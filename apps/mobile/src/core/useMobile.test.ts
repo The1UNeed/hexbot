@@ -5068,18 +5068,28 @@ describe('mobile retained partial cards', () => {
     expect(render().bots[0]?.status ?? 'idle').toBe('idle')
   })
   it.each(['unknown', 'other-sid'])(
-    'does not retain cards from an unsubmitted %s answer',
+    'keeps confirmed cards unchanged after an invalid %s answer',
     async control => {
       await open('private')
+      const beforeAnswers = structuredClone(render().chat.settlements)
+      const requests: string[] = []
+      const original = hooks.handler
+      hooks.handler = async (method, params) => {
+        if (method === 'clarify.respond') requests.push(method)
+        return original(method, params)
+      }
       await render().answer(
         control === 'unknown' ? 'unknown' : 'batch',
         'first',
         'Typed',
         control === 'other-sid' ? 's2' : 's1'
       )
+      expect(requests).toEqual([])
       expect(render().chat.questions[0].questions.map(q => q.id)).toEqual(['first', 'second'])
+      expect(render().chat.resumedWaiting).toBe(false)
+      expect(render().chat.settlements).toEqual(beforeAnswers)
       render().back()
-      expect(render().bots[0].status).toBe('idle')
+      expect(render().bots[0].status).toBe('needs_you')
     }
   )
   it('keeps hidden partial cards through archive, accepted archived Idle, and restore', async () => {
@@ -5712,5 +5722,398 @@ describe('mobile unopened ordinary starts', () => {
     expect(render().bots[0].status).toBe('working')
     hooks.clients[0].emit(wire('message.complete', { text: 'Finished' }))
     expect(render().bots[0].status).toBe('idle')
+  })
+})
+
+describe('mobile unanswered card retention', () => {
+  type Place = 'private' | 'named room' | 'unnamed room'
+  type Kind =
+    | 'approval'
+    | 'question'
+    | 'batch'
+    | 'partial'
+    | 'duplicate question IDs'
+    | 'unanswered duplicate IDs'
+  async function prepare(place: Place = 'private', kind: Kind = 'question') {
+    const room = {
+      id: 'retained-room',
+      name: 'Planning',
+      owner_id: 'owner',
+      archived_at: null,
+      members: [{ member_kind: 'bot', member_id: 'alpha', left_at: null }],
+      turns: [{ bot: 'alpha', live_session_id: 'room-live' }]
+    } as unknown as Room
+    const idle = {
+      ...namedWait,
+      status: 'idle',
+      status_detail:
+        place === 'named room'
+          ? { session_id: 'room-live', room_id: room.id, section_id: null, action: null }
+          : null
+    } as Bot
+    await unopened(idle)
+    const original = hooks.handler
+    hooks.handler = async (method, params) => {
+      if (method === 'hexbot.rooms.get') return { room }
+      if (method === 'hexbot.rooms.log') return { events: [] }
+      if (method === 'hexbot.rooms.list') return { rooms: [room] }
+      return original(method, params)
+    }
+    await render().refresh()
+    if (place === 'private') await render().openSection(idle, section('other', 's2'))
+    else await render().openRoom(room)
+    const sessionId = place === 'private' ? 's2' : 'room-live'
+    const sectionId = place === 'private' ? 'other' : 'room-stored'
+    const context = { bot: 'alpha', section_id: sectionId }
+    const request =
+      kind === 'approval'
+        ? wire(
+            'approval.request',
+            { ...context, request_id: 'unanswered', choices: ['once', 'deny'] },
+            sessionId
+          )
+        : wire(
+            'clarify.request',
+            {
+              ...context,
+              request_id: 'unanswered',
+              questions:
+                kind === 'question'
+                  ? [{ qid: 'first', question: 'Why?' }]
+                  : [
+                      { qid: 'first', question: 'Why?' },
+                      ...(kind === 'duplicate question IDs' || kind === 'unanswered duplicate IDs'
+                        ? [{ qid: 'first', question: 'Same id?' }]
+                        : []),
+                      { qid: 'last', question: 'When?' }
+                    ]
+            },
+            sessionId
+          )
+    const reading = hooks.handler
+    hooks.handler = async (method, params) => {
+      if (method === 'hexbot.bots.get' || method === 'hexbot.bots.list')
+        throw new Error('Roster unavailable')
+      return reading(method, params)
+    }
+    hooks.clients[0].emit(request)
+    if (kind === 'partial' || kind === 'duplicate question IDs')
+      hooks.clients[0].emit(
+        wire(
+          'clarify.resolved',
+          {
+            ...context,
+            request_id: 'unanswered',
+            answers: { first: 'Here' },
+            status: 'waiting',
+            remaining: ['last']
+          },
+          sessionId
+        )
+      )
+    const event = (type: string, payload: Record<string, unknown> = {}) =>
+      hooks.clients[0].emit(wire(type, payload, sessionId))
+    return { context, event, idle, kind, place, request, room, sectionId, sessionId, reading }
+  }
+
+  describe.each(['private', 'named room', 'unnamed room'] as const)('%s', place => {
+    it.each([
+      'approval',
+      'question',
+      'batch',
+      'partial',
+      'duplicate question IDs',
+      'unanswered duplicate IDs'
+    ] as const)('keeps a confirmed %s after leaving with an older Idle roster', async kind => {
+      const f = await prepare(place, kind)
+      expect(render().bots[0].status).toBe('needs_you')
+      const before = render().chat
+      render().back()
+      await expect(render().refresh()).rejects.toThrow('Roster unavailable')
+      expect(render().bots[0]).toMatchObject({
+        status: 'needs_you',
+        status_detail: {
+          session_id: f.sessionId,
+          ...(place === 'private' ? { section_id: f.sectionId } : { room_id: f.room.id })
+        }
+      })
+      if (place === 'private') await render().openSection(f.idle, section('other', 's2'))
+      else await render().openRoom(f.room)
+      expect(render().chat.approvals).toEqual(before.approvals)
+      expect(render().chat.questions).toEqual(before.questions)
+      if (kind === 'partial' || kind === 'duplicate question IDs')
+        expect(render().chat.questions[0].questions.map(q => q.id)).toEqual(['last'])
+      if (kind === 'unanswered duplicate IDs')
+        expect(render().chat.questions[0].questions.map(q => q.id)).toEqual([
+          'first',
+          'first',
+          'last'
+        ])
+    })
+
+    it.each(['approval', 'question'] as const)(
+      'settles a retained %s after leaving and completion retires its activity',
+      async kind => {
+        const f = await prepare(place, kind)
+        render().back()
+        f.event(kind === 'approval' ? 'approval.resolved' : 'clarify.resolved', {
+          ...f.context,
+          request_id: 'unanswered',
+          ...(kind === 'approval'
+            ? { choice: 'once' }
+            : { answers: { first: 'Yes' }, status: 'answered' })
+        })
+        expect(render().bots[0].status).toBe('working')
+        f.event('message.complete', { text: 'Done' })
+        expect(render().bots[0].status).toBe('idle')
+      }
+    )
+
+    it('retains the remaining question when another connected client answers only the first', async () => {
+      const f = await prepare(place, 'batch')
+      render().back()
+      f.event('clarify.resolved', {
+        ...f.context,
+        request_id: 'unanswered',
+        answers: { first: 'Here' },
+        status: 'waiting',
+        remaining: ['last']
+      })
+      expect(render().bots[0].status).toBe('needs_you')
+      if (place === 'private') await render().openSection(f.idle, section('other', 's2'))
+      else await render().openRoom(f.room)
+      expect(render().chat.questions[0].questions.map(q => q.id)).toEqual(['last'])
+    })
+
+    it.each([true, false])('keeps proof only across same epoch=%s', async sameEpoch => {
+      await prepare(place)
+      hooks.clients[0].emit({ type: 'gateway.ready', payload: { replay_epoch: 'first' } })
+      render().back()
+      hooks.clients[0].emit({
+        type: 'gateway.ready',
+        payload: { replay_epoch: sameEpoch ? 'first' : 'second' }
+      })
+      expect(render().bots[0].status).toBe(sameEpoch ? 'needs_you' : 'idle')
+    })
+
+    it('lets a newer successful status read retire the cached card proof without making duplicate replay fresh', async () => {
+      const f = await prepare(place)
+      const failed = hooks.handler
+      hooks.handler = async (method, params) =>
+        method === 'hexbot.bots.get' ? { bot: f.idle } : failed(method, params)
+      hooks.clients[0].emit({ type: 'hexbot.bots.changed', payload: { name: 'alpha' } })
+      await flush()
+      hooks.clients[0].emit(f.request)
+      render().back()
+      expect(render().bots[0].status).toBe('idle')
+    })
+  })
+
+  it('does not retain stale private-session cards after an accepted newer binding', async () => {
+    const f = await prepare()
+    const prior = hooks.handler
+    hooks.handler = async (method, params) => {
+      if (method === 'hexbot.bots.list') return { bots: [f.idle] }
+      if (method === 'hexbot.sections.list') return { sections: [section('other', 'newer-live')] }
+      return prior(method, params)
+    }
+    await render().refresh()
+    f.event('clarify.request', { ...f.context, request_id: 'late-old', question: 'Late?' })
+    render().back()
+    expect(render().bots[0].status).toBe('idle')
+  })
+
+  it('retains a pending clarification learned from an accepted private open snapshot', async () => {
+    const idle = { ...namedWait, status: 'idle', status_detail: null } as Bot
+    await unopened(idle)
+    const original = hooks.handler
+    hooks.handler = async (method, params) => {
+      if (method === 'hexbot.sections.open')
+        return {
+          section: section('other', 's2'),
+          messages: [],
+          pending_clarify: {
+            request_id: 'snapshot',
+            questions: [{ qid: 'first', question: 'Why?' }]
+          }
+        }
+      if (method === 'hexbot.bots.get' || method === 'hexbot.bots.list')
+        throw new Error('Roster unavailable')
+      return original(method, params)
+    }
+    await render().openSection(idle, section('other', 's2'))
+    expect(render().chat.questions.map(q => q.requestId)).toEqual(['snapshot'])
+    render().back()
+    expect(render().bots[0].status).toBe('needs_you')
+  })
+
+  it('does not renew snapshot cards over a newer successful status read', async () => {
+    const idle = { ...namedWait, status: 'idle', status_detail: null } as Bot
+    await unopened(idle)
+    const snapshot = deferred()
+    const original = hooks.handler
+    hooks.handler = async (method, params) => {
+      if (method === 'hexbot.sections.open') return snapshot.promise
+      if (method === 'hexbot.bots.get') return { bot: idle }
+      if (method === 'hexbot.bots.list') throw new Error('Roster unavailable')
+      return original(method, params)
+    }
+    const opening = render().openSection(idle, section('other', 's2'))
+    await flush()
+    hooks.clients[0].emit({ type: 'hexbot.bots.changed', payload: { name: 'alpha' } })
+    await flush()
+    snapshot.resolve({
+      section: section('other', 's2'),
+      messages: [],
+      pending_clarify: { request_id: 'snapshot', question: 'Why?' }
+    })
+    await opening
+    expect(render().chat.questions).toHaveLength(1)
+    render().back()
+    expect(render().bots[0].status).toBe('idle')
+  })
+
+  it.each(['delete', 'archive', 'target'] as const)(
+    'retires confirmed private cards on %s',
+    async control => {
+      const f = await prepare()
+      render().back()
+      if (control === 'delete')
+        hooks.clients[0].emit({
+          type: 'hexbot.sections.changed',
+          payload: { id: 'other', deleted: true }
+        })
+      else if (control === 'archive') {
+        const prior = hooks.handler
+        hooks.handler = async (method, params) =>
+          method === 'hexbot.sections.archive'
+            ? { section: { ...section('other', 's2'), archived_at: 1 } }
+            : prior(method, params)
+        await render().rpc('hexbot.sections.archive', { id: 'other' })
+      } else {
+        hooks.handler = f.reading
+        await render().activate({ ...daemon, id: 'next' }, 'token')
+        await render().refresh()
+        hooks.clients[0].emit(f.request)
+      }
+      expect(render().bots[0].status).toBe('idle')
+    }
+  )
+
+  it('restores hidden unanswered private cards without inventing an answer', async () => {
+    const f = await prepare('private', 'batch')
+    render().back()
+    const prior = hooks.handler
+    let archived = true
+    hooks.handler = async (method, params) => {
+      if (method === 'hexbot.sections.archive' || method === 'hexbot.sections.unarchive')
+        return { section: { ...section('other', 's2'), archived_at: archived ? 1 : null } }
+      return prior(method, params)
+    }
+    await render().rpc('hexbot.sections.archive', { id: 'other' })
+    expect(render().bots[0].status).toBe('idle')
+    archived = false
+    await render().rpc('hexbot.sections.unarchive', { id: 'other' })
+    expect(render().bots[0].status).toBe('needs_you')
+    await render().openSection(f.idle, section('other', 's2'))
+    expect(render().chat.questions[0].questions.map(q => q.id)).toEqual(['first', 'last'])
+    expect(Object.values(render().chat.settlements)).toEqual([{ answers: {} }])
+    expect(render().chat.resumedWaiting).toBe(false)
+  })
+
+  it('keeps sibling requests ahead of ordinary Working after both conversations close', async () => {
+    const f = await prepare()
+    render().back()
+    hooks.clients[0].emit(
+      wire('message.start', { bot: 'alpha', section_id: 'section', room_id: null }, 's1')
+    )
+    expect(render().bots[0].status).toBe('needs_you')
+    f.event('clarify.resolved', {
+      ...f.context,
+      request_id: 'unanswered',
+      status: 'answered',
+      answers: { first: 'Here' }
+    })
+    expect(render().bots[0].status).toBe('working')
+  })
+
+  it.each(['approval', 'question'] as const)(
+    'does not let a replaced room session retain its old %s',
+    async kind => {
+      const f = await prepare('unnamed room', kind)
+      render().back()
+      hooks.clients[0].emit({
+        type: 'hexbot.rooms.turn',
+        payload: {
+          room_id: f.room.id,
+          bot: 'alpha',
+          live_session_id: 'new-room-live',
+          status: 'running'
+        }
+      })
+      expect(render().bots[0].status).not.toBe('needs_you')
+    }
+  )
+
+  it('keeps distinct request IDs independent while both conversations are closed', async () => {
+    const f = await prepare()
+    f.event('approval.request', { ...f.context, request_id: 'approval', choices: ['once', 'deny'] })
+    f.event('clarify.request', {
+      ...f.context,
+      request_id: 'second-batch',
+      questions: [{ qid: 'first', question: 'Different batch?' }]
+    })
+    render().back()
+    f.event('clarify.resolved', {
+      ...f.context,
+      request_id: 'unanswered',
+      status: 'answered',
+      answers: { first: 'Here' }
+    })
+    expect(render().bots[0].status).toBe('needs_you')
+    f.event('approval.resolved', { ...f.context, request_id: 'approval', choice: 'once' })
+    expect(render().bots[0].status).toBe('needs_you')
+    f.event('clarify.resolved', {
+      ...f.context,
+      request_id: 'second-batch',
+      status: 'answered',
+      answers: { first: 'This' }
+    })
+    expect(render().bots[0].status).toBe('working')
+  })
+
+  it('keeps a different room sibling pending when a same-bot room turn is replaced', async () => {
+    const f = await prepare('unnamed room')
+    render().back()
+    const sibling = {
+      ...f.room,
+      id: 'other-room',
+      turns: [{ bot: 'alpha', live_session_id: 'other-room-live' }]
+    }
+    const prior = hooks.handler
+    hooks.handler = async (method, params) =>
+      method === 'hexbot.rooms.get' && params.id === sibling.id
+        ? { room: sibling }
+        : prior(method, params)
+    await render().openRoom(sibling)
+    hooks.clients[0].emit(
+      wire(
+        'approval.request',
+        { bot: 'alpha', section_id: 'other-room-stored', request_id: 'sibling', choices: ['once'] },
+        'other-room-live'
+      )
+    )
+    render().back()
+    hooks.clients[0].emit({
+      type: 'hexbot.rooms.turn',
+      payload: {
+        room_id: f.room.id,
+        bot: 'alpha',
+        live_session_id: 'new-room-live',
+        status: 'running'
+      }
+    })
+    expect(render().bots[0].status).toBe('needs_you')
+    expect(render().bots[0].status_detail?.session_id).toBe('other-room-live')
   })
 })

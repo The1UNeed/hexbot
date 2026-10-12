@@ -150,7 +150,7 @@ export function useMobile() {
   const pendingBotStatus = useRef(new Map<string, BotReadContext & { next?: BotReadContext }>())
   /** Only current room turns can project Working over an older status read. */
   const roomWorking = useRef(new Map<string, number>())
-  /** Known submitted cards and exact bound retries retain proof after their route closes. */
+  /** Exact pending cards, starts, and retries retain proof after their route closes. */
   const submittedTurns = useRef(new Map<string, SubmittedTurn>())
   const pruneSubmitted = useCallback(() => {
     for (const [id, turn] of submittedTurns.current) {
@@ -189,27 +189,63 @@ export function useMobile() {
         submittedTurns.current.delete(id)
     }
   }, [])
-  const retainRetry = useCallback(
-    (state: ChatState, bot: Bot, sessionId: string, section?: Section, roomId?: string) => {
+  const retainTurn = useCallback(
+    (
+      state: ChatState,
+      bot: Bot,
+      sessionId: string,
+      section?: Section,
+      roomId?: string,
+      receipt?: number
+    ) => {
       const proof = state.retryResolution
+      const retry =
+        proof?.resolved &&
+        proof.sessionId === sessionId &&
+        proof.bot === bot.name &&
+        (roomId ? proof.roomId === roomId : proof.sectionId === section?.id)
+      const cards =
+        receipt !== undefined &&
+        receipt >
+          Math.max(rosterRevision.current, botStatusReads.current.get(bot.name)?.revision ?? -1) &&
+        state.busy &&
+        state.waiting &&
+        !state.error &&
+        [...state.approvals, ...state.questions].some(card => card.sessionId === sessionId)
+      if (!retry && !cards) return
+      const owned = submittedTurns.current.get(sessionId)
       if (
-        !proof?.resolved ||
-        proof.sessionId !== sessionId ||
-        proof.bot !== bot.name ||
-        (roomId ? proof.roomId !== roomId : proof.sectionId !== section?.id)
+        owned &&
+        (!sameBot(owned.bot, bot) || owned.section?.id !== section?.id || owned.roomId !== roomId)
       )
         return
-      const owned = submittedTurns.current.get(sessionId)
+      if (cards && section) {
+        const here = routeRef.current
+        const current =
+          here?.kind === 'section' && here.section.id === section.id
+            ? here.section
+            : (sectionsRef.current.find(row => row.id === section.id) ?? section)
+        if (
+          current.bot !== bot.name ||
+          current.archived_at ||
+          sectionArchives.current.get(section.id)?.archived_at ||
+          deletedSections.current.get(section.id)?.active ||
+          (current.live_session_id && current.live_session_id !== sessionId)
+        )
+          return
+      }
       const current = { ...state, messages: [], turns: {} }
-      if (owned) owned.state = current
-      else
+      if (owned) {
+        owned.state = current
+        if (cards) owned.cardsRevision = Math.max(owned.cardsRevision, receipt!)
+      } else
         submittedTurns.current.set(sessionId, {
           bot,
           section,
           roomId,
           sessionId,
-          revision: proof.revision,
-          cardsRevision: proof.revision,
+          revision: retry ? proof!.revision : receipt!,
+          cardsRevision: cards ? receipt! : proof!.revision,
           state: current,
           pending: 0
         })
@@ -762,6 +798,7 @@ export function useMobile() {
       const request = ++refreshSequence.current
       const archives = archiveSnapshot()
       const epoch = replayEpoch.current
+      const cardsRevision = ++eventRevision.current
       loadingEvents.current = []
       try {
         const result = await rpc<{
@@ -854,20 +891,28 @@ export function useMobile() {
         straddling.current = replay.state.busy ? liveId.current : null
         const restored = { ...replay.state, error: failure }
         const bot = botsRef.current.find(bot => sameBot(bot, target.bot))
-        if (bot && liveId.current) retainRetry(restored, bot, liveId.current, target.section)
         loadingEvents.current = null
         setChat(rosterChat(restored, rosterRevision.current))
         acceptArchive(result.section, request, archives, false)
         const newRoute: ChatRoute = { ...target, section: archiveSection(result.section) }
         routeRef.current = newRoute
         setRoute(newRoute)
+        if (
+          bot &&
+          liveId.current &&
+          epoch === replayEpoch.current &&
+          result.section.id === target.section.id &&
+          result.section.bot === bot.name &&
+          request >= acceptedRefresh.current
+        )
+          retainTurn(restored, bot, liveId.current, newRoute.section, undefined, cardsRevision)
         await rpc('hexbot.sections.mark_read', { id: target.section.id })
         return
       } finally {
         if (sequence === openSequence.current) loadingEvents.current = null
       }
     }
-  }, [rpc, syncRoom, archiveSection, archiveSnapshot, acceptArchive, pruneSubmitted, retainRetry])
+  }, [rpc, syncRoom, archiveSection, archiveSnapshot, acceptArchive, pruneSubmitted, retainTurn])
   const syncChatRef = useRef(syncChat)
   syncChatRef.current = syncChat
   const refreshRef = useRef(refresh)
@@ -1279,6 +1324,17 @@ export function useMobile() {
           submittedChanged = true
         } else if (
           event.type === 'hexbot.rooms.turn' &&
+          turn.roomId &&
+          p.room_id === turn.roomId &&
+          p.bot === turn.bot.name &&
+          typeof p.live_session_id === 'string' &&
+          p.live_session_id !== id &&
+          ['running', 'working', 'waiting'].includes(String(p.status))
+        ) {
+          submittedTurns.current.delete(id)
+          submittedChanged = true
+        } else if (
+          event.type === 'hexbot.rooms.turn' &&
           p.room_id === turn.roomId &&
           p.live_session_id === id
         ) {
@@ -1357,6 +1413,7 @@ export function useMobile() {
           )
         }
         setChat(c => {
+          const known = new Set(pendingKeys(c))
           const next = reduceRoom(
             c,
             event,
@@ -1367,12 +1424,38 @@ export function useMobile() {
             const turn = next.turns[event.session_id]
             const bot = turn && botsRef.current.find(bot => bot.name === turn.bot)
             if (turn && bot)
-              retainRetry(
+              retainTurn(
                 { ...emptyChat(), ...turn },
                 bot,
                 event.session_id,
                 undefined,
                 currentRoom.id
+              )
+          }
+          if (
+            ['approval.request', 'clarify.request'].includes(event.type) &&
+            event.session_id &&
+            pendingKeys(next).some(key => !known.has(key))
+          ) {
+            const turn = next.turns[event.session_id]
+            const bot = turn && botsRef.current.find(bot => bot.name === turn.bot)
+            if (
+              turn &&
+              bot &&
+              !currentRoom.archived_at &&
+              currentRoom.turns?.some(
+                active => active.bot === bot.name && active.live_session_id === event.session_id
+              ) &&
+              (!p.bot || p.bot === bot.name) &&
+              (!p.room_id || p.room_id === currentRoom.id)
+            )
+              retainTurn(
+                { ...emptyChat(), ...turn },
+                bot,
+                event.session_id,
+                undefined,
+                currentRoom.id,
+                (event as GatewayEvent & { mobileRevision: number }).mobileRevision
               )
           }
           const id =
@@ -1415,6 +1498,7 @@ export function useMobile() {
           return
         }
         setChat(c => {
+          const known = new Set(pendingKeys(c))
           let next = reduceChat(c, event)
           if (
             next.retryResolution?.sessionId === liveId.current &&
@@ -1434,17 +1518,29 @@ export function useMobile() {
             }
           const bot = botsRef.current.find(bot => sameBot(bot, target.bot))
           if (
-            event.type === 'message.start' &&
-            p.retry_resolved === true &&
             event.session_id &&
-            bot
+            bot &&
+            ((event.type === 'message.start' && p.retry_resolved === true) ||
+              (['approval.request', 'clarify.request'].includes(event.type) &&
+                (!p.bot || p.bot === bot.name) &&
+                (!p.section_id || p.section_id === target.section.id) &&
+                pendingKeys(next).some(key => !known.has(key))))
           )
-            retainRetry(next, bot, event.session_id, target.section)
+            retainTurn(
+              next,
+              bot,
+              event.session_id,
+              target.section,
+              undefined,
+              ['approval.request', 'clarify.request'].includes(event.type)
+                ? (event as GatewayEvent & { mobileRevision: number }).mobileRevision
+                : undefined
+            )
           return rosterChat(next, rosterRevision.current)
         })
       }
     },
-    [rpc, verifyBotStatus, leave, pruneSubmitted, retainRetry, archiveSection]
+    [rpc, verifyBotStatus, leave, pruneSubmitted, retainTurn, archiveSection]
   )
   const acknowledgedApprovals = useRef(new Set<string>())
   useEffect(() => {
