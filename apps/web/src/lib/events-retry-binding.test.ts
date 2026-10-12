@@ -210,6 +210,7 @@ describe.each(['indexed', 'cached'] as const)('%s unopened retry identity', look
 
       if (cause === 'other session') {
         detail.session_id = 'other-live'
+        useSections.setState({ liveSessionId: { [f.sectionId]: 'other-live' } })
       }
 
       useBots.setState({ byName: { owl: { ...f.stopped, status_detail: detail } } })
@@ -320,17 +321,27 @@ it('rejects a live id assigned to two indexed sections', async () => {
   expect(f.status()).toEqual({ section: 'stopped', bot: 'stopped' })
 })
 
-it('preserves an existing room identity while keeping its room Stopped cause', async () => {
+it('preserves an existing room identity while keeping its connector Stopped cause', async () => {
   const f = fixture('cached')
   useBots.setState({
     byName: {
       owl: {
         ...f.stopped,
-        status_detail: { ...f.stopped.status_detail!, section_id: null, room_id: 'r' }
+        status_detail: {
+          ...f.stopped.status_detail!,
+          section_id: null,
+          room_id: 'r',
+          action: { kind: 'fix_connector', connector: 'mail' }
+        }
       }
     }
   })
-  useTranscripts.getState().open(f.sessionId, 'room:r', [], undefined, 'owl')
+  f.event('hexbot.rooms.turn', {
+    room_id: 'r',
+    bot: 'owl',
+    live_session_id: f.sessionId,
+    status: 'running'
+  })
   await f.retry()
   expect(f.transcript()).toMatchObject({ sectionId: 'room:r', bot: 'owl', retryResolved: true })
   expect(f.status().bot).toBe('stopped')

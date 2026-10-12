@@ -359,6 +359,7 @@ it.each(['connector', 'global', 'room', 'other section', 'other session'] as con
         detail.section_id = 'other-section'
       } else {
         detail.session_id = 'other-live'
+        useSections.setState({ liveSessionId: { [f.section.id]: 'other-live' } })
       }
 
       useBots.setState({ byName: { owl: { ...f.stopped, status_detail: detail } } })

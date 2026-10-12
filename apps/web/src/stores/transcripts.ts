@@ -218,7 +218,11 @@ export interface TranscriptsState {
     messages: Message[],
     throughRevision?: number,
     bot?: string,
-    options?: { preserveWaiting?: boolean; roomTurnRunning?: boolean }
+    options?: {
+      preserveWaiting?: boolean
+      preserveRetryResolved?: boolean
+      roomTurnRunning?: boolean
+    }
   ) => void
   reasoningDelta: (sessionId: string, text: string) => void
   resolveApproval: (
@@ -509,6 +513,10 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
           existing?.sectionId === sectionId &&
           (!existing.bot || !bot || existing.bot === bot)
 
+        const preserveRetryResolved = Boolean(
+          options.preserveRetryResolved && preserveWaiting && existing?.bot === bot
+        )
+
         // A live transcript that is ahead of the stored history (a message
         // just sent, a reply streaming) wins over the snapshot.
         if (
@@ -519,7 +527,9 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
             bySession: {
               ...state.bySession,
               [sessionId]: {
-                ...(newer ? existing : retireAuthority(existing, { preserveWaiting })),
+                ...(newer
+                  ? existing
+                  : retireAuthority(existing, { preserveWaiting, preserveRetryResolved })),
                 ...(!newer && options.roomTurnRunning ? { roomTurnRunning: true } : {}),
                 sectionId,
                 bot: bot ?? existing.bot
@@ -539,6 +549,7 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
               ...(existing ? { epoch: existing.epoch } : {}),
               bot: bot ?? existing?.bot,
               ...(preserveWaiting ? { waitingRequests: existing.waitingRequests } : {}),
+              ...(preserveRetryResolved ? { retryResolved: existing?.retryResolved } : {}),
               ...(options.roomTurnRunning ? { roomTurnRunning: true } : {}),
               ...(newer
                 ? {

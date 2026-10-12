@@ -137,6 +137,21 @@ function bindRetryOwner(sessionId: string): boolean {
     return live === sessionId && section ? [{ sectionId: id, bot: section.bot }] : []
   })
 
+  const rooms = useRooms.getState()
+
+  for (const [roomId, turns] of Object.entries(rooms.liveTurnsByRoom)) {
+    for (const [bot, turn] of Object.entries(turns)) {
+      if (
+        turn.live_session_id === sessionId &&
+        turn.bot === bot &&
+        turn.room_id === roomId &&
+        turn.status === 'running'
+      ) {
+        owners.push({ sectionId: `room:${roomId}`, bot })
+      }
+    }
+  }
+
   for (const bot of Object.values(useBots.getState().byName)) {
     const detail = bot.status_detail
 
@@ -145,7 +160,8 @@ function bindRetryOwner(sessionId: string): boolean {
       detail.section_id &&
       !detail.room_id &&
       detail.action?.kind === 'retry' &&
-      botStatus(bot) === 'stopped'
+      botStatus(bot) === 'stopped' &&
+      !owners.some(owner => owner.bot === bot.name && owner.sectionId.startsWith('room:'))
     ) {
       owners.push({ sectionId: detail.section_id, bot: bot.name })
     }
@@ -154,7 +170,7 @@ function bindRetryOwner(sessionId: string): boolean {
   const owner = owners[0]
 
   if (!owner) {
-    return true
+    return !transcript?.sectionId?.startsWith('room:')
   }
 
   if (

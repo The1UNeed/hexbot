@@ -138,7 +138,7 @@ describe('retained room batch replay', () => {
     ['open', 'live messages'],
     ['refreshOne', 'empty'],
     ['refreshOne', 'live messages']
-  ] as const)('locks another client\'s answer on %s with %s history', async (method, history) => {
+  ] as const)("locks another client's answer on %s with %s history", async (method, history) => {
     fixture('clarify', history)
     useTranscripts.getState().clarifyExpire('sibling-live', 'pending')
     batchReplay()
@@ -442,7 +442,7 @@ describe.each(['approval', 'clarify'] as const)('%s confirmation on room refresh
   )
 
   it.each(['empty', 'live messages'] as const)(
-    'retires old answer, working, and retry evidence while retaining %s pending cards',
+    'retires old answer and Working while retaining retry proof and %s pending cards',
     async history => {
       fixture(kind, history)
       const actions = useTranscripts.getState()
@@ -458,7 +458,7 @@ describe.each(['approval', 'clarify'] as const)('%s confirmation on room refresh
       const after = useTranscripts.getState().bySession['sibling-live']!
       expect(after.waitingRequests).toEqual(confirmation)
       expect(after.liveStatus).toBeUndefined()
-      expect(after.retryResolved).toBeUndefined()
+      expect(after.retryResolved).toBe(true)
       expect(after.answeredWaiting).toBeUndefined()
       expect(status()).toBe('needs_you')
     }

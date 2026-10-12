@@ -132,6 +132,21 @@ function clearBotAnswers(
         }
       : botAnswerScope(name, bot)
 
+  if (bot?.status === 'stopped' && detail?.room_id && detail.action?.kind === 'retry') {
+    for (const transcript of Object.values(useTranscripts.getState().bySession)) {
+      if (transcript.bot === name && transcript.sectionId === `room:${detail.room_id}`) {
+        scope.sessionIds.push(transcript.sessionId)
+      }
+    }
+  } else if (bot?.status === 'stopped' && detail?.section_id && detail.action?.kind === 'retry') {
+    const sections = useSections.getState()
+    const live = sections.liveSessionId[detail.section_id]
+
+    if (live && sections.byId[detail.section_id]?.bot === name) {
+      scope.sessionIds.push(live)
+    }
+  }
+
   const matchesScope = (id: string, section?: string) =>
     scope.sessionIds.includes(id) || Boolean(section && scope.sectionIds.includes(section))
 

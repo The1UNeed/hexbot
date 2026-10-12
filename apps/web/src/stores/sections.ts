@@ -23,7 +23,7 @@ import { KICKOFF_MARKER } from '../lib/bot-kickoff'
 import type { Bot, BotStatus, ClarifyRequest, Message, Section } from '../lib/types'
 
 import { draftsActions } from './drafts'
-import { useRooms } from './rooms'
+import { clearDeletedRooms, completedRoomRetry, useRooms } from './rooms'
 import { clarifyWaiting, type Transcript, transcriptRevision, useTranscripts } from './transcripts'
 
 /**
@@ -278,6 +278,8 @@ export function pendingSectionSnapshots(bot: string): Promise<Section[]>[] {
 }
 
 export function clearDeletedSections(): void {
+  clearDeletedRooms()
+
   // A new daemon must not inherit status proof, but old promises stay fenced.
   for (const removed of removedSectionRequests.values()) {
     removed.active = false
@@ -778,6 +780,17 @@ export function liveSectionsOf(
       continue
     }
 
+    const current = useSections.getState().liveSessionId[transcript.sectionId]
+
+    if (
+      current &&
+      transcript.sessionId &&
+      !transcript.sectionId.startsWith('room:') &&
+      current !== transcript.sessionId
+    ) {
+      continue
+    }
+
     const asking = confirmedWaiting(transcript)
 
     const answered = transcript.answeredWaiting
@@ -834,6 +847,7 @@ function resolvedRetry(
   own: LiveSections[string] | undefined
 ) {
   const detail = bot?.status_detail
+  const indexed = useSections.getState()
 
   return Boolean(
     sectionId &&
@@ -842,7 +856,12 @@ function resolvedRetry(
     detail.action?.kind === 'retry' &&
     typeof own === 'object' &&
     own.retryResolved &&
-    (!detail.session_id || detail.session_id === own.retryResolved)
+    (!indexed.liveSessionId[sectionId] || indexed.liveSessionId[sectionId] === own.retryResolved) &&
+    (!indexed.byId[sectionId] || indexed.byId[sectionId]?.bot === bot?.name) &&
+    (!detail.session_id ||
+      detail.session_id === own.retryResolved ||
+      (indexed.byId[sectionId]?.bot === bot?.name &&
+        indexed.liveSessionId[sectionId] === own.retryResolved))
   )
 }
 
@@ -875,7 +894,8 @@ export function sectionStatusOf(
 }
 
 function freshSessionStatus(
-  session: Partial<Parameters<typeof liveSectionsOf>[0][string]> | undefined
+  session: Partial<Parameters<typeof liveSectionsOf>[0][string]> | undefined,
+  running = false
 ): BotStatus | undefined {
   if (!session?.sectionId) {
     return undefined
@@ -889,6 +909,16 @@ function freshSessionStatus(
       streamingMessageId: null
     }
   })[session.sectionId]
+
+  if (
+    running &&
+    session.retryResolved &&
+    session.liveStatus !== 'idle' &&
+    typeof fresh === 'object' &&
+    fresh.status === 'idle'
+  ) {
+    return 'working'
+  }
 
   return fresh === 'answered' ? 'working' : typeof fresh === 'object' ? fresh.status : undefined
 }
@@ -906,6 +936,64 @@ export function botStatusWithLive(
   const status = botStatus(bot)
 
   const detail = bot.status_detail
+  const rooms = useRooms.getState()
+  const indexed = useSections.getState()
+
+  // Native turn failures can omit room_id; only an exact current room session
+  // identifies that stored-session cause without guessing from its section id.
+  const completed = detail?.session_id ? sessions[detail.session_id] : undefined
+
+  const completedRoom = completed?.sectionId?.startsWith('room:')
+    ? completed.sectionId.slice('room:'.length)
+    : undefined
+
+  const roomId =
+    detail?.room_id ??
+    (detail?.action?.kind === 'retry' &&
+    detail.section_id &&
+    detail.session_id &&
+    !indexed.byId[detail.section_id]
+      ? (Object.entries(rooms.liveTurnsByRoom).find(
+          ([, turns]) => turns[bot.name]?.live_session_id === detail.session_id
+        )?.[0] ??
+        (completedRoom &&
+        rooms.byId[completedRoom] &&
+        completedRoomRetry(completed, completedRoom, bot.name)
+          ? completedRoom
+          : undefined))
+      : undefined)
+
+  const archivedRoom = roomId && rooms.byId[roomId]?.archived_at
+  const roomTurn = roomId ? rooms.liveTurnsByRoom[roomId]?.[bot.name] : undefined
+
+  const completedRoomSession =
+    roomId && !roomTurn && rooms.byId[roomId]
+      ? Object.entries(sessions).find(
+          ([id, session]) =>
+            session.sessionId === id && completedRoomRetry(session, roomId, bot.name)
+        )?.[1]
+      : undefined
+
+  const roomSession = roomTurn?.live_session_id
+    ? sessions[roomTurn.live_session_id]
+    : completedRoomSession
+
+  // A room's stored session id is not its virtual section key. The current turn
+  // certifies this bot's retry, including a new live id after the daemon restarts.
+  const roomRetry = Boolean(
+    roomId &&
+    detail?.action?.kind === 'retry' &&
+    !archivedRoom &&
+    roomSession?.bot === bot.name &&
+    roomSession.sectionId === `room:${roomId}` &&
+    roomSession.retryResolved &&
+    (completedRoomSession ||
+      (roomTurn?.bot === bot.name &&
+        roomTurn.room_id === roomId &&
+        roomTurn.status === 'running' &&
+        roomTurn.live_session_id &&
+        (!roomSession.sessionId || roomSession.sessionId === roomTurn.live_session_id)))
+  )
 
   const archivedRetry =
     detail?.action?.kind === 'retry' &&
@@ -915,6 +1003,7 @@ export function botStatusWithLive(
   if (
     status === 'stopped' &&
     !archivedRetry &&
+    !roomRetry &&
     !resolvedRetry(bot, detail?.section_id ?? null, live[detail?.section_id ?? ''])
   ) {
     return status
@@ -933,8 +1022,6 @@ export function botStatusWithLive(
     })
 
   const named = bot.status_detail?.section_id
-  const rooms = useRooms.getState()
-  const archivedRoom = detail?.room_id && rooms.byId[detail.room_id]?.archived_at
 
   // Rooms and private threads are absent from the section index but still count.
   if (
@@ -942,22 +1029,24 @@ export function botStatusWithLive(
     !deletedSectionStatus(bot) &&
     (!named || !sections.some(section => section.id === named))
   ) {
-    const session = detail?.session_id ? sessions[detail.session_id] : undefined
+    const session = roomRetry
+      ? roomSession
+      : detail?.session_id
+        ? sessions[detail.session_id]
+        : undefined
 
     const ownsSession =
       session &&
-      (detail?.room_id
-        ? session.sectionId === `room:${detail.room_id}`
-        : named && session.sectionId === named)
+      (roomId ? session.sectionId === `room:${roomId}` : named && session.sectionId === named)
 
-    const fresh = ownsSession ? freshSessionStatus(session) : undefined
+    const fresh = ownsSession
+      ? freshSessionStatus(session, Boolean(roomRetry && roomTurn && session.roomTurnRunning))
+      : undefined
 
     own.push(
       fresh ?? (detail?.session_id ? status : named ? sectionStatusOf(bot, named, live) : status)
     )
   }
-
-  const indexed = useSections.getState()
 
   for (const [sessionId, session] of Object.entries(sessions)) {
     const id = session.sectionId
@@ -993,7 +1082,7 @@ export function botStatusWithLive(
       session.roomTurnRunning &&
       rooms.liveTurnsByRoom[roomId]?.[bot.name]?.status === 'running'
 
-    const fresh = freshSessionStatus(session) ?? (running ? 'working' : undefined)
+    const fresh = freshSessionStatus(session, Boolean(running)) ?? (running ? 'working' : undefined)
 
     // An unopened thread's trusted card ownership survives its answer and
     // fresh progress, until a roster or lifecycle update retires that evidence.
