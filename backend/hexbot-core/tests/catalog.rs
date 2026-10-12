@@ -601,7 +601,14 @@ fn room_connector_and_global_incidents_survive_missing_or_archived_sections() {
             assert_eq!(bot["status"], "stopped", "{label}");
             assert_eq!(bot["status_detail"]["text"], label);
             assert_eq!(bot["status_detail"]["section_id"], json!(section));
-            assert_eq!(bot["status_detail"]["room_id"], json!(room));
+            assert_eq!(
+                bot["status_detail"]["room_id"],
+                if label == "room stored session" {
+                    json!("room")
+                } else {
+                    json!(room)
+                }
+            );
             assert_eq!(
                 bot["status_detail"]["action"]["kind"],
                 if connector.is_some() {

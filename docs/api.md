@@ -79,9 +79,14 @@ original card. The answer RPC can also return the canonical `choice` or
 
 When a new agent turn starts, `message.start` includes `retry_resolved: true`
 if resolving that section's `turn_failed` incidents succeeded. Clients can
-retire a cached private-section Stopped status with a Retry action for that
-exact live session. For an unopened section, clients bind the marker using
-its known live-session mapping or an exact cached bot/session cause.
+retire a matching cached Stopped status with a Retry action. For an unopened
+private section, clients bind the marker using its known live-session mapping
+or an exact cached bot/session cause. A current same-bot section mapping can
+supersede the incident's older live session. Room markers require the current room
+turn's matching bot and live session. A named room cause can refer to an older
+live session; legacy causes without a room ID require an exact session match.
+Accepted room retry evidence survives successful turn completion until newer
+status or lifecycle authority retires it.
 Compaction starts and older daemons omit this field; an unmarked start or a
 Working event alone does not prove that a failure was resolved.
 
@@ -163,6 +168,8 @@ Mobile retains exact local answer evidence after leaving a conversation,
 including replies from daemons without settlement broadcasts. A fully
 answered live turn shows Working even if the roster missed its wait and
 the following bot reads fail. A newer accepted Idle retires that evidence.
+Partially answered batches retain their confirmed unanswered cards after
+leaving; they still project Needs you without requiring a successful bot read.
 History rereads preserve answer and retry evidence received during an earlier
 attempt, until newer authority retires it. Named bot changes fence older
 targeted status reads.
@@ -824,7 +831,10 @@ Connector mutations emit `hexbot.connectors.changed {connector, bot?}` and
 `hexbot.bots.changed`. Recording a runtime failure emits
 `hexbot.bots.incident {bot, section_id, room_id, session_id, incident: {id,
 kind, connector, text, created_at, resolved_at}}`. Incident resolution does
-not emit an incident event. Turn start and clean turn completion resolve
+not emit an incident event. Room turn failures include their canonical room
+ID in the incident and event. Bot reads also recover that ID for older room
+turn failures while the same bot's stored room session still exists.
+Turn start and clean turn completion resolve
 `turn_failed` incidents. Section deletion resolves only its bot's private
 turn failures; connector, room and global incidents remain open.
 `hexbot.bots.clear_status` resolves all incidents for the bot; successful

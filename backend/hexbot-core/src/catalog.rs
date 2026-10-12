@@ -334,7 +334,8 @@ fn shape_bot(home: &Path, caller: &str, row: Value) -> Result<Value> {
     .into_iter()
     .next();
     let (mut status, mut detail) = ("idle", Value::Null);
-    if let Some(i) = incident {
+    if let Some(mut i) = incident {
+        crate::settings::normalize_incident_room(&db::open(home)?, &mut i)?;
         status = "stopped";
         let action = if i["kind"] == "turn_failed" {
             json!({"kind":"retry"})

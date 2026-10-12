@@ -26,6 +26,10 @@ When a limit is reached, the room shows a notice and stays idle until you send a
 
 Tool approvals appear in the room like approvals in a normal section. A room can use its own approval mode. Reloading restores open approval and question cards. A tool reads "Running" until it completes, including while it waits for approval.
 
+After a failed turn, retrying clears that room failure's Stopped status when
+the bot starts again, even if the bot list has not refreshed. Other failures
+still need attention.
+
 ## Membership and history
 
 You can add or remove bots after creating a room, from Room settings (the info button in the room header). A newly added bot receives the existing transcript so it can follow the discussion. Removing a bot stops only that bot and keeps the old messages and their author labels. Removing the last bot deletes the room; the bot itself is kept.

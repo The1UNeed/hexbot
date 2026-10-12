@@ -70,7 +70,9 @@ room, and the app asks first.
 
 Waiting means a question or approval needs your answer. Once all cards are
 answered and the turn resumes, the app shows Working even if the bot list
-has not refreshed, including after you leave the conversation. Automatic model
+has not refreshed, including after you leave the conversation. If you answer
+only part of a question batch, the remaining questions keep the bot's Needs you
+status after you leave. Automatic model
 retries keep their activity text, such as Retrying the model request, while
 the bot waits for its provider.
 
