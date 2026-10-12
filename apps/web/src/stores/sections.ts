@@ -413,7 +413,8 @@ export const useSections = create<SectionsState>((set, get) => ({
         const indexed = indexSections([...newlyOpened, ...incoming], state.sendingTitles)
 
         for (const section of incoming) {
-          acceptSection(section.id, request)
+          // A preserved row did not install this read's editable metadata.
+          acceptSection(section.id, request, !openedAfter(section.id) || !state.byId[section.id])
         }
 
         return {

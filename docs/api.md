@@ -177,6 +177,8 @@ Local archive, restore and rename replies preserve newer accepted catalog
 metadata and completed edits. List and open snapshots already in flight
 cannot undo completed archive edits; opening still accepts its live session
 and history independently of editable metadata.
+Catalog metadata supersedes a pending edit only when that metadata was
+installed. Keeping a newer local row must not cancel another field's edit.
 Bot list, get and update replies include the daemon's live status. Older
 daemons can return catalog-only Idle from an update, so a settings save alone
 must not retire confirmed pending cards or a live Working status. A later

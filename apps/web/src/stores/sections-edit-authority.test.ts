@@ -21,13 +21,13 @@ const deferred = () => {
   return { promise, resolve, reject }
 }
 
-function fixture(edit: Edit) {
+function fixture(edit: Edit, archivedAt: null | number = edit === 'unarchive' ? 1 : null) {
   const row = {
     id: 'target',
     bot: 'owl',
     title: 'Original',
     title_by: null,
-    archived_at: edit === 'unarchive' ? 1 : null,
+    archived_at: archivedAt,
     live_session_id: 'original-live',
     preview: 'Original preview',
     message_count: 1
@@ -129,6 +129,102 @@ function fixture(edit: Edit) {
 afterEach(() => {
   setActiveRpc(null)
   resetTranscriptEffects()
+})
+
+const catalogOrders = [
+  ['older', 'catalog', 'newer'],
+  ['older', 'newer', 'catalog'],
+  ['catalog', 'older', 'newer'],
+  ['catalog', 'newer', 'older'],
+  ['newer', 'older', 'catalog'],
+  ['newer', 'catalog', 'older']
+] as const
+
+it.each([undefined, 'owl'])(
+  'stamps catalog metadata actually installed into an unloaded row in scope %s',
+  async bot => {
+    const f = fixture('rename')
+    useSections.setState({ byId: {}, idsByBot: {} })
+    const saving = f.begin()
+    f.state.row = { ...f.state.row, title: 'Catalog name' }
+    const catalog = f.state.row
+    f.state.heldList = deferred()
+    const reading = f.changed(bot)
+    f.state.row = { ...f.state.row, live_session_id: 'new-live' }
+    await useSections.getState().openThread('target', 'cat')
+
+    // Opening the thread establishes a newer binding without installing a catalog row.
+    expect(useSections.getState().byId.target).toBeUndefined()
+    f.state.heldList.resolve({ sections: [catalog] })
+    await reading
+    await f.finish(saving)
+
+    expect(useSections.getState().byId.target).toMatchObject({
+      ...catalog,
+      live_session_id: 'new-live'
+    })
+    expect(useSections.getState().liveSessionId.target).toBe('new-live')
+  }
+)
+
+describe.each([
+  ['rename', 'archive'],
+  ['rename', 'unarchive'],
+  ['archive', 'rename'],
+  ['unarchive', 'rename']
+] as const)('catalog between %s and %s', (olderEdit, newerEdit) => {
+  it.each(
+    ([undefined, 'owl'] as const).flatMap(bot =>
+      catalogOrders.map(order => ({ bot, order, label: order.join('/') }))
+    )
+  )('keeps both fields in scope $bot when replies finish $label', async ({ bot, order }) => {
+    const f = fixture(olderEdit, olderEdit === 'unarchive' || newerEdit === 'unarchive' ? 1 : null)
+    const olderSave = f.begin()
+    const catalog = f.state.row
+    f.state.heldList = deferred()
+    const reading = f.changed(bot)
+    const newerReply = deferred()
+
+    const current = {
+      ...f.state.row,
+      ...(newerEdit === 'rename'
+        ? { title: 'Second name' }
+        : { archived_at: newerEdit === 'archive' ? 3 : null })
+    }
+
+    f.call.mockImplementationOnce(async () => {
+      f.state.row = current
+
+      return newerReply.promise
+    })
+
+    const newerSave =
+      newerEdit === 'rename'
+        ? useSections.getState().rename('target', 'Second name')
+        : useSections.getState()[newerEdit]('target')
+
+    const finish = {
+      older: () => f.finish(olderSave),
+      newer: async () => {
+        newerReply.resolve({ section: current })
+        await newerSave
+      },
+      catalog: async () => {
+        f.state.heldList!.resolve({
+          sections: [catalog, { ...catalog, id: 'catalog-sibling', title: 'Catalog sibling' }]
+        })
+        await reading
+      }
+    }
+
+    for (const reply of order) {
+      await finish[reply]()
+    }
+
+    expect(useSections.getState().byId.target).toMatchObject(current)
+    expect(useSections.getState().byId['catalog-sibling']?.title).toBe('Catalog sibling')
+    expect(useSections.getState().liveSessionId.target).toBe('original-live')
+  })
 })
 
 describe.each(['archive', 'rename'] as const)('overlapping fields after %s', edit => {
