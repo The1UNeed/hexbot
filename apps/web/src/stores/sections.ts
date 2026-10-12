@@ -332,28 +332,42 @@ function openedSection(section: Section, request: number): Section {
 function threadBinding(
   state: SectionsState,
   section: Section,
-  opened = false
+  opened = false,
+  request = Infinity
 ): Partial<SectionsState> {
   if (!opened && !isThread(section)) {
     return {}
   }
 
   const liveSessionId = { ...state.liveSessionId }
-  const live = section.live_session_id
-  const transcript = live ? useTranscripts.getState().bySession[live] : undefined
+  const current = state.byId[section.id]
+
+  const live =
+    (boundSectionRequests.get(section.id) ?? 0) > request
+      ? (liveSessionId[section.id] ?? current?.live_session_id)
+      : section.live_session_id
 
   delete liveSessionId[section.id]
 
-  if (
-    !section.archived_at &&
-    live &&
-    transcript?.sectionId === section.id &&
-    transcript.bot === section.bot
-  ) {
+  if (!section.archived_at && live) {
     liveSessionId[section.id] = live
   }
 
-  return { liveSessionId }
+  return {
+    liveSessionId,
+    ...(isThread(section) && (current || section.archived_at)
+      ? {
+          byId: {
+            ...state.byId,
+            [section.id]: {
+              ...(current ?? section),
+              archived_at: section.archived_at,
+              live_session_id: live ?? null
+            }
+          }
+        }
+      : {})
+  }
 }
 
 /** A successful edit protects this row without discarding siblings from an in-flight list. */
@@ -386,6 +400,7 @@ export const useSections = create<SectionsState>((set, get) => ({
     }
 
     const boundAtRead = get().liveSessionId[id]
+    const revision = transcriptRevision()
     const request = ++sectionsRequest
     const connection = useConnection.getState()
 
@@ -412,7 +427,7 @@ export const useSections = create<SectionsState>((set, get) => ({
         return
       }
 
-      // This read installs ownership only, never editable catalog metadata.
+      // Ownership reads can hide archived activity without superseding pending edits.
       boundSectionRequests.set(id, request)
 
       if (!section) {
@@ -422,14 +437,33 @@ export const useSections = create<SectionsState>((set, get) => ({
       set(state => {
         const liveSessionId = { ...state.liveSessionId }
 
-        if (!section.archived_at && section.live_session_id === sessionId) {
-          liveSessionId[id] = sessionId
-        } else if (liveSessionId[id] === sessionId) {
-          delete liveSessionId[id]
+        delete liveSessionId[id]
+
+        if (!section.archived_at && section.live_session_id) {
+          liveSessionId[id] = section.live_session_id
         }
 
-        return { liveSessionId }
+        return {
+          liveSessionId,
+          ...(state.byId[id] || section.archived_at
+            ? {
+                byId: {
+                  ...state.byId,
+                  [id]: {
+                    ...(state.byId[id] ?? section),
+                    archived_at: section.archived_at,
+                    live_session_id: section.live_session_id
+                  }
+                }
+              }
+            : {})
+        }
       })
+
+      if (!section.archived_at && !section.live_session_id) {
+        // A closed runtime retires old activity, while cards remain readable.
+        useTranscripts.getState().clearAnsweredWaiting([id], [], revision, { idle: true })
+      }
     } catch {
       // Failed metadata cannot establish ownership or retire a pending card.
     }
@@ -516,7 +550,9 @@ export const useSections = create<SectionsState>((set, get) => ({
         return {
           byId: {
             ...Object.fromEntries(
-              Object.entries(state.byId).filter(([, section]) => preserve(section.bot))
+              Object.entries(state.byId).filter(
+                ([, section]) => preserve(section.bot) || isThread(section)
+              )
             ),
             ...indexed.byId
           },
@@ -706,7 +742,11 @@ export const useSections = create<SectionsState>((set, get) => ({
     }
 
     sectionChanged(section.id, request, 'archive')
-    set(state => ({ ...mergeEditedSection(state, section), ...threadBinding(state, section) }))
+    set(state => ({
+      ...mergeEditedSection(state, section),
+      ...threadBinding(state, section, false, request)
+    }))
+    boundSectionRequests.set(id, sectionsRequest)
   },
 
   async unarchive(id) {
@@ -718,7 +758,11 @@ export const useSections = create<SectionsState>((set, get) => ({
     }
 
     sectionChanged(section.id, request, 'archive')
-    set(state => ({ ...mergeEditedSection(state, section), ...threadBinding(state, section) }))
+    set(state => ({
+      ...mergeEditedSection(state, section),
+      ...threadBinding(state, section, false, request)
+    }))
+    boundSectionRequests.set(id, sectionsRequest)
   },
 
   async remove(id, purgeMemory = true) {
@@ -874,7 +918,12 @@ export function liveSectionsOf(
       continue
     }
 
-    const current = useSections.getState().liveSessionId[transcript.sectionId]
+    const indexed = useSections.getState()
+    const current = indexed.liveSessionId[transcript.sectionId]
+
+    if (indexed.byId[transcript.sectionId]?.archived_at && !current) {
+      continue
+    }
 
     if (
       current &&

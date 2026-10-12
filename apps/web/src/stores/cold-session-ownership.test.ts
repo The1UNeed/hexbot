@@ -7,7 +7,13 @@ import type { Bot, Room, Section } from '../lib/types'
 import { useBots } from './bots'
 import { useConnection } from './connection'
 import { useRooms } from './rooms'
-import { botStatusWithLive, clearDeletedSections, liveSectionsOf, useSections } from './sections'
+import {
+  botStatusWithLive,
+  clearDeletedSections,
+  liveSectionsOf,
+  sectionStatusOf,
+  useSections
+} from './sections'
 import { resetTranscriptEffects, setTranscriptEffects, useTranscripts } from './transcripts'
 
 const bot = { name: 'owl', status: 'idle', status_detail: null } as Bot
@@ -164,7 +170,14 @@ describe.each(['approval', 'clarify'] as const)('cold %s ownership', kind => {
     pending(kind)
     await flush()
     expect(dot()).toBe('idle')
-    expect(useTranscripts.getState().bySession.live?.waitingRequests).toHaveLength(1)
+    expect(useTranscripts.getState().bySession.live?.waitingRequests).toHaveLength(
+      'live_session_id' in patch && patch.live_session_id === null ? 0 : 1
+    )
+    expect(
+      kind === 'approval'
+        ? useTranscripts.getState().bySession.live?.approvals
+        : useTranscripts.getState().bySession.live?.clarifies
+    ).toHaveLength(1)
   })
 
   it('preserves cards but establishes no ownership when its metadata read fails', async () => {
@@ -270,7 +283,8 @@ describe.each(['approval', 'clarify'] as const)('cold %s ownership', kind => {
     setActiveRpc({ call: vi.fn().mockResolvedValue({ section: section() }) } as never)
     await useSections.getState().unarchive('stored')
     expect(dot()).toBe('needs_you')
-    expect(useSections.getState().byId.stored).toBeUndefined()
+    expect(useSections.getState().byId.stored?.peer_bot).toBe('cat')
+    expect(useSections.getState().idsByBot.owl).toBeUndefined()
   })
 
   it('accepts fresh unlisted archive metadata and survives a failed later read', async () => {
@@ -622,9 +636,13 @@ it.each(['open', 'away and back', 'catalog', 'newer lookup'] as const)(
   }
 )
 
-it.each([{ bot: 'cat' }, { live_session_id: 'different' }, { archived_at: 1 }])(
-  'keeps an older private binding when the new-SID tuple is unverified: %j',
-  async patch => {
+it.each([
+  [{ bot: 'cat' }, 'old-live'],
+  [{ live_session_id: 'different' }, 'different'],
+  [{ archived_at: 1 }, undefined]
+] as const)(
+  'reconciles an older private binding only from an exact owner row: %j',
+  async (patch, expected) => {
     await oldPrivateBinding()
     rpc([section({ live_session_id: 'new-live', ...patch })])
     event(
@@ -638,8 +656,148 @@ it.each([{ bot: 'cat' }, { live_session_id: 'different' }, { archived_at: 1 }])(
       'new-live'
     )
     await flush()
-    expect(useSections.getState().liveSessionId.stored).toBe('old-live')
+    expect(useSections.getState().liveSessionId.stored).toBe(expected)
     expect(useTranscripts.getState().bySession['new-live']?.waitingRequests).toHaveLength(1)
     expect(dot()).toBe('idle')
   }
 )
+
+describe.each(['approval', 'clarify', 'working'] as const)('superseded private %s', kind => {
+  it.each([
+    ['thread', 'third-live', null],
+    ['thread', null, null],
+    ['thread', 'third-live', 1],
+    ['indexed', 'third-live', null],
+    ['indexed', null, null],
+    ['indexed', 'third-live', 1]
+  ] as const)(
+    'retires old activity for %s with SID %s and archive %s',
+    async (surface, sid, archive) => {
+      const original = section({
+        live_session_id: 'old-live',
+        peer_bot: surface === 'thread' ? 'cat' : null
+      })
+
+      setActiveRpc({
+        call: vi.fn().mockResolvedValue({ section: original, messages: [] })
+      } as never)
+
+      if (surface === 'thread') {
+        await useSections.getState().openThread('stored', 'cat')
+      } else {
+        await useSections.getState().open('stored')
+      }
+
+      event(
+        `${kind === 'working' ? 'approval' : kind}.request`,
+        {
+          bot: 'owl',
+          section_id: 'stored',
+          request_id: 'old-request',
+          question: 'Continue?'
+        },
+        'old-live'
+      )
+
+      if (kind === 'working') {
+        event('approval.resolved', { request_id: 'old-request', choice: 'once' }, 'old-live')
+        event('status.update', { kind: 'working', text: 'Working' }, 'old-live')
+      }
+
+      rpc([{ ...original, live_session_id: sid, archived_at: archive }])
+      event(
+        'approval.request',
+        {
+          bot: 'owl',
+          section_id: 'stored',
+          request_id: 'new-request',
+          command: 'check'
+        },
+        'new-live'
+      )
+      await flush()
+      const sessions = useTranscripts.getState().bySession
+      const live = liveSectionsOf(sessions)
+      const rows = surface === 'thread' ? [] : [useSections.getState().byId.stored!]
+      expect(botStatusWithLive(bot, rows, live, sessions)).toBe('idle')
+      expect(sectionStatusOf(bot, 'stored', live)).toBe('idle')
+      expect(sessions['third-live']).toBeUndefined()
+      expect(sessions['new-live']?.approvals).toHaveLength(1)
+      expect(
+        kind === 'clarify' ? sessions['old-live']?.clarifies : sessions['old-live']?.approvals
+      ).toHaveLength(1)
+
+      if (surface === 'thread') {
+        expect(useSections.getState().idsByBot.owl).toBeUndefined()
+      }
+    }
+  )
+})
+
+describe.each(['approval', 'clarify'] as const)('%s lifecycle authority', kind => {
+  it.each(['archive', 'unarchive'] as const)(
+    'completed %s fences an earlier lookup snapshot',
+    async operation => {
+      const before = operation === 'archive' ? null : 1
+      const after = operation === 'archive' ? 1 : null
+      rpc([section({ archived_at: before })])
+      pending(kind)
+      await flush()
+
+      const saving = deferred(),
+        reading = deferred()
+
+      setActiveRpc({
+        call: vi.fn((method: string) =>
+          method === `hexbot.sections.${operation}` ? saving.promise : reading.promise
+        )
+      } as never)
+      const editing = useSections.getState()[operation]('stored')
+      const checking = useSections.getState().verifySessionOwner('live', true)
+      saving.resolve({ section: section({ archived_at: after }) })
+      await editing
+      reading.resolve({ sections: [section({ archived_at: before })] })
+      await checking
+      expect(dot()).toBe(operation === 'archive' ? 'idle' : 'needs_you')
+      expect(useSections.getState().byId.stored?.archived_at).toBe(after)
+      expect(useTranscripts.getState().bySession.live?.waitingRequests).toHaveLength(1)
+    }
+  )
+
+  it.each(['archive', 'unarchive'] as const)(
+    'late %s ACK preserves a newer verified SID through restore',
+    async operation => {
+      rpc([section({ live_session_id: 'old-live', archived_at: 1 })])
+      event('approval.request', { bot: 'owl', section_id: 'stored', request_id: 'old' }, 'old-live')
+      event('approval.resolved', { request_id: 'old', choice: 'once' }, 'old-live')
+      event('status.update', { kind: 'idle', text: 'Ready' }, 'old-live')
+      await flush()
+      const saving = deferred()
+      setActiveRpc({ call: vi.fn(() => saving.promise) } as never)
+      const editing = useSections.getState()[operation]('stored')
+      rpc([section()])
+      pending(kind)
+      await flush()
+      expect(dot()).toBe('needs_you')
+      saving.resolve({
+        section: section({
+          live_session_id: 'old-live',
+          archived_at: operation === 'archive' ? 1 : null
+        })
+      })
+      await editing
+      expect(dot()).toBe(operation === 'archive' ? 'idle' : 'needs_you')
+      expect(useSections.getState().byId.stored?.live_session_id).toBe('live')
+
+      if (operation === 'archive') {
+        rpc([section()])
+        event('hexbot.sections.changed', { id: 'stored' }, '')
+        await flush()
+      }
+
+      expect(dot()).toBe('needs_you')
+      expect(useSections.getState().liveSessionId.stored).toBe('live')
+      expect(useTranscripts.getState().bySession.live?.waitingRequests).toHaveLength(1)
+    }
+  )
+})

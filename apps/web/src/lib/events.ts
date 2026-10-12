@@ -302,7 +302,9 @@ export function routeEvent(event: GatewayEvent, deps: EventRouterDeps = {}): voi
     case 'hexbot.sections.changed':
       if (typeof payload.id === 'string' && payload.deleted !== true) {
         for (const transcript of Object.values(transcripts.bySession)) {
-          if (transcript.sectionId === payload.id && !useSections.getState().byId[payload.id]) {
+          const section = useSections.getState().byId[payload.id]
+
+          if (transcript.sectionId === payload.id && (!section || section.peer_bot)) {
             void useSections.getState().verifySessionOwner(transcript.sessionId, true)
           }
         }
