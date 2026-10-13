@@ -1113,8 +1113,57 @@ export function useMobile() {
               routeRef.current?.kind === 'section' &&
               routeRef.current.section.id === target.section.id &&
               sameBot(routeRef.current.bot, target.bot)
-            )
-              for (const event of buffered) eventRef.current(event, true)
+            ) {
+              const sessionId = liveId.current
+              const receipts = new Map(carried?.cards)
+              let requested = false
+              for (const event of buffered) {
+                const payload = (event.payload ?? {}) as Record<string, unknown>
+                if (
+                  event.session_id === sessionId &&
+                  ['approval.request', 'clarify.request'].includes(event.type) &&
+                  (!payload.bot || payload.bot === target.bot.name) &&
+                  (!payload.section_id || payload.section_id === target.section.id) &&
+                  !payload.room_id
+                )
+                  for (const key of pendingKeys(reduceChat(emptyChat(), event))) {
+                    requested = true
+                    if (!receipts.has(key))
+                      receipts.set(
+                        key,
+                        (event as GatewayEvent & { mobileRevision?: number }).mobileRevision ?? -1
+                      )
+                  }
+                eventRef.current(event, true)
+              }
+              // Existing turns already received the whole buffer. Only legacy unbound events
+              // need a new record, and only after their final chat state has been installed.
+              setChat(state => {
+                const here = routeRef.current
+                const bot = botsRef.current.find(bot => sameBot(bot, target.bot))
+                if (
+                  requested &&
+                  sessionId &&
+                  bot &&
+                  sequence === openSequence.current &&
+                  epoch === replayEpoch.current &&
+                  liveId.current === sessionId &&
+                  here?.kind === 'section' &&
+                  here.section.id === target.section.id &&
+                  sameBot(here.bot, target.bot) &&
+                  !submittedTurns.current.has(sessionId)
+                )
+                  retainTurn(
+                    { ...state, retryResolution: undefined },
+                    bot,
+                    sessionId,
+                    here.section,
+                    undefined,
+                    receipts
+                  )
+                return state
+              })
+            }
           }
         }
       }
@@ -1772,6 +1821,7 @@ export function useMobile() {
             }
           const bot = botsRef.current.find(bot => sameBot(bot, target.bot))
           if (
+            !chatOnly &&
             event.session_id &&
             bot &&
             ((event.type === 'message.start' && p.retry_resolved === true) ||

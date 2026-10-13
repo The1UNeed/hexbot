@@ -8131,3 +8131,318 @@ describe('plain reread settlement on failed read', () => {
     expect(render().chat.waiting).toBe(true)
   })
 })
+
+describe('chat-only replay retains final request state', () => {
+  beforeEach(() => vi.useFakeTimers())
+  afterEach(() => vi.useRealTimers())
+  const batch = (request_id: string) => ({
+    request_id,
+    questions: [
+      { qid: 'first', question: 'Where?' },
+      { qid: 'last', question: 'When?' }
+    ]
+  })
+  const answers = { first: 'Here', last: 'Now' }
+  async function held(path: 'plain' | 'restore', phase: 'open' | 'status') {
+    const idle = { ...namedWait, status: 'idle', status_detail: null } as Bot
+    let row = { ...section(), archived_at: path === 'restore' ? 1 : null }
+    const original = hooks.handler
+    hooks.handler = async (method, params) => {
+      if (method === 'hexbot.bots.list') return { bots: [idle] }
+      if (method === 'hexbot.sections.list') return { sections: [row] }
+      if (method === 'hexbot.bots.get') throw new Error('Unavailable')
+      if (method === 'hexbot.sections.open')
+        return { section: row, messages: [], pending_clarify: batch('old') }
+      return original(method, params)
+    }
+    await render().activate(daemon, 'token')
+    hooks.clients[0].emit(wire('gateway.ready', { replay_epoch: 'epoch-one' }))
+    await render().refresh()
+    await render().openSection(idle, row)
+    const first = deferred()
+    const second = deferred()
+    const previous = hooks.handler
+    let opens = 0
+    let gets = 0
+    hooks.handler = async (method, params) => {
+      if (method === 'hexbot.sections.unarchive') {
+        row = { ...row, archived_at: null }
+        return { section: row }
+      }
+      if (method === 'hexbot.sections.open') {
+        if (++opens === 1) return first.promise
+        if (opens > 2) throw new Error('Follow-up unavailable')
+        if (phase === 'open') return second.promise
+        return {
+          section: row,
+          messages: [{ id: 'history', role: 'assistant', content: 'Earlier reply' }]
+        }
+      }
+      if (method === 'session.status' && opens === 2 && phase === 'status') return second.promise
+      if (method === 'hexbot.bots.get') gets++
+      return previous(method, params)
+    }
+    const emit = (type: string, payload: Record<string, unknown>, weak = false, sid = 's1') =>
+      hooks.clients[0].emit(
+        wire(type, { ...(weak ? {} : { bot: 'alpha', section_id: 'section' }), ...payload }, sid)
+      )
+    const reading =
+      path === 'restore'
+        ? render().rpc('hexbot.sections.unarchive', { id: 'section' })
+        : render()
+            .syncChat()
+            .catch(() => {})
+    await flush()
+    emit('message.complete', {})
+    emit('message.start', { room_id: null })
+    emit('clarify.request', batch('seed'))
+    first.resolve({
+      section: row,
+      messages: [{ id: 'history', role: 'assistant', content: 'Earlier reply' }]
+    })
+    await flush()
+    await flush()
+    expect(opens).toBe(2)
+    expect(render().chat.questions.map(q => q.requestId)).toEqual(['seed'])
+    emit('clarify.resolved', { request_id: 'seed', status: 'answered', answers })
+    const request = (kind: 'approval' | 'question', id = 'later', weak = false, sid = 's1') =>
+      emit(
+        kind === 'approval' ? 'approval.request' : 'clarify.request',
+        kind === 'approval' ? { request_id: id, choices: ['once', 'deny'] } : batch(id),
+        weak,
+        sid
+      )
+    const resolve = (kind: 'approval' | 'question', id = 'later', weak = false, sid = 's1') =>
+      emit(
+        kind === 'approval' ? 'approval.resolved' : 'clarify.resolved',
+        kind === 'approval'
+          ? { request_id: id, choice: 'once' }
+          : { request_id: id, status: 'answered', answers },
+        weak,
+        sid
+      )
+    return {
+      idle,
+      emit,
+      request,
+      resolve,
+      changeSession: (id: string) => {
+        row = { ...row, live_session_id: id }
+      },
+      async reopen(pending?: Record<string, unknown>, status = 'working') {
+        const handler = hooks.handler
+        hooks.handler = async (method, params) => {
+          if (method === 'hexbot.sections.open') {
+            opens++
+            return {
+              section: row,
+              messages: [{ id: 'history', role: 'assistant', content: 'Earlier reply' }],
+              pending_clarify: pending
+            }
+          }
+          if (method === 'session.status') return { status }
+          return handler(method, params)
+        }
+        await render().openSection(idle, row)
+      },
+      reads: () => gets,
+      opens: () => opens,
+      async fail() {
+        await flush()
+        const before = gets
+        second.reject(new Error('Second read unavailable'))
+        await reading
+        await flush()
+        await flush()
+        expect(gets).toBe(before)
+        return before
+      }
+    }
+  }
+  const retainedStatus = () => {
+    render().back()
+    return render().bots[0].status
+  }
+
+  it.each(
+    (['plain', 'restore'] as const).flatMap(path =>
+      (['open', 'status'] as const).flatMap(phase =>
+        (['approval', 'question'] as const).flatMap(kind =>
+          (['resolved', 'expired', 'complete', 'error', 'idle'] as const)
+            .filter(ending => ending !== 'expired' || kind === 'question')
+            .map(ending => [path, phase, kind, ending] as const)
+        )
+      )
+    )
+  )(
+    'keeps %s %s-read %s request→%s from overwriting later submitted state',
+    async (path, phase, kind, ending) => {
+      const f = await held(path, phase)
+      f.request(kind)
+      if (ending === 'resolved') f.resolve(kind)
+      else if (ending === 'expired')
+        f.emit(kind === 'approval' ? 'approval.expire' : 'clarify.expire', { request_id: 'later' })
+      else if (ending === 'complete') f.emit('message.complete', {})
+      else if (ending === 'error') f.emit('error', { message: 'Stopped' })
+      else f.emit('status.update', { kind: 'idle' })
+      await f.fail()
+      if (ending === 'resolved' || ending === 'expired')
+        expect([...render().chat.approvals, ...render().chat.questions]).toEqual([])
+      expect(retainedStatus()).toBe(['resolved', 'expired'].includes(ending) ? 'working' : 'idle')
+      expect(f.opens()).toBe(ending === 'complete' ? 3 : 2)
+    }
+  )
+
+  it.each(
+    (['plain', 'restore'] as const).flatMap(path =>
+      (['open', 'status'] as const).map(phase => [path, phase] as const)
+    )
+  )(
+    'preserves %s %s-read partial answers when the remaining legacy answer arrives after leaving',
+    async (path, phase) => {
+      const f = await held(path, phase)
+      f.request('question')
+      f.emit('clarify.resolved', {
+        request_id: 'later',
+        status: 'waiting',
+        answers: { first: 'Here' },
+        remaining: ['last']
+      })
+      await f.fail()
+      expect(render().chat.questions[0].questions.map(q => q.id)).toEqual(['last'])
+      expect(retainedStatus()).toBe('needs_you')
+      f.emit('clarify.resolved', {
+        request_id: 'later',
+        status: 'answered',
+        answers: { last: 'Now' }
+      })
+      expect(render().bots[0].status).toBe('working')
+    }
+  )
+
+  it.each(
+    (['plain', 'restore'] as const).flatMap(path =>
+      (['pending', 'resolved', 'expired', 'complete', 'error', 'idle'] as const).map(
+        ending => [path, ending] as const
+      )
+    )
+  )(
+    'retains only the final weak %s request state after %s while the prior global record was pruned',
+    async (path, ending) => {
+      const f = await held(path, 'open')
+      f.emit('status.update', { kind: 'idle' })
+      f.emit('message.start', {}, true)
+      f.request('question', 'weak', true)
+      if (ending === 'resolved') f.resolve('question', 'weak', true)
+      else if (ending === 'expired') f.emit('clarify.expire', { request_id: 'weak' }, true)
+      else if (ending === 'complete') f.emit('message.complete', {}, true)
+      else if (ending === 'error') f.emit('error', { message: 'Stopped' }, true)
+      else if (ending === 'idle') f.emit('status.update', { kind: 'idle' }, true)
+      await f.fail()
+      expect(retainedStatus()).toBe(
+        ending === 'pending' ? 'needs_you' : ending === 'resolved' ? 'working' : 'idle'
+      )
+    }
+  )
+
+  it.each(['approval', 'question'] as const)(
+    'keeps a real sibling %s without resurrecting the resolved request',
+    async sibling => {
+      const f = await held('plain', 'open')
+      f.request('approval')
+      f.resolve('approval')
+      f.request(sibling, 'sibling')
+      await f.fail()
+      expect(
+        [...render().chat.approvals, ...render().chat.questions].map(q => q.requestId)
+      ).toEqual(['sibling'])
+      expect(retainedStatus()).toBe('needs_you')
+      f.resolve(sibling, 'sibling')
+      expect(render().bots[0].status).toBe('working')
+    }
+  )
+
+  it.each(['strong', 'weak'] as const)(
+    'keeps the current %s new turn after an older terminal event',
+    async metadata => {
+      const f = await held('plain', 'open')
+      f.request('approval')
+      f.resolve('approval')
+      f.emit('status.update', { kind: 'idle' })
+      f.emit('message.start', metadata === 'strong' ? { room_id: null } : {}, metadata === 'weak')
+      f.request('question', 'current', metadata === 'weak')
+      await f.fail()
+      expect(render().chat.questions.map(q => q.requestId)).toEqual(['current'])
+      expect(retainedStatus()).toBe('needs_you')
+      f.resolve('question', 'current', metadata === 'weak')
+      expect(render().bots[0].status).toBe('working')
+    }
+  )
+
+  it.each(['newer Idle', 'new SID', 'foreign owner', 'foreign room'] as const)(
+    'does not lend replayed request proof across %s',
+    async boundary => {
+      const f = await held('restore', 'open')
+      if (boundary === 'foreign owner')
+        f.emit('clarify.request', { ...batch('foreign'), bot: 'other' })
+      else if (boundary === 'foreign room')
+        f.emit('clarify.request', { ...batch('foreign'), room_id: 'room' })
+      else f.request('question', 'current', false, boundary === 'new SID' ? 's2' : 's1')
+      if (boundary === 'newer Idle') await render().refresh()
+      await f.fail()
+      expect(retainedStatus()).toBe(boundary === 'newer Idle' ? 'idle' : 'working')
+    }
+  )
+  it.each(['partial', 'resolved'] as const)(
+    'reopens the actual %s state without stale retained questions',
+    async ending => {
+      const f = await held('restore', 'status')
+      f.request('question')
+      if (ending === 'partial')
+        f.emit('clarify.resolved', {
+          request_id: 'later',
+          status: 'waiting',
+          answers: { first: 'Here' },
+          remaining: ['last']
+        })
+      else f.resolve('question')
+      await f.fail()
+      expect(retainedStatus()).toBe(ending === 'partial' ? 'needs_you' : 'working')
+      if (ending === 'resolved') await render().refresh()
+      await f.reopen(
+        ending === 'partial' ? { ...batch('later'), answers: { first: 'Here' } } : undefined,
+        ending === 'partial' ? 'working' : 'idle'
+      )
+      expect(render().chat.questions.map(q => q.questions.map(q => q.id))).toEqual(
+        ending === 'partial' ? [['last']] : []
+      )
+      expect(render().chat.messages.map(m => m.text)).toEqual(['Earlier reply'])
+      expect(f.opens()).toBe(3)
+      if (ending === 'resolved') expect(retainedStatus()).toBe('idle')
+    }
+  )
+
+  it.each(['epoch', 'route', 'delete', 'daemon', 'catalog SID'] as const)(
+    'does not create fallback proof after %s supersedes the read',
+    async boundary => {
+      const f = await held('restore', 'open')
+      f.emit('status.update', { kind: 'idle' })
+      f.emit('message.start', {}, true)
+      f.request('question', 'weak', true)
+      if (boundary === 'epoch') f.emit('gateway.ready', { replay_epoch: 'new-epoch' })
+      else if (boundary === 'route') await render().openSection(f.idle, section('other', 's2'))
+      else if (boundary === 'delete')
+        f.emit('hexbot.sections.changed', { id: 'section', deleted: true })
+      else if (boundary === 'daemon')
+        await render().activate({ ...daemon, id: 'next-daemon' }, 'token')
+      else {
+        f.changeSession('s2')
+        await render().refresh()
+      }
+      await f.fail()
+      render().back()
+      expect(render().bots.find(b => b.name === 'alpha')?.status).not.toBe('needs_you')
+      expect(render().bots.find(b => b.name === 'alpha')?.status).not.toBe('working')
+    }
+  )
+})
