@@ -6854,9 +6854,17 @@ describe('mobile open section restore reconfirms pending cards', () => {
     vi.useRealTimers()
   })
 
-  async function archived(kind: 'question' | 'approval' = 'question') {
+  async function archived(
+    kind: 'question' | 'approval' = 'question',
+    catalog: 'same' | 'null' | 'absent' | 'old' = 'same'
+  ) {
     const idle = { ...namedWait, status: 'idle', status_detail: null } as Bot
-    let row: Section = { ...section(), archived_at: 1 }
+    let row: Section = {
+      ...section(),
+      archived_at: 1,
+      live_session_id: catalog === 'null' ? null : catalog === 'old' ? 'old-live' : 's1'
+    }
+    let listed = catalog !== 'absent'
     let reads = true
     let opens = 0
     const question = {
@@ -6884,7 +6892,7 @@ describe('mobile open section restore reconfirms pending cards', () => {
       }
       if (method === 'hexbot.bots.get') throw new Error('Bot read unavailable')
       if (method === 'hexbot.rooms.list') return { rooms: [] }
-      if (method === 'hexbot.sections.list') return { sections: [row] }
+      if (method === 'hexbot.sections.list') return { sections: listed ? [row] : [] }
       if (method === 'hexbot.sections.open') {
         opens++
         if (params.id !== row.id)
@@ -6892,6 +6900,10 @@ describe('mobile open section restore reconfirms pending cards', () => {
             section: { ...section(String(params.id), 's2'), archived_at: null },
             messages: []
           }
+        if (opens === 1) {
+          row = { ...row, live_session_id: 's1' }
+          listed = true
+        }
         if (opens > 1 && reemit) hooks.clients[0].emit(wire('approval.request', approval))
         return { section: row, messages, ...(opens > 1 ? { pending_clarify: pending } : {}) }
       }
@@ -7492,4 +7504,267 @@ describe('mobile open section restore reconfirms pending cards', () => {
       expect(render().bots[0].status).toBe('needs_you')
     }
   )
+
+  describe('restore read ordering', () => {
+    it.each(
+      (['App', 'Management'] as const).flatMap(caller =>
+        (['same', 'null', 'absent', 'old'] as const).flatMap(catalog =>
+          (['question', 'approval'] as const).flatMap(kind =>
+            (['open', 'status'] as const).map(phase => [caller, catalog, kind, phase] as const)
+          )
+        )
+      )
+    )(
+      'keeps %s %s catalog %s through an older roster accepted during %s',
+      async (caller, catalog, kind, phase) => {
+        const f = await archived(kind, catalog)
+        const older = deferred()
+        const held = deferred()
+        const previous = hooks.handler
+        let readingRoster = true
+        let blocking = true
+        hooks.handler = async (method, params) => {
+          if (readingRoster && method === 'hexbot.bots.list') return { bots: [f.idle] }
+          if (readingRoster && method === 'hexbot.info') return older.promise
+          const result = await previous(method, params)
+          if (
+            blocking &&
+            method === (phase === 'open' ? 'hexbot.sections.open' : 'session.status')
+          ) {
+            blocking = false
+            await held.promise
+          }
+          return result
+        }
+        const refreshing = render().refresh()
+        await flush()
+        readingRoster = false
+        const restoring = f.restore()
+        await flush()
+        older.resolve({})
+        await refreshing
+        expect(render().sections[0]?.live_session_id).toBe('s1')
+        held.resolve({})
+        await restoring
+        if (caller === 'App')
+          await render()
+            .refresh()
+            .catch(() => {})
+        else await vi.advanceTimersByTimeAsync(250)
+        expect(f.opens()).toBe(2)
+        expect(
+          [...render().chat.questions, ...render().chat.approvals].map(card => card.requestId)
+        ).toEqual(['archived-card'])
+        render().back()
+        expect(render().bots[0].status).toBe('needs_you')
+      }
+    )
+
+    it.each(
+      (['open', 'status'] as const).flatMap(phase =>
+        (['idle', 'needs_you'] as const).map(snapshot => [phase, snapshot] as const)
+      )
+    )(
+      'accepts agreeing %s while preserving the later %s roster cutoff',
+      async (phase, snapshot) => {
+        const f = await archived('question', 'null')
+        const held = deferred()
+        const previous = hooks.handler
+        let blocking = true
+        let readingRoster = false
+        hooks.handler = async (method, params) => {
+          if (readingRoster && method === 'hexbot.bots.list')
+            return {
+              bots: [
+                {
+                  ...f.idle,
+                  status: snapshot,
+                  status_detail:
+                    snapshot === 'needs_you'
+                      ? { session_id: 's1', section_id: 'section', room_id: null }
+                      : null
+                }
+              ]
+            }
+          const result = await previous(method, params)
+          if (method === 'hexbot.sections.open')
+            f.question.questions[0].question = 'Confirmed question'
+          if (
+            blocking &&
+            method === (phase === 'open' ? 'hexbot.sections.open' : 'session.status')
+          ) {
+            blocking = false
+            await held.promise
+          }
+          return result
+        }
+        const restoring = f.restore()
+        await flush()
+        readingRoster = true
+        await render().refresh()
+        readingRoster = false
+        held.resolve({})
+        await restoring
+        expect(render().chat.questions[0].questions[0].text).toBe('Confirmed question')
+        render().back()
+        expect(render().bots[0].status).toBe(snapshot)
+      }
+    )
+
+    async function acceptedFirst(
+      ending: 'open' | 'status' | 'archive' | 'held',
+      beforeRelease?: (f: Awaited<ReturnType<typeof archived>>) => Promise<void>
+    ) {
+      const f = await archived('question', beforeRelease ? 'null' : 'same')
+      const first = deferred()
+      const second = deferred()
+      const previous = hooks.handler
+      let opens = 0
+      let gets = 0
+      hooks.handler = async (method, params) => {
+        if (method === 'hexbot.bots.get') gets++
+        if (method === 'hexbot.sections.open' && params.id === 'section') {
+          if (++opens === 1) return first.promise
+          if (ending === 'open') throw new Error('Second open unavailable')
+          if (ending === 'archive' || ending === 'held') return second.promise
+        }
+        if (method === 'session.status' && opens === 2 && ending === 'status')
+          throw new Error('Second status unavailable')
+        return previous(method, params)
+      }
+      const restoring = f.restore()
+      await flush()
+      hooks.clients[0].emit(
+        wire('clarify.resolved', {
+          ...f.question,
+          status: 'answered',
+          answers: { first: 'Here', last: 'Now' }
+        })
+      )
+      hooks.clients[0].emit(wire('message.complete', { bot: 'alpha', section_id: 'section' }))
+      hooks.clients[0].emit(
+        wire('message.start', { bot: 'alpha', section_id: 'section', room_id: null })
+      )
+      hooks.clients[0].emit(wire('clarify.request', { ...f.question, request_id: 'fresh' }))
+      hooks.clients[0].emit(
+        wire('clarify.resolved', {
+          ...f.question,
+          request_id: 'fresh',
+          status: 'waiting',
+          answers: { first: 'Here' }
+        })
+      )
+      await flush()
+      if (beforeRelease) await beforeRelease(f)
+      const before = gets
+      first.resolve({
+        section: { ...f.row(), archived_at: null },
+        messages: [{ id: 'readable', role: 'assistant', content: 'Earlier reply' }],
+        pending_clarify: f.question
+      })
+      await flush()
+      await flush()
+      return { ...f, restoring, second, opens: () => opens, reads: () => gets, before }
+    }
+
+    it.each(
+      (['App', 'Management'] as const).flatMap(caller =>
+        (['open', 'status', 'archive'] as const).map(ending => [caller, ending] as const)
+      )
+    )(
+      'keeps accepted partial answers and the new question when %s reread ends with %s',
+      async (caller, ending) => {
+        const f = await acceptedFirst(ending)
+        if (ending === 'archive') {
+          await f.catalog(2)
+          f.second.resolve({
+            section: { ...section(), archived_at: null },
+            messages: [],
+            pending_clarify: f.question
+          })
+        }
+        await f.restoring
+        if (caller === 'App')
+          await render()
+            .refresh()
+            .catch(() => {})
+        else await vi.advanceTimersByTimeAsync(250)
+        expect(f.opens()).toBe(2)
+        expect(f.reads()).toBe(f.before)
+        expect(
+          render().chat.questions.map(card => [card.requestId, card.questions.map(q => q.id)])
+        ).toEqual([['fresh', ['last']]])
+        expect(
+          render().chat.settlements[JSON.stringify(['clarify', 's1', 'archived-card'])]?.answers
+        ).toEqual({ first: 'Here', last: 'Now' })
+        expect(render().chat.messages.map(message => message.text)).toEqual(['Earlier reply'])
+        render().back()
+        expect(render().bots[0].status).toBe(ending === 'archive' ? 'idle' : 'needs_you')
+      }
+    )
+
+    it.each(['question', 'approval'] as const)(
+      'lets a fresh reread %s adopt a newer runtime after the prior catalog read began',
+      async kind => {
+        const f = await acceptedFirst('held', f => f.catalog(null))
+        if (kind === 'approval')
+          hooks.clients[0].emit(
+            wire(
+              'approval.request',
+              { bot: 'alpha', section_id: 'section', request_id: 'current' },
+              's3'
+            )
+          )
+        f.second.resolve({
+          section: { ...section(), archived_at: null, live_session_id: 's3' },
+          messages: [{ id: 'readable', role: 'assistant', content: 'Earlier reply' }],
+          ...(kind === 'question'
+            ? { pending_clarify: { ...f.question, request_id: 'current' } }
+            : {})
+        })
+        await f.restoring
+        expect(render().liveSessionId()).toBe('s3')
+        expect(
+          [...render().chat.questions, ...render().chat.approvals].map(card => [
+            card.sessionId,
+            card.requestId
+          ])
+        ).toEqual([['s3', 'current']])
+        render().back()
+        expect(render().bots[0].status).toBe('needs_you')
+      }
+    )
+
+    it.each(['other route', 'deleted', 'epoch', 'daemon', 'new session', 'newer Idle'] as const)(
+      'does not reinstall an accepted earlier fold over %s during the next read',
+      async boundary => {
+        const f = await acceptedFirst('held')
+        if (boundary === 'other route') await render().openSection(f.idle, section('other', 's2'))
+        else if (boundary === 'deleted')
+          hooks.clients[0].emit({
+            type: 'hexbot.sections.changed',
+            payload: { id: 'section', deleted: true }
+          })
+        else if (boundary === 'epoch')
+          hooks.clients[0].emit({ type: 'gateway.ready', payload: { replay_epoch: 'two' } })
+        else if (boundary === 'daemon')
+          await render().activate({ ...daemon, id: 'other-daemon' }, 'token')
+        else await f.catalog(null, boundary === 'new session' ? 's2' : 's1')
+        f.second.resolve({
+          section: { ...section(), archived_at: null },
+          messages: [],
+          pending_clarify: { ...f.question, request_id: 'fresh' }
+        })
+        await f.restoring
+        if (boundary === 'other route') {
+          expect(render().route).toMatchObject({ kind: 'section', section: { id: 'other' } })
+          expect(render().chat.questions).toEqual([])
+        }
+        if (boundary === 'deleted' || boundary === 'daemon') expect(render().route).toBeNull()
+        render().back()
+        if (boundary === 'daemon') expect(render().bots).toEqual([])
+        else expect(render().bots[0].status).toBe(boundary === 'other route' ? 'needs_you' : 'idle')
+      }
+    )
+  })
 })

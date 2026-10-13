@@ -508,7 +508,8 @@ export function useMobile() {
             const catalogSession = sectionsRef.current.find(
               row => row.id === section.id
             )?.live_session_id
-            const stillCurrent = () => {
+            const catalogRead = refreshSequence.current
+            const stillCurrent = (openedSession = liveId.current, read = catalogRead) => {
               const route = routeRef.current
               const saved = sectionArchives.current.get(section.id)
               const row = sectionsRef.current.find(row => row.id === section.id)
@@ -518,7 +519,9 @@ export function useMobile() {
                 route?.kind === 'section' &&
                 route.section.id === section.id &&
                 sameBot(route.bot, target.bot) &&
-                row?.live_session_id === catalogSession &&
+                (acceptedRefresh.current <= read ||
+                  row?.live_session_id === catalogSession ||
+                  row?.live_session_id === openedSession) &&
                 saved?.generation === accepted.generation &&
                 saved.readChangeRequest === accepted.readChangeRequest &&
                 saved.archived_at === null &&
@@ -894,7 +897,7 @@ export function useMobile() {
     [rpc]
   )
   const syncChat = useCallback(
-    async (stillCurrent?: () => boolean) => {
+    async (stillCurrent?: (openedSession?: string | null, read?: number) => boolean) => {
       const target = routeRef.current
       if (!target || (stillCurrent && !stillCurrent())) return
       if (target.kind === 'room') return syncRoom(target.room.id)
@@ -924,7 +927,7 @@ export function useMobile() {
           }>('hexbot.sections.open', { id: target.section.id })
           if (
             (stillCurrent &&
-              (!stillCurrent() ||
+              (!stillCurrent(result.section.live_session_id, request) ||
                 result.section.id !== target.section.id ||
                 result.section.bot !== target.bot.name ||
                 result.section.archived_at)) ||
@@ -938,7 +941,11 @@ export function useMobile() {
           const status = await rpc<{ status: string }>('session.status', {
             session_id: result.section.live_session_id
           })
-          if (sequence !== openSequence.current || (stillCurrent && !stillCurrent())) return
+          if (
+            sequence !== openSequence.current ||
+            (stillCurrent && !stillCurrent(result.section.live_session_id, request))
+          )
+            return
           liveId.current = result.section.live_session_id
           setHasEarlier(false)
           const submitted = submittedTurns.current.get(liveId.current!)
@@ -1047,17 +1054,6 @@ export function useMobile() {
             pruneSubmitted()
           }
           failure = replay.state.error ?? failure
-          // A turn finished while the history loaded; read it again so its replies show once.
-          if (replay.reread && attempt < 2) {
-            carried = {
-              sessionId: liveId.current!,
-              epoch: replayEpoch.current,
-              proof: statusProof(replay.state),
-              state: replay.state,
-              cards: pendingReceipts
-            }
-            continue
-          }
           straddling.current = replay.state.busy ? liveId.current : null
           const restored = { ...replay.state, error: failure }
           const bot = botsRef.current.find(bot => sameBot(bot, target.bot))
@@ -1091,6 +1087,17 @@ export function useMobile() {
                 )))
           )
             retainTurn(restored, bot, liveId.current, newRoute.section, undefined, pendingReceipts)
+          // Keep accepted events visible even if the follow-up history read fails or is superseded.
+          if (replay.reread && attempt < 2) {
+            carried = {
+              sessionId: liveId.current!,
+              epoch: replayEpoch.current,
+              proof: statusProof(replay.state),
+              state: replay.state,
+              cards: pendingReceipts
+            }
+            continue
+          }
           await rpc('hexbot.sections.mark_read', { id: target.section.id })
           return
         } finally {
