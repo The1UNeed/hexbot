@@ -7855,3 +7855,279 @@ describe('empty clarification consumer', () => {
     expect(render().chat.questions[0].questions.map(q => q.id)).toEqual(['new'])
   })
 })
+
+describe('plain reread settlement on failed read', () => {
+  beforeEach(() => vi.useFakeTimers())
+  afterEach(() => vi.useRealTimers())
+  const question = {
+    request_id: 'fresh',
+    bot: 'alpha',
+    section_id: 'section',
+    questions: [
+      { qid: 'first', question: 'Where?' },
+      { qid: 'last', question: 'When?' }
+    ]
+  }
+  async function rereading(kind: 'question' | 'approval', phase: 'open' | 'status') {
+    const idle = { ...namedWait, status: 'idle', status_detail: null } as Bot
+    await unopened(idle)
+    hooks.clients[0].emit(wire('gateway.ready', { replay_epoch: 'epoch-one' }))
+    const first = deferred()
+    const second = deferred()
+    const original = hooks.handler
+    let opens = 0
+    let gets = 0
+    let finished = false
+    let pending: Record<string, unknown> | undefined = kind === 'question' ? question : undefined
+    hooks.handler = async (method, params) => {
+      if (method === 'hexbot.sections.open' && params.id === 'section') {
+        opens++
+        if (opens >= 3)
+          return {
+            section: section(),
+            messages: [
+              { id: 'history', role: 'assistant', content: 'Earlier reply' },
+              { id: 'done', role: 'assistant', content: 'Fresh reply' }
+            ]
+          }
+        if (opens === 1) return first.promise
+        if (phase === 'open') return second.promise
+        return {
+          section: section(),
+          messages: [{ id: 'history', role: 'assistant', content: 'Earlier reply' }],
+          pending_clarify: pending
+        }
+      }
+      if (method === 'session.status' && opens === 2 && phase === 'status') return second.promise
+      if (method === 'session.status' && finished) return { status: 'idle' }
+      if (method === 'clarify.respond') {
+        pending = { ...question, answers: { first: 'Here' } }
+        return { status: 'waiting', answers: { first: 'Here' }, remaining: ['last'] }
+      }
+      if (method === 'approval.respond') return { resolved: true, choice: 'once' }
+      if (method === 'hexbot.bots.get') {
+        gets++
+        throw new Error('Unavailable')
+      }
+      return original(method, params)
+    }
+    const opening = render().openSection(idle, section())
+    await flush()
+    hooks.clients[0].emit(wire('message.complete', { bot: 'alpha', section_id: 'section' }))
+    hooks.clients[0].emit(
+      wire('message.start', { bot: 'alpha', section_id: 'section', room_id: null })
+    )
+    hooks.clients[0].emit(
+      kind === 'question'
+        ? wire('clarify.request', question)
+        : wire('approval.request', {
+            request_id: 'fresh',
+            bot: 'alpha',
+            section_id: 'section',
+            choices: ['once', 'deny']
+          })
+    )
+    await flush()
+    first.resolve({
+      section: section(),
+      messages: [{ id: 'history', role: 'assistant', content: 'Earlier reply' }]
+    })
+    await flush()
+    await flush()
+    expect(opens).toBe(2)
+    expect([...render().chat.questions, ...render().chat.approvals].map(q => q.requestId)).toEqual([
+      'fresh'
+    ])
+    return {
+      opening,
+      second,
+      idle,
+      finishTurn: () => {
+        finished = true
+      },
+      reads: () => gets,
+      opens: () => opens,
+      success: () =>
+        second.resolve(
+          phase === 'open'
+            ? {
+                section: section(),
+                messages: [{ id: 'history', role: 'assistant', content: 'Earlier reply' }],
+                pending_clarify: pending
+              }
+            : { status: 'working' }
+        )
+    }
+  }
+  const remote = (session = 's1') =>
+    hooks.clients[0].emit(
+      wire(
+        'clarify.resolved',
+        {
+          ...question,
+          status: 'answered',
+          answers: { first: 'Here', last: 'Now' }
+        },
+        session
+      )
+    )
+
+  it.each(
+    (['open', 'status'] as const).flatMap(phase =>
+      (['local partial', 'local approval', 'remote answer'] as const).flatMap(action =>
+        ([false, true] as const).map(fails => [phase, action, fails] as const)
+      )
+    )
+  )('keeps %s-phase %s settlement when the second read fails=%s', async (phase, action, fails) => {
+    const f = await rereading(action === 'local approval' ? 'approval' : 'question', phase)
+    if (action === 'local partial') await render().answer('fresh', 'first', 'Here')
+    else if (action === 'local approval') await render().approval('fresh', 'once')
+    else remote()
+    await flush()
+    const gets = f.reads()
+    if (fails) f.second.reject(new Error('Second read unavailable'))
+    else f.success()
+    await f.opening
+    expect(f.opens()).toBe(2)
+    expect(f.reads()).toBe(gets)
+    expect(render().chat.approvals).toEqual([])
+    expect(render().chat.questions.map(q => [q.requestId, q.questions.map(q => q.id)])).toEqual(
+      action === 'local partial' ? [['fresh', ['last']]] : []
+    )
+    expect(render().chat.messages.map(m => m.text)).toEqual(['Earlier reply'])
+  })
+
+  it.each(['route', 'delete', 'daemon', 'epoch', 'foreign SID', 'new SID', 'owner'] as const)(
+    'does not apply an old buffered settlement across %s',
+    async boundary => {
+      const f = await rereading('question', 'open')
+      remote(boundary === 'foreign SID' ? 's2' : 's1')
+      if (boundary === 'route') await render().openSection(f.idle, section('other', 's2'))
+      else if (boundary === 'delete')
+        hooks.clients[0].emit(wire('hexbot.sections.changed', { id: 'section', deleted: true }))
+      else if (boundary === 'daemon') await render().activate({ ...daemon, id: 'other' }, 'token')
+      else if (boundary === 'epoch')
+        hooks.clients[0].emit(wire('gateway.ready', { replay_epoch: 'epoch-two' }))
+      else if (boundary === 'owner') {
+        const previous = hooks.handler
+        hooks.handler = async (method, params) =>
+          method === 'hexbot.bots.list'
+            ? { bots: [{ ...f.idle, owner_id: 'other-owner' }] }
+            : previous(method, params)
+        await render().refresh()
+      } else if (boundary === 'new SID') {
+        f.second.resolve({ section: section('section', 's2'), messages: [] })
+        // The new session has its own status read; it fails after adopting the new SID.
+        const previous = hooks.handler
+        hooks.handler = async (method, params) =>
+          method === 'session.status' && params.session_id === 's2'
+            ? Promise.reject(new Error('New status unavailable'))
+            : previous(method, params)
+      }
+      if (boundary !== 'new SID') f.second.reject(new Error('Second read unavailable'))
+      await f.opening
+      if (boundary === 'delete') {
+        expect(render().route).toBeNull()
+        expect(render().chat.questions[0]?.questions.map(q => q.id)).toEqual(['first', 'last'])
+      } else if (['route', 'daemon'].includes(boundary)) {
+        expect(render().chat.questions).toEqual([])
+      } else {
+        expect(render().chat.questions[0]?.questions.map(q => q.id)).toEqual(['first', 'last'])
+      }
+    }
+  )
+
+  it.each(['approval', 'question'] as const)(
+    'keeps a sibling %s while draining the exact answer',
+    async sibling => {
+      const f = await rereading('question', 'open')
+      hooks.clients[0].emit(
+        sibling === 'approval'
+          ? wire('approval.request', { request_id: 'sibling', bot: 'alpha', section_id: 'section' })
+          : wire('clarify.request', { ...question, request_id: 'sibling' })
+      )
+      remote()
+      f.second.reject(new Error('Second read unavailable'))
+      await f.opening
+      expect(
+        [...render().chat.questions, ...render().chat.approvals].map(q => q.requestId)
+      ).toEqual(['sibling'])
+      expect(render().chat.waiting).toBe(true)
+    }
+  )
+
+  it.each(['open', 'status'] as const)(
+    'keeps the newer Idle cutoff during a failed %s reread',
+    async phase => {
+      const f = await rereading('question', phase)
+      remote()
+      await flush()
+      await render().refresh()
+      f.second.reject(new Error('Second read unavailable'))
+      await f.opening
+      expect(render().chat.questions).toEqual([])
+      expect(render().chat.resumedWaiting).toBe(false)
+      render().back()
+      expect(render().bots[0].status).toBe('idle')
+    }
+  )
+  it.each(['hexbot.sections.changed', 'hexbot.bots.changed'] as const)(
+    'does not repeat a buffered %s status read on failure',
+    async type => {
+      const f = await rereading('question', 'open')
+      hooks.clients[0].emit(wire(type, { id: 'section', name: 'alpha', bot: 'alpha' }))
+      await flush()
+      remote()
+      await flush()
+      const gets = f.reads()
+      f.second.reject(new Error('Second read unavailable'))
+      await f.opening
+      expect(f.reads()).toBe(gets)
+      expect(render().chat.questions).toEqual([])
+    }
+  )
+
+  it('applies a buffered completion once and reads its finished history once', async () => {
+    const f = await rereading('question', 'open')
+    remote()
+    f.finishTurn()
+    hooks.clients[0].emit(
+      wire('message.complete', { bot: 'alpha', section_id: 'section', text: 'Fresh reply' })
+    )
+    await flush()
+    const gets = f.reads()
+    f.second.reject(new Error('Second read unavailable'))
+    await f.opening
+    await flush()
+    await flush()
+    expect(f.opens()).toBe(3)
+    expect(f.reads()).toBe(gets)
+    expect(render().chat.questions).toEqual([])
+    expect(render().chat.messages.map(m => m.text)).toEqual(['Earlier reply', 'Fresh reply'])
+  })
+
+  it('applies buffered start, status and new request once without another read', async () => {
+    const f = await rereading('question', 'open')
+    remote()
+    hooks.clients[0].emit(
+      wire('message.start', { bot: 'alpha', section_id: 'section', room_id: null })
+    )
+    hooks.clients[0].emit(wire('clarify.request', { ...question, request_id: 'new' }))
+    hooks.clients[0].emit(
+      wire('status.update', {
+        bot: 'alpha',
+        section_id: 'section',
+        kind: 'waiting',
+        text: 'Waiting'
+      })
+    )
+    await flush()
+    const gets = f.reads()
+    f.second.reject(new Error('Second read unavailable'))
+    await f.opening
+    expect(f.opens()).toBe(2)
+    expect(f.reads()).toBe(gets)
+    expect(render().chat.questions.map(q => q.requestId)).toEqual(['new'])
+    expect(render().chat.waiting).toBe(true)
+  })
+})

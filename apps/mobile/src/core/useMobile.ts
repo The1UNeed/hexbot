@@ -1106,7 +1106,7 @@ export function useMobile() {
             loadingEvents.current = null
             // A superseding archive can reject this read while the same chat still receives events.
             if (
-              stillCurrent &&
+              (stillCurrent || carried) &&
               !folded &&
               buffered &&
               epoch === replayEpoch.current &&
@@ -1114,7 +1114,7 @@ export function useMobile() {
               routeRef.current.section.id === target.section.id &&
               sameBot(routeRef.current.bot, target.bot)
             )
-              for (const event of buffered) eventRef.current(event)
+              for (const event of buffered) eventRef.current(event, true)
           }
         }
       }
@@ -1250,374 +1250,382 @@ export function useMobile() {
     [rpc, acceptArchive, archiveSnapshot, retireArchiveActivity, pruneSubmitted]
   )
   const onEvent = useCallback(
-    (event: GatewayEvent) => {
+    (event: GatewayEvent, chatOnly = false) => {
       // Preserve original receipt order when a loading buffer is replayed.
       if ((event as GatewayEvent & { mobileRevision?: number }).mobileRevision === undefined)
         event = { ...event, mobileRevision: ++eventRevision.current } as GatewayEvent
       const target = routeRef.current
       const p = (event.payload ?? {}) as Record<string, unknown>
-      let removedRetry: Bot | undefined
-      let removedRoomBots: Bot[] = []
-      let repeatedDeletion = false
-      if (event.type === 'gateway.ready' && typeof p.replay_epoch === 'string' && p.replay_epoch) {
-        if (replayEpoch.current && replayEpoch.current !== p.replay_epoch) {
-          setChat(clearStatusProof)
-          botStatusReads.current.clear()
-          botStatusChanges.current.clear()
-          pendingBotStatus.current.clear()
-          roomWorking.current.clear()
-          submittedTurns.current.clear()
-          sectionArchives.current.clear()
-          for (const deleted of deletedSections.current.values()) deleted.active = false
-          for (const deleted of deletedRooms.current.values()) deleted.active = false
-          setBots(rows => [...rows])
-          // Events from the previous process cannot restore cards or status in a fresh snapshot.
-          if (loadingEvents.current) loadingEvents.current = []
-        }
-        replayEpoch.current = p.replay_epoch
-      }
-      if (
-        event.type === 'hexbot.rooms.changed' &&
-        p.deleted === true &&
-        typeof p.id === 'string' &&
-        p.id
-      ) {
-        repeatedDeletion = Boolean(deletedRooms.current.get(p.id)?.active)
-        if (!repeatedDeletion) {
-          deletedRooms.current.set(p.id, { request: ++refreshSequence.current, active: true })
-          removedRoomBots = botsRef.current.filter(bot => bot.status_detail?.room_id === p.id)
-          setRooms(rows => rows.filter(room => room.id !== p.id))
-          setBots(rows => [...rows])
-          if (target?.kind === 'room' && p.id === target.room.id) {
+      // Loading events already updated the roster and submitted turns on receipt.
+      if (!chatOnly) {
+        let removedRetry: Bot | undefined
+        let removedRoomBots: Bot[] = []
+        let repeatedDeletion = false
+        if (
+          event.type === 'gateway.ready' &&
+          typeof p.replay_epoch === 'string' &&
+          p.replay_epoch
+        ) {
+          if (replayEpoch.current && replayEpoch.current !== p.replay_epoch) {
             setChat(clearStatusProof)
-            leave()
+            botStatusReads.current.clear()
+            botStatusChanges.current.clear()
+            pendingBotStatus.current.clear()
+            roomWorking.current.clear()
+            submittedTurns.current.clear()
+            sectionArchives.current.clear()
+            for (const deleted of deletedSections.current.values()) deleted.active = false
+            for (const deleted of deletedRooms.current.values()) deleted.active = false
+            setBots(rows => [...rows])
+            // Events from the previous process cannot restore cards or status in a fresh snapshot.
+            if (loadingEvents.current) loadingEvents.current = []
+          }
+          replayEpoch.current = p.replay_epoch
+        }
+        if (
+          event.type === 'hexbot.rooms.changed' &&
+          p.deleted === true &&
+          typeof p.id === 'string' &&
+          p.id
+        ) {
+          repeatedDeletion = Boolean(deletedRooms.current.get(p.id)?.active)
+          if (!repeatedDeletion) {
+            deletedRooms.current.set(p.id, { request: ++refreshSequence.current, active: true })
+            removedRoomBots = botsRef.current.filter(bot => bot.status_detail?.room_id === p.id)
+            setRooms(rows => rows.filter(room => room.id !== p.id))
+            setBots(rows => [...rows])
+            if (target?.kind === 'room' && p.id === target.room.id) {
+              setChat(clearStatusProof)
+              leave()
+            }
           }
         }
-      }
-      if (
-        event.type === 'hexbot.sections.changed' &&
-        p.deleted === true &&
-        typeof p.id === 'string' &&
-        p.id
-      ) {
-        repeatedDeletion = Boolean(deletedSections.current.get(p.id)?.active)
-        if (!repeatedDeletion) {
-          removedRetry = botsRef.current.find(
-            bot =>
-              bot.status === 'stopped' &&
-              bot.status_detail?.section_id === p.id &&
-              !bot.status_detail?.room_id &&
-              bot.status_detail?.action?.kind === 'retry'
-          )
-          deletedSections.current.set(p.id, { request: ++refreshSequence.current, active: true })
-          sectionArchives.current.delete(p.id)
-          sectionsRef.current = sectionsRef.current.filter(section => section.id !== p.id)
-          setSections(sectionsRef.current)
-          setBots(rows => [...rows])
-          if (routeRef.current?.kind === 'section' && routeRef.current.section.id === p.id) leave()
-        }
-      }
-      const contradicts =
-        !repeatedDeletion &&
-        ([
-          'approval.request',
-          'clarify.request',
-          'message.start',
-          'message.complete',
-          'error',
-          'hexbot.bots.incident',
-          'hexbot.sections.changed',
-          'hexbot.rooms.changed',
-          'hexbot.rooms.turn'
-        ].includes(event.type) ||
-          event.type === 'hexbot.bots.changed' ||
-          (event.type === 'status.update' &&
-            ['idle', 'done', 'error', 'interrupted'].includes(String(p.kind))))
-      if (contradicts) {
-        const revision = (event as GatewayEvent & { mobileRevision: number }).mobileRevision
-        for (const bot of botsRef.current) {
-          const detail = bot.status_detail
-          const pending = pendingBotStatus.current.get(bot.name)
-          if (
-            p.bot === bot.name ||
-            (event.type === 'hexbot.bots.changed' && p.name === bot.name) ||
-            (event.session_id &&
-              (event.session_id === detail?.session_id ||
-                event.session_id === pending?.sessionId ||
-                event.session_id === pending?.next?.sessionId)) ||
-            (event.type === 'hexbot.sections.changed' &&
-              typeof p.id === 'string' &&
-              (p.id === detail?.section_id ||
-                p.id === pending?.sectionId ||
-                p.id === pending?.next?.sectionId)) ||
-            (event.type === 'hexbot.rooms.changed' &&
-              typeof p.id === 'string' &&
-              p.id === detail?.room_id) ||
-            (event.type === 'hexbot.rooms.turn' &&
-              typeof p.room_id === 'string' &&
-              p.room_id === detail?.room_id)
-          )
-            botStatusChanges.current.set(
-              bot.name,
-              Math.max(botStatusChanges.current.get(bot.name) ?? 0, revision)
-            )
-        }
-      }
-      if (
-        event.type === 'hexbot.bots.changed' &&
-        p.deleted !== true &&
-        !(event as GatewayEvent & { mobileStatusRead?: boolean }).mobileStatusRead
-      ) {
-        event = { ...event, mobileStatusRead: true } as GatewayEvent
-        const name = typeof p.name === 'string' ? p.name : typeof p.bot === 'string' ? p.bot : ''
-        const bot = botsRef.current.find(bot => bot.name === name)
-        if (bot) {
-          const pending = pendingBotStatus.current.get(name)
-          const context = pending?.next ?? pending
-          void verifyBotStatus(
-            name,
-            context?.sessionId ?? bot.status_detail?.session_id ?? '',
-            context?.sectionId ?? bot.status_detail?.section_id ?? '',
-            (event as GatewayEvent & { mobileRevision: number }).mobileRevision,
-            context?.archive
-          )
-        }
-      }
-      if (removedRetry)
-        void verifyBotStatus(
-          removedRetry.name,
-          removedRetry.status_detail?.session_id ?? '',
-          p.id as string,
-          (event as GatewayEvent & { mobileRevision: number }).mobileRevision
-        )
-      for (const bot of removedRoomBots)
-        void verifyBotStatus(
-          bot.name,
-          bot.status_detail?.session_id ?? '',
-          bot.status_detail?.section_id ?? '',
-          (event as GatewayEvent & { mobileRevision: number }).mobileRevision
-        )
-      if (
-        event.type === 'hexbot.sections.changed' &&
-        p.deleted !== true &&
-        typeof p.id === 'string' &&
-        p.id
-      ) {
-        const name =
-          typeof p.bot === 'string'
-            ? p.bot
-            : (sectionsRef.current.find(row => row.id === p.id)?.bot ??
-              (target?.kind === 'section' && target.section.id === p.id
-                ? target.bot.name
-                : undefined) ??
-              botsRef.current.find(bot => bot.status_detail?.section_id === p.id)?.name)
-        if (name) {
-          const revision = (event as GatewayEvent & { mobileRevision: number }).mobileRevision
-          botStatusChanges.current.set(
-            name,
-            Math.max(botStatusChanges.current.get(name) ?? 0, revision)
-          )
-          void verifyBotStatus(
-            name,
-            '',
-            p.id,
-            (event as GatewayEvent & { mobileRevision: number }).mobileRevision,
-            true
-          )
-        }
-      }
-      const canonical =
-        event.type === 'approval.resolved'
-          ? typeof p.choice === 'string' && ['once', 'session', 'deny'].includes(p.choice)
-          : event.type === 'clarify.resolved' &&
-            typeof p.status === 'string' &&
-            ['waiting', 'answered'].includes(p.status) &&
-            p.answers &&
-            typeof p.answers === 'object' &&
-            !Array.isArray(p.answers) &&
-            Object.values(p.answers).every(answer => typeof answer === 'string')
-      if (
-        canonical &&
-        event.session_id &&
-        typeof p.request_id === 'string' &&
-        p.request_id &&
-        typeof p.bot === 'string' &&
-        p.bot &&
-        typeof p.section_id === 'string' &&
-        p.section_id &&
-        !(event as GatewayEvent & { mobileStatusRead?: boolean }).mobileStatusRead
-      ) {
-        event = { ...event, mobileStatusRead: true } as GatewayEvent
-        void verifyBotStatus(
-          p.bot,
-          event.session_id!,
-          p.section_id,
-          (event as GatewayEvent & { mobileRevision: number }).mobileRevision
-        )
-      }
-      let submittedChanged = false
-      if (
-        event.type === 'message.start' &&
-        event.session_id &&
-        typeof p.bot === 'string' &&
-        p.bot &&
-        typeof p.section_id === 'string' &&
-        p.section_id &&
-        !p.section_id.startsWith('room:') &&
-        p.room_id === null &&
-        !deletedSections.current.get(p.section_id)?.active
-      ) {
-        const bot = botsRef.current.find(bot => bot.name === p.bot)
-        const section =
-          sectionsRef.current.find(section => section.id === p.section_id) ??
-          (target?.kind === 'section' && target.section.id === p.section_id
-            ? target.section
-            : undefined)
-        const bound = submittedTurns.current.get(event.session_id)
-        const sibling = [...submittedTurns.current.values()].find(
-          turn =>
-            bot &&
-            sameBot(turn.bot, bot) &&
-            turn.section?.id === p.section_id &&
-            turn.sessionId !== event.session_id
-        )
         if (
-          bot &&
-          (!section ||
-            (section.bot === bot.name &&
-              !archiveSection(section).archived_at &&
-              (!section.live_session_id || section.live_session_id === event.session_id))) &&
-          !sectionArchives.current.get(p.section_id)?.archived_at &&
-          (!sibling ||
-            sibling.revision <
-              (event as GatewayEvent & { mobileRevision: number }).mobileRevision) &&
-          (!bound ||
-            (sameBot(bound.bot, bot) && !bound.roomId && bound.section?.id === p.section_id))
+          event.type === 'hexbot.sections.changed' &&
+          p.deleted === true &&
+          typeof p.id === 'string' &&
+          p.id
         ) {
-          const owner = {
-            ...section,
-            id: p.section_id,
-            bot: bot.name,
-            archived_at: section?.archived_at ?? null,
-            live_session_id: event.session_id
-          } as Section
-          retireSectionTurns(
-            owner,
+          repeatedDeletion = Boolean(deletedSections.current.get(p.id)?.active)
+          if (!repeatedDeletion) {
+            removedRetry = botsRef.current.find(
+              bot =>
+                bot.status === 'stopped' &&
+                bot.status_detail?.section_id === p.id &&
+                !bot.status_detail?.room_id &&
+                bot.status_detail?.action?.kind === 'retry'
+            )
+            deletedSections.current.set(p.id, { request: ++refreshSequence.current, active: true })
+            sectionArchives.current.delete(p.id)
+            sectionsRef.current = sectionsRef.current.filter(section => section.id !== p.id)
+            setSections(sectionsRef.current)
+            setBots(rows => [...rows])
+            if (routeRef.current?.kind === 'section' && routeRef.current.section.id === p.id)
+              leave()
+          }
+        }
+        const contradicts =
+          !repeatedDeletion &&
+          ([
+            'approval.request',
+            'clarify.request',
+            'message.start',
+            'message.complete',
+            'error',
+            'hexbot.bots.incident',
+            'hexbot.sections.changed',
+            'hexbot.rooms.changed',
+            'hexbot.rooms.turn'
+          ].includes(event.type) ||
+            event.type === 'hexbot.bots.changed' ||
+            (event.type === 'status.update' &&
+              ['idle', 'done', 'error', 'interrupted'].includes(String(p.kind))))
+        if (contradicts) {
+          const revision = (event as GatewayEvent & { mobileRevision: number }).mobileRevision
+          for (const bot of botsRef.current) {
+            const detail = bot.status_detail
+            const pending = pendingBotStatus.current.get(bot.name)
+            if (
+              p.bot === bot.name ||
+              (event.type === 'hexbot.bots.changed' && p.name === bot.name) ||
+              (event.session_id &&
+                (event.session_id === detail?.session_id ||
+                  event.session_id === pending?.sessionId ||
+                  event.session_id === pending?.next?.sessionId)) ||
+              (event.type === 'hexbot.sections.changed' &&
+                typeof p.id === 'string' &&
+                (p.id === detail?.section_id ||
+                  p.id === pending?.sectionId ||
+                  p.id === pending?.next?.sectionId)) ||
+              (event.type === 'hexbot.rooms.changed' &&
+                typeof p.id === 'string' &&
+                p.id === detail?.room_id) ||
+              (event.type === 'hexbot.rooms.turn' &&
+                typeof p.room_id === 'string' &&
+                p.room_id === detail?.room_id)
+            )
+              botStatusChanges.current.set(
+                bot.name,
+                Math.max(botStatusChanges.current.get(bot.name) ?? 0, revision)
+              )
+          }
+        }
+        if (
+          event.type === 'hexbot.bots.changed' &&
+          p.deleted !== true &&
+          !(event as GatewayEvent & { mobileStatusRead?: boolean }).mobileStatusRead
+        ) {
+          event = { ...event, mobileStatusRead: true } as GatewayEvent
+          const name = typeof p.name === 'string' ? p.name : typeof p.bot === 'string' ? p.bot : ''
+          const bot = botsRef.current.find(bot => bot.name === name)
+          if (bot) {
+            const pending = pendingBotStatus.current.get(name)
+            const context = pending?.next ?? pending
+            void verifyBotStatus(
+              name,
+              context?.sessionId ?? bot.status_detail?.session_id ?? '',
+              context?.sectionId ?? bot.status_detail?.section_id ?? '',
+              (event as GatewayEvent & { mobileRevision: number }).mobileRevision,
+              context?.archive
+            )
+          }
+        }
+        if (removedRetry)
+          void verifyBotStatus(
+            removedRetry.name,
+            removedRetry.status_detail?.session_id ?? '',
+            p.id as string,
             (event as GatewayEvent & { mobileRevision: number }).mobileRevision
           )
-          submittedTurns.current.set(event.session_id, {
-            bot,
-            section: owner,
-            sessionId: event.session_id,
-            revision: (event as GatewayEvent & { mobileRevision: number }).mobileRevision,
-            cards: bound?.cards ?? new Map(),
-            workingRevision: (event as GatewayEvent & { mobileRevision: number }).mobileRevision,
-            state: bound?.state ?? emptyChat(),
-            pending: bound?.pending ?? 0
-          })
-          submittedChanged = true
-        }
-      }
-      for (const [id, turn] of submittedTurns.current) {
+        for (const bot of removedRoomBots)
+          void verifyBotStatus(
+            bot.name,
+            bot.status_detail?.session_id ?? '',
+            bot.status_detail?.section_id ?? '',
+            (event as GatewayEvent & { mobileRevision: number }).mobileRevision
+          )
         if (
-          (event.type === 'hexbot.sections.changed' &&
-            p.deleted === true &&
-            p.id === turn.section?.id) ||
-          (event.type === 'hexbot.bots.changed' &&
-            p.deleted === true &&
-            (p.name === turn.bot.name || p.bot === turn.bot.name)) ||
-          (event.type === 'hexbot.rooms.changed' && p.deleted === true && p.id === turn.roomId)
+          event.type === 'hexbot.sections.changed' &&
+          p.deleted !== true &&
+          typeof p.id === 'string' &&
+          p.id
         ) {
-          submittedTurns.current.delete(id)
-          submittedChanged = true
-        } else if (event.session_id === id) {
-          if (
-            (p.bot && p.bot !== turn.bot.name) ||
-            (turn.roomId
-              ? (p.room_id && p.room_id !== turn.roomId) || !acceptsRoomSession(turn.state, event)
-              : p.room_id || (p.section_id && p.section_id !== turn.section?.id))
-          )
-            continue
-          const before = turn.state
-          turn.state = reduceChat(before, event)
-          if (
-            event.type === 'message.start' &&
-            turn.state.retryResolution &&
-            turn.section &&
-            p.bot === turn.bot.name &&
-            p.section_id === turn.section.id &&
-            p.room_id === null
-          )
-            turn.state.retryResolution = {
-              ...turn.state.retryResolution,
-              bot: turn.bot.name,
-              sectionId: turn.section.id,
-              roomId: undefined
-            }
-          turn.cards = requestReceipts(
-            before,
-            turn.state,
-            ['approval.request', 'clarify.request'].includes(event.type)
-              ? (event as GatewayEvent & { mobileRevision: number }).mobileRevision
-              : -1,
-            turn.cards
-          )
-          submittedChanged = true
-        } else if (
-          event.type === 'hexbot.rooms.turn' &&
-          turn.roomId &&
-          p.room_id === turn.roomId &&
-          p.bot === turn.bot.name &&
-          typeof p.live_session_id === 'string' &&
-          p.live_session_id !== id &&
-          ['running', 'working', 'waiting'].includes(String(p.status))
-        ) {
-          submittedTurns.current.delete(id)
-          submittedChanged = true
-        } else if (
-          event.type === 'hexbot.rooms.turn' &&
-          p.room_id === turn.roomId &&
-          p.live_session_id === id
-        ) {
-          turn.state =
-            p.status === 'complete'
-              ? reduceChat(turn.state, { type: 'message.complete', session_id: id, payload: {} })
-              : clearStatusProof(turn.state)
-          submittedChanged = true
-        } else if (
-          (p.bot === turn.bot.name &&
-            [
-              'approval.request',
-              'clarify.request',
-              'message.start',
-              'error',
-              'hexbot.bots.incident'
-            ].includes(event.type)) ||
-          (p.bot === turn.bot.name &&
-            event.type === 'hexbot.rooms.turn' &&
-            ['running', 'working', 'waiting'].includes(String(p.status)))
-        ) {
-          turn.state = clearStatusProof(turn.state)
-          submittedChanged = true
-        }
-      }
-      if (event.type === 'hexbot.rooms.changed' && p.deleted !== true)
-        for (const turn of submittedTurns.current.values())
-          if (turn.roomId === p.id)
+          const name =
+            typeof p.bot === 'string'
+              ? p.bot
+              : (sectionsRef.current.find(row => row.id === p.id)?.bot ??
+                (target?.kind === 'section' && target.section.id === p.id
+                  ? target.bot.name
+                  : undefined) ??
+                botsRef.current.find(bot => bot.status_detail?.section_id === p.id)?.name)
+          if (name) {
+            const revision = (event as GatewayEvent & { mobileRevision: number }).mobileRevision
+            botStatusChanges.current.set(
+              name,
+              Math.max(botStatusChanges.current.get(name) ?? 0, revision)
+            )
             void verifyBotStatus(
-              turn.bot.name,
-              turn.sessionId,
+              name,
               '',
+              p.id,
+              (event as GatewayEvent & { mobileRevision: number }).mobileRevision,
+              true
+            )
+          }
+        }
+        const canonical =
+          event.type === 'approval.resolved'
+            ? typeof p.choice === 'string' && ['once', 'session', 'deny'].includes(p.choice)
+            : event.type === 'clarify.resolved' &&
+              typeof p.status === 'string' &&
+              ['waiting', 'answered'].includes(p.status) &&
+              p.answers &&
+              typeof p.answers === 'object' &&
+              !Array.isArray(p.answers) &&
+              Object.values(p.answers).every(answer => typeof answer === 'string')
+        if (
+          canonical &&
+          event.session_id &&
+          typeof p.request_id === 'string' &&
+          p.request_id &&
+          typeof p.bot === 'string' &&
+          p.bot &&
+          typeof p.section_id === 'string' &&
+          p.section_id &&
+          !(event as GatewayEvent & { mobileStatusRead?: boolean }).mobileStatusRead
+        ) {
+          event = { ...event, mobileStatusRead: true } as GatewayEvent
+          void verifyBotStatus(
+            p.bot,
+            event.session_id!,
+            p.section_id,
+            (event as GatewayEvent & { mobileRevision: number }).mobileRevision
+          )
+        }
+        let submittedChanged = false
+        if (
+          event.type === 'message.start' &&
+          event.session_id &&
+          typeof p.bot === 'string' &&
+          p.bot &&
+          typeof p.section_id === 'string' &&
+          p.section_id &&
+          !p.section_id.startsWith('room:') &&
+          p.room_id === null &&
+          !deletedSections.current.get(p.section_id)?.active
+        ) {
+          const bot = botsRef.current.find(bot => bot.name === p.bot)
+          const section =
+            sectionsRef.current.find(section => section.id === p.section_id) ??
+            (target?.kind === 'section' && target.section.id === p.section_id
+              ? target.section
+              : undefined)
+          const bound = submittedTurns.current.get(event.session_id)
+          const sibling = [...submittedTurns.current.values()].find(
+            turn =>
+              bot &&
+              sameBot(turn.bot, bot) &&
+              turn.section?.id === p.section_id &&
+              turn.sessionId !== event.session_id
+          )
+          if (
+            bot &&
+            (!section ||
+              (section.bot === bot.name &&
+                !archiveSection(section).archived_at &&
+                (!section.live_session_id || section.live_session_id === event.session_id))) &&
+            !sectionArchives.current.get(p.section_id)?.archived_at &&
+            (!sibling ||
+              sibling.revision <
+                (event as GatewayEvent & { mobileRevision: number }).mobileRevision) &&
+            (!bound ||
+              (sameBot(bound.bot, bot) && !bound.roomId && bound.section?.id === p.section_id))
+          ) {
+            const owner = {
+              ...section,
+              id: p.section_id,
+              bot: bot.name,
+              archived_at: section?.archived_at ?? null,
+              live_session_id: event.session_id
+            } as Section
+            retireSectionTurns(
+              owner,
               (event as GatewayEvent & { mobileRevision: number }).mobileRevision
             )
-      pruneSubmitted()
-      if (submittedChanged) setBots(rows => [...rows])
-      if (event.type.endsWith('.changed')) {
-        if (!refreshTimer.current)
-          refreshTimer.current = setTimeout(() => {
-            refreshTimer.current = null
-            void refreshRef.current().catch(e => setError(errorText(e)))
-          }, 200)
+            submittedTurns.current.set(event.session_id, {
+              bot,
+              section: owner,
+              sessionId: event.session_id,
+              revision: (event as GatewayEvent & { mobileRevision: number }).mobileRevision,
+              cards: bound?.cards ?? new Map(),
+              workingRevision: (event as GatewayEvent & { mobileRevision: number }).mobileRevision,
+              state: bound?.state ?? emptyChat(),
+              pending: bound?.pending ?? 0
+            })
+            submittedChanged = true
+          }
+        }
+        for (const [id, turn] of submittedTurns.current) {
+          if (
+            (event.type === 'hexbot.sections.changed' &&
+              p.deleted === true &&
+              p.id === turn.section?.id) ||
+            (event.type === 'hexbot.bots.changed' &&
+              p.deleted === true &&
+              (p.name === turn.bot.name || p.bot === turn.bot.name)) ||
+            (event.type === 'hexbot.rooms.changed' && p.deleted === true && p.id === turn.roomId)
+          ) {
+            submittedTurns.current.delete(id)
+            submittedChanged = true
+          } else if (event.session_id === id) {
+            if (
+              (p.bot && p.bot !== turn.bot.name) ||
+              (turn.roomId
+                ? (p.room_id && p.room_id !== turn.roomId) || !acceptsRoomSession(turn.state, event)
+                : p.room_id || (p.section_id && p.section_id !== turn.section?.id))
+            )
+              continue
+            const before = turn.state
+            turn.state = reduceChat(before, event)
+            if (
+              event.type === 'message.start' &&
+              turn.state.retryResolution &&
+              turn.section &&
+              p.bot === turn.bot.name &&
+              p.section_id === turn.section.id &&
+              p.room_id === null
+            )
+              turn.state.retryResolution = {
+                ...turn.state.retryResolution,
+                bot: turn.bot.name,
+                sectionId: turn.section.id,
+                roomId: undefined
+              }
+            turn.cards = requestReceipts(
+              before,
+              turn.state,
+              ['approval.request', 'clarify.request'].includes(event.type)
+                ? (event as GatewayEvent & { mobileRevision: number }).mobileRevision
+                : -1,
+              turn.cards
+            )
+            submittedChanged = true
+          } else if (
+            event.type === 'hexbot.rooms.turn' &&
+            turn.roomId &&
+            p.room_id === turn.roomId &&
+            p.bot === turn.bot.name &&
+            typeof p.live_session_id === 'string' &&
+            p.live_session_id !== id &&
+            ['running', 'working', 'waiting'].includes(String(p.status))
+          ) {
+            submittedTurns.current.delete(id)
+            submittedChanged = true
+          } else if (
+            event.type === 'hexbot.rooms.turn' &&
+            p.room_id === turn.roomId &&
+            p.live_session_id === id
+          ) {
+            turn.state =
+              p.status === 'complete'
+                ? reduceChat(turn.state, { type: 'message.complete', session_id: id, payload: {} })
+                : clearStatusProof(turn.state)
+            submittedChanged = true
+          } else if (
+            (p.bot === turn.bot.name &&
+              [
+                'approval.request',
+                'clarify.request',
+                'message.start',
+                'error',
+                'hexbot.bots.incident'
+              ].includes(event.type)) ||
+            (p.bot === turn.bot.name &&
+              event.type === 'hexbot.rooms.turn' &&
+              ['running', 'working', 'waiting'].includes(String(p.status)))
+          ) {
+            turn.state = clearStatusProof(turn.state)
+            submittedChanged = true
+          }
+        }
+        if (event.type === 'hexbot.rooms.changed' && p.deleted !== true)
+          for (const turn of submittedTurns.current.values())
+            if (turn.roomId === p.id)
+              void verifyBotStatus(
+                turn.bot.name,
+                turn.sessionId,
+                '',
+                (event as GatewayEvent & { mobileRevision: number }).mobileRevision
+              )
+        pruneSubmitted()
+        if (submittedChanged) setBots(rows => [...rows])
+        if (event.type.endsWith('.changed')) {
+          if (!refreshTimer.current)
+            refreshTimer.current = setTimeout(() => {
+              refreshTimer.current = null
+              void refreshRef.current().catch(e => setError(errorText(e)))
+            }, 200)
+        }
       }
       if (loadingEvents.current) {
         loadingEvents.current.push(event)
