@@ -73,6 +73,8 @@ export interface PendingQuestion {
 export interface RequestSettlement {
   choice?: 'once' | 'session' | 'deny'
   answers?: Record<string, string>
+  /** The visible batch was consumed without proving the whole request complete. */
+  exhaustedRevision?: number
   answered?: boolean
   closed?: boolean
 }

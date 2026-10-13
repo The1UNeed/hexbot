@@ -7768,3 +7768,90 @@ describe('mobile open section restore reconfirms pending cards', () => {
     )
   })
 })
+
+describe('empty clarification consumer', () => {
+  const question = {
+    request_id: 'batch',
+    bot: 'alpha',
+    section_id: 'section',
+    questions: [
+      { qid: 'first', question: 'Where?' },
+      { qid: 'last', question: 'When?' }
+    ]
+  }
+  const answers = { first: 'Here', last: 'Now' }
+  beforeEach(() => vi.useFakeTimers())
+  afterEach(() => vi.useRealTimers())
+
+  it.each(['local', 'remote', 'snapshot', 'buffered'] as const)(
+    'removes the exhausted %s card and sends again after the turn completes',
+    async flow => {
+      const idle = { ...namedWait, status: 'idle', status_detail: null } as Bot
+      await unopened(idle)
+      const original = hooks.handler
+      const held = deferred()
+      let submits = 0
+      let finished = false
+      hooks.handler = async (method, params) => {
+        if (method === 'clarify.respond') return { status: 'waiting', answers }
+        if (method === 'hexbot.bots.get') throw new Error('Unavailable')
+        if (method === 'prompt.submit') submits++
+        if (method === 'session.status') return { status: finished ? 'idle' : 'working' }
+        if (method === 'hexbot.sections.open') {
+          if (flow === 'buffered' && !finished) return held.promise
+          return {
+            section: section(),
+            messages: [],
+            pending_clarify: finished
+              ? undefined
+              : { ...question, ...(flow === 'snapshot' ? { answers } : {}) }
+          }
+        }
+        return original(method, params)
+      }
+      const opening = render().openSection(idle, section())
+      if (flow === 'buffered') {
+        await flush()
+        hooks.clients[0].emit(wire('clarify.resolved', { ...question, status: 'waiting', answers }))
+        held.resolve({ section: section(), messages: [], pending_clarify: question })
+      }
+      await opening
+      if (flow === 'local') await render().answer('batch', 'last', 'Now')
+      if (flow === 'remote')
+        hooks.clients[0].emit(wire('clarify.resolved', { ...question, status: 'waiting', answers }))
+      await flush()
+      expect(render().chat.questions).toEqual([])
+      expect(render().chat.waiting).toBe(false)
+      expect(chatActivityLabel(render().chat)).toBe('Working')
+      finished = true
+      hooks.clients[0].emit(wire('message.complete', { bot: 'alpha', section_id: 'section' }))
+      await flush()
+      expect(render().chat.busy).toBe(false)
+      await render().send('Continue')
+      expect(submits).toBe(1)
+      expect(render().chat.messages.at(-1)?.text).toBe('Continue')
+    }
+  )
+
+  it('does not borrow completion from an explicit unknown remainder or a sibling card', async () => {
+    await start()
+    hooks.clients[0].emit(wire('clarify.request', question))
+    const original = hooks.handler
+    hooks.handler = async (method, params) =>
+      method === 'clarify.respond'
+        ? { status: 'waiting', answers, remaining: ['new'] }
+        : original(method, params)
+    await render().answer('batch', 'last', 'Now')
+    expect(render().chat.questions).toEqual([])
+    expect(render().chat.approvals[0].requestId).toBe('old')
+    expect(render().chat.waiting).toBe(true)
+    expect(render().chat.resumedWaiting).toBe(false)
+    hooks.clients[0].emit(
+      wire('clarify.request', {
+        ...question,
+        questions: [...question.questions, { qid: 'new', question: 'Why?' }]
+      })
+    )
+    expect(render().chat.questions[0].questions.map(q => q.id)).toEqual(['new'])
+  })
+})

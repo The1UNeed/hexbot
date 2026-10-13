@@ -55,6 +55,27 @@ const answerMap = (value: unknown): Record<string, string> =>
     : {}
 const choiceOf = (value: unknown) =>
   value === 'once' || value === 'session' || value === 'deny' ? value : undefined
+const closeExhaustedQuestions = (state: ChatState, sessionId: string, revision: number) =>
+  Object.fromEntries(
+    Object.entries(state.settlements).map(([key, saved]) => {
+      if (
+        saved.exhaustedRevision === undefined ||
+        saved.exhaustedRevision > revision ||
+        saved.answered
+      )
+        return [key, saved]
+      const [kind, session, request] = JSON.parse(key) as string[]
+      return [
+        key,
+        kind === 'clarify' &&
+        session === sessionId &&
+        !saved.answered &&
+        !state.questions.some(q => q.sessionId === session && q.requestId === request)
+          ? { ...saved, closed: true }
+          : saved
+      ]
+    })
+  )
 const resumeAnswered = (state: ChatState, accepted: boolean, revision: number): ChatState =>
   accepted && state.busy && state.waiting && !state.approvals.length && !state.questions.length
     ? { ...state, waiting: false, resumedWaiting: true, waitingRevision: revision, activity: '' }
@@ -217,7 +238,12 @@ export function clarifyResponse(
   return {
     type: 'clarify.resolved',
     session_id: pending.sessionId,
-    payload: { request_id: pending.requestId, answers, status }
+    payload: {
+      request_id: pending.requestId,
+      answers,
+      status,
+      ...(result.remaining === undefined ? {} : { remaining: result.remaining })
+    }
   }
 }
 export function historyMessages(raw: unknown[]): ChatMessage[] {
@@ -303,7 +329,7 @@ export function reduceChat(state: ChatState, event: GatewayEvent): ChatState {
     case 'message.complete': {
       const parts = [...state.interim, text || state.streaming].filter(Boolean)
       if (!parts.length && state.tools.length) parts.push('')
-      const settlements = { ...state.settlements }
+      const settlements = closeExhaustedQuestions(state, sessionId, revision)
       for (const card of state.approvals)
         settlements[requestKey('approval', card.sessionId, card.requestId)] = { closed: true }
       for (const card of state.questions) {
@@ -341,6 +367,10 @@ export function reduceChat(state: ChatState, event: GatewayEvent): ChatState {
         (p.kind === 'working' && (state.approvals.length > 0 || state.questions.length > 0))
       return {
         ...state,
+        settlements:
+          p.kind === 'interrupted' || p.kind === 'error' || p.kind === 'idle' || p.kind === 'done'
+            ? closeExhaustedQuestions(state, sessionId, revision)
+            : state.settlements,
         activity: p.kind === 'working' && waiting ? state.activity : text,
         waiting,
         // Automatic waits do not revoke an accepted human answer.
@@ -396,6 +426,7 @@ export function reduceChat(state: ChatState, event: GatewayEvent): ChatState {
     case 'error':
       return {
         ...state,
+        settlements: closeExhaustedQuestions(state, sessionId, revision),
         error: typeof p.message === 'string' ? p.message : 'The bot could not finish.',
         retryResolution: retireRetry(state),
         busy: false
@@ -448,7 +479,10 @@ export function reduceChat(state: ChatState, event: GatewayEvent): ChatState {
       const saved = state.settlements[key]
       if (saved?.closed) return state
       const answers = { ...answerMap(p.answers), ...saved?.answers }
-      const questions = (Array.isArray(p.questions) ? p.questions : [p])
+      const card = state.questions.find(
+        q => q.requestId === p.request_id && q.sessionId === sessionId
+      )
+      let questions = (Array.isArray(p.questions) ? p.questions : [p])
         .filter(
           (q: Record<string, unknown>) =>
             !Object.prototype.hasOwnProperty.call(answers ?? {}, String(q.qid ?? p.request_id))
@@ -460,17 +494,38 @@ export function reduceChat(state: ChatState, event: GatewayEvent): ChatState {
           multiSelect: q.multi_select === true
         }))
       if (!questions.length && saved?.answered) return state
+      // An exhausted replay cannot replace a newer question omitted by its snapshot.
+      if (!questions.length && card)
+        questions = card.questions.filter(q => !Object.hasOwn(answers, q.id))
+      const settlements = {
+        ...state.settlements,
+        [key]: { ...saved, answers }
+      }
+      const others = state.questions.filter(q => q !== card)
+      if (!questions.length)
+        return resumeAnswered(
+          {
+            ...state,
+            settlements: {
+              ...settlements,
+              [key]: {
+                ...settlements[key],
+                ...(card?.questions.length ? { exhaustedRevision: revision } : {})
+              }
+            },
+            questions: others
+          },
+          Boolean(card?.questions.length),
+          revision
+        )
       return {
         ...state,
         busy: true,
         waiting: true,
         resumedWaiting: false,
         activity: 'Waiting for your answer',
-        settlements: { ...state.settlements, [key]: { ...saved, answers } },
-        questions: [
-          ...state.questions.filter(q => q.requestId !== p.request_id || q.sessionId !== sessionId),
-          { requestId: p.request_id, sessionId, questions }
-        ]
+        settlements,
+        questions: [...others, { requestId: p.request_id, sessionId, questions }]
       }
     }
     case 'clarify.resolved': {
@@ -489,10 +544,14 @@ export function reduceChat(state: ChatState, event: GatewayEvent): ChatState {
       const answered =
         p.status === 'answered' &&
         (!card || card.questions.every(q => Object.hasOwn(answers, q.id)))
+      const hasRemaining =
+        p.remaining !== undefined &&
+        (!Array.isArray(p.remaining) ||
+          p.remaining.some(id => typeof id !== 'string' || !Object.hasOwn(answers, id)))
+      const remaining = card?.questions.filter(question => !Object.hasOwn(answers, question.id))
       const questions = state.questions.flatMap(q => {
         if (q !== card) return [q]
-        const remaining = q.questions.filter(question => !Object.hasOwn(answers, question.id))
-        return answered ? [] : [{ ...q, questions: remaining }]
+        return answered || !remaining?.length ? [] : [{ ...q, questions: remaining }]
       })
       return resumeAnswered(
         {
@@ -500,10 +559,22 @@ export function reduceChat(state: ChatState, event: GatewayEvent): ChatState {
           questions,
           settlements: {
             ...state.settlements,
-            [key]: { ...saved, answers, answered: saved?.answered || answered }
+            [key]: {
+              ...saved,
+              answers,
+              ...(card?.questions.length && !remaining?.length
+                ? { exhaustedRevision: revision }
+                : {}),
+              answered: saved?.answered || answered
+            }
           }
         },
-        Boolean(card && answered),
+        Boolean(
+          !saved?.closed &&
+          (card?.questions.length
+            ? !remaining?.length && (answered || !hasRemaining)
+            : answered && saved?.exhaustedRevision !== undefined && !saved.answered)
+        ),
         revision
       )
     }
