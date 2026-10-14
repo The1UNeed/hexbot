@@ -154,12 +154,17 @@ fn history_summary(home: &Path, row: &Value) -> Result<(String, i64)> {
 }
 /// The section's history in the store from before the native daemon.
 fn legacy_summary(home: &Path, row: &Value) -> Result<(String, i64)> {
+    let (preview, count, _) = legacy_history(home, row)?;
+    Ok((preview, count))
+}
+/// Its preview, message count and newest message time.
+fn legacy_history(home: &Path, row: &Value) -> Result<(String, i64, f64)> {
     let id = row["id"].as_str().unwrap_or("");
     let name = row["bot"].as_str().unwrap_or("");
     let path = profile(home, name)?.join("state.db");
     safe(home, &path)?;
     if !path.exists() {
-        return Ok((String::new(), 0));
+        return Ok((String::new(), 0, 0.0));
     }
     let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
     let (messages, _) = runtime_store::legacy_rows(&conn, id)?;
@@ -177,7 +182,11 @@ fn legacy_summary(home: &Path, row: &Value) -> Result<(String, i64)> {
         })
         .map(|m| runtime_store::preview(m["content"].as_str().unwrap_or("")))
         .unwrap_or_default();
-    Ok((preview, count))
+    let latest = messages
+        .iter()
+        .filter_map(|m| m["timestamp"].as_f64())
+        .fold(0.0, f64::max);
+    Ok((preview, count, latest))
 }
 fn shape_section(home: &Path, row: Value) -> Result<Value> {
     let (preview, count) = history_summary(home, &row)?;
@@ -219,13 +228,22 @@ pub fn chat_section(home: &Path, caller: &str, name: &str) -> Result<Value> {
     bot_owner(home, caller, name)?;
     let mut conn = db::open(home)?;
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-    let existing: Option<String> = tx
-        .query_row(
-            "SELECT id FROM sections WHERE bot=? AND owner_id=? AND peer_bot IS NULL ORDER BY updated_at DESC,id LIMIT 1",
-            params![name, caller],
-            |r| r.get(0),
-        )
-        .optional()?;
+    let candidates = rows(
+        &tx,
+        "SELECT id FROM sections WHERE bot=? AND owner_id=? AND peer_bot IS NULL ORDER BY updated_at DESC,id",
+        &[&name, &caller],
+    )?;
+    // One that recovery set aside waits for repair; a healthy one is the chat.
+    let quarantined = runtime_store::open(home)?
+        .prepare("SELECT session_id FROM native_quarantine")?
+        .query_map([], |r| r.get::<_, String>(0))?
+        .collect::<std::result::Result<std::collections::BTreeSet<_>, _>>()?;
+    let existing = candidates
+        .iter()
+        .filter_map(|row| row["id"].as_str())
+        .find(|id| !quarantined.contains(*id))
+        .or_else(|| candidates.first().and_then(|row| row["id"].as_str()))
+        .map(str::to_owned);
     let id = if let Some(id) = existing {
         tx.execute(
             "UPDATE sections SET archived_at=NULL WHERE id=? AND archived_at IS NOT NULL",
@@ -344,15 +362,17 @@ pub fn one_chat_per_bot(home: &Path) -> Result<()> {
         // A crash after the first open but before the old store was copied in
         // leaves the conversation there; the copy writes its log last.
         let id = row["id"].as_str().unwrap_or("");
-        if count == 0
-            && !native_history(home, &row)?
+        let mut legacy_latest = 0.0;
+        if !native_history(home, &row)?
             && !home
                 .join("runtime/sessions")
                 .join(id)
                 .join("conversation.jsonl")
                 .exists()
         {
-            count = legacy_summary(home, &row)?.1;
+            let (_, legacy_count, latest) = legacy_history(home, &row)?;
+            count = count.max(legacy_count);
+            legacy_latest = latest;
         }
         // Recovery after a crash adds messages without touching the section's
         // time; the newest message counts too.
@@ -362,9 +382,8 @@ pub fn one_chat_per_bot(home: &Path) -> Result<()> {
             |r| r.get(0),
         )?;
         let mut row = row;
-        if let Some(said) = said
-            && said > row["updated_at"].as_f64().unwrap_or(0.0)
-        {
+        let said = said.unwrap_or(0.0).max(legacy_latest);
+        if said > row["updated_at"].as_f64().unwrap_or(0.0) {
             row["updated_at"] = json!(said);
         }
         // A log known only from before the native daemon has no reports to
@@ -1639,7 +1658,8 @@ mod parity_tests {
                  INSERT INTO dreams(id,bot,started_at,status,summary) VALUES('d1','fox',1,'complete','In fox_dreams');
                  INSERT INTO sections(id,bot,owner_id,title,title_by) VALUES('dog_chat','dog','alice','Dreams','bot');
                  INSERT INTO sections(id,bot,owner_id,title,updated_at) VALUES('kit_named','kit','alice','Dreams',9),('kit_old','kit','alice','Old',2);
-                 INSERT INTO bots(name,owner_id) VALUES('dog','alice'),('elk','alice'),('fly','alice'),('gnu','alice'),('hen','alice'),('ivy','alice'),('jay','alice'),('kit','alice'),('lynx','alice');
+                 INSERT INTO bots(name,owner_id) VALUES('dog','alice'),('elk','alice'),('fly','alice'),('gnu','alice'),('hen','alice'),('ivy','alice'),('jay','alice'),('kit','alice'),('lynx','alice'),('mole','alice');
+                 INSERT INTO sections(id,bot,owner_id,title,updated_at) VALUES('mole_native','mole','alice','Native',3),('mole_legacy','mole','alice','Legacy',1);
                  INSERT INTO sections(id,bot,owner_id,title,updated_at) VALUES('lynx_damaged','lynx','alice','Damaged',9),('lynx_healthy','lynx','alice','Healthy',2);
                  INSERT INTO sections(id,bot,owner_id,title,title_dirty,updated_at) VALUES('jay_log','jay','alice','Nightly',1,9),('jay_chat','jay','alice','Plans',0,2);
                  INSERT INTO sections(id,bot,owner_id,title,updated_at) VALUES('ivy_chat','ivy','alice','General',9),('ivy_old','ivy','alice','Old',2);
@@ -1745,6 +1765,24 @@ mod parity_tests {
             "ivy_old",
             json!({"role":"user","text":"Old","timestamp":1}),
         );
+        // Mole's newest message is in a conversation never opened since the
+        // native daemon, whose section time was never advanced.
+        said(
+            home.path(),
+            "mole_native",
+            json!({"role":"user","text":"Older","timestamp":4}),
+        );
+        let mole = home.path().join("profiles/mole");
+        fs::create_dir_all(&mole).unwrap();
+        Connection::open(mole.join("state.db"))
+            .unwrap()
+            .execute_batch(
+                "CREATE TABLE sessions(id TEXT,session_key TEXT,parent_session_id TEXT,model_config TEXT,source TEXT);
+                 CREATE TABLE messages(id INTEGER,session_id TEXT,role TEXT,content TEXT,timestamp REAL);
+                 INSERT INTO sessions(id,session_key) VALUES('mole_legacy','mole_legacy');
+                 INSERT INTO messages VALUES(1,'mole_legacy','user','Newer',8);",
+            )
+            .unwrap();
         // Recovery set Lynx's newest conversation aside.
         said(
             home.path(),
@@ -1824,6 +1862,11 @@ mod parity_tests {
             })
             .unwrap();
         assert_eq!(lynx, 2);
+        // Its chat is the healthy one.
+        assert_eq!(
+            chat_section(home.path(), "alice", "lynx").unwrap()["id"],
+            "lynx_healthy"
+        );
         // With Lynx set aside every bot has one chat, and rerunning does
         // nothing: a cached preview survives it.
         db::open(home.path())
@@ -1875,6 +1918,7 @@ mod parity_tests {
         );
         assert_eq!(ids("elk"), ["elk_recovered"]);
         assert_eq!(ids("fly"), ["fly_legacy"]);
+        assert_eq!(ids("mole"), ["mole_legacy"]);
         // A renamed log loses to a real chat, newer or not; kept alone, its
         // reports are marked and its name stays.
         assert_eq!(ids("gnu"), ["gnu_chat"]);

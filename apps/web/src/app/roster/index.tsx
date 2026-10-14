@@ -377,11 +377,14 @@ export function RosterColumn() {
   const openBotSettings = (bot: string) =>
     void navigate({ to: '/b/$bot/settings/$tab', params: { bot, tab: rememberedTab(bot) } })
 
-  /** The bot's one chat: the one this window knows, else the daemon's, made on first use. */
+  /**
+   * The bot's one chat: the one this window knows, else the daemon's, made on
+   * first use. While a bot has more than one, or only an archived one, the
+   * daemon picks.
+   */
   const openChat = async (bot: string) => {
-    const known = Object.values(useSections.getState().byId).find(
-      item => item.bot === bot && !item.archived_at
-    )
+    const chats = Object.values(useSections.getState().byId).filter(item => item.bot === bot)
+    const known = chats.length === 1 && !chats[0]?.archived_at ? chats[0] : undefined
 
     open(bot, (known ?? (await sectionsActions().chat(bot))).id)
   }

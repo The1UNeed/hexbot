@@ -5,9 +5,14 @@ export type ChatRoute =
 export const SECTIONS_QUERY = { include_archived: true, include_threads: true }
 /** Every room, archived ones included, so Rooms can count them and restore one. */
 export const ROOMS_QUERY = { include_archived: true }
-/** The thread a bot opens on when none is picked: its latest own one, never a teammate thread. */
-export const defaultSection = (sections: Section[], bot: string) =>
-  sections.find(s => s.bot === bot && !s.archived_at && !s.peer_bot)
+/**
+ * The bot's one chat when this list knows it for sure, never a teammate thread.
+ * While a bot has more than one, or only an archived one, the daemon picks.
+ */
+export const defaultSection = (sections: Section[], bot: string) => {
+  const chats = sections.filter(s => s.bot === bot && !s.peer_bot)
+  return chats.length === 1 && !chats[0].archived_at ? chats[0] : undefined
+}
 /**
  * The room Rooms shows: the picked one while it is open or not archived,
  * otherwise the most recent room that is not archived. An open room the list

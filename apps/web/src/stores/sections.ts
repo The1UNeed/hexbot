@@ -126,6 +126,9 @@ function mergeSection(state: SectionsState, section: Section): Partial<SectionsS
   }
 }
 
+/** Reloads asked for by section, so an open already under way reads it again. */
+const reloads = new Map<string, number>()
+
 export const useSections = create<SectionsState>((set, get) => ({
   byId: {},
   error: null,
@@ -158,7 +161,14 @@ export const useSections = create<SectionsState>((set, get) => ({
   },
 
   async open(id) {
+    const asked = reloads.get(id) ?? 0
     const { context, messages, pending_clarify, section } = await sectionsOpen(id)
+
+    // The chat changed while it opened (a dream report): this history is old.
+    if ((reloads.get(id) ?? 0) !== asked) {
+      return get().open(id)
+    }
+
     const live = section.live_session_id
 
     set(state => ({
@@ -272,6 +282,7 @@ export const useSections = create<SectionsState>((set, get) => ({
   },
 
   forgetLive(id) {
+    reloads.set(id, (reloads.get(id) ?? 0) + 1)
     const closed = get().liveSessionId[id]
 
     if (!closed) {

@@ -51,6 +51,27 @@ describe('threads and the section index', () => {
     expect(useSections.getState().liveSessionId.th1).toBe('live-t')
   })
 
+  it('reads a chat again when it changes while opening', async () => {
+    const opened = (text: string) => ({
+      messages: [{ role: 'assistant', row_id: text, text }],
+      section: section({ live_session_id: 'live-1' })
+    })
+
+    vi.mocked(sectionsOpen)
+      .mockClear()
+      .mockImplementationOnce(async () => {
+        // A dream report lands while this open is under way.
+        useSections.getState().forgetLive('s1')
+
+        return opened('Before the report')
+      })
+      .mockResolvedValueOnce(opened('The report'))
+    await useSections.getState().open('s1')
+
+    expect(vi.mocked(sectionsOpen)).toHaveBeenCalledTimes(2)
+    expect(useSections.getState().liveSessionId.s1).toBe('live-1')
+  })
+
   it('opens a thread for the panel with the asker as the user side', async () => {
     vi.mocked(sectionsOpen).mockResolvedValue({
       messages: [

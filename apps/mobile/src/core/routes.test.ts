@@ -23,13 +23,14 @@ describe('open conversation', () => {
     )
     expect(rebind(route, { bots: [bot], rooms: [], sections: [section('a')] })).toBeNull()
   })
-  it('opens a bot on its own latest thread, not a teammate thread', () => {
-    const sections = [
-      section('t', { peer_bot: 'grace' } as Partial<Section>),
-      section('old', { archived_at: 1 } as Partial<Section>),
-      section('mine')
-    ]
-    expect(defaultSection(sections, 'ada')?.id).toBe('mine')
+  it('opens a bot on its one chat, not a teammate thread', () => {
+    const thread = section('t', { peer_bot: 'grace' } as Partial<Section>)
+    expect(defaultSection([thread, section('mine')], 'ada')?.id).toBe('mine')
+    // Two left from before, or an archived one: the daemon picks.
+    expect(defaultSection([section('old'), section('mine')], 'ada')).toBeUndefined()
+    expect(
+      defaultSection([section('old', { archived_at: 1 } as Partial<Section>)], 'ada')
+    ).toBeUndefined()
   })
 })
 describe('rooms', () => {
