@@ -322,8 +322,12 @@ pub fn finish_deletes(home: &Path) -> Result<()> {
             [&id],
             |r| Ok((r.get(0)?, r.get(1)?)),
         )?;
-        if deleted && (left || home.join("runtime/sessions").join(&id).exists()) {
-            delete(home, &id)?;
+        // One leftover that will not go must not keep the others.
+        if deleted
+            && (left || home.join("runtime/sessions").join(&id).exists())
+            && let Err(error) = delete(home, &id)
+        {
+            eprintln!("Could not finish deleting {id}: {}", error.message);
         }
     }
     Ok(())

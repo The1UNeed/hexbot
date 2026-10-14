@@ -302,7 +302,9 @@ context of its own; the meter belongs to bot sections.
   and only then its runtime history and `runtime/sessions/<id>`: a stop
   before the row goes leaves the section whole, and the next start removes
   what a stop after it left (`runtime_store::finish_deletes`). With
-  `purge_memory: false` the core transcript in `state.db` is left in place.
+  `purge_memory: false` the core transcript in `state.db` is left in place;
+  with `true`, rows that could not be removed from `state.db` stay there
+  unread, and the delete still succeeds.
   The bot's memory is not touched either way.
 - `hexbot.sections.touch {id}` is internal; activity is stamped by the plugin
   on `message.complete`. It also sets the section's `done_at`.
