@@ -95,8 +95,9 @@ Nightly packages carry the purple icon from
 `apps/desktop/build/icon-nightly.icon`, so a nightly install is easy to tell
 apart from stable in the Dock.
 
-Nightlies are signed when the signing secrets are present and ad-hoc signed
-otherwise. They are notarized only when the Apple secrets are set.
+Nightly macOS packages are code-signed when the Apple signing secrets are
+present and ad-hoc signed otherwise. The packages are notarized only when the
+Apple secrets are set. Update manifests require the release key.
 
 ## Dev
 
@@ -135,16 +136,18 @@ full/mac/arm64/Hexbot-<v>-mac-arm64.zip|.dmg
 full/mac/x64/...
 full/linux/x64/latest-linux.yml, nightly-linux.yml, Hexbot-<v>-linux-x64.AppImage|.deb
 client/...                          the same for HexbotClient-*
-daemon/native/<v>/<target>/manifest.json   native archive URL, version, target and SHA-256
+daemon/native/<v>/<target>/manifest.json   native archive url/path, version, target and SHA-256
+daemon/native/<v>/<target>/manifest.json.sig   immutable release signatures
 daemon/native/<v>/<target>/hexbot-native-<v>-<target>.tar.gz
 daemon/hexbot-src-<v>.tar.gz               handoff for existing Python services
 install/stable.json, install/nightly.json   install options, URLs, sizes and checksums
 install/stable.txt, install/nightly.txt     <target> <sha256> <url> for the CLI installer only
+install/<v>/<track>.json.sig               immutable install manifest signatures
 install/<v>/hexbot-install-<v>-<target>     terminal installer, one per native target
 install/<v>/HexbotInstaller-<v>-mac-arm64.dmg|mac-x64.dmg|linux-x86_64.AppImage
 ```
 
-Artifacts are immutable (their names carry the version); the `.yml` files and
+Versioned artifacts and `.sig` files are immutable; the `.yml` files and
 `install/<track>.json` and `.txt` are served with `no-cache` and rewritten each
 release. The install JSON uses `application/json`; the text index uses
 `text/plain`. After uploading, `release.yml` reads every app feed and the install
@@ -185,13 +188,20 @@ its machine. The daemon says how, through `update_capability` in
   relaunches and starts the new daemon. The app's track decides what is
   installed, so an app on the stable track cannot be pushed a nightly.
 - `service`: launchd or systemd runs the daemon. It downloads the manifest at
-  `daemon/native/<v>/<target>/manifest.json` and the matching archive, checks
-  its SHA-256 and reported version, then switches `runtime/native-executable`
-  and restarts. Targets are `macos-aarch64`, `macos-x86_64` and `linux-x86_64`.
+  `daemon/native/<v>/<target>/manifest.json`, verifies its release signature,
+  then downloads the matching archive and checks its SHA-256 and reported
+  version. It switches `runtime/native-executable` and restarts. Targets are `macos-aarch64`, `macos-x86_64` and `linux-x86_64`.
   It retains the active runtime and its predecessor, protecting any older
-  runtime still used by a running daemon. `HEXBOT_UPDATE_URL` selects another
-  server. Existing Python services use the historical source feed, published
-  with every release, to install this native runtime and hand over their home.
+  runtime still used by a running daemon. `HEXBOT_UPDATE_URL` selects an HTTPS
+  mirror. Signed manifests retain an absolute `url` for older clients and add
+  a relative `path`. New clients prefer `path`, resolved against that base and
+  its path prefix; without `path`, they use the absolute `url`. Traversal and
+  URL syntax in `path` are rejected. Downloads and redirects must stay on the
+  configured origin.
+  Copy the manifests, versioned signatures, and artifacts without rewriting
+  the signed bytes. Existing Python services use the historical source feed,
+  published with every release, to install this native runtime and hand over
+  their home.
 - unset: a checkout or a hand-started daemon. The page says to update by
   hand.
 
@@ -222,7 +232,7 @@ reference for Hexbot's. Kept as-is:
   user switches tracks. The check cadence (15 s after launch, then every
   4 minutes), the single-action updater, the sidebar pill, and the
   "server behind the client, update it from here" flow are T3 Code's.
-- Signing and notarization are optional and detected from secrets. The
+- Apple signing and notarization are optional and detected from secrets. The
   `.p8` key is stored as text and written to a file on the runner.
 - Release notes compare against the previous release in the same channel.
 - Release-only scripts run in CI against synthetic packages (T3 Code's

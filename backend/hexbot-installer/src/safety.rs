@@ -116,7 +116,80 @@ fn process_executable(pid: i32) -> Option<PathBuf> {
     }
 }
 
+/// Take an exclusive lock, saying what the installer waits for when it is held.
+fn lock_or_wait(
+    file: fs::File,
+    progress: &mut ProgressCallback<'_>,
+    waiting: &str,
+) -> Result<fs::File> {
+    let mut blocking = false;
+    loop {
+        let operation = if blocking {
+            libc::LOCK_EX
+        } else {
+            libc::LOCK_EX | libc::LOCK_NB
+        };
+        if unsafe { libc::flock(file.as_raw_fd(), operation) } == 0 {
+            return Ok(file);
+        }
+        let error = std::io::Error::last_os_error();
+        if error.kind() == ErrorKind::WouldBlock && !blocking {
+            progress(Progress::new("wait", waiting));
+            blocking = true;
+        } else if error.kind() != ErrorKind::Interrupted {
+            return Err(error.into());
+        }
+    }
+}
+
 impl Installer {
+    /// Kept outside HEXBOT_HOME so uninstalling data cannot replace a locked inode.
+    /// All terminal/windowed installers for this user share it, including custom homes.
+    pub(crate) fn lock_installation(
+        &self,
+        progress: &mut ProgressCallback<'_>,
+    ) -> Result<fs::File> {
+        use std::os::unix::fs::OpenOptionsExt;
+        self.paths.validate()?;
+        let path = self.paths.installer_lock(self.target);
+        fs::create_dir_all(path.parent().ok_or("Invalid installer lock path")?)?;
+        let file = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+            .open(path)?;
+        if !file.metadata()?.is_file() {
+            return fail("The installer lock must be a regular file.");
+        }
+        lock_or_wait(
+            file,
+            progress,
+            "Waiting for another Hexbot installer to finish.",
+        )
+    }
+
+    /// The daemon's native updater and `hexbot setup` select runtimes under
+    /// this lock. Holding it from the last version check through `hexbot
+    /// setup --activate` keeps an automatic update from landing in between.
+    pub(crate) fn lock_activation(&self, progress: &mut ProgressCallback<'_>) -> Result<fs::File> {
+        let runtime = self.paths.hexbot_home.join("runtime");
+        fs::create_dir_all(&runtime)?;
+        // Open it as the daemon does, so both lock the same file.
+        let file = fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(runtime.join("activate.lock"))?;
+        lock_or_wait(
+            file,
+            progress,
+            "Waiting for another Hexbot setup or update to finish.",
+        )
+    }
+
     pub(crate) fn preflight_ownership(&self) -> Result<()> {
         install_ownership::check_service(
             &self.paths.service_file(self.target),

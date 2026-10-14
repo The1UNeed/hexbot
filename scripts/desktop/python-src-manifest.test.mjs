@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict'
+import { execFileSync } from 'node:child_process'
+import { fileURLToPath } from 'node:url'
 import { access, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
@@ -24,11 +26,19 @@ test('service source contains only the handoff package and a validated transitio
   await writeFile(join(destination, 'stale.py'), 'old archive')
   await stagePythonSource(repository, destination, { nativeTransitionVersion: '1.2.3-nightly.20261002.1' })
   assert.deepEqual((await readdir(destination)).sort(), ['HEXBOT_NATIVE_TRANSITION.json', 'hexbot', 'pyproject.toml', 'uv.lock'])
-  assert.deepEqual((await readdir(join(destination, 'hexbot'))).sort(), ['__init__.py', 'cli.py', 'native_transition.py'])
+  assert.deepEqual((await readdir(join(destination, 'hexbot'))).sort(), ['__init__.py', 'cli.py', 'native_transition.py', 'update_signature.py'])
   assert.deepEqual(JSON.parse(await readFile(join(destination, 'HEXBOT_NATIVE_TRANSITION.json'))), { version: '1.2.3-nightly.20261002.1' })
   for (const file of handoffFiles) assert.equal(await readFile(join(destination, file), 'utf8'), file)
   for (const version of [undefined, '../invalid', '1.2.3\n', 123]) {
     await assert.rejects(stagePythonSource(repository, destination, { nativeTransitionVersion: version }), /Invalid native transition/)
   }
   await access(join(destination, 'pyproject.toml')) // invalid input never removes an existing archive
+})
+
+// Import the release payload, isolated from the checkout and installed packages.
+test('the actually staged handoff package imports with its signature verifier', async t => {
+  const destination = await mkdtemp(join(tmpdir(), 'hexbot-handoff-import-'))
+  t.after(() => rm(destination, { recursive: true, force: true }))
+  await stagePythonSource(fileURLToPath(new URL('../../', import.meta.url)), destination, { nativeTransitionVersion: '1.2.3' })
+  execFileSync('python3', ['-I', '-c', 'import sys; sys.path.insert(0, sys.argv[1]); import hexbot.cli; from hexbot import native_transition, update_signature; assert native_transition.update_signature is update_signature', destination], { cwd: destination })
 })

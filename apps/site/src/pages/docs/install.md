@@ -60,6 +60,8 @@ If only daemon files are found, the installer asks you to choose an option. It d
 
 The installer never replaces or removes an app while it runs. If Hexbot is open, it asks you to quit it and run the installer again.
 
+One installer changes Hexbot at a time. A second one, terminal or windowed, waits for the first to finish. Uninstall also removes a copy of the app that a stopped install left behind.
+
 ### Where it installs
 
 - **macOS**: Full and Client go to `/Applications`, or to `~/Applications` when `/Applications` is not writable.
