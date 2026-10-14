@@ -239,6 +239,16 @@ exercise the graph.
 - Copy is short, concrete, and uses glossary words. No "seamless", no
   exclamation marks.
 
+## Cursor Cloud specific instructions
+
+`pnpm dev` starts on boot in tmux session `hexbot-dev`. Read
+`/tmp/hexbot-dev/dev.log` for the daemon port, the web port, and a one-time
+sign-in link. The code expires in 10 minutes. The log's `hexbot pair` line
+mints another. Vite listens on localhost (`::1`), not `127.0.0.1`.
+
+Node 26.5.0 is linked ahead of the image's Node 22.14, which `engines`
+rejects. Ubuntu 24.04 has no `python3.11` package; uv installs CPython 3.11.
+
 ## Daemon reference
 
 Daemon work follows `backend/hexbot-core/README.md`.
