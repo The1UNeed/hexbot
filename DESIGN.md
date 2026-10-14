@@ -213,10 +213,15 @@ more freedom and more capability than a hosted product can offer.
   `state.db` and `runtime/sessions` in `backups/one-chat-per-bot-<time>/`, so
   it needs that much free disk. If anything fails (the copy, recovery, a
   delete) nothing more is deleted, the partial copy is removed, and the
-  sections left stay for good; no later start tries again. A bot whose
-  conversations recovery could not read, or whose older `state.db` cannot be
-  read, keeps them all. Its chat is ranked the same way, so the old Dreams log
-  is never a bot's chat while a conversation remains. Memory and notes stay.
+  sections left stay for good; no later start tries again. A section leaves
+  the list before its history is removed, so a stop part way never leaves a
+  broken one: it is whole or gone, and what is left of a gone one is removed
+  at the next start. A bot whose conversations recovery could not read, or
+  whose older `state.db` cannot be read, keeps them all. Its chat is ranked
+  the same way, so the old Dreams log is never a bot's chat while a
+  conversation remains; while its `state.db` cannot be read it gets a new,
+  empty chat, and the old sections open once the file is repaired. Memory and
+  notes stay.
 - A chat starts with the bot's memory and a catalog of skill descriptions.
   It loads skill bodies when needed. It picks up the current name, soul,
   memory, About you, teammates and skill catalog after compaction if the next

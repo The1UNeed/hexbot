@@ -220,21 +220,26 @@ deleting anything it makes a fresh full copy of `hexbot.db`,
 `hexbot-runtime.db`, the affected bots' `state.db` and all of
 `runtime/sessions` in `<home>/backups/one-chat-per-bot-<time>/`, so it needs
 about that much free disk space. The setting is written before the first
-delete. If anything fails (the copy, `reconcile_all`, a delete) the error is
-logged, an unfinished copy (`one-chat-per-bot-<time>.partial`) is removed,
-nothing more is deleted, the setting is written anyway, and the daemon starts;
-the sections left are kept for good and no later start deletes any. A bot with
-a conversation that recovery set aside or could not read, or whose `state.db`
-cannot be read, keeps all its sections. Sections made later, by an older
-build, are never deleted. `hexbot.sections.create`, and a dream posting its
-report, rank a bot's healthy sections the same way, so a kept Dreams log never
-outranks a conversation; a `state.db` that cannot be read counts as empty
-there. Before anything else, the upgrade finds each bot's old Dreams logs and
-records them as the `dream_logs` setting, with the bots it could read as
-`dream_log_bots`: only in those logs are messages matching a dream summary
-treated as dream reports, when the log is first opened and in history search.
-A bot whose `state.db` could not be read then has its logs found the first
-time that store is read.
+delete. If anything fails (the copy, `reconcile_all`, removing a catalog row)
+the error is logged, an unfinished copy (`one-chat-per-bot-<time>.partial`)
+is removed, nothing more is deleted, the setting is written anyway, and the
+daemon starts; the sections left are kept for good and no later start deletes
+any. Each delete is the one `hexbot.sections.delete` makes, so a section is
+whole or gone. A bot with a conversation that recovery set aside or could not
+read, or whose `state.db` cannot be read, keeps all its sections. Sections
+made later, by an older build, are never deleted. `hexbot.sections.create`,
+and a dream posting its report, rank a bot's healthy sections the same way,
+so a kept Dreams log never outranks a conversation. A section whose history
+is only in a `state.db` that cannot be read ranks last and is never the chat,
+since it would not open; when nothing else is left, `create` makes a new
+General chat. Sections `create` makes are recorded in `native_fresh` and open
+without reading `state.db`. Before anything else, the upgrade finds each
+bot's old Dreams logs and records them as the `dream_logs` setting, with the
+bots it could read as `dream_log_bots`: only in those logs are messages
+matching a dream summary treated as dream reports, when the log is first
+opened and in history search. A bot whose `state.db` could not be read then
+has its logs found at the next `create`, first open or history search that
+can read the store (`catalog::dream_logs`); until then the recorded logs stand.
 
 Section shape: `{id, bot, title, title_by: "bot" | null, created_at,
 updated_at, archived_at | null, done_at | null, preview, message_count,
@@ -292,9 +297,13 @@ context of its own; the meter belongs to bot sections.
 - `hexbot.sections.delete {id, purge_memory?: true}` → `{deleted: true}`
   Current clients offer none of these three for a chat; they stay for older
   clients. The next `create` brings a deleted chat back empty.
-  (closes the live session, `session.delete` on the stored row). With
-  `purge_memory: false` only the Hexbot row goes and the core transcript
-  is left in place. The bot's memory is not touched either way.
+  (closes the live session, `session.delete` on the stored row). The
+  section is tombstoned, its catalog row goes in a transaction of its own,
+  and only then its runtime history and `runtime/sessions/<id>`: a stop
+  before the row goes leaves the section whole, and the next start removes
+  what a stop after it left (`runtime_store::finish_deletes`). With
+  `purge_memory: false` the core transcript in `state.db` is left in place.
+  The bot's memory is not touched either way.
 - `hexbot.sections.touch {id}` is internal; activity is stamped by the plugin
   on `message.complete`. It also sets the section's `done_at`.
 - `hexbot.sections.mark_read {id}` → `{section: Section}` clears `done_at`:

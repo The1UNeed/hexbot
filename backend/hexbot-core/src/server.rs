@@ -79,6 +79,9 @@ impl App {
         web_dist: Option<PathBuf>,
     ) -> Result<Arc<Self>> {
         db::migrate(&home)?;
+        if let Err(error) = crate::runtime_store::finish_deletes(&home) {
+            eprintln!("Could not finish deleting sections: {}", error.message);
+        }
         // Before any client can connect. The daemon starts without it; it
         // fails this way only before it deletes anything.
         if let Err(error) = catalog::one_chat_per_bot(&home) {
@@ -166,7 +169,8 @@ impl App {
         if method == "hexbot.sections.delete" {
             let stored = common::required(p, "id")?;
             catalog::section(&self.home, owner, stored)?;
-            self.runtime.delete_stored(owner, stored).await?;
+            // The catalog removes its row before its history.
+            self.runtime.retire_stored(owner, stored).await?;
         }
         if method == "hexbot.bots.delete" {
             let bot = common::required(p, "name")?;

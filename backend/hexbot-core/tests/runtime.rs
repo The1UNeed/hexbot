@@ -1149,6 +1149,57 @@ async fn section_close_releases_the_live_session() {
 }
 
 #[tokio::test]
+async fn a_bot_whose_older_store_cannot_be_read_gets_a_chat_that_opens() {
+    let home = setup();
+    // Section A was never opened since the native daemon; its history is here.
+    let store = home.path().join("profiles/owl/state.db");
+    fs::write(&store, "not a database").unwrap();
+    let app = hexbot_core::server::App::new(
+        home.path().into(),
+        "127.0.0.1:0".parse().unwrap(),
+        fake_pi(home.path()),
+        None,
+    )
+    .unwrap();
+    let open = |id: String| {
+        let app = app.clone();
+        async move {
+            app.call("alice", "hexbot.sections.open", &json!({"id":id}))
+                .await
+        }
+    };
+    assert_eq!(open("section-a".into()).await.unwrap_err().code, 5200);
+    let chat = app
+        .call("alice", "hexbot.sections.create", &json!({"bot":"owl"}))
+        .await
+        .unwrap()["section"]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert_ne!(chat, "section-a");
+    open(chat.clone()).await.unwrap();
+    let again = app
+        .call("alice", "hexbot.sections.create", &json!({"bot":"owl"}))
+        .await
+        .unwrap();
+    assert_eq!(again["section"]["id"], chat);
+    // Section A stays and opens with its history once the store is repaired.
+    fs::remove_file(&store).unwrap();
+    rusqlite::Connection::open(&store)
+        .unwrap()
+        .execute_batch(
+            "CREATE TABLE sessions(id TEXT,session_key TEXT);
+             CREATE TABLE messages(id INTEGER,session_id TEXT,role TEXT,content TEXT,timestamp REAL);
+             INSERT INTO sessions VALUES('section-a','section-a');
+             INSERT INTO messages VALUES(1,'section-a','user','Before the upgrade',1);",
+        )
+        .unwrap();
+    let opened = open("section-a".into()).await.unwrap();
+    app.shutdown().await;
+    assert_eq!(opened["messages"][0]["text"], "Before the upgrade");
+}
+
+#[tokio::test]
 async fn deleting_section_removes_delegated_transcripts() {
     let home = setup();
     let app = hexbot_core::server::App::new(

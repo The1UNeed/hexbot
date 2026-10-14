@@ -927,11 +927,15 @@ fn recall(
     let legacy_path = catalog::profile(home, &key.bot)?.join("state.db");
     safe_path(home, &legacy_path)?;
     let legacy = legacy_stamp(&legacy_path)?;
+    // A store that cannot be read leaves the sections' newer history to search.
     let legacy_db = if legacy.is_some() {
-        Some(Connection::open_with_flags(
-            &legacy_path,
-            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
-        )?)
+        Connection::open_with_flags(&legacy_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .and_then(|conn| {
+                conn.query_row("SELECT COUNT(*) FROM sqlite_master", [], |_| Ok(()))?;
+                Ok(conn)
+            })
+            .map_err(|error| catalog::unreadable_store(&key.bot, &error.into()))
+            .ok()
     } else {
         None
     };
@@ -1600,6 +1604,55 @@ mod history_index_tests {
         assert_eq!(said("log"), ["Why?"]);
         // The same words in a chat are the bot's.
         assert_eq!(said("chat"), ["Say it", "Owl learned"]);
+    }
+
+    #[test]
+    fn a_damaged_older_store_leaves_newer_history_searchable() {
+        let home = tempfile::tempdir().unwrap();
+        db::migrate(home.path()).unwrap();
+        db::open(home.path())
+            .unwrap()
+            .execute_batch(
+                "INSERT INTO users(id,display_name,role,created_at) VALUES('alice','Alice','admin',0);
+                 INSERT INTO bots(name,owner_id) VALUES('owl','alice');
+                 INSERT INTO sections(id,bot,owner_id,title) VALUES('chat','owl','alice','Chat'),('old','owl','alice','Old');",
+            )
+            .unwrap();
+        let owl = home.path().join("profiles/owl");
+        fs::create_dir_all(&owl).unwrap();
+        fs::write(owl.join("state.db"), "not a database").unwrap();
+        runtime_store::append(
+            home.path(),
+            "chat",
+            json!({"role":"user","text":"Plans for Friday","timestamp":1}),
+        )
+        .unwrap();
+        let key = RecallKey {
+            home: home.path().to_owned(),
+            owner: "alice".to_owned(),
+            bot: "owl".to_owned(),
+            roles: String::new(),
+        };
+        let index = recall(
+            home.path(),
+            &key,
+            &BTreeSet::from(["user", "assistant"]),
+            "",
+        )
+        .unwrap();
+        let said = |id: &str| {
+            index
+                .sessions
+                .iter()
+                .find(|s| s.id == id)
+                .unwrap()
+                .messages
+                .iter()
+                .map(|m| text(m, "content").to_owned())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(said("chat"), ["Plans for Friday"]);
+        assert!(said("old").is_empty());
     }
 
     #[test]

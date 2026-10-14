@@ -1658,6 +1658,18 @@ impl Runtime {
         Ok(false)
     }
     pub async fn delete_stored(&self, owner: &str, stored: &str) -> Result<()> {
+        let targets = self.retire_stored(owner, stored).await?;
+        let result = store::delete(&self.home, stored);
+        if result.is_err() {
+            for target in targets {
+                store::unmark_deleted(&self.home, &target)?;
+            }
+        }
+        result
+    }
+    /// Tombstones a section and its delegated tasks and stops them, ready for
+    /// the catalog to delete it. Returns what it tombstoned.
+    pub async fn retire_stored(&self, owner: &str, stored: &str) -> Result<Vec<String>> {
         // Serialize the tombstone with open, then let close acquire the same lock.
         let targets = {
             let lock = self.open_lock(stored);
@@ -1665,16 +1677,13 @@ impl Runtime {
             store::mark_deleted(&self.home, stored)?
         };
         // Keep the original set: a partial purge can remove descendant relationships.
-        let result = match self.close_stored(owner, stored).await {
-            Ok(_) => store::delete(&self.home, stored),
-            Err(error) => Err(error),
-        };
-        if result.is_err() {
+        if let Err(error) = self.close_stored(owner, stored).await {
             for target in targets {
                 store::unmark_deleted(&self.home, &target)?;
             }
+            return Err(error);
         }
-        result
+        Ok(targets)
     }
     pub async fn close_stored(&self, owner: &str, stored: &str) -> Result<bool> {
         let mut closed = false;

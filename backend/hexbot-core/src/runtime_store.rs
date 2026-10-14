@@ -30,6 +30,7 @@ pub fn open(home: &Path) -> Result<Connection> {
       CREATE TABLE IF NOT EXISTS native_summaries(session_id TEXT PRIMARY KEY, message_count INTEGER NOT NULL, preview TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS native_deleted(session_id TEXT PRIMARY KEY);
       CREATE TABLE IF NOT EXISTS native_quarantine(session_id TEXT PRIMARY KEY, error TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS native_fresh(session_id TEXT PRIMARY KEY);
       CREATE TRIGGER IF NOT EXISTS summary_session_insert AFTER INSERT ON native_sessions BEGIN DELETE FROM native_summaries WHERE session_id=NEW.stored_id; END;
       CREATE TRIGGER IF NOT EXISTS summary_journal_insert AFTER INSERT ON native_pi_journal BEGIN DELETE FROM native_summaries WHERE session_id=NEW.session_id; END;
       CREATE TRIGGER IF NOT EXISTS summary_message_insert AFTER INSERT ON native_messages BEGIN DELETE FROM native_summaries WHERE session_id=NEW.session_id; END;
@@ -212,6 +213,7 @@ pub fn delete(home: &Path, stored: &str) -> Result<()> {
         tx.execute("INSERT OR IGNORE INTO native_deleted VALUES(?)", [stored])?;
         tx.execute("DELETE FROM native_summaries WHERE session_id=?", [stored])?;
         tx.execute("DELETE FROM native_quarantine WHERE session_id=?", [stored])?;
+        tx.execute("DELETE FROM native_fresh WHERE session_id=?", [stored])?;
         tx.execute("DELETE FROM native_pi_journal WHERE session_id=?", [stored])?;
         tx.execute(
             "DELETE FROM native_prompt_intents WHERE session_id=?",
@@ -271,6 +273,57 @@ pub fn follow_bot_model(home: &Path, bot: &str, before: &Value, after: &Value) -
                 "UPDATE native_sessions SET options=? WHERE stored_id=?",
                 params![options.to_string(), stored],
             )?;
+        }
+    }
+    Ok(())
+}
+/// Records a section this daemon made: the store from before it has nothing
+/// to import into it, so it opens even while that store cannot be read.
+pub fn mark_fresh(home: &Path, stored: &str) -> Result<()> {
+    open(home)?.execute("INSERT OR IGNORE INTO native_fresh VALUES(?)", [stored])?;
+    Ok(())
+}
+pub fn fresh(home: &Path, stored: &str) -> Result<bool> {
+    Ok(open(home)?.query_row(
+        "SELECT EXISTS(SELECT 1 FROM native_fresh WHERE session_id=?)",
+        [stored],
+        |r| r.get(0),
+    )?)
+}
+/// Finishes the deletes a stop cut short, before the runtime starts. A
+/// section is tombstoned, then loses its catalog row, then its history. One
+/// whose row is still there was never deleted and opens again; one whose row
+/// is gone loses what is left of its history here. Rows in a bot's older
+/// `state.db` stay: no section reads them any more.
+pub fn finish_deletes(home: &Path) -> Result<()> {
+    let tombstones = open(home)?
+        .prepare("SELECT session_id FROM native_deleted")?
+        .query_map([], |r| r.get::<_, String>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let catalog = crate::db::open(home)?;
+    let mut gone = vec![];
+    for id in tombstones {
+        let listed: bool = catalog.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sections WHERE id=?)",
+            [&id],
+            |r| r.get(0),
+        )?;
+        if listed {
+            unmark_deleted(home, &id)?;
+        } else {
+            gone.push(id);
+        }
+    }
+    let conn = open(home)?;
+    for id in gone {
+        // A delegated task of a section that stays was untombstoned with it.
+        let (deleted, left): (bool, bool) = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM native_deleted WHERE session_id=?1), EXISTS(SELECT 1 FROM native_sessions WHERE stored_id=?1) OR EXISTS(SELECT 1 FROM native_messages WHERE session_id=?1) OR EXISTS(SELECT 1 FROM native_pi_journal WHERE session_id=?1)",
+            [&id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )?;
+        if deleted && (left || home.join("runtime/sessions").join(&id).exists()) {
+            delete(home, &id)?;
         }
     }
     Ok(())
@@ -492,14 +545,7 @@ pub fn dream_logs(home: &Path) -> Result<BTreeSet<String>> {
 /// The reports an earlier build posted, unmarked, to a section: none unless it
 /// is a dream log, since a reply elsewhere can read like one.
 pub fn legacy_reports(home: &Path, bot: &str, stored: &str) -> Result<HashSet<String>> {
-    // A bot whose older store could not be read during the upgrade has its
-    // dream logs found the first time that store is read.
-    let logs = if listed(home, "dream_log_bots")?.contains(bot) {
-        dream_logs(home)?
-    } else {
-        crate::catalog::classify_dream_logs(home, bot)?
-    };
-    if !logs.contains(stored) {
+    if !crate::catalog::dream_logs(home, bot)?.contains(stored) {
         return Ok(HashSet::new());
     }
     Ok(common::rows(
@@ -524,7 +570,7 @@ pub fn import_hermes(home: &Path, bot: &str, stored: &str, cwd: &Path) -> Result
     let path = home.join("profiles").join(bot).join("state.db");
     let mut raw = Vec::<(i64, Value, Value)>::new();
     let mut projected = Vec::<Value>::new();
-    if path.exists() {
+    if path.exists() && !fresh(home, stored)? {
         // Dream reports an earlier build posted as the bot's messages: shown,
         // never the bot's context.
         let reports = legacy_reports(home, bot, stored)?;
