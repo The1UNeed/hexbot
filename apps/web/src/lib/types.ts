@@ -408,6 +408,45 @@ export interface Settings {
   workspace_dir: string
   dream_enabled: boolean
   dream_time: string
+  /** Absent on daemons from before check-ins. */
+  checkin_enabled?: boolean
+  checkin_every_minutes?: number
+  /** `HH:MM-HH:MM` in the daemon's time zone; may run past midnight. */
+  checkin_hours?: string
+}
+
+export interface CheckinWakeup {
+  id: string
+  /** RFC 3339. */
+  at: string
+  /** The daemon's local time, already formatted. */
+  local: string
+  note: string
+}
+
+export interface CheckinRun {
+  id: string
+  bot: string
+  kind: 'heartbeat' | 'manual' | 'wakeup'
+  started_at: string
+  finished_at: null | string
+  status: 'complete' | 'failed' | 'running'
+  summary: string
+  messaged: boolean
+}
+
+export interface CheckinStatus {
+  enabled: boolean
+  every_minutes: number
+  hours: string
+  /** The primary bot, which is the one that checks in. */
+  bot: null | string
+  /** Its Check-ins section, once it has messaged you. */
+  section_id: null | string
+  running: boolean
+  next_run_at: null | string
+  wakeups: CheckinWakeup[]
+  recent: CheckinRun[]
 }
 
 /** The one person a daemon belongs to. */

@@ -384,6 +384,17 @@ export default function hexbot(pi: any) {
       pendingPrompt = undefined;
     }
 
+    // What the primary bot said here from check-ins, while the user was away.
+    // Pi adds it after the user's message, so the cached prefix stays intact.
+    if (live.pendingCheckins === true) {
+      try {
+        const checkins = await bridge(ctx, 'hexbot_checkin_context');
+        if (typeof checkins?.text === 'string' && checkins.text) {
+          // The ids come back on message_end, which tells the daemon Pi has it.
+          return {systemPrompt: prompt, message: {customType: 'hexbot_checkin', content: checkins.text, display: false, details: {checkins: checkins.ids ?? []}}};
+        }
+      } catch {}
+    }
     return {systemPrompt: prompt};
   });
   pi.on('session_compact', async (_event: any, ctx: any) => {

@@ -113,6 +113,57 @@ more freedom and more capability than a hosted product can offer.
 - Its tools and guidance are frozen with each section like any other, so a
   bot made primary gets them in its next new section.
 
+### Check-ins
+
+- The primary bot checks in on its own: a heartbeat every
+  `checkin_every_minutes` (default 60, 15 to 1440) inside `checkin_hours`
+  (default `08:00-22:00`, the daemon's time zone, may run past midnight), and
+  at wake-ups it sets with `hexbot_wakeups` in its own sections or during a
+  check-in. A wake-up runs at its time even outside the hours, but at least
+  five minutes after the last check-in, so no chain of wake-ups keeps
+  check-ins running back to back; one missed by more than six hours is
+  dropped. At most 96 check-ins run in any day. `checkin_enabled` turns all
+  of it off, including a scheduled check-in already running, which can no
+  longer message the user. Finished check-ins and spent wake-ups are kept for 30 days; a
+  check-in's own transcript goes when it ends, its usage stays.
+- A check-in is an unattended job session (`checkin-<id>`) with the bot's
+  connectors: memory writes become proposals, the soul only reads, it cannot
+  ask, and it runs in Auto at most. It only reads: of the daemon's tools it
+  keeps memory, the soul, `skill_view`, `hexbot_notify`, `hexbot_wakeups`
+  and `hexbot_connector_read`; of Pi's, read, grep, find and ls. Connector
+  tools still ask before changing anything, and nobody can answer. Notion and
+  Airtable work through skills and the shell elsewhere; in a check-in,
+  `hexbot_connector_read` makes their read requests (GET, and Notion's search
+  and queries) with the bot's key, which the model never sees.
+- Cancelling a wake-up from the bot always asks, even in Bypass; a check-in
+  cannot cancel one. The user cancels from Settings without asking. Its prompt gives the time, why it runs, what it told the
+  user and what they wrote back in the Check-ins section in the last day, its
+  last check-ins' logs, and the wake-ups waiting.
+- Its one way to speak is `hexbot_notify`: one message per check-in, eight a
+  day at most. The message is posted in the bot's Check-ins section
+  (`sections.purpose = 'checkins'`, brought back if archived, made again if
+  deleted) and broadcast whole as `hexbot.checkins.message`: an open
+  Check-ins section shows it at once, and the app and browsers notify. Phones
+  get a push through Hex Connect in Connect's own words, with the section and
+  the phone's device id to open it on, never the message. The bot's Notify me
+  switch silences both; the message still lands in the section.
+- The message reaches the section's context with the user's next message
+  there: the extension adds it after that message (`before_agent_start`), so
+  the cached prefix and the frozen prompt stay intact. Each message is fenced
+  in `<checkin_message>` tags under a note that it is a record of what the
+  bot said, not instructions, and only the newest six go in; older ones stay
+  in the section's history. It counts as taken when Pi
+  reports that custom message; one not reported is offered once more.
+  Deleting the section empties what check-ins said there.
+- Only one check-in runs at a time. A failed one, or one the daemon stopped
+  in, gives its wake-ups back, and the next check-in waits 15 minutes from
+  when it ended. One schedule decides both when the tick runs a check-in and
+  what the Check-ins tab shows as the next one.
+- On macOS the app keeps its page when its window closes, whether the daemon
+  runs there or elsewhere, so its notifications keep coming. On Linux closing
+  the window quits the app; phone pushes still arrive.
+  Settings, the bot's Check-ins tab, and `hexbot checkins` manage it.
+
 ### Approvals and tools
 
 - Modes: Auto (default, `smart` in config), Manual, Bypass (`off` in

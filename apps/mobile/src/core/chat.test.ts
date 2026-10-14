@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { emptyChat, reduceChat, historyMessages, replayChat } from './chat'
+import { checkinMessage, emptyChat, reduceChat, historyMessages, replayChat } from './chat'
 import type { GatewayEvent } from '@hermes/shared'
 const event = (type: string, payload: Record<string, unknown> = {}): GatewayEvent => ({
   type,
@@ -153,5 +153,17 @@ describe('restored tools and questions', () => {
     expect(loaded.state.streaming).toBe('Nearly')
     expect(loaded.state.tools.map(t => t.id)).toEqual(['t2'])
     expect(loaded.state.busy).toBe(true)
+  })
+})
+describe('check-in messages', () => {
+  it('join the open thread once', () => {
+    const once = checkinMessage(emptyChat(), 'checkin-1', 'Your PE feedback is due tonight.')
+    expect(once.messages).toEqual([
+      { id: 'checkin-1', role: 'assistant', text: 'Your PE feedback is due tonight.' }
+    ])
+    expect(checkinMessage(once, 'checkin-1', 'Your PE feedback is due tonight.')).toBe(once)
+    // Already in the history it loaded, under the same row id.
+    const loaded = { ...emptyChat(), messages: historyMessages([{ role: 'assistant', text: 'Hi', row_id: 'checkin-2' }]) }
+    expect(checkinMessage(loaded, 'checkin-2', 'Hi')).toBe(loaded)
   })
 })

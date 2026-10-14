@@ -58,10 +58,19 @@ export function historyMessages(raw: unknown[]): ChatMessage[] {
     } else if (row.role === 'user' || row.role === 'assistant') {
       const text = textContent(row.content ?? row.text)
       if (text || (Array.isArray(row.tool_calls) && row.tool_calls.length))
-        messages.push({ id: String(row.id ?? `history-${messages.length}`), role: row.role, text })
+        messages.push({
+          id: String(row.id ?? row.row_id ?? `history-${messages.length}`),
+          role: row.role,
+          text
+        })
     }
   }
   return messages
+}
+/** A message the primary bot sent from a check-in into the open thread, once by its history row id. */
+export function checkinMessage(state: ChatState, id: string, text: string): ChatState {
+  if (state.messages.some(m => m.id === id)) return state
+  return { ...state, messages: [...state.messages, { id, role: 'assistant', text }] }
 }
 export function reduceChat(state: ChatState, event: GatewayEvent): ChatState {
   const p = (event.payload ?? {}) as Record<string, unknown>

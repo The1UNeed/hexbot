@@ -12,8 +12,9 @@ import {
   selectDaemon
 } from './storage'
 import { pair } from './transport'
+import { registerPush } from './push'
 import { parsePairing, normalizeOrigin } from './links'
-import { emptyChat, historyMessages, reduceChat, replayChat } from './chat'
+import { checkinMessage, emptyChat, historyMessages, reduceChat, replayChat } from './chat'
 import { reduceRoom, restoreRoom, roomChat, roomMessage } from './room-chat'
 import { attachmentPrompt } from './chat-send'
 import { modelLists, providerModels } from './models'
@@ -225,6 +226,17 @@ export function useMobile() {
         if (replay.reread && attempt < 2) continue
         straddling.current = replay.state.busy ? liveId.current : null
         let restored = { ...replay.state, error: failure }
+        // Check-ins that arrived while it loaded carry no session; match the section.
+        for (const event of loadingEvents.current ?? []) {
+          const p = (event.payload ?? {}) as Record<string, unknown>
+          if (
+            event.type === 'hexbot.checkins.message' &&
+            p.section_id === target.section.id &&
+            typeof p.row_id === 'string' &&
+            typeof p.text === 'string'
+          )
+            restored = checkinMessage(restored, p.row_id, p.text)
+        }
         if (result.pending_clarify)
           restored = reduceChat(restored, {
             type: 'clarify.request',
@@ -281,6 +293,19 @@ export function useMobile() {
           )
         )
       } else {
+        if (event.type === 'hexbot.checkins.message') {
+          if (
+            p.section_id === target.section.id &&
+            typeof p.row_id === 'string' &&
+            typeof p.text === 'string'
+          ) {
+            const [id, text] = [p.row_id, p.text]
+            setChat(c => checkinMessage(c, id, text))
+            // Seen as it arrived, so it is read.
+            void rpc('hexbot.sections.mark_read', { id: target.section.id }).catch(() => {})
+          }
+          return
+        }
         if (!event.session_id || event.session_id !== liveId.current) return
         if (event.type === 'message.complete' && straddling.current === event.session_id) {
           // Part of this turn was already in the history; the history now has all of it.
@@ -356,6 +381,7 @@ export function useMobile() {
         async () => {
           await refreshRef.current()
           await syncChatRef.current()
+          void registerPush(rpc, daemon.deviceId).catch(() => undefined)
         },
         onEvent
       )
@@ -622,6 +648,10 @@ export function useMobile() {
       setConnection('offline')
     },
     remove: async (id: string) => {
+      // A forgotten daemon stops pushing to this phone. Only the connected one
+      // can be told; revoking this device on another daemon stops it there.
+      if (active?.id === id)
+        await rpc('hexbot.devices.set_push', { token: null }).catch(() => undefined)
       if (active?.id === id) {
         releaseStaged()
         session.current?.stop()

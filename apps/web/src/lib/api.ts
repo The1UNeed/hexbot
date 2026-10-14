@@ -11,6 +11,7 @@ import type {
   Bot,
   BotCreateInput,
   BotUpdatePatch,
+  CheckinStatus,
   ClarifyQuestion,
   ClarifyRequest,
   ClarifyRequestPayload,
@@ -340,6 +341,11 @@ export const dreamingList = (bot: string, limit = 10) =>
 /** Put the bot's memory back to what it was before this dream. */
 export const dreamingRestore = (id: string) =>
   rpcCall<{ bot: string; memory_md: string }>('hexbot.dreaming.restore', { id })
+
+export const checkinsStatus = () => rpcCall<CheckinStatus>('hexbot.checkins.status')
+export const checkinsRunNow = () => rpcCall<{ id: string }>('hexbot.checkins.run_now')
+export const checkinsCancelWakeup = (id: string) =>
+  rpcCall<{ cancelled: boolean }>('hexbot.checkins.cancel_wakeup', { id })
 
 export interface ConnectStatus {
   registered: boolean

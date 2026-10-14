@@ -22,7 +22,7 @@ import { KICKOFF_MARKER } from '../lib/bot-kickoff'
 import type { Bot, BotStatus, Message, Section } from '../lib/types'
 
 import { draftsActions } from './drafts'
-import { useTranscripts } from './transcripts'
+import { releaseCheckinMessages, useTranscripts } from './transcripts'
 
 /**
  * A thread: the private conversation in which `peer_bot` asks `bot` for help.
@@ -179,16 +179,19 @@ export const useSections = create<SectionsState>((set, get) => ({
     }))
 
     if (live) {
-      useTranscripts
-        .getState()
-        .open(
-          live,
-          id,
-          messagesFromHistory(messages ?? []).filter(
-            // Hexbot replays an interrupted hidden kickoff as a plain user turn.
-            message => !(message.role === 'user' && message.text.includes(KICKOFF_MARKER))
-          )
+      useTranscripts.getState().open(
+        live,
+        id,
+        messagesFromHistory(messages ?? []).filter(
+          // Hexbot replays an interrupted hidden kickoff as a plain user turn.
+          message => !(message.role === 'user' && message.text.includes(KICKOFF_MARKER))
         )
+      )
+
+      // Check-ins that arrived while this loaded; the history may hold them already.
+      for (const row of releaseCheckinMessages(id)) {
+        useTranscripts.getState().checkinMessage(live, row)
+      }
 
       if (context) {
         useTranscripts.getState().sessionContext(live, context)
