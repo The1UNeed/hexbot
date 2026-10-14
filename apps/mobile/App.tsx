@@ -56,7 +56,7 @@ import { parseArgs } from './src/core/chat'
 import { activityLabel, readableResult, resultLine, toolLabel } from './src/core/tools'
 import { Management, type Panel } from './src/Management'
 import { useMobile } from './src/core/useMobile'
-import { useTappedSection } from './src/core/tapped'
+import { clearTapped, useTappedSection } from './src/core/tapped'
 import { shownRoom } from './src/core/routes'
 import { CONNECT_ORIGIN, parseConnectCallback } from './src/core/links'
 import { clearConnectSession, loadConnectSession, saveConnectSession } from './src/core/storage'
@@ -511,6 +511,7 @@ function MobileApp() {
     const b = s && mobile.bots.find(item => item.name === s.bot)
     if (!s || !b) return
     openedTap.current = tapped.key
+    clearTapped()
     act(() => mobile.openSection(b, s))
   }, [
     tapped?.key,

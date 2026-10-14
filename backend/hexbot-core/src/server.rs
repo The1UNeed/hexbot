@@ -384,6 +384,15 @@ impl App {
             }
         }?;
         let mut result = result;
+        // Open Check-ins tabs and the CLI's changes meet: settings and the next run move.
+        if method == "hexbot.settings.set"
+            && p["patch"]
+                .as_object()
+                .is_some_and(|patch| patch.keys().any(|k| k.starts_with("checkin_")))
+        {
+            self.events
+                .emit(owner, None, "hexbot.checkins.changed", json!({}));
+        }
         // Opening a room restores its open approval and question cards.
         if method == "hexbot.rooms.get" {
             for turn in result["room"]["turns"].as_array().into_iter().flatten() {

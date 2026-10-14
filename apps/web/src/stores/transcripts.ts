@@ -141,7 +141,7 @@ export interface TranscriptsState {
    * the reply keeps streaming after it.
    */
   /** A message the primary bot sent here from a check-in, once by its history row id. */
-  checkinMessage: (sessionId: string, message: { createdAt: number; id: string; text: string }) => void
+  checkinMessage: (sessionId: string, message: CheckinRow) => void
   incidentEvent: (sessionId: string, message: string, detail: ErrorDetail) => void
   messageComplete: (sessionId: string, payload?: MessageCompletePayload) => void
   messageDelta: (sessionId: string, text: string) => void
@@ -173,6 +173,28 @@ const defaultEffects: TranscriptEffects = {
 }
 
 let effects: TranscriptEffects = defaultEffects
+
+/** A check-in message for a section whose transcript is still loading. */
+export interface CheckinRow {
+  createdAt: number
+  id: string
+  text: string
+}
+const heldCheckins = new Map<string, CheckinRow[]>()
+
+/** Keeps a check-in message until its section's history is in; a few per section. */
+export function holdCheckinMessage(sectionId: string, row: CheckinRow): void {
+  heldCheckins.set(sectionId, [...(heldCheckins.get(sectionId) ?? []), row].slice(-20))
+}
+
+/** The check-in messages held for a section, now that its transcript exists. */
+export function releaseCheckinMessages(sectionId: string): CheckinRow[] {
+  const rows = heldCheckins.get(sectionId) ?? []
+
+  heldCheckins.delete(sectionId)
+
+  return rows
+}
 
 /** Send a native notification through the same effect the store uses. */
 export function transcriptNotify(input: { body: string; sectionId?: string; title: string }): void {

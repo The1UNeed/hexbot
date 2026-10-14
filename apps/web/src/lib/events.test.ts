@@ -5,6 +5,7 @@ import { useMe } from '../stores/me'
 import { useSections } from '../stores/sections'
 import {
   emptyTranscript,
+  releaseCheckinMessages,
   resetTranscriptEffects,
   setTranscriptEffects,
   useTranscripts
@@ -187,6 +188,23 @@ describe('event routing', () => {
       type: 'hexbot.checkins.message'
     } as unknown as GatewayEvent)
     expect(notify).not.toHaveBeenCalled()
+  })
+  it('holds a check-in message until its section has loaded', () => {
+    useSections.setState({ byId: {}, liveSessionId: {} })
+    routeEvent({
+      payload: {
+        bot: 'hexbot',
+        row_id: 'checkin-m9',
+        section_id: 'loading-1',
+        text: 'Soon.',
+        timestamp: 1
+      },
+      type: 'hexbot.checkins.message'
+    } as unknown as GatewayEvent)
+    expect(releaseCheckinMessages('loading-1')).toEqual([
+      { createdAt: 1000, id: 'checkin-m9', text: 'Soon.' }
+    ])
+    expect(releaseCheckinMessages('loading-1')).toEqual([])
   })
   it('opens the Check-ins section from a browser notification', () => {
     const shown: { onclick: null | (() => void) }[] = []

@@ -4,3 +4,5 @@ import type { PushTarget } from './push'
 export function useTappedSection(): (PushTarget & { key: string }) | null {
   return null
 }
+
+export function clearTapped(): void {}

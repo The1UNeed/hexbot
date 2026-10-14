@@ -30,6 +30,7 @@ import {
 } from '../components/ui/settings-shell'
 import { avatarSrc } from '../lib/avatar-builder'
 import { useBots } from '../stores/bots'
+import { useSettings } from '../stores/settings'
 import { useUi } from '../stores/ui'
 
 export const Route = createFileRoute('/b/$bot/settings/$tab')({
@@ -58,7 +59,7 @@ const GROUPS: { ids: BotSettingsTab[]; label?: string }[] = [
   { ids: ['approvals', 'sections', 'checkins', 'advanced'], label: 'Manage' }
 ]
 
-/** Only the primary bot checks in, so only its settings show Check-ins. */
+/** Only the primary bot checks in, so only its settings show Check-ins, and only on a daemon that has them. */
 function tabsFor(primary: boolean): SettingsTabGroup<BotSettingsTab>[] {
   return GROUPS.map(group => ({
     items: group.ids
@@ -95,7 +96,10 @@ function BotSettingsDialog() {
       : navigate({ to: '/' }))
   }
 
-  const current = isBotSettingsTab(tab) && (tab !== 'checkins' || bot?.primary) ? tab : 'profile'
+  // A daemon from before check-ins sends no check-in settings.
+  const checkins = useSettings(state => state.settings?.checkin_enabled !== undefined)
+  const showCheckins = bot?.primary === true && checkins
+  const current = isBotSettingsTab(tab) && (tab !== 'checkins' || showCheckins) ? tab : 'profile'
 
   const name = bot?.display_name ?? botName
 
@@ -124,7 +128,7 @@ function BotSettingsDialog() {
         onSelect={item =>
           void navigate({ params: { bot: botName, tab: item }, to: '/b/$bot/settings/$tab' })
         }
-        tabs={tabsFor(bot?.primary === true)}
+        tabs={tabsFor(showCheckins)}
       >
         {bot ? (
           <BotSettingsPanel bot={bot} connector={connector} tab={current} />

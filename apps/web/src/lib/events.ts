@@ -35,7 +35,7 @@ import type {
   ToolCompletePayload,
   ToolStartPayload
 } from '../stores/transcripts'
-import { transcriptNotify, useTranscripts } from '../stores/transcripts'
+import { holdCheckinMessage, transcriptNotify, useTranscripts } from '../stores/transcripts'
 import { useUi } from '../stores/ui'
 
 import { getBridge } from './bridge'
@@ -158,6 +158,8 @@ export function routeEvent(event: GatewayEvent, deps: EventRouterDeps = {}): voi
     case 'hexbot.checkins.changed':
       if (useCheckins.getState().loaded) {
         void useCheckins.getState().refresh()
+        // Changed elsewhere, through another app or `hexbot checkins`.
+        void useSettings.getState().refresh()
       }
 
       return
@@ -168,12 +170,19 @@ export function routeEvent(event: GatewayEvent, deps: EventRouterDeps = {}): voi
       // An open Check-ins section shows it at once; history has the same row id.
       const live = sectionId ? useSections.getState().liveSessionId[sectionId] : undefined
 
-      if (live && transcripts.bySession[live] && whole && typeof payload.row_id === 'string') {
-        transcripts.checkinMessage(live, {
+      if (sectionId && whole && typeof payload.row_id === 'string') {
+        const row = {
           createdAt: typeof payload.timestamp === 'number' ? payload.timestamp * 1000 : Date.now(),
           id: payload.row_id,
           text: whole
-        })
+        }
+
+        // Opening as it arrives: it joins once the history is in (stores/sections.ts).
+        if (live && transcripts.bySession[live]) {
+          transcripts.checkinMessage(live, row)
+        } else {
+          holdCheckinMessage(sectionId, row)
+        }
       }
 
       if (whole && botNotifies(bot)) {

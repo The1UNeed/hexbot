@@ -18,3 +18,8 @@ export function useTappedSection(): (PushTarget & { key: string }) | null {
   const target = notificationTarget(request?.content.data)
   return request && target ? { ...target, key: request.identifier } : null
 }
+
+/** Forget a handled tap, so a reload does not open it again. */
+export function clearTapped(): void {
+  void Notifications.clearLastNotificationResponseAsync().catch(() => undefined)
+}
