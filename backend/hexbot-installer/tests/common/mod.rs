@@ -179,6 +179,8 @@ case "$1" in
             exit 1
         fi
         [ "$*" = 'setup --activate --json' ]
+        # The installer passes down the activation lock it holds.
+        [ -e "/dev/fd/${HEXBOT_ACTIVATION_LOCK_FD:?}" ]
         mkdir -p "$HEXBOT_HOME/runtime" "$HOME/.local/bin"
         cp "$0" "$HEXBOT_HOME/runtime/native-executable"
         chmod +x "$HEXBOT_HOME/runtime/native-executable"

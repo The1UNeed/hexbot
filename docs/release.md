@@ -239,10 +239,25 @@ URL syntax. An HTTPS mirror serves the same manifest bytes and signatures;
 downloads and redirects must stay on its origin. The unsigned bootstrap `.txt`
 index keeps absolute URLs.
 The installer refuses versions below the highest valid version in its receipt,
-installed apps, or selected native runtime on the same track, including Update
-or repair. It rechecks after downloading while holding a shared installation
-lock through replacement and receipt writing. Fresh installs and explicit track
-changes may install an older version.
+installed apps, or native runtime on the same track, including Update or
+repair. An app's version, not its app id, decides its track, since Settings can
+move an app to the other track. The native runtime counts both the package
+`runtime/native-executable` selects and the one `native-current.json` names,
+so a crash between the two writes of an activation keeps the floor. The
+installer rechecks after downloading while holding a shared installation lock
+(`~/Library/Application Support/Hexbot/installer.lock` on macOS,
+`~/.local/state/hexbot/installer.lock` on Linux) through replacement and
+receipt writing, and reports "Waiting for another Hexbot installer to finish."
+while another installer holds it. Uninstall with data removal refuses a
+`HEXBOT_HOME` that contains the lock. Headless also rechecks under the daemon's
+`runtime/activate.lock` and keeps it through `hexbot setup --activate`, which
+inherits the locked descriptor in `HEXBOT_ACTIVATION_LOCK_FD`, so a native
+auto-update cannot land between the check and activation. Uninstall removes
+Hexbot apps a killed install left in `.tmp*/previous.app` staging on macOS.
+Installers released before this lock and the Electron app updater do not take
+the installer lock; the native updater takes only `runtime/activate.lock`, and
+the desktop bootstrap's runtime activation takes neither. Fresh installs and explicit
+track changes may install an older version.
 
 Not covered by these manifest signatures:
 

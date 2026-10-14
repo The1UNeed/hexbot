@@ -91,6 +91,12 @@ describe('screens', () => {
           type: 'progress'
         },
         { event: { message: 'Checking the download.', stage: 'verify' }, run, type: 'progress' },
+        // Waiting on a daemon update leaves the bar where it is.
+        {
+          event: { message: 'Waiting for the daemon to finish updating.', stage: 'wait' },
+          run,
+          type: 'progress'
+        },
         {
           event: { message: 'Installing Python for code tools', stage: 'python' },
           run,
@@ -258,6 +264,10 @@ describe('stage labels', () => {
     expect(stageLabel({ message: 'Daemon service removed.', stage: 'service' }, true)).toBe(
       'Removing the daemon service'
     )
+    // The engine says what it waits for: another installer, or a daemon update.
+    expect(
+      stageLabel({ message: 'Waiting for another Hexbot installer to finish.', stage: 'wait' }, false)
+    ).toBe('Waiting for another Hexbot installer to finish')
   })
 })
 

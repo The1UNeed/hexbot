@@ -1566,6 +1566,12 @@ pub(crate) fn activation_lock(runtime: &Path) -> Result<fs::File> {
         .truncate(false)
         .write(true)
         .open(runtime.join("activate.lock"))?;
+    let inherited = std::env::var("HEXBOT_ACTIVATION_LOCK_FD")
+        .ok()
+        .and_then(|fd| fd.parse().ok());
+    if let Some(held) = inherited_activation_lock(&file, inherited) {
+        return Ok(held);
+    }
     loop {
         if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) } == 0 {
             return Ok(file);
@@ -1575,6 +1581,28 @@ pub(crate) fn activation_lock(runtime: &Path) -> Result<fs::File> {
             return Err(error.into());
         }
     }
+}
+
+/// The installer holds the activation lock across its version check and
+/// `hexbot setup --activate`, and passes the locked descriptor down. Use it
+/// only if it is this lock file and the lock is already ours to take.
+fn inherited_activation_lock(file: &fs::File, fd: Option<i32>) -> Option<fs::File> {
+    use std::os::fd::{AsRawFd, FromRawFd};
+    use std::os::unix::fs::MetadataExt;
+    let fd = fd.filter(|fd| *fd > 2)?;
+    // A private copy that processes setup starts do not inherit.
+    let copy = unsafe { libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, 3) };
+    if copy < 0 {
+        return None;
+    }
+    let copy = unsafe { fs::File::from_raw_fd(copy) };
+    let (inherited, ours) = (copy.metadata().ok()?, file.metadata().ok()?);
+    if (inherited.dev(), inherited.ino()) != (ours.dev(), ours.ino()) {
+        return None;
+    }
+    unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) };
+    // Immediate when the inherited file holds the lock; refused while anyone else does.
+    (unsafe { libc::flock(copy.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0).then_some(copy)
 }
 
 // Staging directories remain hidden from pruning until the activation lock is held.
@@ -1660,6 +1688,36 @@ fn activate_native_locked(native: &Path, version: &str, executable: &Path) -> Re
 mod activation_tests {
     use super::*;
     use std::os::unix::fs::{PermissionsExt, symlink};
+
+    #[test]
+    fn setup_reuses_only_the_activation_lock_the_installer_passes_down() {
+        use std::os::fd::AsRawFd;
+        let home = tempfile::tempdir().unwrap();
+        let native = native_directory(home.path()).unwrap();
+        let runtime = native.parent().unwrap();
+        let path = runtime.join("activate.lock");
+        let installer = activation_lock(runtime).unwrap();
+        let file = fs::File::open(&path).unwrap();
+        let other = fs::File::open(&path).unwrap();
+        let unrelated = tempfile::tempfile().unwrap();
+        for fd in [
+            None,
+            Some(-1),
+            Some(other.as_raw_fd()),
+            Some(unrelated.as_raw_fd()),
+        ] {
+            assert!(inherited_activation_lock(&file, fd).is_none());
+        }
+        let setup = inherited_activation_lock(&file, Some(installer.as_raw_fd())).unwrap();
+        // Setup finishing does not release the installer's hold.
+        drop(setup);
+        let contender = fs::File::open(&path).unwrap();
+        let try_lock =
+            || unsafe { libc::flock(contender.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+        assert_ne!(try_lock(), 0);
+        drop(installer);
+        assert_eq!(try_lock(), 0);
+    }
 
     #[test]
     fn concurrent_publications_keep_selection_and_metadata_together() {

@@ -1,30 +1,47 @@
-use crate::{InstalledApp, Installer, Result, Track, app_option, detect, fail};
+use crate::{InstalledApp, Installer, Result, Track, app_option, detect};
 use std::{
     fs,
-    io::{BufReader, Read, Seek, SeekFrom},
-    path::Path,
+    io::{Read, Seek, SeekFrom},
+    path::{Path, PathBuf},
 };
 
 fn parse(version: &str) -> Option<semver::Version> {
     semver::Version::parse(version).ok()
 }
 
-fn track(version: &semver::Version) -> Option<Track> {
+fn track(version: &semver::Version) -> Track {
     if version.pre.as_str().starts_with("nightly.") {
-        Some(Track::Nightly)
+        Track::Nightly
     } else {
-        Some(Track::Stable)
+        Track::Stable
     }
 }
 
-fn app_track(id: &str) -> Option<Track> {
-    if app_option(id).is_none() || id.ends_with(".dev") {
-        None
-    } else if id.ends_with(".nightly") {
-        Some(Track::Nightly)
-    } else {
-        Some(Track::Stable)
-    }
+/// Release apps only. The app id names the track a package was installed
+/// from, but the app updater can move it to the other track in Settings, so
+/// the version decides which floor it sets.
+fn release_app(id: &str) -> bool {
+    app_option(id).is_some() && !id.ends_with(".dev")
+}
+
+/// A runtime launcher is a file inside `runtime/native`.
+fn in_native(native: &Path, executable: &Path) -> bool {
+    executable.starts_with(native) && executable.is_file()
+}
+
+/// The version recorded in a native runtime package beside its launcher.
+fn package_version(executable: &Path) -> Option<semver::Version> {
+    let bytes = fs::read(executable.parent()?.join("manifest.json")).ok()?;
+    let manifest: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+    manifest["version"].as_str().and_then(parse)
+}
+
+/// A macOS app a killed install left in its staging directory: the staging
+/// directory and the Hexbot bundle inside it.
+pub(crate) struct StrandedApp {
+    pub staging: PathBuf,
+    pub app: PathBuf,
+    pub id: String,
 }
 
 impl Installer {
@@ -43,57 +60,94 @@ impl Installer {
             versions.push(version);
         }
         for app in installed.apps {
-            if app_track(&app.app_id) == Some(offered_track)
+            if release_app(&app.app_id)
                 && let Some(version) = self.app_version(&app)?
+                && track(&version) == offered_track
             {
                 versions.push(version);
             }
         }
-        if self.target.is_macos() {
-            for directory in self.paths.app_dirs(self.target) {
-                let entries = match fs::read_dir(directory) {
-                    Ok(entries) => entries,
-                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
-                    Err(error) => return Err(error.into()),
-                };
-                // An interrupted replacement may strand the latest app inside
-                // staging. Count it for every option, even when installing the
-                // other edition or Headless would not recover that app.
-                for entry in entries {
-                    let entry = entry?;
-                    if !entry.file_name().to_string_lossy().starts_with(".tmp")
-                        || !entry.file_type()?.is_dir()
-                    {
-                        continue;
-                    }
-                    let previous = entry.path().join("previous.app");
-                    if fs::symlink_metadata(&previous).is_ok_and(|m| m.is_dir())
-                        && let Some(id) = detect::plist_value(&previous, "CFBundleIdentifier")
-                        && app_track(&id) == Some(offered_track)
-                        && let Some(version) =
-                            detect::plist_value(&previous, "CFBundleShortVersionString")
-                                .as_deref()
-                                .and_then(parse)
-                    {
-                        versions.push(version);
-                    }
+        // An interrupted replacement may strand the latest app inside staging.
+        // Count it for every option, even when installing the other edition or
+        // Headless would not recover that app.
+        for stranded in self.stranded_apps()? {
+            if release_app(&stranded.id)
+                && let Some(version) =
+                    detect::plist_value(&stranded.app, "CFBundleShortVersionString")
+                        .as_deref()
+                        .and_then(parse)
+                && track(&version) == offered_track
+            {
+                versions.push(version);
+            }
+        }
+        // Activation writes native-current.json and swaps native-executable in
+        // two steps (the daemon and `hexbot setup` in one order, the desktop
+        // bootstrap in the other), so either may be ahead after a crash. Count
+        // the package the pointer selects and the one the metadata names.
+        let runtime = self.paths.hexbot_home.join("runtime");
+        if let Ok(native) = runtime.join("native").canonicalize() {
+            let selected = self
+                .paths
+                .executable()
+                .canonicalize()
+                .ok()
+                .filter(|executable| in_native(&native, executable))
+                .and_then(|executable| package_version(&executable));
+            let recorded = fs::read(runtime.join("native-current.json"))
+                .ok()
+                .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+                .and_then(|current| {
+                    let executable = Path::new(current["executable"].as_str()?)
+                        .canonicalize()
+                        .ok()?;
+                    in_native(&native, &executable)
+                        .then(|| current["version"].as_str().and_then(parse))
+                        .flatten()
+                });
+            versions.extend(
+                [selected, recorded]
+                    .into_iter()
+                    .flatten()
+                    .filter(|version| track(version) == offered_track),
+            );
+        }
+        Ok(versions.into_iter().max_by(semver::Version::cmp_precedence))
+    }
+
+    /// Hexbot bundles stranded in `.tmp*/previous.app` inside the app folders.
+    pub(crate) fn stranded_apps(&self) -> Result<Vec<StrandedApp>> {
+        let mut stranded = Vec::new();
+        if !self.target.is_macos() {
+            return Ok(stranded);
+        }
+        for directory in self.paths.app_dirs(self.target) {
+            let entries = match fs::read_dir(directory) {
+                Ok(entries) => entries,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(error) => return Err(error.into()),
+            };
+            for entry in entries {
+                let entry = entry?;
+                if !entry.file_name().to_string_lossy().starts_with(".tmp")
+                    || !entry.file_type()?.is_dir()
+                {
+                    continue;
+                }
+                let app = entry.path().join("previous.app");
+                if fs::symlink_metadata(&app).is_ok_and(|m| m.is_dir())
+                    && let Some(id) = detect::plist_value(&app, "CFBundleIdentifier")
+                    && app_option(&id).is_some()
+                {
+                    stranded.push(StrandedApp {
+                        staging: entry.path(),
+                        app,
+                        id,
+                    });
                 }
             }
         }
-        let runtime = self.paths.hexbot_home.join("runtime");
-        if let Ok(bytes) = fs::read(runtime.join("native-current.json"))
-            && let Ok(current) = serde_json::from_slice::<serde_json::Value>(&bytes)
-            && let Some(version) = current["version"].as_str().and_then(parse)
-            && track(&version) == Some(offered_track)
-            && let Ok(executable) = self.paths.executable().canonicalize()
-            && current["executable"].as_str().map(Path::new) == Some(executable.as_path())
-            && executable.is_file()
-            && let Ok(native) = runtime.join("native").canonicalize()
-            && executable.starts_with(native)
-        {
-            versions.push(version);
-        }
-        Ok(versions.into_iter().max_by(semver::Version::cmp_precedence))
+        Ok(stranded)
     }
 
     fn app_version(&self, app: &InstalledApp) -> Result<Option<semver::Version>> {
@@ -110,9 +164,17 @@ impl Installer {
     }
 }
 
+/// AppImages are installed only on Linux.
+#[cfg(not(target_os = "linux"))]
+fn appimage_version(_: &Path) -> Result<Option<semver::Version>> {
+    Ok(None)
+}
+
 /// Read electron-builder's embedded desktop metadata directly from SquashFS.
 /// Installer-created .desktop files and custom AppImage filenames can be stale.
+#[cfg(target_os = "linux")]
 fn appimage_version(path: &Path) -> Result<Option<semver::Version>> {
+    use std::io::BufReader;
     let mut file = fs::File::open(path)?;
     let mut prefix = Vec::new();
     // Type 2 AppImages append SquashFS to a small ELF runtime. Limit the search
@@ -159,8 +221,8 @@ fn appimage_version(path: &Path) -> Result<Option<semver::Version>> {
             return Ok(version);
         }
     }
-    fail(format!(
-        "Could not read the installed app version from {}. Nothing was installed.",
+    crate::fail(format!(
+        "Could not read the app version from {}. Delete that file, then run the installer again. Your Hexbot data will be kept. Nothing was installed.",
         path.display()
     ))
 }

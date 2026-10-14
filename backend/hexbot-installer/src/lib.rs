@@ -267,19 +267,32 @@ impl Installer {
     }
 
     pub fn uninstall(&self, remove_data: bool, progress: &mut ProgressCallback<'_>) -> Result<()> {
-        let _install_lock = self.lock_installation()?;
+        let _install_lock = self.lock_installation(progress)?;
         if remove_data {
             self.validate_data_removal()?;
         }
         self.preflight_home_removal()?;
         let installed = self.detect()?;
         self.check_removable(&installed.apps.iter().collect::<Vec<_>>())?;
+        // A killed install can leave the previous app in staging, where it
+        // would still set the version floor for a fresh install.
+        let stranded = self.stranded_apps()?;
+        for app in &stranded {
+            self.require_quit(&app.app)?;
+        }
         if installed.service {
             self.remove_service(progress)?;
         }
         let _daemon_lock = self.stop_daemon()?;
         for app in &installed.apps {
             self.remove_app(app, progress)?;
+        }
+        for app in stranded {
+            progress(Progress::new(
+                "remove",
+                format!("Removing {}.", app.app.display()),
+            ));
+            self.remove_owned_path(&app.staging)?;
         }
         if !self.target.is_macos() {
             for base in ["app.hexbot.desktop", "app.hexbot.client"] {
@@ -329,8 +342,17 @@ impl Installer {
         if self.paths.hexbot_home.exists() {
             let data = self.paths.hexbot_home.canonicalize()?;
             let home = self.paths.home.canonicalize()?;
-            if home.starts_with(data) {
+            if home.starts_with(&data) {
                 return fail("Refusing to remove HOME or one of its parent directories.");
+            }
+            // Deleting a held lock would let the next installer lock a new file.
+            let lock = self.paths.installer_lock(self.target);
+            let resolved = home.join(lock.strip_prefix(&self.paths.home)?);
+            if lock.starts_with(&self.paths.hexbot_home) || resolved.starts_with(&data) {
+                return fail(format!(
+                    "{} also holds the installer lock. Delete the Hexbot data in it yourself.",
+                    self.paths.hexbot_home.display()
+                ));
             }
         }
         Ok(())
@@ -381,7 +403,7 @@ impl Installer {
         verify_file(&download, artifact, option)?;
         // Downloads can overlap. Replacement and receipt publication cannot.
         // Return the lock so apply/change retain it until the receipt is written.
-        let install_lock = self.lock_installation()?;
+        let install_lock = self.lock_installation(progress)?;
         if self.target.is_macos()
             && let Some((id, name)) = identity
         {
@@ -411,7 +433,16 @@ impl Installer {
             progress(Progress::new("extract", "Extracting the daemon."));
             extract_native(&download, &unpacked)?;
             let binary = unpacked.join("hexbot");
-            self.run(&binary, &["setup", "--activate", "--json"], true, progress)?;
+            // The daemon may have activated a newer runtime since the check above.
+            let activation = self.lock_activation(progress)?;
+            self.refuse_downgrade(manifest)?;
+            self.run_holding(
+                &binary,
+                &["setup", "--activate", "--json"],
+                &activation,
+                progress,
+            )?;
+            drop(activation);
             if enable_lan {
                 self.run(&self.paths.executable(), &["lan", "on"], false, progress)?;
                 progress(Progress::new(
@@ -674,11 +705,48 @@ impl Installer {
         json: bool,
         progress: &mut ProgressCallback<'_>,
     ) -> Result<()> {
-        let stderr = tempfile::tempfile()?;
-        let mut child = self
-            .paths
-            .command(executable)
+        let mut command = self.paths.command(executable);
+        command.args(args);
+        self.run_command(command, args, json, progress)
+    }
+
+    /// Run `hexbot setup` while this installer holds the activation
+    /// lock. Setup takes the same lock, so it receives the locked descriptor
+    /// in HEXBOT_ACTIVATION_LOCK_FD and uses it instead of waiting on itself.
+    fn run_holding(
+        &self,
+        executable: &Path,
+        args: &[&str],
+        lock: &fs::File,
+        progress: &mut ProgressCallback<'_>,
+    ) -> Result<()> {
+        use std::os::{fd::AsRawFd, unix::process::CommandExt};
+        let fd = lock.as_raw_fd();
+        let mut command = self.paths.command(executable);
+        command
             .args(args)
+            .env("HEXBOT_ACTIVATION_LOCK_FD", fd.to_string());
+        // Only this child inherits the descriptor; fcntl is async-signal-safe.
+        unsafe {
+            command.pre_exec(move || {
+                if libc::fcntl(fd, libc::F_SETFD, 0) == -1 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+        self.run_command(command, args, true, progress)
+    }
+
+    fn run_command(
+        &self,
+        mut command: Command,
+        args: &[&str],
+        json: bool,
+        progress: &mut ProgressCallback<'_>,
+    ) -> Result<()> {
+        let stderr = tempfile::tempfile()?;
+        let mut child = command
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(stderr.try_clone()?)

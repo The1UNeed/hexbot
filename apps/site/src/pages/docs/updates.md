@@ -54,7 +54,7 @@ A stable install follows the stable track and a nightly install follows the nigh
 
 Dev builds run from a source checkout and do not check for updates.
 
-The [installer](/docs/install/#run-it-again) installs from a track too. A new install uses Stable once it is published and Nightly until then; `--stable` or `--nightly` chooses. Update or repair keeps the installed track and refuses a version older than the highest valid version in the receipt, installed apps, or selected native runtime. The installer rechecks after downloading and holds a shared lock until replacement and receipt writing finish. A fresh install or an explicit track change may install an older version.
+The [installer](/docs/install/#run-it-again) installs from a track too. A new install uses Stable once it is published and Nightly until then; `--stable` or `--nightly` chooses. Update or repair keeps the installed track and refuses a version older than the highest valid version in the receipt, installed apps, or selected native runtime. An app counts for the track of its version, so an app moved to Nightly in Settings does not block Update or repair on Stable. The installer rechecks after downloading and holds a shared lock until replacement and receipt writing finish; a second installer says "Waiting for another Hexbot installer to finish." until then. Headless also waits while the daemon installs an update, then checks again. A fresh install or an explicit track change may install an older version.
 
 ## What an update check sends
 
