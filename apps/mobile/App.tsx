@@ -19,10 +19,7 @@ import {
   ConnectionScreen,
   DaemonSwitcher,
   HomeScreen,
-  ModelPill,
   ModelSummary,
-  ThreadsScreen,
-  ThreadSwitcher,
   type ApprovalChoice,
   type AttachmentView,
   type BotSummary,
@@ -31,7 +28,6 @@ import {
   type DaemonEntry,
   type FaceSource,
   type HomeTab,
-  type SectionSummary,
   type ToolActivity
 } from './src/screens'
 import {
@@ -60,7 +56,7 @@ import { shownRoom } from './src/core/routes'
 import { CONNECT_ORIGIN, parseConnectCallback } from './src/core/links'
 import { clearConnectSession, loadConnectSession, saveConnectSession } from './src/core/storage'
 import { connectGrant, request, RevokedError } from './src/core/transport'
-import type { Bot, ChatTool, ConnectDaemon, Section } from './src/core/types'
+import type { Bot, ChatTool, ConnectDaemon } from './src/core/types'
 WebBrowser.maybeCompleteAuthSession()
 const messageOf = (e: unknown) => (e instanceof Error ? e.message : String(e))
 const ms = (seconds: number | null | undefined) => (seconds == null ? undefined : seconds * 1000)
@@ -69,18 +65,13 @@ const faceOf = (b: Bot): FaceSource =>
   b.face
     ? { name: b.display_name, face: b.face }
     : { name: b.display_name, imageUri: avatarSrc(b.avatar) }
-// The daemon's placeholder name for an untitled section; the app calls it a thread.
-const threadTitle = (s: Section) =>
-  s.title === 'New section' || !s.title ? 'New conversation' : s.title
 const DEMO_BOTS: BotSummary[] = [
   {
     id: 'owl',
     name: 'Owl',
     title: 'Chief of staff',
     description: 'Keeps the calendar, travel and family logistics in order.',
-    latestThread: 'Morning brief',
     preview: 'Your morning brief is ready.',
-    threadCount: 1,
     status: 'needs_you'
   },
   {
@@ -88,9 +79,7 @@ const DEMO_BOTS: BotSummary[] = [
     name: 'Blue',
     title: 'Research',
     description: 'Reads papers and long reports, then says what changed.',
-    latestThread: 'Heat pumps',
     preview: 'I found three papers on your topic.',
-    threadCount: 1,
     status: 'idle'
   },
   {
@@ -98,9 +87,7 @@ const DEMO_BOTS: BotSummary[] = [
     name: 'Fern',
     title: 'Inbox manager',
     description: 'Sorts email, drafts replies and asks before sending anything.',
-    latestThread: 'Inbox sweep',
     preview: 'One draft needs your approval.',
-    threadCount: 1,
     status: 'working',
     activity: 'Sorting 38 emails'
   },
@@ -109,9 +96,7 @@ const DEMO_BOTS: BotSummary[] = [
     name: 'Milo',
     title: 'Developer',
     description: 'Fixes bugs in your projects and runs the tests before it says done.',
-    latestThread: 'Login bug',
     preview: 'The tests pass. Ready to review.',
-    threadCount: 1,
     status: 'idle'
   }
 ]
@@ -147,12 +132,9 @@ function MobileApp() {
   const [roomId, setRoomId] = useState<string | null>(null)
   const [addDaemon, setAddDaemon] = useState(false)
   const [panels, setPanels] = useState<Panel[]>([])
-  const [sectionsOpen, setSectionsOpen] = useState(false)
   const [switcherOpen, setSwitcherOpen] = useState(false)
   const [switching, setSwitching] = useState<string | null>(null)
-  const [creating, setCreating] = useState(false)
   const [demo, setDemo] = useState(false)
-  const [demoChat, setDemoChat] = useState(false)
   const [initialLink, setInitialLink] = useState('')
   const [connectDaemons, setConnectDaemons] = useState<ConnectDaemon[] | null>(null)
   const [connectPending, setConnectPending] = useState(false)
@@ -257,11 +239,10 @@ function MobileApp() {
         setAddDaemon(true)
       }
       if (parsed.hostname === 'bot') {
-        const name = parsed.searchParams.get('name')
-        if (mobileRef.current.bots.some(b => b.name === name)) {
-          mobileRef.current.back()
+        const bot = mobileRef.current.bots.find(b => b.name === parsed.searchParams.get('name'))
+        if (bot) {
           setTab('bots')
-          setBotPage(name)
+          await mobileRef.current.openSection(bot)
         }
       }
     })().catch(e => mobileRef.current.setError(messageOf(e)))
@@ -299,11 +280,6 @@ function MobileApp() {
     } else setQuestion(null)
   }, [firstQuestionId, firstQuestion?.requestId])
   const route = mobile.route
-  // A thread belongs to its bot: leaving the chat lands on that bot's page.
-  const routeBot = route?.kind === 'section' ? route.bot.name : null
-  useEffect(() => {
-    if (routeBot) setBotPage(routeBot)
-  }, [routeBot])
   // A room that opens anywhere, such as right after it is created, shows in Rooms.
   const routeRoom = route?.kind === 'room' ? route.room.id : null
   useEffect(() => {
@@ -315,7 +291,6 @@ function MobileApp() {
   }, [routeRoom])
   useEffect(() => {
     setPanels([])
-    setSectionsOpen(false)
     setSwitcherOpen(false)
     setBotPage(null)
     setRoomId(null)
@@ -347,10 +322,6 @@ function MobileApp() {
         mobile.back()
         return true
       }
-      if (demoChat) {
-        setDemoChat(false)
-        return true
-      }
       if (botPage) {
         setBotPage(null)
         return true
@@ -366,7 +337,7 @@ function MobileApp() {
       return false
     })
     return () => subscription.remove()
-  }, [mobile, demoChat, botPage, addDaemon, demo])
+  }, [mobile, botPage, addDaemon, demo])
   const signIn = async () => {
     setConnectPending(true)
     mobile.setError(null)
@@ -418,7 +389,7 @@ function MobileApp() {
   const attach = async () => {
     if (mobile.route?.kind !== 'section') return
     const sessionId = mobile.liveSessionId()
-    if (!sessionId) throw new Error('Open this thread again before attaching a file.')
+    if (!sessionId) throw new Error('Open this chat again before attaching a file.')
     const asset = await pickFile()
     if (!asset) return
     const image = imageMime(asset.name, asset.mimeType)
@@ -454,33 +425,12 @@ function MobileApp() {
     via: d.kind === 'connect' ? 'connect' : 'lan',
     current: d.id === mobile.active?.id
   }))
-  const threadsOf = (bot: Bot): SectionSummary[] =>
-    mobile.sections
-      .filter(s => s.bot === bot.name && !s.peer_bot)
-      .map(s => ({
-        id: s.id,
-        title: threadTitle(s),
-        preview: s.preview,
-        archived: !!s.archived_at,
-        updatedAt: ms(s.updated_at ?? s.created_at),
-        messageCount: s.message_count,
-        working: bot.status === 'working' && bot.status_detail?.section_id === s.id,
-        unread: !!s.done_at
-      }))
   const bots: BotSummary[] = mobile.bots.map(b => {
-    const open = mobile.sections
-      .filter(s => s.bot === b.name && !s.archived_at && !s.peer_bot)
-      .sort((x, y) => (y.updated_at ?? 0) - (x.updated_at ?? 0))
-    // Quote the newest thread that has something to quote.
-    const latest = open.find(s => s.preview) ?? b.sections_recent?.find(s => s.preview)
     return {
       ...faceOf(b),
       id: b.name,
       title: b.title,
       description: b.description,
-      latestThread: latest?.preview ? threadTitle(latest) : null,
-      preview: latest?.preview || null,
-      threadCount: open.length || b.sections_total,
       activity: b.status_detail?.text,
       status:
         b.status === 'idle' && b.sections_recent?.some(s => s.done_at)
@@ -670,28 +620,6 @@ function MobileApp() {
     mobile.back()
     setPanels([])
   }
-  const startThread = async (bot: Bot) => {
-    setCreating(true)
-    try {
-      const result = await mobile.rpc<{ section: Section }>('hexbot.sections.create', {
-        bot: bot.name
-      })
-      setSectionsOpen(false)
-      await mobile.openSection(bot, result.section)
-      void mobile.refresh().catch(() => {})
-    } finally {
-      setCreating(false)
-    }
-  }
-  const updateModel = (bot: Bot, next: { provider?: string; model?: string; reasoning?: string }) =>
-    act(async () => {
-      await mobile.rpc('hexbot.bots.update', {
-        name: bot.name,
-        ...(next.model !== undefined ? { provider: next.provider, model: next.model } : {}),
-        ...(next.reasoning !== undefined ? { reasoning_effort: next.reasoning || null } : {})
-      })
-      await mobile.refresh()
-    })
   const send = (text: string) => {
     const pending = mobile.chat.questions[0]
     if (pending?.questions[0]) {
@@ -803,7 +731,6 @@ function MobileApp() {
         await mobile.refresh()
       })
   }
-  const pageBot = botPage && !demo ? botByName(botPage) : undefined
   const demoBot = demo && botPage ? DEMO_BOTS.find(b => b.id === botPage) : undefined
   const screen =
     !demo && (!mobile.active || addDaemon) ? (
@@ -845,13 +772,12 @@ function MobileApp() {
         error={mobile.error}
         onDismissError={() => mobile.setError(null)}
       />
-    ) : demo && demoBot && demoChat ? (
+    ) : demoBot ? (
       <ChatScreen
         title={demoBot.name}
         face={{ name: demoBot.name }}
-        sectionTitle={demoBot.latestThread}
         items={DEMO_ITEMS}
-        onBack={() => setDemoChat(false)}
+        onBack={() => setBotPage(null)}
         onSend={() => {}}
         onApprove={() => {}}
         sendDisabledReason="Connect a daemon to chat"
@@ -862,7 +788,6 @@ function MobileApp() {
         title={route.bot.display_name}
         face={faceOf(route.bot)}
         status={route.bot.status}
-        sectionTitle={threadTitle(route.section)}
         intro={
           <View style={{ alignItems: 'center', gap: 4, maxWidth: 320 }}>
             {route.bot.description ? (
@@ -886,75 +811,7 @@ function MobileApp() {
         onOpenSettings={() => {
           if (!uploading) setPanels([{ kind: 'bot', bot: route.bot }])
         }}
-        onOpenSections={() => setSectionsOpen(true)}
-        onNewSection={() => act(() => startThread(route.bot))}
         archived={!!route.section.archived_at}
-      />
-    ) : demoBot ? (
-      <ThreadsScreen
-        bot={demoBot}
-        threads={[
-          {
-            id: 'demo-thread',
-            title: demoBot.latestThread ?? 'Demo',
-            preview: demoBot.preview,
-            messageCount: 2
-          }
-        ]}
-        onBack={() => setBotPage(null)}
-        onOpenThread={() => setDemoChat(true)}
-      />
-    ) : pageBot ? (
-      <ThreadsScreen
-        bot={bots.find(b => b.id === pageBot.name)!}
-        threads={threadsOf(pageBot)}
-        creating={creating}
-        onBack={() => setBotPage(null)}
-        onNewThread={() => act(() => startThread(pageBot))}
-        onOpenThread={id =>
-          act(async () => {
-            const s = mobile.sections.find(s => s.id === id)
-            if (s) await mobile.openSection(pageBot, s)
-          })
-        }
-        onThreadActions={id => {
-          const s = mobile.sections.find(s => s.id === id)
-          if (s)
-            setPanels([
-              { kind: 'section', bot: pageBot, data: s as unknown as Record<string, unknown> }
-            ])
-        }}
-        onUnarchive={id =>
-          act(async () => {
-            await mobile.rpc('hexbot.sections.unarchive', { id })
-            await mobile.refresh()
-          })
-        }
-        onOpenProfile={() => setPanels([{ kind: 'bot', bot: pageBot }])}
-        model={
-          <ModelPill
-            disabled={mobile.connection !== 'connected'}
-            models={mobile.models}
-            onChange={next => updateModel(pageBot, next)}
-            rpc={mobile.rpc}
-            testID="threads-model"
-            value={{
-              provider: pageBot.provider ?? '',
-              model: pageBot.model ?? '',
-              reasoning: pageBot.reasoning_effort ?? ''
-            }}
-          />
-        }
-        error={mobile.error}
-        onDismissError={() => mobile.setError(null)}
-        refreshing={refreshing}
-        onRefresh={() => {
-          setRefreshing(true)
-          void mobile
-            .refresh()
-            .catch(e => mobile.setError(messageOf(e)))
-            .finally(() => setRefreshing(false))
-        }}
       />
     ) : (
       <HomeScreen
@@ -964,9 +821,11 @@ function MobileApp() {
         onTabChange={changeTab}
         bots={demo ? DEMO_BOTS : bots}
         onOpenBot={id => {
-          setDemoChat(false)
-          setBotPage(id)
           if (tab !== 'bots') changeTab('bots')
+          const b = botByName(id)
+          // Each bot has one chat with you; the demo shows a sample one.
+          if (b && !demo) act(() => mobile.openSection(b))
+          else setBotPage(id)
         }}
         onOpenPulse={id => {
           const b = botByName(id)
@@ -981,7 +840,7 @@ function MobileApp() {
             return
           }
           const s = detail?.section_id && mobile.sections.find(s => s.id === detail.section_id)
-          if (b && s) act(() => mobile.openSection(b, s))
+          if (b) act(() => mobile.openSection(b, s || undefined))
           else setBotPage(id)
         }}
         onBotLongPress={
@@ -1168,29 +1027,6 @@ function MobileApp() {
           setRoomId(room.id)
           setBotPage(null)
           changeTab('rooms')
-        }}
-      />
-      <ThreadSwitcher
-        visible={sectionsOpen && route?.kind === 'section'}
-        onClose={() => setSectionsOpen(false)}
-        botName={route?.kind === 'section' ? route.bot.display_name : ''}
-        currentId={route?.kind === 'section' ? route.section.id : undefined}
-        threads={route?.kind === 'section' ? threadsOf(route.bot) : []}
-        onSelect={id => {
-          if (route?.kind === 'section') {
-            setSectionsOpen(false)
-            act(async () => {
-              const s = mobile.sections.find(s => s.id === id)
-              if (s) await mobile.openSection(route.bot, s)
-            })
-          }
-        }}
-        onNew={() => {
-          if (route?.kind === 'section') act(() => startThread(route.bot))
-        }}
-        onShowAll={() => {
-          setSectionsOpen(false)
-          back()
         }}
       />
       <DaemonSwitcher

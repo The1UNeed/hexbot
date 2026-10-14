@@ -1014,8 +1014,22 @@ fn search_sessions(home: &Path, owner: &str, bot: &str, current: &str, p: &Value
         roles: roles.iter().copied().collect::<Vec<_>>().join(","),
     };
     let excluded = if target == bot { current } else { "" };
-    let mut index = recall(home, &key, &roles, excluded)?;
-    let result = answer(&mut index, target, p, excluded);
+    // A bot's chat never ends, so what it summarised away is history to search;
+    // only what came after its latest summary is left out as already in view.
+    let summarised = if excluded.is_empty() {
+        None
+    } else {
+        runtime_store::compaction_summaries(home, excluded, f64::MIN, f64::MAX)?
+            .last()
+            .map(|(at, _)| *at)
+    };
+    let mut index = recall(
+        home,
+        &key,
+        &roles,
+        if summarised.is_some() { "" } else { excluded },
+    )?;
+    let result = answer(&mut index, target, p, excluded, summarised);
     // The cache is best effort: a failure to keep the index never replaces
     // the answer; the next search rebuilds it.
     let _ = store_index(key, index);
@@ -1024,12 +1038,52 @@ fn search_sessions(home: &Path, owner: &str, bot: &str, current: &str, p: &Value
 /// The answer for one asking section: the index minus `excluded`, the section
 /// whose history is already in the asking bot's context. Read from the same
 /// kept rows every section of the bot shares, it is what a rebuild without
-/// that section would give.
-fn answer(index: &mut RecallIndex, target: &str, p: &Value, excluded: &str) -> Result<Value> {
+/// that section would give. A section `summarised` at that time keeps the
+/// messages from before it, which its context holds only as a summary.
+fn answer(
+    index: &mut RecallIndex,
+    target: &str,
+    p: &Value,
+    excluded: &str,
+    summarised: Option<f64>,
+) -> Result<Value> {
+    // How many of the asking section's messages came before its latest summary.
+    let earlier = summarised.and_then(|at| {
+        let session = index.sessions.iter().find(|s| s.id == excluded)?;
+        Some(
+            session
+                .messages
+                .iter()
+                .position(|m| m["timestamp"].as_f64().is_none_or(|t| t >= at))
+                .unwrap_or(session.messages.len()),
+        )
+    });
+    let before = index
+        .sessions
+        .iter()
+        .find(|s| s.id == excluded)
+        .zip(earlier)
+        .map(|(s, count)| RecallSession {
+            id: s.id.clone(),
+            title: s.title.clone(),
+            started: s.started,
+            updated: s.updated,
+            archived: s.archived,
+            version: s.version,
+            messages: s.messages[..count].to_vec(),
+            rowids: s.rowids,
+            bytes: 0,
+        });
     let sessions = index
         .sessions
         .iter()
-        .filter(|s| s.id != excluded)
+        .filter_map(|s| {
+            if s.id == excluded {
+                before.as_ref()
+            } else {
+                Some(s)
+            }
+        })
         .collect::<Vec<_>>();
     let limit = p["limit"].as_u64().unwrap_or(3).clamp(1, 10) as usize;
     let window = p["window"].as_u64().unwrap_or(5).clamp(1, 20) as usize;
@@ -1115,7 +1169,12 @@ fn answer(index: &mut RecallIndex, target: &str, p: &Value, excluded: &str) -> R
     // finish rolls back and releases the savepoint even when MATCH fails.
     let savepoint = index.index.savepoint()?;
     let result = (|| {
-        if let Some(session) = index.sessions.iter().find(|s| s.id == excluded) {
+        if let Some(count) = earlier {
+            savepoint.execute(
+                "DELETE FROM recall WHERE session_id=? AND CAST(message_index AS INTEGER)>=?",
+                params![excluded, count as i64],
+            )?;
+        } else if let Some(session) = index.sessions.iter().find(|s| s.id == excluded) {
             delete_session(&savepoint, session)?;
         }
         answer_matches(&savepoint, &sessions, target, p, query, limit, window)
@@ -1369,7 +1428,7 @@ mod history_index_tests {
                     answer_matches(&fresh.index, &sessions, "owl", &args, "alpha OR beta", 3, 5)
                         .unwrap();
                 assert_eq!(
-                    answer(&mut cached, "owl", &args, "current").unwrap(),
+                    answer(&mut cached, "owl", &args, "current", None).unwrap(),
                     oracle
                 );
                 assert!(cached.index.is_autocommit());
@@ -1391,7 +1450,8 @@ mod history_index_tests {
                     &mut cached,
                     "owl",
                     &json!({"query":"\"unterminated"}),
-                    "current"
+                    "current",
+                    None
                 )
                 .unwrap_err()
                 .code,
@@ -1400,6 +1460,41 @@ mod history_index_tests {
             assert!(cached.index.is_autocommit());
             assert_eq!(scores(&cached.index), before);
         }
+    }
+    #[test]
+    fn a_summarised_chat_searches_what_came_before_its_summary() {
+        let mut chat = session("chat", &["alpha early", "alpha later", "alpha now"]);
+        for (message, at) in chat.messages.iter_mut().zip([10.0, 20.0, 30.0]) {
+            message["timestamp"] = json!(at);
+        }
+        let mut cached = build(vec![session("room", &["beta"]), chat]);
+        let args = json!({"query":"alpha","detail":"full","window":0});
+        let found = |result: Value| {
+            result["results"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .flat_map(|r| r["messages"].as_array().unwrap().clone())
+                .map(|m| m["content"].as_str().unwrap().to_owned())
+                .collect::<Vec<_>>()
+        };
+        // Summarised at 25: the first two are only a summary in context now.
+        let result = answer(&mut cached, "owl", &args, "chat", Some(25.0)).unwrap();
+        assert_eq!(result["count"], 1);
+        assert!(!found(result.clone()).contains(&"alpha now".to_owned()));
+        let read = answer(
+            &mut cached,
+            "owl",
+            &json!({"session_id":"chat"}),
+            "chat",
+            Some(25.0),
+        )
+        .unwrap();
+        assert_eq!(read["message_count"], 2);
+        // Never summarised: the whole chat is in context and left out.
+        let result = answer(&mut cached, "owl", &args, "chat", None).unwrap();
+        assert_eq!(result["count"], 0);
+        assert!(cached.index.is_autocommit());
     }
 
     #[test]

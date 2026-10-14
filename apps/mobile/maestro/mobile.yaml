@@ -26,11 +26,8 @@ env:
     id: bot-row-owl
 - extendedWaitUntil:
     visible:
-      id: threads-new
+      id: chat-input
     timeout: 15000
-- takeScreenshot: threads
-- tapOn:
-    id: threads-new
 - tapOn:
     id: chat-input
 - inputText: Hello from native

@@ -15,7 +15,7 @@ own visual identity. Read `CLAUDE.md` for the words.
    correctly mid-turn: tool calls, approvals, attachments. A bot's words
    appear one finished message at a time, never mid-sentence.
 5. Keyboard first: Enter sends, Shift+Enter newline, Esc stops or closes,
-   Cmd/Ctrl+N new section, Cmd/Ctrl+K quick switcher (milestone 3).
+   Cmd/Ctrl+K quick switcher (milestone 3).
 
 ## Tokens
 
@@ -92,49 +92,36 @@ the roster slides in as a drawer.
 ### Left: roster
 
 - Header: a window-drag strip (padded for the macOS traffic lights) with one
-  row: the search pill and a round glass "+" menu (New bot, New section, New
-  room). No app name. The selected row is a white card on the canvas.
+  row: the search pill and a round glass "+" menu (New bot, New room). No app name. The selected row is a white card on the canvas.
 - List: bots and rooms in one list, ordered by last activity. A bot row is
   its face (40px), name, optional label, and a status dot on the face (see
-  "Status colours"). No times, no message preview: a bot has many
-  sections, so one message says little. A room row is the room's cluster
+  "Status colours"). No times and no message preview. A pencil replaces the
+  status tag while the bot's chat holds an unsent draft. A room row is the room's cluster
   (one face, or up to four in a 2x2 grid), name, latest message, and the
   same status dot. Both rows end in a status tag while it applies: a purple
-  "Waiting" (question-mark icon) or a blue "Working" (wrench). A section
-  row shows only "Waiting"; "Working" there would be noise.
-- Under each bot: its two most recent touched sections from the last 14
-  days, newest first, plus the open one. A section row is one line: its
-  title and the status tag. The title is the first message until the bot
-  names the section with its tool; it changes the moment you send, and a
-  rename fades in where the old title was. A section is touched once the user
-  has sent something in it, or typed a draft in its composer; drafts are
-  kept per section in the browser and the row shows a pencil until the text
-  is sent. Untouched sections and older ones stay behind "More", which lists
-  everything with untouched sections last.
-  A bot with nothing to list is just its row; there is no fold toggle.
+  "Waiting" (question-mark icon) or a blue "Working" (wrench).
+- A bot is one row: each bot has one chat with you, like a contact in a
+  messaging app. Clicking the row opens it; the daemon makes it on first use.
+  There are no section rows, no "More", and no archive.
 - Bottom: the current user with a connection dot on their avatar and a
-  settings gear. Archived sections are not listed here; they live in
-  Settings, Archive.
-- Selection: one section is active, or the bot row is filled when its open
-  section is not listed. Clicking a bot row starts fresh: it opens the bot's
-  newest untouched section, or creates one. The header "+" menu also creates
-  a section for the open bot.
+  settings gear.
+- Selection: the open bot's row or the open room's row is filled.
 
 ### Centre: conversation
 
 - Header: nothing but floating glass over the transcript, which scrolls
   under it. In the centre, a pill with the bot's face (status dot on it,
-  bobbing while it works), its name, and the section title in muted text;
-  clicking it opens or closes the side panel. Top right, round glass buttons for section actions (Rename,
-  Archive, Delete) and, while the panel is closed, the panel toggle. The
+  bobbing while it works) and its name; clicking it opens or closes the side
+  panel. Top right, the context meter and, while the panel is closed, the
+  panel toggle. A chat has no title, rename, archive or delete. The
   model is chosen in Bot settings, Model, not in the chat.
-- Context meter: left of the section actions, a glass pill with a 28 px
+- Context meter: a glass pill with a 28 px
   hairline bar and "Context 62%" in meta type, muted; a tick on the bar marks
   where older messages get summarised. Hover or focus (the pill is in the tab
   order) for the plain numbers ("41k of 200k tokens. Older messages are
   summarised above 184k tokens.") in a solid tooltip, so the conversation
   never shows through it. Within 15% of that point the pill turns warning and the tooltip
-  asks for a new section; while Hexbot summarises it reads "Summarising", and
+  says summarising starts soon; while Hexbot summarises it reads "Summarising", and
   right after, until the next reply is measured, a neutral "Context" with
   "Recounting after the summary." Nothing is drawn until the daemon has
   measured the section (`hexbot.sections.open`, `session.usage`), and nothing
@@ -288,11 +275,11 @@ nested inside a card and no row carries more than one line of explanation.
 
 - Route `/b/$bot/settings/$tab`, rendered in the shared shell over the
   three columns; the bot's face and name sit at the top of the tab list.
-  Closing returns to the section that was open. `?connector=<id>` opens
+  Closing returns to the chat that was open. `?connector=<id>` opens
   that connector's set-up sheet, which is how a "Fix Notion" action in the
   chat lands here.
 - Tabs in three groups: Profile, Soul, Model; Abilities (Memory, Tools,
-  Connectors, Skills); Manage (Approvals, Sections, Advanced).
+  Connectors, Skills); Manage (Approvals, Advanced).
 - Tabs: Profile (face, name, label, description), Soul
   (full-height editor, template menu with a confirm, word count), Model
   (configured providers only, the provider's model list with the
@@ -303,8 +290,7 @@ nested inside a card and no row carries more than one line of explanation.
   Computer, Senses, Working with others, plus the working directory),
   Connectors (below), Skills (installed skills with switches, grouped by
   category), Approvals (Inherit, Manual, Auto, and Bypass),
-  Sections (open and
-  archived, with archive and delete), Advanced (Delete bot with the
+  Advanced (Delete bot with the
   type-the-name confirmation).
 - Connectors: a search pill, filter chips (All, On for this bot, Needs
   setup), and rows grouped as Search and browsing, Images and voice,
@@ -351,7 +337,7 @@ nested inside a card and no row carries more than one line of explanation.
 ### Settings (the shared shell, global tabs)
 
 Tabs in four groups: Models (Providers, Usage), Devices (Network, Hex
-Connect), You (Memory, Archive, Approvals, Appearance), App (Updates,
+Connect), You (Memory, Approvals, Appearance), App (Updates,
 About). A daemon belongs to one person, so there is no Users tab; Memory
 starts with your name, the one Get Started asked for.
 
@@ -363,11 +349,6 @@ starts with your name, the one Get Started asked for.
 - Network: "Allow other devices on this network" switch, the addresses
   while it is on, a Paired devices card with Revoke and "Create link", and
   the pairing card (code, QR, link, Copy) once a link exists.
-- Archive: every archived section, newest first, grouped This week, Last
-  week, then by month. A search pill matches titles, first messages, and bot
-  names; a chip per bot narrows the list; on wide windows a rail on the right
-  jumps between groups. Each row shows the bot's face, title, bot, message
-  count, first message, and the archive date; hovering shows Open and Restore.
 - Approvals: "Choose when Hexbot asks before a bot acts. Bots and rooms can
   override it." Modes Manual, Auto, and Bypass, one row each;
   a notice when the daemon has no OS sandbox.

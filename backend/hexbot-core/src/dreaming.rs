@@ -309,8 +309,8 @@ fn consume_proposals(home: &Path, bot: &str, dream: &str, ids: &[&str]) -> Resul
 }
 
 /// Return bounded transcripts, newest conversations first when a busy day exceeds one prompt.
-/// Archived sections remain part of durable learning. The bot's own Dreams
-/// section is the dream's output, not its input, and tool results are left out:
+/// Archived sections remain part of durable learning. Earlier dream reports in
+/// the chat are the dream's output, not its input, and tool results are left out:
 /// the dream learns from what the user and the bot said, not from fetched pages.
 /// Another bot's reply through message_bot is speech, so it stays.
 /// Activity is restricted to [since, until), where until is this dream's start.
@@ -353,11 +353,9 @@ pub fn build_digest(
         } else {
             None
         };
-        // Every surface knows the dream log by its title, as `post_summary` does;
-        // a section the user titled "Dreams" is already that log to the app.
         for section in common::rows(
             &conn,
-            "SELECT id,title FROM sections WHERE bot=? AND COALESCE(title,'')<>'Dreams' ORDER BY created_at,id",
+            "SELECT id,title FROM sections WHERE bot=? ORDER BY created_at,id",
             &[&bot],
         )? {
             let id = section["id"].as_str().unwrap_or("");
@@ -384,6 +382,7 @@ pub fn build_digest(
                     let at = message["timestamp"].as_f64().unwrap_or(0.0);
                     if at < since
                         || at >= until
+                        || message["dream"] == true
                         || message["role"] == "tool" && message["name"] != "message_bot"
                     {
                         continue;
@@ -1086,27 +1085,17 @@ impl Dreaming {
             }
         }
     }
+    /// The report goes into the bot's chat, marked so later dreams skip it.
+    /// It is shown, not said: the bot's conversation does not include it.
     async fn post_summary(&self, owner: &str, bot: &str, output: &str) -> Result<()> {
-        let section = {
-            let mut conn = db::open(&self.home)?;
-            let tx = conn.transaction()?;
-            let existing:Option<String>=tx.query_row("SELECT id FROM sections WHERE bot=? AND owner_id=? AND title='Dreams' ORDER BY created_at LIMIT 1",params![bot,owner],|r|r.get(0)).optional()?;
-            let id = if let Some(id) = existing {
-                id
-            } else {
-                let id = common::id();
-                let now = common::now();
-                tx.execute("INSERT INTO sections(id,bot,title,owner_id,created_at,updated_at) VALUES (?,?,'Dreams',?,?,?)",params![id,bot,owner,now,now])?;
-                id
-            };
-            tx.commit()?;
-            id
-        };
-        self.runtime.close_stored(owner, &section).await?;
+        let chat = crate::catalog::chat_section(&self.home, owner, bot)?;
+        let section = common::required(&chat, "id")?;
+        // An idle chat closes so open clients load the report; a busy one shows it next time.
+        self.runtime.close_if_quiet(owner, section).await?;
         runtime_store::append(
             &self.home,
-            &section,
-            json!({"role":"assistant","text":output,"timestamp":common::now()}),
+            section,
+            json!({"role":"assistant","text":output,"dream":true,"timestamp":common::now()}),
         )?;
         db::open(&self.home)?.execute(
             "UPDATE sections SET updated_at=? WHERE id=?",

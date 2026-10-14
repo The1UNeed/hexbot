@@ -5,7 +5,7 @@ description: Build the Hexbot Expo app for iPhone and Android and connect to you
 ---
 
 The Expo app in `apps/mobile` runs on iOS and Android. Its controls cover bots,
-threads, rooms, approvals, models, memory, scheduled jobs and paired
+their chats, rooms, approvals, models, memory, scheduled jobs and paired
 devices.
 Bots run on your daemon's computer while your phone is asleep.
 
@@ -51,12 +51,11 @@ the phone from Devices returns it to pairing.
 
 ## Control a daemon
 
-Bots lists each bot with its role and description. Open a bot to see its
-threads, start a new conversation, or change its bot settings. Each thread is a
-separate conversation with its own context. Tap the model under New
-conversation to pick the bot's model and thinking level from the providers you
-have connected; it shows the level the model actually runs at. Existing threads
-following its defaults also change when idle; threads with overrides keep them.
+Bots lists each bot with its role and description. Tap a bot to open your chat
+with it; each bot has one, which keeps going. Long-press a bot, or use the
+button at the top right of the chat, for its settings, where you pick its model
+and thinking level from the providers you have connected. A new model applies
+from the chat's next message.
 
 Rooms shows one room at a time, with a switcher when you have several. Daemon shows what your bots are doing now and
 opens settings, models, connectors, skills, jobs, About you, usage, bot
@@ -64,14 +63,14 @@ activity, devices, network, Hex Connect and updates. Settings and
 editors open as cards over the screen you came from. One person owns the daemon; paired devices access that person’s bots and rooms.
 
 A room opens at its latest messages; Show earlier messages loads older ones.
-Rooms take messages while bots work. A thread takes one at a time, so Stop
+Rooms take messages while bots work. A bot's chat takes one at a time, so Stop
 replaces Send until its bot finishes. Removing a room's last bot deletes the
 room, and the app asks first.
 
 Job details show the last status, error and up to 12,000 characters of output
 saved on the daemon. Attachments can be sent without text. The app asks the bot
 to review the files and keeps attachment chips until the send succeeds. A
-message carries only the files picked for it, and files picked for a thread you
+message carries only the files picked for it, and files picked for a chat you
 leave without sending are removed from the daemon. Older
 daemons show an update notice for unavailable attachment or job controls. The app does not provide push notifications
 or computer power controls. For development checks and native simulator flows,

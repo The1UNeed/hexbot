@@ -50,8 +50,6 @@ export interface ChatScreenProps {
   face?: FaceSource
   members?: FaceSource[]
   status?: BotStatus
-  /** The open conversation's title, under the name. */
-  sectionTitle?: string | null
 
   /** The transcript, oldest first. */
   items: ChatItem[]
@@ -75,9 +73,6 @@ export interface ChatScreenProps {
   sendDisabledReason?: string | null
 
   onBack: () => void
-  /** Opens the conversation picker from the title. */
-  onOpenSections?: () => void
-  onNewSection?: () => void
   onOpenSettings?: () => void
 
   onApprove: (requestId: string, choice: ApprovalChoice) => void
@@ -99,43 +94,29 @@ export interface ChatScreenProps {
   onOpenTool?: (tool: ToolActivity) => void
   /** Opens a visual item from the transcript. */
   onOpenVisual?: (id: string) => void
-  /** Under the empty state of a new thread, such as the model it will use. */
+  /** Under the empty state of a new chat, such as the model it will use. */
   intro?: ReactNode
 }
 
 type Entry = ChatItem | { id: string; kind: 'waiting' }
 
 /**
- * One conversation: a bot section or a room. Bot messages sit on soft grey
+ * One conversation: a bot's chat or a room. Bot messages sit on soft grey
  * bubbles on the left, yours on ink bubbles on the right. Tool use folds into
  * one quiet line per run, and approvals stop the transcript with a card.
  */
 export function ChatScreen(props: ChatScreenProps) {
-  const {
-    face,
-    members,
-    onBack,
-    onNewSection,
-    onOpenSections,
-    onOpenSettings,
-    sectionTitle,
-    status,
-    title
-  } = props
-  const theme = useTheme()
+  const { face, members, onBack, onOpenSettings, status, title } = props
   const room = !!members
 
   const header = (
-    <Pressable
-      accessibilityHint={onOpenSections ? 'Switch to another thread' : undefined}
-      accessibilityLabel={sectionTitle ? `${title}, ${sectionTitle}` : title}
-      accessibilityRole={onOpenSections ? 'button' : 'header'}
-      disabled={!onOpenSections}
-      onPress={onOpenSections}
-      style={({ pressed }) => [styles.titleButton, { opacity: pressed ? 0.6 : 1 }]}
+    <View
+      accessibilityLabel={title}
+      accessibilityRole="header"
+      style={styles.titleButton}
       testID="chat-title"
     >
-      <Glass interactive={!!onOpenSections} radius={24} style={styles.titlePill}>
+      <Glass radius={24} style={styles.titlePill}>
         {room ? (
           <RoomFace members={members} name={title} size={30} status={status} />
         ) : (
@@ -145,15 +126,9 @@ export function ChatScreen(props: ChatScreenProps) {
           <Text numberOfLines={1} variant="subhead">
             {title}
           </Text>
-          {sectionTitle ? (
-            <Text maxFontSizeMultiplier={1.2} numberOfLines={1} tone="muted" variant="caption">
-              {sectionTitle}
-            </Text>
-          ) : null}
         </View>
-        {onOpenSections ? <Ionicons color={theme.muted} name="chevron-down" size={14} /> : null}
       </Glass>
-    </Pressable>
+    </View>
   )
 
   return (
@@ -164,16 +139,6 @@ export function ChatScreen(props: ChatScreenProps) {
         testID="chat-bar"
         trailing={
           <>
-            {onNewSection ? (
-              <IconButton
-                accessibilityLabel="New conversation"
-                icon="create-outline"
-                iconSize={21}
-                onPress={onNewSection}
-                testID="chat-new-section"
-                variant="glass"
-              />
-            ) : null}
             {onOpenSettings ? (
               <IconButton
                 accessibilityLabel={room ? 'Room settings' : `Edit ${title}`}
@@ -240,7 +205,7 @@ export function ChatBody(
             <BotFace {...(face ?? { name: title })} mood="happy" name={title} size={88} />
           )}
           <Text align="center" variant="headline">
-            {room ? `Say hello to ${title}` : `New thread with ${title}`}
+            {`Say hello to ${title}`}
           </Text>
           {room ? (
             <Text align="center" tone="muted" variant="callout">
@@ -298,7 +263,7 @@ export function ChatBody(
       {archived ? (
         <View style={[styles.archived, { paddingBottom: bottom }]} testID="chat-archived">
           <Text style={styles.archivedText} tone="muted" variant="callout">
-            {room ? 'This room is archived.' : 'This thread is archived.'}
+            {room ? 'This room is archived.' : 'This chat is archived.'}
           </Text>
           {props.onUnarchive ? (
             <Button

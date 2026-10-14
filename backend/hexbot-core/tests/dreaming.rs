@@ -130,7 +130,7 @@ fn digest_preserves_archived_sources_filters_time_and_caps_unicode() {
     );
 }
 #[tokio::test]
-async fn dreams_use_restricted_tools_persist_snapshots_and_reuse_the_dreams_section() {
+async fn dreams_use_restricted_tools_persist_snapshots_and_report_in_the_chat() {
     let home = setup();
     let hub = EventHub::new();
     let mut receiver = hub.subscribe();
@@ -148,16 +148,21 @@ async fn dreams_use_restricted_tools_persist_snapshots_and_reuse_the_dreams_sect
         assert_eq!(changed["dream"]["memory_before"], "before");
         assert_eq!(changed["dream"]["memory_after"], "before");
     }
+    // Reports go into the bot's one chat, marked as reports.
     let rows = common::rows(
         &db::open(home.path()).unwrap(),
-        "SELECT id FROM sections WHERE title='Dreams'",
+        "SELECT id FROM sections",
         &[],
     )
     .unwrap();
     assert_eq!(rows.len(), 1);
-    let history = runtime_store::history(home.path(), rows[0]["id"].as_str().unwrap()).unwrap();
+    let history = runtime_store::history(home.path(), "chat").unwrap();
     assert_eq!(history.len(), 2);
-    assert!(history.iter().all(|m| m["role"] == "assistant"));
+    assert!(
+        history
+            .iter()
+            .all(|m| m["role"] == "assistant" && m["dream"] == true)
+    );
     dreams.shutdown().await;
     runtime.shutdown().await;
 }
@@ -817,18 +822,17 @@ async fn paired_clients_manage_jobs_through_the_same_owner_scoped_scheduler() {
     );
 }
 
-/// The Dreams section is the dream's output, and fetched pages are not what
-/// the user or the bot said; neither feeds the next dream. A teammate's reply
-/// through message_bot still does.
+/// Dream reports in the chat are the dream's output, and fetched pages are not
+/// what the user or the bot said; neither feeds the next dream. A teammate's
+/// reply through message_bot still does.
 #[test]
-fn digest_skips_the_dreams_section_and_tool_results() {
+fn digest_skips_dream_reports_and_tool_results() {
     let home = setup();
     let h = home.path();
-    db::open(h).unwrap().execute("INSERT INTO sections(id,bot,owner_id,title,created_at,updated_at) VALUES ('dreams','owl','alice','Dreams',0,0)", []).unwrap();
     runtime_store::append(
         h,
-        "dreams",
-        json!({"role":"assistant","text":"Yesterday I learned the user likes tea","timestamp":200}),
+        "chat",
+        json!({"role":"assistant","text":"Yesterday I learned the user likes tea","dream":true,"timestamp":200}),
     )
     .unwrap();
     runtime_store::append(

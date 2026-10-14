@@ -12,7 +12,6 @@ import { MemoryTab } from './memory'
 import { ModelTab } from './model'
 import { PersonaTab } from './persona'
 import { ProfileTab } from './profile'
-import { SectionsTab } from './sections'
 import { errorText } from './shared'
 import { SkillsTab } from './skills'
 import { ToolsTab } from './tools'
@@ -26,7 +25,6 @@ export const BOT_SETTINGS_TABS = [
   'connectors',
   'skills',
   'approvals',
-  'sections',
   'advanced'
 ] as const
 
@@ -40,7 +38,6 @@ export const TAB_LABELS: Record<BotSettingsTab, string> = {
   model: 'Model',
   persona: 'Soul',
   profile: 'Profile',
-  sections: 'Sections',
   skills: 'Skills',
   tools: 'Tools'
 }
@@ -110,7 +107,6 @@ export function BotSettingsPanel({
       {tab === 'connectors' && <ConnectorsTab bot={bot} initialConnector={connector} />}
       {tab === 'skills' && <SkillsTab bot={bot} onSave={save} />}
       {tab === 'approvals' && <ApprovalsTab bot={bot} onSave={save} />}
-      {tab === 'sections' && <SectionsTab botName={bot.name} />}
       {tab === 'advanced' && <AdvancedTab bot={bot} onDelete={remove} />}
       {error ? (
         <p className="mt-6 text-[length:var(--text-secondary)] text-danger" role="alert">

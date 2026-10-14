@@ -14,12 +14,9 @@ export interface BotSummary extends FaceSource {
   title?: string | null
   /** What the bot is for, in the owner's words. */
   description?: string | null
-  /** Title of the latest thread, shown with `preview`. */
-  latestThread?: string | null
-  threadCount?: number | null
   /** What the bot is doing now, such as "Reading 14 sources". */
   activity?: string | null
-  /** Last thing said in its latest conversation. */
+  /** Something said in its chat, quoted on its card. */
   preview?: string | null
   updatedAt?: number | null
   status?: BotStatus
@@ -62,20 +59,6 @@ export interface DaemonOverview {
   platform?: string | null
   /** Shown as a line under the name, such as "3 bots working". */
   detail?: string | null
-}
-
-/** One thread with a bot. The daemon calls it a section; each is its own Pi session. */
-export interface SectionSummary {
-  id: string
-  title: string
-  preview?: string | null
-  updatedAt?: number | null
-  archived?: boolean
-  messageCount?: number | null
-  /** The bot is working in this thread now. */
-  working?: boolean
-  /** The bot finished here and you have not looked yet. */
-  unread?: boolean
 }
 
 export interface ToolActivity {

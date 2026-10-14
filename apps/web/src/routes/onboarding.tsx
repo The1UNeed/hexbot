@@ -86,9 +86,9 @@ export function initialOnboardingStep(input: {
 }
 
 /**
- * Where onboarding ends for someone who already has bots: the section they
- * were in, else any bot's latest section, else a new section on the first
- * bot. Null when there are no bots yet.
+ * Where onboarding ends for someone who already has bots: the chat they were
+ * in, else the chat of a bot they have talked to, else the first bot's chat.
+ * Null when there are no bots yet.
  */
 export async function landingSection(bots: Bot[]): Promise<LastSection | null> {
   if (!bots.length) {

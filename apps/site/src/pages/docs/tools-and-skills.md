@@ -4,7 +4,7 @@ title: Tools, connectors, and skills
 description: Configure local tools, outside services, MCP servers, and skills for a Hexbot bot.
 ---
 
-Tools let a bot act, connectors give it access to outside services, and skills tell it how to carry out particular work. Configure these per bot, then start a new section to use the changed tools and connectors.
+Tools let a bot act, connectors give it access to outside services, and skills tell it how to carry out particular work. Configure these per bot. Changed tools and connectors apply from your next message in the bot's chat; that one reply costs more than usual because it cannot reuse the provider's prompt cache.
 
 ## Local tools
 
@@ -31,7 +31,7 @@ The **Working directory** is the bot's workspace. Choose a project folder outsid
 
 Open Bot settings, Connectors to configure web search, cloud browser, image and video generation, premium voice, Notion, Home Assistant, and other available services. The [tool catalog](/tools/) lists the capabilities.
 
-You set up a connector by choosing its provider and entering the requested credentials. Each bot has its own on/off switch. A connector must be ready and enabled for that bot before its tools appear in a new section.
+You set up a connector by choosing its provider and entering the requested credentials. Each bot has its own on/off switch. A connector must be ready and enabled for that bot before its tools appear in the bot's chat.
 
 **Connected** means an authenticated probe answered. **Key saved** means Hexbot stored the key but has not verified it with a live probe. Use the connector's test action if a service stops working, and check its reported error before replacing credentials.
 
@@ -41,7 +41,7 @@ Your model provider and your connectors may bill separately. A model subscriptio
 
 Add a server in Bot settings, Connectors. Enter a name and a **Command or URL**. A command launches a local server on the daemon computer; an HTTP URL connects to a remote server. Make sure the local command and its dependencies exist on that computer.
 
-Hexbot registers the server for the daemon and gives each bot an enable switch. Start a new section after adding or enabling it. Removing a server removes it for the deployment, so check whether another bot uses it first.
+Hexbot registers the server for the daemon and gives each bot an enable switch. The bot's chat can use it from your next message after you add or enable it. Removing a server removes it for the deployment, so check whether another bot uses it first.
 
 Use the server's own instructions for credentials and permissions. Its tools can act on the account you give it, and outside-service calls follow that service's rules. The workspace sandbox describes local commands; it does not limit what an authenticated service can do in its own account.
 
@@ -51,4 +51,4 @@ Every bot draws on one shared skill library: the skills bundled with Hexbot plus
 
 A skill a bot writes for itself stays private to that bot. You can share a private skill from a bot into the library. A skill can guide a workflow, but it does not supply credentials or make a disabled tool available.
 
-A new section lists each skill's name and description, and the bot reads the full instructions only when it needs them. Turning a skill off or editing it takes effect the next time a bot reads it, even in open sections; a skill added later appears in new sections. Read a skill's instructions before relying on it for unattended work.
+The chat lists each skill's name and description, and the bot reads the full instructions only when it needs them. Turning a skill off or editing it takes effect the next time a bot reads it; a skill added later appears in the list after the chat next summarises older messages. Read a skill's instructions before relying on it for unattended work.

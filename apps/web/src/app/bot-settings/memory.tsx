@@ -648,7 +648,7 @@ export function DreamingBlock({
 
     setStatus(nextStatus)
     setDreams(result.dreams)
-    // The daemon creates the Dreams section on its own, without a sections event.
+    // A first dream can make the bot's chat on its own, without a sections event.
     void sectionsActions().refresh()
   }, [bot.name])
 
@@ -681,7 +681,8 @@ export function DreamingBlock({
     }
   }
 
-  const dreamsSection = useSectionsForBot(bot.name).find(section => section.title === 'Dreams')
+  // Reports are posted in the bot's chat.
+  const chat = useSectionsForBot(bot.name).find(section => !section.archived_at)
 
   const when = (text: string) => (
     <span className="text-[length:var(--text-secondary)] text-muted">{text}</span>
@@ -735,7 +736,7 @@ export function DreamingBlock({
                   onRestored(memoryMd)
                   void load().catch(cause => setError(errorText(cause)))
                 }}
-                sectionId={dreamsSection?.id}
+                sectionId={chat?.id}
               />
             ))}
           </ul>

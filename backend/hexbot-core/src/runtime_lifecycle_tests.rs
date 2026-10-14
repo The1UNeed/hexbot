@@ -3773,7 +3773,7 @@ fn connected_tool_notices_name_the_bot_in_plain_words() {
     );
     assert_eq!(
         notice("Fox", "MCP tools are only reachable from the codemode or tool_search tool, but neither is active; they cannot be called.").unwrap(),
-        "Fox can't use connected tools in this section. Start a new section to use them."
+        "Fox can't use connected tools here."
     );
     assert_eq!(
         notice(

@@ -399,11 +399,9 @@ export function sectionsThread(bot: string, peer: string): Promise<{ section: Se
   return rpcCall<{ section: Section | null }>('hexbot.sections.thread', { bot, peer })
 }
 
-export function sectionsCreate(bot: string, title?: string): Promise<{ section: Section }> {
-  return rpcCall<{ section: Section }>(
-    'hexbot.sections.create',
-    title === undefined ? { bot } : { bot, title }
-  )
+/** A bot's one chat with you; the daemon makes it on first use. */
+export function sectionsCreate(bot: string): Promise<{ section: Section }> {
+  return rpcCall<{ section: Section }>('hexbot.sections.create', { bot })
 }
 
 export interface SectionOpened {
@@ -417,22 +415,6 @@ export interface SectionOpened {
 
 export function sectionsOpen(id: string): Promise<SectionOpened> {
   return rpcCall<SectionOpened>('hexbot.sections.open', { id })
-}
-
-export function sectionsRename(id: string, title: string): Promise<{ section: Section }> {
-  return rpcCall<{ section: Section }>('hexbot.sections.rename', { id, title })
-}
-
-export function sectionsArchive(id: string): Promise<{ section: Section }> {
-  return rpcCall<{ section: Section }>('hexbot.sections.archive', { id })
-}
-
-export function sectionsUnarchive(id: string): Promise<{ section: Section }> {
-  return rpcCall<{ section: Section }>('hexbot.sections.unarchive', { id })
-}
-
-export function sectionsDelete(id: string, purgeMemory = true): Promise<{ deleted: boolean }> {
-  return rpcCall<{ deleted: boolean }>('hexbot.sections.delete', { id, purge_memory: purgeMemory })
 }
 
 export function sectionsMarkRead(id: string): Promise<{ section: Section }> {

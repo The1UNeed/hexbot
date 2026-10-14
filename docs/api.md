@@ -18,7 +18,7 @@ data model. The native transport and event projection live in
 | bot model | profile `model` + `provider` |
 | avatar | profile asset `avatar`; a face picked in an app also in `assets/face.json` |
 | bot memory | profile `memories/MEMORY.md` (the core `USER.md` target is off) |
-| history search | in-memory FTS5 index over the bot's sections, refreshed as history changes (`native_history_versions` in `hexbot-runtime.db`); the asking section is excluded from results and BM25 statistics; cache budget counts retained JSON and allocated SQLite pages |
+| history search | in-memory FTS5 index over the bot's sections, refreshed as history changes (`native_history_versions` in `hexbot-runtime.db`); the asking section is excluded from results and BM25 statistics, except that a chat Pi has compacted keeps its messages from before the latest compaction; cache budget counts retained JSON and allocated SQLite pages |
 | About you | `~/.hexbot/users/<owner_id>/user.md`, injected every turn by the hexbot plugin |
 
 ## Core methods the client calls directly
@@ -40,8 +40,9 @@ data model. The native transport and event projection live in
   before reading or uploading. WebSocket frames and in-flight request bytes
   are capped at 64 MiB per connection.
 - Approvals: `approval.respond {session_id, request_id, choice}`
-  with `choice` in `once | session | deny`. `session` quiets the same kind
-  of request for the rest of the section; nothing persists across sections.
+  with `choice` in `once | session | deny`. `session` ("Allow for now")
+  quiets the same kind of request until the section's Pi session restarts;
+  nothing persists.
   Requests raised by the daemon offer `once | deny` only. Delegates and
   background sections cannot wait for approval; actions that need it are
   refused. Opening a section re-emits its pending approval. Questions arrive as `clarify.request` and
@@ -178,6 +179,13 @@ inside the Hexbot home, symlinks included.
 
 ### Sections
 
+A bot has one chat with its owner: the one section of that bot with no
+`peer_bot`. The other sections are threads (`peer_bot` set). Rooms keep their
+conversations in `room_sessions`, not here. On start the daemon keeps one chat
+per bot (`catalog::one_chat_per_bot`): for a bot with several, the one with
+something said, not archived, not titled `Dreams`, newest first, and deletes
+the others with their history.
+
 Section shape: `{id, bot, title, title_by: "bot" | null, created_at,
 updated_at, archived_at | null, done_at | null, preview, message_count,
 live_session_id | null, peer_bot | null}`
@@ -185,10 +193,9 @@ live_session_id | null, peer_bot | null}`
 `peer_bot` is set on a thread: the private conversation in which `peer_bot`
 asked `bot` for help through `message_bot`.
 
-`title_by` is `"bot"` when the daemon named the section, either from the
-first prompt or through the bot's `hexbot_rename_section` tool; a user rename
-clears it. `preview` is the first user message, also returned by `open`. The
-roster shows only the title.
+`title_by` is `"bot"` when the daemon named the section from the first
+prompt; a user rename clears it. Clients do not show chat titles. `preview`
+is the first user message, also returned by `open`.
 
 - `hexbot.sections.list {bot?, include_archived?, include_threads?}` →
   `{sections: [Section]}`. Threads are left out unless `include_threads` is
@@ -197,11 +204,9 @@ roster shows only the title.
   as soon as `prompt.submit` accepts it, before the bot replies. The
   `General` section created with a bot, and any name the user or bot set, are
   kept.
-- `hexbot.sections.create {bot, title?}` → `{section: Section}` (calls
-  `session.create {profile: bot, close_on_disconnect: false}`, records the
-  stored id). `title` is passed to the core only when given; an untitled
-  core session is what its auto-titler names from the first prompt, and the
-  row shows `New section` until then.
+- `hexbot.sections.create {bot}` → `{section: Section}`: the bot's chat,
+  made titled `General` on first use. An archived chat comes back. A `title`
+  from an older client is ignored.
 - `hexbot.sections.thread {bot, peer}` → `{section: Section | null}`: the
   caller's thread on `bot` whose sender is `peer`. It never creates one.
 - `hexbot.sections.open {id}` → `{section: Section, messages: [Message],
@@ -234,6 +239,8 @@ context of its own; the meter belongs to bot sections.
 - `hexbot.sections.rename {id, title}` → `{section: Section}`
 - `hexbot.sections.archive {id}` / `hexbot.sections.unarchive {id}` → `{section}`
 - `hexbot.sections.delete {id, purge_memory?: true}` → `{deleted: true}`
+  Current clients offer none of these three for a chat; they stay for older
+  clients. The next `create` brings a deleted chat back empty.
   (closes the live session, `session.delete` on the stored row). With
   `purge_memory: false` only the Hexbot row goes and the core transcript
   is left in place. The bot's memory is not touched either way.
@@ -385,15 +392,10 @@ continuation within the active run defers refresh until another compaction.
 The refreshed prompt is saved only once the extension adopts it, so idle
 retirement and daemon restart never reopen a section on a discarded refresh.
 Older sections and those whose fixed guidance or tool layout no longer matches
-after an update keep their prompt. The chat
+after an update keep their prompt, except a chat, which is rebuilt with its
+bot's current tools at its next message. The chat
 shows a "Soul updated" mark under the bubble, as it shows "Memory updated"
 for the builtin memory tool and "Note added" for its `note` action.
-
-The `hexbot_rename_section {title}` tool (toolset `hexbot-section`, kept on
-the same way) renames the section the bot is speaking in, up to 60
-characters, and broadcasts `hexbot.sections.changed`. It refuses in rooms and
-in the Dreams section. The roster and the conversation header fade the new
-title in where the old one was.
 
 The `hexbot_show_html {title, html}` tool shows a visual: one self-contained
 HTML page (a chart, table, diagram or mockup) drawn in the conversation. It
@@ -541,7 +543,11 @@ keep their stored prompts and tool definitions. The former shared-session
 About you repair is removed because every section now belongs to the owner.
 
 New sections freeze connected server names and reach tools through Pi's codemode.
-Saved sections keep their frozen Rust bridge tools, including SSE. New sections
+Saved sections keep their frozen Rust bridge tools, including SSE. A chat is
+the exception: when its bot's tools, connected servers or Hexbot's tool layout
+differ from what it froze, its next input rebuilds its tools and prompt and
+restarts its process on the same conversation, keeping its model, thinking
+level and directory. That request misses the prompt cache once. New sections
 skip existing SSE entries and emit an owner-scoped `warning` with `{section_id,
 room_id, message}`, once per bot/server for each daemon run. Room notices name
 the bot. Pi warning/error notifications use the same event. Clients
@@ -549,7 +555,7 @@ show a dismissible notice under the conversation header.
 
 Manual asks for every connected-tool call, including tools marked read-only.
 Auto runs tools with `readOnlyHint: true` freely and asks for all others. Resource
-tools are read-only. Allow in this section covers one server for the running Pi session. Bypass never asks. Each nested
+tools are read-only. Allow for now covers one server for the running Pi session. Bypass never asks. Each nested
 codemode call uses the approval gate, including shell and file tools.
 
 Stdio servers run as Pi children in a daemon-owned directory,

@@ -97,7 +97,7 @@ export function ModelTab({ bot, onSave }: { bot: Bot; onSave: SaveBot }) {
         Model
       </Heading>
       <div className="space-y-8">
-        <Group footer="Changes apply from the next message, in every section still on this model.">
+        <Group footer="Changes apply from the next message, in the chat and in rooms still on this model.">
           <Row
             control={
               <div className="w-[min(280px,42vw)]">

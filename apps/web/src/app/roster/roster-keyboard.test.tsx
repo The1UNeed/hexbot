@@ -1,10 +1,11 @@
-import { fireEvent, render, screen } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { vi } from 'vitest'
 
-import type { Bot, Room } from '../../lib/types'
+import type { Bot, Room, Section } from '../../lib/types'
 import { useBots } from '../../stores/bots'
 import { useMe } from '../../stores/me'
 import { useRooms } from '../../stores/rooms'
+import { useSections } from '../../stores/sections'
 import { useSettings } from '../../stores/settings'
 
 import { RosterColumn } from './index'
@@ -38,7 +39,7 @@ describe('RosterColumn keyboard', () => {
 
   it('opens the focused row from the search box', () => {
     render(<RosterColumn />)
-    const search = screen.getByLabelText('Search bots and sections')
+    const search = screen.getByLabelText('Search bots and rooms')
 
     fireEvent.keyDown(search, { key: 'ArrowDown' })
     fireEvent.keyDown(search, { key: 'Enter' })
@@ -115,5 +116,59 @@ describe('new room approvals on older daemons', () => {
     if (approval_mode === 'off') {
       expect(picker).toHaveTextContent('Bypass')
     }
+  })
+})
+
+describe('one chat per bot', () => {
+  const scout = {
+    avatar: null,
+    description: 'Finds things',
+    display_name: 'Scout',
+    name: 'scout',
+    sections_recent: [],
+    title: ''
+  } as unknown as Bot
+
+  const chat = {
+    archived_at: null,
+    bot: 'scout',
+    done_at: null,
+    id: 'chat',
+    message_count: 3,
+    peer_bot: null,
+    preview: 'Hi',
+    title: 'General'
+  } as unknown as Section
+
+  beforeEach(() => {
+    navigate.mockClear()
+    useRooms.setState({ byId: {}, order: [] })
+    useBots.setState({ byName: { scout }, loaded: true, order: ['scout'] })
+    useSections.setState({ byId: { chat }, idsByBot: { scout: ['chat'] } })
+  })
+
+  it('lists a bot once, without its sections, and opens its chat', async () => {
+    render(<RosterColumn />)
+
+    expect(screen.getAllByRole('button', { name: /Scout/ })).toHaveLength(1)
+    expect(screen.queryByText('General')).toBeNull()
+
+    fireEvent.click(screen.getByRole('button', { name: /Scout/ }))
+
+    await waitFor(() =>
+      expect(navigate).toHaveBeenCalledWith({
+        params: { bot: 'scout', section: 'chat' },
+        to: '/b/$bot/s/$section'
+      })
+    )
+  })
+
+  it('offers a new bot and a new room, not a new section', async () => {
+    render(<RosterColumn />)
+    fireEvent.click(screen.getByRole('button', { name: 'New' }))
+
+    expect(await screen.findByRole('menuitem', { name: 'New bot' })).toBeVisible()
+    expect(screen.getByRole('menuitem', { name: 'New room' })).toBeVisible()
+    expect(screen.queryByRole('menuitem', { name: 'New section' })).toBeNull()
   })
 })

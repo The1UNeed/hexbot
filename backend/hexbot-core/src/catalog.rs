@@ -5,7 +5,7 @@ use crate::{
     db, runtime_store,
 };
 use base64::{Engine, engine::general_purpose::STANDARD};
-use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
+use rusqlite::{Connection, OpenFlags, OptionalExtension, TransactionBehavior, params};
 use serde_json::{Value, json};
 use std::{
     fs,
@@ -202,27 +202,96 @@ fn list_sections(home: &Path, caller: &str, p: &Value) -> Result<Vec<Value>> {
     .map(|r| shape_section(home, r))
     .collect()
 }
-pub fn create_section(home: &Path, caller: &str, name: &str, title: &str) -> Result<Value> {
+/// A bot's one chat with its owner, made on first use. Threads in which other
+/// bots ask it for help are not chats. A chat an older client archived comes back.
+pub fn chat_section(home: &Path, caller: &str, name: &str) -> Result<Value> {
     bot_owner(home, caller, name)?;
-    let title = if title.trim().is_empty() {
-        "New section"
-    } else {
-        title.trim()
-    };
-    let id = id();
-    let now = now();
     let mut conn = db::open(home)?;
-    let tx = conn.transaction()?;
-    tx.execute(
-        "INSERT INTO sections(id,bot,title,owner_id,created_at,updated_at) VALUES (?,?,?,?,?,?)",
-        params![id, name, title, caller, now, now],
-    )?;
-    tx.execute(
-        "UPDATE bots SET last_activity_at=? WHERE name=?",
-        params![now, name],
-    )?;
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let existing: Option<String> = tx
+        .query_row(
+            "SELECT id FROM sections WHERE bot=? AND owner_id=? AND peer_bot IS NULL ORDER BY updated_at DESC,id LIMIT 1",
+            params![name, caller],
+            |r| r.get(0),
+        )
+        .optional()?;
+    let id = if let Some(id) = existing {
+        tx.execute(
+            "UPDATE sections SET archived_at=NULL WHERE id=? AND archived_at IS NOT NULL",
+            [&id],
+        )?;
+        id
+    } else {
+        let id = id();
+        let now = now();
+        tx.execute(
+            "INSERT INTO sections(id,bot,title,owner_id,created_at,updated_at) VALUES (?,?,'General',?,?,?)",
+            params![id, name, caller, now, now],
+        )?;
+        tx.execute(
+            "UPDATE bots SET last_activity_at=? WHERE name=?",
+            params![now, name],
+        )?;
+        id
+    };
     tx.commit()?;
     section(home, caller, &id)
+}
+/// Earlier builds kept many sections per bot. The one with the latest
+/// conversation stays as the bot's chat and the others are deleted with their
+/// history; memory and notes stay. Runs before the runtime starts, so nothing
+/// is live. Dream reports in a kept Dreams section are marked as reports.
+pub fn one_chat_per_bot(home: &Path) -> Result<()> {
+    let conn = db::open(home)?;
+    let mut chats: std::collections::BTreeMap<(String, String), Vec<(Value, i64)>> =
+        Default::default();
+    for row in rows(
+        &conn,
+        "SELECT * FROM sections WHERE peer_bot IS NULL ORDER BY id",
+        &[],
+    )? {
+        let key = (
+            row["owner_id"].as_str().unwrap_or("").to_owned(),
+            row["bot"].as_str().unwrap_or("").to_owned(),
+        );
+        let (_, count) = history_summary(home, &row)?;
+        chats.entry(key).or_default().push((row, count));
+    }
+    drop(conn);
+    for ((owner, _), mut sections) in chats {
+        // Something said first, then not put away, then not the dream log, then newest.
+        sections.sort_by(|(a, a_count), (b, b_count)| {
+            let rank = |row: &Value, count: i64| {
+                (
+                    count > 0,
+                    row["archived_at"].is_null(),
+                    row["title"] != "Dreams",
+                )
+            };
+            rank(b, *b_count).cmp(&rank(a, *a_count)).then(
+                b["updated_at"]
+                    .as_f64()
+                    .unwrap_or(0.0)
+                    .total_cmp(&a["updated_at"].as_f64().unwrap_or(0.0)),
+            )
+        });
+        let (kept, _) = sections.remove(0);
+        for (row, _) in sections {
+            delete_section(home, &owner, row["id"].as_str().unwrap_or(""), true)?;
+        }
+        if kept["title"] == "Dreams" {
+            let id = kept["id"].as_str().unwrap_or("");
+            runtime_store::open(home)?.execute(
+                "UPDATE native_messages SET message_json=json_set(message_json,'$.dream',json('true')) WHERE session_id=?",
+                [id],
+            )?;
+            db::open(home)?.execute(
+                "UPDATE sections SET title='General',title_by=NULL WHERE id=?",
+                [id],
+            )?;
+        }
+    }
+    Ok(())
 }
 fn avatar(home: &Path, name: &str) -> Result<Value> {
     let dir = profile(home, name)?.join("assets");
@@ -1103,9 +1172,10 @@ pub fn call(home: &Path, caller: &str, method: &str, p: &Value) -> Option<Result
             Ok(json!({"section":row.map(|r| shape_section(home,r)).transpose()?}))
         }
         "hexbot.sections.list" => Ok(json!({"sections":list_sections(home,caller,p)?})),
-        "hexbot.sections.create" => Ok(
-            json!({"section":create_section(home,caller,required(p,"bot")?,p["title"].as_str().unwrap_or("New section"))?}),
-        ),
+        // Opens the bot's chat; there is only ever one, so a title is ignored.
+        "hexbot.sections.create" => {
+            Ok(json!({"section":chat_section(home,caller,required(p,"bot")?)?}))
+        }
         "hexbot.sections.delete" => {
             delete_section(
                 home,
@@ -1227,34 +1297,6 @@ fn clean_title(text: &str) -> String {
         .collect()
 }
 
-pub(crate) fn rename_by_bot(home: &Path, owner: &str, stored: &str, title: &str) -> Result<Value> {
-    let conn = db::open(home)?;
-    let room: bool = conn.query_row(
-        "SELECT EXISTS(SELECT 1 FROM room_sessions WHERE stored_session_id=?)",
-        [stored],
-        |r| r.get(0),
-    )?;
-    if room {
-        return Err(Error::new(
-            4202,
-            "Room conversations cannot be renamed by a bot.",
-        ));
-    }
-    let row = section_row(home, owner, stored)?;
-    if row["title"] == "Dreams" {
-        return Err(Error::new(4202, "The Dreams section cannot be renamed."));
-    }
-    let title = clean_title(title);
-    if title.is_empty() {
-        return Err(Error::new(4202, "A section title is required."));
-    }
-    conn.execute(
-        "UPDATE sections SET title=?,title_by='bot',title_dirty=0,updated_at=? WHERE id=?",
-        params![title, now(), stored],
-    )?;
-    section(home, owner, stored)
-}
-
 pub(crate) fn kickoff_prompt(bot: &Value) -> String {
     let name = bot["display_name"]
         .as_str()
@@ -1357,9 +1399,6 @@ mod parity_tests {
         // The General section created with each bot keeps its name.
         assert!(!adopt_section_title(home.path(), "general", "Fix my arm64 build").unwrap());
         assert!(!adopt_section_title(home.path(), "dreams", "Rename the dreams").unwrap());
-        let renamed = rename_by_bot(home.path(), "alice", "first", "\"Garden plans!\"").unwrap();
-        assert_eq!(renamed["title"], "Garden plans");
-        assert_eq!(renamed["title_by"], "bot");
         call(
             home.path(),
             "alice",
@@ -1393,17 +1432,97 @@ mod parity_tests {
             format!("{}...", "a".repeat(60))
         );
     }
+    fn said(home: &Path, id: &str, message: Value) {
+        runtime_store::open(home)
+            .unwrap()
+            .execute(
+                "INSERT OR IGNORE INTO native_sessions(stored_id,owner,bot,prompt) VALUES(?,'alice','owl','')",
+                [id],
+            )
+            .unwrap();
+        runtime_store::append(home, id, message).unwrap();
+    }
     #[test]
-    fn bots_cannot_rename_rooms_or_dreams() {
-        let home = home();
-        assert!(rename_by_bot(home.path(), "alice", "dreams", "Other").is_err());
+    fn each_bot_keeps_one_chat_with_its_latest_conversation() {
+        let home = tempfile::tempdir().unwrap();
+        db::migrate(home.path()).unwrap();
         db::open(home.path())
             .unwrap()
             .execute_batch(
-                "INSERT INTO rooms(id,name,owner_id) VALUES('room','Room','alice');INSERT INTO room_sessions(room_id,bot,stored_session_id) VALUES('room','owl','first');",
+                "INSERT INTO users(id,display_name,role,created_at) VALUES('alice','Alice','admin',0);
+                 INSERT INTO bots(name,owner_id) VALUES('owl','alice'),('fox','alice'),('ant','alice');
+                 INSERT INTO sections(id,bot,owner_id,title,updated_at,archived_at,peer_bot) VALUES
+                  ('old','owl','alice','Garden',1,NULL,NULL),
+                  ('put_away','owl','alice','Trip',5,5,NULL),
+                  ('empty','owl','alice','New section',9,NULL,NULL),
+                  ('owl_dreams','owl','alice','Dreams',10,NULL,NULL),
+                  ('thread','owl','alice','From Fox',11,NULL,'fox'),
+                  ('fox_dreams','fox','alice','Dreams',3,NULL,NULL),
+                  ('fox_empty','fox','alice','New section',4,NULL,NULL);",
             )
             .unwrap();
-        assert!(rename_by_bot(home.path(), "alice", "first", "Other").is_err());
+        for id in ["old", "put_away", "owl_dreams", "fox_dreams"] {
+            said(
+                home.path(),
+                id,
+                json!({"role":"assistant","text":format!("In {id}")}),
+            );
+        }
+        said(home.path(), "thread", json!({"role":"user","text":"Help"}));
+        one_chat_per_bot(home.path()).unwrap();
+        // Rerunning finds one chat per bot and changes nothing.
+        one_chat_per_bot(home.path()).unwrap();
+        let ids = |bot: &str| {
+            rows(
+                &db::open(home.path()).unwrap(),
+                "SELECT id FROM sections WHERE bot=? ORDER BY id",
+                &[&bot],
+            )
+            .unwrap()
+            .into_iter()
+            .map(|r| r["id"].as_str().unwrap().to_owned())
+            .collect::<Vec<_>>()
+        };
+        // Said something, not archived, not the dream log: Garden, though older.
+        assert_eq!(ids("owl"), ["old", "thread"]);
+        assert!(
+            runtime_store::history(home.path(), "put_away")
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            chat_section(home.path(), "alice", "owl").unwrap()["id"],
+            "old"
+        );
+        // A bot whose only conversation was its dream log keeps it, as reports.
+        assert_eq!(ids("fox"), ["fox_dreams"]);
+        let fox = chat_section(home.path(), "alice", "fox").unwrap();
+        assert_eq!(fox["title"], "General");
+        assert_eq!(
+            runtime_store::history(home.path(), "fox_dreams").unwrap()[0]["dream"],
+            true
+        );
+        // A bot without a chat gets one, once; an archived chat comes back.
+        let ant = chat_section(home.path(), "alice", "ant").unwrap();
+        call(
+            home.path(),
+            "alice",
+            "hexbot.sections.archive",
+            &json!({"id":ant["id"]}),
+        )
+        .unwrap()
+        .unwrap();
+        let again = call(
+            home.path(),
+            "alice",
+            "hexbot.sections.create",
+            &json!({"bot":"ant","title":"Another"}),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(again["section"]["id"], ant["id"]);
+        assert!(again["section"]["archived_at"].is_null());
+        assert_eq!(ids("ant").len(), 1);
     }
     #[test]
     fn kickoff_keeps_marker_and_name_shaped_questions() {

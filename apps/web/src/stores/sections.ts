@@ -7,21 +7,10 @@
 import { create } from 'zustand'
 import { useShallow } from 'zustand/react/shallow'
 
-import {
-  botsIntroduce,
-  messagesFromHistory,
-  sectionsArchive,
-  sectionsCreate,
-  sectionsDelete,
-  sectionsList,
-  sectionsOpen,
-  sectionsRename,
-  sectionsUnarchive
-} from '../lib/api'
+import { botsIntroduce, messagesFromHistory, sectionsCreate, sectionsList, sectionsOpen } from '../lib/api'
 import { KICKOFF_MARKER } from '../lib/bot-kickoff'
 import type { Bot, BotStatus, Message, Section } from '../lib/types'
 
-import { draftsActions } from './drafts'
 import { useTranscripts } from './transcripts'
 
 /**
@@ -32,11 +21,11 @@ import { useTranscripts } from './transcripts'
 export const isThread = (section: Pick<Section, 'peer_bot'>) => Boolean(section.peer_bot)
 
 export interface SectionsState {
-  archive: (id: string) => Promise<void>
   byId: Record<string, Section>
+  /** A bot's one chat with you, made on first use. */
+  chat: (bot: string) => Promise<Section>
   /** Live ids are process-scoped; a new daemon epoch invalidates them all. */
   clearLive: () => void
-  create: (bot: string, title?: string) => Promise<Section>
   error: null | string
   idsByBot: Record<string, string[]>
   liveSessionId: Record<string, string>
@@ -57,13 +46,10 @@ export interface SectionsState {
     peer: string
   ) => Promise<{ liveSessionId: null | string; messages: Message[]; section: Section }>
   refresh: (options?: { bot?: string; include_archived?: boolean }) => Promise<void>
-  remove: (id: string, purgeMemory?: boolean) => Promise<void>
-  rename: (id: string, title: string) => Promise<void>
   /** Titles from first messages still on their way to the daemon, by section id. */
   sendingTitles: Record<string, string>
   /** The first message reached the daemon, or failed: take the daemon's title again. */
   settleTitle: (id: string) => Promise<void>
-  unarchive: (id: string) => Promise<void>
 }
 
 /** What the daemon calls a section nobody has named yet. */
@@ -265,8 +251,8 @@ export const useSections = create<SectionsState>((set, get) => ({
     await get().refresh()
   },
 
-  async create(bot, title) {
-    const { section } = await sectionsCreate(bot, title)
+  async chat(bot) {
+    const { section } = await sectionsCreate(bot)
 
     set(state => ({
       ...mergeSection(state, section),
@@ -276,55 +262,6 @@ export const useSections = create<SectionsState>((set, get) => ({
     }))
 
     return section
-  },
-
-  async rename(id, title) {
-    const { section } = await sectionsRename(id, title)
-
-    set(state => mergeSection(state, section))
-  },
-
-  async archive(id) {
-    const { section } = await sectionsArchive(id)
-
-    set(state => mergeSection(state, section))
-  },
-
-  async unarchive(id) {
-    const { section } = await sectionsUnarchive(id)
-
-    set(state => mergeSection(state, section))
-  },
-
-  async remove(id, purgeMemory = true) {
-    await sectionsDelete(id, purgeMemory)
-    draftsActions().clear(id)
-
-    const live = get().liveSessionId[id]
-
-    if (live) {
-      useTranscripts.getState().drop(live)
-    }
-
-    set(state => {
-      const byId = { ...state.byId }
-      const section = byId[id]
-      delete byId[id]
-
-      const liveSessionId = { ...state.liveSessionId }
-      delete liveSessionId[id]
-
-      return {
-        byId,
-        idsByBot: section
-          ? {
-              ...state.idsByBot,
-              [section.bot]: (state.idsByBot[section.bot] ?? []).filter(item => item !== id)
-            }
-          : state.idsByBot,
-        liveSessionId
-      }
-    })
   },
 
   clearLive() {

@@ -71,7 +71,7 @@ describe('readContext', () => {
     )
   })
 
-  it('turns high near the compaction point and asks for a new section', () => {
+  it('turns high near the compaction point and says summarising is near', () => {
     expect(readContext(context({ tokens: 155_000 }))!.high).toBe(false)
 
     const reading = readContext(context({ tokens: 160_000 }))!
@@ -79,7 +79,7 @@ describe('readContext', () => {
     expect(reading.high).toBe(true)
     expect(reading.label).toBe('80%')
     expect(reading.detail).toBe(
-      '160k of 200k tokens. Older messages are summarised above 184k tokens. Start a new section soon. Long sections make the bot slower and less accurate.'
+      '160k of 200k tokens. Older messages are summarised above 184k tokens. Summarising starts soon.'
     )
   })
 
@@ -142,7 +142,7 @@ describe('ContextMeter', () => {
     expect(meter.querySelector('.bg-warning')).toBeNull()
   })
 
-  it('turns warning when the section is nearly full', () => {
+  it('turns warning when the context is nearly full', () => {
     render(<ContextMeter context={context({ tokens: 170_000 })} />)
 
     const meter = screen.getByRole('meter')
@@ -150,7 +150,7 @@ describe('ContextMeter', () => {
     expect(meter).toHaveAttribute('data-tone', 'high')
     expect(meter).toHaveTextContent('Context 85%')
     expect(meter.querySelector('.bg-warning')).not.toBeNull()
-    expect(meter).toHaveAccessibleName(/Start a new section soon/)
+    expect(meter).toHaveAccessibleName(/Summarising starts soon/)
   })
 
   it('says Summarising while older messages are summarised', () => {

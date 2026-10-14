@@ -26,7 +26,7 @@ Model credentials and tool credentials are separate. A model key does not config
 
 ## 4. Create your first bot
 
-Setup ends by creating your first bot. Choose its name, face, and model, then describe what you want it to do. Hexbot opens the bot's first section, where it introduces itself and may ask a few questions to write its soul and memory. Create more bots later from the roster.
+Setup ends by creating your first bot. Choose its name, face, and model, then describe what you want it to do. Hexbot opens your chat with the bot, where it introduces itself and may ask a few questions to write its soul and memory. Create more bots later from the roster.
 
 Give it a small first task, such as "Help me plan this week's work. Ask for the deadlines you need." In Bot settings, you can change its Soul, Model, Tools, Connectors, and Skills.
 
@@ -38,7 +38,7 @@ If you connect remotely, files and commands still belong to the daemon computer.
 
 ## Next tasks
 
-- Start a new [section](/docs/bots-and-sections/) for a different topic without deleting the bot's memory.
+- Keep talking in the bot's [chat](/docs/bots-and-sections/); it summarises older messages as it grows and keeps what matters in memory.
 - Create a [room](/docs/rooms/) and mention two bots to get both perspectives.
 - Turn on Message other bots and give each teammate a description so bots can ask the right one for help.
 - Enable [Scheduling](/docs/scheduling/) when you want a job to run while you are away.

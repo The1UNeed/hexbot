@@ -3,7 +3,6 @@ import {
   BookOpen,
   Brain,
   Cpu,
-  MessagesSquare,
   Plug,
   ShieldCheck,
   SlidersHorizontal,
@@ -45,7 +44,6 @@ const ICONS: Record<BotSettingsTab, SettingsTabItem['icon']> = {
   model: Cpu,
   persona: Sparkles,
   profile: UserRound,
-  sections: MessagesSquare,
   skills: BookOpen,
   tools: Wrench
 }
@@ -53,7 +51,7 @@ const ICONS: Record<BotSettingsTab, SettingsTabItem['icon']> = {
 const GROUPS: { ids: BotSettingsTab[]; label?: string }[] = [
   { ids: ['profile', 'persona', 'model'] },
   { ids: ['memory', 'tools', 'connectors', 'skills'], label: 'Abilities' },
-  { ids: ['approvals', 'sections', 'advanced'], label: 'Manage' }
+  { ids: ['approvals', 'advanced'], label: 'Manage' }
 ]
 
 const TABS: SettingsTabGroup<BotSettingsTab>[] = GROUPS.map(group => ({

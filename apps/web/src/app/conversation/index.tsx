@@ -1,14 +1,5 @@
 import { useNavigate, useParams } from '@tanstack/react-router'
-import {
-  ArrowDown,
-  Copy,
-  File,
-  MoreHorizontal,
-  PanelRight,
-  RotateCcw,
-  Trash2,
-  X
-} from 'lucide-react'
+import { ArrowDown, Copy, File, PanelRight, RotateCcw, X } from 'lucide-react'
 import { type CSSProperties, isValidElement, useEffect, useMemo, useRef, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
@@ -17,10 +8,7 @@ import { Avatar, useFaceColor } from '../../components/ui/avatar'
 import { Button } from '../../components/ui/button'
 import { Chip } from '../../components/ui/chip'
 import { Dialog } from '../../components/ui/dialog'
-import { Input } from '../../components/ui/input'
-import { Menu } from '../../components/ui/menu'
 import { StatusDot } from '../../components/ui/status-dot'
-import { Title } from '../../components/ui/title'
 import { approvalRespond, attachFile, promptSubmit, sessionInterrupt } from '../../lib/api'
 import { botFace } from '../../lib/avatar-builder'
 import { getBridge } from '../../lib/bridge'
@@ -38,13 +26,11 @@ import { useBot, useBots } from '../../stores/bots'
 import { connectorsActions } from '../../stores/connectors'
 import { draftsActions } from '../../stores/drafts'
 import {
-  isThread,
   liveSectionsOf,
   sectionsActions,
   sectionStatusOf,
   useLiveSessionId,
-  useSection,
-  useSections
+  useSection
 } from '../../stores/sections'
 import {
   transcriptActions,
@@ -591,14 +577,14 @@ const APPROVAL_BUTTONS: Record<ApprovalChoice, string> = {
   always: 'Always allow',
   deny: 'Deny',
   once: 'Approve',
-  session: 'Allow in this section'
+  session: 'Allow for now'
 }
 
 const APPROVAL_CHOICES: Record<ApprovalChoice, string> = {
   always: 'Always allowed',
   deny: 'Denied',
   once: 'Approved',
-  session: 'Allowed in this section'
+  session: 'Allowed for now'
 }
 
 export function ApprovalCard({ approval }: { approval: ApprovalRequest }) {
@@ -910,7 +896,6 @@ function BotConversation() {
   const section = useSection(params.section ?? null)
   const liveId = useLiveSessionId(params.section ?? null)
   const transcript = useTranscript(liveId)
-  const [editing, setEditing] = useState(false)
 
   // Connector tools are named from the bot's catalog ("Connecting to Project tools").
   useEffect(() => {
@@ -918,7 +903,6 @@ function BotConversation() {
       void connectorsActions().load(params.bot)
     }
   }, [params.bot])
-  const [title, setTitle] = useState('')
   const [lightbox, setLightbox] = useState<string | null>(null)
   const [visible, setVisible] = useState(60)
   const [atBottom, setAtBottom] = useState(true)
@@ -968,17 +952,35 @@ function BotConversation() {
 
   useEffect(() => {
     if (params.section && !liveId && unavailable !== params.section) {
+      const { bot: botName, section: sectionId } = params
       sectionsActions()
-        .open(params.section)
-        .catch(() => {
-          // The section does not exist on this daemon: show that instead of
-          // bouncing through `/`, which would remember it and come back here.
-          setUnavailable(params.section ?? null)
+        .open(sectionId)
+        .catch(async () => {
+          // A section deleted when each bot moved to one chat, or one from another
+          // daemon: open this bot's chat if it is here.
+          const chat = botName
+            ? await sectionsActions()
+                .chat(botName)
+                .catch(() => null)
+            : null
+
+          if (chat && chat.id !== sectionId) {
+            void navigate({
+              params: { bot: chat.bot, section: chat.id },
+              replace: true,
+              to: '/b/$bot/s/$section'
+            })
+
+            return
+          }
+
+          // Not here at all: say so instead of bouncing through `/`, which would
+          // remember it and come back here.
+          setUnavailable(sectionId)
           uiActions().setLastSection(null)
         })
     }
-  }, [liveId, params.section, unavailable])
-  useEffect(() => setTitle(section?.title ?? ''), [section?.title])
+  }, [liveId, navigate, params, unavailable])
   useEffect(() => {
     if (atBottom) {
       toEnd()
@@ -1061,42 +1063,6 @@ function BotConversation() {
     }
   }
 
-  const rename = async () => {
-    if (section && title.trim() && title.trim() !== section.title) {
-      await sectionsActions().rename(section.id, title.trim())
-    }
-
-    setEditing(false)
-  }
-
-  const archive = async () => {
-    if (!section) {
-      return
-    }
-
-    await sectionsActions().archive(section.id)
-
-    // Leave the archived section: go to the bot's latest open one, or start a fresh one.
-    const next = Object.values(useSections.getState().byId)
-      .filter(
-        item =>
-          item.bot === section.bot && !item.archived_at && !isThread(item) && item.id !== section.id
-      )
-      .sort((a, b) => toMillis(b.updated_at) - toMillis(a.updated_at))[0]
-
-    const target = next ?? (await sectionsActions().create(section.bot))
-    void navigate({ params: { bot: section.bot, section: target.id }, to: '/b/$bot/s/$section' })
-  }
-
-  const remove = async () => {
-    if (!section || !window.confirm(`Delete “${section.title}”? Its history goes with it.`)) {
-      return
-    }
-
-    await sectionsActions().remove(section.id)
-    void navigate({ to: '/' })
-  }
-
   const send = (prompt: string) => {
     if (liveId && section) {
       transcriptActions().appendUserMessage(liveId, prompt)
@@ -1155,29 +1121,12 @@ function BotConversation() {
             <Avatar {...botFace(bot)} name={name} size="xl" />
             <div>
               <h2 className="text-[length:var(--text-title)] font-semibold">
-                This conversation is no longer available
+                This chat is no longer available
               </h2>
               <p className="mt-1 text-muted">
                 It may have been deleted, or it lives on another daemon.
               </p>
             </div>
-            {bot ? (
-              <Button
-                onClick={() =>
-                  void sectionsActions()
-                    .create(bot.name)
-                    .then(section =>
-                      navigate({
-                        to: '/b/$bot/s/$section',
-                        params: { bot: bot.name, section: section.id }
-                      })
-                    )
-                }
-                variant="primary"
-              >
-                Start a new section
-              </Button>
-            ) : null}
           </div>
         ) : messages.length === 0 && clarifies.length === 0 ? (
           <div className="hex-rise grid h-full place-content-center justify-items-center gap-6 p-8 text-center">
@@ -1269,91 +1218,33 @@ function BotConversation() {
           aria-hidden
           className="absolute inset-x-0 top-0 h-9 bg-gradient-to-b from-background/70 to-transparent"
         />
-        {editing ? (
-          <div className="hex-glass hex-no-drag pointer-events-auto flex h-9 max-w-full min-w-0 items-center gap-2 rounded-full pr-1.5 pl-1.5">
-            <Avatar {...botFace(bot)} name={name} size="sm" />
-            <Input
-              aria-label="Section title"
-              autoFocus
-              className="h-7 w-64 max-w-full min-w-0 rounded-full border-transparent bg-foreground/[0.05] px-3 text-[length:var(--text-secondary)]"
-              onBlur={() => void rename()}
-              onChange={event => setTitle(event.target.value)}
-              onKeyDown={event => {
-                if (event.key === 'Enter') {
-                  void rename()
-                }
-
-                if (event.key === 'Escape') {
-                  setTitle(section?.title ?? '')
-                  setEditing(false)
-                }
-              }}
-              value={title}
+        <button
+          aria-expanded={panelOpen}
+          aria-label={name}
+          className="hex-glass hex-glass-press hex-focus hex-no-drag pointer-events-auto flex h-9 max-w-[min(100%_-_7rem,30rem)] [--hex-press-scale:1.04] min-w-0 items-center gap-2 rounded-full pr-4 pl-1.5 @min-[54rem]:max-w-[min(100%_-_12.5rem,30rem)]"
+          onClick={() => togglePanel()}
+          title={panelOpen ? 'Hide details' : 'Show details'}
+          type="button"
+        >
+          <span className="relative shrink-0">
+            <Avatar
+              className={cn(status === 'working' && 'hex-think')}
+              {...botFace(bot)}
+              mood={status === 'working' ? 'working' : undefined}
+              name={name}
+              size="sm"
             />
-          </div>
-        ) : (
-          <button
-            aria-expanded={panelOpen}
-            aria-label={
-              section?.title && section.title !== bot?.display_name
-                ? `${name}, ${section.title}`
-                : name
-            }
-            className="hex-glass hex-glass-press hex-focus hex-no-drag pointer-events-auto flex h-9 max-w-[min(100%_-_7rem,30rem)] [--hex-press-scale:1.04] min-w-0 items-center gap-2 rounded-full pr-4 pl-1.5 @min-[54rem]:max-w-[min(100%_-_12.5rem,30rem)]"
-            onClick={() => togglePanel()}
-            title={panelOpen ? 'Hide details' : 'Show details'}
-            type="button"
-          >
-            <span className="relative shrink-0">
-              <Avatar
-                className={cn(status === 'working' && 'hex-think')}
-                {...botFace(bot)}
-                mood={status === 'working' ? 'working' : undefined}
-                name={name}
-                size="sm"
-              />
-              <StatusDot size="sm" status={status} />
-            </span>
-            <span className="shrink-0 truncate text-[length:var(--text-secondary)] font-semibold">
-              {name}
-            </span>
-            {section?.title && section.title !== bot?.display_name ? (
-              <span className="min-w-0 truncate text-[length:var(--text-secondary)] text-muted max-[860px]:hidden">
-                <Title key={section.id} text={section.title} />
-              </span>
-            ) : null}
-          </button>
-        )}
+            <StatusDot size="sm" status={status} />
+          </span>
+          <span className="shrink-0 truncate text-[length:var(--text-secondary)] font-semibold">
+            {name}
+          </span>
+        </button>
         {status === 'needs_you' ? <WaitingBanner /> : null}
         <ConnectedToolsNotice sectionId={params.section ?? ''} />
       </header>
       <div className="hex-no-drag absolute top-2.5 right-3 z-30 flex items-center gap-1.5">
         <ContextMeter context={transcript?.context} />
-        <Menu
-          items={[
-            { label: 'Rename', onSelect: () => setEditing(true) },
-            { label: 'Archive', onSelect: () => void archive() },
-            { separator: true, label: '' },
-            {
-              label: (
-                <span className="flex items-center gap-2 text-danger">
-                  <Trash2 size={14} />
-                  Delete
-                </span>
-              ),
-              onSelect: () => void remove()
-            }
-          ]}
-          trigger={
-            <button
-              aria-label="Conversation actions"
-              className="hex-glass hex-glass-press hex-focus grid size-9 place-items-center rounded-full text-foreground/70 hover:text-foreground"
-              type="button"
-            >
-              <MoreHorizontal size={16} />
-            </button>
-          }
-        />
         {panelOpen ? null : (
           <button
             aria-label="Toggle profile panel"

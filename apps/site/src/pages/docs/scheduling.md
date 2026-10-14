@@ -4,7 +4,7 @@ title: Scheduled work
 description: Ask a Hexbot bot to create reminders, recurring jobs, and scheduled scripts.
 ---
 
-The daemon can run work while the app window is closed. It must be running and the computer must be awake when a job is due. Quitting an app-owned daemon stops its jobs; use an independent daemon if the desktop app should be able to quit. Turn on **Scheduling** in Bot settings, Tools, then start a new section and ask the bot to create the job.
+The daemon can run work while the app window is closed. It must be running and the computer must be awake when a job is due. Quitting an app-owned daemon stops its jobs; use an independent daemon if the desktop app should be able to quit. Turn on **Scheduling** in Bot settings, Tools, then ask the bot in its chat to create the job.
 
 ## Create a job in chat
 
@@ -42,8 +42,8 @@ An autonomous agent job and its delegates cannot wait for you to answer a questi
 
 ## Jobs and memory
 
-A job can read the bot's memory and notes but not write them. When a job asks to add, replace, or remove a memory entry, or to note something, Hexbot saves the request as a proposal, and the bot's next dream decides whether to keep it. This keeps text a job fetched from the web out of memory until the bot has looked at it with the rest of the day. See [Dreaming](/docs/dreaming/#proposals-from-scheduled-jobs). A job cannot change the bot's soul either; the bot tells you when it wants a soul change, and you make it in a section.
+A job can read the bot's memory and notes but not write them. When a job asks to add, replace, or remove a memory entry, or to note something, Hexbot saves the request as a proposal, and the bot's next dream decides whether to keep it. This keeps text a job fetched from the web out of memory until the bot has looked at it with the rest of the day. See [Dreaming](/docs/dreaming/#proposals-from-scheduled-jobs). A job cannot change the bot's soul either; the bot tells you when it wants a soul change, and you make it in its chat.
 
 For memory reviews, use [Dreaming](/docs/dreaming/). Dreaming has its own controls and saves summaries in the bot's dream log.
 
-Jobs and their delegates run in Auto when the bot uses Bypass; Manual stays Manual. They cannot message other bots, because a recipient's ordinary section could change memory without a dream reviewing it. Job results stay local.
+Jobs and their delegates run in Auto when the bot uses Bypass; Manual stays Manual. They cannot message other bots, because a recipient's chat could change memory without a dream reviewing it. Job results stay local.

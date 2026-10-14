@@ -79,6 +79,7 @@ impl App {
         web_dist: Option<PathBuf>,
     ) -> Result<Arc<Self>> {
         db::migrate(&home)?;
+        catalog::one_chat_per_bot(&home)?;
         let events = EventHub::new();
         let runtime = Runtime::new(home.clone(), events.clone(), pi)?;
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
