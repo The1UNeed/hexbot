@@ -4,9 +4,30 @@
 //! working folder, and changing settings ask the user every time, even in Bypass.
 use super::*;
 
-/// One room membership change at a time, so a parallel removal cannot empty
-/// and delete a room after another call decided not to ask.
-static ROOM_CHANGES: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+/// One membership change at a time per room, so a parallel removal cannot
+/// empty and delete a room after another call decided not to ask. Other
+/// rooms carry on while one waits for the user.
+static ROOM_CHANGES: std::sync::Mutex<Vec<(String, Weak<AsyncMutex<()>>)>> =
+    std::sync::Mutex::new(Vec::new());
+
+async fn lock_room(room: &str) -> tokio::sync::OwnedMutexGuard<()> {
+    let lock = {
+        let mut locks = ROOM_CHANGES.lock().unwrap();
+        locks.retain(|(_, lock)| lock.strong_count() > 0);
+        match locks
+            .iter()
+            .find_map(|(id, lock)| (id == room).then(|| lock.upgrade()).flatten())
+        {
+            Some(lock) => lock,
+            None => {
+                let lock = Arc::new(AsyncMutex::new(()));
+                locks.push((room.to_owned(), Arc::downgrade(&lock)));
+                lock
+            }
+        }
+    };
+    lock.lock_owned().await
+}
 
 /// The tools a primary bot gets in its own sections, never in rooms, threads,
 /// scheduled jobs or delegates.
@@ -387,7 +408,7 @@ impl Runtime {
             ("hexbot_rooms", "add_member" | "remove_member") => {
                 let room = required(args, "id")?;
                 let bot = required(args, "bot")?;
-                let _serial = ROOM_CHANGES.lock().await;
+                let _serial = lock_room(room).await;
                 if action == "remove_member" {
                     let current = crate::rooms::get(&self.home, owner, room)?;
                     let active = current["members"]
@@ -414,7 +435,7 @@ impl Runtime {
             }
             ("hexbot_rooms", "delete") => {
                 let room = required(args, "id")?;
-                let _serial = ROOM_CHANGES.lock().await;
+                let _serial = lock_room(room).await;
                 let current = crate::rooms::get(&self.home, owner, room)?;
                 let title = current["name"].as_str().unwrap_or(room);
                 self.confirm(
