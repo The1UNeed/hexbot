@@ -598,7 +598,7 @@ export function CheckingRow({ bot, transcript }: { bot?: Bot; transcript?: Trans
         face={
           <Avatar
             className="hex-think"
-            image={avatarData(bot)}
+            {...botFace(bot)}
             mood="working"
             name={name}
             size="sm"
