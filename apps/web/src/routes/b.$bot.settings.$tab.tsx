@@ -1,4 +1,4 @@
-import { createFileRoute, useNavigate } from '@tanstack/react-router'
+import { createFileRoute, redirect, useNavigate } from '@tanstack/react-router'
 import {
   BookOpen,
   Brain,
@@ -31,6 +31,16 @@ import { useBots } from '../stores/bots'
 import { useUi } from '../stores/ui'
 
 export const Route = createFileRoute('/b/$bot/settings/$tab')({
+  // A removed tab, such as Sections from before chats, opens Profile.
+  beforeLoad: ({ params }) => {
+    if (!isBotSettingsTab(params.tab)) {
+      throw redirect({
+        params: { bot: params.bot, tab: 'profile' },
+        replace: true,
+        to: '/b/$bot/settings/$tab'
+      })
+    }
+  },
   component: BotSettingsDialog,
   validateSearch: (search: Record<string, unknown>): { connector?: string } =>
     typeof search.connector === 'string' && search.connector ? { connector: search.connector } : {}

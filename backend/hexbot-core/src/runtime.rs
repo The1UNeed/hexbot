@@ -3143,6 +3143,9 @@ impl Runtime {
                 )?))
             }
             "hexbot_session_settings" => self.session_settings(s),
+            // Threads started before chats replaced sections still offer it;
+            // titles are no longer shown, so there is nothing to rename.
+            "hexbot_rename_section" => Ok(json!({"ok":true})),
             "hexbot_show_html" => show_html(&self.home, &s.stored, args),
             "self_soul" | "hexbot_soul" => {
                 let path = self.home.join("profiles").join(&s.bot).join("SOUL.md");
@@ -4916,6 +4919,14 @@ rl.on('line',line=>{{const c=JSON.parse(line);emit({{type:'response',id:c.id,com
             4243
         );
         assert!(!s.tools.iter().any(|t| t["name"] == "hexbot_rename_section"));
+        // A thread frozen with it still gets an answer.
+        assert_eq!(
+            runtime
+                .tool(&s, "hexbot_rename_section", &json!({"title":"Trip"}))
+                .await
+                .unwrap()["ok"],
+            true
+        );
         assert!(s.tools.iter().any(|t| t["name"] == "hexbot_show_html"));
         runtime.shutdown().await;
     }

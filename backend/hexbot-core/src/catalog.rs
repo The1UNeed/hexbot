@@ -145,6 +145,16 @@ fn history_summary(home: &Path, row: &Value) -> Result<(String, i64)> {
             summary["message_count"].as_i64().unwrap_or(0),
         ));
     }
+    let (preview, count) = legacy_summary(home, row)?;
+    runtime_store::open(home)?.execute(
+        "INSERT OR REPLACE INTO native_summaries VALUES(?,?,?)",
+        params![id, count, preview],
+    )?;
+    Ok((preview, count))
+}
+/// The section's history in the store from before the native daemon.
+fn legacy_summary(home: &Path, row: &Value) -> Result<(String, i64)> {
+    let id = row["id"].as_str().unwrap_or("");
     let name = row["bot"].as_str().unwrap_or("");
     let path = profile(home, name)?.join("state.db");
     safe(home, &path)?;
@@ -162,10 +172,6 @@ fn history_summary(home: &Path, row: &Value) -> Result<(String, i64)> {
         .find(|m| m["role"] == "user" && m["display_kind"] != "hidden")
         .map(|m| runtime_store::preview(m["content"].as_str().unwrap_or("")))
         .unwrap_or_default();
-    runtime_store::open(home)?.execute(
-        "INSERT OR REPLACE INTO native_summaries VALUES(?,?,?)",
-        params![id, count, preview],
-    )?;
     Ok((preview, count))
 }
 fn shape_section(home: &Path, row: Value) -> Result<Value> {
@@ -277,6 +283,19 @@ pub fn one_chat_per_bot(home: &Path) -> Result<()> {
             row["bot"].as_str().unwrap_or("").to_owned(),
         );
         let (_, mut count) = history_summary(home, &row)?;
+        // A crash after the first open but before the old store was copied in
+        // leaves the conversation there; the copy writes its log last.
+        let id = row["id"].as_str().unwrap_or("");
+        if count == 0
+            && !native_history(home, &row)?
+            && !home
+                .join("runtime/sessions")
+                .join(id)
+                .join("conversation.jsonl")
+                .exists()
+        {
+            count = legacy_summary(home, &row)?.1;
+        }
         // Recovery after a crash adds messages without touching the section's
         // time; the newest message counts too.
         let said: Option<f64> = runtime_store::open(home)?.query_row(
@@ -1531,7 +1550,8 @@ mod parity_tests {
                  INSERT INTO bot_incidents(id,bot,section_id,kind,created_at) VALUES('failed','owl','put_away','turn_failed',1);
                  INSERT INTO dreams(id,bot,started_at,status,summary) VALUES('d1','fox',1,'complete','In fox_dreams');
                  INSERT INTO sections(id,bot,owner_id,title,title_by) VALUES('dog_chat','dog','alice','Dreams','bot');
-                 INSERT INTO bots(name,owner_id) VALUES('dog','alice'),('elk','alice');
+                 INSERT INTO bots(name,owner_id) VALUES('dog','alice'),('elk','alice'),('fly','alice');
+                 INSERT INTO sections(id,bot,owner_id,title,updated_at) VALUES('fly_native','fly','alice','Native',5),('fly_legacy','fly','alice','Legacy',9);
                  INSERT INTO sections(id,bot,owner_id,title,updated_at) VALUES('elk_listed','elk','alice','Listed',5),('elk_recovered','elk','alice','Recovered',1);
                  INSERT INTO sections(id,bot,owner_id,title,updated_at,archived_at,peer_bot) VALUES
                   ('old','owl','alice','Garden',1,NULL,NULL),
@@ -1578,6 +1598,31 @@ mod parity_tests {
             "elk_recovered",
             json!({"role":"user","text":"Later","timestamp":9}),
         );
+        // Fly's newest conversation was opened once before a crash, so its
+        // messages are still only in the old store.
+        said(
+            home.path(),
+            "fly_native",
+            json!({"role":"user","text":"Older","timestamp":4}),
+        );
+        let fly = home.path().join("profiles/fly");
+        fs::create_dir_all(&fly).unwrap();
+        Connection::open(fly.join("state.db"))
+            .unwrap()
+            .execute_batch(
+                "CREATE TABLE sessions(id TEXT,session_key TEXT,parent_session_id TEXT,model_config TEXT,source TEXT);
+                 CREATE TABLE messages(id INTEGER,session_id TEXT,role TEXT,content TEXT,timestamp REAL);
+                 INSERT INTO sessions(id,session_key) VALUES('fly_legacy','fly_legacy');
+                 INSERT INTO messages VALUES(1,'fly_legacy','user','Newer',8);",
+            )
+            .unwrap();
+        runtime_store::open(home.path())
+            .unwrap()
+            .execute(
+                "INSERT INTO native_sessions(stored_id,owner,bot,prompt) VALUES('fly_legacy','alice','fly','')",
+                [],
+            )
+            .unwrap();
         // Opened once, but its old history was never copied in.
         runtime_store::open(home.path())
             .unwrap()
@@ -1638,6 +1683,7 @@ mod parity_tests {
             [true, false, false]
         );
         assert_eq!(ids("elk"), ["elk_recovered"]);
+        assert_eq!(ids("fly"), ["fly_legacy"]);
         // A chat the bot titled Dreams is a chat.
         assert_eq!(ids("dog"), ["dog_chat"]);
         assert_eq!(
