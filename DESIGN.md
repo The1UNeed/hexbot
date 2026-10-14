@@ -129,9 +129,14 @@ more freedom and more capability than a hosted product can offer.
 - A check-in is an unattended job session (`checkin-<id>`) with the bot's
   connectors: memory writes become proposals, the soul only reads, it cannot
   ask, and it runs in Auto at most. It only reads: of the daemon's tools it
-  keeps memory, the soul, `hexbot_notify` and `hexbot_wakeups`; of Pi's, read,
-  grep, find and ls. Connector tools still ask before changing anything, and
-  nobody can answer. Its prompt gives the time, why it runs, what it told the
+  keeps memory, the soul, `skill_view`, `hexbot_notify`, `hexbot_wakeups`
+  and `hexbot_connector_read`; of Pi's, read, grep, find and ls. Connector
+  tools still ask before changing anything, and nobody can answer. Notion and
+  Airtable work through skills and the shell elsewhere; in a check-in,
+  `hexbot_connector_read` makes their read requests (GET, and Notion's search
+  and queries) with the bot's key, which the model never sees.
+- Cancelling a wake-up from the bot always asks, even in Bypass; a check-in
+  cannot cancel one. The user cancels from Settings without asking. Its prompt gives the time, why it runs, what it told the
   user and what they wrote back in the Check-ins section in the last day, its
   last check-ins' logs, and the wake-ups waiting.
 - Its one way to speak is `hexbot_notify`: one message per check-in, eight a

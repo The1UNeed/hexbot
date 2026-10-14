@@ -284,7 +284,7 @@ async fn a_failed_check_in_gives_its_wake_up_back_and_runs_read_only() {
     let status = tick(&app, now + 3001.0).await;
     assert_eq!(
         status["recent"][0]["summary"],
-        "hexbot_notify,hexbot_soul,hexbot_wakeups,memory"
+        "hexbot_connector_read,hexbot_notify,hexbot_soul,hexbot_wakeups,memory,skill_view"
     );
     // And its transcript is gone once it ends.
     let left: i64 = runtime_store::open(h.path())
@@ -546,4 +546,76 @@ async fn a_wake_up_too_late_to_run_leaves_the_open_tab() {
         .await
         .unwrap();
     assert!(status["wakeups"].as_array().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn the_primary_bot_asks_before_it_cancels_a_wake_up() {
+    let (_h, app) = setup();
+    let created = app
+        .call("local", "hexbot.bots.create_primary", &json!({}))
+        .await
+        .unwrap();
+    // Bypass skips ordinary approvals, never this one.
+    app.call(
+        "local",
+        "hexbot.bots.update",
+        &json!({"name":"hexbot","approval_mode":"off"}),
+    )
+    .await
+    .unwrap();
+    let live = open(&app, created["section"]["id"].as_str().unwrap()).await;
+    let reply = call_tool(
+        &app,
+        &live,
+        "hexbot_wakeups",
+        json!({"action":"add","at":rfc3339(common::now() + 600.0),"note":"essay"}),
+    )
+    .await;
+    let added: Value = serde_json::from_str(&reply).unwrap();
+    let id = added["wakeup"]["id"]
+        .as_str()
+        .or(added["result"]["wakeup"]["id"].as_str())
+        .unwrap()
+        .to_owned();
+    let mut events = app.events.subscribe();
+    app.call(
+        "local",
+        "prompt.submit",
+        &json!({"session_id":live,"text":json!({"tool":"hexbot_wakeups","args":{"action":"cancel","id":id}}).to_string()}),
+    )
+    .await
+    .unwrap();
+    let text = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let event = events.recv().await.unwrap();
+            let params = &event.frame["params"];
+            if params["type"] == "approval.request" {
+                assert!(
+                    params["payload"]["toolCall"]["title"]
+                        .as_str()
+                        .unwrap_or("")
+                        .contains("essay")
+                        || params["payload"].to_string().contains("essay")
+                );
+                app.call(
+                    "local",
+                    "approval.respond",
+                    &json!({"session_id":live,"request_id":params["payload"]["request_id"],"choice":"deny"}),
+                )
+                .await
+                .unwrap();
+            }
+            if params["type"] == "message.complete" && params["session_id"] == live.as_str() {
+                return params["payload"]["text"].as_str().unwrap_or("").to_owned();
+            }
+        }
+    })
+    .await
+    .unwrap();
+    assert!(text.contains("denied"), "{text}");
+    let status = app
+        .call("local", "hexbot.checkins.status", &json!({}))
+        .await
+        .unwrap();
+    assert_eq!(status["wakeups"].as_array().unwrap().len(), 1);
 }

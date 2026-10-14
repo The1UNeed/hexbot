@@ -208,7 +208,7 @@ fn compact_bot(bot: &Value, soul: bool) -> Value {
 impl Runtime {
     /// `hexbot_notify` in the primary bot's check-ins; `hexbot_wakeups` there
     /// and in its own sections. Both are frozen only into those.
-    pub(super) fn checkin_tool(&self, s: &Live, name: &str, args: &Value) -> Result<Value> {
+    pub(super) async fn checkin_tool(&self, s: &Live, name: &str, args: &Value) -> Result<Value> {
         let settings = self.session_settings(s)?;
         let checkin = settings["checkin"].as_str();
         let own = checkin.is_none()
@@ -233,6 +233,21 @@ impl Runtime {
                 checkin,
                 required(args, "message")?,
             ),
+            // Cancelling is deleting: it asks in the bot's own sections, even in
+            // Bypass, and a check-in, which cannot ask, leaves it to the user.
+            (_, checkin) if args["action"] == "cancel" => {
+                if checkin.is_some() {
+                    return Err(Error::new(
+                        4302,
+                        "A check-in can't cancel a wake-up. Leave it; the user can cancel it in Settings.",
+                    ));
+                }
+                let id = required(args, "id")?;
+                let wakeup = checkins::wakeup_label(&self.home, &s.owner, id)?;
+                self.confirm(s, name, format!("Cancel the wake-up {wakeup}"), args)
+                    .await?;
+                checkins::wakeups_tool(&self.home, &self.events, &s.owner, &s.bot, args)
+            }
             _ => checkins::wakeups_tool(&self.home, &self.events, &s.owner, &s.bot, args),
         }
     }

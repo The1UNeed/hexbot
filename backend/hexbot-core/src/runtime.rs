@@ -611,6 +611,7 @@ impl Runtime {
                 if botrow["is_primary"].as_i64() == Some(1) {
                     tools.push(checkins::notify_descriptor());
                     tools.push(checkins::wakeups_descriptor());
+                    tools.push(checkins::connector_read_descriptor());
                 }
                 tools.retain(|t| {
                     t["name"]
@@ -2779,7 +2780,13 @@ impl Runtime {
                 Ok(checkins::take_context(&self.home, &s.owner, &s.stored)?
                     .unwrap_or_else(|| json!({"text":null,"ids":[]})))
             }
-            "hexbot_notify" | "hexbot_wakeups" => self.checkin_tool(s, name, args),
+            "hexbot_notify" | "hexbot_wakeups" => self.checkin_tool(s, name, args).await,
+            "hexbot_connector_read" => {
+                if !s.stored.starts_with("checkin-") || !s.tools.iter().any(|t| t["name"] == name) {
+                    return Err(Error::new(4210, "This tool is disabled for this section."));
+                }
+                checkins::connector_read(&self.home, &s.bot, args).await
+            }
             "hexbot_todo_context" => {
                 Ok(json!({"text":crate::native_product_tools::todo_context(&self.home,&s.stored)?}))
             }
@@ -4077,6 +4084,7 @@ fn tool_context(name: &str, args: &Value) -> String {
             "action"
         }
         "hexbot_notify" => "message",
+        "hexbot_connector_read" => "path",
         name if name.starts_with("mcp__") => args
             .as_object()
             .and_then(|args| {

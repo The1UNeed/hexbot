@@ -304,7 +304,8 @@ else {
   app.on('second-instance', (_event, argv) => {
     const link = argv.find(arg => arg.startsWith('hexbot://'))
     if (link) navigate(link)
-    else void createWindow()
+    // Closing keeps the window on macOS; launching again brings it back.
+    else void showWindow()
   })
   app.on('open-url', (event, url) => {
     event.preventDefault()

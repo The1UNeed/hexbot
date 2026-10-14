@@ -39,6 +39,7 @@ Decide whether anything needs their attention now: something due today or early 
 - If something does, call hexbot_notify once. Write one short message that stands on its own, because they may only read the notification: what it is, when, why it matters now, and what to do, with links.
 - If nothing does, do not call it. Staying quiet is the usual outcome.
 - If something will matter later, set a wake-up with hexbot_wakeups for when to raise it, with a note to yourself, instead of messaging now.
+- Notion and Airtable are read with hexbot_connector_read: their skills (skill_view) describe the API; skip their shell and install steps.
 - Do not repeat what you already told them unless it changed or became urgent.
 
 Finish with one line on what you looked at and what you decided. It is kept as this check-in's log and is not shown to the user."###;
@@ -48,7 +49,163 @@ const JOB_RULES: &str = "This is an autonomous check-in. Do not ask the user que
 /// The daemon tools a check-in keeps. Pi's read, grep, find and ls stay too;
 /// connectors are reached through code mode and ask before changing anything,
 /// which nobody can answer in a check-in.
-pub(crate) const TOOLS: &[&str] = &["memory", "hexbot_soul", "hexbot_notify", "hexbot_wakeups"];
+pub(crate) const TOOLS: &[&str] = &[
+    "memory",
+    "hexbot_soul",
+    "skill_view",
+    "hexbot_notify",
+    "hexbot_wakeups",
+    "hexbot_connector_read",
+];
+
+/// Connectors that work through a skill and the shell. A check-in has neither
+/// network nor shell, so the daemon reads their API for it, with the bot's
+/// key, which the model never sees; only requests that change nothing.
+struct ReadApi {
+    id: &'static str,
+    name: &'static str,
+    base: &'static str,
+    key: &'static str,
+    headers: &'static [(&'static str, &'static str)],
+    /// Paths a POST may go to: searches and queries, which only read.
+    reads_by_post: &'static [&'static str],
+    prefix: &'static str,
+}
+const READ_APIS: &[ReadApi] = &[
+    ReadApi {
+        id: "notion",
+        name: "Notion",
+        base: "https://api.notion.com",
+        key: "NOTION_API_KEY",
+        headers: &[("Notion-Version", "2025-09-03")],
+        reads_by_post: &[
+            "/v1/search",
+            "/v1/databases/*/query",
+            "/v1/data_sources/*/query",
+        ],
+        prefix: "/v1/",
+    },
+    ReadApi {
+        id: "airtable",
+        name: "Airtable",
+        base: "https://api.airtable.com",
+        key: "AIRTABLE_API_KEY",
+        headers: &[],
+        reads_by_post: &[],
+        prefix: "/v0/",
+    },
+];
+const READ_CAP: usize = 200_000;
+
+pub(crate) fn connector_read_descriptor() -> Value {
+    json!({
+        "name": "hexbot_connector_read",
+        "label": "Read a connector",
+        "description": "Read Notion or Airtable during a check-in, where there is no shell. Send the API request the connector's skill describes (skill_view shows it), without the URL's host or any key: the daemon adds both. Only reads: GET, plus Notion's POST search and database or data source queries.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "connector": { "type": "string", "enum": ["notion", "airtable"] },
+                "method": { "type": "string", "enum": ["GET", "POST"] },
+                "path": { "type": "string", "description": "Like /v1/search or /v0/BASE/TABLE?maxRecords=20" },
+                "body": { "type": "object", "description": "JSON body, for a POST" }
+            },
+            "required": ["connector", "method", "path"]
+        }
+    })
+}
+
+/// Whether `path` is one of the API's read requests.
+fn readable(api: &ReadApi, method: &str, path: &str) -> bool {
+    let route = path.split('?').next().unwrap_or("");
+    let clean = route.starts_with(api.prefix)
+        && !route.contains("..")
+        && !path.contains("://")
+        && !path.contains('@')
+        && !path.contains('#')
+        && path
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"/_-.?=&%:,+".contains(&b));
+    let matches = |pattern: &str| {
+        let (a, b) = (pattern.split('/'), route.split('/'));
+        a.clone().count() == b.clone().count()
+            && a.zip(b).all(|(p, s)| p == "*" && !s.is_empty() || p == s)
+    };
+    clean
+        && match method {
+            "GET" => true,
+            "POST" => api.reads_by_post.iter().any(|p| matches(p)),
+            _ => false,
+        }
+}
+
+/// `hexbot_connector_read`.
+pub(crate) async fn connector_read(home: &Path, bot: &str, args: &Value) -> Result<Value> {
+    let id = common::required(args, "connector")?;
+    let api = READ_APIS
+        .iter()
+        .find(|api| api.id == id)
+        .ok_or_else(|| Error::new(4202, "connector must be notion or airtable"))?;
+    let method = common::required(args, "method")?;
+    let path = common::required(args, "path")?;
+    if !readable(api, method, path) {
+        return Err(Error::new(
+            4302,
+            format!(
+                "Check-ins only read {}. Send GET, or a POST to a search or query.",
+                api.name
+            ),
+        ));
+    }
+    if !crate::connectors::enabled(home, bot, api.id)? {
+        return Err(Error::new(
+            4210,
+            format!("{} is not turned on for this bot.", api.name),
+        ));
+    }
+    let key = crate::connectors::credentials(home, bot)?
+        .remove(api.key)
+        .filter(|k| !k.is_empty())
+        .ok_or_else(|| {
+            Error::new(
+                4210,
+                format!("{} has no key yet; the user adds it in Settings.", api.name),
+            )
+        })?;
+    let client = crate::http::client(20, 0).map_err(|e| Error::new(5240, e.to_string()))?;
+    let url = format!("{}{path}", api.base);
+    let mut request = if method == "POST" {
+        client
+            .post(&url)
+            .json(args.get("body").unwrap_or(&json!({})))
+    } else {
+        client.get(&url)
+    }
+    .bearer_auth(key);
+    for (name, value) in api.headers {
+        request = request.header(*name, *value);
+    }
+    let response = request.send().await.map_err(|e| {
+        crate::http::error(
+            e,
+            5240,
+            [
+                "The connector timed out.",
+                "The connector could not be reached.",
+                "The connector request failed.",
+            ],
+        )
+    })?;
+    let status = response.status().as_u16();
+    let body = crate::http::bytes(
+        response,
+        READ_CAP,
+        |e| Error::new(5240, e.to_string()),
+        Error::new(5240, "The answer is too long; ask for fewer results."),
+    )
+    .await?;
+    Ok(json!({"status":status,"body":String::from_utf8_lossy(&body)}))
+}
 
 pub(crate) fn notify_descriptor() -> Value {
     json!({
@@ -241,6 +398,19 @@ pub(crate) fn wakeups_tool(
             format!("unknown action for hexbot_wakeups: {other}"),
         )),
     }
+}
+
+/// "Thu 15 Oct, 07:30: note", for asking before a wake-up is cancelled.
+pub(crate) fn wakeup_label(home: &Path, owner: &str, id: &str) -> Result<String> {
+    let row: Option<(f64, String)> = db::open(home)?
+        .query_row(
+            "SELECT at,note FROM checkin_wakeups WHERE id=? AND owner_id=? AND fired_at IS NULL AND cancelled_at IS NULL",
+            params![id, owner],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()?;
+    let (at, note) = row.ok_or_else(|| Error::new(4244, "wake-up not found"))?;
+    Ok(format!("{}: {}", when(at), head(&note, 120)))
 }
 
 fn cancel_wakeup(home: &Path, events: &EventHub, owner: &str, id: &str) -> Result<()> {
@@ -708,8 +878,32 @@ fn finish(home: &Path, id: &str, status: &str, summary: &str) -> Result<()> {
 }
 
 /// At start: a check-in the daemon stopped in the middle of failed, and its
-/// wake-ups wait for the next one.
+/// wake-ups wait for the next one. A message recorded just before the daemon
+/// stopped, but not yet shown, is shown now.
 pub(super) fn recover(home: &Path) -> Result<()> {
+    let store = runtime_store::open(home)?;
+    for row in common::rows(
+        &db::open(home)?,
+        "SELECT id,section_id,text,created_at FROM checkin_messages WHERE text<>'' AND created_at>?",
+        &[&(common::now() - 2.0 * 86_400.0)],
+    )? {
+        let (Some(id), Some(section)) = (row["id"].as_str(), row["section_id"].as_str()) else {
+            continue;
+        };
+        let shown: bool = store.query_row(
+            "SELECT EXISTS(SELECT 1 FROM native_messages WHERE session_id=? AND json_extract(message_json,'$.row_id')=?)",
+            params![section, format!("checkin-{id}")],
+            |r| r.get(0),
+        )?;
+        if !shown {
+            // A deleted section's history refuses it; nothing to show then.
+            let _ = runtime_store::append(
+                home,
+                section,
+                json!({"role":"assistant","text":row["text"],"timestamp":row["created_at"],"row_id":format!("checkin-{id}"),"checkin":true}),
+            );
+        }
+    }
     let running = common::rows(
         &db::open(home)?,
         "SELECT id FROM checkins WHERE status='running'",
@@ -1103,6 +1297,24 @@ mod tests {
     }
 
     #[test]
+    fn connector_reads_only_read() {
+        let notion = &READ_APIS[0];
+        assert!(readable(notion, "GET", "/v1/pages/abc-123"));
+        assert!(readable(notion, "POST", "/v1/search"));
+        assert!(readable(notion, "POST", "/v1/data_sources/abc/query"));
+        assert!(!readable(notion, "POST", "/v1/pages"));
+        assert!(!readable(notion, "POST", "/v1/data_sources//query"));
+        assert!(!readable(notion, "PATCH", "/v1/pages/abc"));
+        assert!(!readable(notion, "GET", "/v1/../oauth"));
+        assert!(!readable(notion, "GET", "//evil.example/v1/x"));
+        assert!(!readable(notion, "GET", "/v1/x@evil.example"));
+        let airtable = &READ_APIS[1];
+        assert!(readable(airtable, "GET", "/v0/app1/Tasks?maxRecords=20"));
+        assert!(!readable(airtable, "POST", "/v0/app1/Tasks"));
+        assert!(!readable(airtable, "GET", "/v1/app1"));
+    }
+
+    #[test]
     fn hours_may_run_past_midnight() {
         let day = hours("08:00-22:00").unwrap();
         assert!(within(day, 8 * 60));
@@ -1217,6 +1429,25 @@ mod tests {
             schedule(&conn, "local", &settings, now).unwrap().unwrap().0,
             now - 80_000.0 + 3.0 + 86_400.0
         );
+    }
+
+    #[test]
+    fn a_message_recorded_but_not_shown_is_shown_at_start() {
+        let home = tempfile::tempdir().unwrap();
+        db::migrate(home.path()).unwrap();
+        db::open(home.path())
+            .unwrap()
+            .execute(
+                "INSERT INTO checkin_messages(id,owner_id,bot,section_id,text,created_at) VALUES ('m','local','hexbot','s','Due tonight.',?)",
+                [common::now()],
+            )
+            .unwrap();
+        recover(home.path()).unwrap();
+        recover(home.path()).unwrap();
+        let shown = runtime_store::history(home.path(), "s").unwrap();
+        assert_eq!(shown.len(), 1, "{shown:?}");
+        assert_eq!(shown[0]["row_id"], "checkin-m");
+        assert_eq!(shown[0]["text"], "Due tonight.");
     }
 
     #[test]
