@@ -357,8 +357,9 @@ further up the chain, answers 4202; a bot the
 section owner does not own answers 4205 with the names of their other bots.
 Queued input and background replies keep the active turn's requester chain and
 shared hop count. Delegated work, including nested children, inherits both.
-An idle section starts a fresh chain only for a new originating turn; a
-background continuation resumes its originating chain.
+An idle section starts a fresh chain for a new originating turn. A background
+result that finds the section idle keeps its originating hop count but no
+requesters, since nobody waits on that turn, so the bot can pass the answer on.
 
 The `hexbot_soul {action: read | write, text?}` tool lets a bot read or
 replace its own `SOUL.md` (capped at 4000 characters). It sits in its own
@@ -371,10 +372,7 @@ continuation within the active run defers refresh until another compaction.
 The refreshed prompt is saved only once the extension adopts it, so idle
 retirement and daemon restart never reopen a section on a discarded refresh.
 Older sections and those whose fixed guidance or tool layout no longer matches
-after an update keep their prompt. The requester-chain reply guidance changes
-that layout, so sections created before it shipped no longer refresh their
-prompt at compaction. New sections receive the guidance and support refresh.
-The chat
+after an update keep their prompt. The chat
 shows a "Soul updated" mark under the bubble, as it shows "Memory updated"
 for the builtin memory tool and "Note added" for its `note` action.
 

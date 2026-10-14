@@ -16,7 +16,7 @@ const finish = text => {
     content: [{type: 'text', text}], stopReason: 'stop'}});
   emit({type: 'agent_settled'});
 };
-const blocked = response => response.error?.startsWith('owl is waiting on your reply.')
+const blocked = response => response.error?.startsWith('owl is waiting on this request.')
   ? 'CHAIN_BLOCKED' : 'CHAIN_BYPASSED';
 let scenario;
 rl.on('line', line => {
@@ -49,6 +49,7 @@ rl.on('line', line => {
       case 'nested-detail': return finish('NESTED_BLOCKED');
       case 'correction-check': return finish(JSON.stringify({ok: !!response.error}));
       case 'fresh-check': return finish(response.error ? 'FRESH_BLOCKED' : 'FRESH_ALLOWED');
+      case 'pass-on': return finish(response.error ? 'PASS_ON_BLOCKED' : 'PASS_ON_ALLOWED');
     }
     return;
   }
@@ -72,6 +73,8 @@ rl.on('line', line => {
   } else if (command.message.startsWith('@owl: ')) {
     scenario = command.message.slice('@owl: '.length);
     upstream('parent-check');
+  } else if (command.message === '[reply from fox] late') {
+    tool('pass-on', 'message_bot', {to: 'owl', text: 'Passing this on', wait: true});
   } else if (command.message.startsWith('[reply from fox]')) {
     upstream('async-check');
   } else if (command.message === 'queued check') {

@@ -1233,6 +1233,12 @@ impl Runtime {
                 state.output.clear();
                 state.error = None;
                 state.chain = chain.unwrap_or_default();
+                // A background result that finds the section idle starts a turn
+                // nobody waits on: keep the shared hop count, drop the requesters
+                // so the bot can pass the answer on.
+                if queued {
+                    state.chain.askers.clear();
+                }
             }
             // Queued input joins the unsettled turn, even if a background
             // result belongs to an older turn. Keep its active requester guard.
@@ -2173,7 +2179,7 @@ impl Runtime {
             return Err(Error::new(
                 4202,
                 format!(
-                    "{to} is waiting on your reply. Do the work and reply to it directly instead of asking it."
+                    "{to} is waiting on this request. Do the work and reply to the bot that asked you."
                 ),
             ));
         }

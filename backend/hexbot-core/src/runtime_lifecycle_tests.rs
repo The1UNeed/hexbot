@@ -1569,7 +1569,7 @@ async fn a_bot_cannot_hand_a_request_back_up_the_chain() {
         .prepare_delivery(&cat, "owl", "research")
         .unwrap_err();
     assert_eq!(error.code, 4202);
-    assert!(error.message.starts_with("owl is waiting on your reply."));
+    assert!(error.message.starts_with("owl is waiting on this request."));
     // Asking a bot outside the chain is still fine, and the chain grows with it.
     let (stored, _, chain) = runtime.prepare_delivery(&cat, "fox", "a detail").unwrap();
     runtime
@@ -1590,6 +1590,10 @@ async fn a_bot_cannot_hand_a_request_back_up_the_chain() {
     runtime.prepare_delivery(&owl, "cat", "one more").unwrap();
     runtime.shutdown().await;
 }
+
+/// Shared allowance for the request-chain scenarios. They wait on events and
+/// replies; the deadline only stops a hung run, so it stays generous under load.
+const CHAIN_DEADLINE: Duration = Duration::from_secs(60);
 
 fn setup_request_chain() -> (common::TestHome, Arc<Runtime>, EventHub) {
     let (home, runtime, hub) = setup();
@@ -1636,7 +1640,7 @@ fn assert_upstream_blocked(home: &Path, ids: &[&str]) {
         assert!(
             response["response"]["error"]
                 .as_str()
-                .is_some_and(|message| message.starts_with("owl is waiting on your reply.")),
+                .is_some_and(|message| message.starts_with("owl is waiting on this request.")),
             "{response}"
         );
     }
@@ -1666,7 +1670,7 @@ async fn queued_request_ready(events: &mut tokio::sync::broadcast::Receiver<crat
 async fn async_reply_preserves_requesters_and_hops_until_the_originating_turn_settles() {
     let (home, runtime, _) = setup_request_chain();
     let result = tokio::time::timeout(
-        Duration::from_secs(15),
+        CHAIN_DEADLINE,
         runtime.run_hidden("alice", "owl", "first", "async"),
     )
     .await
@@ -1691,7 +1695,7 @@ async fn async_reply_preserves_requesters_and_hops_until_the_originating_turn_se
 async fn queued_user_input_preserves_the_active_chain_and_a_fresh_turn_resets_it() {
     let (home, runtime, hub) = setup_request_chain();
     let mut events = hub.subscribe();
-    tokio::time::timeout(Duration::from_secs(15), async {
+    tokio::time::timeout(CHAIN_DEADLINE, async {
         let turn = runtime.run_hidden("alice", "owl", "first", "queued");
         let queue = async {
             queued_request_ready(&mut events).await;
@@ -1717,7 +1721,7 @@ async fn queued_user_input_preserves_the_active_chain_and_a_fresh_turn_resets_it
     assert_eq!(original.hops.load(Ordering::Acquire), 1);
     let mut settled = cat.settled.subscribe();
     let before = *settled.borrow();
-    let result = tokio::time::timeout(Duration::from_secs(15), async {
+    let result = tokio::time::timeout(CHAIN_DEADLINE, async {
         runtime
             .call(
                 "alice",
@@ -1747,7 +1751,7 @@ async fn queued_user_input_preserves_the_active_chain_and_a_fresh_turn_resets_it
 async fn a_late_background_result_keeps_the_newer_active_request_chain() {
     let (home, runtime, hub) = setup_request_chain();
     let mut events = hub.subscribe();
-    tokio::time::timeout(Duration::from_secs(15), async {
+    tokio::time::timeout(CHAIN_DEADLINE, async {
         runtime
             .run_hidden("alice", "owl", "first", "async")
             .await
@@ -1785,10 +1789,53 @@ async fn a_late_background_result_keeps_the_newer_active_request_chain() {
 }
 
 #[tokio::test]
+async fn a_late_background_result_in_an_idle_section_can_be_passed_on() {
+    let (_home, runtime, _) = setup_request_chain();
+    tokio::time::timeout(
+        CHAIN_DEADLINE,
+        runtime.run_hidden("alice", "owl", "first", "async"),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let cat = requester(&runtime);
+    let earlier = cat.state.lock().unwrap().chain.clone();
+    assert_eq!(earlier.askers, ["owl"]);
+    assert_eq!(earlier.hops.load(Ordering::Acquire), 2);
+    // owl's turn is over, so nobody waits on cat any more. A late reply that
+    // resumes cat must let it pass the answer on, within the same hop count.
+    let mut settled = cat.settled.subscribe();
+    let before = *settled.borrow();
+    let result = tokio::time::timeout(CHAIN_DEADLINE, async {
+        runtime
+            .return_result(
+                "alice",
+                "cat",
+                &cat.stored,
+                "[reply from fox] late",
+                Some(earlier.clone()),
+            )
+            .await;
+        while *settled.borrow() == before {
+            settled.changed().await.unwrap();
+        }
+        cat.state.lock().unwrap().output.clone()
+    })
+    .await
+    .unwrap();
+    assert_eq!(result, "PASS_ON_ALLOWED");
+    let resumed = cat.state.lock().unwrap().chain.clone();
+    assert!(resumed.askers.is_empty());
+    assert!(Arc::ptr_eq(&resumed.hops, &earlier.hops));
+    assert_eq!(earlier.hops.load(Ordering::Acquire), 3);
+    runtime.shutdown().await;
+}
+
+#[tokio::test]
 async fn delegates_nested_children_and_schema_corrections_inherit_the_request_chain() {
     let (home, runtime, _) = setup_request_chain();
     let result = tokio::time::timeout(
-        Duration::from_secs(20),
+        CHAIN_DEADLINE,
         runtime.run_hidden("alice", "owl", "first", "delegate"),
     )
     .await
@@ -1810,7 +1857,7 @@ async fn delegates_nested_children_and_schema_corrections_inherit_the_request_ch
     assert!(runtime.children.lock().unwrap().is_empty());
     // Independent background work must retain its ordinary fresh-chain behavior.
     let result = tokio::time::timeout(
-        Duration::from_secs(15),
+        CHAIN_DEADLINE,
         runtime.run_hidden_job("alice", "cat", "independent", "independent", &Value::Null),
     )
     .await
