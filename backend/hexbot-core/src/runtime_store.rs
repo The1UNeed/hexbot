@@ -473,24 +473,33 @@ pub fn legacy_rows(conn: &Connection, stored: &str) -> Result<(Vec<Value>, Strin
     }
     Ok((result, lineage.last().cloned().unwrap_or_default()))
 }
-/// Sections an earlier build posted dream reports to, as the upgrade to one
-/// chat per bot found them.
-pub fn dream_logs(home: &Path) -> Result<BTreeSet<String>> {
+/// A list kept in a setting.
+fn listed(home: &Path, key: &str) -> Result<BTreeSet<String>> {
     let value: Option<String> = crate::db::open(home)?
-        .query_row(
-            "SELECT value FROM settings WHERE key='dream_logs'",
-            [],
-            |r| r.get(0),
-        )
+        .query_row("SELECT value FROM settings WHERE key=?", [key], |r| {
+            r.get(0)
+        })
         .optional()?;
     Ok(value
         .and_then(|value| serde_json::from_str(&value).ok())
         .unwrap_or_default())
 }
+/// Sections an earlier build posted dream reports to, as the upgrade to one
+/// chat per bot found them.
+pub fn dream_logs(home: &Path) -> Result<BTreeSet<String>> {
+    listed(home, "dream_logs")
+}
 /// The reports an earlier build posted, unmarked, to a section: none unless it
 /// is a dream log, since a reply elsewhere can read like one.
 pub fn legacy_reports(home: &Path, bot: &str, stored: &str) -> Result<HashSet<String>> {
-    if !dream_logs(home)?.contains(stored) {
+    // A bot whose older store could not be read during the upgrade has its
+    // dream logs found the first time that store is read.
+    let logs = if listed(home, "dream_log_bots")?.contains(bot) {
+        dream_logs(home)?
+    } else {
+        crate::catalog::classify_dream_logs(home, bot)?
+    };
+    if !logs.contains(stored) {
         return Ok(HashSet::new());
     }
     Ok(common::rows(

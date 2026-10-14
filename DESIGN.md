@@ -208,14 +208,15 @@ more freedom and more capability than a hosted product can offer.
 - Updating from a build with many sections per bot keeps, for each bot, the
   section with the latest conversation (something said, not the old Dreams
   log, not archived, newest) and deletes the rest with their history. It runs
-  once, and first makes a full copy of `hexbot.db`, `hexbot-runtime.db`, the
-  bots' `state.db` and `runtime/sessions` in
-  `backups/one-chat-per-bot-<time>/`, so it needs that much free disk; if the
-  copy fails nothing is deleted, the partial copy is removed, and the next
-  start tries again. A finished copy is reused until the upgrade finishes. A
-  chat handed out while the upgrade waits, for whatever reason, is the one it
-  keeps. A bot whose conversations recovery could not read, or whose older
-  `state.db` cannot be read, keeps them all. Memory and notes stay.
+  once, at the first start of this version before any client can connect,
+  and first makes a full copy of `hexbot.db`, `hexbot-runtime.db`, the bots'
+  `state.db` and `runtime/sessions` in `backups/one-chat-per-bot-<time>/`, so
+  it needs that much free disk. If anything fails (the copy, recovery, a
+  delete) nothing more is deleted, the partial copy is removed, and the
+  sections left stay for good; no later start tries again. A bot whose
+  conversations recovery could not read, or whose older `state.db` cannot be
+  read, keeps them all. Its chat is ranked the same way, so the old Dreams log
+  is never a bot's chat while a conversation remains. Memory and notes stay.
 - A chat starts with the bot's memory and a catalog of skill descriptions.
   It loads skill bodies when needed. It picks up the current name, soul,
   memory, About you, teammates and skill catalog after compaction if the next

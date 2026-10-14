@@ -79,10 +79,11 @@ impl App {
         web_dist: Option<PathBuf>,
     ) -> Result<Arc<Self>> {
         db::migrate(&home)?;
-        // The daemon starts without it; nothing it has not backed up is deleted.
+        // Before any client can connect. The daemon starts without it; it
+        // fails this way only before it deletes anything.
         if let Err(error) = catalog::one_chat_per_bot(&home) {
             eprintln!(
-                "The upgrade to one chat per bot stopped and runs again on the next start: {}",
+                "The upgrade to one chat per bot stopped before deleting anything and runs again on the next start: {}",
                 error.message
             );
         }

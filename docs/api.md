@@ -214,24 +214,27 @@ conversations in `room_sessions`, not here. On its first start after the
 upgrade the daemon keeps one chat per bot (`catalog::one_chat_per_bot`, once,
 recorded as the `one_chat_per_bot` setting): for a bot with several, the one
 with something said, then not the old Dreams log, then not archived, then
-newest, and deletes the others with their history. Before deleting anything it
-makes a full copy of `hexbot.db`, `hexbot-runtime.db`, the affected bots'
-`state.db` and all of `runtime/sessions` in
-`<home>/backups/one-chat-per-bot-<time>/`, so it needs about that much free disk
-space. If that copy fails it removes the unfinished copy
-(`one-chat-per-bot-<time>.partial`), deletes nothing and tries again at the next
-start; an error in the upgrade itself is logged and the daemon starts anyway. A
-finished copy is recorded as the `one_chat_per_bot_backup` setting and reused
-while it holds every section to delete and nothing was said in them since. A
-bot with a conversation that recovery set aside or could not read, or whose
-`state.db` cannot be read, keeps all its sections. Sections made later, by an
-older build, are never deleted. `hexbot.sections.create`, and a dream posting
-its report, rank a bot's healthy sections the same way; while the upgrade
-waits, the chat they hand out is pinned in the `chat_pins` setting, ranks
-first, and is always kept, so the chat in use is the one the upgrade keeps
-whatever stopped it. Both settings are removed when the upgrade finishes. The old Dreams logs it finds are recorded as the `dream_logs`
-setting: only in those are messages matching a dream summary treated as dream
-reports, when the log is first opened and in history search.
+newest, and deletes the others with their history. It runs in `App::new`
+before `Runtime::new`, so no client is connected, and it is tried once. Before
+deleting anything it makes a fresh full copy of `hexbot.db`,
+`hexbot-runtime.db`, the affected bots' `state.db` and all of
+`runtime/sessions` in `<home>/backups/one-chat-per-bot-<time>/`, so it needs
+about that much free disk space. The setting is written before the first
+delete. If anything fails (the copy, `reconcile_all`, a delete) the error is
+logged, an unfinished copy (`one-chat-per-bot-<time>.partial`) is removed,
+nothing more is deleted, the setting is written anyway, and the daemon starts;
+the sections left are kept for good and no later start deletes any. A bot with
+a conversation that recovery set aside or could not read, or whose `state.db`
+cannot be read, keeps all its sections. Sections made later, by an older
+build, are never deleted. `hexbot.sections.create`, and a dream posting its
+report, rank a bot's healthy sections the same way, so a kept Dreams log never
+outranks a conversation; a `state.db` that cannot be read counts as empty
+there. Before anything else, the upgrade finds each bot's old Dreams logs and
+records them as the `dream_logs` setting, with the bots it could read as
+`dream_log_bots`: only in those logs are messages matching a dream summary
+treated as dream reports, when the log is first opened and in history search.
+A bot whose `state.db` could not be read then has its logs found the first
+time that store is read.
 
 Section shape: `{id, bot, title, title_by: "bot" | null, created_at,
 updated_at, archived_at | null, done_at | null, preview, message_count,
