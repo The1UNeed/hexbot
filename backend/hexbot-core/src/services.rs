@@ -525,8 +525,38 @@ async fn daemon_request(
 /// Asks Hex Connect to wake the owner's phones about a check-in. `targets` are
 /// `{token, device}`; the push carries only the section and the device id to
 /// open it from, never the message: chat stays off Connect. Returns the tokens
-/// the push service no longer knows, for the caller to forget.
-pub async fn push(home: &Path, targets: &[Value], section: &str) -> Result<Vec<String>> {
+/// the push service no longer knows, for the caller to forget, and the receipt
+/// ids (`{id, token}`) to ask about once the phones' services have answered.
+pub async fn push(
+    home: &Path,
+    targets: &[Value],
+    section: &str,
+) -> Result<(Vec<String>, Vec<Value>)> {
+    let Some(config) = ConnectConfig::load(home)?
+        .filter(|c| !c.daemon_id.is_empty() && !c.daemon_token.is_empty())
+    else {
+        return Ok((vec![], vec![]));
+    };
+    let reply = daemon_request(
+        home,
+        &config,
+        Method::POST,
+        &format!("/api/daemons/{}/push", config.daemon_id),
+        Some(json!({"targets":targets,"section":section})),
+    )
+    .await?;
+    let gone = reply["gone"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|t| t.as_str().map(str::to_owned))
+        .collect();
+    let tickets = reply["tickets"].as_array().cloned().unwrap_or_default();
+    Ok((gone, tickets))
+}
+
+/// Which of these receipt ids say the phone's app is gone (`push`).
+pub async fn push_receipts(home: &Path, ids: &[String]) -> Result<Vec<String>> {
     let Some(config) = ConnectConfig::load(home)?
         .filter(|c| !c.daemon_id.is_empty() && !c.daemon_token.is_empty())
     else {
@@ -536,8 +566,8 @@ pub async fn push(home: &Path, targets: &[Value], section: &str) -> Result<Vec<S
         home,
         &config,
         Method::POST,
-        &format!("/api/daemons/{}/push", config.daemon_id),
-        Some(json!({"targets":targets,"section":section})),
+        &format!("/api/daemons/{}/push/receipts", config.daemon_id),
+        Some(json!({ "ids": ids })),
     )
     .await?;
     Ok(reply["gone"]

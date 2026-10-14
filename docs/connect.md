@@ -233,8 +233,12 @@ per minute per running app instance, when a registration is created.
    as data. A daemon sends only ids and tokens: the message never reaches
    Connect, and no daemon can put its own text in a push. Connect stores
    nothing. At most 20 targets per call and ten calls a minute per daemon. The
-   reply is `{gone, failed}`: tokens Expo no longer knows, which the daemon
-   forgets, and how many Expo refused otherwise (logged by Connect).
+   reply is `{gone, failed, tickets}`: tokens Expo no longer knows, which the
+   daemon forgets; how many Expo refused otherwise (logged by Connect); and
+   `{id, token}` receipt ids. Fifteen minutes later the daemon asks
+   `POST /api/daemons/{id}/push/receipts {ids}` (at most 300) and forgets the
+   tokens whose receipts say the app is gone (`{gone: [ids]}`), since Apple
+   and Google report a removed app only then.
 
 ## Online state
 

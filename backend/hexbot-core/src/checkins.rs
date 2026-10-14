@@ -21,6 +21,8 @@ const WAKEUP_GRACE: f64 = 6.0 * 3_600.0;
 /// After a failed check-in, the next waits this long.
 const RETRY_AFTER: f64 = 15.0 * 60.0;
 const SUMMARY_CAP: usize = 2_000;
+/// Expo's advice for when push receipts are ready.
+const RECEIPT_DELAY: Duration = Duration::from_secs(15 * 60);
 /// Check-in messages one turn takes into context; older ones stay in history.
 const CONTEXT_MESSAGES: usize = 6;
 /// A wake-up waits this long after the last check-in, so no chain of wake-ups
@@ -419,17 +421,51 @@ async fn push(home: &Path, owner: &str, bot: &str, section: &str) -> Result<()> 
     }
     // Connect takes 20 targets a request.
     let mut gone = vec![];
+    let mut tickets = vec![];
     for batch in targets.chunks(20) {
-        gone.extend(crate::services::push(home, batch, section).await?);
+        let (lost, sent) = crate::services::push(home, batch, section).await?;
+        gone.extend(lost);
+        tickets.extend(sent);
     }
-    if !gone.is_empty() {
-        let conn = db::open(home)?;
-        for token in gone {
-            conn.execute(
-                "UPDATE devices SET push_token=NULL,push_platform=NULL WHERE push_token=?",
-                [token],
+    forget_tokens(home, &gone)?;
+    // An app removed from a phone shows only in the receipt, once Apple or
+    // Google answer Expo; ask then, and forget those tokens too.
+    if !tickets.is_empty() {
+        tokio::time::sleep(RECEIPT_DELAY).await;
+        let token_of = tickets
+            .iter()
+            .filter_map(|t| {
+                Some((
+                    t["id"].as_str()?.to_owned(),
+                    t["token"].as_str()?.to_owned(),
+                ))
+            })
+            .collect::<std::collections::HashMap<_, _>>();
+        let ids = token_of.keys().cloned().collect::<Vec<_>>();
+        for batch in ids.chunks(300) {
+            let gone = crate::services::push_receipts(home, batch).await?;
+            forget_tokens(
+                home,
+                &gone
+                    .iter()
+                    .filter_map(|id| token_of.get(id).cloned())
+                    .collect::<Vec<_>>(),
             )?;
         }
+    }
+    Ok(())
+}
+
+fn forget_tokens(home: &Path, tokens: &[String]) -> Result<()> {
+    if tokens.is_empty() {
+        return Ok(());
+    }
+    let conn = db::open(home)?;
+    for token in tokens {
+        conn.execute(
+            "UPDATE devices SET push_token=NULL,push_platform=NULL WHERE push_token=?",
+            [token],
+        )?;
     }
     Ok(())
 }
@@ -864,7 +900,8 @@ impl Dreaming {
         // What they answered in the Check-ins section: done, snoozed, not needed.
         let replies = conn
             .query_row(
-                "SELECT id FROM sections WHERE owner_id=? AND purpose=? AND archived_at IS NULL ORDER BY created_at DESC LIMIT 1",
+                // Archived still counts: its replies say what is handled.
+                "SELECT id FROM sections WHERE owner_id=? AND purpose=? ORDER BY created_at DESC LIMIT 1",
                 params![owner, PURPOSE],
                 |r| r.get::<_, String>(0),
             )

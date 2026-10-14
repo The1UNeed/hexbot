@@ -1738,13 +1738,24 @@ fn set_push(home: &std::path::Path, owner: &str, device: &str, p: &Value) -> Res
     if !valid || (token.is_some() && !matches!(platform, Some("ios" | "android"))) {
         return Err(Error::new(4202, "invalid push token"));
     }
-    let changed = db::open(home)?.execute(
+    let mut conn = db::open(home)?;
+    let tx = conn.transaction()?;
+    let changed = tx.execute(
         "UPDATE devices SET push_token=?,push_platform=? WHERE id=? AND owner_id=? AND revoked_at IS NULL",
         rusqlite::params![token, token.and(platform), device, owner],
     )?;
     if changed == 0 {
         return Err(Error::new(4302, "this connection has no paired device"));
     }
+    // A phone paired again keeps its token; it moves to the new pairing, so
+    // the phone gets each push once.
+    if let Some(token) = token {
+        tx.execute(
+            "UPDATE devices SET push_token=NULL,push_platform=NULL WHERE push_token=? AND id<>?",
+            rusqlite::params![token, device],
+        )?;
+    }
+    tx.commit()?;
     Ok(json!({"ok":true}))
 }
 /// Frames on a daemon page may only load from the daemon. A bot's visual runs

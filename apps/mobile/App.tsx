@@ -512,7 +512,15 @@ function MobileApp() {
     if (!s || !b) return
     openedTap.current = tapped.key
     act(() => mobile.openSection(b, s))
-  }, [tapped?.key, tapped?.section, tapped?.device, mobile.active?.id, mobile.sections, mobile.bots])
+  }, [
+    tapped?.key,
+    tapped?.section,
+    tapped?.device,
+    mobile.saved,
+    mobile.active?.id,
+    mobile.sections,
+    mobile.bots
+  ])
   const rooms = mobile.rooms.map(r => ({
     id: r.id,
     name: r.name,

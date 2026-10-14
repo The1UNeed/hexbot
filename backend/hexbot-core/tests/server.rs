@@ -641,6 +641,29 @@ async fn a_paired_phone_sets_and_clears_only_its_own_push_token() {
         Some("ExponentPushToken[abc-123_X]")
     );
     assert_eq!(token(&other["device_id"]), None);
+    // The same phone paired again: its token moves to the new pairing.
+    let mut again = fixture
+        .socket(other["device_token"].as_str().unwrap())
+        .await;
+    request(
+        &mut again,
+        "move",
+        "hexbot.devices.set_push",
+        json!({"token":"ExponentPushToken[abc-123_X]","platform":"ios"}),
+    )
+    .await;
+    assert_eq!(token(&phone["device_id"]), None);
+    assert_eq!(
+        token(&other["device_id"]).as_deref(),
+        Some("ExponentPushToken[abc-123_X]")
+    );
+    request(
+        &mut socket,
+        "back",
+        "hexbot.devices.set_push",
+        json!({"token":"ExponentPushToken[abc-123_X]","platform":"ios"}),
+    )
+    .await;
     for bad in [
         json!({"token":"https://evil.example/hook","platform":"ios"}),
         json!({"token":"ExponentPushToken[]","platform":"ios"}),
