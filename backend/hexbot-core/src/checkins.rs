@@ -845,9 +845,15 @@ fn schedule(
         [owner],
         |r| r.get(0),
     )?;
+    // The gap runs from when the last check-in ended, however long it ran.
+    let ended: Option<f64> = conn.query_row(
+        "SELECT MAX(COALESCE(finished_at,started_at)) FROM checkins WHERE owner_id=?",
+        [owner],
+        |r| r.get(0),
+    )?;
     let wakeup = wakeup.map(|at| {
         at.max(floor)
-            .max(previous.map_or(f64::MIN, |p| p + WAKEUP_GAP))
+            .max(ended.map_or(f64::MIN, |e| e + WAKEUP_GAP))
     });
     let heartbeat = next_heartbeat(window, every, previous, floor);
     Ok(match (wakeup, heartbeat) {
@@ -882,10 +888,11 @@ fn finish(home: &Path, id: &str, status: &str, summary: &str) -> Result<()> {
 /// stopped, but not yet shown, is shown now.
 pub(super) fn recover(home: &Path) -> Result<()> {
     let store = runtime_store::open(home)?;
+    // Every message kept (30 days at most), however long the daemon was off.
     for row in common::rows(
         &db::open(home)?,
-        "SELECT id,section_id,text,created_at FROM checkin_messages WHERE text<>'' AND created_at>?",
-        &[&(common::now() - 2.0 * 86_400.0)],
+        "SELECT id,section_id,text,created_at FROM checkin_messages WHERE text<>''",
+        &[],
     )? {
         let (Some(id), Some(section)) = (row["id"].as_str(), row["section_id"].as_str()) else {
             continue;
@@ -1406,9 +1413,10 @@ mod tests {
             [now - 10.0],
         )
         .unwrap();
+        // Measured from when that check-in ended, not when it began.
         assert_eq!(
             schedule(&conn, "local", &settings, now).unwrap(),
-            Some((now - 60.0 + WAKEUP_GAP, "wakeup"))
+            Some((now - 30.0 + WAKEUP_GAP, "wakeup"))
         );
         // A failure that ran 20 minutes pauses 15 more from its end, not its start.
         run("c", now - 1200.0, now - 30.0, "failed");
@@ -1439,7 +1447,8 @@ mod tests {
             .unwrap()
             .execute(
                 "INSERT INTO checkin_messages(id,owner_id,bot,section_id,text,created_at) VALUES ('m','local','hexbot','s','Due tonight.',?)",
-                [common::now()],
+                // The daemon was off for days in between.
+                [common::now() - 5.0 * 86_400.0],
             )
             .unwrap();
         recover(home.path()).unwrap();
