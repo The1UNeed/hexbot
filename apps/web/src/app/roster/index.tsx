@@ -2,6 +2,7 @@ import { useNavigate, useParams } from '@tanstack/react-router'
 import {
   ChevronDown,
   ChevronRight,
+  Hexagon,
   MoreHorizontal,
   Plus,
   Search,
@@ -55,6 +56,8 @@ import { useTranscripts } from '../../stores/transcripts'
 import { rememberedTab } from '../bot-settings'
 import { UpdatePill } from '../update-pill'
 
+import { needsPrimary, PrimaryChoice } from './primary-choice'
+
 const DAY = 86_400_000
 
 const rowClass =
@@ -100,8 +103,13 @@ export function relativeTime(raw: number | null): string {
   return new Intl.DateTimeFormat(undefined, { day: 'numeric', month: 'short' }).format(value)
 }
 
+/** The primary bot first, then the most recently active. */
 export const orderedBots = (bots: Bot[]) =>
-  [...bots].sort((a, b) => toMillis(b.last_activity_at) - toMillis(a.last_activity_at))
+  [...bots].sort(
+    (a, b) =>
+      Number(Boolean(b.primary)) - Number(Boolean(a.primary)) ||
+      toMillis(b.last_activity_at) - toMillis(a.last_activity_at)
+  )
 
 export function Field({ children, label }: { children: React.ReactNode; label: string }) {
   return (
@@ -114,11 +122,18 @@ export function Field({ children, label }: { children: React.ReactNode; label: s
 
 export type RosterItem = { item: Bot | Room; kind: 'bot' | 'room' }
 
+const pinned = (entry: RosterItem) => entry.kind === 'bot' && Boolean((entry.item as Bot).primary)
+
+/** The primary bot pinned on top, then bots and rooms by recent activity. */
 export const orderedRosterItems = (bots: Bot[], rooms: Room[]): RosterItem[] =>
   [
     ...bots.map(item => ({ item, kind: 'bot' as const })),
     ...rooms.filter(room => !room.archived_at).map(item => ({ item, kind: 'room' as const }))
-  ].sort((a, b) => toMillis(b.item.last_activity_at) - toMillis(a.item.last_activity_at))
+  ].sort(
+    (a, b) =>
+      Number(pinned(b)) - Number(pinned(a)) ||
+      toMillis(b.item.last_activity_at) - toMillis(a.item.last_activity_at)
+  )
 
 function RoomRow({
   active,
@@ -323,7 +338,17 @@ function BotRows({
           </span>
           <span className="min-w-0 flex-1">
             <span className="flex items-baseline gap-2">
-              <span className="min-w-0 flex-1 truncate font-semibold">{bot.display_name}</span>
+              <span className="flex min-w-0 flex-1 items-center gap-1.5">
+                <span className="truncate font-semibold">{bot.display_name}</span>
+                {bot.primary ? (
+                  <Hexagon
+                    aria-label="Primary bot"
+                    className="shrink-0 text-muted"
+                    role="img"
+                    size={12}
+                  />
+                ) : null}
+              </span>
               <StatusTag status={status} />
             </span>
             {label ? (
@@ -738,6 +763,18 @@ export function RosterColumn() {
         </div>
       </header>
       <div className="min-h-0 flex-1 overflow-y-auto px-2 py-1">
+        {needsPrimary(ordered) ? (
+          <PrimaryChoice
+            bots={ordered}
+            onCreated={(bot, section, created) => {
+              open(bot.name, section.id)
+
+              if (created) {
+                void introduceBot(section, bot)
+              }
+            }}
+          />
+        ) : null}
         {useBots.getState().loaded && ordered.length === 0 ? (
           <button
             className={cn(rowClass, 'bg-surface-2/60')}
@@ -802,9 +839,7 @@ export function RosterColumn() {
               title={label}
             />
           </span>
-          <span className="min-w-0 flex-1 truncate font-medium">
-            {me?.display_name ?? 'You'}
-          </span>
+          <span className="min-w-0 flex-1 truncate font-medium">{me?.display_name ?? 'You'}</span>
           <button
             aria-label="Settings"
             className="grid size-7 place-items-center rounded-full border border-border text-muted transition-colors hover:bg-surface-2 hover:text-foreground"
@@ -916,9 +951,7 @@ export function RosterColumn() {
             </div>
           ) : (
             <p className="flex items-center gap-2 text-[length:var(--text-secondary)] text-muted">
-              <span className="min-w-0 truncate">
-                Runs on {newModel?.label ?? newBot.model}
-              </span>
+              <span className="min-w-0 truncate">Runs on {newModel?.label ?? newBot.model}</span>
               <button
                 className="shrink-0 underline-offset-2 hover:text-foreground hover:underline"
                 onClick={() => setShowModel(true)}
@@ -1067,7 +1100,10 @@ function NewRoomDialog({
           <Select
             label="Room approval mode"
             onValueChange={value => setApprovalMode(value as typeof approvalMode)}
-            options={approvalModes(role, approvalMode).map(({ label, value }) => ({ label, value }))}
+            options={approvalModes(role, approvalMode).map(({ label, value }) => ({
+              label,
+              value
+            }))}
             value={approvalMode}
           />
         </label>
@@ -1103,11 +1139,7 @@ function NewRoomDialog({
           <Button onClick={onClose} variant="ghost">
             Cancel
           </Button>
-          <Button
-            disabled={!name.trim() || !members.length}
-            type="submit"
-            variant="primary"
-          >
+          <Button disabled={!name.trim() || !members.length} type="submit" variant="primary">
             Create room
           </Button>
         </div>

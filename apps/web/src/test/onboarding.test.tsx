@@ -9,6 +9,7 @@ import {
   AboutStep,
   ChoiceStep,
   compileAboutYou,
+  createHexBot,
   initialOnboardingStep,
   installPercent,
   InstallStep,
@@ -116,9 +117,11 @@ describe('onboarding', () => {
   })
 
   it('saves legacy About you when the daemon has no rename method', async () => {
-    const call = vi.fn((method: string) => method === 'hexbot.users.me.set'
-      ? Promise.reject({ code: -32601, message: 'Unknown method' })
-      : Promise.resolve({ cap: 2000, text: 'Name: Alex', updated_at: 1 }))
+    const call = vi.fn((method: string) =>
+      method === 'hexbot.users.me.set'
+        ? Promise.reject({ code: -32601, message: 'Unknown method' })
+        : Promise.resolve({ cap: 2000, text: 'Name: Alex', updated_at: 1 })
+    )
 
     setActiveRpc({ call } as never)
     const onContinue = vi.fn()
@@ -189,9 +192,7 @@ describe('onboarding', () => {
 
     const before = Number(screen.getByRole('progressbar').getAttribute('aria-valuenow'))
     rerender(
-      <InstallStep
-        progress={[uv, { message: 'Installing voice tools', stage: 'dependencies' }]}
-      />
+      <InstallStep progress={[uv, { message: 'Installing voice tools', stage: 'dependencies' }]} />
     )
     expect(screen.getByRole('status')).toHaveTextContent('Installing voice tools')
     expect(document.querySelector('[data-act]')).toHaveAttribute('data-act', 'type')
@@ -265,6 +266,34 @@ describe('onboarding', () => {
 
     const values = progress.map((_, index) => installPercent(progress.slice(0, index + 1)))
     expect(values).toEqual([6, 18, 20, 23, 26, 27, 27, 64, 88, 95])
+  })
+
+  it('creates HexBot, and an ordinary bot of that name on an older daemon', async () => {
+    const created = { bot: { name: 'hexbot' }, section: { id: 'general' } }
+
+    const call = vi.fn((method: string) =>
+      method === 'hexbot.bots.create_primary'
+        ? Promise.reject(Object.assign(new Error('unknown method'), { code: -32601 }))
+        : Promise.resolve(created)
+    )
+
+    setActiveRpc({ call } as never)
+    expect(await createHexBot('openai/gpt-5', null)).toEqual(created)
+    expect(call).toHaveBeenCalledWith('hexbot.bots.create_primary', {
+      model: 'gpt-5',
+      provider: 'openai'
+    })
+    expect(call).toHaveBeenCalledWith('hexbot.bots.create', {
+      display_name: 'HexBot',
+      model: 'gpt-5',
+      name: 'hexbot',
+      provider: 'openai'
+    })
+
+    const failing = vi.fn(() => Promise.reject(new Error('There is already a primary bot.')))
+    setActiveRpc({ call: failing } as never)
+    await expect(createHexBot(null, null)).rejects.toThrow('already a primary bot')
+    expect(failing).toHaveBeenCalledOnce()
   })
 
   it('sets up web search before the first bot, and lets you skip', async () => {
