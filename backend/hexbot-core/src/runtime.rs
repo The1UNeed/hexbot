@@ -56,6 +56,9 @@ struct State {
     /// Argument previews by tool call id, kept until the tool result row is written.
     tool_context: HashMap<String, String>,
     unsaved: VecDeque<(Value, Option<String>, Option<Value>)>,
+    /// Something was added to the conversation outside the turn; clients
+    /// read it again once the turn settles.
+    reread: bool,
 }
 /// One upload: an image, a file reference, or the rendered pages of a PDF.
 struct Staged {
@@ -826,6 +829,7 @@ impl Runtime {
                 tool_started: HashMap::new(),
                 tool_context: HashMap::new(),
                 unsaved: VecDeque::new(),
+                reread: false,
             }),
             requests: Mutex::new(tokio::task::JoinSet::new()),
             event_gate: Mutex::new(()),
@@ -1632,8 +1636,8 @@ impl Runtime {
     }
     /// Stops a section's process unless something in it is still running,
     /// waiting on the user or unsaved, so its next open reads what was
-    /// appended. Its live ID stays, as after an idle retire. False when it is
-    /// still working.
+    /// appended. Its live ID stays, as after an idle retire. True when clients
+    /// can read it again now; while a turn runs they are told when it settles.
     pub async fn close_if_quiet(&self, stored: &str) -> Result<bool> {
         let lock = self.open_lock(stored);
         let _guard = lock.lock().await;
@@ -1643,10 +1647,15 @@ impl Runtime {
         };
         // Checked and retired under the session's locks, so a message sent
         // meanwhile either lands first or opens it again.
-        if !self.retire_quiet(&s, f64::INFINITY) {
+        if self.retire_quiet(&s, f64::INFINITY) {
+            self.stop_retired(&s).await;
+            return Ok(true);
+        }
+        let mut state = s.state.lock().unwrap();
+        if state.busy {
+            state.reread = true;
             return Ok(false);
         }
-        self.stop_retired(&s).await;
         Ok(true)
     }
     async fn close_one(&self, owner: &str, stored: &str) -> Result<bool> {
@@ -3412,6 +3421,14 @@ impl Runtime {
                     // Pi sends no end event for tools cut short by an abort.
                     state.tool_started.clear();
                     state.tool_context.clear();
+                    if std::mem::take(&mut state.reread) {
+                        self.events.emit(
+                            &s.owner,
+                            None,
+                            "hexbot.sections.changed",
+                            json!({"id":s.stored,"bot":s.bot,"reload":true}),
+                        );
+                    }
                     (
                         state.output.clone(),
                         state.error.clone(),

@@ -209,8 +209,8 @@ export function routeEvent(event: GatewayEvent, deps: EventRouterDeps = {}): voi
       return
 
     case 'hexbot.sections.changed':
-      // A dream report landed in an idle chat and closed it; an open view reads it again.
-      if (payload.closed === true && typeof payload.id === 'string') {
+      // A dream report landed in the chat; an open view reads it again.
+      if (payload.reload === true && typeof payload.id === 'string') {
         useSections.getState().forgetLive(payload.id)
       }
 

@@ -63,10 +63,10 @@ describe('event routing', () => {
         refreshSections: vi.fn()
       })
 
-    changed({ bot: 'scout', closed: false, id: 'chat' })
+    changed({ bot: 'scout', id: 'chat', reload: false })
     expect(useSections.getState().liveSessionId).toEqual({ chat: 'live-9', other: 'live-8' })
 
-    changed({ bot: 'scout', closed: true, id: 'chat' })
+    changed({ bot: 'scout', id: 'chat', reload: true })
     expect(useSections.getState().liveSessionId).toEqual({ other: 'live-8' })
     expect(Object.keys(useTranscripts.getState().bySession)).toEqual(['live-8'])
   })

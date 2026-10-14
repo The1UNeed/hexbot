@@ -744,9 +744,11 @@ devices, and removes the invite and update methods.
 `hexbot.bots.changed {name}`, `hexbot.sections.changed {id, bot}`,
 `hexbot.memory.user.changed {}`, `hexbot.network.changed {}`. Session-less,
 broadcast to every connection. When a dream report lands in a chat,
-`hexbot.sections.changed` also carries `closed`: true when the chat was idle
-and its process is stopped (its live ID stays), so a client showing it opens
-it again to read the report; false while a turn is still running.
+`hexbot.sections.changed` also carries `reload`: true when a client showing
+the chat should open it again to read the report. An idle chat's process is
+stopped first (its live ID stays); while a turn runs, `reload` is false and a
+second `hexbot.sections.changed {id, bot, reload: true}` follows when the turn
+settles.
 Connect registration and disconnection emit `hexbot.connect.changed {}`.
 Room mutations emit `hexbot.rooms.changed {id}`. Every persisted room event
 emits `hexbot.rooms.event {room_id, event}`. Turn state changes emit

@@ -304,9 +304,11 @@ pub fn one_chat_per_bot(home: &Path) -> Result<()> {
                 |r| r.get(0),
             )
             .optional()?;
-        let first = first
-            .and_then(|m| serde_json::from_str::<Value>(&m).ok())
-            .unwrap_or(Value::Null);
+        let first = match first {
+            Some(message) => serde_json::from_str::<Value>(&message).unwrap_or(Value::Null),
+            // Never opened since the native daemon: its messages are in the old store.
+            None => first_legacy(home, &row)?,
+        };
         if first["role"] == "assistant"
             && first["dream"] != true
             && first["text"].as_str().is_some_and(|text| {
@@ -422,6 +424,21 @@ pub fn one_chat_per_bot(home: &Path) -> Result<()> {
         [],
     )?;
     Ok(())
+}
+/// The first message of a section in the store from before the native daemon,
+/// shaped like a native row: role and text.
+fn first_legacy(home: &Path, row: &Value) -> Result<Value> {
+    let path = profile(home, row["bot"].as_str().unwrap_or(""))?.join("state.db");
+    safe(home, &path)?;
+    if !path.exists() {
+        return Ok(Value::Null);
+    }
+    let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    let (messages, _) = runtime_store::legacy_rows(&conn, row["id"].as_str().unwrap_or(""))?;
+    Ok(messages
+        .first()
+        .map(|m| json!({"role":m["role"],"text":m["content"]}))
+        .unwrap_or(Value::Null))
 }
 fn native_history(home: &Path, row: &Value) -> Result<bool> {
     Ok(runtime_store::open(home)?.query_row(
@@ -1597,10 +1614,11 @@ mod parity_tests {
                  INSERT INTO bot_incidents(id,bot,section_id,kind,created_at) VALUES('failed','owl','put_away','turn_failed',1);
                  INSERT INTO dreams(id,bot,started_at,status,summary) VALUES('d1','fox',1,'complete','In fox_dreams');
                  INSERT INTO sections(id,bot,owner_id,title,title_by) VALUES('dog_chat','dog','alice','Dreams','bot');
-                 INSERT INTO bots(name,owner_id) VALUES('dog','alice'),('elk','alice'),('fly','alice'),('gnu','alice'),('hen','alice'),('ivy','alice');
+                 INSERT INTO bots(name,owner_id) VALUES('dog','alice'),('elk','alice'),('fly','alice'),('gnu','alice'),('hen','alice'),('ivy','alice'),('jay','alice');
+                 INSERT INTO sections(id,bot,owner_id,title,title_dirty,updated_at) VALUES('jay_log','jay','alice','Nightly',1,9),('jay_chat','jay','alice','Plans',0,2);
                  INSERT INTO sections(id,bot,owner_id,title,updated_at) VALUES('ivy_chat','ivy','alice','General',9),('ivy_old','ivy','alice','Old',2);
                  INSERT INTO sections(id,bot,owner_id,title,title_dirty,updated_at) VALUES('gnu_log','gnu','alice','Nightly',1,9),('gnu_chat','gnu','alice','Plans',0,2),('hen_log','hen','alice','Nightly',1,9);
-                 INSERT INTO dreams(id,bot,started_at,status,summary) VALUES('d2','gnu',1,'complete','Gnu learned'),('d3','hen',1,'complete','Hen learned'),('d4','ivy',1,'complete','Ivy learned');
+                 INSERT INTO dreams(id,bot,started_at,status,summary) VALUES('d2','gnu',1,'complete','Gnu learned'),('d3','hen',1,'complete','Hen learned'),('d4','ivy',1,'complete','Ivy learned'),('d5','jay',1,'complete','Jay learned');
                  INSERT INTO sections(id,bot,owner_id,title,updated_at) VALUES('fly_native','fly','alice','Native',5),('fly_legacy','fly','alice','Legacy',9);
                  INSERT INTO sections(id,bot,owner_id,title,updated_at) VALUES('elk_listed','elk','alice','Listed',5),('elk_recovered','elk','alice','Recovered',1);
                  INSERT INTO sections(id,bot,owner_id,title,updated_at,archived_at,peer_bot) VALUES
@@ -1701,6 +1719,22 @@ mod parity_tests {
             "ivy_old",
             json!({"role":"user","text":"Old","timestamp":1}),
         );
+        said(
+            home.path(),
+            "jay_chat",
+            json!({"role":"user","text":"Plans","timestamp":1}),
+        );
+        let jay = home.path().join("profiles/jay");
+        fs::create_dir_all(&jay).unwrap();
+        Connection::open(jay.join("state.db"))
+            .unwrap()
+            .execute_batch(
+                "CREATE TABLE sessions(id TEXT,session_key TEXT,parent_session_id TEXT,model_config TEXT,source TEXT);
+                 CREATE TABLE messages(id INTEGER,session_id TEXT,role TEXT,content TEXT,timestamp REAL);
+                 INSERT INTO sessions(id,session_key) VALUES('jay_log','jay_log');
+                 INSERT INTO messages VALUES(1,'jay_log','assistant','Jay learned',8);",
+            )
+            .unwrap();
         // Opened once, but its old history was never copied in.
         runtime_store::open(home.path())
             .unwrap()
@@ -1767,6 +1801,8 @@ mod parity_tests {
         assert_eq!(ids("gnu"), ["gnu_chat"]);
         assert_eq!(ids("hen"), ["hen_log"]);
         assert_eq!(ids("ivy"), ["ivy_chat"]);
+        // A renamed log never opened since the native daemon goes too.
+        assert_eq!(ids("jay"), ["jay_chat"]);
         assert_eq!(
             runtime_store::history(home.path(), "hen_log").unwrap()[0]["dream"],
             true

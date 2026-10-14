@@ -4165,3 +4165,29 @@ async fn notes_are_written_by_sections_and_proposed_by_jobs() {
     );
     runtime.shutdown().await;
 }
+#[tokio::test]
+async fn a_busy_chat_is_read_again_when_its_turn_settles() {
+    let (_home, runtime, hub) = setup();
+    let mut events = hub.subscribe();
+    open(&runtime).await;
+    let s = runtime.sessions.lock().unwrap()["first"].clone();
+    s.state.lock().unwrap().busy = true;
+    // A report arrives mid-turn: the turn keeps its process.
+    assert!(!runtime.close_if_quiet("first").await.unwrap());
+    assert!(runtime.sessions.lock().unwrap().contains_key("first"));
+    runtime.event(&s, json!({"type":"agent_settled"})).unwrap();
+    let reload = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let event = events.recv().await.unwrap();
+            if event.frame["params"]["type"] == "hexbot.sections.changed" {
+                return event.frame["params"]["payload"].clone();
+            }
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(reload, json!({"id":"first","bot":"owl","reload":true}));
+    // Once settled, clients read a report now.
+    assert!(runtime.close_if_quiet("first").await.unwrap());
+    runtime.shutdown().await;
+}
