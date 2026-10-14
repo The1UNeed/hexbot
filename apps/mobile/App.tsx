@@ -56,23 +56,13 @@ import { parseArgs } from './src/core/chat'
 import { activityLabel, readableResult, resultLine, toolLabel } from './src/core/tools'
 import { Management, type Panel } from './src/Management'
 import { useMobile } from './src/core/useMobile'
-import * as Notifications from 'expo-notifications'
-import { notificationSection } from './src/core/push'
+import { useTappedSection } from './src/core/tapped'
 import { shownRoom } from './src/core/routes'
 import { CONNECT_ORIGIN, parseConnectCallback } from './src/core/links'
 import { clearConnectSession, loadConnectSession, saveConnectSession } from './src/core/storage'
 import { connectGrant, request, RevokedError } from './src/core/transport'
 import type { Bot, ChatTool, ConnectDaemon, Section } from './src/core/types'
 WebBrowser.maybeCompleteAuthSession()
-// A check-in that arrives while the app is open still shows its banner.
-Notifications.setNotificationHandler({
-  handleNotification: async () => ({
-    shouldShowBanner: true,
-    shouldShowList: true,
-    shouldPlaySound: false,
-    shouldSetBadge: false
-  })
-})
 const messageOf = (e: unknown) => (e instanceof Error ? e.message : String(e))
 const ms = (seconds: number | null | undefined) => (seconds == null ? undefined : seconds * 1000)
 const faceOf = (b: Bot): FaceSource => ({
@@ -502,18 +492,16 @@ function MobileApp() {
   })
   const botByName = (name: string) => mobile.bots.find(b => b.name === name)
   // A tapped check-in opens its section once the daemon's lists have it.
-  const tapped = Notifications.useLastNotificationResponse()
+  const tapped = useTappedSection()
   const openedTap = useRef<string | null>(null)
   useEffect(() => {
-    const request = tapped?.notification.request
-    const id = notificationSection(request?.content.data)
-    if (!request || !id || openedTap.current === request.identifier) return
-    const s = mobile.sections.find(item => item.id === id)
+    if (!tapped || openedTap.current === tapped.key) return
+    const s = mobile.sections.find(item => item.id === tapped.section)
     const b = s && mobile.bots.find(item => item.name === s.bot)
     if (!s || !b) return
-    openedTap.current = request.identifier
+    openedTap.current = tapped.key
     act(() => mobile.openSection(b, s))
-  }, [tapped, mobile.sections, mobile.bots])
+  }, [tapped?.key, tapped?.section, mobile.sections, mobile.bots])
   const rooms = mobile.rooms.map(r => ({
     id: r.id,
     name: r.name,
