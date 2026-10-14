@@ -240,9 +240,30 @@ pub fn chat_section(home: &Path, caller: &str, name: &str) -> Result<Value> {
 /// Earlier builds kept many sections per bot. The one with the latest
 /// conversation stays as the bot's chat and the others are deleted with their
 /// history; memory and notes stay. Runs before the runtime starts, so nothing
-/// is live. Dream reports in a kept Dreams section are marked as reports.
+/// is live. Dream reports in a kept Dreams log are marked as reports.
 pub fn one_chat_per_bot(home: &Path) -> Result<()> {
+    // The log earlier builds posted dream reports to, never renamed.
+    const DREAM_LOG: &str = "peer_bot IS NULL AND title='Dreams' AND COALESCE(title_dirty,0)=0";
     let conn = db::open(home)?;
+    let pending: bool = conn.query_row(
+        &format!("SELECT EXISTS(SELECT 1 FROM sections WHERE peer_bot IS NULL GROUP BY owner_id,bot HAVING COUNT(*)>1) OR EXISTS(SELECT 1 FROM sections WHERE {DREAM_LOG})"),
+        [],
+        |r| r.get(0),
+    )?;
+    if !pending {
+        return Ok(());
+    }
+    // After a crash Pi's own log can hold the newest messages; recover them
+    // before choosing which conversation stays.
+    runtime_store::reconcile_all(home)?;
+    let logs = rows(
+        &conn,
+        &format!("SELECT id FROM sections WHERE {DREAM_LOG}"),
+        &[],
+    )?
+    .into_iter()
+    .filter_map(|row| row["id"].as_str().map(str::to_owned))
+    .collect::<std::collections::BTreeSet<_>>();
     let mut chats: std::collections::BTreeMap<(String, String), Vec<(Value, i64)>> =
         Default::default();
     for row in rows(
@@ -254,18 +275,22 @@ pub fn one_chat_per_bot(home: &Path) -> Result<()> {
             row["owner_id"].as_str().unwrap_or("").to_owned(),
             row["bot"].as_str().unwrap_or("").to_owned(),
         );
-        let (_, count) = history_summary(home, &row)?;
+        let (_, mut count) = history_summary(home, &row)?;
+        // A log known only from before the native daemon has no reports to
+        // mark, so it never stays.
+        if logs.contains(row["id"].as_str().unwrap_or("")) && !native_history(home, &row)? {
+            count = -1;
+        }
         chats.entry(key).or_default().push((row, count));
     }
-    drop(conn);
-    for ((owner, _), mut sections) in chats {
+    for ((owner, bot), mut sections) in chats {
         // Something said first, then not put away, then not the dream log, then newest.
         sections.sort_by(|(a, a_count), (b, b_count)| {
             let rank = |row: &Value, count: i64| {
                 (
                     count > 0,
                     row["archived_at"].is_null(),
-                    row["title"] != "Dreams",
+                    !logs.contains(row["id"].as_str().unwrap_or("")),
                 )
             };
             rank(b, *b_count).cmp(&rank(a, *a_count)).then(
@@ -275,23 +300,46 @@ pub fn one_chat_per_bot(home: &Path) -> Result<()> {
                     .total_cmp(&a["updated_at"].as_f64().unwrap_or(0.0)),
             )
         });
-        let (kept, _) = sections.remove(0);
+        // Deleting stamps activity; this is not the bot's.
+        let activity: Option<f64> = conn
+            .query_row(
+                "SELECT last_activity_at FROM bots WHERE name=?",
+                [&bot],
+                |r| r.get(0),
+            )
+            .optional()?
+            .flatten();
+        let (kept, kept_count) = sections.remove(0);
         for (row, _) in sections {
             delete_section(home, &owner, row["id"].as_str().unwrap_or(""), true)?;
         }
-        if kept["title"] == "Dreams" {
-            let id = kept["id"].as_str().unwrap_or("");
+        let id = kept["id"].as_str().unwrap_or("");
+        if kept_count < 0 {
+            // The chat is made on first use.
+            delete_section(home, &owner, id, true)?;
+        } else if logs.contains(id) {
             runtime_store::open(home)?.execute(
                 "UPDATE native_messages SET message_json=json_set(message_json,'$.dream',json('true')) WHERE session_id=?",
                 [id],
             )?;
-            db::open(home)?.execute(
+            conn.execute(
                 "UPDATE sections SET title='General',title_by=NULL WHERE id=?",
                 [id],
             )?;
         }
+        conn.execute(
+            "UPDATE bots SET last_activity_at=? WHERE name=?",
+            params![activity, bot],
+        )?;
     }
     Ok(())
+}
+fn native_history(home: &Path, row: &Value) -> Result<bool> {
+    Ok(runtime_store::open(home)?.query_row(
+        "SELECT EXISTS(SELECT 1 FROM native_sessions WHERE stored_id=?1) OR EXISTS(SELECT 1 FROM native_messages WHERE session_id=?1)",
+        [row["id"].as_str().unwrap_or("")],
+        |r| r.get(0),
+    )?)
 }
 fn avatar(home: &Path, name: &str) -> Result<Value> {
     let dir = profile(home, name)?.join("assets");
@@ -1450,7 +1498,8 @@ mod parity_tests {
             .unwrap()
             .execute_batch(
                 "INSERT INTO users(id,display_name,role,created_at) VALUES('alice','Alice','admin',0);
-                 INSERT INTO bots(name,owner_id) VALUES('owl','alice'),('fox','alice'),('ant','alice');
+                 INSERT INTO bots(name,owner_id,last_activity_at) VALUES('owl','alice',7),('fox','alice',NULL),('ant','alice',NULL),('bee','alice',NULL),('cat','alice',NULL);
+                 INSERT INTO sections(id,bot,owner_id,title,title_dirty) VALUES('bee_dreams','bee','alice','Dreams',0),('cat_chat','cat','alice','Dreams',1);
                  INSERT INTO sections(id,bot,owner_id,title,updated_at,archived_at,peer_bot) VALUES
                   ('old','owl','alice','Garden',1,NULL,NULL),
                   ('put_away','owl','alice','Trip',5,5,NULL),
@@ -1469,6 +1518,23 @@ mod parity_tests {
             );
         }
         said(home.path(), "thread", json!({"role":"user","text":"Help"}));
+        said(
+            home.path(),
+            "cat_chat",
+            json!({"role":"user","text":"About my dreams"}),
+        );
+        // Bee's dream log is known only from before the native daemon.
+        let bee = home.path().join("profiles/bee");
+        fs::create_dir_all(&bee).unwrap();
+        Connection::open(bee.join("state.db"))
+            .unwrap()
+            .execute_batch(
+                "CREATE TABLE sessions(id TEXT,session_key TEXT,parent_session_id TEXT,model_config TEXT,source TEXT);
+                 CREATE TABLE messages(id INTEGER,session_id TEXT,role TEXT,content TEXT,timestamp REAL);
+                 INSERT INTO sessions(id,session_key) VALUES('bee_dreams','bee_dreams');
+                 INSERT INTO messages VALUES(1,'bee_dreams','assistant','Last night I learned',1);",
+            )
+            .unwrap();
         one_chat_per_bot(home.path()).unwrap();
         // Rerunning finds one chat per bot and changes nothing.
         one_chat_per_bot(home.path()).unwrap();
@@ -1502,6 +1568,26 @@ mod parity_tests {
             runtime_store::history(home.path(), "fox_dreams").unwrap()[0]["dream"],
             true
         );
+        // A dream log with nothing to mark goes; the chat is made on first use.
+        assert!(ids("bee").is_empty());
+        // A chat the user named Dreams is a chat.
+        assert_eq!(ids("cat"), ["cat_chat"]);
+        let cat = chat_section(home.path(), "alice", "cat").unwrap();
+        assert_eq!(cat["title"], "Dreams");
+        assert!(runtime_store::history(home.path(), "cat_chat").unwrap()[0]["dream"].is_null());
+        // Deleting the others is not the bot's activity.
+        let activity = |bot: &str| {
+            db::open(home.path())
+                .unwrap()
+                .query_row(
+                    "SELECT last_activity_at FROM bots WHERE name=?",
+                    [bot],
+                    |r| r.get::<_, Option<f64>>(0),
+                )
+                .unwrap()
+        };
+        assert_eq!(activity("owl"), Some(7.0));
+        assert_eq!(activity("fox"), None);
         // A bot without a chat gets one, once; an archived chat comes back.
         let ant = chat_section(home.path(), "alice", "ant").unwrap();
         call(

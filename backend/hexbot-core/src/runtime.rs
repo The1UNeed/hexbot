@@ -162,7 +162,9 @@ impl Runtime {
         }
         Ok(runtime)
     }
-    async fn live(&self, caller: &str, id: &str) -> Result<Arc<Live>> {
+    /// The running section behind live ID `id`, restarted if it was retired.
+    /// For `input` a retired chat restarts with its bot's current model and tools.
+    async fn live(&self, caller: &str, id: &str, input: bool) -> Result<Arc<Live>> {
         common::user(&self.home, caller)?;
         let existing = self
             .sessions
@@ -185,7 +187,11 @@ impl Runtime {
             .optional()?;
         let (stored, bot) = target.ok_or_else(|| Error::new(4001, "session not found"))?;
         common::bot_owner(&self.home, caller, &bot)?;
-        self.open_session(caller, &bot, &stored).await
+        if input {
+            self.open_for_input(caller, &bot, &stored).await
+        } else {
+            self.open_session(caller, &bot, &stored).await
+        }
     }
     // Retire only settled sessions. Their frozen prompt, tools, JSONL and live ID
     // remain durable, so any unchanged client RPC can resume the same section.
@@ -585,13 +591,21 @@ impl Runtime {
                     .map_err(|e| Error::new(5200, e.to_string()))?
             }
             existing => {
+                let saved = existing
+                    .map(|saved| serde_json::from_str::<Value>(&saved))
+                    .transpose()
+                    .map_err(|e| Error::new(5200, e.to_string()))?;
+                // A chat taking new tools keeps its directory, and its prompt says so.
+                let cwd = saved
+                    .as_ref()
+                    .and_then(|saved| saved["cwd"].as_str())
+                    .and_then(|dir| common::saved_workdir(&self.home, dir))
+                    .unwrap_or_else(|| cwd.clone());
                 let (prompt, mut opts) = self.fresh_options(
                     owner, bot, stored, &botrow, &cwd, &settings, restricted, overrides,
                 )?;
-                if let Some(saved) = existing {
-                    // A chat taking new tools keeps its model, thinking level and directory.
-                    let saved = serde_json::from_str::<Value>(&saved)
-                        .map_err(|e| Error::new(5200, e.to_string()))?;
+                if let Some(saved) = saved {
+                    // It keeps its model and thinking level too.
                     for key in ["model", "provider", "reasoning_effort", "cwd"] {
                         opts[key] = saved[key].clone();
                     }
@@ -1881,14 +1895,14 @@ impl Runtime {
                 .collect::<Vec<_>>();
             return Ok(json!({"sessions":sessions}));
         }
-        let mut s = self.live(caller, required(p, "session_id")?).await?;
-        // New input moves a section to its bot's new model; reads and controls
-        // keep the process that is running.
-        if matches!(
+        // New input moves a section to its bot's new model, and a chat to its
+        // bot's new tools; reads and controls keep the process that is running.
+        let input = matches!(
             method,
             "prompt.submit" | "image.attach_bytes" | "pdf.attach" | "file.attach"
-        ) && self.model_changed(&s)?
-        {
+        );
+        let mut s = self.live(caller, required(p, "session_id")?, input).await?;
+        if input && (self.model_changed(&s)? || self.tools_stale(&s.owner, &s.bot, &s.stored)?) {
             s = self.open_for_input(caller, &s.bot, &s.stored).await?;
         }
         match method {
@@ -4404,7 +4418,7 @@ rl.on('line',line=>{{const c=JSON.parse(line);emit({{type:'response',id:c.id,com
         // Reads keep the running process; the next input restarts it.
         assert!(Arc::ptr_eq(
             &s,
-            &runtime.live("alice", &s.id).await.unwrap()
+            &runtime.live("alice", &s.id, false).await.unwrap()
         ));
         assert!(Arc::ptr_eq(
             &s,
@@ -4484,20 +4498,35 @@ rl.on('line',line=>{{const c=JSON.parse(line);emit({{type:'response',id:c.id,com
             .open_for_input("alice", "owl", "first")
             .await
             .unwrap();
+        // The bot's workspace moves after the chat started; the chat stays where it was.
+        let elsewhere = tempfile::tempdir().unwrap();
+        db::open(home.path())
+            .unwrap()
+            .execute(
+                "UPDATE bots SET workdir=? WHERE name='owl'",
+                [elsewhere.path().to_str().unwrap()],
+            )
+            .unwrap();
         common::write_config(
             home.path(),
             &json!({"mcp_servers":{"fixture-one":{"command":"node"}}}),
         )
         .unwrap();
-        // Reads keep the running process; the next input restarts it.
+        // Reads keep the running process; the next input, here a file, restarts it.
         assert!(Arc::ptr_eq(
             &s,
             &runtime.open_session("alice", "owl", "first").await.unwrap()
         ));
-        let reopened = runtime
-            .open_for_input("alice", "owl", "first")
+        runtime
+            .call(
+                "alice",
+                "file.attach",
+                &json!({"session_id":s.id,"name":"a.txt","data_url":"data:text/plain;base64,YQ=="}),
+            )
             .await
+            .unwrap()
             .unwrap();
+        let reopened = runtime.open_session("alice", "owl", "first").await.unwrap();
         assert!(!Arc::ptr_eq(&s, &reopened));
         assert_eq!(reopened.id, s.id);
         let log = fs::read_to_string(home.path().join("processes.jsonl")).unwrap();
@@ -4505,6 +4534,12 @@ rl.on('line',line=>{{const c=JSON.parse(line);emit({{type:'response',id:c.id,com
             serde_json::from_str::<Value>(log.lines().last().unwrap()).unwrap()["config"].clone();
         assert_eq!(config["mcpServers"], json!(["fixture-one"]));
         assert_eq!(config["model"], "picked");
+        let started = fs::canonicalize(home.workspace()).unwrap();
+        assert_eq!(config["cwd"], json!(started));
+        let prompt = config["prompt"].as_str().unwrap();
+        assert!(prompt.contains(started.to_str().unwrap()));
+        let moved = fs::canonicalize(elsewhere.path()).unwrap();
+        assert!(!prompt.contains(moved.to_str().unwrap()));
         assert!(
             config["prompt"]
                 .as_str()

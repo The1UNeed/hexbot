@@ -450,9 +450,10 @@ async fn idle_restart_preserves_live_id_prompt_tools_and_client_watermarks() {
         .unwrap();
     assert!(response.is_object());
     let after = processes(home.path());
+    // The chat restarts once, with its bot's new tools; it keeps its model.
     assert_eq!(after.len(), 2);
-    assert_eq!(after[0]["config"], after[1]["config"]);
-    assert_eq!(after[0]["args"], after[1]["args"]);
+    assert_eq!(after[1]["config"]["enabledToolsets"], json!(["terminal"]));
+    assert_eq!(after[0]["config"]["model"], after[1]["config"]["model"]);
     assert_eq!(open(&runtime).await, id);
     assert_eq!(processes(home.path()).len(), 2);
     assert!(
@@ -927,7 +928,10 @@ async fn capacity_retires_the_oldest_idle_process_and_keeps_live_alias() {
     }
     assert_eq!(runtime.sessions.lock().unwrap().len(), 16);
     assert!(!runtime.sessions.lock().unwrap().contains_key("first"));
-    assert_eq!(runtime.live("alice", &first).await.unwrap().id, first);
+    assert_eq!(
+        runtime.live("alice", &first, false).await.unwrap().id,
+        first
+    );
     assert_eq!(runtime.sessions.lock().unwrap().len(), 16);
     runtime.shutdown().await;
 }
