@@ -57,7 +57,7 @@ Deleting the bot removes its profile, chat, memory, and scheduled jobs. Stop its
 
 Earlier versions let you keep many sections per bot. The first time the updated daemon starts, each bot keeps one section as its chat: the latest one where something was said, preferring a real conversation over the old Dreams log, archived or not, and then one you had not archived. The other sections are deleted with their history. The bot's memory and notes stay.
 
-Before it deletes anything, the daemon copies its databases and conversation files to `~/.hexbot/backups/one-chat-per-bot-<date>-<time>/`. If the copy fails, nothing is deleted and the daemon tries again at its next start. This happens once: sections an older version makes later are kept.
+Before it deletes anything, the daemon copies its databases and conversation files to `backups/one-chat-per-bot-<date>-<time>/` in its data directory (`~/.hexbot` by default). If the copy fails, nothing is deleted and the daemon tries again at its next start. This happens once: sections an older version makes later are kept.
 
 ## Work with other bots
 
