@@ -407,3 +407,46 @@ async fn only_the_primary_bot_checks_in_and_only_a_check_in_messages_the_user() 
     .await
     .unwrap();
 }
+
+#[tokio::test]
+async fn a_wake_up_waits_a_few_minutes_after_the_last_check_in() {
+    let (h, app) = setup();
+    let created = app
+        .call("local", "hexbot.bots.create_primary", &json!({}))
+        .await
+        .unwrap();
+    set(&app, json!({"checkin_hours": "03:00-03:01"})).await;
+    let now = common::now();
+    let mut events = app.events.subscribe();
+    app.call("local", "hexbot.checkins.run_now", &json!({}))
+        .await
+        .unwrap();
+    while app
+        .call("local", "hexbot.checkins.status", &json!({}))
+        .await
+        .unwrap()["running"]
+        == true
+    {
+        while events.recv().await.unwrap().frame["params"]["type"] != "hexbot.checkins.changed" {}
+    }
+    let live = open(&app, created["section"]["id"].as_str().unwrap()).await;
+    call_tool(
+        &app,
+        &live,
+        "hexbot_wakeups",
+        json!({"action":"add","at":rfc3339(now + 90.0),"note":"look again"}),
+    )
+    .await;
+    let count = || -> i64 {
+        db::open(h.path())
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM checkins", [], |r| r.get(0))
+            .unwrap()
+    };
+    // Due, but the last check-in was a moment ago: no back-to-back runs.
+    app.dreaming.tick_at(now + 120.0).await.unwrap();
+    assert_eq!(count(), 1);
+    let status = tick(&app, now + 360.0).await;
+    assert_eq!(count(), 2);
+    assert_eq!(status["recent"][0]["kind"], "wakeup");
+}

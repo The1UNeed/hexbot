@@ -9,7 +9,9 @@ import type { Rpc } from './types'
  * only the bot's name and the section to open. Skipped without an EAS
  * project, where Expo cannot issue a token, and when the user says no.
  */
-export async function registerPush(rpc: Rpc): Promise<void> {
+/** Daemon device and token pairs already sent this run of the app. */
+const registered = new Set<string>()
+export async function registerPush(rpc: Rpc, device = ''): Promise<void> {
   if (Platform.OS !== 'ios' && Platform.OS !== 'android') return
   const projectId = (Constants.expoConfig?.extra as { eas?: { projectId?: string } } | undefined)
     ?.eas?.projectId
@@ -18,8 +20,12 @@ export async function registerPush(rpc: Rpc): Promise<void> {
   if (status === 'undetermined') status = (await Notifications.requestPermissionsAsync()).status
   if (status !== 'granted') return
   const { data } = await Notifications.getExpoPushTokenAsync({ projectId })
+  // Reconnecting sends it again only when the token changed.
+  const key = `${device}\n${data}`
+  if (registered.has(key)) return
   try {
     await rpc('hexbot.devices.set_push', { token: data, platform: Platform.OS })
+    registered.add(key)
   } catch (error) {
     // A daemon from before check-ins has no such method; there is nothing to register with.
     if (!/unknown method|method not found/i.test(String((error as Error)?.message ?? error)))

@@ -368,7 +368,7 @@ export function useMobile() {
         async () => {
           await refreshRef.current()
           await syncChatRef.current()
-          void registerPush(rpc).catch(() => undefined)
+          void registerPush(rpc, daemon.deviceId).catch(() => undefined)
         },
         onEvent
       )

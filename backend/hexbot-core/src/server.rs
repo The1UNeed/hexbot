@@ -1714,6 +1714,10 @@ async fn handle_request(
 /// A phone's push token, for check-in messages. Only the calling device's own
 /// row changes; a null token stops pushes to it.
 fn set_push(home: &std::path::Path, owner: &str, device: &str, p: &Value) -> Result<Value> {
+    // Only a string sets it and only null clears it; anything else is a mistake.
+    if !(p["token"].is_null() || p["token"].is_string()) {
+        return Err(Error::new(4202, "invalid push token"));
+    }
     let token = p["token"].as_str();
     let valid = token.is_none_or(|t| {
         t.len() <= 200

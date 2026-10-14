@@ -119,8 +119,11 @@ more freedom and more capability than a hosted product can offer.
   `checkin_every_minutes` (default 60, 15 to 1440) inside `checkin_hours`
   (default `08:00-22:00`, the daemon's time zone, may run past midnight), and
   at wake-ups it sets with `hexbot_wakeups` in its own sections or during a
-  check-in. A wake-up runs at its time even outside the hours; one missed by
-  more than six hours is dropped. `checkin_enabled` turns all of it off.
+  check-in. A wake-up runs at its time even outside the hours, but at least
+  five minutes after the last check-in, so no chain of wake-ups keeps
+  check-ins running back to back; one missed by more than six hours is
+  dropped. At most 96 check-ins run in any day. `checkin_enabled` turns all
+  of it off. Finished check-ins and spent wake-ups are kept for 30 days.
 - A check-in is an unattended job session (`checkin-<id>`) with the bot's
   connectors: memory writes become proposals, the soul only reads, it cannot
   ask, and it runs in Auto at most. It only reads: of the daemon's tools it
@@ -139,8 +142,10 @@ more freedom and more capability than a hosted product can offer.
   switch silences both; the message still lands in the section.
 - The message reaches the section's context with the user's next message
   there: the extension adds it after that message (`before_agent_start`), so
-  the cached prefix and the frozen prompt stay intact. It counts as taken when
-  Pi reports that custom message; one not reported is offered once more.
+  the cached prefix and the frozen prompt stay intact. It is fenced as a
+  record of what the bot said, not instructions, and only the newest six go
+  in; older ones stay in the section's history. It counts as taken when Pi
+  reports that custom message; one not reported is offered once more.
   Deleting the section empties what check-ins said there.
 - Only one check-in runs at a time. A failed one, or one the daemon stopped
   in, gives its wake-ups back, and the next check-in waits 15 minutes.

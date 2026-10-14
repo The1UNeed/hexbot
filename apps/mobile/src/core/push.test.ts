@@ -35,9 +35,11 @@ beforeEach(() => {
   mock.token.mockReset().mockResolvedValue({ data: 'ExponentPushToken[abc]' })
 })
 describe('check-in push', () => {
-  it('registers this phone with the daemon', async () => {
+  it('registers this phone with the daemon, once per token', async () => {
     const rpc = vi.fn().mockResolvedValue({ ok: true })
-    await registerPush(rpc)
+    await registerPush(rpc, 'device-1')
+    await registerPush(rpc, 'device-1')
+    expect(rpc).toHaveBeenCalledOnce()
     expect(mock.token).toHaveBeenCalledWith({ projectId: 'project-1' })
     expect(rpc).toHaveBeenCalledWith('hexbot.devices.set_push', {
       token: 'ExponentPushToken[abc]',

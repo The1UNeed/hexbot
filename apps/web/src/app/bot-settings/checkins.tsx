@@ -164,7 +164,10 @@ export function CheckinsTab({ bot }: { bot: Bot }) {
                 {status?.running
                   ? 'Running now'
                   : enabled
-                    ? at(status?.next_run_at, 'Choose a primary bot')
+                    ? at(
+                        status?.next_run_at,
+                        status?.bot ? 'Not scheduled' : 'Choose a primary bot'
+                      )
                     : 'Off'}
               </span>
             }

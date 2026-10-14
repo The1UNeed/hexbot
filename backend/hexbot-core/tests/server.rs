@@ -645,6 +645,7 @@ async fn a_paired_phone_sets_and_clears_only_its_own_push_token() {
         json!({"token":"https://evil.example/hook","platform":"ios"}),
         json!({"token":"ExponentPushToken[]","platform":"ios"}),
         json!({"token":"ExponentPushToken[abc]","platform":"web"}),
+        json!({"token":123,"platform":"ios"}),
     ] {
         let refused = request(&mut socket, "bad", "hexbot.devices.set_push", bad).await;
         assert_eq!(refused["error"]["code"], 4202, "{refused}");

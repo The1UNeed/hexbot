@@ -67,12 +67,29 @@ function RootLayout() {
         return
       }
 
-      // A notification click names the section it is about.
+      // A notification click names the section it is about. Clicked as the app
+      // starts, it waits for the sections list to name the bot.
+      const open = (bot: string) =>
+        void navigate({ params: { bot, section: url }, to: '/b/$bot/s/$section' })
+
       const bot = useSections.getState().byId[url]?.bot
 
       if (bot) {
-        void navigate({ params: { bot, section: url }, to: '/b/$bot/s/$section' })
+        open(bot)
+
+        return
       }
+
+      const stop = useSections.subscribe(state => {
+        const found = state.byId[url]?.bot
+
+        if (found) {
+          stop()
+          open(found)
+        }
+      })
+
+      window.setTimeout(stop, 60_000)
     })
   }, [navigate])
 
