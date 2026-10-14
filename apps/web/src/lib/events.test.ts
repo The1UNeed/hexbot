@@ -51,6 +51,22 @@ describe('event routing', () => {
     expect(transcript.usage?.total_tokens).toBe(12)
   })
 
+  it('reads a chat again once a dream report closed it', () => {
+    useSections.setState({ liveSessionId: { chat: 'live-9', other: 'live-8' } })
+
+    const changed = (payload: Record<string, unknown>) =>
+      routeEvent({ payload, type: 'hexbot.sections.changed' } as unknown as GatewayEvent, {
+        refreshBots: vi.fn(),
+        refreshSections: vi.fn()
+      })
+
+    changed({ bot: 'scout', closed: false, id: 'chat' })
+    expect(useSections.getState().liveSessionId).toEqual({ chat: 'live-9', other: 'live-8' })
+
+    changed({ bot: 'scout', closed: true, id: 'chat' })
+    expect(useSections.getState().liveSessionId).toEqual({ other: 'live-8' })
+  })
+
   it('keeps the context meter from session.usage beside the totals', () => {
     const context = { compact_at: 183_616, compacting: false, tokens: 41_000, window: 200_000 }
 

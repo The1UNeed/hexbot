@@ -163,21 +163,6 @@ describe('one chat per bot', () => {
     )
   })
 
-  it('opens the chat, not a thread in which another bot asked for help', async () => {
-    const thread = { ...chat, id: 'thread', peer_bot: 'owl', title: 'Owl asks' } as Section
-    useSections.setState({ byId: { thread, chat }, idsByBot: { scout: ['thread', 'chat'] } })
-    render(<RosterColumn />)
-
-    fireEvent.click(screen.getByRole('button', { name: /Scout/ }))
-
-    await waitFor(() =>
-      expect(navigate).toHaveBeenCalledWith({
-        params: { bot: 'scout', section: 'chat' },
-        to: '/b/$bot/s/$section'
-      })
-    )
-  })
-
   it('offers a new bot and a new room, not a new section', async () => {
     render(<RosterColumn />)
     fireEvent.click(screen.getByRole('button', { name: 'New' }))

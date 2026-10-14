@@ -1026,7 +1026,7 @@ impl Runtime {
     /// jobs and delegates keep what they started with.
     fn tools_stale(&self, owner: &str, bot: &str, stored: &str) -> Result<bool> {
         let chat: bool = db::open(&self.home)?.query_row(
-            "SELECT EXISTS(SELECT 1 FROM sections WHERE id=?)",
+            "SELECT EXISTS(SELECT 1 FROM sections WHERE id=? AND peer_bot IS NULL)",
             [stored],
             |r| r.get(0),
         )?;
@@ -4527,6 +4527,22 @@ rl.on('line',line=>{{const c=JSON.parse(line);emit({{type:'response',id:c.id,com
             )
             .unwrap();
         assert!(!runtime.tools_stale("alice", "owl", "job").unwrap());
+        // So does a thread in which another bot asks for help.
+        db::open(home.path())
+            .unwrap()
+            .execute(
+                "INSERT INTO sections(id,bot,owner_id,title,peer_bot) VALUES('ask','owl','alice','Fox asks','fox')",
+                [],
+            )
+            .unwrap();
+        store::open(home.path())
+            .unwrap()
+            .execute(
+                "INSERT INTO native_sessions(stored_id,owner,bot,prompt,options) VALUES('ask','alice','owl','frozen',?)",
+                [json!({"tools":[],"mcpServers":[]}).to_string()],
+            )
+            .unwrap();
+        assert!(!runtime.tools_stale("alice", "owl", "ask").unwrap());
     }
     #[tokio::test]
     async fn settings_are_live_and_children_inherit_parent_policy() {

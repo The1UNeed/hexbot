@@ -1091,7 +1091,7 @@ impl Dreaming {
         let chat = crate::catalog::chat_section(&self.home, owner, bot)?;
         let section = common::required(&chat, "id")?;
         // An idle chat closes so open clients load the report; a busy one shows it next time.
-        self.runtime.close_if_quiet(owner, section).await?;
+        let closed = self.runtime.close_if_quiet(owner, section).await?;
         runtime_store::append(
             &self.home,
             section,
@@ -1105,7 +1105,7 @@ impl Dreaming {
             owner,
             None,
             "hexbot.sections.changed",
-            json!({"id":section,"bot":bot}),
+            json!({"id":section,"bot":bot,"closed":closed}),
         );
         Ok(())
     }

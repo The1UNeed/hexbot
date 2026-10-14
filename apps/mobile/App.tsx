@@ -426,11 +426,16 @@ function MobileApp() {
     current: d.id === mobile.active?.id
   }))
   const bots: BotSummary[] = mobile.bots.map(b => {
+    // Quote the chat's last message.
+    const chat =
+      mobile.sections.find(s => s.bot === b.name && !s.peer_bot) ??
+      b.sections_recent?.find(s => s.preview)
     return {
       ...faceOf(b),
       id: b.name,
       title: b.title,
       description: b.description,
+      preview: chat?.preview || null,
       activity: b.status_detail?.text,
       status:
         b.status === 'idle' && b.sections_recent?.some(s => s.done_at)

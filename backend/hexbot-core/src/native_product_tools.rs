@@ -797,6 +797,10 @@ fn read_session(
     for row in native {
         let m: Value = serde_json::from_str(text(&row, "message_json"))
             .map_err(|_| Error::new(5200, "invalid stored message"))?;
+        // A dream report is shown in the chat, not said in it.
+        if m["dream"] == true {
+            continue;
+        }
         let body = m["text"]
             .as_str()
             .map(str::to_owned)
@@ -1508,9 +1512,17 @@ mod history_index_tests {
             json!({"role":"assistant","tool_calls":calls}),
         )
         .unwrap();
+        runtime_store::append(
+            home.path(),
+            "native",
+            json!({"role":"assistant","text":"Last night I learned","dream":true}),
+        )
+        .unwrap();
         let section = json!({"id":"native","title":"Native"});
         let native = read_session(&conn, None, &section, 1).unwrap();
         assert_eq!(shaped(&native.messages[0], None)["tool_calls"], calls);
+        // Dream reports stay out of history search.
+        assert_eq!(native.messages.len(), 1);
         assert!(native.bytes > (8 << 20) + MESSAGE_BYTES);
         let legacy = Connection::open_in_memory().unwrap();
         legacy.execute_batch("CREATE TABLE sessions(id TEXT,session_key TEXT); CREATE TABLE messages(id INTEGER,session_id TEXT,role TEXT,content TEXT,tool_calls TEXT); INSERT INTO sessions VALUES('legacy','legacy');").unwrap();

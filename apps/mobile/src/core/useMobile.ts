@@ -258,6 +258,16 @@ export function useMobile() {
             void refreshRef.current().catch(e => setError(errorText(e)))
           }, 200)
       }
+      // A dream report landed in this idle chat and closed it; read it again.
+      if (
+        event.type === 'hexbot.sections.changed' &&
+        p.closed === true &&
+        target?.kind === 'section' &&
+        target.section.id === p.id
+      ) {
+        void syncChatRef.current().catch(e => setError(errorText(e)))
+        return
+      }
       if (loadingEvents.current) {
         loadingEvents.current.push(event)
         return

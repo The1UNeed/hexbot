@@ -137,12 +137,25 @@ async fn dreams_use_restricted_tools_persist_snapshots_and_report_in_the_chat() 
     let runtime =
         Runtime::new(home.path().into(), hub.clone(), fake_pi(home.path(), false)).unwrap();
     let dreams = Dreaming::new(home.path().into(), runtime.clone(), hub);
-    for _ in 0..2 {
+    for open in [false, true] {
+        if open {
+            runtime
+                .call("alice", "hexbot.sections.open", &json!({"id":"chat"}))
+                .await
+                .unwrap()
+                .unwrap();
+        }
         dreams
             .call("alice", "hexbot.dreaming.run_now", &json!({"bot":"owl"}))
             .await
             .unwrap()
             .unwrap();
+        // An open, idle chat closes, and says so, so open clients read the report.
+        let mut posted = event(&mut receiver, "hexbot.sections.changed").await;
+        while posted["closed"].is_null() {
+            posted = event(&mut receiver, "hexbot.sections.changed").await;
+        }
+        assert_eq!(posted["closed"], open);
         let changed = event(&mut receiver, "hexbot.dreaming.changed").await;
         assert_eq!(changed["dream"]["status"], "complete");
         assert_eq!(changed["dream"]["memory_before"], "before");

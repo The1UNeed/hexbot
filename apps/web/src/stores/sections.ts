@@ -26,6 +26,8 @@ export interface SectionsState {
   chat: (bot: string) => Promise<Section>
   /** Live ids are process-scoped; a new daemon epoch invalidates them all. */
   clearLive: () => void
+  /** The daemon closed this section's live session; an open view reads it again. */
+  forgetLive: (id: string) => void
   error: null | string
   idsByBot: Record<string, string[]>
   liveSessionId: Record<string, string>
@@ -267,6 +269,14 @@ export const useSections = create<SectionsState>((set, get) => ({
   clearLive() {
     set({ liveSessionId: {} })
     useTranscripts.getState().dropAll()
+  },
+
+  forgetLive(id) {
+    set(state => {
+      const { [id]: _closed, ...liveSessionId } = state.liveSessionId
+
+      return { liveSessionId }
+    })
   }
 }))
 
