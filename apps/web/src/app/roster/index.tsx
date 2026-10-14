@@ -34,6 +34,7 @@ import { roomStatus, roomUnread, useRoomList, useRooms } from '../../stores/room
 import {
   botStatusWithLive,
   introduceBot,
+  isThread,
   type LiveSections,
   liveSectionsOf,
   sectionsActions,
@@ -380,7 +381,7 @@ export function RosterColumn() {
   /** The bot's one chat: the one this window knows, else the daemon's, made on first use. */
   const openChat = async (bot: string) => {
     const known = Object.values(useSections.getState().byId).find(
-      item => item.bot === bot && !item.archived_at
+      item => item.bot === bot && !item.archived_at && !isThread(item)
     )
 
     open(bot, (known ?? (await sectionsActions().chat(bot))).id)
