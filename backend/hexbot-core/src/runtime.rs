@@ -50,9 +50,8 @@ struct State {
     display: VecDeque<String>,
     /// Uploads waiting for the next prompt, in the order they arrived.
     staged: Vec<Staged>,
-    /// Bot-to-bot messages sent during the turn that started this one. Every
-    /// section in a chain shares the counter; a fresh turn starts a fresh one.
-    hops: Arc<AtomicUsize>,
+    /// The bot-to-bot chain this turn belongs to; a fresh turn starts a fresh one.
+    chain: Chain,
     tool_started: HashMap<String, std::time::Instant>,
     /// Argument previews by tool call id, kept until the tool result row is written.
     tool_context: HashMap<String, String>,
@@ -66,6 +65,14 @@ struct Staged {
     files: Vec<PathBuf>,
 }
 const MAX_HOPS: usize = 8;
+#[derive(Clone, Debug, Default)]
+struct Chain {
+    /// Bot-to-bot messages sent since the turn that started the chain. Every
+    /// section in the chain shares the counter.
+    hops: Arc<AtomicUsize>,
+    /// Bots waiting on this turn's reply, nearest last. Asking one of them would loop.
+    askers: Vec<String>,
+}
 struct Live {
     owner: String,
     bot: String,
@@ -914,7 +921,7 @@ impl Runtime {
                 native_approvals: HashMap::new(),
                 display: VecDeque::new(),
                 staged: vec![],
-                hops: Arc::default(),
+                chain: Chain::default(),
                 tool_started: HashMap::new(),
                 tool_context: HashMap::new(),
                 unsaved: VecDeque::new(),
@@ -1129,7 +1136,7 @@ impl Runtime {
         text: &str,
         hidden: bool,
         queued: bool,
-        hops: Option<Arc<AtomicUsize>>,
+        chain: Option<Chain>,
         uploads: Option<&[String]>,
     ) -> Result<Value> {
         if self.stopping.load(Ordering::Acquire) {
@@ -1225,8 +1232,16 @@ impl Runtime {
             if !state.busy {
                 state.output.clear();
                 state.error = None;
+                state.chain = chain.unwrap_or_default();
+                // A background result that finds the section idle starts a turn
+                // nobody waits on: keep the shared hop count, drop the requesters
+                // so the bot can pass the answer on.
+                if queued {
+                    state.chain.askers.clear();
+                }
             }
-            state.hops = hops.unwrap_or_default();
+            // Queued input joins the unsettled turn, even if a background
+            // result belongs to an older turn. Keep its active requester guard.
             state.busy = true;
             state.interrupted = false;
             state.last_activity = common::now();
@@ -1314,6 +1329,18 @@ impl Runtime {
         text: &str,
         options: &Value,
     ) -> Result<String> {
+        self.run_hidden_job_in_chain(owner, bot, stored, text, options, None)
+            .await
+    }
+    async fn run_hidden_job_in_chain(
+        &self,
+        owner: &str,
+        bot: &str,
+        stored: &str,
+        text: &str,
+        options: &Value,
+        chain: Option<Chain>,
+    ) -> Result<String> {
         common::bot_owner(&self.home, owner, bot)?;
         let restricted = options["enabled_tools"]
             .as_array()
@@ -1327,7 +1354,9 @@ impl Runtime {
             true,
         )
         .await?;
-        let result = self.run_hidden(owner, bot, stored, text).await;
+        let result = self
+            .run_hidden_deadline(owner, bot, stored, text, HIDDEN_TURN_DEADLINE, chain)
+            .await;
         if let Err(error) = self.close_stored(owner, stored).await {
             eprintln!("Could not close background bot {stored}: {}", error.message);
         }
@@ -1377,14 +1406,14 @@ impl Runtime {
         stored: &str,
         text: &str,
         deadline: Duration,
-        hops: Option<Arc<AtomicUsize>>,
+        chain: Option<Chain>,
     ) -> Result<String> {
         common::bot_owner(&self.home, owner, bot)?;
         let s = self.open_for_input(owner, bot, stored).await?;
         let mut settled = s.settled.subscribe();
         let before = *settled.borrow();
         let finished = tokio::time::timeout(deadline, async {
-            self.submit(&s, text, true, false, hops, None).await?;
+            self.submit(&s, text, true, false, chain, None).await?;
             loop {
                 if *settled.borrow() != before {
                     break;
@@ -2072,7 +2101,14 @@ impl Runtime {
             }
         }))
     }
-    async fn return_result(&self, owner: &str, bot: &str, stored: &str, text: &str) {
+    async fn return_result(
+        &self,
+        owner: &str,
+        bot: &str,
+        stored: &str,
+        text: &str,
+        chain: Option<Chain>,
+    ) {
         let result = async {
             let lock = self.open_lock(stored);
             let guard = lock.lock().await;
@@ -2092,7 +2128,7 @@ impl Runtime {
                 .open_session_locked(owner, bot, stored, None, None, true)
                 .await?;
             drop(guard);
-            self.submit(&parent, text, true, true, None, None).await
+            self.submit(&parent, text, true, true, chain, None).await
         }
         .await;
         if let Err(error) = result {
@@ -2134,14 +2170,18 @@ impl Runtime {
         tx.commit()?;
         Ok((stored, message))
     }
-    fn prepare_delivery(
-        &self,
-        s: &Live,
-        to: &str,
-        text: &str,
-    ) -> Result<(String, String, Arc<AtomicUsize>)> {
+    fn prepare_delivery(&self, s: &Live, to: &str, text: &str) -> Result<(String, String, Chain)> {
         if to == s.bot {
             return Err(Error::new(4202, "A bot cannot message itself."));
+        }
+        let mut chain = s.state.lock().unwrap().chain.clone();
+        if chain.askers.iter().any(|asker| asker == to) {
+            return Err(Error::new(
+                4202,
+                format!(
+                    "{to} is waiting on this request. Do the work and reply to the bot that asked you."
+                ),
+            ));
         }
         let teammates = common::rows(
             &db::open(&self.home)?,
@@ -2159,8 +2199,7 @@ impl Runtime {
                 format!("No bot named {to}. Your teammates: {names}."),
             ));
         }
-        let hops = s.state.lock().unwrap().hops.clone();
-        if hops.fetch_add(1, Ordering::AcqRel) >= MAX_HOPS {
+        if chain.hops.fetch_add(1, Ordering::AcqRel) >= MAX_HOPS {
             return Err(Error::new(
                 4240,
                 format!("bot message hop limit ({MAX_HOPS}) reached"),
@@ -2173,7 +2212,8 @@ impl Runtime {
             "hexbot.sections.changed",
             json!({"id":stored}),
         );
-        Ok((stored, message, hops))
+        chain.askers.push(s.bot.clone());
+        Ok((stored, message, chain))
     }
     async fn deliver_message(
         &self,
@@ -2181,7 +2221,7 @@ impl Runtime {
         to: &str,
         text: &str,
         stored: &str,
-        hops: Arc<AtomicUsize>,
+        chain: Chain,
     ) -> Result<String> {
         common::bot_owner(&self.home, &s.owner, to)?;
         self.run_hidden_deadline(
@@ -2190,7 +2230,7 @@ impl Runtime {
             stored,
             &format!("@{}: {}", s.bot, text),
             HIDDEN_TURN_DEADLINE,
-            Some(hops),
+            Some(chain),
         )
         .await
     }
@@ -2736,8 +2776,10 @@ impl Runtime {
                 }
                 let to = required(args, "to")?.to_owned();
                 let text = required(args, "text")?.to_owned();
-                let (stored, message_id, hops) = self.prepare_delivery(s, &to, &text)?;
+                let (stored, message_id, chain) = self.prepare_delivery(s, &to, &text)?;
                 if args["wait"] == false {
+                    let mut continuation = chain.clone();
+                    continuation.askers.pop();
                     let runtime = self
                         .weak
                         .upgrade()
@@ -2748,20 +2790,26 @@ impl Runtime {
                     while tasks.try_join_next().is_some() {}
                     tasks.spawn(async move {
                         let result = runtime
-                            .deliver_message(&source, &to, &text, &thread, hops)
+                            .deliver_message(&source, &to, &text, &thread, chain)
                             .await;
                         let reply = match result {
                             Ok(reply) => format!("[reply from {to}] {reply}"),
                             Err(error) => format!("[delivery to {to} failed] {}", error.message),
                         };
                         runtime
-                            .return_result(&source.owner, &source.bot, &source.stored, &reply)
+                            .return_result(
+                                &source.owner,
+                                &source.bot,
+                                &source.stored,
+                                &reply,
+                                Some(continuation),
+                            )
                             .await;
                     });
                     Ok(json!({"status":"sent","message_id":message_id,"section_id":stored}))
                 } else {
                     Ok(
-                        json!({"reply":self.deliver_message(s,&to,&text,&stored,hops).await?,"section_id":stored}),
+                        json!({"reply":self.deliver_message(s,&to,&text,&stored,chain).await?,"section_id":stored}),
                     )
                 }
             }

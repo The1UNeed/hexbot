@@ -352,8 +352,14 @@ thread with the sender: a section with `peer_bot` set to the sender. With
 `wait: true` the result is `{reply, section_id}`; with `wait: false` it is
 `{status: "sent", message_id, section_id}`, and a background watcher submits
 the eventual reply to the sender section as hidden input prefixed
-`[reply from <bot>]`. `to` naming the sender itself answers 4202; a bot the
+`[reply from <bot>]`. `to` naming the sender itself, or a bot waiting on the sender's reply
+further up the chain, answers 4202; a bot the
 section owner does not own answers 4205 with the names of their other bots.
+Queued input and background replies keep the active turn's requester chain and
+shared hop count. Delegated work, including nested children, inherits both.
+An idle section starts a fresh chain for a new originating turn. A background
+result that finds the section idle keeps its originating hop count but no
+requesters, since nobody waits on that turn, so the bot can pass the answer on.
 
 The `hexbot_soul {action: read | write, text?}` tool lets a bot read or
 replace its own `SOUL.md` (capped at 4000 characters). It sits in its own
