@@ -301,6 +301,8 @@ export function useMobile() {
           ) {
             const [id, text] = [p.row_id, p.text]
             setChat(c => checkinMessage(c, id, text))
+            // Seen as it arrived, so it is read.
+            void rpc('hexbot.sections.mark_read', { id: target.section.id }).catch(() => {})
           }
           return
         }

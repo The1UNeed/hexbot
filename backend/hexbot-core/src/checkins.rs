@@ -253,26 +253,56 @@ fn cancel_wakeup(home: &Path, events: &EventHub, owner: &str, id: &str) -> Resul
 
 /// The bot's Check-ins section: the newest one, brought back from the archive,
 /// or a new one when the user deleted it.
-fn section(conn: &rusqlite::Connection, owner: &str, bot: &str, now: f64) -> Result<String> {
-    let existing: Option<(String, Option<f64>)> = conn
+/// How the section was before a message went in, to put back if it can't.
+enum Before {
+    New,
+    Was {
+        archived_at: Option<f64>,
+        updated_at: Option<f64>,
+        done_at: Option<f64>,
+    },
+}
+
+fn section(
+    conn: &rusqlite::Connection,
+    owner: &str,
+    bot: &str,
+    now: f64,
+) -> Result<(String, Before)> {
+    let existing = conn
         .query_row(
-            "SELECT id,archived_at FROM sections WHERE owner_id=? AND bot=? AND purpose=? ORDER BY created_at DESC LIMIT 1",
+            "SELECT id,archived_at,updated_at,done_at FROM sections WHERE owner_id=? AND bot=? AND purpose=? ORDER BY created_at DESC LIMIT 1",
             params![owner, bot, PURPOSE],
-            |r| Ok((r.get(0)?, r.get(1)?)),
+            |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    Before::Was {
+                        archived_at: r.get(1)?,
+                        updated_at: r.get(2)?,
+                        done_at: r.get(3)?,
+                    },
+                ))
+            },
         )
         .optional()?;
-    if let Some((id, archived)) = existing {
-        if archived.is_some() {
+    if let Some((id, before)) = existing {
+        if matches!(
+            before,
+            Before::Was {
+                archived_at: Some(_),
+                ..
+            }
+        ) {
             conn.execute("UPDATE sections SET archived_at=NULL WHERE id=?", [&id])?;
         }
-        return Ok(id);
+        return Ok((id, before));
     }
     let id = common::id();
     conn.execute(
         "INSERT INTO sections(id,bot,title,owner_id,created_at,updated_at,purpose) VALUES (?,?,?,?,?,?,?)",
         params![id, bot, SECTION_TITLE, owner, now, now, PURPOSE],
     )?;
-    Ok(id)
+    Ok((id, Before::New))
 }
 
 /// `hexbot_notify`: one message per check-in, at most DAILY_MESSAGES a day.
@@ -327,7 +357,7 @@ pub(crate) fn notify(
             ),
         ));
     }
-    let section = section(&tx, owner, bot, now)?;
+    let (section, before) = section(&tx, owner, bot, now)?;
     let id = common::id();
     let row = format!("checkin-{id}");
     tx.execute(
@@ -354,6 +384,23 @@ pub(crate) fn notify(
     ) {
         conn.execute("DELETE FROM checkin_messages WHERE id=?", [&id])?;
         conn.execute("UPDATE checkins SET message_id=NULL WHERE id=?", [checkin])?;
+        // Nothing arrived, so the section looks as it did: gone if new,
+        // archived and read as before otherwise.
+        match before {
+            Before::New => {
+                conn.execute("DELETE FROM sections WHERE id=?", [&section])?;
+            }
+            Before::Was {
+                archived_at,
+                updated_at,
+                done_at,
+            } => {
+                conn.execute(
+                    "UPDATE sections SET archived_at=?,updated_at=?,done_at=? WHERE id=?",
+                    params![archived_at, updated_at, done_at, section],
+                )?;
+            }
+        }
         return Err(error);
     }
     events.emit(
@@ -1144,6 +1191,43 @@ mod tests {
             schedule(&conn, "local", &settings, now).unwrap().unwrap().0,
             now - 80_000.0 + 3.0 + 86_400.0
         );
+    }
+
+    #[test]
+    fn a_message_that_cannot_be_shown_leaves_the_section_as_it_was() {
+        let home = tempfile::tempdir().unwrap();
+        db::migrate(home.path()).unwrap();
+        let conn = db::open(home.path()).unwrap();
+        conn.execute_batch(
+            "INSERT INTO bots(name,owner_id) VALUES ('hexbot','local');
+             INSERT INTO sections(id,bot,title,owner_id,created_at,updated_at,archived_at,done_at,purpose)
+               VALUES ('s','hexbot','Check-ins','local',1,2,3,NULL,'checkins');
+             INSERT INTO checkins(id,owner_id,bot,kind,started_at,status) VALUES ('c','local','hexbot','heartbeat',1,'running');",
+        )
+        .unwrap();
+        // Its history is gone, so the visible message cannot go in.
+        runtime_store::mark_deleted(home.path(), "s").unwrap();
+        let events = EventHub::new();
+        assert!(notify(home.path(), &events, "local", "hexbot", "c", "Due tonight.").is_err());
+        let state: (Option<f64>, Option<f64>, Option<f64>) = conn
+            .query_row(
+                "SELECT archived_at,updated_at,done_at FROM sections WHERE id='s'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(state, (Some(3.0), Some(2.0), None));
+        let sent: i64 = conn
+            .query_row("SELECT COUNT(*) FROM checkin_messages", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(sent, 0);
+        // And the bot may try again in this check-in.
+        let message: Option<String> = conn
+            .query_row("SELECT message_id FROM checkins WHERE id='c'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert!(message.is_none());
     }
 
     #[test]
