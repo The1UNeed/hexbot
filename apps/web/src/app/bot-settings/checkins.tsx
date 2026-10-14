@@ -91,11 +91,18 @@ export function CheckinsTab({ bot }: { bot: Bot }) {
     EVERY.includes(every) ? EVERY : [...EVERY, every].sort((a, b) => a - b)
   ).map(minutes => ({ label: everyLabel(minutes), value: String(minutes) }))
 
-  const setHours = (next: { from?: string; to?: string }) => {
-    const hours = `${next.from ?? from}-${next.to ?? to}`
+  // Both ends save together, so a window can turn around (08:00 to 22:00
+  // into 22:00 to 08:00) through a moment when both ends match.
+  const saved = `${from}-${to}`
+  const [hours, setHours] = useState({ from, to })
 
-    if (/^\d\d:\d\d-\d\d:\d\d$/.test(hours) && hours !== `${from}-${to}`) {
-      void change({ checkin_hours: hours })
+  useEffect(() => setHours({ from, to }), [from, to])
+
+  const saveHours = () => {
+    const next = `${hours.from}-${hours.to}`
+
+    if (/^\d\d:\d\d-\d\d:\d\d$/.test(next) && hours.from !== hours.to && next !== saved) {
+      void change({ checkin_hours: next })
     }
   }
 
@@ -142,21 +149,21 @@ export function CheckinsTab({ bot }: { bot: Bot }) {
                 <Input
                   aria-label="From"
                   className="w-28"
-                  defaultValue={from}
                   disabled={!enabled}
-                  key={`from-${from}`}
-                  onBlur={event => setHours({ from: event.target.value })}
+                  onBlur={saveHours}
+                  onChange={event => setHours({ ...hours, from: event.target.value })}
                   type="time"
+                  value={hours.from}
                 />
                 <span className="text-muted">to</span>
                 <Input
                   aria-label="To"
                   className="w-28"
-                  defaultValue={to}
                   disabled={!enabled}
-                  key={`to-${to}`}
-                  onBlur={event => setHours({ to: event.target.value })}
+                  onBlur={saveHours}
+                  onChange={event => setHours({ ...hours, to: event.target.value })}
                   type="time"
+                  value={hours.to}
                 />
               </div>
             }

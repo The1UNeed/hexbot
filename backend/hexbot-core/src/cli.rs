@@ -550,7 +550,7 @@ pub async fn execute(home: &Path, args: &[String]) -> Result<Value> {
 pub async fn dispatch(home: &Path, args: &[String]) -> Option<Result<()>> {
     let recognized = matches!(
         args.first().map(String::as_str),
-        Some("connect" | "devices" | "lan" | "send" | "hermes")
+        Some("connect" | "devices" | "lan" | "send" | "checkins" | "hermes")
     ) || (args.first().map(String::as_str) == Some("bots")
         && args.get(1).map(String::as_str) != Some("list"));
     if !recognized {

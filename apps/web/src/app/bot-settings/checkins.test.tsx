@@ -102,4 +102,30 @@ describe('check-ins', () => {
       })
     )
   })
+
+  it('turns the hours around through a moment when both ends match', async () => {
+    const call = vi.fn((method: string, params?: { patch?: Record<string, unknown> }) =>
+      Promise.resolve(
+        method === 'hexbot.checkins.status'
+          ? status()
+          : { checkin_enabled: true, checkin_hours: '08:00-22:00', ...params?.patch }
+      )
+    )
+
+    setActiveRpc({ call } as never)
+    render(<CheckinsTab bot={hexbot} />)
+    const from = await screen.findByLabelText('From')
+    fireEvent.change(from, { target: { value: '22:00' } })
+    fireEvent.blur(from)
+    // 22:00 to 22:00 is no window, so nothing is sent yet.
+    expect(call.mock.calls.filter(([method]) => method === 'hexbot.settings.set')).toEqual([])
+    const to = screen.getByLabelText('To')
+    fireEvent.change(to, { target: { value: '08:00' } })
+    fireEvent.blur(to)
+    await waitFor(() =>
+      expect(call).toHaveBeenCalledWith('hexbot.settings.set', {
+        patch: { checkin_hours: '22:00-08:00' }
+      })
+    )
+  })
 })
