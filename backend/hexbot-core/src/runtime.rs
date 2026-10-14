@@ -2799,12 +2799,21 @@ impl Runtime {
                 {
                     return Err(Error::new(4302, "The user denied this action."));
                 }
-                // The primary bot's job removals ask, whichever of its jobs tools it uses.
-                if args["action"] == "remove" && s.tools.iter().any(|t| t["name"] == "hexbot_jobs")
-                {
+                // The primary bot's job removals and job folders ask, whichever of
+                // its jobs tools it uses.
+                if s.tools.iter().any(|t| t["name"] == "hexbot_jobs") {
                     let job = args["job_id"].as_str().unwrap_or("");
-                    self.confirm(s, name, format!("Remove the scheduled job {job}"), args)
-                        .await?;
+                    if args["action"] == "remove" {
+                        self.confirm(s, name, format!("Remove the scheduled job {job}"), args)
+                            .await?;
+                    }
+                    if matches!(args["action"].as_str(), Some("create" | "update"))
+                        && let Some(folder) =
+                            args["workdir"].as_str().filter(|w| !w.trim().is_empty())
+                    {
+                        self.confirm(s, name, format!("Run a scheduled job in {folder}"), args)
+                            .await?;
+                    }
                 }
                 let mut args = args.clone();
                 if args["action"] == "create" && args["workdir"].is_null() {
