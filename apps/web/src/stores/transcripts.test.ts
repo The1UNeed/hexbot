@@ -50,6 +50,11 @@ describe('transcript reducer', () => {
     actions.approvalRequest('s', { request_id: 'a' })
     expect(transcript()?.streamingMessageId).toBeNull()
     expect(transcript()?.checking).toBe('Checking this step')
+    // The label lives on the transcript; no empty bubble opens to carry it.
+    const count = transcript()?.messages.length
+    actions.statusUpdate('s', { kind: 'checking', text: 'Checking this step' })
+    expect(transcript()?.messages).toHaveLength(count ?? 0)
+    expect(transcript()?.streamingMessageId).toBeNull()
     actions.toolComplete('s', { tool_id: 'b' })
     actions.toolStart('s', { name: 'terminal', tool_id: 'c' })
     const live = transcript()?.messages.at(-1)
