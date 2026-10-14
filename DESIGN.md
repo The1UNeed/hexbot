@@ -105,8 +105,9 @@ more freedom and more capability than a hosted product can offer.
   scheduled jobs, or delegates), it gets four more tools: `hexbot_bots`,
   `hexbot_rooms`, `hexbot_jobs`, and `hexbot_settings`. Each calls the daemon
   method the app uses, as the owner, so the same checks and change events
-  apply. Deleting a bot, room, or job, setting a bot's approval mode or
-  working folder, and every settings change ask the user, even in Bypass.
+  apply. Deleting a bot, room, or job, setting a bot's or room's approval
+  mode or a bot's working folder, and every settings change ask the user,
+  even in Bypass.
   Network, service, and billing settings and every credential stay with
   the user.
 - Its tools and guidance are frozen with each section like any other, so a

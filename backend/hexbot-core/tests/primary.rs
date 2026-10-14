@@ -259,6 +259,48 @@ async fn primary_bot_manages_other_bots_and_always_asks_before_deleting() {
         .await
         .unwrap();
     assert_eq!(rooms["rooms"][0]["name"], "Lab", "{reply}");
+    let room = rooms["rooms"][0]["id"].as_str().unwrap().to_owned();
+
+    // A room's approval mode asks like a bot's, even in Bypass.
+    let (asked, reply) = call_tool(
+        &app,
+        &live,
+        "hexbot_rooms",
+        json!({"action":"update","id":room,"approval_mode":"off"}),
+        "deny",
+    )
+    .await;
+    assert!(asked);
+    assert!(reply.contains("denied"), "{reply}");
+    let rooms = app
+        .call("local", "hexbot.rooms.list", &json!({}))
+        .await
+        .unwrap();
+    assert!(rooms["rooms"][0]["approval_mode"].is_null());
+
+    // Jobs go through the jobs methods, so paired clients hear about them.
+    let mut events = app.events.subscribe();
+    let (asked, reply) = call_tool(
+        &app,
+        &live,
+        "hexbot_jobs",
+        json!({"action":"create","bot":"owl","name":"Digest","prompt":"Summarise the news","schedule":"every 1h"}),
+        "deny",
+    )
+    .await;
+    assert!(!asked);
+    assert!(reply.contains("Digest"), "{reply}");
+    let changed = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let event = events.recv().await.unwrap();
+            if event.frame["params"]["type"] == "hexbot.jobs.changed" {
+                return event.frame["params"]["payload"].clone();
+            }
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(changed["bot"], "owl");
     app.shutdown().await;
 }
 

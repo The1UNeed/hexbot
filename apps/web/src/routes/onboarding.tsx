@@ -14,6 +14,7 @@ import { Select } from '../components/ui/select'
 import { Textarea } from '../components/ui/textarea'
 import { HexbotMark, Wordmark } from '../components/ui/wordmark'
 import {
+  botsCreate,
   botsCreatePrimary,
   botsList,
   connectorsList,
@@ -30,7 +31,7 @@ import { avatarPng, type AvatarStyle, styleForName } from '../lib/avatar-builder
 import { type DaemonProgress, getBridge, hasLocalRuntime, isElectron } from '../lib/bridge'
 import { cn } from '../lib/cn'
 import { connectTo, setLocalDaemonPort } from '../lib/connection'
-import type { Bot, Connector, ModelOption, Provider } from '../lib/types'
+import type { Bot, BotCreateInput, Connector, ModelOption, Provider, Section } from '../lib/types'
 import { useBots } from '../stores/bots'
 import { useConnection } from '../stores/connection'
 import { unknownMethod, useMe } from '../stores/me'
@@ -93,6 +94,29 @@ export async function landingSection(bots: Bot[]): Promise<LastSection | null> {
   const { section } = await sectionsCreate(bots[0]!.name)
 
   return { bot: bots[0]!.name, section: section.id }
+}
+
+/**
+ * Creates HexBot, the primary bot. A daemon from before the primary bot
+ * gets an ordinary bot with the same name, which it can promote once updated.
+ */
+export async function createHexBot(
+  defaultModel: null | string,
+  avatar: null | string
+): Promise<{ bot: Bot; section: Section }> {
+  const [provider, ...rest] = defaultModel?.split('/') ?? []
+  const model = provider && rest.length ? { model: rest.join('/'), provider } : {}
+  const input = { ...(avatar ? { avatar } : {}), ...model }
+
+  try {
+    return await botsCreatePrimary(input)
+  } catch (reason) {
+    if (!unknownMethod(reason)) {
+      throw reason
+    }
+
+    return botsCreate({ ...input, display_name: 'HexBot', name: 'hexbot' } as BotCreateInput)
+  }
 }
 
 /**
@@ -993,14 +1017,8 @@ function OnboardingPage() {
     setCreating(true)
 
     try {
-      const [provider, ...model] = defaultModel?.split('/') ?? []
       const avatar = await avatarPng(styleForName('hexbot'))
-
-      const { bot, section } = await botsCreatePrimary({
-        ...(avatar ? { avatar } : {}),
-        ...(provider && model.length ? { model: model.join('/'), provider } : {})
-      })
-
+      const { bot, section } = await createHexBot(defaultModel, avatar)
       const last = { bot: bot.name, section: section.id }
       uiActions().setLastSection(last)
       void navigate({ to: '/b/$bot/s/$section', params: last })

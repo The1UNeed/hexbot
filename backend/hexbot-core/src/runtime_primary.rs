@@ -1,7 +1,7 @@
 //! The primary bot's tools. Each one calls the daemon method the app uses, as
 //! the section's owner, so validation, change events and clean-up stay the
-//! same. Deleting, changing a bot's approval mode or working folder, and
-//! changing settings ask the user every time, even in Bypass.
+//! same. Deleting, changing a bot's or room's approval mode or a bot's
+//! working folder, and changing settings ask the user every time, even in Bypass.
 use super::*;
 
 /// The tools a primary bot gets in its own sections, never in rooms, threads,
@@ -22,7 +22,7 @@ You are the user's primary bot. Besides your own work, you look after their Hexb
 - hexbot_rooms creates rooms and manages who is in them.
 - hexbot_jobs schedules work for any of their bots.
 - hexbot_settings reads and changes Hexbot's settings, skills and connectors.
-Deleting a bot, room or job, changing a bot's approval mode or working folder, and changing settings always ask the user first. Do the rest when the user asks. You never see or set API keys or connector credentials; tell the user to add them in Settings.
+Deleting a bot, room or job, changing a bot's or room's approval mode or a bot's working folder, and changing settings always ask the user first. Do the rest when the user asks. You never see or set API keys or connector credentials; tell the user to add them in Settings.
 These tools work only in your own sections."###;
 
 const BOT_FIELDS: &[&str] = &[
@@ -101,7 +101,7 @@ pub(super) fn descriptors() -> Vec<Value> {
         json!({
             "name": "hexbot_rooms",
             "label": "Rooms",
-            "description": "List, read, create and change the user's rooms. create needs name and members (bot handles). Removing a room's last bot deletes the room. Deleting a room asks the user first.",
+            "description": "List, read, create and change the user's rooms. create needs name and members (bot handles). Removing a room's last bot deletes the room. Deleting a room, or setting its approval_mode, asks the user first.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -341,6 +341,28 @@ impl Runtime {
                     required(&patch, "id")?;
                     patch.as_object_mut().unwrap().remove("members");
                 }
+                // A room's mode governs every bot's sandbox in it, so it asks like a bot's.
+                if let Some(mode) = patch["approval_mode"].as_str() {
+                    let title = patch["name"]
+                        .as_str()
+                        .or(patch["id"].as_str())
+                        .unwrap_or("the room");
+                    let verb = if action == "create" {
+                        "Create"
+                    } else {
+                        "Change"
+                    };
+                    self.confirm(
+                        s,
+                        name,
+                        format!(
+                            "{verb} {title}: set approval mode to {}",
+                            approval_label(mode)
+                        ),
+                        args,
+                    )
+                    .await?;
+                }
                 let method = format!("hexbot.rooms.{action}");
                 self.dispatch(owner, &method, patch).await
             }
@@ -393,9 +415,23 @@ impl Runtime {
                     self.confirm(s, name, format!("Remove {bot}'s scheduled job {job}"), args)
                         .await?;
                 }
+                if ![
+                    "create", "list", "update", "pause", "resume", "remove", "run",
+                ]
+                .contains(&action)
+                {
+                    return Err(Error::new(
+                        4202,
+                        format!("unknown action for {name}: {action}"),
+                    ));
+                }
                 // Scripts and monitors stay with the bot's own cronjob_manage.
-                let job = pick(args, JOB_FIELDS);
-                crate::dreaming::tool_call(&self.home, owner, bot, &job).await
+                // The jobs method tells paired clients the jobs changed.
+                let mut job = pick(args, JOB_FIELDS);
+                job.as_object_mut().unwrap().remove("action");
+                job["bot"] = json!(bot);
+                let method = format!("hexbot.jobs.{action}");
+                self.dispatch(owner, &method, job).await
             }
             ("hexbot_settings", "get") => {
                 self.dispatch(owner, "hexbot.settings.get", json!({})).await
