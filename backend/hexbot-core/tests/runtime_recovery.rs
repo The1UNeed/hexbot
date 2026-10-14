@@ -418,7 +418,7 @@ fn startup_recovery_counts_unread_history_and_usage_before_any_session_open() {
     );
     assert_eq!(
         store::summary(home.path(), "chat").unwrap()["preview"],
-        "unread request"
+        "unread response"
     );
     let digest =
         hexbot_core::dreaming::build_digest(home.path(), "owl", 0.0, f64::MAX, None).unwrap();
