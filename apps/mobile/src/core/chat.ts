@@ -97,6 +97,8 @@ export function reduceChat(state: ChatState, event: GatewayEvent): ChatState {
         streaming: '',
         interim: [],
         activity: '',
+        // The turn is over, so no review is left; the daemon's clear may be lost.
+        checking: '',
         tools: [],
         approvals: [],
         questions: [],

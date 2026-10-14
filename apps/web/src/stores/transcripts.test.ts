@@ -39,6 +39,37 @@ describe('transcript reducer', () => {
       text: 'Retrying the model request'
     })
   })
+  it('keeps checking a step across an approval card until the last review ends', () => {
+    const actions = useTranscripts.getState()
+    const transcript = () => useTranscripts.getState().bySession.s
+    actions.messageStart('s')
+    actions.toolStart('s', { name: 'terminal', tool_id: 'a' })
+    actions.toolStart('s', { name: 'terminal', tool_id: 'b' })
+    actions.statusUpdate('s', { kind: 'checking', text: 'Checking this step' })
+    // Review A asks; its card ends the bubble while review B still runs.
+    actions.approvalRequest('s', { request_id: 'a' })
+    expect(transcript()?.streamingMessageId).toBeNull()
+    expect(transcript()?.checking).toBe('Checking this step')
+    actions.toolComplete('s', { tool_id: 'b' })
+    actions.toolStart('s', { name: 'terminal', tool_id: 'c' })
+    const live = transcript()?.messages.at(-1)
+    expect(live?.streaming).toBe(true)
+    expect(live?.checking).toBe('Checking this step')
+    actions.statusUpdate('s', { kind: 'checking', text: '' })
+    expect(transcript()?.checking).toBeUndefined()
+    expect(transcript()?.messages.some(message => message.checking)).toBe(false)
+  })
+  it('drops checking a step when the turn ends without the clear', () => {
+    const actions = useTranscripts.getState()
+    const transcript = () => useTranscripts.getState().bySession.s
+    actions.messageStart('s')
+    actions.statusUpdate('s', { kind: 'checking', text: 'Checking this step' })
+    actions.messageComplete('s', { text: 'Done' })
+    expect(transcript()?.checking).toBeUndefined()
+    expect(transcript()?.messages.at(-1)?.checking).toBeUndefined()
+    actions.messageStart('s')
+    expect(transcript()?.messages.at(-1)?.checking).toBeUndefined()
+  })
   it('leaves settled questions to the history it opens and keeps one still waiting', () => {
     const actions = useTranscripts.getState()
     actions.clarifyRequest('s', { question: 'Answered?', request_id: 'a' })

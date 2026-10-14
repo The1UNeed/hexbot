@@ -31,6 +31,19 @@ describe('chat event projection', () => {
     expect(s.activity).toBe('')
     expect(s.busy).toBe(true)
   })
+  it('keeps checking a step through an approval card and drops it when the turn ends', () => {
+    let s = reduceChat(
+      emptyChat(),
+      event('status.update', { kind: 'checking', text: 'Checking this step' })
+    )
+    s = reduceChat(s, event('approval.request', { request_id: 'a' }))
+    s = reduceChat(s, event('tool.complete', { tool_id: 'b' }))
+    expect(s.activity).toBe('Checking this step')
+    s = reduceChat(s, event('message.complete', { text: 'Done' }))
+    expect(s.checking).toBe('')
+    s = reduceChat(s, event('tool.start', { tool_id: 'c', name: 'terminal' }))
+    expect(s.activity).toBe('Using terminal')
+  })
   it('deduplicates re-sent approval cards and keeps the originating session', () => {
     let s = reduceChat(
       emptyChat(),

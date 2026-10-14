@@ -50,6 +50,12 @@ export type TranscriptMessage = Message & { errorDetail?: ErrorDetail }
 
 export interface Transcript {
   approvals: ApprovalRequest[]
+  /**
+   * "Checking this step" while Auto mode reviews a step. It belongs to the
+   * turn, not one message: a card can end the bubble that showed it while
+   * another review still runs, so each new bubble takes it over.
+   */
+  checking?: string
   /** Questions the bot asked through the clarify tool, oldest first. */
   clarifies: ClarifyRequest[]
   /** The context meter; null until the daemon has reported it. */
@@ -202,9 +208,10 @@ export function emptyTranscript(sessionId: string, sectionId?: string): Transcri
   }
 }
 
-function newAssistantMessage(): Message {
+function newAssistantMessage(checking?: string): Message {
   return {
     attachments: [],
+    ...(checking && { checking }),
     createdAt: Date.now(),
     id: nextMessageId('a'),
     role: 'assistant',
@@ -298,7 +305,7 @@ function withCurrentAssistant(
     return replaceMessage(transcript, current.id, patch)
   }
 
-  const created = patch(newAssistantMessage())
+  const created = patch(newAssistantMessage(transcript.checking))
 
   return {
     ...transcript,
@@ -403,15 +410,17 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
     },
 
     messageStart(sessionId) {
-      const message = newAssistantMessage()
+      update(sessionId, transcript => {
+        const message = newAssistantMessage(transcript.checking)
 
-      update(sessionId, transcript => ({
-        ...transcript,
-        error: null,
-        messages: [...transcript.messages, message],
-        streamingMessageId: message.id,
-        turnPrefix: undefined
-      }))
+        return {
+          ...transcript,
+          error: null,
+          messages: [...transcript.messages, message],
+          streamingMessageId: message.id,
+          turnPrefix: undefined
+        }
+      })
     },
 
     messageDelta(sessionId, text) {
@@ -593,6 +602,7 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
         const finalize = (message: Message): Message => ({
           ...settle(message, finalText),
           activity: undefined,
+          checking: undefined,
           error: payload.error ?? message.error,
           status: payload.status,
           streaming: false,
@@ -607,8 +617,10 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
 
         const next = withCurrentAssistant(transcript, finalize)
 
+        // The turn is over, so no review is left; the daemon's clear may be lost.
         return {
           ...next,
+          checking: undefined,
           turnPrefix: undefined,
           error: payload.error ?? null,
           status: null,
@@ -734,16 +746,21 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
         }
 
         // Only the daemon's own clear, an empty `checking` line, ends the
-        // label; it goes once the last overlapping review ends.
+        // label; it goes once the last overlapping review ends. Until then
+        // the bubble streaming now shows it, and so does every later one.
         const checking = status.text || undefined
         const id = transcript.streamingMessageId
 
-        const next = checking
-          ? id
-            ? replaceMessage(transcript, id, message => ({ ...message, checking }))
-            : transcript
+        const next: Transcript = checking
+          ? {
+              ...(id
+                ? replaceMessage(transcript, id, message => ({ ...message, checking }))
+                : transcript),
+              checking
+            }
           : {
               ...transcript,
+              checking: undefined,
               messages: transcript.messages.map(message =>
                 message.checking ? { ...message, checking: undefined } : message
               )
