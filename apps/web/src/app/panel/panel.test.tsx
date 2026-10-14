@@ -4,7 +4,7 @@ import { vi } from 'vitest'
 import type { Bot, ToolCall } from '../../lib/types'
 import { useBots } from '../../stores/bots'
 import { useSections } from '../../stores/sections'
-import { useTranscripts } from '../../stores/transcripts'
+import { emptyTranscript, useTranscripts } from '../../stores/transcripts'
 import { useUi } from '../../stores/ui'
 
 import { ProfilePanel } from './index'
@@ -72,6 +72,7 @@ function seed(calls: ToolCall[], streaming: boolean) {
   useTranscripts.setState({
     bySession: {
       s: {
+        ...emptyTranscript('s'),
         approvals: [],
         clarifies: [],
         error: null,

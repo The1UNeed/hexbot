@@ -158,7 +158,9 @@ impl App {
         if method == "hexbot.sections.delete" {
             let stored = common::required(p, "id")?;
             catalog::section(&self.home, owner, stored)?;
-            self.runtime.delete_stored(owner, stored).await?;
+            self.runtime
+                .delete_stored(owner, stored, p["purge_memory"].as_bool().unwrap_or(true))
+                .await?;
         }
         if method == "hexbot.bots.delete" {
             let bot = common::required(p, "name")?;
@@ -200,6 +202,7 @@ impl App {
                     .delete_stored(
                         common::required(&session, "owner")?,
                         common::required(&session, "stored_id")?,
+                        true,
                     )
                     .await?;
             }
@@ -434,7 +437,7 @@ impl App {
                     self.bot_status(owner, bot);
                 }
             }
-        } else if method == "hexbot.bots.get" {
+        } else if matches!(method, "hexbot.bots.get" | "hexbot.bots.update") {
             self.bot_status(owner, &mut result["bot"]);
         }
         self.changed(owner, method, p, &result);
@@ -612,6 +615,10 @@ impl App {
             return;
         };
         self.events.emit(owner, None, &event, payload.clone());
+        if group == "rooms" && payload["deleted"] == true {
+            self.events
+                .emit(owner, None, "hexbot.bots.changed", json!({}));
+        }
         if group == "connectors" {
             self.events
                 .emit(owner, None, "hexbot.bots.changed", payload);

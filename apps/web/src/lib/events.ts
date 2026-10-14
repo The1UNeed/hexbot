@@ -26,7 +26,7 @@ import { useBots } from '../stores/bots'
 import { useConnectors } from '../stores/connectors'
 import { useMe } from '../stores/me'
 import { useRooms } from '../stores/rooms'
-import { useSections } from '../stores/sections'
+import { botStatus, useSections } from '../stores/sections'
 import { useSettings } from '../stores/settings'
 import type {
   ApprovalRequestPayload,
@@ -95,6 +95,97 @@ function botOfSection(sectionId?: string | null): string | undefined {
 /** Whose card this is: its section's bot, else the bot the daemon names (private threads are unlisted). */
 function cardBot(payload: Record<string, unknown>, sectionId?: string | null): string | undefined {
   return botOfSection(sectionId) ?? (typeof payload.bot === 'string' ? payload.bot : undefined)
+}
+
+/** A settled card may be the first replayed event from an unopened conversation. */
+function bindSettlementOwner(sessionId: string, payload: Record<string, unknown>): void {
+  const transcripts = useTranscripts.getState()
+  const transcript = transcripts.bySession[sessionId]
+
+  if (!transcript || typeof payload.section_id !== 'string' || !payload.section_id) {
+    return
+  }
+
+  const bot = transcript.bot ?? cardBot(payload, payload.section_id)
+
+  if (!bot) {
+    return
+  }
+
+  const detail = useBots.getState().byName[bot]?.status_detail
+
+  const sectionId =
+    transcript.sectionId ??
+    (detail?.session_id === sessionId && detail.room_id
+      ? `room:${detail.room_id}`
+      : payload.section_id)
+
+  if (sectionId !== transcript.sectionId || bot !== transcript.bot) {
+    transcripts.setSectionId(sessionId, sectionId, bot)
+  }
+
+  void useSections.getState().verifySessionOwner(sessionId)
+}
+
+/** Retry starts carry only a session id; use exact known ownership before recording proof. */
+function bindRetryOwner(sessionId: string): boolean {
+  const transcripts = useTranscripts.getState()
+  const transcript = transcripts.bySession[sessionId]
+  const sections = useSections.getState()
+
+  const owners = Object.entries(sections.liveSessionId).flatMap(([id, live]) => {
+    const section = sections.byId[id]
+
+    return live === sessionId && section ? [{ sectionId: id, bot: section.bot }] : []
+  })
+
+  const rooms = useRooms.getState()
+
+  for (const [roomId, turns] of Object.entries(rooms.liveTurnsByRoom)) {
+    for (const [bot, turn] of Object.entries(turns)) {
+      if (
+        turn.live_session_id === sessionId &&
+        turn.bot === bot &&
+        turn.room_id === roomId &&
+        turn.status === 'running'
+      ) {
+        owners.push({ sectionId: `room:${roomId}`, bot })
+      }
+    }
+  }
+
+  for (const bot of Object.values(useBots.getState().byName)) {
+    const detail = bot.status_detail
+
+    if (
+      detail?.session_id === sessionId &&
+      detail.section_id &&
+      !detail.room_id &&
+      detail.action?.kind === 'retry' &&
+      botStatus(bot) === 'stopped' &&
+      !owners.some(owner => owner.bot === bot.name && owner.sectionId.startsWith('room:'))
+    ) {
+      owners.push({ sectionId: detail.section_id, bot: bot.name })
+    }
+  }
+
+  const owner = owners[0]
+
+  if (!owner) {
+    return !transcript?.sectionId?.startsWith('room:')
+  }
+
+  if (
+    owners.some(item => item.sectionId !== owner.sectionId || item.bot !== owner.bot) ||
+    (transcript?.sectionId && transcript.sectionId !== owner.sectionId) ||
+    (transcript?.bot && transcript.bot !== owner.bot)
+  ) {
+    return false
+  }
+
+  transcripts.setSectionId(sessionId, owner.sectionId, owner.bot)
+
+  return true
 }
 
 /** The open transcript for an incident: the section's live session, else the id as sent. */
@@ -209,6 +300,29 @@ export function routeEvent(event: GatewayEvent, deps: EventRouterDeps = {}): voi
       return
 
     case 'hexbot.sections.changed':
+      if (typeof payload.id === 'string' && payload.deleted !== true) {
+        for (const transcript of Object.values(transcripts.bySession)) {
+          const section = useSections.getState().byId[payload.id]
+
+          if (transcript.sectionId === payload.id && (!section || section.peer_bot)) {
+            void useSections.getState().verifySessionOwner(transcript.sessionId, true)
+          }
+        }
+      }
+
+      if (typeof payload.id === 'string' && payload.deleted === true) {
+        useSections.getState().drop(payload.id)
+
+        // An unopened private session can be known only through the bot's cached cause.
+        for (const bot of Object.values(useBots.getState().byName)) {
+          const detail = bot.status_detail
+
+          if (detail?.section_id === payload.id && !detail.room_id && detail.session_id) {
+            transcripts.drop(detail.session_id)
+          }
+        }
+      }
+
       effects.refreshSections()
       effects.refreshBots()
       // Every ask touches its thread; an open thread panel reads it again (new live session,
@@ -235,9 +349,15 @@ export function routeEvent(event: GatewayEvent, deps: EventRouterDeps = {}): voi
   if (
     (event.type === 'approval.request' || event.type === 'clarify.request') &&
     typeof payload.section_id === 'string' &&
-    !transcripts.bySession[sessionId]?.sectionId
+    (!transcripts.bySession[sessionId]?.sectionId || typeof payload.bot === 'string')
   ) {
-    transcripts.setSectionId(sessionId, payload.section_id)
+    transcripts.setSectionId(
+      sessionId,
+      transcripts.bySession[sessionId]?.sectionId ?? payload.section_id,
+      botOfSection(transcripts.bySession[sessionId]?.sectionId ?? payload.section_id) ??
+        transcripts.bySession[sessionId]?.bot ??
+        cardBot(payload, payload.section_id)
+    )
   }
 
   switch (event.type) {
@@ -245,6 +365,7 @@ export function routeEvent(event: GatewayEvent, deps: EventRouterDeps = {}): voi
       transcripts.approvalRequest(sessionId, payload as ApprovalRequestPayload, {
         notify: botNotifies(cardBot(payload, transcripts.bySession[sessionId]?.sectionId))
       })
+      void useSections.getState().verifySessionOwner(sessionId)
 
       return
 
@@ -252,6 +373,58 @@ export function routeEvent(event: GatewayEvent, deps: EventRouterDeps = {}): voi
       transcripts.clarifyRequest(sessionId, payload as ClarifyRequestPayload, {
         notify: botNotifies(cardBot(payload, transcripts.bySession[sessionId]?.sectionId))
       })
+      void useSections.getState().verifySessionOwner(sessionId)
+
+      return
+
+    case 'approval.resolved':
+      if (
+        typeof payload.request_id === 'string' &&
+        payload.request_id &&
+        (payload.choice === 'once' || payload.choice === 'session' || payload.choice === 'deny')
+      ) {
+        transcripts.approvalResolved(sessionId, {
+          request_id: payload.request_id,
+          choice: payload.choice
+        })
+
+        if (
+          Object.hasOwn(
+            useTranscripts.getState().bySession[sessionId]?.approvalDecisions ?? {},
+            payload.request_id
+          )
+        ) {
+          bindSettlementOwner(sessionId, payload)
+        }
+      }
+
+      return
+
+    case 'clarify.resolved':
+      if (
+        typeof payload.request_id === 'string' &&
+        payload.request_id &&
+        (payload.status === 'answered' || payload.status === 'waiting') &&
+        payload.answers &&
+        typeof payload.answers === 'object' &&
+        !Array.isArray(payload.answers) &&
+        Object.values(payload.answers).every(answer => typeof answer === 'string')
+      ) {
+        transcripts.clarifyResolved(sessionId, {
+          request_id: payload.request_id,
+          answers: payload.answers as Record<string, string>,
+          status: payload.status
+        })
+
+        if (
+          Object.hasOwn(
+            useTranscripts.getState().bySession[sessionId]?.clarifyAnswers ?? {},
+            payload.request_id
+          )
+        ) {
+          bindSettlementOwner(sessionId, payload)
+        }
+      }
 
       return
 
@@ -292,7 +465,20 @@ export function routeEvent(event: GatewayEvent, deps: EventRouterDeps = {}): voi
       return
 
     case 'message.start':
-      transcripts.messageStart(sessionId)
+      if (
+        typeof payload.bot === 'string' &&
+        payload.bot &&
+        typeof payload.section_id === 'string' &&
+        payload.section_id &&
+        payload.room_id === null
+      ) {
+        useSections.getState().bindTurn(sessionId, payload.section_id, payload.bot)
+      }
+
+      transcripts.messageStart(
+        sessionId,
+        payload.retry_resolved === true && bindRetryOwner(sessionId)
+      )
 
       return
 

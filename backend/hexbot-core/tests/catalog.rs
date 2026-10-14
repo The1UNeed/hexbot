@@ -1,4 +1,4 @@
-use hexbot_core::{catalog, db, memory::MemoryStore, runtime_store};
+use hexbot_core::{catalog, db, memory::MemoryStore, runtime_store, settings};
 use serde_json::{Value, json};
 use std::{fs, path::Path};
 fn setup() -> tempfile::TempDir {
@@ -17,6 +17,30 @@ fn create(home: &Path) -> Value {
         "hexbot.bots.create",
         json!({"name":"research-owl","model":"model-a","provider":"openai"}),
     )
+}
+fn incident_resolved_at(home: &Path, incident: &Value) -> Option<f64> {
+    db::open(home)
+        .unwrap()
+        .query_row(
+            "SELECT resolved_at FROM bot_incidents WHERE id=?",
+            [incident["id"].as_str().unwrap()],
+            |row| row.get(0),
+        )
+        .unwrap()
+}
+fn assert_bot_status(home: &Path, name: &str, status: &str, action: Value) {
+    let get = call(home, "alice", "hexbot.bots.get", json!({"name":name}));
+    let list = call(home, "alice", "hexbot.bots.list", json!({}));
+    let listed = list["bots"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|bot| bot["name"] == name)
+        .unwrap();
+    for bot in [&get["bot"], listed] {
+        assert_eq!(bot["status"], status, "{bot}");
+        assert_eq!(bot["status_detail"]["action"], action, "{bot}");
+    }
 }
 #[test]
 fn a_bot_can_be_created_with_a_reasoning_level() {
@@ -423,6 +447,448 @@ fn incidents_take_precedence_and_clear_status_resolves_them() {
         json!({"name":"research-owl"}),
     );
     assert_eq!(cleared["bot"]["status"], "idle");
+}
+#[test]
+fn incidents_in_archived_or_deleted_sections_do_not_stop_the_bot() {
+    let home = setup();
+    let h = home.path();
+    let id = create(h)["section"]["id"].as_str().unwrap().to_owned();
+    db::open(h).unwrap().execute("INSERT INTO bot_incidents(id,bot,section_id,kind,text,created_at) VALUES ('incident','research-owl',?,'turn_failed','Provider disconnected',1)", [&id]).unwrap();
+    assert_eq!(
+        catalog::bot(h, "alice", "research-owl").unwrap()["status"],
+        "stopped"
+    );
+    call(h, "alice", "hexbot.sections.archive", json!({"id":id}));
+    assert_eq!(
+        catalog::bot(h, "alice", "research-owl").unwrap()["status"],
+        "idle"
+    );
+    call(h, "alice", "hexbot.sections.unarchive", json!({"id":id}));
+    assert_eq!(
+        catalog::bot(h, "alice", "research-owl").unwrap()["status"],
+        "stopped"
+    );
+    call(h, "alice", "hexbot.sections.delete", json!({"id":id}));
+    assert_eq!(
+        catalog::bot(h, "alice", "research-owl").unwrap()["status"],
+        "idle"
+    );
+}
+
+#[test]
+fn legacy_deleted_section_failures_are_ignored_without_resolving_other_threads() {
+    let home = setup();
+    let h = home.path();
+    let id = create(h)["section"]["id"].as_str().unwrap().to_owned();
+    let conn = db::open(h).unwrap();
+    conn.execute("INSERT INTO bot_incidents(id,bot,section_id,kind,text,created_at) VALUES('legacy','research-owl',?,'turn_failed','Old failed turn',2)", [&id]).unwrap();
+    let status = |expected: &str, section: Option<&str>| {
+        let get = call(
+            h,
+            "alice",
+            "hexbot.bots.get",
+            json!({"name":"research-owl"}),
+        );
+        let list = call(h, "alice", "hexbot.bots.list", json!({}));
+        for bot in [&get["bot"], &list["bots"][0]] {
+            assert_eq!(bot["status"], expected);
+            assert_eq!(bot["status_detail"]["section_id"], json!(section));
+        }
+    };
+    status("stopped", Some(&id));
+    call(h, "alice", "hexbot.sections.archive", json!({"id":id}));
+    status("idle", None);
+    call(h, "alice", "hexbot.sections.unarchive", json!({"id":id}));
+    status("stopped", Some(&id));
+    // Emulate deletion before the incident-resolving delete handler existed.
+    conn.execute("DELETE FROM sections WHERE id=?", [&id])
+        .unwrap();
+    status("idle", None);
+    let resolved: Option<f64> = conn
+        .query_row(
+            "SELECT resolved_at FROM bot_incidents WHERE id='legacy'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(resolved.is_none()); // GET/LIST only select; they do not migrate rows.
+
+    conn.execute_batch("INSERT INTO sections(id,bot,owner_id,title,peer_bot) VALUES('private-thread','research-owl','alice','From Writer','writer'); INSERT INTO bot_incidents(id,bot,section_id,kind,text,created_at) VALUES('thread','research-owl','private-thread','turn_failed','Thread failed',1);").unwrap();
+    assert!(
+        call(
+            h,
+            "alice",
+            "hexbot.sections.list",
+            json!({"bot":"research-owl"})
+        )["sections"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    status("stopped", Some("private-thread"));
+    call(
+        h,
+        "alice",
+        "hexbot.sections.archive",
+        json!({"id":"private-thread"}),
+    );
+    status("idle", None);
+    call(
+        h,
+        "alice",
+        "hexbot.sections.unarchive",
+        json!({"id":"private-thread"}),
+    );
+    status("stopped", Some("private-thread"));
+}
+
+#[test]
+fn room_connector_and_global_incidents_survive_missing_or_archived_sections() {
+    let home = setup();
+    let h = home.path();
+    let id = create(h)["section"]["id"].as_str().unwrap().to_owned();
+    let conn = db::open(h).unwrap();
+    conn.execute_batch("INSERT INTO rooms(id,name,owner_id) VALUES('room','Room','alice'); INSERT INTO room_sessions(room_id,bot,stored_session_id) VALUES('room','research-owl','room-session');").unwrap();
+    call(h, "alice", "hexbot.sections.archive", json!({"id":id}));
+    for (label, kind, section, room, connector) in [
+        (
+            "connector deleted",
+            "connector_error",
+            Some("deleted"),
+            None,
+            Some("github"),
+        ),
+        (
+            "connector archived",
+            "connector_error",
+            Some(id.as_str()),
+            None,
+            Some("github"),
+        ),
+        (
+            "room deleted",
+            "turn_failed",
+            Some("deleted"),
+            Some("room"),
+            None,
+        ),
+        (
+            "room archived",
+            "turn_failed",
+            Some(id.as_str()),
+            Some("room"),
+            None,
+        ),
+        (
+            "room stored session",
+            "turn_failed",
+            Some("room-session"),
+            None,
+            None,
+        ),
+        ("global failure", "turn_failed", None, None, None),
+    ] {
+        conn.execute("DELETE FROM bot_incidents", []).unwrap();
+        conn.execute("INSERT INTO bot_incidents(id,bot,section_id,room_id,kind,connector,text,created_at) VALUES('incident','research-owl',?,?,?,?,?,1)", rusqlite::params![section,room,kind,connector,label]).unwrap();
+        let get = call(
+            h,
+            "alice",
+            "hexbot.bots.get",
+            json!({"name":"research-owl"}),
+        );
+        let list = call(h, "alice", "hexbot.bots.list", json!({}));
+        for bot in [&get["bot"], &list["bots"][0]] {
+            assert_eq!(bot["status"], "stopped", "{label}");
+            assert_eq!(bot["status_detail"]["text"], label);
+            assert_eq!(bot["status_detail"]["section_id"], json!(section));
+            assert_eq!(
+                bot["status_detail"]["room_id"],
+                if label == "room stored session" {
+                    json!("room")
+                } else {
+                    json!(room)
+                }
+            );
+            assert_eq!(
+                bot["status_detail"]["action"]["kind"],
+                if connector.is_some() {
+                    "fix_connector"
+                } else {
+                    "retry"
+                }
+            );
+        }
+    }
+}
+
+#[test]
+fn section_deletion_keeps_connector_errors_open() {
+    for purge in [false, true] {
+        for archived in [false, true] {
+            for teammate in [false, true] {
+                let home = setup();
+                let h = home.path();
+                let id = create(h)["section"]["id"].as_str().unwrap().to_owned();
+                if teammate {
+                    db::open(h)
+                        .unwrap()
+                        .execute("UPDATE sections SET peer_bot='writer' WHERE id=?", [&id])
+                        .unwrap();
+                }
+                runtime_store::append(h, &id, json!({"role":"user","text":"Keep or purge"}))
+                    .unwrap();
+                let retry = settings::record_incident(
+                    h,
+                    "research-owl",
+                    "turn_failed",
+                    "Provider disconnected",
+                    &json!({"section_id":id,"session_id":"retry-session"}),
+                )
+                .unwrap();
+                let connector = settings::record_incident(
+                    h,
+                    "research-owl",
+                    "connector_error",
+                    "GitHub is disconnected",
+                    &json!({"section_id":id,"session_id":"connector-session","connector":"github"}),
+                )
+                .unwrap();
+                if archived {
+                    call(h, "alice", "hexbot.sections.archive", json!({"id":id}));
+                }
+                let action = json!({"kind":"fix_connector","connector":"github"});
+                assert_bot_status(h, "research-owl", "stopped", action.clone());
+                assert_eq!(
+                    catalog::call(
+                        h,
+                        "bob",
+                        "hexbot.sections.delete",
+                        &json!({"id":id,"purge_memory":purge}),
+                    )
+                    .unwrap()
+                    .unwrap_err()
+                    .code,
+                    4302
+                );
+                assert!(incident_resolved_at(h, &retry).is_none());
+                assert!(incident_resolved_at(h, &connector).is_none());
+                assert_eq!(
+                    call(
+                        h,
+                        "alice",
+                        "hexbot.sections.delete",
+                        json!({"id":id,"purge_memory":purge}),
+                    )["deleted"],
+                    true
+                );
+                let resolved = incident_resolved_at(h, &retry);
+                assert!(resolved.is_some());
+                assert!(incident_resolved_at(h, &connector).is_none());
+                assert_bot_status(h, "research-owl", "stopped", action);
+                assert_eq!(
+                    runtime_store::history(h, &id).unwrap().len(),
+                    usize::from(!purge)
+                );
+                assert_eq!(
+                    catalog::call(h, "alice", "hexbot.sections.delete", &json!({"id":id}))
+                        .unwrap()
+                        .unwrap_err()
+                        .code,
+                    4204
+                );
+                assert_eq!(incident_resolved_at(h, &retry), resolved);
+                assert!(incident_resolved_at(h, &connector).is_none());
+            }
+        }
+    }
+}
+
+#[test]
+fn section_deletion_preserves_room_failures_and_checks_session_bot() {
+    for purge in [false, true] {
+        for archived in [false, true] {
+            for context in [
+                "explicit-room",
+                "own-room-session",
+                "other-bot-room-session",
+            ] {
+                let home = setup();
+                let h = home.path();
+                let id = create(h)["section"]["id"].as_str().unwrap().to_owned();
+                call(h, "alice", "hexbot.bots.create", json!({"name":"writer"}));
+                let conn = db::open(h).unwrap();
+                conn.execute(
+                    "INSERT INTO rooms(id,name,owner_id) VALUES('room','Room','alice')",
+                    [],
+                )
+                .unwrap();
+                let explicit = context == "explicit-room";
+                let own_session = context == "own-room-session";
+                if !explicit {
+                    conn.execute(
+                        "INSERT INTO room_sessions(room_id,bot,stored_session_id) VALUES('room',?,?)",
+                        rusqlite::params![if own_session { "research-owl" } else { "writer" }, id],
+                    )
+                    .unwrap();
+                }
+                let incident = settings::record_incident(
+                    h,
+                    "research-owl",
+                    "turn_failed",
+                    "Room provider disconnected",
+                    &json!({"section_id":id,"room_id":if explicit { Some("room") } else { None },"session_id":"room-live"}),
+                )
+                .unwrap();
+                if archived {
+                    call(h, "alice", "hexbot.sections.archive", json!({"id":id}));
+                }
+                let keep = explicit || own_session;
+                let stopped = keep || !archived;
+                assert_bot_status(
+                    h,
+                    "research-owl",
+                    if stopped { "stopped" } else { "idle" },
+                    if stopped {
+                        json!({"kind":"retry"})
+                    } else {
+                        Value::Null
+                    },
+                );
+                call(
+                    h,
+                    "alice",
+                    "hexbot.sections.delete",
+                    json!({"id":id,"purge_memory":purge}),
+                );
+                assert_eq!(
+                    incident_resolved_at(h, &incident).is_none(),
+                    keep,
+                    "{context}"
+                );
+                assert_bot_status(
+                    h,
+                    "research-owl",
+                    if keep { "stopped" } else { "idle" },
+                    if keep {
+                        json!({"kind":"retry"})
+                    } else {
+                        Value::Null
+                    },
+                );
+                assert_eq!(
+                    conn.query_row("SELECT COUNT(*) FROM room_sessions", [], |row| row
+                        .get::<_, i64>(0))
+                        .unwrap(),
+                    i64::from(!explicit)
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn section_deletion_resolves_only_its_private_retry_in_mixed_incidents() {
+    for purge in [false, true] {
+        let home = setup();
+        let h = home.path();
+        let id = create(h)["section"]["id"].as_str().unwrap().to_owned();
+        call(h, "alice", "hexbot.bots.create", json!({"name":"writer"}));
+        let sibling = call(
+            h,
+            "alice",
+            "hexbot.sections.create",
+            json!({"bot":"research-owl"}),
+        );
+        let record = |bot, kind, text, context| {
+            settings::record_incident(h, bot, kind, text, &context).unwrap()
+        };
+        let history = record(
+            "research-owl",
+            "turn_failed",
+            "Earlier failure",
+            json!({"section_id":id}),
+        );
+        settings::resolve_incidents(h, &json!({"incident_id":history["id"]})).unwrap();
+        let old_timestamp = incident_resolved_at(h, &history).unwrap();
+        let retry = record(
+            "research-owl",
+            "turn_failed",
+            "Current failure",
+            json!({"section_id":id}),
+        );
+        let sibling_retry = record(
+            "research-owl",
+            "turn_failed",
+            "Sibling failure",
+            json!({"section_id":sibling["section"]["id"]}),
+        );
+        let global_retry = record("research-owl", "turn_failed", "Global failure", json!({}));
+        let other_bot = record(
+            "writer",
+            "connector_error",
+            "Writer connector failed",
+            json!({"section_id":id,"connector":"github"}),
+        );
+        let connector = record(
+            "research-owl",
+            "connector_error",
+            "Connector failure without a name",
+            json!({"section_id":id}),
+        );
+        assert_bot_status(h, "research-owl", "stopped", Value::Null);
+        call(
+            h,
+            "alice",
+            "hexbot.sections.delete",
+            json!({"id":id,"purge_memory":purge}),
+        );
+        assert!(incident_resolved_at(h, &retry).is_some());
+        assert_eq!(incident_resolved_at(h, &history), Some(old_timestamp));
+        for incident in [&sibling_retry, &global_retry, &other_bot, &connector] {
+            assert!(incident_resolved_at(h, incident).is_none(), "{incident}");
+        }
+        assert_bot_status(h, "research-owl", "stopped", Value::Null);
+        let fix = json!({"kind":"fix_connector","connector":"github"});
+        assert_bot_status(h, "writer", "stopped", fix.clone());
+        let cleared = call(
+            h,
+            "alice",
+            "hexbot.bots.clear_status",
+            json!({"name":"research-owl"}),
+        );
+        assert_eq!(cleared["bot"]["status"], "idle");
+        assert_bot_status(h, "research-owl", "idle", Value::Null);
+        for incident in [&retry, &sibling_retry, &global_retry, &connector] {
+            assert!(incident_resolved_at(h, incident).is_some());
+        }
+        assert_eq!(incident_resolved_at(h, &history), Some(old_timestamp));
+        assert!(incident_resolved_at(h, &other_bot).is_none());
+        record(
+            "research-owl",
+            "connector_error",
+            "Another connector failure",
+            json!({"connector":"github"}),
+        );
+        call(
+            h,
+            "alice",
+            "hexbot.bots.delete",
+            json!({"name":"research-owl"}),
+        );
+        assert_eq!(
+            db::open(h)
+                .unwrap()
+                .query_row(
+                    "SELECT COUNT(*) FROM bot_incidents WHERE bot='research-owl'",
+                    [],
+                    |row| row.get::<_, i64>(0)
+                )
+                .unwrap(),
+            0
+        );
+        assert!(incident_resolved_at(h, &other_bot).is_none());
+        assert_bot_status(h, "writer", "stopped", fix);
+    }
 }
 
 #[test]

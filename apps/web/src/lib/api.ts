@@ -593,8 +593,8 @@ export function approvalRespond(
   sessionId: string,
   requestId: string,
   choice: ApprovalChoice
-): Promise<{ resolved: boolean }> {
-  return rpcCall<{ resolved: boolean }>('approval.respond', {
+): Promise<{ resolved: boolean; choice?: ApprovalChoice }> {
+  return rpcCall('approval.respond', {
     choice,
     request_id: requestId,
     session_id: sessionId
@@ -607,8 +607,8 @@ export function clarifyRespond(
   requestId: string,
   answer: string,
   questionId?: string
-): Promise<{ remaining?: string[]; status: string }> {
-  return rpcCall<{ remaining?: string[]; status: string }>('clarify.respond', {
+): Promise<{ answers?: Record<string, string>; remaining?: string[]; status: string }> {
+  return rpcCall('clarify.respond', {
     answer,
     request_id: requestId,
     session_id: sessionId,

@@ -1,5 +1,306 @@
 use super::*;
 
+#[tokio::test]
+async fn stopping_cancels_late_approvals_and_questions_before_abort_finishes() {
+    let (home, runtime, hub) = setup();
+    db::open(home.path())
+        .unwrap()
+        .execute("UPDATE bots SET approval_mode='manual'", [])
+        .unwrap();
+    let id = open(&runtime).await;
+    let s = runtime.sessions.lock().unwrap()["first"].clone();
+    let mut events = hub.subscribe();
+    runtime
+        .call_inner(
+            "alice",
+            "prompt.submit",
+            &json!({"session_id":id,"text":"late-dialogs"}),
+        )
+        .await
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let event = events.recv().await.unwrap();
+            if event.frame["params"]["type"] == "approval.request" {
+                assert_eq!(event.frame["params"]["payload"]["request_id"], "first");
+                break;
+            }
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(
+        runtime.status_for_bot("alice", "owl").unwrap()["status"],
+        "needs_you"
+    );
+    let before = hub.since("alice", &id, 0)["latest_seq"].as_u64().unwrap();
+    let params = json!({"session_id":id});
+    let stop = runtime.call_inner("alice", "session.interrupt", &params);
+    tokio::pin!(stop);
+    let mut completed = false;
+    let stopped = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            tokio::select! {
+                result = &mut stop => break result,
+                event = events.recv() => {
+                    let frame = event.unwrap().frame;
+                    completed |= frame["params"]["type"] == "message.complete";
+                    if matches!(frame["params"]["type"].as_str(), Some("approval.request" | "clarify.request")) {
+                        let request = frame["params"]["payload"]["request_id"].as_str().unwrap().to_owned();
+                        // Release a broken producer too, so the regression reports
+                        // the unexpected card without leaving its fake Pi blocked.
+                        s.process.respond_extension(&request, json!({"cancelled":true}), DEADLINE).await.unwrap();
+                    }
+                }
+            }
+        }
+    })
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(stopped["status"], "interrupted");
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while !completed {
+            completed = events.recv().await.unwrap().frame["params"]["type"] == "message.complete";
+        }
+    })
+    .await
+    .unwrap();
+    assert!(s.state.lock().unwrap().pending.is_empty());
+    assert!(!s.state.lock().unwrap().busy);
+    assert!(runtime.status_for_bot("alice", "owl").is_none());
+    let replies = fs::read_to_string(home.path().join("dialogs.jsonl"))
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str::<Value>(line).unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(replies.len(), 4);
+    assert!(replies.iter().all(|reply| reply["cancelled"] == true));
+    let replay = hub.since("alice", &id, before);
+    let published = replay["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|event| {
+            matches!(
+                event["type"].as_str(),
+                Some("approval.request" | "clarify.request")
+            )
+        })
+        .collect::<Vec<_>>();
+    runtime.shutdown().await;
+    assert!(
+        published.is_empty(),
+        "late cards were published: {published:?}"
+    );
+}
+
+#[tokio::test]
+async fn dialog_delivery_failure_keeps_partial_answers_unsettled() {
+    let (_home, runtime, hub) = setup();
+    let id = open(&runtime).await;
+    let s = runtime.sessions.lock().unwrap()["first"].clone();
+    s.state.lock().unwrap().busy = true;
+    runtime.event(&s, json!({"type":"extension_ui_request","id":"batch","method":"input","title":format!("__HEXBOT_CLARIFY__{}",json!({"questions":[{"qid":"first","question":"First?"},{"qid":"last","question":"Last?"}]}))})).unwrap();
+    let before_partial = hub.since("alice", &id, 0)["latest_seq"].as_u64().unwrap();
+    let partial = runtime.call_inner("alice", "clarify.respond", &json!({"session_id":id,"request_id":"batch","question_id":"first","answer":"Accepted"})).await.unwrap();
+    assert_eq!(partial["status"], "waiting");
+    let replay = hub.since("alice", &id, before_partial);
+    assert_eq!(replay["count"], 1);
+    assert_eq!(replay["events"][0]["type"], "clarify.resolved");
+    assert_eq!(replay["events"][0]["payload"]["status"], "waiting");
+    let pending = s.state.lock().unwrap().pending["batch"].clone();
+    let mut stopped = s.settled.subscribe();
+    let before_stop = *stopped.borrow();
+    s.process.shutdown().await.unwrap();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while *stopped.borrow() == before_stop {
+            stopped.changed().await.unwrap();
+        }
+    })
+    .await
+    .unwrap();
+    // Exercise the window where the transport has stopped but the received
+    // card has not yet been cleared by the section's terminal event.
+    {
+        let _gate = s.event_gate.lock().unwrap();
+        let mut state = s.state.lock().unwrap();
+        state.closed = false;
+        state.interrupted = false;
+        state.pending.insert("batch".into(), pending);
+    }
+    runtime
+        .sessions
+        .lock()
+        .unwrap()
+        .insert("first".into(), s.clone());
+    let before = hub.since("alice", &id, 0)["latest_seq"].as_u64().unwrap();
+    let failed = runtime.call_inner("alice", "clarify.respond", &json!({"session_id":id,"request_id":"batch","question_id":"last","answer":"Not delivered"})).await.unwrap_err();
+    assert_eq!(failed.code, 5201);
+    assert_eq!(
+        s.state.lock().unwrap().pending["batch"]["answers"],
+        json!({"first":"Accepted"})
+    );
+    assert_eq!(hub.since("alice", &id, before)["count"], 0);
+    runtime.shutdown().await;
+}
+
+#[tokio::test]
+async fn cancelling_queued_and_inflight_dialog_answers_cannot_publish_settlement() {
+    for queued in [true, false] {
+        let (_home, runtime, hub) = setup();
+        let id = open(&runtime).await;
+        let s = runtime.sessions.lock().unwrap()["first"].clone();
+        s.state.lock().unwrap().busy = true;
+        runtime.event(&s, json!({"type":"extension_ui_request","id":"allow","method":"select","title":format!("__HEXBOT_APPROVAL__{}",json!({"tool":"bash","command":"pwd"})),"options":["once","deny"]})).unwrap();
+        let before = hub.since("alice", &id, 0)["latest_seq"].as_u64().unwrap();
+        let guard = if queued {
+            Some(s.answer_gate.lock().await)
+        } else {
+            None
+        };
+        let params = json!({"session_id":id,"request_id":"allow","choice":"once"});
+        let answer = runtime.call_inner("alice", "approval.respond", &params);
+        tokio::pin!(answer);
+        assert!(futures_util::poll!(&mut answer).is_pending());
+        let result = if queued {
+            Runtime::cancel_dialogs(&s).await;
+            drop(guard);
+            answer.await
+        } else {
+            // The answer owns admission and awaits its write acknowledgement.
+            assert!(s.answer_gate.try_lock().is_err());
+            let (_, result) = tokio::join!(Runtime::cancel_dialogs(&s), answer);
+            result
+        };
+        assert_eq!(result.unwrap_err().code, 4204);
+        assert!(s.state.lock().unwrap().pending.is_empty());
+        assert_eq!(hub.since("alice", &id, before)["count"], 0);
+        runtime.shutdown().await;
+    }
+}
+
+#[tokio::test]
+async fn an_old_dialog_settlement_keeps_newer_questions_waiting() {
+    for (old_approval, new_approval) in [(false, false), (true, false), (false, true), (true, true)]
+    {
+        let (_home, runtime, hub) = setup();
+        let id = open(&runtime).await;
+        let s = runtime.sessions.lock().unwrap()["first"].clone();
+        let request = |request_id: &str, approval: bool| {
+            if approval {
+                json!({"type":"extension_ui_request","id":request_id,"method":"select","title":format!("__HEXBOT_APPROVAL__{}",json!({"tool":"bash","command":"pwd"})),"options":["once","deny"]})
+            } else {
+                json!({"type":"extension_ui_request","id":request_id,"method":"input","title":"Question?"})
+            }
+        };
+        let params = |request_id: &str, approval: bool| {
+            if approval {
+                json!({"session_id":id,"request_id":request_id,"choice":"once"})
+            } else {
+                json!({"session_id":id,"request_id":request_id,"answer":"Accepted"})
+            }
+        };
+        s.state.lock().unwrap().busy = true;
+        runtime.event(&s, request("old", old_approval)).unwrap();
+        let old_params = params("old", old_approval);
+        let old_method = if old_approval {
+            "approval.respond"
+        } else {
+            "clarify.respond"
+        };
+        let answer = runtime.call_inner("alice", old_method, &old_params);
+        tokio::pin!(answer);
+        assert!(futures_util::poll!(&mut answer).is_pending());
+        assert!(s.answer_gate.try_lock().is_err());
+        runtime.event(&s, json!({"type":"agent_settled"})).unwrap();
+        s.state.lock().unwrap().busy = true;
+        runtime.event(&s, json!({"type":"agent_start"})).unwrap();
+        runtime.event(&s, request("new", new_approval)).unwrap();
+        let before = hub.since("alice", &id, 0)["latest_seq"].as_u64().unwrap();
+        let global_before = hub.since("alice", "", 0)["latest_seq"].as_u64().unwrap();
+        let response = answer.await.unwrap();
+        assert_eq!(
+            response[if old_approval { "choice" } else { "status" }],
+            if old_approval { "once" } else { "answered" }
+        );
+        let replay = hub.since("alice", &id, before);
+        assert_eq!(
+            replay["events"][0]["type"],
+            if old_approval {
+                "approval.resolved"
+            } else {
+                "clarify.resolved"
+            }
+        );
+        assert_eq!(replay["events"][0]["payload"]["request_id"], "old");
+        assert_eq!(
+            replay["count"], 1,
+            "a pending newer card must not receive Working: {replay}"
+        );
+        assert!(s.state.lock().unwrap().pending.contains_key("new"));
+        assert_eq!(
+            runtime.status_for_bot("alice", "owl").unwrap()["status"],
+            "needs_you"
+        );
+        let changed = hub.since("alice", "", global_before);
+        assert_eq!(changed["count"], 1);
+        assert_eq!(changed["events"][0]["type"], "hexbot.bots.changed");
+        assert_eq!(changed["events"][0]["payload"]["name"], "owl");
+
+        let before_last = replay["latest_seq"].as_u64().unwrap();
+        let new_method = if new_approval {
+            "approval.respond"
+        } else {
+            "clarify.respond"
+        };
+        runtime
+            .call_inner("alice", new_method, &params("new", new_approval))
+            .await
+            .unwrap();
+        let replay = hub.since("alice", &id, before_last);
+        assert_eq!(replay["count"], 2);
+        assert_eq!(replay["events"][0]["payload"]["request_id"], "new");
+        assert_eq!(replay["events"][1]["type"], "status.update");
+        assert_eq!(replay["events"][1]["payload"]["kind"], "working");
+        assert!(s.state.lock().unwrap().pending.is_empty());
+        assert_eq!(
+            runtime.status_for_bot("alice", "owl").unwrap()["status"],
+            "working"
+        );
+        runtime.shutdown().await;
+    }
+}
+
+#[tokio::test]
+async fn a_late_dialog_settlement_does_not_emit_working_after_completion() {
+    let (_home, runtime, hub) = setup();
+    let id = open(&runtime).await;
+    let s = runtime.sessions.lock().unwrap()["first"].clone();
+    s.state.lock().unwrap().busy = true;
+    runtime
+        .event(
+            &s,
+            json!({"type":"extension_ui_request","id":"single","method":"input","title":"Why?"}),
+        )
+        .unwrap();
+    let params = json!({"session_id":id,"request_id":"single","answer":"Because"});
+    let answer = runtime.call_inner("alice", "clarify.respond", &params);
+    tokio::pin!(answer);
+    assert!(futures_util::poll!(&mut answer).is_pending());
+    assert!(s.answer_gate.try_lock().is_err());
+    runtime.event(&s, json!({"type":"agent_settled"})).unwrap();
+    let after_complete = hub.since("alice", &id, 0)["latest_seq"].as_u64().unwrap();
+    let response = answer.await.unwrap();
+    assert_eq!(response["answers"], json!({"single":"Because"}));
+    let replay = hub.since("alice", &id, after_complete);
+    assert_eq!(replay["count"], 1);
+    assert_eq!(replay["events"][0]["type"], "clarify.resolved");
+    assert_eq!(replay["events"][0]["payload"]["status"], "answered");
+    assert!(!s.state.lock().unwrap().busy);
+    runtime.shutdown().await;
+}
+
 fn setup() -> (common::TestHome, Arc<Runtime>, EventHub) {
     let home = common::TestHome::new();
     db::migrate(home.path()).unwrap();
@@ -33,7 +334,16 @@ fn setup() -> (common::TestHome, Arc<Runtime>, EventHub) {
 const fs=require('node:fs'),rl=require('node:readline').createInterface({{input:process.stdin}});
 const emit=v=>process.stdout.write(JSON.stringify(v)+'\n');
 fs.appendFileSync({logfile},JSON.stringify({{pid:process.pid,args:process.argv.slice(2),environment:process.env,config:JSON.parse(fs.readFileSync(process.env.HEXBOT_SESSION_CONFIG))}})+'\n');
-rl.on('line',line=>{{const c=JSON.parse(line);if(c.type==='extension_ui_response'){{fs.appendFileSync({dialogs},JSON.stringify(c)+'\n');if(c.id.startsWith('probe:'))emit({{type:'extension_ui_request',method:'setStatus',statusText:JSON.stringify(c)}});return;}}emit({{type:'response',id:c.id,command:c.type,success:true,data:{{}}}});if(c.type==='prompt'){{emit({{type:'agent_start'}});emit({{type:'message_end',message:{{role:'user',content:c.message}}}});if(c.message!=='wait')emit({{type:'agent_settled'}});}}if(c.type==='abort')emit({{type:'agent_settled'}});}});
+let late=null,abort=null;
+const finishAbort=()=>{{if(abort&&late.size===0){{emit({{type:'response',id:abort.id,command:'abort',success:true,data:{{}}}});abort=null;emit({{type:'message_end',message:{{role:'assistant',content:[],stopReason:'aborted'}}}});emit({{type:'agent_settled'}});}}}};
+rl.on('line',line=>{{const c=JSON.parse(line);if(c.type==='extension_ui_response'){{fs.appendFileSync({dialogs},JSON.stringify(c)+'\n');if(c.id.startsWith('probe:'))emit({{type:'extension_ui_request',method:'setStatus',statusText:JSON.stringify(c)}});
+if(c.id==='first'&&c.cancelled){{late=new Set(['late-approval','late-batch','late-question']);
+emit({{type:'extension_ui_request',id:'late-approval',method:'select',title:'__HEXBOT_APPROVAL__'+JSON.stringify({{tool:'bash',command:'pwd'}}),options:['once','deny']}});
+emit({{type:'extension_ui_request',id:'late-batch',method:'input',title:'__HEXBOT_CLARIFY__'+JSON.stringify({{questions:[{{qid:'why',question:'Why?'}}]}})}});
+emit({{type:'extension_ui_request',id:'late-question',method:'input',title:'Another question?'}});
+}}else if(late&&late.delete(c.id))finishAbort();return;}}
+if(c.type==='abort'&&late){{abort=c;finishAbort();return;}}
+emit({{type:'response',id:c.id,command:c.type,success:true,data:{{}}}});if(c.type==='prompt'){{emit({{type:'agent_start'}});emit({{type:'message_end',message:{{role:'user',content:c.message}}}});if(c.message==='late-dialogs'){{emit({{type:'extension_ui_request',id:'first',method:'select',title:'__HEXBOT_APPROVAL__'+JSON.stringify({{tool:'bash',command:'pwd'}}),options:['once','deny']}});return;}}if(c.message!=='wait')emit({{type:'agent_settled'}});}}if(c.type==='abort')emit({{type:'agent_settled'}});}});
 "#
         ),
     )
@@ -1434,39 +1744,54 @@ async fn reopening_a_section_replays_the_approval_it_is_waiting_on() {
 
 #[tokio::test]
 async fn delete_finishes_bookkeeping_when_the_bot_cannot_be_reaped() {
-    let (home, runtime, hub) = setup();
-    let id = open(&runtime).await;
-    let s = runtime.sessions.lock().unwrap()["first"].clone();
-    s.process.fail_cleanup();
-    runtime.delete_stored("alice", "first").await.unwrap();
-    assert!(runtime.sessions.lock().unwrap().is_empty());
-    assert_eq!(runtime.capacity.available_permits(), 16);
-    assert!(
-        hub.since("alice", &id, 0)["events"]
-            .as_array()
+    for purge in [true, false] {
+        let (home, runtime, hub) = setup();
+        let id = open(&runtime).await;
+        let s = runtime.sessions.lock().unwrap()["first"].clone();
+        store::append(
+            home.path(),
+            "first",
+            json!({"role":"user","text":"Keep or purge"}),
+        )
+        .unwrap();
+        s.process.fail_cleanup();
+        runtime
+            .delete_stored("alice", "first", purge)
+            .await
+            .unwrap();
+        assert!(runtime.sessions.lock().unwrap().is_empty());
+        assert_eq!(runtime.capacity.available_permits(), 16);
+        assert!(
+            hub.since("alice", &id, 0)["events"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(home.path().join("runtime/sessions/first").exists(), !purge);
+        assert_eq!(
+            store::history(home.path(), "first").unwrap().len(),
+            usize::from(!purge)
+        );
+        let live: Option<String> = db::open(home.path())
             .unwrap()
-            .is_empty()
-    );
-    assert!(!home.path().join("runtime/sessions/first").exists());
-    let live: Option<String> = db::open(home.path())
-        .unwrap()
-        .query_row(
-            "SELECT last_live_session_id FROM sections WHERE id='first'",
-            [],
-            |r| r.get(0),
-        )
-        .unwrap();
-    assert_eq!(live, None);
-    let deleted: bool = store::open(home.path())
-        .unwrap()
-        .query_row(
-            "SELECT EXISTS(SELECT 1 FROM native_deleted WHERE session_id='first')",
-            [],
-            |r| r.get(0),
-        )
-        .unwrap();
-    assert!(deleted);
-    runtime.shutdown().await;
+            .query_row(
+                "SELECT last_live_session_id FROM sections WHERE id='first'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(live, None);
+        let deleted: bool = store::open(home.path())
+            .unwrap()
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM native_deleted WHERE session_id='first')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(deleted);
+        runtime.shutdown().await;
+    }
 }
 
 #[tokio::test]
@@ -2515,7 +2840,7 @@ async fn selected_cloud_provider_environment_reaches_agent() {
 
 #[tokio::test]
 async fn failed_deletion_rolls_back_root_and_descendant_tombstones() {
-    for close_failure in [true, false] {
+    for (close_failure, purge) in [(true, true), (true, false), (false, true)] {
         let (home, runtime, _) = setup();
         open(&runtime).await;
         let conn = store::open(home.path()).unwrap();
@@ -2529,7 +2854,7 @@ async fn failed_deletion_rolls_back_root_and_descendant_tombstones() {
         }
         assert!(
             runtime
-                .delete_stored(if close_failure { "bob" } else { "alice" }, "first")
+                .delete_stored(if close_failure { "bob" } else { "alice" }, "first", purge)
                 .await
                 .is_err()
         );
@@ -3814,5 +4139,86 @@ async fn notes_are_written_by_sections_and_proposed_by_jobs() {
         .len(),
         2
     );
+    runtime.shutdown().await;
+}
+
+#[tokio::test]
+async fn ordinary_private_start_names_its_owner_without_a_roster_read() {
+    let (_home, runtime, hub) = setup();
+    let id = open(&runtime).await;
+    let mut events = hub.subscribe();
+    runtime
+        .call_inner(
+            "alice",
+            "prompt.submit",
+            &json!({"session_id":id,"text":"wait"}),
+        )
+        .await
+        .unwrap();
+    let start = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let event = events.recv().await.unwrap();
+            if event.frame["params"]["type"] == "message.start" {
+                break event;
+            }
+        }
+    })
+    .await
+    .unwrap();
+    runtime.shutdown().await;
+    assert_eq!(start.owner, "alice");
+    assert_eq!(start.frame["params"]["session_id"], id);
+    assert_eq!(start.frame["params"]["payload"]["bot"], "owl");
+    assert_eq!(start.frame["params"]["payload"]["section_id"], "first");
+    assert!(
+        start.frame["params"]["payload"]
+            .get("room_id")
+            .is_some_and(Value::is_null)
+    );
+}
+
+#[tokio::test]
+async fn private_start_metadata_excludes_archived_and_unowned_runtime_sessions() {
+    let (home, runtime, hub) = setup();
+    let id = open(&runtime).await;
+    let live = runtime.sessions.lock().unwrap()["first"].clone();
+    for update in [
+        "UPDATE sections SET archived_at=1 WHERE id='first'",
+        "UPDATE sections SET archived_at=NULL,bot='other' WHERE id='first'",
+        "UPDATE sections SET bot='owl',owner_id='bob' WHERE id='first'",
+        "DELETE FROM sections WHERE id='first'",
+    ] {
+        db::open(home.path()).unwrap().execute(update, []).unwrap();
+        let before = hub.since("alice", &id, 0)["latest_seq"].as_u64().unwrap();
+        runtime.emit(&live, "message.start", json!({"retry_resolved":true}));
+        let replay = hub.since("alice", &id, before);
+        let payload = &replay["events"][0]["payload"];
+        assert_eq!(payload["retry_resolved"], true);
+        assert!(payload.get("section_id").is_none(), "{update}: {payload}");
+        assert!(payload.get("bot").is_none());
+        assert!(payload.get("room_id").is_none());
+    }
+    runtime.shutdown().await;
+}
+
+#[tokio::test]
+async fn private_start_metadata_requires_the_current_live_session() {
+    let (home, runtime, hub) = setup();
+    let id = open(&runtime).await;
+    let live = runtime.sessions.lock().unwrap()["first"].clone();
+    store::open(home.path())
+        .unwrap()
+        .execute(
+            "UPDATE native_live_sessions SET live_id='newer-live' WHERE stored_id='first'",
+            [],
+        )
+        .unwrap();
+    let before = hub.since("alice", &id, 0)["latest_seq"].as_u64().unwrap();
+    runtime.emit(&live, "message.start", json!({"retry_resolved":true}));
+    let replay = hub.since("alice", &id, before);
+    let payload = &replay["events"][0]["payload"];
+    assert_eq!(payload["retry_resolved"], true);
+    assert!(payload.get("section_id").is_none());
+    assert!(payload.get("bot").is_none());
     runtime.shutdown().await;
 }

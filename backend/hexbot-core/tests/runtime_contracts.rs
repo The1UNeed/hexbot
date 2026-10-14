@@ -1,7 +1,8 @@
 use hexbot_core::{
-    db,
+    catalog, db,
     events::{Event, EventHub},
     runtime::Runtime,
+    settings,
 };
 use serde_json::{Value, json};
 use std::{fs, time::Duration};
@@ -45,7 +46,7 @@ fn setup() -> (
     fs::write(&script,r#"#!/usr/bin/env node
 const rl=require('node:readline').createInterface({input:process.stdin});
 const emit=v=>process.stdout.write(JSON.stringify(v)+'\n');
-rl.on('line',line=>{const c=JSON.parse(line);emit({type:'response',id:c.id,command:c.type,success:true,data:{}});if(c.type==='prompt'){emit({type:'agent_start'});if(c.message==='wait'){emit({type:'extension_ui_request',id:'a',method:'select',title:'__HEXBOT_APPROVAL__'+JSON.stringify({tool:'bash',command:'pwd'}),options:['once','deny']});}else if(c.message==='fail'){emit({type:'tool_execution_start',toolCallId:'t',toolName:'web_search',args:{query:'x'}});emit({type:'tool_execution_end',toolCallId:'t',toolName:'web_search',isError:true,result:{content:[{type:'text',text:'Token refused'}]}});emit({type:'agent_settled'});}}if(c.type==='abort'){emit({type:'agent_settled'});}});
+rl.on('line',line=>{const c=JSON.parse(line);emit({type:'response',id:c.id,command:c.type,success:true,data:{}});if(c.type==='prompt'){emit({type:'agent_start'});if(c.message==='wait'){emit({type:'extension_ui_request',id:'a',method:'select',title:'__HEXBOT_APPROVAL__'+JSON.stringify({tool:'bash',command:'pwd'}),options:['once','deny']});}else if(c.message==='turn-fail'){emit({type:'message_end',message:{role:'user',content:c.message}});emit({type:'message_end',message:{role:'assistant',content:[],stopReason:'error',errorMessage:'Retry failed'}});emit({type:'agent_settled'});}else if(c.message==='fail'){emit({type:'tool_execution_start',toolCallId:'t',toolName:'web_search',args:{query:'x'}});emit({type:'tool_execution_end',toolCallId:'t',toolName:'web_search',isError:true,result:{content:[{type:'text',text:'Token refused'}]}});emit({type:'agent_settled'});}}if(c.type==='abort'){emit({type:'agent_settled'});}});
 "#).unwrap();
     #[cfg(unix)]
     {
@@ -80,6 +81,11 @@ async fn active_bot_status_uses_wire_detail_and_prioritizes_waiting_section() {
         .await
         .unwrap()
         .unwrap();
+    // Empty successful resolution still proves a new turn, unlike compaction.
+    assert_eq!(
+        next(&mut events, "message.start").await["payload"]["retry_resolved"],
+        true
+    );
     next(&mut events, "approval.request").await;
     let second = open(&runtime, "second").await;
     runtime
@@ -104,6 +110,65 @@ async fn active_bot_status_uses_wire_detail_and_prioritizes_waiting_section() {
     runtime.shutdown().await;
 }
 #[tokio::test]
+async fn answering_or_archiving_moves_the_bot_off_waiting() {
+    let (home, runtime, mut events) = setup();
+    let first = open(&runtime, "first").await;
+    runtime
+        .call(
+            "alice",
+            "prompt.submit",
+            &json!({"session_id":first,"text":"wait"}),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    next(&mut events, "approval.request").await;
+    assert_eq!(
+        runtime.status_for_bot("alice", "owl").unwrap()["status"],
+        "needs_you"
+    );
+    runtime
+        .call(
+            "alice",
+            "approval.respond",
+            &json!({"session_id":first,"request_id":"a","choice":"once"}),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    // Clients refresh the roster on this event; it must follow the answer.
+    assert_eq!(
+        next(&mut events, "hexbot.bots.changed").await["payload"]["name"],
+        "owl"
+    );
+    assert_eq!(
+        runtime.status_for_bot("alice", "owl").unwrap()["status"],
+        "working"
+    );
+    catalog::call(
+        home.path(),
+        "alice",
+        "hexbot.sections.archive",
+        &json!({"id":"first"}),
+    )
+    .unwrap()
+    .unwrap();
+    assert!(runtime.status_for_bot("alice", "owl").is_none());
+    catalog::call(
+        home.path(),
+        "alice",
+        "hexbot.sections.unarchive",
+        &json!({"id":"first"}),
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(
+        runtime.status_for_bot("alice", "owl").unwrap()["status"],
+        "working"
+    );
+    runtime.shutdown().await;
+}
+#[tokio::test]
 async fn failed_tool_events_include_error_property_expected_by_unchanged_ui() {
     let (_home, runtime, mut events) = setup();
     let session = open(&runtime, "first").await;
@@ -122,5 +187,186 @@ async fn failed_tool_events_include_error_property_expected_by_unchanged_ui() {
     assert_eq!(event["payload"]["tool_id"], "t");
     // Failure is read from `result.error`; no summary overwrites the argument preview.
     assert!(event["payload"].get("summary").is_none());
+    runtime.shutdown().await;
+}
+
+#[tokio::test]
+async fn retry_clears_failed_turn_before_the_new_turn_finishes() {
+    let (home, runtime, mut events) = setup();
+    let session = open(&runtime, "first").await;
+    settings::record_incident(
+        home.path(),
+        "owl",
+        "turn_failed",
+        "The previous turn failed",
+        &json!({"section_id":"first","session_id":session}),
+    )
+    .unwrap();
+    assert_eq!(
+        catalog::bot(home.path(), "alice", "owl").unwrap()["status"],
+        "stopped"
+    );
+    runtime
+        .call(
+            "alice",
+            "prompt.submit",
+            &json!({"session_id":session,"text":"wait"}),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    let start = next(&mut events, "message.start").await;
+    assert_eq!(start["session_id"], session);
+    assert_eq!(start["payload"]["retry_resolved"], true);
+    assert_eq!(
+        next(&mut events, "status.update").await["payload"]["kind"],
+        "working"
+    );
+    // The marker and Working precede Waiting; no completion has run.
+    next(&mut events, "approval.request").await;
+    assert_eq!(
+        catalog::bot(home.path(), "alice", "owl").unwrap()["status"],
+        "idle"
+    );
+    assert_eq!(
+        runtime.status_for_bot("alice", "owl").unwrap()["status"],
+        "needs_you"
+    );
+    runtime.shutdown().await;
+}
+
+#[tokio::test]
+async fn failed_retry_stops_again_and_manual_compaction_does_not_resolve_it() {
+    let (home, runtime, mut events) = setup();
+    let session = open(&runtime, "first").await;
+    let previous = settings::record_incident(
+        home.path(),
+        "owl",
+        "turn_failed",
+        "The previous turn failed",
+        &json!({"section_id":"first","session_id":session}),
+    )
+    .unwrap();
+    runtime
+        .call(
+            "alice",
+            "prompt.submit",
+            &json!({"session_id":session,"text":"turn-fail"}),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        next(&mut events, "message.start").await["payload"]["retry_resolved"],
+        true
+    );
+    assert_eq!(
+        next(&mut events, "message.complete").await["payload"]["status"],
+        "error"
+    );
+    next(&mut events, "status.update").await;
+    let failed = catalog::bot(home.path(), "alice", "owl").unwrap();
+    assert_eq!(failed["status"], "stopped");
+    assert_eq!(failed["status_detail"]["text"], "Retry failed");
+    let unresolved: String = db::open(home.path())
+        .unwrap()
+        .query_row(
+            "SELECT id FROM bot_incidents WHERE section_id='first' AND kind='turn_failed' AND resolved_at IS NULL",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_ne!(json!(unresolved), previous["id"]);
+    runtime
+        .call(
+            "alice",
+            "prompt.submit",
+            &json!({"session_id":session,"text":"/compact"}),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        next(&mut events, "message.start").await["payload"]
+            .get("retry_resolved")
+            .is_none()
+    );
+    assert_eq!(
+        next(&mut events, "message.complete").await["payload"]["status"],
+        "complete"
+    );
+    assert_eq!(
+        catalog::bot(home.path(), "alice", "owl").unwrap()["status_detail"],
+        failed["status_detail"]
+    );
+    runtime.shutdown().await;
+}
+
+#[tokio::test]
+async fn failed_incident_resolution_leaves_retry_start_unmarked() {
+    let (home, runtime, mut events) = setup();
+    let session = open(&runtime, "first").await;
+    settings::record_incident(
+        home.path(),
+        "owl",
+        "turn_failed",
+        "The previous turn failed",
+        &json!({"section_id":"first","session_id":session}),
+    )
+    .unwrap();
+    db::open(home.path())
+        .unwrap()
+        .execute_batch("CREATE TRIGGER reject_resolution BEFORE UPDATE ON bot_incidents BEGIN SELECT RAISE(ABORT,'resolution unavailable'); END;")
+        .unwrap();
+    runtime
+        .call(
+            "alice",
+            "prompt.submit",
+            &json!({"session_id":session,"text":"wait"}),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        next(&mut events, "message.start").await["payload"]
+            .get("retry_resolved")
+            .is_none()
+    );
+    next(&mut events, "approval.request").await;
+    assert_eq!(
+        catalog::bot(home.path(), "alice", "owl").unwrap()["status"],
+        "stopped"
+    );
+    db::open(home.path())
+        .unwrap()
+        .execute_batch("DROP TRIGGER reject_resolution;")
+        .unwrap();
+    runtime.shutdown().await;
+}
+
+#[tokio::test]
+async fn room_sessions_still_count_toward_bot_status() {
+    let (home, runtime, mut events) = setup();
+    let session = open(&runtime, "first").await;
+    runtime
+        .call(
+            "alice",
+            "prompt.submit",
+            &json!({"session_id":session,"text":"wait"}),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    next(&mut events, "approval.request").await;
+    // Room conversations have a stored id but no row in the private section index.
+    db::open(home.path())
+        .unwrap()
+        .execute_batch("DELETE FROM sections WHERE id='first'; INSERT INTO rooms(id,name,owner_id) VALUES('room','Room','alice'); INSERT INTO room_sessions(room_id,bot,stored_session_id) VALUES('room','owl','first');")
+        .unwrap();
+    let status = runtime.status_for_bot("alice", "owl").unwrap();
+    assert_eq!(status["status"], "needs_you");
+    assert!(status["status_detail"]["section_id"].is_null());
+    assert_eq!(status["status_detail"]["room_id"], "room");
+    assert_eq!(status["status_detail"]["session_id"], session);
     runtime.shutdown().await;
 }

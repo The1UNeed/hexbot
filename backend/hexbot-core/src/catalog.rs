@@ -320,9 +320,25 @@ fn shape_bot(home: &Path, caller: &str, row: Value) -> Result<Value> {
         .take(2)
         .cloned()
         .collect::<Vec<_>>();
-    let incident=rows(&db::open(home)?,"SELECT * FROM bot_incidents WHERE bot=? AND resolved_at IS NULL ORDER BY created_at DESC LIMIT 1",&[&name])?.into_iter().next();
+    // Room retries need an existing room; private retries need an open section.
+    // Connector incidents and failures without either context remain visible.
+    let incident = rows(
+        &db::open(home)?,
+        "SELECT * FROM bot_incidents i WHERE bot=? AND resolved_at IS NULL AND (
+            i.kind<>'turn_failed' OR CASE WHEN i.room_id IS NOT NULL
+                THEN EXISTS(SELECT 1 FROM rooms r WHERE r.id=i.room_id)
+                ELSE i.section_id IS NULL
+                    OR EXISTS(SELECT 1 FROM room_sessions r WHERE r.stored_session_id=i.section_id AND r.bot=i.bot)
+                    OR EXISTS(SELECT 1 FROM sections s WHERE s.id=i.section_id AND s.archived_at IS NULL)
+                END
+         ) ORDER BY created_at DESC LIMIT 1",
+        &[&name],
+    )?
+    .into_iter()
+    .next();
     let (mut status, mut detail) = ("idle", Value::Null);
-    if let Some(i) = incident {
+    if let Some(mut i) = incident {
+        crate::settings::normalize_incident_room(&db::open(home)?, &mut i)?;
         status = "stopped";
         let action = if i["kind"] == "turn_failed" {
             json!({"kind":"retry"})
@@ -941,6 +957,14 @@ fn delete_section(home: &Path, caller: &str, id: &str, purge: bool) -> Result<()
         let mut conn = db::open(home)?;
         let tx = conn.transaction()?;
         tx.execute("DELETE FROM sections WHERE id=?", [id])?;
+        // Only private turn failures lose their retry when a section is deleted.
+        tx.execute(
+            "UPDATE bot_incidents SET resolved_at=? WHERE section_id=? AND bot=?
+             AND kind='turn_failed' AND room_id IS NULL AND resolved_at IS NULL
+             AND NOT EXISTS(SELECT 1 FROM room_sessions r
+                 WHERE r.stored_session_id=bot_incidents.section_id AND r.bot=bot_incidents.bot)",
+            params![now(), id, row["bot"].as_str()],
+        )?;
         tx.execute(
             "UPDATE bots SET last_activity_at=? WHERE name=?",
             params![now(), row["bot"].as_str()],

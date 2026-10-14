@@ -66,6 +66,9 @@ Each card shows the command or action and why it asks. Approve runs it once. All
 
 Delegates and background sections cannot wait for approval; actions that need it are refused.
 
+Stop cancels pending approvals and questions. New requests from the stopping
+turn are cancelled too.
+
 Read the command and the reason before approving. A familiar tool can still do damage with broad arguments.
 
 ## Credential and browser access

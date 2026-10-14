@@ -53,8 +53,57 @@ data model. The native transport and event projection live in
 
 Events the client renders: `message.start`, `message.delta`, `message.interim`,
 `message.complete` (turn end), `reasoning.delta`, `thinking.delta`, `tool.start`, `tool.complete`,
-`approval.request`, `status.update`, `session.info`, `session.usage {usage,
+`approval.request`, `approval.resolved`, `clarify.request`, `clarify.resolved`,
+`clarify.expire`, `status.update`, `session.info`, `session.usage {usage,
 context}` (the section's totals and its context meter, see Sections), `error`.
+
+`status.update {kind: "waiting", text}` can describe an automatic model retry
+without a question or approval. Mobile keeps that activity text; pending human
+cards use Waiting.
+
+Stop cancels pending dialogs and any approval or question that Pi sends while
+the turn is stopping. Late dialogs are not published as new cards.
+
+Accepted answers publish session-scoped `approval.resolved {request_id,
+choice}` or `clarify.resolved {request_id, answers, status, remaining?}`.
+Approval choices are canonical `once | session | deny`. Clarification answers
+use question IDs (the request ID for a single question); `status` is `waiting`
+for a partial answer and `answered` once every question has an answer. Both
+events include `bot` and `section_id`. They update the matching card on other
+connected clients, including when a roster refresh fails. Other pending
+requests keep Waiting. After a complete answer, the daemon emits Working
+only while the turn is busy and no human requests remain pending. Clients
+can bind a valid settlement to its bot and section without having seen the
+original card. The answer RPC can also return the canonical `choice` or
+`answers`; older daemons omit them.
+
+For an active private section, `message.start` also names `bot`, `section_id`,
+and `room_id: null`. The daemon verifies that section's owner and current live
+session before adding these fields. Clients can bind an unopened conversation and
+show Working even when a roster read fails. Archived sections, room sessions, and
+background jobs omit this private ownership metadata. Older daemons omit it too.
+A conflicting current session, an archived section, or a deletion prevents a start
+from rebinding it. A later accepted status read or turn completion retires the
+activity proof.
+
+When a new agent turn starts, `message.start` includes `retry_resolved: true`
+if resolving that section's `turn_failed` incidents succeeded. Clients can
+retire a matching cached Stopped status with a Retry action. For an unopened
+private section, clients bind the marker using its known live-session mapping
+or an exact cached bot/session cause. A current same-bot section mapping can
+supersede the incident's older live session. Room markers require the current room
+turn's matching bot and live session. A named room cause can refer to an older
+live session; legacy causes without a room ID require an exact session match.
+Accepted room retry evidence survives successful turn completion, leaving,
+and reopening the room until newer status or lifecycle authority retires it.
+Reopening retains only completed proof for a valid bot in that room; a current
+newer turn replaces it.
+Completion received during a room read supersedes an older snapshot of that turn.
+A rejected room send leaves the room busy only while another turn is active.
+Markers retire only failures naming the matching stored section; global and
+connector causes remain Stopped.
+Compaction starts and older daemons omit this field; an unmarked start or a
+Working event alone does not prove that a failure was resolved.
 
 ## `hexbot.*` methods
 
@@ -109,9 +158,69 @@ when it overrides the default.
 
 `status` is `idle`, `working`, `needs_you`, or `stopped` (priority in that
 reverse order), folded by the daemon from live session state, room turns,
-room `waiting.human` events, and open incidents. `status_detail` is
+room `waiting.human` events, and open incidents. Archived private sections and
+their turn failures do not count; their state returns on unarchive. Turn
+failures left by private sections deleted before upgrade are ignored without
+rewriting the incident rows. Room, global and connector incidents remain
+eligible even if their linked section is missing or archived. A new turn
+resolves its `turn_failed` incident. Deleting a private section resolves its
+retryable turn failures; connector, room and global incidents remain open.
+The daemon emits `hexbot.bots.changed {name}` when a turn starts, when a
+question or approval arrives, and when one is answered. Clients also refresh
+bots on `hexbot.sections.changed`, sent when a turn ends or a section is
+archived, unarchived, or deleted. `status_detail` is
 `{text, section_id, room_id, session_id, since, action}` where `action` is
 null, `{kind: "fix_connector", connector}`, or `{kind: "retry"}`.
+The detail names one session even when several sections of the bot are
+active. A non-idle bot reply must not erase status evidence for a
+sibling session. An accepted Idle reply can retire the bot's older live
+status evidence, but does not settle confirmed questions or approvals in
+archived private sections. Restore makes that pending evidence eligible
+again, including when the next bot refresh fails. Pending questions and
+approvals remain Waiting through an unrelated Working event; answers settle
+only their matching request IDs.
+Mobile retains exact local answer evidence after leaving a conversation,
+including replies from daemons without settlement broadcasts. A fully
+answered live turn shows Working even if the roster missed its wait and
+the following bot reads fail. A newer accepted Idle retires that evidence.
+Partially answered batches retain their confirmed unanswered cards after
+leaving; they still project Needs you without requiring a successful bot read.
+History rereads preserve answer and retry evidence received during an earlier
+attempt, until newer authority retires it. Named bot changes fence older
+targeted status reads.
+Mobile projects confirmed cards from the open conversation and every matching
+bot turn in the current room as Needs you, below Stopped. Busy matching room
+turns can show Working, below Needs you and Stopped; newer accepted bot status
+retires older activity evidence. Archived private cards do not count.
+The web client uses accepted running room turns as Working evidence when
+their exact live session matches, below Needs you and Stopped.
+Unindexed private activity counts only after section metadata confirms its
+section ID, bot and live session. A room's stored session ID does not establish
+private thread ownership.
+A room binding that confirms the same bot and live session preserves pending
+cards first received under an unverified stored session ID.
+Accepted archive state excludes matching private activity from the bot
+aggregate and makes the open turn eligible again on restore.
+Bot status and archive fields reconcile independently when sections change.
+Local archive, restore and rename replies preserve newer accepted catalog
+metadata and completed edits. List and open snapshots already in flight
+cannot undo completed archive edits; opening still accepts its live session
+and history independently of editable metadata.
+Catalog metadata supersedes a pending edit only when that metadata was
+installed. Keeping a newer local row must not cancel another field's edit.
+Bot list, get and update replies include the daemon's live status. Older
+daemons can return catalog-only Idle from an update, so a settings save alone
+must not retire confirmed pending cards or a live Working status. A later
+roster or live event can settle them. The web client retains confirmed
+pending cards and retry resolution on same-epoch reconnects while retiring
+optimistic answer evidence. An accepted Idle still retires older confirmed
+cards when a concurrent section read fails during a disconnect; newer cards
+and live activity keep their own authority. Mobile retains answer and retry
+status evidence
+on same-epoch reconnects. Fresh roster or lifecycle state can retire retry
+evidence. A new epoch drops the web client's previous live sessions and
+retires mobile answer and retry status evidence, including room turns.
+Mobile transcript history and cards remain for fresh reconciliation.
 `approval_mode` is `inherit` (the deployment setting), `manual`, `smart`
 (Auto), or `off` (Bypass); `workdir` overrides the deployment workspace for
 that bot's terminal.
@@ -195,7 +304,16 @@ roster shows only the title.
   context: Context, pending_clarify?}` (resumes the stored session on the
   bot's profile; idempotent if live). If the bot is waiting on an approval,
   the daemon sends its `approval.request` event again so a reloaded client
-  gets the card back; clients dedupe on `request_id`.
+  gets the card back; clients dedupe on `request_id`. An approval and a
+  question can be pending together. Answering one card leaves the session
+  waiting while another card still needs an answer. `pending_clarify`
+  names one pending question; a different ID does not prove that an earlier
+  question settled. Match answers and expiry to their own `request_id`.
+  Opening can overlap a rename, archive or restore. Clients keep completed
+  edits while accepting the live session and history; a successful delete,
+  including one reported by another connected client, fences earlier opens
+  and clears that private section's cached Working or Needs you status, and
+  Stopped with a Retry action. Other active sections and rooms still count.
 
 `Context = {tokens, window, compact_at, compacting, recounting, seq}` is how
 full the section's context is: Pi's own estimate of the tokens the next
@@ -221,9 +339,10 @@ context of its own; the meter belongs to bot sections.
 - `hexbot.sections.rename {id, title}` → `{section: Section}`
 - `hexbot.sections.archive {id}` / `hexbot.sections.unarchive {id}` → `{section}`
 - `hexbot.sections.delete {id, purge_memory?: true}` → `{deleted: true}`
-  (closes the live session, `session.delete` on the stored row). With
-  `purge_memory: false` only the Hexbot row goes and the core transcript
-  is left in place. The bot's memory is not touched either way.
+  Closes its live sessions and removes the section. By default its stored
+  transcript and Pi session files are deleted. With `purge_memory: false`
+  those records remain, but the deleted sessions cannot resume or receive
+  new transcript messages. The bot's memory is not touched either way.
 - `hexbot.sections.touch {id}` is internal; activity is stamped by the plugin
   on `message.complete`. It also sets the section's `done_at`.
 - `hexbot.sections.mark_read {id}` → `{section: Section}` clears `done_at`:
@@ -715,20 +834,39 @@ devices, and removes the invite and update methods.
 
 ### Events emitted by the plugin
 
-`hexbot.bots.changed {name}`, `hexbot.sections.changed {id, bot}`,
+`hexbot.bots.changed {name?}`, `hexbot.sections.changed {id, bot?, deleted?}`,
 `hexbot.memory.user.changed {}`, `hexbot.network.changed {}`. Session-less,
 broadcast to every connection.
+Section deletion sends `{id, deleted: true}` to the owner. Clients record
+that exact deletion before refreshing lists, so a failed bot refresh cannot
+retain the deleted private section's cached Working or Needs you status, or
+Stopped with a Retry action. An omitted row in a list does not prove deletion.
 Connect registration and disconnection emit `hexbot.connect.changed {}`.
-Room mutations emit `hexbot.rooms.changed {id}`. Every persisted room event
-emits `hexbot.rooms.event {room_id, event}`. Turn state changes emit
+Room mutations emit `hexbot.rooms.changed {id}`.
+Successful room deletion also emits owner-scoped `hexbot.bots.changed {}`,
+including deletion by removing the last bot, so clients refresh bot status.
+Every persisted room event emits `hexbot.rooms.event {room_id, event}`.
+Turn state changes emit
 `hexbot.rooms.turn {room_id, bot, live_session_id, status}`. Room events go
 to the owner.
 Dream triggers emit `hexbot.dreaming.changed {bot}`.
 Connector mutations emit `hexbot.connectors.changed {connector, bot?}` and
-`hexbot.bots.changed`. Opening or resolving an incident emits
+`hexbot.bots.changed`. Recording a runtime failure emits
 `hexbot.bots.incident {bot, section_id, room_id, session_id, incident: {id,
-kind, connector, text, created_at, resolved_at}}` followed by
-`hexbot.bots.changed {name}`.
+kind, connector, text, created_at, resolved_at}}`. Incident resolution does
+not emit an incident event. Room turn failures include their canonical room
+ID in the incident and event. Bot reads also recover that ID for older room
+turn failures while the same bot's stored room session still exists.
+Turn start and clean turn completion resolve
+`turn_failed` incidents. Section deletion resolves only its bot's private
+turn failures; connector, room and global incidents remain open.
+Bot status excludes room-scoped `turn_failed` incidents once their room is
+deleted, including deletion by removing its last bot. This does not rewrite
+incident history. Connector failures and failures without a room keep their
+existing eligibility; archiving keeps the room available for restore.
+`hexbot.bots.clear_status` resolves all incidents for the bot; successful
+connector setup resolves that connector's incidents. Clients refresh bots on
+the corresponding bots, sections, or connectors changed event.
 
 ## Pairing and auth over HTTP
 

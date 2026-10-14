@@ -96,6 +96,7 @@ export type ApprovalChoice = 'deny' | 'once' | 'session'
 
 export interface ApprovalRequestView {
   requestId: string
+  sessionId?: string
   /** The command or action, shown in monospace. */
   command?: string | null
   reason?: string | null

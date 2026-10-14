@@ -297,6 +297,29 @@ pub fn network(home: &Path) -> Result<Value> {
     )
 }
 
+pub(crate) fn normalize_incident_room(conn: &Connection, incident: &mut Value) -> Result<()> {
+    if incident["kind"] != "turn_failed" || !incident["room_id"].is_null() {
+        return Ok(());
+    }
+    let Some(section) = incident["section_id"].as_str() else {
+        return Ok(());
+    };
+    let room: Option<String> = conn
+        .query_row(
+            "SELECT MIN(s.room_id) FROM room_sessions s
+             JOIN rooms r ON r.id=s.room_id JOIN bots b ON b.name=s.bot
+             WHERE s.stored_session_id=? AND s.bot=? AND r.owner_id=b.owner_id
+             HAVING COUNT(*)=1",
+            params![section, incident["bot"].as_str()],
+            |row| row.get(0),
+        )
+        .optional()?;
+    if let Some(room) = room {
+        incident["room_id"] = json!(room);
+    }
+    Ok(())
+}
+
 /// Internal incident write; the runtime publishes the returned row to affected clients.
 pub fn record_incident(
     home: &Path,
@@ -356,7 +379,15 @@ pub fn record_incident(
         )?;
         id
     };
-    let row = common::rows(&tx, "SELECT * FROM bot_incidents WHERE id=?", &[&id])?.remove(0);
+    let mut row = common::rows(&tx, "SELECT * FROM bot_incidents WHERE id=?", &[&id])?.remove(0);
+    let missing_room = row["room_id"].is_null();
+    normalize_incident_room(&tx, &mut row)?;
+    if missing_room && row["room_id"].is_string() {
+        tx.execute(
+            "UPDATE bot_incidents SET room_id=? WHERE id=?",
+            params![row["room_id"].as_str(), id],
+        )?;
+    }
     tx.commit()?;
     Ok(row)
 }

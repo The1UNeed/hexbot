@@ -79,7 +79,7 @@ export interface ChatScreenProps {
   onNewSection?: () => void
   onOpenSettings?: () => void
 
-  onApprove: (requestId: string, choice: ApprovalChoice) => void
+  onApprove: (requestId: string, choice: ApprovalChoice, sessionId?: string) => void
   onMessageLongPress?: (id: string) => void
 
   archived?: boolean
@@ -638,7 +638,7 @@ export function ApprovalCard({
   request
 }: {
   request: ApprovalRequestView
-  onAnswer: (requestId: string, choice: ApprovalChoice) => void
+  onAnswer: (requestId: string, choice: ApprovalChoice, sessionId?: string) => void
 }) {
   const theme = useTheme()
   const decided = request.decision
@@ -683,7 +683,7 @@ export function ApprovalCard({
             <Button
               key={choice}
               label={CHOICE_LABELS[choice]}
-              onPress={() => onAnswer(request.requestId, choice)}
+              onPress={() => onAnswer(request.requestId, choice, request.sessionId)}
               style={[styles.approvalButton, index > 0 && { backgroundColor: theme.inset }]}
               testID={`approval-${request.requestId}-${choice}`}
               variant={index === 0 ? 'primary' : 'secondary'}
@@ -692,7 +692,7 @@ export function ApprovalCard({
           {request.choices.includes('deny') ? (
             <Button
               label="Deny"
-              onPress={() => onAnswer(request.requestId, 'deny')}
+              onPress={() => onAnswer(request.requestId, 'deny', request.sessionId)}
               style={[styles.approvalButton, { backgroundColor: theme.inset }]}
               testID={`approval-${request.requestId}-deny`}
               variant="secondary"

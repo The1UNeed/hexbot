@@ -68,6 +68,22 @@ Rooms take messages while bots work. A thread takes one at a time, so Stop
 replaces Send until its bot finishes. Removing a room's last bot deletes the
 room, and the app asks first.
 
+Waiting means a question or approval needs your answer. Once all cards are
+answered and the turn resumes, the app shows Working even if the bot list
+has not refreshed, including after you leave the conversation. If you answer
+only part of a question batch, the remaining questions keep the bot's Needs you
+status after you leave. A question or approval you leave without answering
+keeps Needs you too. Automatic model
+retries keep their activity text, such as Retrying the model request, while
+the bot waits for its provider.
+A successfully retried room stays settled when you reopen it, even if the
+bot list has not refreshed.
+A retry that finishes during a room refresh also stays settled.
+If a room message cannot be sent, the room stays idle when no bots are working.
+A room deleted from another device leaves Rooms at once and closes if you are
+in it. Its bots stop showing Working, Needs you, or Stopped for that
+room, even if the bot list cannot refresh.
+
 Job details show the last status, error and up to 12,000 characters of output
 saved on the daemon. Attachments can be sent without text. The app asks the bot
 to review the files and keeps attachment chips until the send succeeds. A

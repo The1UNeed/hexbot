@@ -105,17 +105,48 @@ async fn running_pi_section_reloads_rotated_and_disconnected_credentials() {
             Some(key) => providers::set_key(home.path(), "openai", key).unwrap(),
             None => providers::clear_key(home.path(), "openai").unwrap(),
         };
+        let message = format!("Reply ok {}", key.unwrap_or("disconnected"));
         let reply = process
             .request(
-                json!({"type":"prompt","message":"Reply ok"}),
+                json!({"type":"prompt","message":message}),
                 Duration::from_secs(30),
             )
             .await
             .unwrap();
+        if key.is_none() && !reply.success {
+            // Pi may refresh auth availability before prompt preflight. No turn starts then.
+            assert!(
+                reply
+                    .error
+                    .as_deref()
+                    .is_some_and(|error| error.starts_with("No API key found for openai.")),
+                "{reply:?}"
+            );
+            assert!(
+                received.try_recv().is_err(),
+                "disconnected section must not send a provider request"
+            );
+            continue;
+        }
         assert!(reply.success, "{reply:?}");
         tokio::time::timeout(Duration::from_secs(30), async {
+            let mut starts = 0;
+            let mut echoed = false;
             loop {
-                if events.recv().await.unwrap()["type"] == "agent_settled" {
+                let event = events.recv().await.unwrap();
+                if event["type"] == "agent_start" {
+                    starts += 1;
+                }
+                if event["type"] == "message_start" && event["message"]["role"] == "user" {
+                    echoed = event["message"]["content"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .any(|part| part["text"] == message);
+                }
+                if event["type"] == "agent_settled" {
+                    assert_eq!(starts, 1, "settlement must follow this prompt's start");
+                    assert!(echoed, "settlement must follow this prompt's message");
                     break;
                 }
             }

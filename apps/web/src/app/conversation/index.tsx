@@ -21,7 +21,7 @@ import { Input } from '../../components/ui/input'
 import { Menu } from '../../components/ui/menu'
 import { StatusDot } from '../../components/ui/status-dot'
 import { Title } from '../../components/ui/title'
-import { approvalRespond, attachFile, promptSubmit, sessionInterrupt } from '../../lib/api'
+import { attachFile, promptSubmit, sessionInterrupt } from '../../lib/api'
 import { avatarSrc } from '../../lib/avatar-builder'
 import { getBridge } from '../../lib/bridge'
 import { cn } from '../../lib/cn'
@@ -590,8 +590,7 @@ const APPROVAL_CHOICES: Record<ApprovalChoice, string> = {
 
 export function ApprovalCard({ approval }: { approval: ApprovalRequest }) {
   const choose = async (choice: ApprovalChoice) => {
-    await approvalRespond(approval.sessionId, approval.requestId, choice)
-    transcriptActions().resolveApproval(approval.sessionId, approval.requestId, choice)
+    await transcriptActions().respondApproval(approval.sessionId, approval.requestId, choice)
   }
 
   return (

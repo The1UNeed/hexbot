@@ -1,3 +1,5 @@
+import type { TurnState } from './types'
+
 /** What a tool call reads as in the transcript: done, and while it runs. */
 const LABELS: Record<string, [string, string]> = {
   bash: ['Ran a command', 'Running a command'],
@@ -34,6 +36,13 @@ export function toolLabel(name: string, running = false) {
 export function activityLabel(activity: string) {
   const match = /^Using (\S+)$/.exec(activity)
   return match ? toolLabel(match[1]!, true) : activity
+}
+
+/** Human cards show Waiting; automatic waits keep the daemon's explanation. */
+export function chatActivityLabel(state: TurnState) {
+  return state.approvals.length || state.questions.some(request => request.questions.length)
+    ? 'Waiting'
+    : activityLabel(state.activity) || 'Working'
 }
 
 /**

@@ -19,8 +19,9 @@ import { botsActions } from '../stores/bots'
 import { connectionActions } from '../stores/connection'
 import { useMe } from '../stores/me'
 import { useRooms } from '../stores/rooms'
-import { sectionsActions } from '../stores/sections'
+import { clearDeletedSections, sectionsActions } from '../stores/sections'
 import { settingsActions } from '../stores/settings'
+import { useTranscripts } from '../stores/transcripts'
 import { uiActions } from '../stores/ui'
 
 import { getBridge, type HexbotBridge } from './bridge'
@@ -361,6 +362,11 @@ export class ConnectionSupervisor {
       return this.starting
     }
 
+    if (this.target && targetOrigin(this.target) !== targetOrigin(target)) {
+      clearDeletedSections()
+      useTranscripts.getState().clearAnsweredWaiting()
+    }
+
     this.teardown()
     this.stopped = false
     this.revoked = false
@@ -395,7 +401,7 @@ export class ConnectionSupervisor {
     return this.attemptConnect()
   }
 
-  private teardown(): void {
+  private teardown(preserveRetryResolved = true): void {
     this.generation += 1
     this.stopped = true
     this.starting = null
@@ -410,6 +416,10 @@ export class ConnectionSupervisor {
     this.client?.close()
     this.client = null
     setActiveRpc(null)
+    useTranscripts.getState().clearAnsweredWaiting(undefined, undefined, undefined, {
+      preserveWaiting: true,
+      preserveRetryResolved
+    })
   }
 
   private async attemptConnect(): Promise<void> {
@@ -433,6 +443,7 @@ export class ConnectionSupervisor {
       if (error instanceof DeviceProofError) {
         // A changed key needs pairing; temporary proof failures keep reconnecting.
         if (error.code === 'dpop_key_mismatch') {
+          this.teardown(false)
           store.setStatus('unauthorized', { attempt: 0, proofError: error })
         } else {
           this.scheduleRetry(error)
@@ -505,6 +516,10 @@ export class ConnectionSupervisor {
       }
     })
 
+    useTranscripts.getState().clearAnsweredWaiting(undefined, undefined, undefined, {
+      preserveWaiting: true,
+      preserveRetryResolved: true
+    })
     this.adoptEpoch(payload.replay_epoch ?? null)
 
     this.connectedAt = Date.now()
@@ -561,6 +576,10 @@ export class ConnectionSupervisor {
     }
 
     setActiveRpc(null)
+    useTranscripts.getState().clearAnsweredWaiting(undefined, undefined, undefined, {
+      preserveWaiting: true,
+      preserveRetryResolved: true
+    })
     this.detach?.()
     this.detach = null
     this.client = null
@@ -580,7 +599,7 @@ export class ConnectionSupervisor {
   }
 
   private handleUnauthorized(message: string): void {
-    this.teardown()
+    this.teardown(false)
     connectionActions().clearTarget()
     connectionActions().setStatus('unauthorized', { attempt: 0, error: message })
   }

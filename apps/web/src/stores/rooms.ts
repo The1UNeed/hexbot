@@ -15,7 +15,8 @@ import {
 import type { RoomCreateInput } from '../lib/api'
 import type { BotStatus, Room, RoomEvent, RoomTurn } from '../lib/types'
 
-import { useTranscripts } from './transcripts'
+import { botIdleRevision } from './bots'
+import { transcriptRevision, useTranscripts } from './transcripts'
 
 export interface RoomsState {
   addMember: (id: string, bot: string) => Promise<void>
@@ -52,6 +53,14 @@ function roomGone(error: unknown): boolean {
 
 /** Counts turn changes per room, so a refresh keeps turns that moved while it loaded. */
 const turnChanges = new Map<string, number>()
+const deletedRooms = new Set<string>()
+let roomsRequest = 0
+let acceptedRoomsRequest = 0
+
+/** A different daemon may legitimately use the same room id. */
+export function clearDeletedRooms(): void {
+  deletedRooms.clear()
+}
 
 function bumpTurns(roomId: string): void {
   turnChanges.set(roomId, (turnChanges.get(roomId) ?? 0) + 1)
@@ -84,13 +93,70 @@ function indexRooms(rooms: Room[]): Pick<RoomsState, 'byId' | 'order'> {
 }
 
 function mergeRoom(state: RoomsState, room: Room): Partial<RoomsState> {
+  if (deletedRooms.has(room.id)) {
+    return {}
+  }
+
   return {
     byId: { ...state.byId, [room.id]: room },
     order: state.order.includes(room.id) ? state.order : [room.id, ...state.order]
   }
 }
 
+export function completedRoomRetry(
+  transcript:
+    | {
+        bot?: string
+        sectionId?: string
+        retryResolved?: boolean
+        liveStatus?: 'idle' | 'working' | 'needs_you'
+        roomTurnRunning?: boolean
+        streamingMessageId?: string | null
+        waitingRequests?: unknown[]
+      }
+    | undefined,
+  roomId: string,
+  bot: string
+): boolean {
+  return Boolean(
+    transcript?.sectionId === `room:${roomId}` &&
+    transcript.bot === bot &&
+    transcript.retryResolved &&
+    (transcript.liveStatus === 'idle' || (!transcript.liveStatus && !transcript.roomTurnRunning)) &&
+    !transcript.streamingMessageId &&
+    !transcript.waitingRequests?.length
+  )
+}
+
+function retireCompletedRetries(
+  roomId: string,
+  bot: string,
+  live: string | null,
+  revision = Infinity
+): void {
+  const transcripts = useTranscripts.getState()
+
+  for (const transcript of Object.values(transcripts.bySession)) {
+    if (
+      transcript.sessionId !== live &&
+      transcript.authorityRevision <= revision &&
+      completedRoomRetry(transcript, roomId, bot)
+    ) {
+      transcripts.drop(transcript.sessionId)
+    }
+  }
+}
+
 function dropRoom(state: RoomsState, id: string): Partial<RoomsState> {
+  deletedRooms.add(id)
+  const transcripts = useTranscripts.getState()
+
+  for (const transcript of Object.values(transcripts.bySession)) {
+    if (transcript.sectionId === `room:${id}`) {
+      transcripts.drop(transcript.sessionId)
+    }
+  }
+
   const byId = { ...state.byId }
   const eventsByRoom = { ...state.eventsByRoom }
   const liveTurnsByRoom = { ...state.liveTurnsByRoom }
@@ -110,22 +176,32 @@ export const useRooms = create<RoomsState>((set, get) => ({
   order: [],
 
   async refresh() {
+    const request = ++roomsRequest
     set({ error: null, loading: true })
     const changes = new Map(turnChanges)
+    const revision = transcriptRevision()
+    const idleRevision = botIdleRevision()
 
     try {
       const { rooms } = await roomsList(true)
-      const listed = rooms ?? []
+      const listed = (rooms ?? []).filter(room => !deletedRooms.has(room.id))
       const active = listed.filter(room => !room.archived_at)
       const logs = await Promise.all(active.map(room => roomsLog(room.id, { limit: 1000 })))
+
+      if (request < acceptedRoomsRequest) {
+        return
+      }
+
+      acceptedRoomsRequest = request
       // Turn events are not replayed, so whatever ended while this client was
       // away would stay "working"; the daemon's running turns replace them,
       // except in rooms whose turns changed after the list was read.
       const current = get().liveTurnsByRoom
+      const restored = runningTurns(active.filter(room => !deletedRooms.has(room.id)))
 
       // A daemon without `turns` cannot say, so those rooms keep what they had.
       const liveTurnsByRoom = Object.fromEntries(
-        Object.entries(runningTurns(active)).map(([id, turns]) => [
+        Object.entries(restored).map(([id, turns]) => [
           id,
           turnChanges.get(id) === changes.get(id) && rooms?.find(room => room.id === id)?.turns
             ? turns
@@ -139,7 +215,11 @@ export const useRooms = create<RoomsState>((set, get) => ({
         for (const turn of Object.values(turns)) {
           const running = liveTurnsByRoom[turn.room_id]?.[turn.bot]
 
-          if (turn.live_session_id && running?.live_session_id !== turn.live_session_id) {
+          if (
+            turn.live_session_id &&
+            running?.live_session_id !== turn.live_session_id &&
+            !completedRoomRetry(transcripts.bySession[turn.live_session_id], turn.room_id, turn.bot)
+          ) {
             transcripts.drop(turn.live_session_id)
           }
         }
@@ -148,20 +228,32 @@ export const useRooms = create<RoomsState>((set, get) => ({
       for (const turns of Object.values(liveTurnsByRoom)) {
         for (const turn of Object.values(turns)) {
           if (turn.live_session_id) {
-            transcripts.open(turn.live_session_id, `room:${turn.room_id}`, [])
+            retireCompletedRetries(turn.room_id, turn.bot, turn.live_session_id, revision)
+            transcripts.open(turn.live_session_id, `room:${turn.room_id}`, [], revision, turn.bot, {
+              preserveWaiting: true,
+              preserveRetryResolved: true,
+              roomTurnRunning:
+                turns === restored[turn.room_id] && botIdleRevision(turn.bot) <= idleRevision
+            })
           }
         }
       }
 
       set({
-        ...indexRooms(listed),
+        ...indexRooms(listed.filter(room => !deletedRooms.has(room.id))),
         eventsByRoom: Object.fromEntries(
-          active.map((room, index) => [room.id, logs[index]?.events ?? []])
+          active.flatMap((room, index) =>
+            deletedRooms.has(room.id) ? [] : [[room.id, logs[index]?.events ?? []]]
+          )
         ),
         liveTurnsByRoom,
         loading: false
       })
     } catch (error) {
+      if (request < acceptedRoomsRequest) {
+        return
+      }
+
       set({ error: error instanceof Error ? error.message : String(error), loading: false })
     }
   },
@@ -201,6 +293,11 @@ export const useRooms = create<RoomsState>((set, get) => ({
     }
 
     const [{ room }, { events }] = loaded
+
+    if (deletedRooms.has(id)) {
+      return
+    }
+
     const ordered = [...events].sort((a, b) => a.seq - b.seq)
     set(state => ({
       ...mergeRoom(state, room),
@@ -266,6 +363,10 @@ export const useRooms = create<RoomsState>((set, get) => ({
   },
 
   handleEvent(roomId, event) {
+    if (deletedRooms.has(roomId)) {
+      return
+    }
+
     set(state => {
       const current = state.eventsByRoom[roomId] ?? []
 
@@ -280,7 +381,14 @@ export const useRooms = create<RoomsState>((set, get) => ({
         bumpTurns(roomId)
         const turn = turns[event.actor_id]
 
-        if (turn?.live_session_id) {
+        if (
+          turn?.live_session_id &&
+          !completedRoomRetry(
+            useTranscripts.getState().bySession[turn.live_session_id],
+            roomId,
+            event.actor_id
+          )
+        ) {
           useTranscripts.getState().drop(turn.live_session_id)
         }
 
@@ -305,20 +413,46 @@ export const useRooms = create<RoomsState>((set, get) => ({
   },
 
   handleTurn(turn) {
+    if (deletedRooms.has(turn.room_id)) {
+      return
+    }
+
     bumpTurns(turn.room_id)
     set(state => {
       const current = { ...(state.liveTurnsByRoom[turn.room_id] ?? {}) }
 
+      if (turn.status === 'running' && !turn.live_session_id) {
+        retireCompletedRetries(turn.room_id, turn.bot, null)
+      }
+
       if (turn.live_session_id && !['complete', 'failed', 'stopped'].includes(turn.status)) {
         current[turn.bot] = turn
-        useTranscripts.getState().open(turn.live_session_id, `room:${turn.room_id}`, [])
+        retireCompletedRetries(turn.room_id, turn.bot, turn.live_session_id)
+        useTranscripts
+          .getState()
+          .open(turn.live_session_id, `room:${turn.room_id}`, [], undefined, turn.bot, {
+            preserveWaiting: true,
+            roomTurnRunning: turn.status === 'running'
+          })
       } else {
         const previous = current[turn.bot]
 
+        if (previous?.live_session_id && previous.live_session_id !== turn.live_session_id) {
+          return state
+        }
+
         // The turn is over; its live session may serve the next one, which
         // must not inherit cards nobody can answer any more.
-        if (previous?.live_session_id) {
-          useTranscripts.getState().drop(previous.live_session_id)
+        const live = previous?.live_session_id ?? turn.live_session_id
+        const transcript = live ? useTranscripts.getState().bySession[live] : undefined
+
+        if (
+          live &&
+          transcript?.sectionId === `room:${turn.room_id}` &&
+          transcript.bot === turn.bot &&
+          !(turn.status === 'complete' && completedRoomRetry(transcript, turn.room_id, turn.bot))
+        ) {
+          useTranscripts.getState().drop(live)
         }
 
         delete current[turn.bot]

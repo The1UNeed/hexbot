@@ -70,15 +70,42 @@ export interface PendingQuestion {
   sessionId: string
   questions: { id: string; text: string; choices: string[]; multiSelect: boolean }[]
 }
+export interface RequestSettlement {
+  choice?: 'once' | 'session' | 'deny'
+  answers?: Record<string, string>
+  /** The visible batch was consumed without proving the whole request complete. */
+  exhaustedRevision?: number
+  answered?: boolean
+  closed?: boolean
+}
 /** What one live session is doing right now; it empties when the turn ends. */
 export interface TurnState {
   streaming: string
   interim: string[]
   busy: boolean
+  waiting: boolean
+  /** An accepted last card ended this session's wait, even if the roster refresh fails. */
+  resumedWaiting: boolean
+  /** Receipt order of the exact answer that resumed this wait. */
+  waitingRevision: number
+  /** The daemon resolved failed turns in this exact session; separate from accepted answers. */
+  retryResolution?: {
+    sessionId: string
+    /** Current route ownership verified when this marker was accepted. */
+    bot?: string
+    sectionId?: string
+    /** Set only by a marker bound to the current bot turn in this room. */
+    roomId?: string
+    revision: number
+    sequence?: number
+    resolved: boolean
+  }
   activity: string
   tools: ChatTool[]
   approvals: PendingApproval[]
   questions: PendingQuestion[]
+  /** Exact accepted answers also suppress cards replayed after their settlement. */
+  settlements: Record<string, RequestSettlement>
   error: string | null
 }
 /** A bot's turn in a room, kept apart so bots working at once do not mix. */

@@ -53,7 +53,7 @@ import { MarkdownText } from './src/MarkdownText'
 import { VisualFrame } from './src/VisualFrame'
 import { visualDocument } from './src/core/visual'
 import { parseArgs } from './src/core/chat'
-import { activityLabel, readableResult, resultLine, toolLabel } from './src/core/tools'
+import { chatActivityLabel, readableResult, resultLine, toolLabel } from './src/core/tools'
 import { Management, type Panel } from './src/Management'
 import { useMobile } from './src/core/useMobile'
 import { shownRoom } from './src/core/routes'
@@ -160,13 +160,19 @@ function MobileApp() {
   const [tool, setTool] = useState<ToolActivity | null>(null)
   const [draft, setDraft] = useState('')
   const [attachments, setAttachments] = useState<AttachmentView[]>([])
-  const [question, setQuestion] = useState<{
+  const [question, setQuestionState] = useState<{
     requestId: string
+    sessionId: string
     questionId: string
     text: string
     choices: string[]
     multiSelect: boolean
   } | null>(null)
+  const questionRef = useRef(question)
+  const setQuestion = useCallback((next: typeof question) => {
+    questionRef.current = next
+    setQuestionState(next)
+  }, [])
   const attachmentData = useRef(
     new Map<
       string,
@@ -288,6 +294,7 @@ function MobileApp() {
     if (q) {
       setQuestion({
         requestId: pending.requestId,
+        sessionId: pending.sessionId,
         questionId: q.id,
         text: q.text,
         choices: q.choices,
@@ -296,7 +303,7 @@ function MobileApp() {
       setQuestionAnswer('')
       setQuestionChoices([])
     } else setQuestion(null)
-  }, [firstQuestionId, firstQuestion?.requestId])
+  }, [firstQuestionId, firstQuestion?.requestId, firstQuestion?.sessionId])
   const route = mobile.route
   // A thread belongs to its bot: leaving the chat lands on that bot's page.
   const routeBot = route?.kind === 'section' ? route.bot.name : null
@@ -648,7 +655,7 @@ function MobileApp() {
   mobile.chat.approvals.forEach(a =>
     items.push({
       kind: 'approval',
-      id: `approval-${a.requestId}`,
+      id: `approval-${a.sessionId}-${a.requestId}`,
       request: {
         ...a,
         choices: a.choices.filter(c => ['once', 'session', 'deny'].includes(c)) as ApprovalChoice[]
@@ -659,7 +666,7 @@ function MobileApp() {
     q.questions.forEach(question =>
       items.push({
         kind: 'notice',
-        id: `question-${question.id}`,
+        id: `question-${q.sessionId}-${q.requestId}-${question.id}`,
         text: `Question: ${question.text}`
       })
     )
@@ -698,6 +705,7 @@ function MobileApp() {
         const q = pending.questions[0]
         setQuestion({
           requestId: pending.requestId,
+          sessionId: pending.sessionId,
           questionId: q.id,
           text: q.text,
           choices: q.choices,
@@ -708,8 +716,21 @@ function MobileApp() {
       }
       const q = pending.questions[0]
       act(async () => {
-        await mobile.answer(pending.requestId, q.id, encodeAnswer(q.multiSelect, [], text))
-        setDraft('')
+        await mobile.answer(
+          pending.requestId,
+          q.id,
+          encodeAnswer(q.multiSelect, [], text),
+          pending.sessionId
+        )
+        const currentRoute = mobileRef.current.route
+        if (
+          mobileRef.current.active?.id !== mobile.active?.id ||
+          currentRoute?.kind !== mobile.route?.kind ||
+          (currentRoute?.kind === 'section' ? currentRoute.section.id : currentRoute?.room.id) !==
+            (mobile.route?.kind === 'section' ? mobile.route.section.id : mobile.route?.room.id)
+        )
+          return
+        setDraft(current => (current.trim() === text.trim() ? '' : current))
       })
       return
     }
@@ -766,7 +787,7 @@ function MobileApp() {
     busy: mobile.chat.busy,
     waiting:
       mobile.chat.busy && !mobile.chat.streaming
-        ? { label: activityLabel(mobile.chat.activity) || 'Working' }
+        ? { label: chatActivityLabel(mobile.chat) }
         : undefined,
     onSend: send,
     sendWhileBusy: route?.kind === 'room' || mobile.chat.questions.length > 0,
@@ -775,7 +796,8 @@ function MobileApp() {
     onStop: () => act(mobile.stop),
     attachments,
     onRemoveAttachment: removeAttachment,
-    onApprove: (id: string, choice: ApprovalChoice) => act(() => mobile.approval(id, choice)),
+    onApprove: (id: string, choice: ApprovalChoice, sessionId?: string) =>
+      act(() => mobile.approval(id, choice, sessionId)),
     onOpenTool: setTool,
     onOpenVisual: (id: string) => setVisual(visuals.get(id) ?? null),
     sendDisabledReason: uploading
@@ -798,7 +820,7 @@ function MobileApp() {
           route.kind === 'section' ? 'hexbot.sections.unarchive' : 'hexbot.rooms.unarchive',
           { id: route.kind === 'section' ? route.section.id : route.room.id }
         )
-        await mobile.syncChat()
+        if (route.kind === 'room') await mobile.syncChat()
         await mobile.refresh()
       })
   }
@@ -1061,6 +1083,7 @@ function MobileApp() {
               const q = pending.questions[0]
               setQuestion({
                 requestId: pending.requestId,
+                sessionId: pending.sessionId,
                 questionId: q.id,
                 text: q.text,
                 choices: q.choices,
@@ -1292,9 +1315,24 @@ function MobileApp() {
                 await mobile.answer(
                   question.requestId,
                   question.questionId,
-                  encodeAnswer(question.multiSelect, questionChoices, questionAnswer)
+                  encodeAnswer(question.multiSelect, questionChoices, questionAnswer),
+                  question.sessionId
                 )
-                if (draft.trim() === questionAnswer.trim()) setDraft('')
+                const currentRoute = mobileRef.current.route
+                if (
+                  mobileRef.current.active?.id !== mobile.active?.id ||
+                  currentRoute?.kind !== mobile.route?.kind ||
+                  (currentRoute?.kind === 'section'
+                    ? currentRoute.section.id
+                    : currentRoute?.room.id) !==
+                    (mobile.route?.kind === 'section'
+                      ? mobile.route.section.id
+                      : mobile.route?.room.id)
+                )
+                  return
+                if (draft.trim() === questionAnswer.trim())
+                  setDraft(current => (current.trim() === questionAnswer.trim() ? '' : current))
+                if (questionRef.current !== question) return
                 setQuestion(null)
                 setQuestionAnswer('')
                 setQuestionChoices([])
