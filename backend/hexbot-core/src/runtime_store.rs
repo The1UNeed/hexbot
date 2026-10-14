@@ -571,29 +571,33 @@ pub fn import_hermes(home: &Path, bot: &str, stored: &str, cwd: &Path) -> Result
         lines.push(json!({"type":"message","id":next,"parentId":parent,"timestamp":timestamp,"message":message,"hexbot":projection}).to_string());
         parent = json!(next);
     }
-    let mut conn = open(home)?;
-    let tx = conn.transaction()?;
-    let existing = common::rows(
-        &tx,
-        "SELECT message_json FROM native_messages WHERE session_id=? ORDER BY seq",
-        &[&stored],
-    )?;
-    // Dream reports posted before the chat was first opened follow its history.
-    let reports = existing
-        .iter()
-        .map(|row| serde_json::from_str::<Value>(row["message_json"].as_str().unwrap_or("")))
-        .collect::<std::result::Result<Vec<_>, _>>()
-        .map_err(|_| crate::Error::new(5200, "invalid stored message"))?;
-    if reports.iter().all(|message| message["dream"] == true) {
-        tx.execute("DELETE FROM native_messages WHERE session_id=?", [stored])?;
-        for (i, message) in projected.iter().chain(&reports).enumerate() {
-            tx.execute(
-                "INSERT INTO native_messages VALUES(?,?,?)",
-                params![stored, i + 1, message.to_string()],
-            )?;
+    if !projected.is_empty() {
+        let mut conn = open(home)?;
+        // Take the write lock first: reading, then writing in a deferred
+        // transaction fails at once if a running section wrote in between.
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let existing = common::rows(
+            &tx,
+            "SELECT message_json FROM native_messages WHERE session_id=? ORDER BY seq",
+            &[&stored],
+        )?;
+        // Dream reports posted before the chat was first opened follow its history.
+        let reports = existing
+            .iter()
+            .map(|row| serde_json::from_str::<Value>(row["message_json"].as_str().unwrap_or("")))
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(|_| crate::Error::new(5200, "invalid stored message"))?;
+        if reports.iter().all(|message| message["dream"] == true) {
+            tx.execute("DELETE FROM native_messages WHERE session_id=?", [stored])?;
+            for (i, message) in projected.iter().chain(&reports).enumerate() {
+                tx.execute(
+                    "INSERT INTO native_messages VALUES(?,?,?)",
+                    params![stored, i + 1, message.to_string()],
+                )?;
+            }
         }
+        tx.commit()?;
     }
-    tx.commit()?;
     // Write the import marker only after its transcript transaction commits.
     // A crash before this point can safely repeat the import on next startup.
     common::atomic_write(&target, format!("{}\n", lines.join("\n")).as_bytes())?;
