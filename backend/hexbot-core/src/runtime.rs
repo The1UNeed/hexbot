@@ -2807,9 +2807,10 @@ impl Runtime {
                         self.confirm(s, name, format!("Remove the scheduled job {job}"), args)
                             .await?;
                     }
+                    // Creating without a folder uses this section's; anything named asks.
                     if matches!(args["action"].as_str(), Some("create" | "update"))
-                        && let Some(folder) =
-                            args["workdir"].as_str().filter(|w| !w.trim().is_empty())
+                        && !(args["action"] == "create" && args["workdir"].is_null())
+                        && let Some(folder) = primary::job_folder(args)
                     {
                         self.confirm(s, name, format!("Run a scheduled job in {folder}"), args)
                             .await?;

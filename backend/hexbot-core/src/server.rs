@@ -45,6 +45,9 @@ pub struct App {
     _network_guard: common::DaemonListener,
     pub web_dist: Option<PathBuf>,
     stop: tokio::sync::watch::Sender<bool>,
+    /// Bot deletion and promotion run one at a time, so a bot made primary
+    /// mid-delete never has its sections purged before the refusal.
+    roles: Arc<tokio::sync::Mutex<()>>,
 }
 struct BrowserLogin {
     client: String,
@@ -125,6 +128,7 @@ impl App {
             _network_guard: common::DaemonListener::register(address),
             web_dist,
             stop,
+            roles: Arc::default(),
         });
         app.runtime.set_dispatcher(Arc::downgrade(&app));
         Ok(app)
@@ -148,11 +152,21 @@ impl App {
             _network_guard: common::DaemonListener::register(address),
             web_dist: self.web_dist.clone(),
             stop,
+            roles: self.roles.clone(),
         });
         app.runtime.set_dispatcher(Arc::downgrade(&app));
         Ok(app)
     }
     pub async fn call(self: &Arc<Self>, owner: &str, method: &str, p: &Value) -> Result<Value> {
+        let _roles = if matches!(method, "hexbot.bots.delete" | "hexbot.bots.set_primary") {
+            Some(self.roles.lock().await)
+        } else {
+            None
+        };
+        // Boxed: the dispatcher is large, and the primary bot's tools reach it again.
+        Box::pin(self.call_inner(owner, method, p)).await
+    }
+    async fn call_inner(self: &Arc<Self>, owner: &str, method: &str, p: &Value) -> Result<Value> {
         if *self.stop.borrow() {
             return Err(Error::new(5200, "Reconnect to continue"));
         }

@@ -109,7 +109,7 @@ pub(super) fn descriptors() -> Vec<Value> {
                     "id": { "type": "string", "description": "The room's id" },
                     "name": { "type": "string" },
                     "members": strings,
-                    "main_bot": { "type": "string", "description": "The bot that answers when nobody is mentioned" },
+                    "main_bot": { "type": "string", "description": "The bot that answers when nobody is mentioned; an empty string removes it" },
                     "bot": { "type": "string", "description": "With add_member and remove_member" },
                     "approval_mode": { "type": "string", "enum": ["inherit", "manual", "smart", "off"], "description": "inherit follows each bot and Settings; smart is Auto; off is Bypass" },
                     "include_archived": { "type": "boolean" }
@@ -349,6 +349,12 @@ impl Runtime {
             }
             ("hexbot_rooms", "create" | "update") => {
                 let mut patch = pick(args, ROOM_FIELDS);
+                if patch["main_bot"]
+                    .as_str()
+                    .is_some_and(|b| b.trim().is_empty())
+                {
+                    patch["main_bot"] = Value::Null;
+                }
                 if action == "create" {
                     patch.as_object_mut().unwrap().remove("id");
                 } else {
@@ -460,7 +466,8 @@ impl Runtime {
                 let mut job = pick(args, JOB_FIELDS);
                 job.as_object_mut().unwrap().remove("action");
                 // An unattended job's folder is where its tools work, so it asks like a bot's.
-                if let Some(folder) = job["workdir"].as_str().filter(|w| !w.trim().is_empty()) {
+                // Clearing it moves the job too, so any folder asks.
+                if let Some(folder) = job_folder(&job) {
                     self.confirm(
                         s,
                         name,
@@ -556,6 +563,20 @@ impl Runtime {
             )),
         }
     }
+}
+
+/// The folder a job create or update moves the job to, if it names one;
+/// an empty or null `workdir` is the Settings workspace.
+pub(super) fn job_folder(args: &Value) -> Option<String> {
+    let value = args.get("workdir")?;
+    Some(
+        value
+            .as_str()
+            .map(str::trim)
+            .filter(|w| !w.is_empty())
+            .unwrap_or("the Settings workspace")
+            .to_owned(),
+    )
 }
 
 fn approval_label(mode: &str) -> &str {

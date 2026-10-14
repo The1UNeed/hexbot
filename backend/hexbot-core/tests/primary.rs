@@ -385,6 +385,39 @@ async fn primary_bot_manages_other_bots_and_always_asks_before_deleting() {
     assert!(asked);
     assert!(reply.contains("denied"), "{reply}");
 
+    // Clearing a job's folder moves it too, so that asks as well.
+    let jobs = app
+        .call("local", "hexbot.jobs.list", &json!({"bot":"owl"}))
+        .await
+        .unwrap();
+    let digest = jobs["jobs"][0]["id"].as_str().unwrap().to_owned();
+    let (asked, reply) = call_tool(
+        &app,
+        &live,
+        "hexbot_jobs",
+        json!({"action":"update","bot":"owl","job_id":digest,"workdir":""}),
+        "deny",
+    )
+    .await;
+    assert!(asked);
+    assert!(reply.contains("denied"), "{reply}");
+
+    // An empty main bot leaves the room without one.
+    call_tool(
+        &app,
+        &live,
+        "hexbot_rooms",
+        json!({"action":"update","id":room,"main_bot":""}),
+        "deny",
+    )
+    .await;
+    assert!(
+        app.call("local", "hexbot.rooms.get", &json!({"id":room}))
+            .await
+            .unwrap()["room"]["main_bot"]
+            .is_null()
+    );
+
     // Its own jobs tool asks before removing too, so no path skips the card.
     let (_, reply) = call_tool(
         &app,
