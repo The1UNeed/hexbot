@@ -103,6 +103,9 @@ struct Live {
     proposal: Mutex<Option<(String, String, Vec<Value>)>>,
     /// Auto mode reviews running for this section; see `review::REVIEWS`.
     reviews: tokio::sync::Semaphore,
+    /// Reviews running or waiting their turn; "Checking this step" shows
+    /// while this is above zero.
+    reviewing: Mutex<usize>,
 }
 /// The part of a section's options that picks its model.
 fn model_choice(options: &Value) -> Value {
@@ -941,6 +944,7 @@ impl Runtime {
             usage_sent: AtomicU64::new(0),
             proposal: Mutex::new(None),
             reviews: tokio::sync::Semaphore::new(review::REVIEWS),
+            reviewing: Mutex::new(0),
         });
         {
             let mut sessions = self.sessions.lock().unwrap();

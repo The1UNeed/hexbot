@@ -55,9 +55,11 @@ data model. The native transport and event projection live in
   card. Owner messages are read newest first, whole, until the 80,000-character
   request is full; an oversized stored row ends the read before parsing. When
   older messages are left out, only a low-risk `allow` runs. At most two
-  reviews run per section at once. While one runs the section emits
-  `status.update {kind: "checking", text: "Checking this step"}`, followed by
-  `{kind: "status", text: ""}` when it ends.
+  reviews run per section at once. When a review starts or waits its turn
+  and none was running, the section emits
+  `status.update {kind: "checking", text: "Checking this step"}`; when the
+  last running or waiting review ends, on any path, it emits
+  `{kind: "checking", text: ""}`. Other status lines do not end the label.
   One 60-second review budget includes credential preparation, process startup
   and provider requests. On a timeout, a started process has bounded shutdown/reaping
   cleanup before the fallback card; temporary state is kept until cleanup finishes.

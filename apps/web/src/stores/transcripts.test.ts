@@ -27,8 +27,17 @@ describe('transcript reducer', () => {
     actions.toolStart('s', { name: 'terminal', tool_id: 't' })
     actions.statusUpdate('s', { kind: 'checking', text: 'Checking this step' })
     expect(live()?.checking).toBe('Checking this step')
+    // An unrelated status line leaves the label; another review may still run.
     actions.statusUpdate('s', { kind: 'status', text: '' })
+    actions.statusUpdate('s', { kind: 'waiting', text: 'Retrying the model request' })
+    expect(live()?.checking).toBe('Checking this step')
+    actions.statusUpdate('s', { kind: 'checking', text: '' })
     expect(live()?.checking).toBeUndefined()
+    // The clear does not blank a later, unrelated status line.
+    expect(useTranscripts.getState().bySession.s?.status).toEqual({
+      kind: 'waiting',
+      text: 'Retrying the model request'
+    })
   })
   it('leaves settled questions to the history it opens and keeps one still waiting', () => {
     const actions = useTranscripts.getState()

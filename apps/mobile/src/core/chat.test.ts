@@ -23,7 +23,11 @@ describe('chat event projection', () => {
     s = reduceChat(s, event('tool.start', { tool_id: 't', name: 'terminal' }))
     s = reduceChat(s, event('status.update', { kind: 'checking', text: 'Checking this step' }))
     expect(s.activity).toBe('Checking this step')
+    // An unrelated status line keeps the label; another review may still run.
     s = reduceChat(s, event('status.update', { kind: 'status', text: '' }))
+    s = reduceChat(s, event('status.update', { kind: 'waiting', text: 'Retrying' }))
+    expect(s.activity).toBe('Checking this step')
+    s = reduceChat(s, event('status.update', { kind: 'checking', text: '' }))
     expect(s.activity).toBe('')
     expect(s.busy).toBe(true)
   })

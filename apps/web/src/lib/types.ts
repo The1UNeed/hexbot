@@ -293,7 +293,7 @@ export interface Message {
   attachments: Attachment[]
   /**
    * Set while Auto mode checks a step before it runs ("Checking this step",
-   * a `checking` status line); the next status line clears it.
+   * a `checking` status line); an empty `checking` line clears it.
    */
   checking?: string
   /**

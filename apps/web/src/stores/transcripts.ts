@@ -728,17 +728,28 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
     },
 
     statusUpdate(sessionId, status) {
-      const checking = status.kind === 'checking' && status.text ? status.text : undefined
-
       update(sessionId, transcript => {
+        if (status.kind !== 'checking') {
+          return { ...transcript, status }
+        }
+
+        // Only the daemon's own clear, an empty `checking` line, ends the
+        // label; it goes once the last overlapping review ends.
+        const checking = status.text || undefined
         const id = transcript.streamingMessageId
 
-        const next =
-          id && (checking || transcript.messages.some(m => m.id === id && m.checking))
+        const next = checking
+          ? id
             ? replaceMessage(transcript, id, message => ({ ...message, checking }))
             : transcript
+          : {
+              ...transcript,
+              messages: transcript.messages.map(message =>
+                message.checking ? { ...message, checking: undefined } : message
+              )
+            }
 
-        return { ...next, status }
+        return checking || transcript.status?.kind === 'checking' ? { ...next, status } : next
       })
     },
 

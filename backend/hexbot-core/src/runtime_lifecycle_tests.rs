@@ -1483,14 +1483,14 @@ const fs=require('node:fs')"#,
     runtime
         .event(&s, ask("probe:curl", "curl -sL https://example.com"))
         .unwrap();
-    let mut checking = false;
-    loop {
+    let (mut checking, mut cleared, mut replied) = (false, false, false);
+    while !(cleared && replied) {
         let event = events.recv().await.unwrap();
         let params = &event.frame["params"];
         assert_ne!(params["type"], "approval.request");
         if params["type"] == "status.update" && params["payload"]["kind"] == "checking" {
-            assert_eq!(params["payload"]["text"], review::CHECKING);
-            checking = true;
+            checking |= params["payload"]["text"] == review::CHECKING;
+            cleared |= params["payload"]["text"] == "";
         }
         if params["type"] == "status.update"
             && params["payload"]["text"]
@@ -1501,12 +1501,44 @@ const fs=require('node:fs')"#,
                 serde_json::from_str(params["payload"]["text"].as_str().unwrap()).unwrap();
             assert_eq!(reply["value"], "once");
             assert!(checking);
-            break;
+            replied = true;
         }
     }
     let usage = store::usage(home.path(), "first").unwrap();
     assert_eq!(usage["total_tokens"], 20);
     assert_eq!(usage["cost"], 0.015);
+    // Overlapping reviews keep the label until the last one ends: a routine
+    // step that finishes while another is still checking does not clear it.
+    let held = review::Checking::start(&runtime, &s);
+    let shown = events.recv().await.unwrap();
+    assert_eq!(
+        shown.frame["params"]["payload"],
+        json!({"kind":"checking","text":review::CHECKING})
+    );
+    runtime
+        .event(&s, ask("probe:overlap", "curl -sL https://example.com"))
+        .unwrap();
+    loop {
+        let event = events.recv().await.unwrap();
+        let params = &event.frame["params"];
+        assert_ne!(params["type"], "approval.request");
+        if params["type"] == "status.update" {
+            assert_ne!(params["payload"]["kind"], "checking");
+            if params["payload"]["text"]
+                .as_str()
+                .is_some_and(|t| t.contains("probe:overlap"))
+            {
+                break;
+            }
+        }
+    }
+    drop(held);
+    let cleared = events.recv().await.unwrap();
+    assert_eq!(cleared.frame["params"]["type"], "status.update");
+    assert_eq!(
+        cleared.frame["params"]["payload"],
+        json!({"kind":"checking","text":""})
+    );
     // Pi reports the model it runs now; after a switch to the fallback, the
     // reviewer uses the fallback and not the primary that failed.
     let reviewer_model = || {
@@ -1575,7 +1607,7 @@ const fs=require('node:fs')"#,
     // Failed verdicts cost tokens too. Reviewer text never appears in chat.
     assert_eq!(
         store::usage(home.path(), "first").unwrap()["total_tokens"],
-        80
+        100
     );
     assert!(store::history(home.path(), "first").unwrap().is_empty());
     // Room vetoes survive long messages and more than twenty later requests.
@@ -1634,7 +1666,7 @@ const fs=require('node:fs')"#,
     }
     assert_eq!(
         store::usage(home.path(), "first").unwrap()["total_tokens"],
-        100
+        120
     );
     // A medium-risk allow runs while every owner message fits...
     conn.execute(

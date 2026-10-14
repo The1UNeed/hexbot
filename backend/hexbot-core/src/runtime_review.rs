@@ -191,6 +191,43 @@ fn clip(text: &str, limit: usize) -> String {
     }
 }
 
+/// Counts a review from when it is queued until it ends, on every path. The
+/// section shows "Checking this step" from the first and clears it only when
+/// the last one ends, so overlapping steps keep the label.
+pub(super) struct Checking<'a> {
+    runtime: &'a Runtime,
+    s: &'a Live,
+}
+
+impl<'a> Checking<'a> {
+    pub(super) fn start(runtime: &'a Runtime, s: &'a Live) -> Self {
+        let mut count = s.reviewing.lock().unwrap();
+        *count += 1;
+        if *count == 1 {
+            runtime.emit(
+                s,
+                "status.update",
+                json!({"kind":"checking","text":CHECKING}),
+            );
+        }
+        Self { runtime, s }
+    }
+}
+
+impl Drop for Checking<'_> {
+    fn drop(&mut self) {
+        let mut count = self.s.reviewing.lock().unwrap();
+        *count -= 1;
+        if *count == 0 {
+            self.runtime.emit(
+                self.s,
+                "status.update",
+                json!({"kind":"checking","text":""}),
+            );
+        }
+    }
+}
+
 impl Runtime {
     /// Review an extension approval in the background. A step the reviewer
     /// allows runs without a card; otherwise the card shows with its note.
@@ -226,6 +263,7 @@ impl Runtime {
                 source.state.lock().unwrap().tool_dialogs.remove(&id);
                 return;
             }
+            let checking = Checking::start(&runtime, &source);
             let Ok(_turn) = source.reviews.acquire().await else {
                 return;
             };
@@ -236,18 +274,13 @@ impl Runtime {
                     return;
                 }
             }
-            runtime.emit(
-                &source,
-                "status.update",
-                json!({"kind":"checking","text":CHECKING}),
-            );
             let note = match runtime.review(&source, &request["approval_payload"]).await {
                 Ok(evidence) => match runtime
                     .commit_retrying(&source, &id, &request["approval_payload"], &evidence)
                     .await
                 {
                     Ok(Some(write)) => {
-                        runtime.emit(&source, "status.update", json!({"kind":"status","text":""}));
+                        drop(checking);
                         // The response is committed. A write failure must never
                         // retry an approval that may already have executed.
                         if let Err(error) = write.wait().await {
@@ -257,7 +290,6 @@ impl Runtime {
                     }
                     Ok(None) => {
                         // Stop or close owns the dialog now.
-                        runtime.emit(&source, "status.update", json!({"kind":"status","text":""}));
                         return;
                     }
                     Err(_) => UNAVAILABLE.into(),
@@ -282,7 +314,7 @@ impl Runtime {
                 choices.retain(|choice| choice != "session");
             }
             let payload = payload.clone();
-            runtime.emit(&source, "status.update", json!({"kind":"status","text":""}));
+            drop(checking);
             {
                 let _gate = source.event_gate.lock().unwrap();
                 let mut state = source.state.lock().unwrap();
@@ -317,7 +349,7 @@ impl Runtime {
              FROM room_events e
              WHERE e.room_id IN (SELECT room_id FROM room_sessions WHERE stored_session_id=?1)
              AND e.kind='message.user' AND e.actor_kind='human' AND e.actor_id=?2
-             ORDER BY e.room_id DESC,e.seq DESC",
+             ORDER BY COALESCE(e.created_at,0) DESC,e.room_id,e.seq DESC",
         )?;
         let mut rows = stmt.query(params![s.stored, s.owner, ROW_BYTES])?;
         while let Some(row) = rows.next()? {
