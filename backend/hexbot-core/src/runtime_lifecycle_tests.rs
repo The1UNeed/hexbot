@@ -4173,6 +4173,7 @@ async fn a_busy_chat_is_read_again_when_its_turn_settles() {
     let s = runtime.sessions.lock().unwrap()["first"].clone();
     s.state.lock().unwrap().busy = true;
     // A report arrives mid-turn: the turn keeps its process.
+    assert!(runtime.working("first"));
     assert!(!runtime.close_if_quiet("first").await.unwrap());
     assert!(runtime.sessions.lock().unwrap().contains_key("first"));
     runtime.event(&s, json!({"type":"agent_settled"})).unwrap();
@@ -4187,6 +4188,7 @@ async fn a_busy_chat_is_read_again_when_its_turn_settles() {
     .await
     .unwrap();
     assert_eq!(reload, json!({"id":"first","bot":"owl","reload":true}));
+    assert!(!runtime.working("first"));
     // Once settled, clients read a report now.
     assert!(runtime.close_if_quiet("first").await.unwrap());
     runtime.shutdown().await;

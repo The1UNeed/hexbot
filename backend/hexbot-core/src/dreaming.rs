@@ -1098,6 +1098,9 @@ impl Dreaming {
             section,
             json!({"role":"assistant","text":output,"dream":true,"timestamp":common::now()}),
         )?;
+        // A turn that settled before the report was stored has already asked
+        // clients to read the chat; ask again now that it is there.
+        let reload = reload || !self.runtime.working(section);
         db::open(&self.home)?.execute(
             "UPDATE sections SET updated_at=? WHERE id=?",
             params![common::now(), section],

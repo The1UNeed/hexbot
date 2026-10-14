@@ -257,9 +257,10 @@ pub fn one_chat_per_bot(home: &Path) -> Result<()> {
     const DREAM_LOG: &str =
         "peer_bot IS NULL AND title='Dreams' AND title_by IS NULL AND COALESCE(title_dirty,0)=0";
     let conn = db::open(home)?;
-    // Runs fully once; later starts only when an older build made sections again.
+    // Runs fully once; later starts only when an older build made sections
+    // again, which brings a second one, its dream log included.
     let pending: bool = conn.query_row(
-        &format!("SELECT NOT EXISTS(SELECT 1 FROM settings WHERE key='one_chat_per_bot') OR EXISTS(SELECT 1 FROM sections WHERE peer_bot IS NULL GROUP BY owner_id,bot HAVING COUNT(*)>1) OR EXISTS(SELECT 1 FROM sections WHERE {DREAM_LOG})"),
+        "SELECT NOT EXISTS(SELECT 1 FROM settings WHERE key='one_chat_per_bot') OR EXISTS(SELECT 1 FROM sections WHERE peer_bot IS NULL GROUP BY owner_id,bot HAVING COUNT(*)>1)",
         [],
         |r| r.get(0),
     )?;
@@ -373,7 +374,20 @@ pub fn one_chat_per_bot(home: &Path) -> Result<()> {
         }
         chats.entry(key).or_default().push((row, count));
     }
+    // A conversation recovery set aside stays with its bot's others until
+    // it is repaired, so the healthy ones are never deleted in its favour.
+    let quarantined = runtime
+        .prepare("SELECT session_id FROM native_quarantine")?
+        .query_map([], |r| r.get::<_, String>(0))?
+        .collect::<std::result::Result<std::collections::BTreeSet<_>, _>>()?;
     for ((owner, bot), mut sections) in chats {
+        if sections.len() > 1
+            && sections
+                .iter()
+                .any(|(row, _)| quarantined.contains(row["id"].as_str().unwrap_or("")))
+        {
+            continue;
+        }
         // Something said first, then not put away, then not the dream log, then newest.
         sections.sort_by(|(a, a_count), (b, b_count)| {
             let rank = |row: &Value, count: i64| {
@@ -1625,7 +1639,8 @@ mod parity_tests {
                  INSERT INTO dreams(id,bot,started_at,status,summary) VALUES('d1','fox',1,'complete','In fox_dreams');
                  INSERT INTO sections(id,bot,owner_id,title,title_by) VALUES('dog_chat','dog','alice','Dreams','bot');
                  INSERT INTO sections(id,bot,owner_id,title,updated_at) VALUES('kit_named','kit','alice','Dreams',9),('kit_old','kit','alice','Old',2);
-                 INSERT INTO bots(name,owner_id) VALUES('dog','alice'),('elk','alice'),('fly','alice'),('gnu','alice'),('hen','alice'),('ivy','alice'),('jay','alice'),('kit','alice');
+                 INSERT INTO bots(name,owner_id) VALUES('dog','alice'),('elk','alice'),('fly','alice'),('gnu','alice'),('hen','alice'),('ivy','alice'),('jay','alice'),('kit','alice'),('lynx','alice');
+                 INSERT INTO sections(id,bot,owner_id,title,updated_at) VALUES('lynx_damaged','lynx','alice','Damaged',9),('lynx_healthy','lynx','alice','Healthy',2);
                  INSERT INTO sections(id,bot,owner_id,title,title_dirty,updated_at) VALUES('jay_log','jay','alice','Nightly',1,9),('jay_chat','jay','alice','Plans',0,2);
                  INSERT INTO sections(id,bot,owner_id,title,updated_at) VALUES('ivy_chat','ivy','alice','General',9),('ivy_old','ivy','alice','Old',2);
                  INSERT INTO sections(id,bot,owner_id,title,title_dirty,updated_at) VALUES('gnu_log','gnu','alice','Nightly',1,9),('gnu_chat','gnu','alice','Plans',0,2),('hen_log','hen','alice','Nightly',1,9);
@@ -1730,6 +1745,24 @@ mod parity_tests {
             "ivy_old",
             json!({"role":"user","text":"Old","timestamp":1}),
         );
+        // Recovery set Lynx's newest conversation aside.
+        said(
+            home.path(),
+            "lynx_damaged",
+            json!({"role":"user","text":"Newer","timestamp":8}),
+        );
+        said(
+            home.path(),
+            "lynx_healthy",
+            json!({"role":"user","text":"Older","timestamp":1}),
+        );
+        runtime_store::open(home.path())
+            .unwrap()
+            .execute(
+                "INSERT INTO native_quarantine(session_id,error) VALUES('lynx_damaged','damaged')",
+                [],
+            )
+            .unwrap();
         // Kit's newest chat was created with the title Dreams, by the user.
         said(
             home.path(),
@@ -1783,8 +1816,32 @@ mod parity_tests {
             )
             .unwrap();
         one_chat_per_bot(home.path()).unwrap();
-        // Rerunning finds one chat per bot and changes nothing.
+        // Lynx keeps both until its conversation is repaired.
+        let lynx: i64 = db::open(home.path())
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM sections WHERE bot='lynx'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(lynx, 2);
+        // With Lynx set aside every bot has one chat, and rerunning does
+        // nothing: a cached preview survives it.
+        db::open(home.path())
+            .unwrap()
+            .execute("DELETE FROM sections WHERE bot='lynx'", [])
+            .unwrap();
+        runtime_store::open(home.path())
+            .unwrap()
+            .execute(
+                "INSERT OR REPLACE INTO native_summaries VALUES('kit_named',1,'cached')",
+                [],
+            )
+            .unwrap();
         one_chat_per_bot(home.path()).unwrap();
+        assert_eq!(
+            runtime_store::summary(home.path(), "kit_named").unwrap()["preview"],
+            "cached"
+        );
         let ids = |bot: &str| {
             rows(
                 &db::open(home.path()).unwrap(),

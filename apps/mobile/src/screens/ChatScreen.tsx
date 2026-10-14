@@ -590,13 +590,13 @@ export function VisualCard({
 const CHOICE_LABELS: Record<ApprovalChoice, string> = {
   deny: 'Deny',
   once: 'Allow once',
-  session: 'Allow in this conversation'
+  session: 'Allow for now'
 }
 
 const DECISION_LABELS: Record<ApprovalChoice, string> = {
   deny: 'Denied',
   once: 'Allowed once',
-  session: 'Allowed in this conversation'
+  session: 'Allowed for now'
 }
 
 /** A bot asking before it acts: what it wants to run, why, and the answers. */

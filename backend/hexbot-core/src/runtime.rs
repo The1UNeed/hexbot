@@ -1658,6 +1658,14 @@ impl Runtime {
         }
         Ok(true)
     }
+    /// True while a turn runs in the section.
+    pub fn working(&self, stored: &str) -> bool {
+        self.sessions
+            .lock()
+            .unwrap()
+            .get(stored)
+            .is_some_and(|s| s.state.lock().unwrap().busy)
+    }
     async fn close_one(&self, owner: &str, stored: &str) -> Result<bool> {
         let lock = self.open_lock(stored);
         let _guard = lock.lock().await;
