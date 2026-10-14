@@ -1006,6 +1006,13 @@ function MobileApp() {
                         )
                         await mobile.refresh()
                         await mobile.openSection(result.bot, result.section)
+                        // HexBot greets the user and says what it does, as it does on the web.
+                        await mobile
+                          .rpc('hexbot.bots.introduce', {
+                            name: result.bot.name,
+                            section: result.section.id
+                          })
+                          .catch(() => undefined)
                       })
               }
             : null
