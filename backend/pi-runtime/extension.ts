@@ -245,10 +245,12 @@ export default function hexbot(pi: any) {
       // Host configuration uses user approvals; incomplete scans ask every time.
       const review = mode === 'smart' && !ask.once && (REVIEWED.includes(ask.key) || ask.key.startsWith('mcp:'));
       if (sessionAllowed.has(ask.key) && !ask.once && !review) return;
-      // The reviewer reads the whole input the tool will run with, not the card's preview.
+      // The reviewer reads the whole input the tool will run with, not the card's preview,
+      // and uses the model Pi runs now, which is the fallback after the primary failed.
       const overwrites = review && event.toolName === 'write' ? existsSync(ask.command) : undefined;
       if (overwrites !== undefined) checked({overwrites});
-      const reviewed = review ? {review: true, input: event.input, cwd, ...overwrites !== undefined ? {overwrites} : {}} : {};
+      const model = ctx.model ? {model: {provider: ctx.model.provider, model: ctx.model.id}} : {};
+      const reviewed = review ? {review: true, input: event.input, cwd, ...model, ...overwrites !== undefined ? {overwrites} : {}} : {};
       const choice = await ctx.ui.select('__HEXBOT_APPROVAL__' + JSON.stringify({tool: event.toolName, command: ask.command, reason: ask.reason, ...reviewed}),
         ask.once ? ['once', 'deny'] : ['once', 'session', 'deny']);
       if (mcp || review) {

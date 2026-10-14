@@ -352,7 +352,7 @@ test('Auto asks before full access, with the bot reason, and before writes outsi
   assert.equal((await f.gate('bash', {command:'npm install', full_access:true, reason:' Downloads the dependencies. '}))?.block, true);
   // The daemon's reviewer reads the bot's own reason and answers routine steps.
   assert.deepEqual(f.choices[0], {tool:'bash', command:'npm install', reason:'Run outside the sandbox, with internet access and writes outside the workspace. Downloads the dependencies.',
-    review:true, input:{command:'npm install', full_access:true, reason:' Downloads the dependencies. '}, cwd:f.settings.cwd, options:['once', 'session', 'deny']});
+    review:true, input:{command:'npm install', full_access:true, reason:' Downloads the dependencies. '}, cwd:f.settings.cwd, model:{provider:'test', model:'primary'}, options:['once', 'session', 'deny']});
   // The temp folders are part of the workspace; /usr/local is not.
   assert.equal(await f.gate('write', {path:join(user, 'scratch.txt')}), undefined);
   assert.equal((await f.gate('write', {path:'/usr/local/hexbot-elsewhere.txt'}))?.block, true);
@@ -376,6 +376,11 @@ test('Auto asks before full access, with the bot reason, and before writes outsi
   assert.equal((await f.gate('write', {path:'/usr/local/hexbot-other.txt'}))?.block, true);
   assert.equal((await f.gate('write', {path:join(user, '.zshrc')}))?.block, true);
   assert.equal(f.choices.length, 6);
+  // After the primary model fails, the reviewer uses the fallback Pi switched to.
+  f.settings.fallback = {provider:'test', model:'fallback'};
+  await f.handlers.agent_before_settle({outcome:'error'}, f.ctx);
+  assert.equal((await f.gate('write', {path:'/usr/local/hexbot-other.txt'}))?.block, true);
+  assert.deepEqual(f.choices[6].model, {provider:'test', model:'fallback'});
 });
 
 test('Auto reviews every step outside the sandbox, whatever was allowed before', async t => {

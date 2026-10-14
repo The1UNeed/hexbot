@@ -59,8 +59,9 @@ The app follows the track it was installed from; switch in Settings, Updates.
 - **Tools with approvals.** Bots can run commands, browse, and edit files.
   In **Auto mode**, the default, they work freely inside the workspace
   behind an OS sandbox; steps outside it get a check by the bot's model, and
-  risky or unreviewable steps ask once. Without OS isolation, shell commands
-  require user approval even when requesting full access. Manual asks
+  risky or unreviewable steps ask once. The check is the model's judgment,
+  not a sandbox. Without OS isolation, shell commands require user approval
+  even when requesting full access. Manual asks
   before every change; Bypass asks nothing. Git metadata is read-only and
   project secrets and browser stores are hidden within the platform limits in
   [SECURITY.md](SECURITY.md#tool-isolation). Linux scans existing repositories

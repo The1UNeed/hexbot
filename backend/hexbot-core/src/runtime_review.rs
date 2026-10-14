@@ -272,7 +272,7 @@ impl Runtime {
                 format!("{reason} {note}")
             });
             if let Some(object) = payload.as_object_mut() {
-                for key in ["review", "input", "cwd", "overwrites"] {
+                for key in ["review", "input", "cwd", "overwrites", "model"] {
                     object.remove(key);
                 }
             }
@@ -444,8 +444,18 @@ impl Runtime {
             Ok(None) => return Err(TOO_LONG.into()),
             Err(_) => return Err(UNAVAILABLE.into()),
         };
-        let model = s.model.lock().unwrap().clone();
-        let saved = json!({"provider": model[0], "model": model[1]});
+        // The model Pi runs now: after the primary fails, Pi has switched to
+        // the fallback, and the primary would fail the review the same way.
+        let active = &payload["model"];
+        let saved = match (active["provider"].as_str(), active["model"].as_str()) {
+            (Some(provider), Some(model)) if !provider.is_empty() && !model.is_empty() => {
+                json!({"provider": provider, "model": model})
+            }
+            _ => {
+                let model = s.model.lock().unwrap().clone();
+                json!({"provider": model[0], "model": model[1]})
+            }
+        };
         match self
             .one_shot(&s.bot, &saved, Some(s), PROMPT, &message, TIMEOUT)
             .await

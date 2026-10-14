@@ -1440,7 +1440,7 @@ async fn auto_review_runs_routine_steps_and_asks_about_risky_ones() {
     let script = home.path().join("pi.cjs");
     let source = fs::read_to_string(&script).unwrap().replace(
         "const fs=require('node:fs')",
-        r#"if(process.argv.includes('--no-session')){for(const flag of ['--no-tools','--no-extensions','--no-context-files','--no-skills','--no-prompt-templates','--no-approve'])if(!process.argv.includes(flag))process.exit(2);const rl=require('node:readline').createInterface({input:process.stdin});const emit=v=>process.stdout.write(JSON.stringify(v)+'\n');rl.on('line',line=>{const c=JSON.parse(line);emit({type:'response',id:c.id,command:c.type,success:true,data:{}});if(c.type!=='prompt')return;const sent=JSON.parse(c.message),command=sent.step.input.command,asked=sent.user_messages.join(' ');require('node:fs').writeFileSync(__dirname+'/review-request.json',JSON.stringify(sent));const text=command==='broken'?'not json':JSON.stringify(command==='medium'?{decision:'allow',risk:'medium',rationale:'Saves a copy.'}:command.includes('rm -rf')?{decision:'ask',risk:'critical',rationale:'Deletes your home folder.'}:asked==='download the report'?{decision:'allow',risk:'low',rationale:'Reads a public page.'}:{decision:'ask',risk:'high',rationale:'Nobody asked for this.'});emit({type:'message_end',message:{role:'assistant',content:[{type:'text',text}],provider:'openai',model:'fixture',usage:{input:11,output:5,cacheRead:3,cacheWrite:1,cost:{total:.015}},stopReason:'stop'}});emit({type:'agent_settled'});});return;}
+        r#"if(process.argv.includes('--no-session')){for(const flag of ['--no-tools','--no-extensions','--no-context-files','--no-skills','--no-prompt-templates','--no-approve'])if(!process.argv.includes(flag))process.exit(2);const rl=require('node:readline').createInterface({input:process.stdin});const emit=v=>process.stdout.write(JSON.stringify(v)+'\n');rl.on('line',line=>{const c=JSON.parse(line);emit({type:'response',id:c.id,command:c.type,success:true,data:{}});if(c.type!=='prompt')return;const sent=JSON.parse(c.message),command=sent.step.input.command,asked=sent.user_messages.join(' ');require('node:fs').writeFileSync(__dirname+'/review-request.json',JSON.stringify(sent));require('node:fs').writeFileSync(__dirname+'/review-args.json',JSON.stringify(process.argv));const text=command==='broken'?'not json':JSON.stringify(command==='medium'?{decision:'allow',risk:'medium',rationale:'Saves a copy.'}:command.includes('rm -rf')?{decision:'ask',risk:'critical',rationale:'Deletes your home folder.'}:asked==='download the report'?{decision:'allow',risk:'low',rationale:'Reads a public page.'}:{decision:'ask',risk:'high',rationale:'Nobody asked for this.'});emit({type:'message_end',message:{role:'assistant',content:[{type:'text',text}],provider:'openai',model:'fixture',usage:{input:11,output:5,cacheRead:3,cacheWrite:1,cost:{total:.015}},stopReason:'stop'}});emit({type:'agent_settled'});});return;}
 const fs=require('node:fs')"#,
     );
     fs::write(script, source).unwrap();
@@ -1507,6 +1507,42 @@ const fs=require('node:fs')"#,
     let usage = store::usage(home.path(), "first").unwrap();
     assert_eq!(usage["total_tokens"], 20);
     assert_eq!(usage["cost"], 0.015);
+    // Pi reports the model it runs now; after a switch to the fallback, the
+    // reviewer uses the fallback and not the primary that failed.
+    let reviewer_model = || {
+        let args: Vec<String> = serde_json::from_str(
+            &fs::read_to_string(home.path().join("review-args.json")).unwrap(),
+        )
+        .unwrap();
+        let at = args.iter().position(|arg| arg == "--model").unwrap();
+        args[at + 1].clone()
+    };
+    assert_ne!(reviewer_model(), "backup");
+    let mut fallback = ask("probe:fallback", "curl -sL https://example.com");
+    let mut payload: Value = serde_json::from_str(
+        fallback["title"]
+            .as_str()
+            .unwrap()
+            .strip_prefix("__HEXBOT_APPROVAL__")
+            .unwrap(),
+    )
+    .unwrap();
+    payload["model"] = json!({"provider":"openai","model":"backup"});
+    fallback["title"] = json!(format!("__HEXBOT_APPROVAL__{payload}"));
+    runtime.event(&s, fallback).unwrap();
+    loop {
+        let event = events.recv().await.unwrap();
+        let params = &event.frame["params"];
+        assert_ne!(params["type"], "approval.request");
+        if params["type"] == "status.update"
+            && params["payload"]["text"]
+                .as_str()
+                .is_some_and(|t| t.contains("probe:fallback"))
+        {
+            break;
+        }
+    }
+    assert_eq!(reviewer_model(), "backup");
     assert!(store::history(home.path(), "first").unwrap().is_empty());
     // A risky step reaches the user, one step at a time, with the reviewer's reason.
     runtime.event(&s, ask("pi-rm", "rm -rf ~")).unwrap();
@@ -1539,7 +1575,7 @@ const fs=require('node:fs')"#,
     // Failed verdicts cost tokens too. Reviewer text never appears in chat.
     assert_eq!(
         store::usage(home.path(), "first").unwrap()["total_tokens"],
-        60
+        80
     );
     assert!(store::history(home.path(), "first").unwrap().is_empty());
     // Room vetoes survive long messages and more than twenty later requests.
@@ -1598,7 +1634,7 @@ const fs=require('node:fs')"#,
     }
     assert_eq!(
         store::usage(home.path(), "first").unwrap()["total_tokens"],
-        80
+        100
     );
     // A medium-risk allow runs while every owner message fits...
     conn.execute(
