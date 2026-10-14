@@ -123,19 +123,28 @@ more freedom and more capability than a hosted product can offer.
   more than six hours is dropped. `checkin_enabled` turns all of it off.
 - A check-in is an unattended job session (`checkin-<id>`) with the bot's
   connectors: memory writes become proposals, the soul only reads, it cannot
-  ask, and it runs in Auto at most. Its prompt gives the time, why it runs,
-  what it already told the user in the last day, and the wake-ups waiting.
+  ask, and it runs in Auto at most. It only reads: of the daemon's tools it
+  keeps memory, the soul, `hexbot_notify` and `hexbot_wakeups`; of Pi's, read,
+  grep, find and ls. Connector tools still ask before changing anything, and
+  nobody can answer. Its prompt gives the time, why it runs, what it told the
+  user and what they wrote back in the Check-ins section in the last day, its
+  last check-ins' logs, and the wake-ups waiting.
 - Its one way to speak is `hexbot_notify`: one message per check-in, eight a
   day at most. The message is posted in the bot's Check-ins section
   (`sections.purpose = 'checkins'`, brought back if archived, made again if
-  deleted) and broadcast as `hexbot.checkins.message`, which the app and
-  browsers show as a notification. Phones get a push through Hex Connect
-  that names the bot and the section, never the message.
+  deleted) and broadcast whole as `hexbot.checkins.message`: an open
+  Check-ins section shows it at once, and the app and browsers notify. Phones
+  get a push through Hex Connect in Connect's own words, with the section and
+  the phone's device id to open it on, never the message. The bot's Notify me
+  switch silences both; the message still lands in the section.
 - The message reaches the section's context with the user's next message
   there: the extension adds it after that message (`before_agent_start`), so
-  the cached prefix and the frozen prompt stay intact.
-- Only one check-in runs at a time; after a failed one the next waits 15
-  minutes. Settings, the bot's Check-ins tab, and `hexbot checkins` manage it.
+  the cached prefix and the frozen prompt stay intact. It counts as taken when
+  Pi reports that custom message; one not reported is offered once more.
+  Deleting the section empties what check-ins said there.
+- Only one check-in runs at a time. A failed one, or one the daemon stopped
+  in, gives its wake-ups back, and the next check-in waits 15 minutes.
+  Settings, the bot's Check-ins tab, and `hexbot checkins` manage it.
 
 ### Approvals and tools
 

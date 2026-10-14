@@ -7,8 +7,8 @@ use std::{fs, sync::Arc, time::Duration};
 mod support;
 
 /// A prompt that is a JSON `{tool, args}` calls that daemon tool. A check-in
-/// whose prompt carries `send: TEXT` messages the user with TEXT; any other
-/// check-in stays quiet.
+/// whose prompt carries `send: TEXT` messages the user with TEXT, one carrying
+/// `crash:` fails like a model outage, and any other stays quiet.
 const FAKE_PI: &str = r#"#!/usr/bin/env node
 const rl=require('node:readline').createInterface({input:process.stdin});const emit=x=>process.stdout.write(JSON.stringify(x)+'\n');
 const finish=text=>{emit({type:'message_end',message:{role:'assistant',content:[{type:'text',text}],stopReason:'stop'}});emit({type:'agent_end'});emit({type:'agent_settled'});};
@@ -19,7 +19,8 @@ emit({type:'response',id:c.id,command:c.type,success:true,data:{}});
 if(c.type==='prompt'){emit({type:'agent_start'});emit({type:'message_end',message:{role:'user',content:c.message}});
 let call;try{call=JSON.parse(c.message)}catch{}
 const send=/send: ([^\n]*)/.exec(c.message);
-if(call&&call.tool)bridge(call.tool,call.args);
+if(c.message.startsWith('# Check-in')&&c.message.includes('crash:')){emit({type:'message_end',message:{role:'assistant',content:[],stopReason:'error',errorMessage:'model down'}});emit({type:'agent_end'});emit({type:'agent_settled'});}
+else if(call&&call.tool)bridge(call.tool,call.args);
 else if(send&&c.message.startsWith('# Check-in'))bridge('hexbot_notify',{message:send[1]});
 else finish('Looked at the calendar; nothing needs them now.');}
 if(c.type==='abort')emit({type:'agent_settled'});});
@@ -190,12 +191,93 @@ async fn a_wakeup_the_primary_bot_sets_messages_the_user_in_its_check_ins_sectio
         "{shown:?}"
     );
 
-    // The user's next message there brings it into context, once.
+    // The user's next message there brings it into context. This Pi never
+    // reports taking it, so it is offered once more and then not again.
     let live = open(&app, &section).await;
     let context = call_tool(&app, &live, "hexbot_checkin_context", json!({})).await;
     assert!(context.contains("PE Invasion Games"), "{context}");
     let again = call_tool(&app, &live, "hexbot_checkin_context", json!({})).await;
-    assert!(again.contains("\"text\":null"), "{again}");
+    assert!(again.contains("PE Invasion Games"), "{again}");
+    let done = call_tool(&app, &live, "hexbot_checkin_context", json!({})).await;
+    assert!(done.contains("\"text\":null"), "{done}");
+
+    // Deleting the section takes what was said there with it.
+    app.call("local", "hexbot.sections.delete", &json!({"id":section}))
+        .await
+        .unwrap();
+    let kept: String = db::open(h.path())
+        .unwrap()
+        .query_row("SELECT text FROM checkin_messages", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(kept, "");
+}
+
+#[tokio::test]
+async fn a_failed_check_in_gives_its_wake_up_back_and_runs_read_only() {
+    let (h, app) = setup();
+    let created = app
+        .call("local", "hexbot.bots.create_primary", &json!({}))
+        .await
+        .unwrap();
+    // Every tool the bot has, so the check-in has something to leave out.
+    app.call(
+        "local",
+        "hexbot.bots.update",
+        &json!({"name":"hexbot","tools":["terminal","files","code_execution","browser","computer_use","message_bots","delegate","scheduling"]}),
+    )
+    .await
+    .unwrap();
+    set(&app, json!({"checkin_hours": "03:00-03:01"})).await;
+    let live = open(&app, created["section"]["id"].as_str().unwrap()).await;
+    let now = common::now();
+    call_tool(
+        &app,
+        &live,
+        "hexbot_wakeups",
+        json!({"action":"add","at":rfc3339(now + 600.0),"note":"crash: the provider is down"}),
+    )
+    .await;
+    let status = tick(&app, now + 601.0).await;
+    assert_eq!(status["recent"][0]["status"], "failed");
+    assert_eq!(status["recent"][0]["summary"], "model down");
+    // Back, waiting out the retry pause rather than run every minute.
+    assert_eq!(status["wakeups"].as_array().unwrap().len(), 1);
+    app.dreaming.tick_at(now + 660.0).await.unwrap();
+    let count = || -> i64 {
+        db::open(h.path())
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM checkins", [], |r| r.get(0))
+            .unwrap()
+    };
+    assert_eq!(count(), 1);
+    let status = tick(&app, now + 601.0 + 16.0 * 60.0).await;
+    assert_eq!(count(), 2);
+    assert_eq!(status["recent"][0]["kind"], "wakeup");
+
+    // What the check-in held: reading and its own two tools, nothing that acts.
+    let options: String = runtime_store::open(h.path())
+        .unwrap()
+        .query_row(
+            "SELECT options FROM native_sessions WHERE stored_id LIKE 'checkin-%' LIMIT 1",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let options: Value = serde_json::from_str(&options).unwrap();
+    let mut names = options["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["name"].as_str().unwrap().to_owned())
+        .collect::<Vec<_>>();
+    names.sort();
+    assert!(
+        names.iter().all(
+            |n| ["memory", "hexbot_soul", "hexbot_notify", "hexbot_wakeups"].contains(&n.as_str())
+        ),
+        "{names:?}"
+    );
+    assert!(names.contains(&"hexbot_notify".to_owned()));
 }
 
 #[tokio::test]

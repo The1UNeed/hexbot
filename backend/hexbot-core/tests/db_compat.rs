@@ -158,6 +158,7 @@ fn team_shape(connection: &Connection) -> Vec<(String, Vec<Column>)> {
             text("checkin_id", false),
             text("text", true),
             real("created_at", true),
+            real("offered_at", false),
             real("context_at", false),
         ],
     ));

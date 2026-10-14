@@ -153,6 +153,30 @@ describe('event routing', () => {
       sectionId: 'checkins-1',
       title: 'HexBot'
     })
+    // An open Check-ins section shows it at once, and only once.
+    useSections.setState({
+      byId: { 'checkins-1': { bot: 'hexbot', id: 'checkins-1' } as Section },
+      liveSessionId: { 'checkins-1': 'live-c' }
+    })
+    useTranscripts.setState({ bySession: { 'live-c': emptyTranscript('live-c', 'checkins-1') } })
+
+    const event = {
+      payload: {
+        bot: 'hexbot',
+        row_id: 'checkin-m2',
+        section_id: 'checkins-1',
+        text: 'Your essay draft is due at 9 AM.',
+        timestamp: 1_792_000_000
+      },
+      type: 'hexbot.checkins.message'
+    } as unknown as GatewayEvent
+
+    routeEvent(event)
+    routeEvent(event)
+    const shown = useTranscripts.getState().bySession['live-c']!.messages
+    expect(shown.map(m => [m.id, m.role, m.text])).toEqual([
+      ['checkin-m2', 'assistant', 'Your essay draft is due at 9 AM.']
+    ])
     // Notify me off: the message still lands in the section, quietly.
     notify.mockClear()
     useBots.setState({

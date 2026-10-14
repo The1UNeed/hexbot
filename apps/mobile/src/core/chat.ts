@@ -63,6 +63,12 @@ export function historyMessages(raw: unknown[]): ChatMessage[] {
   }
   return messages
 }
+/** A message the primary bot sent from a check-in into the open thread, once. */
+export function checkinMessage(state: ChatState, id: string, text: string): ChatState {
+  if (state.messages.some(m => m.id === id || (m.role === 'assistant' && m.text === text)))
+    return state
+  return { ...state, messages: [...state.messages, { id, role: 'assistant', text }] }
+}
 export function reduceChat(state: ChatState, event: GatewayEvent): ChatState {
   const p = (event.payload ?? {}) as Record<string, unknown>
   const text = typeof p.text === 'string' ? p.text : ''

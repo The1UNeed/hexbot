@@ -14,7 +14,7 @@ import {
 import { pair } from './transport'
 import { registerPush } from './push'
 import { parsePairing, normalizeOrigin } from './links'
-import { emptyChat, historyMessages, reduceChat, replayChat } from './chat'
+import { checkinMessage, emptyChat, historyMessages, reduceChat, replayChat } from './chat'
 import { reduceRoom, restoreRoom, roomChat, roomMessage } from './room-chat'
 import { attachmentPrompt } from './chat-send'
 import { modelLists, providerModels } from './models'
@@ -282,6 +282,17 @@ export function useMobile() {
           )
         )
       } else {
+        if (event.type === 'hexbot.checkins.message') {
+          if (
+            p.section_id === target.section.id &&
+            typeof p.row_id === 'string' &&
+            typeof p.text === 'string'
+          ) {
+            const [id, text] = [p.row_id, p.text]
+            setChat(c => checkinMessage(c, id, text))
+          }
+          return
+        }
         if (!event.session_id || event.session_id !== liveId.current) return
         if (event.type === 'message.complete' && straddling.current === event.session_id) {
           // Part of this turn was already in the history; the history now has all of it.

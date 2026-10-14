@@ -494,14 +494,23 @@ function MobileApp() {
   // A tapped check-in opens its section once the daemon's lists have it.
   const tapped = useTappedSection()
   const openedTap = useRef<string | null>(null)
+  const switchedTap = useRef<string | null>(null)
   useEffect(() => {
     if (!tapped || openedTap.current === tapped.key) return
+    // Sent by another saved daemon: switch to it, then open once its lists load.
+    const daemon = tapped.device ? mobile.saved.find(d => d.deviceId === tapped.device) : null
+    if (daemon && mobile.active?.id !== daemon.id) {
+      if (switchedTap.current === tapped.key) return
+      switchedTap.current = tapped.key
+      act(() => mobile.activate(daemon))
+      return
+    }
     const s = mobile.sections.find(item => item.id === tapped.section)
     const b = s && mobile.bots.find(item => item.name === s.bot)
     if (!s || !b) return
     openedTap.current = tapped.key
     act(() => mobile.openSection(b, s))
-  }, [tapped?.key, tapped?.section, mobile.sections, mobile.bots])
+  }, [tapped?.key, tapped?.section, tapped?.device, mobile.active?.id, mobile.sections, mobile.bots])
   const rooms = mobile.rooms.map(r => ({
     id: r.id,
     name: r.name,

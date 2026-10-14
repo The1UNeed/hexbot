@@ -130,13 +130,13 @@ test('check-in messages join the next turn after the user message, once, without
     f.requests.push(request);
     const text = waiting.length ? `Sent: ${waiting.join(' ')}` : null;
     waiting = [];
-    return JSON.stringify({result:{text}});
+    return JSON.stringify({result:{text, ids: text ? ['m1'] : []}});
   };
   // Nothing waiting: the turn never asks.
   assert.deepEqual(await f.handlers.before_agent_start({}, f.ctx), {systemPrompt:'Frozen prompt'});
   assert.ok(!f.requests.some(r => r.name === 'hexbot_checkin_context'));
   f.settings.pendingCheckins = true;
-  assert.deepEqual(await f.handlers.before_agent_start({}, f.ctx), {systemPrompt:'Frozen prompt', message:{customType:'hexbot_checkin', content:'Sent: Your PE feedback is due tonight at 11:59 PM.', display:false}});
+  assert.deepEqual(await f.handlers.before_agent_start({}, f.ctx), {systemPrompt:'Frozen prompt', message:{customType:'hexbot_checkin', content:'Sent: Your PE feedback is due tonight at 11:59 PM.', display:false, details:{checkins:['m1']}}});
   // Taken once: the daemon has nothing more, so the turn is plain again.
   assert.deepEqual(await f.handlers.before_agent_start({}, f.ctx), {systemPrompt:'Frozen prompt'});
   // A broken bridge never stops the turn.

@@ -390,7 +390,8 @@ export default function hexbot(pi: any) {
       try {
         const checkins = await bridge(ctx, 'hexbot_checkin_context');
         if (typeof checkins?.text === 'string' && checkins.text) {
-          return {systemPrompt: prompt, message: {customType: 'hexbot_checkin', content: checkins.text, display: false}};
+          // The ids come back on message_end, which tells the daemon Pi has it.
+          return {systemPrompt: prompt, message: {customType: 'hexbot_checkin', content: checkins.text, display: false, details: {checkins: checkins.ids ?? []}}};
         }
       } catch {}
     }

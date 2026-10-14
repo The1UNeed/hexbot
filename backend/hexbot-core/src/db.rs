@@ -88,10 +88,11 @@ CREATE TABLE IF NOT EXISTS checkin_wakeups(
  id TEXT PRIMARY KEY, owner_id TEXT NOT NULL, bot TEXT NOT NULL, at REAL NOT NULL,
  note TEXT NOT NULL, created_at REAL NOT NULL, fired_at REAL, cancelled_at REAL,
  checkin_id TEXT);
--- What a check-in told the user. context_at: when it entered the section's context.
+-- What a check-in told the user. offered_at: first handed to the section's next
+-- turn; context_at: Pi took it into the section's context (or the second offer).
 CREATE TABLE IF NOT EXISTS checkin_messages(
  id TEXT PRIMARY KEY, owner_id TEXT NOT NULL, bot TEXT NOT NULL, section_id TEXT NOT NULL,
- checkin_id TEXT, text TEXT NOT NULL, created_at REAL NOT NULL, context_at REAL);
+ checkin_id TEXT, text TEXT NOT NULL, created_at REAL NOT NULL, offered_at REAL, context_at REAL);
 CREATE INDEX IF NOT EXISTS idx_checkins_owner_started ON checkins(owner_id,started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_checkin_wakeups_due ON checkin_wakeups(owner_id,fired_at,cancelled_at,at);
 CREATE INDEX IF NOT EXISTS idx_checkin_messages_section ON checkin_messages(section_id,context_at);

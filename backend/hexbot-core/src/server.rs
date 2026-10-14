@@ -177,6 +177,7 @@ impl App {
             let stored = common::required(p, "id")?;
             catalog::section(&self.home, owner, stored)?;
             self.runtime.delete_stored(owner, stored).await?;
+            crate::dreaming::checkins::forget_section(&self.home, stored)?;
         }
         if method == "hexbot.bots.delete" {
             let bot = common::required(p, "name")?;

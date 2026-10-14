@@ -25,7 +25,7 @@ vi.mock('expo-notifications', () => ({
   requestPermissionsAsync: mock.request,
   getExpoPushTokenAsync: mock.token
 }))
-import { notificationSection, registerPush } from './push'
+import { notificationTarget, registerPush } from './push'
 
 beforeEach(() => {
   mock.os = 'ios'
@@ -66,9 +66,10 @@ describe('check-in push', () => {
     const rpc = vi.fn().mockRejectedValue(new Error('unknown method: hexbot.devices.set_push'))
     await expect(registerPush(rpc)).resolves.toBeUndefined()
   })
-  it('reads the section a notification opens', () => {
-    expect(notificationSection({ section: 's1' })).toBe('s1')
-    expect(notificationSection({})).toBeNull()
-    expect(notificationSection(null)).toBeNull()
+  it('reads the section a notification opens, and on which daemon', () => {
+    expect(notificationTarget({ section: 's1', device: 'd1' })).toEqual({ section: 's1', device: 'd1' })
+    expect(notificationTarget({ section: 's1' })).toEqual({ section: 's1', device: null })
+    expect(notificationTarget({})).toBeNull()
+    expect(notificationTarget(null)).toBeNull()
   })
 })

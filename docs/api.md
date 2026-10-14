@@ -307,8 +307,8 @@ Settings `checkin_enabled`, `checkin_every_minutes` (15 to 1440) and
   or is unknown.
 - Changes broadcast `hexbot.checkins.changed {bot?}`. A message from a
   check-in broadcasts `hexbot.sections.changed {id, bot}` and then
-  `hexbot.checkins.message {bot, section_id, id, text}`, `text` being a
-  preview.
+  `hexbot.checkins.message {bot, section_id, id, row_id, timestamp, text}`
+  with the whole text; `row_id` is the message's id in the section history.
 
 ### Scheduled jobs
 

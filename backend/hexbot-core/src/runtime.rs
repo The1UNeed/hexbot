@@ -603,13 +603,20 @@ impl Runtime {
                 tools.extend(primary::descriptors());
                 tools.push(checkins::wakeups_descriptor());
             }
-            // A check-in run speaks only through hexbot_notify (checkins.rs).
-            if restricted.is_none()
-                && overrides.is_some_and(|o| o["checkin"].is_string())
-                && botrow["is_primary"].as_i64() == Some(1)
-            {
-                tools.push(checkins::notify_descriptor());
-                tools.push(checkins::wakeups_descriptor());
+            // A check-in run reads and speaks only through hexbot_notify. It runs
+            // on its own over connector content, so nothing it holds acts on the
+            // world (checkins.rs); connectors still ask before changing anything,
+            // and nobody can answer.
+            if overrides.is_some_and(|o| o["checkin"].is_string()) {
+                if botrow["is_primary"].as_i64() == Some(1) {
+                    tools.push(checkins::notify_descriptor());
+                    tools.push(checkins::wakeups_descriptor());
+                }
+                tools.retain(|t| {
+                    t["name"]
+                        .as_str()
+                        .is_some_and(|name| checkins::TOOLS.contains(&name))
+                });
             }
             if let Some(allowed) = restricted {
                 tools.retain(|t| {
@@ -870,10 +877,15 @@ impl Runtime {
             .iter()
             .filter_map(|t| t["name"].as_str().map(str::to_owned))
             .collect::<Vec<_>>();
+        // A check-in reads files but never writes them or runs commands.
+        let checkin = options["checkin"].is_string();
         if unrestricted && selected.iter().any(|v| v == "file") {
-            names.extend(["read", "write", "edit", "grep", "find", "ls"].map(str::to_owned));
+            names.extend(["read", "grep", "find", "ls"].map(str::to_owned));
+            if !checkin {
+                names.extend(["write", "edit"].map(str::to_owned));
+            }
         }
-        if unrestricted && selected.iter().any(|v| v == "terminal") {
+        if unrestricted && !checkin && selected.iter().any(|v| v == "terminal") {
             names.push("bash".into());
         }
         if let Some(allowed) = options["restricted"].as_array() {
@@ -2722,6 +2734,13 @@ impl Runtime {
     }
     async fn tool(&self, s: &Arc<Live>, name: &str, args: &Value) -> Result<Value> {
         common::bot_owner(&self.home, &s.owner, &s.bot)?;
+        // Check-in tools are filtered when frozen; refuse here too.
+        if s.stored.starts_with("checkin-")
+            && s.tools.iter().any(|t| t["name"] == name)
+            && !checkins::TOOLS.contains(&name)
+        {
+            return Err(Error::new(4210, "This tool is disabled in check-ins."));
+        }
         let bot_owner: String = db::open(&self.home)?.query_row(
             "SELECT owner_id FROM bots WHERE name=?",
             [&s.bot],
@@ -2757,7 +2776,8 @@ impl Runtime {
         }
         match name {
             "hexbot_checkin_context" => {
-                Ok(json!({"text":checkins::take_context(&self.home, &s.owner, &s.stored)?}))
+                Ok(checkins::take_context(&self.home, &s.owner, &s.stored)?
+                    .unwrap_or_else(|| json!({"text":null,"ids":[]})))
             }
             "hexbot_notify" | "hexbot_wakeups" => self.checkin_tool(s, name, args),
             "hexbot_todo_context" => {
@@ -3245,6 +3265,16 @@ impl Runtime {
                                 "message.interim",
                                 json!({"text":body,"already_streamed":true}),
                             );
+                        }
+                    }
+                    // Check-in messages entered the section's context (checkins.rs).
+                    "custom" if message["customType"] == "hexbot_checkin" => {
+                        if let Err(error) = checkins::acknowledge(
+                            &self.home,
+                            &s.stored,
+                            &message["details"]["checkins"],
+                        ) {
+                            eprintln!("Check-in context for {}: {}", s.stored, error.message);
                         }
                     }
                     "toolResult" => {

@@ -27,8 +27,13 @@ export async function registerPush(rpc: Rpc): Promise<void> {
   }
 }
 
-/** The section a tapped check-in notification is about. */
-export function notificationSection(data: unknown): string | null {
-  const section = (data as { section?: unknown } | null | undefined)?.section
-  return typeof section === 'string' && section ? section : null
+/** What a tapped check-in notification opens: a section, on the saved daemon this phone is `device` of. */
+export interface PushTarget {
+  section: string
+  device: string | null
+}
+export function notificationTarget(data: unknown): PushTarget | null {
+  const { section, device } = (data ?? {}) as { section?: unknown; device?: unknown }
+  if (typeof section !== 'string' || !section) return null
+  return { section, device: typeof device === 'string' && device ? device : null }
 }

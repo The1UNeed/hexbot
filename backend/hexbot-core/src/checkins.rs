@@ -34,6 +34,11 @@ Finish with one line on what you looked at and what you decided. It is kept as t
 
 const JOB_RULES: &str = "This is an autonomous check-in. Do not ask the user questions; you cannot wait for an answer. You and your delegates cannot message other bots. If the memory tool is available, it reads as usual here; add, append, replace, set, remove, and note are saved as proposals for your next dream, which decides what to keep. If the soul tool is available, it only reads here.";
 
+/// The daemon tools a check-in keeps. Pi's read, grep, find and ls stay too;
+/// connectors are reached through code mode and ask before changing anything,
+/// which nobody can answer in a check-in.
+pub(crate) const TOOLS: &[&str] = &["memory", "hexbot_soul", "hexbot_notify", "hexbot_wakeups"];
+
 pub(crate) fn notify_descriptor() -> Value {
     json!({
         "name": "hexbot_notify",
@@ -308,12 +313,13 @@ pub(crate) fn notify(
     }
     let section = section(&tx, owner, bot, now)?;
     let id = common::id();
+    let row = format!("checkin-{id}");
     // The visible message. Its text reaches the section's context through
     // `take_context` when the user next writes there.
     runtime_store::append(
         home,
         &section,
-        json!({"role":"assistant","text":message,"timestamp":now,"checkin":true}),
+        json!({"role":"assistant","text":message,"timestamp":now,"row_id":row,"checkin":true}),
     )?;
     tx.execute(
         "INSERT INTO checkin_messages(id,owner_id,bot,section_id,checkin_id,text,created_at) VALUES (?,?,?,?,?,?,?)",
@@ -338,14 +344,17 @@ pub(crate) fn notify(
         owner,
         None,
         "hexbot.checkins.message",
-        json!({"bot":bot,"section_id":section,"id":id,"text":runtime_store::preview(message)}),
+        // Whole: the notification is meant to be enough to act on, and an open
+        // section shows it under its history row id.
+        json!({"bot":bot,"section_id":section,"id":id,"row_id":row,"timestamp":now,"text":message}),
     );
     push_later(home, owner, bot, &section);
     Ok(json!({"sent":true,"section":section}))
 }
 
 /// Phones get a push with no message text: Connect relays it, and chat never
-/// passes through Connect.
+/// passes through Connect. The bot's Notify me switch silences it, as it does
+/// the app's notifications; the message still lands in the section.
 fn push_later(home: &Path, owner: &str, bot: &str, section: &str) {
     let Ok(handle) = tokio::runtime::Handle::try_current() else {
         return;
@@ -364,29 +373,31 @@ fn push_later(home: &Path, owner: &str, bot: &str, section: &str) {
 }
 
 async fn push(home: &Path, owner: &str, bot: &str, section: &str) -> Result<()> {
-    let (tokens, name) = {
+    let targets = {
         let conn = db::open(home)?;
-        let tokens = common::rows(
+        let notify: bool = conn
+            .query_row("SELECT notify=1 FROM bots WHERE name=?", [bot], |r| {
+                r.get(0)
+            })
+            .optional()?
+            .unwrap_or(false);
+        if !notify {
+            return Ok(());
+        }
+        // Each phone learns which of its saved daemons to open from its own device id.
+        common::rows(
             &conn,
-            "SELECT push_token FROM devices WHERE owner_id=? AND revoked_at IS NULL AND push_token IS NOT NULL",
+            "SELECT id,push_token FROM devices WHERE owner_id=? AND revoked_at IS NULL AND push_token IS NOT NULL",
             &[&owner],
         )?
         .into_iter()
-        .filter_map(|r| r["push_token"].as_str().map(str::to_owned))
-        .collect::<Vec<_>>();
-        let name: Option<String> = conn
-            .query_row(
-                "SELECT COALESCE(NULLIF(display_name,''),name) FROM bots WHERE name=?",
-                [bot],
-                |r| r.get(0),
-            )
-            .optional()?;
-        (tokens, name.unwrap_or_else(|| bot.to_owned()))
+        .filter_map(|r| Some(json!({"token":r["push_token"].as_str()?,"device":r["id"].as_str()?})))
+        .collect::<Vec<_>>()
     };
-    if tokens.is_empty() {
+    if targets.is_empty() {
         return Ok(());
     }
-    let gone = crate::services::push(home, &tokens, &name, section).await?;
+    let gone = crate::services::push(home, &targets, section).await?;
     if !gone.is_empty() {
         let conn = db::open(home)?;
         for token in gone {
@@ -399,6 +410,16 @@ async fn push(home: &Path, owner: &str, bot: &str, section: &str) -> Result<()> 
     Ok(())
 }
 
+/// A deleted section takes what check-ins said there with it. The rows stay,
+/// empty, so the day's message count still holds.
+pub(crate) fn forget_section(home: &Path, section: &str) -> Result<()> {
+    db::open(home)?.execute(
+        "UPDATE checkin_messages SET text='',context_at=COALESCE(context_at,?) WHERE section_id=?",
+        params![common::now(), section],
+    )?;
+    Ok(())
+}
+
 /// Whether the section has check-in messages its context has not seen yet.
 pub(crate) fn pending_context(home: &Path, stored: &str) -> Result<bool> {
     Ok(db::open(home)?.query_row(
@@ -408,14 +429,16 @@ pub(crate) fn pending_context(home: &Path, stored: &str) -> Result<bool> {
     )?)
 }
 
-/// The check-in messages this section's context has not seen, marked seen.
-/// Pi adds them after the user's next message, so the cached prefix stays.
-pub(crate) fn take_context(home: &Path, owner: &str, stored: &str) -> Result<Option<String>> {
+/// The check-in messages this section's context has not taken yet, with their
+/// ids. Pi adds them after the user's next message, so the cached prefix stays;
+/// `acknowledge` marks them taken when Pi reports that message. A second offer
+/// is the last, so a lost reply cannot repeat them for ever.
+pub(crate) fn take_context(home: &Path, owner: &str, stored: &str) -> Result<Option<Value>> {
     let mut conn = db::open(home)?;
     let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
     let rows = common::rows(
         &tx,
-        "SELECT id,text,created_at FROM checkin_messages WHERE section_id=? AND owner_id=? AND context_at IS NULL ORDER BY created_at",
+        "SELECT id,text,created_at,offered_at FROM checkin_messages WHERE section_id=? AND owner_id=? AND context_at IS NULL ORDER BY created_at",
         &[&stored, &owner],
     )?;
     if rows.is_empty() {
@@ -425,11 +448,18 @@ pub(crate) fn take_context(home: &Path, owner: &str, stored: &str) -> Result<Opt
     let mut text = String::from(
         "Before the user's message above, you sent them these messages here on your own, from check-ins:",
     );
+    let mut ids = vec![];
     for row in &rows {
+        let column = if row["offered_at"].is_null() {
+            "offered_at"
+        } else {
+            "context_at"
+        };
         tx.execute(
-            "UPDATE checkin_messages SET context_at=? WHERE id=?",
+            &format!("UPDATE checkin_messages SET {column}=? WHERE id=?"),
             params![now, row["id"].as_str()],
         )?;
+        ids.push(row["id"].clone());
         text.push_str(&format!(
             "\n\n[{}]\n{}",
             when(row["created_at"].as_f64().unwrap_or(0.0)),
@@ -437,7 +467,62 @@ pub(crate) fn take_context(home: &Path, owner: &str, stored: &str) -> Result<Opt
         ));
     }
     tx.commit()?;
-    Ok(Some(text))
+    Ok(Some(json!({"text":text,"ids":ids})))
+}
+
+/// Pi took these check-in messages into the section's context.
+pub(crate) fn acknowledge(home: &Path, stored: &str, ids: &Value) -> Result<()> {
+    let conn = db::open(home)?;
+    for id in ids
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+    {
+        conn.execute(
+            "UPDATE checkin_messages SET context_at=? WHERE id=? AND section_id=? AND context_at IS NULL",
+            params![common::now(), id, stored],
+        )?;
+    }
+    Ok(())
+}
+
+/// Records how a check-in ended. A failed one gives its wake-ups back, so the
+/// next check-in after the retry wait runs them, until they are too late.
+fn finish(home: &Path, id: &str, status: &str, summary: &str) -> Result<()> {
+    let mut conn = db::open(home)?;
+    let tx = conn.transaction()?;
+    tx.execute(
+        "UPDATE checkins SET finished_at=?,status=?,summary=? WHERE id=?",
+        params![common::now(), status, summary, id],
+    )?;
+    if status == "failed" {
+        tx.execute(
+            "UPDATE checkin_wakeups SET fired_at=NULL,checkin_id=NULL WHERE checkin_id=? AND cancelled_at IS NULL",
+            [id],
+        )?;
+    }
+    tx.commit()?;
+    Ok(())
+}
+
+/// At start: a check-in the daemon stopped in the middle of failed, and its
+/// wake-ups wait for the next one.
+pub(super) fn recover(home: &Path) -> Result<()> {
+    let running = common::rows(
+        &db::open(home)?,
+        "SELECT id FROM checkins WHERE status='running'",
+        &[],
+    )?;
+    for row in running {
+        finish(
+            home,
+            row["id"].as_str().unwrap_or(""),
+            "failed",
+            "Daemon stopped before the check-in finished",
+        )?;
+    }
+    Ok(())
 }
 
 impl Dreaming {
@@ -583,13 +668,7 @@ impl Dreaming {
             Ok(output) => ("complete", head(output.trim(), SUMMARY_CAP)),
             Err(error) => ("failed", error.message),
         };
-        if let Err(error) = db::open(&self.home).and_then(|conn| {
-            conn.execute(
-                "UPDATE checkins SET finished_at=?,status=?,summary=? WHERE id=?",
-                params![common::now(), status, summary, id],
-            )?;
-            Ok(())
-        }) {
+        if let Err(error) = finish(&self.home, id, status, &summary) {
             self.events
                 .emit(owner, None, "error", json!({"message":error.message}));
         }
@@ -630,7 +709,7 @@ impl Dreaming {
         }
         let recent = common::rows(
             &conn,
-            "SELECT text,created_at FROM checkin_messages WHERE owner_id=? AND created_at>? ORDER BY created_at",
+            "SELECT text,created_at FROM checkin_messages WHERE owner_id=? AND created_at>? AND text<>'' ORDER BY created_at",
             &[&owner, &(now - 86_400.0)],
         )?;
         prompt.push_str("\n\nWhat you told them in check-ins in the last day:");
@@ -642,6 +721,49 @@ impl Dreaming {
                 "\n- {}: {}",
                 when(row["created_at"].as_f64().unwrap_or(0.0)),
                 head(row["text"].as_str().unwrap_or(""), 600)
+            ));
+        }
+        let runs = common::rows(
+            &conn,
+            "SELECT kind,started_at,summary FROM checkins WHERE owner_id=? AND status='complete' AND started_at>? ORDER BY started_at DESC LIMIT 5",
+            &[&owner, &(now - 86_400.0)],
+        )?;
+        if !runs.is_empty() {
+            prompt.push_str("\n\nYour last check-ins, newest first, as you logged them:");
+        }
+        for row in &runs {
+            prompt.push_str(&format!(
+                "\n- {}: {}",
+                when(row["started_at"].as_f64().unwrap_or(0.0)),
+                head(row["summary"].as_str().unwrap_or(""), 300)
+            ));
+        }
+        // What they answered in the Check-ins section: done, snoozed, not needed.
+        let replies = conn
+            .query_row(
+                "SELECT id FROM sections WHERE owner_id=? AND purpose=? AND archived_at IS NULL ORDER BY created_at DESC LIMIT 1",
+                params![owner, PURPOSE],
+                |r| r.get::<_, String>(0),
+            )
+            .optional()?
+            .map(|section| runtime_store::history(&self.home, &section))
+            .transpose()?
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|m| {
+                m["role"] == "user"
+                    && m["display_kind"] != "hidden"
+                    && m["timestamp"].as_f64().is_some_and(|t| t > now - 86_400.0)
+            })
+            .collect::<Vec<_>>();
+        if !replies.is_empty() {
+            prompt.push_str("\n\nWhat they wrote back in your Check-ins section in the last day:");
+        }
+        for row in replies.iter().rev().take(5).rev() {
+            prompt.push_str(&format!(
+                "\n- {}: {}",
+                when(row["timestamp"].as_f64().unwrap_or(0.0)),
+                head(row["text"].as_str().unwrap_or(""), 500)
             ));
         }
         let waiting = pending_wakeups(&conn, owner)?;
@@ -711,7 +833,24 @@ impl Dreaming {
                 .and_then(hours)
                 .unwrap_or((8 * 60, 22 * 60));
             let every = settings["checkin_every_minutes"].as_f64().unwrap_or(60.0) * 60.0;
-            next_heartbeat(window, every, last, common::now()).map(now_iso)
+            let now = common::now();
+            // The tick's own order: a wake-up may come first, a failure waits.
+            let wakeup: Option<f64> = conn.query_row(
+                "SELECT MIN(at) FROM checkin_wakeups WHERE owner_id=? AND fired_at IS NULL AND cancelled_at IS NULL",
+                [owner],
+                |r| r.get(0),
+            )?;
+            let failed: Option<f64> = conn.query_row(
+                "SELECT MAX(started_at) FROM checkins WHERE owner_id=? AND status='failed'",
+                [owner],
+                |r| r.get(0),
+            )?;
+            next_heartbeat(window, every, last, now)
+                .into_iter()
+                .chain(wakeup)
+                .reduce(f64::min)
+                .map(|at| failed.map_or(at, |f| at.max(f + RETRY_AFTER)).max(now))
+                .map(now_iso)
         } else {
             None
         };
@@ -787,6 +926,33 @@ mod tests {
             next_heartbeat(window, hour, None, at(14, 6, 0)),
             Some(at(14, 8, 0))
         );
+    }
+
+    #[test]
+    fn context_is_offered_until_pi_takes_it_and_at_most_twice() {
+        let home = tempfile::tempdir().unwrap();
+        db::migrate(home.path()).unwrap();
+        let conn = db::open(home.path()).unwrap();
+        for id in ["a", "b"] {
+            conn.execute(
+                "INSERT INTO checkin_messages(id,owner_id,bot,section_id,text,created_at) VALUES (?,'local','hexbot',?,'Due tonight.',1)",
+                params![id, format!("s-{id}")],
+            )
+            .unwrap();
+        }
+        // Taken: one offer.
+        let offer = take_context(home.path(), "local", "s-a").unwrap().unwrap();
+        assert_eq!(offer["ids"], json!(["a"]));
+        assert!(pending_context(home.path(), "s-a").unwrap());
+        acknowledge(home.path(), "s-a", &offer["ids"]).unwrap();
+        assert!(!pending_context(home.path(), "s-a").unwrap());
+        assert!(take_context(home.path(), "local", "s-a").unwrap().is_none());
+        // Never reported taken: offered twice, then not again.
+        assert!(take_context(home.path(), "local", "s-b").unwrap().is_some());
+        assert!(take_context(home.path(), "local", "s-b").unwrap().is_some());
+        assert!(take_context(home.path(), "local", "s-b").unwrap().is_none());
+        // Another section's ids change nothing here.
+        acknowledge(home.path(), "s-b", &json!(["a"])).unwrap();
     }
 
     #[test]

@@ -808,6 +808,7 @@ impl Dreaming {
             [common::now()],
         )?;
         self.import_jobs()?;
+        checkins::recover(&self.home)?;
         let this = self.clone();
         let mut stop = self.stop.subscribe();
         *ticker = Some(tokio::spawn(async move {

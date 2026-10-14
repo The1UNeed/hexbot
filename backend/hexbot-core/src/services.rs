@@ -522,10 +522,11 @@ async fn daemon_request(
     }
     result
 }
-/// Asks Hex Connect to wake the owner's phones about a check-in. The push names
-/// the bot and the section, never the message: chat stays off Connect. Returns
-/// the tokens the push service no longer knows, for the caller to forget.
-pub async fn push(home: &Path, tokens: &[String], bot: &str, section: &str) -> Result<Vec<String>> {
+/// Asks Hex Connect to wake the owner's phones about a check-in. `targets` are
+/// `{token, device}`; the push carries only the section and the device id to
+/// open it from, never the message: chat stays off Connect. Returns the tokens
+/// the push service no longer knows, for the caller to forget.
+pub async fn push(home: &Path, targets: &[Value], section: &str) -> Result<Vec<String>> {
     let Some(config) = ConnectConfig::load(home)?
         .filter(|c| !c.daemon_id.is_empty() && !c.daemon_token.is_empty())
     else {
@@ -536,7 +537,7 @@ pub async fn push(home: &Path, tokens: &[String], bot: &str, section: &str) -> R
         &config,
         Method::POST,
         &format!("/api/daemons/{}/push", config.daemon_id),
-        Some(json!({"tokens":tokens,"bot":bot,"section":section})),
+        Some(json!({"targets":targets,"section":section})),
     )
     .await?;
     Ok(reply["gone"]

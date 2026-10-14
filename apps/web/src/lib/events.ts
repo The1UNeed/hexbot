@@ -160,6 +160,16 @@ export function routeEvent(event: GatewayEvent, deps: EventRouterDeps = {}): voi
       const bot = typeof payload.bot === 'string' ? payload.bot : ''
       const body = typeof payload.text === 'string' ? payload.text : ''
       const sectionId = typeof payload.section_id === 'string' ? payload.section_id : undefined
+      // An open Check-ins section shows it at once; history has the same row id.
+      const live = sectionId ? useSections.getState().liveSessionId[sectionId] : undefined
+
+      if (live && transcripts.bySession[live] && body && typeof payload.row_id === 'string') {
+        transcripts.checkinMessage(live, {
+          createdAt: typeof payload.timestamp === 'number' ? payload.timestamp * 1000 : Date.now(),
+          id: payload.row_id,
+          text: body
+        })
+      }
 
       if (body && botNotifies(bot)) {
         const title = useBots.getState().byName[bot]?.display_name ?? bot

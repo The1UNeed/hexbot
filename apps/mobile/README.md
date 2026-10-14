@@ -116,7 +116,7 @@ Check-in notifications need push, which needs an EAS project: set
 `EAS_PROJECT_ID` when building, with APNs and FCM credentials on that project.
 Without it the app skips push and shows check-ins when it opens. On a daemon
 reached through Hex Connect, the daemon asks Connect to wake the phone; the
-push carries the bot's name, never the message.
+push says only that the primary bot has a message, never what it is.
 
 ## Verify
 

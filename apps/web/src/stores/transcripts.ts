@@ -140,6 +140,8 @@ export interface TranscriptsState {
    * streaming message alone: the incident fires mid-turn (a tool refused) and
    * the reply keeps streaming after it.
    */
+  /** A message the primary bot sent here from a check-in, once by its history row id. */
+  checkinMessage: (sessionId: string, message: { createdAt: number; id: string; text: string }) => void
   incidentEvent: (sessionId: string, message: string, detail: ErrorDetail) => void
   messageComplete: (sessionId: string, payload?: MessageCompletePayload) => void
   messageDelta: (sessionId: string, text: string) => void
@@ -782,6 +784,35 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
         }
 
         return { ...transcript, error: message, messages, streamingMessageId: null }
+      })
+    },
+
+    checkinMessage(sessionId, message) {
+      update(sessionId, transcript => {
+        if (transcript.messages.some(item => item.id === message.id)) {
+          return transcript
+        }
+
+        const row: TranscriptMessage = {
+          attachments: [],
+          createdAt: message.createdAt,
+          id: message.id,
+          role: 'assistant',
+          streaming: false,
+          text: message.text,
+          toolCalls: []
+        }
+
+        // A turn streaming in this section stays last.
+        const streamingAt = transcript.streamingMessageId
+          ? transcript.messages.findIndex(item => item.id === transcript.streamingMessageId)
+          : -1
+
+        const messages = [...transcript.messages]
+
+        messages.splice(streamingAt >= 0 ? streamingAt : messages.length, 0, row)
+
+        return { ...transcript, messages }
       })
     },
 
