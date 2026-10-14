@@ -13,13 +13,15 @@ const FAKE_PI: &str = r#"#!/usr/bin/env node
 const rl=require('node:readline').createInterface({input:process.stdin});const emit=x=>process.stdout.write(JSON.stringify(x)+'\n');
 const finish=text=>{emit({type:'message_end',message:{role:'assistant',content:[{type:'text',text}],stopReason:'stop'}});emit({type:'agent_end'});emit({type:'agent_settled'});};
 const bridge=(name,args)=>emit({type:'extension_ui_request',id:'tool-1',method:'input',title:'__HEXBOT_TOOL__'+JSON.stringify({name,args})});
+let listing=false;
 rl.on('line',l=>{const c=JSON.parse(l);
-if(c.type==='extension_ui_response'){finish(String(c.value));return;}
+if(c.type==='extension_ui_response'){if(listing){listing=false;const v=JSON.parse(c.value);finish((v.result??v).tools.map(t=>t.name).sort().join(','));}else finish(String(c.value));return;}
 emit({type:'response',id:c.id,command:c.type,success:true,data:{}});
 if(c.type==='prompt'){emit({type:'agent_start'});emit({type:'message_end',message:{role:'user',content:c.message}});
 let call;try{call=JSON.parse(c.message)}catch{}
 const send=/send: ([^\n]*)/.exec(c.message);
 if(c.message.startsWith('# Check-in')&&c.message.includes('crash:')){emit({type:'message_end',message:{role:'assistant',content:[],stopReason:'error',errorMessage:'model down'}});emit({type:'agent_end'});emit({type:'agent_settled'});}
+else if(c.message.startsWith('# Check-in')&&c.message.includes('tools?')){listing=true;bridge('hexbot_session_settings',{});}
 else if(call&&call.tool)bridge(call.tool,call.args);
 else if(send&&c.message.startsWith('# Check-in'))bridge('hexbot_notify',{message:send[1]});
 else finish('Looked at the calendar; nothing needs them now.');}
@@ -254,30 +256,38 @@ async fn a_failed_check_in_gives_its_wake_up_back_and_runs_read_only() {
     assert_eq!(count(), 2);
     assert_eq!(status["recent"][0]["kind"], "wakeup");
 
-    // What the check-in held: reading and its own two tools, nothing that acts.
-    let options: String = runtime_store::open(h.path())
+    // Still failing, so still waiting; the user cancels it from Settings.
+    let waiting = status["wakeups"][0]["id"].as_str().unwrap().to_owned();
+    app.call(
+        "local",
+        "hexbot.checkins.cancel_wakeup",
+        &json!({ "id": waiting }),
+    )
+    .await
+    .unwrap();
+    // What the check-in held: its own two tools and reading, nothing that acts.
+    call_tool(
+        &app,
+        &live,
+        "hexbot_wakeups",
+        json!({"action":"add","at":rfc3339(now + 3000.0),"note":"tools?"}),
+    )
+    .await;
+    let status = tick(&app, now + 3001.0).await;
+    assert_eq!(
+        status["recent"][0]["summary"],
+        "hexbot_notify,hexbot_soul,hexbot_wakeups,memory"
+    );
+    // And its transcript is gone once it ends.
+    let left: i64 = runtime_store::open(h.path())
         .unwrap()
         .query_row(
-            "SELECT options FROM native_sessions WHERE stored_id LIKE 'checkin-%' LIMIT 1",
+            "SELECT COUNT(*) FROM native_sessions WHERE stored_id LIKE 'checkin-%'",
             [],
             |r| r.get(0),
         )
         .unwrap();
-    let options: Value = serde_json::from_str(&options).unwrap();
-    let mut names = options["tools"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|t| t["name"].as_str().unwrap().to_owned())
-        .collect::<Vec<_>>();
-    names.sort();
-    assert!(
-        names.iter().all(
-            |n| ["memory", "hexbot_soul", "hexbot_notify", "hexbot_wakeups"].contains(&n.as_str())
-        ),
-        "{names:?}"
-    );
-    assert!(names.contains(&"hexbot_notify".to_owned()));
+    assert_eq!(left, 0);
 }
 
 #[tokio::test]

@@ -727,6 +727,10 @@ impl Dreaming {
             Ok(output) => ("complete", head(output.trim(), SUMMARY_CAP)),
             Err(error) => ("failed", error.message),
         };
+        // The run's transcript is nobody's to read again; its usage stays.
+        if let Err(error) = self.runtime.delete_stored(owner, &stored).await {
+            eprintln!("Could not remove check-in {stored}: {}", error.message);
+        }
         if let Err(error) = finish(&self.home, id, status, &summary) {
             self.events
                 .emit(owner, None, "error", json!({"message":error.message}));

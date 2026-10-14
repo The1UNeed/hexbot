@@ -4,7 +4,8 @@ const mock = vi.hoisted(() => ({
   projectId: 'project-1' as string | undefined,
   status: 'granted',
   request: vi.fn(),
-  token: vi.fn()
+  token: vi.fn(),
+  channel: vi.fn()
 }))
 vi.mock('react-native', () => ({
   Platform: {
@@ -23,7 +24,9 @@ vi.mock('expo-constants', () => ({
 vi.mock('expo-notifications', () => ({
   getPermissionsAsync: () => Promise.resolve({ status: mock.status }),
   requestPermissionsAsync: mock.request,
-  getExpoPushTokenAsync: mock.token
+  getExpoPushTokenAsync: mock.token,
+  setNotificationChannelAsync: mock.channel,
+  AndroidImportance: { HIGH: 4 }
 }))
 import { notificationTarget, registerPush } from './push'
 
@@ -33,6 +36,7 @@ beforeEach(() => {
   mock.status = 'granted'
   mock.request.mockReset().mockResolvedValue({ status: 'granted' })
   mock.token.mockReset().mockResolvedValue({ data: 'ExponentPushToken[abc]' })
+  mock.channel.mockReset().mockResolvedValue(null)
 })
 describe('check-in push', () => {
   it('registers this phone with the daemon, once per token', async () => {
@@ -45,6 +49,16 @@ describe('check-in push', () => {
       token: 'ExponentPushToken[abc]',
       platform: 'ios'
     })
+  })
+  it('makes the Android channel before asking, as Android 13 needs', async () => {
+    mock.os = 'android'
+    mock.status = 'undetermined'
+    const order: string[] = []
+    mock.channel.mockImplementation(async () => order.push('channel'))
+    mock.request.mockImplementation(async () => (order.push('ask'), { status: 'granted' }))
+    await registerPush(vi.fn().mockResolvedValue({ ok: true }), 'android-device')
+    expect(order).toEqual(['channel', 'ask'])
+    expect(mock.channel).toHaveBeenCalledWith('checkins', { name: 'Check-ins', importance: 4 })
   })
   it('asks once, and does nothing when the user says no', async () => {
     mock.status = 'undetermined'

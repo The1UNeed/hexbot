@@ -18,7 +18,7 @@ export interface PushResult { gone: string[]; failed: number }
  * longer knows, for the daemon to forget, and how many others failed.
  */
 export async function sendCheckinPush(input: { targets: PushTarget[]; section: string }, send: typeof fetch = fetch): Promise<PushResult> {
-  const messages = input.targets.map(target => ({ to: target.token, title: "Hexbot", body: "Your primary bot has a message for you.", data: { section: input.section, device: target.device }, sound: "default", priority: "high" }));
+  const messages = input.targets.map(target => ({ to: target.token, title: "Hexbot", body: "Your primary bot has a message for you.", data: { section: input.section, device: target.device }, sound: "default", priority: "high", channelId: "checkins" }));
   const headers: Record<string, string> = { accept: "application/json", "content-type": "application/json" };
   if (process.env.EXPO_ACCESS_TOKEN) headers.authorization = `Bearer ${process.env.EXPO_ACCESS_TOKEN}`;
   const response = await send(EXPO_PUSH_URL, { method: "POST", headers, body: JSON.stringify(messages), signal: AbortSignal.timeout(10_000) });

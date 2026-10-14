@@ -11,7 +11,7 @@ import {
 } from '../stores/transcripts'
 import fixtures from '../test/fixtures/streaming-turn.json'
 
-import { routeEvent } from './events'
+import { OPEN_SECTION_EVENT, routeEvent } from './events'
 import type { Bot, Section } from './types'
 
 const incident = (overrides: Record<string, unknown> = {}): GatewayEvent =>
@@ -187,6 +187,32 @@ describe('event routing', () => {
       type: 'hexbot.checkins.message'
     } as unknown as GatewayEvent)
     expect(notify).not.toHaveBeenCalled()
+  })
+  it('opens the Check-ins section from a browser notification', () => {
+    const shown: { onclick: null | (() => void) }[] = []
+
+    class FakeNotification {
+      static permission = 'granted'
+      onclick: null | (() => void) = null
+      constructor() {
+        shown.push(this)
+      }
+    }
+
+    vi.stubGlobal('Notification', FakeNotification)
+    const hidden = vi.spyOn(document, 'hidden', 'get').mockReturnValue(true)
+    const opened = vi.fn()
+    window.addEventListener(OPEN_SECTION_EVENT, opened)
+    useBots.setState({ byName: { hexbot: { display_name: 'HexBot', name: 'hexbot' } as Bot } })
+    routeEvent({
+      payload: { bot: 'hexbot', section_id: 'checkins-1', text: 'Due tonight.' },
+      type: 'hexbot.checkins.message'
+    } as unknown as GatewayEvent)
+    shown[0]!.onclick!()
+    expect((opened.mock.calls[0]![0] as CustomEvent<string>).detail).toBe('checkins-1')
+    window.removeEventListener(OPEN_SECTION_EVENT, opened)
+    hidden.mockRestore()
+    vi.unstubAllGlobals()
   })
   it('stays quiet for a bot whose Notify me switch is off', () => {
     const notify = vi.fn()

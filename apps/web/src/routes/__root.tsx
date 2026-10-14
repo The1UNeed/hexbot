@@ -6,6 +6,7 @@ import { UpdateInstalling, useUpdateInstalling } from '../app/update-installing'
 import { userMemoryGet } from '../lib/api'
 import { getBridge, hasLocalRuntime } from '../lib/bridge'
 import { getSupervisor, setLocalDaemonPort } from '../lib/connection'
+import { OPEN_SECTION_EVENT } from '../lib/events'
 import { useConnection } from '../stores/connection'
 import { useSections } from '../stores/sections'
 import { applyTheme, useUi } from '../stores/ui'
@@ -50,29 +51,13 @@ function RootLayout() {
   useAboutYouGate()
   useEffect(() => bindAppUpdates(), [])
   useEffect(() => {
-    // The app menu's "Settings…" and "Check for Updates…" items land here;
-    // pairing links are handled by the connect route.
-    const bridge = getBridge()
-
-    if (!bridge?.onNavigate) {
-      return
-    }
-
-    return bridge.onNavigate(url => {
-      const tab = /^\/settings\/([a-z]+)$/.exec(url)?.[1]
-
-      if (tab) {
-        void navigate({ to: '/settings/$tab', params: { tab } })
-
-        return
-      }
-
-      // A notification click names the section it is about. Clicked as the app
-      // starts, it waits for the sections list to name the bot.
+    // A notification click names the section it is about. Clicked as the app
+    // starts, it waits for the sections list to name the bot.
+    const openSection = (section: string) => {
       const open = (bot: string) =>
-        void navigate({ params: { bot, section: url }, to: '/b/$bot/s/$section' })
+        void navigate({ params: { bot, section }, to: '/b/$bot/s/$section' })
 
-      const bot = useSections.getState().byId[url]?.bot
+      const bot = useSections.getState().byId[section]?.bot
 
       if (bot) {
         open(bot)
@@ -81,7 +66,7 @@ function RootLayout() {
       }
 
       const stop = useSections.subscribe(state => {
-        const found = state.byId[url]?.bot
+        const found = state.byId[section]?.bot
 
         if (found) {
           stop()
@@ -90,7 +75,36 @@ function RootLayout() {
       })
 
       window.setTimeout(stop, 60_000)
+    }
+
+    // A browser tab's own notifications (lib/events.ts) land here.
+    const fromPage = (event: Event) => {
+      const section = (event as CustomEvent<string>).detail
+
+      if (typeof section === 'string') {
+        openSection(section)
+      }
+    }
+
+    window.addEventListener(OPEN_SECTION_EVENT, fromPage)
+    // The app menu's "Settings…" and "Check for Updates…" items land here;
+    // pairing links are handled by the connect route.
+    const bridge = getBridge()
+
+    const stopBridge = bridge?.onNavigate?.(url => {
+      const tab = /^\/settings\/([a-z]+)$/.exec(url)?.[1]
+
+      if (tab) {
+        void navigate({ to: '/settings/$tab', params: { tab } })
+      } else {
+        openSection(url)
+      }
     })
+
+    return () => {
+      window.removeEventListener(OPEN_SECTION_EVENT, fromPage)
+      stopBridge?.()
+    }
   }, [navigate])
 
   return (

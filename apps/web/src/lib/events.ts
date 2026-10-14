@@ -49,6 +49,9 @@ import type {
   Usage
 } from './types'
 
+/** A browser notification asks the app shell to open a section (routes/__root.tsx). */
+export const OPEN_SECTION_EVENT = 'hexbot:open-section'
+
 export interface EventRouterDeps {
   refreshBots?: () => void
   refreshConnectors?: () => void
@@ -183,7 +186,13 @@ export function routeEvent(event: GatewayEvent, deps: EventRouterDeps = {}): voi
           'Notification' in window &&
           Notification.permission === 'granted'
         ) {
-          new Notification(title, { body }).onclick = () => window.focus()
+          new Notification(title, { body }).onclick = () => {
+            window.focus()
+
+            if (sectionId) {
+              window.dispatchEvent(new CustomEvent(OPEN_SECTION_EVENT, { detail: sectionId }))
+            }
+          }
         }
       }
 

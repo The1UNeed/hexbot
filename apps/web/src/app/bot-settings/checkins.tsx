@@ -67,6 +67,13 @@ export function CheckinsTab({ bot }: { bot: Bot }) {
     void refresh()
   }, [refresh])
 
+  // The next check-in moves with the schedule.
+  const change = (patchSettings: Parameters<typeof patch>[0]) =>
+    attempt(async () => {
+      await patch(patchSettings)
+      await refresh()
+    })
+
   const attempt = async (action: () => Promise<unknown>) => {
     try {
       setError(null)
@@ -88,7 +95,7 @@ export function CheckinsTab({ bot }: { bot: Bot }) {
     const hours = `${next.from ?? from}-${next.to ?? to}`
 
     if (/^\d\d:\d\d-\d\d:\d\d$/.test(hours) && hours !== `${from}-${to}`) {
-      void attempt(() => patch({ checkin_hours: hours }))
+      void change({ checkin_hours: hours })
     }
   }
 
@@ -110,7 +117,7 @@ export function CheckinsTab({ bot }: { bot: Bot }) {
               <Switch
                 aria-label="Check in on its own"
                 checked={enabled}
-                onCheckedChange={checked => void attempt(() => patch({ checkin_enabled: checked }))}
+                onCheckedChange={checked => void change({ checkin_enabled: checked })}
               />
             }
             title="Check in on its own"
@@ -121,9 +128,7 @@ export function CheckinsTab({ bot }: { bot: Bot }) {
                 <Select
                   disabled={!enabled}
                   label="How often"
-                  onValueChange={value =>
-                    void attempt(() => patch({ checkin_every_minutes: Number(value) }))
-                  }
+                  onValueChange={value => void change({ checkin_every_minutes: Number(value) })}
                   options={everyOptions}
                   value={String(every)}
                 />

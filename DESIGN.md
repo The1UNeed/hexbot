@@ -123,7 +123,8 @@ more freedom and more capability than a hosted product can offer.
   five minutes after the last check-in, so no chain of wake-ups keeps
   check-ins running back to back; one missed by more than six hours is
   dropped. At most 96 check-ins run in any day. `checkin_enabled` turns all
-  of it off. Finished check-ins and spent wake-ups are kept for 30 days.
+  of it off. Finished check-ins and spent wake-ups are kept for 30 days; a
+  check-in's own transcript goes when it ends, its usage stays.
 - A check-in is an unattended job session (`checkin-<id>`) with the bot's
   connectors: memory writes become proposals, the soul only reads, it cannot
   ask, and it runs in Auto at most. It only reads: of the daemon's tools it

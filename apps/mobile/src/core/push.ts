@@ -9,6 +9,8 @@ import type { Rpc } from './types'
  * only the bot's name and the section to open. Skipped without an EAS
  * project, where Expo cannot issue a token, and when the user says no.
  */
+/** The Android channel check-in pushes use; Connect names it in each push. */
+export const CHANNEL = 'checkins'
 /** Daemon device and token pairs already sent this run of the app. */
 const registered = new Set<string>()
 export async function registerPush(rpc: Rpc, device = ''): Promise<void> {
@@ -16,6 +18,12 @@ export async function registerPush(rpc: Rpc, device = ''): Promise<void> {
   const projectId = (Constants.expoConfig?.extra as { eas?: { projectId?: string } } | undefined)
     ?.eas?.projectId
   if (!projectId) return
+  // Android 13 asks for permission only once a channel exists, and pushes name it.
+  if (Platform.OS === 'android')
+    await Notifications.setNotificationChannelAsync(CHANNEL, {
+      name: 'Check-ins',
+      importance: Notifications.AndroidImportance.HIGH
+    })
   let { status } = await Notifications.getPermissionsAsync()
   if (status === 'undetermined') status = (await Notifications.requestPermissionsAsync()).status
   if (status !== 'granted') return
