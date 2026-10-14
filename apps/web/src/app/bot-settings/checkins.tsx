@@ -198,7 +198,14 @@ export function CheckinsTab({ bot }: { bot: Bot }) {
             }
             title="Run one now"
           />
-          {!getBridge() && permission === 'default' ? (
+          {/* Browsers notify only from HTTPS or this computer, not a LAN address. */}
+          {!getBridge() && permission !== 'unsupported' && !window.isSecureContext ? (
+            <Row
+              description="Browsers show notifications only for HTTPS pages. Open Hexbot through Hex Connect, use the Hexbot app, or let your phone notify you."
+              title="No notifications in this browser"
+            />
+          ) : null}
+          {!getBridge() && permission === 'default' && window.isSecureContext ? (
             <Row
               control={
                 <Button

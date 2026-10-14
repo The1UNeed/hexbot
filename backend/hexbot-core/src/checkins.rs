@@ -209,7 +209,10 @@ pub(crate) fn wakeups_tool(
                     format!("note must be 1 to {NOTE_CAP} characters"),
                 ));
             }
-            let waiting: i64 = conn.query_row(
+            // Count and insert together, so two sections cannot both pass the cap.
+            let mut conn = db::open(home)?;
+            let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+            let waiting: i64 = tx.query_row(
                 "SELECT COUNT(*) FROM checkin_wakeups WHERE owner_id=? AND fired_at IS NULL AND cancelled_at IS NULL",
                 [owner],
                 |r| r.get(0),
@@ -221,10 +224,11 @@ pub(crate) fn wakeups_tool(
                 ));
             }
             let id = common::id();
-            conn.execute(
+            tx.execute(
                 "INSERT INTO checkin_wakeups(id,owner_id,bot,at,note,created_at) VALUES (?,?,?,?,?,?)",
                 params![id, owner, bot, at, note, now],
             )?;
+            tx.commit()?;
             events.emit(owner, None, "hexbot.checkins.changed", json!({"bot":bot}));
             Ok(json!({"wakeup":{"id":id,"at":now_iso(at),"local":when(at),"note":note}}))
         }
@@ -327,16 +331,26 @@ pub(crate) fn notify(
     let now = common::now();
     let mut conn = db::open(home)?;
     let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-    let run: Option<(String, Option<String>)> = tx
+    let run: Option<(String, Option<String>, String)> = tx
         .query_row(
-            "SELECT status,message_id FROM checkins WHERE id=? AND owner_id=? AND bot=?",
+            "SELECT status,message_id,kind FROM checkins WHERE id=? AND owner_id=? AND bot=?",
             params![checkin, owner, bot],
-            |r| Ok((r.get(0)?, r.get(1)?)),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )
         .optional()?;
+    // Turned off while it ran: a scheduled check-in stays quiet. One the user
+    // asked for with Check in now may still answer.
+    if run.as_ref().is_some_and(|(_, _, kind)| kind != "manual")
+        && settings::get(home)?["checkin_enabled"] != true
+    {
+        return Err(Error::new(
+            4245,
+            "Check-ins were turned off. Do not message the user.",
+        ));
+    }
     match run {
-        Some((status, None)) if status == "running" => {}
-        Some((_, Some(_))) => {
+        Some((status, None, _)) if status == "running" => {}
+        Some((_, Some(_), _)) => {
             return Err(Error::new(
                 4245,
                 "You already messaged the user in this check-in. Put everything in one message.",
@@ -1203,6 +1217,33 @@ mod tests {
             schedule(&conn, "local", &settings, now).unwrap().unwrap().0,
             now - 80_000.0 + 3.0 + 86_400.0
         );
+    }
+
+    #[test]
+    fn a_check_in_turned_off_while_it_runs_stays_quiet() {
+        let home = tempfile::tempdir().unwrap();
+        db::migrate(home.path()).unwrap();
+        let conn = db::open(home.path()).unwrap();
+        conn.execute_batch(
+            "INSERT INTO bots(name,owner_id) VALUES ('hexbot','local');
+             INSERT INTO checkins(id,owner_id,bot,kind,started_at,status) VALUES ('c','local','hexbot','heartbeat',1,'running');
+             INSERT INTO settings(key,value) VALUES ('checkin_enabled','false');",
+        )
+        .unwrap();
+        let error = notify(
+            home.path(),
+            &EventHub::new(),
+            "local",
+            "hexbot",
+            "c",
+            "Due tonight.",
+        )
+        .unwrap_err();
+        assert!(error.message.contains("turned off"), "{}", error.message);
+        let sent: i64 = conn
+            .query_row("SELECT COUNT(*) FROM checkin_messages", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(sent, 0);
     }
 
     #[test]
