@@ -28,7 +28,7 @@ describe('bot bubbles', () => {
     expect(result.current).toBe('#f97316')
   })
 
-  it('has no colour for a photo', async () => {
+  it('has no colour for a JPEG photo with no picked face', async () => {
     const bot = { avatar: photo, face: null }
     const { result } = renderHook(() => useFaceColor(bot, 'Ada'))
 

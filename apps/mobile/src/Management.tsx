@@ -25,7 +25,7 @@ import {
   type Rpc,
   type Section
 } from './core/types'
-import { avatarSrc } from './core/avatar'
+import { botPhoto } from './core/avatar'
 import { scheduleChange } from './core/jobs'
 import { isOpenRoom } from './core/routes'
 import { pickFile } from './core/pickFile'
@@ -596,7 +596,7 @@ export function Management({
           <View style={[styles.identity, { backgroundColor: theme.surface }]}>
             <BotFace
               face={bot?.face}
-              imageUri={bot?.face ? null : avatarSrc(bot?.avatar)}
+              imageUri={botPhoto(bot)}
               name={str(values.display_name) || str(values.name) || 'New bot'}
               size={88}
             />
@@ -605,7 +605,7 @@ export function Management({
                 <Button
                   disabled={busy || mobile.connection !== 'connected'}
                   icon="image-outline"
-                  label={bot.avatar ? 'Change photo' : 'Use a photo'}
+                  label={botPhoto(bot) ? 'Change photo' : 'Use a photo'}
                   onPress={() =>
                     void run(async () => {
                       const file = await pickFile(
@@ -624,7 +624,7 @@ export function Management({
                   testID="action-choose-bot-picture"
                   variant="secondary"
                 />
-                {bot.avatar ? (
+                {botPhoto(bot) ? (
                   <Button
                     disabled={busy || mobile.connection !== 'connected'}
                     label="Use its face"

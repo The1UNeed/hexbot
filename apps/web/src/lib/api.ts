@@ -132,8 +132,34 @@ export function botsGet(name: string): Promise<{ bot: Bot }> {
   return rpcCall<{ bot: Bot }>('hexbot.bots.get', { name })
 }
 
+/** A daemon from before picked faces refuses the field; it keeps the face PNG as a photo. */
+function rejectsFace(error: unknown): boolean {
+  const { code, message } = (error ?? {}) as { code?: number; message?: string }
+
+  return code === 4201 && message === 'unknown bot field: face'
+}
+
+/** Send a bot write, again without `face` when the daemon does not know the field. */
+async function withFace<T>(
+  method: string,
+  params: Record<string, unknown> & { face?: unknown }
+): Promise<T> {
+  try {
+    return await rpcCall<T>(method, params)
+  } catch (error) {
+    if (params.face === undefined || !rejectsFace(error)) {
+      throw error
+    }
+
+    const rest = { ...params }
+    delete rest.face
+
+    return rpcCall<T>(method, rest)
+  }
+}
+
 export function botsCreate(input: BotCreateInput): Promise<{ bot: Bot; section: Section }> {
-  return rpcCall<{ bot: Bot; section: Section }>('hexbot.bots.create', { ...input })
+  return withFace<{ bot: Bot; section: Section }>('hexbot.bots.create', { ...input })
 }
 
 /** Have the daemon submit a new bot's hidden first prompt into its section. */
@@ -148,7 +174,7 @@ export function botsIntroduce(
 }
 
 export function botsUpdate(name: string, patch: BotUpdatePatch): Promise<{ bot: Bot }> {
-  return rpcCall<{ bot: Bot }>('hexbot.bots.update', { name, ...patch })
+  return withFace<{ bot: Bot }>('hexbot.bots.update', { name, ...patch })
 }
 
 export function botsDelete(name: string): Promise<{ deleted: boolean }> {

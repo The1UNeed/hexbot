@@ -12,7 +12,11 @@ import {
   botFace,
   EYE_GAP,
   eyeRects,
-  matchFace
+  faceReadNow,
+  faceReadsHeld,
+  matchFace,
+  readFace,
+  READS_KEPT
 } from '../lib/avatar-builder'
 import tokens from '../styles/tokens.css?raw'
 
@@ -169,5 +173,40 @@ describe('isSubscription', () => {
     expect(isSubscription({ auth_type: 'oauth_external' })).toBe(true)
     expect(isSubscription({ auth_type: 'oauth_device_code' })).toBe(true)
     expect(isSubscription({ auth_type: 'api_key' })).toBe(false)
+  })
+})
+
+describe('reading faces back from pictures', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('keeps only the last pictures it read and nothing still pending', async () => {
+    // A picture that fails to load reads as no face, like a photo.
+    vi.stubGlobal(
+      'Image',
+      class {
+        onerror: (() => void) | null = null
+        set src(_: string) {
+          queueMicrotask(() => this.onerror?.())
+        }
+      }
+    )
+
+    const sources = Array.from(
+      { length: READS_KEPT + 8 },
+      (_, index) => `data:image/png;base64,${index}`
+    )
+
+    await Promise.all(sources.map(readFace))
+
+    expect(faceReadsHeld()).toBe(READS_KEPT)
+    expect(faceReadNow(sources[0]!)).toBeUndefined()
+    expect(faceReadNow(sources.at(-1)!)).toBeNull()
+
+    // A photo that is not a PNG is never kept.
+    await expect(readFace('data:image/jpeg;base64,photo')).resolves.toBeNull()
+    expect(faceReadNow('data:image/jpeg;base64,photo')).toBeNull()
+    expect(faceReadsHeld()).toBe(READS_KEPT)
   })
 })

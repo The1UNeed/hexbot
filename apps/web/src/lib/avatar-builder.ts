@@ -366,37 +366,70 @@ export function matchFace(
   return drawn ? style : null
 }
 
+/** Enough for every picture on screen; one dropped is read again if it comes back. */
+export const READS_KEPT = 32
+
 const reads = new Map<string, AvatarStyle | null>()
 const reading = new Map<string, Promise<AvatarStyle | null>>()
 
+/** Only a PNG can be a face this module drew; anything else is a photo. */
+const canRead = (src: string) => src.startsWith('data:image/png')
+
 /** What `readFace` found for `src`, or `undefined` until it has finished. */
 export function faceReadNow(src: string): AvatarStyle | null | undefined {
-  return reads.get(src)
+  return canRead(src) ? reads.get(src) : null
 }
 
 /**
  * Reads a profile picture this module drew back into its style, so a
  * generated face renders live instead of as a still picture. Photos and other
- * uploads give `null`, as does anywhere without a canvas.
+ * uploads give `null`, as does anywhere without a canvas. The last
+ * `READS_KEPT` results are kept, so changing pictures all day does not keep
+ * every one of them.
  */
 export function readFace(src: string): Promise<AvatarStyle | null> {
+  if (!canRead(src)) {
+    return Promise.resolve(null)
+  }
+
+  if (reads.has(src)) {
+    const found = reads.get(src)!
+    // Most recently used goes last, so the oldest is dropped first.
+    reads.delete(src)
+    reads.set(src, found)
+
+    return Promise.resolve(found)
+  }
+
   const known = reading.get(src)
 
   if (known) {
     return known
   }
 
-  const read = (src.startsWith('data:image/png') ? samplePicture(src) : Promise.resolve(null)).then(
-    found => {
-      reads.set(src, found)
+  const read = samplePicture(src).then(found => {
+    reading.delete(src)
+    reads.set(src, found)
 
-      return found
+    for (const oldest of reads.keys()) {
+      if (reads.size <= READS_KEPT) {
+        break
+      }
+
+      reads.delete(oldest)
     }
-  )
+
+    return found
+  })
 
   reading.set(src, read)
 
   return read
+}
+
+/** How many pictures are read or being read; for tests. */
+export function faceReadsHeld(): number {
+  return reads.size + reading.size
 }
 
 function samplePicture(src: string): Promise<AvatarStyle | null> {

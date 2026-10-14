@@ -958,6 +958,10 @@ fn update_bot(home: &Path, caller: &str, p: &Value) -> Result<Value> {
     let name = required(p, "name")?;
     bot_row(home, caller, name)?;
     validate_patch(home, p)?;
+    // A face describes the picture sent with it; alone it would sit on a photo.
+    if p.get("face").is_some_and(|v| !v.is_null()) && p.get("avatar").is_none_or(Value::is_null) {
+        return Err(Error::new(4202, "face needs the avatar it describes"));
+    }
     configure(home, name, p)?;
     let mut conn = db::open(home)?;
     let tx = conn.transaction()?;

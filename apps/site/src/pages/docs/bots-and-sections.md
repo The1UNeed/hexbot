@@ -23,6 +23,10 @@ Use Bot settings to configure how it works:
 
 The teammate description tells other bots when to ask this one for help. For example, "Reviews database changes and checks migration safety" is more useful than "Helpful assistant." If you leave it blank, Hexbot derives a description from the soul.
 
+## Faces and colours
+
+In Profile, pick a shape and a colour for the bot's face, or use a photo. A picked face is kept with the bot on the daemon, so the web app, the desktop app, and the mobile app all draw it. The bot's message bubbles take a light wash of its face colour in sections and rooms, so you can tell bots apart at a glance. A bot with a photo keeps grey bubbles. The mobile app shows faces and can switch a bot to a photo, but faces are picked in the web or desktop app. On an older daemon a picked face is saved only as a picture: the web and desktop apps still draw it live, and the mobile app shows the picture.
+
 ## Keep a conversation going
 
 Reopen a section to continue the same task. Closing the app or restarting the daemon does not delete it. Each section keeps a persistent Pi conversation; a fresh section starts with a new context window and the bot's current settings.

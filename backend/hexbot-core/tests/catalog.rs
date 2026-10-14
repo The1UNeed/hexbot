@@ -404,6 +404,34 @@ fn a_picked_face_is_kept_with_its_picture_until_the_picture_changes() {
     );
     assert!(catalog::bot(h, "alice", "owl").unwrap()["face"].is_null());
 
+    // A face alone would sit on a photo it does not describe.
+    call(
+        h,
+        "alice",
+        "hexbot.bots.update",
+        json!({"name":"owl","avatar":image}),
+    );
+    for patch in [
+        json!({"name":"owl","face":next}),
+        json!({"name":"owl","avatar":null,"face":next}),
+    ] {
+        let error = catalog::call(h, "alice", "hexbot.bots.update", &patch)
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(
+            (error.code, error.message.as_str()),
+            (4202, "face needs the avatar it describes")
+        );
+    }
+    let photo = catalog::bot(h, "alice", "owl").unwrap();
+    assert!(photo["face"].is_null() && !photo["avatar"].is_null());
+    call(
+        h,
+        "alice",
+        "hexbot.bots.update",
+        json!({"name":"owl","face":null}),
+    );
+
     for bad in [
         json!("pill"),
         json!({"shape":"pill"}),

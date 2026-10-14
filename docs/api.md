@@ -134,7 +134,11 @@ face as the `avatar` PNG too, for clients that only show pictures; clients
 that know `face` draw it live and wash the bot's bubbles with its colour.
 It is null when no face was picked, and it is cleared whenever the avatar
 changes without one (a photo, `avatar: null`, or `profiles.set_asset`), so it
-never describes a picture it did not come with. Older daemons leave it out.
+never describes a picture it did not come with. `hexbot.bots.update` refuses
+a non-null `face` without an `avatar` in the same call (4202), so a face never
+lands on a photo. Older daemons leave it out and refuse `face` in writes
+(4201 `unknown bot field: face`); the web app then sends the write again
+without it, and the face is kept as the picture alone.
 `workdir` and the `workspace_dir` setting are refused (4202) when they resolve
 inside the Hexbot home, symlinks included.
 

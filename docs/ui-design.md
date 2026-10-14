@@ -49,8 +49,9 @@ own visual identity. Read `CLAUDE.md` for the words.
   places the ball so the eyes stay inside it. Click any face, or the Hexbot
   mark, and it plays a random act for a few seconds: typing with its two
   round hands, juggling, blowing a horn (`components/ui/hexbot-act.tsx`, 21
-  acts). The install screen gives each stage its own act. In a chat the face never changes size or plays acts on
-  its own: a working bot's face only bobs (`hex-think`).
+  acts). The install screen gives each stage its own act. In a chat the
+  face never changes size or plays acts on its own: a working bot's face
+  only bobs (`hex-think`).
 - Shadows only on floating layers (menus, dialogs, the glass chrome) and the
   cards that sit on the canvas: a hairline plus one soft shadow.
 - Liquid glass (`hex-glass`, `hex-glass-strong` in `tokens.css`) is for
@@ -142,22 +143,23 @@ the roster slides in as a drawer.
   a container: under 54rem the word "Context" goes, and the centred title
   truncates before it can reach the pill. The context window is never called
   memory.
-- Transcript: a centred column capped at 52rem. Bot messages left-aligned
-  in soft grey bubbles washed with the bot's face colour (14% light, 20%
-  dark; plain grey for an uploaded photo), human messages right-aligned in
-  inverse bubbles (black on light, white on dark). Secondary text inside a
-  bot bubble, such as a name or a quote, is #5C5C5C light and #BEBEBE dark,
+- Transcript: a centred column capped at 52rem. Bot messages left-aligned in
+  soft grey bubbles washed with the bot's face colour (14% light, 20% dark;
+  plain grey for an uploaded photo), human messages right-aligned in inverse
+  bubbles (black on light, white on dark). Secondary text inside a bot
+  bubble, such as a name or a quote, is #5C5C5C light and #BEBEBE dark,
   4.5:1 or better on every wash; links are underlined in the text colour. A
   bot's own chat draws no faces in the column (the pill says whose chat it
-  is); a room draws the bot's face and name beside its bubbles. Every bubble and card is fully rounded (20 px,
-  a pill when it is one line) on a shared left edge; bubbles and cards from
-  the same side in a row stack 4 px apart, and a new speaker starts 12 px
-  lower. Each message a bot finishes is its own bubble, so a turn that
-  says "I'll run both" and then reports back is two bubbles, live and after
-  a reload. Copy and retry icons appear beside the last bubble on hover.
-  Markdown body with code blocks (a fenced block is a block even without a
-  language; its copy button shows on hover), tables, images. Time
-  separators ("Today 9:13 PM") between days and after 20 quiet minutes.
+  is); a room draws the bot's face and name beside its bubbles. Every bubble
+  and card is fully rounded (20 px, a pill when it is one line) on a shared
+  left edge; bubbles and cards from the same side in a row stack 4 px apart,
+  and a new speaker starts 12 px lower. Each message a bot finishes is its
+  own bubble, so a turn that says "I'll run both" and then reports back is
+  two bubbles, live and after a reload. Copy and retry icons appear beside
+  the last bubble on hover. Markdown body with code blocks (a fenced block
+  is a block even without a language; its copy button shows on hover),
+  tables, images. Time separators ("Today 9:13 PM") between days and after
+  20 quiet minutes.
 - Live status: from the moment a turn starts until the whole turn is done,
   a line sits at its foot, under the messages the bot has finished: the
   bot's bobbing face and muted words, with no bubble behind them. It says
