@@ -8,7 +8,7 @@ import { SkeletonLines } from '../../components/ui/skeleton'
 import { StatusDot } from '../../components/ui/status-dot'
 import { Thinking } from '../../components/ui/thinking'
 import { roomsSend, roomsStop } from '../../lib/api'
-import { avatarSrc } from '../../lib/avatar-builder'
+import { botFace } from '../../lib/avatar-builder'
 import { cn } from '../../lib/cn'
 import { useRoomOrLeave } from '../../lib/room-or-leave'
 import { toMillis } from '../../lib/time'
@@ -43,8 +43,6 @@ import {
 const NO_EVENTS: RoomEvent[] = []
 const NO_TURNS: Record<string, RoomTurn> = {}
 
-const avatarData = (bot?: Bot) => avatarSrc(bot?.avatar)
-
 export function RoomEventRow({ event, fresh = false }: { event: RoomEvent; fresh?: boolean }) {
   const bot = useBots(state => (event.actor_id ? state.byName[event.actor_id] : undefined))
   const text = typeof event.payload.text === 'string' ? event.payload.text : ''
@@ -76,10 +74,8 @@ export function RoomEventRow({ event, fresh = false }: { event: RoomEvent; fresh
 
   const system = ['member.added', 'member.left', 'note'].includes(event.kind)
 
-  const color = useFaceColor(
-    avatarData(bot),
-    event.kind === 'message.bot' ? (member ?? 'Bot') : null
-  )
+  const said = event.kind === 'message.bot'
+  const color = useFaceColor(said ? bot : undefined, said ? (member ?? 'Bot') : null)
 
   if (event.kind === 'turn.started') {
     return null
@@ -150,9 +146,7 @@ export function RoomEventRow({ event, fresh = false }: { event: RoomEvent; fresh
         className={`flex gap-2 py-1 ${mine ? 'flex-row-reverse' : ''}`}
         data-testid="room-event"
       >
-        {mine ? null : (
-          <Avatar className="mt-1" image={avatarData(bot)} name={name ?? 'Bot'} size="sm" />
-        )}
+        {mine ? null : <Avatar className="mt-1" {...botFace(bot)} name={name ?? 'Bot'} size="sm" />}
         <div className="flex min-w-0 max-w-[80%] flex-col items-start">
           <div
             className={cn(
@@ -399,7 +393,7 @@ export function RoomConversation() {
                   <span className="relative mt-1 shrink-0">
                     <Avatar
                       className="hex-think"
-                      image={avatarData(bot)}
+                      {...botFace(bot)}
                       mood="working"
                       name={name}
                       size="sm"

@@ -4,10 +4,12 @@ const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches
 
 if (faces.length && !reduced) {
   let frame = 0
+  const pupils = faces.map(face => face.querySelector<SVGGElement>('.pupils'))
   const look = (x: number, y: number) => {
     frame = 0
-    for (const face of faces) {
-      const box = face.getBoundingClientRect()
+    // Read every box before writing any transform, so the frame lays out once.
+    const boxes = faces.map(face => face.getBoundingClientRect())
+    boxes.forEach((box, index) => {
       const dx = x - (box.left + box.width / 2)
       const dy = y - (box.top + box.height / 2)
       const distance = Math.hypot(dx, dy) || 1
@@ -15,9 +17,9 @@ if (faces.length && !reduced) {
       const ux = dx / distance
       const uy = dy / distance
       // The eyes are painted on a ball: they slide toward the pointer, roll with the surface, and shrink as it turns away.
-      const pupils = face.querySelector<SVGGElement>('.pupils')
-      if (pupils) pupils.style.transform = `translate(${ux * 16 * turn}px, ${uy * 16 * turn}px) rotate(${ux * 24 * turn}deg) scale(${1 - 0.18 * turn})`
-    }
+      const eyes = pupils[index]
+      if (eyes) eyes.style.transform = `translate(${ux * 16 * turn}px, ${uy * 16 * turn}px) rotate(${ux * 24 * turn}deg) scale(${1 - 0.18 * turn})`
+    })
   }
   addEventListener('pointermove', event => {
     if (frame) return

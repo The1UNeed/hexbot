@@ -164,15 +164,18 @@ function rgb(hex: string): number[] {
   return [(value >> 16) & 255, (value >> 8) & 255, value & 255]
 }
 
+/** A bot as the faces here need it; `BotFace`'s props. */
+interface FaceSourceLike {
+  face?: FaceStyle | null
+  imageUri?: string | null
+  name: string
+}
+
 /**
  * A bot bubble's fill: the plain fill washed with the face colour. A bot with
  * an uploaded picture keeps the plain fill; its colour is not known here.
  */
-export function faceWash(
-  source: { face?: FaceStyle | null; imageUri?: string | null; name: string },
-  fill: string,
-  scheme: 'dark' | 'light'
-): string {
+export function faceWash(source: FaceSourceLike, fill: string, scheme: 'dark' | 'light'): string {
   if (source.imageUri) {
     return fill
   }
@@ -183,4 +186,23 @@ export function faceWash(
   const mixed = base.map((channel, index) => Math.round(channel + (color[index]! - channel) * amount))
 
   return `#${mixed.map(channel => channel.toString(16).padStart(2, '0')).join('')}`
+}
+
+/**
+ * A message bubble's fill: ink for yours, the plain fill for other people,
+ * and the bot's wash for a bot. Rooms name the bot on every reply; a bot's own
+ * thread sends replies without one, so they belong to the thread's bot.
+ */
+export function bubbleFill(
+  item: { author?: FaceSourceLike | null; role: 'bot' | 'human' | 'user' },
+  chat: { face?: FaceSourceLike | null; room: boolean },
+  theme: { fill: string; ink: string; scheme: 'dark' | 'light' }
+): string {
+  if (item.role === 'user') {
+    return theme.ink
+  }
+
+  const author = item.role === 'bot' ? (item.author ?? (chat.room ? null : chat.face)) : null
+
+  return author ? faceWash(author, theme.fill, theme.scheme) : theme.fill
 }

@@ -22,6 +22,7 @@ export {
 export { EmptyState, type EmptyStateProps } from './EmptyState'
 export { FacePicker } from './FacePicker'
 export {
+  bubbleFill,
   FACE_COLORS,
   FACE_SHAPES,
   type FaceMood,

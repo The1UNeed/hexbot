@@ -38,16 +38,18 @@ own visual identity. Read `CLAUDE.md` for the words.
   #4C9AFF, #A3E635. The first is the accent; the rest step apart in hue.
 - Bot faces: every bot has a face, a shape and a colour with two white
   capsule eyes painted on a ball (`lib/avatar-builder.ts`; Chalk gets ink
-  eyes). A face picked in the app is saved as a picture for other clients,
-  and the web app reads that picture back into a live face; pictures saved
-  before the eyes moved are redrawn once. Other uploaded images replace the
+  eyes). A face picked in an app is stored on the bot as its shape and
+  colour (`face` in `docs/api.md`), which the web and mobile apps draw live,
+  and as a picture for clients that only show pictures. A bot whose face was
+  saved before that keeps only the picture: the web app reads it back into a
+  live face, and mobile shows the picture. Other uploaded images replace the
   face; otherwise it is derived from the bot's name. Faces wiggle on hover
   and blink at rest, and a glance moves the eyes over the ball's surface:
-  toward the rim, rolled with it, smaller as it turns away. Every shape places the ball so the eyes stay inside it.
-  Click any face, or the Hexbot mark, and it plays a random act for a few
-  seconds: typing with its two round hands, juggling, blowing a horn
-  (`components/ui/hexbot-act.tsx`, 21 acts). The install screen gives each
-  stage its own act. In a chat the face never changes size or plays acts on
+  toward the rim, rolled with it, smaller as it turns away. Every shape
+  places the ball so the eyes stay inside it. Click any face, or the Hexbot
+  mark, and it plays a random act for a few seconds: typing with its two
+  round hands, juggling, blowing a horn (`components/ui/hexbot-act.tsx`, 21
+  acts). The install screen gives each stage its own act. In a chat the face never changes size or plays acts on
   its own: a working bot's face only bobs (`hex-think`).
 - Shadows only on floating layers (menus, dialogs, the glass chrome) and the
   cards that sit on the canvas: a hairline plus one soft shadow.
@@ -143,9 +145,11 @@ the roster slides in as a drawer.
 - Transcript: a centred column capped at 52rem. Bot messages left-aligned
   in soft grey bubbles washed with the bot's face colour (14% light, 20%
   dark; plain grey for an uploaded photo), human messages right-aligned in
-  inverse bubbles (black on light, white on dark). A bot's own chat draws no faces in the
-  column (the pill says whose chat it is); a room draws the bot's face and
-  name beside its bubbles. Every bubble and card is fully rounded (20 px,
+  inverse bubbles (black on light, white on dark). Secondary text inside a
+  bot bubble, such as a name or a quote, is #5C5C5C light and #BEBEBE dark,
+  4.5:1 or better on every wash; links are underlined in the text colour. A
+  bot's own chat draws no faces in the column (the pill says whose chat it
+  is); a room draws the bot's face and name beside its bubbles. Every bubble and card is fully rounded (20 px,
   a pill when it is one line) on a shared left edge; bubbles and cards from
   the same side in a row stack 4 px apart, and a new speaker starts 12 px
   lower. Each message a bot finishes is its own bubble, so a turn that

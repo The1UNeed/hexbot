@@ -6,7 +6,7 @@ import { useShallow } from 'zustand/react/shallow'
 import { Avatar } from '../../components/ui/avatar'
 import { Button } from '../../components/ui/button'
 import { Input } from '../../components/ui/input'
-import { avatarSrc } from '../../lib/avatar-builder'
+import { botFace } from '../../lib/avatar-builder'
 import { cn } from '../../lib/cn'
 import { toMillis } from '../../lib/time'
 import type { Bot, Section } from '../../lib/types'
@@ -341,7 +341,7 @@ function FilterChip({
       onClick={onClick}
       type="button"
     >
-      {bot ? <Avatar image={avatarSrc(bot.avatar)} name={bot.display_name} size="xs" /> : null}
+      {bot ? <Avatar {...botFace(bot)} name={bot.display_name} size="xs" /> : null}
       {children}
     </button>
   )
@@ -368,7 +368,7 @@ function ArchivedRow({
 
   return (
     <li className="group relative flex min-h-[56px] items-center gap-3 py-2 pr-4 pl-3">
-      <Avatar image={avatarSrc(bot?.avatar)} name={botName} size="sm" />
+      <Avatar {...botFace(bot)} name={botName} size="sm" />
       <div className="min-w-0 flex-1">
         <p className="truncate font-medium">
           <Highlight query={query} text={section.title} />

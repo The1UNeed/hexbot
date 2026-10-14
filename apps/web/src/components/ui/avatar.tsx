@@ -6,9 +6,9 @@ import {
   type AvatarStyle,
   type Ball,
   ballTransform,
+  botFace,
   eyeRects,
   type FaceMood,
-  type FaceRead,
   faceReadNow,
   readFace,
   resolveStyle,
@@ -95,7 +95,7 @@ export function Face({
 }
 
 /** The face drawn in a bot's picture once read, `null` for a photo, `undefined` while reading. */
-export function useFaceRead(image?: null | string): FaceRead | null | undefined {
+export function useFaceRead(image?: null | string): AvatarStyle | null | undefined {
   const [, settle] = useReducer((count: number) => count + 1, 0)
   const read = image ? faceReadNow(image) : null
 
@@ -120,12 +120,24 @@ export function useFaceRead(image?: null | string): FaceRead | null | undefined 
   return read
 }
 
-/** The colour of a bot's face, or `null` for a photo or no bot. */
-export function useFaceColor(image: null | string | undefined, name: null | string): null | string {
+/**
+ * The colour of a bot's face: the one picked in an app, else the one read
+ * from its picture, else the one its name gives. `null` for a photo, or with
+ * neither a bot nor a name.
+ */
+export function useFaceColor(
+  bot: Parameters<typeof botFace>[0],
+  name: null | string
+): null | string {
+  const { image, style } = botFace(bot)
   const read = useFaceRead(image)
 
+  if (style) {
+    return resolveStyle(style).color.value
+  }
+
   if (image) {
-    return read ? resolveStyle(read.style).color.value : null
+    return read ? resolveStyle(read).color.value : null
   }
 
   return name ? resolveStyle(styleForName(name)).color.value : null
@@ -138,7 +150,7 @@ export function useFaceColor(image: null | string | undefined, name: null | stri
 export function Avatar({ act, className, image, mood, name, size, style }: AvatarProps) {
   const playing = useAct(act)
   const read = useFaceRead(image)
-  const face = read?.style ?? style ?? styleForName(name)
+  const face = read ?? style ?? styleForName(name)
   const picture = image && !read ? image : null
 
   return (

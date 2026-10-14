@@ -9,10 +9,12 @@ import {
   avatarSvg,
   avatarSvgDataUrl,
   BALL,
+  botFace,
   EYE_GAP,
   eyeRects,
   matchFace
 } from '../lib/avatar-builder'
+import tokens from '../styles/tokens.css?raw'
 
 /** A 100×100 picture filled with `hex`, with `dots` painted in other colours. */
 function picture(hex: string, dots: [number, number, string][] = []) {
@@ -50,22 +52,16 @@ describe('avatar builder', () => {
       side => [50 + side * (EYE_GAP / 2), round.ball.cy, '#ffffff'] as [number, number, string]
     )
 
-    expect(matchFace(picture('#f97316', eyes), masks)).toEqual({
-      legacy: false,
-      style: { color: 'orange', shape: 'round' }
-    })
+    expect(matchFace(picture('#f97316', eyes), masks)).toEqual({ color: 'orange', shape: 'round' })
   })
 
-  it('knows a flat face from before the eyes moved', () => {
+  it('reads a flat face from before the eyes moved, so it renders live too', () => {
     const pixels = picture('#3b82f6', [
       [41, 48, '#151517'],
       [59, 48, '#151517']
     ])
 
-    expect(matchFace(pixels, masks)).toEqual({
-      legacy: true,
-      style: { color: 'blue', shape: 'round' }
-    })
+    expect(matchFace(pixels, masks)).toEqual({ color: 'blue', shape: 'round' })
   })
 
   it('leaves photos and other uploads alone', () => {
@@ -103,6 +99,51 @@ describe('avatar builder', () => {
       expect(left!.rx).toBe(Math.min(left!.width, left!.height) / 2)
       expect(left!.y + left!.height / 2).toBeLessThan(BALL / 2)
     }
+  })
+
+  it('keeps both eyes inside the ball at every gaze pose in tokens.css', () => {
+    const poses = [
+      ...tokens.matchAll(
+        /translate\((-?[\d.]+)px, (-?[\d.]+)px\) rotate\((-?[\d.]+)deg\) scale\(([\d.]+)\)/g
+      )
+    ].map(match => match.slice(1, 5).map(Number) as [number, number, number, number])
+
+    // The three wander poses and a look each way.
+    expect(poses.length).toBeGreaterThanOrEqual(5)
+
+    for (const [tx, ty, degrees, scale] of poses) {
+      const turn = (degrees * Math.PI) / 180
+
+      for (const mood of ['happy', 'idle', 'listening', 'sleeping', 'working'] as const) {
+        for (const eye of eyeRects(mood)) {
+          // The capsule's bounding corners, a little outside the capsule itself.
+          for (const [x, y] of [
+            [eye.x, eye.y],
+            [eye.x + eye.width, eye.y],
+            [eye.x, eye.y + eye.height],
+            [eye.x + eye.width, eye.y + eye.height]
+          ] as const) {
+            // CSS applies scale, then rotate, then translate, about the ball's centre.
+            const px = tx + scale * (x * Math.cos(turn) - y * Math.sin(turn))
+            const py = ty + scale * (x * Math.sin(turn) + y * Math.cos(turn))
+
+            expect(Math.hypot(px, py), `${mood} at ${degrees}deg`).toBeLessThan(BALL)
+          }
+        }
+      }
+    }
+  })
+
+  it('draws the face picked in an app live, and the picture only when there is none', () => {
+    const avatar = { data: 'data:image/png;base64,iVBORw0KGgo=', mime: 'image/png' }
+    const picked = { avatar, face: { color: 'orange', shape: 'pill' } }
+
+    expect(botFace(picked)).toEqual({ image: null, style: { color: 'orange', shape: 'pill' } })
+    expect(botFace({ avatar, face: null })).toEqual({ image: avatar.data })
+    expect(botFace({ avatar: null })).toEqual({ image: null })
+    expect(botFace(undefined)).toEqual({ image: null })
+    // One result per bot, so a large picture is not rebuilt on every render.
+    expect(botFace(picked)).toBe(botFace(picked))
   })
 
   it('offers every shape and colour as a pressable button', () => {

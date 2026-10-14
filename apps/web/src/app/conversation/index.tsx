@@ -22,7 +22,7 @@ import { Menu } from '../../components/ui/menu'
 import { StatusDot } from '../../components/ui/status-dot'
 import { Title } from '../../components/ui/title'
 import { approvalRespond, attachFile, promptSubmit, sessionInterrupt } from '../../lib/api'
-import { avatarSrc } from '../../lib/avatar-builder'
+import { botFace } from '../../lib/avatar-builder'
 import { getBridge } from '../../lib/bridge'
 import { cn } from '../../lib/cn'
 import { toMillis } from '../../lib/time'
@@ -99,8 +99,6 @@ export function ConnectedToolsNotice({ sectionId }: { sectionId: string }) {
   )
 }
 
-const avatarData = (bot?: Bot) => avatarSrc(bot?.avatar)
-
 const dayKey = (time: number) => new Date(toMillis(time)).toDateString()
 
 /** "Today 9:13 PM", "Yesterday 4:02 PM", or "12 Aug 2:10 PM". */
@@ -169,11 +167,18 @@ export const bubbleClass =
   'min-w-0 max-w-full rounded-[20px] bg-bubble px-3.5 py-2 leading-[1.5] break-words'
 export const userBubbleClass = cn(bubbleClass, 'bg-foreground text-background')
 
-/** A bot bubble washed with its face colour; plain grey for a photo. */
-export function botBubbleStyle(color: null | string): CSSProperties | undefined {
-  return color
-    ? { backgroundColor: `color-mix(in srgb, ${color} var(--hex-bot-wash), var(--hex-bubble))` }
-    : undefined
+/**
+ * A bot bubble washed with its face colour, plain grey for a photo. Secondary
+ * text inside (names, quotes, code labels) takes `--hex-bot-muted`, which
+ * stays readable on every wash.
+ */
+export function botBubbleStyle(color: null | string): CSSProperties {
+  return {
+    '--hex-muted-text': 'var(--hex-bot-muted)',
+    ...(color
+      ? { backgroundColor: `color-mix(in srgb, ${color} var(--hex-bot-wash), var(--hex-bubble))` }
+      : {})
+  } as CSSProperties
 }
 
 /** The transcript column: centred and capped so lines stay readable on wide windows. */
@@ -417,7 +422,7 @@ export function MessageRow({
 }) {
   const assistant = message.role === 'assistant'
   const settled = useRef<number>(undefined)
-  const color = useFaceColor(avatarData(bot), bot ? bot.display_name : null)
+  const color = useFaceColor(bot, bot ? bot.display_name : null)
 
   if (message.error) {
     return (
@@ -526,7 +531,7 @@ export function MessageRow({
         (bubbles.length > 0 || visuals.length > 0 || message.streaming) ? (
           <Avatar
             className={cn('mt-1', message.streaming && 'hex-think')}
-            image={avatarData(bot)}
+            {...botFace(bot)}
             mood={message.streaming ? 'working' : undefined}
             name={name}
             size="sm"
@@ -551,7 +556,7 @@ export function MessageRow({
                 showFace ? undefined : (
                   <Avatar
                     className="hex-think"
-                    image={avatarData(bot)}
+                    {...botFace(bot)}
                     mood="working"
                     name={name}
                     size="sm"
@@ -576,9 +581,7 @@ export function MessageRow({
 export function CardRow({ bot, children }: { bot?: Bot; children: React.ReactNode }) {
   return (
     <div className="flex gap-2 pt-1">
-      {bot ? (
-        <Avatar className="mt-1" image={avatarData(bot)} name={bot.display_name} size="sm" />
-      ) : null}
+      {bot ? <Avatar className="mt-1" {...botFace(bot)} name={bot.display_name} size="sm" /> : null}
       {children}
     </div>
   )
@@ -1149,7 +1152,7 @@ function BotConversation() {
       >
         {unavailable === params.section && !liveId ? (
           <div className="hex-rise grid h-full place-content-center justify-items-center gap-4 p-8 text-center">
-            <Avatar image={avatarData(bot)} name={name} size="xl" />
+            <Avatar {...botFace(bot)} name={name} size="xl" />
             <div>
               <h2 className="text-[length:var(--text-title)] font-semibold">
                 This conversation is no longer available
@@ -1178,7 +1181,7 @@ function BotConversation() {
           </div>
         ) : messages.length === 0 && clarifies.length === 0 ? (
           <div className="hex-rise grid h-full place-content-center justify-items-center gap-6 p-8 text-center">
-            <Avatar image={avatarData(bot)} name={name} size="xl" />
+            <Avatar {...botFace(bot)} name={name} size="xl" />
             <div>
               <h2 className="text-[22px] font-semibold tracking-[-0.01em]">{bot?.display_name}</h2>
               {bot?.title || bot?.description ? (
@@ -1268,7 +1271,7 @@ function BotConversation() {
         />
         {editing ? (
           <div className="hex-glass hex-no-drag pointer-events-auto flex h-9 max-w-full min-w-0 items-center gap-2 rounded-full pr-1.5 pl-1.5">
-            <Avatar image={avatarData(bot)} name={name} size="sm" />
+            <Avatar {...botFace(bot)} name={name} size="sm" />
             <Input
               aria-label="Section title"
               autoFocus
@@ -1304,7 +1307,7 @@ function BotConversation() {
             <span className="relative shrink-0">
               <Avatar
                 className={cn(status === 'working' && 'hex-think')}
-                image={avatarData(bot)}
+                {...botFace(bot)}
                 mood={status === 'working' ? 'working' : undefined}
                 name={name}
                 size="sm"

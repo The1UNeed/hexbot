@@ -47,6 +47,8 @@
   --hex-bubble: #f0f0f2;
   /* How much of a bot's face colour washes its bubbles. */
   --hex-bot-wash: 14%;
+  /* Secondary text inside a washed bubble: 4.5:1 or better on every face colour. */
+  --hex-bot-muted: #5c5c5c;
   --hex-glass-bg: rgb(255 255 255 / 0.58);
   --hex-glass-strong: rgb(250 250 252 / 0.8);
   --hex-glass-glow: rgb(255 255 255 / 0.7);
@@ -105,6 +107,7 @@
     --hex-canvas: #09090a;
     --hex-bubble: #232326;
     --hex-bot-wash: 20%;
+    --hex-bot-muted: #bebebe;
     --hex-glass-bg: rgb(28 28 31 / 0.6);
     --hex-glass-strong: rgb(24 24 27 / 0.82);
     --hex-glass-glow: rgb(255 255 255 / 0.2);
@@ -146,6 +149,8 @@
   --hex-bubble: #f0f0f2;
   /* How much of a bot's face colour washes its bubbles. */
   --hex-bot-wash: 14%;
+  /* Secondary text inside a washed bubble: 4.5:1 or better on every face colour. */
+  --hex-bot-muted: #5c5c5c;
   --hex-glass-bg: rgb(255 255 255 / 0.58);
   --hex-glass-strong: rgb(250 250 252 / 0.8);
   --hex-glass-glow: rgb(255 255 255 / 0.7);
@@ -185,6 +190,7 @@
   --hex-canvas: #09090a;
   --hex-bubble: #232326;
   --hex-bot-wash: 20%;
+  --hex-bot-muted: #bebebe;
   --hex-glass-bg: rgb(28 28 31 / 0.6);
   --hex-glass-strong: rgb(24 24 27 / 0.82);
   --hex-glass-glow: rgb(255 255 255 / 0.2);

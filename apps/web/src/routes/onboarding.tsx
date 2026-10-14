@@ -1070,6 +1070,7 @@ function BotStep({
       const result = await botsCreate({
         ...(avatar ? { avatar } : {}),
         description: description.trim(),
+        face: style,
         display_name: displayName.trim(),
         model,
         name,

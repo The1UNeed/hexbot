@@ -4,7 +4,7 @@ import { Fragment, useEffect, useRef, useState } from 'react'
 import { Avatar } from '../../components/ui/avatar'
 import { SkeletonLines } from '../../components/ui/skeleton'
 import { sectionsThread } from '../../lib/api'
-import { avatarSrc } from '../../lib/avatar-builder'
+import { botFace } from '../../lib/avatar-builder'
 import { cn } from '../../lib/cn'
 import type { Bot, Message } from '../../lib/types'
 import { useBot } from '../../stores/bots'
@@ -74,7 +74,7 @@ function ThreadMessage({ bot, message, name }: { bot?: Bot; message: Message; na
             reply ? 'hex-look-left' : 'hex-look-right',
             message.streaming && 'hex-think'
           )}
-          image={avatarSrc(bot?.avatar)}
+          {...botFace(bot)}
           mood={message.streaming ? 'working' : undefined}
           name={name}
           size="sm"
@@ -271,18 +271,8 @@ export function ThreadPanel({ thread }: { thread: ThreadRef }): React.JSX.Elemen
     <div className="flex h-full min-h-0 flex-col" data-testid="thread-panel">
       <header className="hex-drag flex h-11 shrink-0 items-center gap-2 px-3">
         <span className="flex shrink-0 items-center gap-1">
-          <Avatar
-            className="hex-look-right"
-            image={avatarSrc(sender?.avatar)}
-            name={senderName}
-            size="sm"
-          />
-          <Avatar
-            className="hex-look-left"
-            image={avatarSrc(receiver?.avatar)}
-            name={receiverName}
-            size="sm"
-          />
+          <Avatar className="hex-look-right" {...botFace(sender)} name={senderName} size="sm" />
+          <Avatar className="hex-look-left" {...botFace(receiver)} name={receiverName} size="sm" />
         </span>
         <h2 className="hex-no-drag min-w-0 flex-1 truncate text-[length:var(--text-secondary)] font-semibold">
           {senderName} and {receiverName}

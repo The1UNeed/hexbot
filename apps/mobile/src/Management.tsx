@@ -595,7 +595,8 @@ export function Management({
         <>
           <View style={[styles.identity, { backgroundColor: theme.surface }]}>
             <BotFace
-              imageUri={avatarSrc(bot?.avatar)}
+              face={bot?.face}
+              imageUri={bot?.face ? null : avatarSrc(bot?.avatar)}
               name={str(values.display_name) || str(values.name) || 'New bot'}
               size={88}
             />

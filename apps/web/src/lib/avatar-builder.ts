@@ -250,11 +250,32 @@ export function avatarSrc(avatar?: null | { data: string; mime: string }): null 
   return avatar.data.startsWith('data:') ? avatar.data : `data:${avatar.mime};base64,${avatar.data}`
 }
 
-/** A face read back from a profile picture this module drew. */
-export interface FaceRead {
-  /** Drawn before the eyes moved onto the ball: flat, with dark eyes. */
-  legacy: boolean
-  style: AvatarStyle
+const shown = new WeakMap<object, { image: null | string; style?: AvatarStyle }>()
+
+/**
+ * What to draw for a bot: the face picked in an app, live, when the daemon
+ * stores one (`bot.face`); otherwise its picture, which `Avatar` still reads
+ * back into a live face when this module drew it. One result per bot object,
+ * so a large picture is not rebuilt or looked up afresh on every render.
+ */
+export function botFace(
+  bot?: null | {
+    avatar?: null | { data: string; mime: string }
+    face?: AvatarStyle | null
+  }
+): { image: null | string; style?: AvatarStyle } {
+  if (!bot) {
+    return { image: null }
+  }
+
+  let face = shown.get(bot)
+
+  if (!face) {
+    face = bot.face ? { image: null, style: bot.face } : { image: avatarSrc(bot.avatar) }
+    shown.set(bot, face)
+  }
+
+  return face
 }
 
 /** Sampling size; the 100×100 face space, one pixel per unit. */
@@ -286,13 +307,14 @@ function near(rgba: number[], hex: string, tolerance: number): boolean {
 
 /**
  * Matches a 100×100 RGBA picture against every colour and shape, given each
- * shape's mask drawn at the same size. A photo or any other upload matches
- * nothing.
+ * shape's mask drawn at the same size, with its eyes where this module puts
+ * them now or where it put them before they moved onto the ball. A photo or
+ * any other upload matches nothing.
  */
 export function matchFace(
   pixels: Uint8ClampedArray,
   masks: Record<string, Uint8ClampedArray>
-): FaceRead | null {
+): AvatarStyle | null {
   const body = pixel(pixels, ...BODY)
   const color = AVATAR_COLORS.find(item => near(body, item.value, 3))
 
@@ -337,22 +359,18 @@ export function matchFace(
     side => [50 + side * (EYE_GAP / 2) * scale, ball.cy + EYE_MOODS.idle.dy * scale] as const
   )
 
-  if (eyes.every(([x, y]) => near(pixel(pixels, x, y), color.eyes ?? EYES, 24))) {
-    return { legacy: false, style }
-  }
+  const drawn =
+    eyes.every(([x, y]) => near(pixel(pixels, x, y), color.eyes ?? EYES, 24)) ||
+    LEGACY_EYES.every(([x, y]) => near(pixel(pixels, x, y), INK, 24))
 
-  if (LEGACY_EYES.every(([x, y]) => near(pixel(pixels, x, y), INK, 24))) {
-    return { legacy: true, style }
-  }
-
-  return null
+  return drawn ? style : null
 }
 
-const reads = new Map<string, FaceRead | null>()
-const reading = new Map<string, Promise<FaceRead | null>>()
+const reads = new Map<string, AvatarStyle | null>()
+const reading = new Map<string, Promise<AvatarStyle | null>>()
 
 /** What `readFace` found for `src`, or `undefined` until it has finished. */
-export function faceReadNow(src: string): FaceRead | null | undefined {
+export function faceReadNow(src: string): AvatarStyle | null | undefined {
   return reads.get(src)
 }
 
@@ -361,7 +379,7 @@ export function faceReadNow(src: string): FaceRead | null | undefined {
  * generated face renders live instead of as a still picture. Photos and other
  * uploads give `null`, as does anywhere without a canvas.
  */
-export function readFace(src: string): Promise<FaceRead | null> {
+export function readFace(src: string): Promise<AvatarStyle | null> {
   const known = reading.get(src)
 
   if (known) {
@@ -381,7 +399,7 @@ export function readFace(src: string): Promise<FaceRead | null> {
   return read
 }
 
-function samplePicture(src: string): Promise<FaceRead | null> {
+function samplePicture(src: string): Promise<AvatarStyle | null> {
   if (typeof document === 'undefined') {
     return Promise.resolve(null)
   }
