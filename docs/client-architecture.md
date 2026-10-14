@@ -83,7 +83,7 @@ Only the transcript store is hot; everything else is small.
 | `thinking.delta` | replace the daemon's status line (a wait notice); spinner copy is dropped |
 | `tool.start` / `tool.complete` | add or resolve a tool call in the current assistant message |
 | `approval.request` | push an approval card (session scoped) and notify |
-| `status.update` | header status line |
+| `status.update` | header status line; `checking` replaces the live status with "Checking this step" until an empty `checking` line |
 | `session.info` | update section's model and provider chips |
 | `session.usage` | usage badge |
 | `error` | inline error row |

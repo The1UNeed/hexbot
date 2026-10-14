@@ -98,18 +98,60 @@ more freedom and more capability than a hosted product can offer.
 
 - Modes: Auto (default, `smart` in config), Manual, Bypass (`off` in
   config). Overridable per bot and per room. The model follows Codex: the
-  OS sandbox is the boundary, not a judging model and not pattern matching.
-  Pi itself has no approval modes; Bypass is plain Pi.
+  OS sandbox is the boundary, not pattern matching. In Auto, a step that
+  leaves the sandbox goes to a reviewer first, like Codex's auto-review and
+  Claude Code's auto mode. Pi itself has no approval modes; Bypass is plain Pi.
+- Auto trades containment for fewer prompts, on purpose. Inside the sandbox
+  the OS decides; outside it, internet access and writes outside the
+  workspace are decided by a model review on the section's model, which can
+  be a small local one. The step text the reviewer judges (command, reason,
+  file content, tool arguments) is written by the bot and can carry
+  instructions injected by a page or file the bot read, so a reviewer can be
+  talked into allowing a step. That is a judgment, not containment; Manual
+  keeps the user in front of every such step.
 - Auto: shell commands run in a sandbox with no network that can write only
   inside the workspace (the bot's working directory, its artifact and
   attachment folders, temp folders); shell profiles and login items stay
   read-only even there. A command that needs the internet or a write outside
-  the workspace sets `full_access` with a one-sentence `reason`, and the user
-  sees the command and the reason before it runs with the sandbox's base
-  layer only (credential files still unreadable). File tools change the
-  workspace without asking and ask outside it. Code execution runs in the
-  same workspace sandbox without asking. Browser page scripts and absolute
-  cron script paths ask.
+  the workspace sets `full_access` with a one-sentence `reason`, and runs
+  with the sandbox's base layer only (credential files still unreadable).
+  File tools change the workspace without asking. Code execution runs in the
+  same workspace sandbox without asking. Absolute cron script paths ask.
+  File changes to shell profiles and login items use user approval rather than
+  model review. Full-access shell commands can change them after model review,
+  including without a card when the owner requested that exact change.
+- Auto's reviewer (`runtime_review.rs`): a full-access command, a file change
+  outside the workspace, a connected tool that changes something, and a
+  browser page script go to a tool-free one-shot call on the section's model.
+  It reads the owner's visible messages in the section and their room
+  messages, newest first, plus the step's whole input, working directory,
+  checked file destination and overwrite status. It loads no project instruction files,
+  skills or tools. Assistant text, tool output and bot-added messages stay out.
+  Pi starts in an empty directory and explicitly excludes `APPEND_SYSTEM.md`.
+  ACP reviewers also use an isolated temporary home and Copilot/XDG folders,
+  keeping only explicit GitHub-token authentication. Stored CLI login is not
+  imported. Only `--acp` and `--stdio` are accepted as configured ACP arguments.
+  Extra arguments, missing auth or rejected isolation flags fall back to a
+  card; ordinary ACP sessions keep their login behavior.
+  A step over 20,000 characters asks without review, whatever the tool.
+  Owner messages fill the rest of an 80,000-character request, newest first
+  and never clipped. When older ones are left out (or a stored row is too
+  large to load), the request says so and only a low risk `allow` runs: a
+  long chat's lost restriction could forbid a medium-risk step, so it asks.
+  History-read failures also ask. Each section runs at most two reviews at
+  once, and shows "Checking this step" while one runs. The final check
+  retries once when the database or reply slot is briefly busy. Reported reviewer usage counts toward section,
+  room and daily totals. Changed owner messages or pending owner prompts and steers
+  invalidate automatic approval when the complete evidence is rechecked.
+  Copilot ACP reports zero token usage and cost, so its reviews add no measured
+  usage to budgets or totals.
+  A low or medium risk `allow` runs the step; anything else, including a failure,
+  a timeout (60 s) or unparseable output, shows the card with the reviewer's sentence. Those
+  cards offer Approve and Deny only, and reviewed steps ignore section grants
+  from Manual, so one approval never covers the next step. Changing the mode
+  or working directory during review blocks the step. File execution also
+  checks the resolved destination and reviewed overwrite status again.
+  Only visible sections are reviewed; the rest still refuse.
 - Manual: the shell sandbox is read-only, so a command that writes or
   reaches the network sets `full_access` and asks. Every file change and
   every code run asks. Reads are free in both modes except credential files,
@@ -125,20 +167,24 @@ more freedom and more capability than a hosted product can offer.
   change anything the daemon's OS user can, including provider keys.
 - Without an OS sandbox (Linux where bubblewrap fails its startup probe)
   Hexbot warns, Settings shows a notice, Manual and Auto ask before every
-  shell command and code run, and scheduled scripts refuse to run.
+  shell command and code run, including full-access commands, and scheduled
+  scripts refuse to run. Model review cannot replace this user approval;
+  an explicit section grant can cover later shell requests.
 - Connected tools in new sections use Pi's built-in MCP through codemode.
   The section freezes server namespaces and tool declarations. Manual asks for
-  every connected-tool call. Auto asks unless the server marks the tool read-only;
-  Allow in this section covers
-  that server, and Bypass never asks. Every nested codemode call uses the same
-  approval gate. Removal and disable revoke access immediately, including in Bypass.
+  every connected-tool call, and Allow in this section covers that server.
+  Auto runs read-only tools freely and reviews other calls individually;
+  their cards offer Approve and Deny only. Bypass never asks. Every nested
+  codemode call uses the same approval gate. Removal and disable revoke access
+  immediately, including in Bypass.
   Changed credentials block old clients until they reconnect at the next prompt.
   Saved sections keep their existing Rust bridge tools.
 - Approvals render inline in the transcript with Approve, Allow in this
-  section, and Deny. "Allow in this section" quiets the same kind of request
-  for the rest of that section; nothing is saved across sections. Requests
-  the daemon raises itself (code runs, browser scripts, cron) offer Approve
-  and Deny. Native notifications for approvals and mentions.
+  section, and Deny when a section grant is available. "Allow in this section"
+  quiets the same kind of Manual or unreviewed request for the running agent
+  process; nothing is saved across sections. Reviewed Auto cards, incomplete
+  file scans and requests the daemon raises itself (code runs, browser scripts,
+  cron) offer Approve and Deny only. Native notifications for approvals and mentions.
 - New bots get files, web search, browser and terminal (terminal gated by
   approvals). Computer use is off until enabled. Self-authored skills are on,
   with a transcript notice. Bundled and user-shared skills form one library,
