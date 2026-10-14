@@ -33,6 +33,7 @@ import {
   useSection
 } from '../../stores/sections'
 import {
+  type Transcript,
   transcriptActions,
   type TranscriptMessage,
   useTranscript,
@@ -557,6 +558,42 @@ export function MessageRow({
       </article>
       {assistant ? <AskingRow message={message} sender={bot?.name ?? null} /> : null}
     </>
+  )
+}
+
+/**
+ * "Checking this step" at the foot of a bot's chat while Auto mode still
+ * reviews a step and no message streams: an approval card from an
+ * overlapping review ended the message that showed it. The line opens into
+ * that message's steps.
+ */
+export function CheckingRow({ bot, transcript }: { bot?: Bot; transcript?: Transcript }) {
+  const checking = transcript?.streamingMessageId ? undefined : transcript?.checking
+  const message = checking && transcript?.messages.findLast(item => item.role === 'assistant')
+
+  if (!checking || !message) {
+    return null
+  }
+
+  const name = bot?.display_name ?? 'Bot'
+
+  return (
+    <div className="flex pt-1">
+      <LiveStatus
+        computer
+        face={
+          <Avatar
+            className="hex-think"
+            {...botFace(bot)}
+            mood="working"
+            name={name}
+            size="sm"
+          />
+        }
+        message={{ ...message, checking }}
+        name={name}
+      />
+    </div>
   )
 }
 
@@ -1201,6 +1238,7 @@ function BotConversation() {
                 </div>
               )
             })}
+            <CheckingRow bot={bot} transcript={transcript} />
             {stoppedHere ? (
               <StoppedCard
                 message={stoppedHere}

@@ -413,7 +413,7 @@ export function RoomConversation() {
                     {message ? <MemoryMarks message={message} /> : null}
                     {/* The live status sits at the foot of the turn until it is done. */}
                     {message ? (
-                      <WorkStatus message={message} name={name} />
+                      <WorkStatus checking={transcript?.checking} message={message} name={name} />
                     ) : (
                       <Thinking name={name} />
                     )}

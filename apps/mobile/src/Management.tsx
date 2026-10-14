@@ -75,7 +75,7 @@ const modes = [
 const modeHelp: Record<string, string> = {
   inherit: 'Uses the approval setting of this daemon.',
   smart:
-    'Works freely in the workspace. Commands run in a sandbox with no network; anything outside the workspace asks first.',
+    "Works freely in the workspace. Steps outside it are checked by the bot's model; only risky ones ask first.",
   manual: 'Reads freely. Every file change and command asks first.',
   off: 'No prompts and no sandbox.'
 }
@@ -84,7 +84,7 @@ const TOOLS: { key: string; label: string; description: string }[] = [
   {
     key: 'terminal',
     label: 'Terminal',
-    description: 'Run commands in a sandbox. Leaving it asks first, except in Bypass.'
+    description: 'Run commands in a sandbox. Leaving it is checked first, except in Bypass.'
   },
   { key: 'files', label: 'Files', description: 'Read, write and search files in the workspace.' },
   {

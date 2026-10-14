@@ -51,9 +51,40 @@ redaction, and pattern checks do not provide equivalent containment.
 - Manual uses a read-only shell/code sandbox and asks before file changes.
   Approved `execute_code` runs can write their own output folder in the Hexbot
   home. Manual scheduled scripts cannot write artifacts or workspace files.
+- In Auto, a `full_access` command, a file change outside the workspace, a
+  connected tool that changes something, and a browser page script go to a
+  review on the section's model before they run. It reads the owner's most
+  recent messages, whole, and the whole step, including the checked file
+  destination and overwrite status. It loads no project instruction files,
+  skills or tools, and sees no tool output or bot replies. A step over 20,000
+  characters, or evidence that cannot be read, asks. When older owner messages
+  do not fit, the reviewer is told, and only a step it rates low risk runs. Changed owner evidence or queued owner prompts and steers
+  invalidate automatic approval when the evidence is rechecked. A step it rates
+  low or medium risk runs without asking; anything else, and any review that
+  fails or times out, asks the user for that step only. Allow for now grants do
+  not cover reviewed steps. A mode or working-directory change during review
+  blocks execution; file execution rechecks the destination and reviewed
+  overwrite status. The review is a model judgment, not
+  containment: a step it allows has the same access as one the user approves.
+- So in Auto, internet access and writes outside the workspace are decided by
+  a model, not the sandbox, and a small or local section model judges less
+  well. The step the reviewer reads (command, reason, file content, tool
+  arguments) is written by the bot and can carry instructions injected by a
+  web page or file the bot read; such text can talk a reviewer into allowing
+  a harmful step. Choose Manual where that risk is not acceptable.
 - An approved `full_access` shell command leaves the workspace restrictions.
   The base credential-path and Hexbot-home protections still apply. Review both
   the command and its reason before granting more access.
+- File-tool changes to shell profiles and login items use user approval
+  rather than model review, subject to an explicit Allow for now. Full-access
+  shell commands use the reviewer's system-configuration policy and can
+  change these files without a card when the owner requested that exact change.
+- Reviewers run in a fresh empty working directory and exclude
+  `APPEND_SYSTEM.md`. ACP reviewers also isolate their home, Copilot settings
+  and XDG directories, retaining explicit GitHub tokens rather than stored
+  CLI login or configuration. Configured ACP arguments beyond `--acp` and
+  `--stdio`, missing auth or incompatible isolation flags make review
+  unavailable and produce a user card.
 - Bypass removes prompts and sandboxing and is available only to the admin.
 
 macOS also matches `.git` paths and secret filenames created during a command. It
@@ -130,8 +161,10 @@ ask: they stop with the same explanation.
 
 macOS fails closed when its sandbox cannot start. On Linux, if bubblewrap is
 missing or unusable, Hexbot reports the missing isolation and Auto and Manual
-ask before every shell command and code run. Scheduled scripts then run only
-in Bypass. Approval in this state does not restore OS containment.
+require user approval for shell commands and code runs, including full-access
+commands. Model review cannot replace that approval; an explicit Allow for now
+can cover later shell requests. Scheduled scripts refuse to run in every mode.
+Approval in this state does not restore OS containment.
 
 The policy is shared by Rust and the Pi extension through
 `backend/pi-runtime/credential-policy.json`; parity tests check both builders.

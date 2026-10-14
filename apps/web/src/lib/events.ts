@@ -11,7 +11,7 @@
  *   tool.start/complete    add or resolve a tool call in the current message
  *   approval.request       push an approval card (session scoped) and notify
  *   clarify.request/expire push a question card the bot is waiting on; expire freezes it
- *   status.update          header status line
+ *   status.update          header status line; `checking` marks the live message
  *   session.info           section model and provider chips
  *   session.usage          usage badge
  *   error                  inline error row

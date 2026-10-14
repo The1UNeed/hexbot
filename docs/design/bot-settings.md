@@ -71,7 +71,7 @@ fourth alone:
 | --- | --- | --- |
 | Idle | Nowhere in the chat. The roster row shows the last-active time. | |
 | Working | The existing status line at the foot of the turn. | Stop |
-| Needs you | The existing approval card, the "Waiting on you" room banner. | Approve, Allow in this section, Deny |
+| Needs you | The existing approval card, the "Waiting on you" room banner. | Approve, Deny; Allow for now when offered for a Manual or unreviewed request |
 | Stopped | A new inline card at the point of failure: red dot, "<bot> stopped", why, which task did not finish. | Fix <connector>, Retry |
 
 The Stopped card stays in the transcript after the fix, marked with the

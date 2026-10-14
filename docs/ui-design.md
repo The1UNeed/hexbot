@@ -179,7 +179,8 @@ the roster slides in as a drawer.
   once finished. The Computer tab in the panel still
   lists every call.
 - Approvals: an inline card with the command or action in monospace, the
-  reason, and three buttons: Approve, Allow for now, Deny. Requests
+  reason, and Approve and Deny buttons. Manual and unreviewed cards can also
+  offer Allow for now. Reviewed Auto steps never offer it. Requests
   raised by the daemon (code runs, browser scripts, cron) show Approve and
   Deny only. The card stays in the transcript after the decision, marked
   with the outcome.

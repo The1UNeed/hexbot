@@ -27,6 +27,8 @@ use tokio::sync::{Mutex as AsyncMutex, watch};
 mod attachments;
 #[path = "runtime_delegation.rs"]
 mod delegation;
+#[path = "runtime_review.rs"]
+mod review;
 
 #[cfg(test)]
 #[path = "runtime_lifecycle_tests.rs"]
@@ -121,6 +123,11 @@ struct Live {
     /// It is saved only when the extension adopts it, never on offer: Pi may
     /// discard it, and a reopened section must keep the prompt Pi used.
     proposal: Mutex<Option<(String, String, Vec<Value>)>>,
+    /// Auto mode reviews running for this section; see `review::REVIEWS`.
+    reviews: tokio::sync::Semaphore,
+    /// Reviews running or waiting their turn; "Checking this step" shows
+    /// while this is above zero.
+    reviewing: Mutex<usize>,
 }
 /// The part of a section's options that picks its model.
 fn model_choice(options: &Value) -> Value {
@@ -892,6 +899,8 @@ impl Runtime {
             compaction,
             usage_sent: AtomicU64::new(0),
             proposal: Mutex::new(None),
+            reviews: tokio::sync::Semaphore::new(review::REVIEWS),
+            reviewing: Mutex::new(0),
         });
         {
             let mut sessions = self.sessions.lock().unwrap();
@@ -1369,6 +1378,7 @@ impl Runtime {
         let mut command = json!({"type":"prompt","message":text});
         let sent;
         let dropped;
+        let intent;
         {
             let _gate = s.event_gate.lock().unwrap();
             let mut state = s.state.lock().unwrap();
@@ -1425,14 +1435,14 @@ impl Runtime {
             if queued {
                 command["streamingBehavior"] = json!("followUp");
             }
+            intent = store::stage_prompt(
+                &self.home,
+                &s.stored,
+                command["message"].as_str().unwrap_or(text),
+                if hidden { "hidden" } else { "normal" },
+            );
         }
         remove_staged(dropped);
-        let intent = store::stage_prompt(
-            &self.home,
-            &s.stored,
-            command["message"].as_str().unwrap_or(text),
-            if hidden { "hidden" } else { "normal" },
-        );
         let response = match &intent {
             Ok(_) => s
                 .process
@@ -1454,6 +1464,7 @@ impl Runtime {
         match response {
             Ok(_) => Ok(json!({"status":"submitted"})),
             Err(error) => {
+                let _gate = s.event_gate.lock().unwrap();
                 if let Ok(id) = intent {
                     let _ = store::reject_prompt(&self.home, &s.stored, &id);
                 }
@@ -2036,13 +2047,19 @@ impl Runtime {
             }
             "session.steer" => {
                 let text = required(p, "text")?;
-                let intent = store::stage_prompt(&self.home, &s.stored, text, "normal")?;
-                {
+                let intent = {
                     let _gate = s.event_gate.lock().unwrap();
-                    s.state.lock().unwrap().display.push_back("normal".into());
-                }
+                    let mut state = s.state.lock().unwrap();
+                    if state.closed {
+                        return Err(Error::new(4001, "session not found"));
+                    }
+                    let intent = store::stage_prompt(&self.home, &s.stored, text, "normal")?;
+                    state.display.push_back("normal".into());
+                    intent
+                };
                 if let Err(error) = Self::command(&s, json!({"type":"steer","message":text})).await
                 {
+                    let _gate = s.event_gate.lock().unwrap();
                     store::reject_prompt(&self.home, &s.stored, &intent)?;
                     s.state.lock().unwrap().display.pop_back();
                     return Err(error);
@@ -2565,49 +2582,76 @@ impl Runtime {
         &self,
         bot: &str,
         saved: &Value,
-        dir: &Path,
+        parent: Option<&Live>,
         system_prompt: &str,
         message: &Value,
         timeout: Duration,
     ) -> Result<(String, bool)> {
-        let profile = self.home.join("profiles").join(bot);
-        let mut options = PiOptions::new(&self.pi_executable, dir, profile.join("pi"));
-        options.args = [
-            "--mode",
-            "rpc",
-            "--no-session",
-            "--no-extensions",
-            "--no-skills",
-            "--no-prompt-templates",
-            "--no-approve",
-            "--no-tools",
-            "--system-prompt",
-            system_prompt,
-        ]
-        .map(str::to_owned)
-        .to_vec();
-        let (provider, model) = (
-            saved["provider"].as_str(),
-            saved["model"].as_str().filter(|s| !s.is_empty()),
-        );
-        // Pi refuses --provider without --model; alone it means Pi's default model.
-        if let (Some(provider), Some(_)) = (provider, model) {
+        // Credential refresh and its shared grant lock spend the same budget
+        // as Pi startup and provider work. Keep resources alive through cleanup.
+        let deadline = tokio::time::Instant::now() + timeout;
+        let dir = tempfile::tempdir()?;
+        let mut started = None;
+        let result = tokio::time::timeout_at(deadline, async {
+            let profile = self.home.join("profiles").join(bot);
+            let call_id = common::id();
+            let extension = self.home.join("runtime/one-shot-provider.ts");
+            common::atomic_write(
+                &extension,
+                include_bytes!("../../pi-runtime/one-shot-provider.ts"),
+            )?;
+            common::atomic_write(
+                &self.home.join("runtime/acp.ts"),
+                include_bytes!("../../pi-runtime/acp.ts"),
+            )?;
+            let mut options = PiOptions::new(&self.pi_executable, dir.path(), profile.join("pi"));
+            options.args = [
+                "--mode",
+                "rpc",
+                "--no-session",
+                "--no-extensions",
+                "--no-context-files",
+                "--no-skills",
+                "--no-prompt-templates",
+                "--no-approve",
+                "--no-tools",
+                "--system-prompt",
+                system_prompt,
+                "--append-system-prompt",
+                "",
+            ]
+            .map(str::to_owned)
+            .to_vec();
+            options.args.extend([
+                "--extension".into(),
+                extension.to_string_lossy().into_owned(),
+            ]);
             options
-                .args
-                .extend(["--provider".into(), crate::providers::pi_provider(provider)]);
-        }
-        if let Some(model) = model {
-            options.args.extend(["--model".into(), model.into()]);
-        }
-        crate::providers::prepare_pi_for_request(&self.home, bot, &profile.join("pi"), provider)
-            .await?;
-        options.env.extend(
-            std::env::vars()
-                .chain(crate::connectors::credentials(&self.home, bot)?)
-                .filter(|(name, _)| crate::pi::provider_environment(name, provider.unwrap_or(""))),
-        );
-        let (process, mut events) = PiProcess::spawn(options).map_err(pi_error)?;
-        let result = tokio::time::timeout(timeout, async {
+                .env
+                .insert("HEXBOT_ONE_SHOT_PROVIDER".into(), saved.to_string());
+            let (provider, model) = (
+                saved["provider"].as_str(),
+                saved["model"].as_str().filter(|s| !s.is_empty()),
+            );
+            // Pi refuses --provider without --model; alone it means Pi's default model.
+            if let (Some(provider), Some(_)) = (provider, model) {
+                options
+                    .args
+                    .extend(["--provider".into(), crate::providers::pi_provider(provider)]);
+            }
+            if let Some(model) = model {
+                options.args.extend(["--model".into(), model.into()]);
+            }
+            crate::providers::prepare_pi_for_request(&self.home, bot, &profile.join("pi"), provider)
+                .await?;
+            options.env.extend(
+                std::env::vars()
+                    .chain(crate::connectors::credentials(&self.home, bot)?)
+                    .filter(|(name, _)| crate::pi::provider_environment(name, provider.unwrap_or(""))),
+            );
+            let (process, mut events) = PiProcess::spawn(options).map_err(pi_error)?;
+            started = Some(process);
+            let process = started.as_ref().unwrap();
             let response = process
                 .request(
                     json!({"type":"prompt","message":message.to_string()}),
@@ -2627,12 +2671,67 @@ impl Runtime {
             let mut failed = false;
             loop {
                 let event = events.recv().await.map_err(pi_error)?;
+                // A recovered verdict may use summarized owner evidence. Keep
+                // reading to account for calls, but never automatically allow it.
+                if matches!(event["type"].as_str(), Some("compaction_start" | "auto_compaction_start")) {
+                    failed = true;
+                }
+                if event["type"] == "extension_ui_request" {
+                    let id = event["id"].as_str().unwrap_or("");
+                    let request = event["title"]
+                        .as_str()
+                        .and_then(|title| title.strip_prefix("__HEXBOT_TOOL__"))
+                        .and_then(|body| serde_json::from_str::<Value>(body).ok());
+                    let reply = match request {
+                        Some(request) if event["method"] == "input" => {
+                            let args = &request["args"];
+                            match request["name"].as_str() {
+                                Some("hexbot_acp_complete") if args["context"]["tools"] == json!([]) => {
+                                    crate::provider_acp::complete_reviewer(&self.home, bot, &call_id, args, dir.path()).await
+                                }
+                                Some("hexbot_provider_request") => {
+                                    crate::providers::adapt_request(&self.home, bot, parent.map_or(&call_id, |s| &s.stored), args)
+                                }
+                                Some("hexbot_provider_auth") => {
+                                    crate::providers::request_auth(&self.home, bot, args["provider"].as_str().unwrap_or("")).await
+                                }
+                                _ => Err(Error::new(4302, "One-shot calls cannot use tools")),
+                            }
+                        }
+                        _ => Err(Error::new(4302, "One-shot calls cannot use tools")),
+                    };
+                    failed |= reply.is_err();
+                    let reply = match reply {
+                        Ok(result) => json!({"result":result}),
+                        Err(error) => json!({"error":error.message}),
+                    };
+                    process.respond_extension(id, json!({"value":reply.to_string()}), DEADLINE).await.map_err(pi_error)?;
+                }
+                let billed = match event["type"].as_str() {
+                    Some("message_end") if event["message"]["role"] == "assistant" => Some(&event["message"]),
+                    Some("compaction_end" | "auto_compaction_end") => Some(&event["result"]),
+                    _ => None,
+                };
+                if let Some(message) = billed.filter(|message| message["usage"].is_object())
+                    && let Some(parent) = parent
+                {
+                    let _gate = parent.event_gate.lock().unwrap();
+                    // Usage has a journal entry but no chat projection. Include
+                    // compaction summaries as well as ordinary provider attempts.
+                    self.persist_message(parent, &json!({
+                        "role":"usage", "usage":message["usage"],
+                        "provider":message["provider"].as_str().or(provider).unwrap_or(""),
+                        "model":message["model"].as_str().or(model).unwrap_or(""),
+                        "timestamp":message["timestamp"].as_f64().unwrap_or_else(|| common::now() * 1000.),
+                    }), None, None);
+                }
                 if event["type"] == "message_end" && event["message"]["role"] == "assistant" {
                     result = store::text(&event["message"]["content"]);
-                    failed = matches!(
+                    failed |= matches!(
                         event["message"]["stopReason"].as_str(),
-                        Some("error" | "aborted")
-                    ) || event["message"]["errorMessage"].is_string();
+                        Some("error" | "aborted" | "toolUse" | "length")
+                    ) || event["message"]["errorMessage"].is_string()
+                        || event["message"]["content"].as_array().is_some_and(|blocks| blocks.iter().any(|block| block["type"] == "toolCall"));
                 }
                 if event["type"] == "agent_settled" {
                     return Ok((result, failed));
@@ -2640,7 +2739,9 @@ impl Runtime {
             }
         })
         .await;
-        let _ = process.shutdown().await;
+        if let Some(process) = started {
+            let _ = process.shutdown().await;
+        }
         // A failed call reads as a failed result; callers decide what that means.
         match result {
             Ok(Ok(text)) => Ok(text),
@@ -2744,7 +2845,7 @@ impl Runtime {
             .one_shot(
                 bot,
                 &saved,
-                &profile,
+                None,
                 crate::team::DESCRIPTION_PROMPT,
                 &message,
                 Duration::from_secs(45),
@@ -3647,6 +3748,9 @@ impl Runtime {
                         };
                         // Kept so a client that opens the section later sees the card.
                         request["approval_payload"] = payload;
+                        if request["approval_payload"]["review"] == true {
+                            return self.review_then_ask(s, id, request);
+                        }
                     }
                     s.state
                         .lock()

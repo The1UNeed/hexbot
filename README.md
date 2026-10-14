@@ -3,8 +3,8 @@
 **HexBot is currently in beta, so expect to occasionally run into hiccups and bugs, however we encourage you to give it a shot anyway.**
 
 Hexbot is a desktop app and a background daemon. You create **bots**, each
-with its own persona, model, skills, and memory. You talk to a bot in a
-**section** (a persistent conversation), or put several bots and people in a
+with its own persona, model, skills, and memory. You talk to a bot in its
+**chat** (one ongoing conversation), or put several bots and people in a
 **room** and let them talk to each other. Everything runs on your machine or
 a box on your LAN. Phones and laptops pair with it by code, and the optional
 **Hex Connect** service reaches it from anywhere without routing your chat
@@ -58,7 +58,10 @@ The app follows the track it was installed from; switch in Settings, Updates.
   servers, and more. Pick a model per bot.
 - **Tools with approvals.** Bots can run commands, browse, and edit files.
   In **Auto mode**, the default, they work freely inside the workspace
-  behind an OS sandbox and ask before anything outside it. Manual asks
+  behind an OS sandbox; steps outside it get a check by the bot's model, and
+  risky or unreviewable steps ask once. The check is the model's judgment,
+  not a sandbox. Without OS isolation, shell commands require user approval
+  even when requesting full access. Manual asks
   before every change; Bypass asks nothing. Git metadata is read-only and
   project secrets and browser stores are hidden within the platform limits in
   [SECURITY.md](SECURITY.md#tool-isolation). Linux scans existing repositories
@@ -84,8 +87,10 @@ Docs live at [hexbot.app/docs](https://hexbot.app/docs/) and are built from
 Each section starts its own process per connected stdio server in a daemon-owned
 directory. Servers receive only the runtime's allowed environment and their
 explicit settings. Manual asks for every connected-tool call. Auto runs tools
-marked read-only freely and asks for others; Bypass never asks. Removing or
-disabling a server revokes it in open sections. Config or credential edits block
+marked read-only freely and reviews other calls one at a time. Risky or
+unreviewable calls ask, with Approve and Deny only. In Manual, Allow for now
+covers that server until the bot's agent process restarts. Bypass never asks.
+Removing or disabling a server revokes it in open sections. Config or credential edits block
 old connections and reconnect at the next message. Server stderr, up to the
 last 2 KB, may reach the bot in connection errors.
 
