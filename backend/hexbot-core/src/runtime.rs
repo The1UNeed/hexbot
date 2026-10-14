@@ -1630,28 +1630,24 @@ impl Runtime {
         }
         Ok(closed)
     }
-    /// Closes a section unless something in it is still running, waiting on the
-    /// user or unsaved; a working section is left alone.
-    pub async fn close_if_quiet(&self, owner: &str, stored: &str) -> Result<bool> {
+    /// Stops a section's process unless something in it is still running,
+    /// waiting on the user or unsaved, so its next open reads what was
+    /// appended. Its live ID stays, as after an idle retire. False when it is
+    /// still working.
+    pub async fn close_if_quiet(&self, stored: &str) -> Result<bool> {
+        let lock = self.open_lock(stored);
+        let _guard = lock.lock().await;
         let running = self.sessions.lock().unwrap().get(stored).cloned();
-        if let Some(s) = running {
-            let has_children = self
-                .children
-                .lock()
-                .unwrap()
-                .values()
-                .any(|c| c.row["parent"] == s.stored && c.row["status"] == "running");
-            let state = s.state.lock().unwrap();
-            if has_children
-                || state.busy
-                || !state.pending.is_empty()
-                || !state.staged.is_empty()
-                || !state.unsaved.is_empty()
-            {
-                return Ok(false);
-            }
+        let Some(s) = running else {
+            return Ok(true);
+        };
+        // Checked and retired under the session's locks, so a message sent
+        // meanwhile either lands first or opens it again.
+        if !self.retire_quiet(&s, f64::INFINITY) {
+            return Ok(false);
         }
-        self.close_stored(owner, stored).await
+        self.stop_retired(&s).await;
+        Ok(true)
     }
     async fn close_one(&self, owner: &str, stored: &str) -> Result<bool> {
         let lock = self.open_lock(stored);

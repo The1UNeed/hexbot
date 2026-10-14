@@ -191,6 +191,7 @@ fn latest_leaf_selects_branch_without_erasing_compacted_history_or_billed_calls(
     file(home.path(), &entries);
     reconcile(home.path());
     assert_eq!(texts(home.path()).len(), 4);
+    assert_eq!(store::summarised_before(home.path(), "chat").unwrap(), None);
     entries.push(entry("new-u", Some("a"), user("new question", 5000)));
     entries.push(entry("new-a", Some("new-u"), assistant("new answer", 6000)));
     entries.push(json!({"type":"compaction","id":"compact","parentId":"new-a","timestamp":"2026-09-24T00:00:00.000Z","summary":"Context summary","firstKeptEntryId":"new-u","tokensBefore":200}));
@@ -200,6 +201,11 @@ fn latest_leaf_selects_branch_without_erasing_compacted_history_or_billed_calls(
     assert_eq!(
         texts(home.path()),
         ["root", "shared", "new question", "new answer"]
+    );
+    // The summary covers root and shared; it kept the new question, row 5.
+    assert_eq!(
+        store::summarised_before(home.path(), "chat").unwrap(),
+        Some(5)
     );
     assert_eq!(usage_count(home.path()), 3);
     let all: i64 = store::open(home.path())

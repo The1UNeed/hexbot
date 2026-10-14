@@ -205,10 +205,18 @@ fn imports_legacy_messages_once_and_preserves_hidden_and_tool_rows() {
     let home = setup();
     let conn = rusqlite::Connection::open(home.path().join("profiles/owl/state.db")).unwrap();
     conn.execute_batch("CREATE TABLE sessions(id TEXT,session_key TEXT);CREATE TABLE messages(id INTEGER,session_id TEXT,role TEXT,content TEXT,tool_call_id TEXT,tool_calls TEXT,tool_name TEXT,timestamp REAL,active INTEGER,display_kind TEXT);INSERT INTO sessions VALUES('legacy','section-a');INSERT INTO messages VALUES(1,'legacy','user','secret kickoff',NULL,NULL,NULL,100,1,'hidden');INSERT INTO messages VALUES(2,'legacy','assistant','Calling',NULL,'[{\"id\":\"t1\",\"function\":{\"name\":\"read\",\"arguments\":\"{}\"}}]',NULL,101,1,NULL);INSERT INTO messages VALUES(3,'legacy','tool','Contents','t1',NULL,'read',102,1,NULL);").unwrap();
+    // A dream report posted before the chat was first opened follows its history.
+    runtime_store::append(
+        home.path(),
+        "section-a",
+        json!({"role":"assistant","text":"Last night","dream":true,"timestamp":200}),
+    )
+    .unwrap();
     runtime_store::import_hermes(home.path(), "owl", "section-a", home.path()).unwrap();
     runtime_store::import_hermes(home.path(), "owl", "section-a", home.path()).unwrap();
     let messages = runtime_store::history(home.path(), "section-a").unwrap();
-    assert_eq!(messages.len(), 3);
+    assert_eq!(messages.len(), 4);
+    assert_eq!(messages[3]["dream"], true);
     assert_eq!(messages[0]["display_kind"], "hidden");
     assert_eq!(messages[0]["timestamp"], 100.);
     assert_eq!(messages[2]["name"], "read");

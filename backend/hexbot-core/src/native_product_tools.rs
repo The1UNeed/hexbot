@@ -808,7 +808,7 @@ fn read_session(
         messages.push(json!({"id":row["seq"],"role":m["role"],"content":body,"timestamp":m["timestamp"],"tool_name":m["tool_name"],"tool_calls":m["tool_calls"],"tool_call_id":m["tool_call_id"]}));
     }
     let has_native: bool = conn.query_row(
-        "SELECT EXISTS(SELECT 1 FROM native_messages WHERE session_id=?)",
+        "SELECT EXISTS(SELECT 1 FROM native_messages WHERE session_id=? AND json_extract(message_json,'$.dream') IS NOT 1)",
         [id],
         |r| r.get(0),
     )?;
@@ -1023,9 +1023,7 @@ fn search_sessions(home: &Path, owner: &str, bot: &str, current: &str, p: &Value
     let summarised = if excluded.is_empty() {
         None
     } else {
-        runtime_store::compaction_summaries(home, excluded, f64::MIN, f64::MAX)?
-            .last()
-            .map(|(at, _)| *at)
+        runtime_store::summarised_before(home, excluded)?
     };
     let mut index = recall(
         home,
@@ -1042,23 +1040,23 @@ fn search_sessions(home: &Path, owner: &str, bot: &str, current: &str, p: &Value
 /// The answer for one asking section: the index minus `excluded`, the section
 /// whose history is already in the asking bot's context. Read from the same
 /// kept rows every section of the bot shares, it is what a rebuild without
-/// that section would give. A section `summarised` at that time keeps the
-/// messages from before it, which its context holds only as a summary.
+/// that section would give. A section `summarised` before a row keeps the
+/// messages ahead of that row, which its context holds only as a summary.
 fn answer(
     index: &mut RecallIndex,
     target: &str,
     p: &Value,
     excluded: &str,
-    summarised: Option<f64>,
+    summarised: Option<i64>,
 ) -> Result<Value> {
     // How many of the asking section's messages came before its latest summary.
-    let earlier = summarised.and_then(|at| {
+    let earlier = summarised.and_then(|kept| {
         let session = index.sessions.iter().find(|s| s.id == excluded)?;
         Some(
             session
                 .messages
                 .iter()
-                .position(|m| m["timestamp"].as_f64().is_none_or(|t| t >= at))
+                .position(|m| m["id"].as_i64().is_none_or(|seq| seq >= kept))
                 .unwrap_or(session.messages.len()),
         )
     });
@@ -1467,10 +1465,7 @@ mod history_index_tests {
     }
     #[test]
     fn a_summarised_chat_searches_what_came_before_its_summary() {
-        let mut chat = session("chat", &["alpha early", "alpha later", "alpha now"]);
-        for (message, at) in chat.messages.iter_mut().zip([10.0, 20.0, 30.0]) {
-            message["timestamp"] = json!(at);
-        }
+        let chat = session("chat", &["alpha early", "alpha later", "alpha now"]);
         let mut cached = build(vec![session("room", &["beta"]), chat]);
         let args = json!({"query":"alpha","detail":"full","window":0});
         let found = |result: Value| {
@@ -1482,8 +1477,8 @@ mod history_index_tests {
                 .map(|m| m["content"].as_str().unwrap().to_owned())
                 .collect::<Vec<_>>()
         };
-        // Summarised at 25: the first two are only a summary in context now.
-        let result = answer(&mut cached, "owl", &args, "chat", Some(25.0)).unwrap();
+        // The summary kept the third: the first two are only a summary in context now.
+        let result = answer(&mut cached, "owl", &args, "chat", Some(2)).unwrap();
         assert_eq!(result["count"], 1);
         assert!(!found(result.clone()).contains(&"alpha now".to_owned()));
         let read = answer(
@@ -1491,7 +1486,7 @@ mod history_index_tests {
             "owl",
             &json!({"session_id":"chat"}),
             "chat",
-            Some(25.0),
+            Some(2),
         )
         .unwrap();
         assert_eq!(read["message_count"], 2);

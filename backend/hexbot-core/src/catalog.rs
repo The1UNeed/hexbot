@@ -1112,6 +1112,11 @@ fn delete_section(home: &Path, caller: &str, id: &str, purge: bool) -> Result<()
         let mut conn = db::open(home)?;
         let tx = conn.transaction()?;
         tx.execute("DELETE FROM sections WHERE id=?", [id])?;
+        // A turn that failed there can no longer be retried; the bot is not stopped.
+        tx.execute(
+            "UPDATE bot_incidents SET resolved_at=? WHERE section_id=? AND resolved_at IS NULL",
+            params![now(), id],
+        )?;
         tx.execute(
             "UPDATE bots SET last_activity_at=? WHERE name=?",
             params![now(), row["bot"].as_str()],
@@ -1500,6 +1505,7 @@ mod parity_tests {
                 "INSERT INTO users(id,display_name,role,created_at) VALUES('alice','Alice','admin',0);
                  INSERT INTO bots(name,owner_id,last_activity_at) VALUES('owl','alice',7),('fox','alice',NULL),('ant','alice',NULL),('bee','alice',NULL),('cat','alice',NULL);
                  INSERT INTO sections(id,bot,owner_id,title,title_dirty) VALUES('bee_dreams','bee','alice','Dreams',0),('cat_chat','cat','alice','Dreams',1);
+                 INSERT INTO bot_incidents(id,bot,section_id,kind,created_at) VALUES('failed','owl','put_away','turn_failed',1);
                  INSERT INTO sections(id,bot,owner_id,title,updated_at,archived_at,peer_bot) VALUES
                   ('old','owl','alice','Garden',1,NULL,NULL),
                   ('put_away','owl','alice','Trip',5,5,NULL),
@@ -1587,6 +1593,18 @@ mod parity_tests {
                 .unwrap()
         };
         assert_eq!(activity("owl"), Some(7.0));
+        // A failed turn in a deleted section no longer stops the bot.
+        assert!(
+            db::open(home.path())
+                .unwrap()
+                .query_row(
+                    "SELECT resolved_at FROM bot_incidents WHERE id='failed'",
+                    [],
+                    |r| r.get::<_, Option<f64>>(0),
+                )
+                .unwrap()
+                .is_some()
+        );
         assert_eq!(activity("fox"), None);
         // A bot without a chat gets one, once; an archived chat comes back.
         let ant = chat_section(home.path(), "alice", "ant").unwrap();

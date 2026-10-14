@@ -573,13 +573,20 @@ pub fn import_hermes(home: &Path, bot: &str, stored: &str, cwd: &Path) -> Result
     }
     let mut conn = open(home)?;
     let tx = conn.transaction()?;
-    let count: i64 = tx.query_row(
-        "SELECT COUNT(*) FROM native_messages WHERE session_id=?",
-        [stored],
-        |r| r.get(0),
+    let existing = common::rows(
+        &tx,
+        "SELECT message_json FROM native_messages WHERE session_id=? ORDER BY seq",
+        &[&stored],
     )?;
-    if count == 0 {
-        for (i, message) in projected.iter().enumerate() {
+    // Dream reports posted before the chat was first opened follow its history.
+    let reports = existing
+        .iter()
+        .map(|row| serde_json::from_str::<Value>(row["message_json"].as_str().unwrap_or("")))
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(|_| crate::Error::new(5200, "invalid stored message"))?;
+    if reports.iter().all(|message| message["dream"] == true) {
+        tx.execute("DELETE FROM native_messages WHERE session_id=?", [stored])?;
+        for (i, message) in projected.iter().chain(&reports).enumerate() {
             tx.execute(
                 "INSERT INTO native_messages VALUES(?,?,?)",
                 params![stored, i + 1, message.to_string()],
@@ -1154,6 +1161,52 @@ fn active_ids(entries: &[Value]) -> Result<HashSet<&str>> {
             .and_then(|parent| by_id.get(parent).copied());
     }
     Ok(active)
+}
+/// The first display row a section's latest compaction kept, from Pi's
+/// `firstKeptEntryId`: rows before it are in the context only as the summary.
+/// None when it never compacted.
+pub fn summarised_before(home: &Path, stored: &str) -> Result<Option<i64>> {
+    common::identifier(stored)?;
+    let path = home
+        .join("runtime/sessions")
+        .join(stored)
+        .join("conversation.jsonl");
+    let bytes = match fs::read(&path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.into()),
+    };
+    let (entries, _, _) = parse_pi_entries(&bytes)?;
+    let active = active_ids(&entries)?;
+    let on_path = |entry: &&Value| entry["id"].as_str().is_some_and(|id| active.contains(id));
+    let Some(kept) = entries
+        .iter()
+        .filter(on_path)
+        .rfind(|entry| entry["type"] == "compaction")
+        .map(|entry| entry["firstKeptEntryId"].clone())
+    else {
+        return Ok(None);
+    };
+    let conn = open(home)?;
+    // The kept entry, or the first after it that shows as a row.
+    for entry in entries
+        .iter()
+        .filter(on_path)
+        .skip_while(|entry| entry["id"] != kept)
+    {
+        let seq: Option<i64> = conn
+            .query_row(
+                "SELECT projection_seq FROM native_pi_journal WHERE session_id=? AND entry_id=? AND projection_seq IS NOT NULL",
+                params![stored, entry["id"].as_str()],
+                |r| r.get(0),
+            )
+            .optional()?;
+        if seq.is_some() {
+            return Ok(seq);
+        }
+    }
+    // Nothing kept shows as a row: every row is in the summary.
+    Ok(Some(i64::MAX))
 }
 /// Summaries Pi wrote when it compacted this section's current branch in
 /// `[since, until)`, oldest first, as `(timestamp, summary)`. Reads the

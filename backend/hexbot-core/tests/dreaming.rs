@@ -150,12 +150,12 @@ async fn dreams_use_restricted_tools_persist_snapshots_and_report_in_the_chat() 
             .await
             .unwrap()
             .unwrap();
-        // An open, idle chat closes, and says so, so open clients read the report.
+        // An idle chat, open or not, is closed now, and says so, so open clients read the report.
         let mut posted = event(&mut receiver, "hexbot.sections.changed").await;
         while posted["closed"].is_null() {
             posted = event(&mut receiver, "hexbot.sections.changed").await;
         }
-        assert_eq!(posted["closed"], open);
+        assert_eq!(posted["closed"], true);
         let changed = event(&mut receiver, "hexbot.dreaming.changed").await;
         assert_eq!(changed["dream"]["status"], "complete");
         assert_eq!(changed["dream"]["memory_before"], "before");
