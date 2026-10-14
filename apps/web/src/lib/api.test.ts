@@ -1,8 +1,9 @@
-import { describe, expect, it, vi } from 'vitest'
+import { JsonRpcGatewayError } from '@hermes/shared'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { memoryMarks } from '../app/conversation/steps'
 
-import { attachFile, messagesFromHistory } from './api'
+import { attachFile, botsCreate, botsUpdate, messagesFromHistory } from './api'
 import { rpcCall } from './rpc'
 
 vi.mock('./rpc', () => ({ rpcCall: vi.fn() }))
@@ -317,4 +318,55 @@ it('restores nested code steps with their parent, arguments, duration and errors
     },
     { toolId: 'code/2', parentToolCallId: 'code', result: 'Denied', status: 'error' }
   ])
+})
+
+describe('picked faces on older daemons', () => {
+  const face = { color: 'orange', shape: 'pill' }
+  const avatar = 'data:image/png;base64,iVBORw0KGgo='
+  const unknownFace = () => new JsonRpcGatewayError('unknown bot field: face', { code: 4201 })
+
+  beforeEach(() => {
+    vi.mocked(rpcCall).mockReset()
+  })
+
+  it('sends the write again without the face, keeping its picture', async () => {
+    vi.mocked(rpcCall).mockRejectedValueOnce(unknownFace()).mockResolvedValueOnce({ bot: {} })
+
+    await botsUpdate('owl', { avatar, face })
+
+    expect(rpcCall).toHaveBeenCalledTimes(2)
+    expect(rpcCall).toHaveBeenLastCalledWith('hexbot.bots.update', { avatar, name: 'owl' })
+  })
+
+  it('creates the bot without the face', async () => {
+    vi.mocked(rpcCall).mockRejectedValueOnce(unknownFace()).mockResolvedValueOnce({ bot: {} })
+
+    const input = { avatar, face, model: 'm', name: 'owl', provider: 'p' }
+    await botsCreate(input)
+
+    expect(rpcCall).toHaveBeenLastCalledWith('hexbot.bots.create', {
+      avatar,
+      model: 'm',
+      name: 'owl',
+      provider: 'p'
+    })
+  })
+
+  it.each([
+    ['another refusal', new JsonRpcGatewayError('unknown bot field: eyes', { code: 4201 })],
+    ['a bad face', new JsonRpcGatewayError('face needs the avatar it describes', { code: 4202 })]
+  ])('passes %s through without trying again', async (_, error) => {
+    vi.mocked(rpcCall).mockRejectedValueOnce(error)
+
+    await expect(botsUpdate('owl', { avatar, face })).rejects.toBe(error)
+    expect(rpcCall).toHaveBeenCalledTimes(1)
+  })
+
+  it('never retries a write that had no face', async () => {
+    const error = unknownFace()
+    vi.mocked(rpcCall).mockRejectedValueOnce(error)
+
+    await expect(botsUpdate('owl', { description: 'Reads' })).rejects.toBe(error)
+    expect(rpcCall).toHaveBeenCalledTimes(1)
+  })
 })

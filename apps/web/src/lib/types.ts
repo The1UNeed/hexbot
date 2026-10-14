@@ -92,6 +92,8 @@ export interface Bot {
   /** Per-bot override; `inherit` follows the deployment setting. */
   approval_mode?: BotApprovalMode
   avatar: Avatar | null
+  /** The face picked in an app, drawn live instead of `avatar`; older daemons leave it out. */
+  face?: BotFace | null
   created_at: null | number
   description: string
   display_name: string
@@ -136,8 +138,15 @@ export type BotTool =
   | 'vision'
   | 'voice'
 
+/** A generated face's shape and colour ids (`lib/avatar-builder.ts`). */
+export interface BotFace {
+  color: string
+  shape: string
+}
+
 export interface BotCreateInput {
   avatar?: string
+  face?: BotFace | null
   description?: string
   display_name?: string
   model: string

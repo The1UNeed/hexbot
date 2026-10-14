@@ -16,6 +16,7 @@ import {
   Banner,
   BotFace,
   type BotStatus,
+  bubbleFill,
   Button,
   type FaceSource,
   formatDayDivider,
@@ -373,6 +374,7 @@ function TranscriptEntry({
 
       return (
         <MessageBubble
+          chat={{ face: room ? null : (props.face ?? { name: props.title }), room }}
           continued={run}
           item={entry}
           onLongPress={props.onMessageLongPress}
@@ -385,12 +387,15 @@ function TranscriptEntry({
 }
 
 function MessageBubble({
+  chat,
   continued,
   item,
   onLongPress,
   renderText,
   showAuthor
 }: {
+  /** The thread's bot, for replies that do not name one. */
+  chat: { face: FaceSource | null; room: boolean }
   item: MessageItem
   continued: boolean
   showAuthor: boolean
@@ -421,10 +426,7 @@ function MessageBubble({
           accessibilityHint={onLongPress ? 'Long press for options' : undefined}
           delayLongPress={350}
           onLongPress={onLongPress ? () => onLongPress(item.id) : undefined}
-          style={[
-            styles.bubble,
-            mine ? { backgroundColor: theme.ink } : { backgroundColor: theme.fill }
-          ]}
+          style={[styles.bubble, { backgroundColor: bubbleFill(item, chat, theme) }]}
           testID={`chat-message-${item.id}`}
         >
           {rendered ? (

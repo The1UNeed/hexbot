@@ -16,7 +16,7 @@ data model. The native transport and event projection live in
 | open section | live session (`session.resume {session_id: stored, profile}`) |
 | persona | profile `soul` (SOUL.md) |
 | bot model | profile `model` + `provider` |
-| avatar | profile asset `avatar` |
+| avatar | profile asset `avatar`; a face picked in an app also in `assets/face.json` |
 | bot memory | profile `memories/MEMORY.md` (the core `USER.md` target is off) |
 | history search | in-memory FTS5 index over the bot's sections, refreshed as history changes (`native_history_versions` in `hexbot-runtime.db`); the asking section is excluded from results and BM25 statistics; cache budget counts retained JSON and allocated SQLite pages |
 | About you | `~/.hexbot/users/<owner_id>/user.md`, injected every turn by the hexbot plugin |
@@ -92,7 +92,8 @@ mutation methods check ownership.
 ### Bots
 
 Bot shape: `{name, display_name, title, description, persona, tools: [string], available_tools: [string], skills: [string],
-provider, model, reasoning_effort | null, avatar: {mime, data} | null, created_at, updated_at, last_activity_at,
+provider, model, reasoning_effort | null, avatar: {mime, data} | null, face: {shape, color} | null,
+created_at, updated_at, last_activity_at,
 owner_id, dream_enabled, notify, approval_mode, workdir | null,
 status, status_detail | null, sections_total, sections_recent: [Section]}`
 
@@ -126,13 +127,25 @@ already running, a message queued behind it, and files already attached
 finish on the model they started with. Switching models costs the cached
 prefix once. A section on something else, like a scheduled job with
 its own model or `reasoning_effort`, keeps it.
+`face` is the shape and colour of a face picked in an app (ids from
+`apps/web/src/lib/avatar-builder.ts`, such as `{shape: "pill", color:
+"orange"}`), stored in the profile's `assets/face.json`. The app saves the
+face as the `avatar` PNG too, for clients that only show pictures; clients
+that know `face` draw it live and wash the bot's bubbles with its colour.
+It is null when no face was picked, and it is cleared whenever the avatar
+changes without one (a photo, `avatar: null`, or `profiles.set_asset`), so it
+never describes a picture it did not come with. `hexbot.bots.update` refuses
+a non-null `face` without an `avatar` in the same call (4202), so a face never
+lands on a photo. Older daemons leave it out and refuse `face` in writes
+(4201 `unknown bot field: face`); the web app then sends the write again
+without it, and the face is kept as the picture alone.
 `workdir` and the `workspace_dir` setting are refused (4202) when they resolve
 inside the Hexbot home, symlinks included.
 
 - `hexbot.bots.list {all?}` → `{bots: [Bot]}` ordered by `last_activity_at` desc.
 - `hexbot.bots.get {name}` → `{bot: Bot}`
 - `hexbot.bots.create {name, display_name?, title?, description?, persona?,
-  provider, model, avatar?}` → `{bot: Bot, section: Section}` (creates the
+  provider, model, avatar?, face?}` → `{bot: Bot, section: Section}` (creates the
   profile with `mirror_credentials: true`, applies persona and model, stores
   the avatar, mirrors the deployment settings into the new profile's
   `config.yaml`, creates the first section titled "General").
@@ -148,7 +161,7 @@ inside the Hexbot home, symlinks included.
   once they have navigated to the section. Refused (4243) once the section
   has messages.
 - `hexbot.bots.update {name, display_name?, title?, description?, persona?,
-  provider?, model?, reasoning_effort?, avatar?, dream_enabled?,
+  provider?, model?, reasoning_effort?, avatar?, face?, dream_enabled?,
   tools?, skills?, notify?, approval_mode?, workdir?}` →
   `{bot: Bot}`. `tools` accepts `terminal`, `files`, `code_execution`, `browser`,
   `computer_use`, `vision`, `voice`, `message_bots`, `delegate`, and

@@ -34,6 +34,7 @@ const FIELDS: &[&str] = &[
     "model",
     "reasoning_effort",
     "avatar",
+    "face",
     "dream_enabled",
     "tools",
     "skills",
@@ -278,12 +279,56 @@ fn decode_avatar(value: &Value) -> Result<Option<(&'static str, Vec<u8>)>> {
     };
     Ok(Some((ext, data)))
 }
+/// The shape and colour of a face picked in an app, `{shape, color}`, kept
+/// beside the picture it describes so clients can draw it live.
+fn face(home: &Path, name: &str) -> Result<Value> {
+    let path = profile(home, name)?.join("assets/face.json");
+    let text = read_text(home, &path)?;
+    Ok(serde_json::from_str::<Value>(&text)
+        .ok()
+        .filter(|v| check_face(v).is_ok() && !v.is_null())
+        .unwrap_or(Value::Null))
+}
+fn check_face(value: &Value) -> Result<()> {
+    if value.is_null() {
+        return Ok(());
+    }
+    let id = |v: &Value| {
+        v.as_str().is_some_and(|s| {
+            (1..=32).contains(&s.len())
+                && s.bytes()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'-')
+        })
+    };
+    match value.as_object() {
+        Some(o) if o.len() == 2 && id(&value["shape"]) && id(&value["color"]) => Ok(()),
+        _ => Err(Error::new(
+            4202,
+            "face must be {shape, color} with short lowercase ids, or null",
+        )),
+    }
+}
+fn set_face(home: &Path, name: &str, value: &Value) -> Result<()> {
+    let path = profile(home, name)?.join("assets/face.json");
+    safe(home, &path)?;
+    if value.is_null() {
+        if path.exists() {
+            fs::remove_file(path)?;
+        }
+        return Ok(());
+    }
+    let face = json!({"shape": value["shape"], "color": value["color"]});
+    atomic_write(&path, face.to_string().as_bytes())
+}
+/// Replaces the picture. Any face stored for the old one no longer describes
+/// it, so it goes too; a client picking a face sends `face` with the picture.
 fn set_avatar(home: &Path, name: &str, value: &Value) -> Result<()> {
     let image = decode_avatar(value)?;
     let dir = profile(home, name)?.join("assets");
     for ext in ["png", "jpg", "webp"] {
         safe(home, &dir.join(format!("avatar.{ext}")))?;
     }
+    set_face(home, name, &Value::Null)?;
     if let Some((ext, data)) = &image {
         atomic_write(&dir.join(format!("avatar.{ext}")), data)?;
     }
@@ -406,6 +451,7 @@ fn shape_bot(home: &Path, caller: &str, row: Value) -> Result<Value> {
             .unwrap_or_else(|| cfg["model"]["default"].clone()),
         "reasoning_effort": cfg["model"]["reasoning_effort"],
         "avatar": avatar(home, name)?,
+        "face": face(home, name)?,
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
         "last_activity_at": row["last_activity_at"],
@@ -464,6 +510,7 @@ fn validate_patch(home: &Path, p: &Value) -> Result<()> {
             "avatar" => {
                 decode_avatar(value)?;
             }
+            "face" => check_face(value)?,
             "reasoning_effort"
                 if !value.is_null()
                     && !value
@@ -736,6 +783,9 @@ fn configure(home: &Path, name: &str, p: &Value) -> Result<()> {
     if let Some(v) = p.get("avatar") {
         set_avatar(home, name, v)?;
     }
+    if let Some(v) = p.get("face") {
+        set_face(home, name, v)?;
+    }
     let path = dir.join("profile.yaml");
     let text = read_text(home, &path)?;
     let mut meta = serde_yaml::from_str::<Value>(&text).unwrap_or(json!({}));
@@ -908,6 +958,10 @@ fn update_bot(home: &Path, caller: &str, p: &Value) -> Result<Value> {
     let name = required(p, "name")?;
     bot_row(home, caller, name)?;
     validate_patch(home, p)?;
+    // A face describes the picture sent with it; alone it would sit on a photo.
+    if p.get("face").is_some_and(|v| !v.is_null()) && p.get("avatar").is_none_or(Value::is_null) {
+        return Err(Error::new(4202, "face needs the avatar it describes"));
+    }
     configure(home, name, p)?;
     let mut conn = db::open(home)?;
     let tx = conn.transaction()?;
