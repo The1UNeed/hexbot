@@ -467,7 +467,9 @@ impl Runtime {
                 job.as_object_mut().unwrap().remove("action");
                 // An unattended job's folder is where its tools work, so it asks like a bot's.
                 // Clearing it moves the job too, so any folder asks.
-                if let Some(folder) = job_folder(&job) {
+                if matches!(action, "create" | "update")
+                    && let Some(folder) = job_folder(&job)
+                {
                     self.confirm(
                         s,
                         name,
