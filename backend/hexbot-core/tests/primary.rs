@@ -507,12 +507,24 @@ async fn other_bots_and_promoted_bots_get_the_tools_only_in_new_own_sections() {
         .await
         .unwrap();
     assert_eq!(promoted["bot"]["primary"], true);
-    // The open section keeps the tools it was frozen with.
+    // The open section keeps the tools it was frozen with, but its jobs tool
+    // follows the bot's role: a removal asks there too.
     app.call("local", "hexbot.sections.close", &json!({"id":before}))
         .await
         .unwrap();
-    open(&app, &before).await;
+    let live = open(&app, &before).await;
     assert!(!tools(&before).iter().any(|t| t == "hexbot_bots"));
+    assert!(tools(&before).iter().any(|t| t == "cronjob_manage"));
+    let (asked, reply) = call_tool(
+        &app,
+        &live,
+        "cronjob_manage",
+        json!({"action":"remove","job_id":"any"}),
+        "deny",
+    )
+    .await;
+    assert!(asked);
+    assert!(reply.contains("denied"), "{reply}");
     let after = app
         .call(
             "local",

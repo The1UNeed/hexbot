@@ -994,17 +994,23 @@ function MobileApp() {
         }
         onNewBot={demo ? undefined : () => setPanels([{ kind: 'bot-create' }])}
         primaryChoice={
-          // A daemon from before the primary bot leaves `primary` out.
-          !demo && mobile.bots.length && mobile.bots.every(b => b.primary === false)
+          // A daemon from before the primary bot leaves `primary` out; an
+          // empty one is offered HexBot too, falling back on older daemons.
+          !demo && mobile.bots.every(b => b.primary === false)
             ? {
                 onAdd: mobile.bots.some(b => b.name === 'hexbot')
                   ? undefined
                   : () =>
                       act(async () => {
-                        const result = await mobile.rpc<{ bot: Bot; section: Section }>(
-                          'hexbot.bots.create_primary',
-                          {}
-                        )
+                        const result = await mobile
+                          .rpc<{ bot: Bot; section: Section }>('hexbot.bots.create_primary', {})
+                          .catch(error => {
+                            if (!/unknown method|method not found/i.test(String(error))) throw error
+                            return mobile.rpc<{ bot: Bot; section: Section }>(
+                              'hexbot.bots.create',
+                              { name: 'hexbot', display_name: 'HexBot' }
+                            )
+                          })
                         await mobile.refresh()
                         await mobile.openSection(result.bot, result.section)
                         // HexBot greets the user and says what it does, as it does on the web.

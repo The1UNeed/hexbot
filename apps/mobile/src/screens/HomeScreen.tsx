@@ -268,12 +268,22 @@ function BotsTab({
         ) : (
           <EmptyState
             action={
-              onNewBot ? (
+              primaryChoice?.onAdd ? (
+                <Button
+                  label="Add HexBot"
+                  onPress={primaryChoice.onAdd}
+                  testID="bots-empty-primary"
+                />
+              ) : onNewBot ? (
                 <Button label="Create a bot" onPress={onNewBot} testID="bots-empty-create" />
               ) : null
             }
             face={{ name: 'Hexbot' }}
-            message="A bot has its own face, model, skills and memory."
+            message={
+              primaryChoice?.onAdd
+                ? 'HexBot is your primary bot. It sets up and looks after the rest.'
+                : 'A bot has its own face, model, skills and memory.'
+            }
             testID="bots-empty"
             title="No bots yet"
           />
@@ -296,7 +306,7 @@ function BotsTab({
           <Text accessibilityRole="header" style={styles.largeTitle} variant="largeTitle">
             Bots
           </Text>
-          {primaryChoice ? (
+          {primaryChoice && bots.length ? (
             <Banner
               actionLabel={primaryChoice.onAdd ? 'Add HexBot' : undefined}
               message={`It sets up and looks after your other bots, rooms, scheduled jobs and settings. ${

@@ -2801,7 +2801,10 @@ impl Runtime {
                 }
                 // The primary bot's job removals and job folders ask, whichever of
                 // its jobs tools it uses.
-                if s.tools.iter().any(|t| t["name"] == "hexbot_jobs") {
+                // By role, not tools: a promoted bot's older sections lack hexbot_jobs.
+                if crate::catalog::primary_bot(&self.home, &s.owner)?.as_deref()
+                    == Some(s.bot.as_str())
+                {
                     let job = args["job_id"].as_str().unwrap_or("");
                     if args["action"] == "remove" {
                         self.confirm(s, name, format!("Remove the scheduled job {job}"), args)
