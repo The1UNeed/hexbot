@@ -51,6 +51,8 @@ import type {
 
 /** A browser notification asks the app shell to open a section (routes/__root.tsx). */
 export const OPEN_SECTION_EVENT = 'hexbot:open-section'
+/** Under the app's notification limit (apps/desktop, `hexbot:notify`). */
+const NOTIFY_BODY = 1_000
 
 export interface EventRouterDeps {
   refreshBots?: () => void
@@ -161,21 +163,23 @@ export function routeEvent(event: GatewayEvent, deps: EventRouterDeps = {}): voi
       return
     case 'hexbot.checkins.message': {
       const bot = typeof payload.bot === 'string' ? payload.bot : ''
-      const body = typeof payload.text === 'string' ? payload.text : ''
+      const whole = typeof payload.text === 'string' ? payload.text : ''
       const sectionId = typeof payload.section_id === 'string' ? payload.section_id : undefined
       // An open Check-ins section shows it at once; history has the same row id.
       const live = sectionId ? useSections.getState().liveSessionId[sectionId] : undefined
 
-      if (live && transcripts.bySession[live] && body && typeof payload.row_id === 'string') {
+      if (live && transcripts.bySession[live] && whole && typeof payload.row_id === 'string') {
         transcripts.checkinMessage(live, {
           createdAt: typeof payload.timestamp === 'number' ? payload.timestamp * 1000 : Date.now(),
           id: payload.row_id,
-          text: body
+          text: whole
         })
       }
 
-      if (body && botNotifies(bot)) {
+      if (whole && botNotifies(bot)) {
         const title = useBots.getState().byName[bot]?.display_name ?? bot
+        // A notification shows a few lines; the whole message is in the section.
+        const body = whole.length > NOTIFY_BODY ? `${whole.slice(0, NOTIFY_BODY - 1)}…` : whole
         // The app notifies even with its window closed. A browser tab has no app
         // to go through, so it shows its own while in the background.
         transcriptNotify({ body, sectionId, title })

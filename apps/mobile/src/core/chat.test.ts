@@ -162,5 +162,8 @@ describe('check-in messages', () => {
       { id: 'checkin-1', role: 'assistant', text: 'Your PE feedback is due tonight.' }
     ])
     expect(checkinMessage(once, 'checkin-1', 'Your PE feedback is due tonight.')).toBe(once)
+    // Already in the history it loaded, under the same row id.
+    const loaded = { ...emptyChat(), messages: historyMessages([{ role: 'assistant', text: 'Hi', row_id: 'checkin-2' }]) }
+    expect(checkinMessage(loaded, 'checkin-2', 'Hi')).toBe(loaded)
   })
 })

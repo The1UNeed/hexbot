@@ -226,6 +226,17 @@ export function useMobile() {
         if (replay.reread && attempt < 2) continue
         straddling.current = replay.state.busy ? liveId.current : null
         let restored = { ...replay.state, error: failure }
+        // Check-ins that arrived while it loaded carry no session; match the section.
+        for (const event of loadingEvents.current ?? []) {
+          const p = (event.payload ?? {}) as Record<string, unknown>
+          if (
+            event.type === 'hexbot.checkins.message' &&
+            p.section_id === target.section.id &&
+            typeof p.row_id === 'string' &&
+            typeof p.text === 'string'
+          )
+            restored = checkinMessage(restored, p.row_id, p.text)
+        }
         if (result.pending_clarify)
           restored = reduceChat(restored, {
             type: 'clarify.request',

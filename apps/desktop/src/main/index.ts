@@ -134,12 +134,11 @@ async function createWindow(): Promise<BrowserWindow> {
       pendingLink = undefined
     }
   })
+  // On macOS the app outlives its window, so keep the page: it holds the
+  // connection that brings notifications, such as the primary bot's
+  // check-ins, from a daemon here or elsewhere.
   window.on('close', event => {
-    if (
-      !quitting &&
-      process.platform === 'darwin' &&
-      ['running', 'external'].includes(daemon.status().state)
-    ) {
+    if (!quitting && process.platform === 'darwin') {
       event.preventDefault()
       window.hide()
     }

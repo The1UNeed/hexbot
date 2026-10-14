@@ -143,13 +143,19 @@ more freedom and more capability than a hosted product can offer.
   switch silences both; the message still lands in the section.
 - The message reaches the section's context with the user's next message
   there: the extension adds it after that message (`before_agent_start`), so
-  the cached prefix and the frozen prompt stay intact. It is fenced as a
-  record of what the bot said, not instructions, and only the newest six go
-  in; older ones stay in the section's history. It counts as taken when Pi
+  the cached prefix and the frozen prompt stay intact. Each message is fenced
+  in `<checkin_message>` tags under a note that it is a record of what the
+  bot said, not instructions, and only the newest six go in; older ones stay
+  in the section's history. It counts as taken when Pi
   reports that custom message; one not reported is offered once more.
   Deleting the section empties what check-ins said there.
 - Only one check-in runs at a time. A failed one, or one the daemon stopped
-  in, gives its wake-ups back, and the next check-in waits 15 minutes.
+  in, gives its wake-ups back, and the next check-in waits 15 minutes from
+  when it ended. One schedule decides both when the tick runs a check-in and
+  what the Check-ins tab shows as the next one.
+- On macOS the app keeps its page when its window closes, whether the daemon
+  runs there or elsewhere, so its notifications keep coming. On Linux closing
+  the window quits the app; phone pushes still arrive.
   Settings, the bot's Check-ins tab, and `hexbot checkins` manage it.
 
 ### Approvals and tools

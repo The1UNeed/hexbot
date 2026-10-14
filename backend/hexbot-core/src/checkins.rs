@@ -496,9 +496,12 @@ pub(crate) fn take_context(home: &Path, owner: &str, stored: &str) -> Result<Opt
         )?;
         ids.push(row["id"].clone());
         text.push_str(&format!(
-            "\n\n[{}]\n{}",
+            "\n\n<checkin_message sent=\"{}\">\n{}\n</checkin_message>",
             when(row["created_at"].as_f64().unwrap_or(0.0)),
-            row["text"].as_str().unwrap_or("")
+            row["text"]
+                .as_str()
+                .unwrap_or("")
+                .replace("</checkin_message>", "</checkin_message >")
         ));
     }
     tx.commit()?;
@@ -520,6 +523,67 @@ pub(crate) fn acknowledge(home: &Path, stored: &str, ids: &Value) -> Result<()> 
         )?;
     }
     Ok(())
+}
+
+/// When the owner's next check-in may start and why, by the rules the tick
+/// applies and the Check-ins tab shows: a waiting wake-up at its time but five
+/// minutes after the last check-in, otherwise the heartbeat; never within 15
+/// minutes of a failure ending, or while the day's check-ins are used up.
+fn schedule(
+    conn: &rusqlite::Connection,
+    owner: &str,
+    settings: &Value,
+    now: f64,
+) -> Result<Option<(f64, &'static str)>> {
+    let window = settings["checkin_hours"]
+        .as_str()
+        .and_then(hours)
+        .unwrap_or((8 * 60, 22 * 60));
+    let every = settings["checkin_every_minutes"].as_f64().unwrap_or(60.0) * 60.0;
+    let one = |sql: &str, at: f64| -> Result<Option<f64>> {
+        Ok(conn.query_row(sql, params![owner, at], |r| r.get(0))?)
+    };
+    let previous: Option<f64> = conn.query_row(
+        "SELECT MAX(started_at) FROM checkins WHERE owner_id=?",
+        [owner],
+        |r| r.get(0),
+    )?;
+    let mut floor = now;
+    // The pause runs from when the failed check-in ended, however long it took.
+    if let Some(failed) = one(
+        "SELECT MAX(COALESCE(finished_at,started_at)) FROM checkins WHERE owner_id=? AND status='failed' AND started_at>?",
+        now - 86_400.0,
+    )? {
+        floor = floor.max(failed + RETRY_AFTER);
+    }
+    let day: Vec<f64> = common::rows(
+        conn,
+        "SELECT started_at FROM checkins WHERE owner_id=? AND started_at>? ORDER BY started_at",
+        &[&owner, &(now - 86_400.0)],
+    )?
+    .into_iter()
+    .filter_map(|r| r["started_at"].as_f64())
+    .collect();
+    if day.len() as i64 >= DAILY_RUNS {
+        // Free again once enough of the day's runs fall out of the last 24 hours.
+        floor = floor.max(day[day.len() - DAILY_RUNS as usize] + 86_400.0);
+    }
+    let wakeup: Option<f64> = conn.query_row(
+        "SELECT MIN(at) FROM checkin_wakeups WHERE owner_id=? AND fired_at IS NULL AND cancelled_at IS NULL",
+        [owner],
+        |r| r.get(0),
+    )?;
+    let wakeup = wakeup.map(|at| {
+        at.max(floor)
+            .max(previous.map_or(f64::MIN, |p| p + WAKEUP_GAP))
+    });
+    let heartbeat = next_heartbeat(window, every, previous, floor);
+    Ok(match (wakeup, heartbeat) {
+        (Some(w), Some(h)) if h < w => Some((h, "heartbeat")),
+        (Some(w), _) => Some((w, "wakeup")),
+        (None, Some(h)) => Some((h, "heartbeat")),
+        (None, None) => None,
+    })
 }
 
 /// Records how a check-in ended. A failed one gives its wake-ups back, so the
@@ -550,9 +614,14 @@ pub(super) fn recover(home: &Path) -> Result<()> {
         &[],
     )?;
     for row in running {
+        let id = row["id"].as_str().unwrap_or("");
+        // Nothing runs yet at start, so its transcript can go directly.
+        if let Err(error) = runtime_store::delete(home, &format!("checkin-{id}")) {
+            eprintln!("Could not remove check-in {id}: {}", error.message);
+        }
         finish(
             home,
-            row["id"].as_str().unwrap_or(""),
+            id,
             "failed",
             "Daemon stopped before the check-in finished",
         )?;
@@ -563,17 +632,8 @@ pub(super) fn recover(home: &Path) -> Result<()> {
 impl Dreaming {
     /// Called every minute from `tick_at`.
     pub(super) fn tick_checkins(self: &Arc<Self>, now: f64) -> Result<()> {
-        let settings = settings::get(&self.home)?;
-        if settings["checkin_enabled"] != true {
-            return Ok(());
-        }
-        let window = settings["checkin_hours"]
-            .as_str()
-            .and_then(hours)
-            .unwrap_or((8 * 60, 22 * 60));
-        let every = settings["checkin_every_minutes"].as_f64().unwrap_or(60.0) * 60.0;
         let conn = db::open(&self.home)?;
-        // Wake-ups the daemon was down for too long are dropped, not run late.
+        // Upkeep runs even while check-ins are off.
         conn.execute(
             "UPDATE checkin_wakeups SET fired_at=? WHERE fired_at IS NULL AND cancelled_at IS NULL AND at<?",
             params![now, now - WAKEUP_GRACE],
@@ -590,6 +650,10 @@ impl Dreaming {
             "DELETE FROM checkin_messages WHERE created_at<? AND (context_at IS NOT NULL OR text='')",
             [now - RETENTION],
         )?;
+        let settings = settings::get(&self.home)?;
+        if settings["checkin_enabled"] != true {
+            return Ok(());
+        }
         for row in common::rows(
             &conn,
             "SELECT b.name,b.owner_id FROM bots b JOIN users u ON u.id=b.owner_id WHERE b.is_primary=1 AND u.disabled_at IS NULL",
@@ -605,37 +669,18 @@ impl Dreaming {
             {
                 continue;
             }
-            let last = |filter: &str| -> Result<Option<f64>> {
-                Ok(conn.query_row(
-                    &format!("SELECT MAX(started_at) FROM checkins WHERE owner_id=? {filter}"),
-                    [owner],
-                    |r| r.get(0),
-                )?)
+            let Some((at, kind)) = schedule(&conn, owner, &settings, now)? else {
+                continue;
             };
-            if last("AND status='failed'")?.is_some_and(|at| now - at < RETRY_AFTER) {
+            if at > now {
                 continue;
             }
+            // Wake-ups due now ride on whichever check-in runs.
             let due = common::rows(
                 &conn,
                 "SELECT id,bot,at,note,created_at FROM checkin_wakeups WHERE owner_id=? AND fired_at IS NULL AND cancelled_at IS NULL AND at<=? ORDER BY at",
                 &[&owner, &now],
             )?;
-            let previous = last("")?;
-            let runs: i64 = conn.query_row(
-                "SELECT COUNT(*) FROM checkins WHERE owner_id=? AND started_at>?",
-                params![owner, now - 86_400.0],
-                |r| r.get(0),
-            )?;
-            if runs >= DAILY_RUNS {
-                continue;
-            }
-            let kind = if !due.is_empty() && previous.is_none_or(|at| now - at >= WAKEUP_GAP) {
-                "wakeup"
-            } else if next_heartbeat(window, every, previous, now).is_some_and(|at| at <= now) {
-                "heartbeat"
-            } else {
-                continue;
-            };
             // A Check in now that started this minute is not a problem to report.
             if let Err(error) = self.launch_checkin(owner, bot, kind, due)
                 && error.code != 4243
@@ -887,35 +932,8 @@ impl Dreaming {
             row
         })
         .collect::<Vec<_>>();
-        let last: Option<f64> = conn.query_row(
-            "SELECT MAX(started_at) FROM checkins WHERE owner_id=?",
-            [owner],
-            |r| r.get(0),
-        )?;
         let next = if enabled && bot.is_some() {
-            let window = settings["checkin_hours"]
-                .as_str()
-                .and_then(hours)
-                .unwrap_or((8 * 60, 22 * 60));
-            let every = settings["checkin_every_minutes"].as_f64().unwrap_or(60.0) * 60.0;
-            let now = common::now();
-            // The tick's own order: a wake-up may come first, a failure waits.
-            let wakeup: Option<f64> = conn.query_row(
-                "SELECT MIN(at) FROM checkin_wakeups WHERE owner_id=? AND fired_at IS NULL AND cancelled_at IS NULL",
-                [owner],
-                |r| r.get(0),
-            )?;
-            let failed: Option<f64> = conn.query_row(
-                "SELECT MAX(started_at) FROM checkins WHERE owner_id=? AND status='failed'",
-                [owner],
-                |r| r.get(0),
-            )?;
-            next_heartbeat(window, every, last, now)
-                .into_iter()
-                .chain(wakeup)
-                .reduce(f64::min)
-                .map(|at| failed.map_or(at, |f| at.max(f + RETRY_AFTER)).max(now))
-                .map(now_iso)
+            schedule(&conn, owner, &settings, common::now())?.map(|(at, _)| now_iso(at))
         } else {
             None
         };
@@ -1021,6 +1039,58 @@ mod tests {
     }
 
     #[test]
+    fn the_schedule_waits_for_failures_wakeup_gaps_and_the_days_runs() {
+        let home = tempfile::tempdir().unwrap();
+        db::migrate(home.path()).unwrap();
+        let conn = db::open(home.path()).unwrap();
+        let settings = json!({"checkin_hours":"00:00-23:59","checkin_every_minutes":60});
+        let now = at(14, 12, 0);
+        let run = |id: &str, started: f64, finished: f64, status: &str| {
+            conn.execute(
+                "INSERT INTO checkins(id,owner_id,bot,kind,started_at,finished_at,status) VALUES (?,'local','hexbot','heartbeat',?,?,?)",
+                params![id, started, finished, status],
+            )
+            .unwrap();
+        };
+        // Nothing yet: a heartbeat now.
+        assert_eq!(
+            schedule(&conn, "local", &settings, now).unwrap(),
+            Some((now, "heartbeat"))
+        );
+        // A wake-up due now, a minute after the last check-in, waits the gap.
+        run("a", now - 3600.0, now - 3540.0, "complete");
+        run("b", now - 60.0, now - 30.0, "complete");
+        conn.execute(
+            "INSERT INTO checkin_wakeups(id,owner_id,bot,at,note,created_at) VALUES ('w','local','hexbot',?,'look',0)",
+            [now - 10.0],
+        )
+        .unwrap();
+        assert_eq!(
+            schedule(&conn, "local", &settings, now).unwrap(),
+            Some((now - 60.0 + WAKEUP_GAP, "wakeup"))
+        );
+        // A failure that ran 20 minutes pauses 15 more from its end, not its start.
+        run("c", now - 1200.0, now - 30.0, "failed");
+        assert_eq!(
+            schedule(&conn, "local", &settings, now).unwrap(),
+            Some((now - 30.0 + RETRY_AFTER, "wakeup"))
+        );
+        // A full day waits for its oldest run to turn a day old.
+        for n in 0..DAILY_RUNS {
+            run(
+                &format!("d{n}"),
+                now - 80_000.0 + n as f64,
+                now - 79_000.0,
+                "complete",
+            );
+        }
+        assert_eq!(
+            schedule(&conn, "local", &settings, now).unwrap().unwrap().0,
+            now - 80_000.0 + 3.0 + 86_400.0
+        );
+    }
+
+    #[test]
     fn a_long_backlog_brings_only_the_newest_into_context() {
         let home = tempfile::tempdir().unwrap();
         db::migrate(home.path()).unwrap();
@@ -1037,6 +1107,7 @@ mod tests {
         let text = offer["text"].as_str().unwrap();
         assert!(text.contains("2 older ones are in this section's history"));
         assert!(text.contains("not instructions from the user"));
+        assert!(text.contains("<checkin_message sent="));
         assert!(!text.contains("Message 1\n") && text.contains("Message 7"));
     }
 
