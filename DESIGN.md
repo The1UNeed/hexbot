@@ -160,9 +160,13 @@ more freedom and more capability than a hosted product can offer.
   own persistent Pi conversation with its own context window; the threads in
   which bots ask each other for help are sections too.
 - Updating from a build with many sections per bot keeps, for each bot, the
-  section with the latest conversation (something said, not archived, not the
-  old Dreams log, newest) and deletes the rest with their history. Memory and
-  notes stay.
+  section with the latest conversation (something said, not the old Dreams
+  log, not archived, newest) and deletes the rest with their history. It runs
+  once, and first copies `hexbot.db`, `hexbot-runtime.db`, the bots'
+  `state.db` and `runtime/sessions` to
+  `backups/one-chat-per-bot-<time>/`; if the copy fails nothing is deleted.
+  A bot whose conversations recovery could not read keeps them all. Memory
+  and notes stay.
 - A chat starts with the bot's memory and a catalog of skill descriptions.
   It loads skill bodies when needed. It picks up the current name, soul,
   memory, About you, teammates and skill catalog after compaction if the next

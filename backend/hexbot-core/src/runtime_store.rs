@@ -452,6 +452,16 @@ pub fn import_hermes(home: &Path, bot: &str, stored: &str, cwd: &Path) -> Result
     let mut raw = Vec::<(i64, Value, Value)>::new();
     let mut projected = Vec::<Value>::new();
     if path.exists() {
+        // Dream reports an earlier build posted as the bot's messages: shown,
+        // never the bot's context.
+        let reports = common::rows(
+            &crate::db::open(home)?,
+            "SELECT DISTINCT summary FROM dreams WHERE bot=? AND summary<>''",
+            &[&bot],
+        )?
+        .into_iter()
+        .filter_map(|row| row["summary"].as_str().map(str::to_owned))
+        .collect::<HashSet<_>>();
         let conn = Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
         let (rows, tip) = legacy_rows(&conn, stored)?;
         {
@@ -553,7 +563,15 @@ pub fn import_hermes(home: &Path, bot: &str, stored: &str, cwd: &Path) -> Result
                     }
                     _ => continue,
                 };
-                if context {
+                let report = role == "assistant"
+                    && message["content"]
+                        .as_array()
+                        .is_some_and(|blocks| blocks.len() == 1)
+                    && reports.contains(&body);
+                if report {
+                    projection["dream"] = json!(true);
+                }
+                if context && !report {
                     raw.push((row["id"].as_i64().unwrap_or(0), message, projection.clone()));
                 }
                 projected.push(projection);
@@ -1321,7 +1339,9 @@ fn reorder_projection(conn: &Connection, stored: &str, source_order: &[i64]) -> 
 
 /// Recover every previously opened session before serving usage or catalog RPCs.
 /// Unread conversations must count toward budgets and dreaming after a crash.
-pub fn reconcile_all(home: &Path) -> Result<()> {
+/// Returns the conversations a transient error kept from being recovered.
+pub fn reconcile_all(home: &Path) -> Result<BTreeSet<String>> {
+    let mut unrecovered = BTreeSet::new();
     let sessions = common::rows(
         &open(home)?,
         "SELECT stored_id,owner,bot FROM native_sessions ORDER BY stored_id",
@@ -1359,6 +1379,7 @@ pub fn reconcile_all(home: &Path) -> Result<()> {
                     .is_some_and(|d| d["transient"] == true || d["quarantined"] == true)
             {
                 eprintln!("Could not recover conversation {stored}: {error}");
+                unrecovered.insert(stored.to_owned());
                 continue;
             }
             eprintln!("Quarantining conversation {stored}: {}", error.message);
@@ -1380,7 +1401,7 @@ pub fn reconcile_all(home: &Path) -> Result<()> {
             }
         }
     }
-    Ok(())
+    Ok(unrecovered)
 }
 
 fn check_quarantine(home: &Path, stored: &str) -> Result<()> {

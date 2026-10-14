@@ -175,11 +175,11 @@ the roster slides in as a drawer.
   into one small muted line at the foot of the turn ("Thought for 12s",
   "Worked for 3s") that opens into the same card. Work that finished in under two
   seconds leaves no line.
-  Housekeeping tools (memory, tasks, section search, skills, renaming the
-  section) never appear once finished. The Computer tab in the panel still
+  Housekeeping tools (memory, tasks, history search, skills) never appear
+  once finished. The Computer tab in the panel still
   lists every call.
 - Approvals: an inline card with the command or action in monospace, the
-  reason, and three buttons: Approve, Allow in this section, Deny. Requests
+  reason, and three buttons: Approve, Allow for now, Deny. Requests
   raised by the daemon (code runs, browser scripts, cron) show Approve and
   Deny only. The card stays in the transcript after the decision, marked
   with the outcome.

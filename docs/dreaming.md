@@ -152,9 +152,11 @@ The native scheduler and digest builder live in
   `dream: true` in the bot's chat, made if it has none. It does not trigger
   another agent turn, and it is shown, not said: the bot's Pi conversation
   does not include it. An idle chat is closed first so open clients load the
-  report; a busy one shows it when it next opens. Updating from the old
-  separate `Dreams` section keeps it only when it was the bot's one
-  conversation, and then marks its messages as reports.
+  report; in a busy one, open clients reload the chat when its turn settles.
+  Updating from the old separate `Dreams` section keeps it only when the bot
+  has no other conversation, archived or not, and then marks its reports.
+  Reports an earlier build left in the old store are marked when the chat
+  first opens, so they never enter the bot's context either.
 - `hexbot.dreaming.run_now {bot}` starts a dream immediately.
   `hexbot.dreaming.status {bot}` reports the last run, next run, and last error.
   Interrupted dreams are marked failed when the daemon restarts.

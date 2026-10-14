@@ -268,26 +268,27 @@ pub fn chat_section(home: &Path, caller: &str, name: &str) -> Result<Value> {
 }
 /// Earlier builds kept many sections per bot. The one with the latest
 /// conversation stays as the bot's chat and the others are deleted with their
-/// history; memory and notes stay. Runs before the runtime starts, so nothing
-/// is live. Dream reports in a kept Dreams log are marked as reports.
+/// history, after a copy of everything they are deleted from goes to
+/// `backups/`; memory and notes stay. Runs once, before the runtime starts, so
+/// nothing is live. Dream reports in the chats that stay are marked as reports.
 pub fn one_chat_per_bot(home: &Path) -> Result<()> {
     // The log earlier builds posted dream reports to, never renamed.
     const DREAM_LOG: &str =
         "peer_bot IS NULL AND title='Dreams' AND title_by IS NULL AND COALESCE(title_dirty,0)=0";
     let conn = db::open(home)?;
-    // Runs fully once; later starts only when an older build made sections
-    // again, which brings a second one, its dream log included.
-    let pending: bool = conn.query_row(
-        "SELECT NOT EXISTS(SELECT 1 FROM settings WHERE key='one_chat_per_bot') OR EXISTS(SELECT 1 FROM sections WHERE peer_bot IS NULL GROUP BY owner_id,bot HAVING COUNT(*)>1)",
+    // Runs once. Sections an older build makes later are never deleted:
+    // chat_section picks the bot's chat among them.
+    let done: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM settings WHERE key='one_chat_per_bot')",
         [],
         |r| r.get(0),
     )?;
-    if !pending {
+    if done {
         return Ok(());
     }
     // After a crash Pi's own log can hold the newest messages; recover them
     // before choosing which conversation stays.
-    runtime_store::reconcile_all(home)?;
+    let unrecovered = runtime_store::reconcile_all(home)?;
     let titled = rows(
         &conn,
         &format!("SELECT id FROM sections WHERE {DREAM_LOG}"),
@@ -393,27 +394,34 @@ pub fn one_chat_per_bot(home: &Path) -> Result<()> {
         }
         chats.entry(key).or_default().push((row, count));
     }
-    // A conversation recovery set aside stays with its bot's others until
-    // it is repaired, so the healthy ones are never deleted in its favour.
+    // A bot with a conversation recovery set aside or could not read keeps
+    // all its sections: what it holds is unknown, so none is deleted.
     let quarantined = runtime
         .prepare("SELECT session_id FROM native_quarantine")?
         .query_map([], |r| r.get::<_, String>(0))?
         .collect::<std::result::Result<std::collections::BTreeSet<_>, _>>()?;
+    // What stays and what goes, decided before anything is deleted.
+    let mut kept = vec![];
+    let mut doomed = vec![];
     for ((owner, bot), mut sections) in chats {
-        if sections.len() > 1
-            && sections
-                .iter()
-                .any(|(row, _)| quarantined.contains(row["id"].as_str().unwrap_or("")))
-        {
+        if sections.iter().any(|(row, _)| {
+            let id = row["id"].as_str().unwrap_or("");
+            quarantined.contains(id) || unrecovered.contains(id)
+        }) {
+            kept.extend(
+                sections
+                    .into_iter()
+                    .map(|(row, _)| (bot.clone(), row, false)),
+            );
             continue;
         }
-        // Something said first, then not put away, then not the dream log, then newest.
+        // Something said first, then not the dream log, then not put away, then newest.
         sections.sort_by(|(a, a_count), (b, b_count)| {
             let rank = |row: &Value, count: i64| {
                 (
                     count > 0,
-                    row["archived_at"].is_null(),
                     !logs.contains(row["id"].as_str().unwrap_or("")),
+                    row["archived_at"].is_null(),
                 )
             };
             rank(b, *b_count).cmp(&rank(a, *a_count)).then(
@@ -423,6 +431,35 @@ pub fn one_chat_per_bot(home: &Path) -> Result<()> {
                     .total_cmp(&a["updated_at"].as_f64().unwrap_or(0.0)),
             )
         });
+        let (row, count) = sections.remove(0);
+        for (other, _) in sections {
+            doomed.push((owner.clone(), bot.clone(), other));
+        }
+        if count < 0 {
+            // The chat is made on first use.
+            doomed.push((owner, bot, row));
+        } else {
+            kept.push((bot, row, true));
+        }
+    }
+    if !doomed.is_empty() {
+        let bots = doomed
+            .iter()
+            .map(|(_, bot, _)| bot.as_str())
+            .collect::<std::collections::BTreeSet<_>>();
+        match back_up(home, &bots) {
+            Ok(dir) => eprintln!(
+                "Each bot now keeps one chat. The sections before the upgrade are backed up in {}",
+                dir.display()
+            ),
+            Err(error) => {
+                // Nothing is deleted without a copy; the next start tries again.
+                eprintln!("Kept every section: could not back them up first: {error}");
+                return Ok(());
+            }
+        }
+    }
+    for (owner, bot, row) in doomed {
         // Deleting stamps activity; this is not the bot's.
         let activity: Option<f64> = conn
             .query_row(
@@ -432,33 +469,27 @@ pub fn one_chat_per_bot(home: &Path) -> Result<()> {
             )
             .optional()?
             .flatten();
-        let (kept, kept_count) = sections.remove(0);
-        for (row, _) in sections {
-            delete_section(home, &owner, row["id"].as_str().unwrap_or(""), true)?;
-        }
-        let id = kept["id"].as_str().unwrap_or("");
-        if kept_count < 0 {
-            // The chat is made on first use.
-            delete_section(home, &owner, id, true)?;
-        } else {
-            // The reports, not what the user said there or the bot's replies.
-            for summary in reports.get(&bot).into_iter().flatten() {
-                runtime.execute(
-                    "UPDATE native_messages SET message_json=json_set(message_json,'$.dream',json('true')) WHERE session_id=? AND json_extract(message_json,'$.role')='assistant' AND json_extract(message_json,'$.text')=?",
-                    params![id, summary],
-                )?;
-            }
-            if logs.contains(id) && kept["title"] == "Dreams" {
-                conn.execute(
-                    "UPDATE sections SET title='General',title_by=NULL WHERE id=?",
-                    [id],
-                )?;
-            }
-        }
+        delete_section(home, &owner, row["id"].as_str().unwrap_or(""), true)?;
         conn.execute(
             "UPDATE bots SET last_activity_at=? WHERE name=?",
             params![activity, bot],
         )?;
+    }
+    for (bot, row, chat) in kept {
+        let id = row["id"].as_str().unwrap_or("");
+        // The reports, not what the user said there or the bot's replies.
+        for summary in reports.get(&bot).into_iter().flatten() {
+            runtime.execute(
+                "UPDATE native_messages SET message_json=json_set(message_json,'$.dream',json('true')) WHERE session_id=? AND json_extract(message_json,'$.role')='assistant' AND json_extract(message_json,'$.text')=?",
+                params![id, summary],
+            )?;
+        }
+        if chat && logs.contains(id) && row["title"] == "Dreams" {
+            conn.execute(
+                "UPDATE sections SET title='General',title_by=NULL WHERE id=?",
+                [id],
+            )?;
+        }
     }
     // Previews were each section's first message; a chat shows its latest.
     runtime.execute("DELETE FROM native_summaries", [])?;
@@ -466,6 +497,60 @@ pub fn one_chat_per_bot(home: &Path) -> Result<()> {
         "INSERT OR REPLACE INTO settings(key,value) VALUES('one_chat_per_bot','true')",
         [],
     )?;
+    Ok(())
+}
+/// Copies the databases and conversation files the upgrade deletes from into
+/// `backups/one-chat-per-bot-<time>/`, whole or not at all.
+fn back_up(home: &Path, bots: &std::collections::BTreeSet<&str>) -> Result<PathBuf> {
+    let dir = home.join("backups").join(format!(
+        "one-chat-per-bot-{}",
+        chrono::Utc::now().format("%Y%m%d-%H%M%S")
+    ));
+    let partial = dir.with_extension("partial");
+    if partial.exists() {
+        fs::remove_dir_all(&partial)?;
+    }
+    fs::create_dir_all(&partial)?;
+    let copy = |conn: &Connection, to: PathBuf| -> Result<()> {
+        fs::create_dir_all(to.parent().unwrap_or(&partial))?;
+        conn.execute("VACUUM INTO ?", [to.to_string_lossy()])?;
+        Ok(())
+    };
+    copy(&db::open(home)?, partial.join("hexbot.db"))?;
+    copy(
+        &runtime_store::open(home)?,
+        partial.join("hexbot-runtime.db"),
+    )?;
+    // Conversations from before the native daemon are deleted there too.
+    for bot in bots {
+        let path = profile(home, bot)?.join("state.db");
+        safe(home, &path)?;
+        if path.exists() {
+            copy(
+                &Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?,
+                partial.join("profiles").join(bot).join("state.db"),
+            )?;
+        }
+    }
+    let sessions = home.join("runtime/sessions");
+    if sessions.exists() {
+        copy_tree(&sessions, &partial.join("runtime/sessions"))?;
+    }
+    fs::rename(&partial, &dir)?;
+    Ok(dir)
+}
+fn copy_tree(from: &Path, to: &Path) -> Result<()> {
+    fs::create_dir_all(to)?;
+    for entry in fs::read_dir(from)? {
+        let entry = entry?;
+        let kind = entry.file_type()?;
+        let target = to.join(entry.file_name());
+        if kind.is_dir() {
+            copy_tree(&entry.path(), &target)?;
+        } else if kind.is_file() {
+            fs::copy(entry.path(), target)?;
+        }
+    }
     Ok(())
 }
 /// The first message of a section in the store from before the native daemon,
@@ -1660,6 +1745,10 @@ mod parity_tests {
                  INSERT INTO sections(id,bot,owner_id,title,updated_at) VALUES('kit_named','kit','alice','Dreams',9),('kit_old','kit','alice','Old',2);
                  INSERT INTO bots(name,owner_id) VALUES('dog','alice'),('elk','alice'),('fly','alice'),('gnu','alice'),('hen','alice'),('ivy','alice'),('jay','alice'),('kit','alice'),('lynx','alice'),('mole','alice');
                  INSERT INTO sections(id,bot,owner_id,title,updated_at) VALUES('mole_native','mole','alice','Native',3),('mole_legacy','mole','alice','Legacy',1);
+                 INSERT INTO bots(name,owner_id) VALUES('nan','alice'),('yak','alice');
+                 INSERT INTO sections(id,bot,owner_id,title,updated_at,archived_at) VALUES('nan_trip','nan','alice','Trip',5,5),('nan_dreams','nan','alice','Dreams',10,NULL);
+                 INSERT INTO dreams(id,bot,started_at,status,summary) VALUES('d6','nan',1,'complete','Nan learned');
+                 INSERT INTO sections(id,bot,owner_id,title,updated_at) VALUES('yak_new','yak','alice','New',9),('yak_old','yak','alice','Old',2);
                  INSERT INTO sections(id,bot,owner_id,title,updated_at) VALUES('lynx_damaged','lynx','alice','Damaged',9),('lynx_healthy','lynx','alice','Healthy',2);
                  INSERT INTO sections(id,bot,owner_id,title,title_dirty,updated_at) VALUES('jay_log','jay','alice','Nightly',1,9),('jay_chat','jay','alice','Plans',0,2);
                  INSERT INTO sections(id,bot,owner_id,title,updated_at) VALUES('ivy_chat','ivy','alice','General',9),('ivy_old','ivy','alice','Old',2);
@@ -1783,6 +1872,37 @@ mod parity_tests {
                  INSERT INTO messages VALUES(1,'mole_legacy','user','Newer',8);",
             )
             .unwrap();
+        // Nan put a real conversation away; its Dreams log is still out.
+        said(
+            home.path(),
+            "nan_trip",
+            json!({"role":"user","text":"Plan the trip","timestamp":5}),
+        );
+        said(
+            home.path(),
+            "nan_dreams",
+            json!({"role":"assistant","text":"Nan learned","timestamp":10}),
+        );
+        // Yak's older conversation could not be read when the upgrade ran.
+        said(
+            home.path(),
+            "yak_new",
+            json!({"role":"user","text":"Newer","timestamp":9}),
+        );
+        said(
+            home.path(),
+            "yak_old",
+            json!({"role":"user","text":"Older","timestamp":2}),
+        );
+        fs::create_dir_all(
+            home.path()
+                .join("runtime/sessions/yak_old/conversation.jsonl"),
+        )
+        .unwrap();
+        // A file of a conversation the upgrade deletes.
+        let upload = home.path().join("runtime/sessions/put_away/attachments");
+        fs::create_dir_all(&upload).unwrap();
+        fs::write(upload.join("ticket.txt"), "seat 12").unwrap();
         // Recovery set Lynx's newest conversation aside.
         said(
             home.path(),
@@ -1854,6 +1974,47 @@ mod parity_tests {
             )
             .unwrap();
         one_chat_per_bot(home.path()).unwrap();
+        // Everything it deleted from was copied first.
+        let backups = fs::read_dir(home.path().join("backups"))
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .collect::<Vec<_>>();
+        assert_eq!(backups.len(), 1);
+        let backup = &backups[0];
+        assert!(
+            backup
+                .file_name()
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .starts_with("one-chat-per-bot-")
+        );
+        assert_eq!(
+            fs::read_to_string(backup.join("runtime/sessions/put_away/attachments/ticket.txt"))
+                .unwrap(),
+            "seat 12"
+        );
+        let copied: String = Connection::open(backup.join("hexbot.db"))
+            .unwrap()
+            .query_row("SELECT title FROM sections WHERE id='put_away'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(copied, "Trip");
+        let copied: i64 = Connection::open(backup.join("hexbot-runtime.db"))
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM native_messages WHERE session_id='put_away'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(copied, 1);
+        let copied: String = Connection::open(backup.join("profiles/fly/state.db"))
+            .unwrap()
+            .query_row("SELECT content FROM messages", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(copied, "Newer");
         // Lynx keeps both until its conversation is repaired.
         let lynx: i64 = db::open(home.path())
             .unwrap()
@@ -1880,10 +2041,27 @@ mod parity_tests {
                 [],
             )
             .unwrap();
+        // A section an older build makes afterwards is never deleted.
+        db::open(home.path())
+            .unwrap()
+            .execute(
+                "INSERT INTO sections(id,bot,owner_id,title,updated_at) VALUES('again','owl','alice','Again',20)",
+                [],
+            )
+            .unwrap();
+        said(
+            home.path(),
+            "again",
+            json!({"role":"user","text":"Hello again","timestamp":20}),
+        );
         one_chat_per_bot(home.path()).unwrap();
         assert_eq!(
             runtime_store::summary(home.path(), "kit_named").unwrap()["preview"],
             "cached"
+        );
+        assert_eq!(
+            fs::read_dir(home.path().join("backups")).unwrap().count(),
+            1
         );
         let ids = |bot: &str| {
             rows(
@@ -1896,8 +2074,8 @@ mod parity_tests {
             .map(|r| r["id"].as_str().unwrap().to_owned())
             .collect::<Vec<_>>()
         };
-        // Said something, not archived, not the dream log: Garden, though older.
-        assert_eq!(ids("owl"), ["old", "thread"]);
+        // Said something, not the dream log, not archived: Garden, though older.
+        assert_eq!(ids("owl"), ["again", "old", "thread"]);
         assert!(
             runtime_store::history(home.path(), "put_away")
                 .unwrap()
@@ -1905,8 +2083,16 @@ mod parity_tests {
         );
         assert_eq!(
             chat_section(home.path(), "alice", "owl").unwrap()["id"],
-            "old"
+            "again"
         );
+        // A conversation put away outranks a Dreams log still out.
+        assert_eq!(ids("nan"), ["nan_trip"]);
+        assert_eq!(
+            chat_section(home.path(), "alice", "nan").unwrap()["id"],
+            "nan_trip"
+        );
+        // A bot with a conversation recovery could not read keeps them all.
+        assert_eq!(ids("yak"), ["yak_new", "yak_old"]);
         // A bot whose only conversation was its dream log keeps it, as reports.
         assert_eq!(ids("fox"), ["fox_dreams"]);
         let fox = chat_section(home.path(), "alice", "fox").unwrap();
@@ -1995,6 +2181,92 @@ mod parity_tests {
         assert_eq!(again["section"]["id"], ant["id"]);
         assert!(again["section"]["archived_at"].is_null());
         assert_eq!(ids("ant").len(), 1);
+    }
+    #[test]
+    fn older_dream_reports_stay_out_of_the_bots_context() {
+        let home = tempfile::tempdir().unwrap();
+        db::migrate(home.path()).unwrap();
+        db::open(home.path())
+            .unwrap()
+            .execute_batch(
+                "INSERT INTO users(id,display_name,role,created_at) VALUES('alice','Alice','admin',0);
+                 INSERT INTO bots(name,owner_id) VALUES('owl','alice');
+                 INSERT INTO sections(id,bot,owner_id,title) VALUES('log','owl','alice','Dreams');
+                 INSERT INTO dreams(id,bot,started_at,status,summary) VALUES('d1','owl',1,'complete','Owl learned'),('d2','owl',2,'complete','Owl learned more');",
+            )
+            .unwrap();
+        // An earlier build posted the first report; this one posted the second
+        // before the log was ever opened.
+        let owl = home.path().join("profiles/owl");
+        fs::create_dir_all(&owl).unwrap();
+        Connection::open(owl.join("state.db"))
+            .unwrap()
+            .execute_batch(
+                "CREATE TABLE sessions(id TEXT,session_key TEXT,parent_session_id TEXT,model_config TEXT,source TEXT);
+                 CREATE TABLE messages(id INTEGER,session_id TEXT,role TEXT,content TEXT,timestamp REAL);
+                 INSERT INTO sessions(id,session_key) VALUES('log','log');
+                 INSERT INTO messages VALUES(1,'log','assistant','Owl learned',1),(2,'log','user','Why?',1.5),(3,'log','assistant','Because',1.6);",
+            )
+            .unwrap();
+        said(
+            home.path(),
+            "log",
+            json!({"role":"assistant","text":"Owl learned more","dream":true,"timestamp":2000}),
+        );
+        one_chat_per_bot(home.path()).unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        runtime_store::import_hermes(home.path(), "owl", "log", workspace.path()).unwrap();
+        let history = runtime_store::history(home.path(), "log").unwrap();
+        assert_eq!(
+            history
+                .iter()
+                .map(|m| (m["text"].as_str().unwrap(), m["dream"] == true))
+                .collect::<Vec<_>>(),
+            [
+                ("Owl learned", true),
+                ("Why?", false),
+                ("Because", false),
+                ("Owl learned more", true)
+            ]
+        );
+        let context =
+            fs::read_to_string(home.path().join("runtime/sessions/log/conversation.jsonl"))
+                .unwrap();
+        assert!(!context.contains("Owl learned"));
+        assert!(context.contains("Because"));
+    }
+    #[test]
+    fn the_upgrade_deletes_nothing_it_could_not_back_up() {
+        let home = tempfile::tempdir().unwrap();
+        db::migrate(home.path()).unwrap();
+        db::open(home.path())
+            .unwrap()
+            .execute_batch(
+                "INSERT INTO users(id,display_name,role,created_at) VALUES('alice','Alice','admin',0);
+                 INSERT INTO bots(name,owner_id) VALUES('owl','alice');
+                 INSERT INTO sections(id,bot,owner_id,title,updated_at) VALUES('new','owl','alice','New',9),('old','owl','alice','Old',2);",
+            )
+            .unwrap();
+        said(home.path(), "new", json!({"role":"user","text":"Newer"}));
+        said(home.path(), "old", json!({"role":"user","text":"Older"}));
+        // Something in the way of the backup folder.
+        fs::write(home.path().join("backups"), "").unwrap();
+        one_chat_per_bot(home.path()).unwrap();
+        let count = || -> i64 {
+            db::open(home.path())
+                .unwrap()
+                .query_row("SELECT COUNT(*) FROM sections", [], |r| r.get(0))
+                .unwrap()
+        };
+        assert_eq!(count(), 2);
+        // The next start tries again.
+        fs::remove_file(home.path().join("backups")).unwrap();
+        one_chat_per_bot(home.path()).unwrap();
+        assert_eq!(count(), 1);
+        assert_eq!(
+            fs::read_dir(home.path().join("backups")).unwrap().count(),
+            1
+        );
     }
     #[test]
     fn kickoff_keeps_marker_and_name_shaped_questions() {

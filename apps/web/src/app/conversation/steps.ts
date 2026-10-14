@@ -11,7 +11,7 @@ const VERBS: Record<string, [live: string, done: string]> = {
   delegate_task: ['Delegating', 'Delegated'],
   codemode: ['Running code', 'Ran code'],
   execute_code: ['Running code', 'Ran code'],
-  hexbot_rename_section: ['Naming the section', 'Named the section'],
+  hexbot_rename_section: ['Naming the chat', 'Named the chat'],
   hexbot_show_html: ['Drawing', 'Drew'],
   hexbot_soul: ['Updating soul', 'Updated soul'],
   image_generate: ['Generating an image', 'Generated an image'],

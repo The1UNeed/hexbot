@@ -178,6 +178,10 @@ impl Runtime {
             .cloned();
         if let Some(s) = existing {
             common::bot_owner(&self.home, caller, &s.bot)?;
+            if input {
+                // Under the open lock, which moves it to new tools or a new model.
+                return self.open_for_input(caller, &s.bot, &s.stored).await;
+            }
             s.state.lock().unwrap().last_activity = common::now();
             return Ok(s);
         }
@@ -217,7 +221,7 @@ impl Runtime {
             let Ok(guard) = lock.try_lock_owned() else {
                 continue;
             };
-            if self.retire_quiet(&s, before) {
+            if self.retire_quiet(&s, before, false) {
                 expired.push((s.clone(), guard));
                 // Under capacity pressure retire only the least recently used bot.
                 if before == f64::INFINITY {
@@ -231,9 +235,11 @@ impl Runtime {
         Ok(expired.len())
     }
     /// Marks a section closed and takes it out of the map when nothing in it is
-    /// still running or unsaved and it was last used before `before`. The
-    /// caller holds its open lock and then stops it with `stop_retired`.
-    fn retire_quiet(&self, s: &Arc<Live>, before: f64) -> bool {
+    /// still running or unsaved and it was last used before `before`. Uploads
+    /// waiting for the next prompt keep it open unless `uploads_move`: the
+    /// caller then hands them to the process that replaces it. The caller
+    /// holds its open lock and then stops it with `stop_retired`.
+    fn retire_quiet(&self, s: &Arc<Live>, before: f64, uploads_move: bool) -> bool {
         let has_children = self
             .children
             .lock()
@@ -251,7 +257,7 @@ impl Runtime {
             || state.busy
             || state.closed
             || !state.pending.is_empty()
-            || !state.staged.is_empty()
+            || !(uploads_move || state.staged.is_empty())
             || !state.unsaved.is_empty()
             || state.last_activity >= before
             || !s.requests.lock().unwrap().is_empty()
@@ -533,19 +539,25 @@ impl Runtime {
         common::bot_owner(&self.home, owner, bot)?;
         store::session_dir(&self.home, stored)?;
         let running = self.sessions.lock().unwrap().get(stored).cloned();
+        // Rebuilding the tool list reads every config, so it is done once.
+        let mut stale = None;
+        let mut uploads = vec![];
         if let Some(s) = running {
             if s.owner != owner {
                 return Err(Error::new(4302, "not the owner"));
             }
             // A new model or new tools start a new process on the same
-            // conversation and live ID. A section still working switches next time.
+            // conversation and live ID, and uploads waiting for the next
+            // prompt move to it. A section still working switches next time.
             if !(input
-                && (self.model_changed(&s)? || self.tools_stale(owner, bot, stored)?)
-                && self.retire_quiet(&s, f64::INFINITY))
+                && (self.model_changed(&s)?
+                    || *stale.insert(self.tools_stale(owner, bot, stored)?))
+                && self.retire_quiet(&s, f64::INFINITY, true))
             {
                 s.state.lock().unwrap().last_activity = common::now();
                 return Ok(s);
             }
+            uploads = std::mem::take(&mut s.state.lock().unwrap().staged);
             self.stop_retired(&s).await;
         }
         let permit = match self.capacity.clone().try_acquire_owned() {
@@ -589,7 +601,13 @@ impl Runtime {
             )
             .optional()?;
         let options = match existing {
-            Some(options) if !(input && self.tools_stale(owner, bot, stored)?) => {
+            Some(options)
+                if !(input
+                    && match stale {
+                        Some(stale) => stale,
+                        None => self.tools_stale(owner, bot, stored)?,
+                    }) =>
+            {
                 serde_json::from_str::<Value>(&options)
                     .map_err(|e| Error::new(5200, e.to_string()))?
             }
@@ -824,7 +842,7 @@ impl Runtime {
                 tool_dialogs: std::collections::HashSet::new(),
                 native_approvals: HashMap::new(),
                 display: VecDeque::new(),
-                staged: vec![],
+                staged: uploads,
                 chain: Chain::default(),
                 tool_started: HashMap::new(),
                 tool_context: HashMap::new(),
@@ -1647,7 +1665,7 @@ impl Runtime {
         };
         // Checked and retired under the session's locks, so a message sent
         // meanwhile either lands first or opens it again.
-        if self.retire_quiet(&s, f64::INFINITY) {
+        if self.retire_quiet(&s, f64::INFINITY, false) {
             self.stop_retired(&s).await;
             return Ok(true);
         }
@@ -1914,10 +1932,7 @@ impl Runtime {
             method,
             "prompt.submit" | "image.attach_bytes" | "pdf.attach" | "file.attach"
         );
-        let mut s = self.live(caller, required(p, "session_id")?, input).await?;
-        if input && (self.model_changed(&s)? || self.tools_stale(&s.owner, &s.bot, &s.stored)?) {
-            s = self.open_for_input(caller, &s.bot, &s.stored).await?;
-        }
+        let s = self.live(caller, required(p, "session_id")?, input).await?;
         match method {
             "prompt.submit" => {
                 let uploads = match &p["attachments"] {
@@ -4602,6 +4617,51 @@ rl.on('line',line=>{{const c=JSON.parse(line);emit({{type:'response',id:c.id,com
             )
             .unwrap();
         assert!(!runtime.tools_stale("alice", "owl", "ask").unwrap());
+    }
+    #[tokio::test]
+    async fn uploads_waiting_for_the_next_message_move_to_the_chat_with_new_tools() {
+        let (home, runtime, _) = setup();
+        let config = home.path().join("profiles/owl/config.yaml");
+        fs::write(&config, "tools:\n  enabled_toolsets: [hexbot]\n").unwrap();
+        let s = runtime
+            .open_for_input("alice", "owl", "first")
+            .await
+            .unwrap();
+        assert!(s.tools.iter().any(|t| t["name"] == "message_bot"));
+        let file = runtime
+            .call(
+                "alice",
+                "file.attach",
+                &json!({"session_id":s.id,"name":"a.txt","data_url":"data:text/plain;base64,YQ=="}),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        // The user turns a tool off between the upload and the message.
+        fs::write(&config, "tools:\n  enabled_toolsets: []\n").unwrap();
+        runtime
+            .call(
+                "alice",
+                "prompt.submit",
+                &json!({"session_id":s.id,"text":"Read this","attachments":[file["id"]]}),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        let now = runtime.open_session("alice", "owl", "first").await.unwrap();
+        assert!(!Arc::ptr_eq(&s, &now));
+        assert!(!now.tools.iter().any(|t| t["name"] == "message_bot"));
+        let sent: String = store::open(home.path())
+            .unwrap()
+            .query_row(
+                "SELECT text FROM native_prompt_intents WHERE session_id='first'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(sent.contains(file["path"].as_str().unwrap()), "{sent}");
+        assert!(Path::new(file["path"].as_str().unwrap()).exists());
+        runtime.shutdown().await;
     }
     #[tokio::test]
     async fn settings_are_live_and_children_inherit_parent_policy() {

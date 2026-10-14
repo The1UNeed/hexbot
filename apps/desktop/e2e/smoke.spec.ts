@@ -11,7 +11,7 @@ import { seedCodexTokens, startDaemon, type RunningDaemon } from './daemon'
 const desktopRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const repoRoot = resolve(desktopRoot, '../..')
 
-test('creates a bot, chats, and creates another section', async () => {
+test('creates a bot, chats, and reopens its one chat', async () => {
   const daemonHome = await mkdtemp(resolve(tmpdir(), 'hexbot-e2e-daemon-'))
   const desktopHome = await mkdtemp(resolve(tmpdir(), 'hexbot-e2e-desktop-'))
   let daemon: RunningDaemon | undefined
@@ -86,13 +86,17 @@ test('creates a bot, chats, and creates another section', async () => {
       timeout: 120_000
     })
 
-    const firstSectionUrl = page.url()
-    await page.getByRole('button', { name: 'New', exact: true }).click()
-    const newSection = page.getByTestId('roster-new-section')
-    await expect(newSection).toBeVisible()
-    await newSection.click()
-    await expect(page).not.toHaveURL(firstSectionUrl, { timeout: 30_000 })
-    await expect(page.locator('[data-roster-id^="section:"]')).toHaveCount(2)
+    // The bot has one ongoing chat: leaving and coming back reopens it with its history.
+    const chatUrl = page.url()
+    await page.getByRole('button', { exact: true, name: 'Settings' }).click()
+    await expect(page).not.toHaveURL(chatUrl, { timeout: 30_000 })
+    await page.locator('[data-roster-id="bot:scout"]').click()
+    await expect(page).toHaveURL(chatUrl, { timeout: 30_000 })
+    await expect(page.getByTestId('bot-message').filter({ hasText: /pong/i }).last()).toBeVisible({
+      timeout: 30_000
+    })
+    await expect(page.getByTestId('roster-new-section')).toHaveCount(0)
+    await expect(page.locator('[data-roster-id^="section:"]')).toHaveCount(0)
   } finally {
     await app?.close().catch(() => undefined)
     await daemon?.stop().catch(() => undefined)

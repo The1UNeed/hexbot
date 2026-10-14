@@ -181,10 +181,17 @@ inside the Hexbot home, symlinks included.
 
 A bot has one chat with its owner: the one section of that bot with no
 `peer_bot`. The other sections are threads (`peer_bot` set). Rooms keep their
-conversations in `room_sessions`, not here. On start the daemon keeps one chat
-per bot (`catalog::one_chat_per_bot`): for a bot with several, the one with
-something said, not archived, not titled `Dreams`, newest first, and deletes
-the others with their history.
+conversations in `room_sessions`, not here. On its first start after the
+upgrade the daemon keeps one chat per bot (`catalog::one_chat_per_bot`, once,
+recorded as the `one_chat_per_bot` setting): for a bot with several, the one
+with something said, then not the old Dreams log, then not archived, then
+newest, and deletes the others with their history. Before deleting anything it
+copies `hexbot.db`, `hexbot-runtime.db`, the affected bots' `state.db` and
+`runtime/sessions` to `<home>/backups/one-chat-per-bot-<time>/`; if that copy
+fails it deletes nothing and tries again at the next start. A bot with a
+conversation that recovery set aside or could not read keeps all its sections.
+Sections made later, by an older build, are never deleted;
+`hexbot.sections.create` returns the newest healthy one.
 
 Section shape: `{id, bot, title, title_by: "bot" | null, created_at,
 updated_at, archived_at | null, done_at | null, preview, message_count,
