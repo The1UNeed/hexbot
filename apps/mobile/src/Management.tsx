@@ -719,6 +719,9 @@ export function Management({
                 {action('Clear stopped status', () =>
                   rpc('hexbot.bots.clear_status', { name: bot.name })
                 )}
+                {bot.primary === false && !mobile.bots.some(b => b.primary)
+                  ? action('Make primary', () => rpc('hexbot.bots.set_primary', { name: bot.name }))
+                  : null}
                 {/* The primary bot stays; the daemon refuses to delete it too. */}
                 {bot.primary
                   ? null

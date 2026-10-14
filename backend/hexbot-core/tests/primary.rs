@@ -278,6 +278,36 @@ async fn primary_bot_manages_other_bots_and_always_asks_before_deleting() {
         .unwrap();
     assert!(rooms["rooms"][0]["approval_mode"].is_null());
 
+    let (asked, _) = call_tool(
+        &app,
+        &live,
+        "hexbot_rooms",
+        json!({"action":"update","id":room,"approval_mode":"inherit"}),
+        "once",
+    )
+    .await;
+    assert!(asked);
+
+    // A bot's working folder can be set and cleared again; both ask.
+    let folder = h.workspace().join("owl");
+    fs::create_dir_all(&folder).unwrap();
+    for (workdir, expected) in [(json!(folder), json!(folder)), (json!(""), Value::Null)] {
+        let (asked, reply) = call_tool(
+            &app,
+            &live,
+            "hexbot_bots",
+            json!({"action":"update","name":"owl","workdir":workdir}),
+            "once",
+        )
+        .await;
+        assert!(asked, "{reply}");
+        let owl = app
+            .call("local", "hexbot.bots.get", &json!({"name":"owl"}))
+            .await
+            .unwrap();
+        assert_eq!(owl["bot"]["workdir"], expected, "{reply}");
+    }
+
     // Jobs go through the jobs methods, so paired clients hear about them.
     let mut events = app.events.subscribe();
     let (asked, reply) = call_tool(

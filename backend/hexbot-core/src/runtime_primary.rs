@@ -91,7 +91,7 @@ pub(super) fn descriptors() -> Vec<Value> {
                     "tools": { "type": "array", "items": { "type": "string", "enum": ["terminal", "files", "code_execution", "browser", "computer_use", "vision", "voice", "message_bots", "delegate", "scheduling"] } },
                     "skills": strings,
                     "approval_mode": { "type": "string", "enum": ["inherit", "manual", "smart", "off"], "description": "inherit follows Settings; smart is Auto; off is Bypass" },
-                    "workdir": { "type": "string" },
+                    "workdir": { "type": "string", "description": "A folder on this computer; an empty string returns the bot to the Settings workspace" },
                     "dream_enabled": { "type": "boolean" },
                     "notify": { "type": "boolean" }
                 },
@@ -111,7 +111,7 @@ pub(super) fn descriptors() -> Vec<Value> {
                     "members": strings,
                     "main_bot": { "type": "string", "description": "The bot that answers when nobody is mentioned" },
                     "bot": { "type": "string", "description": "With add_member and remove_member" },
-                    "approval_mode": { "type": "string", "enum": ["manual", "smart", "off"] },
+                    "approval_mode": { "type": "string", "enum": ["inherit", "manual", "smart", "off"], "description": "inherit follows each bot and Settings; smart is Auto; off is Bypass" },
                     "include_archived": { "type": "boolean" }
                 },
                 "required": ["action"]
@@ -269,8 +269,15 @@ impl Runtime {
                 Ok(json!({"bot":compact_bot(&result["bot"], true)}))
             }
             ("hexbot_bots", "create" | "update") => {
-                let patch = pick(args, BOT_FIELDS);
+                let mut patch = pick(args, BOT_FIELDS);
                 required(&patch, "name")?;
+                // Schemas stay plain strings for every provider; empty clears the override.
+                if patch["workdir"]
+                    .as_str()
+                    .is_some_and(|w| w.trim().is_empty())
+                {
+                    patch["workdir"] = Value::Null;
+                }
                 if ["approval_mode", "workdir"]
                     .iter()
                     .any(|k| patch.get(*k).is_some())
@@ -283,7 +290,9 @@ impl Runtime {
                     if patch.get("workdir").is_some() {
                         changes.push(format!(
                             "working folder to {}",
-                            patch["workdir"].as_str().unwrap_or("the default")
+                            patch["workdir"]
+                                .as_str()
+                                .unwrap_or("the Settings workspace")
                         ));
                     }
                     let verb = if action == "create" {

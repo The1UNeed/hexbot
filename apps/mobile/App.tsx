@@ -992,6 +992,24 @@ function MobileApp() {
               }
         }
         onNewBot={demo ? undefined : () => setPanels([{ kind: 'bot-create' }])}
+        primaryChoice={
+          // A daemon from before the primary bot leaves `primary` out.
+          !demo && mobile.bots.length && mobile.bots.every(b => b.primary === false)
+            ? {
+                onAdd: mobile.bots.some(b => b.name === 'hexbot')
+                  ? undefined
+                  : () =>
+                      act(async () => {
+                        const result = await mobile.rpc<{ bot: Bot; section: Section }>(
+                          'hexbot.bots.create_primary',
+                          {}
+                        )
+                        await mobile.refresh()
+                        await mobile.openSection(result.bot, result.section)
+                      })
+              }
+            : null
+        }
         rooms={demo ? [] : rooms}
         roomId={roomId}
         onSelectRoom={id => setRoomId(id)}

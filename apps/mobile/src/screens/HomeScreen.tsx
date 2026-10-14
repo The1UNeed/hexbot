@@ -73,6 +73,11 @@ export interface HomeScreenProps {
   /** Long press on a bot, such as opening its profile. */
   onBotLongPress?: (id: string) => void
   onNewBot?: () => void
+  /**
+   * Set while a daemon upgraded from before the primary bot has none. Add
+   * creates HexBot; without it, the user promotes a bot from its profile.
+   */
+  primaryChoice?: { onAdd?: () => void } | null
 
   /** Every room, archived ones included; the tab lists the others and counts these. */
   rooms: RoomSummary[]
@@ -231,6 +236,7 @@ function BotsTab({
   onOpenBot,
   onRefresh,
   onSwitchDaemon,
+  primaryChoice,
   refreshing
 }: HomeScreenProps) {
   const [query, setQuery] = useState('')
@@ -289,6 +295,18 @@ function BotsTab({
           <Text accessibilityRole="header" style={styles.largeTitle} variant="largeTitle">
             Bots
           </Text>
+          {primaryChoice ? (
+            <Banner
+              actionLabel={primaryChoice.onAdd ? 'Add HexBot' : undefined}
+              message={`It sets up and looks after your other bots, rooms, scheduled jobs and settings. ${
+                primaryChoice.onAdd ? 'Add HexBot, or open' : 'Open'
+              } a bot's profile and choose Make primary.`}
+              onAction={primaryChoice.onAdd}
+              testID="bots-primary-choice"
+              title="Choose a primary bot"
+              tone="info"
+            />
+          ) : null}
           {bots.length > 3 ? (
             <View style={styles.search}>
               <SearchField
