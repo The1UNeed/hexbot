@@ -324,10 +324,7 @@ fn ensure_total(dir: &Path, additional: u64) -> Result<()> {
         }
     }
     if total > SESSION_LIMIT {
-        return Err(Error::new(
-            4018,
-            "Attachments in this section exceed 512 MiB",
-        ));
+        return Err(Error::new(4018, "Attachments in this chat exceed 512 MiB"));
     }
     Ok(())
 }

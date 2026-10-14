@@ -221,11 +221,15 @@ makes a full copy of `hexbot.db`, `hexbot-runtime.db`, the affected bots'
 space. If that copy fails it removes the unfinished copy
 (`one-chat-per-bot-<time>.partial`), deletes nothing and tries again at the next
 start; an error in the upgrade itself is logged and the daemon starts anyway. A
-bot with a conversation that recovery set aside or could not read keeps all its
-sections. Sections made later, by an older build, are never deleted.
-`hexbot.sections.create`, and a dream posting its report, rank a bot's healthy
-sections the same way, so while the upgrade waits for its copy the chat in use
-is the one it will keep. The old Dreams logs it finds are recorded as the `dream_logs`
+finished copy is recorded as the `one_chat_per_bot_backup` setting and reused
+while it holds every section to delete and nothing was said in them since. A
+bot with a conversation that recovery set aside or could not read, or whose
+`state.db` cannot be read, keeps all its sections. Sections made later, by an
+older build, are never deleted. `hexbot.sections.create`, and a dream posting
+its report, rank a bot's healthy sections the same way; while the upgrade
+waits, the chat they hand out is pinned in the `chat_pins` setting, ranks
+first, and is always kept, so the chat in use is the one the upgrade keeps
+whatever stopped it. Both settings are removed when the upgrade finishes. The old Dreams logs it finds are recorded as the `dream_logs`
 setting: only in those are messages matching a dream summary treated as dream
 reports, when the log is first opened and in history search.
 

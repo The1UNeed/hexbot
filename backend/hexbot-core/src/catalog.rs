@@ -241,19 +241,22 @@ pub fn chat_section(home: &Path, caller: &str, name: &str) -> Result<Value> {
     let (healthy, set_aside): (Vec<_>, Vec<_>) = candidates
         .into_iter()
         .partition(|row| !quarantined.contains(row["id"].as_str().unwrap_or("")));
-    // Ranked as the upgrade ranks them, so the chat it keeps is the one in use
-    // while it waits for a backup.
+    // Ranked as the upgrade ranks them. A chat handed out while the upgrade
+    // waits is pinned: it stays the chat, and the upgrade keeps it whatever it
+    // finds when it runs again.
+    let pending = setting(&tx, "one_chat_per_bot")?.is_null();
+    let mut pins = pins(&tx)?;
     let existing = if healthy.is_empty() {
         set_aside.into_iter().next()
     } else {
         let logs = runtime_store::dream_logs(home)?;
         let mut ranked = chat_candidates(home, healthy, &logs)?;
-        rank_chats(&mut ranked, &logs);
+        rank_chats(&mut ranked, &logs, &pins);
         // A dream log with nothing to mark goes in the upgrade.
         ranked
             .into_iter()
             .next()
-            .filter(|(_, count)| *count >= 0)
+            .filter(|(row, count)| *count >= 0 || pins.contains(row["id"].as_str().unwrap_or("")))
             .map(|(row, _)| row)
     }
     .and_then(|row| row["id"].as_str().map(str::to_owned));
@@ -276,8 +279,29 @@ pub fn chat_section(home: &Path, caller: &str, name: &str) -> Result<Value> {
         )?;
         id
     };
+    if pending && pins.insert(id.clone()) {
+        tx.execute(
+            "INSERT OR REPLACE INTO settings(key,value) VALUES('chat_pins',?)",
+            [json!(pins).to_string()],
+        )?;
+    }
     tx.commit()?;
     section(home, caller, &id)
+}
+/// A JSON setting, or null.
+fn setting(conn: &Connection, key: &str) -> Result<Value> {
+    let value: Option<String> = conn
+        .query_row("SELECT value FROM settings WHERE key=?", [key], |r| {
+            r.get(0)
+        })
+        .optional()?;
+    Ok(value
+        .and_then(|value| serde_json::from_str(&value).ok())
+        .unwrap_or(Value::Null))
+}
+/// The chats handed out while the upgrade to one chat per bot waits.
+fn pins(conn: &Connection) -> Result<std::collections::BTreeSet<String>> {
+    Ok(serde_json::from_value(setting(conn, "chat_pins")?).unwrap_or_default())
 }
 /// A bot's chats with how much was said in each (-1 for a dream log with no
 /// report to mark) and when it was last said.
@@ -325,14 +349,20 @@ fn chat_candidates(
     }
     Ok(result)
 }
-/// Best first: something said, then not the dream log, then not put away,
-/// then newest.
-fn rank_chats(sections: &mut [(Value, i64)], logs: &std::collections::BTreeSet<String>) {
+/// Best first: handed out while the upgrade waited, then something said, then
+/// not the dream log, then not put away, then newest.
+fn rank_chats(
+    sections: &mut [(Value, i64)],
+    logs: &std::collections::BTreeSet<String>,
+    pins: &std::collections::BTreeSet<String>,
+) {
     sections.sort_by(|(a, a_count), (b, b_count)| {
         let rank = |row: &Value, count: i64| {
+            let id = row["id"].as_str().unwrap_or("");
             (
+                pins.contains(id),
                 count > 0,
-                !logs.contains(row["id"].as_str().unwrap_or("")),
+                !logs.contains(id),
                 row["archived_at"].is_null(),
             )
         };
@@ -395,6 +425,9 @@ pub fn one_chat_per_bot(home: &Path) -> Result<()> {
         }
     }
     let runtime = runtime_store::open(home)?;
+    // A bot whose store from before the native daemon cannot be read keeps
+    // all its sections; the other bots go ahead.
+    let mut unreadable = std::collections::BTreeSet::new();
     // The log opened with a report: one titled like it but begun by the user
     // is a chat. A log the user renamed is still the log: it opens with a
     // report an earlier build posted, unmarked. A chat this build made for a
@@ -414,7 +447,16 @@ pub fn one_chat_per_bot(home: &Path) -> Result<()> {
             .optional()?;
         // What an earlier build kept comes first; reports this build posted
         // to a log never opened since follow it.
-        let first = match first_legacy(home, &row)? {
+        let legacy = first_legacy(home, &row).unwrap_or_else(|error| {
+            let bot = row["bot"].as_str().unwrap_or("").to_owned();
+            if unreadable.insert(bot.clone()) {
+                eprintln!(
+                    "Kept every section of {bot}: could not read its older conversations: {error}"
+                );
+            }
+            Value::Null
+        });
+        let first = match legacy {
             Value::Null => first
                 .and_then(|message| serde_json::from_str::<Value>(&message).ok())
                 .unwrap_or(Value::Null),
@@ -451,7 +493,9 @@ pub fn one_chat_per_bot(home: &Path) -> Result<()> {
         chats.entry(key).or_default().push(row);
     }
     // A bot with a conversation recovery set aside or could not read keeps
-    // all its sections: what it holds is unknown, so none is deleted.
+    // all its sections: what it holds is unknown, so none is deleted. A chat
+    // handed out while the upgrade waited always stays.
+    let pins = pins(&conn)?;
     let quarantined = runtime
         .prepare("SELECT session_id FROM native_quarantine")?
         .query_map([], |r| r.get::<_, String>(0))?
@@ -460,20 +504,26 @@ pub fn one_chat_per_bot(home: &Path) -> Result<()> {
     let mut kept = vec![];
     let mut doomed = vec![];
     for ((owner, bot), sections) in chats {
-        if sections.iter().any(|row| {
-            let id = row["id"].as_str().unwrap_or("");
-            quarantined.contains(id) || unrecovered.contains(id)
-        }) {
+        if unreadable.contains(&bot)
+            || sections.iter().any(|row| {
+                let id = row["id"].as_str().unwrap_or("");
+                quarantined.contains(id) || unrecovered.contains(id)
+            })
+        {
             kept.extend(sections.into_iter().map(|row| (bot.clone(), row, false)));
             continue;
         }
         let mut sections = chat_candidates(home, sections, &logs)?;
-        rank_chats(&mut sections, &logs);
+        rank_chats(&mut sections, &logs, &pins);
         let (row, count) = sections.remove(0);
         for (other, _) in sections {
-            doomed.push((owner.clone(), bot.clone(), other));
+            if pins.contains(other["id"].as_str().unwrap_or("")) {
+                kept.push((bot.clone(), other, false));
+            } else {
+                doomed.push((owner.clone(), bot.clone(), other));
+            }
         }
-        if count < 0 {
+        if count < 0 && !pins.contains(row["id"].as_str().unwrap_or("")) {
             // The chat is made on first use.
             doomed.push((owner, bot, row));
         } else {
@@ -485,15 +535,45 @@ pub fn one_chat_per_bot(home: &Path) -> Result<()> {
             .iter()
             .map(|(_, bot, _)| bot.as_str())
             .collect::<std::collections::BTreeSet<_>>();
-        match back_up(home, &bots) {
-            Ok(dir) => eprintln!(
-                "Each bot now keeps one chat. The sections before the upgrade are backed up in {}",
-                dir.display()
-            ),
-            Err(error) => {
-                // Nothing is deleted without a copy; the next start tries again.
-                eprintln!("Kept every section: could not back them up first: {error}");
-                return Ok(());
+        // A backup an earlier start made is used again while it holds every
+        // section to delete and nothing was said in them since; a delete that
+        // keeps failing must not fill the disk with copies. One that failed
+        // part way only lowers what a section last said.
+        let sections = doomed
+            .iter()
+            .map(|(_, _, row)| {
+                (
+                    row["id"].as_str().unwrap_or("").to_owned(),
+                    row["updated_at"].as_f64().unwrap_or(0.0),
+                )
+            })
+            .collect::<std::collections::BTreeMap<_, _>>();
+        let earlier = setting(&conn, "one_chat_per_bot_backup")?;
+        let covered = earlier["path"]
+            .as_str()
+            .is_some_and(|path| Path::new(path).is_dir())
+            && sections.iter().all(|(id, said)| {
+                earlier["sections"][id]
+                    .as_f64()
+                    .is_some_and(|then| *said <= then)
+            });
+        if !covered {
+            match back_up(home, &bots) {
+                Ok(dir) => {
+                    conn.execute(
+                        "INSERT OR REPLACE INTO settings(key,value) VALUES('one_chat_per_bot_backup',?)",
+                        [json!({"path": dir, "sections": sections}).to_string()],
+                    )?;
+                    eprintln!(
+                        "Each bot now keeps one chat. The sections before the upgrade are backed up in {}",
+                        dir.display()
+                    )
+                }
+                Err(error) => {
+                    // Nothing is deleted without a copy; the next start tries again.
+                    eprintln!("Kept every section: could not back them up first: {error}");
+                    return Ok(());
+                }
             }
         }
     }
@@ -537,9 +617,9 @@ pub fn one_chat_per_bot(home: &Path) -> Result<()> {
     }
     // Previews were each section's first message; a chat shows its latest.
     runtime.execute("DELETE FROM native_summaries", [])?;
-    conn.execute(
-        "INSERT OR REPLACE INTO settings(key,value) VALUES('one_chat_per_bot','true')",
-        [],
+    conn.execute_batch(
+        "INSERT OR REPLACE INTO settings(key,value) VALUES('one_chat_per_bot','true');
+         DELETE FROM settings WHERE key IN ('chat_pins','one_chat_per_bot_backup');",
     )?;
     Ok(())
 }
@@ -2414,6 +2494,169 @@ mod parity_tests {
         .unwrap();
         assert_eq!(kept.len(), 1);
         assert_eq!(kept[0]["id"], waiting["id"]);
+    }
+    /// Owl's Dreams log is its newest section; Trip is its chat.
+    fn owl_with_a_newer_dream_log(home: &Path) {
+        db::open(home)
+            .unwrap()
+            .execute_batch(
+                "INSERT INTO users(id,display_name,role,created_at) VALUES('alice','Alice','admin',0);
+                 INSERT INTO bots(name,owner_id) VALUES('owl','alice');
+                 INSERT INTO sections(id,bot,owner_id,title,updated_at) VALUES('log','owl','alice','Dreams',9),('trip','owl','alice','Trip',2);
+                 INSERT INTO dreams(id,bot,started_at,status,summary) VALUES('d1','owl',1,'complete','Owl learned');",
+            )
+            .unwrap();
+        said(
+            home,
+            "log",
+            json!({"role":"assistant","text":"Owl learned","timestamp":9}),
+        );
+        said(
+            home,
+            "trip",
+            json!({"role":"user","text":"Book the train","timestamp":2}),
+        );
+    }
+    fn setting_of(home: &Path, key: &str) -> Value {
+        setting(&db::open(home).unwrap(), key).unwrap()
+    }
+    #[test]
+    fn a_bot_whose_older_store_cannot_be_read_holds_up_no_other() {
+        let home = tempfile::tempdir().unwrap();
+        db::migrate(home.path()).unwrap();
+        owl_with_a_newer_dream_log(home.path());
+        db::open(home.path())
+            .unwrap()
+            .execute_batch(
+                "INSERT INTO bots(name,owner_id) VALUES('yak','alice');
+                 INSERT INTO sections(id,bot,owner_id,title,updated_at) VALUES('yak_a','yak','alice','A',1),('yak_b','yak','alice','B',2);",
+            )
+            .unwrap();
+        let yak = home.path().join("profiles/yak");
+        fs::create_dir_all(&yak).unwrap();
+        fs::write(yak.join("state.db"), "not a database").unwrap();
+        one_chat_per_bot(home.path()).unwrap();
+        assert_eq!(setting_of(home.path(), "one_chat_per_bot"), true);
+        let ids = |bot: &str| {
+            rows(
+                &db::open(home.path()).unwrap(),
+                "SELECT id FROM sections WHERE bot=? ORDER BY id",
+                &[&bot],
+            )
+            .unwrap()
+            .into_iter()
+            .map(|r| r["id"].as_str().unwrap().to_owned())
+            .collect::<Vec<_>>()
+        };
+        assert_eq!(ids("owl"), ["trip"]);
+        assert_eq!(ids("yak"), ["yak_a", "yak_b"]);
+        assert_eq!(
+            chat_section(home.path(), "alice", "owl").unwrap()["id"],
+            "trip"
+        );
+    }
+    #[test]
+    fn the_chat_handed_out_while_the_upgrade_waits_stays_whatever_stopped_it() {
+        let home = tempfile::tempdir().unwrap();
+        db::migrate(home.path()).unwrap();
+        owl_with_a_newer_dream_log(home.path());
+        // A conversation recovery cannot even start on stops the upgrade
+        // before it knows which section is the dream log.
+        runtime_store::open(home.path())
+            .unwrap()
+            .execute(
+                "INSERT INTO native_sessions(stored_id,owner,bot,prompt) VALUES('broken','alice','','')",
+                [],
+            )
+            .unwrap();
+        assert!(one_chat_per_bot(home.path()).is_err());
+        let waiting = chat_section(home.path(), "alice", "owl").unwrap();
+        assert_eq!(waiting["id"], "log");
+        said(
+            home.path(),
+            "log",
+            json!({"role":"user","text":"Keep this","timestamp":10}),
+        );
+        // Asked again, it is the same chat.
+        assert_eq!(
+            chat_section(home.path(), "alice", "owl").unwrap()["id"],
+            "log"
+        );
+        runtime_store::open(home.path())
+            .unwrap()
+            .execute("DELETE FROM native_sessions WHERE stored_id='broken'", [])
+            .unwrap();
+        one_chat_per_bot(home.path()).unwrap();
+        let kept = rows(
+            &db::open(home.path()).unwrap(),
+            "SELECT id FROM sections WHERE bot='owl'",
+            &[],
+        )
+        .unwrap();
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept[0]["id"], "log");
+        assert!(
+            runtime_store::history(home.path(), "log")
+                .unwrap()
+                .iter()
+                .any(|m| m["text"] == "Keep this")
+        );
+        let chat = chat_section(home.path(), "alice", "owl").unwrap();
+        assert_eq!(chat["id"], "log");
+        assert_eq!(chat["title"], "General");
+        // Done: nothing is pinned any more.
+        assert!(setting_of(home.path(), "chat_pins").is_null());
+    }
+    #[cfg(unix)]
+    #[test]
+    fn a_delete_that_keeps_failing_makes_one_backup() {
+        use std::os::unix::fs::PermissionsExt;
+        let home = tempfile::tempdir().unwrap();
+        db::migrate(home.path()).unwrap();
+        db::open(home.path())
+            .unwrap()
+            .execute_batch(
+                "INSERT INTO users(id,display_name,role,created_at) VALUES('alice','Alice','admin',0);
+                 INSERT INTO bots(name,owner_id) VALUES('owl','alice');
+                 INSERT INTO sections(id,bot,owner_id,title,updated_at) VALUES('new','owl','alice','New',9),('old','owl','alice','Old',2);",
+            )
+            .unwrap();
+        said(
+            home.path(),
+            "new",
+            json!({"role":"user","text":"Newer","timestamp":9}),
+        );
+        said(
+            home.path(),
+            "old",
+            json!({"role":"user","text":"Older","timestamp":2}),
+        );
+        // A folder the copy can read but the delete cannot empty.
+        let stuck = home.path().join("runtime/sessions/old/stuck");
+        fs::create_dir_all(&stuck).unwrap();
+        fs::write(stuck.join("file.txt"), "kept").unwrap();
+        fs::set_permissions(&stuck, fs::Permissions::from_mode(0o500)).unwrap();
+        if fs::write(stuck.join("probe"), "").is_ok() {
+            // Running as root writes anywhere.
+            return;
+        }
+        let backups = || fs::read_dir(home.path().join("backups")).unwrap().count();
+        assert!(one_chat_per_bot(home.path()).is_err());
+        assert_eq!(backups(), 1);
+        assert!(one_chat_per_bot(home.path()).is_err());
+        assert_eq!(backups(), 1);
+        fs::set_permissions(&stuck, fs::Permissions::from_mode(0o700)).unwrap();
+        one_chat_per_bot(home.path()).unwrap();
+        assert_eq!(backups(), 1);
+        let kept = rows(
+            &db::open(home.path()).unwrap(),
+            "SELECT id FROM sections",
+            &[],
+        )
+        .unwrap();
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept[0]["id"], "new");
+        assert!(setting_of(home.path(), "one_chat_per_bot_backup").is_null());
     }
     #[test]
     fn a_reply_that_reads_like_a_dream_report_stays_the_bots() {

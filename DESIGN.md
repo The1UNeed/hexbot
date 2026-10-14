@@ -211,9 +211,11 @@ more freedom and more capability than a hosted product can offer.
   once, and first makes a full copy of `hexbot.db`, `hexbot-runtime.db`, the
   bots' `state.db` and `runtime/sessions` in
   `backups/one-chat-per-bot-<time>/`, so it needs that much free disk; if the
-  copy fails nothing is deleted, the partial copy is removed, and until the
-  next try each bot's chat is the one the upgrade will keep. A bot whose
-  conversations recovery could not read keeps them all. Memory and notes stay.
+  copy fails nothing is deleted, the partial copy is removed, and the next
+  start tries again. A finished copy is reused until the upgrade finishes. A
+  chat handed out while the upgrade waits, for whatever reason, is the one it
+  keeps. A bot whose conversations recovery could not read, or whose older
+  `state.db` cannot be read, keeps them all. Memory and notes stay.
 - A chat starts with the bot's memory and a catalog of skill descriptions.
   It loads skill bodies when needed. It picks up the current name, soul,
   memory, About you, teammates and skill catalog after compaction if the next
