@@ -292,6 +292,11 @@ export interface Message {
   activity?: string
   attachments: Attachment[]
   /**
+   * Set while Auto mode checks a step before it runs ("Checking this step",
+   * a `checking` status line); the next status line clears it.
+   */
+  checking?: string
+  /**
    * Questions this message asked, restored from history and already settled.
    * Live questions are cards on the transcript instead.
    */

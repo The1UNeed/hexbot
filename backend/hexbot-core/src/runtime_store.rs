@@ -59,8 +59,9 @@ pub fn history(home: &Path, stored: &str) -> Result<Vec<Value>> {
     })
     .collect()
 }
-/// Stream visible owner evidence, stopping before allocating an oversized row
-/// or when the caller's complete serialized request no longer fits.
+/// Stream visible owner evidence, newest first. Stops before allocating an
+/// oversized row, or when the caller's serialized request is full; either way
+/// the result is false and the older messages are left out.
 pub(crate) fn user_history(
     home: &Path,
     stored: &str,
@@ -75,14 +76,14 @@ pub(crate) fn user_history(
          AND CASE WHEN octet_length(m.message_json)>?2 THEN 1 ELSE
              json_extract(m.message_json,'$.role')='user'
              AND json_extract(m.message_json,'$.display_kind') IS NOT 'hidden'
-             AND json_extract(m.message_json,'$.custom_type') IS NULL END ORDER BY m.seq",
+             AND json_extract(m.message_json,'$.custom_type') IS NULL END ORDER BY m.seq DESC",
     )?;
     let mut rows = stmt.query(params![stored, row_bytes])?;
     while let Some(row) = rows.next()? {
+        // Size is checked before JSON parsing, including for non-owner rows:
+        // an oversized row and everything older count as left out.
         let Some(raw) = row.get::<_, Option<String>>(0)? else {
-            // Size is checked before JSON parsing, including for non-owner
-            // rows: unusually large tool/assistant metadata also asks safely.
-            return Err(crate::Error::new(5200, "Evidence row exceeds size limit"));
+            return Ok(false);
         };
         let message =
             serde_json::from_str(&raw).map_err(|e| crate::Error::new(5200, e.to_string()))?;

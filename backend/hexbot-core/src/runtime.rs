@@ -101,6 +101,8 @@ struct Live {
     /// It is saved only when the extension adopts it, never on offer: Pi may
     /// discard it, and a reopened section must keep the prompt Pi used.
     proposal: Mutex<Option<(String, String, Vec<Value>)>>,
+    /// Auto mode reviews running for this section; see `review::REVIEWS`.
+    reviews: tokio::sync::Semaphore,
 }
 /// The part of a section's options that picks its model.
 fn model_choice(options: &Value) -> Value {
@@ -938,6 +940,7 @@ impl Runtime {
             compaction,
             usage_sent: AtomicU64::new(0),
             proposal: Mutex::new(None),
+            reviews: tokio::sync::Semaphore::new(review::REVIEWS),
         });
         {
             let mut sessions = self.sessions.lock().unwrap();

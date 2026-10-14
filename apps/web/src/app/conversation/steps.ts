@@ -488,6 +488,11 @@ export function liveStatus(message: Message, name: string): LiveStatusLine {
     call => call.status === 'running' && call.name !== ASKING_TOOL
   )
 
+  // Auto mode is checking the step before it runs; say so over the step.
+  if (message.checking) {
+    return { call: running, label: message.checking }
+  }
+
   if (running) {
     return { call: running, label: activityLabel(running, name) }
   }

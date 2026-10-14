@@ -351,12 +351,17 @@ before browser page scripts; Auto reviews them. Both modes ask before
 scheduling an absolute script path.
 
 Auto's reviewer reads the whole step, including the checked file destination,
-working directory and overwrite status, plus complete visible owner messages
-from the section and complete owner-authored room messages. A step over 20,000
-characters or a complete request over 80,000 characters asks without clipping
-or dropping authorization evidence. History reads stop at that cap, and a
-stored row over the allocation limit asks before JSON parsing, including large
-tool or bot metadata. Missing or unreadable evidence also asks.
+working directory and overwrite status, plus visible owner messages from the
+section and owner-authored room messages, read newest first and never clipped.
+A step over 20,000 characters asks. Messages fill the rest of an 80,000-character
+request; the read stops at the first one that does not fit, or at a stored row
+over the allocation limit (before JSON parsing, including large tool or bot
+metadata). The request then sets `earlier_user_messages_omitted`, the prompt
+says so, and only a low-risk `allow` runs: a medium-risk one asks. Unreadable
+evidence asks. A section runs at most two reviews at once and emits a
+`checking` status while one runs. The final check waits up to 250 ms for the
+room database and retries once, after waiting up to two seconds for the reply
+slot, so brief contention does not turn an allowed step into a card.
 Before allowing a step, the daemon reads that evidence again and queues the
 reply while holding the same gate used to stage owner prompts and steers.
 A brief room database write reservation orders owner room messages with that

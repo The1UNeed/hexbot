@@ -53,11 +53,12 @@ redaction, and pattern checks do not provide equivalent containment.
   home. Manual scheduled scripts cannot write artifacts or workspace files.
 - In Auto, a `full_access` command, a file change outside the workspace, a
   connected tool that changes something, and a browser page script go to a
-  review on the section's model before they run. It reads complete owner
-  messages and the whole step, including the checked file destination and
-  overwrite status. It loads no project instruction files, skills or tools,
-  and sees no tool output or bot replies. If the complete evidence cannot fit
-  or be read, it asks. Changed owner evidence or queued owner prompts and steers
+  review on the section's model before they run. It reads the owner's most
+  recent messages, whole, and the whole step, including the checked file
+  destination and overwrite status. It loads no project instruction files,
+  skills or tools, and sees no tool output or bot replies. A step over 20,000
+  characters, or evidence that cannot be read, asks. When older owner messages
+  do not fit, the reviewer is told, and only a step it rates low risk runs. Changed owner evidence or queued owner prompts and steers
   invalidate automatic approval when the evidence is rechecked. A step it rates
   low or medium risk runs without asking; anything else, and any review that
   fails or times out, asks the user for that step only. Section grants do not
@@ -65,6 +66,12 @@ redaction, and pattern checks do not provide equivalent containment.
   blocks execution; file execution rechecks the destination and reviewed
   overwrite status. The review is a model judgment, not
   containment: a step it allows has the same access as one the user approves.
+- So in Auto, internet access and writes outside the workspace are decided by
+  a model, not the sandbox, and a small or local section model judges less
+  well. The step the reviewer reads (command, reason, file content, tool
+  arguments) is written by the bot and can carry instructions injected by a
+  web page or file the bot read; such text can talk a reviewer into allowing
+  a harmful step. Choose Manual where that risk is not acceptable.
 - An approved `full_access` shell command leaves the workspace restrictions.
   The base credential-path and Hexbot-home protections still apply. Review both
   the command and its reason before granting more access.

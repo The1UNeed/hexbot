@@ -728,7 +728,18 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
     },
 
     statusUpdate(sessionId, status) {
-      update(sessionId, transcript => ({ ...transcript, status }))
+      const checking = status.kind === 'checking' && status.text ? status.text : undefined
+
+      update(sessionId, transcript => {
+        const id = transcript.streamingMessageId
+
+        const next =
+          id && (checking || transcript.messages.some(m => m.id === id && m.checking))
+            ? replaceMessage(transcript, id, message => ({ ...message, checking }))
+            : transcript
+
+        return { ...next, status }
+      })
     },
 
     sessionInfo(sessionId, info) {

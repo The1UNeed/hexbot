@@ -452,6 +452,22 @@ impl PiProcess {
         })
     }
 
+    /// Wait until the extension reply slot is free, so a caller whose
+    /// `try_respond_extension` found it busy can try once more. Gives up at
+    /// the deadline or when the process stops; the retry then reports why.
+    pub(crate) async fn extension_slot(&self, deadline: Duration) {
+        let mut stop = self.inner.stop.subscribe();
+        let mut done = self.inner.done.clone();
+        let _ = tokio::time::timeout(deadline, async {
+            tokio::select! {
+                _ = terminal(&mut stop) => {}
+                _ = terminal(&mut done) => {}
+                _ = self.inner.extension_admission.acquire() => {}
+            }
+        })
+        .await;
+    }
+
     fn extension_record(&self, id: &str, mut fields: Value) -> Result<Vec<u8>, PiError> {
         if id.is_empty() {
             return Err(PiError::InvalidCommand("extension request id is empty"));

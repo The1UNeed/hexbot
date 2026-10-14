@@ -101,6 +101,14 @@ more freedom and more capability than a hosted product can offer.
   OS sandbox is the boundary, not pattern matching. In Auto, a step that
   leaves the sandbox goes to a reviewer first, like Codex's auto-review and
   Claude Code's auto mode. Pi itself has no approval modes; Bypass is plain Pi.
+- Auto trades containment for fewer prompts, on purpose. Inside the sandbox
+  the OS decides; outside it, internet access and writes outside the
+  workspace are decided by a model review on the section's model, which can
+  be a small local one. The step text the reviewer judges (command, reason,
+  file content, tool arguments) is written by the bot and can carry
+  instructions injected by a page or file the bot read, so a reviewer can be
+  talked into allowing a step. That is a judgment, not containment; Manual
+  keeps the user in front of every such step.
 - Auto: shell commands run in a sandbox with no network that can write only
   inside the workspace (the bot's working directory, its artifact and
   attachment folders, temp folders); shell profiles and login items stay
@@ -115,9 +123,9 @@ more freedom and more capability than a hosted product can offer.
 - Auto's reviewer (`runtime_review.rs`): a full-access command, a file change
   outside the workspace, a connected tool that changes something, and a
   browser page script go to a tool-free one-shot call on the section's model.
-  It reads all visible owner messages in the section and all owner-authored
-  room messages, plus the step's whole input, working directory, checked file
-  destination and overwrite status. It loads no project instruction files,
+  It reads the owner's visible messages in the section and their room
+  messages, newest first, plus the step's whole input, working directory,
+  checked file destination and overwrite status. It loads no project instruction files,
   skills or tools. Assistant text, tool output and bot-added messages stay out.
   Pi starts in an empty directory and explicitly excludes `APPEND_SYSTEM.md`.
   ACP reviewers also use an isolated temporary home and Copilot/XDG folders,
@@ -125,9 +133,14 @@ more freedom and more capability than a hosted product can offer.
   imported. Only `--acp` and `--stdio` are accepted as configured ACP arguments.
   Extra arguments, missing auth or rejected isolation flags fall back to a
   card; ordinary ACP sessions keep their login behavior.
-  A step over 20,000 characters or a complete request over 80,000 characters
-  asks without review; messages are never clipped or dropped to make it fit.
-  History-read failures also ask. Reported reviewer usage counts toward section,
+  A step over 20,000 characters asks without review, whatever the tool.
+  Owner messages fill the rest of an 80,000-character request, newest first
+  and never clipped. When older ones are left out (or a stored row is too
+  large to load), the request says so and only a low risk `allow` runs: a
+  long chat's lost restriction could forbid a medium-risk step, so it asks.
+  History-read failures also ask. Each section runs at most two reviews at
+  once, and shows "Checking this step" while one runs. The final check
+  retries once when the database or reply slot is briefly busy. Reported reviewer usage counts toward section,
   room and daily totals. Changed owner messages or pending owner prompts and steers
   invalidate automatic approval when the complete evidence is rechecked.
   Copilot ACP reports zero token usage and cost, so its reviews add no measured

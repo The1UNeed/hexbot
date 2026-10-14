@@ -50,9 +50,14 @@ data model. The native transport and event projection live in
   `pending_clarify` on section open; use `clarify.respond` to answer.
   In Auto, full-access shell commands, outside-workspace file changes,
   changing connected-tool calls and browser page scripts are reviewed against
-  complete owner messages before a card is needed. Review failures and evidence
-  that cannot fit whole produce a one-step card. History reads stop at the
-  review cap; oversized stored rows also produce a card before parsing.
+  the owner's most recent messages before a card is needed. Review failures,
+  unreadable evidence and steps over 20,000 characters produce a one-step
+  card. Owner messages are read newest first, whole, until the 80,000-character
+  request is full; an oversized stored row ends the read before parsing. When
+  older messages are left out, only a low-risk `allow` runs. At most two
+  reviews run per section at once. While one runs the section emits
+  `status.update {kind: "checking", text: "Checking this step"}`, followed by
+  `{kind: "status", text: ""}` when it ends.
   One 60-second review budget includes credential preparation, process startup
   and provider requests. On a timeout, a started process has bounded shutdown/reaping
   cleanup before the fallback card; temporary state is kept until cleanup finishes.

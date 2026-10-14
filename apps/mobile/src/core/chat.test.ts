@@ -18,6 +18,15 @@ describe('chat event projection', () => {
     expect(s.busy).toBe(false)
     expect(s.streaming).toBe('')
   })
+  it('shows Auto mode checking a step and keeps the turn busy after', () => {
+    let s = reduceChat(emptyChat(), event('status.update', { kind: 'working', text: 'Working' }))
+    s = reduceChat(s, event('tool.start', { tool_id: 't', name: 'terminal' }))
+    s = reduceChat(s, event('status.update', { kind: 'checking', text: 'Checking this step' }))
+    expect(s.activity).toBe('Checking this step')
+    s = reduceChat(s, event('status.update', { kind: 'status', text: '' }))
+    expect(s.activity).toBe('')
+    expect(s.busy).toBe(true)
+  })
   it('deduplicates re-sent approval cards and keeps the originating session', () => {
     let s = reduceChat(
       emptyChat(),

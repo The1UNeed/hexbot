@@ -20,6 +20,16 @@ describe('transcript reducer', () => {
     actions.messageComplete('s')
     expect(useTranscripts.getState().bySession.s?.status).toBeNull()
   })
+  it('marks the live message while Auto mode checks a step and clears it after', () => {
+    const actions = useTranscripts.getState()
+    const live = () => useTranscripts.getState().bySession.s?.messages.at(-1)
+    actions.messageStart('s')
+    actions.toolStart('s', { name: 'terminal', tool_id: 't' })
+    actions.statusUpdate('s', { kind: 'checking', text: 'Checking this step' })
+    expect(live()?.checking).toBe('Checking this step')
+    actions.statusUpdate('s', { kind: 'status', text: '' })
+    expect(live()?.checking).toBeUndefined()
+  })
   it('leaves settled questions to the history it opens and keeps one still waiting', () => {
     const actions = useTranscripts.getState()
     actions.clarifyRequest('s', { question: 'Answered?', request_id: 'a' })
