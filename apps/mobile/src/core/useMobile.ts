@@ -646,6 +646,10 @@ export function useMobile() {
       setConnection('offline')
     },
     remove: async (id: string) => {
+      // A forgotten daemon stops pushing to this phone. Only the connected one
+      // can be told; revoking this device on another daemon stops it there.
+      if (active?.id === id)
+        await rpc('hexbot.devices.set_push', { token: null }).catch(() => undefined)
       if (active?.id === id) {
         releaseStaged()
         session.current?.stop()

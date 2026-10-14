@@ -184,6 +184,14 @@ async fn a_wakeup_the_primary_bot_sets_messages_the_user_in_its_check_ins_sectio
         )
         .unwrap();
     assert_eq!((title.as_str(), bot.as_str()), ("Check-ins", "hexbot"));
+    // Unread until opened, like a turn that finished elsewhere.
+    let done: Option<f64> = db::open(h.path())
+        .unwrap()
+        .query_row("SELECT done_at FROM sections WHERE id=?", [&section], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert!(done.is_some());
     let shown = runtime_store::history(h.path(), &section).unwrap();
     let text = &note["send: ".len()..];
     assert!(
@@ -459,4 +467,48 @@ async fn a_wake_up_waits_a_few_minutes_after_the_last_check_in() {
     let status = tick(&app, now + 360.0).await;
     assert_eq!(count(), 2);
     assert_eq!(status["recent"][0]["kind"], "wakeup");
+}
+
+#[tokio::test]
+async fn check_in_now_takes_the_wake_ups_already_due() {
+    let (h, app) = setup();
+    let created = app
+        .call("local", "hexbot.bots.create_primary", &json!({}))
+        .await
+        .unwrap();
+    set(&app, json!({"checkin_enabled": false})).await;
+    let live = open(&app, created["section"]["id"].as_str().unwrap()).await;
+    let now = common::now();
+    call_tool(
+        &app,
+        &live,
+        "hexbot_wakeups",
+        json!({"action":"add","at":rfc3339(now + 61.0),"note":"send: The essay is due at 9 AM."}),
+    )
+    .await;
+    // Check-ins are off, so only Check in now runs it, once it is due.
+    db::open(h.path())
+        .unwrap()
+        .execute("UPDATE checkin_wakeups SET at=?", [now - 1.0])
+        .unwrap();
+    let mut events = app.events.subscribe();
+    app.call("local", "hexbot.checkins.run_now", &json!({}))
+        .await
+        .unwrap();
+    let message = loop {
+        let event = events.recv().await.unwrap();
+        if event.frame["params"]["type"] == "hexbot.checkins.message" {
+            break event.frame["params"]["payload"]["text"].clone();
+        }
+    };
+    assert_eq!(message, "The essay is due at 9 AM.");
+    let waiting: i64 = db::open(h.path())
+        .unwrap()
+        .query_row(
+            "SELECT COUNT(*) FROM checkin_wakeups WHERE fired_at IS NULL",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(waiting, 0);
 }

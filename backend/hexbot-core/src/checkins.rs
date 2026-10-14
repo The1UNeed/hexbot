@@ -336,9 +336,10 @@ pub(crate) fn notify(
         "UPDATE checkins SET message_id=? WHERE id=?",
         params![id, checkin],
     )?;
+    // Unread, like a turn that finished while the user was elsewhere.
     tx.execute(
-        "UPDATE sections SET updated_at=? WHERE id=?",
-        params![now, section],
+        "UPDATE sections SET updated_at=?,done_at=? WHERE id=?",
+        params![now, now, section],
     )?;
     tx.commit()?;
     // The visible message goes to the other database once the record is
@@ -416,7 +417,11 @@ async fn push(home: &Path, owner: &str, bot: &str, section: &str) -> Result<()> 
     if targets.is_empty() {
         return Ok(());
     }
-    let gone = crate::services::push(home, &targets, section).await?;
+    // Connect takes 20 targets a request.
+    let mut gone = vec![];
+    for batch in targets.chunks(20) {
+        gone.extend(crate::services::push(home, batch, section).await?);
+    }
     if !gone.is_empty() {
         let conn = db::open(home)?;
         for token in gone {
@@ -708,26 +713,34 @@ impl Dreaming {
         }
         let id = common::id();
         let now = common::now();
-        let started = (|| -> Result<()> {
+        let started = (|| -> Result<Vec<Value>> {
             let mut conn = db::open(&self.home)?;
             let tx = conn.transaction()?;
             tx.execute(
                 "INSERT INTO checkins(id,owner_id,bot,kind,started_at,status) VALUES (?,?,?,?,?,'running')",
                 params![id, owner, bot, kind, now],
             )?;
+            // A wake-up cancelled since it was read stays cancelled and out of the prompt.
+            let mut claimed = vec![];
             for wakeup in &wakeups {
-                tx.execute(
-                    "UPDATE checkin_wakeups SET fired_at=?,checkin_id=? WHERE id=?",
+                if tx.execute(
+                    "UPDATE checkin_wakeups SET fired_at=?,checkin_id=? WHERE id=? AND fired_at IS NULL AND cancelled_at IS NULL",
                     params![now, id, wakeup["id"].as_str()],
-                )?;
+                )? == 1
+                {
+                    claimed.push(wakeup.clone());
+                }
             }
             tx.commit()?;
-            Ok(())
+            Ok(claimed)
         })();
-        if let Err(error) = started {
-            self.running.lock().unwrap().remove(&key);
-            return Err(error);
-        }
+        let wakeups = match started {
+            Ok(claimed) => claimed,
+            Err(error) => {
+                self.running.lock().unwrap().remove(&key);
+                return Err(error);
+            }
+        };
         self.events
             .emit(owner, None, "hexbot.checkins.changed", json!({"bot":bot}));
         let reply = json!({"id":id,"kind":kind,"status":"running"});
@@ -903,7 +916,13 @@ impl Dreaming {
             "hexbot.checkins.run_now" => {
                 let bot = crate::catalog::primary_bot(&self.home, owner)?
                     .ok_or_else(|| Error::new(4246, "Choose a primary bot first."))?;
-                self.launch_checkin(owner, &bot, "manual", vec![])
+                // Wake-ups already due come along, as with any check-in.
+                let due = common::rows(
+                    &db::open(&self.home)?,
+                    "SELECT id,bot,at,note,created_at FROM checkin_wakeups WHERE owner_id=? AND fired_at IS NULL AND cancelled_at IS NULL AND at<=? ORDER BY at",
+                    &[&owner, &common::now()],
+                )?;
+                self.launch_checkin(owner, &bot, "manual", due)
             }
             "hexbot.checkins.cancel_wakeup" => {
                 cancel_wakeup(&self.home, &self.events, owner, common::required(p, "id")?)?;
