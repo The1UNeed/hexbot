@@ -362,6 +362,18 @@ async fn primary_bot_manages_other_bots_and_always_asks_before_deleting() {
     .unwrap();
     assert_eq!(changed["bot"], "owl");
 
+    // A job's working folder asks like a bot's.
+    let (asked, reply) = call_tool(
+        &app,
+        &live,
+        "hexbot_jobs",
+        json!({"action":"create","bot":"owl","name":"Elsewhere","prompt":"Tidy up","schedule":"every 1h","workdir":folder}),
+        "deny",
+    )
+    .await;
+    assert!(asked);
+    assert!(reply.contains("denied"), "{reply}");
+
     // Its own jobs tool asks before removing too, so no path skips the card.
     let (_, reply) = call_tool(
         &app,

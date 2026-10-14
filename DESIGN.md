@@ -106,7 +106,7 @@ more freedom and more capability than a hosted product can offer.
   `hexbot_rooms`, `hexbot_jobs`, and `hexbot_settings`. Each calls the daemon
   method the app uses, as the owner, so the same checks and change events
   apply. Deleting a bot, room, or job, setting a bot's or room's approval
-  mode or a bot's working folder, and every settings change ask the user,
+  mode or a bot's or job's working folder, and every settings change ask the user,
   even in Bypass.
   Network, service, and billing settings and every credential stay with
   the user.

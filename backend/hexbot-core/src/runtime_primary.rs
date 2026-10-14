@@ -22,7 +22,7 @@ You are the user's primary bot. Besides your own work, you look after their Hexb
 - hexbot_rooms creates rooms and manages who is in them.
 - hexbot_jobs schedules work for any of their bots.
 - hexbot_settings reads and changes Hexbot's settings, skills and connectors.
-Deleting a bot, room or job, changing a bot's or room's approval mode or a bot's working folder, and changing settings always ask the user first. Do the rest when the user asks. You never see or set API keys or connector credentials; tell the user to add them in Settings.
+Deleting a bot, room or job, changing a bot's or room's approval mode or a bot's or job's working folder, and changing settings always ask the user first. Do the rest when the user asks. You never see or set API keys or connector credentials; tell the user to add them in Settings.
 These tools work only in your own sections."###;
 
 const BOT_FIELDS: &[&str] = &[
@@ -120,7 +120,7 @@ pub(super) fn descriptors() -> Vec<Value> {
         json!({
             "name": "hexbot_jobs",
             "label": "Scheduled jobs",
-            "description": "Create and manage scheduled jobs for any of the user's bots. Actions: create, list, update, pause, resume, remove, run. Each job runs as that bot in a fresh session and saves its output locally. Removing a job asks the user first.",
+            "description": "Create and manage scheduled jobs for any of the user's bots. Actions: create, list, update, pause, resume, remove, run. Each job runs as that bot in a fresh session and saves its output locally. Removing a job, or setting its workdir, asks the user first.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -459,6 +459,16 @@ impl Runtime {
                 // The jobs method tells paired clients the jobs changed.
                 let mut job = pick(args, JOB_FIELDS);
                 job.as_object_mut().unwrap().remove("action");
+                // An unattended job's folder is where its tools work, so it asks like a bot's.
+                if let Some(folder) = job["workdir"].as_str().filter(|w| !w.trim().is_empty()) {
+                    self.confirm(
+                        s,
+                        name,
+                        format!("Run {bot}'s scheduled job in {folder}"),
+                        args,
+                    )
+                    .await?;
+                }
                 if job["repeat"] == 0 {
                     job["repeat"] = Value::Null;
                 }
