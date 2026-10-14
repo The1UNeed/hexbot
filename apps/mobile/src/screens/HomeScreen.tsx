@@ -249,6 +249,7 @@ function BotsTab({
         )
         .sort(
           (a, b) =>
+            Number(!!b.primary) - Number(!!a.primary) ||
             (PINNED[a.status ?? ''] ?? 9) - (PINNED[b.status ?? ''] ?? 9) ||
             (b.updatedAt ?? 0) - (a.updatedAt ?? 0)
         ),

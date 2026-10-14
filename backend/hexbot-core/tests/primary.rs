@@ -331,6 +331,57 @@ async fn primary_bot_manages_other_bots_and_always_asks_before_deleting() {
     .await
     .unwrap();
     assert_eq!(changed["bot"], "owl");
+
+    // Its own jobs tool asks before removing too, so no path skips the card.
+    let (_, reply) = call_tool(
+        &app,
+        &live,
+        "hexbot_jobs",
+        json!({"action":"create","bot":"hexbot","name":"Mine","prompt":"Check in","schedule":"every 1h"}),
+        "deny",
+    )
+    .await;
+    let reply: Value = serde_json::from_str(&reply).unwrap();
+    let job = reply["result"]["job"]["id"].as_str().unwrap().to_owned();
+    assert!(
+        config["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|t| t["name"] == "cronjob_manage")
+    );
+    let (asked, reply) = call_tool(
+        &app,
+        &live,
+        "cronjob_manage",
+        json!({"action":"remove","job_id":job}),
+        "deny",
+    )
+    .await;
+    assert!(asked);
+    assert!(reply.contains("denied"), "{reply}");
+    let jobs = app
+        .call("local", "hexbot.jobs.list", &json!({"bot":"hexbot"}))
+        .await
+        .unwrap();
+    assert_eq!(jobs["jobs"].as_array().unwrap().len(), 1, "{jobs}");
+
+    // An empty reasoning effort returns a bot to its model's default.
+    for (effort, expected) in [(json!("high"), json!("high")), (json!(""), Value::Null)] {
+        call_tool(
+            &app,
+            &live,
+            "hexbot_bots",
+            json!({"action":"update","name":"owl","reasoning_effort":effort}),
+            "deny",
+        )
+        .await;
+        let owl = app
+            .call("local", "hexbot.bots.get", &json!({"name":"owl"}))
+            .await
+            .unwrap();
+        assert_eq!(owl["bot"]["reasoning_effort"], expected);
+    }
     app.shutdown().await;
 }
 

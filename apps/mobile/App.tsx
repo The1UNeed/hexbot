@@ -475,6 +475,7 @@ function MobileApp() {
     return {
       ...faceOf(b),
       id: b.name,
+      primary: b.primary === true,
       title: b.title,
       description: b.description,
       latestThread: latest?.preview ? threadTitle(latest) : null,

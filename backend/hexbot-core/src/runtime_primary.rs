@@ -4,6 +4,10 @@
 //! working folder, and changing settings ask the user every time, even in Bypass.
 use super::*;
 
+/// One room membership change at a time, so a parallel removal cannot empty
+/// and delete a room after another call decided not to ask.
+static ROOM_CHANGES: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 /// The tools a primary bot gets in its own sections, never in rooms, threads,
 /// scheduled jobs or delegates.
 pub(super) const TOOL_NAMES: &[&str] = &[
@@ -87,7 +91,7 @@ pub(super) fn descriptors() -> Vec<Value> {
                     "persona": { "type": "string", "description": "The bot's soul, complete" },
                     "provider": { "type": "string" },
                     "model": { "type": "string" },
-                    "reasoning_effort": { "type": "string" },
+                    "reasoning_effort": { "type": "string", "description": "An empty string returns to the model's default" },
                     "tools": { "type": "array", "items": { "type": "string", "enum": ["terminal", "files", "code_execution", "browser", "computer_use", "vision", "voice", "message_bots", "delegate", "scheduling"] } },
                     "skills": strings,
                     "approval_mode": { "type": "string", "enum": ["inherit", "manual", "smart", "off"], "description": "inherit follows Settings; smart is Auto; off is Bypass" },
@@ -130,7 +134,7 @@ pub(super) fn descriptors() -> Vec<Value> {
                     "prompt": { "type": "string" },
                     "schedule": { "type": "string" },
                     "name": { "type": "string" },
-                    "repeat": { "type": "integer" },
+                    "repeat": { "type": "integer", "minimum": 0, "description": "How many times it runs; 0 removes the limit" },
                     "include_disabled": { "type": "boolean" },
                     "skills": strings,
                     "enabled_toolsets": strings,
@@ -143,7 +147,7 @@ pub(super) fn descriptors() -> Vec<Value> {
         json!({
             "name": "hexbot_settings",
             "label": "Settings",
-            "description": "Read and change Hexbot's settings. get returns them. set changes settings given in patch. skill turns an installed skill on or off for every bot. connector turns a connector that is already set up on or off for one bot. Every change asks the user first.",
+            "description": "Read and change Hexbot's settings. get returns them. set changes settings given in patch. skill turns an installed skill on or off in Settings, Skills; a bot that turned it off in its own settings keeps it off, so use hexbot_bots update skills for one bot. connector turns a connector that is already set up on or off for one bot. Every change asks the user first.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -227,7 +231,13 @@ impl Runtime {
         })
     }
 
-    async fn confirm(&self, s: &Live, tool: &str, title: String, args: &Value) -> Result<()> {
+    pub(super) async fn confirm(
+        &self,
+        s: &Live,
+        tool: &str,
+        title: String,
+        args: &Value,
+    ) -> Result<()> {
         let request = json!({"tool":tool,"toolCall":{"title":title},"input":args,"reason":"The primary bot always asks before this."});
         if !self.ask_approval(s, request, true).await? {
             return Err(Error::new(4302, "The user denied this action."));
@@ -272,11 +282,10 @@ impl Runtime {
                 let mut patch = pick(args, BOT_FIELDS);
                 required(&patch, "name")?;
                 // Schemas stay plain strings for every provider; empty clears the override.
-                if patch["workdir"]
-                    .as_str()
-                    .is_some_and(|w| w.trim().is_empty())
-                {
-                    patch["workdir"] = Value::Null;
+                for key in ["workdir", "reasoning_effort"] {
+                    if patch[key].as_str().is_some_and(|v| v.trim().is_empty()) {
+                        patch[key] = Value::Null;
+                    }
                 }
                 if ["approval_mode", "workdir"]
                     .iter()
@@ -378,6 +387,7 @@ impl Runtime {
             ("hexbot_rooms", "add_member" | "remove_member") => {
                 let room = required(args, "id")?;
                 let bot = required(args, "bot")?;
+                let _serial = ROOM_CHANGES.lock().await;
                 if action == "remove_member" {
                     let current = crate::rooms::get(&self.home, owner, room)?;
                     let active = current["members"]
@@ -404,6 +414,7 @@ impl Runtime {
             }
             ("hexbot_rooms", "delete") => {
                 let room = required(args, "id")?;
+                let _serial = ROOM_CHANGES.lock().await;
                 let current = crate::rooms::get(&self.home, owner, room)?;
                 let title = current["name"].as_str().unwrap_or(room);
                 self.confirm(
@@ -438,6 +449,9 @@ impl Runtime {
                 // The jobs method tells paired clients the jobs changed.
                 let mut job = pick(args, JOB_FIELDS);
                 job.as_object_mut().unwrap().remove("action");
+                if job["repeat"] == 0 {
+                    job["repeat"] = Value::Null;
+                }
                 job["bot"] = json!(bot);
                 let method = format!("hexbot.jobs.{action}");
                 self.dispatch(owner, &method, job).await
@@ -484,7 +498,7 @@ impl Runtime {
                 self.confirm(
                     s,
                     name,
-                    format!("{verb} the skill {skill} for every bot"),
+                    format!("{verb} the skill {skill} in Settings"),
                     args,
                 )
                 .await?;
