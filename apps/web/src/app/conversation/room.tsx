@@ -2,7 +2,7 @@ import { useNavigate, useParams } from '@tanstack/react-router'
 import { Info } from 'lucide-react'
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
 
-import { Avatar } from '../../components/ui/avatar'
+import { Avatar, useFaceColor } from '../../components/ui/avatar'
 import { RoomCluster } from '../../components/ui/room-cluster'
 import { SkeletonLines } from '../../components/ui/skeleton'
 import { StatusDot } from '../../components/ui/status-dot'
@@ -29,6 +29,7 @@ import { WorkStatus } from './work-status'
 
 import {
   ApprovalCard,
+  botBubbleStyle,
   bubbleClass,
   CardRow,
   ConnectedToolsNotice,
@@ -74,6 +75,11 @@ export function RoomEventRow({ event, fresh = false }: { event: RoomEvent; fresh
     memberId
 
   const system = ['member.added', 'member.left', 'note'].includes(event.kind)
+
+  const color = useFaceColor(
+    avatarData(bot),
+    event.kind === 'message.bot' ? (member ?? 'Bot') : null
+  )
 
   if (event.kind === 'turn.started') {
     return null
@@ -155,6 +161,7 @@ export function RoomEventRow({ event, fresh = false }: { event: RoomEvent; fresh
               fresh && 'hex-message',
               fresh && mine && 'hex-message-mine'
             )}
+            style={mine ? undefined : botBubbleStyle(color)}
           >
             {!mine ? (
               <div className="mb-0.5 text-[length:var(--text-meta)] font-semibold text-muted">

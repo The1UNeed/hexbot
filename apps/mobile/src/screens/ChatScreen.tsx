@@ -18,6 +18,7 @@ import {
   type BotStatus,
   Button,
   type FaceSource,
+  faceWash,
   formatDayDivider,
   Glass,
   IconButton,
@@ -423,7 +424,13 @@ function MessageBubble({
           onLongPress={onLongPress ? () => onLongPress(item.id) : undefined}
           style={[
             styles.bubble,
-            mine ? { backgroundColor: theme.ink } : { backgroundColor: theme.fill }
+            {
+              backgroundColor: mine
+                ? theme.ink
+                : item.role === 'bot' && item.author
+                  ? faceWash(item.author, theme.fill, theme.scheme)
+                  : theme.fill
+            }
           ]}
           testID={`chat-message-${item.id}`}
         >

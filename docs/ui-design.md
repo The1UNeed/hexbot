@@ -36,9 +36,14 @@ own visual identity. Read `CLAUDE.md` for the words.
 - Chart series, for bot visuals only: light #4F46E5, #0D9488, #D97706,
   #DB2777, #2F7CF6, #65A30D; dark #8B85FF, #2DD4BF, #FBBF24, #F472B6,
   #4C9AFF, #A3E635. The first is the accent; the rest step apart in hue.
-- Bot faces: every bot has a face, a shape and a colour with two eyes
-  (`lib/avatar-builder.ts`). Uploaded images replace it; otherwise the face
-  is derived from the bot's name. Faces wiggle on hover and blink at rest.
+- Bot faces: every bot has a face, a shape and a colour with two white
+  capsule eyes painted on a ball (`lib/avatar-builder.ts`; Chalk gets ink
+  eyes). A face picked in the app is saved as a picture for other clients,
+  and the web app reads that picture back into a live face; pictures saved
+  before the eyes moved are redrawn once. Other uploaded images replace the
+  face; otherwise it is derived from the bot's name. Faces wiggle on hover
+  and blink at rest, and a glance moves the eyes over the ball's surface:
+  toward the rim, rolled with it, smaller as it turns away. Every shape places the ball so the eyes stay inside it.
   Click any face, or the Hexbot mark, and it plays a random act for a few
   seconds: typing with its two round hands, juggling, blowing a horn
   (`components/ui/hexbot-act.tsx`, 21 acts). The install screen gives each
@@ -136,8 +141,9 @@ the roster slides in as a drawer.
   truncates before it can reach the pill. The context window is never called
   memory.
 - Transcript: a centred column capped at 52rem. Bot messages left-aligned
-  in soft grey bubbles, human messages right-aligned in inverse bubbles
-  (black on light, white on dark). A bot's own chat draws no faces in the
+  in soft grey bubbles washed with the bot's face colour (14% light, 20%
+  dark; plain grey for an uploaded photo), human messages right-aligned in
+  inverse bubbles (black on light, white on dark). A bot's own chat draws no faces in the
   column (the pill says whose chat it is); a room draws the bot's face and
   name beside its bubbles. Every bubble and card is fully rounded (20 px,
   a pill when it is one line) on a shared left edge; bubbles and cards from

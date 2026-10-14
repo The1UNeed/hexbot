@@ -45,6 +45,8 @@
 
   --hex-canvas: #f3f3f5;
   --hex-bubble: #f0f0f2;
+  /* How much of a bot's face colour washes its bubbles. */
+  --hex-bot-wash: 14%;
   --hex-glass-bg: rgb(255 255 255 / 0.58);
   --hex-glass-strong: rgb(250 250 252 / 0.8);
   --hex-glass-glow: rgb(255 255 255 / 0.7);
@@ -102,6 +104,7 @@
 
     --hex-canvas: #09090a;
     --hex-bubble: #232326;
+    --hex-bot-wash: 20%;
     --hex-glass-bg: rgb(28 28 31 / 0.6);
     --hex-glass-strong: rgb(24 24 27 / 0.82);
     --hex-glass-glow: rgb(255 255 255 / 0.2);
@@ -141,6 +144,8 @@
 
   --hex-canvas: #f3f3f5;
   --hex-bubble: #f0f0f2;
+  /* How much of a bot's face colour washes its bubbles. */
+  --hex-bot-wash: 14%;
   --hex-glass-bg: rgb(255 255 255 / 0.58);
   --hex-glass-strong: rgb(250 250 252 / 0.8);
   --hex-glass-glow: rgb(255 255 255 / 0.7);
@@ -179,6 +184,7 @@
 
   --hex-canvas: #09090a;
   --hex-bubble: #232326;
+  --hex-bot-wash: 20%;
   --hex-glass-bg: rgb(28 28 31 / 0.6);
   --hex-glass-strong: rgb(24 24 27 / 0.82);
   --hex-glass-glow: rgb(255 255 255 / 0.2);
@@ -789,24 +795,30 @@ body {
   }
 }
 
-/* Eyes wander a little while idle, so a face never looks frozen. */
+/*
+ * Eyes wander a little while idle, so a face never looks frozen. The eyes
+ * are painted on a ball (the frame set up in avatar-builder.ts, 45 units
+ * across), so a glance moves them over its surface: they slide toward the
+ * rim, roll with it, and shrink as the surface turns away. Each pose holds
+ * still between moves; nothing repaints while it holds.
+ */
 @keyframes hex-gaze {
   0%,
-  38%,
+  36%,
   100% {
-    transform: translate(0, 0);
+    transform: translate(0, 0) rotate(0deg) scale(1);
   }
-  42%,
-  56% {
-    transform: translate(2.5px, -0.5px);
+  40%,
+  54% {
+    transform: translate(15px, -18px) rotate(24deg) scale(0.82);
   }
-  60%,
-  78% {
-    transform: translate(-2px, 0.5px);
+  58%,
+  74% {
+    transform: translate(-6px, 2px) rotate(-9deg) scale(0.95);
   }
-  82%,
+  78%,
   96% {
-    transform: translate(0.5px, 1px);
+    transform: translate(3px, 2px) rotate(4deg) scale(0.98);
   }
 }
 
@@ -831,8 +843,8 @@ body {
   animation: hex-gaze 9s ease-in-out infinite;
 }
 /*
- * A face turned toward the bot beside it: eyes over, body tilted. A pose
- * answering a state change, not a loop; units are the face's 100-unit space.
+ * A face turned toward the bot beside it: eyes over the surface, body
+ * tilted. A pose answering a state change, not a loop; units are the ball's.
  */
 .hex-look-right.hex-face .hex-gaze,
 .hex-look-left.hex-face .hex-gaze {
@@ -840,10 +852,10 @@ body {
   transition: transform var(--hex-motion-enter) var(--hex-ease-out);
 }
 .hex-look-right.hex-face .hex-gaze {
-  transform: translate(7px, 0.5px);
+  transform: translate(12px, -4px) rotate(14deg) scale(0.9);
 }
 .hex-look-left.hex-face .hex-gaze {
-  transform: translate(-7px, 0.5px);
+  transform: translate(-12px, -4px) rotate(-14deg) scale(0.9);
 }
 .hex-lean-right,
 .hex-lean-left {
@@ -857,10 +869,12 @@ body {
   transform: rotate(-10deg);
 }
 /* Eye geometry morphs between moods instead of snapping. */
-.hex-face .hex-eyes ellipse {
+.hex-face .hex-eyes rect {
   transition:
-    cx var(--hex-motion-panel) var(--hex-ease-out),
-    cy var(--hex-motion-panel) var(--hex-ease-out),
+    x var(--hex-motion-panel) var(--hex-ease-out),
+    y var(--hex-motion-panel) var(--hex-ease-out),
+    width var(--hex-motion-panel) var(--hex-ease-out),
+    height var(--hex-motion-panel) var(--hex-ease-out),
     rx var(--hex-motion-panel) var(--hex-ease-out),
     ry var(--hex-motion-panel) var(--hex-ease-out);
 }

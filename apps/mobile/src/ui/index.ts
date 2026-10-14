@@ -27,6 +27,7 @@ export {
   type FaceMood,
   type FaceStyle,
   faceForName,
+  faceWash,
   resolveFace
 } from './faces'
 export { Field, type FieldProps, SearchField, type SearchFieldProps } from './Field'

@@ -9,11 +9,11 @@ import {
   Trash2,
   X
 } from 'lucide-react'
-import { isValidElement, useEffect, useMemo, useRef, useState } from 'react'
+import { type CSSProperties, isValidElement, useEffect, useMemo, useRef, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 
-import { Avatar } from '../../components/ui/avatar'
+import { Avatar, useFaceColor } from '../../components/ui/avatar'
 import { Button } from '../../components/ui/button'
 import { Chip } from '../../components/ui/chip'
 import { Dialog } from '../../components/ui/dialog'
@@ -160,13 +160,21 @@ export function BubbleActions({
 }
 
 /**
- * Soft grey for bots. Humans get the inverse (`userBubbleClass`), like Grok
- * Bot. A message that arrives while the chat is open springs in whole from
- * its corner (`hex-message`), like a text; history is drawn where it is.
+ * Soft grey for bots, washed with the bot's face colour (`botBubbleStyle`).
+ * Humans get the inverse (`userBubbleClass`), like Grok Bot. A message that
+ * arrives while the chat is open springs in whole from its corner
+ * (`hex-message`), like a text; history is drawn where it is.
  */
 export const bubbleClass =
   'min-w-0 max-w-full rounded-[20px] bg-bubble px-3.5 py-2 leading-[1.5] break-words'
 export const userBubbleClass = cn(bubbleClass, 'bg-foreground text-background')
+
+/** A bot bubble washed with its face colour; plain grey for a photo. */
+export function botBubbleStyle(color: null | string): CSSProperties | undefined {
+  return color
+    ? { backgroundColor: `color-mix(in srgb, ${color} var(--hex-bot-wash), var(--hex-bubble))` }
+    : undefined
+}
 
 /** The transcript column: centred and capped so lines stay readable on wide windows. */
 export const transcriptClass = 'mx-auto max-w-[52rem] px-5 py-2'
@@ -409,6 +417,7 @@ export function MessageRow({
 }) {
   const assistant = message.role === 'assistant'
   const settled = useRef<number>(undefined)
+  const color = useFaceColor(avatarData(bot), bot ? bot.display_name : null)
 
   if (message.error) {
     return (
@@ -473,6 +482,7 @@ export function MessageRow({
           index >= still && 'hex-message',
           index >= still && !assistant && 'hex-message-mine'
         )}
+        style={assistant ? botBubbleStyle(color) : undefined}
       >
         {text ? (
           <div className="hex-prose">

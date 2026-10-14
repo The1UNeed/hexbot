@@ -11,9 +11,12 @@ if (faces.length && !reduced) {
       const dx = x - (box.left + box.width / 2)
       const dy = y - (box.top + box.height / 2)
       const distance = Math.hypot(dx, dy) || 1
-      const reach = Math.min(1, distance / 320) * 4.5
+      const turn = Math.min(1, distance / 320)
+      const ux = dx / distance
+      const uy = dy / distance
+      // The eyes are painted on a ball: they slide toward the pointer, roll with the surface, and shrink as it turns away.
       const pupils = face.querySelector<SVGGElement>('.pupils')
-      if (pupils) pupils.style.transform = `translate(${(dx / distance) * reach}px, ${(dy / distance) * reach}px)`
+      if (pupils) pupils.style.transform = `translate(${ux * 16 * turn}px, ${uy * 16 * turn}px) rotate(${ux * 24 * turn}deg) scale(${1 - 0.18 * turn})`
     }
   }
   addEventListener('pointermove', event => {

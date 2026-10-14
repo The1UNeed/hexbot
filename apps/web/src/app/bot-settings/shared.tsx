@@ -1,7 +1,7 @@
 import { Check } from 'lucide-react'
 import { type ChangeEvent, useEffect, useRef, useState } from 'react'
 
-import { Avatar } from '../../components/ui/avatar'
+import { Avatar, useFaceRead } from '../../components/ui/avatar'
 import { AvatarBuilder } from '../../components/ui/avatar-builder'
 import { Button } from '../../components/ui/button'
 import { Input } from '../../components/ui/input'
@@ -254,7 +254,8 @@ export function AvatarPicker({
   const [style, setStyle] = useState<AvatarStyle | null>(null)
   const [error, setError] = useState<string | null>(null)
   const fileRef = useRef<HTMLInputElement>(null)
-  const currentStyle = style ?? styleForName(bot.display_name)
+  const saved = useFaceRead(avatarSrc(bot.avatar))
+  const currentStyle = style ?? saved?.style ?? styleForName(bot.display_name)
 
   const upload = (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0]

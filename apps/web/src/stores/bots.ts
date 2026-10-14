@@ -7,6 +7,7 @@ import { create } from 'zustand'
 import { useShallow } from 'zustand/react/shallow'
 
 import { botsCreate, botsDelete, botsGet, botsList, botsUpdate } from '../lib/api'
+import { avatarPng, avatarSrc, readFace } from '../lib/avatar-builder'
 import type { Bot, BotCreateInput, BotUpdatePatch, Section } from '../lib/types'
 
 import { uiActions } from './ui'
@@ -48,6 +49,7 @@ export const useBots = create<BotsState>((set, get) => ({
       const result = await botsList()
 
       set({ ...indexBots(result.bots ?? []), loaded: true, loading: false })
+      void redrawFlatFaces(result.bots ?? [])
     } catch (error) {
       set({ error: error instanceof Error ? error.message : String(error), loading: false })
     }
@@ -98,6 +100,34 @@ export const useBots = create<BotsState>((set, get) => ({
     })
   }
 }))
+
+const looked = new Set<string>()
+
+/**
+ * Saves a fresh picture, once, for every bot whose face was drawn before the
+ * eyes moved onto the ball. Same shape and colour; the phone and every other
+ * client then show the current face too.
+ */
+async function redrawFlatFaces(bots: Bot[]) {
+  for (const bot of bots) {
+    const src = avatarSrc(bot.avatar)
+
+    if (!src || looked.has(src)) {
+      continue
+    }
+
+    looked.add(src)
+    const read = await readFace(src)
+    const avatar = read?.legacy ? await avatarPng(read.style) : null
+
+    if (avatar) {
+      await useBots
+        .getState()
+        .update(bot.name, { avatar })
+        .catch(() => undefined)
+    }
+  }
+}
 
 export function botsActions(): BotsState {
   return useBots.getState()
