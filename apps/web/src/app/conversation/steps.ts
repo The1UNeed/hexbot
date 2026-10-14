@@ -361,7 +361,7 @@ const ACTIVITY: Record<string, string> = {
   delegate_task: 'is asking another bot',
   codemode: 'is running code',
   execute_code: 'is running code',
-  hexbot_rename_section: 'is naming the section',
+  hexbot_rename_section: 'is naming the chat',
   hexbot_show_html: 'is drawing',
   hexbot_soul: 'is updating its soul',
   image_generate: 'is making an image',

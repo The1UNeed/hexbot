@@ -67,6 +67,25 @@ struct Staged {
     refs: Vec<String>,
     files: Vec<PathBuf>,
 }
+/// Uploads moving to a section's new process. If it never starts they wait
+/// for the next open of the section instead of being lost.
+struct Moving<'a> {
+    parked: &'a Mutex<HashMap<String, Vec<Staged>>>,
+    stored: &'a str,
+    uploads: Vec<Staged>,
+}
+impl Drop for Moving<'_> {
+    fn drop(&mut self) {
+        if !self.uploads.is_empty() {
+            self.parked
+                .lock()
+                .unwrap()
+                .entry(self.stored.to_owned())
+                .or_default()
+                .append(&mut self.uploads);
+        }
+    }
+}
 const MAX_HOPS: usize = 8;
 #[derive(Clone, Debug, Default)]
 struct Chain {
@@ -123,6 +142,8 @@ pub struct Runtime {
     children: Mutex<HashMap<String, delegation::Child>>,
     description_refreshes: Mutex<HashMap<String, bool>>,
     warned_servers: Mutex<std::collections::HashSet<String>>,
+    /// Uploads of sections whose new process failed to start, by section.
+    parked: Mutex<HashMap<String, Vec<Staged>>>,
     /// Orders context reports across sessions and idle restarts. Seeded from
     /// the clock so a report after a daemon restart still outranks the last
     /// one a client kept.
@@ -146,6 +167,7 @@ impl Runtime {
             children: Mutex::new(HashMap::new()),
             description_refreshes: Mutex::new(HashMap::new()),
             warned_servers: Mutex::new(std::collections::HashSet::new()),
+            parked: Mutex::new(HashMap::new()),
             usage_seq: AtomicU64::new((common::now() * 1000.0) as u64),
         });
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
@@ -541,7 +563,11 @@ impl Runtime {
         let running = self.sessions.lock().unwrap().get(stored).cloned();
         // Rebuilding the tool list reads every config, so it is done once.
         let mut stale = None;
-        let mut uploads = vec![];
+        let mut uploads = Moving {
+            parked: &self.parked,
+            stored,
+            uploads: vec![],
+        };
         if let Some(s) = running {
             if s.owner != owner {
                 return Err(Error::new(4302, "not the owner"));
@@ -557,8 +583,15 @@ impl Runtime {
                 s.state.lock().unwrap().last_activity = common::now();
                 return Ok(s);
             }
-            uploads = std::mem::take(&mut s.state.lock().unwrap().staged);
+            uploads.uploads = std::mem::take(&mut s.state.lock().unwrap().staged);
             self.stop_retired(&s).await;
+        } else {
+            uploads.uploads = self
+                .parked
+                .lock()
+                .unwrap()
+                .remove(stored)
+                .unwrap_or_default();
         }
         let permit = match self.capacity.clone().try_acquire_owned() {
             Ok(permit) => Ok(permit),
@@ -842,7 +875,7 @@ impl Runtime {
                 tool_dialogs: std::collections::HashSet::new(),
                 native_approvals: HashMap::new(),
                 display: VecDeque::new(),
-                staged: uploads,
+                staged: std::mem::take(&mut uploads.uploads),
                 chain: Chain::default(),
                 tool_started: HashMap::new(),
                 tool_context: HashMap::new(),
@@ -875,6 +908,7 @@ impl Runtime {
         if let Err(error) = Self::command(&s, json!({"type":"get_state"})).await {
             self.sessions.lock().unwrap().remove(stored);
             let _ = s.process.shutdown().await;
+            uploads.uploads = std::mem::take(&mut s.state.lock().unwrap().staged);
             return Err(error);
         }
         store::open(&self.home)?.execute(
@@ -1708,6 +1742,13 @@ impl Runtime {
             }
             sessions.remove(stored)
         };
+        remove_staged(
+            self.parked
+                .lock()
+                .unwrap()
+                .remove(stored)
+                .unwrap_or_default(),
+        );
         if let Some(s) = s {
             {
                 let _gate = s.event_gate.lock().unwrap();
@@ -4661,6 +4702,45 @@ rl.on('line',line=>{{const c=JSON.parse(line);emit({{type:'response',id:c.id,com
             .unwrap();
         assert!(sent.contains(file["path"].as_str().unwrap()), "{sent}");
         assert!(Path::new(file["path"].as_str().unwrap()).exists());
+        runtime.shutdown().await;
+    }
+    #[tokio::test]
+    async fn uploads_survive_a_new_process_that_fails_to_start() {
+        let (home, runtime, _) = setup();
+        let config = home.path().join("profiles/owl/config.yaml");
+        fs::write(&config, "tools:\n  enabled_toolsets: [hexbot]\n").unwrap();
+        let s = runtime
+            .open_for_input("alice", "owl", "first")
+            .await
+            .unwrap();
+        let file = runtime
+            .call(
+                "alice",
+                "file.attach",
+                &json!({"session_id":s.id,"name":"a.txt","data_url":"data:text/plain;base64,YQ=="}),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        fs::write(&config, "tools:\n  enabled_toolsets: []\n").unwrap();
+        // The new process exits at once.
+        let script = home.path().join("pi.cjs");
+        let working = fs::read_to_string(&script).unwrap();
+        fs::write(&script, "#!/usr/bin/env node\nprocess.exit(1)\n").unwrap();
+        let message = json!({"session_id":s.id,"text":"Read this","attachments":[file["id"]]});
+        let submit = || runtime.call("alice", "prompt.submit", &message);
+        assert!(submit().await.unwrap().is_err());
+        fs::write(&script, working).unwrap();
+        submit().await.unwrap().unwrap();
+        let sent: String = store::open(home.path())
+            .unwrap()
+            .query_row(
+                "SELECT text FROM native_prompt_intents WHERE session_id='first'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(sent.contains(file["path"].as_str().unwrap()), "{sent}");
         runtime.shutdown().await;
     }
     #[tokio::test]

@@ -6,7 +6,7 @@ use crate::{Error, Result, catalog, common, connectors, db, runtime_store};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde_json::{Value, json};
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     fs,
     path::{Path, PathBuf},
     sync::{
@@ -783,6 +783,7 @@ fn legacy_stamp(path: &Path) -> Result<Option<Vec<(std::time::SystemTime, u64)>>
 fn read_session(
     conn: &Connection,
     legacy: Option<&Connection>,
+    reports: &HashSet<String>,
     section: &Value,
     version: i64,
 ) -> Result<RecallSession> {
@@ -835,6 +836,10 @@ fn read_session(
                     .filter(Value::is_array)
                     .map(|v| runtime_store::text(&v))
                     .unwrap_or_else(|| content.to_owned());
+                // A dream report an earlier build posted is not the bot speaking.
+                if row["role"] == "assistant" && reports.contains(&content) {
+                    continue;
+                }
                 messages.push(json!({
                     "id": row["id"],
                     "role": row["role"],
@@ -968,7 +973,12 @@ fn recall(
             Some(session) => delete_session(&tx, &session)?,
             None => (),
         };
-        let mut session = read_session(&conn, legacy_db.as_ref(), section, version)?;
+        let reports = if legacy_db.is_some() {
+            runtime_store::legacy_reports(home, &key.bot, id)?
+        } else {
+            HashSet::new()
+        };
+        let mut session = read_session(&conn, legacy_db.as_ref(), &reports, section, version)?;
         index_session(&tx, &mut session, roles)?;
         index.sessions.push(session);
     }
@@ -1514,7 +1524,7 @@ mod history_index_tests {
         )
         .unwrap();
         let section = json!({"id":"native","title":"Native"});
-        let native = read_session(&conn, None, &section, 1).unwrap();
+        let native = read_session(&conn, None, &HashSet::new(), &section, 1).unwrap();
         assert_eq!(shaped(&native.messages[0], None)["tool_calls"], calls);
         // Dream reports stay out of history search.
         assert_eq!(native.messages.len(), 1);
@@ -1527,8 +1537,69 @@ mod history_index_tests {
                 [calls.to_string()],
             )
             .unwrap();
-        let legacy = read_session(&conn, Some(&legacy), &json!({"id":"legacy"}), 0).unwrap();
+        let legacy = read_session(
+            &conn,
+            Some(&legacy),
+            &HashSet::new(),
+            &json!({"id":"legacy"}),
+            0,
+        )
+        .unwrap();
         assert!(legacy.bytes > (8 << 20) + MESSAGE_BYTES);
+    }
+
+    #[test]
+    fn reports_in_an_unopened_dream_log_are_not_the_bot_speaking() {
+        let home = tempfile::tempdir().unwrap();
+        db::migrate(home.path()).unwrap();
+        db::open(home.path())
+            .unwrap()
+            .execute_batch(
+                "INSERT INTO users(id,display_name,role,created_at) VALUES('alice','Alice','admin',0);
+                 INSERT INTO bots(name,owner_id) VALUES('owl','alice');
+                 INSERT INTO sections(id,bot,owner_id,title) VALUES('log','owl','alice','Dreams'),('chat','owl','alice','Chat');
+                 INSERT INTO dreams(id,bot,started_at,status,summary) VALUES('d1','owl',1,'complete','Owl learned');
+                 INSERT INTO settings(key,value) VALUES('dream_logs','[\"log\"]');",
+            )
+            .unwrap();
+        let owl = home.path().join("profiles/owl");
+        fs::create_dir_all(&owl).unwrap();
+        Connection::open(owl.join("state.db"))
+            .unwrap()
+            .execute_batch(
+                "CREATE TABLE sessions(id TEXT,session_key TEXT);
+                 CREATE TABLE messages(id INTEGER,session_id TEXT,role TEXT,content TEXT,timestamp REAL);
+                 INSERT INTO sessions VALUES('log','log'),('chat','chat');
+                 INSERT INTO messages VALUES(1,'log','assistant','Owl learned',1),(2,'log','user','Why?',2),(3,'chat','user','Say it',3),(4,'chat','assistant','Owl learned',4);",
+            )
+            .unwrap();
+        let key = RecallKey {
+            home: home.path().to_owned(),
+            owner: "alice".to_owned(),
+            bot: "owl".to_owned(),
+            roles: String::new(),
+        };
+        let index = recall(
+            home.path(),
+            &key,
+            &BTreeSet::from(["user", "assistant"]),
+            "",
+        )
+        .unwrap();
+        let said = |id: &str| {
+            index
+                .sessions
+                .iter()
+                .find(|s| s.id == id)
+                .unwrap()
+                .messages
+                .iter()
+                .map(|m| text(m, "content").to_owned())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(said("log"), ["Why?"]);
+        // The same words in a chat are the bot's.
+        assert_eq!(said("chat"), ["Say it", "Owl learned"]);
     }
 
     #[test]

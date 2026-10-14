@@ -186,12 +186,19 @@ upgrade the daemon keeps one chat per bot (`catalog::one_chat_per_bot`, once,
 recorded as the `one_chat_per_bot` setting): for a bot with several, the one
 with something said, then not the old Dreams log, then not archived, then
 newest, and deletes the others with their history. Before deleting anything it
-copies `hexbot.db`, `hexbot-runtime.db`, the affected bots' `state.db` and
-`runtime/sessions` to `<home>/backups/one-chat-per-bot-<time>/`; if that copy
-fails it deletes nothing and tries again at the next start. A bot with a
-conversation that recovery set aside or could not read keeps all its sections.
-Sections made later, by an older build, are never deleted;
-`hexbot.sections.create` returns the newest healthy one.
+makes a full copy of `hexbot.db`, `hexbot-runtime.db`, the affected bots'
+`state.db` and all of `runtime/sessions` in
+`<home>/backups/one-chat-per-bot-<time>/`, so it needs about that much free disk
+space. If that copy fails it removes the unfinished copy
+(`one-chat-per-bot-<time>.partial`), deletes nothing and tries again at the next
+start; an error in the upgrade itself is logged and the daemon starts anyway. A
+bot with a conversation that recovery set aside or could not read keeps all its
+sections. Sections made later, by an older build, are never deleted.
+`hexbot.sections.create`, and a dream posting its report, rank a bot's healthy
+sections the same way, so while the upgrade waits for its copy the chat in use
+is the one it will keep. The old Dreams logs it finds are recorded as the `dream_logs`
+setting: only in those are messages matching a dream summary treated as dream
+reports, when the log is first opened and in history search.
 
 Section shape: `{id, bot, title, title_by: "bot" | null, created_at,
 updated_at, archived_at | null, done_at | null, preview, message_count,

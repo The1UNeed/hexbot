@@ -438,6 +438,35 @@ pub fn legacy_rows(conn: &Connection, stored: &str) -> Result<(Vec<Value>, Strin
     }
     Ok((result, lineage.last().cloned().unwrap_or_default()))
 }
+/// Sections an earlier build posted dream reports to, as the upgrade to one
+/// chat per bot found them.
+pub fn dream_logs(home: &Path) -> Result<BTreeSet<String>> {
+    let value: Option<String> = crate::db::open(home)?
+        .query_row(
+            "SELECT value FROM settings WHERE key='dream_logs'",
+            [],
+            |r| r.get(0),
+        )
+        .optional()?;
+    Ok(value
+        .and_then(|value| serde_json::from_str(&value).ok())
+        .unwrap_or_default())
+}
+/// The reports an earlier build posted, unmarked, to a section: none unless it
+/// is a dream log, since a reply elsewhere can read like one.
+pub fn legacy_reports(home: &Path, bot: &str, stored: &str) -> Result<HashSet<String>> {
+    if !dream_logs(home)?.contains(stored) {
+        return Ok(HashSet::new());
+    }
+    Ok(common::rows(
+        &crate::db::open(home)?,
+        "SELECT DISTINCT summary FROM dreams WHERE bot=? AND summary<>''",
+        &[&bot],
+    )?
+    .into_iter()
+    .filter_map(|row| row["summary"].as_str().map(str::to_owned))
+    .collect())
+}
 /// Read the old store without changing it, retaining hidden rows and tool results.
 /// Imported Pi files are written once; subsequent launches let Pi own the log.
 pub fn import_hermes(home: &Path, bot: &str, stored: &str, cwd: &Path) -> Result<()> {
@@ -454,14 +483,7 @@ pub fn import_hermes(home: &Path, bot: &str, stored: &str, cwd: &Path) -> Result
     if path.exists() {
         // Dream reports an earlier build posted as the bot's messages: shown,
         // never the bot's context.
-        let reports = common::rows(
-            &crate::db::open(home)?,
-            "SELECT DISTINCT summary FROM dreams WHERE bot=? AND summary<>''",
-            &[&bot],
-        )?
-        .into_iter()
-        .filter_map(|row| row["summary"].as_str().map(str::to_owned))
-        .collect::<HashSet<_>>();
+        let reports = legacy_reports(home, bot, stored)?;
         let conn = Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
         let (rows, tip) = legacy_rows(&conn, stored)?;
         {

@@ -79,7 +79,13 @@ impl App {
         web_dist: Option<PathBuf>,
     ) -> Result<Arc<Self>> {
         db::migrate(&home)?;
-        catalog::one_chat_per_bot(&home)?;
+        // The daemon starts without it; nothing it has not backed up is deleted.
+        if let Err(error) = catalog::one_chat_per_bot(&home) {
+            eprintln!(
+                "The upgrade to one chat per bot stopped and runs again on the next start: {}",
+                error.message
+            );
+        }
         let events = EventHub::new();
         let runtime = Runtime::new(home.clone(), events.clone(), pi)?;
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
