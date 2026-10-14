@@ -272,11 +272,18 @@ export const useSections = create<SectionsState>((set, get) => ({
   },
 
   forgetLive(id) {
+    const closed = get().liveSessionId[id]
+
+    if (!closed) {
+      return
+    }
+
     set(state => {
       const { [id]: _closed, ...liveSessionId } = state.liveSessionId
 
       return { liveSessionId }
     })
+    useTranscripts.getState().drop(closed)
   }
 }))
 

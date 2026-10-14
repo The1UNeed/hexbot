@@ -53,6 +53,9 @@ describe('event routing', () => {
 
   it('reads a chat again once a dream report closed it', () => {
     useSections.setState({ liveSessionId: { chat: 'live-9', other: 'live-8' } })
+    useTranscripts.setState({
+      bySession: { 'live-8': emptyTranscript('live-8'), 'live-9': emptyTranscript('live-9') }
+    })
 
     const changed = (payload: Record<string, unknown>) =>
       routeEvent({ payload, type: 'hexbot.sections.changed' } as unknown as GatewayEvent, {
@@ -65,6 +68,7 @@ describe('event routing', () => {
 
     changed({ bot: 'scout', closed: true, id: 'chat' })
     expect(useSections.getState().liveSessionId).toEqual({ other: 'live-8' })
+    expect(Object.keys(useTranscripts.getState().bySession)).toEqual(['live-8'])
   })
 
   it('keeps the context meter from session.usage beside the totals', () => {
