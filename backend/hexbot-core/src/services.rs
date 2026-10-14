@@ -1606,17 +1606,30 @@ fn inherited_activation_lock(file: &fs::File, fd: Option<i32>) -> Option<fs::Fil
 }
 
 // Staging directories remain hidden from pruning until the activation lock is held.
+// `newer_than_selected` is the daemon updater's manifest: setup or the installer
+// may have selected a newer build while the update downloaded, so chronology is
+// checked again under the lock against the selected runtime, not the running one.
 pub(crate) fn publish_native(
     native: &Path,
     version: &str,
     staging: &Path,
     entrypoint: &str,
+    newer_than_selected: Option<&Value>,
 ) -> Result<PathBuf> {
-    let _lock = activation_lock(
-        native
-            .parent()
-            .ok_or_else(|| Error::new(5243, "Missing runtime directory"))?,
-    )?;
+    let runtime = native
+        .parent()
+        .ok_or_else(|| Error::new(5243, "Missing runtime directory"))?;
+    let _lock = activation_lock(runtime)?;
+    if let Some(requested) = newer_than_selected {
+        let selected = runtime
+            .join("native-executable")
+            .canonicalize()
+            .ok()
+            .and_then(|executable| fs::read(executable.with_file_name("manifest.json")).ok())
+            .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+            .unwrap_or_else(|| json!({}));
+        require_newer_native_build(requested, &selected)?;
+    }
     let directory = native.join(format!("{version}-{}", common::id()));
     fs::rename(staging, &directory)?;
     let executable = directory.join(entrypoint);
@@ -1720,6 +1733,47 @@ mod activation_tests {
     }
 
     #[test]
+    fn daemon_update_does_not_replace_a_newer_build_selected_while_it_waited() {
+        let home = tempfile::tempdir().unwrap();
+        let native = native_directory(home.path()).unwrap();
+        let runtime = native.parent().unwrap();
+        let package = |version: &str, built_at: u64| {
+            let staging = tempfile::tempdir_in(&native).unwrap();
+            fs::write(staging.path().join("hexbot"), version).unwrap();
+            let manifest = json!({"version": version, "builtAt": built_at});
+            fs::write(
+                staging.path().join("manifest.json"),
+                serde_json::to_vec(&manifest).unwrap(),
+            )
+            .unwrap();
+            (staging, manifest)
+        };
+        // The daemon checked 9.8.7 against its running build and now waits for the lock.
+        let (update, requested) = package("9.8.7", 200);
+        let installer = activation_lock(runtime).unwrap();
+        let waiting = std::thread::spawn({
+            let native = native.clone();
+            let staging = update.path().to_owned();
+            move || publish_native(&native, "9.8.7", &staging, "hexbot", Some(&requested))
+        });
+        // The installer selects 9.8.8 while it holds the lock.
+        let (setup, _) = package("9.8.8", 300);
+        let selected = native.join("9.8.8");
+        fs::rename(setup.path(), &selected).unwrap();
+        activate_native_locked(&native, "9.8.8", &selected.join("hexbot")).unwrap();
+        drop(installer);
+        assert_eq!(waiting.join().unwrap().unwrap_err().code, 4212);
+        let active = runtime.join("native-executable").canonicalize().unwrap();
+        assert_eq!(fs::read_to_string(active).unwrap(), "9.8.8");
+        assert!(update.path().is_dir());
+        // A build newer than the selected one still publishes.
+        let (newer, requested) = package("9.8.9", 400);
+        publish_native(&native, "9.8.9", newer.path(), "hexbot", Some(&requested)).unwrap();
+        let active = runtime.join("native-executable").canonicalize().unwrap();
+        assert_eq!(fs::read_to_string(active).unwrap(), "9.8.9");
+    }
+
+    #[test]
     fn concurrent_publications_keep_selection_and_metadata_together() {
         use std::{
             os::fd::AsRawFd,
@@ -1750,7 +1804,8 @@ mod activation_tests {
                     let staging = tempfile::tempdir_in(native).unwrap();
                     fs::write(staging.path().join("hexbot"), version.to_string()).unwrap();
                     barrier.wait();
-                    publish_native(native, &version.to_string(), staging.path(), "hexbot").unwrap();
+                    publish_native(native, &version.to_string(), staging.path(), "hexbot", None)
+                        .unwrap();
                 });
             }
         });
@@ -2104,7 +2159,13 @@ async fn native_update(home: &Path, version: &str, service: &Service) -> Result<
             "updated daemon version does not match request",
         ));
     }
-    publish_native(&native, version, staging.path(), entrypoint)
+    publish_native(
+        &native,
+        version,
+        staging.path(),
+        entrypoint,
+        Some(&manifest),
+    )
 }
 
 /// CLI registration persists credentials without starting a tunnel outside the daemon.

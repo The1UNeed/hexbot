@@ -252,7 +252,11 @@ while another installer holds it. Uninstall with data removal refuses a
 `HEXBOT_HOME` that contains the lock. Headless also rechecks under the daemon's
 `runtime/activate.lock` and keeps it through `hexbot setup --activate`, which
 inherits the locked descriptor in `HEXBOT_ACTIVATION_LOCK_FD`, so a native
-auto-update cannot land between the check and activation. Uninstall removes
+auto-update cannot land between the check and activation. The reverse holds
+too: the daemon's native updater checks the build against the one it runs
+before downloading, then again under `runtime/activate.lock` against the build
+`runtime/native-executable` selects, so a newer build that setup or the
+installer selected meanwhile is not replaced by an older one. Uninstall removes
 Hexbot apps a killed install left in `.tmp*/previous.app` staging on macOS.
 Installers released before this lock and the Electron app updater do not take
 the installer lock; the native updater takes only `runtime/activate.lock`, and

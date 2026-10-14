@@ -93,7 +93,7 @@ describe('screens', () => {
         { event: { message: 'Checking the download.', stage: 'verify' }, run, type: 'progress' },
         // Waiting on a daemon update leaves the bar where it is.
         {
-          event: { message: 'Waiting for the daemon to finish updating.', stage: 'wait' },
+          event: { message: 'Waiting for another Hexbot setup or update to finish.', stage: 'wait' },
           run,
           type: 'progress'
         },

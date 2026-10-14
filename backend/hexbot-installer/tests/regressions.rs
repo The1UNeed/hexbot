@@ -1728,7 +1728,10 @@ fn a_native_update_during_a_headless_install_is_rechecked_under_the_activation_l
     let mut waited = false;
     let result = engine.apply(InstallOption::Headless, Track::Stable, &mut |event| {
         if event.stage == "wait" {
-            assert_eq!(event.message, "Waiting for the daemon to finish updating.");
+            assert_eq!(
+                event.message,
+                "Waiting for another Hexbot setup or update to finish."
+            );
             waited = true;
             // The daemon selects 0.0.3, then releases the lock.
             let updated = native_package(&engine, "0.0.3-a", "0.0.3");

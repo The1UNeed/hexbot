@@ -183,7 +183,11 @@ impl Installer {
             .truncate(false)
             .write(true)
             .open(runtime.join("activate.lock"))?;
-        lock_or_wait(file, progress, "Waiting for the daemon to finish updating.")
+        lock_or_wait(
+            file,
+            progress,
+            "Waiting for another Hexbot setup or update to finish.",
+        )
     }
 
     pub(crate) fn preflight_ownership(&self) -> Result<()> {
