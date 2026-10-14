@@ -720,7 +720,17 @@ export function Management({
                   rpc('hexbot.bots.clear_status', { name: bot.name })
                 )}
                 {bot.primary === false && !mobile.bots.some(b => b.primary)
-                  ? action('Make primary', () => rpc('hexbot.bots.set_primary', { name: bot.name }))
+                  ? action('Make primary', async () => {
+                      const result = await rpc<{ bot: Bot }>('hexbot.bots.set_primary', {
+                        name: bot.name
+                      })
+                      // Its older threads keep their tools, so a new one opens.
+                      const { section } = await rpc<{ section: Section }>(
+                        'hexbot.sections.create',
+                        { bot: bot.name }
+                      )
+                      await mobile.openSection(result.bot, section)
+                    })
                   : null}
                 {/* The primary bot stays; the daemon refuses to delete it too. */}
                 {bot.primary

@@ -36,7 +36,11 @@ describe('primary bot choice', () => {
 
   it('offers only promotion when a bot already has the handle', async () => {
     const call = vi.fn((method: string) =>
-      Promise.resolve(method === 'hexbot.bots.list' ? { bots: [] } : { bot: bot('hexbot', true) })
+      Promise.resolve(
+        method === 'hexbot.bots.list'
+          ? { bots: [] }
+          : { bot: bot('hexbot', true), section: { id: 'new' } }
+      )
     )
 
     setActiveRpc({ call } as never)
@@ -46,6 +50,10 @@ describe('primary bot choice', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Make primary' }))
     await waitFor(() =>
       expect(call).toHaveBeenCalledWith('hexbot.bots.set_primary', { name: 'hexbot' })
+    )
+    // Its older sections keep their tools, so a new one opens.
+    await waitFor(() =>
+      expect(call).toHaveBeenCalledWith('hexbot.sections.create', { bot: 'hexbot' })
     )
   })
 
@@ -61,7 +69,7 @@ describe('primary bot choice', () => {
 
     render(<PrimaryChoice bots={[bot('owl', false)]} onCreated={onCreated} />)
     fireEvent.click(screen.getByRole('button', { name: 'Add HexBot' }))
-    await waitFor(() => expect(onCreated).toHaveBeenCalledWith(created.bot, created.section))
+    await waitFor(() => expect(onCreated).toHaveBeenCalledWith(created.bot, created.section, true))
     expect(call).toHaveBeenCalledWith('hexbot.bots.create_primary', expect.any(Object))
   })
 })

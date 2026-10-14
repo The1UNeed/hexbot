@@ -766,9 +766,12 @@ export function RosterColumn() {
         {needsPrimary(ordered) ? (
           <PrimaryChoice
             bots={ordered}
-            onCreated={(bot, section) => {
+            onCreated={(bot, section, created) => {
               open(bot.name, section.id)
-              void introduceBot(section, bot)
+
+              if (created) {
+                void introduceBot(section, bot)
+              }
             }}
           />
         ) : null}

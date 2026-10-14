@@ -235,8 +235,11 @@ impl App {
                 .filter(|m| m["member_kind"] == "bot" && m["left_at"].is_null())
                 .map(|m| m["member_id"].as_str())
                 .collect::<Vec<_>>();
-            // Removing the last bot deletes the room.
+            // Removing the last bot deletes the room, unless the caller asked to keep it.
             let deleting = method == "hexbot.rooms.delete" || active == [bot];
+            if deleting && method == "hexbot.rooms.remove_member" && p["keep_room"] == true {
+                return Err(rooms::last_bot());
+            }
             removed_sessions = common::rows(
                 &db::open(&self.home)?,
                 "SELECT stored_session_id FROM room_sessions WHERE room_id=?1 AND (?2 OR bot=?3)",
@@ -325,6 +328,7 @@ impl App {
                 owner,
                 common::required(p, "id")?,
                 common::required(p, "bot")?,
+                p["keep_room"] == true,
             ),
             _ => {
                 if let Some(result) = self.dreaming.call(owner, method, p).await {

@@ -288,6 +288,36 @@ async fn primary_bot_manages_other_bots_and_always_asks_before_deleting() {
     .await;
     assert!(asked);
 
+    // Removing the room's last bot deletes it, so that removal asks; the
+    // daemon refuses it in the same statement when asked to keep the room.
+    assert_eq!(
+        app.call(
+            "local",
+            "hexbot.rooms.remove_member",
+            &json!({"id":room,"bot":"owl","keep_room":true}),
+        )
+        .await
+        .unwrap_err()
+        .code,
+        4233
+    );
+    let (asked, reply) = call_tool(
+        &app,
+        &live,
+        "hexbot_rooms",
+        json!({"action":"remove_member","id":room,"bot":"owl"}),
+        "deny",
+    )
+    .await;
+    assert!(asked);
+    assert!(reply.contains("denied"), "{reply}");
+    assert_eq!(
+        app.call("local", "hexbot.rooms.get", &json!({"id":room}))
+            .await
+            .unwrap()["room"]["name"],
+        "Lab"
+    );
+
     // A bot's working folder can be set and cleared again; both ask.
     let folder = h.workspace().join("owl");
     fs::create_dir_all(&folder).unwrap();

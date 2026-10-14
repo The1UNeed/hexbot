@@ -2,7 +2,7 @@ import { useState } from 'react'
 
 import { Button } from '../../components/ui/button'
 import { Select } from '../../components/ui/select'
-import { botsCreatePrimary, botsSetPrimary } from '../../lib/api'
+import { botsCreatePrimary, botsSetPrimary, sectionsCreate } from '../../lib/api'
 import { avatarPng, styleForName } from '../../lib/avatar-builder'
 import type { Bot, Section } from '../../lib/types'
 import { botsActions } from '../../stores/bots'
@@ -24,7 +24,11 @@ export function PrimaryChoice({
   onCreated
 }: {
   bots: Bot[]
-  onCreated: (bot: Bot, section: Section) => void
+  /**
+   * Opens the primary bot's new section. `created` is false for a promoted
+   * bot, whose older sections lack the new tools and which needs no greeting.
+   */
+  onCreated: (bot: Bot, section: Section, created: boolean) => void
 }) {
   // A bot already called hexbot can only be promoted, so it is offered first.
   const taken = bots.some(bot => bot.name === PRIMARY_HANDLE)
@@ -41,10 +45,12 @@ export function PrimaryChoice({
         const avatar = await avatarPng(styleForName(PRIMARY_HANDLE))
         const { bot, section } = await botsCreatePrimary(avatar ? { avatar } : {})
         await botsActions().refresh()
-        onCreated(bot, section)
+        onCreated(bot, section, true)
       } else {
-        await botsSetPrimary(chosen)
+        const { bot } = await botsSetPrimary(chosen)
+        const { section } = await sectionsCreate(bot.name)
         await botsActions().refresh()
+        onCreated(bot, section, false)
       }
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason))
