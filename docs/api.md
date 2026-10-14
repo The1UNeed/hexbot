@@ -91,7 +91,7 @@ mutation methods check ownership.
 
 ### Bots
 
-Bot shape: `{name, display_name, title, description, persona, tools: [string], available_tools: [string], skills: [string],
+Bot shape: `{name, display_name, title, description, primary, persona, tools: [string], available_tools: [string], skills: [string],
 provider, model, reasoning_effort | null, avatar: {mime, data} | null, created_at, updated_at, last_activity_at,
 owner_id, dream_enabled, notify, approval_mode, workdir | null,
 status, status_detail | null, sections_total, sections_recent: [Section]}`
@@ -129,7 +129,11 @@ its own model or `reasoning_effort`, keeps it.
 `workdir` and the `workspace_dir` setting are refused (4202) when they resolve
 inside the Hexbot home, symlinks included.
 
-- `hexbot.bots.list {all?}` → `{bots: [Bot]}` ordered by `last_activity_at` desc.
+`primary` is true for the primary bot, the one bot that looks after the
+others (`DESIGN.md`, "The primary bot"). There is at most one per owner.
+
+- `hexbot.bots.list {all?}` → `{bots: [Bot]}`, the primary bot first, then by
+  `last_activity_at` desc.
 - `hexbot.bots.get {name}` → `{bot: Bot}`
 - `hexbot.bots.create {name, display_name?, title?, description?, persona?,
   provider, model, avatar?}` → `{bot: Bot, section: Section}` (creates the
@@ -140,6 +144,16 @@ inside the Hexbot home, symlinks included.
   the same way.
   `display_name` defaults to the bot name in title case — never to `title`,
   which is free-form caller text stored verbatim.
+- `hexbot.bots.create_primary {display_name?, provider?, model?,
+  reasoning_effort?, avatar?}` → `{bot: Bot, section: Section}`. Creates
+  HexBot: handle `hexbot`, display name "HexBot" unless given, title
+  "Primary bot", a soul for looking after the user's bots, and every
+  available tool. Refused with 4214 when there is already a primary bot and
+  with 4208 when a bot called `hexbot` exists (make it primary instead).
+  `hexbot.bots.create` refuses the handle `hexbot` (4202).
+- `hexbot.bots.set_primary {name}` → `{bot: Bot}`. Makes an existing bot
+  primary; refused with 4214 once there is one. Its next new section gets the
+  primary bot's tools.
 - `hexbot.bots.introduce {name, section}` → `{submitted: true, section}`.
   Resumes the section on the calling transport, then submits the bot's
   hidden first prompt (`backend/hexbot-core/src/catalog.rs`): a one-line greeting and up to
@@ -161,7 +175,8 @@ inside the Hexbot home, symlinks included.
 - `hexbot.bots.delete {name}` → `{deleted: true}` (deletes the profile
   directory, all rows, the bot's scheduled jobs, and the memory proposals those jobs left; refuses with 4211 if any of its sections is live
   and mid-turn — `session.active_list` status `working` or `waiting` —
-  with `data.sections: [{id, status}]`).
+  with `data.sections: [{id, status}]`, and with 4214 for the primary bot
+  before any of its sections stop).
 
 ### Sections
 

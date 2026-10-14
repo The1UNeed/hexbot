@@ -27,6 +27,8 @@ use tokio::sync::{Mutex as AsyncMutex, watch};
 mod attachments;
 #[path = "runtime_delegation.rs"]
 mod delegation;
+#[path = "runtime_primary.rs"]
+mod primary;
 
 #[cfg(test)]
 #[path = "runtime_lifecycle_tests.rs"]
@@ -117,6 +119,8 @@ pub struct Runtime {
     /// the clock so a report after a daemon restart still outranks the last
     /// one a client kept.
     usage_seq: AtomicU64,
+    /// The App whose methods the primary bot's tools call (`runtime_primary.rs`).
+    dispatcher: Mutex<Option<Weak<crate::server::App>>>,
 }
 impl Runtime {
     pub fn new(home: PathBuf, events: EventHub, pi_executable: PathBuf) -> Result<Arc<Self>> {
@@ -137,6 +141,7 @@ impl Runtime {
             description_refreshes: Mutex::new(HashMap::new()),
             warned_servers: Mutex::new(std::collections::HashSet::new()),
             usage_seq: AtomicU64::new((common::now() * 1000.0) as u64),
+            dispatcher: Mutex::new(None),
         });
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
             let weak = Arc::downgrade(&runtime);
@@ -588,6 +593,14 @@ impl Runtime {
                 tools.push(crate::dreaming::tool_descriptor());
             }
             tools.extend(crate::native_tools::descriptors(&self.home, bot)?);
+            // The primary bot looks after the others from its own sections only.
+            if restricted.is_none()
+                && overrides.is_none()
+                && botrow["is_primary"].as_i64() == Some(1)
+                && shows_visuals(&self.home, stored)?
+            {
+                tools.extend(primary::descriptors());
+            }
             if let Some(allowed) = restricted {
                 tools.retain(|t| {
                     t["name"]
@@ -992,11 +1005,16 @@ impl Runtime {
             about
         );
         let prompt = format!(
-            "{}{}\n\n{}\n\n{}{}",
+            "{}{}\n\n{}\n\n{}{}{}",
             prompt,
             PROMPT_RULES,
             crate::settings::PLATFORM_HINT,
             HEXBOT_GUIDANCE,
+            if is_primary_layout(tools) {
+                primary::GUIDANCE
+            } else {
+                ""
+            },
             PROMPT_FILES
                 .replace("{profile}", &profile.display().to_string())
                 .replace("{cwd}", &cwd.display().to_string())
@@ -2290,8 +2308,12 @@ impl Runtime {
 
     /// Ask the section owner about a daemon tool action, unless the mode is Bypass.
     async fn native_approval(&self, s: &Live, params: Value) -> Result<bool> {
+        self.ask_approval(s, params, false).await
+    }
+    /// With `always`, asks even in Bypass.
+    async fn ask_approval(&self, s: &Live, params: Value, always: bool) -> Result<bool> {
         let settings = self.session_settings(s)?;
-        if settings["approvalMode"] == "off" {
+        if settings["approvalMode"] == "off" && !always {
             return Ok(true);
         }
         if settings["canAsk"] == false {
@@ -2989,6 +3011,9 @@ impl Runtime {
                 Ok(json!({"section":section}))
             }
             "hexbot_show_html" => show_html(&self.home, &s.stored, args),
+            "hexbot_bots" | "hexbot_rooms" | "hexbot_jobs" | "hexbot_settings" => {
+                self.primary_tool(s, name, args).await
+            }
             "self_soul" | "hexbot_soul" => {
                 let path = self.home.join("profiles").join(&s.bot).join("SOUL.md");
                 if let Some(text) = args["text"].as_str() {
@@ -3695,6 +3720,11 @@ fn prompt_layout(tools: &[Value]) -> String {
         hash.update(part);
         hash.update([0]);
     }
+    // Hashed only for the primary bot, so other sections keep their layout.
+    if is_primary_layout(tools) {
+        hash.update(primary::GUIDANCE);
+        hash.update([0]);
+    }
     let mut names: Vec<&str> = tools.iter().filter_map(|t| t["name"].as_str()).collect();
     names.sort_unstable();
     for name in names {
@@ -3702,6 +3732,14 @@ fn prompt_layout(tools: &[Value]) -> String {
         hash.update([0]);
     }
     format!("{:x}", hash.finalize())
+}
+/// A section frozen with the primary bot's tools also carries its guidance.
+fn is_primary_layout(tools: &[Value]) -> bool {
+    tools.iter().any(|t| {
+        t["name"]
+            .as_str()
+            .is_some_and(|n| primary::TOOL_NAMES.contains(&n))
+    })
 }
 /// The prompt's closing block naming the section's connected servers. Built
 /// from the names frozen in `options.mcpServers`, so a rebuilt prompt lists
@@ -3965,6 +4003,7 @@ fn tool_context(name: &str, args: &Value) -> String {
         "delegate_task" => "goal",
         "message_bot" => "to",
         "hexbot_show_html" => "title",
+        "hexbot_bots" | "hexbot_rooms" | "hexbot_jobs" | "hexbot_settings" => "action",
         name if name.starts_with("mcp__") => args
             .as_object()
             .and_then(|args| {

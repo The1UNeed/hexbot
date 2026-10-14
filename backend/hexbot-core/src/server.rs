@@ -110,7 +110,7 @@ impl App {
             crate::dreaming::Dreaming::new(home.clone(), runtime.clone(), events.clone());
         auth::local_token(&home)?;
         let (stop, _) = tokio::sync::watch::channel(false);
-        Ok(Arc::new(Self {
+        let app = Arc::new(Self {
             memory: MemoryStore::new(home.clone()),
             auth_connection: Mutex::new(db::open(&home)?),
             home,
@@ -125,13 +125,15 @@ impl App {
             _network_guard: common::DaemonListener::register(address),
             web_dist,
             stop,
-        }))
+        });
+        app.runtime.set_dispatcher(Arc::downgrade(&app));
+        Ok(app)
     }
     /// Serve another address with the same bots: running turns and the event
     /// log carry over; connections to the old address are closed by `disconnect`.
     pub fn rebind(&self, address: SocketAddr) -> Result<Arc<Self>> {
         let (stop, _) = tokio::sync::watch::channel(false);
-        Ok(Arc::new(Self {
+        let app = Arc::new(Self {
             memory: MemoryStore::new(self.home.clone()),
             auth_connection: Mutex::new(db::open(&self.home)?),
             home: self.home.clone(),
@@ -146,7 +148,9 @@ impl App {
             _network_guard: common::DaemonListener::register(address),
             web_dist: self.web_dist.clone(),
             stop,
-        }))
+        });
+        app.runtime.set_dispatcher(Arc::downgrade(&app));
+        Ok(app)
     }
     pub async fn call(self: &Arc<Self>, owner: &str, method: &str, p: &Value) -> Result<Value> {
         if *self.stop.borrow() {
@@ -163,6 +167,7 @@ impl App {
         if method == "hexbot.bots.delete" {
             let bot = common::required(p, "name")?;
             common::bot_owner(&self.home, owner, bot)?;
+            catalog::check_deletable(&self.home, owner, bot)?;
             let running: bool = db::open(&self.home)?.query_row(
                 "SELECT EXISTS(SELECT 1 FROM room_turns WHERE bot=? AND status='running')",
                 [bot],
@@ -334,7 +339,10 @@ impl App {
                     if let Ok(value) = &result
                         && matches!(
                             method,
-                            "hexbot.bots.create" | "hexbot.bots.update" | "profiles.configure"
+                            "hexbot.bots.create"
+                                | "hexbot.bots.create_primary"
+                                | "hexbot.bots.update"
+                                | "profiles.configure"
                         )
                         && let Some(name) = value["bot"]["name"].as_str().or(value["name"].as_str())
                     {
@@ -550,6 +558,8 @@ impl App {
         if !matches!(
             action,
             "create"
+                | "create_primary"
+                | "set_primary"
                 | "update"
                 | "delete"
                 | "clear_status"

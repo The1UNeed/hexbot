@@ -23,6 +23,12 @@ Use Bot settings to configure how it works:
 
 The teammate description tells other bots when to ask this one for help. For example, "Reviews database changes and checks migration safety" is more useful than "Helpful assistant." If you leave it blank, Hexbot derives a description from the soul.
 
+## The primary bot
+
+HexBot is your primary bot. Setup creates it, and it looks after the rest: in its own sections it can list, create, change, and delete your bots, create rooms and change who is in them, schedule jobs for any bot, and change settings, skills, and connectors. It always asks before it deletes a bot, room, or job, changes a bot's approval mode or working folder, or changes a setting, even in Bypass. It never sees API keys or connector credentials, and it can't change network or service settings.
+
+There is one primary bot, pinned at the top of the roster, and it can't be deleted. You can rename it and change its soul, model, and tools like any other bot. If you used Hexbot before the primary bot existed, the roster asks you once to add HexBot or to make one of your bots primary. A bot made primary gets the extra tools in its next new section. Its tools don't work in rooms or scheduled jobs.
+
 ## Keep a conversation going
 
 Reopen a section to continue the same task. Closing the app or restarting the daemon does not delete it. Each section keeps a persistent Pi conversation; a fresh section starts with a new context window and the bot's current settings.

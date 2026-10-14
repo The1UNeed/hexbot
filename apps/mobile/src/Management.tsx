@@ -719,16 +719,19 @@ export function Management({
                 {action('Clear stopped status', () =>
                   rpc('hexbot.bots.clear_status', { name: bot.name })
                 )}
-                {action(
-                  'Delete bot',
-                  async () => {
-                    await rpc('hexbot.bots.delete', { name: bot.name })
-                    mobile.back()
-                    onClose()
-                  },
-                  true,
-                  'This deletes the bot, its threads, memory and scheduled jobs.'
-                )}
+                {/* The primary bot stays; the daemon refuses to delete it too. */}
+                {bot.primary
+                  ? null
+                  : action(
+                      'Delete bot',
+                      async () => {
+                        await rpc('hexbot.bots.delete', { name: bot.name })
+                        mobile.back()
+                        onClose()
+                      },
+                      true,
+                      'This deletes the bot, its threads, memory and scheduled jobs.'
+                    )}
               </Group>
             </>
           ) : null}

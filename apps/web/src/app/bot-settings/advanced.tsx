@@ -7,6 +7,20 @@ import type { Bot } from '../../lib/types'
 import { Group, Heading, Row } from './shared'
 
 export function AdvancedTab({ bot, onDelete }: { bot: Bot; onDelete: () => Promise<void> }) {
+  if (bot.primary) {
+    return (
+      <div>
+        <Heading description="What this bot does in Hexbot.">Advanced</Heading>
+        <Group title="Primary bot">
+          <Row
+            description="It sets up and looks after your other bots, rooms, scheduled jobs and settings. It asks before it deletes anything or changes settings. It can't be deleted."
+            title={`${bot.display_name} is your primary bot`}
+          />
+        </Group>
+      </div>
+    )
+  }
+
   return (
     <div>
       <Heading description="Actions that cannot be undone.">Advanced</Heading>
