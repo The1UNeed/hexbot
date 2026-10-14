@@ -252,8 +252,9 @@ pub fn one_chat_per_bot(home: &Path) -> Result<()> {
     const DREAM_LOG: &str =
         "peer_bot IS NULL AND title='Dreams' AND title_by IS NULL AND COALESCE(title_dirty,0)=0";
     let conn = db::open(home)?;
+    // Runs fully once; later starts only when an older build made sections again.
     let pending: bool = conn.query_row(
-        &format!("SELECT EXISTS(SELECT 1 FROM sections WHERE peer_bot IS NULL GROUP BY owner_id,bot HAVING COUNT(*)>1) OR EXISTS(SELECT 1 FROM sections WHERE {DREAM_LOG})"),
+        &format!("SELECT NOT EXISTS(SELECT 1 FROM settings WHERE key='one_chat_per_bot') OR EXISTS(SELECT 1 FROM sections WHERE peer_bot IS NULL GROUP BY owner_id,bot HAVING COUNT(*)>1) OR EXISTS(SELECT 1 FROM sections WHERE {DREAM_LOG})"),
         [],
         |r| r.get(0),
     )?;
@@ -263,7 +264,7 @@ pub fn one_chat_per_bot(home: &Path) -> Result<()> {
     // After a crash Pi's own log can hold the newest messages; recover them
     // before choosing which conversation stays.
     runtime_store::reconcile_all(home)?;
-    let logs = rows(
+    let mut logs = rows(
         &conn,
         &format!("SELECT id FROM sections WHERE {DREAM_LOG}"),
         &[],
@@ -271,6 +272,49 @@ pub fn one_chat_per_bot(home: &Path) -> Result<()> {
     .into_iter()
     .filter_map(|row| row["id"].as_str().map(str::to_owned))
     .collect::<std::collections::BTreeSet<_>>();
+    // Every report a dream posted, by bot.
+    let mut reports: std::collections::BTreeMap<String, std::collections::BTreeSet<String>> =
+        Default::default();
+    for row in rows(
+        &conn,
+        "SELECT DISTINCT bot,summary FROM dreams WHERE summary<>''",
+        &[],
+    )? {
+        if let (Some(bot), Some(summary)) = (row["bot"].as_str(), row["summary"].as_str()) {
+            reports
+                .entry(bot.to_owned())
+                .or_default()
+                .insert(summary.to_owned());
+        }
+    }
+    let runtime = runtime_store::open(home)?;
+    // A log the user renamed is still the log: it opens with a report.
+    for row in rows(
+        &conn,
+        "SELECT id,bot FROM sections WHERE peer_bot IS NULL",
+        &[],
+    )? {
+        let id = row["id"].as_str().unwrap_or("");
+        let first: Option<String> = runtime
+            .query_row(
+                "SELECT message_json FROM native_messages WHERE session_id=? ORDER BY seq LIMIT 1",
+                [id],
+                |r| r.get(0),
+            )
+            .optional()?;
+        let first = first
+            .and_then(|m| serde_json::from_str::<Value>(&m).ok())
+            .unwrap_or(Value::Null);
+        if first["role"] == "assistant"
+            && first["text"].as_str().is_some_and(|text| {
+                reports
+                    .get(row["bot"].as_str().unwrap_or(""))
+                    .is_some_and(|known| known.contains(text))
+            })
+        {
+            logs.insert(id.to_owned());
+        }
+    }
     let mut chats: std::collections::BTreeMap<(String, String), Vec<(Value, i64)>> =
         Default::default();
     for row in rows(
@@ -350,30 +394,30 @@ pub fn one_chat_per_bot(home: &Path) -> Result<()> {
         if kept_count < 0 {
             // The chat is made on first use.
             delete_section(home, &owner, id, true)?;
-        } else if logs.contains(id) {
+        } else {
             // The reports, not what the user said there or the bot's replies.
-            let summaries = rows(
-                &conn,
-                "SELECT DISTINCT summary FROM dreams WHERE bot=? AND summary<>''",
-                &[&bot],
-            )?;
-            let runtime = runtime_store::open(home)?;
-            for summary in &summaries {
+            for summary in reports.get(&bot).into_iter().flatten() {
                 runtime.execute(
                     "UPDATE native_messages SET message_json=json_set(message_json,'$.dream',json('true')) WHERE session_id=? AND json_extract(message_json,'$.role')='assistant' AND json_extract(message_json,'$.text')=?",
-                    params![id, summary["summary"].as_str()],
+                    params![id, summary],
                 )?;
             }
-            conn.execute(
-                "UPDATE sections SET title='General',title_by=NULL WHERE id=?",
-                [id],
-            )?;
+            if logs.contains(id) && kept["title"] == "Dreams" {
+                conn.execute(
+                    "UPDATE sections SET title='General',title_by=NULL WHERE id=?",
+                    [id],
+                )?;
+            }
         }
         conn.execute(
             "UPDATE bots SET last_activity_at=? WHERE name=?",
             params![activity, bot],
         )?;
     }
+    conn.execute(
+        "INSERT OR REPLACE INTO settings(key,value) VALUES('one_chat_per_bot','true')",
+        [],
+    )?;
     Ok(())
 }
 fn native_history(home: &Path, row: &Value) -> Result<bool> {
@@ -1550,7 +1594,9 @@ mod parity_tests {
                  INSERT INTO bot_incidents(id,bot,section_id,kind,created_at) VALUES('failed','owl','put_away','turn_failed',1);
                  INSERT INTO dreams(id,bot,started_at,status,summary) VALUES('d1','fox',1,'complete','In fox_dreams');
                  INSERT INTO sections(id,bot,owner_id,title,title_by) VALUES('dog_chat','dog','alice','Dreams','bot');
-                 INSERT INTO bots(name,owner_id) VALUES('dog','alice'),('elk','alice'),('fly','alice');
+                 INSERT INTO bots(name,owner_id) VALUES('dog','alice'),('elk','alice'),('fly','alice'),('gnu','alice'),('hen','alice');
+                 INSERT INTO sections(id,bot,owner_id,title,title_dirty,updated_at) VALUES('gnu_log','gnu','alice','Nightly',1,9),('gnu_chat','gnu','alice','Plans',0,2),('hen_log','hen','alice','Nightly',1,9);
+                 INSERT INTO dreams(id,bot,started_at,status,summary) VALUES('d2','gnu',1,'complete','Gnu learned'),('d3','hen',1,'complete','Hen learned');
                  INSERT INTO sections(id,bot,owner_id,title,updated_at) VALUES('fly_native','fly','alice','Native',5),('fly_legacy','fly','alice','Legacy',9);
                  INSERT INTO sections(id,bot,owner_id,title,updated_at) VALUES('elk_listed','elk','alice','Listed',5),('elk_recovered','elk','alice','Recovered',1);
                  INSERT INTO sections(id,bot,owner_id,title,updated_at,archived_at,peer_bot) VALUES
@@ -1623,6 +1669,22 @@ mod parity_tests {
                 [],
             )
             .unwrap();
+        // Logs the user renamed, still opening with a report.
+        said(
+            home.path(),
+            "gnu_log",
+            json!({"role":"assistant","text":"Gnu learned","timestamp":8}),
+        );
+        said(
+            home.path(),
+            "gnu_chat",
+            json!({"role":"user","text":"Plans","timestamp":1}),
+        );
+        said(
+            home.path(),
+            "hen_log",
+            json!({"role":"assistant","text":"Hen learned","timestamp":8}),
+        );
         // Opened once, but its old history was never copied in.
         runtime_store::open(home.path())
             .unwrap()
@@ -1684,6 +1746,18 @@ mod parity_tests {
         );
         assert_eq!(ids("elk"), ["elk_recovered"]);
         assert_eq!(ids("fly"), ["fly_legacy"]);
+        // A renamed log loses to a real chat, newer or not; kept alone, its
+        // reports are marked and its name stays.
+        assert_eq!(ids("gnu"), ["gnu_chat"]);
+        assert_eq!(ids("hen"), ["hen_log"]);
+        assert_eq!(
+            runtime_store::history(home.path(), "hen_log").unwrap()[0]["dream"],
+            true
+        );
+        assert_eq!(
+            chat_section(home.path(), "alice", "hen").unwrap()["title"],
+            "Nightly"
+        );
         // A chat the bot titled Dreams is a chat.
         assert_eq!(ids("dog"), ["dog_chat"]);
         assert_eq!(
