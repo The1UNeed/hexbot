@@ -512,3 +512,38 @@ async fn check_in_now_takes_the_wake_ups_already_due() {
         .unwrap();
     assert_eq!(waiting, 0);
 }
+
+#[tokio::test]
+async fn a_wake_up_too_late_to_run_leaves_the_open_tab() {
+    let (_h, app) = setup();
+    let created = app
+        .call("local", "hexbot.bots.create_primary", &json!({}))
+        .await
+        .unwrap();
+    set(&app, json!({"checkin_enabled": false})).await;
+    let live = open(&app, created["section"]["id"].as_str().unwrap()).await;
+    let now = common::now();
+    call_tool(
+        &app,
+        &live,
+        "hexbot_wakeups",
+        json!({"action":"add","at":rfc3339(now + 600.0),"note":"look"}),
+    )
+    .await;
+    let mut events = app.events.subscribe();
+    // Off all day: seven hours late, it is dropped, and open tabs hear of it.
+    app.dreaming
+        .tick_at(now + 600.0 + 7.0 * 3600.0)
+        .await
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while events.recv().await.unwrap().frame["params"]["type"] != "hexbot.checkins.changed" {}
+    })
+    .await
+    .unwrap();
+    let status = app
+        .call("local", "hexbot.checkins.status", &json!({}))
+        .await
+        .unwrap();
+    assert!(status["wakeups"].as_array().unwrap().is_empty());
+}

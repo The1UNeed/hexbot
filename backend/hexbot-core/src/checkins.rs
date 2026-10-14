@@ -721,11 +721,23 @@ impl Dreaming {
     /// Called every minute from `tick_at`.
     pub(super) fn tick_checkins(self: &Arc<Self>, now: f64) -> Result<()> {
         let conn = db::open(&self.home)?;
-        // Upkeep runs even while check-ins are off.
+        // Upkeep runs even while check-ins are off. A dropped wake-up leaves
+        // any open Check-ins tab.
+        let missed = common::rows(
+            &conn,
+            "SELECT DISTINCT owner_id FROM checkin_wakeups WHERE fired_at IS NULL AND cancelled_at IS NULL AND at<?",
+            &[&(now - WAKEUP_GRACE)],
+        )?;
         conn.execute(
             "UPDATE checkin_wakeups SET fired_at=? WHERE fired_at IS NULL AND cancelled_at IS NULL AND at<?",
             params![now, now - WAKEUP_GRACE],
         )?;
+        for row in missed {
+            if let Some(owner) = row["owner_id"].as_str() {
+                self.events
+                    .emit(owner, None, "hexbot.checkins.changed", json!({}));
+            }
+        }
         conn.execute(
             "DELETE FROM checkins WHERE status<>'running' AND started_at<?",
             [now - RETENTION],

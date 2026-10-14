@@ -156,10 +156,11 @@ export function routeEvent(event: GatewayEvent, deps: EventRouterDeps = {}): voi
       return
 
     case 'hexbot.checkins.changed':
+      // Changed elsewhere, through another app or `hexbot checkins`.
+      void useSettings.getState().refresh()
+
       if (useCheckins.getState().loaded) {
         void useCheckins.getState().refresh()
-        // Changed elsewhere, through another app or `hexbot checkins`.
-        void useSettings.getState().refresh()
       }
 
       return
