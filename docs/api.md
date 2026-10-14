@@ -195,7 +195,8 @@ asked `bot` for help through `message_bot`.
 
 `title_by` is `"bot"` when the daemon named the section from the first
 prompt; a user rename clears it. Clients do not show chat titles. `preview`
-is the first user message, also returned by `open`.
+is the latest visible message from either side, as a chat list shows it, also
+returned by `open`.
 
 - `hexbot.sections.list {bot?, include_archived?, include_threads?}` →
   `{sections: [Section]}`. Threads are left out unless `include_threads` is

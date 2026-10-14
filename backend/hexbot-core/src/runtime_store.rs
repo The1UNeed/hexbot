@@ -108,6 +108,7 @@ pub fn summary(home: &Path, stored: &str) -> Result<Value> {
             .optional()?)
     };
     // The section list reads every summary; only a miss needs the write lock.
+    // The preview is the latest message either side said, as a chat list shows.
     if let Some((count, preview)) = cached(&conn)? {
         return Ok(json!({"preview":preview,"message_count":count}));
     }
@@ -122,7 +123,7 @@ pub fn summary(home: &Path, stored: &str) -> Result<Value> {
         )?;
         let text: String = tx
             .query_row(
-                "SELECT COALESCE(json_extract(m.message_json,'$.text'),'') FROM native_messages m LEFT JOIN native_pi_journal p ON p.session_id=m.session_id AND p.projection_seq=m.seq WHERE m.session_id=? AND (p.active IS NULL OR p.active=1) AND json_extract(m.message_json,'$.role')='user' AND COALESCE(json_extract(m.message_json,'$.display_kind'),'normal')<>'hidden' ORDER BY m.seq LIMIT 1",
+                "SELECT COALESCE(json_extract(m.message_json,'$.text'),'') FROM native_messages m LEFT JOIN native_pi_journal p ON p.session_id=m.session_id AND p.projection_seq=m.seq WHERE m.session_id=? AND (p.active IS NULL OR p.active=1) AND json_extract(m.message_json,'$.role') IN ('user','assistant') AND COALESCE(json_extract(m.message_json,'$.display_kind'),'normal')<>'hidden' AND COALESCE(json_extract(m.message_json,'$.text'),'')<>'' ORDER BY m.seq DESC LIMIT 1",
                 [stored],
                 |r| r.get(0),
             )

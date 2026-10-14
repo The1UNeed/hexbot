@@ -939,29 +939,29 @@ fn legacy_multi_compaction_deduplicates_display_and_uses_only_tip_context() {
 }
 
 #[test]
-fn summary_uses_first_visible_user_and_invalidates_on_history_changes() {
+fn summary_previews_the_latest_visible_message_and_follows_history_changes() {
     let home = setup();
     let text = "界".repeat(61);
     for message in [
-        json!({"role":"user","text":"internal","display_kind":"hidden"}),
+        json!({"role":"user","text":"earlier"}),
         json!({"role":"user","text":text}),
-        json!({"role":"user","text":"later"}),
+        json!({"role":"user","text":"internal","display_kind":"hidden"}),
+        json!({"role":"assistant","text":"","tool_calls":[{"id":"t1"}]}),
     ] {
         runtime_store::append(home.path(), "section-a", message).unwrap();
     }
     let summary = runtime_store::summary(home.path(), "section-a").unwrap();
     assert_eq!(summary["preview"], format!("{}...", "界".repeat(60)));
-    assert_eq!(summary["message_count"], 3);
+    assert_eq!(summary["message_count"], 4);
     runtime_store::append(
         home.path(),
         "section-a",
         json!({"role":"assistant","text":"reply"}),
     )
     .unwrap();
-    assert_eq!(
-        runtime_store::summary(home.path(), "section-a").unwrap()["message_count"],
-        4
-    );
+    let summary = runtime_store::summary(home.path(), "section-a").unwrap();
+    assert_eq!(summary["message_count"], 5);
+    assert_eq!(summary["preview"], "reply");
 }
 
 #[tokio::test]

@@ -169,7 +169,12 @@ fn legacy_summary(home: &Path, row: &Value) -> Result<(String, i64)> {
         .count() as i64;
     let preview = messages
         .iter()
-        .find(|m| m["role"] == "user" && m["display_kind"] != "hidden")
+        .rev()
+        .find(|m| {
+            matches!(m["role"].as_str(), Some("user" | "assistant"))
+                && m["display_kind"] != "hidden"
+                && m["content"].as_str().is_some_and(|text| !text.is_empty())
+        })
         .map(|m| runtime_store::preview(m["content"].as_str().unwrap_or("")))
         .unwrap_or_default();
     Ok((preview, count))
@@ -422,6 +427,8 @@ pub fn one_chat_per_bot(home: &Path) -> Result<()> {
             params![activity, bot],
         )?;
     }
+    // Previews were each section's first message; a chat shows its latest.
+    runtime.execute("DELETE FROM native_summaries", [])?;
     conn.execute(
         "INSERT OR REPLACE INTO settings(key,value) VALUES('one_chat_per_bot','true')",
         [],
@@ -1550,7 +1557,7 @@ mod parity_tests {
         );
     }
     #[test]
-    fn naming_tracks_bot_and_user_and_preserves_first_preview() {
+    fn naming_tracks_bot_and_user_and_previews_the_latest_message() {
         let home = home();
         assert!(adopt_section_title(home.path(), "first", "Plan the garden.").unwrap());
         assert_eq!(
@@ -1574,9 +1581,9 @@ mod parity_tests {
         assert_eq!(clean_title(&"x".repeat(100)).len(), 60);
         runtime_store::open(home.path()).unwrap().execute("INSERT INTO native_sessions(stored_id,owner,bot,prompt) VALUES('first','alice','owl','')",[]).unwrap();
         for (seq, message) in [
-            json!({"role":"user","text":"Hidden kickoff","display_kind":"hidden"}),
-            json!({"role":"user","text":format!("{}\nend","a".repeat(61))}),
-            json!({"role":"user","text":"Latest"}),
+            json!({"role":"user","text":"Earlier"}),
+            json!({"role":"assistant","text":format!("{}\nend","a".repeat(61))}),
+            json!({"role":"user","text":"Hidden follow-up","display_kind":"hidden"}),
         ]
         .iter()
         .enumerate()
