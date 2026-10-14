@@ -277,6 +277,19 @@ pub fn one_chat_per_bot(home: &Path) -> Result<()> {
             row["bot"].as_str().unwrap_or("").to_owned(),
         );
         let (_, mut count) = history_summary(home, &row)?;
+        // Recovery after a crash adds messages without touching the section's
+        // time; the newest message counts too.
+        let said: Option<f64> = runtime_store::open(home)?.query_row(
+            "SELECT MAX(json_extract(message_json,'$.timestamp')) FROM native_messages WHERE session_id=?",
+            [row["id"].as_str().unwrap_or("")],
+            |r| r.get(0),
+        )?;
+        let mut row = row;
+        if let Some(said) = said
+            && said > row["updated_at"].as_f64().unwrap_or(0.0)
+        {
+            row["updated_at"] = json!(said);
+        }
         // A log known only from before the native daemon has no reports to
         // mark, so it never stays.
         if logs.contains(row["id"].as_str().unwrap_or("")) && !native_history(home, &row)? {
@@ -346,7 +359,7 @@ pub fn one_chat_per_bot(home: &Path) -> Result<()> {
 }
 fn native_history(home: &Path, row: &Value) -> Result<bool> {
     Ok(runtime_store::open(home)?.query_row(
-        "SELECT EXISTS(SELECT 1 FROM native_sessions WHERE stored_id=?1) OR EXISTS(SELECT 1 FROM native_messages WHERE session_id=?1)",
+        "SELECT EXISTS(SELECT 1 FROM native_messages WHERE session_id=?1) OR EXISTS(SELECT 1 FROM native_pi_journal WHERE session_id=?1)",
         [row["id"].as_str().unwrap_or("")],
         |r| r.get(0),
     )?)
@@ -488,7 +501,7 @@ fn shape_bot(home: &Path, caller: &str, row: Value) -> Result<Value> {
     let sections = list_sections(home, caller, &json!({"bot":name,"include_archived":true}))?;
     let recent = sections
         .iter()
-        .filter(|s| s["archived_at"].is_null() && s["title"] != "Dreams")
+        .filter(|s| s["archived_at"].is_null())
         .take(2)
         .cloned()
         .collect::<Vec<_>>();
@@ -1518,7 +1531,8 @@ mod parity_tests {
                  INSERT INTO bot_incidents(id,bot,section_id,kind,created_at) VALUES('failed','owl','put_away','turn_failed',1);
                  INSERT INTO dreams(id,bot,started_at,status,summary) VALUES('d1','fox',1,'complete','In fox_dreams');
                  INSERT INTO sections(id,bot,owner_id,title,title_by) VALUES('dog_chat','dog','alice','Dreams','bot');
-                 INSERT INTO bots(name,owner_id) VALUES('dog','alice');
+                 INSERT INTO bots(name,owner_id) VALUES('dog','alice'),('elk','alice');
+                 INSERT INTO sections(id,bot,owner_id,title,updated_at) VALUES('elk_listed','elk','alice','Listed',5),('elk_recovered','elk','alice','Recovered',1);
                  INSERT INTO sections(id,bot,owner_id,title,updated_at,archived_at,peer_bot) VALUES
                   ('old','owl','alice','Garden',1,NULL,NULL),
                   ('put_away','owl','alice','Trip',5,5,NULL),
@@ -1553,6 +1567,25 @@ mod parity_tests {
             "dog_chat",
             json!({"role":"user","text":"Dreams"}),
         );
+        // Recovered after a crash: newer than its section's time says.
+        said(
+            home.path(),
+            "elk_listed",
+            json!({"role":"user","text":"Earlier","timestamp":4}),
+        );
+        said(
+            home.path(),
+            "elk_recovered",
+            json!({"role":"user","text":"Later","timestamp":9}),
+        );
+        // Opened once, but its old history was never copied in.
+        runtime_store::open(home.path())
+            .unwrap()
+            .execute(
+                "INSERT INTO native_sessions(stored_id,owner,bot,prompt) VALUES('bee_dreams','alice','bee','')",
+                [],
+            )
+            .unwrap();
         said(
             home.path(),
             "cat_chat",
@@ -1604,6 +1637,7 @@ mod parity_tests {
             fox.iter().map(|m| m["dream"] == true).collect::<Vec<_>>(),
             [true, false, false]
         );
+        assert_eq!(ids("elk"), ["elk_recovered"]);
         // A chat the bot titled Dreams is a chat.
         assert_eq!(ids("dog"), ["dog_chat"]);
         assert_eq!(

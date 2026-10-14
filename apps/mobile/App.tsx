@@ -844,8 +844,8 @@ function MobileApp() {
             changeTab('rooms')
             return
           }
-          const s = detail?.section_id && mobile.sections.find(s => s.id === detail.section_id)
-          if (b) act(() => mobile.openSection(b, s || undefined))
+          // Work in a thread with another bot shows in the bot's one chat.
+          if (b) act(() => mobile.openSection(b))
           else setBotPage(id)
         }}
         onBotLongPress={
