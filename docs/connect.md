@@ -225,6 +225,13 @@ per minute per running app instance, when a registration is created.
    with the daemon token, the first one as soon as the tunnel starts; Connect
    records `last_seen_at` and the port, which only the loopback development
    address uses.
+6. Check-in push: `POST /api/daemons/{id}/push {tokens, bot, section}` with
+   the daemon token, when the primary bot messages the user from a check-in.
+   Connect relays it to Expo's push service as "`bot`: Messaged you from a
+   check-in", with `section` for the phone to open. The message itself never
+   reaches Connect, and Connect stores nothing. At most 20 Expo tokens per
+   call and ten calls a minute per daemon; the reply's `gone` lists tokens
+   Expo no longer knows, which the daemon forgets.
 
 ## Online state
 

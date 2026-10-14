@@ -99,6 +99,21 @@ hexbot bots primary writer
 
 There is one primary bot, and it stays. `hexbot bots list` shows it first, with `"primary": true`.
 
+## Check-ins
+
+The primary bot's check-ins can be managed without the app:
+
+```sh
+hexbot checkins                    # settings, next check-in, wake-ups, recent runs
+hexbot checkins now                # check in now
+hexbot checkins off                # or on
+hexbot checkins every 30           # minutes, 15 to 1440
+hexbot checkins hours 07:30-23:00  # regular check-ins stay inside these hours
+hexbot checkins cancel ID          # cancel a wake-up
+```
+
+`hexbot checkins`, `now`, and `cancel` need the daemon running.
+
 ## Send a message and list rooms
 
 Quote the message so the shell passes it as one argument:

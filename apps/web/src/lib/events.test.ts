@@ -133,6 +133,37 @@ describe('event routing', () => {
     expect(rows.filter(item => item.error)).toHaveLength(1)
     expect(rows.at(-1)!.error).toBe('Still expired')
   })
+  it('notifies when the primary bot messages you from a check-in', () => {
+    const notify = vi.fn()
+    setTranscriptEffects({ notify })
+    useBots.setState({
+      byName: { hexbot: { display_name: 'HexBot', name: 'hexbot', primary: true } as Bot }
+    })
+    routeEvent({
+      payload: {
+        bot: 'hexbot',
+        id: 'm1',
+        section_id: 'checkins-1',
+        text: 'Your PE feedback is due tonight at 11:59 PM.'
+      },
+      type: 'hexbot.checkins.message'
+    } as unknown as GatewayEvent)
+    expect(notify).toHaveBeenCalledWith({
+      body: 'Your PE feedback is due tonight at 11:59 PM.',
+      sectionId: 'checkins-1',
+      title: 'HexBot'
+    })
+    // Notify me off: the message still lands in the section, quietly.
+    notify.mockClear()
+    useBots.setState({
+      byName: { hexbot: { display_name: 'HexBot', name: 'hexbot', notify: false } as Bot }
+    })
+    routeEvent({
+      payload: { bot: 'hexbot', section_id: 'checkins-1', text: 'Later.' },
+      type: 'hexbot.checkins.message'
+    } as unknown as GatewayEvent)
+    expect(notify).not.toHaveBeenCalled()
+  })
   it('stays quiet for a bot whose Notify me switch is off', () => {
     const notify = vi.fn()
     setTranscriptEffects({ notify })

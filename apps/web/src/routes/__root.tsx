@@ -7,6 +7,7 @@ import { userMemoryGet } from '../lib/api'
 import { getBridge, hasLocalRuntime } from '../lib/bridge'
 import { getSupervisor, setLocalDaemonPort } from '../lib/connection'
 import { useConnection } from '../stores/connection'
+import { useSections } from '../stores/sections'
 import { applyTheme, useUi } from '../stores/ui'
 import { bindAppUpdates } from '../stores/updates'
 
@@ -62,6 +63,15 @@ function RootLayout() {
 
       if (tab) {
         void navigate({ to: '/settings/$tab', params: { tab } })
+
+        return
+      }
+
+      // A notification click names the section it is about.
+      const bot = useSections.getState().byId[url]?.bot
+
+      if (bot) {
+        void navigate({ params: { bot, section: url }, to: '/b/$bot/s/$section' })
       }
     })
   }, [navigate])

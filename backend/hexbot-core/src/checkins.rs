@@ -1,0 +1,799 @@
+//! Check-ins: the primary bot looks at what is going on, on its own, and
+//! messages the user only when something matters. A heartbeat runs during the
+//! user's hours (Settings, Check-ins); the bot also sets wake-ups for moments it
+//! wants to look again. Each run is an unattended job session, so memory writes
+//! become proposals. Its one way to speak is `hexbot_notify`, which posts into
+//! the primary bot's Check-ins section and notifies the user's devices. What it
+//! said reaches that section's context with the user's next message there.
+use super::*;
+
+/// The section a primary bot's check-in messages go to, by `sections.purpose`.
+const PURPOSE: &str = "checkins";
+const SECTION_TITLE: &str = "Check-ins";
+/// Messages the user gets from check-ins in any 24 hours, from one bot or several.
+const DAILY_MESSAGES: i64 = 8;
+const MESSAGE_CAP: usize = 4_000;
+const NOTE_CAP: usize = 1_000;
+const PENDING_WAKEUPS: i64 = 50;
+const WAKEUP_HORIZON: f64 = 366.0 * 86_400.0;
+/// A wake-up the daemon missed by more than this is dropped, not run late.
+const WAKEUP_GRACE: f64 = 6.0 * 3_600.0;
+/// After a failed check-in, the next waits this long.
+const RETRY_AFTER: f64 = 15.0 * 60.0;
+const SUMMARY_CAP: usize = 2_000;
+
+const GUIDE: &str = r###"Look over what is going on for the user, on your own. Use what you know: your memory and notes, their About you, and what your connected tools show now (calendar, email, tasks, documents). Read only; change nothing in their tools.
+
+Decide whether anything needs their attention now: something due today or early tomorrow, a meeting to prepare for, a reply they are waiting on, something that changed, or something they asked you to watch.
+- If something does, call hexbot_notify once. Write one short message that stands on its own, because they may only read the notification: what it is, when, why it matters now, and what to do, with links.
+- If nothing does, do not call it. Staying quiet is the usual outcome.
+- If something will matter later, set a wake-up with hexbot_wakeups for when to raise it, with a note to yourself, instead of messaging now.
+- Do not repeat what you already told them unless it changed or became urgent.
+
+Finish with one line on what you looked at and what you decided. It is kept as this check-in's log and is not shown to the user."###;
+
+const JOB_RULES: &str = "This is an autonomous check-in. Do not ask the user questions; you cannot wait for an answer. You and your delegates cannot message other bots. If the memory tool is available, it reads as usual here; add, append, replace, set, remove, and note are saved as proposals for your next dream, which decides what to keep. If the soul tool is available, it only reads here.";
+
+pub(crate) fn notify_descriptor() -> Value {
+    json!({
+        "name": "hexbot_notify",
+        "label": "Message the user",
+        "description": "Send the user one message from this check-in. It appears in your Check-ins section and as a notification on their devices, so it must stand on its own: what it is, when, why it matters now, and what to do, with any links. Once per check-in. Do not call it when nothing needs their attention.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "message": { "type": "string", "description": "Markdown, at most 4000 characters" }
+            },
+            "required": ["message"]
+        }
+    })
+}
+
+pub(crate) fn wakeups_descriptor() -> Value {
+    json!({
+        "name": "hexbot_wakeups",
+        "label": "Wake-ups",
+        "description": "Set a time to check in again on your own, with a note to yourself on what to look at then. At that time you get a check-in with the note and decide then whether to message the user. list shows the ones waiting; add needs at and note; cancel needs id.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "action": { "type": "string", "enum": ["list", "add", "cancel"] },
+                "at": { "type": "string", "description": "Local time, like 2026-10-15 07:30, or an RFC 3339 time" },
+                "note": { "type": "string", "description": "What to look at then, and why" },
+                "id": { "type": "string", "description": "With cancel: the wake-up's id" }
+            },
+            "required": ["action"]
+        }
+    })
+}
+
+/// `HH:MM-HH:MM` as minutes of the day. The window may run past midnight.
+fn hours(text: &str) -> Option<(u32, u32)> {
+    let (from, to) = text.split_once('-')?;
+    if !settings::clock(from) || !settings::clock(to) {
+        return None;
+    }
+    let (fh, fm) = clock_time(from)?;
+    let (th, tm) = clock_time(to)?;
+    Some((fh * 60 + fm, th * 60 + tm))
+}
+
+fn within((from, to): (u32, u32), minute: u32) -> bool {
+    if from < to {
+        (from..to).contains(&minute)
+    } else {
+        minute >= from || minute < to
+    }
+}
+
+fn head(text: &str, limit: usize) -> String {
+    if text.chars().count() <= limit {
+        return text.to_owned();
+    }
+    format!("{}…", text.chars().take(limit).collect::<String>())
+}
+
+fn local(at: f64) -> Option<DateTime<Local>> {
+    Local.timestamp_opt(at as i64, 0).single()
+}
+
+fn minute_of_day(at: &DateTime<Local>) -> u32 {
+    at.hour() * 60 + at.minute()
+}
+
+fn when(at: f64) -> String {
+    local(at)
+        .map(|d| d.format("%a %-d %b, %H:%M").to_string())
+        .unwrap_or_default()
+}
+
+/// When the next heartbeat may run: `every` minutes after the last check-in,
+/// moved to the start of the user's hours when that falls outside them.
+fn next_heartbeat(window: (u32, u32), every: f64, last: Option<f64>, now: f64) -> Option<f64> {
+    let earliest = last.map_or(now, |last| (last + every).max(now));
+    let at = local(earliest)?;
+    if within(window, minute_of_day(&at)) {
+        return Some(earliest);
+    }
+    let start = |day: chrono::NaiveDate| {
+        day.and_hms_opt(window.0 / 60, window.0 % 60, 0)
+            .and_then(|d| Local.from_local_datetime(&d).earliest())
+    };
+    let today = start(at.date_naive())?;
+    let next = if today > at {
+        today
+    } else {
+        start(at.date_naive().succ_opt()?)?
+    };
+    Some(next.timestamp() as f64)
+}
+
+/// A wake-up time: RFC 3339, or local `YYYY-MM-DD HH:MM[:SS]` with a space or `T`.
+fn wakeup_time(text: &str) -> Option<f64> {
+    let text = text.trim();
+    parse_timestamp(text).or_else(|| {
+        ["%Y-%m-%d %H:%M", "%Y-%m-%dT%H:%M:%S%.f"]
+            .iter()
+            .find_map(|fmt| NaiveDateTime::parse_from_str(text, fmt).ok())
+            .and_then(|d| Local.from_local_datetime(&d).earliest())
+            .map(|d| d.timestamp() as f64)
+    })
+}
+
+fn wakeup_view(row: &Value) -> Value {
+    let at = row["at"].as_f64().unwrap_or(0.0);
+    json!({"id":row["id"],"at":now_iso(at),"local":when(at),"note":row["note"]})
+}
+
+fn pending_wakeups(conn: &rusqlite::Connection, owner: &str) -> Result<Vec<Value>> {
+    common::rows(
+        conn,
+        "SELECT id,bot,at,note,created_at FROM checkin_wakeups WHERE owner_id=? AND fired_at IS NULL AND cancelled_at IS NULL ORDER BY at",
+        &[&owner],
+    )
+}
+
+/// `hexbot_wakeups`, for the primary bot's own sections and its check-ins.
+pub(crate) fn wakeups_tool(
+    home: &Path,
+    events: &EventHub,
+    owner: &str,
+    bot: &str,
+    args: &Value,
+) -> Result<Value> {
+    let conn = db::open(home)?;
+    match common::required(args, "action")? {
+        "list" => Ok(
+            json!({"wakeups":pending_wakeups(&conn, owner)?.iter().map(wakeup_view).collect::<Vec<_>>()}),
+        ),
+        "add" => {
+            let text = common::required(args, "at")?;
+            let at = wakeup_time(text).ok_or_else(|| {
+                Error::new(
+                    4202,
+                    "at must be a local time like 2026-10-15 07:30, or an RFC 3339 time",
+                )
+            })?;
+            let now = common::now();
+            if at <= now + 60.0 {
+                return Err(Error::new(4202, "at must be at least a minute from now"));
+            }
+            if at > now + WAKEUP_HORIZON {
+                return Err(Error::new(4202, "at must be within a year"));
+            }
+            let note = common::required(args, "note")?.trim();
+            if note.is_empty() || note.chars().count() > NOTE_CAP {
+                return Err(Error::new(
+                    4202,
+                    format!("note must be 1 to {NOTE_CAP} characters"),
+                ));
+            }
+            let waiting: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM checkin_wakeups WHERE owner_id=? AND fired_at IS NULL AND cancelled_at IS NULL",
+                [owner],
+                |r| r.get(0),
+            )?;
+            if waiting >= PENDING_WAKEUPS {
+                return Err(Error::new(
+                    4202,
+                    format!("{PENDING_WAKEUPS} wake-ups are already waiting; cancel one first"),
+                ));
+            }
+            let id = common::id();
+            conn.execute(
+                "INSERT INTO checkin_wakeups(id,owner_id,bot,at,note,created_at) VALUES (?,?,?,?,?,?)",
+                params![id, owner, bot, at, note, now],
+            )?;
+            events.emit(owner, None, "hexbot.checkins.changed", json!({"bot":bot}));
+            Ok(json!({"wakeup":{"id":id,"at":now_iso(at),"local":when(at),"note":note}}))
+        }
+        "cancel" => {
+            cancel_wakeup(home, events, owner, common::required(args, "id")?)?;
+            Ok(json!({"cancelled":true}))
+        }
+        other => Err(Error::new(
+            4202,
+            format!("unknown action for hexbot_wakeups: {other}"),
+        )),
+    }
+}
+
+fn cancel_wakeup(home: &Path, events: &EventHub, owner: &str, id: &str) -> Result<()> {
+    let changed = db::open(home)?.execute(
+        "UPDATE checkin_wakeups SET cancelled_at=? WHERE id=? AND owner_id=? AND fired_at IS NULL AND cancelled_at IS NULL",
+        params![common::now(), id, owner],
+    )?;
+    if changed == 0 {
+        return Err(Error::new(4244, "wake-up not found"));
+    }
+    events.emit(owner, None, "hexbot.checkins.changed", json!({}));
+    Ok(())
+}
+
+/// The bot's Check-ins section: the newest one, brought back from the archive,
+/// or a new one when the user deleted it.
+fn section(conn: &rusqlite::Connection, owner: &str, bot: &str, now: f64) -> Result<String> {
+    let existing: Option<(String, Option<f64>)> = conn
+        .query_row(
+            "SELECT id,archived_at FROM sections WHERE owner_id=? AND bot=? AND purpose=? ORDER BY created_at DESC LIMIT 1",
+            params![owner, bot, PURPOSE],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()?;
+    if let Some((id, archived)) = existing {
+        if archived.is_some() {
+            conn.execute("UPDATE sections SET archived_at=NULL WHERE id=?", [&id])?;
+        }
+        return Ok(id);
+    }
+    let id = common::id();
+    conn.execute(
+        "INSERT INTO sections(id,bot,title,owner_id,created_at,updated_at,purpose) VALUES (?,?,?,?,?,?,?)",
+        params![id, bot, SECTION_TITLE, owner, now, now, PURPOSE],
+    )?;
+    Ok(id)
+}
+
+/// `hexbot_notify`: one message per check-in, at most DAILY_MESSAGES a day.
+pub(crate) fn notify(
+    home: &Path,
+    events: &EventHub,
+    owner: &str,
+    bot: &str,
+    checkin: &str,
+    message: &str,
+) -> Result<Value> {
+    let message = message.trim();
+    if message.is_empty() {
+        return Err(Error::new(4202, "message is empty"));
+    }
+    if message.chars().count() > MESSAGE_CAP {
+        return Err(Error::new(
+            4202,
+            format!("Keep the message under {MESSAGE_CAP} characters."),
+        ));
+    }
+    let now = common::now();
+    let mut conn = db::open(home)?;
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    let run: Option<(String, Option<String>)> = tx
+        .query_row(
+            "SELECT status,message_id FROM checkins WHERE id=? AND owner_id=? AND bot=?",
+            params![checkin, owner, bot],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()?;
+    match run {
+        Some((status, None)) if status == "running" => {}
+        Some((_, Some(_))) => {
+            return Err(Error::new(
+                4245,
+                "You already messaged the user in this check-in. Put everything in one message.",
+            ));
+        }
+        _ => return Err(Error::new(4245, "This check-in has ended.")),
+    }
+    let sent: i64 = tx.query_row(
+        "SELECT COUNT(*) FROM checkin_messages WHERE owner_id=? AND created_at>?",
+        params![owner, now - 86_400.0],
+        |r| r.get(0),
+    )?;
+    if sent >= DAILY_MESSAGES {
+        return Err(Error::new(
+            4245,
+            format!(
+                "The user had {DAILY_MESSAGES} check-in messages in the last day. Keep this for a later check-in."
+            ),
+        ));
+    }
+    let section = section(&tx, owner, bot, now)?;
+    let id = common::id();
+    // The visible message. Its text reaches the section's context through
+    // `take_context` when the user next writes there.
+    runtime_store::append(
+        home,
+        &section,
+        json!({"role":"assistant","text":message,"timestamp":now,"checkin":true}),
+    )?;
+    tx.execute(
+        "INSERT INTO checkin_messages(id,owner_id,bot,section_id,checkin_id,text,created_at) VALUES (?,?,?,?,?,?,?)",
+        params![id, owner, bot, section, checkin, message, now],
+    )?;
+    tx.execute(
+        "UPDATE checkins SET message_id=? WHERE id=?",
+        params![id, checkin],
+    )?;
+    tx.execute(
+        "UPDATE sections SET updated_at=? WHERE id=?",
+        params![now, section],
+    )?;
+    tx.commit()?;
+    events.emit(
+        owner,
+        None,
+        "hexbot.sections.changed",
+        json!({"id":section,"bot":bot}),
+    );
+    events.emit(
+        owner,
+        None,
+        "hexbot.checkins.message",
+        json!({"bot":bot,"section_id":section,"id":id,"text":runtime_store::preview(message)}),
+    );
+    push_later(home, owner, bot, &section);
+    Ok(json!({"sent":true,"section":section}))
+}
+
+/// Phones get a push with no message text: Connect relays it, and chat never
+/// passes through Connect.
+fn push_later(home: &Path, owner: &str, bot: &str, section: &str) {
+    let Ok(handle) = tokio::runtime::Handle::try_current() else {
+        return;
+    };
+    let (home, owner, bot, section) = (
+        home.to_owned(),
+        owner.to_owned(),
+        bot.to_owned(),
+        section.to_owned(),
+    );
+    handle.spawn(async move {
+        if let Err(error) = push(&home, &owner, &bot, &section).await {
+            eprintln!("Check-in push: {}", error.message);
+        }
+    });
+}
+
+async fn push(home: &Path, owner: &str, bot: &str, section: &str) -> Result<()> {
+    let (tokens, name) = {
+        let conn = db::open(home)?;
+        let tokens = common::rows(
+            &conn,
+            "SELECT push_token FROM devices WHERE owner_id=? AND revoked_at IS NULL AND push_token IS NOT NULL",
+            &[&owner],
+        )?
+        .into_iter()
+        .filter_map(|r| r["push_token"].as_str().map(str::to_owned))
+        .collect::<Vec<_>>();
+        let name: Option<String> = conn
+            .query_row(
+                "SELECT COALESCE(NULLIF(display_name,''),name) FROM bots WHERE name=?",
+                [bot],
+                |r| r.get(0),
+            )
+            .optional()?;
+        (tokens, name.unwrap_or_else(|| bot.to_owned()))
+    };
+    if tokens.is_empty() {
+        return Ok(());
+    }
+    let gone = crate::services::push(home, &tokens, &name, section).await?;
+    if !gone.is_empty() {
+        let conn = db::open(home)?;
+        for token in gone {
+            conn.execute(
+                "UPDATE devices SET push_token=NULL,push_platform=NULL WHERE push_token=?",
+                [token],
+            )?;
+        }
+    }
+    Ok(())
+}
+
+/// Whether the section has check-in messages its context has not seen yet.
+pub(crate) fn pending_context(home: &Path, stored: &str) -> Result<bool> {
+    Ok(db::open(home)?.query_row(
+        "SELECT EXISTS(SELECT 1 FROM checkin_messages WHERE section_id=? AND context_at IS NULL)",
+        [stored],
+        |r| r.get(0),
+    )?)
+}
+
+/// The check-in messages this section's context has not seen, marked seen.
+/// Pi adds them after the user's next message, so the cached prefix stays.
+pub(crate) fn take_context(home: &Path, owner: &str, stored: &str) -> Result<Option<String>> {
+    let mut conn = db::open(home)?;
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    let rows = common::rows(
+        &tx,
+        "SELECT id,text,created_at FROM checkin_messages WHERE section_id=? AND owner_id=? AND context_at IS NULL ORDER BY created_at",
+        &[&stored, &owner],
+    )?;
+    if rows.is_empty() {
+        return Ok(None);
+    }
+    let now = common::now();
+    let mut text = String::from(
+        "Before the user's message above, you sent them these messages here on your own, from check-ins:",
+    );
+    for row in &rows {
+        tx.execute(
+            "UPDATE checkin_messages SET context_at=? WHERE id=?",
+            params![now, row["id"].as_str()],
+        )?;
+        text.push_str(&format!(
+            "\n\n[{}]\n{}",
+            when(row["created_at"].as_f64().unwrap_or(0.0)),
+            row["text"].as_str().unwrap_or("")
+        ));
+    }
+    tx.commit()?;
+    Ok(Some(text))
+}
+
+impl Dreaming {
+    /// Called every minute from `tick_at`.
+    pub(super) fn tick_checkins(self: &Arc<Self>, now: f64) -> Result<()> {
+        let settings = settings::get(&self.home)?;
+        if settings["checkin_enabled"] != true {
+            return Ok(());
+        }
+        let window = settings["checkin_hours"]
+            .as_str()
+            .and_then(hours)
+            .unwrap_or((8 * 60, 22 * 60));
+        let every = settings["checkin_every_minutes"].as_f64().unwrap_or(60.0) * 60.0;
+        let conn = db::open(&self.home)?;
+        // Wake-ups the daemon was down for too long are dropped, not run late.
+        conn.execute(
+            "UPDATE checkin_wakeups SET fired_at=? WHERE fired_at IS NULL AND cancelled_at IS NULL AND at<?",
+            params![now, now - WAKEUP_GRACE],
+        )?;
+        for row in common::rows(
+            &conn,
+            "SELECT b.name,b.owner_id FROM bots b JOIN users u ON u.id=b.owner_id WHERE b.is_primary=1 AND u.disabled_at IS NULL",
+            &[],
+        )? {
+            let bot = row["name"].as_str().unwrap_or("");
+            let owner = row["owner_id"].as_str().unwrap_or("");
+            if self
+                .running
+                .lock()
+                .unwrap()
+                .contains(&format!("checkin:{owner}"))
+            {
+                continue;
+            }
+            let last = |filter: &str| -> Result<Option<f64>> {
+                Ok(conn.query_row(
+                    &format!("SELECT MAX(started_at) FROM checkins WHERE owner_id=? {filter}"),
+                    [owner],
+                    |r| r.get(0),
+                )?)
+            };
+            if last("AND status='failed'")?.is_some_and(|at| now - at < RETRY_AFTER) {
+                continue;
+            }
+            let due = common::rows(
+                &conn,
+                "SELECT id,bot,at,note,created_at FROM checkin_wakeups WHERE owner_id=? AND fired_at IS NULL AND cancelled_at IS NULL AND at<=? ORDER BY at",
+                &[&owner, &now],
+            )?;
+            let kind = if !due.is_empty() {
+                "wakeup"
+            } else if next_heartbeat(window, every, last("")?, now).is_some_and(|at| at <= now) {
+                "heartbeat"
+            } else {
+                continue;
+            };
+            if let Err(error) = self.launch_checkin(owner, bot, kind, due) {
+                self.events
+                    .emit(owner, None, "error", json!({"message":error.message}));
+            }
+        }
+        Ok(())
+    }
+
+    fn launch_checkin(
+        self: &Arc<Self>,
+        owner: &str,
+        bot: &str,
+        kind: &str,
+        wakeups: Vec<Value>,
+    ) -> Result<Value> {
+        if *self.stop.borrow() {
+            return Err(Error::new(5240, "scheduler is stopping"));
+        }
+        let key = format!("checkin:{owner}");
+        if !self.running.lock().unwrap().insert(key.clone()) {
+            return Err(Error::new(4243, "A check-in is already running."));
+        }
+        let id = common::id();
+        let now = common::now();
+        let started = (|| -> Result<()> {
+            let mut conn = db::open(&self.home)?;
+            let tx = conn.transaction()?;
+            tx.execute(
+                "INSERT INTO checkins(id,owner_id,bot,kind,started_at,status) VALUES (?,?,?,?,?,'running')",
+                params![id, owner, bot, kind, now],
+            )?;
+            for wakeup in &wakeups {
+                tx.execute(
+                    "UPDATE checkin_wakeups SET fired_at=?,checkin_id=? WHERE id=?",
+                    params![now, id, wakeup["id"].as_str()],
+                )?;
+            }
+            tx.commit()?;
+            Ok(())
+        })();
+        if let Err(error) = started {
+            self.running.lock().unwrap().remove(&key);
+            return Err(error);
+        }
+        self.events
+            .emit(owner, None, "hexbot.checkins.changed", json!({"bot":bot}));
+        let reply = json!({"id":id,"kind":kind,"status":"running"});
+        let this = self.clone();
+        let (owner, bot, kind, run) = (
+            owner.to_owned(),
+            bot.to_owned(),
+            kind.to_owned(),
+            id.clone(),
+        );
+        let task = tokio::spawn(async move {
+            this.run_checkin(&owner, &bot, &run, &kind, &wakeups).await;
+            this.running.lock().unwrap().remove(&key);
+            this.events
+                .emit(&owner, None, "hexbot.checkins.changed", json!({"bot":bot}));
+        });
+        let mut tasks = self.tasks.lock().unwrap();
+        tasks.retain(|t| !t.is_finished());
+        tasks.push(task);
+        Ok(reply)
+    }
+
+    async fn run_checkin(&self, owner: &str, bot: &str, id: &str, kind: &str, wakeups: &[Value]) {
+        let stored = format!("checkin-{id}");
+        let mut stop = self.stop.subscribe();
+        let result = async {
+            let prompt = self.checkin_prompt(owner, kind, wakeups)?;
+            // `job` makes it unattended (memory proposals, no questions, Auto at
+            // most); `checkin` adds hexbot_notify and hexbot_wakeups.
+            let options = json!({"job": stored, "checkin": id});
+            tokio::select! {
+                result = self.runtime.run_hidden_job(owner, bot, &stored, &prompt, &options) => result,
+                _ = wait_stop(&mut stop) => {
+                    let _ = self.runtime.interrupt_stored(owner, &stored).await;
+                    let _ = self.runtime.close_stored(owner, &stored).await;
+                    Err(Error::new(5240, "Daemon stopped before the check-in finished"))
+                }
+            }
+        }
+        .await;
+        let (status, summary) = match result {
+            Ok(output) => ("complete", head(output.trim(), SUMMARY_CAP)),
+            Err(error) => ("failed", error.message),
+        };
+        if let Err(error) = db::open(&self.home).and_then(|conn| {
+            conn.execute(
+                "UPDATE checkins SET finished_at=?,status=?,summary=? WHERE id=?",
+                params![common::now(), status, summary, id],
+            )?;
+            Ok(())
+        }) {
+            self.events
+                .emit(owner, None, "error", json!({"message":error.message}));
+        }
+    }
+
+    fn checkin_prompt(&self, owner: &str, kind: &str, wakeups: &[Value]) -> Result<String> {
+        let conn = db::open(&self.home)?;
+        let settings = settings::get(&self.home)?;
+        let name: String = conn
+            .query_row("SELECT display_name FROM users WHERE id=?", [owner], |r| {
+                r.get(0)
+            })
+            .optional()?
+            .unwrap_or_else(|| "the user".to_owned());
+        let now = common::now();
+        let clock = local(now)
+            .map(|d| d.format("%A %-d %B %Y, %H:%M (UTC%:z)").to_string())
+            .unwrap_or_default();
+        let window = settings["checkin_hours"].as_str().unwrap_or("08:00-22:00");
+        let every = settings["checkin_every_minutes"].as_u64().unwrap_or(60);
+        let mut prompt = format!("# Check-in\nIt is {clock}. You are {name}'s primary bot.\n\n");
+        match kind {
+            "wakeup" => {
+                prompt.push_str("You set these wake-ups for now:");
+                for wakeup in wakeups {
+                    prompt.push_str(&format!(
+                        "\n- Set {}: {}",
+                        when(wakeup["created_at"].as_f64().unwrap_or(0.0)),
+                        wakeup["note"].as_str().unwrap_or("")
+                    ));
+                }
+                prompt.push_str("\nLook at those first.");
+            }
+            "manual" => prompt.push_str(&format!("{name} asked you to check in now.")),
+            _ => prompt.push_str(&format!(
+                "This is one of your regular check-ins, every {every} minutes during {name}'s hours ({window})."
+            )),
+        }
+        let recent = common::rows(
+            &conn,
+            "SELECT text,created_at FROM checkin_messages WHERE owner_id=? AND created_at>? ORDER BY created_at",
+            &[&owner, &(now - 86_400.0)],
+        )?;
+        prompt.push_str("\n\nWhat you told them in check-ins in the last day:");
+        if recent.is_empty() {
+            prompt.push_str(" nothing.");
+        }
+        for row in &recent {
+            prompt.push_str(&format!(
+                "\n- {}: {}",
+                when(row["created_at"].as_f64().unwrap_or(0.0)),
+                head(row["text"].as_str().unwrap_or(""), 600)
+            ));
+        }
+        let waiting = pending_wakeups(&conn, owner)?;
+        prompt.push_str("\n\nWake-ups still waiting:");
+        if waiting.is_empty() {
+            prompt.push_str(" none.");
+        }
+        for row in &waiting {
+            prompt.push_str(&format!(
+                "\n- {} (id {}): {}",
+                when(row["at"].as_f64().unwrap_or(0.0)),
+                row["id"].as_str().unwrap_or(""),
+                row["note"].as_str().unwrap_or("")
+            ));
+        }
+        Ok(format!("{prompt}\n\n{GUIDE}\n\n{JOB_RULES}"))
+    }
+
+    pub(super) async fn call_checkins(
+        self: &Arc<Self>,
+        owner: &str,
+        method: &str,
+        p: &Value,
+    ) -> Result<Value> {
+        match method {
+            "hexbot.checkins.status" => self.checkin_status(owner),
+            "hexbot.checkins.run_now" => {
+                let bot = crate::catalog::primary_bot(&self.home, owner)?
+                    .ok_or_else(|| Error::new(4246, "Choose a primary bot first."))?;
+                self.launch_checkin(owner, &bot, "manual", vec![])
+            }
+            "hexbot.checkins.cancel_wakeup" => {
+                cancel_wakeup(&self.home, &self.events, owner, common::required(p, "id")?)?;
+                Ok(json!({"cancelled":true}))
+            }
+            _ => Err(Error::new(-32601, "unknown check-in method")),
+        }
+    }
+
+    fn checkin_status(&self, owner: &str) -> Result<Value> {
+        let settings = settings::get(&self.home)?;
+        let conn = db::open(&self.home)?;
+        let bot = crate::catalog::primary_bot(&self.home, owner)?;
+        let enabled = settings["checkin_enabled"] == true;
+        let recent = common::rows(
+            &conn,
+            "SELECT id,bot,kind,started_at,finished_at,status,summary,message_id FROM checkins WHERE owner_id=? ORDER BY started_at DESC LIMIT 10",
+            &[&owner],
+        )?
+        .into_iter()
+        .map(|mut row| {
+            for key in ["started_at", "finished_at"] {
+                row[key] = row[key].as_f64().map(now_iso).map_or(Value::Null, Value::from);
+            }
+            row["messaged"] = json!(!row["message_id"].is_null());
+            row
+        })
+        .collect::<Vec<_>>();
+        let last: Option<f64> = conn.query_row(
+            "SELECT MAX(started_at) FROM checkins WHERE owner_id=?",
+            [owner],
+            |r| r.get(0),
+        )?;
+        let next = if enabled && bot.is_some() {
+            let window = settings["checkin_hours"]
+                .as_str()
+                .and_then(hours)
+                .unwrap_or((8 * 60, 22 * 60));
+            let every = settings["checkin_every_minutes"].as_f64().unwrap_or(60.0) * 60.0;
+            next_heartbeat(window, every, last, common::now()).map(now_iso)
+        } else {
+            None
+        };
+        let section: Option<String> = match &bot {
+            Some(bot) => conn
+                .query_row(
+                    "SELECT id FROM sections WHERE owner_id=? AND bot=? AND purpose=? AND archived_at IS NULL ORDER BY created_at DESC LIMIT 1",
+                    params![owner, bot, PURPOSE],
+                    |r| r.get(0),
+                )
+                .optional()?,
+            None => None,
+        };
+        Ok(json!({
+            "enabled": enabled,
+            "every_minutes": settings["checkin_every_minutes"],
+            "hours": settings["checkin_hours"],
+            "bot": bot,
+            "section_id": section,
+            "running": self.running.lock().unwrap().contains(&format!("checkin:{owner}")),
+            "next_run_at": next,
+            "wakeups": pending_wakeups(&conn, owner)?.iter().map(wakeup_view).collect::<Vec<_>>(),
+            "recent": recent
+        }))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn at(day: u32, h: u32, m: u32) -> f64 {
+        Local
+            .with_ymd_and_hms(2026, 10, day, h, m, 0)
+            .earliest()
+            .unwrap()
+            .timestamp() as f64
+    }
+
+    #[test]
+    fn hours_may_run_past_midnight() {
+        let day = hours("08:00-22:00").unwrap();
+        assert!(within(day, 8 * 60));
+        assert!(!within(day, 22 * 60));
+        let night = hours("22:00-02:00").unwrap();
+        assert!(within(night, 23 * 60));
+        assert!(within(night, 60));
+        assert!(!within(night, 12 * 60));
+        assert!(hours("8-22").is_none());
+    }
+
+    #[test]
+    fn heartbeats_wait_their_interval_and_the_users_hours() {
+        let window = hours("08:00-22:00").unwrap();
+        let hour = 3600.0;
+        // The first one runs at once inside the hours.
+        assert_eq!(
+            next_heartbeat(window, hour, None, at(14, 9, 0)),
+            Some(at(14, 9, 0))
+        );
+        // Then an interval after the last.
+        assert_eq!(
+            next_heartbeat(window, hour, Some(at(14, 9, 0)), at(14, 9, 30)),
+            Some(at(14, 10, 0))
+        );
+        // Late at night it waits for the morning.
+        assert_eq!(
+            next_heartbeat(window, hour, Some(at(14, 21, 30)), at(14, 22, 5)),
+            Some(at(15, 8, 0))
+        );
+        // Before the hours start, the same morning.
+        assert_eq!(
+            next_heartbeat(window, hour, None, at(14, 6, 0)),
+            Some(at(14, 8, 0))
+        );
+    }
+
+    #[test]
+    fn wakeup_times_read_local_and_rfc3339() {
+        assert_eq!(wakeup_time("2026-10-15 07:30"), Some(at(15, 7, 30)));
+        assert_eq!(wakeup_time("2026-10-15T07:30"), Some(at(15, 7, 30)));
+        assert_eq!(wakeup_time("2026-10-15T07:30:00Z"), Some(1_792_049_400.0));
+        assert!(wakeup_time("tomorrow morning").is_none());
+    }
+}

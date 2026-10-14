@@ -29,6 +29,7 @@ mod attachments;
 mod delegation;
 #[path = "runtime_primary.rs"]
 mod primary;
+use crate::dreaming::checkins;
 
 #[cfg(test)]
 #[path = "runtime_lifecycle_tests.rs"]
@@ -600,6 +601,15 @@ impl Runtime {
                 && shows_visuals(&self.home, stored)?
             {
                 tools.extend(primary::descriptors());
+                tools.push(checkins::wakeups_descriptor());
+            }
+            // A check-in run speaks only through hexbot_notify (checkins.rs).
+            if restricted.is_none()
+                && overrides.is_some_and(|o| o["checkin"].is_string())
+                && botrow["is_primary"].as_i64() == Some(1)
+            {
+                tools.push(checkins::notify_descriptor());
+                tools.push(checkins::wakeups_descriptor());
             }
             if let Some(allowed) = restricted {
                 tools.retain(|t| {
@@ -719,6 +729,10 @@ impl Runtime {
             // A scheduled job's session, and any delegate under it, proposes memory.
             opts["job"] = overrides
                 .and_then(|p| p.get("job"))
+                .cloned()
+                .unwrap_or(Value::Null);
+            opts["checkin"] = overrides
+                .and_then(|p| p.get("checkin"))
                 .cloned()
                 .unwrap_or(Value::Null);
             store::open(&self.home)?.execute(
@@ -2299,6 +2313,8 @@ impl Runtime {
                 .collect::<serde_json::Map<_, _>>()
                 .into();
         }
+        // The extension asks for check-in messages only when some are waiting.
+        saved["pendingCheckins"] = json!(checkins::pending_context(&self.home, &s.stored)?);
         saved["canAsk"] = json!(db.query_row(
             "SELECT EXISTS(SELECT 1 FROM sections WHERE id=?) OR EXISTS(SELECT 1 FROM room_sessions WHERE stored_session_id=?)",
             params![s.stored,s.stored], |r| r.get::<_,bool>(0)
@@ -2740,6 +2756,10 @@ impl Runtime {
             }
         }
         match name {
+            "hexbot_checkin_context" => {
+                Ok(json!({"text":checkins::take_context(&self.home, &s.owner, &s.stored)?}))
+            }
+            "hexbot_notify" | "hexbot_wakeups" => self.checkin_tool(s, name, args),
             "hexbot_todo_context" => {
                 Ok(json!({"text":crate::native_product_tools::todo_context(&self.home,&s.stored)?}))
             }
@@ -4023,7 +4043,10 @@ fn tool_context(name: &str, args: &Value) -> String {
         "delegate_task" => "goal",
         "message_bot" => "to",
         "hexbot_show_html" => "title",
-        "hexbot_bots" | "hexbot_rooms" | "hexbot_jobs" | "hexbot_settings" => "action",
+        "hexbot_bots" | "hexbot_rooms" | "hexbot_jobs" | "hexbot_settings" | "hexbot_wakeups" => {
+            "action"
+        }
+        "hexbot_notify" => "message",
         name if name.starts_with("mcp__") => args
             .as_object()
             .and_then(|args| {

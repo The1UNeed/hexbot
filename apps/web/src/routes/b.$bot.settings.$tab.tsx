@@ -1,5 +1,6 @@
 import { createFileRoute, useNavigate } from '@tanstack/react-router'
 import {
+  BellRing,
   BookOpen,
   Brain,
   Cpu,
@@ -40,6 +41,7 @@ export const Route = createFileRoute('/b/$bot/settings/$tab')({
 const ICONS: Record<BotSettingsTab, SettingsTabItem['icon']> = {
   advanced: SlidersHorizontal,
   approvals: ShieldCheck,
+  checkins: BellRing,
   connectors: Plug,
   memory: Brain,
   model: Cpu,
@@ -53,13 +55,18 @@ const ICONS: Record<BotSettingsTab, SettingsTabItem['icon']> = {
 const GROUPS: { ids: BotSettingsTab[]; label?: string }[] = [
   { ids: ['profile', 'persona', 'model'] },
   { ids: ['memory', 'tools', 'connectors', 'skills'], label: 'Abilities' },
-  { ids: ['approvals', 'sections', 'advanced'], label: 'Manage' }
+  { ids: ['approvals', 'sections', 'checkins', 'advanced'], label: 'Manage' }
 ]
 
-const TABS: SettingsTabGroup<BotSettingsTab>[] = GROUPS.map(group => ({
-  items: group.ids.map(id => ({ icon: ICONS[id], id, label: TAB_LABELS[id] })),
-  label: group.label
-}))
+/** Only the primary bot checks in, so only its settings show Check-ins. */
+function tabsFor(primary: boolean): SettingsTabGroup<BotSettingsTab>[] {
+  return GROUPS.map(group => ({
+    items: group.ids
+      .filter(id => primary || id !== 'checkins')
+      .map(id => ({ icon: ICONS[id], id, label: TAB_LABELS[id] })),
+    label: group.label
+  }))
+}
 
 function BotSettingsDialog() {
   const { bot: botName, tab } = Route.useParams()
@@ -88,7 +95,8 @@ function BotSettingsDialog() {
       : navigate({ to: '/' }))
   }
 
-  const current = isBotSettingsTab(tab) ? tab : 'profile'
+  const current = isBotSettingsTab(tab) && (tab !== 'checkins' || bot?.primary) ? tab : 'profile'
+
   const name = bot?.display_name ?? botName
 
   return (
@@ -116,7 +124,7 @@ function BotSettingsDialog() {
         onSelect={item =>
           void navigate({ params: { bot: botName, tab: item }, to: '/b/$bot/settings/$tab' })
         }
-        tabs={TABS}
+        tabs={tabsFor(bot?.primary === true)}
       >
         {bot ? (
           <BotSettingsPanel bot={bot} connector={connector} tab={current} />

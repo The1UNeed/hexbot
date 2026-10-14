@@ -113,6 +113,30 @@ more freedom and more capability than a hosted product can offer.
 - Its tools and guidance are frozen with each section like any other, so a
   bot made primary gets them in its next new section.
 
+### Check-ins
+
+- The primary bot checks in on its own: a heartbeat every
+  `checkin_every_minutes` (default 60, 15 to 1440) inside `checkin_hours`
+  (default `08:00-22:00`, the daemon's time zone, may run past midnight), and
+  at wake-ups it sets with `hexbot_wakeups` in its own sections or during a
+  check-in. A wake-up runs at its time even outside the hours; one missed by
+  more than six hours is dropped. `checkin_enabled` turns all of it off.
+- A check-in is an unattended job session (`checkin-<id>`) with the bot's
+  connectors: memory writes become proposals, the soul only reads, it cannot
+  ask, and it runs in Auto at most. Its prompt gives the time, why it runs,
+  what it already told the user in the last day, and the wake-ups waiting.
+- Its one way to speak is `hexbot_notify`: one message per check-in, eight a
+  day at most. The message is posted in the bot's Check-ins section
+  (`sections.purpose = 'checkins'`, brought back if archived, made again if
+  deleted) and broadcast as `hexbot.checkins.message`, which the app and
+  browsers show as a notification. Phones get a push through Hex Connect
+  that names the bot and the section, never the message.
+- The message reaches the section's context with the user's next message
+  there: the extension adds it after that message (`before_agent_start`), so
+  the cached prefix and the frozen prompt stay intact.
+- Only one check-in runs at a time; after a failed one the next waits 15
+  minutes. Settings, the bot's Check-ins tab, and `hexbot checkins` manage it.
+
 ### Approvals and tools
 
 - Modes: Auto (default, `smart` in config), Manual, Bypass (`off` in

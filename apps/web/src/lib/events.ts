@@ -16,6 +16,7 @@
  *   session.usage          usage badge
  *   error                  inline error row
  *   hexbot.bots.incident   Stopped card in the section's transcript, notification
+ *   hexbot.checkins.message the primary bot messaged you on its own: notification
  *
  * Session-less `hexbot.*.changed` events refresh the cold stores.
  */
@@ -23,6 +24,7 @@
 import type { GatewayEvent } from '@hermes/shared'
 
 import { useBots } from '../stores/bots'
+import { useCheckins } from '../stores/checkins'
 import { useConnectors } from '../stores/connectors'
 import { useMe } from '../stores/me'
 import { useRooms } from '../stores/rooms'
@@ -36,6 +38,7 @@ import type {
 import { transcriptNotify, useTranscripts } from '../stores/transcripts'
 import { useUi } from '../stores/ui'
 
+import { getBridge } from './bridge'
 import type { HexbotRpcClient } from './rpc'
 import type {
   ClarifyRequestPayload,
@@ -146,6 +149,36 @@ export function routeEvent(event: GatewayEvent, deps: EventRouterDeps = {}): voi
 
     case 'hexbot.memory.user.changed':
       return
+
+    case 'hexbot.checkins.changed':
+      if (useCheckins.getState().loaded) {
+        void useCheckins.getState().refresh()
+      }
+
+      return
+    case 'hexbot.checkins.message': {
+      const bot = typeof payload.bot === 'string' ? payload.bot : ''
+      const body = typeof payload.text === 'string' ? payload.text : ''
+      const sectionId = typeof payload.section_id === 'string' ? payload.section_id : undefined
+
+      if (body && botNotifies(bot)) {
+        const title = useBots.getState().byName[bot]?.display_name ?? bot
+        // The app notifies even with its window closed. A browser tab has no app
+        // to go through, so it shows its own while in the background.
+        transcriptNotify({ body, sectionId, title })
+
+        if (
+          !getBridge() &&
+          document.hidden &&
+          'Notification' in window &&
+          Notification.permission === 'granted'
+        ) {
+          new Notification(title, { body }).onclick = () => window.focus()
+        }
+      }
+
+      return
+    }
 
     case 'hexbot.connectors.changed':
       effects.refreshConnectors()

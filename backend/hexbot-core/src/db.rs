@@ -6,7 +6,7 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior};
 
 use crate::{Error, Result};
 
-pub const SCHEMA_VERSION: i64 = 15;
+pub const SCHEMA_VERSION: i64 = 16;
 /// Version 13 made a daemon one person's: earlier accounts fold into the owner.
 const ONE_PERSON_VERSION: i64 = 13;
 
@@ -78,6 +78,23 @@ CREATE TABLE IF NOT EXISTS memory_proposals(
  id TEXT PRIMARY KEY, bot TEXT NOT NULL, owner_id TEXT NOT NULL, job_id TEXT NOT NULL,
  action TEXT NOT NULL, args_json TEXT NOT NULL DEFAULT '{}', created_at REAL NOT NULL,
  consumed_at REAL, consumed_by TEXT);
+-- Check-ins: the primary bot's own looks at what is going on (checkins.rs).
+CREATE TABLE IF NOT EXISTS checkins(
+ id TEXT PRIMARY KEY, owner_id TEXT NOT NULL, bot TEXT NOT NULL,
+ kind TEXT NOT NULL CHECK(kind IN ('heartbeat','wakeup','manual')),
+ started_at REAL NOT NULL, finished_at REAL, status TEXT NOT NULL,
+ summary TEXT NOT NULL DEFAULT '', message_id TEXT);
+CREATE TABLE IF NOT EXISTS checkin_wakeups(
+ id TEXT PRIMARY KEY, owner_id TEXT NOT NULL, bot TEXT NOT NULL, at REAL NOT NULL,
+ note TEXT NOT NULL, created_at REAL NOT NULL, fired_at REAL, cancelled_at REAL,
+ checkin_id TEXT);
+-- What a check-in told the user. context_at: when it entered the section's context.
+CREATE TABLE IF NOT EXISTS checkin_messages(
+ id TEXT PRIMARY KEY, owner_id TEXT NOT NULL, bot TEXT NOT NULL, section_id TEXT NOT NULL,
+ checkin_id TEXT, text TEXT NOT NULL, created_at REAL NOT NULL, context_at REAL);
+CREATE INDEX IF NOT EXISTS idx_checkins_owner_started ON checkins(owner_id,started_at DESC);
+CREATE INDEX IF NOT EXISTS idx_checkin_wakeups_due ON checkin_wakeups(owner_id,fired_at,cancelled_at,at);
+CREATE INDEX IF NOT EXISTS idx_checkin_messages_section ON checkin_messages(section_id,context_at);
 CREATE INDEX IF NOT EXISTS idx_sections_bot ON sections(bot);
 CREATE INDEX IF NOT EXISTS idx_memory_proposals_bot_pending ON memory_proposals(bot,consumed_at,created_at);
 CREATE INDEX IF NOT EXISTS idx_room_events_room_seq ON room_events(room_id,seq);
@@ -112,6 +129,9 @@ const COLUMNS: &[(&str, &str, &str)] = &[
     ("sections", "peer_bot", "TEXT"),
     ("bot_messages", "source_section", "TEXT"),
     ("bots", "is_primary", "INTEGER NOT NULL DEFAULT 0"),
+    ("sections", "purpose", "TEXT"),
+    ("devices", "push_token", "TEXT"),
+    ("devices", "push_platform", "TEXT"),
 ];
 
 /// Open the explicitly selected database without running schema migrations.

@@ -12,6 +12,7 @@ import {
   selectDaemon
 } from './storage'
 import { pair } from './transport'
+import { registerPush } from './push'
 import { parsePairing, normalizeOrigin } from './links'
 import { emptyChat, historyMessages, reduceChat, replayChat } from './chat'
 import { reduceRoom, restoreRoom, roomChat, roomMessage } from './room-chat'
@@ -356,6 +357,7 @@ export function useMobile() {
         async () => {
           await refreshRef.current()
           await syncChatRef.current()
+          void registerPush(rpc).catch(() => undefined)
         },
         onEvent
       )

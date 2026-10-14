@@ -106,8 +106,8 @@ fn team_shape(connection: &Connection) -> Vec<(String, Vec<Column>)> {
     for (table, columns) in &mut expected {
         let names: &[&str] = match table.as_str() {
             "bots" => &["auto_description", "auto_description_key"],
-            "devices" => &["jkt"],
-            "sections" => &["peer_bot"],
+            "devices" => &["jkt", "push_token", "push_platform"],
+            "sections" => &["peer_bot", "purpose"],
             "bot_messages" => &["source_section"],
             _ => &[],
         };
@@ -144,6 +144,49 @@ fn team_shape(connection: &Connection) -> Vec<(String, Vec<Column>)> {
             ("created_at".into(), "REAL".into(), true, None, 0),
             ("consumed_at".into(), "REAL".into(), false, None, 0),
             text("consumed_by", false),
+        ],
+    ));
+    let real = |name: &str, required: bool| (name.into(), "REAL".into(), required, None, 0);
+    let key = |name: &str| (name.into(), "TEXT".into(), false, None, 1);
+    expected.push((
+        "checkin_messages".into(),
+        vec![
+            key("id"),
+            text("owner_id", true),
+            text("bot", true),
+            text("section_id", true),
+            text("checkin_id", false),
+            text("text", true),
+            real("created_at", true),
+            real("context_at", false),
+        ],
+    ));
+    expected.push((
+        "checkin_wakeups".into(),
+        vec![
+            key("id"),
+            text("owner_id", true),
+            text("bot", true),
+            real("at", true),
+            text("note", true),
+            real("created_at", true),
+            real("fired_at", false),
+            real("cancelled_at", false),
+            text("checkin_id", false),
+        ],
+    ));
+    expected.push((
+        "checkins".into(),
+        vec![
+            key("id"),
+            text("owner_id", true),
+            text("bot", true),
+            text("kind", true),
+            real("started_at", true),
+            real("finished_at", false),
+            text("status", true),
+            ("summary".into(), "TEXT".into(), true, Some("''".into()), 0),
+            text("message_id", false),
         ],
     ));
     expected.sort_by(|a, b| a.0.cmp(&b.0));
@@ -814,14 +857,14 @@ fn version_13_upgrades_and_preserves_proposals_on_repeat() {
     conn.execute("UPDATE schema_version SET version=13", [])
         .unwrap();
     db::migrate(home.path()).unwrap();
-    assert_eq!(db::SCHEMA_VERSION, 15);
+    assert_eq!(db::SCHEMA_VERSION, 16);
     conn.execute("INSERT INTO memory_proposals(id,bot,owner_id,job_id,action,created_at) VALUES ('p','scout','local','job','add',1)", []).unwrap();
     db::migrate(home.path()).unwrap();
     assert_eq!(
         conn.query_row("SELECT version FROM schema_version", [], |r| r
             .get::<_, i64>(0))
             .unwrap(),
-        15
+        16
     );
     assert_eq!(
         conn.query_row("SELECT id FROM memory_proposals", [], |r| r
@@ -829,7 +872,7 @@ fn version_13_upgrades_and_preserves_proposals_on_repeat() {
             .unwrap(),
         "p"
     );
-    conn.execute("UPDATE schema_version SET version=16", [])
+    conn.execute("UPDATE schema_version SET version=17", [])
         .unwrap();
     assert!(db::migrate(home.path()).is_err());
 }
