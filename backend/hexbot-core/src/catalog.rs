@@ -264,7 +264,7 @@ pub fn one_chat_per_bot(home: &Path) -> Result<()> {
     // After a crash Pi's own log can hold the newest messages; recover them
     // before choosing which conversation stays.
     runtime_store::reconcile_all(home)?;
-    let mut logs = rows(
+    let titled = rows(
         &conn,
         &format!("SELECT id FROM sections WHERE {DREAM_LOG}"),
         &[],
@@ -272,6 +272,7 @@ pub fn one_chat_per_bot(home: &Path) -> Result<()> {
     .into_iter()
     .filter_map(|row| row["id"].as_str().map(str::to_owned))
     .collect::<std::collections::BTreeSet<_>>();
+    let mut logs = std::collections::BTreeSet::new();
     // Every report a dream posted, by bot.
     let mut reports: std::collections::BTreeMap<String, std::collections::BTreeSet<String>> =
         Default::default();
@@ -288,9 +289,10 @@ pub fn one_chat_per_bot(home: &Path) -> Result<()> {
         }
     }
     let runtime = runtime_store::open(home)?;
-    // A log the user renamed is still the log: it opens with a report that
-    // an earlier build posted, unmarked. A chat this build made for a report
-    // opens with a marked one.
+    // The log opened with a report: one titled like it but begun by the user
+    // is a chat. A log the user renamed is still the log: it opens with a
+    // report an earlier build posted, unmarked. A chat this build made for a
+    // report opens with a marked one.
     for row in rows(
         &conn,
         "SELECT id,bot FROM sections WHERE peer_bot IS NULL",
@@ -309,13 +311,14 @@ pub fn one_chat_per_bot(home: &Path) -> Result<()> {
             // Never opened since the native daemon: its messages are in the old store.
             None => first_legacy(home, &row)?,
         };
-        if first["role"] == "assistant"
-            && first["dream"] != true
-            && first["text"].as_str().is_some_and(|text| {
-                reports
-                    .get(row["bot"].as_str().unwrap_or(""))
-                    .is_some_and(|known| known.contains(text))
-            })
+        if first["role"] == "assistant" && titled.contains(id)
+            || first["role"] == "assistant"
+                && first["dream"] != true
+                && first["text"].as_str().is_some_and(|text| {
+                    reports
+                        .get(row["bot"].as_str().unwrap_or(""))
+                        .is_some_and(|known| known.contains(text))
+                })
         {
             logs.insert(id.to_owned());
         }
@@ -1614,7 +1617,8 @@ mod parity_tests {
                  INSERT INTO bot_incidents(id,bot,section_id,kind,created_at) VALUES('failed','owl','put_away','turn_failed',1);
                  INSERT INTO dreams(id,bot,started_at,status,summary) VALUES('d1','fox',1,'complete','In fox_dreams');
                  INSERT INTO sections(id,bot,owner_id,title,title_by) VALUES('dog_chat','dog','alice','Dreams','bot');
-                 INSERT INTO bots(name,owner_id) VALUES('dog','alice'),('elk','alice'),('fly','alice'),('gnu','alice'),('hen','alice'),('ivy','alice'),('jay','alice');
+                 INSERT INTO sections(id,bot,owner_id,title,updated_at) VALUES('kit_named','kit','alice','Dreams',9),('kit_old','kit','alice','Old',2);
+                 INSERT INTO bots(name,owner_id) VALUES('dog','alice'),('elk','alice'),('fly','alice'),('gnu','alice'),('hen','alice'),('ivy','alice'),('jay','alice'),('kit','alice');
                  INSERT INTO sections(id,bot,owner_id,title,title_dirty,updated_at) VALUES('jay_log','jay','alice','Nightly',1,9),('jay_chat','jay','alice','Plans',0,2);
                  INSERT INTO sections(id,bot,owner_id,title,updated_at) VALUES('ivy_chat','ivy','alice','General',9),('ivy_old','ivy','alice','Old',2);
                  INSERT INTO sections(id,bot,owner_id,title,title_dirty,updated_at) VALUES('gnu_log','gnu','alice','Nightly',1,9),('gnu_chat','gnu','alice','Plans',0,2),('hen_log','hen','alice','Nightly',1,9);
@@ -1719,6 +1723,17 @@ mod parity_tests {
             "ivy_old",
             json!({"role":"user","text":"Old","timestamp":1}),
         );
+        // Kit's newest chat was created with the title Dreams, by the user.
+        said(
+            home.path(),
+            "kit_named",
+            json!({"role":"user","text":"About my dreams","timestamp":8}),
+        );
+        said(
+            home.path(),
+            "kit_old",
+            json!({"role":"user","text":"Old","timestamp":1}),
+        );
         said(
             home.path(),
             "jay_chat",
@@ -1803,6 +1818,8 @@ mod parity_tests {
         assert_eq!(ids("ivy"), ["ivy_chat"]);
         // A renamed log never opened since the native daemon goes too.
         assert_eq!(ids("jay"), ["jay_chat"]);
+        assert_eq!(ids("kit"), ["kit_named"]);
+        assert!(runtime_store::history(home.path(), "kit_named").unwrap()[0]["dream"].is_null());
         assert_eq!(
             runtime_store::history(home.path(), "hen_log").unwrap()[0]["dream"],
             true
