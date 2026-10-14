@@ -169,8 +169,8 @@ more freedom and more capability than a hosted product can offer.
   request starts a new run. A continuation within the active run discards that
   refresh until another compaction. When the bot's tools or connected servers
   change, or an update changes Hexbot's own tools, the chat is rebuilt with
-  them at its next message; rooms, jobs and delegates keep what they started
-  with. Skill reads use current bodies and grants.
+  them at its next message; rooms, threads between bots, jobs and delegates
+  keep what they started with. Skill reads use current bodies and grants.
 - Sidebar: one list of bots and rooms ordered by recent activity. A bot is one
   row; opening it opens the chat.
 

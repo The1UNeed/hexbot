@@ -133,8 +133,9 @@ The native daemon provides `message_bot {to, text, wait: bool}` for bots:
   request starts a new run. A continuation within the active run defers refresh
   until another compaction. Older sections, or sections whose fixed guidance
   or tool layout no longer matches after an update, keep their prompt, except
-  a bot's chat and its threads, which are rebuilt with current tools at their
-  next message (see `docs/api.md`, connected tools).
+  a bot's chat with its owner, which is rebuilt with current tools at its next
+  message (see `docs/api.md`, connected tools). Threads keep what they started
+  with.
 - Delivery is in-process: resume or create the target bot's thread with the
   sender, a section with `peer_bot` set to the sender (one per pair, titled
   `From <sender>`), submit the text there as a hidden user-role message

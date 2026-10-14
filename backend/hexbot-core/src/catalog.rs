@@ -243,7 +243,8 @@ pub fn chat_section(home: &Path, caller: &str, name: &str) -> Result<Value> {
 /// is live. Dream reports in a kept Dreams log are marked as reports.
 pub fn one_chat_per_bot(home: &Path) -> Result<()> {
     // The log earlier builds posted dream reports to, never renamed.
-    const DREAM_LOG: &str = "peer_bot IS NULL AND title='Dreams' AND COALESCE(title_dirty,0)=0";
+    const DREAM_LOG: &str =
+        "peer_bot IS NULL AND title='Dreams' AND title_by IS NULL AND COALESCE(title_dirty,0)=0";
     let conn = db::open(home)?;
     let pending: bool = conn.query_row(
         &format!("SELECT EXISTS(SELECT 1 FROM sections WHERE peer_bot IS NULL GROUP BY owner_id,bot HAVING COUNT(*)>1) OR EXISTS(SELECT 1 FROM sections WHERE {DREAM_LOG})"),
@@ -318,10 +319,19 @@ pub fn one_chat_per_bot(home: &Path) -> Result<()> {
             // The chat is made on first use.
             delete_section(home, &owner, id, true)?;
         } else if logs.contains(id) {
-            runtime_store::open(home)?.execute(
-                "UPDATE native_messages SET message_json=json_set(message_json,'$.dream',json('true')) WHERE session_id=?",
-                [id],
+            // The reports, not what the user said there or the bot's replies.
+            let summaries = rows(
+                &conn,
+                "SELECT DISTINCT summary FROM dreams WHERE bot=? AND summary<>''",
+                &[&bot],
             )?;
+            let runtime = runtime_store::open(home)?;
+            for summary in &summaries {
+                runtime.execute(
+                    "UPDATE native_messages SET message_json=json_set(message_json,'$.dream',json('true')) WHERE session_id=? AND json_extract(message_json,'$.role')='assistant' AND json_extract(message_json,'$.text')=?",
+                    params![id, summary["summary"].as_str()],
+                )?;
+            }
             conn.execute(
                 "UPDATE sections SET title='General',title_by=NULL WHERE id=?",
                 [id],
@@ -1506,6 +1516,9 @@ mod parity_tests {
                  INSERT INTO bots(name,owner_id,last_activity_at) VALUES('owl','alice',7),('fox','alice',NULL),('ant','alice',NULL),('bee','alice',NULL),('cat','alice',NULL);
                  INSERT INTO sections(id,bot,owner_id,title,title_dirty) VALUES('bee_dreams','bee','alice','Dreams',0),('cat_chat','cat','alice','Dreams',1);
                  INSERT INTO bot_incidents(id,bot,section_id,kind,created_at) VALUES('failed','owl','put_away','turn_failed',1);
+                 INSERT INTO dreams(id,bot,started_at,status,summary) VALUES('d1','fox',1,'complete','In fox_dreams');
+                 INSERT INTO sections(id,bot,owner_id,title,title_by) VALUES('dog_chat','dog','alice','Dreams','bot');
+                 INSERT INTO bots(name,owner_id) VALUES('dog','alice');
                  INSERT INTO sections(id,bot,owner_id,title,updated_at,archived_at,peer_bot) VALUES
                   ('old','owl','alice','Garden',1,NULL,NULL),
                   ('put_away','owl','alice','Trip',5,5,NULL),
@@ -1524,6 +1537,22 @@ mod parity_tests {
             );
         }
         said(home.path(), "thread", json!({"role":"user","text":"Help"}));
+        // The user answered a report in the log; that stays conversation.
+        said(
+            home.path(),
+            "fox_dreams",
+            json!({"role":"user","text":"Why?"}),
+        );
+        said(
+            home.path(),
+            "fox_dreams",
+            json!({"role":"assistant","text":"Because"}),
+        );
+        said(
+            home.path(),
+            "dog_chat",
+            json!({"role":"user","text":"Dreams"}),
+        );
         said(
             home.path(),
             "cat_chat",
@@ -1570,9 +1599,16 @@ mod parity_tests {
         assert_eq!(ids("fox"), ["fox_dreams"]);
         let fox = chat_section(home.path(), "alice", "fox").unwrap();
         assert_eq!(fox["title"], "General");
+        let fox = runtime_store::history(home.path(), "fox_dreams").unwrap();
         assert_eq!(
-            runtime_store::history(home.path(), "fox_dreams").unwrap()[0]["dream"],
-            true
+            fox.iter().map(|m| m["dream"] == true).collect::<Vec<_>>(),
+            [true, false, false]
+        );
+        // A chat the bot titled Dreams is a chat.
+        assert_eq!(ids("dog"), ["dog_chat"]);
+        assert_eq!(
+            chat_section(home.path(), "alice", "dog").unwrap()["title"],
+            "Dreams"
         );
         // A dream log with nothing to mark goes; the chat is made on first use.
         assert!(ids("bee").is_empty());
