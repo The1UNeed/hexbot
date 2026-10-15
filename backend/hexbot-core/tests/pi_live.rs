@@ -100,36 +100,109 @@ async fn running_pi_section_reloads_rotated_and_disconnected_credentials() {
         .await
         .unwrap();
     assert!(ready.success, "{ready:?}");
+    let mut message_count = ready.data.as_ref().unwrap()["messageCount"].clone();
     for key in [Some("original"), Some("rotated"), None, Some("reconnected")] {
         match key {
             Some(key) => providers::set_key(home.path(), "openai", key).unwrap(),
             None => providers::clear_key(home.path(), "openai").unwrap(),
         };
+        let message = format!("Reply ok for {}", key.unwrap_or("disconnected"));
         let reply = process
             .request(
-                json!({"type":"prompt","message":"Reply ok"}),
+                json!({"type":"prompt","message":message}),
                 Duration::from_secs(30),
             )
             .await
             .unwrap();
-        assert!(reply.success, "{reply:?}");
-        tokio::time::timeout(Duration::from_secs(30), async {
-            loop {
-                if events.recv().await.unwrap()["type"] == "agent_settled" {
-                    break;
+        if reply.success {
+            assert_eq!(reply.data.as_ref().unwrap()["disposition"], "started");
+            let assistant = tokio::time::timeout(Duration::from_secs(30), async {
+                let mut started = false;
+                let mut user_seen = false;
+                let mut assistant = None;
+                loop {
+                    let event = events.recv().await.unwrap();
+                    match event["type"].as_str() {
+                        Some("agent_start") => {
+                            assert!(!started, "duplicate agent_start: {event}");
+                            started = true;
+                        }
+                        Some("message_end") if event["message"]["role"] == "user" => {
+                            assert!(started && !user_seen, "unexpected user message: {event}");
+                            assert_eq!(
+                                event["message"]["content"],
+                                json!([{"type":"text","text":message}])
+                            );
+                            user_seen = true;
+                        }
+                        Some("message_end") if event["message"]["role"] == "assistant" => {
+                            assert!(user_seen, "assistant before current prompt: {event}");
+                            assert!(assistant.replace(event["message"].clone()).is_none());
+                        }
+                        Some("agent_settled") => {
+                            assert!(
+                                started && user_seen,
+                                "settled before current prompt: {event}"
+                            );
+                            break assistant.expect("assistant terminal message before settlement");
+                        }
+                        _ => {}
+                    }
                 }
+            })
+            .await
+            .unwrap();
+            assert_eq!(assistant["provider"], "openai");
+            assert_eq!(assistant["model"], "fixture");
+            if key.is_some() {
+                assert_eq!(assistant["stopReason"], "stop", "{assistant}");
+                assert_eq!(assistant["content"], json!([{"type":"text","text":"ok"}]));
+            } else {
+                // Pi's cached auth snapshot can accept preflight before request-time
+                // credential loading notices the disconnect. No HTTP request may follow.
+                assert_eq!(assistant["stopReason"], "error", "{assistant}");
+                assert_eq!(
+                    assistant["errorMessage"],
+                    "Provider is not configured: openai"
+                );
             }
-        })
-        .await
-        .unwrap();
-        if let Some(key) = key {
-            assert_eq!(received.try_recv().unwrap(), format!("Bearer {key}"));
         } else {
-            assert!(
-                received.try_recv().is_err(),
-                "disconnected section must not send a provider request"
+            // An up-to-date auth snapshot refuses preflight without starting a turn,
+            // so there is no agent_settled event to wait for in this case.
+            assert!(key.is_none(), "{reply:?}");
+            assert_eq!(
+                reply.error.as_deref().unwrap().lines().next(),
+                Some("No API key found for openai."),
+                "{reply:?}"
             );
         }
+        // A correlated RPC after the terminal response/events orders the next phase
+        // after this one, including Pi's agent_settled callbacks.
+        let state = process
+            .request(json!({"type":"get_state"}), Duration::from_secs(30))
+            .await
+            .unwrap();
+        assert!(state.success, "{state:?}");
+        let state = state.data.unwrap();
+        assert_eq!(
+            state["sessionId"],
+            ready.data.as_ref().unwrap()["sessionId"]
+        );
+        assert_eq!(state["isStreaming"], false);
+        assert_eq!(state["isCompacting"], false);
+        assert_eq!(state["pendingMessageCount"], 0);
+        if !reply.success {
+            assert_eq!(state["messageCount"], message_count);
+        }
+        message_count = state["messageCount"].clone();
+        if let Some(key) = key {
+            assert_eq!(received.try_recv().unwrap(), format!("Bearer {key}"));
+        }
+        assert_eq!(
+            received.try_recv(),
+            Err(tokio::sync::mpsc::error::TryRecvError::Empty),
+            "unexpected provider request after {message}"
+        );
     }
     process.shutdown().await.unwrap();
     server.abort();
