@@ -288,7 +288,7 @@ struct PendingChat<'a> {
 impl Drop for PendingChat<'_> {
     fn drop(&mut self) {
         if let Some(id) = &self.id
-            && let Err(error) = runtime_store::delete(self.home, id)
+            && let Err(error) = runtime_store::discard_dream_chat(self.home, id)
         {
             eprintln!("Could not remove uncommitted chat {id}: {error}");
         }
@@ -299,6 +299,9 @@ pub fn chat_section(home: &Path, caller: &str, name: &str) -> Result<Value> {
     bot_owner(home, caller, name)?;
     // Before the transaction: finding the bot's dream logs may write.
     let logs = dream_logs(home, name)?;
+    // Drop the catalog writer before cleanup takes the product boundary.
+    // This guard owns even a partially built fork that returns an error.
+    let mut forked = PendingChat { home, id: None };
     let mut conn = db::open(home)?;
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let candidates = rows(
@@ -343,7 +346,6 @@ pub fn chat_section(home: &Path, caller: &str, name: &str) -> Result<Value> {
         .next()
         .filter(|candidate| candidate.count >= 0)
         .and_then(|candidate| candidate.row["id"].as_str().map(str::to_owned));
-    let mut forked = PendingChat { home, id: None };
     let id = if let Some(mut id) = existing {
         if logs.contains(&id) {
             let reports = rows(
@@ -356,8 +358,8 @@ pub fn chat_section(home: &Path, caller: &str, name: &str) -> Result<Value> {
             .collect();
             let version: i64 = runtime_store::open(home)?.query_row("SELECT COALESCE((SELECT version FROM native_history_versions WHERE session_id=?),0)", [&id], |r| r.get(0))?;
             let next = common::id();
+            forked.id = Some(next.clone());
             if runtime_store::fork_dream_chat(home, name, caller, &id, &next, &reports)? {
-                forked.id = Some(next.clone());
                 tx.execute("INSERT INTO sections(id,bot,title,owner_id,created_at,updated_at) SELECT ?,bot,CASE WHEN title='Dreams' THEN 'General' ELSE title END,owner_id,created_at,updated_at FROM sections WHERE id=?", params![next, id])?;
                 let mut adopted = setting(&tx, "dream_chat_adoptions")?
                     .as_object()
@@ -369,6 +371,8 @@ pub fn chat_section(home: &Path, caller: &str, name: &str) -> Result<Value> {
                     [Value::Object(adopted).to_string()],
                 )?;
                 id = next;
+            } else {
+                forked.id = None;
             }
         }
         tx.execute(

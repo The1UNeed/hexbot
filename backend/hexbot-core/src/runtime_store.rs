@@ -1391,13 +1391,26 @@ pub fn import_hermes(home: &Path, bot: &str, stored: &str, cwd: &Path) -> Result
     Ok(())
 }
 
+/// Discard only a caller-owned Dream fork whose catalog transaction rolled back.
+/// Ordinary purge keeps billing history; this unpublished copy has zero-charge
+/// usage rows that must go too. The caller must release its catalog writer first.
+pub(crate) fn discard_dream_chat(home: &Path, target: &str) -> Result<()> {
+    with_tombstone(home, || {
+        open(home)?.execute("DELETE FROM native_usage WHERE session_id=?", [target])?;
+        purge_locked(home, target, true)
+    })
+}
+
 /// Starts an independent owner conversation from an already-imported Dream log.
 /// The original JSONL, prompt, journal and cached prefix remain untouched. Old
 /// compaction/branch summaries may contain reports, so replay original messages
 /// on the selected branch rather than transferring those generated summaries.
 /// Display history still includes reports, marked as output; usage stays on the
 /// original conversation and is never billed again for this copy.
-pub fn fork_dream_chat(
+/// The caller owns the unpublished target, including cleanup on any error.
+/// Release its catalog transaction before deleting that target: deletion takes
+/// the product boundary, which must always precede database writers.
+pub(crate) fn fork_dream_chat(
     home: &Path,
     bot: &str,
     owner: &str,
@@ -1503,23 +1516,16 @@ pub fn fork_dream_chat(
         lines.push(copied.to_string());
         parent = json!(next);
     }
-    let created = (|| {
-        mark_fresh(home, target)?;
-        for mut shown in original.into_iter().chain(missing_reports) {
-            if dream_report_text(&shown).is_some_and(|text| reports.contains(&text)) {
-                shown["dream"] = json!(true);
-            }
-            append(home, target, shown)?;
+    mark_fresh(home, target)?;
+    for mut shown in original.into_iter().chain(missing_reports) {
+        if dream_report_text(&shown).is_some_and(|text| reports.contains(&text)) {
+            shown["dream"] = json!(true);
         }
-        let path = session_dir(home, target)?.join("conversation.jsonl");
-        common::atomic_write(&path, format!("{}\n", lines.join("\n")).as_bytes())?;
-        reconcile(home, bot, target, owner)?;
-        Ok::<_, crate::Error>(())
-    })();
-    if let Err(error) = created {
-        let _ = delete(home, target);
-        return Err(error);
+        append(home, target, shown)?;
     }
+    let path = session_dir(home, target)?.join("conversation.jsonl");
+    common::atomic_write(&path, format!("{}\n", lines.join("\n")).as_bytes())?;
+    reconcile(home, bot, target, owner)?;
     Ok(true)
 }
 
