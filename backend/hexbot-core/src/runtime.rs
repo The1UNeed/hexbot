@@ -53,7 +53,8 @@ struct State {
     stop_epoch: u64,
     inputs: VecDeque<PendingInput>,
     submitting: usize,
-    input_waiters: usize,
+    /// Input that provisionally or actually owns the current Pi operation.
+    input_run: Option<String>,
     last_activity: f64,
     output: String,
     error: Option<String>,
@@ -114,14 +115,14 @@ struct InputAdmission(Arc<Live>);
 impl InputAdmission {
     fn start(s: &Arc<Live>) -> Self {
         let _gate = s.event_gate.lock().unwrap();
-        s.state.lock().unwrap().input_waiters += 1;
+        s.input_waiters.fetch_add(1, Ordering::AcqRel);
         Self(s.clone())
     }
 }
 impl Drop for InputAdmission {
     fn drop(&mut self) {
         let _gate = self.0.event_gate.lock().unwrap();
-        self.0.state.lock().unwrap().input_waiters -= 1;
+        self.0.input_waiters.fetch_sub(1, Ordering::AcqRel);
         self.0.run_ended.send_modify(|v| *v += 1);
     }
 }
@@ -211,16 +212,21 @@ struct Live {
     stored: String,
     id: String,
     process: PiProcess,
+    /// Only a configuration retirement may hand waiting input to its replacement.
+    replaced: AtomicBool,
     state: Mutex<State>,
     settled: watch::Sender<u64>,
     /// Run, command and Stop completions that can admit queued input, or close.
+    /// Shared across configuration restarts so old waiters see the new close.
     run_ended: watch::Sender<u64>,
     tools: Vec<Value>,
     requests: Mutex<tokio::task::JoinSet<()>>,
     event_gate: Mutex<()>,
     attachment_gate: AsyncMutex<()>,
     recovery_gate: AsyncMutex<()>,
-    input_gate: AsyncMutex<()>,
+    /// FIFO admission and reservations survive a configuration restart.
+    input_gate: Arc<AsyncMutex<()>>,
+    input_waiters: Arc<AtomicUsize>,
     permit: Mutex<Option<tokio::sync::OwnedSemaphorePermit>>,
     /// Provider, model and thinking level the Pi process runs with.
     model: Mutex<Value>,
@@ -258,6 +264,8 @@ pub struct Runtime {
     pi_executable: PathBuf,
     sessions: Mutex<HashMap<String, Arc<Live>>>,
     opening: Mutex<HashMap<String, Weak<AsyncMutex<()>>>>,
+    /// Waiters keep the previous FIFO even if starting its replacement fails.
+    input_queues: Mutex<HashMap<String, Weak<Live>>>,
     capacity: Arc<tokio::sync::Semaphore>,
     weak: Weak<Self>,
     stopping: AtomicBool,
@@ -283,6 +291,7 @@ impl Runtime {
             pi_executable,
             sessions: Mutex::new(HashMap::new()),
             opening: Mutex::new(HashMap::new()),
+            input_queues: Mutex::new(HashMap::new()),
             capacity: Arc::new(tokio::sync::Semaphore::new(16)),
             weak: weak.clone(),
             stopping: AtomicBool::new(false),
@@ -373,7 +382,7 @@ impl Runtime {
             let Ok(guard) = lock.try_lock_owned() else {
                 continue;
             };
-            if self.retire_quiet(&s, before, false) {
+            if self.retire_quiet(&s, before, false, false) {
                 expired.push((s.clone(), guard));
                 // Under capacity pressure retire only the least recently used bot.
                 if before == f64::INFINITY {
@@ -392,7 +401,13 @@ impl Runtime {
     /// caller then hands them to the process that replaces it. Input still on
     /// its way in always keeps it open. The caller holds its open lock and
     /// then stops it with `stop_retired`.
-    fn retire_quiet(&self, s: &Arc<Live>, before: f64, uploads_move: bool) -> bool {
+    fn retire_quiet(
+        &self,
+        s: &Arc<Live>,
+        before: f64,
+        uploads_move: bool,
+        admitting: bool,
+    ) -> bool {
         let has_children = self
             .children
             .lock()
@@ -411,7 +426,7 @@ impl Runtime {
             || state.stops != 0
             || state.recovering
             || state.submitting != 0
-            || state.input_waiters != 0
+            || (!admitting && s.input_waiters.load(Ordering::Acquire) != 0)
             || !state.inputs.is_empty()
             || state.closed
             || !state.pending.is_empty()
@@ -423,6 +438,7 @@ impl Runtime {
         {
             return false;
         }
+        s.replaced.store(uploads_move, Ordering::Release);
         state.closed = true;
         s.run_ended.send_modify(|v| *v += 1);
         sessions.remove(&s.stored);
@@ -668,7 +684,7 @@ impl Runtime {
         let lock = self.open_lock(stored);
         let _guard = lock.lock().await;
         let s = self
-            .open_session_locked(owner, bot, stored, None, None, true)
+            .open_session_locked(owner, bot, stored, None, None, true, false)
             .await?;
         // Retiring takes the open lock too, so the section is still open here.
         let landing = Landing::new(&s)?;
@@ -707,9 +723,10 @@ impl Runtime {
             };
         let lock = self.open_lock(stored);
         let _guard = lock.lock().await;
-        self.open_session_locked(owner, bot, stored, restricted, overrides, input)
+        self.open_session_locked(owner, bot, stored, restricted, overrides, input, false)
             .await
     }
+    #[allow(clippy::too_many_arguments)]
     async fn open_session_locked(
         &self,
         owner: &str,
@@ -718,6 +735,7 @@ impl Runtime {
         restricted: Option<&[&str]>,
         overrides: Option<&Value>,
         input: bool,
+        admitting: bool,
     ) -> Result<Arc<Live>> {
         if self.stopping.load(Ordering::Acquire) {
             return Err(Error::new(5201, "daemon is shutting down"));
@@ -725,6 +743,25 @@ impl Runtime {
         common::bot_owner(&self.home, owner, bot)?;
         store::session_dir(&self.home, stored)?;
         let running = self.sessions.lock().unwrap().get(stored).cloned();
+        let previous = running.clone().or_else(|| {
+            self.input_queues
+                .lock()
+                .unwrap()
+                .get(stored)
+                .and_then(Weak::upgrade)
+        });
+        let input_gate = previous
+            .as_ref()
+            .map(|s| s.input_gate.clone())
+            .unwrap_or_default();
+        let input_waiters = previous
+            .as_ref()
+            .map(|s| s.input_waiters.clone())
+            .unwrap_or_default();
+        let run_ended = previous
+            .as_ref()
+            .map(|s| s.run_ended.clone())
+            .unwrap_or_else(|| watch::channel(0).0);
         // Rebuilding the tool list reads every config, so it is done once.
         let mut stale = None;
         let mut uploads = Moving {
@@ -742,7 +779,7 @@ impl Runtime {
             if !(input
                 && (self.model_changed(&s)?
                     || *stale.insert(self.tools_stale(owner, bot, stored)?))
-                && self.retire_quiet(&s, f64::INFINITY, true))
+                && self.retire_quiet(&s, f64::INFINITY, true, admitting))
             {
                 s.state.lock().unwrap().last_activity = common::now();
                 return Ok(s);
@@ -1028,6 +1065,7 @@ impl Runtime {
             stored: stored.into(),
             id: live_id,
             process,
+            replaced: AtomicBool::new(false),
             state: Mutex::new(State {
                 busy: false,
                 compacting: false,
@@ -1038,7 +1076,7 @@ impl Runtime {
                 stop_epoch: 0,
                 inputs: VecDeque::new(),
                 submitting: 0,
-                input_waiters: 0,
+                input_run: None,
                 last_activity: common::now(),
                 output: String::new(),
                 error: None,
@@ -1058,10 +1096,11 @@ impl Runtime {
             event_gate: Mutex::new(()),
             attachment_gate: AsyncMutex::new(()),
             recovery_gate: AsyncMutex::new(()),
-            input_gate: AsyncMutex::new(()),
+            input_gate,
+            input_waiters,
             permit: Mutex::new(Some(permit)),
             settled,
-            run_ended: watch::channel(0).0,
+            run_ended,
             tools: options["tools"].as_array().cloned().unwrap_or_default(),
             model: Mutex::new(model_choice(&options)),
             compaction,
@@ -1078,6 +1117,9 @@ impl Runtime {
                 return Err(Error::new(5201, "daemon is shutting down"));
             }
             sessions.insert(stored.into(), s.clone());
+            let mut queues = self.input_queues.lock().unwrap();
+            queues.retain(|_, session| session.strong_count() > 0);
+            queues.insert(stored.into(), Arc::downgrade(&s));
         }
         let weak = self.weak.clone();
         let task_session = s.clone();
@@ -1481,32 +1523,58 @@ impl Runtime {
             return Err(Error::new(5201, "daemon is shutting down"));
         }
         common::bot_owner(&self.home, &s.owner, &s.bot)?;
-        self.register_worker_bridge(s);
-        if text.trim() == "/compact" || text.trim().starts_with("/compact ") {
+        let compact = text.trim() == "/compact" || text.trim().starts_with("/compact ");
+        if !compact {
+            if text.trim().is_empty() {
+                return Err(Error::new(4200, "missing parameter: text"));
+            }
+            if text.len() > 1024 * 1024 {
+                return Err(Error::new(4202, "prompt exceeds 1 MiB"));
+            }
+        }
+        let mut s = s.clone();
+        let _reservation = queued.then(|| InputAdmission::start(&s));
+        let _input = if queued {
+            self.input_slot(&s).await?
+        } else {
+            s.input_gate
+                .clone()
+                .try_lock_owned()
+                .map_err(|_| Error::new(4002, "session is already working"))?
+        };
+        if compact {
             let mut ended = s.run_ended.subscribe();
             loop {
+                let (current, _open) = self.input_session(&s, false).await?;
+                s = current;
                 {
                     let _gate = s.event_gate.lock().unwrap();
                     let mut state = s.state.lock().unwrap();
                     if state.closed {
                         return Err(Error::new(4001, "session not found"));
                     }
-                    if state.busy || state.stops != 0 || state.input_waiters != 0 {
+                    if state.busy
+                        || state.stops != 0
+                        || s.input_waiters.load(Ordering::Acquire) != usize::from(queued)
+                    {
                         return Err(Error::new(4002, "session is already working"));
                     }
                     if !state.recovering {
                         state.busy = true;
                         state.compacting = true;
+                        state.input_run = None;
+                        state.interrupted = false;
                         state.last_activity = common::now();
                         break;
                     }
                 }
+                drop(_open);
                 ended
                     .changed()
                     .await
                     .map_err(|_| Error::new(5201, "session closed"))?;
             }
-            self.emit(s, "message.start", json!({}));
+            self.emit(&s, "message.start", json!({}));
             let response = s
                 .process
                 .request(json!({"type":"compact","customInstructions":text.trim().strip_prefix("/compact").unwrap_or("").trim()}), Duration::from_secs(300))
@@ -1544,53 +1612,45 @@ impl Runtime {
                 state.end_turn()
             };
             if reread {
-                self.reload(s);
+                self.reload(&s);
             }
             s.run_ended.send_modify(|v| *v += 1);
             match result {
                 Ok(()) => {
                     self.emit(
-                        s,
+                        &s,
                         "message.complete",
                         json!({"text":"Older messages summarised.","status":"complete"}),
                     );
                 }
                 Err(error) => {
                     self.emit(
-                        s,
+                        &s,
                         "message.complete",
                         json!({"text":"","status":"error","error":error.message}),
                     );
                     return Err(error);
                 }
             }
-            self.emit(s, "status.update", json!({"kind":"idle","text":""}));
+            self.emit(&s, "status.update", json!({"kind":"idle","text":""}));
             s.settled.send_modify(|v| *v += 1);
             return Ok(json!({"status":"completed"}));
         }
-        if text.trim().is_empty() {
-            return Err(Error::new(4200, "missing parameter: text"));
-        }
-        if text.len() > 1024 * 1024 {
-            return Err(Error::new(4202, "prompt exceeds 1 MiB"));
-        }
-        let _reservation = queued.then(|| InputAdmission::start(s));
-        let _input = if queued {
-            Some(Self::input_slot(s).await?)
-        } else {
-            None
-        };
         let mut command = json!({"type":"prompt","message":text});
         let mut chain = chain;
-        let mut run_ended = s.run_ended.subscribe();
         let (sent, dropped, intent, reply, fresh) = loop {
+            let (current, _open) = self.input_session(&s, true).await?;
+            s = current;
+            let mut run_ended = s.run_ended.subscribe();
             let staged = {
                 let _gate = s.event_gate.lock().unwrap();
                 let mut state = s.state.lock().unwrap();
                 if state.closed {
                     return Err(Error::new(4001, "session not found"));
                 }
-                if (state.busy || state.stops != 0 || state.input_waiters != 0) && !queued {
+                if (state.busy || state.stops != 0 || s.input_waiters.load(Ordering::Acquire) != 0)
+                    && !queued
+                {
                     return Err(Error::new(4002, "session is already working"));
                 }
                 // Idle Stop may return before its recovery worker runs. Wait
@@ -1613,6 +1673,14 @@ impl Runtime {
                             4204,
                             format!("attachment not found: {missing}; attach it again"),
                         ));
+                    }
+                    // Settlement may have arrived since input_session observed a
+                    // busy process. Recheck at the actual fresh-run boundary.
+                    if !state.busy
+                        && (self.model_changed(&s)?
+                            || self.tools_stale(&s.owner, &s.bot, &s.stored)?)
+                    {
+                        continue;
                     }
                     let input_chain = chain.clone();
                     let fresh = !state.busy;
@@ -1677,6 +1745,9 @@ impl Runtime {
                             };
                             let reply = s.process.try_input(&command, intent).map_err(pi_error)?;
                             state.inputs.push_back(input);
+                            if fresh {
+                                state.input_run = Some(intent.clone());
+                            }
                             state.submitting += 1;
                             Ok(reply)
                         });
@@ -1688,6 +1759,7 @@ impl Runtime {
             }
             // Pi retains follow-ups on abort but does not deliver them. Wait
             // for Stop and the stopped operation before submitting another one.
+            drop(_open);
             run_ended
                 .changed()
                 .await
@@ -2452,6 +2524,9 @@ impl Runtime {
                         ));
                     }
                 };
+                // Actual admission owns its own boundary after every wait; this
+                // initial landing must not prevent its configuration restart.
+                drop(_landing);
                 let result = self
                     .submit(
                         &s,
@@ -2679,7 +2754,7 @@ impl Runtime {
             }
             // A chat takes its bot's current tools; other sections keep theirs.
             let parent = self
-                .open_session_locked(owner, bot, stored, None, None, true)
+                .open_session_locked(owner, bot, stored, None, None, true, false)
                 .await?;
             let _landing = Landing::new(&parent)?;
             drop(guard);
@@ -3789,7 +3864,7 @@ impl Runtime {
         }
         match event["type"].as_str().unwrap_or("") {
             "hexbot_input_preflight" => {
-                self.accept_input(s, &event);
+                self.accept_input(s, &event)?;
             }
             "agent_start" => {
                 self.emit(s, "message.start", json!({}));
@@ -5294,6 +5369,7 @@ rl.on('line',line=>{{const c=JSON.parse(line);emit({{type:'response',id:c.id,com
                 "child",
                 None,
                 Some(&json!({"parent_session":"first"})),
+                false,
                 false,
             )
             .await
