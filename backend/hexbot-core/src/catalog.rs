@@ -1511,15 +1511,25 @@ fn create_bot(home: &Path, caller: &str, p: &Value) -> Result<Value> {
     {
         return Err(Error::new(4202, "invalid or reserved bot name"));
     }
-    if db::open(home)?
+    // Reserve the name and profile against journal cleanup. Release the catalog
+    // write reservation before taking the skills/config locks below.
+    let mut conn = db::open(home)?;
+    let reservation = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    if reservation
         .query_row("SELECT 1 FROM bots WHERE name=?", [name], |_| Ok(()))
         .optional()?
         .is_some()
     {
         return Err(Error::new(4208, format!("bot already exists: {name}")));
     }
+    if bot_delete_journal(&reservation, name)?.is_some() {
+        return Err(Error::new(
+            4208,
+            format!("bot deletion is still pending: {name}; restart to retry cleanup"),
+        ));
+    }
     let dir = profile(home, name)?;
-    if dir.exists() {
+    if dir.try_exists()? {
         return Err(Error::new(4208, format!("profile already exists: {name}")));
     }
     let mut patch = p.clone();
@@ -1549,6 +1559,7 @@ fn create_bot(home: &Path, caller: &str, p: &Value) -> Result<Value> {
             e.into()
         }
     })?;
+    reservation.commit()?;
     // Seed deployment defaults so every new bot sees the existing model and tool settings.
     let result = (|| {
         {
@@ -1741,8 +1752,47 @@ fn delete_section(home: &Path, caller: &str, id: &str, purge: bool) -> Result<Op
 // The bot row is the commit decision; no history or profile is removed before it.
 const BOT_DELETE_PREFIX: &str = "pending_bot_delete:";
 
+fn bot_delete_journal(conn: &Connection, name: &str) -> Result<Option<Value>> {
+    let raw: Option<String> = conn
+        .query_row(
+            "SELECT value FROM settings WHERE key=?",
+            [format!("{BOT_DELETE_PREFIX}{name}")],
+            |r| r.get(0),
+        )
+        .optional()?;
+    raw.map(|raw| serde_json::from_str(&raw).map_err(|e| Error::new(5200, e.to_string())))
+        .transpose()
+}
+
 pub fn prepare_bot_delete(home: &Path, caller: &str, name: &str) -> Result<Vec<Value>> {
+    let mut conn = db::open(home)?;
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let targets = prepare_bot_delete_in(home, caller, name, &tx)?;
+    tx.commit()?;
+    Ok(targets)
+}
+
+fn prepare_bot_delete_in(
+    home: &Path,
+    caller: &str,
+    name: &str,
+    conn: &Connection,
+) -> Result<Vec<Value>> {
     bot_owner(home, caller, name)?;
+    let previous = if let Some(journal) = bot_delete_journal(conn, name)? {
+        if journal["committed"] == true {
+            return Err(Error::new(
+                4208,
+                format!("bot deletion is still pending: {name}"),
+            ));
+        }
+        journal["targets"]
+            .as_array()
+            .cloned()
+            .ok_or_else(|| Error::new(5200, "Invalid bot deletion journal"))?
+    } else {
+        Vec::new()
+    };
     // Validate the profile boundary before retiring anything.
     safe(home, &profile(home, name)?.join("memories/MEMORY.md"))?;
     let mut targets = rows(
@@ -1750,7 +1800,14 @@ pub fn prepare_bot_delete(home: &Path, caller: &str, name: &str) -> Result<Vec<V
         "SELECT stored_id AS id,owner FROM native_sessions WHERE bot=?",
         &[&name],
     )?;
-    targets.extend(rows(&db::open(home)?, "SELECT id,owner_id AS owner FROM sections WHERE bot=? UNION SELECT stored_session_id AS id,owner_id AS owner FROM room_sessions JOIN rooms ON rooms.id=room_sessions.room_id WHERE room_sessions.bot=?", &[&name, &name])?);
+    targets.extend(rows(conn, "SELECT id,owner_id AS owner FROM sections WHERE bot=? UNION SELECT stored_session_id AS id,owner_id AS owner FROM room_sessions JOIN rooms ON rooms.id=room_sessions.room_id WHERE room_sessions.bot=?", &[&name, &name])?);
+    // A repeated preparation may discover new sessions, but must retain the
+    // original exact targets even if their catalog/native mappings disappeared.
+    for target in previous {
+        if !targets.iter().any(|t| t["id"] == target["id"]) {
+            targets.push(target);
+        }
+    }
     // Capture descendants before any purge can remove their parent links.
     for target in targets.clone() {
         for id in runtime_store::descendants(home, required(&target, "id")?)? {
@@ -1759,34 +1816,40 @@ pub fn prepare_bot_delete(home: &Path, caller: &str, name: &str) -> Result<Vec<V
             }
         }
     }
-    db::open(home)?.execute(
-        "INSERT OR REPLACE INTO settings(key,value) VALUES(?,?)",
+    conn.execute(
+        "INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
         params![
             format!("{BOT_DELETE_PREFIX}{name}"),
-            json!({"targets":targets,"committed":false}).to_string()
+            json!({"targets":targets,"committed":false,"name_reserved":true}).to_string()
         ],
     )?;
     Ok(targets)
 }
 
 pub fn rollback_bot_delete(home: &Path, name: &str) -> Result<()> {
-    let conn = db::open(home)?;
-    let raw: Option<String> = conn
-        .query_row(
-            "SELECT value FROM settings WHERE key=?",
-            [format!("{BOT_DELETE_PREFIX}{name}")],
-            |r| r.get(0),
-        )
-        .optional()?;
-    if let Some(raw) = raw {
-        let journal: Value =
-            serde_json::from_str(&raw).map_err(|e| Error::new(5200, e.to_string()))?;
+    let mut conn = db::open(home)?;
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    rollback_bot_delete_in(home, name, &tx, None)?;
+    tx.commit()?;
+    Ok(())
+}
+
+fn rollback_bot_delete_in(
+    home: &Path,
+    name: &str,
+    conn: &Connection,
+    expected: Option<&[Value]>,
+) -> Result<()> {
+    if let Some(journal) = bot_delete_journal(conn, name)? {
         if journal["committed"] == true {
             return Ok(());
         }
         let targets = journal["targets"]
             .as_array()
             .ok_or_else(|| Error::new(5200, "Invalid bot deletion journal"))?;
+        if expected.is_some_and(|expected| expected != targets) {
+            return Ok(());
+        }
         for target in targets {
             runtime_store::unmark_deleted(home, required(target, "id")?)?;
         }
@@ -1798,14 +1861,51 @@ pub fn rollback_bot_delete(home: &Path, name: &str) -> Result<()> {
     Ok(())
 }
 
-fn finish_bot_delete(home: &Path, name: &str, targets: &[Value]) -> Result<()> {
+fn finish_bot_delete(home: &Path, name: &str) -> Result<()> {
+    let mut conn = db::open(home)?;
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    // Another cleanup may have completed since the caller enumerated journals.
+    let Some(journal) = bot_delete_journal(&tx, name)? else {
+        return Ok(());
+    };
+    if journal["committed"] != true {
+        rollback_bot_delete_in(home, name, &tx, None)?;
+        tx.commit()?;
+        return Ok(());
+    }
+    let dir = profile(home, name)?;
+    let bot_exists: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM bots WHERE name=?)",
+        [name],
+        |r| r.get(0),
+    )?;
+    if bot_exists {
+        return Err(Error::new(
+            5200,
+            format!(
+                "Cannot finish deleting bot {name}: catalog bot exists; preserved data and pending journal for recovery"
+            ),
+        ));
+    }
+    // Older journals allowed name reuse. With a remaining profile and no
+    // reservation provenance, its generation is unknown, even without a row.
+    if journal["name_reserved"] != true && dir.try_exists()? {
+        return Err(Error::new(
+            5200,
+            format!(
+                "Cannot finish deleting bot {name}: profile ownership is unknown; preserved data and pending journal for recovery"
+            ),
+        ));
+    }
+    let targets = journal["targets"]
+        .as_array()
+        .ok_or_else(|| Error::new(5200, "Invalid bot deletion journal"))?;
     for target in targets {
         runtime_store::delete(home, required(target, "id")?)?;
     }
     let jobs = runtime_store::open(home)?;
     jobs.execute("DELETE FROM native_jobs WHERE bot=?", [name])?;
     jobs.execute("DELETE FROM native_job_imports WHERE bot=?", [name])?;
-    let dir = profile(home, name)?;
     if dir.try_exists()? {
         // Save durable memory before removing the profile. A failed save keeps it all.
         let memory = dir.join("memories/MEMORY.md");
@@ -1820,47 +1920,76 @@ fn finish_bot_delete(home: &Path, name: &str, targets: &[Value]) -> Result<()> {
         }
         fs::remove_dir_all(&dir)?;
     }
-    db::open(home)?.execute(
+    tx.execute(
         "DELETE FROM settings WHERE key=?",
         [format!("{BOT_DELETE_PREFIX}{name}")],
     )?;
+    tx.commit()?;
     Ok(())
 }
 
 /// Runs before generic section tombstones: hidden sessions share the bot's commit decision.
 pub fn finish_bot_deletes(home: &Path) -> Result<()> {
     let conn = db::open(home)?;
+    let mut result = Ok(());
     for row in rows(
         &conn,
-        "SELECT key,value FROM settings WHERE key LIKE 'pending_bot_delete:%'",
+        "SELECT key FROM settings WHERE key LIKE 'pending_bot_delete:%'",
         &[],
     )? {
         let key = required(&row, "key")?;
         let name = &key[BOT_DELETE_PREFIX.len()..];
-        let journal: Value = serde_json::from_str(required(&row, "value")?)
-            .map_err(|e| Error::new(5200, e.to_string()))?;
-        if journal["committed"] != true {
-            rollback_bot_delete(home, name)?;
-        } else {
-            let targets = journal["targets"]
-                .as_array()
-                .ok_or_else(|| Error::new(5200, "Invalid bot deletion journal"))?;
-            if let Err(error) = finish_bot_delete(home, name, targets) {
-                eprintln!("Could not finish deleting bot {name}: {error}");
+        if let Err(error) = finish_bot_delete(home, name) {
+            eprintln!("Could not finish deleting bot {name}: {error}");
+            if result.is_ok() {
+                result = Err(error);
             }
         }
     }
-    Ok(())
+    result
+}
+
+/// Generic tombstone recovery must leave unresolved bot decisions alone.
+pub(crate) fn pending_bot_delete_targets(home: &Path) -> Result<BTreeSet<String>> {
+    let mut targets = BTreeSet::new();
+    for row in rows(
+        &db::open(home)?,
+        "SELECT value FROM settings WHERE key LIKE 'pending_bot_delete:%'",
+        &[],
+    )? {
+        let journal: Value = serde_json::from_str(required(&row, "value")?)
+            .map_err(|e| Error::new(5200, e.to_string()))?;
+        for target in journal["targets"]
+            .as_array()
+            .ok_or_else(|| Error::new(5200, "Invalid bot deletion journal"))?
+        {
+            let id = required(target, "id")?;
+            targets.insert(id.to_owned());
+            targets.extend(runtime_store::descendants(home, id)?);
+        }
+    }
+    Ok(targets)
 }
 
 fn delete_bot(home: &Path, caller: &str, name: &str) -> Result<Value> {
+    // Persist retirement provenance before touching the separate native store.
     let targets = prepare_bot_delete(home, caller, name)?;
     let committed = (|| {
+        let mut conn = db::open(home)?;
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let journal = bot_delete_journal(&tx, name)?;
+        if !journal.as_ref().is_some_and(|journal| {
+            journal["committed"] == false && journal["targets"].as_array() == Some(&targets)
+        }) {
+            return Err(Error::new(
+                4208,
+                format!("bot deletion changed: {name}; retry"),
+            ));
+        }
+        bot_owner(home, caller, name)?;
         for target in &targets {
             runtime_store::mark_deleted(home, required(target, "id")?)?;
         }
-        let mut conn = db::open(home)?;
-        let tx = conn.transaction()?;
         tx.execute("DELETE FROM sections WHERE bot=?", [name])?;
         // Threads where this bot asked others stay with their recipients.
         tx.execute("UPDATE sections SET archived_at=? WHERE peer_bot=? AND owner_id=? AND archived_at IS NULL", params![now(), name, caller])?;
@@ -1879,10 +2008,13 @@ fn delete_bot(home: &Path, caller: &str, name: &str) -> Result<Value> {
         Ok::<_, Error>(())
     })();
     if let Err(error) = committed {
-        rollback_bot_delete(home, name)?;
+        let mut conn = db::open(home)?;
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        rollback_bot_delete_in(home, name, &tx, Some(&targets))?;
+        tx.commit()?;
         return Err(error);
     }
-    if let Err(error) = finish_bot_delete(home, name, &targets) {
+    if let Err(error) = finish_bot_delete(home, name) {
         eprintln!("Deleted bot {name}, but cleanup is pending: {error}");
         return Ok(json!({"deleted":true,"history_pending":true}));
     }

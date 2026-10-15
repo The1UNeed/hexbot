@@ -41,6 +41,7 @@ pub struct App {
     proofs: Arc<dpop::Proofs>,
     logins: Mutex<HashMap<String, BrowserLogin>>,
     auth_connection: Mutex<rusqlite::Connection>,
+    bot_lifecycle: Arc<tokio::sync::Mutex<()>>,
     pub address: SocketAddr,
     _network_guard: common::DaemonListener,
     pub web_dist: Option<PathBuf>,
@@ -124,6 +125,7 @@ impl App {
         Ok(Arc::new(Self {
             memory: MemoryStore::new(home.clone()),
             auth_connection: Mutex::new(db::open(&home)?),
+            bot_lifecycle: Arc::new(tokio::sync::Mutex::new(())),
             home,
             events,
             runtime,
@@ -145,6 +147,7 @@ impl App {
         Ok(Arc::new(Self {
             memory: MemoryStore::new(self.home.clone()),
             auth_connection: Mutex::new(db::open(&self.home)?),
+            bot_lifecycle: self.bot_lifecycle.clone(),
             home: self.home.clone(),
             events: self.events.clone(),
             runtime: self.runtime.clone(),
@@ -164,6 +167,13 @@ impl App {
             return Err(Error::new(5200, "Reconnect to continue"));
         }
         common::user(&self.home, owner)?;
+        // Order name reuse with retirement, commit and rollback, including
+        // requests through a rebound listener. Never hold a SQLite lock over await.
+        let _bot_lifecycle = if matches!(method, "hexbot.bots.create" | "hexbot.bots.delete") {
+            Some(self.bot_lifecycle.lock().await)
+        } else {
+            None
+        };
         let mut affected_rooms = Vec::new();
         // Deletes are orchestrated here alone: one busy check, one close pass.
         if method == "hexbot.sections.delete" {

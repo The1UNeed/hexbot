@@ -283,7 +283,13 @@ legacy-only, room and delegated targets and the catalog commit decision. Startup
 rolls back uncommitted retirement or finishes committed cleanup. A committed
 cleanup failure returns `{deleted:true, history_pending:true}` and keeps its
 journal for startup retry. No failed catalog commit removes history, memory or
-notes. This does not reconstruct data already purged by an older build.
+notes. Creation refuses with 4208 while that name has a pending deletion, even
+if its profile is already gone. App create/delete requests are ordered across
+retirement and cleanup; startup cleanup re-reads the decision under the same
+catalog write reservation used to reserve a new profile. If an older journal
+conflicts with a catalog bot, or its remaining profile has no name-reservation
+provenance, cleanup reports an error and keeps the files, jobs and journal for
+manual recovery. This does not reconstruct data already purged by an older build.
 
 
 Section shape: `{id, bot, title, title_by: "bot" | null, created_at,
