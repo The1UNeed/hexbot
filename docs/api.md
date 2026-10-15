@@ -360,11 +360,13 @@ returned by `open`.
   bot's profile; idempotent if live). If the bot is waiting on an approval,
   the daemon sends its `approval.request` event again so a reloaded client
   gets the card back; clients dedupe on `request_id`.
-  A missing catalog section returns code `4204`. The web app resolves the
-  bot's canonical chat only for that code; other open failures keep the
-  selected route and offer Retry. Returning the same canonical ID also
-  offers Retry rather than declaring that chat unavailable. Late replies
-  from an obsolete route or daemon do not redirect the current view.
+  A missing catalog section returns code `4204`. Ordinary web bot-chat routes
+  resolve the daemon's canonical chat before opening history, displaying it,
+  or enabling input, including saved routes and already-loaded live IDs.
+  Explicit peer threads keep their own route. Metadata or open failures keep
+  the selected route and offer Retry, including when canonical resolution
+  returns the same ID. Late replies from an obsolete route or daemon do not
+  redirect the current view.
 
 `Context = {tokens, window, compact_at, compacting, recounting, seq}` is how
 full the section's context is: Pi's own estimate of the tokens the next

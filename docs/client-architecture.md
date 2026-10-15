@@ -152,9 +152,23 @@ native-only controls.
 
 Ordinary bot-chat URLs resolve the daemon's chat before showing history or enabling
 input, including restored URLs and already-loaded live IDs. Explicit teammate
-threads keep their own route. Metadata or open failures offer Retry. The same
+threads keep their own route and accept only answers to existing approval and
+question cards. Metadata or open failures offer Retry. The same
 navigation and daemon guards cover closing bot settings, so a late lookup cannot
 pull the user out of a later room or route. Mobile Pulse opens a waiting teammate
 thread's approval or question on its own live ID; ordinary bot taps still open
 the canonical owner chat. Reconnects discard old chooser state, and a fresh
 modern capability never accepts a stale ordinary chooser row as canonical.
+
+Closing settings for a deleted bot clears only that bot's remembered chat and
+leaves through the normal Home route. A later navigation or daemon change
+cancels that exit, including while chat selection is waiting.
+
+Mobile reconnect resolves an ordinary owner route through the daemon before
+restoring history or enabling input, even when its old row still exists. A
+failed lookup keeps input closed and offers Retry. Explicit peer threads and
+rooms keep their own routes; older daemons keep their remembered explicit pick.
+
+Onboarding's initial decision, Continue retry and first-bot creation use the
+same route and daemon guard. Leaving that visit prevents later chat selection,
+remembered-selection updates, navigation and bot introduction from its replies.

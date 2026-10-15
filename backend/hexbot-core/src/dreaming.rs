@@ -448,7 +448,9 @@ pub fn build_digest(
                             .as_str()
                             .map(str::to_owned)
                             .unwrap_or_else(|| message["content"].to_string());
-                        if message["role"] == "assistant" && reports.contains(&content) {
+                        if runtime_store::dream_report_text(&message)
+                            .is_some_and(|text| reports.contains(&text))
+                        {
                             continue;
                         }
                         latest = latest.max(message["timestamp"].as_f64().unwrap_or(0.0));
