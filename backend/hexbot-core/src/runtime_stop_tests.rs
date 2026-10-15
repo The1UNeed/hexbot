@@ -72,7 +72,7 @@ if (process.argv.includes('--no-session')) {
     .unwrap();
 }
 
-async fn stop_event(
+pub(super) async fn stop_event(
     events: &mut tokio::sync::broadcast::Receiver<crate::events::Event>,
     matches: impl Fn(&Value) -> bool,
 ) -> Value {
