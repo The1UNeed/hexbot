@@ -72,8 +72,10 @@ data model. The native transport and event projection live in
   Stop cancels pending approvals, questions and Auto reviews. Approvals and
   questions arriving while the turn is stopping are cancelled before Pi's abort
   finishes, without publishing new cards. Queued input arriving during Stop
-  waits for the stopped run to settle, then starts or joins a fresh run.
+  waits until Stop finishes and the stopped run or command completes, then
+  starts or joins a fresh run. Idle Stop needs no run-settlement event.
   That run accepts tools, approvals and questions again.
+  If abort fails or times out, Pi exits and waiting deliveries report an error.
   Without OS isolation, shell commands require user approval even with
   `full_access`; review cannot replace
   it. Explicit section grants can cover unreviewed requests when offered.

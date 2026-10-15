@@ -249,7 +249,7 @@ impl Runtime {
         let interrupted = {
             let mut state = s.state.lock().unwrap();
             state.tool_dialogs.insert(id.clone());
-            state.interrupted
+            state.dialogs_cancelled()
         };
         tasks.spawn(async move {
             if interrupted {
@@ -270,7 +270,7 @@ impl Runtime {
             {
                 let state = source.state.lock().unwrap();
                 // A stop drained the dialog while this step waited its turn.
-                if state.closed || state.interrupted || !state.tool_dialogs.contains(&id) {
+                if state.dialogs_cancelled() || !state.tool_dialogs.contains(&id) {
                     return;
                 }
             }
@@ -319,7 +319,7 @@ impl Runtime {
                 let _gate = source.event_gate.lock().unwrap();
                 let mut state = source.state.lock().unwrap();
                 // A stop drained the dialog while the reviewer ran.
-                if state.closed || state.interrupted || !state.tool_dialogs.remove(&id) {
+                if state.dialogs_cancelled() || !state.tool_dialogs.remove(&id) {
                     return;
                 }
                 state.pending.insert(id.clone(), request);
@@ -382,7 +382,7 @@ impl Runtime {
         self.retry_messages(s);
         let unavailable = {
             let state = s.state.lock().unwrap();
-            !state.unsaved.is_empty() || state.closed || state.interrupted
+            !state.unsaved.is_empty() || state.dialogs_cancelled()
         };
         if unavailable {
             return Err(Error::new(5201, "Owner evidence is unavailable"));
@@ -445,8 +445,7 @@ impl Runtime {
         {
             let state = s.state.lock().unwrap();
             if self.stopping.load(Ordering::Acquire)
-                || state.closed
-                || state.interrupted
+                || state.dialogs_cancelled()
                 || !state.tool_dialogs.contains(id)
             {
                 return Ok(None);

@@ -681,3 +681,563 @@ async fn cancellation_does_not_take_a_late_dialog_from_its_response_task() {
     assert_eq!(reply["cancelled"], true);
     runtime.shutdown().await;
 }
+
+// Control command replies independently of run events. Idle abort and manual
+// compaction do not produce agent_settled in Pi 1.0.1.
+fn install_stop_lifecycle_pi(home: &Path) {
+    fs::write(home.join("pi.cjs"), r#"#!/usr/bin/env node
+const fs = require('node:fs');
+const emit = event => process.stdout.write(JSON.stringify(event) + '\n');
+const status = text => emit({type:'extension_ui_request', method:'setStatus', statusText:text});
+const reply = (c, success = true) => emit({type:'response', id:c.id, command:c.type, success, data:{}, error:success ? undefined : 'fixture rejection'});
+let compact, prompt;
+const stops = [];
+require('node:readline').createInterface({input:process.stdin}).on('line', line => {
+  const c = JSON.parse(line);
+  fs.appendFileSync(__dirname + '/commands.jsonl', JSON.stringify(c) + '\n');
+  if (c.type === 'extension_ui_response') {
+    fs.appendFileSync(__dirname + '/dialogs.jsonl', JSON.stringify(c) + '\n');
+    return;
+  }
+  if (c.type === 'compact') { compact = c; status('compact waiting'); return; }
+  if (c.type === 'prompt' && c.message === 'reject') { prompt = c; status('prompt waiting'); return; }
+  if (c.type === 'hold') { status('command held'); return; }
+  if (c.type === 'abort') { stops.push(c); status('abort waiting'); return; }
+  if (c.type === 'exit_pi') process.exit(0);
+  if (c.type === 'release_compact' || c.type === 'fail_compact') { reply(compact, c.type === 'release_compact'); compact = undefined; }
+  if (c.type === 'fail_prompt') { reply(prompt, false); prompt = undefined; }
+  if (c.type === 'release_abort' || c.type === 'fail_abort') reply(stops.shift(), c.type === 'release_abort');
+  if (c.type === 'release_settled') emit({type:'agent_settled'});
+  reply(c);
+  if (c.type === 'prompt') {
+    emit({type:'agent_start'});
+    emit({type:'message_end', message:{role:'user', content:c.message}});
+    status('projected ' + c.message);
+  }
+});
+"#).unwrap();
+}
+
+fn start_stop(runtime: &Arc<Runtime>, id: &str) -> tokio::task::JoinHandle<Result<Value>> {
+    let (runtime, id) = (runtime.clone(), id.to_owned());
+    tokio::spawn(async move {
+        runtime
+            .call_inner("alice", "session.interrupt", &json!({"session_id":id}))
+            .await
+    })
+}
+
+async fn assert_fresh_dialog_paths(runtime: &Arc<Runtime>, s: &Arc<Live>, hub: &EventHub) {
+    let mut events = hub.subscribe();
+    runtime.event(s, json!({"type":"extension_ui_request","id":"fresh-confirm","method":"confirm","title":"Continue?"})).unwrap();
+    let card = stop_event(&mut events, |event| event["type"] == "approval.request").await;
+    assert_eq!(card["payload"]["request_id"], "fresh-confirm");
+    runtime
+        .call_inner(
+            "alice",
+            "approval.respond",
+            &json!({"session_id":s.id,"request_id":"fresh-confirm","choice":"once"}),
+        )
+        .await
+        .unwrap();
+    runtime.event(s, json!({"type":"extension_ui_request","id":"fresh-clarify","method":"input","title":format!("__HEXBOT_CLARIFY__{}",json!({"questions":[{"qid":"file","question":"Which file?"}]}))})).unwrap();
+    stop_event(&mut events, |event| event["type"] == "clarify.request").await;
+    runtime.call_inner("alice", "clarify.respond", &json!({"session_id":s.id,"request_id":"fresh-clarify","question_id":"file","answer":"file.txt"})).await.unwrap();
+    let native = {
+        let (runtime, s) = (runtime.clone(), s.clone());
+        tokio::spawn(async move {
+            runtime
+                .native_approval(&s, json!({"tool":"execute_code"}))
+                .await
+                .unwrap()
+        })
+    };
+    let card = stop_event(&mut events, |event| event["type"] == "approval.request").await;
+    runtime
+        .call_inner(
+            "alice",
+            "approval.respond",
+            &json!({"session_id":s.id,"request_id":card["payload"]["request_id"],"choice":"once"}),
+        )
+        .await
+        .unwrap();
+    assert!(native.await.unwrap());
+    for name in ["hexbot_session_settings", "hexbot_todo_context"] {
+        runtime.event(s, json!({"type":"extension_ui_request","id":name,"method":"input","title":format!("__HEXBOT_TOOL__{}",json!({"name":name,"args":{}}))})).unwrap();
+    }
+    let mut replies = std::mem::take(&mut *s.requests.lock().unwrap());
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while replies.join_next().await.is_some() {}
+    })
+    .await
+    .unwrap();
+    Runtime::command(s, json!({"type":"get_state"}))
+        .await
+        .unwrap();
+    let replies = fs::read_to_string(runtime.home.join("dialogs.jsonl"))
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str::<Value>(line).unwrap())
+        .collect::<Vec<_>>();
+    for name in ["hexbot_session_settings", "hexbot_todo_context"] {
+        let reply = replies.iter().find(|reply| reply["id"] == name).unwrap();
+        assert_ne!(reply["cancelled"], true);
+        let value: Value = serde_json::from_str(reply["value"].as_str().unwrap()).unwrap();
+        assert!(value.get("result").is_some(), "{reply}");
+        assert!(value.get("error").is_none(), "{reply}");
+    }
+}
+
+async fn result_waits_for_stop_and_command(command: &str, completion: &str, stop_first: bool) {
+    let (home, runtime, hub) = setup();
+    install_stop_lifecycle_pi(home.path());
+    db::open(home.path())
+        .unwrap()
+        .execute_batch("UPDATE bots SET approval_mode='manual'")
+        .unwrap();
+    let id = open(&runtime).await;
+    let s = runtime.sessions.lock().unwrap()["first"].clone();
+    let mut events = hub.subscribe();
+    let pending_command = {
+        let (runtime, s, command) = (runtime.clone(), s.clone(), command.to_owned());
+        tokio::spawn(async move { runtime.submit(&s, &command, false, false, None, None).await })
+    };
+    stop_event(&mut events, |event| {
+        event["payload"]["text"]
+            == if command == "reject" {
+                "prompt waiting"
+            } else {
+                "compact waiting"
+            }
+    })
+    .await;
+    let mut stop = start_stop(&runtime, &id);
+    stop_event(&mut events, |event| {
+        event["payload"]["text"] == "abort waiting"
+    })
+    .await;
+    let result = runtime.return_result("alice", "owl", "first", "background result", None);
+    tokio::pin!(result);
+    if stop_first {
+        assert!(futures_util::poll!(result.as_mut()).is_pending());
+        Runtime::command(&s, json!({"type":"release_abort"}))
+            .await
+            .unwrap();
+        (&mut stop).await.unwrap().unwrap();
+        // No agent_settled will follow. The command completion must wake us.
+        assert!(futures_util::poll!(result.as_mut()).is_pending());
+        Runtime::command(&s, json!({"type":completion}))
+            .await
+            .unwrap();
+    } else {
+        Runtime::command(&s, json!({"type":completion}))
+            .await
+            .unwrap();
+    }
+    let response = pending_command.await.unwrap();
+    assert_eq!(response.is_ok(), completion == "release_compact");
+    if !stop_first {
+        assert!(!s.state.lock().unwrap().busy);
+        assert!(
+            futures_util::poll!(result.as_mut()).is_pending(),
+            "result bypassed the outstanding Stop after {completion}"
+        );
+        assert!(s.state.lock().unwrap().display.is_empty());
+        let conn = store::open(home.path()).unwrap();
+        let intents: i64 = conn.query_row("SELECT COUNT(*) FROM native_prompt_intents WHERE session_id='first' AND text='background result'", [], |row| row.get(0)).unwrap();
+        assert_eq!(intents, 0);
+        Runtime::command(&s, json!({"type":"release_abort"}))
+            .await
+            .unwrap();
+        (&mut stop).await.unwrap().unwrap();
+    }
+    tokio::time::timeout(Duration::from_secs(5), result)
+        .await
+        .unwrap();
+    stop_event(&mut events, |event| {
+        event["payload"]["text"] == "projected background result"
+    })
+    .await;
+    assert!(!s.state.lock().unwrap().interrupted);
+    assert_fresh_dialog_paths(&runtime, &s, &hub).await;
+    runtime.shutdown().await;
+}
+
+#[tokio::test]
+async fn compact_success_keeps_results_waiting_for_stop() {
+    result_waits_for_stop_and_command("/compact", "release_compact", false).await;
+}
+#[tokio::test]
+async fn compact_failure_keeps_results_waiting_for_stop() {
+    result_waits_for_stop_and_command("/compact", "fail_compact", false).await;
+}
+#[tokio::test]
+async fn prompt_failure_keeps_results_waiting_for_stop() {
+    result_waits_for_stop_and_command("reject", "fail_prompt", false).await;
+}
+#[tokio::test]
+async fn compact_success_wakes_results_after_stop_has_finished() {
+    result_waits_for_stop_and_command("/compact", "release_compact", true).await;
+}
+#[tokio::test]
+async fn compact_failure_wakes_results_after_stop_has_finished() {
+    result_waits_for_stop_and_command("/compact", "fail_compact", true).await;
+}
+#[tokio::test]
+async fn prompt_failure_wakes_results_after_stop_has_finished() {
+    result_waits_for_stop_and_command("reject", "fail_prompt", true).await;
+}
+
+async fn idle_stop_result(concurrent: bool, detach_caller: bool) {
+    let (home, runtime, hub) = setup();
+    install_stop_lifecycle_pi(home.path());
+    let id = open(&runtime).await;
+    let s = runtime.sessions.lock().unwrap()["first"].clone();
+    let mut events = hub.subscribe();
+    let mut first = start_stop(&runtime, &id);
+    stop_event(&mut events, |event| {
+        event["payload"]["text"] == "abort waiting"
+    })
+    .await;
+    let second = if concurrent {
+        let stop = {
+            let runtime = runtime.clone();
+            tokio::spawn(async move { runtime.interrupt_stored("alice", "first").await })
+        };
+        stop_event(&mut events, |event| {
+            event["payload"]["text"] == "abort waiting"
+        })
+        .await;
+        Some(stop)
+    } else {
+        None
+    };
+    if detach_caller {
+        first.abort();
+        assert!((&mut first).await.unwrap_err().is_cancelled());
+    }
+    let result = runtime.return_result("alice", "owl", "first", "background result", None);
+    tokio::pin!(result);
+    assert!(futures_util::poll!(result.as_mut()).is_pending());
+    assert!(s.state.lock().unwrap().display.is_empty());
+    for text in ["fresh prompt", "/compact"] {
+        assert_eq!(
+            runtime
+                .submit(&s, text, false, false, None, None)
+                .await
+                .unwrap_err()
+                .code,
+            4002
+        );
+    }
+    Runtime::command(&s, json!({"type":"release_abort"}))
+        .await
+        .unwrap();
+    if let Some(second) = second {
+        // Completion of the first idle Stop cannot release the second's waiters.
+        assert!(!second.is_finished());
+        // A get_state reply orders us after the first abort reply, but its
+        // request task may still be completing. Wait for that first guard too.
+        let mut ended = s.run_ended.subscribe();
+        loop {
+            if s.state.lock().unwrap().stops == 1 {
+                break;
+            }
+            ended.changed().await.unwrap();
+        }
+        assert!(futures_util::poll!(result.as_mut()).is_pending());
+        Runtime::command(&s, json!({"type":"release_abort"}))
+            .await
+            .unwrap();
+        assert!(second.await.unwrap().unwrap());
+    }
+    tokio::time::timeout(Duration::from_secs(5), result)
+        .await
+        .unwrap();
+    stop_event(&mut events, |event| {
+        event["payload"]["text"] == "projected background result"
+    })
+    .await;
+    if !detach_caller {
+        first.await.unwrap().unwrap();
+    }
+    assert_eq!(s.state.lock().unwrap().stops, 0);
+    assert!(!s.state.lock().unwrap().interrupted);
+    runtime.shutdown().await;
+}
+
+#[tokio::test]
+async fn idle_stop_releases_results_without_agent_settled() {
+    idle_stop_result(false, false).await;
+}
+#[tokio::test]
+async fn concurrent_idle_stops_release_results_only_after_both_finish() {
+    idle_stop_result(true, false).await;
+}
+#[tokio::test]
+async fn disconnected_stop_caller_does_not_strand_results() {
+    idle_stop_result(false, true).await;
+}
+
+#[tokio::test]
+async fn settlement_during_stop_keeps_dialogs_and_results_cancelled_until_stop_finishes() {
+    let (home, runtime, hub) = setup();
+    install_stop_lifecycle_pi(home.path());
+    let id = open(&runtime).await;
+    let s = runtime.sessions.lock().unwrap()["first"].clone();
+    let mut events = hub.subscribe();
+    runtime
+        .submit(&s, "wait", false, false, None, None)
+        .await
+        .unwrap();
+    stop_event(&mut events, |event| {
+        event["payload"]["text"] == "projected wait"
+    })
+    .await;
+    let stop = start_stop(&runtime, &id);
+    stop_event(&mut events, |event| {
+        event["payload"]["text"] == "abort waiting"
+    })
+    .await;
+    Runtime::command(&s, json!({"type":"release_settled"}))
+        .await
+        .unwrap();
+    stop_event(&mut events, |event| event["type"] == "message.complete").await;
+    assert!(!s.state.lock().unwrap().interrupted);
+    assert!(!s.state.lock().unwrap().busy);
+    let before = hub.since("alice", &id, 0)["latest_seq"].as_u64().unwrap();
+    for (id, method, title) in [
+        ("late-confirm", "confirm", "Continue?".to_owned()),
+        (
+            "late-review",
+            "select",
+            reviewed_request("late-review")["title"]
+                .as_str()
+                .unwrap()
+                .to_owned(),
+        ),
+        (
+            "late-tool",
+            "input",
+            format!(
+                "__HEXBOT_TOOL__{}",
+                json!({"name":"hexbot_session_settings","args":{}})
+            ),
+        ),
+    ] {
+        runtime
+            .event(
+                &s,
+                json!({"type":"extension_ui_request","id":id,"method":method,"title":title}),
+            )
+            .unwrap();
+    }
+    assert!(
+        !runtime
+            .native_approval(&s, json!({"tool":"execute_code"}))
+            .await
+            .unwrap()
+    );
+    let mut replies = std::mem::take(&mut *s.requests.lock().unwrap());
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while replies.join_next().await.is_some() {}
+    })
+    .await
+    .unwrap();
+    Runtime::command(&s, json!({"type":"get_state"}))
+        .await
+        .unwrap();
+    let replies = fs::read_to_string(home.path().join("dialogs.jsonl")).unwrap();
+    assert_eq!(replies.lines().count(), 3, "{replies}");
+    assert!(
+        replies
+            .lines()
+            .all(|line| serde_json::from_str::<Value>(line).unwrap()["cancelled"] == true)
+    );
+    assert!(published_cards(&hub, &id, before).is_empty());
+    let result = runtime.return_result("alice", "owl", "first", "background result", None);
+    tokio::pin!(result);
+    assert!(futures_util::poll!(result.as_mut()).is_pending());
+    assert!(s.state.lock().unwrap().display.is_empty());
+    Runtime::command(&s, json!({"type":"release_abort"}))
+        .await
+        .unwrap();
+    stop.await.unwrap().unwrap();
+    tokio::time::timeout(Duration::from_secs(5), result)
+        .await
+        .unwrap();
+    assert_fresh_dialog_paths(&runtime, &s, &hub).await;
+    runtime.shutdown().await;
+}
+
+async fn stop_failure_rejects_waiting_result(reason: &str) {
+    let (home, runtime, hub) = setup();
+    install_stop_lifecycle_pi(home.path());
+    open(&runtime).await;
+    let s = runtime.sessions.lock().unwrap()["first"].clone();
+    let mut events = hub.subscribe();
+    runtime
+        .submit(&s, "wait", false, false, None, None)
+        .await
+        .unwrap();
+    stop_event(&mut events, |event| {
+        event["payload"]["text"] == "projected wait"
+    })
+    .await;
+    let stop = {
+        let (runtime, s, deadline) = (
+            runtime.clone(),
+            s.clone(),
+            if reason == "deadline" {
+                Duration::from_secs(1)
+            } else {
+                DEADLINE
+            },
+        );
+        tokio::spawn(async move { runtime.interrupt(&s, deadline).await })
+    };
+    stop_event(&mut events, |event| {
+        event["payload"]["text"] == "abort waiting"
+    })
+    .await;
+    let result = runtime.return_result("alice", "owl", "first", "background result", None);
+    tokio::pin!(result);
+    assert!(futures_util::poll!(result.as_mut()).is_pending());
+    match reason {
+        "close" => {
+            // Block process cleanup: explicit close must wake at the closed
+            // state transition, before shutdown or process-exit projection.
+            let attachment = s.attachment_gate.lock().await;
+            let close = runtime.close_stored("alice", "first");
+            tokio::pin!(close);
+            assert!(futures_util::poll!(close.as_mut()).is_pending());
+            tokio::time::timeout(Duration::from_secs(5), result.as_mut())
+                .await
+                .unwrap();
+            drop(attachment);
+            assert!(close.await.unwrap());
+        }
+        "exit" => {
+            assert!(
+                Runtime::command(&s, json!({"type":"exit_pi"}))
+                    .await
+                    .is_err()
+            );
+        }
+        "abort error" => {
+            // Shutdown may overtake this control command's own reply.
+            let _ = Runtime::command(&s, json!({"type":"fail_abort"})).await;
+        }
+        "deadline" => {}
+        _ => unreachable!(),
+    }
+    if reason != "close" {
+        tokio::time::timeout(Duration::from_secs(5), result)
+            .await
+            .unwrap();
+    }
+    assert!(
+        tokio::time::timeout(Duration::from_secs(5), stop)
+            .await
+            .unwrap()
+            .unwrap()
+            .is_err()
+    );
+    let warning = stop_event(&mut events, |event| {
+        event["type"] == "warning"
+            && event["payload"]["message"] == "A background result could not be delivered"
+    })
+    .await;
+    assert!(
+        warning["payload"]["error"]
+            .as_str()
+            .unwrap()
+            .contains("session")
+    );
+    assert!(s.state.lock().unwrap().closed);
+    assert_eq!(s.state.lock().unwrap().stops, 0);
+    assert!(
+        !fs::read_to_string(home.path().join("commands.jsonl"))
+            .unwrap()
+            .contains("background result")
+    );
+    assert_eq!(
+        runtime
+            .submit(&s, "later", true, true, None, None)
+            .await
+            .unwrap_err()
+            .code,
+        4001
+    );
+    runtime.shutdown().await;
+}
+
+#[tokio::test]
+async fn explicit_close_rejects_results_before_process_cleanup() {
+    stop_failure_rejects_waiting_result("close").await;
+}
+#[tokio::test]
+async fn pi_exit_rejects_results_waiting_on_stop() {
+    stop_failure_rejects_waiting_result("exit").await;
+}
+#[tokio::test]
+async fn abort_error_closes_instead_of_stranding_results() {
+    stop_failure_rejects_waiting_result("abort error").await;
+}
+#[tokio::test]
+async fn abort_deadline_closes_instead_of_stranding_results() {
+    stop_failure_rejects_waiting_result("deadline").await;
+}
+
+#[tokio::test]
+async fn abort_admission_error_releases_stop_and_rejects_waiting_results() {
+    let (home, runtime, hub) = setup();
+    install_stop_lifecycle_pi(home.path());
+    open(&runtime).await;
+    let s = runtime.sessions.lock().unwrap()["first"].clone();
+    let mut events = hub.subscribe();
+    let mut commands = tokio::task::JoinSet::new();
+    // Exhaust the real transport admission slots, before any abort is sent.
+    for _ in 0..PiOptions::new("", "", "").request_capacity {
+        let s = s.clone();
+        commands.spawn(async move { Runtime::command(&s, json!({"type":"hold"})).await });
+        stop_event(&mut events, |event| {
+            event["payload"]["text"] == "command held"
+        })
+        .await;
+    }
+    let stop = runtime.interrupt(&s, DEADLINE);
+    tokio::pin!(stop);
+    assert!(futures_util::poll!(stop.as_mut()).is_pending());
+    let result = runtime.return_result("alice", "owl", "first", "background result", None);
+    tokio::pin!(result);
+    assert!(futures_util::poll!(result.as_mut()).is_pending());
+    let error = tokio::time::timeout(Duration::from_secs(5), stop)
+        .await
+        .unwrap()
+        .unwrap_err();
+    assert!(error.message.contains("Too many pending"), "{error:?}");
+    tokio::time::timeout(Duration::from_secs(5), result)
+        .await
+        .unwrap();
+    stop_event(&mut events, |event| {
+        event["type"] == "warning"
+            && event["payload"]["message"] == "A background result could not be delivered"
+    })
+    .await;
+    assert!(s.state.lock().unwrap().closed);
+    assert_eq!(s.state.lock().unwrap().stops, 0);
+    while let Some(result) = commands.join_next().await {
+        assert!(result.unwrap().is_err());
+    }
+    assert!(
+        !fs::read_to_string(home.path().join("commands.jsonl"))
+            .unwrap()
+            .contains("background result")
+    );
+    assert_eq!(
+        runtime.interrupt(&s, DEADLINE).await.unwrap_err().code,
+        4001
+    );
+    runtime.shutdown().await;
+}

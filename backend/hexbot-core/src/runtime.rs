@@ -43,6 +43,8 @@ struct State {
     busy: bool,
     closed: bool,
     interrupted: bool,
+    /// Stop calls still cancelling dialogs, native tools or Pi itself.
+    stops: usize,
     last_activity: f64,
     output: String,
     error: Option<String>,
@@ -58,6 +60,31 @@ struct State {
     /// Argument previews by tool call id, kept until the tool result row is written.
     tool_context: HashMap<String, String>,
     unsaved: VecDeque<(Value, Option<String>, Option<Value>)>,
+}
+impl State {
+    fn dialogs_cancelled(&self) -> bool {
+        self.closed || self.interrupted || self.stops != 0
+    }
+}
+/// Each Stop owns one count, independent of busy and the old run's settlement.
+struct StopGuard(Arc<Live>);
+impl StopGuard {
+    fn start(s: &Arc<Live>) -> Result<Self> {
+        let _gate = s.event_gate.lock().unwrap();
+        let mut state = s.state.lock().unwrap();
+        if state.closed {
+            return Err(Error::new(4001, "session not found"));
+        }
+        state.stops += 1;
+        Ok(Self(s.clone()))
+    }
+}
+impl Drop for StopGuard {
+    fn drop(&mut self) {
+        let _gate = self.0.event_gate.lock().unwrap();
+        self.0.state.lock().unwrap().stops -= 1;
+        self.0.run_ended.send_modify(|v| *v += 1);
+    }
 }
 /// One upload: an image, a file reference, or the rendered pages of a PDF.
 struct Staged {
@@ -83,7 +110,7 @@ struct Live {
     process: PiProcess,
     state: Mutex<State>,
     settled: watch::Sender<u64>,
-    /// Every Pi run boundary, including one with undelivered queued input.
+    /// Run, command and Stop completions that can admit queued input, or close.
     run_ended: watch::Sender<u64>,
     tools: Vec<Value>,
     requests: Mutex<tokio::task::JoinSet<()>>,
@@ -249,6 +276,7 @@ impl Runtime {
         let mut state = s.state.lock().unwrap();
         if has_children
             || state.busy
+            || state.stops != 0
             || state.closed
             || !state.pending.is_empty()
             || !state.staged.is_empty()
@@ -259,6 +287,7 @@ impl Runtime {
             return false;
         }
         state.closed = true;
+        s.run_ended.send_modify(|v| *v += 1);
         sessions.remove(&s.stored);
         true
     }
@@ -922,6 +951,7 @@ impl Runtime {
                 busy: false,
                 closed: false,
                 interrupted: false,
+                stops: 0,
                 last_activity: common::now(),
                 output: String::new(),
                 error: None,
@@ -1158,8 +1188,12 @@ impl Runtime {
         self.register_worker_bridge(s);
         if text.trim() == "/compact" || text.trim().starts_with("/compact ") {
             {
+                let _gate = s.event_gate.lock().unwrap();
                 let mut state = s.state.lock().unwrap();
-                if state.busy {
+                if state.closed {
+                    return Err(Error::new(4001, "session not found"));
+                }
+                if state.busy || state.stops != 0 {
                     return Err(Error::new(4002, "session is already working"));
                 }
                 state.busy = true;
@@ -1171,7 +1205,11 @@ impl Runtime {
                 .request(json!({"type":"compact","customInstructions":text.trim().strip_prefix("/compact").unwrap_or("").trim()}), Duration::from_secs(300))
                 .await
                 .map_err(pi_error);
-            s.state.lock().unwrap().busy = false;
+            {
+                let _gate = s.event_gate.lock().unwrap();
+                s.state.lock().unwrap().busy = false;
+                s.run_ended.send_modify(|v| *v += 1);
+            }
             let result = response.and_then(|reply| {
                 if reply.success {
                     Ok(())
@@ -1229,10 +1267,10 @@ impl Runtime {
                 if state.closed {
                     return Err(Error::new(4001, "session not found"));
                 }
-                if state.busy && !queued {
+                if (state.busy || state.stops != 0) && !queued {
                     return Err(Error::new(4002, "session is already working"));
                 }
-                if queued && state.busy && state.interrupted {
+                if queued && (state.stops != 0 || (state.busy && state.interrupted)) {
                     None
                 } else {
                     if let Some(ids) = uploads
@@ -1296,7 +1334,7 @@ impl Runtime {
                 break staged;
             }
             // Pi retains follow-ups on abort but does not deliver them. Wait
-            // for the stopped run's boundary before submitting another one.
+            // for Stop and the stopped operation before submitting another one.
             run_ended
                 .changed()
                 .await
@@ -1338,6 +1376,7 @@ impl Runtime {
                 state.busy = false;
                 state.error = Some(error.message.clone());
                 state.display.pop_back();
+                s.run_ended.send_modify(|v| *v += 1);
                 self.events
                     .emit(&s.owner, None, "hexbot.bots.changed", json!({"name":s.bot}));
                 s.settled.send_modify(|v| *v += 1);
@@ -1517,19 +1556,51 @@ impl Runtime {
             }
         }
     }
+    async fn interrupt(&self, s: &Arc<Live>, deadline: Duration) -> Result<()> {
+        let runtime = self
+            .weak
+            .upgrade()
+            .ok_or_else(|| Error::new(5201, "daemon is stopping"))?;
+        let stop = StopGuard::start(s)?;
+        // Finish Stop even if its RPC caller disconnects. The guard covers all
+        // cleanup and concurrent Stops; no request task can strand its count.
+        tokio::spawn(async move {
+            let s = &stop.0;
+            crate::provider_acp::cancel(&runtime.home, &s.stored).await;
+            Self::cancel_dialogs(s).await;
+            crate::native_tools::close_session(&runtime.home, &s.stored).await;
+            let result = s
+                .process
+                .request_cancellable(json!({"type":"abort"}), deadline)
+                .await
+                .map_err(pi_error)
+                .and_then(|reply| {
+                    if reply.success {
+                        Ok(())
+                    } else {
+                        Err(Error::new(
+                            5201,
+                            reply.error.unwrap_or_else(|| "Stop failed".into()),
+                        ))
+                    }
+                });
+            if result.is_err() {
+                // A rejected abort promises no run boundary. Exit closes the
+                // section and wakes deliveries instead of waiting indefinitely.
+                let _ = s.process.shutdown().await;
+            }
+            result
+        })
+        .await
+        .map_err(|error| Error::new(5201, error.to_string()))?
+    }
     pub async fn interrupt_stored(&self, owner: &str, stored: &str) -> Result<bool> {
         let s = self.sessions.lock().unwrap().get(stored).cloned();
         if let Some(s) = s {
             if s.owner != owner {
                 return Err(Error::new(4302, "not the owner"));
             }
-            crate::provider_acp::cancel(&self.home, &s.stored).await;
-            Self::cancel_dialogs(&s).await;
-            crate::native_tools::close_session(&self.home, &s.stored).await;
-            s.process
-                .request_cancellable(json!({"type":"abort"}), DEADLINE)
-                .await
-                .map_err(pi_error)?;
+            self.interrupt(&s, DEADLINE).await?;
             return Ok(true);
         }
         Ok(false)
@@ -1602,6 +1673,7 @@ impl Runtime {
             {
                 let _gate = s.event_gate.lock().unwrap();
                 s.state.lock().unwrap().closed = true;
+                s.run_ended.send_modify(|v| *v += 1);
             }
             // Staging already under way finishes, sees the close and removes
             // its files before the section folder can be deleted.
@@ -1657,6 +1729,7 @@ impl Runtime {
         for s in &sessions {
             let _gate = s.event_gate.lock().unwrap();
             s.state.lock().unwrap().closed = true;
+            s.run_ended.send_modify(|v| *v += 1);
         }
         // Stop every section at once: a service manager gives the whole daemon
         // a few seconds, not a few seconds per section. Whatever is still
@@ -1877,13 +1950,7 @@ impl Runtime {
                 Ok(json!({"status":if s.state.lock().unwrap().busy{"working"}else{"idle"}}))
             }
             "session.interrupt" => {
-                crate::provider_acp::cancel(&self.home, &s.stored).await;
-                Self::cancel_dialogs(&s).await;
-                crate::native_tools::close_session(&self.home, &s.stored).await;
-                s.process
-                    .request_cancellable(json!({"type":"abort"}), DEADLINE)
-                    .await
-                    .map_err(pi_error)?;
+                self.interrupt(&s, DEADLINE).await?;
                 Ok(json!({"status":"interrupted"}))
             }
             "session.steer" => {
@@ -2404,7 +2471,7 @@ impl Runtime {
         {
             let _gate = s.event_gate.lock().unwrap();
             let mut state = s.state.lock().unwrap();
-            if state.closed || state.interrupted {
+            if state.dialogs_cancelled() {
                 return Ok(false);
             }
             state.native_approvals.insert(id.clone(), sender);
@@ -3500,7 +3567,7 @@ impl Runtime {
                             event["method"].as_str(),
                             Some("select" | "confirm" | "input" | "editor")
                         ))
-                    && s.state.lock().unwrap().interrupted
+                    && s.state.lock().unwrap().dialogs_cancelled()
                 {
                     // Pi can prepare another dialog while Stop cancels the first.
                     // Answer it so abort can finish, without publishing another card.
@@ -3542,7 +3609,7 @@ impl Runtime {
                     let interrupted = {
                         let mut state = s.state.lock().unwrap();
                         state.tool_dialogs.insert(id.clone());
-                        state.interrupted
+                        state.dialogs_cancelled()
                     };
                     tasks.spawn(async move {
                         if interrupted {
@@ -3732,6 +3799,7 @@ fn pump(
                     state.closed = true;
                     state.error = Some(error.message.clone());
                     state.pending.clear();
+                    s.run_ended.send_modify(|v| *v += 1);
                     (busy, was_closed)
                 };
                 if busy {
