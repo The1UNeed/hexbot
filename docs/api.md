@@ -71,7 +71,9 @@ data model. The native transport and event projection live in
   flags also produce a one-step card.
   Stop cancels pending approvals, questions and Auto reviews. Approvals and
   questions arriving while the turn is stopping are cancelled before Pi's abort
-  finishes, without publishing new cards. A new turn accepts dialogs again.
+  finishes, without publishing new cards. Queued input arriving during Stop
+  waits for the stopped run to settle, then starts or joins a fresh run.
+  That run accepts tools, approvals and questions again.
   Without OS isolation, shell commands require user approval even with
   `full_access`; review cannot replace
   it. Explicit section grants can cover unreviewed requests when offered.

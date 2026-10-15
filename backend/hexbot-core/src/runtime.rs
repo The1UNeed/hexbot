@@ -83,6 +83,8 @@ struct Live {
     process: PiProcess,
     state: Mutex<State>,
     settled: watch::Sender<u64>,
+    /// Every Pi run boundary, including one with undelivered queued input.
+    run_ended: watch::Sender<u64>,
     tools: Vec<Value>,
     requests: Mutex<tokio::task::JoinSet<()>>,
     event_gate: Mutex<()>,
@@ -938,6 +940,7 @@ impl Runtime {
             attachment_gate: AsyncMutex::new(()),
             permit: Mutex::new(Some(permit)),
             settled,
+            run_ended: watch::channel(0).0,
             tools: options["tools"].as_array().cloned().unwrap_or_default(),
             model: Mutex::new(model_choice(&options)),
             compaction,
@@ -1217,73 +1220,88 @@ impl Runtime {
             return Err(Error::new(4202, "prompt exceeds 1 MiB"));
         }
         let mut command = json!({"type":"prompt","message":text});
-        let sent;
-        let dropped;
-        let intent;
-        {
-            let _gate = s.event_gate.lock().unwrap();
-            let mut state = s.state.lock().unwrap();
-            if state.closed {
-                return Err(Error::new(4001, "session not found"));
-            }
-            if state.busy && !queued {
-                return Err(Error::new(4002, "session is already working"));
-            }
-            if let Some(ids) = uploads
-                && let Some(missing) = ids
-                    .iter()
-                    .find(|id| !state.staged.iter().any(|u| &u.id == *id))
-            {
-                return Err(Error::new(
-                    4204,
-                    format!("attachment not found: {missing}; attach it again"),
-                ));
-            }
-            if !state.busy {
-                state.output.clear();
-                state.error = None;
-                state.interrupted = false;
-                state.chain = chain.unwrap_or_default();
-                // A background result that finds the section idle starts a turn
-                // nobody waits on: keep the shared hop count, drop the requesters
-                // so the bot can pass the answer on.
-                if queued {
-                    state.chain.askers.clear();
+        let mut chain = chain;
+        let mut run_ended = s.run_ended.subscribe();
+        let (sent, dropped, intent) = loop {
+            let staged = {
+                let _gate = s.event_gate.lock().unwrap();
+                let mut state = s.state.lock().unwrap();
+                if state.closed {
+                    return Err(Error::new(4001, "session not found"));
                 }
+                if state.busy && !queued {
+                    return Err(Error::new(4002, "session is already working"));
+                }
+                if queued && state.busy && state.interrupted {
+                    None
+                } else {
+                    if let Some(ids) = uploads
+                        && let Some(missing) = ids
+                            .iter()
+                            .find(|id| !state.staged.iter().any(|u| &u.id == *id))
+                    {
+                        return Err(Error::new(
+                            4204,
+                            format!("attachment not found: {missing}; attach it again"),
+                        ));
+                    }
+                    if !state.busy {
+                        state.output.clear();
+                        state.error = None;
+                        state.interrupted = false;
+                        state.chain = chain.take().unwrap_or_default();
+                        // A background result that finds the section idle starts a turn
+                        // nobody waits on: keep the shared hop count, drop the requesters
+                        // so the bot can pass the answer on.
+                        if queued {
+                            state.chain.askers.clear();
+                        }
+                    }
+                    // Queued input joins the unsettled turn, even if a background
+                    // result belongs to an older turn. Keep its active requester guard.
+                    // It must also keep Stop's cancellation until this turn settles.
+                    state.busy = true;
+                    state.last_activity = common::now();
+                    state
+                        .display
+                        .push_back(if hidden { "hidden" } else { "normal" }.into());
+                    // A client that names its uploads sends only those; anything else
+                    // staged here was abandoned, by this client or another one.
+                    let (sent, dropped) = std::mem::take(&mut state.staged)
+                        .into_iter()
+                        .partition::<Vec<_>, _>(|u| uploads.is_none_or(|ids| ids.contains(&u.id)));
+                    command["images"] = json!(
+                        sent.iter()
+                            .flat_map(|u| u.images.clone())
+                            .collect::<Vec<_>>()
+                    );
+                    let refs = sent.iter().flat_map(|u| u.refs.clone()).collect::<Vec<_>>();
+                    if !refs.is_empty() {
+                        command["message"] =
+                            json!(format!("{}\n\nAttached files:\n{}", text, refs.join("\n")));
+                    }
+                    if queued {
+                        command["streamingBehavior"] = json!("followUp");
+                    }
+                    let intent = store::stage_prompt(
+                        &self.home,
+                        &s.stored,
+                        command["message"].as_str().unwrap_or(text),
+                        if hidden { "hidden" } else { "normal" },
+                    );
+                    Some((sent, dropped, intent))
+                }
+            };
+            if let Some(staged) = staged {
+                break staged;
             }
-            // Queued input joins the unsettled turn, even if a background
-            // result belongs to an older turn. Keep its active requester guard.
-            // It must also keep Stop's cancellation until this turn settles.
-            state.busy = true;
-            state.last_activity = common::now();
-            state
-                .display
-                .push_back(if hidden { "hidden" } else { "normal" }.into());
-            // A client that names its uploads sends only those; anything else
-            // staged here was abandoned, by this client or another one.
-            (sent, dropped) = std::mem::take(&mut state.staged)
-                .into_iter()
-                .partition::<Vec<_>, _>(|u| uploads.is_none_or(|ids| ids.contains(&u.id)));
-            command["images"] = json!(
-                sent.iter()
-                    .flat_map(|u| u.images.clone())
-                    .collect::<Vec<_>>()
-            );
-            let refs = sent.iter().flat_map(|u| u.refs.clone()).collect::<Vec<_>>();
-            if !refs.is_empty() {
-                command["message"] =
-                    json!(format!("{}\n\nAttached files:\n{}", text, refs.join("\n")));
-            }
-            if queued {
-                command["streamingBehavior"] = json!("followUp");
-            }
-            intent = store::stage_prompt(
-                &self.home,
-                &s.stored,
-                command["message"].as_str().unwrap_or(text),
-                if hidden { "hidden" } else { "normal" },
-            );
-        }
+            // Pi retains follow-ups on abort but does not deliver them. Wait
+            // for the stopped run's boundary before submitting another one.
+            run_ended
+                .changed()
+                .await
+                .map_err(|_| Error::new(5201, "session closed"))?;
+        };
         remove_staged(dropped);
         let response = match &intent {
             Ok(_) => s
@@ -1456,6 +1474,8 @@ impl Runtime {
             let _gate = s.event_gate.lock().unwrap();
             let mut state = s.state.lock().unwrap();
             state.interrupted = true;
+            state.native_approvals.clear();
+            state.display.clear();
             let owned = state
                 .pending
                 .keys()
@@ -1469,8 +1489,6 @@ impl Runtime {
         while tasks.join_next().await.is_some() {}
         let pending = {
             let mut state = s.state.lock().unwrap();
-            state.native_approvals.clear();
-            state.display.clear();
             let mut pending = HashMap::new();
             // Later arrivals belong to the replacement JoinSet. Its response
             // tasks own their cancellation; taking them here would reply twice.
@@ -3415,6 +3433,10 @@ impl Runtime {
                 self.retry_messages(s);
                 let (text, error, pending) = {
                     let mut state = s.state.lock().unwrap();
+                    // This boundary belongs to the stopped run even if a new
+                    // prompt reached idle Pi before we handled its last event.
+                    state.interrupted = false;
+                    s.run_ended.send_modify(|v| *v += 1);
                     if !state.display.is_empty() {
                         return Ok(());
                     }
@@ -3726,6 +3748,7 @@ fn pump(
                     crate::native_tools::close_session(&runtime.home, &s.stored).await;
                 }
                 s.permit.lock().unwrap().take();
+                s.run_ended.send_modify(|v| *v += 1);
                 s.settled.send_modify(|v| *v += 1);
                 let mut sessions = runtime.sessions.lock().unwrap();
                 if sessions

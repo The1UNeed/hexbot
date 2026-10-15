@@ -56,7 +56,7 @@ if (process.argv.includes('--no-session')) {
       return;
     }
     emit({type: 'response', id: command.id, command: command.type, success: true, data: {}});
-    if (command.type === 'get_state') { released = true; finishAbort(); }
+    if (command.type === 'release_abort') { released = true; finishAbort(); }
     if (command.type === 'prompt') {
       emit({type: 'agent_start'});
       emit({type: 'message_end', message: {role: 'user', content: command.message}});
@@ -174,7 +174,7 @@ async fn stopping_cancels_late_approvals_and_questions_before_abort_finishes() {
         .unwrap()
         .unwrap()
     );
-    Runtime::command(&s, json!({"type":"get_state"}))
+    Runtime::command(&s, json!({"type":"release_abort"}))
         .await
         .unwrap();
     assert_eq!(
@@ -336,30 +336,108 @@ async fn stopping_cancels_an_inflight_auto_review_without_a_fallback_card() {
     runtime.shutdown().await;
 }
 
-#[tokio::test]
-async fn a_queued_background_result_keeps_an_unsettled_turn_interrupted() {
+// Pi 1.0.1 queues follow-ups while streaming, retains them on abort, and
+// starts a fresh run for a prompt received while idle. stop-queue.test.mjs
+// checks this contract against the pinned package with a local provider.
+fn install_queue_pi(home: &Path, idle_before_settled: bool) {
+    fs::write(
+        home.join("idle-before-settled"),
+        json!(idle_before_settled).to_string(),
+    )
+    .unwrap();
+    fs::write(home.join("pi.cjs"), r#"#!/usr/bin/env node
+const fs = require('node:fs');
+const emit = event => process.stdout.write(JSON.stringify(event) + '\n');
+const status = text => emit({type:'extension_ui_request', method:'setStatus', statusText:text});
+const response = (c, data = {}) => emit({type:'response', id:c.id, command:c.type, success:true, data});
+const idleBeforeSettled = JSON.parse(fs.readFileSync(__dirname + '/idle-before-settled'));
+let active = false, abort;
+const queue = [];
+const delivered = text => emit({type:'message_end', message:{role:'user', content:text}});
+const finishAbort = () => {
+  active = false;
+  emit({type:'message_end', message:{role:'assistant', content:[], stopReason:'aborted'}});
+  if (!idleBeforeSettled) emit({type:'agent_settled'});
+  response(abort);
+  abort = undefined;
+  status('abort idle');
+};
+require('node:readline').createInterface({input:process.stdin}).on('line', line => {
+  const c = JSON.parse(line);
+  fs.appendFileSync(__dirname + '/commands.jsonl', JSON.stringify({active, c}) + '\n');
+  if (c.type === 'extension_ui_response') {
+    fs.appendFileSync(__dirname + '/dialogs.jsonl', JSON.stringify(c) + '\n');
+    return;
+  }
+  if (c.type === 'abort') {
+    abort = c;
+    if (idleBeforeSettled) finishAbort();
+    else status('abort waiting');
+    return;
+  }
+  response(c, c.type === 'get_state' ? {isStreaming:active, pendingMessageCount:queue.length} : {});
+  if (c.type === 'release_abort') finishAbort();
+  if (c.type === 'release_settled') emit({type:'agent_settled'});
+  if (c.type === 'prompt') {
+    if (active && c.streamingBehavior === 'followUp') { queue.push(c.message); return; }
+    active = true;
+    emit({type:'agent_start'});
+    delivered(c.message);
+    status('projected ' + c.message);
+    if (c.message === 'background result') emit({type:'extension_ui_request', id:'fresh-question', method:'input', title:'Which file?'});
+  }
+  if (c.type === 'finish_run') {
+    for (const text of queue.splice(0)) delivered(text);
+    active = false;
+    emit({type:'message_end', message:{role:'assistant', content:[{type:'text', text:'finished'}], stopReason:'stop'}});
+    emit({type:'agent_settled'});
+  }
+});
+"#).unwrap();
+}
+
+async fn queued_result_after_stop(idle_before_settled: bool) {
     let (home, runtime, hub) = setup();
-    install_stop_pi(home.path());
+    install_queue_pi(home.path(), idle_before_settled);
     let id = open(&runtime).await;
     let s = runtime.sessions.lock().unwrap()["first"].clone();
+    let mut events = hub.subscribe();
     runtime
         .submit(&s, "wait", false, false, None, None)
         .await
         .unwrap();
-    Runtime::cancel_dialogs(&s).await;
-    let before = hub.since("alice", &id, 0)["latest_seq"].as_u64().unwrap();
-
-    // A delegate can finish after cancellation but before Pi settles the turn.
-    runtime
-        .return_result("alice", "owl", "first", "wait", None)
-        .await;
+    stop_event(&mut events, |event| {
+        event["payload"]["text"] == "projected wait"
+    })
+    .await;
+    let stop = {
+        let (runtime, id) = (runtime.clone(), id.clone());
+        tokio::spawn(async move {
+            runtime
+                .call_inner("alice", "session.interrupt", &json!({"session_id":id}))
+                .await
+                .unwrap()
+        })
+    };
+    stop_event(&mut events, |event| {
+        event["payload"]["text"]
+            == if idle_before_settled {
+                "abort idle"
+            } else {
+                "abort waiting"
+            }
+    })
+    .await;
+    assert!(s.state.lock().unwrap().busy);
     assert!(s.state.lock().unwrap().interrupted);
-    runtime
-        .event(
-            &s,
-            json!({"type":"extension_ui_request","id":"late-after-result","method":"input","title":"Continue?"}),
-        )
-        .unwrap();
+    let before = hub.since("alice", &id, 0)["latest_seq"].as_u64().unwrap();
+    let result = runtime.return_result("alice", "owl", "first", "background result", None);
+    tokio::pin!(result);
+    assert!(futures_util::poll!(result.as_mut()).is_pending());
+
+    // A continuation's agent_start may have been in flight when Stop arrived.
+    runtime.event(&s, json!({"type":"agent_start"})).unwrap();
+    runtime.event(&s, json!({"type":"extension_ui_request","id":"late-question","method":"input","title":"Continue?"})).unwrap();
     let mut replies = std::mem::take(&mut *s.requests.lock().unwrap());
     tokio::time::timeout(Duration::from_secs(5), async {
         while replies.join_next().await.is_some() {}
@@ -367,17 +445,168 @@ async fn a_queued_background_result_keeps_an_unsettled_turn_interrupted() {
     .await
     .unwrap();
     assert!(published_cards(&hub, &id, before).is_empty());
-    assert!(s.state.lock().unwrap().pending.is_empty());
-
+    assert!(s.state.lock().unwrap().interrupted);
     Runtime::command(&s, json!({"type":"get_state"}))
         .await
         .unwrap();
-    runtime.event(&s, json!({"type":"agent_settled"})).unwrap();
+    let commands = fs::read_to_string(home.path().join("commands.jsonl")).unwrap();
+    assert!(!commands.contains("background result"), "{commands}");
+
+    Runtime::command(
+        &s,
+        json!({"type":if idle_before_settled { "release_settled" } else { "release_abort" }}),
+    )
+    .await
+    .unwrap();
+    tokio::time::timeout(Duration::from_secs(5), result)
+        .await
+        .unwrap();
+    stop.await.unwrap();
+    let card = stop_event(&mut events, |event| event["type"] == "clarify.request").await;
+    assert_eq!(card["payload"]["request_id"], "fresh-question");
+    assert!(!s.state.lock().unwrap().interrupted);
+    assert!(s.state.lock().unwrap().busy);
+    let commands = fs::read_to_string(home.path().join("commands.jsonl"))
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str::<Value>(line).unwrap())
+        .collect::<Vec<_>>();
+    let delivered = commands
+        .iter()
+        .filter(|command| command["c"]["message"] == "background result")
+        .collect::<Vec<_>>();
+    assert_eq!(delivered.len(), 1);
+    assert_eq!(
+        delivered[0]["active"], false,
+        "result must start a new Pi run"
+    );
+    runtime
+        .call_inner(
+            "alice",
+            "clarify.respond",
+            &json!({"session_id":id,"request_id":"fresh-question","answer":"file.txt"}),
+        )
+        .await
+        .unwrap();
+    Runtime::command(&s, json!({"type":"finish_run"}))
+        .await
+        .unwrap();
+    stop_event(&mut events, |event| {
+        event["type"] == "message.complete" && event["payload"]["text"] == "finished"
+    })
+    .await;
+    assert!(!s.state.lock().unwrap().busy);
+    assert!(s.state.lock().unwrap().display.is_empty());
+    let history = store::history(home.path(), "first").unwrap();
+    let delivered = history
+        .iter()
+        .filter(|row| row["role"] == "user" && row["text"] == "background result")
+        .collect::<Vec<_>>();
+    assert_eq!(delivered.len(), 1);
+    assert_eq!(delivered[0]["display_kind"], "hidden");
+    runtime
+        .submit(&s, "next user turn", false, false, None, None)
+        .await
+        .unwrap();
+    runtime.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_result_arriving_while_pi_aborts_waits_and_starts_a_fresh_run() {
+    queued_result_after_stop(false).await;
+}
+
+#[tokio::test]
+async fn a_result_arriving_after_pi_is_idle_waits_for_daemon_settlement() {
+    queued_result_after_stop(true).await;
+}
+
+#[tokio::test]
+async fn settlement_reopens_every_dialog_path_even_with_undelivered_input() {
+    let (home, runtime, hub) = setup();
+    install_stop_pi(home.path());
+    db::open(home.path())
+        .unwrap()
+        .execute_batch("UPDATE bots SET approval_mode='manual'")
+        .unwrap();
+    let id = open(&runtime).await;
+    let s = runtime.sessions.lock().unwrap()["first"].clone();
+    let mut events = hub.subscribe();
     runtime
         .submit(&s, "wait", false, false, None, None)
         .await
         .unwrap();
+    stop_event(&mut events, |event| {
+        event["payload"]["text"] == "prompt ready"
+    })
+    .await;
+    Runtime::cancel_dialogs(&s).await;
+    // Model a new prompt already admitted before the old settlement was
+    // projected. A generic agent_start must not clear Stop; this boundary must.
+    s.state.lock().unwrap().display.push_back("hidden".into());
+    runtime.event(&s, json!({"type":"agent_settled"})).unwrap();
+    assert!(s.state.lock().unwrap().busy);
     assert!(!s.state.lock().unwrap().interrupted);
+    runtime.event(&s, json!({"type":"agent_start"})).unwrap();
+    runtime.event(&s, json!({"type":"extension_ui_request","id":"fresh-approval","method":"confirm","title":"Continue?"})).unwrap();
+    let card = stop_event(&mut events, |event| event["type"] == "approval.request").await;
+    assert_eq!(card["payload"]["request_id"], "fresh-approval");
+    runtime
+        .call_inner(
+            "alice",
+            "approval.respond",
+            &json!({"session_id":id,"request_id":"fresh-approval","choice":"once"}),
+        )
+        .await
+        .unwrap();
+    runtime.event(&s, json!({"type":"extension_ui_request","id":"fresh-batch","method":"input","title":format!("__HEXBOT_CLARIFY__{}",json!({"questions":[{"qid":"file","question":"Which file?"}]}))})).unwrap();
+    let card = stop_event(&mut events, |event| event["type"] == "clarify.request").await;
+    assert_eq!(card["payload"]["request_id"], "fresh-batch");
+    runtime.call_inner("alice", "clarify.respond", &json!({"session_id":id,"request_id":"fresh-batch","question_id":"file","answer":"file.txt"})).await.unwrap();
+    for name in ["hexbot_session_settings", "hexbot_todo_context"] {
+        runtime.event(&s, json!({"type":"extension_ui_request","id":name,"method":"input","title":format!("__HEXBOT_TOOL__{}",json!({"name":name,"args":{}}))})).unwrap();
+    }
+    let mut replies = std::mem::take(&mut *s.requests.lock().unwrap());
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while replies.join_next().await.is_some() {}
+    })
+    .await
+    .unwrap();
+    Runtime::command(&s, json!({"type":"get_state"}))
+        .await
+        .unwrap();
+    let replies = fs::read_to_string(home.path().join("dialogs.jsonl"))
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str::<Value>(line).unwrap())
+        .collect::<Vec<_>>();
+    for name in ["hexbot_session_settings", "hexbot_todo_context"] {
+        let response = replies.iter().find(|reply| reply["id"] == name).unwrap();
+        assert_ne!(response["cancelled"], true);
+        let value: Value = serde_json::from_str(response["value"].as_str().unwrap()).unwrap();
+        assert!(value.get("result").is_some(), "{response}");
+        assert!(value.get("error").is_none(), "{response}");
+    }
+    let native = {
+        let (runtime, s) = (runtime.clone(), s.clone());
+        tokio::spawn(async move {
+            runtime
+                .native_approval(&s, json!({"tool":"execute_code"}))
+                .await
+                .unwrap()
+        })
+    };
+    let card = stop_event(&mut events, |event| event["type"] == "approval.request").await;
+    runtime
+        .call_inner(
+            "alice",
+            "approval.respond",
+            &json!({"session_id":id,"request_id":card["payload"]["request_id"],"choice":"once"}),
+        )
+        .await
+        .unwrap();
+    assert!(native.await.unwrap());
+    assert!(s.state.lock().unwrap().pending.is_empty());
     runtime.shutdown().await;
 }
 
@@ -404,7 +633,7 @@ async fn cancellation_does_not_take_a_late_dialog_from_its_response_task() {
     install_stop_pi(home.path());
     open(&runtime).await;
     let s = runtime.sessions.lock().unwrap()["first"].clone();
-    let backpressure = s.process.hold_extension_response().await;
+    let backpressure = s.process.hold_extension_admission();
     let (started, ready) = tokio::sync::oneshot::channel();
     let (arrived, delivered) = tokio::sync::oneshot::channel();
     let late = LateDialog {
