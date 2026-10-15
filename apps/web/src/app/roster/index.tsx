@@ -26,6 +26,7 @@ import { cn } from '../../lib/cn'
 import { reasoningOptions, runningLevel } from '../../lib/reasoning'
 import { toMillis } from '../../lib/time'
 import type { Bot, ModelOption, ReasoningEffort, Room, RoomEvent, Section } from '../../lib/types'
+import { useChatSelection } from '../../lib/use-chat-selection'
 import { useBotList, useBots } from '../../stores/bots'
 import { useConnection } from '../../stores/connection'
 import { useDrafts } from '../../stores/drafts'
@@ -240,6 +241,7 @@ function BotRow({
 export function RosterColumn() {
   const params = useParams({ strict: false }) as { bot?: string; section?: string }
   const navigate = useNavigate()
+  const { cancel: cancelChat, selectChat } = useChatSelection()
   const bots = useBotList()
   const rooms = useRoomList()
   const sectionMap = useSections(state => state.byId)
@@ -382,7 +384,7 @@ export function RosterColumn() {
    * tell one recovery set aside. An older daemon's may be picked by the user.
    */
   const openChat = async (bot: string) => {
-    const chat = await sectionsActions().chat(bot)
+    const chat = await selectChat(bot)
 
     if (chat) {
       open(bot, chat.id)
@@ -455,7 +457,10 @@ export function RosterColumn() {
             <Input
               aria-label="Search bots and rooms"
               className="h-9 rounded-full border-transparent bg-foreground/[0.05] pl-9 focus-visible:border-transparent focus-visible:bg-background focus-visible:shadow-card"
-              onChange={event => setQuery(event.target.value.toLowerCase())}
+              onChange={event => {
+                cancelChat()
+                setQuery(event.target.value.toLowerCase())
+              }}
               placeholder="Search"
               value={query}
             />

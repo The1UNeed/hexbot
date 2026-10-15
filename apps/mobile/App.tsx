@@ -53,7 +53,7 @@ import { parseArgs } from './src/core/chat'
 import { activityLabel, readableResult, resultLine, toolLabel } from './src/core/tools'
 import { Management, type Panel } from './src/Management'
 import { useMobile } from './src/core/useMobile'
-import { shownRoom } from './src/core/routes'
+import { chatPreview, shownRoom } from './src/core/routes'
 import { CONNECT_ORIGIN, parseConnectCallback } from './src/core/links'
 import { clearConnectSession, loadConnectSession, saveConnectSession } from './src/core/storage'
 import { connectGrant, request, RevokedError } from './src/core/transport'
@@ -427,16 +427,12 @@ function MobileApp() {
     current: d.id === mobile.active?.id
   }))
   const bots: BotSummary[] = mobile.bots.map(b => {
-    // Quote the chat's last message.
-    const chat =
-      mobile.sections.find(s => s.bot === b.name && !s.peer_bot) ??
-      b.sections_recent?.find(s => s.preview)
     return {
       ...faceOf(b),
       id: b.name,
       title: b.title,
       description: b.description,
-      preview: chat?.preview || null,
+      preview: chatPreview(b.name, mobile.sections, b.sections_recent),
       activity: b.status_detail?.text,
       status:
         b.status === 'idle' && b.sections_recent?.some(s => s.done_at)

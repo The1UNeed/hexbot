@@ -134,12 +134,12 @@ export const useConnection = create<ConnectionState>(set => ({
 
   setTarget(target) {
     writeStoredTarget(target)
-    set({ target })
+    set(state => (state.target === target ? { target } : { daemon: null, epoch: null, target }))
   },
 
   clearTarget() {
     writeStoredTarget(null)
-    set({ daemon: null, target: null })
+    set({ daemon: null, epoch: null, target: null })
   },
 
   setDaemon(daemon) {
@@ -147,7 +147,7 @@ export const useConnection = create<ConnectionState>(set => ({
   },
 
   setEpoch(epoch) {
-    set({ epoch })
+    set(state => (state.epoch === epoch ? { epoch } : { daemon: null, epoch }))
   }
 }))
 

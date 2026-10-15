@@ -65,6 +65,8 @@ export function legacyChat(
 export interface ChatChoice {
   bot: string
   choices: Section[]
+  /** Whether this lookup still belongs to the current navigation and daemon. */
+  current: () => boolean
   /** The section picked, or null when the user picks none. */
   pick: (section: null | Section) => void
 }
@@ -182,8 +184,10 @@ function mergeSection(state: SectionsState, section: Section): Partial<SectionsS
 
 /** Reloads asked for by section, so an open already under way reads it again. */
 const reloads = new Map<string, number>()
+/** Share history reads so a slower concurrent snapshot cannot replace a newer one. */
+const opening = new Map<string, ReturnType<SectionsState['open']>>()
 
-/** Each bot's chat on an older daemon, so the user is asked once while the app runs. */
+/** Each bot's chat on an older daemon, remembered for the current connection. */
 const picked = new Map<string, string>()
 let chatGeneration = 0
 
@@ -254,14 +258,6 @@ export const useSections = create<SectionsState>((set, get) => ({
 
       set(state => ({
         ...indexSections(result.sections ?? [], state.sendingTitles),
-        liveSessionId: {
-          ...state.liveSessionId,
-          ...Object.fromEntries(
-            (result.sections ?? [])
-              .filter(section => section.live_session_id)
-              .map(section => [section.id, section.live_session_id as string])
-          )
-        },
         loading: false
       }))
     } catch (error) {
@@ -269,47 +265,81 @@ export const useSections = create<SectionsState>((set, get) => ({
     }
   },
 
-  async open(id) {
+  open(id) {
+    const pending = opening.get(id)
+
+    if (pending) {
+      return pending
+    }
+
     const { target, epoch } = useConnection.getState()
-    const asked = reloads.get(id) ?? 0
-    const { context, messages, pending_clarify, section } = await sectionsOpen(id)
 
-    if (target !== useConnection.getState().target || epoch !== useConnection.getState().epoch) {
-      throw new Error('The selected daemon changed. Open this chat again.')
-    }
+    const current = () =>
+      target === useConnection.getState().target && epoch === useConnection.getState().epoch
 
-    // The chat changed while it opened (a dream report): this history is old.
-    if ((reloads.get(id) ?? 0) !== asked) {
-      return get().open(id)
-    }
+    const read = async (): ReturnType<SectionsState['open']> => {
+      const asked = reloads.get(id) ?? 0
+      let result
 
-    const live = section.live_session_id
+      try {
+        result = await sectionsOpen(id)
+      } catch (error) {
+        // A report can supersede a failed read as well as a successful snapshot.
+        if (current() && (reloads.get(id) ?? 0) !== asked) {
+          return read()
+        }
 
-    set(state => ({
-      ...mergeSection(state, section),
-      liveSessionId: live ? { ...state.liveSessionId, [id]: live } : state.liveSessionId
-    }))
+        throw error
+      }
 
-    if (live) {
-      useTranscripts.getState().open(
-        live,
-        id,
-        messagesFromHistory(messages ?? []).filter(
-          // Hexbot replays an interrupted hidden kickoff as a plain user turn.
-          message => !(message.role === 'user' && message.text.includes(KICKOFF_MARKER))
+      if (!current()) {
+        throw new Error('The selected daemon changed. Open this chat again.')
+      }
+
+      if ((reloads.get(id) ?? 0) !== asked) {
+        return read()
+      }
+
+      const { context, messages, pending_clarify, section } = result
+      const live = section.live_session_id
+
+      if (live) {
+        useTranscripts.getState().open(
+          live,
+          id,
+          messagesFromHistory(messages ?? []).filter(
+            message => !(message.role === 'user' && message.text.includes(KICKOFF_MARKER))
+          )
         )
-      )
 
-      if (context) {
-        useTranscripts.getState().sessionContext(live, context)
+        if (context) {
+          useTranscripts.getState().sessionContext(live, context)
+        }
+
+        if (pending_clarify) {
+          useTranscripts.getState().clarifyRequest(live, pending_clarify, { notify: false })
+        }
       }
 
-      if (pending_clarify) {
-        useTranscripts.getState().clarifyRequest(live, pending_clarify, { notify: false })
-      }
+      // Only a history read establishes a loaded chat. Catalog live IDs are
+      // metadata; a list refresh or canonical lookup cannot restore its transcript.
+      set(state => ({
+        ...mergeSection(state, section),
+        liveSessionId: live ? { ...state.liveSessionId, [id]: live } : state.liveSessionId
+      }))
+
+      return { liveSessionId: live, section }
     }
 
-    return { liveSessionId: live, section }
+    const request = read().finally(() => {
+      if (opening.get(id) === request) {
+        opening.delete(id)
+      }
+    })
+
+    opening.set(id, request)
+
+    return request
   },
 
   async openThread(id, peer) {
@@ -393,6 +423,7 @@ export const useSections = create<SectionsState>((set, get) => ({
           choosing: {
             bot,
             choices,
+            current,
             pick: choice => {
               if (get().choosing?.choices === choices) {
                 set({ choosing: null })
@@ -419,12 +450,7 @@ export const useSections = create<SectionsState>((set, get) => ({
       return null
     }
 
-    set(state => ({
-      ...mergeSection(state, section),
-      liveSessionId: section.live_session_id
-        ? { ...state.liveSessionId, [section.id]: section.live_session_id }
-        : state.liveSessionId
-    }))
+    set(state => mergeSection(state, section))
 
     return section
   },
@@ -436,7 +462,7 @@ export const useSections = create<SectionsState>((set, get) => ({
 
   forgetLive(id) {
     reloads.set(id, (reloads.get(id) ?? 0) + 1)
-    const closed = get().liveSessionId[id]
+    const closed = get().liveSessionId[id] ?? get().byId[id]?.live_session_id
 
     if (!closed) {
       return
@@ -452,10 +478,20 @@ export const useSections = create<SectionsState>((set, get) => ({
 }))
 
 useConnection.subscribe((next, previous) => {
-  if (next.target !== previous.target || next.epoch !== previous.epoch) {
+  const changed = next.target !== previous.target || next.epoch !== previous.epoch
+
+  if (changed || (!next.daemon && previous.daemon)) {
     useSections.getState().choosing?.pick(null)
     chatGeneration++
     picked.clear()
+  }
+
+  if (changed) {
+    opening.clear()
+
+    if (next.target !== previous.target) {
+      useSections.getState().clearLive()
+    }
   }
 })
 
