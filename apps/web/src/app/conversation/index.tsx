@@ -363,7 +363,7 @@ export function StoppedCard({
   message: TranscriptMessage
   name: string
   onFix?: (connector: string) => void
-  onRetry: () => void
+  onRetry?: () => void
 }) {
   const connector = message.errorDetail?.connector ?? null
 
@@ -394,9 +394,11 @@ export function StoppedCard({
             Fix {connectorName}
           </Button>
         ) : null}
-        <Button onClick={onRetry} size="sm">
-          Retry
-        </Button>
+        {onRetry ? (
+          <Button onClick={onRetry} size="sm">
+            Retry
+          </Button>
+        ) : null}
       </div>
     </div>
   )
@@ -416,7 +418,7 @@ export function MessageRow({
   message: TranscriptMessage
   onFix?: (connector: string) => void
   onImage: (source: string) => void
-  onRetry: () => void
+  onRetry?: () => void
   /** Arrived while this chat was open: each of its bubbles springs in as it appears. */
   fresh?: boolean
   /** Follows a bubble from the same side: it sits 4 px under it, one stack. */
@@ -464,9 +466,10 @@ export function MessageRow({
     onClick: () => void navigator.clipboard.writeText(bubbles.join('\n\n'))
   }
 
-  const actions = assistant
-    ? [copy, { icon: <RotateCcw size={14} />, label: 'Retry', onClick: onRetry }]
-    : [copy]
+  const actions =
+    assistant && onRetry
+      ? [copy, { icon: <RotateCcw size={14} />, label: 'Retry', onClick: onRetry }]
+      : [copy]
 
   const last = bubbles.length - 1
   const name = bot?.display_name ?? 'Bot'
@@ -1054,12 +1057,14 @@ function BotConversation() {
     [params.bot, params.section, target, epoch, capability, installation, location, openAttempt]
   )
 
-  const [resolved, setResolved] = useState<object | null>(null)
+  const [resolved, setResolved] = useState<{ entry: object; peer: boolean } | null>(null)
   const bot = useBot(params.bot ?? null)
   const botsLoaded = useBots(state => state.loaded)
   const section = useSection(params.section ?? null)
   const loadedLiveId = useLiveSessionId(params.section ?? null)
-  const liveId = resolved === entry ? loadedLiveId : null
+  const ready = resolved?.entry === entry
+  const ownerInput = ready && !resolved.peer
+  const liveId = ready ? loadedLiveId : null
   const transcript = useTranscript(liveId)
 
   // Connector tools are named from the bot's catalog ("Connecting to Project tools").
@@ -1190,7 +1195,7 @@ function BotConversation() {
           return
         }
 
-        setResolved(entry)
+        setResolved({ entry, peer: Boolean(chat.peer_bot) })
       })().catch(error => {
         if (current()) {
           setOpenFailure({
@@ -1211,7 +1216,7 @@ function BotConversation() {
   }, [entry, router])
 
   useEffect(() => {
-    if (resolved !== entry || !params.section || liveId) {
+    if (!ready || !params.section || liveId) {
       return
     }
 
@@ -1238,7 +1243,7 @@ function BotConversation() {
     return () => {
       cancelled = true
     }
-  }, [resolved, entry, params.section, liveId, router, location, target, epoch])
+  }, [ready, entry, params.section, liveId, router, location, target, epoch])
   useEffect(() => {
     if (atBottom) {
       toEnd()
@@ -1303,7 +1308,19 @@ function BotConversation() {
     return items.sort((a, b) => a.at - b.at)
   }, [approvals, clarifies, shown])
 
+  const canPrompt = () =>
+    ownerInput &&
+    router.history.location === location &&
+    target === useConnection.getState().target &&
+    epoch === useConnection.getState().epoch &&
+    capability === useConnection.getState().daemon?.one_chat &&
+    installation === useConnection.getState().daemon?.install_id
+
   const retry = () => {
+    if (!canPrompt()) {
+      return
+    }
+
     const last = messages.findLast(message => message.role === 'user')
 
     if (liveId && last) {
@@ -1322,7 +1339,7 @@ function BotConversation() {
   }
 
   const send = (prompt: string) => {
-    if (liveId && section) {
+    if (canPrompt() && liveId && section) {
       transcriptActions().appendUserMessage(liveId, prompt)
       sectionsActions().markTouched(section.id, prompt)
       void promptSubmit(liveId, prompt).finally(
@@ -1349,6 +1366,10 @@ function BotConversation() {
       onDragOver={event => event.preventDefault()}
       onDrop={event => {
         event.preventDefault()
+
+        if (!canPrompt()) {
+          return
+        }
 
         const input =
           viewport.current?.parentElement?.querySelector<HTMLInputElement>('input[type=file]')
@@ -1384,7 +1405,7 @@ function BotConversation() {
               Retry
             </Button>
           </div>
-        ) : resolved !== entry ? (
+        ) : !ready ? (
           <div className="grid h-full place-content-center text-muted" role="status">
             Opening conversation
           </div>
@@ -1397,18 +1418,20 @@ function BotConversation() {
                 <p className="mx-auto mt-1.5 max-w-sm text-muted">{bot.title || bot.description}</p>
               ) : null}
             </div>
-            <div className="flex max-w-lg flex-col items-center gap-2">
-              {suggestedPrompts(bot?.description ?? '', bot?.display_name).map(prompt => (
-                <button
-                  className="hex-glass-press hex-focus rounded-full bg-bubble [--hex-press-scale:1.04] px-4 py-2 text-[length:var(--text-secondary)] text-foreground/85 hover:bg-surface-2 hover:text-foreground"
-                  key={prompt}
-                  onClick={() => send(prompt)}
-                  type="button"
-                >
-                  {prompt}
-                </button>
-              ))}
-            </div>
+            {ownerInput ? (
+              <div className="flex max-w-lg flex-col items-center gap-2">
+                {suggestedPrompts(bot?.description ?? '', bot?.display_name).map(prompt => (
+                  <button
+                    className="hex-glass-press hex-focus rounded-full bg-bubble [--hex-press-scale:1.04] px-4 py-2 text-[length:var(--text-secondary)] text-foreground/85 hover:bg-surface-2 hover:text-foreground"
+                    key={prompt}
+                    onClick={() => send(prompt)}
+                    type="button"
+                  >
+                    {prompt}
+                  </button>
+                ))}
+              </div>
+            ) : null}
           </div>
         ) : (
           <div className={cn(transcriptClass, 'hex-fade')} key={liveId ?? params.section}>
@@ -1456,7 +1479,7 @@ function BotConversation() {
                     message={message}
                     onFix={fixConnector}
                     onImage={setLightbox}
-                    onRetry={retry}
+                    onRetry={ownerInput ? retry : undefined}
                   />
                 </div>
               )
@@ -1467,7 +1490,7 @@ function BotConversation() {
                 message={stoppedHere}
                 name={bot?.display_name ?? 'Bot'}
                 onFix={fixConnector}
-                onRetry={retry}
+                onRetry={ownerInput ? retry : undefined}
               />
             ) : null}
             <div className="h-2" />
@@ -1532,17 +1555,19 @@ function BotConversation() {
         </button>
       ) : null}
       <div className="absolute inset-x-0 bottom-0 z-20" ref={composerBox}>
-        <div className="relative mx-auto max-w-[52rem] px-1">
-          <Composer
-            bot={bot}
-            key={params.section}
-            notice={notice}
-            sectionId={params.section ?? null}
-            sessionId={liveId}
-            status={status}
-            streaming={streaming}
-          />
-        </div>
+        {ownerInput ? (
+          <div className="relative mx-auto max-w-[52rem] px-1">
+            <Composer
+              bot={bot}
+              key={params.section}
+              notice={notice}
+              sectionId={params.section ?? null}
+              sessionId={liveId}
+              status={status}
+              streaming={streaming}
+            />
+          </div>
+        ) : null}
       </div>
       <Dialog
         onOpenChange={open => !open && setLightbox(null)}

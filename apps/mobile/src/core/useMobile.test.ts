@@ -417,7 +417,7 @@ it('reconnect clears a legacy chooser even when capability is unchanged', async 
 it('an older hydration reply cannot replace fresh canonical capability on the same connection', async () => {
   const hook = await connected()
   const older = pause('hexbot.info')
-  let refresh!: Promise<void>
+  let refresh!: ReturnType<ReturnType<typeof useMobile>['refresh']>
   await act(async () => { refresh = hook.result.current.refresh(); await older.called })
   state.request.mockImplementation(reply)
   await act(async () => { await hook.result.current.refresh() })
@@ -425,4 +425,160 @@ it('an older hydration reply cannot replace fresh canonical capability on the sa
   expect(hook.result.current.info?.one_chat).toBe(true)
   await act(async () => { await hook.result.current.openSection(bot, section('obsolete')) })
   expect(hook.result.current.route).toMatchObject({ section: { id: 'owl-chat' } })
+})
+
+
+it.each([true, false])('reconnect resolves the canonical owner chat after upgrade, old row survives: %s', async survives => {
+  oneChat = false
+  sections = [section('old', { message_count: 2 }), section('owl-chat', { message_count: 2 })]
+  const hook = await connected()
+  await act(async () => { await hook.result.current.openSection(bot, sections[0]) })
+  oneChat = true
+  if (!survives) sections = [sections[1]!]
+  state.request.mockImplementation(async (method: string, params: Record<string, unknown> = {}) => method === 'hexbot.sections.open'
+    ? { section: section(String(params.id)), messages: [{ role: 'assistant', text: `${params.id} history` }] }
+    : reply(method, params))
+  state.request.mockClear()
+  await act(async () => { await state.ready() })
+  const restored = hook.result.current.chat.messages.map(m => m.text)
+  await act(async () => { await hook.result.current.send('Canonical reply') })
+  expect(state.request).toHaveBeenCalledWith('prompt.submit', expect.objectContaining({ session_id: 'live-owl-chat' }))
+  expect(state.request).toHaveBeenCalledWith('hexbot.sections.create', { bot: 'owl' })
+  expect(state.request).not.toHaveBeenCalledWith('hexbot.sections.open', { id: 'old' })
+  expect(hook.result.current.route).toMatchObject({ section: { id: 'owl-chat' } })
+  expect(restored).toEqual(['owl-chat history'])
+})
+
+
+it.each(['room', 'peer', 'legacy', 'same-canonical'] as const)(
+  'reconnect preserves the explicit %s control', async kind => {
+    oneChat = kind !== 'legacy'
+    sections = [section('owl-chat', { message_count: 2 }), section('other', { message_count: 2 }), section('peer', { peer_bot: 'yak', archived_at: 1 })]
+    const hook = await connected()
+    state.request.mockImplementation(async (method: string, params: Record<string, unknown> = {}) => method === 'hexbot.sections.open'
+      ? { section: sections.find(s => s.id === params.id) ?? section(String(params.id)), messages: [] }
+      : reply(method, params))
+    if (kind === 'room') await act(async () => { await hook.result.current.openRoom(room) })
+    else await act(async () => { await hook.result.current.openSection(bot, kind === 'peer' ? sections[2] : kind === 'legacy' ? sections[1] : undefined) })
+    state.request.mockClear()
+    await act(async () => { await state.ready() })
+    if (kind === 'room') expect(hook.result.current.route).toMatchObject({ kind: 'room', room: { id: 'room' } })
+    else expect(hook.result.current.route).toMatchObject({ section: { id: kind === 'peer' ? 'peer' : kind === 'legacy' ? 'other' : 'owl-chat' } })
+    expect(state.request.mock.calls.filter(([method]) => method === 'hexbot.sections.create')).toHaveLength(kind === 'same-canonical' ? 1 : 0)
+  }
+)
+it('holds owner input through reconnect lookup failure and retries the canonical lookup', async () => {
+  sections = [section('owl-chat'), section('survivor')]
+  const hook = await connected()
+  await act(async () => { await hook.result.current.openSection(bot) })
+  const held = pause('hexbot.sections.create')
+  let reconnect!: Promise<void>
+  await act(async () => { reconnect = state.ready(); await Promise.resolve() })
+  expect(hook.result.current.liveSessionId()).toBeNull()
+  await expect(hook.result.current.send('too early')).rejects.toThrow()
+  await act(async () => { held.reject(new Error('Canonical lookup unavailable')); await reconnect.catch(() => {}) })
+  expect(hook.result.current.error).toBe('Canonical lookup unavailable')
+  const opened = state.request.mock.calls.filter(([method]) => method === 'hexbot.sections.open').length
+  // App Retry and report reload both call this public history-sync callback.
+  await act(async () => { await hook.result.current.syncChat() })
+  expect(state.request.mock.calls.filter(([method]) => method === 'hexbot.sections.open')).toHaveLength(opened)
+  expect(hook.result.current.liveSessionId()).toBeNull()
+  await expect(hook.result.current.send('still too early')).rejects.toThrow()
+  state.request.mockImplementation(reply)
+  await act(async () => { await state.ready() })
+  expect(hook.result.current.liveSessionId()).toBe('live-owl-chat')
+  await act(async () => { await hook.result.current.send('after retry') })
+  expect(state.request).toHaveBeenCalledWith('prompt.submit', expect.objectContaining({ session_id: 'live-owl-chat', text: 'after retry' }))
+  expect(state.request.mock.calls.some(([method, params]) => method === 'prompt.submit' && params.text.includes('early'))).toBe(false)
+})
+it.each(['room', 'bot', 'back', 'daemon', 'unmount'] as const)(
+  'a held reconnect canonical reply yields to later %s', async action => {
+    sections = [section('owl-chat'), section('survivor')]
+    const hook = await connected()
+    await act(async () => { await hook.result.current.openSection(bot) })
+    const held = pause('hexbot.sections.create', p => p.bot === 'owl')
+    let reconnect!: Promise<void>
+    await act(async () => { reconnect = state.ready(); await Promise.resolve() })
+    // Assert the reconnect actually reaches the canonical boundary.
+    expect(state.request.mock.calls.filter(([method]) => method === 'hexbot.sections.create').length).toBeGreaterThan(1)
+    await act(async () => {
+      if (action === 'room') await hook.result.current.openRoom(room)
+      if (action === 'bot') await hook.result.current.openSection(other)
+      if (action === 'back') hook.result.current.back()
+      if (action === 'daemon') await hook.result.current.activate({ ...daemon, id: 'second' }, 'token')
+      if (action === 'unmount') hook.unmount()
+      held.resolve({ section: section('late-canonical') })
+      await reconnect
+    })
+    expect(state.request).not.toHaveBeenCalledWith('hexbot.sections.open', { id: 'late-canonical' })
+    if (action === 'room') expect(hook.result.current.route?.kind).toBe('room')
+    if (action === 'bot') expect(hook.result.current.route).toMatchObject({ section: { id: 'yak-chat' } })
+    if (action === 'back' || action === 'daemon') expect(hook.result.current.route).toBeNull()
+  }
+)
+
+
+it.each(['history', 'status'] as const)('reconnect publishes no write ID until canonical %s is restored', async boundary => {
+  sections = [section('owl-chat')]
+  const hook = await connected()
+  await act(async () => { await hook.result.current.openSection(bot) })
+  const held = pause(boundary === 'history' ? 'hexbot.sections.open' : 'session.status')
+  let reconnect!: Promise<void>
+  await act(async () => { reconnect = state.ready(); await held.called })
+  expect(hook.result.current.liveSessionId()).toBeNull()
+  await expect(hook.result.current.send('premature')).rejects.toThrow()
+  await act(async () => {
+    held.resolve(boundary === 'history' ? { section: section('owl-chat'), messages: [{ role: 'assistant', text: 'Canonical history' }] } : { status: 'idle' })
+    await reconnect
+  })
+  expect(hook.result.current.liveSessionId()).toBe('live-owl-chat')
+  expect(state.request.mock.calls.some(([method]) => method === 'prompt.submit')).toBe(false)
+})
+it('reconnect hydration yields to room navigation before any canonical or stale history RPC', async () => {
+  sections = [section('owl-chat')]
+  const hook = await connected()
+  await act(async () => { await hook.result.current.openSection(bot) })
+  state.request.mockClear()
+  const held = pause('hexbot.info')
+  let reconnect!: Promise<void>
+  await act(async () => { reconnect = state.ready(); await held.called })
+  await act(async () => { await hook.result.current.openRoom(room) })
+  await act(async () => { held.resolve({ one_chat: true }); await reconnect })
+  expect(hook.result.current.route?.kind).toBe('room')
+  expect(state.request.mock.calls.some(([method]) => method === 'hexbot.sections.create' || method === 'hexbot.sections.open')).toBe(false)
+  expect(state.request.mock.calls.filter(([method]) => method === 'hexbot.rooms.log')).toHaveLength(1)
+})
+it('a superseded reconnect hydration cannot open an ordinary row with older capability', async () => {
+  sections = [section('owl-chat'), section('survivor')]
+  const hook = await connected()
+  await act(async () => { await hook.result.current.openSection(bot) })
+  const held = pause('hexbot.info')
+  let reconnect!: Promise<void>
+  await act(async () => { reconnect = state.ready(); await held.called })
+  state.request.mockImplementation(reply)
+  await act(async () => { await hook.result.current.refresh() })
+  state.request.mockClear()
+  await act(async () => { held.resolve({ one_chat: false }); await reconnect })
+  expect(hook.result.current.info?.one_chat).toBe(true)
+  expect(hook.result.current.liveSessionId()).toBeNull()
+  expect(hook.result.current.error).toMatch(/Retry/)
+  expect(state.request.mock.calls.some(([method]) => method === 'hexbot.sections.open' || method === 'hexbot.sections.unarchive')).toBe(false)
+  await act(async () => { await state.ready() })
+  expect(hook.result.current.liveSessionId()).toBe('live-owl-chat')
+})
+
+
+it('an obsolete legacy sheet answer cannot change a later room after reconnect', async () => {
+  oneChat = false
+  sections = [section('a', { message_count: 2 }), section('b', { message_count: 2 })]
+  const hook = await connected()
+  await act(async () => { await hook.result.current.openSection(bot) })
+  const oldChoose = hook.result.current.choose
+  const oldChoice = hook.result.current.choosing!.choices[1]!
+  await act(async () => { await state.ready() })
+  await act(async () => { await hook.result.current.openRoom(room) })
+  state.request.mockClear()
+  await act(async () => { oldChoose(oldChoice) })
+  expect(hook.result.current.route?.kind).toBe('room')
+  expect(state.request.mock.calls.some(([method]) => method === 'hexbot.sections.unarchive' || method === 'hexbot.sections.open' || method === 'hexbot.sections.create')).toBe(false)
 })

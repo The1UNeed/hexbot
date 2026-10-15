@@ -29,6 +29,8 @@ import {
 import { botFace } from '../lib/avatar-builder'
 import { useChatSelection } from '../lib/use-chat-selection'
 import { useBots } from '../stores/bots'
+import { sectionsActions } from '../stores/sections'
+import { uiActions } from '../stores/ui'
 
 export const Route = createFileRoute('/b/$bot/settings/$tab')({
   // A removed tab, such as Sections from before chats, opens Profile.
@@ -76,7 +78,7 @@ function BotSettingsDialog() {
   const bot = useBots(state => state.byName[botName])
   const loaded = useBots(state => state.loaded)
   const refresh = useBots(state => state.refresh)
-  const { selectChat } = useChatSelection()
+  const { startSelection } = useChatSelection()
   const [closeError, setCloseError] = useState<string | null>(null)
   useEffect(() => {
     if (!loaded) {
@@ -90,16 +92,40 @@ function BotSettingsDialog() {
   }, [botName, tab])
 
   const close = async () => {
+    const current = startSelection()
+    const missing = () => useBots.getState().loaded && !useBots.getState().byName[botName]
+
+    const exitMissing = () => {
+      if (!current() || !missing()) {
+        return false
+      }
+
+      // Home restores the remembered chat. Forget only this deleted bot's pick.
+      if (uiActions().lastSection?.bot === botName) {
+        uiActions().setLastSection(null)
+      }
+
+      void navigate({ to: '/' })
+
+      return true
+    }
+
     setCloseError(null)
 
-    try {
-      const section = await selectChat(botName)
+    if (exitMissing() || (!useBots.getState().loaded && !useBots.getState().byName[botName])) {
+      return
+    }
 
-      if (section) {
+    try {
+      const section = await sectionsActions().chat(botName, () => current() && !missing())
+
+      if (current() && !exitMissing() && section) {
         void navigate({ params: { bot: botName, section: section.id }, to: '/b/$bot/s/$section' })
       }
     } catch (error) {
-      setCloseError(error instanceof Error ? error.message : String(error))
+      if (current() && !exitMissing()) {
+        setCloseError(error instanceof Error ? error.message : String(error))
+      }
     }
   }
 
