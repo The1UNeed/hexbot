@@ -530,6 +530,11 @@ fn digest_prefers_native_branch_and_legacy_fallback_resolves_session_keys_and_ac
     legacy.execute_batch("CREATE TABLE sessions(id TEXT,session_key TEXT); CREATE TABLE messages(id INTEGER PRIMARY KEY,session_id TEXT,role TEXT,content TEXT,timestamp REAL,active INTEGER); INSERT INTO sessions VALUES ('physical-session','chat'); INSERT INTO messages VALUES (1,'physical-session','user','inactive legacy',100,0),(2,'physical-session','user','active legacy',101,1);").unwrap();
     let before = dreaming::build_digest(home.path(), "owl", 0.0, f64::MAX, None).unwrap();
     assert_eq!(before["sections"][0]["transcript"], "user: active legacy");
+    // A completed import leaves its Pi file as well as the projection.
+    conversation(
+        home.path(),
+        &[said("imported", None, "user", "imported native legacy", 1)],
+    );
     runtime_store::append(
         home.path(),
         "chat",
@@ -842,6 +847,7 @@ async fn paired_clients_manage_jobs_through_the_same_owner_scoped_scheduler() {
 fn digest_skips_dream_reports_and_tool_results() {
     let home = setup();
     let h = home.path();
+    runtime_store::mark_fresh(h, "chat").unwrap();
     runtime_store::append(
         h,
         "chat",
@@ -1961,6 +1967,7 @@ fn native_digest_survives_obsolete_legacy_classification_and_open_failures() {
     for fault in ["corrupt", "schema", "open"] {
         let home = setup();
         let h = home.path();
+        runtime_store::mark_fresh(h, "chat").unwrap();
         runtime_store::append(
             h,
             "chat",
@@ -2085,6 +2092,7 @@ fn native_fallback_classifies_known_and_recreated_logs_without_losing_structured
     // A structured first reply, even under the old title, does not establish a log.
     let home = setup();
     let h = home.path();
+    runtime_store::mark_fresh(h, "chat").unwrap();
     db::open(h).unwrap().execute_batch("UPDATE sections SET title='Dreams' WHERE id='chat'; INSERT INTO dreams(id,bot,started_at,status,summary) VALUES('old','owl',1,'complete','REPORT');").unwrap();
     runtime_store::append(
         h,
@@ -2116,6 +2124,7 @@ fn native_fallback_keeps_adopted_snapshot_and_later_old_client_write_boundaries(
     let conn = db::open(h).unwrap();
     conn.execute_batch("INSERT INTO sections(id,bot,owner_id,title) VALUES('adopted','owl','alice','Chat'); INSERT INTO settings VALUES('dream_logs','[\"chat\"]');").unwrap();
     for id in ["chat", "adopted"] {
+        runtime_store::mark_fresh(h, id).unwrap();
         runtime_store::append(
             h,
             id,
@@ -2186,6 +2195,7 @@ async fn manual_and_scheduled_dreams_read_native_history_and_notes_with_obsolete
     for scheduled in [false, true] {
         let home = setup();
         let h = home.path();
+        runtime_store::mark_fresh(h, "chat").unwrap();
         enable_dream_now(h);
         runtime_store::append(
             h,
@@ -2237,6 +2247,7 @@ async fn unread_legacy_only_history_fails_dreams_without_advancing_cutoff_or_con
     for scheduled in [false, true] {
         let home = setup();
         let h = home.path();
+        runtime_store::mark_fresh(h, "chat").unwrap();
         let conn = db::open(h).unwrap();
         enable_dream_now(h);
         conn.execute_batch("INSERT INTO sections(id,bot,owner_id,title) VALUES('legacy-only','owl','alice','Old chat');").unwrap();
@@ -2304,5 +2315,319 @@ async fn unread_legacy_only_history_fails_dreams_without_advancing_cutoff_or_con
         );
         dreams.shutdown().await;
         runtime.shutdown().await;
+    }
+}
+
+fn repair_dream_legacy_store(home: &Path) {
+    let path = home.join("profiles/owl/state.db");
+    if path.exists() {
+        fs::remove_file(&path).unwrap();
+    }
+    rusqlite::Connection::open(path).unwrap().execute_batch(
+        "CREATE TABLE sessions(id TEXT PRIMARY KEY,session_key TEXT,parent_session_id TEXT);
+         CREATE TABLE messages(id INTEGER PRIMARY KEY,session_id TEXT,role TEXT,content TEXT,timestamp REAL,active INTEGER,display_kind TEXT);
+         INSERT INTO sessions VALUES('legacy','chat',NULL);
+         INSERT INTO messages VALUES(1,'legacy','user','previously unread dialogue',100,1,NULL);",
+    ).unwrap();
+}
+
+fn assert_dream_preserved_pending_input(home: &Path) {
+    let conn = db::open(home).unwrap();
+    assert_eq!(
+        conn.query_row(
+            "SELECT COALESCE(MAX(started_at),0) FROM dreams WHERE status='complete'",
+            [],
+            |r| r.get::<_, f64>(0),
+        )
+        .unwrap(),
+        0.
+    );
+    assert_eq!(
+        conn.query_row(
+            "SELECT COUNT(*) FROM memory_proposals WHERE consumed_at IS NULL",
+            [],
+            |r| r.get::<_, i64>(0),
+        )
+        .unwrap(),
+        1
+    );
+    assert!(!home.join("prompts.log").exists());
+}
+
+#[tokio::test]
+async fn failed_public_open_does_not_make_an_unimported_chat_complete_for_dreaming() {
+    for scheduled in [false, true] {
+        let home = setup();
+        let h = home.path();
+        enable_dream_now(h);
+        note(h, "owl", Local::now().date_naive(), "daily note");
+        dreaming::propose_memory(
+            h,
+            "alice",
+            "owl",
+            "job",
+            "add",
+            &json!({"text":"pending proposal"}),
+        )
+        .unwrap();
+        obsolete_legacy_store(h, "corrupt");
+        let hub = EventHub::new();
+        let mut receiver = hub.subscribe();
+        let runtime = Runtime::new(h.into(), hub.clone(), fake_pi(h, false)).unwrap();
+        let error = runtime
+            .call("alice", "hexbot.sections.open", &json!({"id":"chat"}))
+            .await
+            .unwrap()
+            .unwrap_err();
+        assert!(error.message.contains("not a database"), "{error}");
+        let native = runtime_store::open(h).unwrap();
+        let frozen: (String, String) = native
+            .query_row(
+                "SELECT prompt,options FROM native_sessions WHERE stored_id='chat'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert!(!runtime_store::fresh(h, "chat").unwrap());
+        assert!(runtime_store::history(h, "chat").unwrap().is_empty());
+        let path = runtime_store::session_dir(h, "chat")
+            .unwrap()
+            .join("conversation.jsonl");
+        assert!(!path.exists());
+        assert!(dreaming::build_digest(h, "owl", 0., 200., None).is_err());
+        let dreams = Dreaming::new(h.into(), runtime.clone(), hub);
+        let changed = run_digest_dream(&dreams, scheduled, &mut receiver).await;
+        assert_eq!(changed["dream"]["status"], "failed", "{changed}");
+        assert_dream_preserved_pending_input(h);
+        repair_dream_legacy_store(h);
+        runtime
+            .call("alice", "hexbot.sections.open", &json!({"id":"chat"}))
+            .await
+            .unwrap()
+            .unwrap();
+        runtime.close_stored("alice", "chat").await.unwrap();
+        let original = fs::read(&path).unwrap();
+        let changed = run_digest_dream(&dreams, false, &mut receiver).await;
+        assert_eq!(changed["dream"]["status"], "complete", "{changed}");
+        let prompt = fs::read_to_string(h.join("prompts.log")).unwrap();
+        assert!(
+            prompt.contains("previously unread dialogue")
+                && prompt.contains("daily note")
+                && prompt.contains("pending proposal")
+        );
+        assert_eq!(fs::read(path).unwrap(), original);
+        assert_eq!(
+            native
+                .query_row(
+                    "SELECT prompt,options FROM native_sessions WHERE stored_id='chat'",
+                    [],
+                    |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
+                )
+                .unwrap(),
+            frozen
+        );
+        let cutoff: f64 = db::open(h)
+            .unwrap()
+            .query_row(
+                "SELECT MAX(started_at) FROM dreams WHERE status='complete'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(
+            !dreaming::build_digest(h, "owl", cutoff, f64::MAX, None)
+                .unwrap()
+                .to_string()
+                .contains("previously unread dialogue")
+        );
+        dreams.shutdown().await;
+        runtime.shutdown().await;
+    }
+}
+
+#[tokio::test]
+async fn complete_imports_and_known_empty_new_chats_can_dream_with_unreadable_legacy() {
+    for imported in [false, true] {
+        for scheduled in [false, true] {
+            let home = setup();
+            let h = home.path();
+            enable_dream_now(h);
+            note(h, "owl", Local::now().date_naive(), "daily note");
+            dreaming::propose_memory(
+                h,
+                "alice",
+                "owl",
+                "job",
+                "add",
+                &json!({"text":"pending proposal"}),
+            )
+            .unwrap();
+            let hub = EventHub::new();
+            let mut receiver = hub.subscribe();
+            let runtime = Runtime::new(h.into(), hub.clone(), fake_pi(h, false)).unwrap();
+            if imported {
+                repair_dream_legacy_store(h);
+                runtime
+                    .call("alice", "hexbot.sections.open", &json!({"id":"chat"}))
+                    .await
+                    .unwrap()
+                    .unwrap();
+                runtime.close_stored("alice", "chat").await.unwrap();
+                assert!(!runtime_store::fresh(h, "chat").unwrap());
+            } else {
+                db::open(h)
+                    .unwrap()
+                    .execute("DELETE FROM sections WHERE id='chat'", [])
+                    .unwrap();
+                let chat = hexbot_core::catalog::chat_section(h, "alice", "owl").unwrap();
+                let id = chat["id"].as_str().unwrap();
+                assert!(runtime_store::fresh(h, id).unwrap());
+                assert!(runtime_store::history(h, id).unwrap().is_empty());
+                assert!(
+                    !runtime_store::session_dir(h, id)
+                        .unwrap()
+                        .join("conversation.jsonl")
+                        .exists()
+                );
+            }
+            obsolete_legacy_store(h, "corrupt");
+            let dreams = Dreaming::new(h.into(), runtime.clone(), hub);
+            let changed = run_digest_dream(&dreams, scheduled, &mut receiver).await;
+            assert_eq!(changed["dream"]["status"], "complete", "{changed}");
+            let prompt = fs::read_to_string(h.join("prompts.log")).unwrap();
+            assert!(prompt.contains("daily note") && prompt.contains("pending proposal"));
+            assert_eq!(prompt.contains("previously unread dialogue"), imported);
+            dreams.shutdown().await;
+            runtime.shutdown().await;
+        }
+    }
+}
+
+#[tokio::test]
+async fn unrecovered_and_quarantined_projections_cannot_advance_dreams_past_unread_messages() {
+    for quarantined in [false, true] {
+        for scheduled in [false, true] {
+            let home = setup();
+            let h = home.path();
+            enable_dream_now(h);
+            repair_dream_legacy_store(h);
+            dreaming::propose_memory(
+                h,
+                "alice",
+                "owl",
+                "job",
+                "add",
+                &json!({"text":"pending proposal"}),
+            )
+            .unwrap();
+            let hub = EventHub::new();
+            let mut receiver = hub.subscribe();
+            let runtime = Runtime::new(h.into(), hub.clone(), fake_pi(h, false)).unwrap();
+            runtime
+                .call("alice", "hexbot.sections.open", &json!({"id":"chat"}))
+                .await
+                .unwrap()
+                .unwrap();
+            runtime.close_stored("alice", "chat").await.unwrap();
+            let path = runtime_store::session_dir(h, "chat")
+                .unwrap()
+                .join("conversation.jsonl");
+            let mut raw = fs::read_to_string(&path).unwrap();
+            let last: Value = serde_json::from_str(raw.lines().last().unwrap()).unwrap();
+            raw.push_str(&format!("{}\n", json!({"type":"message","id":"late","parentId":last["id"],"timestamp":"1970-01-01T00:01:41.000Z","message":{"role":"user","content":[{"type":"text","text":"durable unprojected dialogue"}],"timestamp":101000}})));
+            assert!(
+                !json!(runtime_store::history(h, "chat").unwrap())
+                    .to_string()
+                    .contains("durable unprojected dialogue")
+            );
+            if quarantined {
+                fs::write(&path, format!("{raw}invalid middle record\n")).unwrap();
+            } else {
+                fs::write(&path, &raw).unwrap();
+                fs::rename(&path, h.join("unread-conversation.jsonl")).unwrap();
+                fs::create_dir(&path).unwrap();
+                assert_eq!(
+                    fs::read_to_string(h.join("unread-conversation.jsonl")).unwrap(),
+                    raw
+                );
+            }
+            runtime_store::reconcile_all(h).unwrap();
+            let native = runtime_store::open(h).unwrap();
+            let table = if quarantined {
+                "native_quarantine"
+            } else {
+                "native_unrecovered"
+            };
+            assert_eq!(
+                native
+                    .query_row(
+                        &format!("SELECT COUNT(*) FROM {table} WHERE session_id='chat'"),
+                        [],
+                        |r| r.get::<_, i64>(0)
+                    )
+                    .unwrap(),
+                1
+            );
+            // Even an unchanged adopted projection version cannot vouch for a
+            // durable message recovery has not projected yet.
+            db::open(h).unwrap().execute_batch("INSERT INTO sections(id,bot,owner_id,title) VALUES('adopted','owl','alice','Chat');").unwrap();
+            runtime_store::mark_fresh(h, "adopted").unwrap();
+            for message in runtime_store::history(h, "chat").unwrap() {
+                runtime_store::append(h, "adopted", message).unwrap();
+            }
+            let version = runtime_store::history_version(&native, "chat").unwrap();
+            db::open(h)
+                .unwrap()
+                .execute(
+                    "INSERT INTO settings VALUES('dream_chat_adoptions',?)",
+                    [json!({"chat":{"target":"adopted","version":version}}).to_string()],
+                )
+                .unwrap();
+            obsolete_legacy_store(h, "corrupt");
+            let dreams = Dreaming::new(h.into(), runtime.clone(), hub);
+            let changed = run_digest_dream(&dreams, scheduled, &mut receiver).await;
+            assert_eq!(changed["dream"]["status"], "failed", "{changed}");
+            assert!(
+                changed["dream"]["summary"]
+                    .as_str()
+                    .unwrap()
+                    .contains("must be recovered")
+            );
+            assert_dream_preserved_pending_input(h);
+            if path.is_dir() {
+                fs::remove_dir(&path).unwrap();
+            }
+            if quarantined {
+                fs::write(&path, &raw).unwrap();
+            } else {
+                fs::rename(h.join("unread-conversation.jsonl"), &path).unwrap();
+            }
+            runtime_store::reconcile_all(h).unwrap();
+            assert_eq!(
+                native
+                    .query_row(
+                        &format!("SELECT COUNT(*) FROM {table} WHERE session_id='chat'"),
+                        [],
+                        |r| r.get::<_, i64>(0)
+                    )
+                    .unwrap(),
+                0
+            );
+            assert!(
+                json!(runtime_store::history(h, "chat").unwrap())
+                    .to_string()
+                    .contains("durable unprojected dialogue")
+            );
+            let changed = run_digest_dream(&dreams, false, &mut receiver).await;
+            assert_eq!(changed["dream"]["status"], "complete", "{changed}");
+            assert!(
+                fs::read_to_string(h.join("prompts.log"))
+                    .unwrap()
+                    .contains("durable unprojected dialogue")
+            );
+            assert_eq!(fs::read_to_string(path).unwrap(), raw);
+            dreams.shutdown().await;
+            runtime.shutdown().await;
+        }
     }
 }
