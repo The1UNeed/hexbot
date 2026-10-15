@@ -1169,17 +1169,19 @@ pub fn remove_bot(home: &Path, owner: &str, room: &str, bot: &str) -> Result<Val
 }
 /// Delete a room and its bots' room transcripts. Callers check ownership first.
 pub fn delete(home: &Path, room: &str) -> Result<Value> {
-    purge_transcripts(home, room)?;
     let mut conn = db::open(home)?;
-    let tx = conn.transaction()?;
+    // Reserve the metadata write before destructive transcript cleanup and the
+    // incident reads; a deferred snapshot cannot upgrade after another writer.
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    purge_transcripts(home, &tx, room)?;
     crate::settings::retire_room_incidents(&tx, room)?;
     tx.execute("DELETE FROM rooms WHERE id=?", [room])?;
     tx.commit()?;
     Ok(json!({"deleted":true}))
 }
-fn purge_transcripts(home: &Path, room: &str) -> Result<()> {
+fn purge_transcripts(home: &Path, conn: &rusqlite::Connection, room: &str) -> Result<()> {
     for row in rows(
-        &db::open(home)?,
+        conn,
         "SELECT stored_session_id FROM room_sessions WHERE room_id=?",
         &[&room],
     )? {

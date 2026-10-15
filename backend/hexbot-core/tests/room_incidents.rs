@@ -356,6 +356,214 @@ async fn last_member_removal_retires_only_owned_room_failures_and_refreshes_bots
     delete_room(true).await;
 }
 
+// Observe connections opened inside the public RPC without production test hooks.
+// The callback runs synchronously at each SQL boundary, so the interleaving needs
+// no timing assumptions. Its state is local to each test's current-thread runtime.
+mod deletion_write_race {
+    use rusqlite::{Connection, Error, ffi};
+    use std::{
+        cell::RefCell,
+        ffi::{CStr, c_char, c_int, c_uint, c_void},
+        sync::Once,
+        time::Duration,
+    };
+
+    #[derive(Default)]
+    pub struct Attempts {
+        pub purge: Option<Result<usize, Error>>,
+        pub incident: Option<Result<usize, Error>>,
+    }
+
+    struct Race {
+        writer: Connection,
+        attempts: Attempts,
+    }
+
+    thread_local! {
+        static RACE: RefCell<Option<Race>> = const { RefCell::new(None) };
+    }
+
+    pub struct Guard;
+    impl Guard {
+        pub fn start(writer: Connection) -> Self {
+            static REGISTER: Once = Once::new();
+            REGISTER.call_once(|| {
+                // SQLite keeps this static callback for future connections.
+                assert_eq!(
+                    unsafe { ffi::sqlite3_auto_extension(Some(install)) },
+                    ffi::SQLITE_OK
+                );
+            });
+            writer.busy_timeout(Duration::ZERO).unwrap();
+            RACE.with_borrow_mut(|race| {
+                assert!(race.is_none());
+                *race = Some(Race {
+                    writer,
+                    attempts: Attempts::default(),
+                });
+            });
+            Self
+        }
+
+        pub fn finish(self) -> Attempts {
+            RACE.with_borrow_mut(|race| race.take().unwrap().attempts)
+        }
+    }
+
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            RACE.with_borrow_mut(|race| *race = None);
+        }
+    }
+
+    unsafe extern "C" fn install(
+        db: *mut ffi::sqlite3,
+        _: *mut *mut c_char,
+        _: *const ffi::sqlite3_api_routines,
+    ) -> c_int {
+        // The trace owns no pointers or callback data beyond SQLite's call.
+        unsafe {
+            ffi::sqlite3_trace_v2(
+                db,
+                ffi::SQLITE_TRACE_STMT,
+                Some(trace),
+                std::ptr::null_mut(),
+            )
+        }
+    }
+
+    unsafe extern "C" fn trace(
+        _: c_uint,
+        _: *mut c_void,
+        statement: *mut c_void,
+        _: *mut c_void,
+    ) -> c_int {
+        let sql = unsafe { ffi::sqlite3_sql(statement.cast()) };
+        if sql.is_null() {
+            return 0;
+        }
+        let sql = unsafe { CStr::from_ptr(sql) }.to_bytes();
+        let purge = sql.starts_with(b"INSERT OR IGNORE INTO native_deleted");
+        let incident = sql.starts_with(b"UPDATE bot_incidents SET room_id=?,resolved_at=?");
+        if purge || incident {
+            RACE.with_borrow_mut(|race| {
+                if let Some(race) = race {
+                    let attempt = if purge {
+                        &mut race.attempts.purge
+                    } else {
+                        &mut race.attempts.incident
+                    };
+                    if attempt.is_none() {
+                        *attempt = Some(race.writer.execute(
+                            "UPDATE rooms SET name=name||' renamed' WHERE id='concurrent-room'",
+                            [],
+                        ));
+                    }
+                }
+            });
+        }
+        0
+    }
+}
+
+async fn delete_during_unrelated_write(last_member: bool) {
+    let (home, app) = fixture().await;
+    let (room, failure) = failed_room(&app).await;
+    let stored = failure["section_id"].as_str().unwrap();
+    let id = failure["incident"]["id"].as_str().unwrap();
+    let conn = db::open(home.path()).unwrap();
+    conn.execute(
+        "INSERT INTO rooms(id,name,owner_id) VALUES('concurrent-room','Other','local')",
+        [],
+    )
+    .unwrap();
+    // Exercise legacy attribution's reads as well as native descendant cleanup.
+    conn.execute("UPDATE bot_incidents SET room_id=NULL WHERE id=?", [id])
+        .unwrap();
+    let native = hexbot_core::runtime_store::open(home.path()).unwrap();
+    native.execute("INSERT INTO native_sessions(stored_id,owner,bot,prompt,options) VALUES('child','local','owl','',?)", [json!({"parent_session":stored}).to_string()]).unwrap();
+    hexbot_core::runtime_store::append(
+        home.path(),
+        "child",
+        json!({"role":"user","text":"Child history"}),
+    )
+    .unwrap();
+    for session in [stored, "child"] {
+        assert!(
+            !hexbot_core::runtime_store::history(home.path(), session)
+                .unwrap()
+                .is_empty()
+        );
+        let dir = hexbot_core::runtime_store::session_dir(home.path(), session).unwrap();
+        fs::write(dir.join("cleanup-fixture"), "fixture").unwrap();
+    }
+    let race = deletion_write_race::Guard::start(db::open(home.path()).unwrap());
+    let method = if last_member {
+        "hexbot.rooms.remove_member"
+    } else {
+        "hexbot.rooms.delete"
+    };
+    let result = app
+        .call("local", method, &json!({"id":room,"bot":"owl"}))
+        .await;
+    let attempts = race.finish();
+    assert!(result.is_ok(), "{method}: {result:?}");
+    for (stage, attempt) in [
+        ("transcript purge", attempts.purge),
+        ("incident retirement", attempts.incident),
+    ] {
+        assert!(
+            matches!(attempt, Some(Err(rusqlite::Error::SqliteFailure(error, _))) if error.code == rusqlite::ErrorCode::DatabaseBusy),
+            "room deletion must reserve the metadata write before {stage}: {attempt:?}"
+        );
+    }
+    assert_eq!(
+        conn.query_row("SELECT COUNT(*) FROM rooms WHERE id=?", [&room], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+    assert_eq!(incident(&conn, id).0.as_deref(), Some(room.as_str()));
+    assert!(incident(&conn, id).1.is_some());
+    for session in [stored, "child"] {
+        assert!(
+            hexbot_core::runtime_store::history(home.path(), session)
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            native
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM native_deleted WHERE session_id=?)",
+                    [session],
+                    |r| r.get::<_, bool>(0)
+                )
+                .unwrap()
+        );
+        assert!(!home.path().join("runtime/sessions").join(session).exists());
+    }
+    // The competing operation can proceed as soon as deletion commits.
+    assert_eq!(
+        conn.execute(
+            "UPDATE rooms SET name='Renamed' WHERE id='concurrent-room'",
+            []
+        )
+        .unwrap(),
+        1
+    );
+    app.shutdown().await;
+}
+
+#[tokio::test]
+async fn explicit_room_deletion_reserves_write_before_purge_and_incident_reads() {
+    delete_during_unrelated_write(false).await;
+}
+
+#[tokio::test]
+async fn last_member_removal_reserves_write_before_purge_and_incident_reads() {
+    delete_during_unrelated_write(true).await;
+}
+
 #[test]
 fn room_deletion_does_not_claim_ambiguous_foreign_or_other_bot_legacy_mappings() {
     for mapping in ["unique", "ambiguous", "foreign", "other-bot", "live-only"] {
