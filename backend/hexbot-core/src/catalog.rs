@@ -1514,14 +1514,8 @@ fn delete_section(home: &Path, caller: &str, id: &str, purge: bool) -> Result<()
         runtime_store::unmark_deleted(home, id)?;
         return Err(error);
     }
-    if purge {
-        let purged = (|| {
-            runtime_store::delete(home, id)?;
-            purge_legacy_history(home, required(&row, "bot")?, id)
-        })();
-        if let Err(error) = purged {
-            eprintln!("Deleted section {id}, but not all of its history yet: {error}");
-        }
+    if purge && let Err(error) = runtime_store::delete(home, id) {
+        eprintln!("Deleted section {id}, but not all of its history yet: {error}");
     }
     Ok(())
 }
@@ -1530,7 +1524,7 @@ fn delete_section(home: &Path, caller: &str, id: &str, purge: bool) -> Result<()
 pub(crate) fn purge_legacy_history(home: &Path, bot: &str, id: &str) -> Result<()> {
     let path = profile(home, bot)?.join("state.db");
     safe(home, &path)?;
-    if path.exists() {
+    if path.try_exists()? {
         let mut conn = Connection::open(path)?;
         conn.busy_timeout(std::time::Duration::from_secs(10))?;
         let tx = conn.transaction()?;

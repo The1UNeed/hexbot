@@ -1,4 +1,6 @@
-use hexbot_core::{catalog, db, memory::MemoryStore, runtime_store, server::App};
+use hexbot_core::{
+    catalog, db, memory::MemoryStore, native_product_tools as product, runtime_store, server::App,
+};
 use serde_json::{Value, json};
 use std::{fs, future::Future, path::PathBuf, sync::Arc};
 
@@ -122,6 +124,16 @@ impl Fixture {
             .join(stored)
             .join("conversation.jsonl")
     }
+    fn completed(&self, stored: &str) -> bool {
+        runtime_store::open(self.home.path())
+            .unwrap()
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM native_delete_completed WHERE session_id=?)",
+                [stored],
+                |r| r.get(0),
+            )
+            .unwrap()
+    }
     fn snapshot(&self) -> Value {
         let h = self.home.path();
         let conn = runtime_store::open(h).unwrap();
@@ -206,6 +218,8 @@ fn public_section_delete_respects_purge_and_closes_descendants() {
         assert_eq!(fixture.snapshot(), state, "purge={purge:?} after restart");
         run(fixture.assert_closed());
         let keep = purge == Some(false);
+        assert_eq!(fixture.completed(&fixture.id), !keep);
+        assert_eq!(fixture.completed(&fixture.child), !keep);
         assert_eq!(state["parent_messages"], usize::from(keep));
         assert_eq!(state["child_messages"], usize::from(keep));
         assert_eq!(state["parent_pi"], keep);
@@ -282,6 +296,150 @@ fn public_section_delete_checks_ownership_before_storage() {
 }
 
 #[test]
+fn product_tools_reject_deleted_sources_without_changing_retained_files() {
+    for purge in [Some(false), Some(true), None] {
+        let mut fixture = Fixture::new();
+        let h = fixture.home.path();
+        fs::write(
+            h.join("profiles/owl/config.yaml"),
+            "tools:\n  enabled_toolsets: [todo, skills]\n",
+        )
+        .unwrap();
+        let skill = h.join("profiles/owl/skills/plan/SKILL.md");
+        let original = "---\nname: plan\ndescription: Use for planning.\n---\nKeep this skill.\n";
+        fs::create_dir_all(skill.parent().unwrap()).unwrap();
+        fs::write(&skill, original).unwrap();
+        // The child has native metadata but no catalog entry. It must remain
+        // a valid product-tool source until the actual public delete.
+        for stored in [&fixture.id, &fixture.child] {
+            run(product::call(
+                h,
+                "local",
+                "owl",
+                stored,
+                "todo_list",
+                &json!({"todos":[{"id":"keep","content":"Original task","status":"pending"}]}),
+            ))
+            .unwrap()
+            .unwrap();
+        }
+        run(product::call(
+            h,
+            "local",
+            "owl",
+            &fixture.child,
+            "skill_manage",
+            &json!({"operations":[{"name":"plan","action":"patch","old_string":"Keep this skill.","new_string":"Keep this skill."}]}),
+        ))
+        .unwrap()
+        .unwrap();
+        let todo = h
+            .join("runtime/sessions")
+            .join(&fixture.id)
+            .join("todo.json");
+        let before = fs::read(&todo).unwrap();
+        fixture.dispatch_delete("local", purge).unwrap();
+        for restart in [false, true] {
+            if restart {
+                fixture.restart();
+            }
+            for stored in [&fixture.id, &fixture.child] {
+                for (name, args) in [
+                    ("todo_list", json!({"todos":[]})),
+                    (
+                        "skill_manage",
+                        json!({"operations":[{"name":"plan","action":"delete"}]}),
+                    ),
+                ] {
+                    assert_eq!(
+                        run(product::call(
+                            fixture.home.path(),
+                            "local",
+                            "owl",
+                            stored,
+                            name,
+                            &args
+                        ))
+                        .unwrap()
+                        .unwrap_err()
+                        .code,
+                        4001,
+                        "purge={purge:?}, restart={restart}, tool={name}"
+                    );
+                }
+            }
+            assert_eq!(fs::read_to_string(&skill).unwrap(), original);
+            if purge == Some(false) {
+                assert_eq!(fs::read(&todo).unwrap(), before);
+            } else {
+                assert!(!todo.exists());
+            }
+        }
+    }
+}
+
+#[test]
+fn completed_purges_skip_native_legacy_and_file_cleanup_on_restarts() {
+    let mut fixture = Fixture::new();
+    fixture.dispatch_delete("local", Some(true)).unwrap();
+    let h = fixture.home.path();
+    let native = runtime_store::open(h).unwrap();
+    native.execute_batch("CREATE TABLE cleanup_attempts(kind TEXT); CREATE TRIGGER observe_delete BEFORE INSERT ON native_deleted BEGIN INSERT INTO cleanup_attempts VALUES('tombstone'); END; CREATE TRIGGER observe_policy BEFORE UPDATE ON native_delete_options BEGIN INSERT INTO cleanup_attempts VALUES('policy'); END;").unwrap();
+    // Observable barriers: cleanup must never touch these paths or issue
+    // destructive SQL again after the original purge succeeded.
+    let legacy = rusqlite::Connection::open(h.join("profiles/owl/state.db")).unwrap();
+    legacy
+        .execute("INSERT INTO sessions VALUES(?)", [&fixture.id])
+        .unwrap();
+    legacy
+        .execute(
+            "INSERT INTO messages VALUES(9,?,'user','Barrier')",
+            [&fixture.id],
+        )
+        .unwrap();
+    native
+        .execute(
+            "INSERT INTO native_messages VALUES(?,9,'{}')",
+            [&fixture.id],
+        )
+        .unwrap();
+    let dir = fixture.pi_path(&fixture.id).parent().unwrap().to_path_buf();
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(dir.join("barrier"), "Keep").unwrap();
+    for _ in 0..2 {
+        fixture.restart();
+        runtime_store::finish_deletes(fixture.home.path()).unwrap();
+        assert_eq!(
+            native
+                .query_row("SELECT COUNT(*) FROM cleanup_attempts", [], |r| r
+                    .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            native
+                .query_row("SELECT COUNT(*) FROM native_messages", [], |r| r
+                    .get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            legacy
+                .query_row("SELECT COUNT(*) FROM messages", [], |r| r.get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+        assert_eq!(fs::read_to_string(dir.join("barrier")).unwrap(), "Keep");
+        assert!(
+            runtime_store::owned_sessions(fixture.home.path(), "owl")
+                .unwrap()
+                .is_empty()
+        );
+        run(fixture.assert_closed());
+    }
+}
+
+#[test]
 fn bot_delete_purges_retained_native_conversations_after_restart() {
     let mut fixture = Fixture::new();
     runtime_store::open(fixture.home.path())
@@ -338,6 +496,14 @@ fn bot_delete_purges_retained_native_conversations_after_restart() {
                 .unwrap()
                 .is_empty()
         );
+        for stored in [fixture.id.as_str(), fixture.child.as_str(), "hidden-job"] {
+            assert!(fixture.completed(stored));
+        }
+        assert!(
+            runtime_store::owned_sessions(fixture.home.path(), "owl")
+                .unwrap()
+                .is_empty()
+        );
         fixture.app.shutdown().await;
     });
 }
@@ -381,6 +547,31 @@ fn failed_public_section_delete_keeps_data_and_unmarks_descendants() {
         assert_eq!(state["memory"], "Durable memory");
         assert!(catalog::section(fixture.home.path(), "local", &fixture.id).is_ok());
     }
+}
+
+#[test]
+fn bot_delete_waits_for_catalog_commit_before_purging_or_completing_history() {
+    let fixture = Fixture::new();
+    db::open(fixture.home.path()).unwrap().execute_batch("CREATE TRIGGER refuse_delete BEFORE DELETE ON sections BEGIN SELECT RAISE(ABORT,'fixture'); END;").unwrap();
+    run(async {
+        assert!(
+            fixture
+                .app
+                .call("local", "hexbot.bots.delete", &json!({"name":"owl"}))
+                .await
+                .is_err()
+        );
+        fixture.app.shutdown().await;
+    });
+    let state = fixture.snapshot();
+    for key in ["parent_messages", "child_messages", "legacy_messages"] {
+        assert_eq!(state[key], 1, "{key}");
+    }
+    assert_eq!(state["parent_pi"], true);
+    assert_eq!(state["child_pi"], true);
+    assert!(!fixture.completed(&fixture.id));
+    assert!(!fixture.completed(&fixture.child));
+    assert!(catalog::section(fixture.home.path(), "local", &fixture.id).is_ok());
 }
 
 #[test]
@@ -457,6 +648,10 @@ fn startup_finishes_failed_native_or_legacy_purge_after_catalog_removal() {
         assert_eq!(partial["parent_messages"], usize::from(native_failure));
         assert_eq!(partial["child_messages"], 0);
         assert_eq!(partial["legacy_messages"], 1);
+        assert!(!fixture.completed(&fixture.id));
+        assert!(fixture.completed(&fixture.child));
+        fixture.restart();
+        assert!(!fixture.completed(&fixture.id));
         conn.execute_batch("DROP TRIGGER fail_purge").unwrap();
         fixture.restart();
         let state = fixture.snapshot();
@@ -472,6 +667,13 @@ fn startup_finishes_failed_native_or_legacy_purge_after_catalog_removal() {
         assert_eq!(state["child_pi"], false);
         assert_eq!(state["tombstones"], 2);
         assert_eq!(state["memory"], "Durable memory");
+        assert!(fixture.completed(&fixture.id));
+        assert!(fixture.completed(&fixture.child));
+        assert!(
+            runtime_store::owned_sessions(fixture.home.path(), "owl")
+                .unwrap()
+                .is_empty()
+        );
     }
 }
 
@@ -512,6 +714,32 @@ fn bot_delete_finds_retained_root_without_native_or_catalog_row() {
 
 #[cfg(unix)]
 #[test]
+fn inaccessible_legacy_directory_never_counts_as_completed_cleanup() {
+    use std::os::unix::fs::PermissionsExt;
+    let mut fixture = Fixture::new();
+    let profile = fixture.home.path().join("profiles/owl");
+    let permissions = fs::metadata(&profile).unwrap().permissions();
+    fs::set_permissions(&profile, fs::Permissions::from_mode(0o000)).unwrap();
+    if profile.join("state.db").try_exists().is_ok() {
+        // Root and filesystems that ignore directory permissions cannot model
+        // an unreadable legacy database. Restore access before returning.
+        fs::set_permissions(&profile, permissions).unwrap();
+        return;
+    }
+    let deleted = fixture.dispatch_delete("local", Some(true));
+    fs::set_permissions(&profile, permissions).unwrap();
+    deleted.unwrap();
+    assert!(!fixture.completed(&fixture.id));
+    assert!(!fixture.completed(&fixture.child));
+    assert_eq!(fixture.snapshot()["legacy_messages"], 1);
+    fixture.restart();
+    assert!(fixture.completed(&fixture.id));
+    assert!(fixture.completed(&fixture.child));
+    assert_eq!(fixture.snapshot()["legacy_messages"], 0);
+}
+
+#[cfg(unix)]
+#[test]
 fn deletion_never_follows_session_symlinks_and_bot_cleanup_retries_files() {
     use std::os::unix::fs::symlink;
     let mut fixture = Fixture::new();
@@ -542,6 +770,8 @@ fn deletion_never_follows_session_symlinks_and_bot_cleanup_retries_files() {
     assert!(!fixture.pi_path(&fixture.id).exists());
     assert!(!fixture.pi_path(&fixture.child).exists());
     // Leaf symlinks, including broken ones, are removed without touching targets.
+    assert!(fixture.completed(&fixture.id));
+    assert!(fixture.completed(&fixture.child));
     for target in [outside.path().to_path_buf(), outside.path().join("missing")] {
         symlink(&target, sessions.join("leaf")).unwrap();
         runtime_store::delete(fixture.home.path(), "leaf").unwrap();
@@ -574,5 +804,33 @@ fn old_tombstone_without_ownership_purges_native_files_and_leaves_legacy_unread(
     assert_eq!(state["parent_pi"], false);
     assert_eq!(state["child_pi"], false);
     assert_eq!(state["legacy_messages"], 1);
+    run(fixture.assert_closed());
+}
+
+#[test]
+fn startup_upgrades_old_cleanup_schema_and_completes_each_orphaned_child() {
+    let mut fixture = Fixture::new();
+    let h = fixture.home.path();
+    runtime_store::mark_deleted(h, &fixture.id).unwrap();
+    let native = runtime_store::open(h).unwrap();
+    // Old builds persisted tombstones and disposition but no completion table.
+    native
+        .execute_batch("DROP TABLE native_delete_completed; DELETE FROM native_sessions;")
+        .unwrap();
+    db::open(h)
+        .unwrap()
+        .execute("DELETE FROM sections WHERE id=?", [&fixture.id])
+        .unwrap();
+    fixture.restart();
+    assert!(fixture.completed(&fixture.id));
+    assert!(fixture.completed(&fixture.child));
+    assert_eq!(fixture.snapshot()["legacy_messages"], 0);
+    assert!(!fixture.pi_path(&fixture.id).exists());
+    assert!(!fixture.pi_path(&fixture.child).exists());
+    assert!(
+        runtime_store::owned_sessions(fixture.home.path(), "owl")
+            .unwrap()
+            .is_empty()
+    );
     run(fixture.assert_closed());
 }

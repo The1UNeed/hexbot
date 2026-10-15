@@ -2968,6 +2968,7 @@ impl Runtime {
                     let session = session
                         .upgrade()
                         .ok_or_else(|| Error::new(5201, "session closed"))?;
+                    store::check_deleted(&store::open(&runtime.home)?, &session.stored)?;
                     let saved: String = store::open(&runtime.home)?.query_row(
                         "SELECT options FROM native_sessions WHERE stored_id=?",
                         [&session.stored],
@@ -3062,6 +3063,7 @@ impl Runtime {
     }
     async fn tool(&self, s: &Arc<Live>, name: &str, args: &Value) -> Result<Value> {
         common::bot_owner(&self.home, &s.owner, &s.bot)?;
+        store::check_deleted(&store::open(&self.home)?, &s.stored)?;
         let bot_owner: String = db::open(&self.home)?.query_row(
             "SELECT owner_id FROM bots WHERE name=?",
             [&s.bot],

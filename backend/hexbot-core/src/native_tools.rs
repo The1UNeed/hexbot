@@ -585,6 +585,7 @@ pub async fn call(
 ) -> Result<Value> {
     common::bot_owner(home, owner, bot)?;
     common::identifier(stored)?;
+    crate::runtime_store::check_deleted(&crate::runtime_store::open(home)?, stored)?;
     let mut stopped = {
         let mut map = cancellations().lock().unwrap_or_else(|e| e.into_inner());
         map.entry((home.to_owned(), stored.to_owned()))
@@ -1134,6 +1135,13 @@ pub fn register_dispatcher(home: &Path, stored: &str, callback: ToolDispatcher) 
         .unwrap_or_else(|e| e.into_inner())
         .insert((home.to_owned(), stored.to_owned()), callback);
 }
+pub(crate) fn dispatcher(home: &Path, stored: &str) -> Option<ToolDispatcher> {
+    dispatchers()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(&(home.to_owned(), stored.to_owned()))
+        .cloned()
+}
 type KernelMap = HashMap<(PathBuf, String, String), Arc<Mutex<Option<Kernel>>>>;
 fn kernels() -> &'static Mutex<KernelMap> {
     static KERNELS: OnceLock<Mutex<KernelMap>> = OnceLock::new();
@@ -1288,11 +1296,7 @@ async fn execute_code(
             let Some(tool) = value["hexbot_tool"].as_str() else {
                 return Ok(value);
             };
-            let dispatcher = dispatchers()
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .get(&(home.to_owned(), stored.to_owned()))
-                .cloned();
+            let dispatcher = dispatcher(home, stored);
             let result = if tool == "execute_code" {
                 Err(Error::new(4202, "execute_code cannot call itself"))
             } else if let Some(dispatcher) = dispatcher {

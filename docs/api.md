@@ -317,11 +317,14 @@ context of its own; the meter belongs to bot sections.
   The durable tombstone and retention choice precede the catalog transaction;
   history removal follows its commit. A stop before that commit keeps the
   section whole. After it, startup preserves retained history or retries an
-  interrupted purge. Cleanup failures after the catalog commit are logged and
-  deletion still succeeds. Old tombstones without a retention choice keep their
-  original purge behavior. Legacy cleanup requires known bot ownership; older
-  tombstones that have lost it can leave unread legacy rows. Usage accounting
-  and upgrade backups are kept. `hexbot.bots.delete` purges the bot's owned
+  interrupted purge. A durable completion marker prevents later startups from
+  repeating successful native, file and legacy cleanup; the tombstone remains.
+  Product tools and Python tool callbacks also reject deleted source IDs,
+  including retained conversations. Cleanup failures after the catalog commit
+  are logged and deletion still succeeds. Old tombstones without a retention
+  choice keep their original purge behavior. Legacy cleanup requires known bot
+  ownership; older tombstones that have lost it can leave unread legacy rows.
+  Usage accounting and upgrade backups are kept. `hexbot.bots.delete` purges the bot's owned
   history, including retained sections whose catalog rows have already gone.
 - `hexbot.sections.touch {id}` is internal; activity is stamped by the plugin
   on `message.complete`. It also sets the section's `done_at`.

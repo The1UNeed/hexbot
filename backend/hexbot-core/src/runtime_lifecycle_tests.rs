@@ -853,6 +853,93 @@ async fn unrelated_open_lock_does_not_block_live_commands() {
     runtime.shutdown().await;
 }
 #[tokio::test]
+async fn captured_python_bridge_and_runtime_tools_reject_retained_deleted_sources() {
+    let (home, runtime, _) = setup();
+    fs::write(
+        home.path().join("profiles/owl/config.yaml"),
+        "model:\n  provider: openai\n  default: fixture\ntools:\n  enabled_toolsets: [file, terminal, todo, skills, code_execution]\n",
+    )
+    .unwrap();
+    db::open(home.path())
+        .unwrap()
+        .execute("UPDATE bots SET approval_mode='off' WHERE name='owl'", [])
+        .unwrap();
+    open(&runtime).await;
+    let source = runtime.sessions.lock().unwrap()["first"].clone();
+    runtime.register_worker_bridge(&source);
+    // This is the actual callback Python captures before awaiting it. Keep it
+    // alive across close, which unregisters the section's dispatcher.
+    let bridge = crate::native_tools::dispatcher(home.path(), "first").unwrap();
+    let file = home.workspace().join("keep.txt");
+    bridge("write_file".into(), json!({"path":file,"content":"Keep"}))
+        .await
+        .unwrap();
+    bridge(
+        "todo_list".into(),
+        json!({"todos":[{"id":"keep","content":"Keep","status":"pending"}]}),
+    )
+    .await
+    .unwrap();
+    let todo = home.path().join("runtime/sessions/first/todo.json");
+    let before = fs::read(&todo).unwrap();
+    runtime.retire_stored("alice", "first").await.unwrap();
+    crate::catalog::call(
+        home.path(),
+        "alice",
+        "hexbot.sections.delete",
+        &json!({"id":"first","purge_memory":false}),
+    )
+    .unwrap()
+    .unwrap();
+    for (name, args) in [
+        ("todo_list", json!({"todos":[]})),
+        (
+            "skill_manage",
+            json!({"operations":[{"name":"plan","action":"delete"}]}),
+        ),
+        ("write_file", json!({"path":file,"content":"Changed"})),
+        ("terminal", json!({"command":"echo changed"})),
+    ] {
+        assert_eq!(
+            bridge(name.into(), args).await.unwrap_err().code,
+            4001,
+            "{name}"
+        );
+    }
+    for name in ["execute_code", "self_soul"] {
+        assert_eq!(
+            runtime
+                .tool(
+                    &source,
+                    name,
+                    &json!({"code":"print('late')","text":"Late soul"})
+                )
+                .await
+                .unwrap_err()
+                .code,
+            4001
+        );
+    }
+    assert_eq!(
+        crate::native_tools::call(
+            home.path(),
+            "alice",
+            "owl",
+            "first",
+            "execute_code",
+            &json!({"code":"print('late')"})
+        )
+        .await
+        .unwrap_err()
+        .code,
+        4001
+    );
+    assert_eq!(fs::read_to_string(file).unwrap(), "Keep");
+    assert_eq!(fs::read(todo).unwrap(), before);
+    runtime.shutdown().await;
+}
+
+#[tokio::test]
 async fn buffered_events_after_close_cannot_restore_deleted_rows() {
     let (home, runtime, _) = setup();
     open(&runtime).await;

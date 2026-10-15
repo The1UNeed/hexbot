@@ -112,7 +112,9 @@ pub fn descriptors(home: &Path, bot: &str) -> Result<Vec<Value>> {
 fn ensure_session(home: &Path, owner: &str, bot: &str, session: &str) -> Result<()> {
     common::bot_owner(home, owner, bot)?;
     common::identifier(session)?;
-    let actual: Option<(String, String)> = runtime_store::open(home)?
+    let conn = runtime_store::open(home)?;
+    runtime_store::check_deleted(&conn, session)?;
+    let actual: Option<(String, String)> = conn
         .query_row(
             "SELECT owner,bot FROM native_sessions WHERE stored_id=?",
             [session],
