@@ -234,8 +234,11 @@ pub fn delete(home: &Path, stored: &str) -> Result<()> {
         tx.execute("DELETE FROM native_sessions WHERE stored_id=?", [stored])?;
         tx.commit()?;
         let path = home.join("runtime/sessions").join(stored);
-        if path.exists() {
-            fs::remove_dir_all(path)?;
+        match fs::symlink_metadata(&path) {
+            Ok(metadata) if metadata.file_type().is_symlink() => fs::remove_file(path)?,
+            Ok(_) => fs::remove_dir_all(path)?,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
         }
     }
     Ok(())
@@ -301,6 +304,7 @@ pub fn fresh(home: &Path, stored: &str) -> Result<bool> {
 /// is gone loses what is left of its history here. Rows in a bot's older
 /// `state.db` stay: no section reads them any more.
 pub fn finish_deletes(home: &Path) -> Result<()> {
+    crate::catalog::finish_bot_deletes(home)?;
     let tombstones = open(home)?
         .prepare("SELECT session_id FROM native_deleted")?
         .query_map([], |r| r.get::<_, String>(0))?
@@ -742,6 +746,140 @@ pub fn import_hermes(home: &Path, bot: &str, stored: &str, cwd: &Path) -> Result
     // A crash before this point can safely repeat the import on next startup.
     common::atomic_write(&target, format!("{}\n", lines.join("\n")).as_bytes())?;
     Ok(())
+}
+
+/// Starts an independent owner conversation from an already-imported Dream log.
+/// The original JSONL, prompt, journal and cached prefix remain untouched. Old
+/// compaction/branch summaries may contain reports, so replay original messages
+/// on the selected branch rather than transferring those generated summaries.
+/// Display history still includes reports, marked as output; usage stays on the
+/// original conversation and is never billed again for this copy.
+pub fn fork_dream_chat(
+    home: &Path,
+    bot: &str,
+    owner: &str,
+    source: &str,
+    target: &str,
+    reports: &HashSet<String>,
+) -> Result<bool> {
+    common::identifier(source)?;
+    common::identifier(target)?;
+    let source_path = home
+        .join("runtime/sessions")
+        .join(source)
+        .join("conversation.jsonl");
+    let bytes = match fs::read(&source_path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error.into()),
+    };
+    let (entries, _, torn) = parse_pi_entries(&bytes)?;
+    if torn {
+        return Err(crate::Error::new(
+            5200,
+            "The old Dream log needs recovery before it can become a chat",
+        ));
+    }
+    let is_report = |entry: &Value| {
+        entry["type"] == "message"
+            && entry["message"]["role"] == "assistant"
+            && reports.contains(&text(&entry["message"]["content"]))
+    };
+    if !entries.iter().any(is_report) {
+        return Ok(false);
+    }
+    let mut active = active_ids(&entries)?;
+    let by_id = entries
+        .iter()
+        .filter_map(|e| e["id"].as_str().map(|id| (id, e)))
+        .collect::<HashMap<_, _>>();
+    // Branch summaries also stand for original messages. Expand their source
+    // paths before removing generated summaries, including nested branches.
+    loop {
+        let mut added = false;
+        for summary in entries.iter().filter(|e| e["type"] == "branch_summary") {
+            if !summary["id"].as_str().is_some_and(|id| active.contains(id)) {
+                continue;
+            }
+            let mut from = summary["fromId"].as_str();
+            while let Some(id) = from.filter(|id| *id != "root") {
+                let entry = by_id.get(id).ok_or_else(|| crate::Error::new(5200, "The old Dream log is missing a summarized branch; its original conversation has been preserved"))?;
+                if !active.insert(id) {
+                    break;
+                }
+                added = true;
+                from = entry["parentId"].as_str();
+            }
+        }
+        if !added {
+            break;
+        }
+    }
+    let original = history(home, source)?;
+    let header = bytes
+        .split(|b| *b == b'\n')
+        .find(|line| !line.iter().all(u8::is_ascii_whitespace))
+        .and_then(|line| serde_json::from_slice::<Value>(line).ok())
+        .unwrap_or(Value::Null);
+    let timestamp = chrono::Utc::now().to_rfc3339();
+    let mut lines = vec![
+        json!({"type":"session","version":3,"id":target,"timestamp":timestamp,"cwd":header["cwd"]})
+            .to_string(),
+    ];
+    let mut parent = Value::Null;
+    let mut missing_reports = Vec::new();
+    for entry in entries
+        .iter()
+        .filter(|e| e["id"].as_str().is_some_and(|id| active.contains(id)))
+    {
+        if entry["type"] != "message" && entry["type"] != "custom_message" {
+            continue;
+        }
+        if is_report(entry) {
+            let mut shown = projection(&entry["message"], None).unwrap_or(Value::Null);
+            shown["dream"] = json!(true);
+            if !original
+                .iter()
+                .any(|m| m["role"] == shown["role"] && m["text"] == shown["text"])
+            {
+                missing_reports.push(shown);
+            }
+            continue;
+        }
+        let mut message = entry["message"].clone();
+        if message["role"] == "assistant" {
+            message["usage"] = json!({"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}});
+        }
+        let next = id();
+        let mut copied = entry.clone();
+        copied["id"] = json!(next);
+        copied["parentId"] = parent;
+        if copied["type"] == "message" {
+            copied["message"] = message;
+        }
+        lines.push(copied.to_string());
+        parent = json!(next);
+    }
+    let created = (|| {
+        mark_fresh(home, target)?;
+        for mut shown in original.into_iter().chain(missing_reports) {
+            if shown["role"] == "assistant"
+                && shown["text"].as_str().is_some_and(|s| reports.contains(s))
+            {
+                shown["dream"] = json!(true);
+            }
+            append(home, target, shown)?;
+        }
+        let path = session_dir(home, target)?.join("conversation.jsonl");
+        common::atomic_write(&path, format!("{}\n", lines.join("\n")).as_bytes())?;
+        reconcile(home, bot, target, owner)?;
+        Ok::<_, crate::Error>(())
+    })();
+    if let Err(error) = created {
+        let _ = delete(home, target);
+        return Err(error);
+    }
+    Ok(true)
 }
 
 /// Commit display metadata before sending a prompt to Pi. Matching by final text

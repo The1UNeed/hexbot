@@ -2,11 +2,15 @@
 import { act, cleanup, renderHook } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { useMobile } from './useMobile'
+import appSource from '../../App.tsx?raw'
+import ts from 'typescript'
 import type { Bot, Room, SavedDaemon, Section } from './types'
 
 const state = vi.hoisted(() => ({
   request: vi.fn(),
-  revoked: () => {}
+  revoked: () => {},
+  event: (_event: unknown) => {},
+  ready: async () => {}
 }))
 vi.mock('react-native', () => ({
   AppState: { addEventListener: () => ({ remove() {} }) }
@@ -24,7 +28,9 @@ vi.mock('./transport', () => ({ pair: vi.fn() }))
 vi.mock('./session', () => ({
   MobileSession: class {
     client = { connectionState: 'open', request: state.request }
-    constructor(_daemon: unknown, _token: string, changed: (state: string) => void) {
+    constructor(_daemon: unknown, _token: string, changed: (state: string) => void, ready: () => Promise<void>, event: (event: unknown) => void) {
+      state.ready = ready
+      state.event = event
       state.revoked = () => changed('revoked')
     }
     async connect() {}
@@ -280,4 +286,143 @@ describe('mobile navigation while a bot lookup waits', () => {
     expect(hook.result.current.route).toMatchObject({ kind: 'section', section: { id: 'b' } })
     expect(state.request.mock.calls.some(([m]) => m === 'hexbot.sections.create')).toBe(false)
   })
+})
+
+/** Execute the actual HomeScreen callback with the real hook, without loading native UI. */
+const pulse = (mobile: ReturnType<typeof useMobile>, selected: Bot) => {
+  const app = appSource
+  const callback = app.split('onOpenPulse={')[1]!.split('\n        onBotLongPress=')[0]!.trim().slice(0, -1)
+  const js = ts.transpile(`const handler = ${callback}`, { target: ts.ScriptTarget.ES2022 })
+  let pending = Promise.resolve()
+  let roomId: string | null = null
+  const handler = new Function('mobile', 'botByName', 'act', 'setRoomId', 'changeTab', 'setBotPage', `${js}; return handler`)(
+    mobile, () => selected, (run: () => Promise<void>) => { pending = run() },
+    (id: string) => { roomId = id }, () => {}, () => {}
+  )
+  handler(selected.name)
+  return { done: () => pending, room: () => roomId }
+}
+const waiting = (id = 'thread') => ({ ...bot, status: 'needs_you', status_detail: { section_id: id, room_id: null } }) as Bot
+
+describe('actual App Pulse callback and mobile conversation', () => {
+  it.each(['approval', 'clarify'] as const)('opens the waiting peer thread and responds to its %s card', async kind => {
+    const thread = section('thread', { peer_bot: 'yak' })
+    sections = [section('owner'), thread]
+    const hook = await connected()
+    state.request.mockImplementation(async (method: string, params: Record<string, unknown> = {}) => {
+      if (method === 'hexbot.sections.open') {
+        const chosen = sections.find(s => s.id === params.id) ?? section(String(params.id))
+        state.event({ type: kind === 'approval' ? 'approval.request' : 'clarify.request', session_id: chosen.live_session_id, payload: { request_id: 'pending', command: 'pwd', question: 'Which file?', qid: 'file', choices: ['once', 'deny'] } })
+        return { section: chosen, messages: [] }
+      }
+      return reply(method, params)
+    })
+    await act(async () => { await pulse(hook.result.current, waiting()).done() })
+    expect(hook.result.current.route).toMatchObject({ kind: 'section', section: { id: 'thread', peer_bot: 'yak' }, bot: { name: 'owl' } })
+    const cards = kind === 'approval' ? hook.result.current.chat.approvals : hook.result.current.chat.questions
+    expect(cards).toMatchObject([{ requestId: 'pending', sessionId: 'live-thread' }])
+    await act(async () => {
+      if (kind === 'approval') await hook.result.current.approval('pending', 'once')
+      else await hook.result.current.answer('pending', 'file', 'answer')
+    })
+    expect(state.request).toHaveBeenCalledWith(kind === 'approval' ? 'approval.respond' : 'clarify.respond', expect.objectContaining({ session_id: 'live-thread', request_id: 'pending' }))
+    expect(state.request.mock.calls.some(([m]) => m === 'hexbot.sections.create')).toBe(false)
+  })
+  it.each(['missing', 'working', 'wrong-bot', 'stale-session', 'no-detail'] as const)('keeps ordinary canonical selection for %s status metadata', async why => {
+    sections = [section('thread', { peer_bot: 'yak', ...(why === 'wrong-bot' ? { bot: 'yak' } : {}), ...(why === 'stale-session' ? { live_session_id: 'older-live' } : {}) })]
+    const hook = await connected()
+    const selected = { ...waiting(why === 'missing' ? 'absent' : 'thread'), status_detail: { section_id: why === 'missing' ? 'absent' : 'thread', room_id: null, session_id: why === 'stale-session' ? 'new-live' : null }, ...(why === 'working' ? { status: 'working' } : {}), ...(why === 'no-detail' ? { status_detail: null } : {}) } as Bot
+    await act(async () => { await pulse(hook.result.current, selected).done() })
+    expect(hook.result.current.route).toMatchObject({ section: { id: 'owl-chat' } })
+  })
+  it('gives an available room precedence and falls back from an archived room to the waiting thread', async () => {
+    sections = [section('thread', { peer_bot: 'yak' })]
+    const hook = await connected()
+    const selected = { ...waiting(), status_detail: { section_id: 'thread', room_id: 'room' } } as Bot
+    let opened!: ReturnType<typeof pulse>
+    await act(async () => { opened = pulse(hook.result.current, selected); await opened.done() })
+    expect(opened.room()).toBe('room')
+    expect(state.request.mock.calls.some(([m]) => m === 'hexbot.sections.open')).toBe(false)
+    hook.result.current.rooms[0]!.archived_at = 1
+    await act(async () => { await pulse(hook.result.current, selected).done() })
+    expect(hook.result.current.route).toMatchObject({ section: { id: 'thread' } })
+  })
+  it('opens an archived waiting thread without selecting it as the owner chat', async () => {
+    sections = [section('thread', { peer_bot: 'yak', archived_at: 1 })]
+    const hook = await connected()
+    await act(async () => { await pulse(hook.result.current, waiting()).done() })
+    expect(hook.result.current.route).toMatchObject({ section: { id: 'thread' } })
+    expect(state.request.mock.calls.some(([m]) => m === 'hexbot.sections.create')).toBe(false)
+    await act(async () => { await hook.result.current.openSection(bot) })
+    expect(hook.result.current.route).toMatchObject({ section: { id: 'owl-chat' } })
+  })
+  it('ignores a waiting-thread history arriving after room navigation', async () => {
+    sections = [section('thread', { peer_bot: 'yak' })]
+    const hook = await connected()
+    const held = pause('hexbot.sections.open', p => p.id === 'thread')
+    let opening!: ReturnType<typeof pulse>
+    await act(async () => { opening = pulse(hook.result.current, waiting()); await Promise.resolve() })
+    // The exact-base callback opens the owner chat, which is the negative control.
+    await act(async () => { await hook.result.current.openRoom(room) })
+    await act(async () => { held.resolve({ section: sections[0], messages: [] }); await opening.done() })
+    expect(hook.result.current.route?.kind).toBe('room')
+  })
+})
+
+describe('legacy choices across daemon hydration', () => {
+  it('clears an obsolete chooser and resolves a stale owner choice through the upgraded daemon', async () => {
+    oneChat = false
+    sections = [section('keep', { message_count: 2 }), section('removed', { message_count: 2 })]
+    const hook = await connected()
+    await act(async () => { await hook.result.current.openSection(bot) })
+    const obsolete = hook.result.current.choosing!.choices[1]!
+    oneChat = true
+    sections = [section('owl-chat')]
+    await act(async () => { await hook.result.current.refresh() })
+    expect(hook.result.current.choosing).toBeNull()
+    // Also guard a callback already queued by the native sheet before it disappeared.
+    await act(async () => { await hook.result.current.openSection(bot, obsolete) })
+    expect(hook.result.current.route).toMatchObject({ section: { id: 'owl-chat' } })
+    expect(state.request).not.toHaveBeenCalledWith('hexbot.sections.open', { id: 'removed' })
+  })
+})
+
+it.each(['daemon', 'back'] as const)('a Pulse thread open yields to later %s', async action => {
+  sections = [section('thread', { peer_bot: 'yak' })]
+  const hook = await connected()
+  const held = pause('hexbot.sections.open', p => p.id === 'thread')
+  let opening!: ReturnType<typeof pulse>
+  await act(async () => { opening = pulse(hook.result.current, waiting()); await held.called })
+  await act(async () => {
+    if (action === 'daemon') await hook.result.current.activate({ ...daemon, id: 'second' }, 'token')
+    else hook.result.current.back()
+    held.resolve({ section: sections[0], messages: [], pending_clarify: { request_id: 'obsolete', question: 'Old question' } })
+    await opening.done()
+  })
+  expect(hook.result.current.route).toBeNull()
+  expect(hook.result.current.chat.questions).toHaveLength(0)
+})
+
+it('reconnect clears a legacy chooser even when capability is unchanged', async () => {
+  oneChat = false
+  sections = [section('a', { message_count: 2 }), section('b', { message_count: 2 })]
+  const hook = await connected()
+  await act(async () => { await hook.result.current.openSection(bot) })
+  expect(hook.result.current.choosing).not.toBeNull()
+  await act(async () => { await state.ready() })
+  expect(hook.result.current.choosing).toBeNull()
+  await act(async () => { await hook.result.current.openSection(bot) })
+  expect(hook.result.current.choosing).not.toBeNull()
+})
+it('an older hydration reply cannot replace fresh canonical capability on the same connection', async () => {
+  const hook = await connected()
+  const older = pause('hexbot.info')
+  let refresh!: Promise<void>
+  await act(async () => { refresh = hook.result.current.refresh(); await older.called })
+  state.request.mockImplementation(reply)
+  await act(async () => { await hook.result.current.refresh() })
+  await act(async () => { older.resolve({ one_chat: false }); await refresh })
+  expect(hook.result.current.info?.one_chat).toBe(true)
+  await act(async () => { await hook.result.current.openSection(bot, section('obsolete')) })
+  expect(hook.result.current.route).toMatchObject({ section: { id: 'owl-chat' } })
 })

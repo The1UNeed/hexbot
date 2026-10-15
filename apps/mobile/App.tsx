@@ -715,7 +715,9 @@ function MobileApp() {
         ? 'Opening conversation'
         : mobile.connection !== 'connected'
           ? 'Reconnect to send'
-          : undefined,
+          : route?.kind === 'section' && route.section.peer_bot
+            ? 'Conversation between bots'
+            : undefined,
     error: mobile.chat.error || mobile.error,
     onRetry: () =>
       act(async () => {
@@ -841,8 +843,15 @@ function MobileApp() {
             changeTab('rooms')
             return
           }
-          // Work in a thread with another bot shows in the bot's one chat.
-          if (b) act(() => mobile.openSection(b))
+          // Questions and approvals belong to the waiting conversation's live ID.
+          // A normal bot tap still resolves its owner chat through the daemon.
+          const thread = b?.status === 'needs_you'
+            ? mobile.sections.find(s =>
+                s.id === detail?.section_id && s.bot === b.name && s.peer_bot &&
+                (!detail.session_id || !s.live_session_id || detail.session_id === s.live_session_id)
+              )
+            : undefined
+          if (b) act(() => mobile.openSection(b, thread))
           else setBotPage(id)
         }}
         onBotLongPress={

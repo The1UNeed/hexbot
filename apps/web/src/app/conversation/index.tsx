@@ -1,7 +1,16 @@
 import { JsonRpcGatewayError } from '@hermes/shared'
-import { useNavigate, useParams } from '@tanstack/react-router'
+import { useNavigate, useParams, useRouter } from '@tanstack/react-router'
 import { ArrowDown, Copy, File, PanelRight, RotateCcw, X } from 'lucide-react'
-import { type CSSProperties, isValidElement, useEffect, useMemo, useRef, useState } from 'react'
+import {
+  type CSSProperties,
+  isValidElement,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore
+} from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 
@@ -10,7 +19,13 @@ import { Button } from '../../components/ui/button'
 import { Chip } from '../../components/ui/chip'
 import { Dialog } from '../../components/ui/dialog'
 import { StatusDot } from '../../components/ui/status-dot'
-import { approvalRespond, attachFile, promptSubmit, sessionInterrupt } from '../../lib/api'
+import {
+  approvalRespond,
+  attachFile,
+  promptSubmit,
+  sectionsList,
+  sessionInterrupt
+} from '../../lib/api'
 import { botFace } from '../../lib/avatar-builder'
 import { getBridge } from '../../lib/bridge'
 import { cn } from '../../lib/cn'
@@ -41,7 +56,7 @@ import {
   useTranscript,
   useTranscripts
 } from '../../stores/transcripts'
-import { uiActions, useUi } from '../../stores/ui'
+import { useUi } from '../../stores/ui'
 
 import { AskingRow } from './asking-row'
 import { ClarifyCard } from './clarify-card'
@@ -1016,10 +1031,35 @@ function useHeight<T extends HTMLElement>(): [React.RefObject<T | null>, number]
 function BotConversation() {
   const params = useParams({ strict: false }) as { bot?: string; section?: string }
   const navigate = useNavigate()
+  const router = useRouter()
+  const location = useSyncExternalStore(router.history.subscribe, () => router.history.location)
+  const target = useConnection(state => state.target)
+  const epoch = useConnection(state => state.epoch)
+  const capability = useConnection(state => state.daemon?.one_chat)
+  const installation = useConnection(state => state.daemon?.install_id)
+  const [openAttempt, setOpenAttempt] = useState(0)
+
+  // Validation belongs to this route entry, even if the same URL or live ID is reused.
+  const entry = useMemo(
+    () => ({
+      bot: params.bot,
+      section: params.section,
+      target,
+      epoch,
+      capability,
+      installation,
+      location,
+      openAttempt
+    }),
+    [params.bot, params.section, target, epoch, capability, installation, location, openAttempt]
+  )
+
+  const [resolved, setResolved] = useState<object | null>(null)
   const bot = useBot(params.bot ?? null)
   const botsLoaded = useBots(state => state.loaded)
   const section = useSection(params.section ?? null)
-  const liveId = useLiveSessionId(params.section ?? null)
+  const loadedLiveId = useLiveSessionId(params.section ?? null)
+  const liveId = resolved === entry ? loadedLiveId : null
   const transcript = useTranscript(liveId)
 
   // Connector tools are named from the bot's catalog ("Connecting to Project tools").
@@ -1060,11 +1100,7 @@ function BotConversation() {
   const approvals = useMemo(() => transcript?.approvals ?? [], [transcript?.approvals])
   const clarifies = useMemo(() => transcript?.clarifies ?? [], [transcript?.clarifies])
   const streaming = Boolean(transcript?.streamingMessageId)
-  const [unavailable, setUnavailable] = useState<string | null>(null)
   const [openFailure, setOpenFailure] = useState<{ section: string; message: string } | null>(null)
-  const [openAttempt, setOpenAttempt] = useState(0)
-  const target = useConnection(state => state.target)
-  const epoch = useConnection(state => state.epoch)
   const stoppedHere = stoppedCardFor(bot, params.section ?? null, messages)
 
   const status = sectionStatusOf(
@@ -1079,87 +1115,130 @@ function BotConversation() {
       ? (bot?.status_detail?.text ?? messages.findLast(message => message.error)?.error)
       : null
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     let cancelled = false
 
     const current = () =>
       !cancelled &&
+      router.history.location === location &&
+      target === useConnection.getState().target &&
+      epoch === useConnection.getState().epoch &&
+      capability === useConnection.getState().daemon?.one_chat &&
+      installation === useConnection.getState().daemon?.install_id
+
+    const cancel = () => {
+      cancelled = true
+      const choice = sectionsActions().choosing
+
+      if (choice && !choice.current()) {
+        choice.pick(null)
+      }
+    }
+
+    const offHistory = router.history.subscribe(cancel)
+    const offNavigate = router.subscribe('onBeforeNavigate', cancel)
+    setOpenFailure(null)
+    const botName = params.bot
+    const sectionId = params.section
+
+    const destination = router.matchRoutes(location.pathname).at(-1)?.params as
+      { bot?: string; section?: string } | undefined
+
+    if (
+      botName &&
+      sectionId &&
+      destination?.bot === botName &&
+      destination?.section === sectionId
+    ) {
+      void (async () => {
+        // A bookmark can name an owner chat that survived a conservative upgrade,
+        // or an explicit teammate thread. Missing metadata must be read before
+        // choosing either policy; a failed read is never evidence of deletion.
+        const row =
+          section ??
+          (
+            await sectionsList({ bot: botName, include_archived: true, include_threads: true })
+          ).sections.find(s => s.id === sectionId)
+
+        if (!current()) {
+          return
+        }
+
+        if (row && row.bot !== botName) {
+          throw new Error('This conversation belongs to another bot.')
+        }
+
+        const chat = row?.peer_bot ? row : await sectionsActions().chat(botName, current)
+
+        if (!current()) {
+          return
+        }
+
+        if (!chat) {
+          setOpenFailure({ section: sectionId, message: 'Choose a chat to continue.' })
+
+          return
+        }
+
+        if (chat.id !== sectionId) {
+          void navigate({
+            to: '/b/$bot/s/$section',
+            params: { bot: chat.bot, section: chat.id },
+            replace: true
+          })
+
+          return
+        }
+
+        setResolved(entry)
+      })().catch(error => {
+        if (current()) {
+          setOpenFailure({
+            section: sectionId,
+            message: error instanceof Error ? error.message : String(error)
+          })
+        }
+      })
+    }
+
+    return () => {
+      cancel()
+      offHistory()
+      offNavigate()
+    }
+    // Catalog/history updates do not reselect a chat. Retry and a new route entry do.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [entry, router])
+
+  useEffect(() => {
+    if (resolved !== entry || !params.section || liveId) {
+      return
+    }
+
+    let cancelled = false
+
+    const current = () =>
+      !cancelled &&
+      router.history.location === location &&
       target === useConnection.getState().target &&
       epoch === useConnection.getState().epoch
 
-    setOpenFailure(null)
-    setUnavailable(null)
-
-    if (params.section && !liveId) {
-      const botName = params.bot
-      const sectionId = params.section
-      sectionsActions()
-        .open(sectionId)
-        .catch(async error => {
-          if (!current()) {
-            return
-          }
-
-          const failed = (failure: unknown) => {
-            if (current()) {
-              setOpenFailure({
-                section: sectionId,
-                message: failure instanceof Error ? failure.message : String(failure)
-              })
-            }
-          }
-
-          if (!(error instanceof JsonRpcGatewayError) || error.code !== 4204) {
-            failed(error)
-
-            return
-          }
-
-          // A section deleted when each bot moved to one chat, or one from another
-          // daemon: open this bot's chat if it is here.
-          let chat
-
-          try {
-            chat = botName ? await sectionsActions().chat(botName, current) : null
-          } catch (failure) {
-            failed(failure)
-
-            return
-          }
-
-          if (!current()) {
-            return
-          }
-
-          if (chat && chat.id !== sectionId) {
-            void navigate({
-              params: { bot: chat.bot, section: chat.id },
-              replace: true,
-              to: '/b/$bot/s/$section'
-            })
-
-            return
-          }
-
-          // It still exists: the missing reply raced a catalog change. Retry
-          // opening it instead of permanently suppressing this route.
-          if (chat) {
-            failed(error)
-
-            return
-          }
-
-          // Not here at all: say so instead of bouncing through `/`, which would
-          // remember it and come back here.
-          setUnavailable(sectionId)
-          uiActions().setLastSection(null)
-        })
-    }
+    const sectionId = params.section
+    void sectionsActions()
+      .open(sectionId)
+      .catch(error => {
+        if (current()) {
+          setOpenFailure({
+            section: sectionId,
+            message: error instanceof Error ? error.message : String(error)
+          })
+        }
+      })
 
     return () => {
       cancelled = true
     }
-  }, [liveId, navigate, params.bot, params.section, target, epoch, openAttempt])
+  }, [resolved, entry, params.section, liveId, router, location, target, epoch])
   useEffect(() => {
     if (atBottom) {
       toEnd()
@@ -1295,7 +1374,7 @@ function BotConversation() {
         ref={viewport}
         style={{ paddingBottom: composerHeight + 8, paddingTop: 60 }}
       >
-        {openFailure && openFailure.section === params.section && !liveId ? (
+        {openFailure && openFailure.section === params.section ? (
           <div
             className="grid h-full place-content-center justify-items-center gap-4 p-8 text-center"
             role="alert"
@@ -1305,17 +1384,9 @@ function BotConversation() {
               Retry
             </Button>
           </div>
-        ) : unavailable === params.section && !liveId ? (
-          <div className="hex-rise grid h-full place-content-center justify-items-center gap-4 p-8 text-center">
-            <Avatar {...botFace(bot)} name={name} size="xl" />
-            <div>
-              <h2 className="text-[length:var(--text-title)] font-semibold">
-                This chat is no longer available
-              </h2>
-              <p className="mt-1 text-muted">
-                It may have been deleted, or it lives on another daemon.
-              </p>
-            </div>
+        ) : resolved !== entry ? (
+          <div className="grid h-full place-content-center text-muted" role="status">
+            Opening conversation
           </div>
         ) : messages.length === 0 && clarifies.length === 0 ? (
           <div className="hex-rise grid h-full place-content-center justify-items-center gap-6 p-8 text-center">

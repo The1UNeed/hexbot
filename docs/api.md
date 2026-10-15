@@ -265,6 +265,27 @@ repeats migration deletes or changes Pi context. A failed classification stops
 the dream before it can learn from uncertain reports. Filesystem metadata errors
 are read failures, not missing legacy databases; backup cannot omit such a database.
 
+Already-imported legacy Dream logs can contain reports in Pi JSONL as well as
+in the display projection. When one would become the owner chat, chat lookup
+starts an independent section with the original dialogue and marked display
+reports. Its context replays the selected branch's original messages, expanding
+compaction and branch summaries, and excludes the reports. Original JSONL,
+journal, frozen options and prompt remain unchanged. `dream_chat_adoptions`
+records the source, replacement and source history version. Lookup prefers the
+healthy replacement. Dream input omits the copied source snapshot and its old
+summaries; later writes from old clients remain eligible. Copied usage is zero;
+original usage remains on the original conversation.
+
+Bot deletion retires sessions before changing the catalog, then atomically
+removes its sections, bot and room mappings before purging history or profile
+files. A `pending_bot_delete:<name>` settings journal records exact native,
+legacy-only, room and delegated targets and the catalog commit decision. Startup
+rolls back uncommitted retirement or finishes committed cleanup. A committed
+cleanup failure returns `{deleted:true, history_pending:true}` and keeps its
+journal for startup retry. No failed catalog commit removes history, memory or
+notes. This does not reconstruct data already purged by an older build.
+
+
 Section shape: `{id, bot, title, title_by: "bot" | null, created_at,
 updated_at, archived_at | null, done_at | null, preview, message_count,
 live_session_id | null, peer_bot | null}`

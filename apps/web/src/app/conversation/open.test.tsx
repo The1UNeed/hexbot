@@ -13,10 +13,19 @@ import { ConversationColumn } from './index'
 
 const navigate = vi.fn()
 let params = { bot: 'owl', section: 'old' }
-vi.mock('@tanstack/react-router', () => ({
-  useNavigate: () => navigate,
-  useParams: () => params
-}))
+vi.mock('@tanstack/react-router', () => {
+  const router = {
+    matchRoutes: () => [{ params: params }],
+    history: { location: {}, subscribe: () => () => {} },
+    subscribe: () => () => {}
+  }
+
+  return {
+    useRouter: () => router,
+    useNavigate: () => navigate,
+    useParams: () => params
+  }
+})
 
 const section = (id: string, live: string | null = null) =>
   ({
@@ -50,7 +59,7 @@ const reply = (method: string, input: { id?: string } = {}) =>
     method === 'hexbot.sections.open'
       ? { section: section(input.id ?? 'old', `live-${input.id}`), messages: [] }
       : method === 'hexbot.sections.create'
-        ? { section: section('old') }
+        ? { section: section(params.section) }
         : { connectors: [] }
   )
 
@@ -92,7 +101,7 @@ it.each([
   render(<ConversationColumn />)
   expect(await screen.findByRole('alert')).toHaveTextContent(error.message)
   expect(useUi.getState().lastSection).toEqual(remembered)
-  expect(call.mock.calls.some(([method]) => method === 'hexbot.sections.create')).toBe(false)
+  expect(call.mock.calls.filter(([method]) => method === 'hexbot.sections.create')).toHaveLength(1)
   expect(attempts).toBe(1)
   fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
   await waitFor(() => expect(useSections.getState().liveSessionId.old).toBe('live-old'))
@@ -149,6 +158,11 @@ it.each(['navigate', 'daemon', 'unmount'] as const)(
       return reply(method, input)
     })
     const view = render(<ConversationColumn />)
+    await waitFor(() => expect(held).toBe(true))
+
+    const canonicalCalls = call.mock.calls.filter(
+      ([method]) => method === 'hexbot.sections.create'
+    ).length
 
     if (action === 'navigate') {
       params = { bot: 'owl', section: 'new' }
@@ -168,7 +182,9 @@ it.each(['navigate', 'daemon', 'unmount'] as const)(
     await act(async () => {
       old.reject(new JsonRpcGatewayError('section not found', { code: 4204 }))
     })
-    expect(call.mock.calls.some(([method]) => method === 'hexbot.sections.create')).toBe(false)
+    expect(call.mock.calls.filter(([method]) => method === 'hexbot.sections.create')).toHaveLength(
+      canonicalCalls + (action === 'daemon' ? 1 : 0)
+    )
     expect(navigate).not.toHaveBeenCalled()
     expect(useUi.getState().lastSection).toEqual(remembered)
   }
@@ -187,9 +203,7 @@ it('ignores late canonical resolution after navigation', async () => {
     return reply(method, input)
   })
   const view = render(<ConversationColumn />)
-  await waitFor(() =>
-    expect(call).toHaveBeenCalledWith('hexbot.sections.create', { bot: 'owl', title: undefined })
-  )
+  await waitFor(() => expect(call).toHaveBeenCalledWith('hexbot.sections.create', { bot: 'owl' }))
   params = { bot: 'owl', section: 'new' }
   view.rerender(<ConversationColumn />)
   await act(async () => {

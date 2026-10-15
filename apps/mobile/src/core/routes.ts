@@ -30,7 +30,8 @@ export function legacyChat(
   return section ? { section } : null
 }
 /**
- * The section a tap on a bot opens, or the `chosen` one. A daemon with one
+ * A bot tap resolves its owner chat. An older chooser can supply `chosen`;
+ * an explicit teammate thread keeps its own route. A daemon with one
  * chat per bot names it, never one recovery set aside, whatever the lists
  * here say. An older one: the section its list makes certain, else the one
  * in `picked` from before, else the sections to choose from; made only for
@@ -46,7 +47,9 @@ export async function botChat(
 ): Promise<{ choices: Section[] } | { section: Section }> {
   const create = async () =>
     (await rpc<{ section: Section }>('hexbot.sections.create', { bot })).section
-  if (oneChat) return { section: chosen ?? (await create()) }
+  // A Pulse question opens its actual thread without changing the owner-chat pick.
+  if (chosen?.peer_bot) return { section: chosen }
+  if (oneChat) return { section: await create() }
   let section = chosen
   if (!section) {
     const { sections } = await rpc<{ sections: Section[] }>('hexbot.sections.list', {

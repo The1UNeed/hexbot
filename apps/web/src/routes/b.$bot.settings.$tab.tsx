@@ -10,7 +10,7 @@ import {
   UserRound,
   Wrench
 } from 'lucide-react'
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 
 import { AppShell } from '../app/app-shell'
 import {
@@ -27,9 +27,8 @@ import {
   type SettingsTabItem
 } from '../components/ui/settings-shell'
 import { botFace } from '../lib/avatar-builder'
+import { useChatSelection } from '../lib/use-chat-selection'
 import { useBots } from '../stores/bots'
-import { sectionsActions } from '../stores/sections'
-import { useUi } from '../stores/ui'
 
 export const Route = createFileRoute('/b/$bot/settings/$tab')({
   // A removed tab, such as Sections from before chats, opens Profile.
@@ -77,7 +76,8 @@ function BotSettingsDialog() {
   const bot = useBots(state => state.byName[botName])
   const loaded = useBots(state => state.loaded)
   const refresh = useBots(state => state.refresh)
-  const lastSection = useUi(state => state.lastSection)
+  const { selectChat } = useChatSelection()
+  const [closeError, setCloseError] = useState<string | null>(null)
   useEffect(() => {
     if (!loaded) {
       void refresh()
@@ -89,20 +89,18 @@ function BotSettingsDialog() {
     }
   }, [botName, tab])
 
-  // Back to the section the user was in, else the bot's chat.
   const close = async () => {
-    const section =
-      lastSection?.bot === botName
-        ? lastSection.section
-        : (
-            await sectionsActions()
-              .chat(botName)
-              .catch(() => null)
-          )?.id
+    setCloseError(null)
 
-    void (section
-      ? navigate({ params: { bot: botName, section }, to: '/b/$bot/s/$section' })
-      : navigate({ to: '/' }))
+    try {
+      const section = await selectChat(botName)
+
+      if (section) {
+        void navigate({ params: { bot: botName, section: section.id }, to: '/b/$bot/s/$section' })
+      }
+    } catch (error) {
+      setCloseError(error instanceof Error ? error.message : String(error))
+    }
   }
 
   const current = isBotSettingsTab(tab) ? tab : 'profile'
@@ -135,6 +133,11 @@ function BotSettingsDialog() {
         }
         tabs={TABS}
       >
+        {closeError ? (
+          <p className="px-6 pt-4 text-danger" role="alert">
+            {closeError}
+          </p>
+        ) : null}
         {bot ? (
           <BotSettingsPanel bot={bot} connector={connector} tab={current} />
         ) : (

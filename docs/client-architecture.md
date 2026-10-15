@@ -149,3 +149,12 @@ native-only controls.
 - End to end: Playwright drives the packaged Electron app against a
   daemon started in a temp home with a stub provider: connect, create a
   bot, send a message, see a reply.
+
+Ordinary bot-chat URLs resolve the daemon's chat before showing history or enabling
+input, including restored URLs and already-loaded live IDs. Explicit teammate
+threads keep their own route. Metadata or open failures offer Retry. The same
+navigation and daemon guards cover closing bot settings, so a late lookup cannot
+pull the user out of a later room or route. Mobile Pulse opens a waiting teammate
+thread's approval or question on its own live ID; ordinary bot taps still open
+the canonical owner chat. Reconnects discard old chooser state, and a fresh
+modern capability never accepts a stale ordinary chooser row as canonical.

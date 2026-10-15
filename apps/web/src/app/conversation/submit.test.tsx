@@ -13,10 +13,19 @@ import { useTranscripts } from '../../stores/transcripts'
 import { ConversationColumn } from './index'
 
 let params = { bot: 'owl', section: 'chat' }
-vi.mock('@tanstack/react-router', () => ({
-  useNavigate: () => vi.fn(),
-  useParams: () => params
-}))
+vi.mock('@tanstack/react-router', () => {
+  const router = {
+    matchRoutes: () => [{ params: params }],
+    history: { location: {}, subscribe: () => () => {} },
+    subscribe: () => () => {}
+  }
+
+  return {
+    useRouter: () => router,
+    useNavigate: () => vi.fn(),
+    useParams: () => params
+  }
+})
 
 const section = (id = 'chat', live = 'durable-id') =>
   ({ id, bot: 'owl', title: 'Trip', live_session_id: live, peer_bot: null }) as Section
@@ -75,6 +84,10 @@ beforeEach(() => {
   firstError = missing()
   heldOpen = null
   call = vi.fn((method: string, input: Record<string, unknown>) => {
+    if (method === 'hexbot.sections.create') {
+      return Promise.resolve({ section: section(params.section) })
+    }
+
     if (method === 'hexbot.sections.open') {
       opens++
 

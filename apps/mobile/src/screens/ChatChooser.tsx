@@ -21,7 +21,7 @@ export function ChatChooser({ choices, name, onChoose }: ChatChooserProps) {
       title={`Continue with ${name ?? ''}`}
       visible={name !== null}
     >
-      <Group footer="This daemon is older than the app and keeps several sections for each bot. Pick one to continue. Your choice is saved on the daemon. When it updates, this conversation stays and the others are deleted after a full backup. A section containing only dream reports gives way to a conversation.">
+      <Group footer="This daemon keeps several conversations per bot. Pick one to continue. Your choice is saved for the update. If dream reports obscure that choice, Hexbot keeps all histories and may open another chat. Other histories are removed only after a full backup and a safe selection.">
         {choices.map(section => (
           <Row
             chevron

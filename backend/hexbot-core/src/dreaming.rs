@@ -344,7 +344,17 @@ pub fn build_digest(
     if room.is_none() {
         // An older build can add an unmarked log after migration. A dream
         // may run before anyone opens the chat; classify before reading input.
-        crate::catalog::classify_dream_logs(home, bot)?;
+        let dream_logs = crate::catalog::classify_dream_logs(home, bot)?;
+        let adopted = crate::common::rows(
+            &conn,
+            "SELECT key,value FROM settings WHERE key='dream_chat_adoptions'",
+            &[],
+        )?;
+        let adopted: Value = adopted
+            .first()
+            .and_then(|r| r["value"].as_str())
+            .and_then(|s| serde_json::from_str(s).ok())
+            .unwrap_or(Value::Null);
         proposals = pending_proposals(&conn, bot, until)?;
         notes = recent_notes(home, bot, notes_watermark(&conn, bot, since)?)?;
         let legacy_path = home.join("profiles").join(bot).join("state.db");
@@ -362,6 +372,19 @@ pub fn build_digest(
             &[&bot],
         )? {
             let id = section["id"].as_str().unwrap_or("");
+            if let Some(replacement) = adopted[id]["target"].as_str() {
+                let exists: bool = conn.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM sections WHERE id=?)",
+                    [replacement],
+                    |r| r.get(0),
+                )?;
+                let version: i64 = runtime_store::open(home)?.query_row("SELECT COALESCE((SELECT version FROM native_history_versions WHERE session_id=?),0)", [id], |r| r.get(0))?;
+                // A client from before one-chat may still write to the old ID.
+                // Only omit the exact snapshot already copied to the owner chat.
+                if exists && adopted[id]["version"] == version {
+                    continue;
+                }
+            }
             let mut transcript = vec![];
             let mut latest = 0f64;
             let native_exists = if home.join("hexbot-runtime.db").exists() {
@@ -376,8 +399,12 @@ pub fn build_digest(
             let mut compactions = vec![];
             if native_exists {
                 // Summaries are a bonus; one unreadable file must not stop the dream.
-                compactions =
-                    runtime_store::compaction_summaries(home, id, since, until).unwrap_or_default();
+                // Old log summaries were generated with reports in context.
+                // Read its original human dialogue instead of recycling those summaries.
+                if !dream_logs.contains(id) {
+                    compactions = runtime_store::compaction_summaries(home, id, since, until)
+                        .unwrap_or_default();
+                }
                 for (at, _) in &compactions {
                     latest = latest.max(*at);
                 }

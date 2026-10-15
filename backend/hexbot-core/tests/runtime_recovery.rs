@@ -549,3 +549,181 @@ fn quarantine_survives_restarts_and_lifts_once_the_conversation_is_restored() {
     assert_eq!(quarantined(home.path()), 1);
     assert!(!path.exists());
 }
+
+#[test]
+fn already_imported_dream_log_adoption_preserves_raw_history_and_forks_clean_context() {
+    use hexbot_core::catalog;
+    for (compacted, partial, renamed, branched) in [
+        (false, false, false, false),
+        (true, false, true, false),
+        (false, true, true, false),
+        (false, false, true, true),
+    ] {
+        let home = setup();
+        let h = home.path();
+        db::open(h).unwrap().execute_batch("UPDATE sections SET title='Dreams' WHERE id='chat'; INSERT INTO dreams(id,bot,started_at,status,summary) VALUES('dream','owl',1,'complete','REPORT_SECRET');").unwrap();
+        if renamed {
+            db::open(h)
+                .unwrap()
+                .execute(
+                    "UPDATE sections SET title='Night notes' WHERE id='chat'",
+                    [],
+                )
+                .unwrap();
+        }
+        let mut entries = vec![
+            entry("report", None, assistant("REPORT_SECRET", 1000)),
+            entry("human", Some("report"), user("Keep my human reply", 2000)),
+            entry("reply", Some("human"), assistant("Keep the answer", 3000)),
+        ];
+        if compacted {
+            entries.push(json!({"type":"compaction","id":"summary","parentId":"reply","timestamp":"2026-09-24T00:00:04Z","summary":"Contaminated summary REPORT_SECRET","firstKeptEntryId":"reply","tokensBefore":100}));
+        }
+        if branched {
+            entries.push(json!({"type":"branch_summary","id":"branch","parentId":"human","fromId":"reply","timestamp":"2026-09-24T00:00:05Z","summary":"Abandoned branch REPORT_SECRET"}));
+        }
+        let original = file(h, &entries);
+        let bytes = fs::read(&original).unwrap();
+        if !partial {
+            reconcile(h);
+        }
+        let frozen: (String, String) = store::open(h)
+            .unwrap()
+            .query_row(
+                "SELECT prompt,options FROM native_sessions WHERE stored_id='chat'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        catalog::one_chat_per_bot(h).unwrap();
+        db::open(h).unwrap().execute_batch("CREATE TRIGGER stop_adoption BEFORE INSERT ON sections BEGIN SELECT RAISE(ABORT,'controlled adoption stop'); END;").unwrap();
+        assert!(catalog::chat_section(h, "alice", "owl").is_err());
+        assert_eq!(
+            fs::read_dir(h.join("runtime/sessions")).unwrap().count(),
+            1,
+            "uncommitted derived context was orphaned"
+        );
+        assert_eq!(
+            store::open(h)
+                .unwrap()
+                .query_row(
+                    "SELECT COUNT(*) FROM native_messages WHERE session_id<>'chat'",
+                    [],
+                    |r| r.get::<_, i64>(0)
+                )
+                .unwrap(),
+            0
+        );
+        db::open(h)
+            .unwrap()
+            .execute_batch("DROP TRIGGER stop_adoption")
+            .unwrap();
+        let selected = catalog::chat_section(h, "alice", "owl").unwrap();
+        let selected = selected["id"].as_str().unwrap();
+        let context = fs::read_to_string(
+            store::session_dir(h, selected)
+                .unwrap()
+                .join("conversation.jsonl"),
+        )
+        .unwrap();
+        if let Ok(pi) = std::env::var("HEXBOT_TEST_PI") {
+            let module = Path::new(&pi)
+                .parent()
+                .unwrap()
+                .parent()
+                .unwrap()
+                .join("@earendil-works/pi-coding-agent/dist/core/session-manager.js");
+            let output = std::process::Command::new("node").arg("--input-type=module").arg("-e").arg(r#"
+                import {pathToFileURL} from 'node:url';
+                const {SessionManager} = await import(pathToFileURL(process.env.PI_MODULE));
+                const manager = SessionManager.open(process.env.CHAT_FILE);
+                const before = JSON.stringify(manager.buildSessionContext().messages);
+                console.log(JSON.stringify({phase:'adopted',report:before.includes('REPORT_SECRET'),human:before.includes('Keep my human reply')}));
+                if (before.includes('REPORT_SECRET') || !before.includes('Keep my human reply')) process.exit(2);
+                const summary = manager.buildSessionContext().messages.map(m => JSON.stringify(m.content)).join(' ');
+                manager.appendCompaction(summary, manager.getEntries().at(-1).id, 100);
+                const after = JSON.stringify(SessionManager.open(process.env.CHAT_FILE).buildSessionContext().messages);
+                console.log(JSON.stringify({phase:'compacted',report:after.includes('REPORT_SECRET'),human:after.includes('Keep my human reply')}));
+                if (after.includes('REPORT_SECRET') || !after.includes('Keep my human reply')) process.exit(3);
+            "#).env("PI_MODULE", module).env("CHAT_FILE", store::session_dir(h, selected).unwrap().join("conversation.jsonl")).output().unwrap();
+            println!("{}", String::from_utf8_lossy(&output.stdout));
+            assert!(
+                output.status.success(),
+                "Pinned Pi context inspection failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+        assert!(
+            !context.contains("REPORT_SECRET"),
+            "adopted owner context still contains a report: {context}"
+        );
+        assert!(context.contains("Keep my human reply"));
+        assert!(context.contains("Keep the answer"));
+        assert_ne!(
+            selected, "chat",
+            "adoption must start an independent Pi conversation"
+        );
+        assert_eq!(
+            fs::read(&original).unwrap(),
+            bytes,
+            "original Pi prefix was edited"
+        );
+        assert_eq!(
+            store::open(h)
+                .unwrap()
+                .query_row(
+                    "SELECT prompt,options FROM native_sessions WHERE stored_id='chat'",
+                    [],
+                    |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+                )
+                .unwrap(),
+            frozen
+        );
+        let history = store::history(h, selected).unwrap();
+        assert!(
+            history
+                .iter()
+                .any(|m| m["text"] == "REPORT_SECRET" && m["dream"] == true)
+        );
+        assert_eq!(
+            history
+                .iter()
+                .filter(|m| m["text"] == "Keep my human reply")
+                .count(),
+            1
+        );
+        assert_eq!(
+            catalog::chat_section(h, "alice", "owl").unwrap()["id"],
+            selected
+        );
+        assert!(
+            !serde_json::to_string(
+                &store::compaction_summaries(h, selected, 0., f64::MAX).unwrap()
+            )
+            .unwrap()
+            .contains("REPORT_SECRET")
+        );
+        assert_eq!(store::usage(h, selected).unwrap()["total_tokens"], 0);
+        let digest = hexbot_core::dreaming::build_digest(h, "owl", 0., f64::MAX, None).unwrap();
+        assert!(!digest.to_string().contains("REPORT_SECRET"));
+        assert!(digest.to_string().contains("Keep my human reply"));
+        assert!(
+            digest["sections"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|section| section["id"] != "chat")
+        );
+        store::append(
+            h,
+            "chat",
+            json!({"role":"user","text":"Late old-client reply","timestamp":9}),
+        )
+        .unwrap();
+        let later = hexbot_core::dreaming::build_digest(h, "owl", 0., f64::MAX, None)
+            .unwrap()
+            .to_string();
+        assert!(later.contains("Late old-client reply"));
+        assert!(!later.contains("REPORT_SECRET"));
+    }
+}

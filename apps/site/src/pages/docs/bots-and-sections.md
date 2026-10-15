@@ -70,3 +70,14 @@ An updated app connected to a daemon that hasn't been updated yet goes back to t
 In a [room](/docs/rooms/), everyone sees the shared conversation. With **Message other bots** enabled, a bot can instead ask one of your teammates for help in a private conversation. The bot it asks does the work itself and can't hand the request back. Open the help row under its reply to read that exchange.
 
 **Delegate** creates an isolated subagent for a subtask and returns the result to the originating conversation. It is a separate capability from asking a named teammate. Both use model tokens and the daemon's usage limits.
+
+Saved chat links also resolve the daemon's current chat before you can send.
+On mobile, a waiting item in Pulse opens the conversation containing its question
+or approval, including a private conversation between bots.
+
+If an old Dream log was already imported into Pi with reports in its context,
+Hexbot starts a separate owner conversation using its original human dialogue.
+It keeps the original conversation file and frozen prompt unchanged. The new
+chat shows the old reports, but its model context omits them and rebuilds old
+summaries from the original dialogue. Memory and notes stay. Dreaming reads that
+copied dialogue once and excludes the original report-containing summaries.

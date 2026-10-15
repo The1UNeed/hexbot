@@ -12,10 +12,19 @@ import { useTranscripts } from '../../stores/transcripts'
 import { ConversationColumn } from './index'
 
 const navigate = vi.fn()
-vi.mock('@tanstack/react-router', () => ({
-  useNavigate: () => navigate,
-  useParams: () => ({ bot: 'owl', section: 'chat' })
-}))
+vi.mock('@tanstack/react-router', () => {
+  const router = {
+    matchRoutes: () => [{ params: { bot: 'owl', section: 'chat' } }],
+    history: { location: {}, subscribe: () => () => {} },
+    subscribe: () => () => {}
+  }
+
+  return {
+    useRouter: () => router,
+    useNavigate: () => navigate,
+    useParams: () => ({ bot: 'owl', section: 'chat' })
+  }
+})
 
 const section = {
   id: 'chat',
@@ -94,7 +103,7 @@ it.each([false, true])(
   async mounted => {
     await useSections.getState().open('chat')
     const view = render(<ConversationColumn />)
-    expect(screen.getByText('Previous conversation')).toBeVisible()
+    expect(await screen.findByText('Previous conversation')).toBeVisible()
 
     if (!mounted) {
       view.unmount()

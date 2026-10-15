@@ -1527,3 +1527,242 @@ async fn deleting_a_bot_stops_the_threads_where_it_asked_others() {
     assert!(archived.is_some());
     app.shutdown().await;
 }
+
+/// The real App used to purge native history before attempting its first catalog write.
+#[tokio::test]
+async fn failed_bot_delete_preserves_native_history_and_profile_across_startup() {
+    for table in ["sections", "bots"] {
+        let home = setup();
+        let h = home.path();
+        let pi = fake_pi(h);
+        let app = hexbot_core::server::App::new(
+            h.into(),
+            "127.0.0.1:0".parse().unwrap(),
+            pi.clone(),
+            None,
+        )
+        .unwrap();
+        open(&app.runtime, "alice").await;
+        app.runtime
+            .ensure_hidden("alice", "owl", "hidden-job")
+            .await
+            .unwrap();
+        for id in ["section-a", "hidden-job"] {
+            runtime_store::append(
+                h,
+                id,
+                json!({"role":"user","text":format!("history of {id}")}),
+            )
+            .unwrap();
+        }
+        fs::create_dir_all(h.join("profiles/owl/memories/notes")).unwrap();
+        fs::write(h.join("profiles/owl/memories/MEMORY.md"), "memory").unwrap();
+        fs::write(h.join("profiles/owl/memories/notes/2026-10-15.md"), "notes").unwrap();
+        db::open(h).unwrap().execute_batch(&format!("CREATE TRIGGER stop_delete BEFORE DELETE ON {table} BEGIN SELECT RAISE(ABORT,'controlled catalog stop'); END;")).unwrap();
+        let error = app
+            .call("alice", "hexbot.bots.delete", &json!({"name":"owl"}))
+            .await
+            .unwrap_err();
+        assert!(error.message.contains("controlled catalog stop"));
+        for id in ["section-a", "hidden-job"] {
+            assert_eq!(
+                runtime_store::history(h, id).unwrap().len(),
+                1,
+                "history erased before catalog {table} commit: {id}"
+            );
+        }
+        assert_eq!(
+            fs::read_to_string(h.join("profiles/owl/memories/MEMORY.md")).unwrap(),
+            "memory"
+        );
+        assert_eq!(
+            fs::read_to_string(h.join("profiles/owl/memories/notes/2026-10-15.md")).unwrap(),
+            "notes"
+        );
+        app.shutdown().await;
+        db::open(h)
+            .unwrap()
+            .execute_batch("DROP TRIGGER stop_delete")
+            .unwrap();
+        let restarted =
+            hexbot_core::server::App::new(h.into(), "127.0.0.1:0".parse().unwrap(), pi, None)
+                .unwrap();
+        assert_eq!(
+            open(&restarted.runtime, "alice").await["messages"][0]["text"],
+            "history of section-a"
+        );
+        assert_eq!(runtime_store::history(h, "hidden-job").unwrap().len(), 1);
+        restarted.shutdown().await;
+    }
+}
+
+#[tokio::test]
+async fn bot_delete_startup_distinguishes_retirement_from_committed_partial_cleanup() {
+    use hexbot_core::catalog;
+    for committed in [false, true] {
+        let home = setup();
+        let h = home.path();
+        let pi = fake_pi(h);
+        let app = hexbot_core::server::App::new(
+            h.into(),
+            "127.0.0.1:0".parse().unwrap(),
+            pi.clone(),
+            None,
+        )
+        .unwrap();
+        open(&app.runtime, "alice").await;
+        app.runtime
+            .ensure_hidden("alice", "owl", "hidden")
+            .await
+            .unwrap();
+        runtime_store::open(h).unwrap().execute("INSERT INTO native_sessions(stored_id,owner,bot,prompt,options) VALUES('delegate','alice','owl','',?)", [json!({"parent_session":"hidden"}).to_string()]).unwrap();
+        db::open(h).unwrap().execute_batch("INSERT INTO rooms(id,owner_id,name) VALUES('room','alice','Room'); INSERT INTO room_sessions VALUES('room','owl','room-history',NULL); INSERT INTO sections(id,bot,owner_id,title) VALUES('legacy-only','owl','alice','Legacy');").unwrap();
+        for id in ["section-a", "hidden", "delegate", "room-history"] {
+            runtime_store::append(
+                h,
+                id,
+                json!({"role":"user","text":format!("original {id}")}),
+            )
+            .unwrap();
+        }
+        let targets = catalog::prepare_bot_delete(h, "alice", "owl").unwrap();
+        for target in targets {
+            app.runtime
+                .retire_stored(
+                    target["owner"].as_str().unwrap(),
+                    target["id"].as_str().unwrap(),
+                )
+                .await
+                .unwrap();
+        }
+        if committed {
+            // Abort native cleanup after the real atomic catalog commit.
+            runtime_store::open(h).unwrap().execute_batch("CREATE TRIGGER stop_purge BEFORE DELETE ON native_messages WHEN OLD.session_id='hidden' BEGIN SELECT RAISE(ABORT,'controlled cleanup stop'); END;").unwrap();
+            let result = catalog::call(h, "alice", "hexbot.bots.delete", &json!({"name":"owl"}))
+                .unwrap()
+                .unwrap();
+            assert_eq!(result, json!({"deleted":true,"history_pending":true}));
+            assert!(catalog::bot(h, "alice", "owl").is_err());
+            assert!(runtime_store::session_dir(h, "hidden").is_err());
+            runtime_store::open(h)
+                .unwrap()
+                .execute_batch("DROP TRIGGER stop_purge")
+                .unwrap();
+        }
+        app.shutdown().await;
+        let restarted =
+            hexbot_core::server::App::new(h.into(), "127.0.0.1:0".parse().unwrap(), pi, None)
+                .unwrap();
+        for id in ["section-a", "hidden", "delegate", "room-history"] {
+            if committed {
+                assert!(
+                    runtime_store::history(h, id).unwrap().is_empty(),
+                    "orphaned {id}"
+                );
+                assert!(
+                    runtime_store::session_dir(h, id).is_err(),
+                    "resurrected {id}"
+                );
+            } else {
+                assert_eq!(
+                    runtime_store::history(h, id).unwrap()[0]["text"],
+                    format!("original {id}")
+                );
+                assert!(runtime_store::session_dir(h, id).is_ok());
+            }
+        }
+        if !committed {
+            assert!(catalog::section(h, "alice", "legacy-only").is_ok());
+        }
+        assert_eq!(
+            db::open(h)
+                .unwrap()
+                .query_row(
+                    "SELECT COUNT(*) FROM settings WHERE key LIKE 'pending_bot_delete:%'",
+                    [],
+                    |r| r.get::<_, i64>(0)
+                )
+                .unwrap(),
+            0
+        );
+        restarted.shutdown().await;
+    }
+}
+
+#[tokio::test]
+async fn never_opened_section_retirement_recovers_without_inventing_history() {
+    let home = setup();
+    runtime_store::mark_deleted(home.path(), "section-a").unwrap();
+    let app = hexbot_core::server::App::new(
+        home.path().into(),
+        "127.0.0.1:0".parse().unwrap(),
+        fake_pi(home.path()),
+        None,
+    )
+    .unwrap();
+    assert!(
+        open(&app.runtime, "alice").await["messages"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    app.shutdown().await;
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn bot_delete_refuses_memory_symlinks_before_catalog_commit() {
+    let home = setup();
+    let h = home.path();
+    let app =
+        hexbot_core::server::App::new(h.into(), "127.0.0.1:0".parse().unwrap(), fake_pi(h), None)
+            .unwrap();
+    open(&app.runtime, "alice").await;
+    runtime_store::append(h, "section-a", json!({"role":"user","text":"Keep history"})).unwrap();
+    let outside = home.workspace().join("outside-memory");
+    fs::create_dir_all(home.workspace()).unwrap();
+    fs::write(&outside, "Do not touch").unwrap();
+    fs::create_dir_all(h.join("profiles/owl/memories")).unwrap();
+    std::os::unix::fs::symlink(&outside, h.join("profiles/owl/memories/MEMORY.md")).unwrap();
+    assert!(
+        app.call("alice", "hexbot.bots.delete", &json!({"name":"owl"}))
+            .await
+            .is_err()
+    );
+    assert!(hexbot_core::catalog::bot(h, "alice", "owl").is_ok());
+    assert_eq!(
+        runtime_store::history(h, "section-a").unwrap()[0]["text"],
+        "Keep history"
+    );
+    assert_eq!(fs::read_to_string(outside).unwrap(), "Do not touch");
+    app.shutdown().await;
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn bot_delete_removes_owned_session_links_without_touching_their_targets() {
+    let home = setup();
+    let h = home.path();
+    let app =
+        hexbot_core::server::App::new(h.into(), "127.0.0.1:0".parse().unwrap(), fake_pi(h), None)
+            .unwrap();
+    let outside = home.workspace();
+    fs::create_dir_all(&outside).unwrap();
+    fs::write(outside.join("keep.txt"), "unrelated data").unwrap();
+    runtime_store::open(h).unwrap().execute("INSERT INTO native_sessions(stored_id,owner,bot,prompt) VALUES('link-session','alice','owl','')", []).unwrap();
+    fs::create_dir_all(h.join("runtime/sessions")).unwrap();
+    let link = h.join("runtime/sessions/link-session");
+    std::os::unix::fs::symlink(&outside, &link).unwrap();
+    let result = app
+        .call("alice", "hexbot.bots.delete", &json!({"name":"owl"}))
+        .await
+        .unwrap();
+    assert_eq!(result["deleted"], true);
+    assert!(!result["history_pending"].as_bool().unwrap_or(false));
+    assert!(fs::symlink_metadata(link).is_err());
+    assert_eq!(
+        fs::read_to_string(outside.join("keep.txt")).unwrap(),
+        "unrelated data"
+    );
+    app.shutdown().await;
+}

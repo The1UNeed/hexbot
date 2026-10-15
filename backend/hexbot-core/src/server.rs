@@ -201,31 +201,28 @@ impl App {
                     .stop_internal(room["id"].as_str().unwrap_or(""))
                     .await?;
             }
-            // Sections, room conversations and hidden jobs, each under its owner.
-            let sessions = common::rows(
-                &crate::runtime_store::open(&self.home)?,
-                "SELECT stored_id,owner FROM native_sessions WHERE bot=?",
-                &[&bot],
-            )?;
-            for session in sessions {
-                self.runtime
-                    .delete_stored(
+            let sessions = catalog::prepare_bot_delete(&self.home, owner, bot)?;
+            let prepared: Result<()> = async {
+                for session in sessions {
+                    self.runtime.retire_stored(
                         common::required(&session, "owner")?,
-                        common::required(&session, "stored_id")?,
-                    )
-                    .await?;
-            }
-            // Threads where this bot asked others are archived below; stop any still answering
-            // or waiting on the owner, since their panel can no longer be opened.
-            let threads = common::rows(
-                &db::open(&self.home)?,
-                "SELECT id FROM sections WHERE peer_bot=? AND owner_id=? AND archived_at IS NULL",
-                &[&bot, &owner],
-            )?;
-            for thread in threads {
-                self.runtime
-                    .close_stored(owner, common::required(&thread, "id")?)
-                    .await?;
+                        common::required(&session, "id")?,
+                    ).await?;
+                }
+                // Stop recipient threads before archiving them in the catalog transaction.
+                let threads = common::rows(
+                    &db::open(&self.home)?,
+                    "SELECT id FROM sections WHERE peer_bot=? AND owner_id=? AND archived_at IS NULL",
+                    &[&bot, &owner],
+                )?;
+                for thread in threads {
+                    self.runtime.close_stored(owner, common::required(&thread, "id")?).await?;
+                }
+                Ok(())
+            }.await;
+            if let Err(error) = prepared {
+                catalog::rollback_bot_delete(&self.home, bot)?;
+                return Err(error);
             }
         }
         let mut removed_sessions = Vec::new();
@@ -370,8 +367,11 @@ impl App {
                     Err(Error::new(-32601, format!("unknown method: {method}")))
                 }
             }
-        }?;
-        let mut result = result;
+        };
+        if result.is_err() && method == "hexbot.bots.delete" {
+            catalog::rollback_bot_delete(&self.home, common::required(p, "name")?)?;
+        }
+        let mut result = result?;
         // Opening a room restores its open approval and question cards.
         if method == "hexbot.rooms.get" {
             for turn in result["room"]["turns"].as_array().into_iter().flatten() {

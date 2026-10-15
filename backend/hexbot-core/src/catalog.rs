@@ -270,6 +270,21 @@ fn list_sections(home: &Path, caller: &str, p: &Value) -> Result<Vec<Value>> {
 }
 /// A bot's one chat with its owner, made on first use. Threads in which other
 /// bots ask it for help are not chats. A chat an older client archived comes back.
+/// A derived conversation is disposable until its catalog row commits.
+struct PendingChat<'a> {
+    home: &'a Path,
+    id: Option<String>,
+}
+impl Drop for PendingChat<'_> {
+    fn drop(&mut self) {
+        if let Some(id) = &self.id
+            && let Err(error) = runtime_store::delete(self.home, id)
+        {
+            eprintln!("Could not remove uncommitted chat {id}: {error}");
+        }
+    }
+}
+
 pub fn chat_section(home: &Path, caller: &str, name: &str) -> Result<Value> {
     bot_owner(home, caller, name)?;
     // Before the transaction: finding the bot's dream logs may write.
@@ -288,8 +303,23 @@ pub fn chat_section(home: &Path, caller: &str, name: &str) -> Result<Value> {
         .prepare("SELECT session_id FROM native_quarantine UNION SELECT session_id FROM native_unrecovered")?
         .query_map([], |r| r.get::<_, String>(0))?
         .collect::<std::result::Result<BTreeSet<_>, _>>()?;
+    let adopted = setting(&tx, "dream_chat_adoptions")?;
+    let present = candidates
+        .iter()
+        .filter_map(|r| r["id"].as_str())
+        .filter(|id| !unavailable.contains(*id))
+        .collect::<BTreeSet<_>>();
+    let superseded = candidates
+        .iter()
+        .filter_map(|row| {
+            let source = row["id"].as_str()?;
+            let replacement = adopted[source]["target"].as_str()?;
+            present.contains(replacement).then(|| source.to_owned())
+        })
+        .collect::<BTreeSet<_>>();
     let healthy = candidates
         .into_iter()
+        .filter(|row| !superseded.contains(row["id"].as_str().unwrap_or("")))
         .filter(|row| !unavailable.contains(row["id"].as_str().unwrap_or("")))
         .collect();
     // Ranked as the upgrade ranks them: sections it could not remove never
@@ -303,7 +333,34 @@ pub fn chat_section(home: &Path, caller: &str, name: &str) -> Result<Value> {
         .next()
         .filter(|candidate| candidate.count >= 0)
         .and_then(|candidate| candidate.row["id"].as_str().map(str::to_owned));
-    let id = if let Some(id) = existing {
+    let mut forked = PendingChat { home, id: None };
+    let id = if let Some(mut id) = existing {
+        if logs.contains(&id) {
+            let reports = rows(
+                &tx,
+                "SELECT summary FROM dreams WHERE bot=? AND summary<>''",
+                &[&name],
+            )?
+            .into_iter()
+            .filter_map(|r| r["summary"].as_str().map(str::to_owned))
+            .collect();
+            let version: i64 = runtime_store::open(home)?.query_row("SELECT COALESCE((SELECT version FROM native_history_versions WHERE session_id=?),0)", [&id], |r| r.get(0))?;
+            let next = common::id();
+            if runtime_store::fork_dream_chat(home, name, caller, &id, &next, &reports)? {
+                forked.id = Some(next.clone());
+                tx.execute("INSERT INTO sections(id,bot,title,owner_id,created_at,updated_at) SELECT ?,bot,CASE WHEN title='Dreams' THEN 'General' ELSE title END,owner_id,created_at,updated_at FROM sections WHERE id=?", params![next, id])?;
+                let mut adopted = setting(&tx, "dream_chat_adoptions")?
+                    .as_object()
+                    .cloned()
+                    .unwrap_or_default();
+                adopted.insert(id.clone(), json!({"target":next,"version":version}));
+                tx.execute(
+                    "INSERT OR REPLACE INTO settings VALUES('dream_chat_adoptions',?)",
+                    [Value::Object(adopted).to_string()],
+                )?;
+                id = next;
+            }
+        }
         tx.execute(
             "UPDATE sections SET archived_at=NULL WHERE id=? AND archived_at IS NOT NULL",
             [&id],
@@ -326,6 +383,7 @@ pub fn chat_section(home: &Path, caller: &str, name: &str) -> Result<Value> {
         id
     };
     tx.commit()?;
+    forked.id = None;
     section(home, caller, &id)
 }
 /// A JSON setting, or null.
@@ -1646,6 +1704,159 @@ fn delete_section(home: &Path, caller: &str, id: &str, purge: bool) -> Result<Op
     Ok(None)
 }
 
+// A bot deletion spans the catalog, native SQLite store and profile directory.
+// Keep its exact targets in the existing settings journal until cleanup finishes.
+// The bot row is the commit decision; no history or profile is removed before it.
+const BOT_DELETE_PREFIX: &str = "pending_bot_delete:";
+
+pub fn prepare_bot_delete(home: &Path, caller: &str, name: &str) -> Result<Vec<Value>> {
+    bot_owner(home, caller, name)?;
+    // Validate the profile boundary before retiring anything.
+    safe(home, &profile(home, name)?.join("memories/MEMORY.md"))?;
+    let mut targets = rows(
+        &runtime_store::open(home)?,
+        "SELECT stored_id AS id,owner FROM native_sessions WHERE bot=?",
+        &[&name],
+    )?;
+    targets.extend(rows(&db::open(home)?, "SELECT id,owner_id AS owner FROM sections WHERE bot=? UNION SELECT stored_session_id AS id,owner_id AS owner FROM room_sessions JOIN rooms ON rooms.id=room_sessions.room_id WHERE room_sessions.bot=?", &[&name, &name])?);
+    // Capture descendants before any purge can remove their parent links.
+    for target in targets.clone() {
+        for id in runtime_store::descendants(home, required(&target, "id")?)? {
+            if !targets.iter().any(|t| t["id"] == id) {
+                targets.push(json!({"id":id,"owner":target["owner"]}));
+            }
+        }
+    }
+    db::open(home)?.execute(
+        "INSERT OR REPLACE INTO settings(key,value) VALUES(?,?)",
+        params![
+            format!("{BOT_DELETE_PREFIX}{name}"),
+            json!({"targets":targets,"committed":false}).to_string()
+        ],
+    )?;
+    Ok(targets)
+}
+
+pub fn rollback_bot_delete(home: &Path, name: &str) -> Result<()> {
+    let conn = db::open(home)?;
+    let raw: Option<String> = conn
+        .query_row(
+            "SELECT value FROM settings WHERE key=?",
+            [format!("{BOT_DELETE_PREFIX}{name}")],
+            |r| r.get(0),
+        )
+        .optional()?;
+    if let Some(raw) = raw {
+        let journal: Value =
+            serde_json::from_str(&raw).map_err(|e| Error::new(5200, e.to_string()))?;
+        if journal["committed"] == true {
+            return Ok(());
+        }
+        let targets = journal["targets"]
+            .as_array()
+            .ok_or_else(|| Error::new(5200, "Invalid bot deletion journal"))?;
+        for target in targets {
+            runtime_store::unmark_deleted(home, required(target, "id")?)?;
+        }
+        conn.execute(
+            "DELETE FROM settings WHERE key=?",
+            [format!("{BOT_DELETE_PREFIX}{name}")],
+        )?;
+    }
+    Ok(())
+}
+
+fn finish_bot_delete(home: &Path, name: &str, targets: &[Value]) -> Result<()> {
+    for target in targets {
+        runtime_store::delete(home, required(target, "id")?)?;
+    }
+    let jobs = runtime_store::open(home)?;
+    jobs.execute("DELETE FROM native_jobs WHERE bot=?", [name])?;
+    jobs.execute("DELETE FROM native_job_imports WHERE bot=?", [name])?;
+    let dir = profile(home, name)?;
+    if dir.try_exists()? {
+        // Save durable memory before removing the profile. A failed save keeps it all.
+        let memory = dir.join("memories/MEMORY.md");
+        safe(home, &memory)?;
+        if memory.try_exists()? {
+            let saved = home
+                .join("runtime/deleted-bots")
+                .join(format!("{name}-{}", id()))
+                .join("MEMORY.md");
+            safe(home, &saved)?;
+            atomic_write(&saved, &fs::read(&memory)?)?;
+        }
+        fs::remove_dir_all(&dir)?;
+    }
+    db::open(home)?.execute(
+        "DELETE FROM settings WHERE key=?",
+        [format!("{BOT_DELETE_PREFIX}{name}")],
+    )?;
+    Ok(())
+}
+
+/// Runs before generic section tombstones: hidden sessions share the bot's commit decision.
+pub fn finish_bot_deletes(home: &Path) -> Result<()> {
+    let conn = db::open(home)?;
+    for row in rows(
+        &conn,
+        "SELECT key,value FROM settings WHERE key LIKE 'pending_bot_delete:%'",
+        &[],
+    )? {
+        let key = required(&row, "key")?;
+        let name = &key[BOT_DELETE_PREFIX.len()..];
+        let journal: Value = serde_json::from_str(required(&row, "value")?)
+            .map_err(|e| Error::new(5200, e.to_string()))?;
+        if journal["committed"] != true {
+            rollback_bot_delete(home, name)?;
+        } else {
+            let targets = journal["targets"]
+                .as_array()
+                .ok_or_else(|| Error::new(5200, "Invalid bot deletion journal"))?;
+            if let Err(error) = finish_bot_delete(home, name, targets) {
+                eprintln!("Could not finish deleting bot {name}: {error}");
+            }
+        }
+    }
+    Ok(())
+}
+
+fn delete_bot(home: &Path, caller: &str, name: &str) -> Result<Value> {
+    let targets = prepare_bot_delete(home, caller, name)?;
+    let committed = (|| {
+        for target in &targets {
+            runtime_store::mark_deleted(home, required(target, "id")?)?;
+        }
+        let mut conn = db::open(home)?;
+        let tx = conn.transaction()?;
+        tx.execute("DELETE FROM sections WHERE bot=?", [name])?;
+        // Threads where this bot asked others stay with their recipients.
+        tx.execute("UPDATE sections SET archived_at=? WHERE peer_bot=? AND owner_id=? AND archived_at IS NULL", params![now(), name, caller])?;
+        tx.execute("DELETE FROM dreams WHERE bot=?", [name])?;
+        tx.execute("DELETE FROM memory_proposals WHERE bot=?", [name])?;
+        tx.execute("UPDATE room_members SET left_at=? WHERE member_kind='bot' AND member_id=? AND left_at IS NULL", params![now(), name])?;
+        tx.execute("UPDATE rooms SET main_bot=NULL WHERE main_bot=?", [name])?;
+        tx.execute("DELETE FROM room_sessions WHERE bot=?", [name])?;
+        tx.execute("DELETE FROM bot_incidents WHERE bot=?", [name])?;
+        tx.execute("DELETE FROM bots WHERE name=?", [name])?;
+        tx.execute(
+            "UPDATE settings SET value=json_set(value,'$.committed',json('true')) WHERE key=?",
+            [format!("{BOT_DELETE_PREFIX}{name}")],
+        )?;
+        tx.commit()?;
+        Ok::<_, Error>(())
+    })();
+    if let Err(error) = committed {
+        rollback_bot_delete(home, name)?;
+        return Err(error);
+    }
+    if let Err(error) = finish_bot_delete(home, name, &targets) {
+        eprintln!("Deleted bot {name}, but cleanup is pending: {error}");
+        return Ok(json!({"deleted":true,"history_pending":true}));
+    }
+    Ok(json!({"deleted":true}))
+}
+
 pub fn call(home: &Path, caller: &str, method: &str, p: &Value) -> Option<Result<Value>> {
     if matches!(
         method,
@@ -1686,57 +1897,7 @@ pub fn call(home: &Path, caller: &str, method: &str, p: &Value) -> Option<Result
             )?;
             Ok(json!({"bot":bot(home,caller,name)?}))
         }
-        "hexbot.bots.delete" => {
-            let name = required(p, "name")?;
-            bot_owner(home, caller, name)?;
-            let dir = profile(home, name)?;
-            // The daemon checks for running turns and removes conversations first.
-            for s in list_sections(
-                home,
-                caller,
-                &json!({"bot":name,"include_archived":true,"include_threads":true}),
-            )? {
-                if let Some(error) =
-                    delete_section(home, caller, s["id"].as_str().unwrap_or(""), true)?
-                {
-                    return Err(error);
-                }
-            }
-            // Threads where this bot asked others stay with them, closed: a new bot with the
-            // same name starts its own.
-            db::open(home)?.execute(
-                "UPDATE sections SET archived_at=? WHERE peer_bot=? AND owner_id=? AND archived_at IS NULL",
-                params![now(), name, caller],
-            )?;
-            let mut conn = db::open(home)?;
-            let tx = conn.transaction()?;
-            tx.execute("DELETE FROM dreams WHERE bot=?", [name])?;
-            tx.execute("DELETE FROM memory_proposals WHERE bot=?", [name])?;
-            tx.execute("UPDATE room_members SET left_at=? WHERE member_kind='bot' AND member_id=? AND left_at IS NULL",params![now(),name])?;
-            tx.execute("UPDATE rooms SET main_bot=NULL WHERE main_bot=?", [name])?;
-            tx.execute("DELETE FROM room_sessions WHERE bot=?", [name])?;
-            tx.execute("DELETE FROM bot_incidents WHERE bot=?", [name])?;
-            tx.execute("DELETE FROM bots WHERE name=?", [name])?;
-            if dir.exists() {
-                // Keep notes outside the active bot directory after deletion.
-                let memory = dir.join("memories/MEMORY.md");
-                if memory.is_file() {
-                    safe(home, &memory)?;
-                    let saved = home
-                        .join("runtime/deleted-bots")
-                        .join(format!("{name}-{}", id()))
-                        .join("MEMORY.md");
-                    atomic_write(&saved, &fs::read(&memory)?)?;
-                }
-                fs::remove_dir_all(&dir)?;
-            }
-            tx.commit()?;
-            // Jobs are keyed by bot name, so a later bot with this name must not inherit them.
-            let jobs = runtime_store::open(home)?;
-            jobs.execute("DELETE FROM native_jobs WHERE bot=?", [name])?;
-            jobs.execute("DELETE FROM native_job_imports WHERE bot=?", [name])?;
-            Ok(json!({"deleted":true}))
-        }
+        "hexbot.bots.delete" => delete_bot(home, caller, required(p, "name")?),
         "hexbot.sections.thread" => {
             let bot = required(p, "bot")?;
             let peer = required(p, "peer")?;

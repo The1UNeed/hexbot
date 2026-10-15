@@ -44,6 +44,8 @@ export function useMobile() {
   const [rooms, setRooms] = useState<Room[]>([])
   const [sections, setSections] = useState<Section[]>([])
   const [info, setInfo] = useState<DaemonInfo | null>(null)
+  const infoRef = useRef<DaemonInfo | null>(null)
+  const refreshSequence = useRef(0)
   const [settings, setSettings] = useState<Settings | null>(null)
   const [user, setUser] = useState<CurrentUser | null>(null)
   const [route, setRoute] = useState<ChatRoute | null>(null)
@@ -126,6 +128,7 @@ export function useMobile() {
   const refresh = useCallback(async () => {
     const current = session.current
     clearModels()
+    const sequence = ++refreshSequence.current
     const before = routeRef.current
     const [b, r, s, i, config, me] = await Promise.all([
       rpc<{ bots: Bot[] }>('hexbot.bots.list'),
@@ -135,7 +138,13 @@ export function useMobile() {
       rpc<Settings>('hexbot.settings.get'),
       rpc<CurrentUser>('hexbot.users.me')
     ])
-    if (!mounted.current || session.current !== current) return
+    if (!mounted.current || session.current !== current || sequence !== refreshSequence.current) return
+    const previousInfo = infoRef.current
+    if (previousInfo && (previousInfo.one_chat !== i.one_chat || previousInfo.install_id !== i.install_id)) {
+      cancelNavigation()
+      picked.current.clear()
+    }
+    infoRef.current = i
     setBots(b.bots)
     setRooms(r.rooms)
     setSections(s.sections)
@@ -149,7 +158,7 @@ export function useMobile() {
     if (!next) return leave()
     routeRef.current = next
     setRoute(next)
-  }, [rpc, clearModels, leave])
+  }, [rpc, clearModels, leave, cancelNavigation])
   const syncRoom = useCallback(
     async (id: string) => {
       const sequence = ++openSequence.current
@@ -353,6 +362,8 @@ export function useMobile() {
       setRooms([])
       setSections([])
       setInfo(null)
+      infoRef.current = null
+      refreshSequence.current++
       setSettings(null)
       setUser(null)
       setChoosing(null)
@@ -380,6 +391,11 @@ export function useMobile() {
           }
         },
         async () => {
+          // A reconnect can reach an upgraded daemon at the same address.
+          cancelNavigation()
+          picked.current.clear()
+          infoRef.current = null
+          setInfo(null)
           await refreshRef.current()
           await syncChatRef.current()
         },
@@ -453,7 +469,7 @@ export function useMobile() {
     setLoading(true)
     setError(null)
     try {
-      const oneChat = (info ?? (await lookup<DaemonInfo>('hexbot.info'))).one_chat === true
+      const oneChat = (infoRef.current ?? (await lookup<DaemonInfo>('hexbot.info'))).one_chat === true
       const found = await botChat(lookup, bot.name, oneChat, picked.current, section)
       if (stale()) return
       if ('choices' in found) {

@@ -33,14 +33,16 @@ export function useChatSelection() {
     async (bot: string) => {
       const selected = ++generation.current
       const location = router.history.location
-      const { target, epoch } = useConnection.getState()
+      const { target, epoch, daemon } = useConnection.getState()
 
       // Read history directly: React may still be batching the route transition.
       const current = () =>
         generation.current === selected &&
         router.history.location === location &&
         target === useConnection.getState().target &&
-        epoch === useConnection.getState().epoch
+        epoch === useConnection.getState().epoch &&
+        daemon?.one_chat === useConnection.getState().daemon?.one_chat &&
+        daemon?.install_id === useConnection.getState().daemon?.install_id
 
       try {
         const chat = await sectionsActions().chat(bot, current)
