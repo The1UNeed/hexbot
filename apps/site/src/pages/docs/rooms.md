@@ -36,7 +36,7 @@ A daemon belongs to one person, so you are the only person in its rooms. Rooms w
 
 Archiving hides a room but keeps its history. Deleting it removes the room and its history; each bot's own memory is left as it is.
 
-Deleting a room, including by removing its last bot, clears failures from that room's turns and refreshes the bots' statuses. Failures in other rooms or sections, subagents, connector problems, and failures without a conversation remain. Archiving a room keeps its failed turns available to retry.
+Deleting a room, including by removing its last bot, clears failures from that room's turns, removes its delegated conversations, and refreshes the bots' statuses. Failures in other surviving rooms, sections, or background runs, connector problems, and failures without a conversation remain. Archiving a room keeps its failed turns available to retry.
 
 ## Bots working together
 
