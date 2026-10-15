@@ -105,6 +105,17 @@ it also installs over SSH when nobody is signed in at the screen.
   directory. Existing Python `state.db` history is imported once, including
   hidden and tool messages. New native turns are not mirrored into legacy
   Python history. There is no Python rollback package.
+  Section deletion commits its catalog decision before purging history.
+  Requested legacy purges persist exact native targets, bot, owner and the
+  decision root in `native_delete_options`/`native_delete_pending`, then save
+  identifiable legacy IDs before removing native relationships. Startup retries
+  incomplete cleanup even when native rows and files are gone. Completed
+  targets remain tombstoned. A failed catalog decision rolls back its own
+  request without changing raw history or frozen options. `purge_memory: false`
+  still purges native history and leaves legacy history alone. Old tombstones
+  without ownership metadata retain their native-only recovery behavior.
+  The one-shot upgrade backup already copies the entire runtime database,
+  including these requests; cleanup retries do not rerun its deletion plan.
   Session recovery reconciles Pi's durable log with native history and usage;
   replaying an already recorded message does not duplicate it or its cost.
   `native_history_versions` counts, by trigger, every change to a session's
