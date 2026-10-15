@@ -75,6 +75,7 @@ pub fn open(home: &Path) -> Result<Connection> {
       CREATE TABLE IF NOT EXISTS native_delete_claims(attempt TEXT NOT NULL,session_id TEXT NOT NULL REFERENCES native_delete_pending(session_id) ON DELETE CASCADE,PRIMARY KEY(attempt,session_id));
       CREATE TABLE IF NOT EXISTS native_delete_completed(session_id TEXT PRIMARY KEY REFERENCES native_deleted(session_id) ON DELETE CASCADE);
       CREATE TABLE IF NOT EXISTS native_quarantine(session_id TEXT PRIMARY KEY, error TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS native_unrecovered(session_id TEXT PRIMARY KEY);
       CREATE TABLE IF NOT EXISTS native_fresh(session_id TEXT PRIMARY KEY);
       CREATE TRIGGER IF NOT EXISTS summary_session_insert AFTER INSERT ON native_sessions BEGIN DELETE FROM native_summaries WHERE session_id=NEW.stored_id; END;
       CREATE TRIGGER IF NOT EXISTS summary_journal_insert AFTER INSERT ON native_pi_journal BEGIN DELETE FROM native_summaries WHERE session_id=NEW.session_id; END;
@@ -278,7 +279,14 @@ fn catalog_ids(home: &Path) -> Result<HashSet<String>> {
         .collect::<rusqlite::Result<_>>()?)
 }
 pub fn mark_deleted(home: &Path, stored: &str) -> Result<Vec<String>> {
-    Ok(mark_retiring(home, stored)?.targets)
+    with_tombstone(home, || {
+        let listed = catalog_ids(home)?;
+        let mut conn = open(home)?;
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let targets = mark_targets(&tx, stored, listed.contains(stored))?;
+        tx.commit()?;
+        Ok(targets)
+    })
 }
 pub(crate) fn mark_retiring(home: &Path, stored: &str) -> Result<Retirement> {
     with_tombstone(home, || {
@@ -332,7 +340,7 @@ pub(crate) fn with_section_delete(
     owner: &str,
     purge: bool,
     commit_catalog: impl FnOnce() -> Result<()>,
-) -> Result<()> {
+) -> Result<Option<crate::Error>> {
     with_tombstone(home, || {
         let listed = catalog_ids(home)?;
         let mut conn = open(home)?;
@@ -403,9 +411,9 @@ pub(crate) fn with_section_delete(
         if let Err(error) = finalized {
             // The catalog already committed. Keep the durable markers and
             // disposition for startup rather than report a reversible failure.
-            eprintln!("Deleted section {stored}, but could not finalize its markers: {error}");
+            return Ok(Some(error));
         }
-        Ok(())
+        Ok(None)
     })
 }
 pub fn unmark_deleted(home: &Path, stored: &str) -> Result<()> {
@@ -484,6 +492,10 @@ fn purge(home: &Path, stored: &str, retry_completed: bool) -> Result<()> {
         let tx = conn.transaction()?;
         tx.execute("DELETE FROM native_summaries WHERE session_id=?", [stored])?;
         tx.execute("DELETE FROM native_quarantine WHERE session_id=?", [stored])?;
+        tx.execute(
+            "DELETE FROM native_unrecovered WHERE session_id=?",
+            [stored],
+        )?;
         tx.execute("DELETE FROM native_fresh WHERE session_id=?", [stored])?;
         tx.execute("DELETE FROM native_pi_journal WHERE session_id=?", [stored])?;
         tx.execute(
@@ -1350,7 +1362,7 @@ pub fn reconcile(home: &Path, bot: &str, stored: &str, owner: &str) -> Result<()
         .join("runtime/sessions")
         .join(stored)
         .join("conversation.jsonl");
-    if !path.exists() {
+    if !path.try_exists()? {
         return Ok(());
     }
     let entries = read_pi_entries(&path)?;
@@ -1763,7 +1775,9 @@ fn reorder_projection(conn: &Connection, stored: &str, source_order: &[i64]) -> 
 
 /// Recover every previously opened session before serving usage or catalog RPCs.
 /// Unread conversations must count toward budgets and dreaming after a crash.
-/// Returns the conversations a transient error kept from being recovered.
+/// Records and returns the conversations a transient error kept from being
+/// recovered. Catalog lookup skips them without rereading every Pi log. A
+/// successful recovery on a later start makes them eligible again.
 pub fn reconcile_all(home: &Path) -> Result<BTreeSet<String>> {
     let mut unrecovered = BTreeSet::new();
     let sessions = common::rows(
@@ -1803,6 +1817,10 @@ pub fn reconcile_all(home: &Path) -> Result<BTreeSet<String>> {
                     .is_some_and(|d| d["transient"] == true || d["quarantined"] == true)
             {
                 eprintln!("Could not recover conversation {stored}: {error}");
+                open(home)?.execute(
+                    "INSERT OR IGNORE INTO native_unrecovered VALUES(?)",
+                    [stored],
+                )?;
                 unrecovered.insert(stored.to_owned());
                 continue;
             }
@@ -1823,6 +1841,11 @@ pub fn reconcile_all(home: &Path) -> Result<BTreeSet<String>> {
             {
                 eprintln!("Could not move damaged conversation {stored}: {error}");
             }
+        } else {
+            open(home)?.execute(
+                "DELETE FROM native_unrecovered WHERE session_id=?",
+                [stored],
+            )?;
         }
     }
     Ok(unrecovered)

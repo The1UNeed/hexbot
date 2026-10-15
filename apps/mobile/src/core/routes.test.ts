@@ -11,7 +11,7 @@ import {
 import type { Bot, Room, Rpc, Section } from './types'
 const bot = { name: 'ada', display_name: 'Ada' } as Bot
 const section = (id: string, extra: Partial<Section> = {}) =>
-  ({ id, bot: 'ada', title: id, ...extra }) as Section
+  ({ id, bot: 'ada', title: id, archived_at: null, ...extra }) as Section
 describe('open conversation', () => {
   it('keeps a teammate thread open when the lists reload', () => {
     // The daemon lists teammate threads only when asked to.
@@ -93,6 +93,35 @@ describe("a bot's chat", () => {
       'daemon unavailable'
     )
     expect(failing.methods()).not.toContain('hexbot.sections.create')
+  })
+  it.each([null, 5])(
+    'persists an explicit older pick even when already open, archived_at=%s',
+    async archived_at => {
+      const old = said('old', { archived_at, title: 'Trip' })
+      const newer = said('new', { updated_at: 9 })
+      const api = daemon([old, newer])
+      const picked = new Map<string, string>()
+      expect(await botChat(api.rpc, 'ada', false, picked, old)).toEqual({
+        section: { ...old, archived_at: null }
+      })
+      expect(api.calls).toEqual([['hexbot.sections.unarchive', { id: 'old' }]])
+      expect(picked.get('ada')).toBe('old')
+      // A new client asks again; it never invents a chat or a remembered choice.
+      expect(await botChat(api.rpc, 'ada', false, new Map())).toHaveProperty('choices')
+      expect(api.methods()).not.toContain('hexbot.sections.create')
+    }
+  )
+  it('does not remember an unarchived pick when persisting it fails', async () => {
+    const sections = [said('old'), said('new', { updated_at: 9 })]
+    const failing = daemon(sections, 'hexbot.sections.unarchive')
+    const picked = new Map<string, string>()
+    await expect(botChat(failing.rpc, 'ada', false, picked, sections[0])).rejects.toThrow(
+      'daemon unavailable'
+    )
+    expect(picked.size).toBe(0)
+    const retry = daemon(sections)
+    expect(await botChat(retry.rpc, 'ada', false, picked)).toHaveProperty('choices')
+    expect(retry.methods()).not.toContain('hexbot.sections.create')
   })
 })
 describe('rooms', () => {

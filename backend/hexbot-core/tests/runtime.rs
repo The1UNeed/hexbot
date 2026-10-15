@@ -1262,6 +1262,80 @@ async fn a_bot_whose_chat_recovery_set_aside_gets_a_new_chat_that_opens() {
 }
 
 #[tokio::test]
+async fn unreadable_native_history_falls_back_to_a_chat_that_actually_opens() {
+    for healthy in [false, true] {
+        let home = setup();
+        let conn = db::open(home.path()).unwrap();
+        conn.execute("UPDATE sections SET updated_at=9 WHERE id='section-a'", [])
+            .unwrap();
+        let runtime = runtime_store::open(home.path()).unwrap();
+        runtime.execute("INSERT INTO native_sessions(stored_id,owner,bot,prompt) VALUES('section-a','alice','owl','')", []).unwrap();
+        runtime_store::append(
+            home.path(),
+            "section-a",
+            json!({"role":"user","text":"Unrecoverable for now","timestamp":9}),
+        )
+        .unwrap();
+        let path = home
+            .path()
+            .join("runtime/sessions/section-a/conversation.jsonl");
+        fs::create_dir_all(&path).unwrap();
+        fs::write(path.join("kept"), "repair me").unwrap();
+        if healthy {
+            conn.execute("INSERT INTO sections(id,bot,owner_id,title,updated_at) VALUES('healthy','owl','alice','Healthy',2)", []).unwrap();
+            runtime_store::append(
+                home.path(),
+                "healthy",
+                json!({"role":"user","text":"Healthy conversation","timestamp":2}),
+            )
+            .unwrap();
+        }
+        let memories = home.path().join("profiles/owl/memories");
+        fs::create_dir_all(memories.join("notes")).unwrap();
+        fs::write(memories.join("MEMORY.md"), "Keep my memory").unwrap();
+        fs::write(memories.join("notes/2026-10-15.md"), "Keep my notes").unwrap();
+        let app = hexbot_core::server::App::new(
+            home.path().into(),
+            "127.0.0.1:0".parse().unwrap(),
+            fake_pi(home.path()),
+            None,
+        )
+        .unwrap();
+        let chosen = app
+            .call("alice", "hexbot.sections.create", &json!({"bot":"owl"}))
+            .await
+            .unwrap();
+        let id = chosen["section"]["id"].as_str().unwrap();
+        assert_ne!(id, "section-a");
+        if healthy {
+            assert_eq!(id, "healthy");
+        }
+        let opened = app
+            .call("alice", "hexbot.sections.open", &json!({"id":id}))
+            .await
+            .unwrap();
+        assert!(opened["section"]["live_session_id"].is_string());
+        assert_eq!(
+            app.call("alice", "hexbot.sections.create", &json!({"bot":"owl"}))
+                .await
+                .unwrap()["section"]["id"],
+            id
+        );
+        assert!(hexbot_core::catalog::section(home.path(), "alice", "section-a").is_ok());
+        assert_eq!(fs::read_to_string(path.join("kept")).unwrap(), "repair me");
+        assert_eq!(
+            fs::read_to_string(memories.join("MEMORY.md")).unwrap(),
+            "Keep my memory"
+        );
+        assert_eq!(
+            fs::read_to_string(memories.join("notes/2026-10-15.md")).unwrap(),
+            "Keep my notes"
+        );
+        app.shutdown().await;
+    }
+}
+
+#[tokio::test]
 async fn deleting_section_removes_delegated_transcripts() {
     let home = setup();
     let app = hexbot_core::server::App::new(

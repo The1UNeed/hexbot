@@ -485,6 +485,35 @@ fn startup_leaves_io_failures_in_place_but_quarantines_bad_data() {
 }
 
 #[test]
+fn failed_projection_recovery_preserves_the_log_and_skips_it_for_canonical_chat() {
+    let home = setup();
+    let path = file(
+        home.path(),
+        &[entry("u", None, user("Recover later", 100_000))],
+    );
+    let original = fs::read(&path).unwrap();
+    store::open(home.path()).unwrap().execute_batch(
+        "CREATE TRIGGER refuse_projection BEFORE INSERT ON native_pi_journal WHEN NEW.session_id='chat' BEGIN SELECT RAISE(ABORT,'projection unavailable'); END;",
+    ).unwrap();
+    hexbot_core::catalog::one_chat_per_bot(home.path()).unwrap();
+    let chosen = hexbot_core::catalog::chat_section(home.path(), "alice", "owl").unwrap();
+    assert_ne!(chosen["id"], "chat");
+    assert_eq!(fs::read(&path).unwrap(), original);
+    assert_eq!(quarantined(home.path()), 0);
+    store::open(home.path())
+        .unwrap()
+        .execute_batch("DROP TRIGGER refuse_projection")
+        .unwrap();
+    assert!(store::reconcile_all(home.path()).unwrap().is_empty());
+    assert_eq!(texts(home.path()), ["Recover later"]);
+    assert_eq!(
+        hexbot_core::catalog::chat_section(home.path(), "alice", "owl").unwrap()["id"],
+        "chat"
+    );
+    assert_eq!(fs::read(&path).unwrap(), original);
+}
+
+#[test]
 fn quarantine_survives_restarts_and_lifts_once_the_conversation_is_restored() {
     let home = setup();
     let dir = store::session_dir(home.path(), "chat").unwrap();

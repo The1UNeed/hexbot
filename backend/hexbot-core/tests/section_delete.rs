@@ -837,7 +837,7 @@ fn startup_finishes_failed_native_or_legacy_purge_after_catalog_removal() {
         conn.execute_batch(&trigger).unwrap();
         assert_eq!(
             fixture.dispatch_delete("local", Some(true)).unwrap(),
-            json!({"deleted":true})
+            json!({"deleted":true,"history_pending":true})
         );
         assert!(catalog::section(h, "local", &fixture.id).is_err());
         let partial = fixture.snapshot();
@@ -1170,15 +1170,45 @@ fn failed_parent_delete_preserves_committed_child_disposition() {
 
 #[test]
 fn startup_parent_rollback_preserves_committed_retained_child() {
-    let mut fixture = Fixture::new();
-    retain_child(&fixture);
-    let before = policies(fixture.home.path());
-    runtime_store::mark_deleted(fixture.home.path(), &fixture.id).unwrap();
-    fixture.restart();
-    assert_eq!(policies(fixture.home.path()), before);
-    assert_blocked(&fixture, &fixture.child);
-    assert!(runtime_store::session_dir(fixture.home.path(), &fixture.id).is_ok());
-    run(fixture.app.shutdown());
+    for old_markers in [false, true] {
+        for completed in [false, true] {
+            let mut fixture = Fixture::new();
+            retain_child(&fixture);
+            let h = fixture.home.path();
+            let native = runtime_store::open(h).unwrap();
+            if completed {
+                native
+                    .execute(
+                        "INSERT INTO native_delete_completed VALUES(?)",
+                        [&fixture.child],
+                    )
+                    .unwrap();
+            }
+            let before = policies(h);
+            if old_markers {
+                // Tombstones already on disk when upgrading from 673 carry
+                // no provisional provenance. Never infer that an unlisted
+                // descendant belongs to this parent's interrupted attempt.
+                native
+                    .execute("INSERT INTO native_deleted VALUES(?)", [&fixture.id])
+                    .unwrap();
+                native
+                    .execute(
+                        "INSERT INTO native_delete_options VALUES(?,'owl','local',1)",
+                        [&fixture.id],
+                    )
+                    .unwrap();
+            } else {
+                runtime_store::mark_deleted(h, &fixture.id).unwrap();
+            }
+            fixture.restart();
+            assert_eq!(policies(fixture.home.path()), before);
+            assert_blocked(&fixture, &fixture.child);
+            assert_eq!(fixture.completed(&fixture.child), completed);
+            assert!(runtime_store::session_dir(fixture.home.path(), &fixture.id).is_ok());
+            run(fixture.app.shutdown());
+        }
+    }
 }
 
 #[test]
@@ -1466,5 +1496,122 @@ fn failed_parent_commit_preserves_completed_child_and_frozen_options() {
         assert_blocked(&fixture, &fixture.child);
         assert!(runtime_store::session_dir(fixture.home.path(), &fixture.id).is_ok());
         run(fixture.app.shutdown());
+    }
+}
+
+#[test]
+fn migration_failures_preserve_retention_and_skip_unreadable_canonical_chats() {
+    for catalog_failure in [false, true] {
+        for purge_unreadable in [false, true] {
+            let mut fixture = Fixture::new();
+            let h = fixture.home.path();
+            let native = runtime_store::open(h).unwrap();
+            // An independent retained section must never be ranked, rewritten
+            // by recovery, or swept up by the one-chat migration.
+            native.execute("UPDATE native_sessions SET options='{\"frozen\":\"retained\"}' WHERE stored_id=?", [&fixture.child]).unwrap();
+            retain_child(&fixture);
+            let retained_pi = fs::read(fixture.pi_path(&fixture.child)).unwrap();
+            let retained_policy = policies(h);
+            let catalog = db::open(h).unwrap();
+            catalog.execute_batch("DELETE FROM settings WHERE key='one_chat_per_bot'; INSERT INTO sections(id,bot,owner_id,title,updated_at) VALUES('keeper','owl','local','Keeper',4000000000),('later','owl','local','Later',1);").unwrap();
+            catalog
+                .execute("UPDATE sections SET updated_at=2 WHERE id=?", [&fixture.id])
+                .unwrap();
+            for (id, time) in [("keeper", 4000000000_i64), ("later", 1)] {
+                runtime_store::append(h, id, json!({"role":"user","text":id,"timestamp":time}))
+                    .unwrap();
+            }
+            if catalog_failure {
+                catalog.execute_batch("CREATE TABLE commit_fault(section_id TEXT REFERENCES sections(id) DEFERRABLE INITIALLY DEFERRED);").unwrap();
+                catalog
+                    .execute("INSERT INTO commit_fault VALUES(?)", [&fixture.id])
+                    .unwrap();
+            } else {
+                native.execute_batch(&format!("CREATE TRIGGER fail_purge BEFORE DELETE ON native_messages WHEN OLD.session_id='{}' BEGIN SELECT RAISE(ABORT,'migration cleanup fault'); END;",fixture.id)).unwrap();
+            }
+            catalog::one_chat_per_bot(h).unwrap();
+            assert_eq!(
+                catalog::section(h, "local", &fixture.id).is_ok(),
+                catalog_failure
+            );
+            assert!(catalog::section(h, "local", "later").is_ok());
+            assert_eq!(runtime_store::history(h, &fixture.child).unwrap().len(), 1);
+            assert_eq!(
+                policies(h)
+                    .iter()
+                    .find(|r| r["session_id"] == fixture.child)
+                    .unwrap(),
+                &retained_policy[0]
+            );
+            if catalog_failure {
+                catalog.execute_batch("DROP TABLE commit_fault").unwrap();
+            } else {
+                native.execute_batch("DROP TRIGGER fail_purge").unwrap();
+            }
+            runtime_store::finish_deletes(h).unwrap();
+            catalog::one_chat_per_bot(h).unwrap();
+            // The one-shot migration never retries catalog deletes or reaches
+            // the later section after either kind of failure.
+            assert!(catalog::section(h, "local", "later").is_ok());
+            assert_eq!(
+                catalog::section(h, "local", &fixture.id).is_ok(),
+                catalog_failure
+            );
+            catalog.execute_batch("INSERT INTO sections(id,bot,owner_id,title,updated_at) VALUES('unreadable','owl','local','Unreadable',5000000000);").unwrap();
+            native
+                .execute(
+                    "INSERT INTO native_sessions VALUES('unreadable','local','owl','frozen','{}')",
+                    [],
+                )
+                .unwrap();
+            let unreadable = runtime_store::session_dir(h, "unreadable")
+                .unwrap()
+                .join("conversation.jsonl");
+            fs::create_dir_all(&unreadable).unwrap();
+            fs::write(unreadable.join("kept"), "repair me").unwrap();
+            fixture.restart();
+            let h = fixture.home.path();
+            let selected =
+                catalog::call(h, "local", "hexbot.sections.create", &json!({"bot":"owl"}))
+                    .unwrap()
+                    .unwrap();
+            assert_eq!(selected["section"]["id"], "keeper");
+            assert_eq!(
+                fs::read(fixture.pi_path(&fixture.child)).unwrap(),
+                retained_pi
+            );
+            assert_blocked(&fixture, &fixture.child);
+            assert_eq!(
+                policies(h)
+                    .iter()
+                    .find(|r| r["session_id"] == fixture.child)
+                    .unwrap(),
+                &retained_policy[0]
+            );
+            catalog::call(
+                h,
+                "local",
+                "hexbot.sections.delete",
+                &json!({"id":"unreadable","purge_memory":purge_unreadable}),
+            )
+            .unwrap()
+            .unwrap();
+            let marked: bool = native
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM native_unrecovered WHERE session_id='unreadable')",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(marked, !purge_unreadable);
+            assert_eq!(unreadable.exists(), !purge_unreadable);
+            assert_eq!(
+                runtime_store::session_dir(h, "unreadable")
+                    .unwrap_err()
+                    .code,
+                4001
+            );
+            run(fixture.app.shutdown());
+        }
     }
 }

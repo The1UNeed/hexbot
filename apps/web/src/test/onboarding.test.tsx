@@ -92,9 +92,9 @@ describe('onboarding', () => {
     setActiveRpc({ call } as never)
     ui.lastSection = { bot: 'scout', section: 's-picked' }
 
-    expect(await landingSection([{ name: 'scout', sections_recent: [] } as unknown as Bot])).toEqual(
-      { bot: 'scout', section: 's-picked' }
-    )
+    expect(
+      await landingSection([{ name: 'scout', sections_recent: [] } as unknown as Bot])
+    ).toEqual({ bot: 'scout', section: 's-picked' })
     // Not asked again which section, and none made.
     expect(call.mock.calls.map(([method]) => method)).toEqual(['hexbot.info'])
     ui.lastSection = null
@@ -119,7 +119,8 @@ describe('onboarding', () => {
         {
           'hexbot.bots.list': { bots: [ada] },
           'hexbot.memory.user.get': { cap: 2000, text: 'Name: Alex', updated_at: 1 },
-          'hexbot.sections.list': { sections: [said('Night notes', 9), said('Trip', 5)] }
+          'hexbot.sections.list': { sections: [said('Night notes', 9), said('Trip', 5)] },
+          'hexbot.sections.unarchive': { section: said('Trip', 20) }
         }[method] ?? {}
       )
     )
@@ -146,6 +147,7 @@ describe('onboarding', () => {
       expect(screen.queryByText('Connect a provider')).toBeNull()
       expect(navigate).not.toHaveBeenCalled()
       expect(call).not.toHaveBeenCalledWith('hexbot.sections.create', expect.anything())
+      expect(call).not.toHaveBeenCalledWith('hexbot.sections.unarchive', expect.anything())
 
       // Continue asks again, and opens what is picked.
       fireEvent.click(screen.getByRole('button', { name: 'Continue' }))
@@ -158,6 +160,7 @@ describe('onboarding', () => {
         })
       )
       expect(ui.setLastSection).toHaveBeenCalledWith({ bot: 'ada', section: 'Trip' })
+      expect(call).toHaveBeenCalledWith('hexbot.sections.unarchive', { id: 'Trip' })
       expect(call).not.toHaveBeenCalledWith('hexbot.sections.create', expect.anything())
     } finally {
       useConnection.setState({ daemon: null, status: 'idle' } as never)
@@ -274,9 +277,11 @@ describe('onboarding', () => {
   })
 
   it('saves legacy About you when the daemon has no rename method', async () => {
-    const call = vi.fn((method: string) => method === 'hexbot.users.me.set'
-      ? Promise.reject({ code: -32601, message: 'Unknown method' })
-      : Promise.resolve({ cap: 2000, text: 'Name: Alex', updated_at: 1 }))
+    const call = vi.fn((method: string) =>
+      method === 'hexbot.users.me.set'
+        ? Promise.reject({ code: -32601, message: 'Unknown method' })
+        : Promise.resolve({ cap: 2000, text: 'Name: Alex', updated_at: 1 })
+    )
 
     setActiveRpc({ call } as never)
     const onContinue = vi.fn()
@@ -347,9 +352,7 @@ describe('onboarding', () => {
 
     const before = Number(screen.getByRole('progressbar').getAttribute('aria-valuenow'))
     rerender(
-      <InstallStep
-        progress={[uv, { message: 'Installing voice tools', stage: 'dependencies' }]}
-      />
+      <InstallStep progress={[uv, { message: 'Installing voice tools', stage: 'dependencies' }]} />
     )
     expect(screen.getByRole('status')).toHaveTextContent('Installing voice tools')
     expect(document.querySelector('[data-act]')).toHaveAttribute('data-act', 'type')

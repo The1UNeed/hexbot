@@ -30,12 +30,15 @@ const section = (id: string, overrides: Partial<Section> = {}) =>
 
 const daemon = (info: Partial<DaemonInfo>) => info as DaemonInfo
 const chat = (bot: string) => useSections.getState().chat(bot)
+let listed: Section[] = []
 
 /** An older daemon listing these sections of `bot`. Picks are remembered by bot. */
-const listing = (bot: string, ...sections: Section[]) =>
+const listing = (bot: string, ...sections: Section[]) => {
+  listed = sections.map(item => ({ ...item, bot: item.peer_bot ? item.bot : bot }))
   vi.mocked(sectionsList).mockResolvedValue({
-    sections: sections.map(item => ({ ...item, bot: item.peer_bot ? item.bot : bot }))
+    sections: listed
   })
+}
 
 /** Waits for `chat` to ask, then answers with the section of `id`, or none. */
 async function pick(id: null | string) {
@@ -53,7 +56,11 @@ describe("a bot's chat", () => {
       .mockReset()
       .mockResolvedValue({ section: section('made') })
     vi.mocked(sectionsList).mockReset()
-    vi.mocked(sectionsUnarchive).mockReset()
+    vi.mocked(sectionsUnarchive)
+      .mockReset()
+      .mockImplementation(async id => ({
+        section: { ...listed.find(item => item.id === id)!, archived_at: null, updated_at: 20 }
+      }))
     vi.mocked(daemonInfo).mockReset()
     useSections.setState({ byId: {}, choosing: null, idsByBot: {}, liveSessionId: {} })
     useConnection.setState({ daemon: daemon({ version: '0.1.6' }) })
@@ -163,6 +170,59 @@ describe("a bot's chat", () => {
     await pick(null)
     expect(await opening).toBeNull()
     expect(sectionsCreate).not.toHaveBeenCalled()
+    expect(sectionsUnarchive).not.toHaveBeenCalled()
+    expect(useSections.getState().choosing).toBeNull()
+  })
+
+  it.each([null, 5])(
+    'persists an explicit older pick before opening, archived_at=%s',
+    async archived_at => {
+      const bot = `persist-${archived_at}`
+      listing(
+        bot,
+        section('old', { archived_at, updated_at: 1, title: 'Trip' }),
+        section('new', { updated_at: 9 })
+      )
+      const opening = chat(bot)
+      await pick('old')
+      expect(await opening).toMatchObject({
+        id: 'old',
+        title: 'Trip',
+        archived_at: null,
+        updated_at: 20
+      })
+      expect(sectionsUnarchive).toHaveBeenCalledExactlyOnceWith('old')
+      expect(sectionsCreate).not.toHaveBeenCalled()
+    }
+  )
+
+  it('does not remember a failed persistence RPC, and lets the user retry or cancel', async () => {
+    listing('persist-failure', section('old'), section('new', { updated_at: 9 }))
+    vi.mocked(sectionsUnarchive).mockRejectedValueOnce(new Error('write failed'))
+    const opening = chat('persist-failure')
+    const failed = expect(opening).rejects.toThrow('write failed')
+    await pick('old')
+    await failed
+    const retry = chat('persist-failure')
+    await pick(null)
+    expect(await retry).toBeNull()
+    expect(sectionsUnarchive).toHaveBeenCalledTimes(1)
+    expect(sectionsCreate).not.toHaveBeenCalled()
+  })
+
+  it('does not persist a choice from a superseded lookup or a changed daemon', async () => {
+    let complete!: (value: { sections: Section[] }) => void
+    vi.mocked(sectionsList).mockReturnValueOnce(
+      new Promise(resolve => {
+        complete = resolve
+      })
+    )
+    const old = chat('stale')
+    await Promise.resolve()
+    useConnection.setState({ epoch: 'another-daemon' })
+    complete({ sections: [section('stale')] })
+    expect(await old).toBeNull()
+    expect(sectionsUnarchive).not.toHaveBeenCalled()
     expect(useSections.getState().choosing).toBeNull()
   })
 })

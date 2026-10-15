@@ -32,8 +32,8 @@ export const isThread = (section: Pick<Section, 'peer_bot'>) => Boolean(section.
 /**
  * A bot's chat on a daemon from before one chat per bot, which keeps many
  * sections and makes another on every create. Its update keeps the one with
- * the latest conversation unless that is its Dreams log, which its list
- * cannot tell apart, renamed or not. So the chat is certain only while at
+ * the latest conversation, giving way only for report-only logs, which its
+ * list cannot tell apart, renamed or not. So the chat is certain only while at
  * most one section has something said; otherwise those are the choices,
  * open ones first, newest first. Null for a bot with none: create makes it.
  * Never a thread.
@@ -75,7 +75,7 @@ export interface SectionsState {
    * A bot's one chat with you, made on first use. On an older daemon the
    * user may be asked to pick it; null when they pick none.
    */
-  chat: (bot: string) => Promise<null | Section>
+  chat: (bot: string, current?: () => boolean) => Promise<null | Section>
   /** The choice `chat` is waiting on, if any. */
   choosing: ChatChoice | null
   /** Live ids are process-scoped; a new daemon epoch invalidates them all. */
@@ -185,6 +185,7 @@ const reloads = new Map<string, number>()
 
 /** Each bot's chat on an older daemon, so the user is asked once while the app runs. */
 const picked = new Map<string, string>()
+let chatGeneration = 0
 
 /** Whether the daemon names each bot's one chat; one from before keeps many sections per bot. */
 export async function oneChat(): Promise<boolean> {
@@ -198,12 +199,17 @@ export async function oneChat(): Promise<boolean> {
  */
 async function olderChat(
   bot: string,
-  ask: (choices: Section[]) => Promise<null | Section>
+  ask: (choices: Section[]) => Promise<null | Section>,
+  current: () => boolean
 ): Promise<null | Section> {
   const found = legacyChat(
     (await sectionsList({ bot, include_archived: true })).sections ?? [],
     bot
   )
+
+  if (!current()) {
+    return null
+  }
 
   if (!found) {
     return (await sectionsCreate(bot)).section
@@ -214,14 +220,21 @@ async function olderChat(
       ? found.section
       : (found.choices.find(choice => choice.id === picked.get(bot)) ?? (await ask(found.choices)))
 
-  if (!section) {
+  if (!section || !current()) {
+    return null
+  }
+
+  // Older daemons update recency even for an open section. Persist the pick
+  // before remembering it, so an upgrade keeps it without another message.
+  const opened = (await sectionsUnarchive(section.id)).section
+
+  if (!current()) {
     return null
   }
 
   picked.set(bot, section.id)
 
-  // Archived, it would take no messages and lose to an open one at the update.
-  return section.archived_at ? (await sectionsUnarchive(section.id)).section : section
+  return opened
 }
 
 export const useSections = create<SectionsState>((set, get) => ({
@@ -257,8 +270,13 @@ export const useSections = create<SectionsState>((set, get) => ({
   },
 
   async open(id) {
+    const { target, epoch } = useConnection.getState()
     const asked = reloads.get(id) ?? 0
     const { context, messages, pending_clarify, section } = await sectionsOpen(id)
+
+    if (target !== useConnection.getState().target || epoch !== useConnection.getState().epoch) {
+      throw new Error('The selected daemon changed. Open this chat again.')
+    }
 
     // The chat changed while it opened (a dream report): this history is old.
     if ((reloads.get(id) ?? 0) !== asked) {
@@ -273,16 +291,14 @@ export const useSections = create<SectionsState>((set, get) => ({
     }))
 
     if (live) {
-      useTranscripts
-        .getState()
-        .open(
-          live,
-          id,
-          messagesFromHistory(messages ?? []).filter(
-            // Hexbot replays an interrupted hidden kickoff as a plain user turn.
-            message => !(message.role === 'user' && message.text.includes(KICKOFF_MARKER))
-          )
+      useTranscripts.getState().open(
+        live,
+        id,
+        messagesFromHistory(messages ?? []).filter(
+          // Hexbot replays an interrupted hidden kickoff as a plain user turn.
+          message => !(message.role === 'user' && message.text.includes(KICKOFF_MARKER))
         )
+      )
 
       if (context) {
         useTranscripts.getState().sessionContext(live, context)
@@ -359,7 +375,17 @@ export const useSections = create<SectionsState>((set, get) => ({
     await get().refresh()
   },
 
-  async chat(bot) {
+  async chat(bot, active = () => true) {
+    get().choosing?.pick(null)
+    const generation = ++chatGeneration
+    const { target, epoch } = useConnection.getState()
+
+    const current = () =>
+      generation === chatGeneration &&
+      target === useConnection.getState().target &&
+      epoch === useConnection.getState().epoch &&
+      active()
+
     const ask = (choices: Section[]) =>
       new Promise<null | Section>(resolve => {
         get().choosing?.pick(null)
@@ -368,19 +394,28 @@ export const useSections = create<SectionsState>((set, get) => ({
             bot,
             choices,
             pick: choice => {
-              set({ choosing: null })
-              resolve(choice)
+              if (get().choosing?.choices === choices) {
+                set({ choosing: null })
+              }
+
+              resolve(current() ? choice : null)
             }
           }
         })
       })
 
     // The daemon names the chat, never one recovery set aside.
-    const section = (await oneChat())
-      ? (await sectionsCreate(bot)).section
-      : await olderChat(bot, ask)
+    const modern = await oneChat()
 
-    if (!section) {
+    if (!current()) {
+      return null
+    }
+
+    const section = modern
+      ? (await sectionsCreate(bot)).section
+      : await olderChat(bot, ask, current)
+
+    if (!section || !current()) {
       return null
     }
 
@@ -415,6 +450,14 @@ export const useSections = create<SectionsState>((set, get) => ({
     useTranscripts.getState().drop(closed)
   }
 }))
+
+useConnection.subscribe((next, previous) => {
+  if (next.target !== previous.target || next.epoch !== previous.epoch) {
+    useSections.getState().choosing?.pick(null)
+    chatGeneration++
+    picked.clear()
+  }
+})
 
 export function sectionsActions(): SectionsState {
   return useSections.getState()
