@@ -65,6 +65,8 @@ If a bot's conversations couldn't be read, or the daemon found one of them damag
 
 An updated app connected to a daemon that hasn't been updated yet goes back to the section you were last in. When you select a bot, the app opens a section by itself only if at most one has something said; otherwise it asks which one to continue, once per bot while the app runs. To choose again, restart the app or reload the page, then select the bot. The app saves your choice on the daemon and brings it out of the archive if needed. That conversation stays when the daemon updates, even if you haven't sent another message. A log containing only dream reports still gives way to a real conversation. Cancelling saves nothing. If saving fails, retry your choice.
 
+For sections kept from an earlier version, archiving hides the section's own failed-turn status; restoring it brings that status back. Archiving leaves failures from its subagents visible. Deleting a section clears its own turn failures and removes its delegated conversations. Connector problems and failures in other surviving rooms, sections, or background runs remain.
+
 ## Work with other bots
 
 In a [room](/docs/rooms/), everyone sees the shared conversation. With **Message other bots** enabled, a bot can instead ask one of your teammates for help in a private conversation. The bot it asks does the work itself and can't hand the request back. Open the help row under its reply to read that exchange.
