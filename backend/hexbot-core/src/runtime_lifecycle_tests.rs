@@ -4063,7 +4063,7 @@ async fn selected_cloud_provider_environment_reaches_agent() {
 }
 
 #[tokio::test]
-async fn failed_deletion_rolls_back_root_and_descendant_tombstones() {
+async fn failed_close_rolls_back_tombstones_but_partial_purge_keeps_them() {
     for close_failure in [true, false] {
         let (home, runtime, _) = setup();
         open(&runtime).await;
@@ -4085,13 +4085,15 @@ async fn failed_deletion_rolls_back_root_and_descendant_tombstones() {
         let marks: i64 = conn
             .query_row("SELECT count(*) FROM native_deleted", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(marks, 0);
+        assert_eq!(marks, if close_failure { 0 } else { 3 });
         store::mark_deleted(home.path(), "first").unwrap();
         store::unmark_deleted(home.path(), "first").unwrap();
         let marks: i64 = conn
             .query_row("SELECT count(*) FROM native_deleted", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(marks, 0);
+        // Purged descendants keep their tombstones after their relationship
+        // rows have gone, even if the root is later unmarked independently.
+        assert_eq!(marks, if close_failure { 0 } else { 2 });
         runtime.shutdown().await;
     }
 }
@@ -5514,4 +5516,77 @@ async fn an_upload_on_its_way_in_keeps_its_section_running() {
         .unwrap();
     assert!(sent.contains(file["path"].as_str().unwrap()), "{sent}");
     runtime.shutdown().await;
+}
+
+#[tokio::test]
+async fn retained_delete_closes_processes_and_rejects_late_events_and_delegated_results() {
+    for purge in [false, true] {
+        let (home, runtime, _) = setup();
+        let live = open(&runtime).await;
+        let parent = runtime.sessions.lock().unwrap()["first"].clone();
+        runtime
+            .open_session_with_tools(
+                "alice",
+                "owl",
+                "child",
+                Some(&[]),
+                Some(&json!({"parent_session":"first"})),
+                false,
+            )
+            .await
+            .unwrap();
+        store::append(
+            home.path(),
+            "first",
+            json!({"role":"user","text":"Keep this"}),
+        )
+        .unwrap();
+        runtime.retire_stored("alice", "first").await.unwrap();
+        crate::catalog::call(
+            home.path(),
+            "alice",
+            "hexbot.sections.delete",
+            &json!({"id":"first","purge_memory":purge}),
+        )
+        .unwrap()
+        .unwrap();
+        let before = store::history(home.path(), "first").unwrap();
+        runtime
+            .event(
+                &parent,
+                json!({"type":"message_end","message":{"role":"assistant","content":"Late event"}}),
+            )
+            .unwrap();
+        runtime
+            .return_result("alice", "owl", "first", "Late delegate", None)
+            .await;
+        assert_eq!(store::history(home.path(), "first").unwrap(), before);
+        assert_eq!(before.len(), usize::from(!purge));
+        assert!(
+            runtime
+                .call(
+                    "alice",
+                    "prompt.submit",
+                    &json!({"session_id":live,"text":"Too late"})
+                )
+                .await
+                .unwrap()
+                .is_err()
+        );
+        for stored in ["first", "child"] {
+            assert_eq!(
+                runtime
+                    .ensure_hidden("alice", "owl", stored)
+                    .await
+                    .unwrap_err()
+                    .code,
+                4001
+            );
+        }
+        for process in processes(home.path()) {
+            assert_exited(&process);
+        }
+        assert_eq!(processes(home.path()).len(), 2);
+        runtime.shutdown().await;
+    }
 }

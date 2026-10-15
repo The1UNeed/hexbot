@@ -1709,14 +1709,9 @@ impl Runtime {
         Ok(false)
     }
     pub async fn delete_stored(&self, owner: &str, stored: &str) -> Result<()> {
-        let targets = self.retire_stored(owner, stored).await?;
-        let result = store::delete(&self.home, stored);
-        if result.is_err() {
-            for target in targets {
-                store::unmark_deleted(&self.home, &target)?;
-            }
-        }
-        result
+        self.retire_stored(owner, stored).await?;
+        // A partial purge must remain blocked and discoverable for cleanup.
+        store::delete(&self.home, stored)
     }
     /// Tombstones a section and its delegated tasks and stops them, ready for
     /// the catalog to delete it. Returns what it tombstoned.
