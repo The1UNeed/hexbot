@@ -1709,6 +1709,38 @@ async fn never_opened_section_retirement_recovers_without_inventing_history() {
     app.shutdown().await;
 }
 
+#[tokio::test]
+async fn overlapping_bot_deletes_and_recreation_are_ordered_across_rebind() {
+    let home = setup();
+    let h = home.path();
+    let app =
+        hexbot_core::server::App::new(h.into(), "127.0.0.1:0".parse().unwrap(), fake_pi(h), None)
+            .unwrap();
+    open(&app.runtime, "alice").await;
+    let rebound = app.rebind("127.0.0.1:0".parse().unwrap()).unwrap();
+    let params = json!({"name":"owl"});
+    // Retirement awaits a real fixture process. Both later requests overlap
+    // that await and must keep their order across the two App instances.
+    let (first, second, created) = tokio::join!(
+        app.call("alice", "hexbot.bots.delete", &params),
+        rebound.call("alice", "hexbot.bots.delete", &params),
+        app.call("alice", "hexbot.bots.create", &params),
+    );
+    assert_eq!(first.unwrap(), json!({"deleted":true}));
+    assert_eq!(second.unwrap_err().code, 4205);
+    let created = created.unwrap();
+    let section = created["section"]["id"].as_str().unwrap();
+    fs::create_dir_all(h.join("profiles/owl/memories")).unwrap();
+    fs::write(h.join("profiles/owl/memories/MEMORY.md"), "new memory").unwrap();
+    runtime_store::finish_deletes(h).unwrap();
+    assert!(hexbot_core::catalog::section(h, "alice", section).is_ok());
+    assert_eq!(
+        fs::read_to_string(h.join("profiles/owl/memories/MEMORY.md")).unwrap(),
+        "new memory"
+    );
+    app.shutdown().await;
+}
+
 #[cfg(unix)]
 #[tokio::test]
 async fn bot_delete_refuses_memory_symlinks_before_catalog_commit() {

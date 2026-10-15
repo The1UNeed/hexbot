@@ -304,7 +304,8 @@ pub fn fresh(home: &Path, stored: &str) -> Result<bool> {
 /// is gone loses what is left of its history here. Rows in a bot's older
 /// `state.db` stay: no section reads them any more.
 pub fn finish_deletes(home: &Path) -> Result<()> {
-    crate::catalog::finish_bot_deletes(home)?;
+    let bot_cleanup = crate::catalog::finish_bot_deletes(home);
+    let protected = crate::catalog::pending_bot_delete_targets(home)?;
     let tombstones = open(home)?
         .prepare("SELECT session_id FROM native_deleted")?
         .query_map([], |r| r.get::<_, String>(0))?
@@ -312,6 +313,9 @@ pub fn finish_deletes(home: &Path) -> Result<()> {
     let catalog = crate::db::open(home)?;
     let mut gone = vec![];
     for id in tombstones {
+        if protected.contains(&id) {
+            continue;
+        }
         let listed: bool = catalog.query_row(
             "SELECT EXISTS(SELECT 1 FROM sections WHERE id=?)",
             [&id],
@@ -339,7 +343,7 @@ pub fn finish_deletes(home: &Path) -> Result<()> {
             eprintln!("Could not finish deleting {id}: {}", error.message);
         }
     }
-    Ok(())
+    bot_cleanup
 }
 pub fn session_dir(home: &Path, stored: &str) -> Result<PathBuf> {
     common::identifier(stored)?;

@@ -53,6 +53,8 @@ Use **Stop** to interrupt a running answer. The chat stays, and you can send ano
 
 Deleting the bot removes its profile, chat, memory, and scheduled jobs. Stop its active work first. Back up the daemon's data directory before removing a bot you may need again.
 
+If deletion leaves cleanup pending, its name stays reserved until a daemon restart finishes cleanup. An interrupted deletion from an older build can conflict with a recreated bot or leave a profile whose owner is uncertain. Hexbot preserves that data and reports the conflict in the daemon log for manual recovery.
+
 ## Updating from earlier versions
 
 Earlier versions let you keep many sections per bot. The first time the updated daemon starts, it keeps one section of each bot as its chat and deletes the others with their history. It prefers a section with real conversation, then one you had not archived, then the newest. Old Dreams logs containing human conversation compete the same way; a log containing only dream reports gives way to a conversation. Dream reports never make a mixed log's conversation newer. If a report followed its last conversation, or its message times are missing or invalid, the update keeps all of that bot's sections and opens the chat with the newest known conversation. A bot left with no section gets a new chat when you first open it. The bot's memory and notes stay.
