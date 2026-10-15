@@ -162,13 +162,23 @@ fn legacy_history(
     home: &Path,
     row: &Value,
     reports: &BTreeSet<String>,
-) -> Result<Option<(String, i64, f64)>> {
+) -> Result<Option<(String, i64, ChatActivity)>> {
     let id = row["id"].as_str().unwrap_or("");
     let name = row["bot"].as_str().unwrap_or("");
     let path = profile(home, name)?.join("state.db");
     safe(home, &path)?;
-    if !path.exists() || runtime_store::fresh(home, id)? {
-        return Ok(Some((String::new(), 0, 0.0)));
+    if runtime_store::fresh(home, id)? {
+        return Ok(Some((String::new(), 0, ChatActivity::default())));
+    }
+    let exists = match path.try_exists() {
+        Ok(exists) => exists,
+        Err(error) => {
+            unreadable_store(name, &error.into());
+            return Ok(None);
+        }
+    };
+    if !exists {
+        return Ok(Some((String::new(), 0, ChatActivity::default())));
     }
     let messages = match Connection::open_with_flags(&path, OpenFlags::SQLITE_OPEN_READ_ONLY)
         .map_err(Error::from)
@@ -201,12 +211,16 @@ fn legacy_history(
         })
         .map(|m| runtime_store::preview(m["content"].as_str().unwrap_or("")))
         .unwrap_or_default();
-    let latest = messages
-        .iter()
-        .filter(conversation)
-        .filter_map(|m| m["timestamp"].as_f64())
-        .fold(0.0, f64::max);
-    Ok(Some((preview, count, latest)))
+    let mut activity = ChatActivity::default();
+    for message in &messages {
+        if matches!(
+            message["role"].as_str(),
+            Some("user" | "assistant" | "tool")
+        ) {
+            activity.record(&message["timestamp"], !conversation(&message));
+        }
+    }
+    Ok(Some((preview, count, activity)))
 }
 /// Says once per start that a bot's store from before the native daemon
 /// cannot be read; every list and search would say it again.
@@ -287,8 +301,8 @@ pub fn chat_section(home: &Path, caller: &str, name: &str) -> Result<Value> {
     let existing = ranked
         .into_iter()
         .next()
-        .filter(|(_, count)| *count >= 0)
-        .and_then(|(row, _)| row["id"].as_str().map(str::to_owned));
+        .filter(|candidate| candidate.count >= 0)
+        .and_then(|candidate| candidate.row["id"].as_str().map(str::to_owned));
     let id = if let Some(id) = existing {
         tx.execute(
             "UPDATE sections SET archived_at=NULL WHERE id=? AND archived_at IS NOT NULL",
@@ -325,28 +339,74 @@ fn setting(conn: &Connection, key: &str) -> Result<Value> {
         .and_then(|value| serde_json::from_str(&value).ok())
         .unwrap_or(Value::Null))
 }
-/// A bot's chats with how much was said in each and when it was last said.
-/// The count is -1 for a legacy log containing only known reports and -2 for a
-/// section whose history from before the native daemon cannot be read.
+/// Reports can overwrite the same catalog timestamp an older client's
+/// unarchive RPC uses to save its choice. No old field records that choice
+/// separately. If a report followed the dialogue, keep the competing histories.
+#[derive(Default)]
+struct ChatActivity {
+    dialogue: f64,
+    report: f64,
+    uncertain: bool,
+}
+impl ChatActivity {
+    fn record(&mut self, timestamp: &Value, report: bool) {
+        if let Some(at) = timestamp.as_f64().filter(|at| at.is_finite() && *at > 0.0) {
+            let latest = if report {
+                &mut self.report
+            } else {
+                &mut self.dialogue
+            };
+            *latest = latest.max(at);
+        } else {
+            self.uncertain = true;
+        }
+    }
+    fn merge(&mut self, other: Self) {
+        self.dialogue = self.dialogue.max(other.dialogue);
+        self.report = self.report.max(other.report);
+        self.uncertain |= other.uncertain;
+    }
+}
+struct ChatCandidate {
+    row: Value,
+    // -1: legacy report-only log, -2: unreadable legacy history.
+    count: i64,
+    activity_at: f64,
+    preserve: bool,
+}
+/// A bot's chats with non-report activity, preserving an ambiguous old choice.
 fn chat_candidates(
     home: &Path,
     sections: Vec<Value>,
     logs: &BTreeSet<String>,
-) -> Result<Vec<(Value, i64)>> {
+) -> Result<Vec<ChatCandidate>> {
     let mut result = vec![];
-    for mut row in sections {
+    for row in sections {
         let (_, mut count) = history_summary(home, &row)?;
-        // A crash after the first open but before the old store was copied in
-        // leaves the conversation there; the copy writes its log last.
-        let id = row["id"].as_str().unwrap_or("").to_owned();
+        // A crash before the imported JSONL commit leaves history in both stores.
+        let id = row["id"].as_str().unwrap_or("");
         let native = native_history(home, &row)?;
-        // A log can become a real conversation. Only stored report metadata
-        // excludes messages; neither its title nor its assistant's wording does.
-        let reports = if logs.contains(&id) {
-            count = runtime_store::open(home)?.query_row(
-                "SELECT COUNT(*) FROM native_messages WHERE session_id=? AND COALESCE(json_extract(message_json,'$.dream'),0)<>1 AND json_extract(message_json,'$.role') IN ('user','assistant','tool')",
-                [&id], |r| r.get(0),
-            )?;
+        let log = logs.contains(id);
+        let mut activity = ChatActivity::default();
+        let reports = if log {
+            count = 0;
+            for message in rows(
+                &runtime_store::open(home)?,
+                "SELECT message_json FROM native_messages WHERE session_id=?",
+                &[&id],
+            )? {
+                let message: Value =
+                    serde_json::from_str(message["message_json"].as_str().unwrap_or(""))
+                        .map_err(|error| Error::new(5200, error.to_string()))?;
+                if matches!(
+                    message["role"].as_str(),
+                    Some("user" | "assistant" | "tool")
+                ) {
+                    let report = message["dream"] == true;
+                    count += i64::from(!report);
+                    activity.record(&message["timestamp"], report);
+                }
+            }
             rows(
                 &db::open(home)?,
                 "SELECT summary FROM dreams WHERE bot=? AND summary<>''",
@@ -358,66 +418,69 @@ fn chat_candidates(
         } else {
             BTreeSet::new()
         };
-        let mut legacy_latest = 0.0;
         let mut readable = true;
         if !home
             .join("runtime/sessions")
-            .join(&id)
+            .join(id)
             .join("conversation.jsonl")
-            .exists()
+            .try_exists()?
         {
             match legacy_history(home, &row, &reports)? {
-                Some((_, legacy_count, latest)) => {
+                Some((_, legacy_count, legacy_activity)) => {
                     count = count.max(legacy_count);
-                    legacy_latest = latest;
+                    activity.merge(legacy_activity);
                 }
                 None => readable = false,
             }
         }
-        // Recovery after a crash adds messages without touching the section's
-        // time; the newest message counts too.
-        let said: Option<f64> = runtime_store::open(home)?.query_row(
-            "SELECT MAX(json_extract(message_json,'$.timestamp')) FROM native_messages WHERE session_id=?",
-            [&id],
-            |r| r.get(0),
-        )?;
-        let said = said.unwrap_or(0.0).max(legacy_latest);
-        if said > row["updated_at"].as_f64().unwrap_or(0.0) {
-            row["updated_at"] = json!(said);
-        }
-        // A legacy report-only log has no conversation to keep. Native logs
-        // keep their already marked reports when there is no better chat.
-        if logs.contains(&id) && !native && count == 0 {
+        let updated = row["updated_at"].as_f64().unwrap_or(0.0);
+        let preserve =
+            log && count > 0 && (activity.uncertain || activity.report >= activity.dialogue);
+        let activity_at = if log {
+            // With no report after dialogue, retain updated_at: the owner may
+            // have picked this older chat via unarchive without sending a message.
+            if preserve {
+                activity.dialogue
+            } else {
+                activity.dialogue.max(updated)
+            }
+        } else {
+            let said: Option<f64> = runtime_store::open(home)?.query_row(
+                "SELECT MAX(json_extract(message_json,'$.timestamp')) FROM native_messages WHERE session_id=?",
+                [id], |r| r.get(0),
+            )?;
+            said.unwrap_or(0.0).max(activity.dialogue).max(updated)
+        };
+        if log && !native && count == 0 {
             count = -1;
         }
         if !readable {
             count = -2;
         }
-        result.push((row, count));
+        result.push(ChatCandidate {
+            row,
+            count,
+            activity_at,
+            preserve,
+        });
     }
     Ok(result)
 }
-/// Best first: readable, then dialogue, then not a report-only log, then
-/// not put away, then newest. A mixed log competes as a conversation.
-fn rank_chats(sections: &mut [(Value, i64)], logs: &BTreeSet<String>) {
-    sections.sort_by(|(a, a_count), (b, b_count)| {
-        let rank = |row: &Value, count: i64| {
+/// Best first: readable, dialogue, not a report-only log, not archived, newest.
+fn rank_chats(sections: &mut [ChatCandidate], logs: &BTreeSet<String>) {
+    sections.sort_by(|a, b| {
+        let rank = |candidate: &ChatCandidate| {
             (
-                count > -2,
-                count > 0,
-                count > 0 || !logs.contains(row["id"].as_str().unwrap_or("")),
-                row["archived_at"].is_null(),
+                candidate.count > -2,
+                candidate.count > 0,
+                candidate.count > 0 || !logs.contains(candidate.row["id"].as_str().unwrap_or("")),
+                candidate.row["archived_at"].is_null(),
             )
         };
-        rank(b, *b_count)
-            .cmp(&rank(a, *a_count))
-            .then(
-                b["updated_at"]
-                    .as_f64()
-                    .unwrap_or(0.0)
-                    .total_cmp(&a["updated_at"].as_f64().unwrap_or(0.0)),
-            )
-            .then_with(|| a["id"].as_str().cmp(&b["id"].as_str()))
+        rank(b)
+            .cmp(&rank(a))
+            .then(b.activity_at.total_cmp(&a.activity_at))
+            .then_with(|| a.row["id"].as_str().cmp(&b.row["id"].as_str()))
     });
 }
 /// Sections an earlier build posted dream reports to. A bot the upgrade could
@@ -426,11 +489,9 @@ fn rank_chats(sections: &mut [(Value, i64)], logs: &BTreeSet<String>) {
 /// the next call tries again. It may write, so never call it inside a
 /// catalog write transaction.
 pub(crate) fn dream_logs(home: &Path, bot: &str) -> Result<BTreeSet<String>> {
-    let looked: BTreeSet<String> =
-        serde_json::from_value(setting(&db::open(home)?, "dream_log_bots")?).unwrap_or_default();
-    if !looked.contains(bot)
-        && let Err(error) = classify_dream_logs(home, bot)
-    {
+    // Older builds can add logs even after the one-shot migration. Inspect
+    // current candidates again; this only marks display history, never Pi context.
+    if let Err(error) = classify_dream_logs(home, bot) {
         unreadable_store(bot, &error);
     }
     runtime_store::dream_logs(home)
@@ -462,9 +523,12 @@ pub(crate) fn classify_dream_logs(home: &Path, bot: &str) -> Result<BTreeSet<Str
         ),
         &[&bot],
     )?;
+    if sections.is_empty() {
+        return Ok(BTreeSet::new());
+    }
     let path = profile(home, bot)?.join("state.db");
     safe(home, &path)?;
-    let legacy = if path.exists() {
+    let legacy = if path.try_exists()? {
         Some(Connection::open_with_flags(
             path,
             OpenFlags::SQLITE_OPEN_READ_ONLY,
@@ -473,6 +537,7 @@ pub(crate) fn classify_dream_logs(home: &Path, bot: &str) -> Result<BTreeSet<Str
         None
     };
     let runtime = runtime_store::open(home)?;
+    let known = runtime_store::dream_logs(home)?;
     let mut logs = BTreeSet::new();
     for row in sections {
         let id = row["id"].as_str().unwrap_or("");
@@ -496,24 +561,15 @@ pub(crate) fn classify_dream_logs(home: &Path, bot: &str) -> Result<BTreeSet<Str
                 .and_then(|message| serde_json::from_str(&message).ok());
         }
         let first = first.unwrap_or(Value::Null);
-        if first["role"] == "assistant"
-            && (row["titled"] == 1
-                || first["dream"] != true
-                    && first["text"]
-                        .as_str()
-                        .is_some_and(|text| reports.contains(text)))
+        if known.contains(id)
+            || first["role"] == "assistant"
+                && (row["titled"] == 1
+                    || first["dream"] != true
+                        && first["text"]
+                            .as_str()
+                            .is_some_and(|text| reports.contains(text)))
         {
             logs.insert(id.to_owned());
-        }
-    }
-    // The reports in a dream log, not what the user said there or the bot's
-    // replies; a reply elsewhere can read like a report.
-    for id in &logs {
-        for summary in &reports {
-            runtime.execute(
-                "UPDATE native_messages SET message_json=json_set(message_json,'$.dream',json('true')) WHERE session_id=? AND json_extract(message_json,'$.role')='assistant' AND json_extract(message_json,'$.text')=?",
-                params![id, summary],
-            )?;
         }
     }
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -527,7 +583,19 @@ pub(crate) fn classify_dream_logs(home: &Path, bot: &str) -> Result<BTreeSet<Str
         "INSERT OR REPLACE INTO settings(key,value) VALUES('dream_logs',?),('dream_log_bots',?)",
         params![json!(all).to_string(), json!(bots).to_string()],
     )?;
+    // Persist identity before marking. If marking fails, the next call can
+    // retry even for a renamed log whose first report is already marked.
     tx.commit()?;
+    // The reports in a dream log, not what the user said there or the bot's
+    // replies; a reply elsewhere can read like a report.
+    for id in &logs {
+        for summary in &reports {
+            runtime.execute(
+                "UPDATE native_messages SET message_json=json_set(message_json,'$.dream',json('true')) WHERE session_id=? AND json_extract(message_json,'$.role')='assistant' AND json_extract(message_json,'$.text')=? AND COALESCE(json_extract(message_json,'$.dream'),0)<>1",
+                params![id, summary],
+            )?;
+        }
+    }
     Ok(logs)
 }
 /// Earlier builds kept many sections per bot. At the first start of this
@@ -653,15 +721,19 @@ fn plan_one_chat_per_bot(
             continue;
         }
         let mut sections = chat_candidates(home, sections, &logs)?;
-        // What a section held is unknown while its history cannot be read.
-        if sections.iter().any(|(_, count)| *count == -2) {
+        // Unreadable history or a report-overwritten old choice is unknown.
+        // Preserve the whole bot rather than guess which history to delete.
+        if sections
+            .iter()
+            .any(|candidate| candidate.count == -2 || sections.len() > 1 && candidate.preserve)
+        {
             continue;
         }
         rank_chats(&mut sections, &logs);
-        let (row, count) = sections.remove(0);
+        let ChatCandidate { row, count, .. } = sections.remove(0);
         let id = |row: &Value| row["id"].as_str().unwrap_or("").to_owned();
-        for (other, _) in sections {
-            doomed.push((owner.clone(), bot.clone(), id(&other)));
+        for other in sections {
+            doomed.push((owner.clone(), bot.clone(), id(&other.row)));
         }
         if count < 0 {
             // The chat is made on first use.
@@ -729,7 +801,7 @@ fn copy_backup(home: &Path, bots: &BTreeSet<&str>, to: &Path) -> Result<()> {
     for bot in bots {
         let path = profile(home, bot)?.join("state.db");
         safe(home, &path)?;
-        if path.exists() {
+        if path.try_exists()? {
             copy(
                 &Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?,
                 to.join("profiles").join(bot).join("state.db"),
@@ -737,7 +809,7 @@ fn copy_backup(home: &Path, bots: &BTreeSet<&str>, to: &Path) -> Result<()> {
         }
     }
     let sessions = home.join("runtime/sessions");
-    if sessions.exists() {
+    if sessions.try_exists()? {
         copy_tree(&sessions, &to.join("runtime/sessions"))?;
     }
     Ok(())
@@ -2905,6 +2977,414 @@ mod parity_tests {
             .execute_batch("ALTER TABLE messages ADD COLUMN active INTEGER DEFAULT 1")
             .unwrap();
     }
+    // Native-only, legacy-only and a projection interrupted before its JSONL
+    // commit must all use the same non-report dialogue time.
+    #[test]
+    fn reports_do_not_rank_a_mixed_log_above_newer_dialogue() {
+        for source in ["native", "legacy", "partial", "imported"] {
+            for title in ["Dreams", "Night notes"] {
+                let home = tempfile::tempdir().unwrap();
+                legacy_log(home.path(), title, true, true);
+                let conn = db::open(home.path()).unwrap();
+                conn.execute_batch("INSERT INTO dreams(id,bot,started_at,status,summary) VALUES('later','owl',20,'complete','Later report'); UPDATE sections SET updated_at=20.001 WHERE id='log';").unwrap();
+                Connection::open(profile(home.path(), "owl").unwrap().join("state.db")).unwrap().execute_batch("INSERT INTO messages(id,session_id,role,content,timestamp) VALUES(4,'log','assistant','Later report',20);").unwrap();
+                if source == "imported" {
+                    let workspace = tempfile::tempdir().unwrap();
+                    runtime_store::import_hermes(home.path(), "owl", "log", workspace.path())
+                        .unwrap();
+                } else if source != "legacy" {
+                    said(
+                        home.path(),
+                        "log",
+                        json!({"role":"assistant","text":"Stored report","timestamp":1}),
+                    );
+                    if source == "native" {
+                        said(
+                            home.path(),
+                            "log",
+                            json!({"role":"user","text":"Human question","timestamp":2}),
+                        );
+                        said(
+                            home.path(),
+                            "log",
+                            json!({"role":"assistant","text":"Actual reply","timestamp":3}),
+                        );
+                        fs::remove_file(profile(home.path(), "owl").unwrap().join("state.db"))
+                            .unwrap();
+                    }
+                    said(
+                        home.path(),
+                        "log",
+                        json!({"role":"assistant","text":"Later report","timestamp":20}),
+                    );
+                }
+                assert_eq!(
+                    chat_section(home.path(), "alice", "owl").unwrap()["id"],
+                    "ordinary",
+                    "{source} {title}"
+                );
+                one_chat_per_bot(home.path()).unwrap();
+                // updated_at cannot tell a report from an overwritten chooser
+                // selection. Preserve both histories rather than delete either.
+                assert_eq!(ids_of(home.path(), "owl"), ["log", "ordinary"]);
+                assert_eq!(setting_of(home.path(), "one_chat_per_bot"), true);
+                // Finish an interrupted import before checking its native digest.
+                // Migration itself must preserve the still-legacy human rows.
+                if source == "partial" {
+                    let workspace = tempfile::tempdir().unwrap();
+                    runtime_store::import_hermes(home.path(), "owl", "log", workspace.path())
+                        .unwrap();
+                }
+                let digest = crate::dreaming::build_digest(home.path(), "owl", 0.0, f64::MAX, None)
+                    .unwrap()
+                    .to_string();
+                assert!(
+                    digest.contains("Human question") && digest.contains("Trip plans"),
+                    "{source} {title}: {digest}"
+                );
+                assert!(!digest.contains("Stored report") && !digest.contains("Later report"));
+                one_chat_per_bot(home.path()).unwrap();
+                assert_eq!(ids_of(home.path(), "owl"), ["log", "ordinary"]);
+            }
+        }
+    }
+    #[test]
+    fn reports_after_an_explicit_old_choice_preserve_both_conversations() {
+        for picked in ["log", "ordinary"] {
+            let home = tempfile::tempdir().unwrap();
+            legacy_log(home.path(), "Night notes", true, true);
+            call(
+                home.path(),
+                "alice",
+                "hexbot.sections.unarchive",
+                &json!({"id":picked}),
+            )
+            .unwrap()
+            .unwrap();
+            let later = now() + 1.0;
+            Connection::open(profile(home.path(), "owl").unwrap().join("state.db")).unwrap().execute("INSERT INTO messages(id,session_id,role,content,timestamp) VALUES(4,'log','assistant','Stored report',?)", [later]).unwrap();
+            db::open(home.path())
+                .unwrap()
+                .execute(
+                    "UPDATE sections SET updated_at=? WHERE id='log'",
+                    [later + 0.001],
+                )
+                .unwrap();
+            one_chat_per_bot(home.path()).unwrap();
+            assert_eq!(ids_of(home.path(), "owl"), ["log", "ordinary"]);
+            assert_eq!(
+                chat_section(home.path(), "alice", "owl").unwrap()["id"],
+                "ordinary"
+            );
+        }
+    }
+    #[test]
+    fn mixed_log_timestamps_that_cannot_order_dialogue_preserve_history() {
+        for timestamp in [Value::Null, json!("broken"), json!(0), json!(-1)] {
+            let home = tempfile::tempdir().unwrap();
+            legacy_log(home.path(), "Night notes", true, true);
+            fs::remove_file(profile(home.path(), "owl").unwrap().join("state.db")).unwrap();
+            said(
+                home.path(),
+                "log",
+                json!({"role":"assistant","text":"Stored report","timestamp":1}),
+            );
+            said(
+                home.path(),
+                "log",
+                json!({"role":"user","text":"Keep this question","timestamp":timestamp}),
+            );
+            one_chat_per_bot(home.path()).unwrap();
+            assert_eq!(ids_of(home.path(), "owl"), ["log", "ordinary"]);
+            assert_eq!(
+                chat_section(home.path(), "alice", "owl").unwrap()["id"],
+                "ordinary"
+            );
+        }
+    }
+    #[test]
+    fn a_standalone_mixed_log_keeps_dialogue_when_the_last_message_is_a_report() {
+        for imported in [false, true] {
+            let home = tempfile::tempdir().unwrap();
+            legacy_log(home.path(), "Dreams", true, false);
+            Connection::open(profile(home.path(), "owl").unwrap().join("state.db")).unwrap().execute_batch("INSERT INTO messages(id,session_id,role,content,timestamp) VALUES(4,'log','assistant','Stored report',20)").unwrap();
+            db::open(home.path())
+                .unwrap()
+                .execute_batch("UPDATE sections SET updated_at=20.001 WHERE id='log'")
+                .unwrap();
+            if imported {
+                let workspace = tempfile::tempdir().unwrap();
+                runtime_store::import_hermes(home.path(), "owl", "log", workspace.path()).unwrap();
+            }
+            one_chat_per_bot(home.path()).unwrap();
+            assert_eq!(ids_of(home.path(), "owl"), ["log"]);
+            assert_eq!(
+                chat_section(home.path(), "alice", "owl").unwrap()["id"],
+                "log"
+            );
+            assert_eq!(
+                section(home.path(), "alice", "log").unwrap()["title"],
+                "General"
+            );
+            let digest = crate::dreaming::build_digest(home.path(), "owl", 0.0, f64::MAX, None)
+                .unwrap()
+                .to_string();
+            assert!(digest.contains("Human question"));
+            assert!(!digest.contains("Stored report"));
+        }
+    }
+    #[test]
+    fn uncertain_legacy_dialogue_times_cannot_authorize_deletion() {
+        for timestamp in [Value::Null, json!("broken"), json!(0), json!(-1)] {
+            let home = tempfile::tempdir().unwrap();
+            legacy_log(home.path(), "Night notes", true, true);
+            let conn =
+                Connection::open(profile(home.path(), "owl").unwrap().join("state.db")).unwrap();
+            conn.execute(
+                "UPDATE messages SET timestamp=json_extract(?, '$') WHERE role<>'assistant'",
+                [timestamp.to_string()],
+            )
+            .unwrap();
+            one_chat_per_bot(home.path()).unwrap();
+            assert_eq!(ids_of(home.path(), "owl"), ["log", "ordinary"]);
+            assert_eq!(
+                chat_section(home.path(), "alice", "owl").unwrap()["id"],
+                "ordinary"
+            );
+        }
+    }
+    #[cfg(unix)]
+    struct RestorePermissions(PathBuf, fs::Permissions);
+    #[cfg(unix)]
+    impl RestorePermissions {
+        fn deny(path: PathBuf) -> Self {
+            use std::os::unix::fs::PermissionsExt;
+            let original = fs::metadata(&path).unwrap().permissions();
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o000)).unwrap();
+            Self(path, original)
+        }
+    }
+    #[cfg(unix)]
+    impl Drop for RestorePermissions {
+        fn drop(&mut self) {
+            fs::set_permissions(&self.0, self.1.clone()).unwrap();
+        }
+    }
+    #[cfg(unix)]
+    #[test]
+    fn legacy_metadata_errors_preserve_catalog_history_and_one_shot_marker() {
+        for healthy in [false, true] {
+            let home = tempfile::tempdir().unwrap();
+            legacy_log(home.path(), "Night notes", true, healthy);
+            if healthy {
+                runtime_store::mark_fresh(home.path(), "ordinary").unwrap();
+            } else {
+                db::open(home.path()).unwrap().execute_batch("INSERT INTO sections(id,bot,owner_id,title,updated_at) VALUES('older','owl','alice','Older',1);").unwrap();
+                Connection::open(profile(home.path(), "owl").unwrap().join("state.db")).unwrap().execute_batch("INSERT INTO sessions(id,session_key) VALUES('older','older'); INSERT INTO messages(id,session_id,role,content,timestamp) VALUES(4,'older','user','Older conversation',1);").unwrap();
+            }
+            let profile = profile(home.path(), "owl").unwrap();
+            let denied = RestorePermissions::deny(profile.clone());
+            assert!(
+                profile.join("state.db").try_exists().is_err(),
+                "fixture must deny actual traversal"
+            );
+            one_chat_per_bot(home.path()).unwrap();
+            assert_eq!(
+                ids_of(home.path(), "owl"),
+                if healthy {
+                    vec!["log", "ordinary"]
+                } else {
+                    vec!["log", "older"]
+                }
+            );
+            assert_eq!(setting_of(home.path(), "one_chat_per_bot"), true);
+            assert!(setting_of(home.path(), "dream_log_bots").is_null());
+            if healthy {
+                assert_eq!(
+                    chat_section(home.path(), "alice", "owl").unwrap()["id"],
+                    "ordinary"
+                );
+            } else {
+                assert_ne!(
+                    chat_section(home.path(), "alice", "owl").unwrap()["id"],
+                    "log"
+                );
+            }
+            assert!(!home.path().join("backups").exists());
+            let before = ids_of(home.path(), "owl");
+            drop(denied);
+            one_chat_per_bot(home.path()).unwrap();
+            assert_eq!(ids_of(home.path(), "owl"), before);
+            assert_eq!(
+                section(home.path(), "alice", "log").unwrap()["message_count"],
+                3
+            );
+            assert_eq!(
+                chat_section(home.path(), "alice", "owl").unwrap()["id"],
+                if healthy { "ordinary" } else { "log" }
+            );
+        }
+    }
+    #[cfg(unix)]
+    #[test]
+    fn backup_refuses_unreadable_legacy_database_and_removes_partial_copy() {
+        let home = tempfile::tempdir().unwrap();
+        legacy_log(home.path(), "Night notes", true, true);
+        let denied = RestorePermissions::deny(profile(home.path(), "owl").unwrap());
+        assert!(back_up(home.path(), &BTreeSet::from(["owl"])).is_err());
+        assert_eq!(
+            fs::read_dir(home.path().join("backups")).unwrap().count(),
+            0
+        );
+        drop(denied);
+        let backup = back_up(home.path(), &BTreeSet::from(["owl"])).unwrap();
+        assert!(backup.join("profiles/owl/state.db").is_file());
+    }
+    #[test]
+    fn later_legacy_logs_are_classified_without_repeating_migration() {
+        for title in ["Dreams", "Night notes"] {
+            for mixed in [false, true] {
+                let home = tempfile::tempdir().unwrap();
+                legacy_log(home.path(), "Initial notes", false, true);
+                one_chat_per_bot(home.path()).unwrap();
+                assert_eq!(ids_of(home.path(), "owl"), ["ordinary"]);
+                db::open(home.path()).unwrap().execute("INSERT INTO sections(id,bot,owner_id,title,updated_at) VALUES('later-log','owl','alice',?,20.001)", [title]).unwrap();
+                said(
+                    home.path(),
+                    "later-log",
+                    json!({"role":"assistant","text":"Stored report","timestamp":1}),
+                );
+                if mixed {
+                    said(
+                        home.path(),
+                        "later-log",
+                        json!({"role":"user","text":"Old human reply","timestamp":2}),
+                    );
+                }
+                said(
+                    home.path(),
+                    "later-log",
+                    json!({"role":"assistant","text":"Stored report","timestamp":20}),
+                );
+                let before_lookup =
+                    crate::dreaming::build_digest(home.path(), "owl", 0.0, f64::MAX, None)
+                        .unwrap()
+                        .to_string();
+                assert!(!before_lookup.contains("Stored report"));
+                assert_eq!(
+                    chat_section(home.path(), "alice", "owl").unwrap()["id"],
+                    "ordinary"
+                );
+                assert!(
+                    runtime_store::dream_logs(home.path())
+                        .unwrap()
+                        .contains("later-log")
+                );
+                let history = runtime_store::history(home.path(), "later-log").unwrap();
+                assert_eq!(history[0]["dream"], true);
+                assert_eq!(history.last().unwrap()["dream"], true);
+                let digest = crate::dreaming::build_digest(home.path(), "owl", 0.0, f64::MAX, None)
+                    .unwrap()
+                    .to_string();
+                assert!(!digest.contains("Stored report"));
+                assert_eq!(digest.contains("Old human reply"), mixed);
+                one_chat_per_bot(home.path()).unwrap();
+                assert_eq!(ids_of(home.path(), "owl"), ["later-log", "ordinary"]);
+                assert!(
+                    runtime_store::dream_logs(home.path())
+                        .unwrap()
+                        .contains("log")
+                );
+            }
+        }
+    }
+    #[test]
+    fn a_partial_log_classification_retries_without_losing_report_markers() {
+        for failure in ["catalog", "projection"] {
+            let home = tempfile::tempdir().unwrap();
+            legacy_log(home.path(), "Initial notes", false, true);
+            one_chat_per_bot(home.path()).unwrap();
+            db::open(home.path()).unwrap().execute_batch("INSERT INTO sections(id,bot,owner_id,title,updated_at) VALUES('later-log','owl','alice','Renamed',20)").unwrap();
+            said(
+                home.path(),
+                "later-log",
+                json!({"role":"assistant","text":"Stored report","timestamp":20}),
+            );
+            let conn = if failure == "catalog" {
+                db::open(home.path()).unwrap()
+            } else {
+                runtime_store::open(home.path()).unwrap()
+            };
+            conn.execute_batch(if failure == "catalog" {
+                "CREATE TRIGGER refuse_classification BEFORE INSERT ON settings WHEN NEW.key='dream_logs' BEGIN SELECT RAISE(ABORT,'classification failed'); END;"
+            } else {
+                "CREATE TRIGGER refuse_classification BEFORE UPDATE ON native_messages BEGIN SELECT RAISE(ABORT,'marking failed'); END;"
+            }).unwrap();
+            assert!(classify_dream_logs(home.path(), "owl").is_err());
+            assert_eq!(
+                runtime_store::dream_logs(home.path())
+                    .unwrap()
+                    .contains("later-log"),
+                failure == "projection"
+            );
+            assert_ne!(
+                runtime_store::history(home.path(), "later-log").unwrap()[0]["dream"],
+                true
+            );
+            conn.execute_batch("DROP TRIGGER refuse_classification")
+                .unwrap();
+            assert_eq!(
+                chat_section(home.path(), "alice", "owl").unwrap()["id"],
+                "ordinary"
+            );
+            assert!(
+                runtime_store::dream_logs(home.path())
+                    .unwrap()
+                    .contains("later-log")
+            );
+            assert_eq!(
+                runtime_store::history(home.path(), "later-log").unwrap()[0]["dream"],
+                true
+            );
+            one_chat_per_bot(home.path()).unwrap();
+            assert_eq!(ids_of(home.path(), "owl"), ["later-log", "ordinary"]);
+        }
+    }
+    #[cfg(unix)]
+    #[test]
+    fn a_recreated_legacy_log_is_classified_after_permissions_are_repaired() {
+        let home = tempfile::tempdir().unwrap();
+        legacy_log(home.path(), "Initial notes", false, true);
+        runtime_store::mark_fresh(home.path(), "ordinary").unwrap();
+        one_chat_per_bot(home.path()).unwrap();
+        db::open(home.path()).unwrap().execute_batch("INSERT INTO sections(id,bot,owner_id,title,updated_at) VALUES('later-log','owl','alice','Renamed',20.001)").unwrap();
+        Connection::open(profile(home.path(), "owl").unwrap().join("state.db")).unwrap().execute_batch("INSERT INTO sessions(id,session_key) VALUES('later-log','later-log'); INSERT INTO messages(id,session_id,role,content,timestamp) VALUES(5,'later-log','assistant','Stored report',1),(6,'later-log','user','Keep this human reply',2),(7,'later-log','assistant','Stored report',20);").unwrap();
+        let denied = RestorePermissions::deny(profile(home.path(), "owl").unwrap());
+        assert!(classify_dream_logs(home.path(), "owl").is_err());
+        assert!(crate::dreaming::build_digest(home.path(), "owl", 0.0, f64::MAX, None).is_err());
+        assert!(
+            !runtime_store::dream_logs(home.path())
+                .unwrap()
+                .contains("later-log")
+        );
+        assert_eq!(
+            chat_section(home.path(), "alice", "owl").unwrap()["id"],
+            "ordinary"
+        );
+        drop(denied);
+        let digest = crate::dreaming::build_digest(home.path(), "owl", 0.0, f64::MAX, None)
+            .unwrap()
+            .to_string();
+        assert!(digest.contains("Keep this human reply"));
+        assert!(!digest.contains("Stored report"));
+        assert!(
+            runtime_store::dream_logs(home.path())
+                .unwrap()
+                .contains("later-log")
+        );
+        one_chat_per_bot(home.path()).unwrap();
+        assert_eq!(ids_of(home.path(), "owl"), ["later-log", "ordinary"]);
+    }
     #[test]
     fn a_legacy_dream_log_with_dialogue_is_a_chat_before_and_after_import() {
         for title in ["Dreams", "Night notes"] {
@@ -3038,7 +3518,13 @@ mod parity_tests {
         .unwrap()
         .unwrap();
         one_chat_per_bot(home.path()).unwrap();
-        assert_eq!(ids_of(home.path(), "owl"), ["log"]);
+        // A later native report and a chooser selection both update the same
+        // timestamp. Preserve both chats when that old choice is ambiguous.
+        assert_eq!(ids_of(home.path(), "owl"), ["log", "ordinary"]);
+        assert_eq!(
+            chat_section(home.path(), "alice", "owl").unwrap()["id"],
+            "ordinary"
+        );
         let workspace = tempfile::tempdir().unwrap();
         runtime_store::import_hermes(home.path(), "owl", "log", workspace.path()).unwrap();
         let history = runtime_store::history(home.path(), "log").unwrap();

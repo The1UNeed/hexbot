@@ -563,6 +563,7 @@ export function devicesRevoke(id: string): Promise<{ revoked: boolean }> {
 // ---------------------------------------------------------------------------
 
 export interface PromptSubmitOptions {
+  attachments?: string[]
   display_kind?: 'hidden'
   queued?: boolean
   surface?: string

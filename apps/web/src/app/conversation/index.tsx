@@ -671,30 +671,100 @@ export function suggestedPrompts(description: string, name = 'this bot'): string
   ]
 }
 
-/**
- * Submit a prompt, and if the daemon no longer holds the live session (it was
- * reaped after a reload or a daemon restart), reopen the section once and
- * resend on the fresh session. Any other failure lands in the transcript as
- * an error row instead of an unhandled rejection.
- */
-async function submitOrReopen(sessionId: string, sectionId: string | null, text: string) {
+/** Reopen and resend once only after an explicit rejection before acceptance. */
+async function submitOrReopen(
+  sessionId: string,
+  sectionId: string | null,
+  text: string,
+  retry: { current: () => boolean; files: File[] }
+): Promise<boolean> {
+  const { current, files } = retry
+
+  if (!current()) {
+    return false
+  }
+
+  const pending = useTranscripts
+    .getState()
+    .bySession[sessionId]?.messages.findLast(message => message.role === 'user')
+
+  let active = sessionId
+
   try {
     await promptSubmit(sessionId, text)
+
+    return current()
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error)
+    if (!current()) {
+      return false
+    }
 
-    if (sectionId && /session not found/i.test(message)) {
-      const reopened = await sectionsActions().open(sectionId)
+    let failure = error
 
-      if (reopened.liveSessionId && reopened.liveSessionId !== sessionId) {
-        transcriptActions().appendUserMessage(reopened.liveSessionId, text)
-        await promptSubmit(reopened.liveSessionId, text)
+    // Network failures and provider errors leave acceptance unknown. Only
+    // the gateway's missing-live-session rejection is safe to resend.
+    if (
+      sectionId &&
+      error instanceof JsonRpcGatewayError &&
+      error.code === 4001 &&
+      /^session not found$/i.test(error.message)
+    ) {
+      try {
+        const reopened = await sectionsActions().open(sectionId)
 
-        return
+        if (!current()) {
+          return false
+        }
+
+        if (reopened.liveSessionId) {
+          active = reopened.liveSessionId
+
+          // open keeps an optimistic row ahead of history on a reused ID.
+          // A replacement ID, or a replaced snapshot, needs that row once.
+          if (
+            pending &&
+            !useTranscripts
+              .getState()
+              .bySession[active]?.messages.some(message => message.id === pending.id)
+          ) {
+            transcriptActions().appendUserMessage(active, text, pending.attachments)
+          }
+
+          // Closing a process can discard its staged uploads. Send the
+          // original bytes again and name only these uploads on the retry.
+          const attachments: string[] = []
+
+          for (const file of files) {
+            const upload = await attachFile(active, file)
+
+            if (!current()) {
+              return false
+            }
+
+            if (typeof upload.id !== 'string') {
+              throw new Error('The daemon did not return an attachment ID. Attach the file again.')
+            }
+
+            attachments.push(upload.id)
+          }
+
+          await promptSubmit(active, text, { attachments })
+
+          return current()
+        }
+      } catch (retryError) {
+        failure = retryError
       }
     }
 
-    transcriptActions().errorEvent(sessionId, message)
+    if (current()) {
+      transcriptActions().errorEvent(
+        active,
+        failure instanceof Error ? failure.message : String(failure)
+      )
+    }
+
+    return false
   }
 }
 
@@ -743,9 +813,23 @@ function Composer({
 
     setSending(true)
 
+    // Capture the sender before uploading: a route or daemon can change
+    // while a file is on its way in, before prompt submission even starts.
+    const { target, epoch } = useConnection.getState()
+    const source = picker.current
+
+    const current = () =>
+      target === useConnection.getState().target &&
+      epoch === useConnection.getState().epoch &&
+      Boolean(source?.isConnected)
+
     try {
       for (const item of files) {
         await attachFile(sessionId, item.file)
+
+        if (!current()) {
+          return
+        }
       }
 
       const attachments: Attachment[] = files.map(item => ({
@@ -767,7 +851,15 @@ function Composer({
         sectionsActions().markTouched(sectionId, text)
       }
 
-      await submitOrReopen(sessionId, sectionId, text.trim())
+      if (
+        !(await submitOrReopen(sessionId, sectionId, text.trim(), {
+          current,
+          files: files.map(item => item.file)
+        }))
+      ) {
+        return
+      }
+
       setText('')
       setFiles([])
 
@@ -777,7 +869,7 @@ function Composer({
     } finally {
       setSending(false)
 
-      if (sectionId) {
+      if (sectionId && current()) {
         void sectionsActions().settleTitle(sectionId)
       }
     }

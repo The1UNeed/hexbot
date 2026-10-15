@@ -342,6 +342,9 @@ pub fn build_digest(
     let mut proposals = vec![];
     let mut notes = vec![];
     if room.is_none() {
+        // An older build can add an unmarked log after migration. A dream
+        // may run before anyone opens the chat; classify before reading input.
+        crate::catalog::classify_dream_logs(home, bot)?;
         proposals = pending_proposals(&conn, bot, until)?;
         notes = recent_notes(home, bot, notes_watermark(&conn, bot, since)?)?;
         let legacy_path = home.join("profiles").join(bot).join("state.db");

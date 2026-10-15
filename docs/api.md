@@ -235,7 +235,16 @@ and a dream posting its report, rank a bot's healthy sections the same way,
 so a report-only Dreams log never outranks a conversation. A mixed log with
 non-report dialogue competes as a conversation; the daemon filters reports
 using stored dream summaries and message markers, never title or prefix
-heuristics. Unreadable history stays untouched. A section that recovery
+heuristics. For known mixed logs, reports never advance dialogue recency.
+If a report followed the dialogue, or a message timestamp is absent or invalid,
+the upgrade preserves every section of that bot and chooses the chat using
+known non-report dialogue times. Older reports and the old `unarchive` RPC
+both write `updated_at`, without recording why. A report can overwrite a saved
+choice, and the separate report and catalog timestamps cannot prove whether a
+choice came after the report either. The daemon cannot recover that intent:
+it preserves the competing histories instead of deleting either. When the
+latest report predates the dialogue, a later catalog update still counts,
+preserving an explicit choice without another message. Unreadable history stays untouched. A section that recovery
 set aside or could not recover, or whose history is only in an unreadable
 `state.db`, is never the chat, since it would not open; when nothing else is left, `create`
 makes a new General chat and the other stays for repair. Sections `create`
@@ -250,6 +259,11 @@ treated as dream reports, when the log is first opened, in history search
 and in a dream's digest. A bot whose `state.db` could not be read then
 has its logs found at the next `create`, first open or history search that
 can read the store (`catalog::dream_logs`); until then the recorded logs stand.
+Classification also inspects current sections at chat lookup and before a dream,
+so logs recreated by an older build after migration are marked too. This never
+repeats migration deletes or changes Pi context. A failed classification stops
+the dream before it can learn from uncertain reports. Filesystem metadata errors
+are read failures, not missing legacy databases; backup cannot omit such a database.
 
 Section shape: `{id, bot, title, title_by: "bot" | null, created_at,
 updated_at, archived_at | null, done_at | null, preview, message_count,
