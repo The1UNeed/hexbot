@@ -400,17 +400,106 @@ struct PendingChat<'a> {
 impl Drop for PendingChat<'_> {
     fn drop(&mut self) {
         if let Some(id) = &self.id
-            && let Err(error) = runtime_store::delete(self.home, id)
+            && let Err(error) = finish_chat_fork(self.home, id)
         {
             eprintln!("Could not remove uncommitted chat {id}: {error}");
         }
     }
 }
 
+/// Inspect the publication decision while holding the same reservation as the
+/// publisher. A pending identity alone authorizes cleanup of its private copy,
+/// never of a catalog conversation, a bot journal target, or retained history.
+fn finish_chat_fork(home: &Path, target: &str) -> Result<()> {
+    let mut catalog = db::open(home)?;
+    let tx = catalog.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let native = runtime_store::open(home)?;
+    let Some(row) = rows(
+        &native,
+        "SELECT * FROM native_pending_chat_forks WHERE target=?",
+        &[&target],
+    )?
+    .pop() else {
+        return Ok(());
+    };
+    let source = required(&row, "source")?;
+    let adopted = setting(&tx, "dream_chat_adoptions")?;
+    if adopted[source]["target"] == target {
+        // The section and this exact adoption committed together. A later
+        // section read or marker-removal failure cannot unpublish it.
+        native.execute(
+            "DELETE FROM native_pending_chat_forks WHERE target=?",
+            [target],
+        )?;
+    } else {
+        let listed: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sections WHERE id=?1) OR EXISTS(SELECT 1 FROM room_sessions WHERE stored_session_id=?1)",
+            [target], |r| r.get(0),
+        )?;
+        if listed || pending_bot_delete_targets(home)?.contains(target) {
+            return Err(Error::new(
+                5200,
+                "pending chat fork has another catalog owner or decision",
+            ));
+        }
+        // The reservation waited out the sole publisher. Its rolled-back ID
+        // cannot be published later or discovered by bot deletion. Release the
+        // writer before cleanup, which may acquire the product gate in builds
+        // that have one. No catalog writer may wait for that gate.
+        tx.commit()?;
+        drop(catalog);
+        return runtime_store::discard_chat_fork(
+            home,
+            target,
+            required(&row, "bot")?,
+            required(&row, "owner")?,
+        );
+    }
+    tx.commit()?;
+    Ok(())
+}
+
+pub(crate) fn finish_chat_forks(home: &Path) -> Result<()> {
+    let targets = rows(
+        &runtime_store::open(home)?,
+        "SELECT target FROM native_pending_chat_forks ORDER BY target",
+        &[],
+    )?;
+    let mut result = Ok(());
+    for row in targets {
+        let target = required(&row, "target")?;
+        if let Err(error) = finish_chat_fork(home, target) {
+            eprintln!("Could not finish pending chat {target}: {error}");
+            if result.is_ok() {
+                result = Err(error);
+            }
+        }
+    }
+    result
+}
+
+#[cfg(all(test, unix))]
+pub(crate) fn chat_fork_barrier(home: &Path, phase: &str) -> Result<()> {
+    use std::io::{Read, Write};
+    let path = home.join("fork-barrier.sock");
+    if path.try_exists()? {
+        let mut socket = std::os::unix::net::UnixStream::connect(path)?;
+        socket.write_all(phase.as_bytes())?;
+        socket.read_exact(&mut [0])?;
+    }
+    Ok(())
+}
+
+#[cfg(all(test, unix))]
+#[path = "catalog_fork_tests.rs"]
+mod fork_tests;
+
 pub fn chat_section(home: &Path, caller: &str, name: &str) -> Result<Value> {
     bot_owner(home, caller, name)?;
     // Before the transaction: finding the bot's dream logs may write.
     let logs = dream_logs(home, name)?;
+    // The writer and connection must drop before cleanup, on every error path.
+    let mut forked = PendingChat { home, id: None };
     let mut conn = db::open(home)?;
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let candidates = rows(
@@ -455,7 +544,6 @@ pub fn chat_section(home: &Path, caller: &str, name: &str) -> Result<Value> {
         .next()
         .filter(|candidate| candidate.count >= 0)
         .and_then(|candidate| candidate.row["id"].as_str().map(str::to_owned));
-    let mut forked = PendingChat { home, id: None };
     let id = if let Some(mut id) = existing {
         if logs.contains(&id) {
             let reports = rows(
@@ -468,8 +556,20 @@ pub fn chat_section(home: &Path, caller: &str, name: &str) -> Result<Value> {
             .collect();
             let version: i64 = runtime_store::open(home)?.query_row("SELECT COALESCE((SELECT version FROM native_history_versions WHERE session_id=?),0)", [&id], |r| r.get(0))?;
             let next = common::id();
+            let listed: bool = tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM sections WHERE id=?1) OR EXISTS(SELECT 1 FROM room_sessions WHERE stored_session_id=?1)",
+                [&next], |r| r.get(0),
+            )?;
+            if listed {
+                return Err(Error::new(5200, "chat fork target already exists"));
+            }
+            runtime_store::prepare_chat_fork(home, &id, &next, name, caller)?;
+            forked.id = Some(next.clone());
+            #[cfg(all(test, unix))]
+            chat_fork_barrier(home, "before_copy")?;
             if runtime_store::fork_dream_chat(home, name, caller, &id, &next, &reports)? {
-                forked.id = Some(next.clone());
+                #[cfg(all(test, unix))]
+                chat_fork_barrier(home, "after_copy")?;
                 tx.execute("INSERT INTO sections(id,bot,title,owner_id,created_at,updated_at) SELECT ?,bot,CASE WHEN title='Dreams' THEN 'General' ELSE title END,owner_id,created_at,updated_at FROM sections WHERE id=?", params![next, id])?;
                 let mut adopted = setting(&tx, "dream_chat_adoptions")?
                     .as_object()
@@ -504,7 +604,20 @@ pub fn chat_section(home: &Path, caller: &str, name: &str) -> Result<Value> {
         )?;
         id
     };
+    #[cfg(all(test, unix))]
+    if forked.id.is_some() {
+        chat_fork_barrier(home, "before_commit")?;
+    }
     tx.commit()?;
+    #[cfg(all(test, unix))]
+    if forked.id.is_some() {
+        chat_fork_barrier(home, "after_commit")?;
+    }
+    if let Some(target) = &forked.id
+        && let Err(error) = finish_chat_fork(home, target)
+    {
+        eprintln!("Could not finish pending chat {target}: {error}");
+    }
     forked.id = None;
     section(home, caller, &id)
 }

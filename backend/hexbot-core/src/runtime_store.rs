@@ -36,6 +36,7 @@ pub fn open(home: &Path) -> Result<Connection> {
       CREATE TABLE IF NOT EXISTS native_quarantine(session_id TEXT PRIMARY KEY, error TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS native_unrecovered(session_id TEXT PRIMARY KEY);
       CREATE TABLE IF NOT EXISTS native_fresh(session_id TEXT PRIMARY KEY);
+      CREATE TABLE IF NOT EXISTS native_pending_chat_forks(target TEXT PRIMARY KEY,source TEXT NOT NULL,bot TEXT NOT NULL,owner TEXT NOT NULL);
       CREATE TRIGGER IF NOT EXISTS summary_session_insert AFTER INSERT ON native_sessions BEGIN DELETE FROM native_summaries WHERE session_id=NEW.stored_id; END;
       CREATE TRIGGER IF NOT EXISTS summary_journal_insert AFTER INSERT ON native_pi_journal BEGIN DELETE FROM native_summaries WHERE session_id=NEW.session_id; END;
       CREATE TRIGGER IF NOT EXISTS summary_message_insert AFTER INSERT ON native_messages BEGIN DELETE FROM native_summaries WHERE session_id=NEW.session_id; END;
@@ -584,6 +585,90 @@ pub fn fresh(home: &Path, stored: &str) -> Result<bool> {
         |r| r.get(0),
     )?)
 }
+/// Reserve an unpublished copy before its first native write. A catalog adoption
+/// is the commit decision; this record survives rollback and process termination.
+pub(crate) fn prepare_chat_fork(
+    home: &Path,
+    source: &str,
+    target: &str,
+    bot: &str,
+    owner: &str,
+) -> Result<()> {
+    common::identifier(source)?;
+    common::identifier(target)?;
+    let target_path = home.join("runtime/sessions").join(target);
+    let present = match fs::symlink_metadata(target_path) {
+        Ok(_) => true,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+        Err(error) => return Err(error.into()),
+    };
+    if source == target || present {
+        return Err(crate::Error::new(5200, "chat fork target already exists"));
+    }
+    let mut conn = open(home)?;
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    for (table, column) in [
+        ("native_sessions", "stored_id"),
+        ("native_messages", "session_id"),
+        ("native_pi_journal", "session_id"),
+        ("native_usage", "session_id"),
+        ("native_deleted", "session_id"),
+        ("native_fresh", "session_id"),
+        ("native_prompt_intents", "session_id"),
+        ("native_summaries", "session_id"),
+        ("native_history_versions", "session_id"),
+        ("native_quarantine", "session_id"),
+        ("native_unrecovered", "session_id"),
+    ] {
+        let present: bool = tx.query_row(
+            &format!("SELECT EXISTS(SELECT 1 FROM {table} WHERE {column}=?)"),
+            [target],
+            |r| r.get(0),
+        )?;
+        if present {
+            return Err(crate::Error::new(5200, "chat fork target already exists"));
+        }
+    }
+    tx.execute(
+        "INSERT INTO native_pending_chat_forks VALUES(?,?,?,?)",
+        params![target, source, bot, owner],
+    )?;
+    tx.commit()?;
+    Ok(())
+}
+
+/// The caller has waited out publication under the catalog reservation, ruled
+/// out other decisions, and released the writer before entering cleanup.
+/// Never traverse descendants or touch a legacy store.
+/// Keep the identity until files, native data and copied zero-charge usage go.
+pub(crate) fn discard_chat_fork(home: &Path, target: &str, bot: &str, owner: &str) -> Result<()> {
+    let conn = open(home)?;
+    let ambiguous: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM native_sessions WHERE stored_id=?1 OR json_extract(options,'$.parent_session')=?1)
+         OR EXISTS(SELECT 1 FROM native_delete_options WHERE session_id=?1)
+         OR EXISTS(SELECT 1 FROM native_delete_pending WHERE session_id=?1)
+         OR EXISTS(SELECT 1 FROM native_delete_completed WHERE session_id=?1)
+         OR EXISTS(SELECT 1 FROM native_usage WHERE session_id=?1 AND (bot<>?2 OR owner_id<>?3 OR input_tokens<>0 OR output_tokens<>0 OR cache_read_tokens<>0 OR cache_write_tokens<>0 OR cost<>0))",
+        params![target, bot, owner],
+        |r| r.get(0),
+    )?;
+    if ambiguous {
+        return Err(crate::Error::new(
+            5200,
+            "unpublished chat has another history owner or decision",
+        ));
+    }
+    delete_one(home, target)?;
+    let mut conn = open(home)?;
+    let tx = conn.transaction()?;
+    tx.execute("DELETE FROM native_usage WHERE session_id=?", [target])?;
+    tx.execute(
+        "DELETE FROM native_pending_chat_forks WHERE target=?",
+        [target],
+    )?;
+    tx.commit()?;
+    Ok(())
+}
 /// Finishes the deletes a stop cut short, before the runtime starts. A
 /// section is tombstoned, then loses its catalog row, then its history. One
 /// whose row is still there was never deleted and opens again; one whose row
@@ -591,8 +676,19 @@ pub fn fresh(home: &Path, stored: &str) -> Result<bool> {
 /// requests retain their bot, owner and decision root until all cleanup
 /// finishes. Older untagged tombstones cannot identify a legacy database.
 pub fn finish_deletes(home: &Path) -> Result<()> {
-    let mut cleanup = crate::catalog::finish_bot_deletes(home);
-    let protected = crate::catalog::pending_bot_delete_targets(home)?;
+    let mut cleanup = crate::catalog::finish_chat_forks(home);
+    if let Err(error) = crate::catalog::finish_bot_deletes(home)
+        && cleanup.is_ok()
+    {
+        cleanup = Err(error);
+    }
+    let mut protected = crate::catalog::pending_bot_delete_targets(home)?;
+    protected.extend(
+        open(home)?
+            .prepare("SELECT target FROM native_pending_chat_forks")?
+            .query_map([], |r| r.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?,
+    );
     {
         let mut catalog = crate::db::open(home)?;
         let reservation =
@@ -1196,7 +1292,8 @@ pub fn import_hermes(home: &Path, bot: &str, stored: &str, cwd: &Path) -> Result
 /// on the selected branch rather than transferring those generated summaries.
 /// Display history still includes reports, marked as output; usage stays on the
 /// original conversation and is never billed again for this copy.
-pub fn fork_dream_chat(
+/// The caller reserves the target and owns cleanup, including internal errors.
+pub(crate) fn fork_dream_chat(
     home: &Path,
     bot: &str,
     owner: &str,
@@ -1302,23 +1399,23 @@ pub fn fork_dream_chat(
         lines.push(copied.to_string());
         parent = json!(next);
     }
-    let created = (|| {
-        mark_fresh(home, target)?;
-        for mut shown in original.into_iter().chain(missing_reports) {
-            if dream_report_text(&shown).is_some_and(|text| reports.contains(&text)) {
-                shown["dream"] = json!(true);
-            }
-            append(home, target, shown)?;
+    mark_fresh(home, target)?;
+    #[cfg(all(test, unix))]
+    let mut first = true;
+    for mut shown in original.into_iter().chain(missing_reports) {
+        if dream_report_text(&shown).is_some_and(|text| reports.contains(&text)) {
+            shown["dream"] = json!(true);
         }
-        let path = session_dir(home, target)?.join("conversation.jsonl");
-        common::atomic_write(&path, format!("{}\n", lines.join("\n")).as_bytes())?;
-        reconcile(home, bot, target, owner)?;
-        Ok::<_, crate::Error>(())
-    })();
-    if let Err(error) = created {
-        let _ = delete(home, target);
-        return Err(error);
+        append(home, target, shown)?;
+        #[cfg(all(test, unix))]
+        if first {
+            first = false;
+            crate::catalog::chat_fork_barrier(home, "during_copy")?;
+        }
     }
+    let path = session_dir(home, target)?.join("conversation.jsonl");
+    common::atomic_write(&path, format!("{}\n", lines.join("\n")).as_bytes())?;
+    reconcile(home, bot, target, owner)?;
     Ok(true)
 }
 
