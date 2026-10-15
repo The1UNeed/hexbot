@@ -320,9 +320,15 @@ context of its own; the meter belongs to bot sections.
   history. Neither choice changes the bot's `MEMORY.md` or daily notes.
   The durable tombstone and retention choice precede the catalog transaction;
   history removal follows its commit. A stop before that commit keeps the
-  section whole. After it, startup preserves retained history or retries an
+  section whole. A failed parent deletion preserves any descendant deleted
+  earlier, including its ownership, retention choice and completion marker.
+  Overlapping deletion attempts cannot undo one another's committed markers.
+  After the catalog commit, startup preserves retained history or retries an
   interrupted purge. A durable completion marker prevents later startups from
   repeating successful native, file and legacy cleanup; the tombstone remains.
+  Bulk bot deletion also skips descendants completed earlier in the same pass.
+  An explicit storage cleanup retry can remove replacement artifacts for an
+  already completed ID.
   Product tools and Python tool callbacks also reject deleted source IDs,
   including retained conversations. An admitted product-tool write finishes
   before deletion commits, even if its waiting tool call was cancelled. Bot

@@ -1483,38 +1483,32 @@ fn update_bot(home: &Path, caller: &str, p: &Value) -> Result<Value> {
 /// goes only after that transaction commits and only for a destructive delete.
 fn delete_section(home: &Path, caller: &str, id: &str, purge: bool) -> Result<()> {
     let row = section_row(home, caller, id)?;
-    // Tombstoned first, so nothing opens it or writes to it again.
-    if let Err(error) = runtime_store::mark_section_deleted(
+    runtime_store::with_section_delete(
         home,
         id,
         required(&row, "bot")?,
         required(&row, "owner_id")?,
         purge,
-    ) {
-        runtime_store::unmark_deleted(home, id)?;
-        return Err(error);
-    }
-    let removed = (|| {
-        let mut conn = db::open(home)?;
-        let tx = conn.transaction()?;
-        tx.execute("DELETE FROM sections WHERE id=?", [id])?;
-        // A turn that failed there can no longer be retried; the bot is not stopped.
-        tx.execute(
-            "UPDATE bot_incidents SET resolved_at=? WHERE section_id=? AND resolved_at IS NULL",
-            params![now(), id],
-        )?;
-        tx.execute(
-            "UPDATE bots SET last_activity_at=? WHERE name=?",
-            params![now(), row["bot"].as_str()],
-        )?;
-        tx.commit()?;
-        Ok(())
-    })();
-    if let Err(error) = removed {
-        runtime_store::unmark_deleted(home, id)?;
-        return Err(error);
-    }
-    if purge && let Err(error) = runtime_store::delete(home, id) {
+        || {
+            let mut conn = db::open(home)?;
+            let tx = conn.transaction()?;
+            if tx.execute("DELETE FROM sections WHERE id=?", [id])? == 0 {
+                return Err(Error::new(4204, "section not found"));
+            }
+            // A turn that failed there can no longer be retried; the bot is not stopped.
+            tx.execute(
+                "UPDATE bot_incidents SET resolved_at=? WHERE section_id=? AND resolved_at IS NULL",
+                params![now(), id],
+            )?;
+            tx.execute(
+                "UPDATE bots SET last_activity_at=? WHERE name=?",
+                params![now(), row["bot"].as_str()],
+            )?;
+            tx.commit()?;
+            Ok(())
+        },
+    )?;
+    if purge && let Err(error) = runtime_store::delete_pending(home, id) {
         eprintln!("Deleted section {id}, but not all of its history yet: {error}");
     }
     Ok(())
@@ -1592,7 +1586,7 @@ pub fn call(home: &Path, caller: &str, method: &str, p: &Value) -> Option<Result
             // Retained sections have no catalog row. Include hidden sessions and
             // tombstone ownership left behind by interrupted file removal.
             for session in runtime_store::owned_sessions(home, name)? {
-                runtime_store::delete(home, required(&session, "stored_id")?)?;
+                runtime_store::delete_pending(home, required(&session, "stored_id")?)?;
             }
             // Threads where this bot asked others stay with them, closed: a new bot with the
             // same name starts its own.

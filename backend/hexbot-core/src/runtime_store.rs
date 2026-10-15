@@ -71,6 +71,8 @@ pub fn open(home: &Path) -> Result<Connection> {
       CREATE TABLE IF NOT EXISTS native_summaries(session_id TEXT PRIMARY KEY, message_count INTEGER NOT NULL, preview TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS native_deleted(session_id TEXT PRIMARY KEY);
       CREATE TABLE IF NOT EXISTS native_delete_options(session_id TEXT PRIMARY KEY REFERENCES native_deleted(session_id) ON DELETE CASCADE,bot TEXT NOT NULL,owner TEXT NOT NULL,purge INTEGER NOT NULL);
+      CREATE TABLE IF NOT EXISTS native_delete_pending(session_id TEXT PRIMARY KEY REFERENCES native_deleted(session_id) ON DELETE CASCADE,root_id TEXT NOT NULL,cataloged INTEGER NOT NULL);
+      CREATE TABLE IF NOT EXISTS native_delete_claims(attempt TEXT NOT NULL,session_id TEXT NOT NULL REFERENCES native_delete_pending(session_id) ON DELETE CASCADE,PRIMARY KEY(attempt,session_id));
       CREATE TABLE IF NOT EXISTS native_delete_completed(session_id TEXT PRIMARY KEY REFERENCES native_deleted(session_id) ON DELETE CASCADE);
       CREATE TABLE IF NOT EXISTS native_quarantine(session_id TEXT PRIMARY KEY, error TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS native_fresh(session_id TEXT PRIMARY KEY);
@@ -233,68 +235,176 @@ fn descendant_ids(conn: &Connection, stored: &str) -> Result<Vec<String>> {
     .map(|row| common::required(&row, "id").map(str::to_owned))
     .collect()
 }
-fn mark_targets(conn: &Connection, stored: &str) -> Result<(Vec<String>, Vec<String>)> {
+fn mark_targets(conn: &Connection, stored: &str, cataloged: bool) -> Result<Vec<String>> {
     let targets = descendant_ids(conn, stored)?;
-    let mut inserted = Vec::new();
     for target in &targets {
         common::identifier(target)?;
         if delete_completed(conn, target)? {
             continue;
         }
         if conn.execute("INSERT OR IGNORE INTO native_deleted VALUES(?)", [target])? > 0 {
-            inserted.push(target.clone());
+            conn.execute(
+                "INSERT INTO native_delete_pending VALUES(?,?,?)",
+                params![target, stored, cataloged],
+            )?;
         }
         // Keep ownership after native_sessions and the catalog row have gone,
         // including when removing the session directory failed.
         conn.execute(
-            "INSERT OR IGNORE INTO native_delete_options SELECT stored_id,bot,owner,1 FROM native_sessions WHERE stored_id=?",
+            "INSERT OR IGNORE INTO native_delete_options SELECT stored_id,bot,owner,1 FROM native_sessions WHERE stored_id=? AND EXISTS(SELECT 1 FROM native_delete_pending WHERE session_id=stored_id)",
             [target],
         )?;
     }
-    Ok((targets, inserted))
+    Ok(targets)
+}
+/// A retirement can release only its own claims on provisional markers.
+/// Committing a deletion removes those claims, so a late rollback is harmless.
+#[derive(Debug)]
+pub(crate) struct Retirement {
+    pub(crate) targets: Vec<String>,
+    attempt: String,
+}
+fn claim_retirement(conn: &Connection, targets: Vec<String>) -> Result<Retirement> {
+    let attempt = id();
+    for target in &targets {
+        conn.execute("INSERT INTO native_delete_claims SELECT ?1,session_id FROM native_delete_pending WHERE session_id=?2", params![attempt, target])?;
+    }
+    Ok(Retirement { targets, attempt })
+}
+fn catalog_ids(home: &Path) -> Result<HashSet<String>> {
+    Ok(crate::db::open(home)?
+        .prepare("SELECT id FROM sections")?
+        .query_map([], |r| r.get(0))?
+        .collect::<rusqlite::Result<_>>()?)
 }
 pub fn mark_deleted(home: &Path, stored: &str) -> Result<Vec<String>> {
-    Ok(mark_retiring(home, stored)?.0)
+    Ok(mark_retiring(home, stored)?.targets)
 }
-pub(crate) fn mark_retiring(home: &Path, stored: &str) -> Result<(Vec<String>, Vec<String>)> {
+pub(crate) fn mark_retiring(home: &Path, stored: &str) -> Result<Retirement> {
     with_tombstone(home, || {
+        let listed = catalog_ids(home)?;
         let mut conn = open(home)?;
         let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        let targets = mark_targets(&tx, stored)?;
+        let targets = mark_targets(&tx, stored, listed.contains(stored))?;
+        let retirement = claim_retirement(&tx, targets)?;
         tx.commit()?;
-        Ok(targets)
+        Ok(retirement)
     })
 }
-/// A failed close may undo only the markers it inserted, never an earlier
-/// retained deletion or a completed purge, even if it is in the same tree.
-pub(crate) fn rollback_retiring(home: &Path, inserted: &[String]) -> Result<()> {
+fn release_retirement(
+    conn: &Connection,
+    retirement: &Retirement,
+    listed: &HashSet<String>,
+) -> Result<()> {
+    conn.execute(
+        "DELETE FROM native_delete_claims WHERE attempt=?",
+        [&retirement.attempt],
+    )?;
+    for target in &retirement.targets {
+        let pending = conn.query_row("SELECT root_id,cataloged FROM native_delete_pending WHERE session_id=? AND NOT EXISTS(SELECT 1 FROM native_delete_claims WHERE session_id=?1)", [target], |r| Ok((r.get::<_,String>(0)?,r.get::<_,bool>(1)?))).optional()?;
+        if let Some((root, cataloged)) = pending
+            && (!cataloged || listed.contains(&root))
+        {
+            conn.execute("DELETE FROM native_deleted WHERE session_id=?", [target])?;
+        }
+    }
+    Ok(())
+}
+pub(crate) fn rollback_retiring(home: &Path, retirement: &Retirement) -> Result<()> {
+    // Releasing a claim never creates a tombstone or changes disposition. The
+    // native transaction serializes it with claim acquisition and completion;
+    // taking the product gate here could stall a failed caller behind another
+    // deletion that is waiting for the same catalog writer.
+    let listed = catalog_ids(home)?;
     let mut conn = open(home)?;
     let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-    for target in inserted {
-        tx.execute("DELETE FROM native_deleted WHERE session_id=?", [target])?;
-    }
+    release_retirement(&tx, retirement, &listed)?;
     tx.commit()?;
     Ok(())
 }
-/// Save the requested disposition before the catalog transaction. The root's
-/// catalog ownership also covers sections never opened in the native runtime.
-pub(crate) fn mark_section_deleted(
+/// Serialize durable disposition, catalog commit and any rollback under the
+/// product boundary. No database writer is reserved while waiting for tools.
+/// Prior committed tombstones keep their disposition until a successful purge.
+pub(crate) fn with_section_delete(
     home: &Path,
     stored: &str,
     bot: &str,
     owner: &str,
     purge: bool,
+    commit_catalog: impl FnOnce() -> Result<()>,
 ) -> Result<()> {
     with_tombstone(home, || {
+        let listed = catalog_ids(home)?;
         let mut conn = open(home)?;
         let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        for target in mark_targets(&tx, stored)?.0 {
-            tx.execute(
-                "INSERT INTO native_delete_options VALUES(?,?,?,?) ON CONFLICT(session_id) DO UPDATE SET purge=excluded.purge",
-                params![target, bot, owner, purge],
+        let targets = mark_targets(&tx, stored, listed.contains(stored))?;
+        let retirement = claim_retirement(&tx, targets)?;
+        let mut previous = Vec::new();
+        for target in &retirement.targets {
+            let pending: bool = tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM native_delete_pending WHERE session_id=?)",
+                [target],
+                |r| r.get(0),
             )?;
+            if !pending {
+                continue;
+            }
+            previous.push((
+                target.clone(),
+                tx.query_row(
+                    "SELECT bot,owner,purge FROM native_delete_options WHERE session_id=?",
+                    [target],
+                    |r| {
+                        Ok((
+                            r.get::<_, String>(0)?,
+                            r.get::<_, String>(1)?,
+                            r.get::<_, bool>(2)?,
+                        ))
+                    },
+                )
+                .optional()?,
+            ));
+            tx.execute("INSERT INTO native_delete_options VALUES(?,?,?,?) ON CONFLICT(session_id) DO UPDATE SET purge=excluded.purge", params![target,bot,owner,purge])?;
         }
         tx.commit()?;
+        if let Err(error) = commit_catalog() {
+            // The boundary excludes overlapping disposition/commit/rollback.
+            // Restore only provisional options changed above, then release this
+            // attempt. Runtime retirement has its own independent claim.
+            let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+            for (target, options) in previous {
+                if let Some((bot, owner, purge)) = options {
+                    tx.execute(
+                        "UPDATE native_delete_options SET bot=?,owner=?,purge=? WHERE session_id=?",
+                        params![bot, owner, purge, target],
+                    )?;
+                } else {
+                    tx.execute(
+                        "DELETE FROM native_delete_options WHERE session_id=?",
+                        [&target],
+                    )?;
+                }
+            }
+            release_retirement(&tx, &retirement, &listed)?;
+            tx.commit()?;
+            return Err(error);
+        }
+        let finalized: Result<()> = (|| {
+            let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+            for target in &retirement.targets {
+                tx.execute(
+                    "DELETE FROM native_delete_pending WHERE session_id=?",
+                    [target],
+                )?;
+            }
+            tx.commit()?;
+            Ok(())
+        })();
+        if let Err(error) = finalized {
+            // The catalog already committed. Keep the durable markers and
+            // disposition for startup rather than report a reversible failure.
+            eprintln!("Deleted section {stored}, but could not finalize its markers: {error}");
+        }
         Ok(())
     })
 }
@@ -324,16 +434,39 @@ fn delete_completed(conn: &Connection, stored: &str) -> Result<bool> {
 /// Purge native rows, files and identifiable legacy history before recording
 /// completion. The permanent tombstone still rejects late opens and writes.
 pub fn delete(home: &Path, stored: &str) -> Result<()> {
+    purge(home, stored, true)
+}
+/// Startup and bulk deletion never retry completed descendants, even when a
+/// parent still has native relationship rows or a snapshot still lists them.
+pub(crate) fn delete_pending(home: &Path, stored: &str) -> Result<()> {
+    purge(home, stored, false)
+}
+fn purge(home: &Path, stored: &str, retry_completed: bool) -> Result<()> {
     // Commit every descendant's ownership and purge intent before any rows go.
     // A retry can then find children whose parent relationship was removed.
     let targets = with_tombstone(home, || {
         let mut conn = open(home)?;
         let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        let targets = mark_targets(&tx, stored)?.0;
+        let targets = descendant_ids(&tx, stored)?
+            .into_iter()
+            .filter_map(|target| match delete_completed(&tx, &target) {
+                Ok(true) if !retry_completed => None,
+                Ok(_) => Some(Ok(target)),
+                Err(error) => Some(Err(error)),
+            })
+            .collect::<Result<Vec<_>>>()?;
+        // Purging is already past the catalog boundary, or an explicit store
+        // delete. It cannot be undone by a still-finishing retirement.
+        mark_targets(&tx, stored, false)?;
         for target in &targets {
+            tx.execute("INSERT OR IGNORE INTO native_delete_options SELECT stored_id,bot,owner,1 FROM native_sessions WHERE stored_id=?", [target])?;
+            tx.execute(
+                "DELETE FROM native_delete_pending WHERE session_id=?",
+                [target],
+            )?;
             // An explicit delete retries even a completed ID, for example when
             // removing a newly replaced leaf symlink. Startup and owner cleanup
-            // select only unfinished IDs.
+            // skip completed IDs throughout the tree.
             tx.execute(
                 "DELETE FROM native_delete_completed WHERE session_id=?",
                 [target],
@@ -463,42 +596,41 @@ pub fn fresh(home: &Path, stored: &str) -> Result<bool> {
         |r| r.get(0),
     )?)
 }
-/// Finish interrupted destructive deletes before the runtime starts. A catalog
-/// row still present rolls back its tombstone tree. Otherwise retention is
-/// permanent; old tombstones without options keep their original purge behavior.
+/// Recover provisional markers by their original root, without unmarking an
+/// earlier committed descendant. Once the catalog root is gone, cleanup is
+/// destructive and must stay retryable even if files or legacy storage fail.
 pub fn finish_deletes(home: &Path) -> Result<()> {
-    let tombstones = open(home)?
-        .prepare("SELECT d.session_id,COALESCE(o.purge,1)<>0,c.session_id IS NOT NULL FROM native_deleted d LEFT JOIN native_delete_options o USING(session_id) LEFT JOIN native_delete_completed c USING(session_id)")?
-        .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, bool>(1)?, r.get::<_, bool>(2)?)))?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
-    let catalog = crate::db::open(home)?;
-    let listed = catalog
-        .prepare("SELECT id FROM sections")?
-        .query_map([], |r| r.get::<_, String>(0))?
-        .collect::<rusqlite::Result<HashSet<_>>>()?;
-    // Roll back whole trees first. A child in the original snapshot may have
-    // lost its tombstone when its still-listed parent was rolled back.
-    for (id, _, _) in &tombstones {
-        if listed.contains(id) {
-            unmark_deleted(home, id)?;
+    with_tombstone(home, || {
+        let listed = catalog_ids(home)?;
+        let mut conn = open(home)?;
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let pending = common::rows(&tx, "SELECT * FROM native_delete_pending", &[])?;
+        for row in pending {
+            let stored = common::required(&row, "session_id")?;
+            if row["cataloged"] == 1 && listed.contains(common::required(&row, "root_id")?) {
+                tx.execute("DELETE FROM native_deleted WHERE session_id=?", [stored])?;
+            } else {
+                tx.execute(
+                    "DELETE FROM native_delete_pending WHERE session_id=?",
+                    [stored],
+                )?;
+            }
         }
-    }
-    let conn = open(home)?;
-    for (id, purge, completed) in tombstones {
-        if purge && !completed && !listed.contains(&id) {
-            let pending: bool = conn.query_row(
-                "SELECT EXISTS(SELECT 1 FROM native_deleted WHERE session_id=?1) AND NOT EXISTS(SELECT 1 FROM native_delete_completed WHERE session_id=?1)",
-                [&id],
-                |r| r.get(0),
-            )?;
-            if !pending {
-                continue;
-            }
-            // One leftover that will not go must not keep the others. Failed
-            // native, file or legacy cleanup leaves no completion marker.
-            if let Err(error) = delete(home, &id) {
-                eprintln!("Could not finish deleting {id}: {}", error.message);
-            }
+        // Old builds did not record provisional ownership. A still-listed
+        // root is safe to reopen; descendants may already be committed deletes.
+        for stored in &listed {
+            tx.execute("DELETE FROM native_deleted WHERE session_id=? AND NOT EXISTS(SELECT 1 FROM native_delete_completed WHERE session_id=?1)", [stored])?;
+        }
+        tx.commit()?;
+        Ok(())
+    })?;
+    let tombstones = open(home)?
+        .prepare("SELECT d.session_id FROM native_deleted d LEFT JOIN native_delete_options o USING(session_id) LEFT JOIN native_delete_completed c USING(session_id) WHERE COALESCE(o.purge,1)<>0 AND c.session_id IS NULL")?
+        .query_map([], |r| r.get::<_, String>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    for id in tombstones {
+        if let Err(error) = delete_pending(home, &id) {
+            eprintln!("Could not finish deleting {id}: {}", error.message);
         }
     }
     Ok(())
@@ -1721,4 +1853,98 @@ pub(crate) fn check_deleted(conn: &Connection, stored: &str) -> Result<()> {
         return Err(crate::Error::new(4001, "The section was deleted"));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod deletion_attempt_tests {
+    use super::*;
+
+    #[test]
+    fn overlapping_retirements_release_only_their_own_provisional_markers() {
+        for legacy_only in [false, true] {
+            for committed in [false, true] {
+                let home = tempfile::tempdir().unwrap();
+                let h = home.path();
+                crate::db::migrate(h).unwrap();
+                crate::db::open(h)
+                    .unwrap()
+                    .execute(
+                        "INSERT INTO sections(id,bot,owner_id) VALUES('parent','owl','local')",
+                        [],
+                    )
+                    .unwrap();
+                let conn = open(h).unwrap();
+                if !legacy_only {
+                    conn.execute(
+                        "INSERT INTO native_sessions VALUES('parent','local','owl','frozen','{}')",
+                        [],
+                    )
+                    .unwrap();
+                }
+                conn.execute("INSERT INTO native_sessions VALUES('child','local','owl','child prompt','{\"parent_session\":\"parent\"}')", []).unwrap();
+                let first = mark_retiring(h, "parent").unwrap();
+                let second = mark_retiring(h, "child").unwrap();
+                rollback_retiring(h, &first).unwrap();
+                // The overlapping child attempt still owns its provisional
+                // marker. The otherwise untouched parent can already reopen.
+                assert!(session_dir(h, "parent").is_ok());
+                assert_eq!(session_dir(h, "child").unwrap_err().code, 4001);
+                if committed {
+                    with_section_delete(h, "child", "owl", "local", false, || Ok(())).unwrap();
+                }
+                rollback_retiring(h, &second).unwrap();
+                assert_eq!(session_dir(h, "child").is_err(), committed);
+                if committed {
+                    let row = common::rows(
+                        &conn,
+                        "SELECT * FROM native_delete_options WHERE session_id='child'",
+                        &[],
+                    )
+                    .unwrap();
+                    assert_eq!(row[0]["purge"], 0);
+                    assert_eq!(row[0]["bot"], "owl");
+                    assert_eq!(row[0]["owner"], "local");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn late_retirement_rollback_keeps_completed_purges_and_legacy_only_ownership() {
+        let home = tempfile::tempdir().unwrap();
+        let h = home.path();
+        crate::db::migrate(h).unwrap();
+        crate::db::open(h)
+            .unwrap()
+            .execute(
+                "INSERT INTO sections(id,bot,owner_id) VALUES('parent','owl','local')",
+                [],
+            )
+            .unwrap();
+        let first = mark_retiring(h, "parent").unwrap();
+        let second = mark_retiring(h, "parent").unwrap();
+        with_section_delete(h, "parent", "owl", "local", true, || {
+            crate::db::open(h)?.execute("DELETE FROM sections WHERE id='parent'", [])?;
+            Ok(())
+        })
+        .unwrap();
+        delete_pending(h, "parent").unwrap();
+        for retirement in [&first, &second] {
+            rollback_retiring(h, retirement).unwrap();
+            assert_eq!(session_dir(h, "parent").unwrap_err().code, 4001);
+            assert!(delete_completed(&open(h).unwrap(), "parent").unwrap());
+        }
+        let rows = owned_sessions(h, "owl").unwrap();
+        assert!(rows.is_empty());
+        let conn = open(h).unwrap();
+        assert_eq!(
+            conn.query_row(
+                "SELECT owner FROM native_delete_options WHERE session_id='parent'",
+                [],
+                |r| r.get::<_, String>(0)
+            )
+            .unwrap(),
+            "local"
+        );
+    }
 }

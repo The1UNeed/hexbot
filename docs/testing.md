@@ -8,6 +8,13 @@
   captured legacy schema fixtures in temporary homes. Local HTTP/SSE/MCP
   fixtures test provider and tool behavior. Actual Pi checks are documented
   in [`backend/hexbot-core/README.md`](../backend/hexbot-core/README.md).
+  Section deletion regressions in `tests/section_delete.rs` cover public calls,
+  offline catalog deletion, restart recovery, deferred catalog commit failures,
+  disposition write failures and completed descendant cleanup in both orders.
+  Concurrent deletes reserve SQLite writers and wait for committed policy rows;
+  they use the existing busy timeouts, with no sleeps. Unit tests cover
+  overlapping retirement claims and real todo/skill writes whose awaiters were
+  cancelled. All deletion fixtures use disposable homes.
 - Pi runtime: `node --test backend/pi-runtime/*.test.mjs` after
   `npm ci --prefix backend/pi-runtime --ignore-scripts --no-audit --no-fund`.
   CI runs the Rust and Pi suites on Linux and macOS. Approval tests use a stub

@@ -20,6 +20,9 @@ struct Fixture {
 }
 impl Fixture {
     fn new() -> Self {
+        Self::with_root(None)
+    }
+    fn with_root(root: Option<&str>) -> Self {
         let home = tempfile::tempdir().unwrap();
         let h = home.path();
         // Construct outside Tokio so neither background ticker nor description task starts.
@@ -45,7 +48,17 @@ impl Fixture {
         )
         .unwrap()
         .unwrap();
-        let id = created["section"]["id"].as_str().unwrap().to_owned();
+        let mut id = created["section"]["id"].as_str().unwrap().to_owned();
+        if let Some(root) = root {
+            db::open(h)
+                .unwrap()
+                .execute(
+                    "UPDATE sections SET id=? WHERE id=?",
+                    rusqlite::params![root, id],
+                )
+                .unwrap();
+            id = root.to_owned();
+        }
         let child = format!("child-{id}");
         let conn = runtime_store::open(h).unwrap();
         for (stored, live, options) in [
@@ -1016,4 +1029,442 @@ fn startup_upgrades_old_cleanup_schema_and_completes_each_orphaned_child() {
             .is_empty()
     );
     run(fixture.assert_closed());
+}
+
+fn policies(home: &std::path::Path) -> Vec<Value> {
+    hexbot_core::common::rows(
+        &runtime_store::open(home).unwrap(),
+        "SELECT * FROM native_delete_options ORDER BY session_id",
+        &[],
+    )
+    .unwrap()
+}
+
+fn retain_child(fixture: &Fixture) {
+    let h = fixture.home.path();
+    db::open(h)
+        .unwrap()
+        .execute(
+            "INSERT INTO sections(id,bot,owner_id) VALUES(?,'owl','local')",
+            [&fixture.child],
+        )
+        .unwrap();
+    catalog::call(
+        h,
+        "local",
+        "hexbot.sections.delete",
+        &json!({"id":fixture.child,"purge_memory":false}),
+    )
+    .unwrap()
+    .unwrap();
+}
+
+fn assert_blocked(fixture: &Fixture, id: &str) {
+    let h = fixture.home.path();
+    assert_eq!(
+        runtime_store::append(h, id, json!({"role":"user","text":"late"}))
+            .unwrap_err()
+            .code,
+        4001
+    );
+    assert_eq!(
+        run(product::call(
+            h,
+            "local",
+            "owl",
+            id,
+            "todo_list",
+            &json!({"todos":[]})
+        ))
+        .unwrap()
+        .unwrap_err()
+        .code,
+        4001
+    );
+}
+
+#[test]
+fn failed_parent_delete_preserves_committed_child_disposition() {
+    for public in [false, true] {
+        for fault in ["disposition", "catalog"] {
+            for legacy_only in [false, true] {
+                let mut fixture = Fixture::new();
+                retain_child(&fixture);
+                let h = fixture.home.path();
+                fs::write(
+                    h.join("profiles/owl/config.yaml"),
+                    "tools:\n  enabled_toolsets: [todo, skills]\n",
+                )
+                .unwrap();
+                if legacy_only {
+                    runtime_store::open(h)
+                        .unwrap()
+                        .execute(
+                            "DELETE FROM native_sessions WHERE stored_id=?",
+                            [&fixture.id],
+                        )
+                        .unwrap();
+                }
+                let before = policies(h);
+                let native = runtime_store::open(h).unwrap();
+                let catalog = db::open(h).unwrap();
+                if fault == "disposition" {
+                    for (trigger, event) in
+                        [("refuse_insert", "INSERT"), ("refuse_policy", "UPDATE")]
+                    {
+                        native.execute_batch(&format!("CREATE TRIGGER {trigger} BEFORE {event} ON native_delete_options WHEN NEW.session_id='{}' AND NEW.purge=0 BEGIN SELECT RAISE(ABORT,'disposition fault'); END;", fixture.id)).unwrap();
+                    }
+                } else {
+                    // Deferred FK checks fail at COMMIT, after the DELETE succeeded.
+                    catalog.execute_batch("CREATE TABLE commit_fault(section_id TEXT REFERENCES sections(id) DEFERRABLE INITIALLY DEFERRED);").unwrap();
+                    catalog
+                        .execute("INSERT INTO commit_fault VALUES(?)", [&fixture.id])
+                        .unwrap();
+                }
+                let result = if public {
+                    fixture.dispatch_delete("local", Some(fault != "disposition"))
+                } else {
+                    catalog::call(
+                        h,
+                        "local",
+                        "hexbot.sections.delete",
+                        &json!({"id":fixture.id,"purge_memory":fault != "disposition"}),
+                    )
+                    .unwrap()
+                };
+                assert!(result.is_err(), "public={public}, fault={fault}");
+                assert_eq!(
+                    policies(h),
+                    before,
+                    "public={public}, fault={fault}, legacy={legacy_only}"
+                );
+                assert_blocked(&fixture, &fixture.child);
+                assert!(runtime_store::session_dir(h, &fixture.id).is_ok());
+                assert!(catalog::section(h, "local", &fixture.id).is_ok());
+                run(product::call(
+                    h,
+                    "local",
+                    "owl",
+                    &fixture.id,
+                    "todo_list",
+                    &json!({"todos":[]}),
+                ))
+                .unwrap()
+                .unwrap();
+                if fault == "disposition" {
+                    native
+                        .execute_batch("DROP TRIGGER refuse_policy; DROP TRIGGER refuse_insert")
+                        .unwrap();
+                } else {
+                    catalog.execute_batch("DROP TABLE commit_fault").unwrap();
+                }
+                fixture.restart();
+                assert_eq!(policies(fixture.home.path()), before);
+                assert_blocked(&fixture, &fixture.child);
+                assert!(runtime_store::session_dir(fixture.home.path(), &fixture.id).is_ok());
+                run(fixture.app.shutdown());
+            }
+        }
+    }
+}
+
+#[test]
+fn startup_parent_rollback_preserves_committed_retained_child() {
+    let mut fixture = Fixture::new();
+    retain_child(&fixture);
+    let before = policies(fixture.home.path());
+    runtime_store::mark_deleted(fixture.home.path(), &fixture.id).unwrap();
+    fixture.restart();
+    assert_eq!(policies(fixture.home.path()), before);
+    assert_blocked(&fixture, &fixture.child);
+    assert!(runtime_store::session_dir(fixture.home.path(), &fixture.id).is_ok());
+    run(fixture.app.shutdown());
+}
+
+#[test]
+fn bot_cleanup_never_repeats_completed_descendants_in_either_order() {
+    for root in ["a-parent", "z-parent"] {
+        let mut fixture = Fixture::with_root(Some(root));
+        fixture.dispatch_delete("local", Some(false)).unwrap();
+        fixture.restart();
+        let h = fixture.home.path();
+        runtime_store::open(h).unwrap().execute_batch(
+            "CREATE TRIGGER refuse_repeat BEFORE DELETE ON native_delete_completed BEGIN SELECT RAISE(ABORT,'completed cleanup repeated'); END;").unwrap();
+        run(fixture
+            .app
+            .call("local", "hexbot.bots.delete", &json!({"name":"owl"})))
+        .unwrap();
+        assert!(fixture.completed(&fixture.id));
+        assert!(fixture.completed(&fixture.child));
+        run(fixture.app.shutdown());
+    }
+}
+
+#[test]
+fn overlapping_public_deletes_cannot_undo_a_successful_retention() {
+    check_overlapping_deletes(true);
+}
+
+#[test]
+fn overlapping_catalog_deletes_cannot_undo_a_successful_retention() {
+    check_overlapping_deletes(false);
+}
+
+fn check_overlapping_deletes(public: bool) {
+    use std::{
+        sync::mpsc,
+        thread,
+        time::{Duration, Instant},
+    };
+    let mut fixture = Fixture::new();
+    let h = fixture.home.path();
+    fs::write(
+        h.join("profiles/owl/config.yaml"),
+        "tools:\n  enabled_toolsets: [todo, skills]\n",
+    )
+    .unwrap();
+    let native = runtime_store::open(h).unwrap();
+    native
+        .execute("DELETE FROM native_live_sessions", [])
+        .unwrap();
+    native.execute_batch("CREATE TABLE policy_commits(n INTEGER); INSERT INTO policy_commits VALUES(0); CREATE TRIGGER observe_policy AFTER UPDATE ON native_delete_options WHEN NEW.session_id NOT LIKE 'child-%' BEGIN UPDATE policy_commits SET n=n+1; END;").unwrap();
+    let mut catalog_writer = db::open(h).unwrap();
+    let writer = catalog_writer
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .unwrap();
+    let delete = move |app: Arc<App>, id: String, purge: bool| {
+        let args = json!({"id":id,"purge_memory":purge});
+        if public {
+            run(app.call("local", "hexbot.sections.delete", &args))
+        } else {
+            catalog::call(&app.home, "local", "hexbot.sections.delete", &args).unwrap()
+        }
+    };
+    let (finished, first) = mpsc::channel();
+    let app = fixture.app.clone();
+    let root = fixture.id.clone();
+    let a = thread::spawn(move || finished.send(delete(app, root, true)).unwrap());
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        let n: i64 = native
+            .query_row("SELECT n FROM policy_commits", [], |r| r.get(0))
+            .unwrap();
+        if n >= 1 {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "first disposition did not commit"
+        );
+        thread::yield_now();
+    }
+    // Reproduce the independent review's SQLite barrier. This reserves
+    // only the native writer and forces its ordinary five-second timeout,
+    // leaving reads free and separating the two catalog waiters.
+    let mut native_writer = runtime_store::open(h).unwrap();
+    let native_tx = native_writer
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .unwrap();
+    let path = h.to_path_buf();
+    assert!(
+        thread::spawn(move || runtime_store::append(
+            &path,
+            "timeout-probe",
+            json!({"role":"user","text":"blocked"})
+        ))
+        .join()
+        .unwrap()
+        .is_err()
+    );
+    native_tx.rollback().unwrap();
+    let app = fixture.app.clone();
+    let root = fixture.id.clone();
+    let (started, second_started) = mpsc::channel();
+    let b = thread::spawn(move || {
+        started.send(()).unwrap();
+        delete(app, root, false)
+    });
+    second_started.recv().unwrap();
+    // On 673 both disposition commits precede A's failure. With the
+    // serialized boundary B waits there instead. In either case A must
+    // return its real catalog error before the reserved writer is released.
+    assert!(
+        first
+            .recv_timeout(Duration::from_secs(20))
+            .unwrap()
+            .is_err()
+    );
+    writer.rollback().unwrap();
+    a.join().unwrap();
+    assert_eq!(b.join().unwrap().unwrap(), json!({"deleted":true}));
+    assert_eq!(policies(h).len(), 2);
+    assert!(policies(h).iter().all(|r| r["purge"] == 0));
+    assert_blocked(&fixture, &fixture.id);
+    assert_blocked(&fixture, &fixture.child);
+    assert!(!fixture.completed(&fixture.id));
+    fixture.restart();
+    assert_blocked(&fixture, &fixture.id);
+    assert_blocked(&fixture, &fixture.child);
+    run(fixture.app.shutdown());
+}
+
+#[test]
+fn completed_descendants_stay_skipped_until_an_explicit_retry() {
+    let mut fixture = Fixture::new();
+    let h = fixture.home.path();
+    let native = runtime_store::open(h).unwrap();
+    native.execute_batch(&format!("CREATE TRIGGER fail_parent BEFORE DELETE ON native_sessions WHEN OLD.stored_id='{}' BEGIN SELECT RAISE(ABORT,'parent fault'); END;", fixture.id)).unwrap();
+    fixture.dispatch_delete("local", Some(true)).unwrap();
+    assert!(fixture.completed(&fixture.child));
+    assert!(!fixture.completed(&fixture.id));
+    // Replacement artifacts make any repeated cleanup observable on all three
+    // stores, even while the unfinished parent still has a relationship row.
+    native
+        .execute(
+            "INSERT INTO native_sessions VALUES(?,'local','owl','replacement',?)",
+            rusqlite::params![
+                fixture.child,
+                json!({"parent_session":fixture.id}).to_string()
+            ],
+        )
+        .unwrap();
+    native
+        .execute(
+            "INSERT INTO native_messages VALUES(?,1,'{}')",
+            [&fixture.child],
+        )
+        .unwrap();
+    let dir = fixture
+        .pi_path(&fixture.child)
+        .parent()
+        .unwrap()
+        .to_path_buf();
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(dir.join("barrier"), "replacement").unwrap();
+    let legacy = rusqlite::Connection::open(h.join("profiles/owl/state.db")).unwrap();
+    legacy
+        .execute("INSERT INTO sessions VALUES(?)", [&fixture.child])
+        .unwrap();
+    legacy
+        .execute(
+            "INSERT INTO messages VALUES(2,?,'user','replacement')",
+            [&fixture.child],
+        )
+        .unwrap();
+    native.execute_batch("DROP TRIGGER fail_parent; CREATE TRIGGER refuse_repeat BEFORE DELETE ON native_delete_completed BEGIN SELECT RAISE(ABORT,'repeated completed cleanup'); END;").unwrap();
+    runtime_store::finish_deletes(h).unwrap();
+    assert!(fixture.completed(&fixture.id));
+    assert!(fixture.completed(&fixture.child));
+    assert_eq!(runtime_store::history(h, &fixture.child).unwrap().len(), 1);
+    assert_eq!(
+        fs::read_to_string(dir.join("barrier")).unwrap(),
+        "replacement"
+    );
+    assert_eq!(
+        legacy
+            .query_row("SELECT count(*) FROM messages", [], |r| r.get::<_, i64>(0))
+            .unwrap(),
+        1
+    );
+    fixture.restart();
+    let h = fixture.home.path();
+    assert_eq!(runtime_store::history(h, &fixture.child).unwrap().len(), 1);
+    native.execute_batch("DROP TRIGGER refuse_repeat").unwrap();
+    runtime_store::delete(h, &fixture.child).unwrap();
+    assert!(
+        runtime_store::history(h, &fixture.child)
+            .unwrap()
+            .is_empty()
+    );
+    assert!(!dir.exists());
+    assert_eq!(
+        legacy
+            .query_row("SELECT count(*) FROM messages", [], |r| r.get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+    assert!(fixture.completed(&fixture.child));
+    run(fixture.app.shutdown());
+}
+
+#[test]
+fn postcommit_marker_failure_never_rolls_back_a_delete() {
+    for purge in [false, true] {
+        let mut fixture = Fixture::new();
+        let h = fixture.home.path();
+        let native = runtime_store::open(h).unwrap();
+        native.execute_batch("CREATE TRIGGER fail_finalize BEFORE DELETE ON native_delete_pending BEGIN SELECT RAISE(ABORT,'finalization fault'); END;").unwrap();
+        fixture.dispatch_delete("local", Some(purge)).unwrap();
+        assert!(catalog::section(h, "local", &fixture.id).is_err());
+        assert_blocked(&fixture, &fixture.id);
+        assert_blocked(&fixture, &fixture.child);
+        assert!(!fixture.completed(&fixture.id));
+        assert_eq!(runtime_store::history(h, &fixture.id).unwrap().len(), 1);
+        native.execute_batch("DROP TRIGGER fail_finalize").unwrap();
+        fixture.restart();
+        assert_blocked(&fixture, &fixture.id);
+        assert_blocked(&fixture, &fixture.child);
+        assert_eq!(
+            runtime_store::history(fixture.home.path(), &fixture.id)
+                .unwrap()
+                .len(),
+            usize::from(!purge)
+        );
+        assert_eq!(fixture.completed(&fixture.id), purge);
+        run(fixture.app.shutdown());
+    }
+}
+
+#[test]
+fn failed_parent_commit_preserves_completed_child_and_frozen_options() {
+    for public in [false, true] {
+        let mut fixture = Fixture::new();
+        retain_child(&fixture);
+        let h = fixture.home.path();
+        let native = runtime_store::open(h).unwrap();
+        native
+            .execute(
+                "INSERT INTO native_delete_completed VALUES(?)",
+                [&fixture.child],
+            )
+            .unwrap();
+        native.execute("UPDATE native_sessions SET prompt='original prompt',options=? WHERE stored_id=?",rusqlite::params![json!({"parent_session":fixture.id,"provider":"openai","model":"frozen","skill_catalog":["keep"]}).to_string(),fixture.child]).unwrap();
+        let before = policies(h);
+        let settings = hexbot_core::common::rows(
+            &native,
+            "SELECT * FROM native_sessions ORDER BY stored_id",
+            &[],
+        )
+        .unwrap();
+        let conn = db::open(h).unwrap();
+        conn.execute_batch("CREATE TABLE commit_fault(section_id TEXT REFERENCES sections(id) DEFERRABLE INITIALLY DEFERRED);").unwrap();
+        conn.execute("INSERT INTO commit_fault VALUES(?)", [&fixture.id])
+            .unwrap();
+        let args = json!({"id":fixture.id,"purge_memory":true});
+        let result = if public {
+            run(fixture.app.call("local", "hexbot.sections.delete", &args))
+        } else {
+            catalog::call(h, "local", "hexbot.sections.delete", &args).unwrap()
+        };
+        assert!(result.is_err());
+        assert_eq!(policies(h), before);
+        assert!(fixture.completed(&fixture.child));
+        assert_eq!(
+            hexbot_core::common::rows(
+                &native,
+                "SELECT * FROM native_sessions ORDER BY stored_id",
+                &[]
+            )
+            .unwrap(),
+            settings
+        );
+        assert_blocked(&fixture, &fixture.child);
+        conn.execute_batch("DROP TABLE commit_fault").unwrap();
+        fixture.restart();
+        assert_eq!(policies(fixture.home.path()), before);
+        assert!(fixture.completed(&fixture.child));
+        assert_blocked(&fixture, &fixture.child);
+        assert!(runtime_store::session_dir(fixture.home.path(), &fixture.id).is_ok());
+        run(fixture.app.shutdown());
+    }
 }

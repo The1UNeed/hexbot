@@ -165,12 +165,13 @@ impl App {
         }
         common::user(&self.home, owner)?;
         let mut affected_rooms = Vec::new();
+        let mut retirements = Vec::new();
         // Deletes are orchestrated here alone: one busy check, one close pass.
         if method == "hexbot.sections.delete" {
             let stored = common::required(p, "id")?;
             catalog::section(&self.home, owner, stored)?;
             // The catalog removes its row before its history.
-            self.runtime.retire_stored(owner, stored).await?;
+            retirements.push(self.runtime.retire_for_delete(owner, stored).await?);
         }
         if method == "hexbot.bots.delete" {
             let bot = common::required(p, "name")?;
@@ -203,25 +204,32 @@ impl App {
             }
             // Sections, room conversations and hidden jobs, each under its owner.
             let sessions = crate::runtime_store::owned_sessions(&self.home, bot)?;
-            for session in sessions {
-                self.runtime
-                    .retire_stored(
-                        common::required(&session, "owner")?,
-                        common::required(&session, "stored_id")?,
-                    )
-                    .await?;
-            }
-            // Threads where this bot asked others are archived below; stop any still answering
-            // or waiting on the owner, since their panel can no longer be opened.
-            let threads = common::rows(
-                &db::open(&self.home)?,
-                "SELECT id FROM sections WHERE peer_bot=? AND owner_id=? AND archived_at IS NULL",
-                &[&bot, &owner],
-            )?;
-            for thread in threads {
-                self.runtime
-                    .close_stored(owner, common::required(&thread, "id")?)
-                    .await?;
+            let prepared: Result<()> = async {
+                for session in sessions {
+                    retirements.push(self.runtime
+                        .retire_for_delete(
+                            common::required(&session, "owner")?,
+                            common::required(&session, "stored_id")?,
+                        )
+                        .await?);
+                }
+                // Threads where this bot asked others are archived below; stop any still answering
+                // or waiting on the owner, since their panel can no longer be opened.
+                let threads = common::rows(
+                    &db::open(&self.home)?,
+                    "SELECT id FROM sections WHERE peer_bot=? AND owner_id=? AND archived_at IS NULL",
+                    &[&bot, &owner],
+                )?;
+                for thread in threads {
+                    self.runtime
+                        .close_stored(owner, common::required(&thread, "id")?)
+                        .await?;
+                }
+                Ok(())
+            }.await;
+            if let Err(error) = prepared {
+                self.runtime.rollback_retirements(retirements).await?;
+                return Err(error);
             }
         }
         let mut removed_sessions = Vec::new();
@@ -366,8 +374,11 @@ impl App {
                     Err(Error::new(-32601, format!("unknown method: {method}")))
                 }
             }
-        }?;
-        let mut result = result;
+        };
+        if result.is_err() && !retirements.is_empty() {
+            self.runtime.rollback_retirements(retirements).await?;
+        }
+        let mut result = result?;
         // Opening a room restores its open approval and question cards.
         if method == "hexbot.rooms.get" {
             for turn in result["room"]["turns"].as_array().into_iter().flatten() {

@@ -1750,8 +1750,15 @@ impl Runtime {
     /// Tombstones a section and its delegated tasks and stops them, ready for
     /// the catalog to delete it. Returns what it tombstoned.
     pub async fn retire_stored(&self, owner: &str, stored: &str) -> Result<Vec<String>> {
+        Ok(self.retire_for_delete(owner, stored).await?.targets)
+    }
+    pub(crate) async fn retire_for_delete(
+        &self,
+        owner: &str,
+        stored: &str,
+    ) -> Result<store::Retirement> {
         // Serialize the tombstone with open, then let close acquire the same lock.
-        let (targets, inserted) = {
+        let retirement = {
             let lock = self.open_lock(stored);
             let _guard = lock.lock().await;
             let home = self.home.clone();
@@ -1764,10 +1771,24 @@ impl Runtime {
         };
         // Keep the original set: a partial purge can remove descendant relationships.
         if let Err(error) = self.close_stored(owner, stored).await {
-            store::rollback_retiring(&self.home, &inserted)?;
+            self.rollback_retirements(vec![retirement]).await?;
             return Err(error);
         }
-        Ok(targets)
+        Ok(retirement)
+    }
+    pub(crate) async fn rollback_retirements(
+        &self,
+        retirements: Vec<store::Retirement>,
+    ) -> Result<()> {
+        let home = self.home.clone();
+        tokio::task::spawn_blocking(move || {
+            for retirement in retirements {
+                store::rollback_retiring(&home, &retirement)?;
+            }
+            Ok(())
+        })
+        .await
+        .map_err(|error| Error::new(5200, format!("section rollback failed: {error}")))?
     }
     pub async fn close_stored(&self, owner: &str, stored: &str) -> Result<bool> {
         let mut closed = false;
