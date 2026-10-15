@@ -8,6 +8,12 @@
   captured legacy schema fixtures in temporary homes. Local HTTP/SSE/MCP
   fixtures test provider and tool behavior. Actual Pi checks are documented
   in [`backend/hexbot-core/README.md`](../backend/hexbot-core/README.md).
+  `section_delete_recovery` exercises public catalog/App deletions with native,
+  legacy transaction, file and final metadata faults, restart, denied paths,
+  exact aliases, descendants and ownership controls. The catalog library's
+  `section_delete_crash_at_the_real_catalog_commit_recovers_the_decision`
+  kills a child process at socket barriers before and after the actual SQLite
+  catalog COMMIT. It checks rollback versus completed native and legacy erasure.
 - Pi runtime: `node --test backend/pi-runtime/*.test.mjs` after
   `npm ci --prefix backend/pi-runtime --ignore-scripts --no-audit --no-fund`.
   CI runs the Rust and Pi suites on Linux and macOS. Approval tests use a stub
