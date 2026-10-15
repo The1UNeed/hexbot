@@ -18,13 +18,13 @@ fn get_in(conn: &rusqlite::Connection, caller: &str, room: &str) -> Result<Value
     row["limits"] = json_field(&row["limits_json"]);
     row.as_object_mut().unwrap().remove("limits_json");
     row["members"] = json!(rows(
-        &conn,
+        conn,
         "SELECT m.*,COALESCE(NULLIF(u.display_name,''),NULLIF(b.display_name,'')) AS display_name FROM room_members m LEFT JOIN users u ON m.member_kind='human' AND u.id=m.member_id LEFT JOIN bots b ON m.member_kind='bot' AND b.name=m.member_id WHERE m.room_id=? ORDER BY m.added_at,m.member_id",
         &[&room],
     )?);
     // Running turns let a reconnected client rebuild who is working.
     row["turns"] = json!(rows(
-        &conn,
+        conn,
         "SELECT t.bot,s.live_session_id FROM room_turns t LEFT JOIN room_sessions s ON s.room_id=t.room_id AND s.bot=t.bot WHERE t.room_id=? AND t.status='running' ORDER BY t.started_at,t.bot",
         &[&room],
     )?);

@@ -514,3 +514,126 @@ fn check_catalog_decision(public: bool, last: bool, fault: bool) {
     }
     run(again.shutdown());
 }
+
+#[test]
+fn last_member_race_releases_retirement_when_a_new_member_keeps_the_room() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let home = support::TestHome::new();
+    let h = home.path();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let pi = h.join("pi.cjs");
+    let marker = h.join("stopped-once");
+    fs::write(&pi,format!(r#"#!/usr/bin/env node
+const fs=require('node:fs'),net=require('node:net');
+require('node:readline').createInterface({{input:process.stdin}}).on('line',line=>{{const c=JSON.parse(line);if(c.type!=='extension_ui_response')process.stdout.write(JSON.stringify({{type:'response',id:c.id,command:c.type,success:true,data:{{}}}})+'\n');}});
+process.on('SIGTERM',()=>{{if(fs.existsSync({marker}))process.exit(0);fs.writeFileSync({marker},'stopped');const s=net.connect({port},'127.0.0.1',()=>s.write('closing\n'));s.on('data',()=>process.exit(0));}});
+"#,marker=json!(marker))).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&pi, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let running = App::new(h.into(), "127.0.0.1:0".parse().unwrap(), pi, None).unwrap();
+    for bot in ["owl", "fox"] {
+        catalog::call(
+            h,
+            "local",
+            "hexbot.bots.create",
+            &json!({"name":bot,"description":"Fixture"}),
+        )
+        .unwrap()
+        .unwrap();
+    }
+    fs::write(
+        h.join("profiles/owl/config.yaml"),
+        "model:\n  provider: openai\n  default: fixture\ntools:\n  enabled_toolsets: []\n",
+    )
+    .unwrap();
+    db::open(h)
+        .unwrap()
+        .execute(
+            "INSERT OR REPLACE INTO settings VALUES('workspace_dir',?)",
+            [json!(home.workspace()).to_string()],
+        )
+        .unwrap();
+    let room = rooms::call(
+        h,
+        "local",
+        "hexbot.rooms.create",
+        &json!({"name":"Room","members":["owl"]}),
+    )
+    .unwrap()
+    .unwrap()["room"]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    db::open(h)
+        .unwrap()
+        .execute(
+            "INSERT INTO room_sessions(room_id,bot,stored_session_id) VALUES(?,'owl','room-root')",
+            [&room],
+        )
+        .unwrap();
+    run(async {
+        running
+            .runtime
+            .ensure_hidden("local", "owl", "room-root")
+            .await
+            .unwrap();
+        let frozen = common::rows(
+            &store::open(h).unwrap(),
+            "SELECT prompt,options FROM native_sessions WHERE stored_id='room-root'",
+            &[],
+        )
+        .unwrap();
+        let a = running.clone();
+        let id = room.clone();
+        let deleting = tokio::spawn(async move {
+            a.call(
+                "local",
+                "hexbot.rooms.remove_member",
+                &json!({"id":id,"bot":"owl"}),
+            )
+            .await
+        });
+        let listener = tokio::net::TcpListener::from_std(listener).unwrap();
+        let (mut closing, _) =
+            tokio::time::timeout(std::time::Duration::from_secs(5), listener.accept())
+                .await
+                .unwrap()
+                .unwrap();
+        let mut ready = [0; 8];
+        closing.read_exact(&mut ready).await.unwrap();
+        assert_eq!(&ready, b"closing\n");
+        running
+            .call(
+                "local",
+                "hexbot.rooms.add_member",
+                &json!({"id":room,"bot":"fox"}),
+            )
+            .await
+            .unwrap();
+        closing.write_all(b"release").await.unwrap();
+        let result = deleting.await.unwrap().unwrap();
+        assert_ne!(result["room"]["deleted"], true);
+        assert!(rooms::get(h, "local", &room).is_ok());
+        store::append(
+            h,
+            "room-root",
+            json!({"role":"user","text":"surviving room history"}),
+        )
+        .unwrap();
+        assert_eq!(
+            common::rows(
+                &store::open(h).unwrap(),
+                "SELECT prompt,options FROM native_sessions WHERE stored_id='room-root'",
+                &[]
+            )
+            .unwrap(),
+            frozen
+        );
+        running.shutdown().await;
+    });
+}

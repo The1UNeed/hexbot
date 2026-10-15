@@ -406,9 +406,19 @@ impl App {
             catalog::rollback_bot_delete(&self.home, common::required(p, "name")?)?;
         }
         if result.is_err() && !retirements.is_empty() {
-            self.runtime.rollback_retirements(retirements).await?;
+            self.runtime
+                .rollback_retirements(std::mem::take(&mut retirements))
+                .await?;
         }
         let mut result = result?;
+        // Membership may change while Pi closes. If another bot now keeps the
+        // room, removal has no deletion decision to commit these retirements.
+        if method == "hexbot.rooms.remove_member"
+            && result["room"]["deleted"] != true
+            && !retirements.is_empty()
+        {
+            self.runtime.rollback_retirements(retirements).await?;
+        }
         // Opening a room restores its open approval and question cards.
         if method == "hexbot.rooms.get" {
             for turn in result["room"]["turns"].as_array().into_iter().flatten() {

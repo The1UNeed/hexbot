@@ -389,6 +389,7 @@ pub(crate) fn rollback_bot_retiring(
     home: &Path,
     targets: &[Value],
     attempt: Option<&str>,
+    recovering: bool,
 ) -> Result<()> {
     let listed = catalog_ids(home)?;
     let mut conn = open(home)?;
@@ -418,6 +419,29 @@ pub(crate) fn rollback_bot_retiring(
                     tx.execute("DELETE FROM native_deleted WHERE session_id=?", [&stored])?;
                 } else if listed.contains(&stored) {
                     tx.execute("DELETE FROM native_deleted WHERE session_id=? AND NOT EXISTS(SELECT 1 FROM native_delete_options WHERE session_id=?1) AND NOT EXISTS(SELECT 1 FROM native_delete_completed WHERE session_id=?1)", [&stored])?;
+                }
+            }
+        }
+    }
+    if recovering {
+        // Startup has no live claim owners. The exact uncommitted bot journal
+        // also covers older prepare -> Runtime retirement callers whose claim
+        // IDs were not attached to the journal. Only provisional roots roll
+        // back; an absent section/room decision or completion stays terminal.
+        for target in targets {
+            for stored in descendant_ids(&tx, common::required(target, "id")?)? {
+                let pending = tx
+                    .query_row(
+                        "SELECT root_id,cataloged FROM native_delete_pending WHERE session_id=?",
+                        [&stored],
+                        |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)),
+                    )
+                    .optional()?;
+                if !delete_completed(&tx, &stored)?
+                    && pending
+                        .is_some_and(|(root, kind)| kind == 0 || listed.root_exists(&root, kind))
+                {
+                    tx.execute("DELETE FROM native_deleted WHERE session_id=?", [&stored])?;
                 }
             }
         }
@@ -837,7 +861,7 @@ pub fn finish_deletes(home: &Path) -> Result<()> {
             if protected.contains(stored) {
                 continue;
             }
-            tx.execute("DELETE FROM native_deleted WHERE session_id=? AND NOT EXISTS(SELECT 1 FROM native_delete_completed WHERE session_id=?1) AND NOT EXISTS(SELECT 1 FROM native_delete_options WHERE session_id=?1)", [stored])?;
+            tx.execute("DELETE FROM native_deleted WHERE session_id=? AND NOT EXISTS(SELECT 1 FROM native_delete_completed WHERE session_id=?1)", [stored])?;
         }
         tx.commit()?;
         Ok(())
@@ -1566,8 +1590,8 @@ fn persist_pi_message(
         let body = text(&message["content"]);
         let intent: Option<(String, String)> = conn
             .query_row(
-                "SELECT id,display_kind FROM native_prompt_intents WHERE session_id=? AND text=? AND consumed_by IS NULL ORDER BY created_at,rowid LIMIT 1",
-                params![stored, body],
+                "SELECT id,display_kind FROM native_prompt_intents WHERE session_id=? AND consumed_by IS NULL AND (id=? OR (? IS NULL AND text=?)) ORDER BY created_at,rowid LIMIT 1",
+                params![stored, seed.and_then(|s| s["_input_intent"].as_str()), seed.and_then(|s| s["_input_intent"].as_str()), body],
                 |r| Ok((r.get(0)?, r.get(1)?)),
             )
             .optional()?;
@@ -1582,6 +1606,9 @@ fn persist_pi_message(
     let mut projected = projection(message, display.as_deref());
     if let (Some(projected), Some(seed)) = (&mut projected, seed.and_then(Value::as_object)) {
         for (key, value) in seed {
+            if key == "_input_intent" {
+                continue;
+            }
             projected[key] = value.clone();
         }
     }

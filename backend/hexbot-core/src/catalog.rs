@@ -1811,7 +1811,7 @@ pub(crate) fn retire_bot_delete(home: &Path, caller: &str, name: &str) -> Result
             runtime_store::mark_bot_retiring(home, &targets, required(&journal, "attempt")?)
         {
             let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-            rollback_bot_delete_in(home, name, &tx, Some(&targets))?;
+            rollback_bot_delete_in(home, name, &tx, Some(&targets), false)?;
             tx.commit()?;
             return Err(error);
         }
@@ -1878,7 +1878,7 @@ pub fn rollback_bot_delete(home: &Path, name: &str) -> Result<()> {
     runtime_store::with_tombstone(home, || {
         let mut conn = db::open(home)?;
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        rollback_bot_delete_in(home, name, &tx, None)?;
+        rollback_bot_delete_in(home, name, &tx, None, false)?;
         tx.commit()?;
         Ok(())
     })
@@ -1889,6 +1889,7 @@ fn rollback_bot_delete_in(
     name: &str,
     conn: &Connection,
     expected: Option<&[Value]>,
+    recovering: bool,
 ) -> Result<()> {
     if let Some(journal) = bot_delete_journal(conn, name)? {
         if journal["committed"] == true {
@@ -1900,7 +1901,12 @@ fn rollback_bot_delete_in(
         if expected.is_some_and(|expected| expected != targets) {
             return Ok(());
         }
-        runtime_store::rollback_bot_retiring(home, targets, journal["attempt"].as_str())?;
+        runtime_store::rollback_bot_retiring(
+            home,
+            targets,
+            journal["attempt"].as_str(),
+            recovering,
+        )?;
         conn.execute(
             "DELETE FROM settings WHERE key=?",
             [format!("{BOT_DELETE_PREFIX}{name}")],
@@ -1923,7 +1929,7 @@ fn finish_bot_delete_locked(home: &Path, name: &str) -> Result<()> {
         return Ok(());
     };
     if journal["committed"] != true {
-        rollback_bot_delete_in(home, name, &tx, None)?;
+        rollback_bot_delete_in(home, name, &tx, None, true)?;
         tx.commit()?;
         return Ok(());
     }
@@ -2060,7 +2066,7 @@ fn delete_bot(home: &Path, caller: &str, name: &str) -> Result<Value> {
         runtime_store::with_tombstone(home, || {
             let mut conn = db::open(home)?;
             let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-            rollback_bot_delete_in(home, name, &tx, Some(&targets))?;
+            rollback_bot_delete_in(home, name, &tx, Some(&targets), false)?;
             tx.commit()?;
             Ok(())
         })?;
