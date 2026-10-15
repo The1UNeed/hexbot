@@ -38,6 +38,8 @@ Archiving hides a room but keeps its history. Deleting it removes the room and i
 
 If deletion cannot be saved, the room, membership and conversation history stay. Once deletion is saved, the conversations stay closed. A history cleanup failure is retried when the daemon restarts.
 
+While a room is being deleted, new messages and bot starts are refused. If deletion fails, you can send again. Closing the app during deletion lets the daemon finish it. If another bot joins while the last bot is being removed, the room stays available.
+
 Deleting a room, including by removing its last bot, clears failures from that room's turns, removes its delegated conversations, and refreshes the bots' statuses. Failures in other surviving rooms, sections, or background runs, connector problems, and failures without a conversation remain. Archiving a room keeps its failed turns available to retry.
 
 ## Bots working together

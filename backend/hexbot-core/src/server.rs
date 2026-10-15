@@ -163,20 +163,60 @@ impl App {
         }))
     }
     pub async fn call(self: &Arc<Self>, owner: &str, method: &str, p: &Value) -> Result<Value> {
+        // Reserve name reuse in request order before handing deletion to its
+        // cancellation-safe task, including through a rebound listener.
+        let bot_lifecycle = if matches!(method, "hexbot.bots.create" | "hexbot.bots.delete") {
+            Some(self.bot_lifecycle.clone().lock_owned().await)
+        } else {
+            None
+        };
+        if matches!(
+            method,
+            "hexbot.bots.delete" | "hexbot.rooms.delete" | "hexbot.rooms.remove_member"
+        ) {
+            // A disconnected/cancelled RPC must not abandon retirement halfway
+            // through Pi shutdown. This task owns closure, decision and rollback.
+            let app = self.clone();
+            let (owner, method, p) = (owner.to_owned(), method.to_owned(), p.clone());
+            return tokio::spawn(async move {
+                let _bot_lifecycle = bot_lifecycle;
+                app.call_inner(&owner, &method, &p).await
+            })
+            .await
+            .map_err(|error| Error::new(5200, format!("deletion failed: {error}")))?;
+        }
+        let _bot_lifecycle = bot_lifecycle;
+        self.call_inner(owner, method, p).await
+    }
+    async fn call_inner(self: &Arc<Self>, owner: &str, method: &str, p: &Value) -> Result<Value> {
         if *self.stop.borrow() {
             return Err(Error::new(5200, "Reconnect to continue"));
         }
         common::user(&self.home, owner)?;
-        // Order name reuse with retirement, commit and rollback, including
-        // requests through a rebound listener. Never hold a SQLite lock over await.
-        let _bot_lifecycle = if matches!(method, "hexbot.bots.create" | "hexbot.bots.delete") {
-            Some(self.bot_lifecycle.lock().await)
+        let mut admission = Vec::new();
+        // Drain openers before the final busy check. New opens fail admission
+        // until closure and the catalog decision finish.
+        if method == "hexbot.bots.delete" {
+            let bot = common::required(p, "name")?;
+            common::bot_owner(&self.home, owner, bot)?;
+            self.check_bot_delete_idle(bot)?;
+            admission.push(
+                self.runtime
+                    .admission
+                    .pause(crate::admission::Scope::Bot(bot.into()))
+                    .await,
+            );
+        }
+        let _room_post = if method == "hexbot.rooms.send" {
+            Some(self.runtime.admission.enter(crate::admission::Scope::Room(
+                common::required(p, "id")?.into(),
+            ))?)
         } else {
             None
         };
         let mut affected_rooms = Vec::new();
         let mut retirements = Vec::new();
-        // Deletes are orchestrated here alone: one busy check, one close pass.
+        // Deletes are orchestrated here: admission, close, catalog decision.
         if method == "hexbot.sections.delete" {
             let stored = common::required(p, "id")?;
             catalog::section(&self.home, owner, stored)?;
@@ -186,22 +226,7 @@ impl App {
         if method == "hexbot.bots.delete" {
             let bot = common::required(p, "name")?;
             common::bot_owner(&self.home, owner, bot)?;
-            let running: bool = db::open(&self.home)?.query_row(
-                "SELECT EXISTS(SELECT 1 FROM room_turns WHERE bot=? AND status='running')",
-                [bot],
-                |r| r.get(0),
-            )?;
-            let busy = self.runtime.busy_sections(bot);
-            if running || !busy.is_empty() {
-                let sections = busy
-                    .iter()
-                    .map(|s| json!({"id":s["id"],"status":s["status"]}))
-                    .collect::<Vec<_>>();
-                return Err(
-                    Error::new(4211, format!("bot {bot} has a streaming section"))
-                        .with_data(json!({"sections":sections})),
-                );
-            }
+            self.check_bot_delete_idle(bot)?;
             affected_rooms = common::rows(
                 &db::open(&self.home)?,
                 "SELECT r.id,r.owner_id FROM rooms r JOIN room_members m ON m.room_id=r.id WHERE m.member_kind='bot' AND m.member_id=? AND m.left_at IS NULL",
@@ -248,6 +273,14 @@ impl App {
         // checked once here and the rooms helpers below do not repeat it.
         if matches!(method, "hexbot.rooms.delete" | "hexbot.rooms.remove_member") {
             let room = common::required(p, "id")?;
+            // Order removals before deciding which one removes the last bot.
+            // Joins remain allowed while processes close.
+            admission.push(
+                self.runtime
+                    .admission
+                    .pause(crate::admission::Scope::Room(room.into()))
+                    .await,
+            );
             let row = rooms::get(&self.home, owner, room)?;
             let bot = p["bot"].as_str();
             let active = row["members"]
@@ -266,8 +299,8 @@ impl App {
             )?;
             if deleting {
                 // Close before metadata cascades remove the only stored-id mapping.
-                let targets = rooms::delete_targets(&self.home, &db::open(&self.home)?, room)?;
                 self.rooms.stop_internal(room).await?;
+                let targets = rooms::delete_targets(&self.home, &db::open(&self.home)?, room)?;
                 removed_sessions.clear();
                 let prepared: Result<()> = async {
                     for target in targets {
@@ -289,6 +322,14 @@ impl App {
                     return Err(error);
                 }
             }
+        }
+        // A concurrent bot deletion can make a non-last removal become the
+        // last one in the catalog transaction. Close its bot before that
+        // decision too; the other room members keep their processes.
+        for session in &removed_sessions {
+            self.runtime
+                .close_stored(owner, common::required(session, "stored_session_id")?)
+                .await?;
         }
         let result = match method {
             "hexbot.cli.send" => {
@@ -431,12 +472,6 @@ impl App {
             self.rooms.stop(owner, common::required(p, "id")?).await?;
         }
         if !removed_sessions.is_empty() {
-            // Only the removed bot stops; the rest of the room keeps going.
-            for session in removed_sessions {
-                self.runtime
-                    .close_stored(owner, common::required(&session, "stored_session_id")?)
-                    .await?;
-            }
             db::open(&self.home)?.execute(
                 "UPDATE room_sessions SET live_session_id=NULL WHERE room_id=? AND bot=?",
                 rusqlite::params![common::required(p, "id")?, common::required(p, "bot")?],
@@ -509,6 +544,25 @@ impl App {
             );
         }
         Ok(result)
+    }
+    fn check_bot_delete_idle(&self, bot: &str) -> Result<()> {
+        let running: bool = db::open(&self.home)?.query_row(
+            "SELECT EXISTS(SELECT 1 FROM room_turns WHERE bot=? AND status='running')",
+            [bot],
+            |r| r.get(0),
+        )?;
+        let busy = self.runtime.busy_sections(bot);
+        if running || !busy.is_empty() {
+            let sections = busy
+                .iter()
+                .map(|s| json!({"id":s["id"],"status":s["status"]}))
+                .collect::<Vec<_>>();
+            return Err(
+                Error::new(4211, format!("bot {bot} has a streaming section"))
+                    .with_data(json!({"sections":sections})),
+            );
+        }
+        Ok(())
     }
     /// Close this App's connections and refuse new calls; bots keep running.
     pub fn disconnect(&self) {

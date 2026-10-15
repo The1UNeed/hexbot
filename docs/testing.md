@@ -26,6 +26,14 @@
   `tests/room_delete.rs` checks public and direct room deletion, last-member
   removal, catalog rollback, exact owned descendants, legacy cleanup, terminal
   retry after cleanup faults, retained children and foreign-owner controls.
+  `tests/deletion_admission.rs` holds actual child processes at TCP startup and
+  shutdown barriers. It checks late hidden, CLI, job and room admission,
+  descendant PIDs, rebound listeners, cancelled requests, rollback recovery,
+  concurrent joins and unrelated rooms. One-shot description PIDs test admission
+  through actual shutdown after cancellation. Hidden, job, public CLI and incoming
+  teammate starts pause before live-ID registration to check deletion waits.
+  It verifies history and raw files
+  remain until the decision and deleted processes are gone before success.
 - Pi runtime: `node --test backend/pi-runtime/*.test.mjs` after
   `npm ci --prefix backend/pi-runtime --ignore-scripts --no-audit --no-fund`.
   CI runs the Rust and Pi suites on Linux and macOS. Approval tests use a stub
