@@ -26,6 +26,8 @@ When a limit is reached, the room shows a notice and stays idle until you send a
 
 Tool approvals appear in the room like approvals in a bot's chat. A room can use its own approval mode. Reloading restores open approval and question cards. A tool reads "Running" until it completes, including while it waits for approval.
 
+The daemon stores room context with failures recorded by the bot runtime and preserves it across restarts. It also recovers the room for older failures when that bot's saved conversation belongs to exactly one of your rooms.
+
 ## Membership and history
 
 You can add or remove bots after creating a room, from Room settings (the info button in the room header). A newly added bot receives the existing transcript so it can follow the discussion. Removing a bot stops only that bot and keeps the old messages and their author labels. Removing the last bot deletes the room; the bot itself is kept.
@@ -33,6 +35,8 @@ You can add or remove bots after creating a room, from Room settings (the info b
 A daemon belongs to one person, so you are the only person in its rooms. Rooms with people who run their own Hexbot will come through [Hex Connect](/docs/connect/).
 
 Archiving hides a room but keeps its history. Deleting it removes the room and its history; each bot's own memory is left as it is.
+
+Deleting a room, including by removing its last bot, clears failures from that room's turns, removes its delegated conversations, and refreshes the bots' statuses. Failures in other surviving rooms, sections, or background runs, connector problems, and failures without a conversation remain. Archiving a room keeps its failed turns available to retry.
 
 ## Bots working together
 

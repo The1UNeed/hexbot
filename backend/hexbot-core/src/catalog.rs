@@ -1146,6 +1146,26 @@ fn display_name(name: &str) -> String {
         .collect::<Vec<_>>()
         .join(" ")
 }
+/// The bot's newest failure that still has a visible cause. Hidden native runs
+/// have no catalog section: require their bot and owner, and exclude deleted
+/// sessions and catalog entries hidden by other filters. Connector and global
+/// failures outlive their original chat. Needs `runtime` attached.
+const OPEN_INCIDENT: &str = "SELECT i.* FROM bot_incidents i JOIN bots b ON b.name=i.bot
+ WHERE i.bot=? AND i.resolved_at IS NULL AND (
+    i.kind<>'turn_failed' OR CASE WHEN i.room_id IS NOT NULL
+        THEN EXISTS(SELECT 1 FROM rooms r WHERE r.id=i.room_id AND r.owner_id=b.owner_id)
+        ELSE i.section_id IS NULL
+            OR EXISTS(SELECT 1 FROM room_sessions s JOIN rooms r ON r.id=s.room_id
+                WHERE s.stored_session_id=i.section_id AND s.bot=i.bot AND r.owner_id=b.owner_id)
+            OR EXISTS(SELECT 1 FROM sections s WHERE s.id=i.section_id
+                AND s.bot=i.bot AND s.owner_id=b.owner_id AND s.archived_at IS NULL)
+            OR (NOT EXISTS(SELECT 1 FROM sections s WHERE s.id=i.section_id)
+                AND NOT EXISTS(SELECT 1 FROM room_sessions s WHERE s.stored_session_id=i.section_id)
+                AND EXISTS(SELECT 1 FROM runtime.native_sessions s WHERE s.stored_id=i.section_id
+                    AND s.bot=i.bot AND s.owner=b.owner_id)
+                AND NOT EXISTS(SELECT 1 FROM runtime.native_deleted d WHERE d.session_id=i.section_id))
+        END
+ ) ORDER BY i.created_at DESC LIMIT 1";
 fn shape_bot(home: &Path, caller: &str, row: Value) -> Result<Value> {
     let name = row["name"].as_str().unwrap_or("");
     let cfg = config(home, name)?;
@@ -1156,9 +1176,16 @@ fn shape_bot(home: &Path, caller: &str, row: Value) -> Result<Value> {
         .take(2)
         .cloned()
         .collect::<Vec<_>>();
-    let incident=rows(&db::open(home)?,"SELECT * FROM bot_incidents WHERE bot=? AND resolved_at IS NULL ORDER BY created_at DESC LIMIT 1",&[&name])?.into_iter().next();
+    let conn = db::open(home)?;
+    runtime_store::open(home)?;
+    conn.execute(
+        "ATTACH DATABASE ? AS runtime",
+        [home.join("hexbot-runtime.db").to_string_lossy().as_ref()],
+    )?;
+    let incident = rows(&conn, OPEN_INCIDENT, &[&name])?.into_iter().next();
     let (mut status, mut detail) = ("idle", Value::Null);
-    if let Some(i) = incident {
+    if let Some(mut i) = incident {
+        crate::settings::normalize_incident_room(&conn, &mut i)?;
         status = "stopped";
         let action = if i["kind"] == "turn_failed" {
             json!({"kind":"retry"})
@@ -1809,10 +1836,15 @@ fn delete_section(home: &Path, caller: &str, id: &str, purge: bool) -> Result<Op
     };
     let removed = (|| {
         tx.execute("DELETE FROM sections WHERE id=?", [id])?;
-        // A turn that failed there can no longer be retried; the bot is not stopped.
+        // Room and connector failures still have a cause outside this section.
         tx.execute(
-            "UPDATE bot_incidents SET resolved_at=? WHERE section_id=? AND resolved_at IS NULL",
-            params![now(), id],
+            "UPDATE bot_incidents SET resolved_at=? WHERE section_id=? AND bot=?
+             AND kind='turn_failed' AND room_id IS NULL AND resolved_at IS NULL
+             AND EXISTS(SELECT 1 FROM bots b WHERE b.name=bot_incidents.bot AND b.owner_id=?4)
+             AND NOT EXISTS(SELECT 1 FROM room_sessions s JOIN rooms r ON r.id=s.room_id
+                 WHERE s.stored_session_id=bot_incidents.section_id
+                 AND s.bot=bot_incidents.bot AND r.owner_id=?4)",
+            params![now(), id, row["bot"].as_str(), caller],
         )?;
         tx.execute(
             "UPDATE bots SET last_activity_at=? WHERE name=?",
@@ -2387,6 +2419,60 @@ mod parity_tests {
             .unwrap();
         home
     }
+    #[test]
+    fn open_incident_finds_room_transcripts_by_stored_id_without_scans() {
+        let home = home();
+        runtime_store::open(home.path()).unwrap();
+        let conn = db::open(home.path()).unwrap();
+        conn.execute(
+            "ATTACH DATABASE ? AS runtime",
+            [home
+                .path()
+                .join("hexbot-runtime.db")
+                .to_string_lossy()
+                .as_ref()],
+        )
+        .unwrap();
+        // Each hidden run has its own stored ID and unresolved failures
+        // accumulate; every one is checked against the room transcripts.
+        conn.execute_batch(
+            "WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<500)
+             INSERT INTO rooms(id,name,owner_id) SELECT 'room-'||x,'Room','alice' FROM n;
+             INSERT INTO room_sessions(room_id,bot,stored_session_id)
+             SELECT id,'owl','transcript-'||id FROM rooms;
+             WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<1000)
+             INSERT INTO runtime.native_sessions(stored_id,owner,bot,prompt)
+             SELECT 'run-'||x,'alice','owl','' FROM n;
+             INSERT INTO bot_incidents(id,bot,section_id,kind,created_at)
+             SELECT 'failure-'||substr(stored_id,5),'owl',stored_id,'turn_failed',
+              CAST(substr(stored_id,5) AS REAL) FROM runtime.native_sessions;
+             INSERT INTO runtime.native_deleted(session_id) VALUES('run-1000');",
+        )
+        .unwrap();
+        let plan = conn
+            .prepare(&format!("EXPLAIN QUERY PLAN {OPEN_INCIDENT}"))
+            .unwrap()
+            .query_map(["owl"], |row| row.get::<_, String>(3))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        assert!(
+            !plan.iter().any(|step| step.starts_with("SCAN")),
+            "{plan:#?}"
+        );
+        assert_eq!(
+            plan.iter()
+                .filter(|step| step.contains("idx_room_sessions_stored"))
+                .count(),
+            2,
+            "{plan:#?}"
+        );
+        let mut query = conn.prepare(OPEN_INCIDENT).unwrap();
+        let id: String = query.query_row(["owl"], |row| row.get("id")).unwrap();
+        assert_eq!(id, "failure-999");
+        assert_eq!(query.get_status(rusqlite::StatementStatus::FullscanStep), 0);
+    }
+
     #[test]
     fn runtime_backup_includes_pending_legacy_cleanup_and_its_exact_keys() {
         let home = home();
@@ -3412,6 +3498,182 @@ mod parity_tests {
         }
     }
     #[test]
+    fn migration_incident_cleanup_follows_the_catalog_commit_when_history_fails() {
+        for failure in ["catalog", "native", "legacy"] {
+            let home = tempfile::tempdir().unwrap();
+            db::migrate(home.path()).unwrap();
+            owl_with_four_conversations(home.path());
+            let conn = db::open(home.path()).unwrap();
+            conn.execute_batch(
+                "INSERT INTO users(id,display_name,role,created_at) VALUES('bob','Bob','member',0);
+                 INSERT INTO bots(name,owner_id) VALUES('remote','bob');
+                 INSERT INTO rooms(id,name,owner_id) VALUES('room','Room','alice');
+                 INSERT INTO room_sessions(room_id,bot,stored_session_id) VALUES('room','owl','room-transcript');
+                 INSERT INTO bot_incidents(id,bot,section_id,room_id,kind,connector,text,created_at) VALUES
+                 ('private-mid','owl','mid',NULL,'turn_failed',NULL,'Private mid',1),
+                 ('private-stuck','owl','stuck',NULL,'turn_failed',NULL,'Private stuck',2),
+                 ('private-new','owl','new',NULL,'turn_failed',NULL,'Private new',3),
+                 ('room','owl','mid','room','turn_failed',NULL,'Room',4),
+                 ('legacy-room','owl','room-transcript',NULL,'turn_failed',NULL,'Legacy room',5),
+                 ('connector','owl','mid',NULL,'connector_error','github','Connector',6),
+                 ('global','owl',NULL,NULL,'turn_failed',NULL,'Global',7),
+                 ('foreign','remote','mid',NULL,'turn_failed',NULL,'Other bot',8);",
+            ).unwrap();
+            let native = runtime_store::open(home.path()).unwrap();
+            let profile = profile(home.path(), "owl").unwrap();
+            fs::create_dir_all(&profile).unwrap();
+            let legacy = Connection::open(profile.join("state.db")).unwrap();
+            legacy.execute_batch(
+                "CREATE TABLE sessions(id TEXT,session_key TEXT,parent_session_id TEXT,model_config TEXT,source TEXT);
+                 CREATE TABLE messages(id INTEGER,session_id TEXT,role TEXT,content TEXT,timestamp REAL);
+                 INSERT INTO sessions(id,session_key) VALUES('mid','mid');
+                 INSERT INTO messages VALUES(1,'mid','user','Older mid',5);",
+            ).unwrap();
+            match failure {
+                // Failing incident retirement must roll back the catalog row too.
+                "catalog" => conn.execute_batch(
+                    "CREATE TRIGGER stuck BEFORE UPDATE ON bot_incidents WHEN OLD.id='private-mid'
+                     BEGIN SELECT RAISE(ABORT,'incident cleanup failed'); END;",
+                ).unwrap(),
+                "native" => native.execute_batch(
+                    "CREATE TRIGGER stuck BEFORE DELETE ON native_messages WHEN OLD.session_id='mid'
+                     BEGIN SELECT RAISE(ABORT,'native purge failed'); END;",
+                ).unwrap(),
+                "legacy" => legacy.execute_batch(
+                    "CREATE TRIGGER stuck BEFORE DELETE ON messages
+                     BEGIN SELECT RAISE(ABORT,'legacy purge failed'); END;",
+                ).unwrap(),
+                _ => unreachable!(),
+            }
+            one_chat_per_bot(home.path()).unwrap();
+            let committed = failure != "catalog";
+            let expected = if committed {
+                vec!["new", "old", "stuck"]
+            } else {
+                vec!["mid", "new", "old", "stuck"]
+            };
+            assert_eq!(ids_of(home.path(), "owl"), expected, "{failure}");
+            let resolved = || {
+                rows(
+                    &conn,
+                    "SELECT id FROM bot_incidents WHERE resolved_at IS NOT NULL ORDER BY id",
+                    &[],
+                )
+                .unwrap()
+                .into_iter()
+                .map(|r| r["id"].as_str().unwrap().to_owned())
+                .collect::<Vec<_>>()
+            };
+            assert_eq!(
+                resolved(),
+                if committed {
+                    vec!["private-mid"]
+                } else {
+                    vec![]
+                },
+                "{failure}"
+            );
+            assert_eq!(
+                chat_section(home.path(), "alice", "owl").unwrap()["id"],
+                "new"
+            );
+            assert_eq!(
+                bot(home.path(), "alice", "owl").unwrap()["status_detail"]["text"],
+                "Global"
+            );
+            assert_eq!(
+                native
+                    .query_row(
+                        "SELECT EXISTS(SELECT 1 FROM native_deleted WHERE session_id='mid')",
+                        [],
+                        |r| r.get::<_, bool>(0)
+                    )
+                    .unwrap(),
+                committed
+            );
+            assert_eq!(
+                runtime_store::history(home.path(), "mid")
+                    .unwrap()
+                    .is_empty(),
+                failure == "legacy"
+            );
+            assert_eq!(
+                legacy
+                    .query_row("SELECT content FROM messages", [], |r| r
+                        .get::<_, String>(0))
+                    .unwrap(),
+                "Older mid"
+            );
+            let backup = fs::read_dir(home.path().join("backups"))
+                .unwrap()
+                .next()
+                .unwrap()
+                .unwrap()
+                .path();
+            let saved = Connection::open(backup.join("hexbot.db")).unwrap();
+            assert_eq!(
+                saved
+                    .query_row("SELECT count(*) FROM sections", [], |r| r.get::<_, i64>(0))
+                    .unwrap(),
+                4
+            );
+            assert_eq!(
+                saved
+                    .query_row(
+                        "SELECT count(*) FROM bot_incidents WHERE resolved_at IS NOT NULL",
+                        [],
+                        |r| r.get::<_, i64>(0)
+                    )
+                    .unwrap(),
+                0
+            );
+            assert_eq!(
+                runtime_store::history(&backup, "mid").unwrap()[0]["text"],
+                "In mid"
+            );
+            match failure {
+                "catalog" => conn.execute_batch("DROP TRIGGER stuck;").unwrap(),
+                "native" => native.execute_batch("DROP TRIGGER stuck;").unwrap(),
+                "legacy" => legacy.execute_batch("DROP TRIGGER stuck;").unwrap(),
+                _ => unreachable!(),
+            }
+            runtime_store::finish_deletes(home.path()).unwrap();
+            one_chat_per_bot(home.path()).unwrap();
+            assert_eq!(ids_of(home.path(), "owl"), expected);
+            assert_eq!(
+                resolved(),
+                if committed {
+                    vec!["private-mid"]
+                } else {
+                    vec![]
+                }
+            );
+            assert_eq!(
+                fs::read_dir(home.path().join("backups")).unwrap().count(),
+                1
+            );
+            assert_eq!(
+                runtime_store::history(home.path(), "mid")
+                    .unwrap()
+                    .is_empty(),
+                committed
+            );
+            // Recovery erases committed history and preserves a rolled-back deletion.
+            assert_eq!(
+                legacy
+                    .query_row("SELECT count(*) FROM messages", [], |r| r.get::<_, i64>(0))
+                    .unwrap(),
+                if committed { 0 } else { 1 }
+            );
+            for id in ["new", "old", "stuck"] {
+                assert_eq!(
+                    runtime_store::history(home.path(), id).unwrap()[0]["text"],
+                    format!("In {id}")
+                );
+            }
+        }
+    }
+    #[test]
     fn unreadable_native_chats_stay_for_repair_but_are_never_canonical() {
         for healthy in [false, true] {
             let home = tempfile::tempdir().unwrap();
@@ -3589,6 +3851,22 @@ mod parity_tests {
         let home = tempfile::tempdir().unwrap();
         db::migrate(home.path()).unwrap();
         owl_with_four_conversations(home.path());
+        let private = crate::settings::record_incident(
+            home.path(),
+            "owl",
+            "turn_failed",
+            "Private failure",
+            &json!({"section_id":"mid"}),
+        )
+        .unwrap();
+        let connector = crate::settings::record_incident(
+            home.path(),
+            "owl",
+            "connector_error",
+            "Connector failure",
+            &json!({"section_id":"mid","connector":"github"}),
+        )
+        .unwrap();
         runtime_store::open(home.path()).unwrap().execute_batch(
             "CREATE TRIGGER stuck BEFORE DELETE ON native_messages WHEN OLD.session_id='mid' BEGIN SELECT RAISE(ABORT,'history purge failed'); END;",
         ).unwrap();
@@ -3604,6 +3882,28 @@ mod parity_tests {
         assert_eq!(result["history_pending"], true);
         assert_eq!(ids_of(home.path(), "owl"), ["new", "old", "stuck"]);
         assert!(runtime_store::session_dir(home.path(), "mid").is_err());
+        let conn = db::open(home.path()).unwrap();
+        for (incident, resolved) in [(private, true), (connector, false)] {
+            assert_eq!(
+                conn.query_row(
+                    "SELECT resolved_at IS NOT NULL FROM bot_incidents WHERE id=?",
+                    [incident["id"].as_str().unwrap()],
+                    |r| r.get::<_, bool>(0)
+                )
+                .unwrap(),
+                resolved
+            );
+        }
+        assert!(
+            call(
+                home.path(),
+                "alice",
+                "hexbot.sections.delete",
+                &json!({"id":"mid"})
+            )
+            .unwrap()
+            .is_err()
+        );
     }
     fn legacy_log(home: &Path, title: &str, dialogue: bool, ordinary: bool) {
         db::migrate(home).unwrap();
