@@ -83,8 +83,13 @@ data model. The native transport and event projection live in
   accepted into Pi's queue is recovered at that boundary too, before later
   input is admitted. Pi's steering-before-follow-up order is preserved, with
   each input's original display intent, images, file references and Chain.
+  Replay uses acknowledged intents and actual user projections, so identical
+  text remains distinct even when Pi omits it from returned queue metadata.
   Recovery keeps the same Pi session, stored history, prompt and tools.
-  Idle Stop needs no run-settlement event.
+  Idle Stop needs no run-settlement event. A new owner prompt or `/compact`
+  arriving while idle recovery finishes waits for the admission handoff; it
+  does not return 4002 just because the recovery worker has not run yet. An
+  active Stop, unfinished run, or input reserved ahead of it still returns 4002.
   That run accepts tools, approvals and questions again.
   If abort fails or times out, Pi exits and waiting deliveries report an error.
   Without OS isolation, shell commands require user approval even with

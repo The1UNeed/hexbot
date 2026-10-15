@@ -5,6 +5,8 @@ use std::{
     path::{Path, PathBuf},
     time::Duration,
 };
+#[path = "support/stop_pi.rs"]
+mod stop_pi;
 mod support;
 
 fn setup() -> support::TestHome {
@@ -292,6 +294,13 @@ async fn actual_pi_resumes_accepted_input_after_stop_before_new_owner_input() {
     .unwrap();
     let opened = open(&runtime, "alice").await;
     let live = &opened["section"]["live_session_id"];
+    // Idle Pi emits no agent_settled on abort. The next owner prompt must
+    // wait for the empty recovery handoff rather than fail as busy.
+    runtime
+        .call("alice", "session.interrupt", &json!({"session_id":live}))
+        .await
+        .unwrap()
+        .unwrap();
     runtime
         .call(
             "alice",

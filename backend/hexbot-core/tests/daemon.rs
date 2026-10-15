@@ -260,18 +260,19 @@ fn product_version_and_cli_errors_are_consistent() {
 #[cfg(unix)]
 async fn terminal_startup_link_preserves_pair_codes_and_mint_failure_keeps_serving() {
     const TERMINAL: &str = r#"
-import os, pty, select, subprocess, sys, time
+import os, pty, re, select, subprocess, sys, time
 master, slave = pty.openpty()
 child = subprocess.Popen([sys.argv[1], 'serve', '--port', '0'], stdout=slave, stderr=subprocess.PIPE)
 os.close(slave)
 try:
     output = b''
     deadline = time.monotonic() + 15
-    while b'HERMES_BACKEND_READY' not in output:
+    while not re.search(rb'(?m)^HERMES_BACKEND_READY port=\d+\r?\n', output):
         remaining = deadline - time.monotonic()
         if remaining <= 0 or not select.select([master], [], [], remaining)[0]:
             raise RuntimeError('daemon did not become ready')
-        output += os.read(master, 65536)
+        # Fragment the actual daemon output even when the PTY batches writes.
+        output += os.read(master, 1)
     os.write(1, output.replace(b'\r\n', b'\n'))
     sys.stdin.readline()
 finally:

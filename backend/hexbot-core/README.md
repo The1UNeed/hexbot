@@ -132,8 +132,11 @@ it also installs over SSH when nobody is signed in at the screen.
   prevent retirement. Replay retention is bounded by session count and bytes.
   Stop also blocks retirement and input admission through its cleanup and queue
   recovery. Pi 1.0.1 retains queued user input on abort. After Stop, the old
-  operation and its preflights finish before `clear_queue` returns the retained
-  steering and follow-ups. The daemon resubmits their original envelopes into
+  operation and its preflights finish before `clear_queue` clears Pi's actual
+  queues. Its text metadata can omit identical queued messages; acknowledged
+  queued preflights and actual user projections determine what remains. Unknown
+  metadata or an omitted input without a queued preflight still fails closed.
+  The daemon resubmits the retained original envelopes in ledger order into
   the same session, retaining prompt intents, images, file references and Chain.
   Transport preflight dispositions share the ordered event stream so identical
   owner and hidden input cannot exchange display intents. No past context or

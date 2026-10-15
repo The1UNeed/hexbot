@@ -1,5 +1,5 @@
-//! Stop recovery uses Pi 1.0.1's clear_queue RPC. It returns the still-pending
-//! steering/follow-up strings; the daemon retains each original input envelope.
+//! Stop recovery clears Pi 1.0.1's actual queues, then replays the daemon's
+//! unprojected input ledger. Pi's returned text metadata can omit queued input.
 use super::*;
 
 impl Runtime {
@@ -161,7 +161,6 @@ impl Runtime {
         let _gate = s.event_gate.lock().unwrap();
         let mut state = s.state.lock().unwrap();
         let mut available = state.inputs.clone();
-        let mut retained = VecDeque::new();
         for (key, lane) in [("steering", "steer"), ("followUp", "prompt")] {
             let texts = queues[key]
                 .as_array()
@@ -177,16 +176,22 @@ impl Runtime {
                     .ok_or_else(|| {
                         Error::new(5201, "Pi queued input has no matching original intent")
                     })?;
-                let mut input = available.remove(index).unwrap();
-                input.in_pi = false;
-                retained.push_back(input);
+                available.remove(index);
             }
         }
-        if available.iter().any(|input| input.in_pi) {
+        // Pi removes queue metadata by text when an earlier identical user
+        // message starts. clear_queue still clears the actual queues. Only a
+        // known queued preflight authorizes an omitted entry; unexplained
+        // metadata and ambiguous acceptance keep the fail-closed behavior.
+        if available.iter().any(|input| input.in_pi && !input.queued) {
             return Err(Error::new(5201, "Pi omitted an unprojected input"));
         }
-        retained.append(&mut available);
-        state.inputs = retained;
+        // Ordered preflights and actual user projections already maintain the
+        // daemon's intent order, including steering priority and duplicate text.
+        // Never select replay envelopes or their identities from Pi's text list.
+        for input in &mut state.inputs {
+            input.in_pi = false;
+        }
         Ok(())
     }
 

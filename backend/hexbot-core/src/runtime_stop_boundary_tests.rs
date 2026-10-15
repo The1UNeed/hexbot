@@ -765,3 +765,470 @@ async fn close_rejects_input_waiting_for_admission_before_cleanup_or_a_prior_inp
         runtime.shutdown().await;
     }
 }
+
+// Hold the recovery worker independently of Stop and Pi settlement. A public
+// owner request after idle must await this handoff, never fail as busy solely
+// because the detached worker has not been scheduled yet.
+#[tokio::test]
+async fn owner_prompt_after_idle_stop_waits_for_empty_recovery_without_a_busy_error() {
+    for mode in ["idle", "settled", "delayed settlement", "repeated"] {
+        let (home, runtime, hub) = setup();
+        install_stop_lifecycle_pi(home.path());
+        let id = open(&runtime).await;
+        let s = runtime.sessions.lock().unwrap()["first"].clone();
+        let mut events = hub.subscribe();
+        let recovery = s.recovery_gate.lock().await;
+        if matches!(mode, "settled" | "delayed settlement") {
+            runtime
+                .call_inner(
+                    "alice",
+                    "prompt.submit",
+                    &json!({"session_id":id,"text":"old run"}),
+                )
+                .await
+                .unwrap();
+            stop_event(&mut events, |e| e["payload"]["text"] == "projected old run").await;
+        }
+        let first = start_stop(&runtime, &id);
+        stop_event(&mut events, |e| e["payload"]["text"] == "abort waiting").await;
+        let second = if mode == "repeated" {
+            let second = start_stop(&runtime, &id);
+            stop_event(&mut events, |e| e["payload"]["text"] == "abort waiting").await;
+            Some(second)
+        } else {
+            None
+        };
+        if mode == "settled" {
+            Runtime::command(&s, json!({"type":"release_settled"}))
+                .await
+                .unwrap();
+            stop_event(&mut events, |e| {
+                e["type"] == "status.update" && e["payload"]["kind"] == "idle"
+            })
+            .await;
+        }
+        Runtime::command(&s, json!({"type":"release_abort"}))
+            .await
+            .unwrap();
+        first.await.unwrap().unwrap();
+        let params = json!({"session_id":id,"text":"fresh owner"});
+        if let Some(second) = second {
+            assert_eq!(
+                runtime
+                    .call_inner("alice", "prompt.submit", &params)
+                    .await
+                    .unwrap_err()
+                    .code,
+                4002
+            );
+            Runtime::command(&s, json!({"type":"release_abort"}))
+                .await
+                .unwrap();
+            second.await.unwrap().unwrap();
+        }
+        if mode == "delayed settlement" {
+            // An abort acknowledgement alone does not end the old operation.
+            assert_eq!(
+                runtime
+                    .call_inner("alice", "prompt.submit", &params)
+                    .await
+                    .unwrap_err()
+                    .code,
+                4002
+            );
+            Runtime::command(&s, json!({"type":"release_settled"}))
+                .await
+                .unwrap();
+            stop_event(&mut events, |e| {
+                e["type"] == "status.update" && e["payload"]["kind"] == "idle"
+            })
+            .await;
+        }
+        assert!(runtime.status_for_bot("alice", "owl").is_none());
+        let owner = runtime.call_inner("alice", "prompt.submit", &params);
+        tokio::pin!(owner);
+        let admission = futures_util::poll!(owner.as_mut());
+        assert!(
+            admission.is_pending(),
+            "{mode}: empty recovery must not return a busy error: {admission:?}"
+        );
+        assert!(s.state.lock().unwrap().display.is_empty());
+        drop(recovery);
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(5), owner)
+                .await
+                .unwrap()
+                .unwrap()["status"],
+            "submitted"
+        );
+        stop_event(&mut events, |e| {
+            e["payload"]["text"] == "projected fresh owner"
+        })
+        .await;
+        let rows = store::history(home.path(), "first").unwrap();
+        let owners = rows
+            .iter()
+            .filter(|r| r["role"] == "user" && r["text"] == "fresh owner")
+            .collect::<Vec<_>>();
+        assert_eq!(owners.len(), 1);
+        assert_eq!(owners[0]["display_kind"], "normal");
+        assert!(!s.state.lock().unwrap().interrupted);
+        assert!(s.state.lock().unwrap().display.is_empty());
+        runtime.shutdown().await;
+    }
+}
+
+#[tokio::test]
+async fn manual_compaction_after_idle_stop_waits_for_empty_recovery() {
+    let (home, runtime, hub) = setup();
+    install_stop_lifecycle_pi(home.path());
+    let id = open(&runtime).await;
+    let s = runtime.sessions.lock().unwrap()["first"].clone();
+    let recovery = s.recovery_gate.lock().await;
+    let mut events = hub.subscribe();
+    let stop = start_stop(&runtime, &id);
+    stop_event(&mut events, |e| e["payload"]["text"] == "abort waiting").await;
+    Runtime::command(&s, json!({"type":"release_abort"}))
+        .await
+        .unwrap();
+    stop.await.unwrap().unwrap();
+    let params = json!({"session_id":id,"text":"/compact"});
+    let compact = runtime.call_inner("alice", "prompt.submit", &params);
+    tokio::pin!(compact);
+    let admission = futures_util::poll!(compact.as_mut());
+    assert!(
+        admission.is_pending(),
+        "empty recovery must not reject compaction: {admission:?}"
+    );
+    assert!(!s.state.lock().unwrap().compacting);
+    drop(recovery);
+    let release = async {
+        stop_event(&mut events, |e| e["payload"]["text"] == "compact waiting").await;
+        Runtime::command(&s, json!({"type":"release_compact"}))
+            .await
+            .unwrap();
+    };
+    let (result, ()) = tokio::time::timeout(Duration::from_secs(5), async {
+        tokio::join!(compact, release)
+    })
+    .await
+    .unwrap();
+    assert_eq!(result.unwrap()["status"], "completed");
+    assert!(!s.state.lock().unwrap().busy);
+    assert!(runtime.status_for_bot("alice", "owl").is_none());
+    runtime.shutdown().await;
+}
+
+#[tokio::test]
+async fn idle_owner_admission_cannot_overtake_retained_stop_input() {
+    let (home, runtime, hub) = setup();
+    install_queue_pi(home.path(), false);
+    let id = open(&runtime).await;
+    let s = runtime.sessions.lock().unwrap()["first"].clone();
+    let mut events = hub.subscribe();
+    runtime
+        .submit(&s, "wait", false, false, None, None)
+        .await
+        .unwrap();
+    stop_event(&mut events, |e| e["payload"]["text"] == "projected wait").await;
+    runtime
+        .submit(&s, "retained result", true, true, None, None)
+        .await
+        .unwrap();
+    let recovery = s.recovery_gate.lock().await;
+    let stop = start_stop(&runtime, &id);
+    stop_event(&mut events, |e| e["payload"]["text"] == "abort waiting").await;
+    Runtime::command(&s, json!({"type":"release_abort"}))
+        .await
+        .unwrap();
+    stop.await.unwrap().unwrap();
+    stop_event(&mut events, |e| {
+        e["type"] == "status.update" && e["payload"]["kind"] == "idle"
+    })
+    .await;
+    let params = json!({"session_id":id,"text":"fresh owner"});
+    let owner = runtime.call_inner("alice", "prompt.submit", &params);
+    tokio::pin!(owner);
+    assert!(futures_util::poll!(owner.as_mut()).is_pending());
+    drop(recovery);
+    // Recovery starts a real busy run; the waiting owner still cannot replace it.
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(5), owner)
+            .await
+            .unwrap()
+            .unwrap_err()
+            .code,
+        4002
+    );
+    stop_event(&mut events, |e| {
+        e["payload"]["text"] == "projected retained result"
+    })
+    .await;
+    Runtime::command(&s, json!({"type":"finish_run"}))
+        .await
+        .unwrap();
+    stop_event(&mut events, |e| {
+        e["type"] == "status.update" && e["payload"]["kind"] == "idle"
+    })
+    .await;
+    runtime
+        .call_inner("alice", "prompt.submit", &params)
+        .await
+        .unwrap();
+    stop_event(&mut events, |e| {
+        e["payload"]["text"] == "projected fresh owner"
+    })
+    .await;
+    let users = store::history(home.path(), "first")
+        .unwrap()
+        .into_iter()
+        .filter(|r| r["role"] == "user")
+        .collect::<Vec<_>>();
+    assert_eq!(
+        users
+            .iter()
+            .map(|r| r["text"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        vec!["wait", "retained result", "fresh owner"]
+    );
+    assert_eq!(users[1]["display_kind"], "hidden");
+    assert_eq!(users[2]["display_kind"], "normal");
+    runtime.shutdown().await;
+}
+
+#[tokio::test]
+async fn close_rejects_owner_input_waiting_for_empty_stop_recovery() {
+    for text in ["fresh owner", "/compact"] {
+        let (home, runtime, hub) = setup();
+        install_stop_lifecycle_pi(home.path());
+        let id = open(&runtime).await;
+        let s = runtime.sessions.lock().unwrap()["first"].clone();
+        let recovery = s.recovery_gate.lock().await;
+        let mut events = hub.subscribe();
+        let stop = start_stop(&runtime, &id);
+        stop_event(&mut events, |e| e["payload"]["text"] == "abort waiting").await;
+        Runtime::command(&s, json!({"type":"release_abort"}))
+            .await
+            .unwrap();
+        stop.await.unwrap().unwrap();
+        let params = json!({"session_id":id,"text":text});
+        let owner = runtime.call_inner("alice", "prompt.submit", &params);
+        tokio::pin!(owner);
+        assert!(futures_util::poll!(owner.as_mut()).is_pending());
+        runtime.close_stored("alice", "first").await.unwrap();
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(5), owner)
+                .await
+                .unwrap()
+                .unwrap_err()
+                .code,
+            4001
+        );
+        assert!(s.state.lock().unwrap().display.is_empty());
+        let intents: i64 = store::open(home.path())
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM native_prompt_intents WHERE session_id='first'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(intents, 0);
+        drop(recovery);
+        runtime.shutdown().await;
+    }
+}
+
+#[tokio::test]
+async fn omitted_queue_metadata_replays_ordered_original_envelopes() {
+    let (home, runtime, hub) = setup();
+    install_queue_pi(home.path(), false);
+    let script = home.path().join("pi.cjs");
+    let source = fs::read_to_string(&script).unwrap().replace(
+        "response(c, {steering:steering.splice(0), followUp:queue.splice(0)})",
+        "steering.splice(0); queue.splice(0); response(c, {steering:[], followUp:[]})",
+    );
+    fs::write(script, source).unwrap();
+    open(&runtime).await;
+    let s = runtime.sessions.lock().unwrap()["first"].clone();
+    let mut events = hub.subscribe();
+    runtime
+        .submit(&s, "wait", false, false, None, None)
+        .await
+        .unwrap();
+    stop_event(&mut events, |e| e["payload"]["text"] == "projected wait").await;
+    let chain = Chain {
+        hops: Arc::new(AtomicUsize::new(3)),
+        askers: vec!["caller".into()],
+    };
+    let path = home.path().join("owned.txt");
+    fs::write(&path, "owned").unwrap();
+    let image = json!({"type":"image","mimeType":"image/png","data":"fixture-image"});
+    for _ in 0..2 {
+        s.state.lock().unwrap().staged.push(Staged {
+            id: "owned".into(),
+            images: vec![image.clone()],
+            refs: vec![path.to_string_lossy().into_owned()],
+            files: vec![path.clone()],
+        });
+        runtime
+            .submit(
+                &s,
+                "same text",
+                true,
+                true,
+                Some(chain.clone()),
+                Some(&["owned".into()]),
+            )
+            .await
+            .unwrap();
+    }
+    runtime.steer(&s, "same text").await.unwrap();
+    let originals = s
+        .state
+        .lock()
+        .unwrap()
+        .inputs
+        .iter()
+        .filter(|i| i.display == "hidden")
+        .cloned()
+        .collect::<Vec<_>>();
+    let stop = start_stop(&runtime, &s.id);
+    stop_event(&mut events, |e| e["payload"]["text"] == "abort waiting").await;
+    Runtime::command(&s, json!({"type":"release_abort"}))
+        .await
+        .unwrap();
+    stop.await.unwrap().unwrap();
+    stop_event(&mut events, |e| {
+        e["payload"]["text"] == "projected same text"
+    })
+    .await;
+    let mut ended = s.run_ended.subscribe();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if !s.state.lock().unwrap().recovering {
+                break;
+            }
+            ended.changed().await.unwrap();
+        }
+    })
+    .await
+    .unwrap();
+    {
+        let state = s.state.lock().unwrap();
+        assert_eq!(state.inputs.len(), 2);
+        for (input, original) in state.inputs.iter().zip(&originals) {
+            assert_eq!(input.intent, original.intent);
+            assert_eq!(input.command, original.command);
+            assert_eq!(input.display, "hidden");
+            assert!(Arc::ptr_eq(&input.chain.hops, &chain.hops));
+            assert_eq!(input.chain.askers, chain.askers);
+            assert_eq!(input.chain.hops.load(Ordering::Relaxed), 3);
+        }
+    }
+    assert!(path.exists());
+    Runtime::command(&s, json!({"type":"finish_run"}))
+        .await
+        .unwrap();
+    stop_event(&mut events, |e| {
+        e["type"] == "message.complete" && e["payload"]["text"] == "finished"
+    })
+    .await;
+    let users = store::history(home.path(), "first")
+        .unwrap()
+        .into_iter()
+        .filter(|r| r["role"] == "user")
+        .collect::<Vec<_>>();
+    assert_eq!(users.len(), 4);
+    assert_eq!(users[1]["text"], "same text");
+    assert_eq!(users[1]["display_kind"], "normal");
+    for (row, original) in users[2..].iter().zip(originals) {
+        assert_eq!(row["text"], original.command["message"]);
+        assert_eq!(row["display_kind"], "hidden");
+        let consumed: i64 = store::open(home.path())
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM native_prompt_intents WHERE id=? AND consumed_by IS NOT NULL",
+                [original.intent],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(consumed, 1);
+    }
+    assert!(s.state.lock().unwrap().inputs.is_empty());
+    assert!(s.state.lock().unwrap().display.is_empty());
+    runtime.shutdown().await;
+}
+
+#[tokio::test]
+async fn unexplained_pi_queue_metadata_and_unconfirmed_omissions_fail_closed() {
+    for unknown_text in [true, false] {
+        let (home, runtime, hub) = setup();
+        install_queue_pi(home.path(), false);
+        let script = home.path().join("pi.cjs");
+        let replacement = if unknown_text {
+            "steering.splice(0); queue.splice(0); response(c, {steering:[], followUp:['unowned input']})"
+        } else {
+            "steering.splice(0); queue.splice(0); response(c, {steering:[], followUp:[]})"
+        };
+        let mut source = fs::read_to_string(&script).unwrap().replace(
+            "response(c, {steering:steering.splice(0), followUp:queue.splice(0)})",
+            replacement,
+        );
+        if !unknown_text {
+            // A successful response without a queued disposition cannot prove
+            // that an omitted input remains in Pi's queue.
+            source = source.replace(
+                "['prompt','steer'].includes(c.type)",
+                "(['prompt','steer'].includes(c.type) && c.message !== 'known input')",
+            );
+        }
+        fs::write(&script, source).unwrap();
+        open(&runtime).await;
+        let s = runtime.sessions.lock().unwrap()["first"].clone();
+        let mut events = hub.subscribe();
+        runtime
+            .submit(&s, "wait", false, false, None, None)
+            .await
+            .unwrap();
+        stop_event(&mut events, |e| e["payload"]["text"] == "projected wait").await;
+        runtime
+            .submit(&s, "known input", true, true, None, None)
+            .await
+            .unwrap();
+        let stop = start_stop(&runtime, &s.id);
+        stop_event(&mut events, |e| e["payload"]["text"] == "abort waiting").await;
+        Runtime::command(&s, json!({"type":"release_abort"}))
+            .await
+            .unwrap();
+        stop.await.unwrap().unwrap();
+        let warning = stop_event(&mut events, |e| e["type"] == "warning").await;
+        assert_eq!(
+            warning["payload"]["error"],
+            if unknown_text {
+                "Pi queued input has no matching original intent"
+            } else {
+                "Pi omitted an unprojected input"
+            }
+        );
+        let mut ended = s.run_ended.subscribe();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if s.state.lock().unwrap().closed {
+                    break;
+                }
+                ended.changed().await.unwrap();
+            }
+        })
+        .await
+        .unwrap();
+        let users = store::history(home.path(), "first")
+            .unwrap()
+            .into_iter()
+            .filter(|r| r["role"] == "user")
+            .collect::<Vec<_>>();
+        assert_eq!(users.len(), 1);
+        assert_eq!(users[0]["text"], "wait");
+        runtime.shutdown().await;
+    }
+}

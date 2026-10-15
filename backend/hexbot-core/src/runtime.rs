@@ -1240,18 +1240,28 @@ impl Runtime {
         common::bot_owner(&self.home, &s.owner, &s.bot)?;
         self.register_worker_bridge(s);
         if text.trim() == "/compact" || text.trim().starts_with("/compact ") {
-            {
-                let _gate = s.event_gate.lock().unwrap();
-                let mut state = s.state.lock().unwrap();
-                if state.closed {
-                    return Err(Error::new(4001, "session not found"));
+            let mut ended = s.run_ended.subscribe();
+            loop {
+                {
+                    let _gate = s.event_gate.lock().unwrap();
+                    let mut state = s.state.lock().unwrap();
+                    if state.closed {
+                        return Err(Error::new(4001, "session not found"));
+                    }
+                    if state.busy || state.stops != 0 || state.input_waiters != 0 {
+                        return Err(Error::new(4002, "session is already working"));
+                    }
+                    if !state.recovering {
+                        state.busy = true;
+                        state.compacting = true;
+                        state.last_activity = common::now();
+                        break;
+                    }
                 }
-                if state.busy || state.stops != 0 || state.recovering || state.input_waiters != 0 {
-                    return Err(Error::new(4002, "session is already working"));
-                }
-                state.busy = true;
-                state.compacting = true;
-                state.last_activity = common::now();
+                ended
+                    .changed()
+                    .await
+                    .map_err(|_| Error::new(5201, "session closed"))?;
             }
             self.emit(s, "message.start", json!({}));
             let response = s
@@ -1330,16 +1340,17 @@ impl Runtime {
                 if state.closed {
                     return Err(Error::new(4001, "session not found"));
                 }
-                if (state.busy || state.stops != 0 || state.recovering || state.input_waiters != 0)
-                    && !queued
-                {
+                if (state.busy || state.stops != 0 || state.input_waiters != 0) && !queued {
                     return Err(Error::new(4002, "session is already working"));
                 }
-                if queued
-                    && (state.stops != 0
-                        || state.recovering
-                        || state.compacting
-                        || (state.busy && state.interrupted))
+                // Idle Stop may return before its recovery worker runs. Wait
+                // for that handoff instead of reporting a spurious busy error.
+                // Recheck real work and reserved inputs before staging anything.
+                if state.recovering
+                    || (queued
+                        && (state.stops != 0
+                            || state.compacting
+                            || (state.busy && state.interrupted)))
                 {
                     None
                 } else {
