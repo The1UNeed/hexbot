@@ -29,6 +29,10 @@ pub fn open(home: &Path) -> Result<Connection> {
       CREATE INDEX IF NOT EXISTS idx_native_prompt_intents_session ON native_prompt_intents(session_id,consumed_by);
       CREATE TABLE IF NOT EXISTS native_summaries(session_id TEXT PRIMARY KEY, message_count INTEGER NOT NULL, preview TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS native_deleted(session_id TEXT PRIMARY KEY);
+      CREATE TABLE IF NOT EXISTS native_delete_options(session_id TEXT PRIMARY KEY REFERENCES native_deleted(session_id) ON DELETE CASCADE,bot TEXT NOT NULL,owner TEXT NOT NULL,purge INTEGER NOT NULL);
+      CREATE TABLE IF NOT EXISTS native_delete_pending(session_id TEXT PRIMARY KEY REFERENCES native_deleted(session_id) ON DELETE CASCADE,root_id TEXT NOT NULL,cataloged INTEGER NOT NULL);
+      CREATE TABLE IF NOT EXISTS native_delete_completed(session_id TEXT PRIMARY KEY REFERENCES native_deleted(session_id) ON DELETE CASCADE);
+      CREATE TABLE IF NOT EXISTS native_delete_legacy(session_id TEXT NOT NULL REFERENCES native_delete_options(session_id) ON DELETE CASCADE,legacy_id TEXT NOT NULL,PRIMARY KEY(session_id,legacy_id));
       CREATE TABLE IF NOT EXISTS native_quarantine(session_id TEXT PRIMARY KEY, error TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS native_unrecovered(session_id TEXT PRIMARY KEY);
       CREATE TABLE IF NOT EXISTS native_fresh(session_id TEXT PRIMARY KEY);
@@ -187,20 +191,77 @@ pub fn descendants(home: &Path, stored: &str) -> Result<Vec<String>> {
     .collect()
 }
 pub fn mark_deleted(home: &Path, stored: &str) -> Result<Vec<String>> {
+    let catalog = crate::db::open(home)?;
+    let owner = catalog
+        .query_row(
+            "SELECT bot,owner_id FROM sections WHERE id=?",
+            [stored],
+            |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
+        )
+        .optional()?;
     let mut conn = open(home)?;
     let tx = conn.transaction()?;
-    let targets = descendants(home, stored)?;
+    let owner = owner.or(tx
+        .query_row(
+            "SELECT bot,owner FROM native_sessions WHERE stored_id=?",
+            [stored],
+            |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
+        )
+        .optional()?);
+    let targets = if let Some((bot, owner)) = owner {
+        owned_descendants(&tx, stored, &bot, &owner)?
+    } else {
+        descendants(home, stored)?
+    };
     for target in &targets {
         tx.execute("INSERT OR IGNORE INTO native_deleted VALUES(?)", [target])?;
     }
     tx.commit()?;
     Ok(targets)
 }
+fn owned_descendants(
+    conn: &Connection,
+    stored: &str,
+    bot: &str,
+    owner: &str,
+) -> Result<Vec<String>> {
+    common::rows(conn,
+        "WITH RECURSIVE tree(id) AS (SELECT ?1 UNION SELECT s.stored_id FROM native_sessions s JOIN tree t ON json_extract(s.options,'$.parent_session')=t.id WHERE s.bot=?2 AND s.owner=?3) SELECT id FROM tree",
+        &[&stored, &bot, &owner])?.into_iter().map(|row| common::required(&row,"id").map(str::to_owned)).collect()
+}
 pub fn unmark_deleted(home: &Path, stored: &str) -> Result<()> {
+    unmark_targets(home, stored, &BTreeSet::new())
+}
+pub(crate) fn unmark_section_deleted(home: &Path, stored: &str) -> Result<()> {
+    let mut protected = crate::catalog::pending_bot_delete_targets(home)?;
+    let catalog = crate::db::open(home)?;
+    if let Some((bot, owner)) = catalog
+        .query_row(
+            "SELECT bot,owner_id FROM sections WHERE id=?",
+            [stored],
+            |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
+        )
+        .optional()?
+    {
+        let owned = owned_descendants(&open(home)?, stored, &bot, &owner)?;
+        protected.extend(
+            descendants(home, stored)?
+                .into_iter()
+                .filter(|id| !owned.contains(id)),
+        );
+    }
+    unmark_targets(home, stored, &protected)
+}
+fn unmark_targets(home: &Path, stored: &str, protected: &BTreeSet<String>) -> Result<()> {
     let mut conn = open(home)?;
     let tx = conn.transaction()?;
     for target in descendants(home, stored)? {
-        tx.execute("DELETE FROM native_deleted WHERE session_id=?", [target])?;
+        if protected.contains(&target) {
+            continue;
+        }
+        // A late retirement rollback cannot reopen a catalog decision or
+        // discard its only remaining legacy cleanup ownership.
+        tx.execute("DELETE FROM native_deleted WHERE session_id=? AND NOT EXISTS(SELECT 1 FROM native_delete_options WHERE session_id=?1) AND NOT EXISTS(SELECT 1 FROM native_delete_completed WHERE session_id=?1)", [target])?;
     }
     tx.commit()?;
     Ok(())
@@ -209,39 +270,264 @@ pub fn delete(home: &Path, stored: &str) -> Result<()> {
     common::identifier(stored)?;
     let targets = descendants(home, stored)?;
     for stored in targets.iter().rev() {
-        let mut conn = open(home)?;
-        let tx = conn.transaction()?;
-        tx.execute("INSERT OR IGNORE INTO native_deleted VALUES(?)", [stored])?;
-        tx.execute("DELETE FROM native_summaries WHERE session_id=?", [stored])?;
-        tx.execute("DELETE FROM native_quarantine WHERE session_id=?", [stored])?;
-        tx.execute(
-            "DELETE FROM native_unrecovered WHERE session_id=?",
-            [stored],
-        )?;
-        tx.execute("DELETE FROM native_fresh WHERE session_id=?", [stored])?;
-        tx.execute("DELETE FROM native_pi_journal WHERE session_id=?", [stored])?;
-        tx.execute(
-            "DELETE FROM native_prompt_intents WHERE session_id=?",
-            [stored],
-        )?;
-        tx.execute("DELETE FROM native_messages WHERE session_id=?", [stored])?;
-        // Last, after the message delete trigger has bumped it: the session is
-        // tombstoned above, so its history can never be written again.
-        tx.execute(
-            "DELETE FROM native_history_versions WHERE session_id=?",
-            [stored],
-        )?;
-        tx.execute("DELETE FROM native_sessions WHERE stored_id=?", [stored])?;
-        tx.commit()?;
-        let path = home.join("runtime/sessions").join(stored);
-        match fs::symlink_metadata(&path) {
-            Ok(metadata) if metadata.file_type().is_symlink() => fs::remove_file(path)?,
-            Ok(_) => fs::remove_dir_all(path)?,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(error.into()),
-        }
+        delete_one(home, stored)?;
     }
     Ok(())
+}
+fn delete_one(home: &Path, stored: &str) -> Result<()> {
+    common::identifier(stored)?;
+    let mut conn = open(home)?;
+    let tx = conn.transaction()?;
+    tx.execute("INSERT OR IGNORE INTO native_deleted VALUES(?)", [stored])?;
+    tx.execute("DELETE FROM native_summaries WHERE session_id=?", [stored])?;
+    tx.execute("DELETE FROM native_quarantine WHERE session_id=?", [stored])?;
+    tx.execute(
+        "DELETE FROM native_unrecovered WHERE session_id=?",
+        [stored],
+    )?;
+    tx.execute("DELETE FROM native_fresh WHERE session_id=?", [stored])?;
+    tx.execute("DELETE FROM native_pi_journal WHERE session_id=?", [stored])?;
+    tx.execute(
+        "DELETE FROM native_prompt_intents WHERE session_id=?",
+        [stored],
+    )?;
+    tx.execute("DELETE FROM native_messages WHERE session_id=?", [stored])?;
+    // Last, after the message delete trigger has bumped it: the session is
+    // tombstoned above, so its history can never be written again.
+    tx.execute(
+        "DELETE FROM native_history_versions WHERE session_id=?",
+        [stored],
+    )?;
+    tx.execute("DELETE FROM native_sessions WHERE stored_id=?", [stored])?;
+    tx.commit()?;
+    for parent in [home.join("runtime"), home.join("runtime/sessions")] {
+        if fs::symlink_metadata(parent).is_ok_and(|m| m.file_type().is_symlink()) {
+            return Err(crate::Error::new(
+                4202,
+                "session path must not contain symlinks",
+            ));
+        }
+    }
+    let path = home.join("runtime/sessions").join(stored);
+    match fs::symlink_metadata(&path) {
+        Ok(metadata) if metadata.file_type().is_symlink() => fs::remove_file(path)?,
+        Ok(_) => fs::remove_dir_all(path)?,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
+    }
+    Ok(())
+}
+
+/// The caller holds the catalog write reservation. Record every owned native
+/// target before the catalog decision can remove the bot/owner lookup. The
+/// pending root distinguishes a failed decision from a committed descendant
+/// even after native parent links have gone. Only true legacy purges use this
+/// metadata; false keeps its existing native-purge/legacy-preservation behavior.
+pub(crate) struct LegacyDeleteAttempt {
+    root: String,
+    targets: Vec<String>,
+    added: Vec<String>,
+    previous: Vec<(String, String)>,
+}
+pub(crate) fn prepare_legacy_delete(
+    home: &Path,
+    stored: &str,
+    bot: &str,
+    owner: &str,
+    catalog: &Connection,
+) -> Result<LegacyDeleteAttempt> {
+    common::identifier(stored)?;
+    common::identifier(bot)?;
+    let mut conn = open(home)?;
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    let targets = owned_descendants(&tx, stored, bot, owner)?;
+    let mut added = Vec::new();
+    let mut previous = Vec::new();
+    for target in &targets {
+        common::identifier(target)?;
+        if tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM native_delete_completed WHERE session_id=?)",
+            [target],
+            |r| r.get::<_, bool>(0),
+        )? {
+            continue;
+        }
+        let foreign: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM native_sessions WHERE stored_id=?1 AND (bot<>?2 OR owner<>?3)) OR EXISTS(SELECT 1 FROM native_delete_options WHERE session_id=?1 AND (bot<>?2 OR owner<>?3))", params![target,bot,owner], |r| r.get(0))?;
+        if foreign {
+            return Err(crate::Error::new(
+                4302,
+                "history belongs to another bot or owner",
+            ));
+        }
+        tx.execute("INSERT OR IGNORE INTO native_deleted VALUES(?)", [target])?;
+        if tx.execute(
+            "INSERT OR IGNORE INTO native_delete_options VALUES(?,?,?,1)",
+            params![target, bot, owner],
+        )? > 0
+        {
+            tx.execute(
+                "INSERT INTO native_delete_pending VALUES(?,?,1)",
+                params![target, stored],
+            )?;
+            added.push(target.to_owned());
+        } else if let Some(root) = tx
+            .query_row(
+                "SELECT root_id FROM native_delete_pending WHERE session_id=? AND cataloged=1",
+                [target],
+                |r| r.get::<_, String>(0),
+            )
+            .optional()?
+            && root != stored
+            && catalog.query_row(
+                "SELECT EXISTS(SELECT 1 FROM sections WHERE id=?)",
+                [&root],
+                |r| r.get::<_, bool>(0),
+            )?
+        {
+            // A failed parent rollback may still own provisional markers.
+            // This child can commit independently; persist its own decision
+            // before COMMIT so parent recovery cannot later reopen it.
+            tx.execute(
+                "UPDATE native_delete_pending SET root_id=? WHERE session_id=?",
+                params![stored, target],
+            )?;
+            previous.push((target.clone(), root));
+        }
+    }
+    tx.commit()?;
+    Ok(LegacyDeleteAttempt {
+        root: stored.to_owned(),
+        targets,
+        added,
+        previous,
+    })
+}
+
+pub(crate) fn rollback_legacy_delete(home: &Path, attempt: &LegacyDeleteAttempt) -> Result<()> {
+    let mut catalog = crate::db::open(home)?;
+    let reservation =
+        catalog.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    if !reservation.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sections WHERE id=?)",
+        [&attempt.root],
+        |r| r.get::<_, bool>(0),
+    )? {
+        return Ok(());
+    }
+    let protected = crate::catalog::pending_bot_delete_targets(home)?;
+    let mut conn = open(home)?;
+    let tx = conn.transaction()?;
+    for (target, root) in &attempt.previous {
+        tx.execute(
+            "UPDATE native_delete_pending SET root_id=? WHERE session_id=? AND root_id=?",
+            params![root, target, attempt.root],
+        )?;
+    }
+    for target in &attempt.added {
+        let ours: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM native_delete_pending WHERE session_id=? AND root_id=?)",
+            params![target, attempt.root],
+            |r| r.get(0),
+        )?;
+        if !ours {
+            continue;
+        }
+        if protected.contains(target) {
+            tx.execute(
+                "DELETE FROM native_delete_options WHERE session_id=?",
+                [target],
+            )?;
+            tx.execute(
+                "DELETE FROM native_delete_pending WHERE session_id=?",
+                [target],
+            )?;
+        } else {
+            tx.execute("DELETE FROM native_deleted WHERE session_id=?", [target])?;
+        }
+    }
+    tx.commit()?;
+    reservation.commit()?;
+    Ok(())
+}
+
+/// Bot cleanup calls this only after removing the old profile, while its
+/// catalog journal still reserves the name. A metadata failure keeps that
+/// journal, so an old section request cannot later touch a reused profile.
+pub(crate) fn complete_legacy_delete(home: &Path, stored: &str) -> Result<()> {
+    let mut conn = open(home)?;
+    let tx = conn.transaction()?;
+    tx.execute("INSERT OR IGNORE INTO native_delete_completed SELECT session_id FROM native_delete_options WHERE session_id=?", [stored])?;
+    tx.execute(
+        "DELETE FROM native_delete_options WHERE session_id=?",
+        [stored],
+    )?;
+    tx.execute(
+        "DELETE FROM native_delete_pending WHERE session_id=?",
+        [stored],
+    )?;
+    tx.commit()?;
+    Ok(())
+}
+
+fn finish_legacy_delete(home: &Path, stored: &str) -> Result<()> {
+    // Order recovery against bot cleanup/name reuse. No writer spans an await.
+    let mut catalog = crate::db::open(home)?;
+    let reservation =
+        catalog.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    if crate::catalog::pending_bot_delete_targets(home)?.contains(stored) {
+        return Err(crate::Error::new(
+            5200,
+            "bot deletion still owns this history",
+        ));
+    }
+    let mut conn = open(home)?;
+    let request = conn.query_row("SELECT o.bot,o.owner,p.root_id FROM native_delete_options o JOIN native_delete_pending p USING(session_id) WHERE o.session_id=? AND o.purge=1", [stored], |r| Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?))).optional()?;
+    let Some((bot, owner, root)) = request else {
+        return Ok(());
+    };
+    if reservation.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sections WHERE id=?)",
+        [&root],
+        |r| r.get::<_, bool>(0),
+    )? {
+        return Err(crate::Error::new(
+            5200,
+            "catalog deletion did not commit; kept the original history",
+        ));
+    }
+    // The original legacy DB is intact until its own transaction commits. Save
+    // its exact aliases/descendants before removing any native relationship.
+    // A failed read leaves the request, including legacy-only roots, retryable.
+    let keys = crate::catalog::legacy_delete_ids(home, &bot, &owner, stored)?;
+    let tx = conn.transaction()?;
+    for key in keys {
+        tx.execute(
+            "INSERT OR IGNORE INTO native_delete_legacy VALUES(?,?)",
+            params![stored, key],
+        )?;
+    }
+    tx.commit()?;
+    let keys = conn
+        .prepare("SELECT legacy_id FROM native_delete_legacy WHERE session_id=?")?
+        .query_map([stored], |r| r.get::<_, String>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    delete_one(home, stored)?;
+    crate::catalog::purge_legacy_delete(home, &bot, &owner, &keys)?;
+    complete_legacy_delete(home, stored)?;
+    reservation.commit()?;
+    Ok(())
+}
+
+pub(crate) fn finish_section_delete(home: &Path, attempt: &LegacyDeleteAttempt) -> Result<()> {
+    let mut result = Ok(());
+    for target in &attempt.targets {
+        if let Err(error) = finish_legacy_delete(home, target)
+            && result.is_ok()
+        {
+            result = Err(error);
+        }
+    }
+    result
 }
 /// Sections still on a bot's previous provider and model move with the bot from
 /// their next message, and take its new thinking level if they had its old one.
@@ -301,11 +587,47 @@ pub fn fresh(home: &Path, stored: &str) -> Result<bool> {
 /// Finishes the deletes a stop cut short, before the runtime starts. A
 /// section is tombstoned, then loses its catalog row, then its history. One
 /// whose row is still there was never deleted and opens again; one whose row
-/// is gone loses what is left of its history here. Rows in a bot's older
-/// `state.db` stay: no section reads them any more.
+/// is gone loses what is left of its history here. Tagged legacy purge
+/// requests retain their bot, owner and decision root until all cleanup
+/// finishes. Older untagged tombstones cannot identify a legacy database.
 pub fn finish_deletes(home: &Path) -> Result<()> {
-    let bot_cleanup = crate::catalog::finish_bot_deletes(home);
+    let mut cleanup = crate::catalog::finish_bot_deletes(home);
     let protected = crate::catalog::pending_bot_delete_targets(home)?;
+    {
+        let mut catalog = crate::db::open(home)?;
+        let reservation =
+            catalog.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let conn = open(home)?;
+        let pending = common::rows(
+            &conn,
+            "SELECT session_id,root_id FROM native_delete_pending WHERE cataloged=1",
+            &[],
+        )?;
+        for row in pending {
+            let stored = common::required(&row, "session_id")?;
+            if protected.contains(stored) {
+                continue;
+            }
+            let listed: bool = reservation.query_row(
+                "SELECT EXISTS(SELECT 1 FROM sections WHERE id=?)",
+                [common::required(&row, "root_id")?],
+                |r| r.get(0),
+            )?;
+            if listed {
+                // Each cascade is atomic. A failed rollback must keep this
+                // request intact without holding up independent decisions.
+                if let Err(error) =
+                    conn.execute("DELETE FROM native_deleted WHERE session_id=?", [stored])
+                {
+                    eprintln!("Could not roll back deleting {stored}: {error}");
+                    if cleanup.is_ok() {
+                        cleanup = Err(error.into());
+                    }
+                }
+            }
+        }
+        reservation.commit()?;
+    }
     let tombstones = open(home)?
         .prepare("SELECT session_id FROM native_deleted")?
         .query_map([], |r| r.get::<_, String>(0))?
@@ -321,7 +643,19 @@ pub fn finish_deletes(home: &Path) -> Result<()> {
             [&id],
             |r| r.get(0),
         )?;
-        if listed {
+        let requested: bool = open(home)?.query_row(
+            "SELECT EXISTS(SELECT 1 FROM native_delete_options WHERE session_id=?)",
+            [&id],
+            |r| r.get(0),
+        )?;
+        if requested {
+            if let Err(error) = finish_legacy_delete(home, &id) {
+                eprintln!("Could not finish deleting {id}: {error}");
+                if cleanup.is_ok() {
+                    cleanup = Err(error);
+                }
+            }
+        } else if listed {
             unmark_deleted(home, &id)?;
         } else {
             gone.push(id);
@@ -343,7 +677,7 @@ pub fn finish_deletes(home: &Path) -> Result<()> {
             eprintln!("Could not finish deleting {id}: {}", error.message);
         }
     }
-    bot_cleanup
+    cleanup
 }
 pub fn session_dir(home: &Path, stored: &str) -> Result<PathBuf> {
     common::identifier(stored)?;

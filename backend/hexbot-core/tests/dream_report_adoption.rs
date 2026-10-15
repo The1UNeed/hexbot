@@ -1,4 +1,4 @@
-use hexbot_core::{catalog, db, dreaming, runtime_store as store};
+use hexbot_core::{catalog, db, dreaming, native_product_tools as product, runtime_store as store};
 use rusqlite::params;
 use serde_json::{Value, json};
 use std::{fs, path::Path};
@@ -380,4 +380,147 @@ fn recreated_log_repairs_only_proven_structural_projection_markers_once() {
         assert_eq!(store::history_version(&conn, "log").unwrap(), version);
         assert_eq!(store::history(h, "log").unwrap(), history);
     }
+}
+
+async fn search(home: &Path, args: Value) -> Value {
+    product::call(home, "alice", "owl", "current", "session_search", &args)
+        .await
+        .unwrap()
+        .unwrap()
+}
+fn tool_calls(message: &Value) -> Value {
+    match &message["tool_calls"] {
+        Value::String(calls) => serde_json::from_str(calls).unwrap(),
+        calls => calls.clone(),
+    }
+}
+/// The structural legacy replies a search returns, all but the plain reports.
+fn recalled(messages: &Value) -> Vec<(Value, Value, Value, Value)> {
+    let shown = messages.as_array().unwrap();
+    let ids = shown.iter().map(|m| m["id"].clone()).collect::<Vec<_>>();
+    assert_eq!(ids, [2, 3, 4, 5, 6, 7, 8, 9], "{messages}");
+    let call = &shown[1];
+    assert_eq!(call["content"], "REPORT_TEXT");
+    assert_eq!(tool_calls(call)[0]["id"], "call-1");
+    assert_eq!(
+        tool_calls(call)[0]["function"]["arguments"],
+        r#"{"path":"notes.txt"}"#
+    );
+    assert_eq!(shown[2]["tool_call_id"], "call-1");
+    assert_eq!(shown[2]["content"], "UNIQUE_FILE_CONTENT");
+    // Every returned tool result has its call.
+    for result in shown.iter().filter(|m| !m["tool_call_id"].is_null()) {
+        let called = |m: &Value| {
+            tool_calls(m)
+                .as_array()
+                .is_some_and(|calls| calls.iter().any(|c| c["id"] == result["tool_call_id"]))
+        };
+        assert!(shown.iter().any(|m| m["role"] == "assistant" && called(m)));
+    }
+    assert_eq!(shown[5]["content"], "Ordinary answer");
+    shown
+        .iter()
+        .map(|m| {
+            let [id, role, content, result] =
+                ["id", "role", "content", "tool_call_id"].map(|key| m[key].clone());
+            (id, role, content, result)
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn legacy_search_before_import_keeps_structural_replies_beside_the_current_chat() {
+    let home = setup();
+    let h = home.path();
+    db::open(h).unwrap().execute_batch("UPDATE sections SET updated_at=10 WHERE id='log'; INSERT INTO sections(id,bot,title,owner_id,created_at,updated_at) VALUES('current','owl','General','alice',20,20);").unwrap();
+    store::open(h)
+        .unwrap()
+        .execute(
+            "INSERT INTO native_sessions(stored_id,owner,bot,prompt) VALUES('current','alice','owl','')",
+            [],
+        )
+        .unwrap();
+    store::append(
+        h,
+        "current",
+        json!({"role":"user","text":"Current owner conversation","timestamp":20}),
+    )
+    .unwrap();
+    let path = catalog::profile(h, "owl").unwrap();
+    fs::create_dir_all(&path).unwrap();
+    let legacy = rusqlite::Connection::open(path.join("state.db")).unwrap();
+    legacy.execute_batch("CREATE TABLE sessions(id TEXT PRIMARY KEY,session_key TEXT,parent_session_id TEXT,model_config TEXT,source TEXT); CREATE TABLE messages(id INTEGER PRIMARY KEY,session_id TEXT,role TEXT,content TEXT,tool_calls TEXT,tool_call_id TEXT,tool_name TEXT,timestamp REAL,active INTEGER,reasoning TEXT); INSERT INTO sessions VALUES('old','log',NULL,NULL,NULL);").unwrap();
+    let mut rows = messages("stop");
+    // A signed text block, a reasoning column and a serialized plain report
+    // with an encoded empty call list, then the report posted after them.
+    rows.push(assistant(
+        json!([{"type":"text","text":"REPORT_TEXT","textSignature":"sig"}]),
+        8000,
+    ));
+    rows.push(assistant(json!("REPORT_TEXT"), 9000));
+    rows.push(assistant(json!([block("REPORT_TEXT")]), 10000));
+    rows.push(assistant(json!("REPORT_TEXT"), 11000));
+    for (i, m) in rows.iter().enumerate() {
+        let content = if matches!(i, 0 | 2 | 6 | 8 | 10) {
+            store::text(&m["content"])
+        } else {
+            m["content"].to_string()
+        };
+        let calls = match i {
+            2 => Some(json!([{"id":"call-1","type":"function","function":{"name":"read","arguments":"{\"path\":\"notes.txt\"}"}}]).to_string()),
+            9 => Some("[]".to_owned()),
+            _ => None,
+        };
+        legacy
+            .execute(
+                "INSERT INTO messages VALUES(?,'old',?,?,?,?,?,?,1,?)",
+                params![
+                    i + 1,
+                    if m["role"] == "toolResult" {
+                        "tool"
+                    } else {
+                        m["role"].as_str().unwrap()
+                    },
+                    content,
+                    calls,
+                    m["toolCallId"].as_str(),
+                    m["toolName"].as_str(),
+                    (i + 1) as f64,
+                    (i == 8).then_some("Legacy reasoning")
+                ],
+            )
+            .unwrap();
+    }
+    drop(legacy);
+    let stored = fs::read(path.join("state.db")).unwrap();
+    // The old mixed log stays a separate history; the newer chat is the bot's.
+    assert_eq!(canonical(h), "current");
+    let chat = store::session_dir(h, "log")
+        .unwrap()
+        .join("conversation.jsonl");
+    assert!(!chat.exists());
+    let read = search(h, json!({"session_id":"log","detail":"full","window":20})).await;
+    let before = recalled(&read["messages"]);
+    // Read from the old store itself: its call list is still serialized.
+    assert!(read["messages"][1]["tool_calls"].is_string());
+    let found = search(
+        h,
+        json!({"query":"REPORT_TEXT","role_filter":"assistant","detail":"full","window":20}),
+    )
+    .await;
+    assert_eq!(found["results"].as_array().unwrap().len(), 1, "{found}");
+    assert_eq!(found["results"][0]["session_id"], "log");
+    let matched = found["results"][0]["match_message_id"].as_i64().unwrap();
+    assert!([3, 5, 6, 8, 9].contains(&matched), "{found}");
+    assert_eq!(recalled(&found["results"][0]["messages"]), before);
+    assert_eq!(fs::read(path.join("state.db")).unwrap(), stored);
+    assert!(!chat.exists());
+
+    // Importing the log changes where it is read from, not what it holds.
+    store::import_hermes(h, "owl", "log", h).unwrap();
+    product::forget_history_indexes();
+    let imported = search(h, json!({"session_id":"log","detail":"full","window":20})).await;
+    assert!(imported["messages"][1]["tool_calls"].is_array());
+    assert_eq!(recalled(&imported["messages"]), before);
+    assert_eq!(canonical(h), "current");
 }

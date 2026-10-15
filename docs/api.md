@@ -373,8 +373,11 @@ context of its own; the meter belongs to bot sections.
   before the row goes leaves the section whole, and the next start removes
   what a stop after it left (`runtime_store::finish_deletes`). With
   `purge_memory: false` the core transcript in `state.db` is left in place;
-  with `true`, rows that could not be removed from `state.db` stay there
-  unread, and the delete still succeeds. If any history cleanup fails after
+  with `true`, cleanup ownership and the catalog decision are saved before
+  that row goes. Startup retries native files and identifiable legacy history
+  until cleanup finishes, including when native rows are already gone.
+  Older untagged tombstones have no legacy ownership to recover.
+  If any history cleanup fails after
   the catalog commit, `history_pending: true` reports that the section is
   already deleted with cleanup incomplete. A catalog failure returns an
   error and removes the tombstone, leaving the section usable.
