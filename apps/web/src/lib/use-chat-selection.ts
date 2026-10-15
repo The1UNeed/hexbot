@@ -29,20 +29,24 @@ export function useChatSelection() {
     }
   }, [router, cancel])
 
+  const startSelection = useCallback(() => {
+    const selected = ++generation.current
+    const location = router.history.location
+    const { target, epoch, daemon } = useConnection.getState()
+
+    // Read history directly: React may still be batching the route transition.
+    return () =>
+      generation.current === selected &&
+      router.history.location === location &&
+      target === useConnection.getState().target &&
+      epoch === useConnection.getState().epoch &&
+      daemon?.one_chat === useConnection.getState().daemon?.one_chat &&
+      daemon?.install_id === useConnection.getState().daemon?.install_id
+  }, [router])
+
   const selectChat = useCallback(
     async (bot: string) => {
-      const selected = ++generation.current
-      const location = router.history.location
-      const { target, epoch, daemon } = useConnection.getState()
-
-      // Read history directly: React may still be batching the route transition.
-      const current = () =>
-        generation.current === selected &&
-        router.history.location === location &&
-        target === useConnection.getState().target &&
-        epoch === useConnection.getState().epoch &&
-        daemon?.one_chat === useConnection.getState().daemon?.one_chat &&
-        daemon?.install_id === useConnection.getState().daemon?.install_id
+      const current = startSelection()
 
       try {
         const chat = await sectionsActions().chat(bot, current)
@@ -56,8 +60,8 @@ export function useChatSelection() {
         return null
       }
     },
-    [router]
+    [startSelection]
   )
 
-  return { cancel, selectChat }
+  return { cancel, selectChat, startSelection }
 }

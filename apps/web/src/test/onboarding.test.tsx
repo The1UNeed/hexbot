@@ -1,3 +1,10 @@
+import {
+  createMemoryHistory,
+  createRootRoute,
+  createRoute,
+  createRouter,
+  RouterProvider
+} from '@tanstack/react-router'
 import type * as Router from '@tanstack/react-router'
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import type { ComponentType } from 'react'
@@ -38,6 +45,30 @@ vi.mock('@tanstack/react-router', async importOriginal => ({
   ...(await importOriginal<typeof Router>()),
   useNavigate: () => navigate
 }))
+
+async function renderPage(chooser = false) {
+  const OnboardingPage = Route.options.component as ComponentType
+
+  const root = createRootRoute({
+    component: () => (
+      <>
+        <OnboardingPage />
+        {chooser ? <ChatChooser /> : null}
+      </>
+    )
+  })
+
+  const page = createRoute({ getParentRoute: () => root, path: '/onboarding' })
+
+  const router = createRouter({
+    history: createMemoryHistory({ initialEntries: ['/onboarding'] }),
+    routeTree: root.addChildren([page])
+  })
+
+  await router.load()
+
+  return render(<RouterProvider router={router} />)
+}
 
 describe('onboarding', () => {
   it.each([
@@ -131,15 +162,8 @@ describe('onboarding', () => {
     useConnection.setState({ daemon: { version: '0.1.6' } as never, status: 'connected' })
     useBots.setState({ byName: { ada }, loaded: true, order: ['ada'] } as never)
 
-    const OnboardingPage = Route.options.component as ComponentType
-
     try {
-      render(
-        <>
-          <OnboardingPage />
-          <ChatChooser />
-        </>
-      )
+      await renderPage(true)
 
       fireEvent.keyDown(await screen.findByRole('dialog'), { key: 'Escape' })
 
@@ -192,10 +216,8 @@ describe('onboarding', () => {
     useConnection.setState({ daemon: { one_chat: true } as never, status: 'connected' })
     useBots.setState({ byName: { scout: bot }, loaded: true, order: ['scout'] } as never)
 
-    const OnboardingPage = Route.options.component as ComponentType
-
     try {
-      render(<OnboardingPage />)
+      await renderPage()
 
       expect(await screen.findByRole('heading', { name: 'Continue with Scout' })).toBeVisible()
       expect(screen.getByRole('alert')).toHaveTextContent('Chat unavailable')

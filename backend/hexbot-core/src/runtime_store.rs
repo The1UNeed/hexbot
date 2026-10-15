@@ -937,6 +937,96 @@ pub fn text(content: &Value) -> String {
         })
         .unwrap_or_default()
 }
+/// Old reports were plain assistant text. Equal text in a tool reply, thinking
+/// message or an unfamiliar block is not report identity. The same test accepts
+/// Pi messages, native projections and legacy rows with serialized content.
+pub(crate) fn dream_report_text(message: &Value) -> Option<String> {
+    let empty = |value: &Value| {
+        value.is_null()
+            || value.as_str().is_some_and(str::is_empty)
+            || value.as_array().is_some_and(Vec::is_empty)
+    };
+    let no_calls = empty(&message["tool_calls"])
+        || message["tool_calls"]
+            .as_str()
+            .and_then(|s| serde_json::from_str::<Value>(s).ok())
+            .is_some_and(|calls| empty(&calls));
+    if message["role"] != "assistant"
+        || message["dream_report_eligible"] == false
+        || !no_calls
+        || !empty(&message["reasoning"])
+        || !empty(&message["thinking"])
+        || !empty(&message["reasoning_content"])
+    {
+        return None;
+    }
+    let Some(content) = message.get("content") else {
+        return message["text"].as_str().map(str::to_owned);
+    };
+    let parsed = content
+        .as_str()
+        .and_then(|s| serde_json::from_str::<Value>(s).ok())
+        .filter(Value::is_array);
+    match parsed.as_ref().unwrap_or(content) {
+        Value::String(text) => Some(text.clone()),
+        Value::Array(blocks)
+            if blocks.len() == 1
+                && blocks[0]["type"] == "text"
+                && blocks[0].as_object().is_some_and(|block| {
+                    block
+                        .keys()
+                        .all(|key| matches!(key.as_str(), "type" | "text"))
+                }) =>
+        {
+            blocks[0]["text"].as_str().map(str::to_owned)
+        }
+        _ => None,
+    }
+}
+
+/// Only projection metadata changes here. In particular, an old text-only
+/// classifier's mistake can be disproved by the linked raw message without
+/// changing that message, its Pi file, or any frozen session options.
+pub(crate) fn classify_dream_reports(
+    home: &Path,
+    stored: &str,
+    reports: &BTreeSet<String>,
+) -> Result<()> {
+    let mut conn = open(home)?;
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    for row in common::rows(
+        &tx,
+        "SELECT m.seq,m.message_json,p.raw_json FROM native_messages m LEFT JOIN native_pi_journal p ON p.session_id=m.session_id AND p.projection_seq=m.seq WHERE m.session_id=?",
+        &[&stored],
+    )? {
+        let mut shown: Value = serde_json::from_str(row["message_json"].as_str().unwrap_or(""))
+            .map_err(|e| crate::Error::new(5200, e.to_string()))?;
+        let before = shown.clone();
+        let raw = row["raw_json"]
+            .as_str()
+            .map(serde_json::from_str::<Value>)
+            .transpose()
+            .map_err(|e| crate::Error::new(5200, e.to_string()))?;
+        if shown["role"] == "assistant" {
+            if dream_report_text(&shown).is_none()
+                || raw.as_ref().is_some_and(|m| dream_report_text(m).is_none())
+            {
+                shown["dream_report_eligible"] = json!(false);
+                shown.as_object_mut().unwrap().remove("dream");
+            } else if dream_report_text(&shown).is_some_and(|text| reports.contains(&text)) {
+                shown["dream"] = json!(true);
+            }
+        }
+        if shown != before {
+            tx.execute(
+                "UPDATE native_messages SET message_json=? WHERE session_id=? AND seq=?",
+                params![shown.to_string(), stored, row["seq"].as_i64()],
+            )?;
+        }
+    }
+    tx.commit()?;
+    Ok(())
+}
 /// Resolve a continuation without crossing explicit branch or delegation boundaries.
 pub fn legacy_lineage(conn: &Connection, stored: &str) -> Result<Vec<String>> {
     let all = common::rows(conn, "SELECT * FROM sessions", &[])?;
@@ -1139,7 +1229,7 @@ pub fn import_hermes(home: &Path, bot: &str, stored: &str, cwd: &Path) -> Result
                     .unwrap_or_else(|| json!(content));
                 let body = text(&parsed);
                 let ts = row["timestamp"].as_f64().unwrap_or(0.) * 1000.;
-                let mut projection = json!({"role":role,"text":body,"row_id":format!("legacy-{}",row["id"]),"display_kind":row["display_kind"],"timestamp":row["timestamp"]});
+                let mut shown = json!({"role":role,"text":body,"row_id":format!("legacy-{}",row["id"]),"display_kind":row["display_kind"],"timestamp":row["timestamp"]});
                 let message = match role {
                     "user" => {
                         let content = if let Some(blocks) = parsed.as_array() {
@@ -1180,10 +1270,13 @@ pub fn import_hermes(home: &Path, bot: &str, stored: &str, cwd: &Path) -> Result
                         json!({"role":"user","content":content,"timestamp":ts})
                     }
                     "assistant" => {
-                        let mut blocks = vec![];
-                        if !body.is_empty() {
-                            blocks.push(json!({"type":"text","text":body}));
-                        }
+                        let mut blocks = parsed.as_array().cloned().unwrap_or_else(|| {
+                            if body.is_empty() {
+                                vec![]
+                            } else {
+                                vec![json!({"type":"text","text":body})]
+                            }
+                        });
                         if let Some(calls) = row["tool_calls"]
                             .as_str()
                             .and_then(|s| serde_json::from_str::<Value>(s).ok())
@@ -1222,23 +1315,34 @@ pub fn import_hermes(home: &Path, bot: &str, stored: &str, cwd: &Path) -> Result
                         })
                     }
                     "tool" => {
-                        projection["name"] = row["tool_name"].clone();
+                        shown["name"] = row["tool_name"].clone();
+                        shown["tool_name"] = row["tool_name"].clone();
+                        shown["tool_id"] = row["tool_call_id"].clone();
+                        shown["tool_call_id"] = row["tool_call_id"].clone();
                         json!({"role":"toolResult","toolCallId":row["tool_call_id"],"toolName":row["tool_name"],"content":[{"type":"text","text":body}],"isError":false,"timestamp":ts})
                     }
                     _ => continue,
                 };
-                let report = role == "assistant"
-                    && message["content"]
-                        .as_array()
-                        .is_some_and(|blocks| blocks.len() == 1)
-                    && reports.contains(&body);
+                if role == "assistant" {
+                    shown.as_object_mut().unwrap().extend(
+                        projection(&message, None)
+                            .unwrap()
+                            .as_object()
+                            .unwrap()
+                            .clone(),
+                    );
+                }
+                if role == "assistant" && dream_report_text(&row).is_none() {
+                    shown["dream_report_eligible"] = json!(false);
+                }
+                let report = dream_report_text(&row).is_some_and(|text| reports.contains(&text));
                 if report {
-                    projection["dream"] = json!(true);
+                    shown["dream"] = json!(true);
                 }
                 if context && !report {
-                    raw.push((row["id"].as_i64().unwrap_or(0), message, projection.clone()));
+                    raw.push((row["id"].as_i64().unwrap_or(0), message, shown.clone()));
                 }
-                projected.push(projection);
+                projected.push(shown);
             }
         }
     }
@@ -1321,8 +1425,8 @@ pub fn fork_dream_chat(
     }
     let is_report = |entry: &Value| {
         entry["type"] == "message"
-            && entry["message"]["role"] == "assistant"
-            && reports.contains(&text(&entry["message"]["content"]))
+            && entry["hexbot"]["dream_report_eligible"] != false
+            && dream_report_text(&entry["message"]).is_some_and(|text| reports.contains(&text))
     };
     if !entries.iter().any(is_report) {
         return Ok(false);
@@ -1379,7 +1483,7 @@ pub fn fork_dream_chat(
             shown["dream"] = json!(true);
             if !original
                 .iter()
-                .any(|m| m["role"] == shown["role"] && m["text"] == shown["text"])
+                .any(|m| dream_report_text(m).is_some() && m["text"] == shown["text"])
             {
                 missing_reports.push(shown);
             }
@@ -1402,9 +1506,7 @@ pub fn fork_dream_chat(
     let created = (|| {
         mark_fresh(home, target)?;
         for mut shown in original.into_iter().chain(missing_reports) {
-            if shown["role"] == "assistant"
-                && shown["text"].as_str().is_some_and(|s| reports.contains(s))
-            {
+            if dream_report_text(&shown).is_some_and(|text| reports.contains(&text)) {
                 shown["dream"] = json!(true);
             }
             append(home, target, shown)?;
@@ -1506,6 +1608,11 @@ fn projection(message: &Value, display: Option<&str>) -> Option<Value> {
             result["content"] = message["content"].clone();
         }
         "assistant" => {
+            // Text extraction deliberately omits other blocks. Keep that fact
+            // with the display row, including blocks this daemon cannot render.
+            if dream_report_text(message).is_none() {
+                result["dream_report_eligible"] = json!(false);
+            }
             let calls = message["content"]
                 .as_array()
                 .into_iter()
@@ -1612,6 +1719,13 @@ fn persist_pi_message(
             projected[key] = value.clone();
         }
     }
+    if let Some(projected) = &mut projected
+        && message["role"] == "assistant"
+        && dream_report_text(message).is_none()
+    {
+        projected["dream_report_eligible"] = json!(false);
+        projected.as_object_mut().unwrap().remove("dream");
+    }
     let mut projection_seq = None;
     if let Some(mut projected) = projected {
         let existing = if recover {
@@ -1626,6 +1740,12 @@ fn persist_pi_message(
                 for (key, value) in map {
                     projected[key] = value.clone();
                 }
+            }
+            // Structural evidence belongs to this actual message, even when an
+            // older projection or imported seed called equal text a report.
+            if message["role"] == "assistant" && dream_report_text(message).is_none() {
+                projected["dream_report_eligible"] = json!(false);
+                projected.as_object_mut().unwrap().remove("dream");
             }
             conn.execute(
                 "UPDATE native_messages SET message_json=? WHERE session_id=? AND seq=?",
@@ -1706,6 +1826,10 @@ fn legacy_projection(
             .is_some_and(|id| old.get("row_id") == Some(id));
         let same_text = old["role"] == wanted["role"]
             && old["text"] == wanted["text"]
+            && (old["role"] != "assistant"
+                || old["tool_calls"] == wanted["tool_calls"]
+                    && old["reasoning"] == wanted["reasoning"]
+                    && dream_report_text(&old).is_some() == dream_report_text(wanted).is_some())
             && (old["role"] != "tool"
                 || old["name"] == wanted["name"]
                 || old["tool_name"] == wanted["tool_name"]);

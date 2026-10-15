@@ -717,7 +717,9 @@ function MobileApp() {
           ? 'Reconnect to send'
           : route?.kind === 'section' && route.section.peer_bot
             ? 'Conversation between bots'
-            : undefined,
+            : route?.kind === 'section' && !mobile.liveSessionId()
+              ? 'Open this chat to send'
+              : undefined,
     error: mobile.chat.error || mobile.error,
     onRetry: () =>
       act(async () => {

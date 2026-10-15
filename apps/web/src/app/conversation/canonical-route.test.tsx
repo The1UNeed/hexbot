@@ -318,7 +318,7 @@ it('binds same-URL navigation to a new lookup, ignoring the old reply', async ()
   await waitFor(() => expect(lookups).toBe(2))
   await act(async () => first.resolve({ section: canonical }))
   expect(view.router.state.location.pathname).toBe('/b/owl/s/old')
-  expect(screen.getByRole('textbox', { name: 'Message' })).toBeDisabled()
+  expect(screen.queryByRole('textbox', { name: 'Message' })).toBeNull()
   expect(calls('hexbot.sections.open')).toHaveLength(0)
   await act(async () => second.resolve({ section: canonical }))
   expect(await screen.findByText('canonical history')).toBeVisible()
@@ -337,4 +337,135 @@ it('dismisses a route chooser when navigation supersedes its entry', async () =>
   expect(useSections.getState().choosing).toBeNull()
   expect(calls('hexbot.sections.unarchive')).toHaveLength(0)
   expect(view.router.state.location.pathname).toBe('/r/garden')
+})
+
+it.each(['empty', 'history', 'stopped', 'archived'] as const)(
+  'peer routes expose transcript and pending answers without owner input: %s',
+  async kind => {
+    call.mockImplementation((method: string, input: Record<string, unknown> = {}) =>
+      method === 'hexbot.sections.open'
+        ? Promise.resolve({
+            section: section('peer', {
+              peer_bot: 'yak',
+              archived_at: kind === 'archived' ? 1 : null,
+              live_session_id: 'peer-live'
+            }),
+            messages:
+              kind === 'empty'
+                ? []
+                : [
+                    { role: 'user', text: 'Peer request' },
+                    { role: 'assistant', text: 'Peer response' }
+                  ],
+            ...(kind === 'empty'
+              ? {}
+              : {
+                  pending_clarify: { request_id: 'question', qid: 'file', question: 'Which file?' }
+                })
+          })
+        : reply(method, input)
+    )
+    const view = await mount('/b/owl/s/peer')
+    await waitFor(() => expect(useSections.getState().liveSessionId.peer).toBe('peer-live'))
+
+    if (kind === 'stopped') {
+      act(() => useTranscripts.getState().errorEvent('peer-live', 'Peer failed'))
+      expect(await screen.findByText('Peer failed')).toBeVisible()
+    }
+
+    const ownerComposer = screen.queryByRole('textbox', { name: 'Message' })
+
+    if (ownerComposer) {
+      fireEvent.change(ownerComposer, { target: { value: 'Owner injection' } })
+      fireEvent.keyDown(ownerComposer, { key: 'Enter' })
+      await act(async () => {})
+    }
+
+    expect(calls('prompt.submit')).toHaveLength(0)
+    expect(ownerComposer).toBeNull()
+    expect(view.container.querySelector('input[type=file]')).toBeNull()
+    expect(screen.queryByRole('button', { name: /attach|send|retry/i })).toBeNull()
+    expect(
+      screen.queryByRole('button', {
+        name: /What can you help me|Tell me what you remember|Suggest three things/i
+      })
+    ).toBeNull()
+    fireEvent.drop(view.container.firstElementChild!, {
+      dataTransfer: { files: [new File(['private'], 'private.txt')] }
+    })
+    fireEvent.keyDown(document, { key: 'Enter', ctrlKey: true })
+
+    if (kind !== 'empty') {
+      fireEvent.change(screen.getByRole('textbox', { name: 'Your own answer' }), {
+        target: { value: 'chosen.txt' }
+      })
+      fireEvent.click(screen.getByRole('button', { name: 'Done' }))
+      await waitFor(() =>
+        expect(call).toHaveBeenCalledWith(
+          'clarify.respond',
+          expect.objectContaining({
+            session_id: 'peer-live',
+            request_id: 'question',
+            answer: 'chosen.txt'
+          })
+        )
+      )
+      act(() =>
+        useTranscripts.getState().approvalRequest('peer-live', {
+          request_id: 'approval',
+          command: 'pwd',
+          choices: ['once', 'deny']
+        })
+      )
+      fireEvent.click(await screen.findByRole('button', { name: 'Approve' }))
+      await waitFor(() =>
+        expect(call).toHaveBeenCalledWith(
+          'approval.respond',
+          expect.objectContaining({
+            session_id: 'peer-live',
+            request_id: 'approval',
+            choice: 'once'
+          })
+        )
+      )
+    }
+
+    expect(calls('prompt.submit')).toHaveLength(0)
+    expect(calls('file.attach')).toHaveLength(0)
+    expect(calls('hexbot.sections.create')).toHaveLength(0)
+    expect(calls('hexbot.sections.unarchive')).toHaveLength(0)
+  }
+)
+
+it('keeps every owner input closed while explicit peer metadata is unresolved', async () => {
+  const held = deferred()
+  call.mockImplementation((method: string, input: Record<string, unknown>) =>
+    method === 'hexbot.sections.list' ? held.promise : reply(method, input)
+  )
+  const view = await mount('/b/owl/s/peer')
+  await waitFor(() => expect(calls('hexbot.sections.list')).toHaveLength(1))
+  expect(screen.queryByRole('textbox', { name: 'Message' })).toBeNull()
+  expect(view.container.querySelector('input[type=file]')).toBeNull()
+  expect(calls('prompt.submit')).toHaveLength(0)
+  await act(async () => held.resolve({ sections: [peer] }))
+  expect(await screen.findByText('Which file?')).toBeVisible()
+  expect(screen.queryByRole('textbox', { name: 'Message' })).toBeNull()
+})
+it('retains ordinary chat input, attachments and message retry', async () => {
+  const view = await mount('/b/owl/s/canonical')
+  expect(await screen.findByText('canonical history')).toBeVisible()
+  expect(screen.getByRole('textbox', { name: 'Message' })).toBeEnabled()
+  expect(screen.getByRole('button', { name: 'Attach files' })).toBeEnabled()
+  expect(view.container.querySelector('input[type=file]')).not.toBeNull()
+  const composer = screen.getByRole('textbox', { name: 'Message' })
+  fireEvent.change(composer, { target: { value: 'Healthy owner reply' } })
+  fireEvent.keyDown(composer, { key: 'Enter' })
+  await waitFor(() => expect(calls('prompt.submit')).toHaveLength(1))
+  fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
+  await waitFor(() => expect(calls('prompt.submit')).toHaveLength(2))
+  expect(
+    calls('prompt.submit').every(
+      ([, params]) => params.session_id === 'canonical' && params.text === 'Healthy owner reply'
+    )
+  ).toBe(true)
 })

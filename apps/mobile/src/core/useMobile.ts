@@ -56,6 +56,8 @@ export function useMobile() {
   const session = useRef<MobileSession | null>(null)
   const routeRef = useRef<ChatRoute | null>(null)
   const liveId = useRef<string | null>(null)
+  // A reconnect cannot restore an old owner row until canonical lookup succeeds.
+  const ownerPending = useRef(false)
   const roomEvents = useRef<RoomEvent[]>([])
   const loadingEvents = useRef<GatewayEvent[] | null>(null)
   const openSequence = useRef(0)
@@ -68,7 +70,7 @@ export function useMobile() {
   /** The live session whose running turn was half in the history when it loaded. */
   const straddling = useRef<string | null>(null)
   /** An older daemon's sections to pick a bot's chat from, while asked. */
-  const [choosing, setChoosing] = useState<{ bot: Bot; choices: Section[] } | null>(null)
+  const [choosing, setChoosing] = useState<{ bot: Bot; choices: Section[]; current: () => boolean } | null>(null)
   /** Each bot's chat on an older daemon, so the user is asked once while the app runs. */
   const picked = useRef(new Map<string, string>())
   const cancelNavigation = useCallback(() => {
@@ -122,10 +124,11 @@ export function useMobile() {
     cancelNavigation()
     routeRef.current = null
     liveId.current = null
+    ownerPending.current = false
     setRoute(null)
     setHasEarlier(false)
   }, [releaseStaged, cancelNavigation])
-  const refresh = useCallback(async () => {
+  const refresh = useCallback(async (reconnecting = false) => {
     const current = session.current
     clearModels()
     const sequence = ++refreshSequence.current
@@ -153,11 +156,18 @@ export function useMobile() {
     setUser(me)
     // The open conversation follows renames and edits, and closes once it is gone.
     // A route that changed while the lists loaded may be newer than them.
-    if (!before || routeRef.current !== before) return
+    if (!before || routeRef.current !== before) return i
+    // Reconnect resolves owner chats before restoring history, even if the
+    // old row survived migration. It may also have disappeared from this list.
+    if (reconnecting && before.kind === 'section' && !before.section.peer_bot) return i
     const next = rebind(before, { bots: b.bots, rooms: r.rooms, sections: s.sections })
-    if (!next) return leave()
+    if (!next) {
+      leave()
+      return i
+    }
     routeRef.current = next
     setRoute(next)
+    return i
   }, [rpc, clearModels, leave, cancelNavigation])
   const syncRoom = useCallback(
     async (id: string) => {
@@ -211,6 +221,7 @@ export function useMobile() {
     const target = routeRef.current
     if (!target) return
     if (target.kind === 'room') return syncRoom(target.room.id)
+    if (ownerPending.current) return
     let failure: string | null = null
     for (let attempt = 0; ; attempt++) {
       const sequence = ++openSequence.current
@@ -227,10 +238,11 @@ export function useMobile() {
           routeRef.current.section.id !== target.section.id
         )
           return
-        liveId.current = result.section.live_session_id
+        const restoredLiveId = result.section.live_session_id
+        if (!restoredLiveId) throw new Error('Open this conversation again before sending.')
         setHasEarlier(false)
         const status = await rpc<{ status: string }>('session.status', {
-          session_id: liveId.current
+          session_id: restoredLiveId
         })
         if (sequence !== openSequence.current) return
         const replay = replayChat(
@@ -239,20 +251,21 @@ export function useMobile() {
             busy: status.status === 'working',
             messages: historyMessages(result.messages)
           },
-          (loadingEvents.current ?? []).filter(event => event.session_id === liveId.current)
+          (loadingEvents.current ?? []).filter(event => event.session_id === restoredLiveId)
         )
         failure = replay.state.error ?? failure
         // A turn finished while the history loaded; read it again so its replies show once.
         if (replay.reread && attempt < 2) continue
-        straddling.current = replay.state.busy ? liveId.current : null
+        straddling.current = replay.state.busy ? restoredLiveId : null
         let restored = { ...replay.state, error: failure }
         if (result.pending_clarify)
           restored = reduceChat(restored, {
             type: 'clarify.request',
-            session_id: liveId.current!,
+            session_id: restoredLiveId,
             payload: result.pending_clarify
           })
         loadingEvents.current = null
+        liveId.current = restoredLiveId
         setChat(restored)
         const newRoute: ChatRoute = { ...target, section: result.section }
         routeRef.current = newRoute
@@ -391,13 +404,44 @@ export function useMobile() {
           }
         },
         async () => {
+          if (session.current !== next || !mounted.current) return
           // A reconnect can reach an upgraded daemon at the same address.
           cancelNavigation()
-          picked.current.clear()
+          const generation = navigation.current
+          const before = routeRef.current
+          ownerPending.current = before?.kind === 'section' && !before.section.peer_bot
+          const current = () =>
+            mounted.current && session.current === next && navigation.current === generation
+          const previousInfo = infoRef.current
           infoRef.current = null
           setInfo(null)
-          await refreshRef.current()
-          await syncChatRef.current()
+          liveId.current = null
+          setChat(emptyChat())
+          setLoading(true)
+          try {
+            const refreshing = refreshRef.current(true)
+            const sequence = refreshSequence.current
+            const refreshed = await refreshing
+            if (!current()) return
+            if (!refreshed || sequence !== refreshSequence.current) {
+              setError('Daemon information changed. Retry opening the conversation.')
+              return
+            }
+            if (refreshed.one_chat === true || previousInfo?.install_id !== refreshed.install_id)
+              picked.current.clear()
+            if (before?.kind === 'section' && !before.section.peer_bot) {
+              // Old daemons keep their explicit remembered choice. Modern ones
+              // must name the canonical owner chat before any history is opened.
+              await openSectionRef.current(before.bot)
+            } else {
+              await syncChatRef.current()
+            }
+          } catch (error) {
+            if (current()) setError(errorText(error))
+            throw error
+          } finally {
+            if (current()) setLoading(false)
+          }
         },
         onEvent
       )
@@ -473,7 +517,7 @@ export function useMobile() {
       const found = await botChat(lookup, bot.name, oneChat, picked.current, section)
       if (stale()) return
       if ('choices' in found) {
-        setChoosing({ bot, choices: found.choices })
+        setChoosing({ bot, choices: found.choices, current: () => !stale() })
         return
       }
       const selected = found.section
@@ -482,7 +526,8 @@ export function useMobile() {
       const target: ChatRoute = { kind: 'section', section: selected, bot }
       routeRef.current = target
       setRoute(target)
-      liveId.current = selected.live_session_id
+      ownerPending.current = false
+      liveId.current = null
       setChat(emptyChat())
       await syncChat()
     } catch (e) {
@@ -491,9 +536,12 @@ export function useMobile() {
       if (!stale()) setLoading(false)
     }
   }
+  const openSectionRef = useRef(openSection)
+  openSectionRef.current = openSection
   /** Opens the section picked on an older daemon, or nothing when none is. */
   const choose = (section: Section | null) => {
     const asked = choosing
+    if (asked && !asked.current()) return
     cancelNavigation()
     if (asked && section) void openSection(asked.bot, section)
   }
@@ -526,6 +574,8 @@ export function useMobile() {
     const text = attachmentPrompt(input, hasAttachments)
     const target = routeRef.current
     if (!target || !text) throw new Error('Enter a message or attach a file.')
+    if (target.kind === 'section' && (target.section.peer_bot || !liveId.current))
+      throw new Error('Open your chat before sending.')
     const messageId = Crypto.randomUUID()
     setChat(c => ({
       ...c,
