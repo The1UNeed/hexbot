@@ -116,6 +116,23 @@ pub(crate) struct ExtensionWrite {
     deadline: Duration,
 }
 
+/// Input already enqueued under the session's event gate. Retains command
+/// admission until preflight replies, even when the RPC client disconnects.
+pub(crate) struct InputReply {
+    response: oneshot::Receiver<Result<PiResponse, PiError>>,
+    done: watch::Receiver<Option<PiError>>,
+    _admission: OwnedSemaphorePermit,
+}
+impl InputReply {
+    pub(crate) async fn wait(mut self) -> Result<PiResponse, PiError> {
+        tokio::select! {
+            biased;
+            result = &mut self.response => result.map_err(|_| PiError::Exited)?,
+            error = terminal(&mut self.done) => Err(error),
+        }
+    }
+}
+
 impl ExtensionWrite {
     pub(crate) async fn wait(mut self) -> Result<(), PiError> {
         tokio::time::timeout(self.deadline, async {
@@ -133,6 +150,7 @@ enum Request {
     Command {
         id: String,
         command: String,
+        input: Option<String>,
         bytes: Vec<u8>,
         reply: Reply,
     },
@@ -161,6 +179,7 @@ struct WriteRecord {
 }
 struct Pending {
     command: String,
+    input: Option<String>,
     reply: Reply,
 }
 
@@ -190,7 +209,7 @@ struct Inner {
     stop: watch::Sender<Option<PiError>>,
     done: watch::Receiver<Option<PiError>>,
     next_id: AtomicU64,
-    admission: Semaphore,
+    admission: Arc<Semaphore>,
     extension_admission: Arc<Semaphore>,
     max_record_bytes: usize,
 }
@@ -282,7 +301,7 @@ impl PiProcess {
         let (stop, stop_rx) = watch::channel(None);
         let (done_tx, done) = watch::channel(None);
         let max_record_bytes = options.max_record_bytes;
-        let admission = Semaphore::new(options.request_capacity);
+        let admission = Arc::new(Semaphore::new(options.request_capacity));
         tokio::spawn(supervise(
             child, stdin, stdout, request_rx, event_tx, stop_rx, done_tx, options,
         ));
@@ -332,6 +351,54 @@ impl PiProcess {
         self.request_with_policy(command, None, false).await
     }
 
+    /// Commit an input before Stop can claim the event gate. Unlike an async
+    /// send, this cannot enqueue a pre-Stop input behind the abort command.
+    pub(crate) fn try_input(&self, command: &Value, intent: &str) -> Result<InputReply, PiError> {
+        let admission = self
+            .inner
+            .admission
+            .clone()
+            .try_acquire_owned()
+            .map_err(|_| PiError::Capacity)?;
+        let name = command["type"]
+            .as_str()
+            .filter(|name| matches!(*name, "prompt" | "steer"))
+            .ok_or(PiError::InvalidCommand("expected prompt or steer"))?;
+        if command.get("id").is_some() {
+            return Err(PiError::InvalidCommand("id is assigned by the transport"));
+        }
+        let id = format!(
+            "hexbot-{}",
+            self.inner.next_id.fetch_add(1, Ordering::Relaxed)
+        );
+        let mut command = command.clone();
+        command["id"] = Value::String(id.clone());
+        let bytes = self.serialize(&command)?;
+        let stop = self.inner.stop.borrow();
+        if let Some(error) = stop.as_ref().or(self.inner.done.borrow().as_ref()) {
+            return Err(error.clone());
+        }
+        let (reply, response) = oneshot::channel();
+        self.inner
+            .requests
+            .try_send(Request::Command {
+                id,
+                command: name.into(),
+                input: Some(intent.into()),
+                bytes,
+                reply,
+            })
+            .map_err(|error| match error {
+                mpsc::error::TrySendError::Full(_) => PiError::Capacity,
+                mpsc::error::TrySendError::Closed(_) => PiError::Exited,
+            })?;
+        Ok(InputReply {
+            response,
+            done: self.inner.done.clone(),
+            _admission: admission,
+        })
+    }
+
     async fn request_with_policy(
         &self,
         command: &mut Value,
@@ -373,6 +440,7 @@ impl PiProcess {
             Request::Command {
                 id,
                 command: name,
+                input: None,
                 bytes,
                 reply,
             },
@@ -673,11 +741,11 @@ async fn supervise(
                 let Some(request) = request else { break PiError::Shutdown; };
                 if exited { request.reject(PiError::Exited); continue; }
                 match request {
-                    Request::Command { id, command, bytes, reply } => {
+                    Request::Command { id, command, input, bytes, reply } => {
                         if pending.len() >= options.request_capacity { let _ = reply.send(Err(PiError::Capacity)); continue; }
                         match writes.try_send(WriteRecord { bytes, written: None, _extension_admission: None }) {
                             Ok(()) => {
-                                pending.insert(id, Pending { command, reply });
+                                pending.insert(id, Pending { command, input, reply });
                                 #[cfg(test)]
                                 if let Some(queued) = &options.write_queued { let _ = queued.send(()); }
                             }
@@ -773,10 +841,12 @@ fn record(bytes: &[u8], pending: &mut HashMap<String, Pending>) -> Result<Option
         if !response.success && response.error.is_none() {
             return Err(PiError::Protocol("failed response missing error"));
         }
-        if let Some(request) = pending.remove(&response.id) {
-            let _ = request.reply.send(Ok(response));
-        }
-        Ok(None)
+        let request = pending.remove(&response.id).unwrap();
+        // Put preflight disposition in the same ordered stream as user events.
+        // Daemon scheduling must not attribute identical text to a later steer.
+        let input = request.input.map(|intent| serde_json::json!({"type":"hexbot_input_preflight","intent":intent,"disposition":response.data.as_ref().map(|data| &data["disposition"])}));
+        let _ = request.reply.send(Ok(response));
+        Ok(input)
     } else {
         Ok(Some(value))
     }
@@ -830,7 +900,7 @@ mod commit_tests {
                     stop,
                     done,
                     next_id: AtomicU64::new(1),
-                    admission: Semaphore::new(1),
+                    admission: Arc::new(Semaphore::new(1)),
                     extension_admission: Arc::new(Semaphore::new(1)),
                     max_record_bytes: 1024,
                 }),
@@ -849,6 +919,7 @@ mod commit_tests {
             .try_send(Request::Command {
                 id: "hold".into(),
                 command: "hold".into(),
+                input: None,
                 bytes: vec![],
                 reply,
             })

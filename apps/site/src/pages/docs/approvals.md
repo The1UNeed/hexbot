@@ -82,6 +82,13 @@ helpers can call provider APIs with the bot's credentials and incur costs.
 
 Each card shows the command or action and why it asks. Approve runs it once. Deny stops it, and the bot sees that you declined. Reviewed Auto cards offer only those two choices.
 
+Stop cancels pending approvals, questions and Auto reviews. Requests that arrive
+while the turn is stopping are cancelled too. An answer accepted before Stop can
+finish; a card Stop has already cancelled cannot approve a step. Background
+results, including ones already queued before Stop, wait until Stop and the
+current turn or compaction finish, then run before newer messages. Steering
+waits too. Bots can ask again on the next turn.
+
 When a Manual or unreviewed card offers Allow for now, it stops asking for that kind of request until the bot's agent process restarts: after it has been idle a while, when you change its model or tools, or when the daemon restarts. For example, Manual can allow full-access commands, outside file changes, or one connected server. In Auto, unreviewed shell requests without a sandbox and host-configuration file requests can offer Allow for now. It never covers reviewed Auto steps. Nothing is saved, so after a restart it asks again. Incomplete file scans and requests the daemon raises itself, such as code runs, browser scripts and scheduling, offer Approve and Deny only.
 
 Delegates and background jobs cannot wait for approval; actions that need it are refused.
