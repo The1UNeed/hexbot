@@ -1,5 +1,8 @@
 use super::*;
 
+#[path = "runtime_stop_boundary_tests.rs"]
+mod boundary;
+
 fn install_stop_pi(home: &Path) {
     fs::write(
         home.join("pi.cjs"),
@@ -352,7 +355,7 @@ const status = text => emit({type:'extension_ui_request', method:'setStatus', st
 const response = (c, data = {}) => emit({type:'response', id:c.id, command:c.type, success:true, data});
 const idleBeforeSettled = JSON.parse(fs.readFileSync(__dirname + '/idle-before-settled'));
 let active = false, abort;
-const queue = [];
+const queue = [], steering = [];
 const delivered = text => emit({type:'message_end', message:{role:'user', content:text}});
 const finishAbort = () => {
   active = false;
@@ -375,9 +378,11 @@ require('node:readline').createInterface({input:process.stdin}).on('line', line 
     else status('abort waiting');
     return;
   }
-  response(c, c.type === 'get_state' ? {isStreaming:active, pendingMessageCount:queue.length} : {});
+  if (c.type === 'clear_queue') { response(c, {steering:steering.splice(0), followUp:queue.splice(0)}); return; }
+  response(c, c.type === 'get_state' ? {isStreaming:active, pendingMessageCount:queue.length + steering.length} : ['prompt','steer'].includes(c.type) ? {disposition:active || c.type === 'steer' ? 'queued' : 'started'} : {});
   if (c.type === 'release_abort') finishAbort();
   if (c.type === 'release_settled') emit({type:'agent_settled'});
+  if (c.type === 'steer') { steering.push(c.message); return; }
   if (c.type === 'prompt') {
     if (active && c.streamingBehavior === 'followUp') { queue.push(c.message); return; }
     active = true;
@@ -387,7 +392,7 @@ require('node:readline').createInterface({input:process.stdin}).on('line', line 
     if (c.message === 'background result') emit({type:'extension_ui_request', id:'fresh-question', method:'input', title:'Which file?'});
   }
   if (c.type === 'finish_run') {
-    for (const text of queue.splice(0)) delivered(text);
+    for (const text of [...steering.splice(0), ...queue.splice(0)]) delivered(text);
     active = false;
     emit({type:'message_end', message:{role:'assistant', content:[{type:'text', text:'finished'}], stopReason:'stop'}});
     emit({type:'agent_settled'});

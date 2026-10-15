@@ -29,6 +29,8 @@ mod attachments;
 mod delegation;
 #[path = "runtime_review.rs"]
 mod review;
+#[path = "runtime_stop.rs"]
+mod stop;
 
 #[cfg(test)]
 #[path = "runtime_lifecycle_tests.rs"]
@@ -41,10 +43,17 @@ const HIDDEN_TURN_DEADLINE: Duration = Duration::from_secs(1800);
 const SHUTDOWN_DEADLINE: Duration = Duration::from_secs(8);
 struct State {
     busy: bool,
+    compacting: bool,
     closed: bool,
     interrupted: bool,
     /// Stop calls still cancelling dialogs, native tools or Pi itself.
     stops: usize,
+    /// Stop recovery owns admission until retained Pi input has been resubmitted.
+    recovering: bool,
+    stop_epoch: u64,
+    inputs: VecDeque<PendingInput>,
+    submitting: usize,
+    input_waiters: usize,
     last_activity: f64,
     output: String,
     error: Option<String>,
@@ -76,7 +85,26 @@ impl StopGuard {
             return Err(Error::new(4001, "session not found"));
         }
         state.stops += 1;
+        state.recovering = true;
+        state.stop_epoch += 1;
         Ok(Self(s.clone()))
+    }
+}
+/// Waiting input reserves its place before Stop releases admission. Cancellation
+/// releases the reservation without staging text, uploads or a display intent.
+struct InputAdmission(Arc<Live>);
+impl InputAdmission {
+    fn start(s: &Arc<Live>) -> Self {
+        let _gate = s.event_gate.lock().unwrap();
+        s.state.lock().unwrap().input_waiters += 1;
+        Self(s.clone())
+    }
+}
+impl Drop for InputAdmission {
+    fn drop(&mut self) {
+        let _gate = self.0.event_gate.lock().unwrap();
+        self.0.state.lock().unwrap().input_waiters -= 1;
+        self.0.run_ended.send_modify(|v| *v += 1);
     }
 }
 impl Drop for StopGuard {
@@ -85,6 +113,17 @@ impl Drop for StopGuard {
         self.0.state.lock().unwrap().stops -= 1;
         self.0.run_ended.send_modify(|v| *v += 1);
     }
+}
+/// An input retains its original durable intent, display kind, images and
+/// caller chain until Pi projects it. Stop never reconstructs it from text.
+#[derive(Clone)]
+struct PendingInput {
+    intent: String,
+    in_pi: bool,
+    queued: bool,
+    command: Value,
+    display: String,
+    chain: Chain,
 }
 /// One upload: an image, a file reference, or the rendered pages of a PDF.
 struct Staged {
@@ -116,6 +155,8 @@ struct Live {
     requests: Mutex<tokio::task::JoinSet<()>>,
     event_gate: Mutex<()>,
     attachment_gate: AsyncMutex<()>,
+    recovery_gate: AsyncMutex<()>,
+    input_gate: AsyncMutex<()>,
     permit: Mutex<Option<tokio::sync::OwnedSemaphorePermit>>,
     /// Provider, model and thinking level the Pi process runs with.
     model: Mutex<Value>,
@@ -277,6 +318,10 @@ impl Runtime {
         if has_children
             || state.busy
             || state.stops != 0
+            || state.recovering
+            || state.submitting != 0
+            || state.input_waiters != 0
+            || !state.inputs.is_empty()
             || state.closed
             || !state.pending.is_empty()
             || !state.staged.is_empty()
@@ -949,9 +994,15 @@ impl Runtime {
             process,
             state: Mutex::new(State {
                 busy: false,
+                compacting: false,
                 closed: false,
                 interrupted: false,
                 stops: 0,
+                recovering: false,
+                stop_epoch: 0,
+                inputs: VecDeque::new(),
+                submitting: 0,
+                input_waiters: 0,
                 last_activity: common::now(),
                 output: String::new(),
                 error: None,
@@ -968,6 +1019,8 @@ impl Runtime {
             requests: Mutex::new(tokio::task::JoinSet::new()),
             event_gate: Mutex::new(()),
             attachment_gate: AsyncMutex::new(()),
+            recovery_gate: AsyncMutex::new(()),
+            input_gate: AsyncMutex::new(()),
             permit: Mutex::new(Some(permit)),
             settled,
             run_ended: watch::channel(0).0,
@@ -1193,10 +1246,11 @@ impl Runtime {
                 if state.closed {
                     return Err(Error::new(4001, "session not found"));
                 }
-                if state.busy || state.stops != 0 {
+                if state.busy || state.stops != 0 || state.recovering || state.input_waiters != 0 {
                     return Err(Error::new(4002, "session is already working"));
                 }
                 state.busy = true;
+                state.compacting = true;
                 state.last_activity = common::now();
             }
             self.emit(s, "message.start", json!({}));
@@ -1205,11 +1259,14 @@ impl Runtime {
                 .request(json!({"type":"compact","customInstructions":text.trim().strip_prefix("/compact").unwrap_or("").trim()}), Duration::from_secs(300))
                 .await
                 .map_err(pi_error);
+            // Keep compact completion and its wakeup ordered with admission.
+            let _gate = s.event_gate.lock().unwrap();
             {
-                let _gate = s.event_gate.lock().unwrap();
-                s.state.lock().unwrap().busy = false;
-                s.run_ended.send_modify(|v| *v += 1);
+                let mut state = s.state.lock().unwrap();
+                state.busy = false;
+                state.compacting = false;
             }
+            s.run_ended.send_modify(|v| *v += 1);
             let result = response.and_then(|reply| {
                 if reply.success {
                     Ok(())
@@ -1257,20 +1314,33 @@ impl Runtime {
         if text.len() > 1024 * 1024 {
             return Err(Error::new(4202, "prompt exceeds 1 MiB"));
         }
+        let _reservation = queued.then(|| InputAdmission::start(s));
+        let _input = if queued {
+            Some(Self::input_slot(s).await?)
+        } else {
+            None
+        };
         let mut command = json!({"type":"prompt","message":text});
         let mut chain = chain;
         let mut run_ended = s.run_ended.subscribe();
-        let (sent, dropped, intent) = loop {
+        let (sent, dropped, intent, reply, fresh) = loop {
             let staged = {
                 let _gate = s.event_gate.lock().unwrap();
                 let mut state = s.state.lock().unwrap();
                 if state.closed {
                     return Err(Error::new(4001, "session not found"));
                 }
-                if (state.busy || state.stops != 0) && !queued {
+                if (state.busy || state.stops != 0 || state.recovering || state.input_waiters != 0)
+                    && !queued
+                {
                     return Err(Error::new(4002, "session is already working"));
                 }
-                if queued && (state.stops != 0 || (state.busy && state.interrupted)) {
+                if queued
+                    && (state.stops != 0
+                        || state.recovering
+                        || state.compacting
+                        || (state.busy && state.interrupted))
+                {
                     None
                 } else {
                     if let Some(ids) = uploads
@@ -1283,7 +1353,9 @@ impl Runtime {
                             format!("attachment not found: {missing}; attach it again"),
                         ));
                     }
-                    if !state.busy {
+                    let input_chain = chain.clone();
+                    let fresh = !state.busy;
+                    if fresh {
                         state.output.clear();
                         state.error = None;
                         state.interrupted = false;
@@ -1327,7 +1399,24 @@ impl Runtime {
                         command["message"].as_str().unwrap_or(text),
                         if hidden { "hidden" } else { "normal" },
                     );
-                    Some((sent, dropped, intent))
+                    let reply = intent
+                        .as_ref()
+                        .map_err(|e| Error::new(e.code, &e.message))
+                        .and_then(|intent| {
+                            let input = PendingInput {
+                                intent: intent.clone(),
+                                in_pi: true,
+                                queued: false,
+                                command: command.clone(),
+                                display: if hidden { "hidden" } else { "normal" }.into(),
+                                chain: input_chain.unwrap_or_else(|| state.chain.clone()),
+                            };
+                            let reply = s.process.try_input(&command, intent).map_err(pi_error)?;
+                            state.inputs.push_back(input);
+                            state.submitting += 1;
+                            Ok(reply)
+                        });
+                    Some((sent, dropped, intent, reply, fresh))
                 }
             };
             if let Some(staged) = staged {
@@ -1341,13 +1430,17 @@ impl Runtime {
                 .map_err(|_| Error::new(5201, "session closed"))?;
         };
         remove_staged(dropped);
-        let response = match &intent {
-            Ok(_) => s
-                .process
-                .prompt(&mut command)
-                .await
-                .map_err(pi_error)
-                .and_then(|reply| {
+        // The acknowledgement/rollback belongs to the input, not its RPC
+        // waiter. A disconnected client cannot strand Stop's preflight barrier.
+        let runtime = self
+            .weak
+            .upgrade()
+            .ok_or_else(|| Error::new(5201, "daemon is stopping"))?;
+        let s = s.clone();
+        tokio::spawn(async move {
+            let committed = reply.is_ok();
+            let response = match reply {
+                Ok(reply) => reply.wait().await.map_err(pi_error).and_then(|reply| {
                     if reply.success {
                         Ok(())
                     } else {
@@ -1357,33 +1450,59 @@ impl Runtime {
                         ))
                     }
                 }),
-            Err(error) => Err(Error::new(error.code, &error.message)),
-        };
-        match response {
-            Ok(_) => Ok(json!({"status":"submitted"})),
-            Err(error) => {
-                let _gate = s.event_gate.lock().unwrap();
-                if let Ok(id) = intent {
-                    let _ = store::reject_prompt(&self.home, &s.stored, &id);
-                }
-                let mut state = s.state.lock().unwrap();
-                if state.closed {
-                    remove_staged(sent);
-                } else {
-                    let later = std::mem::replace(&mut state.staged, sent);
-                    state.staged.extend(later);
-                }
-                state.busy = false;
-                state.error = Some(error.message.clone());
-                state.display.pop_back();
-                s.run_ended.send_modify(|v| *v += 1);
-                self.events
-                    .emit(&s.owner, None, "hexbot.bots.changed", json!({"name":s.bot}));
-                s.settled.send_modify(|v| *v += 1);
-                Err(error)
+                Err(error) => Err(error),
+            };
+            let _gate = s.event_gate.lock().unwrap();
+            let mut state = s.state.lock().unwrap();
+            if committed {
+                state.submitting -= 1;
             }
-        }
+            s.run_ended.send_modify(|v| *v += 1);
+            match response {
+                Ok(()) => Ok(json!({"status":"submitted"})),
+                Err(error) => {
+                    if let Ok(id) = intent {
+                        let _ = store::reject_prompt(&runtime.home, &s.stored, &id);
+                        if let Some(index) =
+                            state.inputs.iter().position(|input| input.intent == id)
+                        {
+                            state.inputs.remove(index);
+                            if !state.interrupted {
+                                state.display.remove(index);
+                            }
+                        }
+                    }
+                    if state.closed {
+                        remove_staged(sent);
+                    } else {
+                        let later = std::mem::replace(&mut state.staged, sent);
+                        state.staged.extend(later);
+                    }
+                    if fresh {
+                        state.busy = false;
+                        state.error = Some(error.message.clone());
+                    }
+                    // No committed record was added when staging/enqueue failed.
+                    if !committed && !state.interrupted {
+                        state.display.pop_back();
+                    }
+                    runtime.events.emit(
+                        &s.owner,
+                        None,
+                        "hexbot.bots.changed",
+                        json!({"name":s.bot}),
+                    );
+                    if fresh {
+                        s.settled.send_modify(|v| *v += 1);
+                    }
+                    Err(error)
+                }
+            }
+        })
+        .await
+        .map_err(|error| Error::new(5201, error.to_string()))?
     }
+
     /// Callers share the live ID with room viewers before running, so a section
     /// moves to its bot's new model here rather than mid-turn.
     pub async fn ensure_hidden(&self, owner: &str, bot: &str, stored: &str) -> Result<String> {
@@ -1508,6 +1627,110 @@ impl Runtime {
         }
         Ok(state.output.clone())
     }
+    /// Stop and client answers claim a dialog at the transport enqueue, under
+    /// the event gate. Failed enqueue leaves it waiting, including its final qid.
+    fn claim_answer(
+        &self,
+        s: &Live,
+        method: &str,
+        p: &Value,
+    ) -> Result<(Value, Option<crate::pi::ExtensionWrite>)> {
+        let _gate = s.event_gate.lock().unwrap();
+        let mut state = s.state.lock().unwrap();
+        if state.dialogs_cancelled() {
+            return Err(Error::new(4204, "request is no longer waiting"));
+        }
+        let id = required(p, "request_id")?;
+        let mut request = state
+            .pending
+            .get(id)
+            .cloned()
+            .ok_or_else(|| Error::new(4204, "request is no longer waiting"))?;
+        let answer = if method == "approval.respond" {
+            if request["kind"] != "approval" {
+                return Err(Error::new(4202, "not an approval request"));
+            }
+            let offered = |choice: &str| {
+                request["approval_payload"]["choices"]
+                    .as_array()
+                    .is_some_and(|choices| choices.iter().any(|c| c == choice))
+            };
+            // Apps from before Always allow was removed still send it.
+            let choice = match required(p, "choice")? {
+                "always" if offered("session") => "session",
+                "always" => "once",
+                choice => choice,
+            };
+            if !offered(choice) {
+                return Err(Error::new(4202, "invalid approval choice"));
+            }
+            if request["method"] == "confirm" {
+                json!({"confirmed":choice!="deny"})
+            } else {
+                json!({"value":choice})
+            }
+        } else {
+            if request["kind"] != "clarify" {
+                return Err(Error::new(4202, "not a clarification request"));
+            }
+            if let Some(questions) = request["clarify_payload"]["questions"].as_array().cloned() {
+                let question_id = required(p, "question_id")?;
+                if !questions.iter().any(|q| q["qid"] == question_id) {
+                    return Err(Error::new(4202, "unknown question"));
+                }
+                let pending = &mut request;
+                if !pending["answers"].is_object() {
+                    pending["answers"] = json!({});
+                }
+                if pending["answers"].get(question_id).is_some() {
+                    return Err(Error::new(4202, "question was already answered"));
+                }
+                pending["answers"][question_id] = json!(p["answer"].as_str().unwrap_or(""));
+                let remaining = questions
+                    .iter()
+                    .filter_map(|q| q["qid"].as_str())
+                    .filter(|qid| pending["answers"].get(*qid).is_none())
+                    .collect::<Vec<_>>();
+                if !remaining.is_empty() {
+                    let result = json!({"status":"waiting","remaining":remaining});
+                    state.pending.insert(id.into(), request);
+                    return Ok((result, None));
+                }
+                json!({"value":pending["answers"].to_string()})
+            } else {
+                json!({"value":p["answer"].as_str().unwrap_or("")})
+            }
+        };
+
+        let write = if request["method"] == "native" {
+            if let Some(sender) = state.native_approvals.remove(id) {
+                let _ = sender.send(answer["value"].as_str().unwrap_or("deny").to_owned());
+            }
+            None
+        } else {
+            Some(
+                s.process
+                    .try_respond_extension(id, answer, DEADLINE)
+                    .map_err(pi_error)?,
+            )
+        };
+        state.pending.remove(id);
+        drop(state);
+        // Publish before Pi can settle, never after awaiting its write receipt.
+        self.emit(
+            s,
+            "status.update",
+            json!({"kind":"working","text":"Working"}),
+        );
+        Ok((
+            if method == "approval.respond" {
+                json!({"resolved":true})
+            } else {
+                json!({"status":"answered"})
+            },
+            write,
+        ))
+    }
     async fn cancel_dialogs(s: &Live) {
         let (mut tasks, owned) = {
             let _gate = s.event_gate.lock().unwrap();
@@ -1556,6 +1779,32 @@ impl Runtime {
             }
         }
     }
+    async fn abort_turn(&self, s: &Arc<Live>, deadline: Duration) -> Result<()> {
+        crate::provider_acp::cancel(&self.home, &s.stored).await;
+        Self::cancel_dialogs(s).await;
+        crate::native_tools::close_session(&self.home, &s.stored).await;
+        let result = s
+            .process
+            .request_cancellable(json!({"type":"abort"}), deadline)
+            .await
+            .map_err(pi_error)
+            .and_then(|reply| {
+                if reply.success {
+                    Ok(())
+                } else {
+                    Err(Error::new(
+                        5201,
+                        reply.error.unwrap_or_else(|| "Stop failed".into()),
+                    ))
+                }
+            });
+        if result.is_err() {
+            // A rejected abort promises no run boundary. Exit closes the
+            // section and wakes deliveries instead of waiting indefinitely.
+            let _ = s.process.shutdown().await;
+        }
+        result
+    }
     async fn interrupt(&self, s: &Arc<Live>, deadline: Duration) -> Result<()> {
         let runtime = self
             .weak
@@ -1566,28 +1815,12 @@ impl Runtime {
         // cleanup and concurrent Stops; no request task can strand its count.
         tokio::spawn(async move {
             let s = &stop.0;
-            crate::provider_acp::cancel(&runtime.home, &s.stored).await;
-            Self::cancel_dialogs(s).await;
-            crate::native_tools::close_session(&runtime.home, &s.stored).await;
-            let result = s
-                .process
-                .request_cancellable(json!({"type":"abort"}), deadline)
-                .await
-                .map_err(pi_error)
-                .and_then(|reply| {
-                    if reply.success {
-                        Ok(())
-                    } else {
-                        Err(Error::new(
-                            5201,
-                            reply.error.unwrap_or_else(|| "Stop failed".into()),
-                        ))
-                    }
+            let result = runtime.abort_turn(s, deadline).await;
+            if result.is_ok() {
+                let (runtime, s) = (runtime.clone(), s.clone());
+                tokio::spawn(async move {
+                    runtime.resume_stopped_inputs(s).await;
                 });
-            if result.is_err() {
-                // A rejected abort promises no run boundary. Exit closes the
-                // section and wakes deliveries instead of waiting indefinitely.
-                let _ = s.process.shutdown().await;
             }
             result
         })
@@ -1953,27 +2186,7 @@ impl Runtime {
                 self.interrupt(&s, DEADLINE).await?;
                 Ok(json!({"status":"interrupted"}))
             }
-            "session.steer" => {
-                let text = required(p, "text")?;
-                let intent = {
-                    let _gate = s.event_gate.lock().unwrap();
-                    let mut state = s.state.lock().unwrap();
-                    if state.closed {
-                        return Err(Error::new(4001, "session not found"));
-                    }
-                    let intent = store::stage_prompt(&self.home, &s.stored, text, "normal")?;
-                    state.display.push_back("normal".into());
-                    intent
-                };
-                if let Err(error) = Self::command(&s, json!({"type":"steer","message":text})).await
-                {
-                    let _gate = s.event_gate.lock().unwrap();
-                    store::reject_prompt(&self.home, &s.stored, &intent)?;
-                    s.state.lock().unwrap().display.pop_back();
-                    return Err(error);
-                }
-                Ok(json!({"status":"queued"}))
-            }
+            "session.steer" => self.steer(&s, required(p, "text")?).await,
             "session.close" => Ok(json!({"closed":self.close_stored(caller,&s.stored).await?})),
             "session.save" => Ok(json!({"saved":true,"stored_session_id":s.stored})),
             "session.title" => {
@@ -2039,97 +2252,17 @@ impl Runtime {
                 json!({"acknowledged":s.state.lock().unwrap().pending.contains_key(required(p,"request_id")?)}),
             ),
             "approval.respond" | "clarify.respond" => {
-                let id = required(p, "request_id")?;
-                let request = s
-                    .state
-                    .lock()
-                    .unwrap()
-                    .pending
-                    .get(id)
-                    .cloned()
-                    .ok_or_else(|| Error::new(4204, "request is no longer waiting"))?;
-                let answer = if method == "approval.respond" {
-                    if request["kind"] != "approval" {
-                        return Err(Error::new(4202, "not an approval request"));
+                let claimed = match self.claim_answer(&s, method, p) {
+                    Err(error) if error.message == crate::pi::PiError::Capacity.to_string() => {
+                        s.process.extension_slot(Duration::from_secs(1)).await;
+                        self.claim_answer(&s, method, p)?
                     }
-                    let offered = |choice: &str| {
-                        request["approval_payload"]["choices"]
-                            .as_array()
-                            .is_some_and(|choices| choices.iter().any(|c| c == choice))
-                    };
-                    // Apps from before Always allow was removed still send it.
-                    let choice = match required(p, "choice")? {
-                        "always" if offered("session") => "session",
-                        "always" => "once",
-                        choice => choice,
-                    };
-                    if !offered(choice) {
-                        return Err(Error::new(4202, "invalid approval choice"));
-                    }
-                    if request["method"] == "confirm" {
-                        json!({"confirmed":choice!="deny"})
-                    } else {
-                        json!({"value":choice})
-                    }
-                } else {
-                    if request["kind"] != "clarify" {
-                        return Err(Error::new(4202, "not a clarification request"));
-                    }
-                    if let Some(questions) = request["clarify_payload"]["questions"].as_array() {
-                        let question_id = required(p, "question_id")?;
-                        if !questions.iter().any(|q| q["qid"] == question_id) {
-                            return Err(Error::new(4202, "unknown question"));
-                        }
-                        let mut state = s.state.lock().unwrap();
-                        let pending = state
-                            .pending
-                            .get_mut(id)
-                            .ok_or_else(|| Error::new(4204, "question expired"))?;
-                        if !pending["answers"].is_object() {
-                            pending["answers"] = json!({});
-                        }
-                        if pending["answers"].get(question_id).is_some() {
-                            return Err(Error::new(4202, "question was already answered"));
-                        }
-                        pending["answers"][question_id] = json!(p["answer"].as_str().unwrap_or(""));
-                        let remaining = questions
-                            .iter()
-                            .filter_map(|q| q["qid"].as_str())
-                            .filter(|qid| pending["answers"].get(*qid).is_none())
-                            .collect::<Vec<_>>();
-                        if !remaining.is_empty() {
-                            return Ok(json!({"status":"waiting","remaining":remaining}));
-                        }
-                        json!({"value":pending["answers"].to_string()})
-                    } else {
-                        json!({"value":p["answer"].as_str().unwrap_or("")})
-                    }
+                    result => result?,
                 };
-                // The bot was waiting on the owner; it works again.
-                let resumed = json!({"kind":"working","text":"Working"});
-                if request["method"] == "native" {
-                    {
-                        let mut state = s.state.lock().unwrap();
-                        if let Some(sender) = state.native_approvals.remove(id) {
-                            let _ =
-                                sender.send(answer["value"].as_str().unwrap_or("deny").to_owned());
-                        }
-                        state.pending.remove(id);
-                    }
-                    self.emit(&s, "status.update", resumed);
-                    return Ok(json!({"resolved":true}));
+                if let Some(write) = claimed.1 {
+                    write.wait().await.map_err(pi_error)?;
                 }
-                s.process
-                    .respond_extension(id, answer, DEADLINE)
-                    .await
-                    .map_err(pi_error)?;
-                s.state.lock().unwrap().pending.remove(id);
-                self.emit(&s, "status.update", resumed);
-                Ok(if method == "approval.respond" {
-                    json!({"resolved":true})
-                } else {
-                    json!({"status":"answered"})
-                })
+                Ok(claimed.0)
             }
             "image.attach_bytes" | "pdf.attach" | "file.attach" => self.attach(&s, method, p).await,
             "attachments.clear" => self.clear_attachments(&s).await,
@@ -3365,6 +3498,32 @@ impl Runtime {
             return Ok(());
         }
         match event["type"].as_str().unwrap_or("") {
+            "hexbot_input_preflight" => {
+                let mut state = s.state.lock().unwrap();
+                if let Some(index) = state
+                    .inputs
+                    .iter()
+                    .position(|input| input.intent == event["intent"])
+                {
+                    let disposition = event["disposition"].as_str().unwrap_or("");
+                    if matches!(disposition, "started" | "queued") {
+                        let mut input = state.inputs.remove(index).unwrap();
+                        input.queued = disposition == "queued";
+                        let at = if !input.queued {
+                            0
+                        } else if input.command["type"] == "steer" {
+                            state
+                                .inputs
+                                .iter()
+                                .position(|other| other.queued && other.command["type"] != "steer")
+                                .unwrap_or(state.inputs.len())
+                        } else {
+                            state.inputs.len()
+                        };
+                        state.inputs.insert(at, input);
+                    }
+                }
+            }
             "agent_start" => {
                 self.emit(s, "message.start", json!({}));
                 self.emit(
@@ -3388,14 +3547,34 @@ impl Runtime {
                 let body = store::text(&message["content"]);
                 match message["role"].as_str().unwrap_or("") {
                     "user" => {
-                        let display = s
-                            .state
-                            .lock()
-                            .unwrap()
-                            .display
-                            .pop_front()
-                            .unwrap_or_else(|| "normal".into());
-                        self.persist_message(s, message, Some(&display), None);
+                        let (display, intent) = {
+                            let mut state = s.state.lock().unwrap();
+                            if let Some(index) = state.inputs.iter().position(|input| {
+                                input.in_pi
+                                    && (input.command["message"] == body
+                                        || (!input.command["images"]
+                                            .as_array()
+                                            .is_none_or(Vec::is_empty)
+                                            && input.command["message"].as_str().is_some_and(
+                                                |text| body.starts_with(&format!("{text}\n\n")),
+                                            )))
+                            }) {
+                                let input = state.inputs.remove(index).unwrap();
+                                state.display.remove(index);
+                                (input.display, Some(input.intent))
+                            } else {
+                                (
+                                    state.display.pop_front().unwrap_or_else(|| "normal".into()),
+                                    None,
+                                )
+                            }
+                        };
+                        self.persist_message(
+                            s,
+                            message,
+                            Some(&display),
+                            intent.map(|id| json!({"_input_intent":id})),
+                        );
                     }
                     "assistant" => {
                         self.persist_message(s, message, None, None);

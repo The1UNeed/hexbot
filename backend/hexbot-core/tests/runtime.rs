@@ -238,6 +238,144 @@ async fn actual_pi_loads_hexbot_extension_and_private_session() {
 
 #[tokio::test]
 #[ignore = "requires HEXBOT_TEST_PI to the pinned Pi executable"]
+async fn actual_pi_resumes_accepted_input_after_stop_before_new_owner_input() {
+    use axum::{Json, Router, extract::State, routing::post};
+    use std::sync::Arc;
+    #[derive(Clone)]
+    struct Provider {
+        requests: tokio::sync::mpsc::UnboundedSender<Value>,
+        release: Arc<tokio::sync::Semaphore>,
+    }
+    async fn complete(
+        State(provider): State<Provider>,
+        Json(body): Json<Value>,
+    ) -> ([(&'static str, &'static str); 1], String) {
+        provider.requests.send(body.clone()).unwrap();
+        let content = body["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .rev()
+            .find(|m| m["role"] == "user")
+            .unwrap()["content"]
+            .clone();
+        if runtime_store::text(&content) == "block" {
+            let _permit = provider.release.acquire().await.unwrap();
+        }
+        let chunk = json!({"id":"stop-fixture","object":"chat.completion.chunk","created":1,"model":"test-model","choices":[{"index":0,"delta":{"role":"assistant","content":"finished"},"finish_reason":null}]});
+        let end = json!({"id":"stop-fixture","object":"chat.completion.chunk","created":1,"model":"test-model","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]});
+        (
+            [("content-type", "text/event-stream")],
+            format!("data: {chunk}\n\ndata: {end}\n\ndata: [DONE]\n\n"),
+        )
+    }
+    let (requests, mut received) = tokio::sync::mpsc::unbounded_channel();
+    let release = Arc::new(tokio::sync::Semaphore::new(0));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let app = Router::new()
+        .route("/v1/chat/completions", post(complete))
+        .with_state(Provider {
+            requests,
+            release: release.clone(),
+        });
+    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let home = setup();
+    fs::write(home.path().join("profiles/owl/config.yaml"), format!("model:\n  provider: lmstudio\n  default: test-model\n  api_key: test-key\n  base_url: http://{address}/v1\ntools:\n  enabled_toolsets: []\n")).unwrap();
+    let hub = EventHub::new();
+    let mut events = hub.subscribe();
+    let runtime = Runtime::new(
+        home.path().into(),
+        hub,
+        PathBuf::from(std::env::var_os("HEXBOT_TEST_PI").unwrap()),
+    )
+    .unwrap();
+    let opened = open(&runtime, "alice").await;
+    let live = &opened["section"]["live_session_id"];
+    runtime
+        .call(
+            "alice",
+            "prompt.submit",
+            &json!({"session_id":live,"text":"block"}),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    let first = tokio::time::timeout(Duration::from_secs(20), received.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    runtime.call("alice", "prompt.submit", &json!({"session_id":live,"text":"accepted result","queued":true,"display_kind":"hidden"})).await.unwrap().unwrap();
+    runtime
+        .call("alice", "session.interrupt", &json!({"session_id":live}))
+        .await
+        .unwrap()
+        .unwrap();
+    let second = tokio::time::timeout(Duration::from_secs(20), received.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        runtime_store::text(&second["messages"].as_array().unwrap().last().unwrap()["content"]),
+        "accepted result"
+    );
+    // The cached prefix and frozen tool declarations survive recovery.
+    assert_eq!(first["messages"][0], second["messages"][0]);
+    assert_eq!(first["tools"], second["tools"]);
+    tokio::time::timeout(Duration::from_secs(20), async {
+        loop {
+            let event = events.recv().await.unwrap();
+            if event.frame["params"]["type"] == "message.complete"
+                && event.frame["params"]["payload"]["text"] == "finished"
+            {
+                break;
+            }
+        }
+    })
+    .await
+    .unwrap();
+    let history = runtime_store::history(home.path(), "section-a").unwrap();
+    let rows = history
+        .iter()
+        .filter(|r| r["role"] == "user" && r["text"] == "accepted result")
+        .collect::<Vec<_>>();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["display_kind"], "hidden");
+    runtime
+        .call(
+            "alice",
+            "prompt.submit",
+            &json!({"session_id":live,"text":"new owner input"}),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    let third = tokio::time::timeout(Duration::from_secs(20), received.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        runtime_store::text(&third["messages"].as_array().unwrap().last().unwrap()["content"]),
+        "new owner input"
+    );
+    assert_eq!(
+        third["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(
+                |m| m["role"] == "user" && runtime_store::text(&m["content"]) == "accepted result"
+            )
+            .count(),
+        1
+    );
+    release.add_permits(1);
+    runtime.shutdown().await;
+    server.abort();
+}
+
+#[tokio::test]
+#[ignore = "requires HEXBOT_TEST_PI to the pinned Pi executable"]
 async fn actual_pi_streams_and_executes_native_memory_tool() {
     use axum::{Json, Router, extract::State, routing::post};
     use std::sync::{Arc, Mutex};

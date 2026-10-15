@@ -84,8 +84,11 @@ helpers can call provider APIs with the section's credentials and incur costs.
 Each card shows the command or action and why it asks. Approve runs it once. Deny stops it, and the bot sees that you declined. Reviewed Auto cards offer only those two choices.
 
 Stop cancels pending approvals, questions and Auto reviews. Requests that arrive
-while the turn is stopping are cancelled too. Background results wait until Stop
-and the current turn or compaction finish. Bots can ask again on the next turn.
+while the turn is stopping are cancelled too. An answer accepted before Stop can
+finish; a card Stop has already cancelled cannot approve a step. Background
+results, including ones already queued before Stop, wait until Stop and the
+current turn or compaction finish, then run before newer messages. Steering
+waits too. Bots can ask again on the next turn.
 
 When a Manual or unreviewed card offers Allow in this section, it stops asking for that kind of request while the section's agent process runs. For example, Manual can grant full-access commands, outside file changes, or one connected server. In Auto, unreviewed shell requests without a sandbox and host-configuration file requests can offer a section grant. These grants never cover reviewed Auto steps. Nothing is saved across sections. Incomplete file scans and requests the daemon raises itself, such as code runs, browser scripts and scheduling, offer Approve and Deny only.
 

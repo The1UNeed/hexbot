@@ -2135,11 +2135,18 @@ async fn reviewer_rechecks_pending_and_projected_owner_restrictions() {
     let script = home.path().join("pi.cjs");
     let source = fs::read_to_string(&script).unwrap().replace("const fs=require('node:fs')", r#"if(process.argv.includes('--no-session')){const emit=v=>process.stdout.write(JSON.stringify(v)+'\n');require('node:readline').createInterface({input:process.stdin}).on('line',line=>{const c=JSON.parse(line);emit({type:'response',id:c.id,command:c.type,success:true,data:{}});if(c.type!=='prompt')return;const socket=require('node:net').connect(Number(require('node:fs').readFileSync(__dirname+'/review-port','utf8')),'127.0.0.1',()=>socket.write('reviewing\n'));socket.once('data',()=>{emit({type:'message_end',message:{role:'assistant',content:[{type:'text',text:'{"decision":"allow","risk":"low"}'}],stopReason:'stop'}});emit({type:'agent_settled'});socket.end();});});return;}
 const fs=require('node:fs')"#);
+    // These owner inputs join a live run, as steering does in Pi. Keep the
+    // generic prompt fixture from settling while a synthetic review is pending.
+    let source = source.replace("if(c.type==='extension_ui_response')", "if(c.type==='steer'||(c.type==='prompt'&&c.streamingBehavior==='followUp')){emit({type:'response',id:c.id,command:c.type,success:true,data:{disposition:'queued'}});return;}if(c.type==='extension_ui_response')");
     fs::write(script, source).unwrap();
     let live = open(&runtime).await;
     let s = runtime.sessions.lock().unwrap()["first"].clone();
     let ask = |id| json!({"type":"extension_ui_request","id":id,"method":"select","title":format!("__HEXBOT_APPROVAL__{}", json!({"tool":"bash","command":"publish report","input":{"command":"publish report","full_access":true},"cwd":"/work","review":true})),"options":["once","session","deny"]});
     let mut events = hub.subscribe();
+    runtime
+        .submit(&s, "wait", false, false, None, None)
+        .await
+        .unwrap();
     runtime
         .call(
             "alice",

@@ -24,6 +24,9 @@ data model. The native transport and event projection live in
 ## Core methods the client calls directly
 
 - Chat: `prompt.submit {session_id, text, attachments?}`, `session.interrupt`, `session.steer`.
+  `session.steer {session_id, text}` steers a healthy busy run. During Stop or
+  manual compaction it waits before staging input; when idle it starts a fresh
+  run. Close or process exit rejects a waiting steer with a session error.
 - History: `session.history {session_id}`, `session.events.since` on reconnect.
 - Attachments: `image.attach_bytes {session_id, content_base64, filename}`,
   `file.attach {session_id, data_url, name}`, `pdf.attach {session_id, content_base64}`.
@@ -71,9 +74,17 @@ data model. The native transport and event projection live in
   flags also produce a one-step card.
   Stop cancels pending approvals, questions and Auto reviews. Approvals and
   questions arriving while the turn is stopping are cancelled before Pi's abort
-  finishes, without publishing new cards. Queued input arriving during Stop
-  waits until Stop finishes and the stopped run or command completes, then
-  starts or joins a fresh run. Idle Stop needs no run-settlement event.
+  finishes, without publishing new cards. A client answer that Stop has already
+  claimed returns 4204. An answer committed to Pi before Stop can finish;
+  duplicate answers cannot commit again. Partial clarification answers remain
+  waiting, and a failed final enqueue leaves the last question retryable.
+  Queued input arriving during Stop waits until Stop finishes and the stopped
+  run or command completes, then starts or joins a fresh run. Input already
+  accepted into Pi's queue is recovered at that boundary too, before later
+  input is admitted. Pi's steering-before-follow-up order is preserved, with
+  each input's original display intent, images, file references and Chain.
+  Recovery keeps the same Pi session, stored history, prompt and tools.
+  Idle Stop needs no run-settlement event.
   That run accepts tools, approvals and questions again.
   If abort fails or times out, Pi exits and waiting deliveries report an error.
   Without OS isolation, shell commands require user approval even with

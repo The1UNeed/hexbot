@@ -130,6 +130,15 @@ it also installs over SSH when nobody is signed in at the screen.
 - Settled Pi processes retire after 15 idle minutes. Session IDs remain valid;
   a later RPC resumes the durable session. Staged files and pending questions
   prevent retirement. Replay retention is bounded by session count and bytes.
+  Stop also blocks retirement and input admission through its cleanup and queue
+  recovery. Pi 1.0.1 retains queued user input on abort. After Stop, the old
+  operation and its preflights finish before `clear_queue` returns the retained
+  steering and follow-ups. The daemon resubmits their original envelopes into
+  the same session, retaining prompt intents, images, file references and Chain.
+  Transport preflight dispositions share the ordered event stream so identical
+  owner and hidden input cannot exchange display intents. No past context or
+  frozen prompt/tool options are rebuilt. Client dialog answers claim the event
+  gate through the response enqueue; Stop rejects later claims with 4204.
 - `profiles/<bot>/pi/` is the bot's Pi agent directory. The daemon rewrites
   `auth.json`, `models.json`, and the `compaction` key of `settings.json`
   atomically before every Pi start and whenever credentials change; other
