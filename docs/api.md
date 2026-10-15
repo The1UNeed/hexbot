@@ -69,6 +69,9 @@ data model. The native transport and event projection live in
   retains explicit GitHub-token authentication; unavailable stored login,
   configured arguments beyond `--acp`/`--stdio`, or incompatible isolation
   flags also produce a one-step card.
+  Stop cancels pending approvals, questions and Auto reviews. Approvals and
+  questions arriving while the turn is stopping are cancelled before Pi's abort
+  finishes, without publishing new cards. A new turn accepts dialogs again.
   Without OS isolation, shell commands require user approval even with
   `full_access`; review cannot replace
   it. Explicit section grants can cover unreviewed requests when offered.

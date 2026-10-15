@@ -323,14 +323,15 @@ impl Runtime {
                     return;
                 }
                 state.pending.insert(id.clone(), request);
+                drop(state);
+                runtime.events.emit(
+                    &source.owner,
+                    None,
+                    "hexbot.bots.changed",
+                    json!({"name":source.bot}),
+                );
+                runtime.emit(&source, "approval.request", payload);
             }
-            runtime.events.emit(
-                &source.owner,
-                None,
-                "hexbot.bots.changed",
-                json!({"name":source.bot}),
-            );
-            runtime.emit(&source, "approval.request", payload);
         });
         Ok(())
     }

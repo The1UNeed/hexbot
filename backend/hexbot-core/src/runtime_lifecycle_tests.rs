@@ -1,5 +1,8 @@
 use super::*;
 
+#[path = "runtime_stop_tests.rs"]
+mod stop_tests;
+
 fn setup() -> (common::TestHome, Arc<Runtime>, EventHub) {
     let home = common::TestHome::new();
     db::migrate(home.path()).unwrap();

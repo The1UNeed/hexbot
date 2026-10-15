@@ -2366,8 +2366,9 @@ impl Runtime {
         payload["request_id"] = json!(id);
         payload["choices"] = json!(["once", "deny"]);
         {
+            let _gate = s.event_gate.lock().unwrap();
             let mut state = s.state.lock().unwrap();
-            if state.closed {
+            if state.closed || state.interrupted {
                 return Ok(false);
             }
             state.native_approvals.insert(id.clone(), sender);
@@ -2375,10 +2376,11 @@ impl Runtime {
                 id.clone(),
                 json!({"kind":"approval","method":"native","approval_payload":payload}),
             );
+            drop(state);
+            self.emit(s, "approval.request", payload);
+            self.events
+                .emit(&s.owner, None, "hexbot.bots.changed", json!({"name":s.bot}));
         }
-        self.emit(s, "approval.request", payload);
-        self.events
-            .emit(&s.owner, None, "hexbot.bots.changed", json!({"name":s.bot}));
         let answer = receiver.await.unwrap_or_else(|_| "deny".into());
         s.state.lock().unwrap().pending.remove(&id);
         Ok(answer != "deny")
@@ -3452,6 +3454,33 @@ impl Runtime {
             "extension_ui_request" => {
                 let id = event["id"].as_str().unwrap_or("");
                 let title = event["title"].as_str().unwrap_or("");
+                if !title.starts_with("__HEXBOT_TOOL__")
+                    && (title.starts_with("__HEXBOT_CLARIFY__")
+                        || matches!(
+                            event["method"].as_str(),
+                            Some("select" | "confirm" | "input" | "editor")
+                        ))
+                    && s.state.lock().unwrap().interrupted
+                {
+                    // Pi can prepare another dialog while Stop cancels the first.
+                    // Answer it so abort can finish, without publishing another card.
+                    let source = s.clone();
+                    let id = id.to_owned();
+                    let mut tasks = s.requests.lock().unwrap();
+                    while tasks.try_join_next().is_some() {}
+                    s.state.lock().unwrap().tool_dialogs.insert(id.clone());
+                    tasks.spawn(async move {
+                        if let Err(error) = source
+                            .process
+                            .respond_extension(&id, json!({"cancelled":true}), DEADLINE)
+                            .await
+                        {
+                            eprintln!("Could not cancel late bot dialog {id}: {error}");
+                        }
+                        source.state.lock().unwrap().tool_dialogs.remove(&id);
+                    });
+                    return Ok(());
+                }
                 if let Some(request) = title.strip_prefix("__HEXBOT_TOOL__") {
                     let request: Value = serde_json::from_str(request)
                         .map_err(|e| Error::new(5201, e.to_string()))?;
