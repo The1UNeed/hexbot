@@ -1,6 +1,7 @@
 import { createRootRoute, Outlet, useNavigate, useRouterState } from '@tanstack/react-router'
 import { useEffect, useRef } from 'react'
 
+import { ChatChooser } from '../app/chat-chooser'
 import { ConnectionLost, useConnectionLost } from '../app/connection-lost'
 import { UpdateInstalling, useUpdateInstalling } from '../app/update-installing'
 import { userMemoryGet } from '../lib/api'
@@ -79,6 +80,7 @@ function RootLayout() {
       </div>
       <div className="contents" inert={lost || installing}>
         <Outlet />
+        <ChatChooser />
       </div>
       {lost && !installing ? <ConnectionLost /> : null}
       {installing ? <UpdateInstalling /> : null}

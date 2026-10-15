@@ -6,6 +6,7 @@ export {
   type NewBot,
   NewBotSheet
 } from './BotSheets'
+export { ChatChooser, type ChatChooserProps } from './ChatChooser'
 export { ApprovalCard, ChatBody, ChatScreen, type ChatScreenProps, VisualCard } from './ChatScreen'
 export {
   type ConnectionPending,

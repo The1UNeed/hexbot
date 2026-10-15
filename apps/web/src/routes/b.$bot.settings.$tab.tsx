@@ -28,6 +28,7 @@ import {
 } from '../components/ui/settings-shell'
 import { botFace } from '../lib/avatar-builder'
 import { useBots } from '../stores/bots'
+import { sectionsActions } from '../stores/sections'
 import { useUi } from '../stores/ui'
 
 export const Route = createFileRoute('/b/$bot/settings/$tab')({
@@ -88,8 +89,16 @@ function BotSettingsDialog() {
     }
   }, [botName, tab])
 
-  const close = () => {
-    const section = lastSection?.bot === botName ? lastSection.section : bot?.sections_recent[0]?.id
+  // Back to the section the user was in, else the bot's chat.
+  const close = async () => {
+    const section =
+      lastSection?.bot === botName
+        ? lastSection.section
+        : (
+            await sectionsActions()
+              .chat(botName)
+              .catch(() => null)
+          )?.id
 
     void (section
       ? navigate({ params: { bot: botName, section }, to: '/b/$bot/s/$section' })
@@ -120,7 +129,7 @@ function BotSettingsDialog() {
         }
         label={`${name} bot settings`}
         navLabel="Bot settings tabs"
-        onClose={close}
+        onClose={() => void close()}
         onSelect={item =>
           void navigate({ params: { bot: botName, tab: item }, to: '/b/$bot/settings/$tab' })
         }

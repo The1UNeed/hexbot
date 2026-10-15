@@ -14,6 +14,7 @@ import { pickFile } from './src/core/pickFile'
 import AsyncStorage from '@react-native-async-storage/async-storage'
 import {
   ChatBody,
+  ChatChooser,
   ChatScreen,
   type ChatScreenProps,
   ConnectionScreen,
@@ -1033,6 +1034,11 @@ function MobileApp() {
           setBotPage(null)
           changeTab('rooms')
         }}
+      />
+      <ChatChooser
+        choices={mobile.choosing?.choices ?? []}
+        name={mobile.choosing ? mobile.choosing.bot.display_name || mobile.choosing.bot.name : null}
+        onChoose={mobile.choose}
       />
       <DaemonSwitcher
         visible={switcherOpen}

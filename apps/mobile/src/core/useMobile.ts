@@ -17,7 +17,7 @@ import { emptyChat, historyMessages, reduceChat, replayChat } from './chat'
 import { reduceRoom, restoreRoom, roomChat, roomMessage } from './room-chat'
 import { attachmentPrompt } from './chat-send'
 import { modelLists, providerModels } from './models'
-import { ROOMS_QUERY, SECTIONS_QUERY, defaultSection, rebind, type ChatRoute } from './routes'
+import { ROOMS_QUERY, SECTIONS_QUERY, botChat, rebind, type ChatRoute } from './routes'
 import type {
   Bot,
   Section,
@@ -63,6 +63,10 @@ export function useMobile() {
   const unsent = useRef(new Set<string>())
   /** The live session whose running turn was half in the history when it loaded. */
   const straddling = useRef<string | null>(null)
+  /** An older daemon's sections to pick a bot's chat from, while asked. */
+  const [choosing, setChoosing] = useState<{ bot: Bot; choices: Section[] } | null>(null)
+  /** Each bot's chat on an older daemon, so the user is asked once while the app runs. */
+  const picked = useRef(new Map<string, string>())
   const rpc: Rpc = useCallback(async (method, params = {}) => {
     const current = session.current
     if (!current || current.client.connectionState !== 'open')
@@ -342,6 +346,8 @@ export function useMobile() {
       setInfo(null)
       setSettings(null)
       setUser(null)
+      setChoosing(null)
+      picked.current.clear()
       openSequence.current++
       loadingEvents.current = null
       routeRef.current = null
@@ -421,21 +427,13 @@ export function useMobile() {
     setLoading(true)
     setError(null)
     try {
-      // An older daemon makes a section on every create: choose from what it has now.
-      const oneChat = info?.one_chat === true
-      const known =
-        section || oneChat
-          ? sections
-          : (
-              await rpc<{ sections: Section[] }>('hexbot.sections.list', {
-                ...SECTIONS_QUERY,
-                bot: bot.name
-              })
-            ).sections
-      const selected =
-        section ??
-        defaultSection(known, bot.name, oneChat) ??
-        (await rpc<{ section: Section }>('hexbot.sections.create', { bot: bot.name })).section
+      const oneChat = (info ?? (await rpc<DaemonInfo>('hexbot.info'))).one_chat === true
+      const found = await botChat(rpc, bot.name, oneChat, picked.current, section)
+      if ('choices' in found) {
+        setChoosing({ bot, choices: found.choices })
+        return
+      }
+      const selected = found.section
       const here = routeRef.current
       if (here?.kind !== 'section' || here.section.id !== selected.id) releaseStaged()
       const target: ChatRoute = { kind: 'section', section: selected, bot }
@@ -449,6 +447,12 @@ export function useMobile() {
     } finally {
       setLoading(false)
     }
+  }
+  /** Opens the section picked on an older daemon, or nothing when none is. */
+  const choose = (section: Section | null) => {
+    const asked = choosing
+    setChoosing(null)
+    if (asked && section) void openSection(asked.bot, section)
   }
   const openRoom = async (room: Room) => {
     setLoading(true)
@@ -620,6 +624,8 @@ export function useMobile() {
     activate,
     pairing,
     openSection,
+    choosing,
+    choose,
     openRoom,
     send,
     stop,

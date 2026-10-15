@@ -62,8 +62,17 @@ struct State {
     tool_context: HashMap<String, String>,
     unsaved: VecDeque<(Value, Option<String>, Option<Value>)>,
     /// Something was added to the conversation outside the turn; clients
-    /// read it again once the turn settles.
+    /// read it again once the turn ends.
     reread: bool,
+}
+impl State {
+    /// Ends the turn, however it ends: settled, compacted, refused or cut
+    /// off. True when clients should read the section again for what was
+    /// added outside it meanwhile.
+    fn end_turn(&mut self) -> bool {
+        self.busy = false;
+        std::mem::take(&mut self.reread)
+    }
 }
 /// One upload: an image, a file reference, or the rendered pages of a PDF.
 struct Staged {
@@ -83,6 +92,8 @@ impl Landing {
             return Err(Error::new(4001, "session not found"));
         }
         state.landing += 1;
+        #[cfg(test)]
+        s.landed.notify_one();
         Ok(Self(s.clone()))
     }
 }
@@ -150,6 +161,9 @@ struct Live {
     /// Reviews running or waiting their turn; "Checking this step" shows
     /// while this is above zero.
     reviewing: Mutex<usize>,
+    /// Told when input starts on its way in, so a test acts while it is.
+    #[cfg(test)]
+    landed: tokio::sync::Notify,
 }
 /// The part of a section's options that picks its model.
 fn model_choice(options: &Value) -> Value {
@@ -364,6 +378,15 @@ impl Runtime {
             payload["section_id"] = json!(s.stored);
         }
         self.events.emit(&s.owner, Some(&s.id), kind, payload);
+    }
+    /// Asks clients to read a section again for what was added outside its turn.
+    fn reload(&self, s: &Live) {
+        self.events.emit(
+            &s.owner,
+            None,
+            "hexbot.sections.changed",
+            json!({"id":s.stored,"bot":s.bot,"reload":true}),
+        );
     }
     /// The name the UI shows for a bot.
     fn bot_label(&self, bot: &str) -> String {
@@ -951,6 +974,8 @@ impl Runtime {
             proposal: Mutex::new(None),
             reviews: tokio::sync::Semaphore::new(review::REVIEWS),
             reviewing: Mutex::new(0),
+            #[cfg(test)]
+            landed: tokio::sync::Notify::new(),
         });
         {
             let mut sessions = self.sessions.lock().unwrap();
@@ -1377,19 +1402,18 @@ impl Runtime {
                 .request(json!({"type":"compact","customInstructions":text.trim().strip_prefix("/compact").unwrap_or("").trim()}), Duration::from_secs(300))
                 .await
                 .map_err(pi_error);
-            s.state.lock().unwrap().busy = false;
-            let result = response.and_then(|reply| {
-                if reply.success {
-                    Ok(())
-                } else {
-                    Err(Error::new(
-                        5201,
-                        reply.error.unwrap_or_else(|| "Summarising failed".into()),
-                    ))
-                }
-            });
-            match result {
-                Ok(()) => {
+            let result = response
+                .and_then(|reply| {
+                    if reply.success {
+                        Ok(())
+                    } else {
+                        Err(Error::new(
+                            5201,
+                            reply.error.unwrap_or_else(|| "Summarising failed".into()),
+                        ))
+                    }
+                })
+                .and_then(|()| {
                     store::append(
                         &self.home,
                         &s.stored,
@@ -1399,7 +1423,14 @@ impl Runtime {
                         &self.home,
                         &s.stored,
                         json!({"role":"assistant","text":"Older messages summarised."}),
-                    )?;
+                    )
+                });
+            // Pi settles no turn for a compaction; it ends here, stored or not.
+            if s.state.lock().unwrap().end_turn() {
+                self.reload(s);
+            }
+            match result {
+                Ok(()) => {
                     self.emit(
                         s,
                         "message.complete",
@@ -1525,11 +1556,14 @@ impl Runtime {
                     let later = std::mem::replace(&mut state.staged, sent);
                     state.staged.extend(later);
                 }
-                state.busy = false;
+                let reread = state.end_turn();
                 state.error = Some(error.message.clone());
                 state.display.pop_back();
                 self.events
                     .emit(&s.owner, None, "hexbot.bots.changed", json!({"name":s.bot}));
+                if reread {
+                    self.reload(s);
+                }
                 s.settled.send_modify(|v| *v += 1);
                 Err(error)
             }
@@ -1759,13 +1793,13 @@ impl Runtime {
     }
     /// Adds a message to a section outside its turns, such as a dream report;
     /// a running process keeps going. True when clients can read the section
-    /// again now. While a turn runs they are told when it settles, which is
-    /// always after the message is stored.
+    /// again now. While a turn runs they are told when it ends, however it
+    /// ends, which is always after the message is stored.
     pub fn append_outside_turn(&self, stored: &str, message: Value) -> Result<bool> {
         store::append(&self.home, stored, message)?;
         let running = self.sessions.lock().unwrap().get(stored).cloned();
         Ok(running.is_none_or(|s| {
-            // The turn's settle takes `reread` under this lock.
+            // `State::end_turn` takes `reread` under this lock.
             let mut state = s.state.lock().unwrap();
             if state.busy && !state.closed {
                 state.reread = true;
@@ -3628,19 +3662,13 @@ impl Runtime {
                     if !state.display.is_empty() {
                         return Ok(());
                     }
-                    state.busy = false;
+                    if state.end_turn() {
+                        self.reload(s);
+                    }
                     state.last_activity = common::now();
                     // Pi sends no end event for tools cut short by an abort.
                     state.tool_started.clear();
                     state.tool_context.clear();
-                    if std::mem::take(&mut state.reread) {
-                        self.events.emit(
-                            &s.owner,
-                            None,
-                            "hexbot.sections.changed",
-                            json!({"id":s.stored,"bot":s.bot,"reload":true}),
-                        );
-                    }
                     (
                         state.output.clone(),
                         state.error.clone(),
@@ -3897,11 +3925,11 @@ fn pump(
                     let mut state = s.state.lock().unwrap();
                     let was_closed = state.closed;
                     let busy = state.busy && !was_closed;
-                    state.busy = false;
+                    let reread = state.end_turn();
                     state.closed = true;
                     state.error = Some(error.message.clone());
                     state.pending.clear();
-                    (busy, was_closed, std::mem::take(&mut state.reread))
+                    (busy, was_closed, reread)
                 };
                 if busy {
                     runtime.incident(&s, &error.message);
@@ -3916,14 +3944,10 @@ fn pump(
                     Runtime::cancel_dialogs(&s).await;
                     crate::native_tools::close_session(&runtime.home, &s.stored).await;
                 }
-                // What was added during the turn is read now that it has ended.
-                if reread && !was_closed {
-                    runtime.events.emit(
-                        &s.owner,
-                        None,
-                        "hexbot.sections.changed",
-                        json!({"id":s.stored,"bot":s.bot,"reload":true}),
-                    );
+                // What was added during the turn is read now that it has
+                // ended, even when the section was closed under it.
+                if reread {
+                    runtime.reload(&s);
                 }
                 s.permit.lock().unwrap().take();
                 s.settled.send_modify(|v| *v += 1);

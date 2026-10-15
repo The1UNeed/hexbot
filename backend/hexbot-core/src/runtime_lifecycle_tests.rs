@@ -5440,6 +5440,92 @@ async fn a_report_is_always_read_again_after_it_is_stored() {
     assert_eq!(texts, ["Mid-turn", "Idle", "Before exit"]);
     runtime.shutdown().await;
 }
+/// A turn Pi never settles reads a report again when it ends: a compaction
+/// that finishes or fails, or a message Pi refuses. The chat keeps its
+/// process, and the report is stored before clients read it.
+#[tokio::test]
+async fn a_report_is_read_again_however_a_turn_ends() {
+    let (home, runtime, hub) = setup();
+    // This Pi holds each compaction and message until the test answers it.
+    fs::write(
+        home.path().join("pi.cjs"),
+        r#"#!/usr/bin/env node
+const rl=require('node:readline').createInterface({input:process.stdin});
+const emit=v=>process.stdout.write(JSON.stringify(v)+'\n');
+let held=null;
+rl.on('line',line=>{const c=JSON.parse(line);
+if(c.type==='extension_ui_response'){if(held)emit({type:'response',id:held.id,command:held.type,success:c.value==='ok',error:c.value});held=null;return;}
+if(c.type==='compact'||c.type==='prompt'){held=c;emit({type:'extension_ui_request',method:'setStatus',statusText:'held'});return;}
+emit({type:'response',id:c.id,command:c.type,success:true,data:{}});});
+"#,
+    )
+    .unwrap();
+    let mut events = hub.subscribe();
+    let id = open(&runtime).await;
+    let s = runtime.sessions.lock().unwrap()["first"].clone();
+    for (text, answer) in [
+        ("/compact", "ok"),
+        ("/compact", "Summarising failed"),
+        ("Hello", "Prompt rejected"),
+    ] {
+        let turn = {
+            let (runtime, id) = (runtime.clone(), id.clone());
+            tokio::spawn(async move {
+                runtime
+                    .call(
+                        "alice",
+                        "prompt.submit",
+                        &json!({"session_id":id,"text":text}),
+                    )
+                    .await
+                    .unwrap()
+            })
+        };
+        // Pi has it, so the turn is running.
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let event = events.recv().await.unwrap();
+                if event.frame["params"]["type"] == "status.update"
+                    && event.frame["params"]["payload"]["text"] == "held"
+                {
+                    break;
+                }
+            }
+        })
+        .await
+        .unwrap();
+        let report = format!("Report while {text} ends with {answer}");
+        assert!(
+            !runtime
+                .append_outside_turn(
+                    "first",
+                    json!({"role":"assistant","text":report,"dream":true})
+                )
+                .unwrap()
+        );
+        s.process
+            .respond_extension("held", json!({"value":answer}), Duration::from_secs(5))
+            .await
+            .unwrap();
+        assert_eq!(
+            next_reload(&mut events).await,
+            json!({"id":"first","bot":"owl","reload":true})
+        );
+        let texts = store::history(&runtime.home, "first")
+            .unwrap()
+            .into_iter()
+            .map(|m| m["text"].as_str().unwrap_or("").to_owned())
+            .collect::<Vec<_>>();
+        assert!(texts.contains(&report), "{texts:?}");
+        assert_eq!(turn.await.unwrap().is_ok(), answer == "ok", "{text}");
+        if answer == "ok" {
+            assert!(texts.iter().any(|t| t == "Older messages summarised."));
+        }
+    }
+    assert!(Arc::ptr_eq(&s, &runtime.sessions.lock().unwrap()["first"]));
+    assert!(!s.state.lock().unwrap().busy);
+    runtime.shutdown().await;
+}
 #[tokio::test]
 async fn an_upload_on_its_way_in_keeps_its_section_running() {
     let (home, runtime, _) = setup();
@@ -5460,13 +5546,10 @@ async fn an_upload_on_its_way_in_keeps_its_section_running() {
                 .unwrap()
         })
     };
-    tokio::time::timeout(Duration::from_secs(5), async {
-        while s.state.lock().unwrap().landing == 0 {
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .unwrap();
+    tokio::time::timeout(Duration::from_secs(5), s.landed.notified())
+        .await
+        .unwrap();
+    assert_eq!(s.state.lock().unwrap().landing, 1);
     // Running out of room, a dream report and new tools leave it running.
     assert_eq!(runtime.retire_idle(f64::INFINITY).await.unwrap(), 0);
     assert!(

@@ -2,13 +2,13 @@ import { describe, it, expect } from 'vitest'
 import {
   ROOMS_QUERY,
   SECTIONS_QUERY,
-  defaultSection,
+  botChat,
   isOpenRoom,
   rebind,
   shownRoom,
   type ChatRoute
 } from './routes'
-import type { Bot, Room, Section } from './types'
+import type { Bot, Room, Rpc, Section } from './types'
 const bot = { name: 'ada', display_name: 'Ada' } as Bot
 const section = (id: string, extra: Partial<Section> = {}) =>
   ({ id, bot: 'ada', title: id, ...extra }) as Section
@@ -23,33 +23,76 @@ describe('open conversation', () => {
     )
     expect(rebind(route, { bots: [bot], rooms: [], sections: [section('a')] })).toBeNull()
   })
-  it('opens a bot on its one chat, not a teammate thread', () => {
-    const thread = section('t', { peer_bot: 'grace' } as Partial<Section>)
-    expect(defaultSection([thread, section('mine')], 'ada', true)?.id).toBe('mine')
-    // Two left from before, or an archived one: the daemon picks.
-    expect(defaultSection([section('old'), section('mine')], 'ada', true)).toBeUndefined()
-    expect(
-      defaultSection([section('old', { archived_at: 1 } as Partial<Section>)], 'ada', true)
-    ).toBeUndefined()
+})
+describe("a bot's chat", () => {
+  const said = (id: string, extra: Partial<Section> = {}) =>
+    section(id, { message_count: 3, updated_at: 1, ...extra } as Partial<Section>)
+  /** A daemon listing `sections`, recording each call. */
+  const daemon = (sections: Section[], fail?: string) => {
+    const calls: [string, Record<string, unknown>?][] = []
+    const rpc = (async (method: string, params?: Record<string, unknown>) => {
+      calls.push([method, params])
+      if (method === fail) throw new Error('daemon unavailable')
+      if (method === 'hexbot.sections.list') return { sections }
+      if (method === 'hexbot.sections.unarchive')
+        return { section: { ...sections.find(s => s.id === params?.id), archived_at: null } }
+      return { section: section('made') }
+    }) as Rpc
+    return { calls, rpc, methods: () => calls.map(([method]) => method) }
+  }
+  it('is the one a daemon with one chat per bot names, whatever this app lists', async () => {
+    // Its only section may be one recovery set aside: the daemon makes a new chat.
+    const { methods, rpc } = daemon([said('set-aside')])
+    expect(await botChat(rpc, 'ada', true, new Map())).toEqual({ section: section('made') })
+    expect(methods()).toEqual(['hexbot.sections.create'])
   })
-  it('keeps to the chat an older daemon keeps, which makes a section on every create', () => {
-    const said = (id: string, extra: Partial<Section> = {}) =>
-      section(id, { message_count: 3, updated_at: 1, ...extra } as Partial<Section>)
+  it('is asked for on an older daemon rather than guess which section is its Dreams log', async () => {
+    // A real conversation, and a newer log the user renamed: the list cannot tell them apart.
     const sections = [
-      section('thread', { peer_bot: 'grace', message_count: 9, updated_at: 9 } as Partial<Section>),
-      section('empty', { message_count: 0, updated_at: 8 } as Partial<Section>),
-      said('dreams', { title: 'Dreams', title_by: null, updated_at: 7 }),
-      said('put-away', { archived_at: 5, updated_at: 6 }),
-      said('long'),
-      said('named', { title: 'Dreams', title_by: 'bot', updated_at: 0 })
+      said('night', { title: 'Night notes', updated_at: 9 }),
+      said('trip', { title: 'Trip', updated_at: 5 }),
+      section('empty', { message_count: 0, updated_at: 10 } as Partial<Section>),
+      said('thread', { peer_bot: 'grace', updated_at: 11 } as Partial<Section>)
     ]
-    // Something said, then not the Dreams log, then not archived, then newest.
-    expect(defaultSection(sections, 'ada', false)?.id).toBe('long')
-    expect(defaultSection(sections.slice(0, 4), 'ada', false)?.id).toBe('put-away')
-    expect(defaultSection(sections.slice(0, 3), 'ada', false)?.id).toBe('dreams')
-    expect(defaultSection(sections.slice(0, 2), 'ada', false)?.id).toBe('empty')
-    // Nothing yet: the one create makes is the chat.
-    expect(defaultSection(sections.slice(0, 1), 'ada', false)).toBeUndefined()
+    const { calls, methods, rpc } = daemon(sections)
+    const picked = new Map<string, string>()
+    const found = await botChat(rpc, 'ada', false, picked)
+    expect('choices' in found && found.choices.map(s => s.id)).toEqual(['night', 'trip'])
+    expect(calls[0]).toEqual(['hexbot.sections.list', { ...SECTIONS_QUERY, bot: 'ada' }])
+    // The one picked is the chat from then on, while the app runs.
+    expect(await botChat(rpc, 'ada', false, picked, sections[1])).toEqual({ section: sections[1] })
+    expect(await botChat(rpc, 'ada', false, picked)).toEqual({ section: sections[1] })
+    expect(methods()).not.toContain('hexbot.sections.create')
+    // So is a conversation the user named Dreams beside another.
+    const named = said('named', { title: 'Dreams', title_by: null, updated_at: 7 })
+    const both = await botChat(daemon([named, sections[1]!]).rpc, 'ada', false, new Map())
+    expect('choices' in both && both.choices.map(s => s.id)).toEqual(['named', 'trip'])
+  })
+  it('is the one section with something said on an older daemon, made only for none', async () => {
+    const dreams = said('dreams', { title: 'Dreams', updated_at: 2 })
+    const empty = section('empty', { message_count: 0, updated_at: 9 } as Partial<Section>)
+    const open = (sections: Section[]) => botChat(daemon(sections).rpc, 'ada', false, new Map())
+    expect(await open([dreams, empty])).toEqual({ section: dreams })
+    expect(await open([empty])).toEqual({ section: empty })
+    const none = daemon([said('other', { bot: 'grace' })])
+    expect(await botChat(none.rpc, 'ada', false, new Map())).toEqual({ section: section('made') })
+    expect(none.methods()).toEqual(['hexbot.sections.list', 'hexbot.sections.create'])
+  })
+  it('comes out of the archive to take messages, or fails without a new section', async () => {
+    const archived = said('trip', { archived_at: 5 })
+    const ok = daemon([archived])
+    // The chat screen shows the composer only for a section that is not archived.
+    const found = await botChat(ok.rpc, 'ada', false, new Map())
+    expect(found).toEqual({ section: { ...archived, archived_at: null } })
+    expect(ok.calls.at(-1)).toEqual(['hexbot.sections.unarchive', { id: 'trip' }])
+    // Picked from the choices too.
+    const picked = await botChat(ok.rpc, 'ada', false, new Map(), archived)
+    expect(picked).toEqual({ section: { ...archived, archived_at: null } })
+    const failing = daemon([archived], 'hexbot.sections.unarchive')
+    await expect(botChat(failing.rpc, 'ada', false, new Map())).rejects.toThrow(
+      'daemon unavailable'
+    )
+    expect(failing.methods()).not.toContain('hexbot.sections.create')
   })
 })
 describe('rooms', () => {

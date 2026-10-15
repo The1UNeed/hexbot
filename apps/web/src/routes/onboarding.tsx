@@ -87,7 +87,8 @@ export function initialOnboardingStep(input: {
 /**
  * Where onboarding ends for someone who already has bots: the chat they were
  * in, else the chat of a bot they have talked to, else the first bot's chat.
- * Null when there are no bots yet.
+ * Null when there are no bots yet, or when an older daemon asked which
+ * section to continue and the user picked none.
  */
 export async function landingSection(bots: Bot[]): Promise<LastSection | null> {
   if (!bots.length) {
@@ -100,15 +101,10 @@ export async function landingSection(bots: Bot[]): Promise<LastSection | null> {
     return last
   }
 
-  const recent = bots.find(bot => bot.sections_recent.length)
+  const bot = bots.find(bot => bot.sections_recent.length) ?? bots[0]!
+  const section = await sectionsActions().chat(bot.name)
 
-  if (recent) {
-    return { bot: recent.name, section: recent.sections_recent[0]!.id }
-  }
-
-  const section = await sectionsActions().chat(bots[0]!.name)
-
-  return { bot: bots[0]!.name, section: section.id }
+  return section ? { bot: bot.name, section: section.id } : null
 }
 
 /**

@@ -13,7 +13,8 @@ import {
   messagesFromHistory,
   sectionsCreate,
   sectionsList,
-  sectionsOpen
+  sectionsOpen,
+  sectionsUnarchive
 } from '../lib/api'
 import { KICKOFF_MARKER } from '../lib/bot-kickoff'
 import type { Bot, BotStatus, Message, Section } from '../lib/types'
@@ -29,25 +30,54 @@ import { useTranscripts } from './transcripts'
 export const isThread = (section: Pick<Section, 'peer_bot'>) => Boolean(section.peer_bot)
 
 /**
- * The chat a daemon from before one chat per bot keeps when it updates: one
- * with something said, then not its Dreams log, then not archived, then the
- * newest. Never a thread.
+ * A bot's chat on a daemon from before one chat per bot, which keeps many
+ * sections and makes another on every create. Its update keeps the one with
+ * the latest conversation unless that is its Dreams log, which its list
+ * cannot tell apart, renamed or not. So the chat is certain only while at
+ * most one section has something said; otherwise those are the choices,
+ * open ones first, newest first. Null for a bot with none: create makes it.
+ * Never a thread.
  */
-export function keptChat(sections: Section[], bot: string): Section | undefined {
-  const rank = (section: Section) =>
-    (section.message_count > 0 ? 4 : 0) +
-    (section.title === 'Dreams' && !section.title_by ? 0 : 2) +
-    (section.archived_at ? 0 : 1)
-
-  return sections
+export function legacyChat(
+  sections: Section[],
+  bot: string
+): { choices: Section[] } | { section: Section } | null {
+  const chats = sections
     .filter(section => section.bot === bot && !isThread(section))
-    .sort((a, b) => rank(b) - rank(a) || (b.updated_at ?? 0) - (a.updated_at ?? 0))[0]
+    .sort(
+      (a, b) =>
+        Number(Boolean(a.archived_at)) - Number(Boolean(b.archived_at)) ||
+        (b.updated_at ?? 0) - (a.updated_at ?? 0)
+    )
+
+  const said = chats.filter(section => section.message_count > 0)
+
+  if (said.length > 1) {
+    return { choices: said }
+  }
+
+  const section = said[0] ?? chats[0]
+
+  return section ? { section } : null
+}
+
+/** An older daemon's sections the user picks a bot's chat from, while asked. */
+export interface ChatChoice {
+  bot: string
+  choices: Section[]
+  /** The section picked, or null when the user picks none. */
+  pick: (section: null | Section) => void
 }
 
 export interface SectionsState {
   byId: Record<string, Section>
-  /** A bot's one chat with you, made on first use. */
-  chat: (bot: string) => Promise<Section>
+  /**
+   * A bot's one chat with you, made on first use. On an older daemon the
+   * user may be asked to pick it; null when they pick none.
+   */
+  chat: (bot: string) => Promise<null | Section>
+  /** The choice `chat` is waiting on, if any. */
+  choosing: ChatChoice | null
   /** Live ids are process-scoped; a new daemon epoch invalidates them all. */
   clearLive: () => void
   /** The daemon closed this section's live session; an open view reads it again. */
@@ -153,8 +183,45 @@ function mergeSection(state: SectionsState, section: Section): Partial<SectionsS
 /** Reloads asked for by section, so an open already under way reads it again. */
 const reloads = new Map<string, number>()
 
+/** Each bot's chat on an older daemon, so the user is asked once while the app runs. */
+const picked = new Map<string, string>()
+
+/**
+ * A bot's chat on a daemon from before one chat per bot: the one its list
+ * makes certain, else the one the user picks, brought back if archived. Made
+ * only for a bot with none, since create there makes another every time.
+ */
+async function olderChat(
+  bot: string,
+  ask: (choices: Section[]) => Promise<null | Section>
+): Promise<null | Section> {
+  const found = legacyChat(
+    (await sectionsList({ bot, include_archived: true })).sections ?? [],
+    bot
+  )
+
+  if (!found) {
+    return (await sectionsCreate(bot)).section
+  }
+
+  const section =
+    'section' in found
+      ? found.section
+      : (found.choices.find(choice => choice.id === picked.get(bot)) ?? (await ask(found.choices)))
+
+  if (!section) {
+    return null
+  }
+
+  picked.set(bot, section.id)
+
+  // Archived, it would take no messages and lose to an open one at the update.
+  return section.archived_at ? (await sectionsUnarchive(section.id)).section : section
+}
+
 export const useSections = create<SectionsState>((set, get) => ({
   byId: {},
+  choosing: null,
   error: null,
   idsByBot: {},
   liveSessionId: {},
@@ -290,12 +357,29 @@ export const useSections = create<SectionsState>((set, get) => ({
   async chat(bot) {
     const daemon = useConnection.getState().daemon ?? (await daemonInfo())
 
-    // An older daemon makes a new section on every create, so take one it has.
-    const kept = daemon.one_chat
-      ? undefined
-      : keptChat((await sectionsList({ bot, include_archived: true })).sections ?? [], bot)
+    const ask = (choices: Section[]) =>
+      new Promise<null | Section>(resolve => {
+        get().choosing?.pick(null)
+        set({
+          choosing: {
+            bot,
+            choices,
+            pick: choice => {
+              set({ choosing: null })
+              resolve(choice)
+            }
+          }
+        })
+      })
 
-    const section = kept ?? (await sectionsCreate(bot)).section
+    // The daemon names the chat, never one recovery set aside.
+    const section = daemon.one_chat
+      ? (await sectionsCreate(bot)).section
+      : await olderChat(bot, ask)
+
+    if (!section) {
+      return null
+    }
 
     set(state => ({
       ...mergeSection(state, section),

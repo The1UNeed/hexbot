@@ -140,27 +140,49 @@ describe('one chat per bot', () => {
     title: 'General'
   } as unknown as Section
 
+  const named = vi.fn((bot: string) =>
+    Promise.resolve(bot === 'scout' ? ({ ...chat, id: 'named' } as Section) : null)
+  )
+
   beforeEach(() => {
     navigate.mockClear()
+    named.mockClear()
     useRooms.setState({ byId: {}, order: [] })
     useBots.setState({ byName: { scout }, loaded: true, order: ['scout'] })
-    useSections.setState({ byId: { chat }, idsByBot: { scout: ['chat'] } })
+    useSections.setState({
+      byId: { chat },
+      chat: named,
+      idsByBot: { scout: ['chat'] },
+      open: () => new Promise(() => undefined)
+    })
   })
 
-  it('lists a bot once, without its sections, and opens its chat', async () => {
+  it('lists a bot once, without its sections, and opens the chat the daemon names', async () => {
     render(<RosterColumn />)
 
     expect(screen.getAllByRole('button', { name: /Scout/ })).toHaveLength(1)
     expect(screen.queryByText('General')).toBeNull()
 
+    // The one this window knows may be a chat recovery set aside.
     fireEvent.click(screen.getByRole('button', { name: /Scout/ }))
 
     await waitFor(() =>
       expect(navigate).toHaveBeenCalledWith({
-        params: { bot: 'scout', section: 'chat' },
+        params: { bot: 'scout', section: 'named' },
         to: '/b/$bot/s/$section'
       })
     )
+    expect(named).toHaveBeenCalledWith('scout')
+  })
+
+  it('opens nothing when the user picks no section on an older daemon', async () => {
+    named.mockResolvedValueOnce(null)
+    render(<RosterColumn />)
+
+    fireEvent.click(screen.getByRole('button', { name: /Scout/ }))
+
+    await waitFor(() => expect(named).toHaveBeenCalledWith('scout'))
+    expect(navigate).not.toHaveBeenCalled()
   })
 
   it('offers a new bot and a new room, not a new section', async () => {

@@ -404,6 +404,11 @@ export function sectionsCreate(bot: string): Promise<{ section: Section }> {
   return rpcCall<{ section: Section }>('hexbot.sections.create', { bot })
 }
 
+/** Brings an archived section back. A daemon that keeps one chat per bot does it on create. */
+export function sectionsUnarchive(id: string): Promise<{ section: Section }> {
+  return rpcCall<{ section: Section }>('hexbot.sections.unarchive', { id })
+}
+
 export interface SectionOpened {
   /** How full the section's context is; see `ContextUsage`. */
   context?: ContextUsage

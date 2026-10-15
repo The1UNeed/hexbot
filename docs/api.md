@@ -265,11 +265,15 @@ returned by `open`.
   kept.
 - `hexbot.sections.create {bot}` → `{section: Section}`: the bot's chat,
   made titled `General` on first use. An archived chat comes back. A `title`
-  from an older client is ignored. A daemon without `one_chat` in
-  `hexbot.info` makes a new section on every call, so clients there list the
-  bot's sections and open the one its upgrade will keep (something said, then
-  not its `Dreams` log, then not archived, then newest), and call `create`
-  only when the bot has none.
+  from an older client is ignored. Clients call it for the bot's chat rather
+  than pick from their own list, which cannot tell a section recovery set
+  aside. A daemon without `one_chat` in `hexbot.info` makes a new section on
+  every call, so clients there list the bot's sections and call `create`
+  only when it has none. Its upgrade keeps the latest conversation unless
+  that is its `Dreams` log, which its list cannot tell apart, so a client
+  opens a section by itself only while at most one has something said (the
+  newest open one when none has); otherwise the user picks among those, once
+  per bot while the app runs. A chosen archived section is unarchived first.
 - `hexbot.sections.thread {bot, peer}` → `{section: Section | null}`: the
   caller's thread on `bot` whose sender is `peer`. It never creates one.
 - `hexbot.sections.open {id}` → `{section: Section, messages: [Message],
@@ -819,7 +823,9 @@ broadcast to every connection. When a dream report lands in a chat,
 the chat should open it again to read the report. The report never stops the
 chat's process. While a turn runs, `reload` is false and a second
 `hexbot.sections.changed {id, bot, reload: true}` follows when that turn
-settles or its process exits, always after the report is stored.
+ends, always after the report is stored: when it settles, when a manual
+compaction finishes or fails, when Pi refuses the message, or when its
+process exits.
 Connect registration and disconnection emit `hexbot.connect.changed {}`.
 Room mutations emit `hexbot.rooms.changed {id}`. Every persisted room event
 emits `hexbot.rooms.event {room_id, event}`. Turn state changes emit

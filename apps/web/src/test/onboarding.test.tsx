@@ -37,11 +37,16 @@ describe('onboarding', () => {
     expect(initialOnboardingStep(input)).toBe(expected)
   })
 
-  it('lands in the section the user was in, any recent one, or a new one', async () => {
+  it('lands in the section the user was in, else the chat the daemon names', async () => {
     const bot = (name: string, sections: string[]) =>
       ({ name, sections_recent: sections.map(id => ({ id })) }) as unknown as Bot
 
-    const call = vi.fn(() => Promise.resolve({ section: { id: 's-new' } }))
+    const call = vi.fn((method: string, params?: { bot?: string }) =>
+      Promise.resolve(
+        method === 'hexbot.info' ? { one_chat: true } : { section: { id: `chat-${params?.bot}` } }
+      )
+    )
+
     setActiveRpc({ call } as never)
 
     expect(await landingSection([])).toBeNull()
@@ -51,14 +56,19 @@ describe('onboarding', () => {
       bot: 'scout',
       section: 's-old'
     })
+    expect(call).not.toHaveBeenCalled()
 
+    // A bot talked to before, not its recent list: one recovery set aside is never its chat.
     ui.lastSection = { bot: 'gone', section: 's-x' }
     expect(await landingSection([bot('quiet', []), bot('bea', ['s-2'])])).toEqual({
       bot: 'bea',
-      section: 's-2'
+      section: 'chat-bea'
     })
 
-    expect(await landingSection([bot('quiet', [])])).toEqual({ bot: 'quiet', section: 's-new' })
+    expect(await landingSection([bot('quiet', [])])).toEqual({
+      bot: 'quiet',
+      section: 'chat-quiet'
+    })
     expect(call).toHaveBeenCalledWith('hexbot.sections.create', { bot: 'quiet' })
     ui.lastSection = null
   })

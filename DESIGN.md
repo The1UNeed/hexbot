@@ -222,9 +222,11 @@ more freedom and more capability than a hosted product can offer.
   conversation remains; while its `state.db` cannot be read, or recovery has
   set its conversation aside, it gets a new, empty chat, and the old sections
   open once their files are repaired. Memory and notes stay.
-- An updated app on a daemon from before one chat per bot opens the section
-  that daemon will keep when it updates, and makes one only for a bot with
-  none, since that daemon makes a new section on every create.
+- An updated app on a daemon from before one chat per bot makes a section
+  only for a bot with none, since that daemon makes a new one on every
+  create. That daemon's list cannot tell its Dreams log, renamed or not, from
+  a conversation, so the app opens a section by itself only while at most
+  one has something said, and otherwise asks which one to continue.
 - A chat starts with the bot's memory and a catalog of skill descriptions.
   It loads skill bodies when needed. It picks up the current name, soul,
   memory, About you, teammates and skill catalog after compaction if the next

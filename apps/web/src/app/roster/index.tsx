@@ -378,15 +378,15 @@ export function RosterColumn() {
     void navigate({ to: '/b/$bot/settings/$tab', params: { bot, tab: rememberedTab(bot) } })
 
   /**
-   * The bot's one chat: the one this window knows, else the daemon's, made on
-   * first use. While a bot has more than one, or only an archived one, the
-   * daemon picks, or for an older daemon `chat` does.
+   * The bot's one chat, as the daemon names it: this window's list cannot
+   * tell one recovery set aside. An older daemon's may be picked by the user.
    */
   const openChat = async (bot: string) => {
-    const chats = Object.values(useSections.getState().byId).filter(item => item.bot === bot)
-    const known = chats.length === 1 && !chats[0]?.archived_at ? chats[0] : undefined
+    const chat = await sectionsActions().chat(bot)
 
-    open(bot, (known ?? (await sectionsActions().chat(bot))).id)
+    if (chat) {
+      open(bot, chat.id)
+    }
   }
 
   const keyboard = (event: React.KeyboardEvent) => {

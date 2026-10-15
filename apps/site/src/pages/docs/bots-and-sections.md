@@ -61,7 +61,7 @@ This happens once, at the first start of the updated daemon, before any app or b
 
 If anything goes wrong, such as the copy failing, the daemon deletes nothing more and starts as usual, and later starts never try again. A section is either deleted or kept whole with its history, even if the daemon stops part way. If a bot's older conversations couldn't be read, or the daemon found its chat damaged, that bot keeps all its sections and starts a new, empty chat; the old ones open again once their files are repaired. When a bot still has several sections, its chat is the one the update would have kept, never the old Dreams log while a real conversation remains. Sections an older version makes later are kept too.
 
-An updated app connected to a daemon that hasn't been updated yet opens the section that daemon will keep, so you carry on in the chat that stays.
+An updated app connected to a daemon that hasn't been updated yet opens a bot's section by itself only when it has one conversation. When it has several, the app asks which one to continue, once per bot while the app runs; an archived one you pick comes out of the archive. Carry on in the conversation you want to keep: when the daemon updates, the latest one stays.
 
 ## Work with other bots
 

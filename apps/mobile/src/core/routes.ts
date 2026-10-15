@@ -1,4 +1,4 @@
-import type { Bot, Room, Section } from './types'
+import type { Bot, Room, Rpc, Section } from './types'
 export type ChatRoute =
   { kind: 'section'; section: Section; bot: Bot } | { kind: 'room'; room: Room }
 /** Every section the open conversation can be, teammate threads included. */
@@ -6,20 +6,61 @@ export const SECTIONS_QUERY = { include_archived: true, include_threads: true }
 /** Every room, archived ones included, so Rooms can count them and restore one. */
 export const ROOMS_QUERY = { include_archived: true }
 /**
- * The bot's one chat when this list knows it for sure, never a teammate thread.
- * While a bot has more than one, or only an archived one, the daemon picks.
- * Without `oneChat` the daemon is older and makes a section on every create,
- * so the chat is the one it keeps when it updates: something said, then not
- * its Dreams log, then not archived, then the newest.
+ * A bot's chat on a daemon from before one chat per bot, which keeps many
+ * sections and makes another on every create. Its update keeps the one with
+ * the latest conversation unless that is its Dreams log, which its list
+ * cannot tell apart, renamed or not. So the chat is certain only while at
+ * most one section has something said; otherwise those are the choices,
+ * open ones first, newest first. Null for a bot with none: create makes it.
+ * Never a teammate thread.
  */
-export const defaultSection = (sections: Section[], bot: string, oneChat: boolean) => {
-  const chats = sections.filter(s => s.bot === bot && !s.peer_bot)
-  if (oneChat) return chats.length === 1 && !chats[0].archived_at ? chats[0] : undefined
-  const rank = (s: Section) =>
-    (s.message_count > 0 ? 4 : 0) +
-    (s.title === 'Dreams' && !s.title_by ? 0 : 2) +
-    (s.archived_at ? 0 : 1)
-  return chats.sort((a, b) => rank(b) - rank(a) || (b.updated_at ?? 0) - (a.updated_at ?? 0))[0]
+export function legacyChat(
+  sections: Section[],
+  bot: string
+): { choices: Section[] } | { section: Section } | null {
+  const chats = sections
+    .filter(s => s.bot === bot && !s.peer_bot)
+    .sort(
+      (a, b) =>
+        Number(!!a.archived_at) - Number(!!b.archived_at) || (b.updated_at ?? 0) - (a.updated_at ?? 0)
+    )
+  const said = chats.filter(s => s.message_count > 0)
+  if (said.length > 1) return { choices: said }
+  const section = said[0] ?? chats[0]
+  return section ? { section } : null
+}
+/**
+ * The section a tap on a bot opens, or the `chosen` one. A daemon with one
+ * chat per bot names it, never one recovery set aside, whatever the lists
+ * here say. An older one: the section its list makes certain, else the one
+ * in `picked` from before, else the sections to choose from; made only for
+ * a bot with none. The one it opens is remembered in `picked` and comes out
+ * of the archive first: archived, it takes no messages and loses at the update.
+ */
+export async function botChat(
+  rpc: Rpc,
+  bot: string,
+  oneChat: boolean,
+  picked: Map<string, string>,
+  chosen?: Section
+): Promise<{ choices: Section[] } | { section: Section }> {
+  const create = async () =>
+    (await rpc<{ section: Section }>('hexbot.sections.create', { bot })).section
+  if (oneChat) return { section: chosen ?? (await create()) }
+  let section = chosen
+  if (!section) {
+    const { sections } = await rpc<{ sections: Section[] }>('hexbot.sections.list', {
+      ...SECTIONS_QUERY,
+      bot
+    })
+    const found = legacyChat(sections, bot)
+    if (!found) return { section: await create() }
+    section = 'section' in found ? found.section : found.choices.find(s => s.id === picked.get(bot))
+    if (!section) return found
+  }
+  picked.set(bot, section.id)
+  if (!section.archived_at) return { section }
+  return rpc<{ section: Section }>('hexbot.sections.unarchive', { id: section.id })
 }
 /**
  * The room Rooms shows: the picked one while it is open or not archived,
