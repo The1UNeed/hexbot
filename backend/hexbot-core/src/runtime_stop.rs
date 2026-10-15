@@ -9,7 +9,9 @@ pub(super) struct InputBoundary {
 
 impl Runtime {
     fn check_input_alias(&self, s: &Live) -> Result<()> {
-        if s.state.lock().unwrap().closed && !s.replaced.load(Ordering::Acquire) {
+        if s.input_generation != s.input_queue.generation.load(Ordering::Acquire)
+            || (s.state.lock().unwrap().closed && !s.replaced.load(Ordering::Acquire))
+        {
             return Err(Error::new(4001, "session not found"));
         }
         let valid: bool = store::open(&self.home)?.query_row(
@@ -30,18 +32,19 @@ impl Runtime {
         previous: &Arc<Live>,
         refresh: bool,
     ) -> Result<(Arc<Live>, InputBoundary)> {
-        if previous.state.lock().unwrap().closed && !previous.replaced.load(Ordering::Acquire) {
-            return Err(Error::new(4001, "session not found"));
-        }
+        self.check_input_alias(previous)?;
         let target = self
             .sessions
             .lock()
             .unwrap()
             .get(&previous.stored)
             .cloned()
-            .filter(|current| current.id == previous.id)
-            .or_else(|| (!previous.state.lock().unwrap().closed).then(|| previous.clone()))
-            .ok_or_else(|| Error::new(4001, "session not found"))?;
+            .filter(|current| {
+                current.id == previous.id && current.input_generation == previous.input_generation
+            })
+            // A failed replacement can leave only the retired Live and its
+            // waiters. The validated configuration alias may retry startup.
+            .unwrap_or_else(|| previous.clone());
         let previous = &target;
         // Unchanged or unsettled input only needs a landing guard. In particular
         // it must not wait on another caller opening this already-live session.
@@ -95,6 +98,9 @@ impl Runtime {
                     true,
                 )
                 .await?;
+            if s.input_generation != previous.input_generation {
+                return Err(Error::new(4001, "session not found"));
+            }
             let mut ended = s.run_ended.subscribe();
             let idle = {
                 let state = s.state.lock().unwrap();
@@ -276,6 +282,9 @@ impl Runtime {
         let slot = s.input_gate.clone().lock_owned();
         tokio::pin!(slot);
         loop {
+            if s.input_generation != s.input_queue.generation.load(Ordering::Acquire) {
+                return Err(Error::new(4001, "session not found"));
+            }
             if s.state.lock().unwrap().closed {
                 if !s.replaced.load(Ordering::Acquire) {
                     return Err(Error::new(4001, "session not found"));

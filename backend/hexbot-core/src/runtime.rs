@@ -206,6 +206,25 @@ struct Chain {
     /// Bots waiting on this turn's reply, nearest last. Asking one of them would loop.
     askers: Vec<String>,
 }
+/// Admission belongs to every process and waiter in a configuration restart,
+/// including when the newest process fails before it can accept input.
+struct InputQueue {
+    gate: Arc<AsyncMutex<()>>,
+    waiters: Arc<AtomicUsize>,
+    ended: watch::Sender<u64>,
+    /// A ready process exit rejects earlier waiters even if the alias reopens.
+    generation: AtomicU64,
+}
+impl Default for InputQueue {
+    fn default() -> Self {
+        Self {
+            gate: Arc::default(),
+            waiters: Arc::default(),
+            ended: watch::channel(0).0,
+            generation: AtomicU64::new(0),
+        }
+    }
+}
 struct Live {
     owner: String,
     bot: String,
@@ -214,6 +233,9 @@ struct Live {
     process: PiProcess,
     /// Only a configuration retirement may hand waiting input to its replacement.
     replaced: AtomicBool,
+    ready: AtomicBool,
+    input_queue: Arc<InputQueue>,
+    input_generation: u64,
     state: Mutex<State>,
     settled: watch::Sender<u64>,
     /// Run, command and Stop completions that can admit queued input, or close.
@@ -224,7 +246,8 @@ struct Live {
     event_gate: Mutex<()>,
     attachment_gate: AsyncMutex<()>,
     recovery_gate: AsyncMutex<()>,
-    /// FIFO admission and reservations survive a configuration restart.
+    /// Handles into input_queue, shared by every configuration replacement.
+    /// Keeping these handles also lets per-process operations subscribe directly.
     input_gate: Arc<AsyncMutex<()>>,
     input_waiters: Arc<AtomicUsize>,
     permit: Mutex<Option<tokio::sync::OwnedSemaphorePermit>>,
@@ -264,8 +287,8 @@ pub struct Runtime {
     pi_executable: PathBuf,
     sessions: Mutex<HashMap<String, Arc<Live>>>,
     opening: Mutex<HashMap<String, Weak<AsyncMutex<()>>>>,
-    /// Waiters keep the previous FIFO even if starting its replacement fails.
-    input_queues: Mutex<HashMap<String, Weak<Live>>>,
+    /// Weak shared state, rather than one process's lifetime. No Live is retained.
+    input_queues: Mutex<HashMap<String, Weak<InputQueue>>>,
     capacity: Arc<tokio::sync::Semaphore>,
     weak: Weak<Self>,
     stopping: AtomicBool,
@@ -743,25 +766,17 @@ impl Runtime {
         common::bot_owner(&self.home, owner, bot)?;
         store::session_dir(&self.home, stored)?;
         let running = self.sessions.lock().unwrap().get(stored).cloned();
-        let previous = running.clone().or_else(|| {
-            self.input_queues
-                .lock()
-                .unwrap()
-                .get(stored)
-                .and_then(Weak::upgrade)
-        });
-        let input_gate = previous
+        let input_queue = running
             .as_ref()
-            .map(|s| s.input_gate.clone())
+            .map(|s| s.input_queue.clone())
+            .or_else(|| {
+                self.input_queues
+                    .lock()
+                    .unwrap()
+                    .get(stored)
+                    .and_then(Weak::upgrade)
+            })
             .unwrap_or_default();
-        let input_waiters = previous
-            .as_ref()
-            .map(|s| s.input_waiters.clone())
-            .unwrap_or_default();
-        let run_ended = previous
-            .as_ref()
-            .map(|s| s.run_ended.clone())
-            .unwrap_or_else(|| watch::channel(0).0);
         // Rebuilding the tool list reads every config, so it is done once.
         let mut stale = None;
         let mut uploads = Moving {
@@ -1066,6 +1081,9 @@ impl Runtime {
             id: live_id,
             process,
             replaced: AtomicBool::new(false),
+            ready: AtomicBool::new(false),
+            input_generation: input_queue.generation.load(Ordering::Acquire),
+            input_queue: input_queue.clone(),
             state: Mutex::new(State {
                 busy: false,
                 compacting: false,
@@ -1096,11 +1114,11 @@ impl Runtime {
             event_gate: Mutex::new(()),
             attachment_gate: AsyncMutex::new(()),
             recovery_gate: AsyncMutex::new(()),
-            input_gate,
-            input_waiters,
+            input_gate: input_queue.gate.clone(),
+            input_waiters: input_queue.waiters.clone(),
             permit: Mutex::new(Some(permit)),
             settled,
-            run_ended,
+            run_ended: input_queue.ended.clone(),
             tools: options["tools"].as_array().cloned().unwrap_or_default(),
             model: Mutex::new(model_choice(&options)),
             compaction,
@@ -1118,28 +1136,37 @@ impl Runtime {
             }
             sessions.insert(stored.into(), s.clone());
             let mut queues = self.input_queues.lock().unwrap();
-            queues.retain(|_, session| session.strong_count() > 0);
-            queues.insert(stored.into(), Arc::downgrade(&s));
+            queues.retain(|_, queue| queue.strong_count() > 0);
+            queues.insert(stored.into(), Arc::downgrade(&input_queue));
         }
         let weak = self.weak.clone();
         let task_session = s.clone();
         tokio::spawn(async move {
             pump(weak, task_session, events).await;
         });
-        if let Err(error) = Self::command(&s, json!({"type":"get_state"})).await {
+        let started = async {
+            Self::command(&s, json!({"type":"get_state"})).await?;
+            store::open(&self.home)?.execute(
+                "INSERT INTO native_live_sessions(stored_id,live_id) VALUES(?,?) ON CONFLICT(stored_id) DO UPDATE SET live_id=excluded.live_id",
+                params![stored, s.id],
+            )?;
+            db::open(&self.home)?.execute(
+                "UPDATE sections SET last_live_session_id=? WHERE id=?",
+                params![s.id, stored],
+            )?;
+            let _gate = s.event_gate.lock().unwrap();
+            if s.state.lock().unwrap().closed {
+                return Err(Error::new(5201, "session closed during startup"));
+            }
+            s.ready.store(true, Ordering::Release);
+            Ok(())
+        }.await;
+        if let Err(error) = started {
             self.sessions.lock().unwrap().remove(stored);
             let _ = s.process.shutdown().await;
             uploads.uploads = std::mem::take(&mut s.state.lock().unwrap().staged);
             return Err(error);
         }
-        store::open(&self.home)?.execute(
-            "INSERT INTO native_live_sessions(stored_id,live_id) VALUES(?,?) ON CONFLICT(stored_id) DO UPDATE SET live_id=excluded.live_id",
-            params![stored, s.id],
-        )?;
-        db::open(&self.home)?.execute(
-            "UPDATE sections SET last_live_session_id=? WHERE id=?",
-            params![s.id, stored],
-        )?;
         self.emit(
             &s,
             "session.info",
@@ -4320,6 +4347,9 @@ fn pump(
                     let busy = state.busy && !was_closed;
                     let reread = state.end_turn();
                     state.closed = true;
+                    if !was_closed && s.ready.load(Ordering::Acquire) {
+                        s.input_queue.generation.fetch_add(1, Ordering::AcqRel);
+                    }
                     state.error = Some(error.message.clone());
                     state.pending.clear();
                     s.run_ended.send_modify(|v| *v += 1);

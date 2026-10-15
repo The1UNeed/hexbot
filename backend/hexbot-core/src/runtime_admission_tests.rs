@@ -1162,3 +1162,204 @@ async fn a_waiter_on_the_previous_live_wakes_when_its_replacement_closes_before_
     );
     runtime.shutdown().await;
 }
+
+// Unlike the archived independent probe, this barrier observes the actual
+// process/pump lifetime, not the admission registry's representation.
+async fn pump_released(session: Weak<Live>) {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while session.upgrade().is_some() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn failed_readiness_keeps_fifo_uploads_until_the_older_waiter_is_served() {
+    for reopen in [false, true] {
+        for exit in [false, true] {
+            let (home, runtime, hub) = setup();
+            old_configuration(home.path());
+            idle_stop_pi(home.path());
+            let id = open(&runtime).await;
+            let old = runtime.sessions.lock().unwrap()["first"].clone();
+            let file = runtime.call_inner("alice", "file.attach", &json!({"session_id":id,"name":"earlier.txt","data_url":"data:text/plain;base64,ZWFybGllcg=="})).await.unwrap();
+            let ids = [file["id"].as_str().unwrap().to_owned()];
+            let recovery = old.recovery_gate.lock().await;
+            runtime
+                .call_inner("alice", "session.interrupt", &json!({"session_id":id}))
+                .await
+                .unwrap();
+            let first = runtime.submit(&old, "failed replacement", true, true, None, None);
+            let second =
+                runtime.submit(&old, "earlier hidden result", true, true, None, Some(&ids));
+            tokio::pin!(first, second);
+            assert!(futures_util::poll!(first.as_mut()).is_pending());
+            assert!(futures_util::poll!(second.as_mut()).is_pending());
+            let path = home.path().join("pi.cjs");
+            let good = fs::read_to_string(&path).unwrap();
+            fs::write(&path, good.replace("const c=JSON.parse(line);", "const c=JSON.parse(line);if(c.type==='get_state'){global.readiness=c;emit({type:'extension_ui_request',method:'setStatus',statusText:'readiness waiting'});return;}if(c.type==='release_readiness'){if(c.exit)process.exit(1);emit({type:'response',id:global.readiness.id,command:'get_state',success:false,error:'readiness fixture failure'});}")).unwrap();
+            change_configuration(home.path());
+            let mut events = hub.subscribe();
+            drop(recovery);
+            tokio::select! {
+                result = &mut first => panic!("startup did not reach readiness: {result:?}"),
+                _ = stop_tests::stop_event(&mut events, |e| e["payload"]["text"] == "readiness waiting") => {},
+            }
+            let starting = runtime.sessions.lock().unwrap()["first"].clone();
+            assert_eq!(processes(home.path()).len(), 2);
+            let failed = Arc::downgrade(&starting);
+            let release =
+                Runtime::command(&starting, json!({"type":"release_readiness","exit":exit})).await;
+            if exit {
+                assert!(release.is_err());
+            } else {
+                release.unwrap();
+            }
+            drop(starting);
+            let error = first.await.unwrap_err();
+            assert_eq!(error.code, 5201);
+            if !exit {
+                assert!(error.message.contains("readiness fixture failure"));
+            }
+            pump_released(failed).await;
+            assert_eq!(old.input_waiters.load(Ordering::Acquire), 1);
+            fs::write(&path, good).unwrap();
+            let later = json!({"session_id":id,"text":"later owner prompt","attachments":[]});
+            if reopen {
+                runtime.open_session("alice", "owl", "first").await.unwrap();
+                assert_eq!(
+                    runtime
+                        .call_inner("alice", "prompt.submit", &later)
+                        .await
+                        .unwrap_err()
+                        .code,
+                    4002
+                );
+            }
+            assert!(Path::new(file["path"].as_str().unwrap()).exists());
+            assert!(store::history(home.path(), "first").unwrap().is_empty());
+            second.await.unwrap();
+            let current = runtime.sessions.lock().unwrap()["first"].clone();
+            assert!(Arc::ptr_eq(&old.input_gate, &current.input_gate));
+            stop_tests::stop_event(&mut events, |e| e["type"] == "message.complete").await;
+            runtime
+                .call_inner("alice", "prompt.submit", &later)
+                .await
+                .unwrap();
+            stop_tests::stop_event(&mut events, |e| e["type"] == "message.complete").await;
+            let history = store::history(home.path(), "first").unwrap();
+            let users = history
+                .iter()
+                .filter(|m| m["role"] == "user")
+                .collect::<Vec<_>>();
+            assert_eq!(users.len(), 2);
+            assert_eq!(
+                users[0]["text"],
+                format!(
+                    "earlier hidden result\n\nAttached files:\n{}",
+                    file["path"].as_str().unwrap()
+                )
+            );
+            assert_eq!(users[0]["display_kind"], "hidden");
+            assert_eq!(users[1]["text"], "later owner prompt");
+            assert_eq!(users[1]["display_kind"], "normal");
+            assert!(Path::new(file["path"].as_str().unwrap()).exists());
+            let intents: (usize, usize) = store::open(home.path()).unwrap().query_row("SELECT count(*),count(consumed_by) FROM native_prompt_intents WHERE session_id='first'", [], |r| Ok((r.get(0)?,r.get(1)?))).unwrap();
+            assert_eq!(intents, (2, 2));
+            runtime.shutdown().await;
+        }
+    }
+}
+
+#[tokio::test]
+async fn an_exited_replacement_rejects_older_waiters_even_after_the_same_alias_reopens() {
+    let (home, runtime, _) = setup();
+    old_configuration(home.path());
+    let id = open(&runtime).await;
+    let old = runtime.sessions.lock().unwrap()["first"].clone();
+    change_configuration(home.path());
+    let current = runtime
+        .open_for_input("alice", "owl", "first")
+        .await
+        .unwrap();
+    assert_eq!(current.id, id);
+    let slot = current.input_gate.lock().await;
+    let waiting = runtime.submit(&old, "obsolete hidden result", true, true, None, None);
+    tokio::pin!(waiting);
+    assert!(futures_util::poll!(waiting.as_mut()).is_pending());
+    let exited = Arc::downgrade(&current);
+    current.process.shutdown().await.unwrap();
+    drop(slot);
+    drop(current);
+    pump_released(exited).await;
+    let reopened = runtime.open_session("alice", "owl", "first").await.unwrap();
+    assert_eq!(reopened.id, id);
+    assert_eq!(waiting.await.unwrap_err().code, 4001);
+    assert!(store::history(home.path(), "first").unwrap().is_empty());
+    runtime
+        .submit(&reopened, "usable reopened owner", false, false, None, None)
+        .await
+        .unwrap();
+    runtime.shutdown().await;
+}
+
+#[tokio::test]
+async fn closing_a_failed_start_rejects_older_waiters_before_alias_reopen() {
+    let (home, runtime, hub) = setup();
+    old_configuration(home.path());
+    idle_stop_pi(home.path());
+    let id = open(&runtime).await;
+    let old = runtime.sessions.lock().unwrap()["first"].clone();
+    let recovery = old.recovery_gate.lock().await;
+    runtime
+        .call_inner("alice", "session.interrupt", &json!({"session_id":id}))
+        .await
+        .unwrap();
+    let first = runtime.submit(&old, "failed replacement", true, true, None, None);
+    let second = runtime.submit(&old, "obsolete result", true, true, None, None);
+    tokio::pin!(first, second);
+    assert!(futures_util::poll!(first.as_mut()).is_pending());
+    assert!(futures_util::poll!(second.as_mut()).is_pending());
+    let path = home.path().join("pi.cjs");
+    let good = fs::read_to_string(&path).unwrap();
+    fs::write(&path, good.replace("const c=JSON.parse(line);", "const c=JSON.parse(line);if(c.type==='get_state'){global.readiness=c;emit({type:'extension_ui_request',method:'setStatus',statusText:'readiness waiting'});return;}if(c.type==='release_readiness'){emit({type:'response',id:global.readiness.id,command:'get_state',success:false,error:'readiness fixture failure'});}")).unwrap();
+    change_configuration(home.path());
+    let mut events = hub.subscribe();
+    drop(recovery);
+    tokio::select! {
+        result = &mut first => panic!("startup did not reach readiness: {result:?}"),
+        _ = stop_tests::stop_event(&mut events, |e| e["payload"]["text"] == "readiness waiting") => {},
+    }
+    let starting = runtime.sessions.lock().unwrap()["first"].clone();
+    let failed = Arc::downgrade(&starting);
+    let closing = runtime.close_stored("alice", "first");
+    tokio::pin!(closing);
+    assert!(futures_util::poll!(closing.as_mut()).is_pending());
+    Runtime::command(&starting, json!({"type":"release_readiness"}))
+        .await
+        .unwrap();
+    drop(starting);
+    assert_eq!(first.await.unwrap_err().code, 5201);
+    assert!(closing.await.unwrap());
+    pump_released(failed).await;
+    fs::write(path, good).unwrap();
+    let reopened = open(&runtime).await;
+    assert_ne!(id, reopened);
+    assert_eq!(second.await.unwrap_err().code, 4001);
+    assert!(store::history(home.path(), "first").unwrap().is_empty());
+    runtime
+        .call_inner(
+            "alice",
+            "prompt.submit",
+            &json!({"session_id":reopened,"text":"new owner"}),
+        )
+        .await
+        .unwrap();
+    stop_tests::stop_event(&mut events, |e| e["type"] == "message.complete").await;
+    let history = store::history(home.path(), "first").unwrap();
+    assert_eq!(history.len(), 1);
+    assert_eq!(history[0]["text"], "new owner");
+    runtime.shutdown().await;
+}
