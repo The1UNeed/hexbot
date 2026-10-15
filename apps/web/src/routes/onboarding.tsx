@@ -29,6 +29,7 @@ import {
 import {
   avatarPng,
   type AvatarStyle,
+  botFace,
   DEFAULT_AVATAR_STYLE,
   styleForName
 } from '../lib/avatar-builder'
@@ -49,7 +50,7 @@ import type {
 import { useBots } from '../stores/bots'
 import { useConnection } from '../stores/connection'
 import { unknownMethod, useMe } from '../stores/me'
-import { introduceBot, sectionsActions } from '../stores/sections'
+import { introduceBot, oneChat, sectionsActions } from '../stores/sections'
 import { type LastSection, uiActions } from '../stores/ui'
 
 export const Route = createFileRoute('/onboarding')({ component: OnboardingPage })
@@ -59,6 +60,7 @@ type OnboardingStep =
   | 'bot'
   | 'choice'
   | 'connect'
+  | 'continue'
   | 'deciding'
   | 'defaults'
   | 'install'
@@ -85,26 +87,86 @@ export function initialOnboardingStep(input: {
 }
 
 /**
- * Where onboarding ends for someone who already has bots: the chat they were
- * in, else the chat of a bot they have talked to, else the first bot's chat.
- * Null when there are no bots yet, or when an older daemon asked which
- * section to continue and the user picked none.
+ * The bot onboarding ends with for someone who already has bots: the one
+ * they were with, else one they have talked to, else the first.
+ */
+export function landingBot(bots: Bot[]): Bot | undefined {
+  const last = uiActions().lastSection
+
+  return (
+    bots.find(bot => bot.name === last?.bot) ??
+    bots.find(bot => bot.sections_recent.length) ??
+    bots[0]
+  )
+}
+
+/**
+ * Where onboarding ends for someone who already has bots: the chat of
+ * `landingBot` as the daemon names it, never the section remembered here,
+ * which the upgrade may have deleted or recovery set aside. An older daemon
+ * names no chat, so there the section they were in stays theirs. Null when
+ * there are no bots yet, or when an older daemon asked which section to
+ * continue and the user picked none.
  */
 export async function landingSection(bots: Bot[]): Promise<LastSection | null> {
-  if (!bots.length) {
+  const bot = landingBot(bots)
+
+  if (!bot) {
     return null
   }
 
   const last = uiActions().lastSection
 
-  if (last && bots.some(bot => bot.name === last.bot)) {
+  if (last?.bot === bot.name && !(await oneChat())) {
     return last
   }
 
-  const bot = bots.find(bot => bot.sections_recent.length) ?? bots[0]!
   const section = await sectionsActions().chat(bot.name)
 
   return section ? { bot: bot.name, section: section.id } : null
+}
+
+/**
+ * Where someone with bots waits when their chat did not open: an older
+ * daemon asked which section to continue and they picked none, or the daemon
+ * failed. Continue asks again; nothing is opened or made until then.
+ */
+export function ContinueStep({
+  bot,
+  error,
+  onContinue
+}: {
+  bot: Bot
+  error: null | string
+  onContinue: () => Promise<void>
+}) {
+  const [busy, setBusy] = useState(false)
+
+  return (
+    <SetupFrame subtitle="Pick up where you left off." title={`Continue with ${bot.display_name}`}>
+      <div className="grid w-full flex-1 place-items-center py-8">
+        <Avatar {...botFace(bot)} name={bot.display_name} size="xl" />
+      </div>
+      <SetupActions className="pb-[12vh]">
+        <Button
+          busy={busy}
+          className={PILL}
+          onClick={() => {
+            setBusy(true)
+            void onContinue().finally(() => setBusy(false))
+          }}
+          variant="primary"
+        >
+          Continue
+        </Button>
+      </SetupActions>
+      {error ? (
+        <p className="pb-10 text-center text-secondary text-danger" role="alert">
+          {error}
+        </p>
+      ) : null}
+    </SetupFrame>
+  )
 }
 
 /**
@@ -1235,25 +1297,32 @@ function OnboardingPage() {
   const [defaultModel, setDefaultModel] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [creating, setCreating] = useState(false)
+  // The bots of someone whose chat did not open, and why, for Continue.
+  const [unopened, setUnopened] = useState<{ bots: Bot[]; error: null | string } | null>(null)
   const onError = useCallback((message: string) => setError(message), [])
 
   const finish = useCallback(
     (bots: Bot[]) =>
-      landingSection(bots)
-        .then(last => {
-          if (!last) {
+      landingSection(bots).then(
+        last => {
+          if (last) {
+            uiActions().setLastSection(last)
+            void navigate({ to: '/b/$bot/s/$section', params: last })
+          } else if (bots.length) {
+            // An older daemon asked which section to continue and none was
+            // picked: that opens nothing, and these bots are still here.
+            setUnopened({ bots, error: null })
+            setStep('continue')
+          } else {
             setStep('providers')
-
-            return
           }
-
-          uiActions().setLastSection(last)
-          void navigate({ to: '/b/$bot/s/$section', params: last })
-        })
-        .catch(reason => {
-          setError(String(reason))
-          setStep('providers')
-        }),
+        },
+        // Only a call for a bot's chat fails, so there are bots.
+        reason => {
+          setUnopened({ bots, error: String(reason) })
+          setStep('continue')
+        }
+      ),
     [navigate]
   )
 
@@ -1353,6 +1422,18 @@ function OnboardingPage() {
 
   if (step === 'deciding' || step === 'connect') {
     return null
+  }
+
+  if (step === 'continue') {
+    const bot = landingBot(unopened?.bots ?? [])
+
+    return unopened && bot ? (
+      <ContinueStep
+        bot={bot}
+        error={unopened.error}
+        onContinue={() => finish(unopened.bots)}
+      />
+    ) : null
   }
 
   if (creating) {

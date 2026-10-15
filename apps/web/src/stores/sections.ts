@@ -186,6 +186,11 @@ const reloads = new Map<string, number>()
 /** Each bot's chat on an older daemon, so the user is asked once while the app runs. */
 const picked = new Map<string, string>()
 
+/** Whether the daemon names each bot's one chat; one from before keeps many sections per bot. */
+export async function oneChat(): Promise<boolean> {
+  return Boolean((useConnection.getState().daemon ?? (await daemonInfo())).one_chat)
+}
+
 /**
  * A bot's chat on a daemon from before one chat per bot: the one its list
  * makes certain, else the one the user picks, brought back if archived. Made
@@ -355,8 +360,6 @@ export const useSections = create<SectionsState>((set, get) => ({
   },
 
   async chat(bot) {
-    const daemon = useConnection.getState().daemon ?? (await daemonInfo())
-
     const ask = (choices: Section[]) =>
       new Promise<null | Section>(resolve => {
         get().choosing?.pick(null)
@@ -373,7 +376,7 @@ export const useSections = create<SectionsState>((set, get) => ({
       })
 
     // The daemon names the chat, never one recovery set aside.
-    const section = daemon.one_chat
+    const section = (await oneChat())
       ? (await sectionsCreate(bot)).section
       : await olderChat(bot, ask)
 

@@ -217,16 +217,19 @@ more freedom and more capability than a hosted product can offer.
   the list before its history is removed, so a stop part way never leaves a
   broken one: it is whole or gone, and what is left of a gone one is removed
   at the next start. A bot whose conversations recovery could not read, or
-  whose older `state.db` cannot be read, keeps them all. Its chat is ranked
-  the same way, so the old Dreams log is never a bot's chat while a
-  conversation remains; while its `state.db` cannot be read, or recovery has
-  set its conversation aside, it gets a new, empty chat, and the old sections
-  open once their files are repaired. Memory and notes stay.
+  whose older `state.db` cannot be read, keeps them all with their history.
+  Its chat is ranked the same way among the sections that open, so the old
+  Dreams log is never a bot's chat while a conversation remains; one
+  recovery set aside, or whose history is only in a `state.db` that cannot
+  be read, is skipped, and a new chat is made only when none can be the
+  chat. No client lists or opens the others. Memory and notes stay.
 - An updated app on a daemon from before one chat per bot makes a section
   only for a bot with none, since that daemon makes a new one on every
   create. That daemon's list cannot tell its Dreams log, renamed or not, from
   a conversation, so the app opens a section by itself only while at most
-  one has something said, and otherwise asks which one to continue.
+  one has something said, and otherwise asks which one to continue. The pick
+  lasts while the app runs and does not change what the upgrade keeps: a
+  Dreams log picked there still gives way to a conversation.
 - A chat starts with the bot's memory and a catalog of skill descriptions.
   It loads skill bodies when needed. It picks up the current name, soul,
   memory, About you, teammates and skill catalog after compaction if the next

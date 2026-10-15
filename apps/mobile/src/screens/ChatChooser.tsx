@@ -21,7 +21,7 @@ export function ChatChooser({ choices, name, onChoose }: ChatChooserProps) {
       title={`Continue with ${name ?? ''}`}
       visible={name !== null}
     >
-      <Group footer="This daemon is older than the app and keeps several sections for each bot. Pick one to continue. When the daemon updates, each bot keeps only its latest conversation.">
+      <Group footer="This daemon is older than the app and keeps several sections for each bot. Pick one to continue. When the daemon updates, the one you carry on in stays unless it began with a dream report, and the others are deleted after a full backup.">
         {choices.map(section => (
           <Row
             chevron
