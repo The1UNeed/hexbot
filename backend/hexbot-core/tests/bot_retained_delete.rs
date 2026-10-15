@@ -1,5 +1,5 @@
 //! Bot catalog decisions composed with already committed retained deletions.
-use hexbot_core::{catalog, common, db, runtime_store as store, server::App};
+use hexbot_core::{catalog, common, db, rooms, runtime_store as store, server::App};
 use rusqlite::params;
 use serde_json::{Value, json};
 use std::{fs, future::Future, path::Path, sync::Arc};
@@ -476,4 +476,148 @@ fn successful_bot_delete_purges_owned_retention_and_preserves_other_data() {
         f.assert_purged();
         run(f.app.shutdown());
     }
+}
+
+/// The whole tombstone format of builds before retention (67e895d
+/// `mark_deleted`): native_deleted rows for a root and its delegated tasks.
+fn old_build_mark_deleted(h: &Path, stored: &str) {
+    store::open(h).unwrap().execute("INSERT OR IGNORE INTO native_deleted WITH RECURSIVE tree(id) AS (SELECT ?1 UNION SELECT s.stored_id FROM native_sessions s JOIN tree t ON json_extract(s.options,'$.parent_session')=t.id) SELECT id FROM tree", [stored]).unwrap();
+}
+
+#[test]
+fn old_build_bot_journal_reopens_every_unrecorded_target() {
+    let mut f = Fixture::new();
+    let h = f.home.path().to_owned();
+    // Room, hidden and delegated sessions the earlier build also retired.
+    let room = rooms::call(
+        &h,
+        "local",
+        "hexbot.rooms.create",
+        &json!({"name":"Room","members":["owl"]}),
+    )
+    .unwrap()
+    .unwrap()["room"]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    db::open(&h)
+        .unwrap()
+        .execute(
+            "INSERT INTO room_sessions(room_id,bot,stored_session_id) VALUES(?,'owl','room-owl')",
+            [&room],
+        )
+        .unwrap();
+    let live = [
+        f.root.clone(),
+        "chat-delegate".into(),
+        "hidden-run".into(),
+        "room-owl".into(),
+        "room-delegate".into(),
+    ];
+    let native = store::open(&h).unwrap();
+    for (id, parent) in [
+        ("chat-delegate", Some(f.root.as_str())),
+        ("hidden-run", None),
+        ("room-owl", None),
+        ("room-delegate", Some("room-owl")),
+    ] {
+        let options = format!(
+            "{{ \"parent_session\":{}, \"model\":\"frozen\", \"unrelated\": [3, 2, 1] }}",
+            json!(parent)
+        );
+        native
+            .execute(
+                "INSERT INTO native_sessions VALUES(?,'local','owl','frozen prompt',?)",
+                params![id, options],
+            )
+            .unwrap();
+        store::append(
+            &h,
+            id,
+            json!({"role":"user","text":format!("history {id}")}),
+        )
+        .unwrap();
+        fs::write(
+            store::session_dir(&h, id)
+                .unwrap()
+                .join("conversation-original.jsonl"),
+            format!("raw {id}\n"),
+        )
+        .unwrap();
+    }
+    f.legacy.execute_batch("INSERT INTO sessions VALUES('legacy-room','room-owl',NULL); INSERT INTO messages(session_id,role,content) VALUES('legacy-room','user','legacy room');").unwrap();
+    f.restart();
+    let snapshot = |h: &Path, legacy: &rusqlite::Connection| {
+        let read = |conn: &rusqlite::Connection, sql: &str| common::rows(conn, sql, &[]).unwrap();
+        let native = store::open(h).unwrap();
+        json!([
+            read(&native, "SELECT * FROM native_sessions ORDER BY stored_id"),
+            read(&native, "SELECT * FROM native_deleted ORDER BY session_id"),
+            read(
+                &native,
+                "SELECT * FROM native_delete_options ORDER BY session_id"
+            ),
+            read(
+                &native,
+                "SELECT * FROM native_delete_completed ORDER BY session_id"
+            ),
+            read(legacy, "SELECT * FROM sessions ORDER BY id"),
+            read(legacy, "SELECT * FROM messages ORDER BY id"),
+            read(
+                &db::open(h).unwrap(),
+                "SELECT * FROM room_sessions ORDER BY room_id"
+            ),
+        ])
+    };
+    let before = snapshot(&h, &f.legacy);
+    // The earlier build journaled exact targets without a claim ID, retired
+    // each with Runtime.retire_stored, then stopped before the catalog COMMIT.
+    // Captured from actual 67e895d preparation, with only its generated chat
+    // UUID normalized. Do not manufacture an old journal with today's writer.
+    let old = include_str!("fixtures/deletion/67e895d-bot-journal.json").replace("@chat@", &f.root);
+    let decision: Value = serde_json::from_str(&old).unwrap();
+    db::open(&h)
+        .unwrap()
+        .execute(
+            "INSERT INTO settings(key,value) VALUES('pending_bot_delete:owl',?)",
+            [&old],
+        )
+        .unwrap();
+    for target in decision["targets"].as_array().unwrap() {
+        old_build_mark_deleted(&h, target["id"].as_str().unwrap());
+    }
+    for id in &live {
+        assert_eq!(store::session_dir(&h, id).unwrap_err().code, 4001);
+    }
+    for _ in 0..2 {
+        f.restart();
+        assert!(journal(&h).is_none());
+        assert_eq!(snapshot(&h, &f.legacy), before);
+        assert!(catalog::bot(&h, "local", "owl").is_ok());
+        for id in &live {
+            assert_eq!(
+                store::history(&h, id).unwrap()[0]["text"],
+                format!("history {id}")
+            );
+            assert_eq!(
+                fs::read_to_string(
+                    store::session_dir(&h, id)
+                        .unwrap()
+                        .join("conversation-original.jsonl")
+                )
+                .unwrap(),
+                format!("raw {id}\n")
+            );
+        }
+        // Recorded retention and completion stay closed.
+        for id in ["retained", "grandchild", "legacy-retained", "completed"] {
+            assert_eq!(store::session_dir(&h, id).unwrap_err().code, 4001);
+        }
+        f.assert_other_and_completed();
+    }
+    for id in &live {
+        store::append(&h, id, json!({"role":"user","text":"after restart"})).unwrap();
+        assert_eq!(store::history(&h, id).unwrap().len(), 2);
+    }
+    run(f.app.shutdown());
 }

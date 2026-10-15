@@ -1,0 +1,34 @@
+{
+  "committed": false,
+  "name_reserved": true,
+  "targets": [
+    {
+      "id": "@chat@",
+      "owner": "local"
+    },
+    {
+      "id": "chat-delegate",
+      "owner": "local"
+    },
+    {
+      "id": "hidden-run",
+      "owner": "local"
+    },
+    {
+      "id": "room-owl",
+      "owner": "local"
+    },
+    {
+      "id": "room-delegate",
+      "owner": "local"
+    },
+    {
+      "id": "@chat@",
+      "owner": "local"
+    },
+    {
+      "id": "room-owl",
+      "owner": "local"
+    }
+  ]
+}

@@ -26,6 +26,10 @@
   `tests/room_delete.rs` checks public and direct room deletion, last-member
   removal, catalog rollback, exact owned descendants, legacy cleanup, terminal
   retry after cleanup faults, retained children and foreign-owner controls.
+  The section, bot and room deletion files also start from tombstones and bot
+  journals in the format of builds before retention, stopped before their
+  catalog commit, and restart twice. Committed old deletions, recorded
+  retention and foreign mappings stay closed.
 - Pi runtime: `node --test backend/pi-runtime/*.test.mjs` after
   `npm ci --prefix backend/pi-runtime --ignore-scripts --no-audit --no-fund`.
   CI runs the Rust and Pi suites on Linux and macOS. Approval tests use a stub

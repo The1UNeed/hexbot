@@ -637,3 +637,94 @@ process.on('SIGTERM',()=>{{if(fs.existsSync({marker}))process.exit(0);fs.writeFi
         running.shutdown().await;
     });
 }
+
+#[test]
+fn old_build_room_cleanup_stop_reopens_owned_sessions_of_the_surviving_room() {
+    let mut f = Fixture::new();
+    let h = f.home.path().to_owned();
+    // Owned and foreign mappings in the room that the earlier build failed to delete.
+    db::open(&h).unwrap().execute_batch(&format!("INSERT INTO room_members(room_id,member_kind,member_id) VALUES('{0}','bot','fox'); INSERT INTO room_sessions(room_id,bot,stored_session_id) VALUES('{0}','fox','fox-room'),('{0}','remote','foreign-room');", f.room)).unwrap();
+    let legacy = rusqlite::Connection::open(h.join("profiles/fox/state.db")).unwrap();
+    legacy.execute_batch("CREATE TABLE sessions(id TEXT PRIMARY KEY,session_key TEXT,parent_session_id TEXT); CREATE TABLE messages(id INTEGER PRIMARY KEY,session_id TEXT,role TEXT,content TEXT); INSERT INTO sessions VALUES('legacy-fox-room','fox-room',NULL); INSERT INTO messages(session_id,role,content) VALUES('legacy-fox-room','user','legacy fox room');").unwrap();
+    // Its room deletion tombstoned and purged these native transcripts in one
+    // transaction each, left legacy rows alone, and stopped before DELETE rooms.
+    store::open(&h)
+        .unwrap()
+        .execute_batch("INSERT INTO native_deleted VALUES('fox-room'),('foreign-room')")
+        .unwrap();
+    f.catalog = catalog_snapshot(&h);
+    for _ in 0..2 {
+        f.restart();
+        f.intact();
+        assert!(store::session_dir(&h, "fox-room").is_ok());
+        // A room cannot reopen a session for a bot its owner does not own.
+        assert_eq!(
+            store::session_dir(&h, "foreign-room").unwrap_err().code,
+            4001
+        );
+        assert_eq!(
+            legacy
+                .query_row("SELECT COUNT(*) FROM messages", [], |r| r.get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+    }
+    store::append(
+        &h,
+        "fox-room",
+        json!({"role":"user","text":"room continues"}),
+    )
+    .unwrap();
+    assert_eq!(store::history(&h, "fox-room").unwrap().len(), 1);
+    run(f.app.shutdown());
+}
+
+#[test]
+fn old_build_room_marker_reopens_its_owned_native_delegates() {
+    let mut f = Fixture::new();
+    let h = f.home.path().to_owned();
+    let native = store::open(&h).unwrap();
+    let options = "{ \"parent_session\": \"room-root\", \"model\": \"frozen\" }";
+    native
+        .execute(
+            "INSERT INTO native_sessions VALUES('room-delegate','local','owl','frozen prompt',?)",
+            [options],
+        )
+        .unwrap();
+    store::append(
+        &h,
+        "room-delegate",
+        json!({"role":"user","text":"owned delegate"}),
+    )
+    .unwrap();
+    let raw = store::session_dir(&h, "room-delegate")
+        .unwrap()
+        .join("conversation-original.jsonl");
+    fs::write(&raw, "original raw delegate\n").unwrap();
+    f.frozen = common::rows(
+        &native,
+        "SELECT * FROM native_sessions ORDER BY stored_id",
+        &[],
+    )
+    .unwrap();
+    // Old mark_deleted had no request metadata. Its recursively marked retained
+    // child keeps that child's modern recorded decision and exact frozen bytes.
+    native.execute_batch("INSERT OR IGNORE INTO native_deleted WITH RECURSIVE tree(id) AS (SELECT 'room-root' UNION SELECT s.stored_id FROM native_sessions s JOIN tree t ON json_extract(s.options,'$.parent_session')=t.id) SELECT id FROM tree").unwrap();
+    for _ in 0..2 {
+        f.restart();
+        f.intact();
+        for stored in ["room-root", "room-delegate"] {
+            assert!(store::session_dir(&h, stored).is_ok());
+        }
+        assert_eq!(
+            store::history(&h, "room-delegate").unwrap()[0]["text"],
+            "owned delegate"
+        );
+        assert_eq!(fs::read_to_string(&raw).unwrap(), "original raw delegate\n");
+    }
+    for stored in ["room-root", "room-delegate"] {
+        store::append(&h, stored, json!({"role":"user","text":"after restart"})).unwrap();
+        assert_eq!(store::history(&h, stored).unwrap().len(), 2);
+    }
+    run(f.app.shutdown());
+}

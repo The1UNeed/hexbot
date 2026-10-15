@@ -429,8 +429,12 @@ context of its own; the meter belongs to bot sections.
   succeeds with `history_pending: true`. A catalog failure returns an error
   and releases only that attempt's provisional markers. Migration and bot
   deletion stop when cleanup is pending, leaving later sections untouched.
-  Old tombstones without a retention choice are destructively cleaned
-  up, including identifiable legacy history.
+  Tombstones from earlier builds record no retention choice. Startup reopens
+  those still belonging to a surviving section, owned room mapping or exact
+  uncommitted bot deletion journal, along with their owned delegated tasks.
+  Recorded committed deletions, retained history and completed cleanup stay
+  closed. Other old tombstones are destructively cleaned up, including
+  identifiable legacy history.
   Legacy cleanup requires known bot ownership; older tombstones that have lost
   it can leave unread legacy rows. Usage accounting and upgrade backups are
   kept. `hexbot.bots.delete` purges the bot's owned history, including retained

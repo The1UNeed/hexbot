@@ -59,6 +59,8 @@ An older app or API client can still delete a section and ask to keep its histor
 
 If the bot's deletion cannot be saved, its profile and history stay, including conversations you had already deleted with their history kept. Once the deletion is saved, an interrupted cleanup keeps the name reserved until a restart finishes it.
 
+When updating after an interrupted deletion from an older build, a restart restores the conversations still belonging to a surviving section, owned room mapping or uncommitted bot deletion. Conversations with a recorded committed deletion stay closed. History already erased by the older build cannot be restored.
+
 ## Updating from earlier versions
 
 Earlier versions let you keep many sections per bot. The first time the updated daemon starts, it keeps one section of each bot as its chat and deletes the others with their history. It prefers a section with real conversation, then one you had not archived, then the newest. Old Dreams logs containing human conversation compete the same way; a log containing only dream reports gives way to a conversation. Dream reports never make a mixed log's conversation newer. If a report followed its last conversation, or its message times are missing or invalid, the update keeps all of that bot's sections and opens the chat with the newest known conversation. A bot left with no section gets a new chat when you first open it. The bot's memory and notes stay.

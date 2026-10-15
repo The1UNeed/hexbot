@@ -2014,3 +2014,119 @@ fn check_completed_legacy_descendant(alias: bool) {
     );
     run(fixture.app.shutdown());
 }
+
+/// The whole tombstone format of builds before retention (67e895d
+/// `mark_deleted`): native_deleted rows for a root and its delegated tasks.
+fn old_build_mark_deleted(h: &std::path::Path, stored: &str) {
+    runtime_store::open(h).unwrap().execute("INSERT OR IGNORE INTO native_deleted WITH RECURSIVE tree(id) AS (SELECT ?1 UNION SELECT s.stored_id FROM native_sessions s JOIN tree t ON json_extract(s.options,'$.parent_session')=t.id) SELECT id FROM tree", [stored]).unwrap();
+}
+
+fn native_rows(h: &std::path::Path) -> Vec<Value> {
+    hexbot_core::common::rows(
+        &runtime_store::open(h).unwrap(),
+        "SELECT * FROM native_sessions ORDER BY stored_id",
+        &[],
+    )
+    .unwrap()
+}
+
+#[test]
+fn old_build_section_stop_reopens_the_listed_root_with_its_delegates() {
+    for retained_child in [false, true] {
+        let mut fixture = Fixture::new();
+        if retained_child {
+            retain_child(&fixture);
+        }
+        fixture.restart();
+        let path = fixture.home.path().to_owned();
+        let h = path.as_path();
+        let before = (
+            fixture.snapshot(),
+            native_rows(h),
+            policies(h),
+            fs::read(fixture.pi_path(&fixture.id)).unwrap(),
+            fs::read(fixture.pi_path(&fixture.child)).unwrap(),
+        );
+        // An earlier build stopped after Runtime retirement, before the
+        // catalog delete. Restart twice: recovery must be idempotent.
+        old_build_mark_deleted(h, &fixture.id);
+        for _ in 0..2 {
+            fixture.restart();
+            assert_eq!(fixture.snapshot(), before.0, "retained={retained_child}");
+            assert_eq!(native_rows(h), before.1);
+            assert_eq!(policies(h), before.2);
+            assert_eq!(fs::read(fixture.pi_path(&fixture.id)).unwrap(), before.3);
+            assert_eq!(fs::read(fixture.pi_path(&fixture.child)).unwrap(), before.4);
+            assert!(catalog::section(h, "local", &fixture.id).is_ok());
+            assert!(runtime_store::session_dir(h, &fixture.id).is_ok());
+            if retained_child {
+                assert_blocked(&fixture, &fixture.child);
+            } else {
+                assert!(runtime_store::session_dir(h, &fixture.child).is_ok());
+            }
+        }
+        fs::write(
+            h.join("profiles/owl/config.yaml"),
+            "tools:\n  enabled_toolsets: [todo, skills]\n",
+        )
+        .unwrap();
+        let mut live = vec![fixture.id.clone()];
+        if !retained_child {
+            live.push(fixture.child.clone());
+        }
+        for stored in &live {
+            runtime_store::append(h, stored, json!({"role":"user","text":"after restart"}))
+                .unwrap();
+            run(product::call(
+                h,
+                "local",
+                "owl",
+                stored,
+                "todo_list",
+                &json!({"todos":[]}),
+            ))
+            .unwrap()
+            .unwrap();
+            assert_eq!(runtime_store::history(h, stored).unwrap().len(), 2);
+        }
+        run(fixture.app.shutdown());
+    }
+}
+
+#[test]
+fn old_build_committed_section_stays_deleted_and_retries_cleanup() {
+    let mut fixture = Fixture::new();
+    let path = fixture.home.path().to_owned();
+    let h = path.as_path();
+    // The earlier build committed the catalog delete, then stopped. A native
+    // cleanup fault on the delegated task keeps it for the next startup.
+    old_build_mark_deleted(h, &fixture.id);
+    db::open(h)
+        .unwrap()
+        .execute("DELETE FROM sections WHERE id=?", [&fixture.id])
+        .unwrap();
+    let native = runtime_store::open(h).unwrap();
+    native.execute_batch(&format!("CREATE TRIGGER fail_child_cleanup BEFORE DELETE ON native_sessions WHEN OLD.stored_id='{}' BEGIN SELECT RAISE(ABORT,'child cleanup fault'); END", fixture.child)).unwrap();
+    fixture.restart();
+    assert!(!fixture.completed(&fixture.child));
+    for stored in [&fixture.id, &fixture.child] {
+        assert_eq!(
+            runtime_store::session_dir(h, stored).unwrap_err().code,
+            4001
+        );
+    }
+    native
+        .execute_batch("DROP TRIGGER fail_child_cleanup")
+        .unwrap();
+    fixture.restart();
+    let state = fixture.snapshot();
+    assert_eq!(state["parent_messages"], 0);
+    assert_eq!(state["child_messages"], 0);
+    assert_eq!(state["parent_pi"], false);
+    assert_eq!(state["child_pi"], false);
+    assert_eq!(state["tombstones"], 2);
+    assert_eq!(state["memory"], "Durable memory");
+    assert!(fixture.completed(&fixture.id));
+    assert!(fixture.completed(&fixture.child));
+    run(fixture.assert_closed());
+}

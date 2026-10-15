@@ -303,6 +303,46 @@ fn catalog_ids(home: &Path) -> Result<CatalogIds> {
             .collect::<rusqlite::Result<_>>()?,
     })
 }
+/// Builds before retention wrote only native_deleted: no pending root,
+/// retention choice or completion records which decision a marker belongs to.
+fn unrecorded(id: &str) -> String {
+    format!(
+        "NOT EXISTS(SELECT 1 FROM native_delete_pending WHERE session_id={id}) AND NOT EXISTS(SELECT 1 FROM native_delete_options WHERE session_id={id}) AND NOT EXISTS(SELECT 1 FROM native_delete_completed WHERE session_id={id})"
+    )
+}
+/// Only a surviving catalog root or an exact uncommitted bot journal can
+/// justify rolling back an old marker. Recorded decisions and foreign branches
+/// stop traversal, preserving their independently committed deletion.
+fn reopen_unrecorded(
+    conn: &Connection,
+    root: &str,
+    bot: &str,
+    owner: &str,
+    protected: &BTreeSet<String>,
+) -> Result<()> {
+    if protected.contains(root) {
+        return Ok(());
+    }
+    let ids = conn
+        .prepare(&format!("WITH RECURSIVE tree(id) AS (
+            SELECT ?1 WHERE EXISTS(SELECT 1 FROM native_deleted WHERE session_id=?1) AND {} AND NOT EXISTS(SELECT 1 FROM native_sessions WHERE stored_id=?1 AND (bot<>?2 OR owner<>?3))
+            UNION SELECT s.stored_id FROM native_sessions s JOIN tree t ON json_extract(s.options,'$.parent_session')=t.id
+            WHERE s.bot=?2 AND s.owner=?3 AND {}) SELECT id FROM tree", unrecorded("?1"), unrecorded("s.stored_id")))?
+        .query_map(params![root, bot, owner], |r| r.get(0))?
+        .collect::<rusqlite::Result<Vec<String>>>()?;
+    for id in ids.iter().filter(|id| !protected.contains(*id)) {
+        conn.execute("DELETE FROM native_deleted WHERE session_id=?", [id])?;
+    }
+    Ok(())
+}
+/// Old retirement was provisional while its section or owned room mapping
+/// survived. Rows are (id, bot, owner); recorded decisions take precedence.
+fn surviving_roots(home: &Path) -> Result<Vec<(String, String, String)>> {
+    Ok(crate::db::open(home)?
+        .prepare("SELECT id,bot,owner_id FROM sections UNION SELECT s.stored_session_id,s.bot,r.owner_id FROM room_sessions s JOIN rooms r ON r.id=s.room_id JOIN bots b ON b.name=s.bot AND b.owner_id=r.owner_id")?
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+        .collect::<rusqlite::Result<_>>()?)
+}
 pub fn mark_deleted(home: &Path, stored: &str) -> Result<Vec<String>> {
     with_tombstone(home, || {
         let listed = catalog_ids(home)?;
@@ -387,6 +427,7 @@ pub(crate) fn mark_bot_retiring(home: &Path, targets: &[Value], attempt: &str) -
 
 pub(crate) fn rollback_bot_retiring(
     home: &Path,
+    bot: &str,
     targets: &[Value],
     attempt: Option<&str>,
     recovering: bool,
@@ -411,14 +452,20 @@ pub(crate) fn rollback_bot_retiring(
         // Old bot journals had no claim ID. Only undo provably provisional
         // work; a catalogless retained child is already a committed deletion.
         for target in targets {
-            for stored in descendant_ids(&tx, common::required(target, "id")?)? {
+            let root = common::required(target, "id")?;
+            reopen_unrecorded(
+                &tx,
+                root,
+                bot,
+                common::required(target, "owner")?,
+                &BTreeSet::new(),
+            )?;
+            for stored in descendant_ids(&tx, root)? {
                 let pending = tx.query_row("SELECT root_id,cataloged FROM native_delete_pending WHERE session_id=? AND NOT EXISTS(SELECT 1 FROM native_delete_claims WHERE session_id=?1)", [&stored], |r| Ok((r.get::<_,String>(0)?,r.get::<_,i64>(1)?))).optional()?;
                 if pending.is_some_and(|(root, cataloged)| {
                     cataloged == 0 || listed.root_exists(&root, cataloged)
                 }) {
                     tx.execute("DELETE FROM native_deleted WHERE session_id=?", [&stored])?;
-                } else if listed.contains(&stored) {
-                    tx.execute("DELETE FROM native_deleted WHERE session_id=? AND NOT EXISTS(SELECT 1 FROM native_delete_options WHERE session_id=?1) AND NOT EXISTS(SELECT 1 FROM native_delete_completed WHERE session_id=?1)", [&stored])?;
                 }
             }
         }
@@ -835,8 +882,29 @@ pub fn finish_deletes(home: &Path) -> Result<()> {
     let protected = crate::catalog::pending_bot_delete_targets(home)?;
     with_tombstone(home, || {
         let listed = catalog_ids(home)?;
+        let surviving = surviving_roots(home)?;
         let mut conn = open(home)?;
         let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        // Inspect old markers before removing any modern pending metadata.
+        // An absent decision root must never turn a recorded committed child
+        // into an apparently old marker under a surviving ancestor.
+        for (stored, bot, owner) in surviving {
+            if protected.contains(&stored) {
+                continue;
+            }
+            reopen_unrecorded(&tx, &stored, &bot, &owner, &protected)?;
+            // Before claims, retirement could save purge=1 without a pending
+            // root. A surviving section's own native root was still provisional.
+            // Require that root row: a descendant or an already erased row can
+            // instead belong to a committed ancestor whose cleanup failed.
+            if listed.contains(&stored) {
+                tx.execute("DELETE FROM native_deleted WHERE session_id=?1
+                    AND NOT EXISTS(SELECT 1 FROM native_delete_pending WHERE session_id=?1)
+                    AND NOT EXISTS(SELECT 1 FROM native_delete_completed WHERE session_id=?1)
+                    AND EXISTS(SELECT 1 FROM native_delete_options WHERE session_id=?1 AND bot=?2 AND owner=?3 AND purge=1)
+                    AND EXISTS(SELECT 1 FROM native_sessions WHERE stored_id=?1 AND bot=?2 AND owner=?3 AND json_extract(options,'$.parent_session') IS NULL)", params![stored,bot,owner])?;
+            }
+        }
         let pending = common::rows(&tx, "SELECT * FROM native_delete_pending", &[])?;
         for row in pending {
             let stored = common::required(&row, "session_id")?;
@@ -854,14 +922,6 @@ pub fn finish_deletes(home: &Path) -> Result<()> {
                     [stored],
                 )?;
             }
-        }
-        // Old builds did not record provisional ownership. A still-listed
-        // root is safe to reopen; descendants may already be committed deletes.
-        for stored in &listed.sections {
-            if protected.contains(stored) {
-                continue;
-            }
-            tx.execute("DELETE FROM native_deleted WHERE session_id=? AND NOT EXISTS(SELECT 1 FROM native_delete_completed WHERE session_id=?1)", [stored])?;
         }
         tx.commit()?;
         Ok(())
@@ -2601,6 +2661,194 @@ mod deletion_attempt_tests {
                     .unwrap(),
                 "frozen"
             );
+        }
+    }
+
+    #[test]
+    fn old_journal_startup_reopens_only_its_unrecorded_markers() {
+        let home = tempfile::tempdir().unwrap();
+        let h = home.path();
+        crate::db::migrate(h).unwrap();
+        crate::db::open(h).unwrap().execute_batch("INSERT INTO bots(name,owner_id) VALUES('owl','local'),('fox','local'); INSERT INTO sections(id,bot,owner_id) VALUES('chat','owl','local');").unwrap();
+        let native = open(h).unwrap();
+        for (stored, bot, parent) in [
+            ("chat", "owl", None),
+            ("delegate", "owl", Some("chat")),
+            ("hidden", "owl", None),
+            ("claimed", "owl", Some("chat")),
+            ("retained", "owl", Some("chat")),
+            ("completed", "owl", Some("chat")),
+            ("unrelated", "fox", None),
+        ] {
+            native
+                .execute(
+                    "INSERT INTO native_sessions VALUES(?,'local',?,'frozen',?)",
+                    params![stored, bot, json!({"parent_session":parent}).to_string()],
+                )
+                .unwrap();
+            append(h, stored, json!({"role":"user","text":"original"})).unwrap();
+        }
+        // Earlier-build markers, beside another attempt's committed claim,
+        // recorded retention and completion, and an unrelated old deletion.
+        native.execute_batch("INSERT INTO native_deleted VALUES('chat'),('delegate'),('hidden'),('claimed'),('retained'),('completed'),('unrelated');
+            INSERT INTO native_delete_pending VALUES('claimed','gone-section',1);
+            INSERT INTO native_delete_claims VALUES('other-attempt','claimed');
+            INSERT INTO native_delete_options VALUES('claimed','owl','local',0),('retained','owl','local',0),('completed','owl','local',1);
+            INSERT INTO native_delete_completed VALUES('completed');").unwrap();
+        let targets = [
+            "chat",
+            "delegate",
+            "hidden",
+            "claimed",
+            "retained",
+            "completed",
+        ]
+        .map(|id| json!({"id":id,"owner":"local"}));
+        crate::db::open(h)
+            .unwrap()
+            .execute(
+                "INSERT INTO settings(key,value) VALUES('pending_bot_delete:owl',?)",
+                [json!({"targets":targets,"committed":false,"name_reserved":true}).to_string()],
+            )
+            .unwrap();
+        for _ in 0..2 {
+            finish_deletes(h).unwrap();
+            assert!(
+                crate::catalog::pending_bot_delete_targets(h)
+                    .unwrap()
+                    .is_empty()
+            );
+            for stored in ["chat", "delegate", "hidden"] {
+                assert!(session_dir(h, stored).is_ok(), "{stored}");
+                assert_eq!(history(h, stored).unwrap().len(), 1);
+            }
+            for (stored, kept) in [
+                ("claimed", 1),
+                ("retained", 1),
+                ("completed", 1),
+                ("unrelated", 0),
+            ] {
+                assert_eq!(session_dir(h, stored).unwrap_err().code, 4001, "{stored}");
+                assert_eq!(history(h, stored).unwrap().len(), kept, "{stored}");
+            }
+            assert!(delete_completed(&native, "unrelated").unwrap());
+        }
+    }
+
+    #[test]
+    fn old_catalog_recovery_keeps_foreign_and_recorded_decisions_closed() {
+        let home = tempfile::tempdir().unwrap();
+        let h = home.path();
+        crate::db::migrate(h).unwrap();
+        crate::db::open(h).unwrap().execute_batch("INSERT INTO bots(name,owner_id) VALUES('owl','local');
+            INSERT INTO sections(id,bot,owner_id) VALUES('live','owl','local'),('mismatched','owl','local'),('committed-child','owl','local');").unwrap();
+        let native = open(h).unwrap();
+        for (stored, bot, owner, parent) in [
+            ("live", "owl", "local", None),
+            ("delegate", "owl", "local", Some("live")),
+            ("foreign-bot", "fox", "local", Some("live")),
+            ("foreign-owner", "owl", "bob", Some("live")),
+            ("beyond-foreign", "owl", "local", Some("foreign-bot")),
+            ("mismatched", "owl", "bob", None),
+            ("committed-child", "owl", "local", Some("live")),
+            ("completed-child", "owl", "local", Some("live")),
+            ("retained-child", "owl", "local", Some("live")),
+        ] {
+            native
+                .execute(
+                    "INSERT INTO native_sessions VALUES(?,?,?,'frozen',?)",
+                    params![
+                        stored,
+                        owner,
+                        bot,
+                        json!({"parent_session":parent}).to_string()
+                    ],
+                )
+                .unwrap();
+            append(h, stored, json!({"role":"user","text":"original"})).unwrap();
+            native
+                .execute("INSERT INTO native_deleted VALUES(?)", [stored])
+                .unwrap();
+        }
+        native.execute_batch("INSERT INTO native_delete_options VALUES('committed-child','owl','local',1),('completed-child','owl','local',1),('retained-child','owl','local',0);
+            INSERT INTO native_delete_pending VALUES('committed-child','absent-decision',1);
+            INSERT INTO native_delete_completed VALUES('completed-child');
+            CREATE TABLE IF NOT EXISTS native_delete_legacy(session_id TEXT NOT NULL REFERENCES native_delete_options(session_id) ON DELETE CASCADE,legacy_id TEXT NOT NULL,PRIMARY KEY(session_id,legacy_id));
+            INSERT INTO native_delete_legacy VALUES('committed-child','saved-legacy-alias');
+            CREATE TRIGGER fail_committed_cleanup BEFORE DELETE ON native_sessions WHEN OLD.stored_id='committed-child' BEGIN SELECT RAISE(ABORT,'committed cleanup fault'); END;
+            CREATE TRIGGER keep_unknown BEFORE DELETE ON native_sessions WHEN OLD.stored_id IN ('foreign-bot','foreign-owner','beyond-foreign','mismatched') BEGIN SELECT RAISE(ABORT,'preserve boundary control for inspection'); END;").unwrap();
+        for _ in 0..2 {
+            finish_deletes(h).unwrap();
+            for stored in ["live", "delegate"] {
+                assert!(session_dir(h, stored).is_ok(), "{stored}");
+                assert_eq!(history(h, stored).unwrap().len(), 1);
+            }
+            for stored in [
+                "foreign-bot",
+                "foreign-owner",
+                "beyond-foreign",
+                "mismatched",
+                "committed-child",
+                "completed-child",
+                "retained-child",
+            ] {
+                assert_eq!(
+                    append(h, stored, json!({"role":"user","text":"late"}))
+                        .unwrap_err()
+                        .code,
+                    4001,
+                    "{stored}"
+                );
+            }
+            assert!(!delete_completed(&native, "committed-child").unwrap());
+            assert_eq!(native.query_row("SELECT legacy_id FROM native_delete_legacy WHERE session_id='committed-child'",[],|r|r.get::<_,String>(0)).unwrap(),"saved-legacy-alias");
+            assert_eq!(history(h, "committed-child").unwrap().len(), 1);
+            assert_eq!(history(h, "retained-child").unwrap().len(), 1);
+            assert_eq!(history(h, "completed-child").unwrap().len(), 1);
+        }
+        native
+            .execute_batch("DROP TRIGGER fail_committed_cleanup")
+            .unwrap();
+        finish_deletes(h).unwrap();
+        assert_eq!(session_dir(h, "committed-child").unwrap_err().code, 4001);
+        assert!(history(h, "committed-child").unwrap().is_empty());
+        assert!(delete_completed(&native, "committed-child").unwrap());
+    }
+
+    #[test]
+    fn old_committed_child_under_an_unmarked_live_parent_stays_terminal() {
+        let home = tempfile::tempdir().unwrap();
+        let h = home.path();
+        crate::db::migrate(h).unwrap();
+        crate::db::open(h)
+            .unwrap()
+            .execute(
+                "INSERT INTO sections(id,bot,owner_id) VALUES('live','owl','local')",
+                [],
+            )
+            .unwrap();
+        let native = open(h).unwrap();
+        for (stored, parent) in [("live", None), ("committed", Some("live"))] {
+            native
+                .execute(
+                    "INSERT INTO native_sessions VALUES(?,'local','owl','frozen',?)",
+                    params![stored, json!({"parent_session":parent}).to_string()],
+                )
+                .unwrap();
+            append(h, stored, json!({"role":"user","text":"original"})).unwrap();
+        }
+        // The old child's catalog decision committed. Its healthy parent was
+        // never retired, so that parent's existence cannot reverse the delete.
+        native
+            .execute("INSERT INTO native_deleted VALUES('committed')", [])
+            .unwrap();
+        for _ in 0..2 {
+            finish_deletes(h).unwrap();
+            assert!(session_dir(h, "live").is_ok());
+            assert_eq!(history(h, "live").unwrap().len(), 1);
+            assert_eq!(session_dir(h, "committed").unwrap_err().code, 4001);
+            assert!(history(h, "committed").unwrap().is_empty());
+            assert!(delete_completed(&native, "committed").unwrap());
         }
     }
 }

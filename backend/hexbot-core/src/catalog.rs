@@ -1904,6 +1904,7 @@ fn rollback_bot_delete_in(
         }
         runtime_store::rollback_bot_retiring(
             home,
+            name,
             targets,
             journal["attempt"].as_str(),
             recovering,
