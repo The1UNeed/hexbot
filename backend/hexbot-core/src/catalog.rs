@@ -191,10 +191,7 @@ fn legacy_history(
         }
     };
     let conversation = |m: &&Value| {
-        !(m["role"] == "assistant"
-            && m["content"]
-                .as_str()
-                .is_some_and(|text| reports.contains(text)))
+        !runtime_store::dream_report_text(m).is_some_and(|text| reports.contains(&text))
     };
     let count = messages
         .iter()
@@ -602,30 +599,35 @@ pub(crate) fn classify_dream_logs(home: &Path, bot: &str) -> Result<BTreeSet<Str
         // What an earlier build kept comes first; reports this build posted
         // to a log never opened since follow it.
         let mut first = match &legacy {
-            Some(legacy) => runtime_store::legacy_rows(legacy, id)?
-                .0
-                .first()
-                .map(|m| json!({"role":m["role"],"text":m["content"]})),
+            Some(legacy) => runtime_store::legacy_rows(legacy, id)?.0.first().cloned(),
             None => None,
         };
         if first.is_none() {
-            first = runtime
+            let native = runtime
                 .query_row(
-                    "SELECT message_json FROM native_messages WHERE session_id=? ORDER BY seq LIMIT 1",
+                    "SELECT m.message_json,p.raw_json FROM native_messages m LEFT JOIN native_pi_journal p ON p.session_id=m.session_id AND p.projection_seq=m.seq WHERE m.session_id=? ORDER BY m.seq LIMIT 1",
                     [id],
-                    |r| r.get::<_, String>(0),
+                    |r| Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?)),
                 )
-                .optional()?
-                .and_then(|message| serde_json::from_str(&message).ok());
+                .optional()?;
+            if let Some((message, raw)) = native {
+                first = serde_json::from_str(&message).ok();
+                if let Some(raw) = raw {
+                    let raw: Value =
+                        serde_json::from_str(&raw).map_err(|e| Error::new(5200, e.to_string()))?;
+                    if runtime_store::dream_report_text(&raw).is_none() {
+                        first = Some(raw);
+                    }
+                }
+            }
         }
         let first = first.unwrap_or(Value::Null);
         if known.contains(id)
-            || first["role"] == "assistant"
+            || runtime_store::dream_report_text(&first).is_some()
                 && (row["titled"] == 1
                     || first["dream"] != true
-                        && first["text"]
-                            .as_str()
-                            .is_some_and(|text| reports.contains(text)))
+                        && runtime_store::dream_report_text(&first)
+                            .is_some_and(|text| reports.contains(&text)))
         {
             logs.insert(id.to_owned());
         }
@@ -647,12 +649,7 @@ pub(crate) fn classify_dream_logs(home: &Path, bot: &str) -> Result<BTreeSet<Str
     // The reports in a dream log, not what the user said there or the bot's
     // replies; a reply elsewhere can read like a report.
     for id in &logs {
-        for summary in &reports {
-            runtime.execute(
-                "UPDATE native_messages SET message_json=json_set(message_json,'$.dream',json('true')) WHERE session_id=? AND json_extract(message_json,'$.role')='assistant' AND json_extract(message_json,'$.text')=? AND COALESCE(json_extract(message_json,'$.dream'),0)<>1",
-                params![id, summary],
-            )?;
-        }
+        runtime_store::classify_dream_reports(home, id, &reports)?;
     }
     Ok(logs)
 }

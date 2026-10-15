@@ -228,8 +228,10 @@ more freedom and more capability than a hosted product can offer.
   create. That daemon's list cannot tell its Dreams log, renamed or not, from
   a conversation, so the app opens a section by itself only while at most
   one has something said, and otherwise asks which one to continue. The pick
-  lasts while the app runs and does not change what the upgrade keeps: a
-  Dreams log picked there still gives way to a conversation.
+  lasts while the app runs. When supported, successful unarchive also saves
+  the choice for upgrade. Old reports can overwrite that same activity time;
+  when a mixed log makes the choice ambiguous, the upgrade keeps all competing
+  histories and ranks the chat by known human conversation activity.
 - A chat starts with the bot's memory and a catalog of skill descriptions.
   It loads skill bodies when needed. It picks up the current name, soul,
   memory, About you, teammates and skill catalog after compaction if the next
