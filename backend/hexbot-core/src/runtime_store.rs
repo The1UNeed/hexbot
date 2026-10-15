@@ -1906,9 +1906,10 @@ fn active_ids(entries: &[Value]) -> Result<HashSet<&str>> {
     }
     Ok(active)
 }
-/// The first display row a section's latest compaction kept, from Pi's
-/// `firstKeptEntryId`: rows before it are in the context only as the summary.
-/// None when it never compacted.
+/// The first display row still in Pi's verbatim context after its latest
+/// compaction. Bind completed live appends without replaying messages, changing
+/// their projections, or billing them again. An incomplete/unknown boundary is
+/// an error, never evidence that every row was summarized.
 pub fn summarised_before(home: &Path, stored: &str) -> Result<Option<i64>> {
     common::identifier(stored)?;
     let path = home
@@ -1920,37 +1921,129 @@ pub fn summarised_before(home: &Path, stored: &str) -> Result<Option<i64>> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(error.into()),
     };
-    let (entries, _, _) = parse_pi_entries(&bytes)?;
+    let uncertain = || {
+        crate::Error::new(
+            5200,
+            "Cannot determine which conversation messages were summarized; the log and saved message journal do not yet agree",
+        )
+    };
+    let (entries, _, torn) = parse_pi_entries(&bytes)?;
+    if torn {
+        return Err(uncertain());
+    }
     let active = active_ids(&entries)?;
     let on_path = |entry: &&Value| entry["id"].as_str().is_some_and(|id| active.contains(id));
-    let Some(kept) = entries
+    let branch = entries.iter().filter(on_path).collect::<Vec<_>>();
+    let Some(compact) = branch
         .iter()
-        .filter(on_path)
-        .rfind(|entry| entry["type"] == "compaction")
-        .map(|entry| entry["firstKeptEntryId"].clone())
+        .rposition(|entry| entry["type"] == "compaction")
     else {
         return Ok(None);
     };
-    let conn = open(home)?;
-    // The kept entry, or the first after it that shows as a row.
-    for entry in entries
+    let kept = branch[compact]["firstKeptEntryId"]
+        .as_str()
+        .ok_or_else(uncertain)?;
+    // Pi uses the compaction's own id when it keeps no earlier entries.
+    let first = branch[..=compact]
         .iter()
-        .filter(on_path)
-        .skip_while(|entry| entry["id"] != kept)
-    {
-        let seq: Option<i64> = conn
-            .query_row(
-                "SELECT projection_seq FROM native_pi_journal WHERE session_id=? AND entry_id=? AND projection_seq IS NOT NULL",
-                params![stored, entry["id"].as_str()],
-                |r| r.get(0),
-            )
-            .optional()?;
-        if seq.is_some() {
-            return Ok(seq);
+        .position(|entry| entry["id"] == kept)
+        .ok_or_else(uncertain)?;
+    let retained = branch[first..]
+        .iter()
+        .filter_map(|entry| entry["id"].as_str())
+        .collect::<HashSet<_>>();
+    let mut conn = open(home)?;
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    check_deleted(&tx, stored)?;
+    let mut earlier = 0;
+    let mut cutoff = None::<i64>;
+    for entry in &entries {
+        let message = match entry["type"].as_str() {
+            Some("message") => entry["message"].clone(),
+            Some("custom_message") => {
+                json!({"role":"custom","content":entry["content"],"customType":entry["customType"],"display":entry["display"],"details":entry["details"],"timestamp":entry_timestamp(entry)*1000.0})
+            }
+            _ => continue,
+        };
+        let entry_id = common::required(entry, "id")?;
+        let raw = message.to_string();
+        let existing: Option<(String, String)> = tx.query_row(
+            "SELECT journal_id,raw_json FROM native_pi_journal WHERE session_id=? AND entry_id=?",
+            params![stored, entry_id], |r| Ok((r.get(0)?, r.get(1)?)),
+        ).optional()?;
+        let journal = if let Some((journal, recorded)) = existing {
+            if recorded != raw {
+                return Err(uncertain());
+            }
+            Some(journal)
+        } else {
+            // Consume occurrences in append order, including abandoned branches.
+            // Equal text, timestamps, or tool arguments alone cannot identify an
+            // event; the entire raw message and its multiplicity must agree.
+            let waiting: Option<String> = tx.query_row(
+                "SELECT journal_id FROM native_pi_journal WHERE session_id=? AND entry_id IS NULL AND raw_json=? ORDER BY rowid LIMIT 1",
+                params![stored, raw], |r| r.get(0),
+            ).optional()?;
+            if let Some(journal) = &waiting {
+                tx.execute(
+                    "UPDATE native_pi_journal SET entry_id=? WHERE journal_id=?",
+                    params![entry_id, journal],
+                )?;
+            }
+            waiting
+        };
+        let Some(journal) = journal else {
+            // The durable append may have beaten native event projection. A
+            // visible message without a row cannot prove a seq cutoff.
+            if projection(&message, None).is_some() {
+                return Err(uncertain());
+            }
+            continue;
+        };
+        let is_active = active.contains(entry_id);
+        tx.execute(
+            "UPDATE native_pi_journal SET active=? WHERE journal_id=? AND active<>?",
+            params![is_active, journal, is_active],
+        )?;
+        let seq: Option<i64> = tx.query_row(
+            "SELECT projection_seq FROM native_pi_journal WHERE journal_id=?",
+            [&journal],
+            |r| r.get(0),
+        )?;
+        if let Some(seq) = seq.filter(|_| is_active) {
+            if retained.contains(entry_id) {
+                cutoff = Some(cutoff.map_or(seq, |old| old.min(seq)));
+            } else {
+                earlier = earlier.max(seq);
+            }
         }
     }
-    // Nothing kept shows as a row: every row is in the summary.
-    Ok(Some(i64::MAX))
+    // A fully summarized log has a finite boundary too: an event projected
+    // before its next disk append must remain excluded from recall.
+    let cutoff = cutoff.unwrap_or(earlier.checked_add(1).ok_or_else(uncertain)?);
+    if earlier >= cutoff {
+        return Err(uncertain());
+    }
+    let unknown: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM native_pi_journal WHERE session_id=? AND entry_id IS NULL AND projection_seq<?)",
+        params![stored, cutoff], |r| r.get(0),
+    )?;
+    let ids = entries
+        .iter()
+        .filter_map(|entry| entry["id"].as_str())
+        .collect::<HashSet<_>>();
+    let lost = common::rows(
+        &tx,
+        "SELECT entry_id FROM native_pi_journal WHERE session_id=? AND entry_id IS NOT NULL",
+        &[&stored],
+    )?
+    .iter()
+    .any(|row| row["entry_id"].as_str().is_none_or(|id| !ids.contains(id)));
+    if unknown || lost {
+        return Err(uncertain());
+    }
+    tx.commit()?;
+    Ok(Some(cutoff))
 }
 /// Summaries Pi wrote when it compacted this section's current branch in
 /// `[since, until)`, oldest first, as `(timestamp, summary)`. Reads the

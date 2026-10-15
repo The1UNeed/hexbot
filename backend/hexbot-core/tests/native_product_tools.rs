@@ -476,6 +476,174 @@ async fn session_search_defers_asking_history_and_restores_it_after_invalid_matc
     );
     assert_eq!(product::sections_read(), before); // Rollback restored current's rows.
 }
+
+/// Live message_end projection precedes Pi's append, and there is no recovery
+/// pass between these searches. Exercise read, browse, scroll and FTS through
+/// the public tool, including a shared index warmed by another conversation.
+#[tokio::test]
+async fn session_search_live_compaction_excludes_verbatim_context_without_reopen() {
+    let _serial = SEARCH.lock().await;
+    for already_bound in [false, true] {
+        let home = setup();
+        let h = home.path();
+        let path = runtime_store::session_dir(h, "current")
+            .unwrap()
+            .join("conversation.jsonl");
+        let user =
+            |text| json!({"role":"user","content":[{"type":"text","text":text}],"timestamp":1000});
+        let messages = [
+            user("summarized archive"),
+            user("still verbatim"),
+            user("still verbatim"),
+        ];
+        let mut entries = vec![json!({"type":"session","version":3,"id":"current"})];
+        for (i, message) in messages.iter().enumerate() {
+            runtime_store::project_seeded(h, "current", "local", "owl", message, None, None)
+                .unwrap();
+            entries.push(json!({"type":"message","id":format!("m{i}"),"parentId":if i==0 {Value::Null} else {json!(format!("m{}", i-1))},"message":message}));
+        }
+        let write = |entries: &[Value]| {
+            fs::write(
+                &path,
+                entries.iter().map(|v| format!("{v}\n")).collect::<String>(),
+            )
+            .unwrap()
+        };
+        write(&entries);
+        if already_bound {
+            runtime_store::reconcile(h, "owl", "current", "local").unwrap();
+        }
+        let original = runtime_store::history(h, "current").unwrap();
+        assert_eq!(
+            search(h, "local", "owl", "current", &json!({"query":"verbatim"})).await["count"],
+            0
+        );
+        // The other caller has already indexed the full asking conversation.
+        assert_eq!(
+            search(h, "local", "owl", "past", &json!({"query":"verbatim"})).await["count"],
+            1
+        );
+        entries.push(json!({"type":"compaction","id":"c","parentId":"m2","firstKeptEntryId":"m1","summary":"An archive summary"}));
+        write(&entries);
+        let read = search(
+            h,
+            "local",
+            "owl",
+            "current",
+            &json!({"session_id":"current"}),
+        )
+        .await;
+        assert_eq!(read["messages"].as_array().unwrap().len(), 1, "{read}");
+        assert_eq!(read["messages"][0]["content"], "summarized archive");
+        let scroll = search(
+            h,
+            "local",
+            "owl",
+            "current",
+            &json!({"session_id":"current","around_message_id":1}),
+        )
+        .await;
+        assert_eq!(scroll["messages"].as_array().unwrap().len(), 1);
+        let browse = search(h, "local", "owl", "current", &json!({})).await;
+        assert_eq!(browse["results"][0]["message_count"], 1);
+        assert_eq!(
+            search(h, "local", "owl", "current", &json!({"query":"archive"})).await["count"],
+            1
+        );
+        assert_eq!(
+            search(h, "local", "owl", "current", &json!({"query":"verbatim"})).await["count"],
+            0
+        );
+        // Projection of the next event is visible before its durable append.
+        let next = user("new context pending append");
+        runtime_store::project_seeded(h, "current", "local", "owl", &next, None, None).unwrap();
+        assert_eq!(
+            search(h, "local", "owl", "current", &json!({"query":"pending"})).await["count"],
+            0
+        );
+        entries.push(json!({"type":"message","id":"next","parentId":"c","message":next}));
+        write(&entries);
+        assert_eq!(
+            search(
+                h,
+                "local",
+                "owl",
+                "current",
+                &json!({"session_id":"current"})
+            )
+            .await["message_count"],
+            1
+        );
+        assert_eq!(
+            &runtime_store::history(h, "current").unwrap()[..3],
+            original
+        );
+        // A branch abandons a formerly summarized message; cached search must
+        // follow Pi's active path before any reopen/reconcile can update it.
+        let branch = user("branch context");
+        runtime_store::project_seeded(h, "current", "local", "owl", &branch, None, None).unwrap();
+        entries.push(json!({"type":"message","id":"branch","parentId":"m0","message":branch}));
+        entries.push(json!({"type":"compaction","id":"c2","parentId":"branch","firstKeptEntryId":"branch","summary":"Branch summary"}));
+        write(&entries);
+        assert_eq!(
+            search(
+                h,
+                "local",
+                "owl",
+                "current",
+                &json!({"session_id":"current"})
+            )
+            .await["message_count"],
+            1
+        );
+        assert_eq!(
+            search(h, "local", "owl", "past", &json!({"query":"verbatim"})).await["count"],
+            0
+        );
+        let before = fs::read(&path).unwrap();
+        let version =
+            runtime_store::history_version(&runtime_store::open(h).unwrap(), "current").unwrap();
+        // Unknown firstKept is uncertainty, never permission to return all rows.
+        entries.last_mut().unwrap()["firstKeptEntryId"] = json!("unknown");
+        write(&entries);
+        let error = call(h, "session_search", json!({"session_id":"current"}))
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, 5200);
+        assert_eq!(
+            runtime_store::history_version(&runtime_store::open(h).unwrap(), "current").unwrap(),
+            version
+        );
+        fs::write(&path, &before).unwrap();
+        assert_eq!(
+            search(h, "local", "owl", "current", &json!({"query":"archive"})).await["count"],
+            1
+        );
+        for suffix in ["{\"type\":", "invalid\n"] {
+            let mut bytes = before.clone();
+            bytes.extend_from_slice(suffix.as_bytes());
+            fs::write(&path, &bytes).unwrap();
+            assert_eq!(
+                call(h, "session_search", json!({"query":"archive"}))
+                    .await
+                    .unwrap_err()
+                    .code,
+                5200
+            );
+            assert_eq!(
+                fs::read(&path).unwrap(),
+                bytes,
+                "live search rewrote Pi's file"
+            );
+        }
+        fs::write(&path, &before).unwrap();
+        assert_eq!(
+            search(h, "local", "owl", "current", &json!({"query":"archive"})).await["count"],
+            1
+        );
+    }
+}
+
 /// Search tests share one process-wide index and read counter.
 static SEARCH: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 /// Seeds `count` messages over fifty sections of the bot, in one transaction.
