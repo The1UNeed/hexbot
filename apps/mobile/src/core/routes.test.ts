@@ -3,6 +3,7 @@ import {
   ROOMS_QUERY,
   SECTIONS_QUERY,
   botChat,
+  chatPreview,
   isOpenRoom,
   rebind,
   shownRoom,
@@ -150,5 +151,23 @@ describe('rooms', () => {
     expect(isOpenRoom(route, 'old')).toBe(true)
     expect(isOpenRoom(route, 'new')).toBe(false)
     expect(isOpenRoom(null, 'old')).toBe(false)
+  })
+})
+
+describe('bot card preview', () => {
+  it('omits an ambiguous quote when a newer unavailable row precedes the older canonical chat', () => {
+    const healthy = section('healthy', { preview: 'Ongoing conversation', message_count: 2, updated_at: 1 })
+    const unavailable = section('quarantined', { preview: 'Unavailable history', message_count: 4, updated_at: 9 })
+    expect(chatPreview('ada', [unavailable, healthy], [unavailable])).toBeNull()
+    expect(chatPreview('ada', [healthy], [unavailable])).toBeNull()
+  })
+  it('keeps ordinary singleton previews, recent-list fallback, and ignores teammate threads', () => {
+    const chat = section('chat', { preview: 'Ongoing conversation' })
+    const thread = section('thread', { peer_bot: 'grace', preview: 'Teammate question' })
+    expect(chatPreview('ada', [chat, thread], [chat])).toBe('Ongoing conversation')
+    expect(chatPreview('ada', [], [chat])).toBe('Ongoing conversation')
+    expect(chatPreview('ada', [{ ...chat, preview: 'Latest message' }], [chat])).toBe('Latest message')
+    expect(chatPreview('ada', [thread])).toBeNull()
+    expect(chatPreview('ada', [])).toBeNull()
   })
 })

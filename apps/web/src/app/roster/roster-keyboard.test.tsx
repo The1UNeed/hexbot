@@ -12,7 +12,13 @@ import { RosterColumn } from './index'
 
 const navigate = vi.hoisted(() => vi.fn())
 
+const router = vi.hoisted(() => ({
+  history: { location: {}, subscribe: () => () => undefined },
+  subscribe: () => () => undefined
+}))
+
 vi.mock('@tanstack/react-router', () => ({
+  useRouter: () => router,
   useNavigate: () => navigate,
   useParams: () => ({})
 }))
@@ -172,7 +178,7 @@ describe('one chat per bot', () => {
         to: '/b/$bot/s/$section'
       })
     )
-    expect(named).toHaveBeenCalledWith('scout')
+    expect(named).toHaveBeenCalledWith('scout', expect.any(Function))
   })
 
   it('opens nothing when the user picks no section on an older daemon', async () => {
@@ -181,7 +187,7 @@ describe('one chat per bot', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /Scout/ }))
 
-    await waitFor(() => expect(named).toHaveBeenCalledWith('scout'))
+    await waitFor(() => expect(named).toHaveBeenCalledWith('scout', expect.any(Function)))
     expect(navigate).not.toHaveBeenCalled()
   })
 

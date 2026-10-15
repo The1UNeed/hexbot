@@ -33,6 +33,11 @@ Connect sequence:
 3. Wait for the `gateway.ready` event; keep its `replay_epoch`.
 4. Call `hexbot.info`, `hexbot.settings.get`, `hexbot.bots.list`.
 
+Daemon capabilities belong to the current target and replay epoch. Clear them
+when that connection ends or changes, and publish `hexbot.info` independently
+of other hydration RPCs. If info is unavailable, chat selection waits for a
+successful info request before deciding whether create is safe on that daemon.
+
 Reconnect with exponential backoff from 1 s to 16 s, forever, reset after
 30 s stable. On reconnect, for every open live session call
 `session.events.since {session_id, last_seen}`; if the returned epoch
@@ -70,6 +75,18 @@ store and by `params.type` for global events (`hexbot.*.changed`).
   persisted to localStorage.
 
 Only the transcript store is hot; everything else is small.
+
+A catalog live ID does not mean its history has loaded. Only `sections.open`
+registers a chat as loaded; list refreshes and canonical lookups leave that
+registration alone. A report reload discards it and its transcript, including
+when the chat is offscreen. Concurrent history opens share a request and reread
+if another report invalidates the snapshot before it arrives.
+
+Roster selections and Dream log entries resolve the daemon's canonical chat
+on activation. Older daemons use the same explicit chooser and persist a pick
+before opening it. Later navigation, unmount, or a daemon change cancels the
+lookup before any further writes or navigation. Mobile omits a bot card's quote
+when multiple preserved owner conversations make its source uncertain.
 
 ## Event mapping
 

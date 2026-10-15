@@ -1,4 +1,4 @@
-import { Link } from '@tanstack/react-router'
+import { Link, useNavigate } from '@tanstack/react-router'
 import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { Button } from '../../components/ui/button'
@@ -21,7 +21,8 @@ import {
 } from '../../lib/api'
 import { cn } from '../../lib/cn'
 import type { Bot } from '../../lib/types'
-import { sectionsActions, useSectionsForBot } from '../../stores/sections'
+import { useChatSelection } from '../../lib/use-chat-selection'
+import { sectionsActions } from '../../stores/sections'
 import { Markdown } from '../conversation'
 
 import {
@@ -530,15 +531,13 @@ function BotNotesBlock({ bot }: { bot: string }) {
 
 /** One dream in the log: its summary, and when it changed memory, the before and after with a way back. */
 function DreamEntry({
-  bot,
   dream,
-  onRestored,
-  sectionId
+  onOpen,
+  onRestored
 }: {
-  bot: string
   dream: Dream
+  onOpen: () => void
   onRestored: (memoryMd: string) => void
-  sectionId?: string
 }) {
   const [open, setOpen] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -561,17 +560,9 @@ function DreamEntry({
 
   return (
     <li className="px-4 py-3">
-      {sectionId ? (
-        <Link
-          className="block hover:text-accent"
-          params={{ bot, section: sectionId }}
-          to="/b/$bot/s/$section"
-        >
-          {summary}
-        </Link>
-      ) : (
-        <div>{summary}</div>
-      )}
+      <button className="block w-full text-left hover:text-accent" onClick={onOpen} type="button">
+        {summary}
+      </button>
       {changed ? (
         <div className="mt-1">
           <button
@@ -681,8 +672,20 @@ export function DreamingBlock({
     }
   }
 
-  // Reports are posted in the bot's chat.
-  const chat = useSectionsForBot(bot.name).find(section => !section.archived_at)
+  const navigate = useNavigate()
+  const { selectChat } = useChatSelection()
+
+  const openReport = async () => {
+    try {
+      const chat = await selectChat(bot.name)
+
+      if (chat) {
+        void navigate({ to: '/b/$bot/s/$section', params: { bot: bot.name, section: chat.id } })
+      }
+    } catch (cause) {
+      setError(errorText(cause))
+    }
+  }
 
   const when = (text: string) => (
     <span className="text-[length:var(--text-secondary)] text-muted">{text}</span>
@@ -729,14 +732,13 @@ export function DreamingBlock({
           <ul className={cn(cardClass, dividerClass)}>
             {dreams.map(dream => (
               <DreamEntry
-                bot={bot.name}
                 dream={dream}
                 key={dream.id}
+                onOpen={() => void openReport()}
                 onRestored={memoryMd => {
                   onRestored(memoryMd)
                   void load().catch(cause => setError(errorText(cause)))
                 }}
-                sectionId={chat?.id}
               />
             ))}
           </ul>

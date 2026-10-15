@@ -94,3 +94,11 @@ export function rebind(
   const room = lists.rooms.find(x => x.id === route.room.id)
   return room ? { kind: 'room', room: { ...room, turns: room.turns ?? route.room.turns } } : null
 }
+
+/** A catalog cannot identify a canonical chat among preserved recovery rows. */
+export function chatPreview(bot: string, sections: Section[], recent: Section[] = []): string | null {
+  const chats = new Map(
+    [...recent, ...sections].filter(s => s.bot === bot && !s.peer_bot).map(s => [s.id, s])
+  )
+  return chats.size === 1 ? [...chats.values()][0]!.preview || null : null
+}
