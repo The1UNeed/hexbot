@@ -355,6 +355,26 @@ fn display_name(name: &str) -> String {
         .collect::<Vec<_>>()
         .join(" ")
 }
+/// The bot's newest failure that still has a visible cause. Hidden native runs
+/// have no catalog section: require their bot and owner, and exclude deleted
+/// sessions and catalog entries hidden by other filters. Connector and global
+/// failures outlive their original chat. Needs `runtime` attached.
+const OPEN_INCIDENT: &str = "SELECT i.* FROM bot_incidents i JOIN bots b ON b.name=i.bot
+ WHERE i.bot=? AND i.resolved_at IS NULL AND (
+    i.kind<>'turn_failed' OR CASE WHEN i.room_id IS NOT NULL
+        THEN EXISTS(SELECT 1 FROM rooms r WHERE r.id=i.room_id AND r.owner_id=b.owner_id)
+        ELSE i.section_id IS NULL
+            OR EXISTS(SELECT 1 FROM room_sessions s JOIN rooms r ON r.id=s.room_id
+                WHERE s.stored_session_id=i.section_id AND s.bot=i.bot AND r.owner_id=b.owner_id)
+            OR EXISTS(SELECT 1 FROM sections s WHERE s.id=i.section_id
+                AND s.bot=i.bot AND s.owner_id=b.owner_id AND s.archived_at IS NULL)
+            OR (NOT EXISTS(SELECT 1 FROM sections s WHERE s.id=i.section_id)
+                AND NOT EXISTS(SELECT 1 FROM room_sessions s WHERE s.stored_session_id=i.section_id)
+                AND EXISTS(SELECT 1 FROM runtime.native_sessions s WHERE s.stored_id=i.section_id
+                    AND s.bot=i.bot AND s.owner=b.owner_id)
+                AND NOT EXISTS(SELECT 1 FROM runtime.native_deleted d WHERE d.session_id=i.section_id))
+        END
+ ) ORDER BY i.created_at DESC LIMIT 1";
 fn shape_bot(home: &Path, caller: &str, row: Value) -> Result<Value> {
     let name = row["name"].as_str().unwrap_or("");
     let cfg = config(home, name)?;
@@ -365,37 +385,13 @@ fn shape_bot(home: &Path, caller: &str, row: Value) -> Result<Value> {
         .take(2)
         .cloned()
         .collect::<Vec<_>>();
-    // Hidden native runs have no catalog section. Require their bot and owner,
-    // and exclude deleted sessions and catalog entries hidden by other filters.
-    // Connector and global failures outlive their original chat.
     let conn = db::open(home)?;
     runtime_store::open(home)?;
     conn.execute(
         "ATTACH DATABASE ? AS runtime",
         [home.join("hexbot-runtime.db").to_string_lossy().as_ref()],
     )?;
-    let incident = rows(
-        &conn,
-        "SELECT i.* FROM bot_incidents i JOIN bots b ON b.name=i.bot
-         WHERE i.bot=? AND i.resolved_at IS NULL AND (
-            i.kind<>'turn_failed' OR CASE WHEN i.room_id IS NOT NULL
-                THEN EXISTS(SELECT 1 FROM rooms r WHERE r.id=i.room_id AND r.owner_id=b.owner_id)
-                ELSE i.section_id IS NULL
-                    OR EXISTS(SELECT 1 FROM room_sessions s JOIN rooms r ON r.id=s.room_id
-                        WHERE s.stored_session_id=i.section_id AND s.bot=i.bot AND r.owner_id=b.owner_id)
-                    OR EXISTS(SELECT 1 FROM sections s WHERE s.id=i.section_id
-                        AND s.bot=i.bot AND s.owner_id=b.owner_id AND s.archived_at IS NULL)
-                    OR (NOT EXISTS(SELECT 1 FROM sections s WHERE s.id=i.section_id)
-                        AND NOT EXISTS(SELECT 1 FROM room_sessions s WHERE s.stored_session_id=i.section_id)
-                        AND EXISTS(SELECT 1 FROM runtime.native_sessions s WHERE s.stored_id=i.section_id
-                            AND s.bot=i.bot AND s.owner=b.owner_id)
-                        AND NOT EXISTS(SELECT 1 FROM runtime.native_deleted d WHERE d.session_id=i.section_id))
-                END
-         ) ORDER BY i.created_at DESC LIMIT 1",
-        &[&name],
-    )?
-    .into_iter()
-    .next();
+    let incident = rows(&conn, OPEN_INCIDENT, &[&name])?.into_iter().next();
     let (mut status, mut detail) = ("idle", Value::Null);
     if let Some(mut i) = incident {
         crate::settings::normalize_incident_room(&conn, &mut i)?;
@@ -1355,6 +1351,59 @@ mod parity_tests {
             )
             .unwrap();
         home
+    }
+    #[test]
+    fn open_incident_finds_room_transcripts_by_stored_id_without_scans() {
+        let home = home();
+        runtime_store::open(home.path()).unwrap();
+        let conn = db::open(home.path()).unwrap();
+        conn.execute(
+            "ATTACH DATABASE ? AS runtime",
+            [home
+                .path()
+                .join("hexbot-runtime.db")
+                .to_string_lossy()
+                .as_ref()],
+        )
+        .unwrap();
+        // Each hidden run has its own stored ID and unresolved failures
+        // accumulate; every one is checked against the room transcripts.
+        conn.execute_batch(
+            "WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<500)
+             INSERT INTO rooms(id,name,owner_id) SELECT 'room-'||x,'Room','alice' FROM n;
+             INSERT INTO room_sessions(room_id,bot,stored_session_id)
+             SELECT id,'owl','transcript-'||id FROM rooms;
+             WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<1000)
+             INSERT INTO runtime.native_sessions(stored_id,owner,bot,prompt)
+             SELECT 'run-'||x,'alice','owl','' FROM n;
+             INSERT INTO bot_incidents(id,bot,section_id,kind,created_at)
+             SELECT 'failure-'||substr(stored_id,5),'owl',stored_id,'turn_failed',
+              CAST(substr(stored_id,5) AS REAL) FROM runtime.native_sessions;
+             INSERT INTO runtime.native_deleted(session_id) VALUES('run-1000');",
+        )
+        .unwrap();
+        let plan = conn
+            .prepare(&format!("EXPLAIN QUERY PLAN {OPEN_INCIDENT}"))
+            .unwrap()
+            .query_map(["owl"], |row| row.get::<_, String>(3))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        assert!(
+            !plan.iter().any(|step| step.starts_with("SCAN")),
+            "{plan:#?}"
+        );
+        assert_eq!(
+            plan.iter()
+                .filter(|step| step.contains("idx_room_sessions_stored"))
+                .count(),
+            2,
+            "{plan:#?}"
+        );
+        let mut query = conn.prepare(OPEN_INCIDENT).unwrap();
+        let id: String = query.query_row(["owl"], |row| row.get("id")).unwrap();
+        assert_eq!(id, "failure-999");
+        assert_eq!(query.get_status(rusqlite::StatementStatus::FullscanStep), 0);
     }
     #[test]
     fn model_and_new_bot_config_do_not_copy_secrets() {

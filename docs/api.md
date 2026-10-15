@@ -771,7 +771,8 @@ devices, and removes the invite and update methods.
 `hexbot.memory.user.changed {}`, `hexbot.network.changed {}`. Session-less,
 broadcast to every connection.
 Connect registration and disconnection emit `hexbot.connect.changed {}`.
-Room mutations emit `hexbot.rooms.changed {id, deleted?}`. Room deletion,
+Room mutations emit `hexbot.rooms.changed {id, deleted?}`; `add_member` and
+`remove_member` also name the bot in `bot` and `name`. Room deletion,
 including last-member removal, sets `deleted: true` and then emits an
 owner-scoped, session-less `hexbot.bots.changed {}`. Every persisted room event
 emits `hexbot.rooms.event {room_id, event}`. Turn state changes emit

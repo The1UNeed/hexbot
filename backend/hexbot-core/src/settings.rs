@@ -442,7 +442,9 @@ pub fn resolve_incidents(home: &Path, filters: &Value) -> Result<Vec<Value>> {
         }
     }
     let mut conn = db::open(home)?;
-    let tx = conn.transaction()?;
+    // Reserve the write before reading, as record_incident does; a deferred
+    // snapshot cannot upgrade after another writer commits.
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
     let args = args
         .iter()
         .map(|s| s as &dyn rusqlite::ToSql)

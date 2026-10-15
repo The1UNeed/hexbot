@@ -2,8 +2,9 @@ use hexbot_core::{db, settings};
 use serde_json::json;
 use std::fs;
 
-// Interleave an unrelated committed write after the incident's attribution and
-// dedup reads, immediately before its first write. No scheduler timing needed.
+// Interleave an unrelated committed write after an incident's reads (attribution
+// and dedup, or resolution), immediately before its first write. No scheduler
+// timing needed.
 mod incident_write_contention {
     use rusqlite::{Connection, ErrorCode, ffi};
     use std::{
@@ -44,6 +45,7 @@ mod incident_write_contention {
             let sql = unsafe { CStr::from_ptr(sql) }.to_bytes();
             if sql.starts_with(b"INSERT INTO bot_incidents")
                 || sql.starts_with(b"UPDATE bot_incidents SET text=")
+                || sql.starts_with(b"UPDATE bot_incidents SET resolved_at=")
             {
                 // Take the connection before executing, since it is traced too.
                 if let Some(writer) = WRITER.with_borrow_mut(Option::take) {
@@ -59,8 +61,7 @@ mod incident_write_contention {
         0
     }
 
-    #[test]
-    fn incident_insert_and_dedup_reserve_the_write_before_reading() {
+    fn register() {
         static REGISTER: Once = Once::new();
         REGISTER.call_once(|| {
             assert_eq!(
@@ -68,20 +69,52 @@ mod incident_write_contention {
                 ffi::SQLITE_OK,
             )
         });
+    }
+
+    fn home() -> tempfile::TempDir {
+        register();
         let home = super::setup();
-        let writer = super::db::open(home.path()).unwrap();
-        writer
+        super::db::open(home.path())
+            .unwrap()
             .execute(
                 "INSERT INTO settings(key,value) VALUES('lan_enabled','false')",
                 [],
             )
             .unwrap();
-        drop(writer);
+        home
+    }
+
+    /// Arm a competing writer that fails at once instead of waiting.
+    fn compete(home: &std::path::Path) {
+        let writer = super::db::open(home).unwrap();
+        writer.busy_timeout(Duration::ZERO).unwrap();
+        WRITER.with_borrow_mut(|slot| *slot = Some(writer));
+    }
+
+    fn competed() -> rusqlite::Result<usize> {
+        WRITER.with_borrow_mut(|slot| *slot = None);
+        RESULT
+            .with_borrow_mut(Option::take)
+            .expect("competing write attempted")
+    }
+
+    fn lan_enabled(home: &std::path::Path) -> String {
+        super::db::open(home)
+            .unwrap()
+            .query_row(
+                "SELECT value FROM settings WHERE key='lan_enabled'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap()
+    }
+
+    #[test]
+    fn incident_insert_and_dedup_reserve_the_write_before_reading() {
+        let home = home();
         let mut incident_id = None;
         for text in ["First failure", "Repeated failure"] {
-            let writer = super::db::open(home.path()).unwrap();
-            writer.busy_timeout(Duration::ZERO).unwrap();
-            WRITER.with_borrow_mut(|slot| *slot = Some(writer));
+            compete(home.path());
             let incident = super::settings::record_incident(
                 home.path(),
                 "owl",
@@ -89,10 +122,7 @@ mod incident_write_contention {
                 text,
                 &super::json!({"section_id":"a"}),
             );
-            WRITER.with_borrow_mut(|slot| *slot = None);
-            let competed = RESULT
-                .with_borrow_mut(Option::take)
-                .expect("competing write attempted");
+            let competed = competed();
             let incident = incident.expect("incident survives the competing write");
             assert_eq!(
                 competed.unwrap_err().sqlite_error_code(),
@@ -115,6 +145,54 @@ mod incident_write_contention {
                 .unwrap(),
             1
         );
+    }
+
+    #[test]
+    fn incident_resolution_reserves_the_write_before_reading() {
+        let home = home();
+        let incident = super::settings::record_incident(
+            home.path(),
+            "owl",
+            "turn_failed",
+            "Provider failed",
+            &super::json!({"section_id":"a"}),
+        )
+        .unwrap();
+        // The runtime clears a section's failure with this filter when its next
+        // turn succeeds. A deferred read would lose its snapshot to the commit
+        // and fail with SQLITE_BUSY_SNAPSHOT, leaving the bot Stopped.
+        compete(home.path());
+        let resolved = super::settings::resolve_incidents(
+            home.path(),
+            &super::json!({"section_id":"a","kind":"turn_failed"}),
+        );
+        let competed = competed();
+        let resolved = resolved.expect("resolution survives the competing write");
+        assert_eq!(
+            competed.unwrap_err().sqlite_error_code(),
+            Some(ErrorCode::DatabaseBusy)
+        );
+        assert_eq!(resolved.len(), 1);
+        assert_eq!(resolved[0]["id"], incident["id"]);
+        assert!(resolved[0]["resolved_at"].is_number());
+        let conn = super::db::open(home.path()).unwrap();
+        assert_eq!(
+            conn.query_row(
+                "SELECT resolved_at FROM bot_incidents WHERE id=?",
+                [incident["id"].as_str()],
+                |row| row.get::<_, f64>(0),
+            )
+            .unwrap(),
+            resolved[0]["resolved_at"].as_f64().unwrap()
+        );
+        // The refused writer changed nothing and can write once resolution commits.
+        assert_eq!(lan_enabled(home.path()), "false");
+        conn.execute(
+            "UPDATE settings SET value='true' WHERE key='lan_enabled'",
+            [],
+        )
+        .unwrap();
+        assert_eq!(lan_enabled(home.path()), "true");
     }
 }
 
