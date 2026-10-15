@@ -255,30 +255,26 @@ pub fn chat_section(home: &Path, caller: &str, name: &str) -> Result<Value> {
         "SELECT * FROM sections WHERE bot=? AND owner_id=? AND peer_bot IS NULL ORDER BY updated_at DESC,id",
         &[&name, &caller],
     )?;
-    // One that recovery set aside waits for repair; a healthy one is the chat.
+    // One that recovery set aside would not open; it stays, waiting for repair.
     let quarantined = runtime_store::open(home)?
         .prepare("SELECT session_id FROM native_quarantine")?
         .query_map([], |r| r.get::<_, String>(0))?
         .collect::<std::result::Result<BTreeSet<_>, _>>()?;
-    let (healthy, set_aside): (Vec<_>, Vec<_>) = candidates
+    let healthy = candidates
         .into_iter()
-        .partition(|row| !quarantined.contains(row["id"].as_str().unwrap_or("")));
+        .filter(|row| !quarantined.contains(row["id"].as_str().unwrap_or("")))
+        .collect();
     // Ranked as the upgrade ranks them: sections it could not remove never
     // put a dream log ahead of a conversation.
-    let existing = if healthy.is_empty() {
-        set_aside.into_iter().next()
-    } else {
-        let mut ranked = chat_candidates(home, healthy, &logs)?;
-        rank_chats(&mut ranked, &logs);
-        // A dream log with nothing to mark is never the chat, nor one whose
-        // history cannot be read yet: it would not open. Both stay.
-        ranked
-            .into_iter()
-            .next()
-            .filter(|(_, count)| *count >= 0)
-            .map(|(row, _)| row)
-    }
-    .and_then(|row| row["id"].as_str().map(str::to_owned));
+    let mut ranked = chat_candidates(home, healthy, &logs)?;
+    rank_chats(&mut ranked, &logs);
+    // A dream log with nothing to mark is never the chat, nor one whose
+    // history cannot be read yet: it would not open. Both stay.
+    let existing = ranked
+        .into_iter()
+        .next()
+        .filter(|(_, count)| *count >= 0)
+        .and_then(|(row, _)| row["id"].as_str().map(str::to_owned));
     let id = if let Some(id) = existing {
         tx.execute(
             "UPDATE sections SET archived_at=NULL WHERE id=? AND archived_at IS NOT NULL",

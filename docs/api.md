@@ -99,7 +99,9 @@ mutation methods check ownership.
 
 - `hexbot.info {}` → `{version, hermes_version, daemon_name, install_id,
   auth_required, lan_enabled, addresses: [string], platform, sandbox, home,
-  update_capability}`. `update_capability` is `desktop` when the Hexbot app
+  update_capability, one_chat}`. `one_chat` is true once
+  `hexbot.sections.create` returns the bot's one chat; older daemons leave it
+  out. `update_capability` is `desktop` when the Hexbot app
   on that machine runs the daemon, `service` when launchd or systemd does,
   and `null` for a checkout or a hand-started daemon. `sandbox` is the OS
   sandbox shell and code tools run in: `sandbox-exec` on macOS, `bubblewrap`
@@ -229,15 +231,16 @@ whole or gone. A bot with a conversation that recovery set aside or could not
 read, or whose `state.db` cannot be read, keeps all its sections. Sections
 made later, by an older build, are never deleted. `hexbot.sections.create`,
 and a dream posting its report, rank a bot's healthy sections the same way,
-so a kept Dreams log never outranks a conversation. A section whose history
-is only in a `state.db` that cannot be read ranks last and is never the chat,
-since it would not open; when nothing else is left, `create` makes a new
-General chat. Sections `create` makes are recorded in `native_fresh` and open
-without reading `state.db`. Before anything else, the upgrade finds each
-bot's old Dreams logs and records them as the `dream_logs` setting, with the
-bots it could read as `dream_log_bots`: only in those logs are messages
-matching a dream summary treated as dream reports, when the log is first
-opened and in history search. A bot whose `state.db` could not be read then
+so a kept Dreams log never outranks a conversation. A section that recovery
+set aside, or whose history is only in a `state.db` that cannot be read, is
+never the chat, since it would not open; when nothing else is left, `create`
+makes a new General chat and the other stays for repair. Sections `create`
+makes are recorded in `native_fresh` and open without reading `state.db`.
+Before anything else, the upgrade finds each bot's old Dreams logs and
+records them as the `dream_logs` setting, with the bots it could read as
+`dream_log_bots`: only in those logs are messages matching a dream summary
+treated as dream reports, when the log is first opened, in history search
+and in a dream's digest. A bot whose `state.db` could not be read then
 has its logs found at the next `create`, first open or history search that
 can read the store (`catalog::dream_logs`); until then the recorded logs stand.
 
@@ -262,7 +265,11 @@ returned by `open`.
   kept.
 - `hexbot.sections.create {bot}` → `{section: Section}`: the bot's chat,
   made titled `General` on first use. An archived chat comes back. A `title`
-  from an older client is ignored.
+  from an older client is ignored. A daemon without `one_chat` in
+  `hexbot.info` makes a new section on every call, so clients there list the
+  bot's sections and open the one its upgrade will keep (something said, then
+  not its `Dreams` log, then not archived, then newest), and call `create`
+  only when the bot has none.
 - `hexbot.sections.thread {bot, peer}` → `{section: Section | null}`: the
   caller's thread on `bot` whose sender is `peer`. It never creates one.
 - `hexbot.sections.open {id}` → `{section: Section, messages: [Message],
@@ -809,10 +816,10 @@ devices, and removes the invite and update methods.
 `hexbot.memory.user.changed {}`, `hexbot.network.changed {}`. Session-less,
 broadcast to every connection. When a dream report lands in a chat,
 `hexbot.sections.changed` also carries `reload`: true when a client showing
-the chat should open it again to read the report. An idle chat's process is
-stopped first (its live ID stays); while a turn runs, `reload` is false and a
-second `hexbot.sections.changed {id, bot, reload: true}` follows when the turn
-settles.
+the chat should open it again to read the report. The report never stops the
+chat's process. While a turn runs, `reload` is false and a second
+`hexbot.sections.changed {id, bot, reload: true}` follows when that turn
+settles or its process exits, always after the report is stored.
 Connect registration and disconnection emit `hexbot.connect.changed {}`.
 Room mutations emit `hexbot.rooms.changed {id}`. Every persisted room event
 emits `hexbot.rooms.event {room_id, event}`. Turn state changes emit

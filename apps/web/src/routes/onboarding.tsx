@@ -21,7 +21,6 @@ import {
   connectorsSetup,
   providerModels,
   providersList,
-  sectionsCreate,
   settingsGet,
   settingsSet,
   userMemoryGet,
@@ -50,7 +49,7 @@ import type {
 import { useBots } from '../stores/bots'
 import { useConnection } from '../stores/connection'
 import { unknownMethod, useMe } from '../stores/me'
-import { introduceBot } from '../stores/sections'
+import { introduceBot, sectionsActions } from '../stores/sections'
 import { type LastSection, uiActions } from '../stores/ui'
 
 export const Route = createFileRoute('/onboarding')({ component: OnboardingPage })
@@ -107,7 +106,7 @@ export async function landingSection(bots: Bot[]): Promise<LastSection | null> {
     return { bot: recent.name, section: recent.sections_recent[0]!.id }
   }
 
-  const { section } = await sectionsCreate(bots[0]!.name)
+  const section = await sectionsActions().chat(bots[0]!.name)
 
   return { bot: bots[0]!.name, section: section.id }
 }

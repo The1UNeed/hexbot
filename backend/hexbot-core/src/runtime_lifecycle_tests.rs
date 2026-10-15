@@ -929,7 +929,7 @@ async fn capacity_retires_the_oldest_idle_process_and_keeps_live_alias() {
     assert_eq!(runtime.sessions.lock().unwrap().len(), 16);
     assert!(!runtime.sessions.lock().unwrap().contains_key("first"));
     assert_eq!(
-        runtime.live("alice", &first, false).await.unwrap().id,
+        runtime.live("alice", &first, false).await.unwrap().0.id,
         first
     );
     assert_eq!(runtime.sessions.lock().unwrap().len(), 16);
@@ -5374,31 +5374,144 @@ async fn notes_are_written_by_sections_and_proposed_by_jobs() {
     );
     runtime.shutdown().await;
 }
-#[tokio::test]
-async fn a_busy_chat_is_read_again_when_its_turn_settles() {
-    let (_home, runtime, hub) = setup();
-    let mut events = hub.subscribe();
-    open(&runtime).await;
-    let s = runtime.sessions.lock().unwrap()["first"].clone();
-    s.state.lock().unwrap().busy = true;
-    // A report arrives mid-turn: the turn keeps its process.
-    assert!(runtime.working("first"));
-    assert!(!runtime.close_if_quiet("first").await.unwrap());
-    assert!(runtime.sessions.lock().unwrap().contains_key("first"));
-    runtime.event(&s, json!({"type":"agent_settled"})).unwrap();
-    let reload = tokio::time::timeout(Duration::from_secs(5), async {
+/// The next `hexbot.sections.changed` that asks clients to read the section again.
+async fn next_reload(events: &mut tokio::sync::broadcast::Receiver<crate::events::Event>) -> Value {
+    tokio::time::timeout(Duration::from_secs(5), async {
         loop {
             let event = events.recv().await.unwrap();
-            if event.frame["params"]["type"] == "hexbot.sections.changed" {
-                return event.frame["params"]["payload"].clone();
+            let payload = &event.frame["params"]["payload"];
+            if event.frame["params"]["type"] == "hexbot.sections.changed"
+                && payload["reload"] == true
+            {
+                return payload.clone();
             }
         }
     })
     .await
+    .unwrap()
+}
+#[tokio::test]
+async fn a_report_is_always_read_again_after_it_is_stored() {
+    let (_home, runtime, hub) = setup();
+    let mut events = hub.subscribe();
+    open(&runtime).await;
+    let s = runtime.sessions.lock().unwrap()["first"].clone();
+    let report = |text: &str| json!({"role":"assistant","text":text,"dream":true});
+    let turn = || s.state.lock().unwrap().busy = true;
+    // A turn settles while the report is on its way, and another begins:
+    // the report waits for that one.
+    turn();
+    runtime.event(&s, json!({"type":"agent_settled"})).unwrap();
+    turn();
+    assert!(
+        !runtime
+            .append_outside_turn("first", report("Mid-turn"))
+            .unwrap()
+    );
+    while events.try_recv().is_ok() {}
+    runtime.event(&s, json!({"type":"agent_settled"})).unwrap();
+    assert_eq!(
+        next_reload(&mut events).await,
+        json!({"id":"first","bot":"owl","reload":true})
+    );
+    // Idle: clients read it now, and the process keeps going.
+    assert!(
+        runtime
+            .append_outside_turn("first", report("Idle"))
+            .unwrap()
+    );
+    assert!(Arc::ptr_eq(&s, &runtime.sessions.lock().unwrap()["first"]));
+    // A turn that ends with its process still asks for the reload.
+    turn();
+    assert!(
+        !runtime
+            .append_outside_turn("first", report("Before exit"))
+            .unwrap()
+    );
+    while events.try_recv().is_ok() {}
+    s.process.shutdown().await.unwrap();
+    assert_eq!(next_reload(&mut events).await["id"], "first");
+    let texts = store::history(&runtime.home, "first")
+        .unwrap()
+        .into_iter()
+        .filter(|m| m["dream"] == true)
+        .map(|m| m["text"].as_str().unwrap().to_owned())
+        .collect::<Vec<_>>();
+    assert_eq!(texts, ["Mid-turn", "Idle", "Before exit"]);
+    runtime.shutdown().await;
+}
+#[tokio::test]
+async fn an_upload_on_its_way_in_keeps_its_section_running() {
+    let (home, runtime, _) = setup();
+    let id = open(&runtime).await;
+    let s = runtime.sessions.lock().unwrap()["first"].clone();
+    // The upload is past the open and waiting to be staged.
+    let staging = s.attachment_gate.lock().await;
+    let upload = {
+        let (runtime, id) = (runtime.clone(), id.clone());
+        tokio::spawn(async move {
+            runtime
+                .call(
+                    "alice",
+                    "file.attach",
+                    &json!({"session_id":id,"name":"a.txt","data_url":"data:text/plain;base64,YQ=="}),
+                )
+                .await
+                .unwrap()
+        })
+    };
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while s.state.lock().unwrap().landing == 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
     .unwrap();
-    assert_eq!(reload, json!({"id":"first","bot":"owl","reload":true}));
-    assert!(!runtime.working("first"));
-    // Once settled, clients read a report now.
-    assert!(runtime.close_if_quiet("first").await.unwrap());
+    // Running out of room, a dream report and new tools leave it running.
+    assert_eq!(runtime.retire_idle(f64::INFINITY).await.unwrap(), 0);
+    assert!(
+        runtime
+            .append_outside_turn(
+                "first",
+                json!({"role":"assistant","text":"Report","dream":true})
+            )
+            .unwrap()
+    );
+    fs::write(
+        home.path().join("profiles/owl/config.yaml"),
+        "model:\n  provider: openai\n  default: fixture\ntools:\n  enabled_toolsets: [hexbot]\n",
+    )
+    .unwrap();
+    assert!(Arc::ptr_eq(
+        &s,
+        &runtime
+            .open_for_input("alice", "owl", "first")
+            .await
+            .unwrap()
+    ));
+    drop(staging);
+    let file = upload.await.unwrap().unwrap();
+    // The next message moves the chat to its new tools and sends the upload.
+    runtime
+        .call(
+            "alice",
+            "prompt.submit",
+            &json!({"session_id":id,"text":"Read this","attachments":[file["id"]]}),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    let now = runtime.sessions.lock().unwrap()["first"].clone();
+    assert!(!Arc::ptr_eq(&s, &now));
+    assert!(now.tools.iter().any(|t| t["name"] == "message_bot"));
+    let sent: String = store::open(home.path())
+        .unwrap()
+        .query_row(
+            "SELECT text FROM native_prompt_intents WHERE session_id='first'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(sent.contains(file["path"].as_str().unwrap()), "{sent}");
     runtime.shutdown().await;
 }

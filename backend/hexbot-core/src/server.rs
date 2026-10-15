@@ -321,6 +321,9 @@ impl App {
                 "sandbox": crate::credentials::sandbox(),
                 // Clients describe Manual, Auto and Bypass only to a daemon that has them.
                 "approvals": "sandbox",
+                // `hexbot.sections.create` returns the bot's one chat; an older
+                // daemon makes a new section every time.
+                "one_chat": true,
                 "home": self.home
             })),
             "hexbot.rooms.stop" => {

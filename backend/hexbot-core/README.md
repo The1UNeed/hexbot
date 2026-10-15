@@ -128,8 +128,10 @@ it also installs over SSH when nobody is signed in at the screen.
   sections require no transcript reads. A deleted section disappears at the
   next query, and `delete` drops its version row with the rest of its history.
 - Settled Pi processes retire after 15 idle minutes. Session IDs remain valid;
-  a later RPC resumes the durable session. Staged files and pending questions
-  prevent retirement. Replay retention is bounded by session count and bytes.
+  a later RPC resumes the durable session. Staged files, pending questions,
+  and uploads or messages still on their way in prevent retirement; that
+  includes the restart that moves a chat to new tools or a new model. Replay
+  retention is bounded by session count and bytes.
 - `profiles/<bot>/pi/` is the bot's Pi agent directory. The daemon rewrites
   `auth.json`, `models.json`, and the `compaction` key of `settings.json`
   atomically before every Pi start and whenever credentials change; other

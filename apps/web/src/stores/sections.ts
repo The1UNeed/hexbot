@@ -7,10 +7,18 @@
 import { create } from 'zustand'
 import { useShallow } from 'zustand/react/shallow'
 
-import { botsIntroduce, messagesFromHistory, sectionsCreate, sectionsList, sectionsOpen } from '../lib/api'
+import {
+  botsIntroduce,
+  daemonInfo,
+  messagesFromHistory,
+  sectionsCreate,
+  sectionsList,
+  sectionsOpen
+} from '../lib/api'
 import { KICKOFF_MARKER } from '../lib/bot-kickoff'
 import type { Bot, BotStatus, Message, Section } from '../lib/types'
 
+import { useConnection } from './connection'
 import { useTranscripts } from './transcripts'
 
 /**
@@ -19,6 +27,22 @@ import { useTranscripts } from './transcripts'
  * section can arrive by (a bot's recent sections, a changed event, an open).
  */
 export const isThread = (section: Pick<Section, 'peer_bot'>) => Boolean(section.peer_bot)
+
+/**
+ * The chat a daemon from before one chat per bot keeps when it updates: one
+ * with something said, then not its Dreams log, then not archived, then the
+ * newest. Never a thread.
+ */
+export function keptChat(sections: Section[], bot: string): Section | undefined {
+  const rank = (section: Section) =>
+    (section.message_count > 0 ? 4 : 0) +
+    (section.title === 'Dreams' && !section.title_by ? 0 : 2) +
+    (section.archived_at ? 0 : 1)
+
+  return sections
+    .filter(section => section.bot === bot && !isThread(section))
+    .sort((a, b) => rank(b) - rank(a) || (b.updated_at ?? 0) - (a.updated_at ?? 0))[0]
+}
 
 export interface SectionsState {
   byId: Record<string, Section>
@@ -264,7 +288,14 @@ export const useSections = create<SectionsState>((set, get) => ({
   },
 
   async chat(bot) {
-    const { section } = await sectionsCreate(bot)
+    const daemon = useConnection.getState().daemon ?? (await daemonInfo())
+
+    // An older daemon makes a new section on every create, so take one it has.
+    const kept = daemon.one_chat
+      ? undefined
+      : keptChat((await sectionsList({ bot, include_archived: true })).sections ?? [], bot)
+
+    const section = kept ?? (await sectionsCreate(bot)).section
 
     set(state => ({
       ...mergeSection(state, section),

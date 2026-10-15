@@ -885,6 +885,50 @@ fn digest_skips_dream_reports_and_tool_results() {
     assert_eq!(digest["omitted_conversations"], 0);
 }
 
+/// A Dreams log the upgrade kept and nobody opened since still holds earlier
+/// reports in the old store. The next dream skips them there and keeps what
+/// the user and the bot said, there and in other chats.
+#[test]
+fn digest_skips_reports_in_a_dream_log_kept_in_the_old_store() {
+    let home = setup();
+    let h = home.path();
+    db::open(h).unwrap().execute_batch(
+        "INSERT INTO sections(id,bot,owner_id,title,created_at,updated_at) VALUES ('dreams','owl','alice','Dreams',0,0);
+         INSERT INTO dreams(id,bot,started_at,status,summary) VALUES ('d1','owl',150,'complete','Last night I learned tea');",
+    )
+    .unwrap();
+    let legacy = rusqlite::Connection::open(h.join("profiles/owl/state.db")).unwrap();
+    legacy.execute_batch("CREATE TABLE sessions(id TEXT,session_key TEXT);
+        CREATE TABLE messages(id INTEGER PRIMARY KEY,session_id TEXT,role TEXT,content TEXT,timestamp REAL,active INTEGER);
+        INSERT INTO sessions VALUES ('dreams','dreams'),('chat','chat');
+        INSERT INTO messages VALUES
+            (1,'dreams','assistant','Last night I learned tea',200,1),
+            (2,'dreams','user','Also, I take it black',201,1),
+            (3,'dreams','assistant','Noted',202,1),
+            (4,'chat','user','What did you learn?',203,1),
+            (5,'chat','assistant','Last night I learned tea',204,1);").unwrap();
+    let digest = dreaming::build_digest(h, "owl", 100.0, f64::MAX, None).unwrap();
+    let transcript = |id: &str| {
+        digest["sections"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|section| section["id"] == id)
+            .map(|section| section["transcript"].clone())
+    };
+    assert_eq!(
+        transcript("dreams"),
+        Some(json!("user: Also, I take it black\nassistant: Noted"))
+    );
+    // A reply in a chat that reads like a report is still the bot speaking.
+    assert_eq!(
+        transcript("chat"),
+        Some(json!(
+            "user: What did you learn?\nassistant: Last night I learned tea"
+        ))
+    );
+}
+
 /// One proposal that does not fit the digest's proposal budget is skipped,
 /// and the smaller ones after it still go in.
 #[test]

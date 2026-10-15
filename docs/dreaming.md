@@ -151,12 +151,13 @@ The native scheduler and digest builder live in
 - A completed summary is stored directly as an assistant message marked
   `dream: true` in the bot's chat, made if it has none. It does not trigger
   another agent turn, and it is shown, not said: the bot's Pi conversation
-  does not include it. An idle chat is closed first so open clients load the
-  report; in a busy one, open clients reload the chat when its turn settles.
+  does not include it. Posting it never stops the chat's process: open
+  clients read the chat again at once or, while a turn runs, when it ends.
   Updating from the old separate `Dreams` section keeps it only when the bot
   has no other conversation, archived or not, and then marks its reports.
   Reports an earlier build left in the old store are marked when the chat
-  first opens, so they never enter the bot's context either.
+  first opens, so they never enter the bot's context either. A dream skips
+  them in a kept Dreams log that was never opened.
 - `hexbot.dreaming.run_now {bot}` starts a dream immediately.
   `hexbot.dreaming.status {bot}` reports the last run, next run, and last error.
   Interrupted dreams are marked failed when the daemon restarts.

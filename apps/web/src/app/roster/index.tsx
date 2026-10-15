@@ -380,7 +380,7 @@ export function RosterColumn() {
   /**
    * The bot's one chat: the one this window knows, else the daemon's, made on
    * first use. While a bot has more than one, or only an archived one, the
-   * daemon picks.
+   * daemon picks, or for an older daemon `chat` does.
    */
   const openChat = async (bot: string) => {
     const chats = Object.values(useSections.getState().byId).filter(item => item.bot === bot)

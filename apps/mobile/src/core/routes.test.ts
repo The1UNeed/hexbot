@@ -25,12 +25,31 @@ describe('open conversation', () => {
   })
   it('opens a bot on its one chat, not a teammate thread', () => {
     const thread = section('t', { peer_bot: 'grace' } as Partial<Section>)
-    expect(defaultSection([thread, section('mine')], 'ada')?.id).toBe('mine')
+    expect(defaultSection([thread, section('mine')], 'ada', true)?.id).toBe('mine')
     // Two left from before, or an archived one: the daemon picks.
-    expect(defaultSection([section('old'), section('mine')], 'ada')).toBeUndefined()
+    expect(defaultSection([section('old'), section('mine')], 'ada', true)).toBeUndefined()
     expect(
-      defaultSection([section('old', { archived_at: 1 } as Partial<Section>)], 'ada')
+      defaultSection([section('old', { archived_at: 1 } as Partial<Section>)], 'ada', true)
     ).toBeUndefined()
+  })
+  it('keeps to the chat an older daemon keeps, which makes a section on every create', () => {
+    const said = (id: string, extra: Partial<Section> = {}) =>
+      section(id, { message_count: 3, updated_at: 1, ...extra } as Partial<Section>)
+    const sections = [
+      section('thread', { peer_bot: 'grace', message_count: 9, updated_at: 9 } as Partial<Section>),
+      section('empty', { message_count: 0, updated_at: 8 } as Partial<Section>),
+      said('dreams', { title: 'Dreams', title_by: null, updated_at: 7 }),
+      said('put-away', { archived_at: 5, updated_at: 6 }),
+      said('long'),
+      said('named', { title: 'Dreams', title_by: 'bot', updated_at: 0 })
+    ]
+    // Something said, then not the Dreams log, then not archived, then newest.
+    expect(defaultSection(sections, 'ada', false)?.id).toBe('long')
+    expect(defaultSection(sections.slice(0, 4), 'ada', false)?.id).toBe('put-away')
+    expect(defaultSection(sections.slice(0, 3), 'ada', false)?.id).toBe('dreams')
+    expect(defaultSection(sections.slice(0, 2), 'ada', false)?.id).toBe('empty')
+    // Nothing yet: the one create makes is the chat.
+    expect(defaultSection(sections.slice(0, 1), 'ada', false)).toBeUndefined()
   })
 })
 describe('rooms', () => {

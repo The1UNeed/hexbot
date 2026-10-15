@@ -8,10 +8,18 @@ export const ROOMS_QUERY = { include_archived: true }
 /**
  * The bot's one chat when this list knows it for sure, never a teammate thread.
  * While a bot has more than one, or only an archived one, the daemon picks.
+ * Without `oneChat` the daemon is older and makes a section on every create,
+ * so the chat is the one it keeps when it updates: something said, then not
+ * its Dreams log, then not archived, then the newest.
  */
-export const defaultSection = (sections: Section[], bot: string) => {
+export const defaultSection = (sections: Section[], bot: string, oneChat: boolean) => {
   const chats = sections.filter(s => s.bot === bot && !s.peer_bot)
-  return chats.length === 1 && !chats[0].archived_at ? chats[0] : undefined
+  if (oneChat) return chats.length === 1 && !chats[0].archived_at ? chats[0] : undefined
+  const rank = (s: Section) =>
+    (s.message_count > 0 ? 4 : 0) +
+    (s.title === 'Dreams' && !s.title_by ? 0 : 2) +
+    (s.archived_at ? 0 : 1)
+  return chats.sort((a, b) => rank(b) - rank(a) || (b.updated_at ?? 0) - (a.updated_at ?? 0))[0]
 }
 /**
  * The room Rooms shows: the picked one while it is open or not archived,

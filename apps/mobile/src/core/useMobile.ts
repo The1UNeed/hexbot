@@ -421,9 +421,20 @@ export function useMobile() {
     setLoading(true)
     setError(null)
     try {
+      // An older daemon makes a section on every create: choose from what it has now.
+      const oneChat = info?.one_chat === true
+      const known =
+        section || oneChat
+          ? sections
+          : (
+              await rpc<{ sections: Section[] }>('hexbot.sections.list', {
+                ...SECTIONS_QUERY,
+                bot: bot.name
+              })
+            ).sections
       const selected =
         section ??
-        defaultSection(sections, bot.name) ??
+        defaultSection(known, bot.name, oneChat) ??
         (await rpc<{ section: Section }>('hexbot.sections.create', { bot: bot.name })).section
       const here = routeRef.current
       if (here?.kind !== 'section' || here.section.id !== selected.id) releaseStaged()

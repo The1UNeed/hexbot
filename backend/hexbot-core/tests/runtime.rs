@@ -1200,6 +1200,68 @@ async fn a_bot_whose_older_store_cannot_be_read_gets_a_chat_that_opens() {
 }
 
 #[tokio::test]
+async fn a_bot_whose_chat_recovery_set_aside_gets_a_new_chat_that_opens() {
+    let home = setup();
+    // Section A's conversation is damaged; startup recovery sets it aside.
+    runtime_store::open(home.path())
+        .unwrap()
+        .execute(
+            "INSERT INTO native_sessions(stored_id,owner,bot,prompt) VALUES('section-a','alice','owl','')",
+            [],
+        )
+        .unwrap();
+    let dir = runtime_store::session_dir(home.path(), "section-a").unwrap();
+    fs::write(dir.join("conversation.jsonl"), "not a conversation\n").unwrap();
+    let app = hexbot_core::server::App::new(
+        home.path().into(),
+        "127.0.0.1:0".parse().unwrap(),
+        fake_pi(home.path()),
+        None,
+    )
+    .unwrap();
+    let call = |method: &'static str, params: Value| {
+        let app = app.clone();
+        async move { app.call("alice", method, &params).await }
+    };
+    let open = |id: &str| call("hexbot.sections.open", json!({"id":id}));
+    assert_eq!(open("section-a").await.unwrap_err().code, 5200);
+    let chat = call("hexbot.sections.create", json!({"bot":"owl"}))
+        .await
+        .unwrap()["section"]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert_ne!(chat, "section-a");
+    // The new chat opens, takes a message and stays the chat.
+    let live = open(&chat).await.unwrap()["section"]["live_session_id"].clone();
+    call(
+        "prompt.submit",
+        json!({"session_id":live,"text":"Hello again"}),
+    )
+    .await
+    .unwrap();
+    for _ in 0..2 {
+        let again = call("hexbot.sections.create", json!({"bot":"owl"}))
+            .await
+            .unwrap();
+        assert_eq!(again["section"]["id"], chat);
+        open(&chat).await.unwrap();
+    }
+    // The damaged conversation stays, set aside for repair.
+    assert_eq!(open("section-a").await.unwrap_err().code, 5200);
+    let kept = fs::read_dir(&dir)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+        .collect::<Vec<_>>();
+    app.shutdown().await;
+    assert!(
+        kept.iter()
+            .any(|name| name.starts_with("conversation.quarantine-")),
+        "{kept:?}"
+    );
+}
+
+#[tokio::test]
 async fn deleting_section_removes_delegated_transcripts() {
     let home = setup();
     let app = hexbot_core::server::App::new(

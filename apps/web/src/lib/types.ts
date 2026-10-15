@@ -251,6 +251,11 @@ export interface DaemonInfo {
   sandbox?: 'bubblewrap' | 'sandbox-exec' | null
   /** `sandbox` once the daemon has sandboxed approvals; absent on older daemons. */
   approvals?: 'sandbox'
+  /**
+   * True once `hexbot.sections.create` returns the bot's one chat; an older
+   * daemon makes a new section every time.
+   */
+  one_chat?: true
   /** How the daemon can update itself when asked; absent on older daemons. */
   update_capability?: 'desktop' | 'service' | null
   version: string

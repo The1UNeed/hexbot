@@ -403,6 +403,8 @@ pub fn build_digest(
                     )
                     .optional()?;
                 if let Some(session) = session {
+                    // Reports an earlier build posted to a dream log it kept.
+                    let reports = runtime_store::legacy_reports(home, bot, id)?;
                     for message in common::rows(
                         store,
                         "SELECT * FROM messages WHERE session_id=? AND active=1 AND COALESCE(timestamp,0)>=? AND COALESCE(timestamp,0)<? ORDER BY id",
@@ -416,6 +418,9 @@ pub fn build_digest(
                             .as_str()
                             .map(str::to_owned)
                             .unwrap_or_else(|| message["content"].to_string());
+                        if message["role"] == "assistant" && reports.contains(&content) {
+                            continue;
+                        }
                         latest = latest.max(message["timestamp"].as_f64().unwrap_or(0.0));
                         transcript.push(format!(
                             "{}: {}",
@@ -1090,17 +1095,11 @@ impl Dreaming {
     async fn post_summary(&self, owner: &str, bot: &str, output: &str) -> Result<()> {
         let chat = crate::catalog::chat_section(&self.home, owner, bot)?;
         let section = common::required(&chat, "id")?;
-        // An idle chat closes so open clients load the report; a busy one
-        // tells them when its turn settles.
-        let reload = self.runtime.close_if_quiet(section).await?;
-        runtime_store::append(
-            &self.home,
+        // Open clients read the chat again now, or when a running turn settles.
+        let reload = self.runtime.append_outside_turn(
             section,
             json!({"role":"assistant","text":output,"dream":true,"timestamp":common::now()}),
         )?;
-        // A turn that settled before the report was stored has already asked
-        // clients to read the chat; ask again now that it is there.
-        let reload = reload || !self.runtime.working(section);
         db::open(&self.home)?.execute(
             "UPDATE sections SET updated_at=? WHERE id=?",
             params![common::now(), section],

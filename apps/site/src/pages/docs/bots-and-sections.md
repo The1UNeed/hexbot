@@ -59,7 +59,9 @@ Earlier versions let you keep many sections per bot. The first time the updated 
 
 This happens once, at the first start of the updated daemon, before any app or browser can connect. Before it deletes anything, the daemon makes a full copy of its databases and its conversation files in `backups/one-chat-per-bot-<date>-<time>/` in its data directory (`~/.hexbot` by default). The copy is about as large as those files, so the disk needs that much free space.
 
-If anything goes wrong, such as the copy failing, the daemon deletes nothing more and starts as usual, and later starts never try again. A section is either deleted or kept whole with its history, even if the daemon stops part way. If a bot's older conversations couldn't be read, that bot keeps all its sections and starts a new, empty chat; the old ones open again once the file is repaired. When a bot still has several sections, its chat is the one the update would have kept, never the old Dreams log while a real conversation remains. Sections an older version makes later are kept too.
+If anything goes wrong, such as the copy failing, the daemon deletes nothing more and starts as usual, and later starts never try again. A section is either deleted or kept whole with its history, even if the daemon stops part way. If a bot's older conversations couldn't be read, or the daemon found its chat damaged, that bot keeps all its sections and starts a new, empty chat; the old ones open again once their files are repaired. When a bot still has several sections, its chat is the one the update would have kept, never the old Dreams log while a real conversation remains. Sections an older version makes later are kept too.
+
+An updated app connected to a daemon that hasn't been updated yet opens the section that daemon will keep, so you carry on in the chat that stays.
 
 ## Work with other bots
 

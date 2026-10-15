@@ -52,6 +52,9 @@ struct State {
     display: VecDeque<String>,
     /// Uploads waiting for the next prompt, in the order they arrived.
     staged: Vec<Staged>,
+    /// Inputs on their way in (see `Landing`); the section is not retired
+    /// under them.
+    landing: usize,
     /// The bot-to-bot chain this turn belongs to; a fresh turn starts a fresh one.
     chain: Chain,
     tool_started: HashMap<String, std::time::Instant>,
@@ -68,6 +71,25 @@ struct Staged {
     images: Vec<Value>,
     refs: Vec<String>,
     files: Vec<PathBuf>,
+}
+/// Input on its way into a section: an upload being staged or a message being
+/// sent. Taken under the open lock, so the section cannot retire before the
+/// input lands; closing the section still ends it.
+struct Landing(Arc<Live>);
+impl Landing {
+    fn new(s: &Arc<Live>) -> Result<Self> {
+        let mut state = s.state.lock().unwrap();
+        if state.closed {
+            return Err(Error::new(4001, "session not found"));
+        }
+        state.landing += 1;
+        Ok(Self(s.clone()))
+    }
+}
+impl Drop for Landing {
+    fn drop(&mut self) {
+        self.0.state.lock().unwrap().landing -= 1;
+    }
 }
 /// Uploads moving to a section's new process. If it never starts they wait
 /// for the next open of the section instead of being lost.
@@ -195,8 +217,14 @@ impl Runtime {
         Ok(runtime)
     }
     /// The running section behind live ID `id`, restarted if it was retired.
-    /// For `input` a retired chat restarts with its bot's current model and tools.
-    async fn live(&self, caller: &str, id: &str, input: bool) -> Result<Arc<Live>> {
+    /// For `input` a retired chat restarts with its bot's current model and
+    /// tools, and does not retire again until the input lands.
+    async fn live(
+        &self,
+        caller: &str,
+        id: &str,
+        input: bool,
+    ) -> Result<(Arc<Live>, Option<Landing>)> {
         common::user(&self.home, caller)?;
         let existing = self
             .sessions
@@ -205,28 +233,30 @@ impl Runtime {
             .values()
             .find(|s| s.id == id && s.owner == caller)
             .cloned();
-        if let Some(s) = existing {
-            common::bot_owner(&self.home, caller, &s.bot)?;
-            if input {
-                // Under the open lock, which moves it to new tools or a new model.
-                return self.open_for_input(caller, &s.bot, &s.stored).await;
+        let (stored, bot) = match existing {
+            Some(s) if !input => {
+                common::bot_owner(&self.home, caller, &s.bot)?;
+                s.state.lock().unwrap().last_activity = common::now();
+                return Ok((s, None));
             }
-            s.state.lock().unwrap().last_activity = common::now();
-            return Ok(s);
-        }
-        let target: Option<(String, String)> = store::open(&self.home)?
-            .query_row(
-                "SELECT s.stored_id,s.bot FROM native_live_sessions l JOIN native_sessions s ON s.stored_id=l.stored_id WHERE l.live_id=? AND s.owner=?",
-                params![id, caller],
-                |r| Ok((r.get(0)?, r.get(1)?)),
-            )
-            .optional()?;
-        let (stored, bot) = target.ok_or_else(|| Error::new(4001, "session not found"))?;
+            // Input opens it again under the open lock, which moves it to new
+            // tools or a new model.
+            Some(s) => (s.stored.clone(), s.bot.clone()),
+            None => store::open(&self.home)?
+                .query_row(
+                    "SELECT s.stored_id,s.bot FROM native_live_sessions l JOIN native_sessions s ON s.stored_id=l.stored_id WHERE l.live_id=? AND s.owner=?",
+                    params![id, caller],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .optional()?
+                .ok_or_else(|| Error::new(4001, "session not found"))?,
+        };
         common::bot_owner(&self.home, caller, &bot)?;
         if input {
-            self.open_for_input(caller, &bot, &stored).await
+            let (s, landing) = self.open_to_land(caller, &bot, &stored).await?;
+            Ok((s, Some(landing)))
         } else {
-            self.open_session(caller, &bot, &stored).await
+            Ok((self.open_session(caller, &bot, &stored).await?, None))
         }
     }
     // Retire only settled sessions. Their frozen prompt, tools, JSONL and live ID
@@ -266,8 +296,9 @@ impl Runtime {
     /// Marks a section closed and takes it out of the map when nothing in it is
     /// still running or unsaved and it was last used before `before`. Uploads
     /// waiting for the next prompt keep it open unless `uploads_move`: the
-    /// caller then hands them to the process that replaces it. The caller
-    /// holds its open lock and then stops it with `stop_retired`.
+    /// caller then hands them to the process that replaces it. Input still on
+    /// its way in always keeps it open. The caller holds its open lock and
+    /// then stops it with `stop_retired`.
     fn retire_quiet(&self, s: &Arc<Live>, before: f64, uploads_move: bool) -> bool {
         let has_children = self
             .children
@@ -287,6 +318,7 @@ impl Runtime {
             || state.closed
             || !state.pending.is_empty()
             || !(uploads_move || state.staged.is_empty())
+            || state.landing > 0
             || !state.unsaved.is_empty()
             || state.last_activity >= before
             || !s.requests.lock().unwrap().is_empty()
@@ -514,8 +546,25 @@ impl Runtime {
     }
     /// Opens a section to give it input, first moving it to its bot's new model.
     async fn open_for_input(&self, owner: &str, bot: &str, stored: &str) -> Result<Arc<Live>> {
-        self.open_session_with_tools(owner, bot, stored, None, None, true)
-            .await
+        Ok(self.open_to_land(owner, bot, stored).await?.0)
+    }
+    /// `open_for_input`, keeping the section from retiring until the input lands.
+    async fn open_to_land(
+        &self,
+        owner: &str,
+        bot: &str,
+        stored: &str,
+    ) -> Result<(Arc<Live>, Landing)> {
+        common::identifier(bot)?;
+        common::identifier(stored)?;
+        let lock = self.open_lock(stored);
+        let _guard = lock.lock().await;
+        let s = self
+            .open_session_locked(owner, bot, stored, None, None, true)
+            .await?;
+        // Retiring takes the open lock too, so the section is still open here.
+        let landing = Landing::new(&s)?;
+        Ok((s, landing))
     }
     async fn open_session_with_tools(
         &self,
@@ -883,6 +932,7 @@ impl Runtime {
                 native_approvals: HashMap::new(),
                 display: VecDeque::new(),
                 staged: std::mem::take(&mut uploads.uploads),
+                landing: 0,
                 chain: Chain::default(),
                 tool_started: HashMap::new(),
                 tool_context: HashMap::new(),
@@ -1579,11 +1629,12 @@ impl Runtime {
         chain: Option<Chain>,
     ) -> Result<String> {
         common::bot_owner(&self.home, owner, bot)?;
-        let s = self.open_for_input(owner, bot, stored).await?;
+        let (s, landing) = self.open_to_land(owner, bot, stored).await?;
         let mut settled = s.settled.subscribe();
         let before = *settled.borrow();
         let finished = tokio::time::timeout(deadline, async {
             self.submit(&s, text, true, false, chain, None).await?;
+            drop(landing);
             loop {
                 if *settled.borrow() != before {
                     break;
@@ -1706,37 +1757,22 @@ impl Runtime {
         }
         Ok(closed)
     }
-    /// Stops a section's process unless something in it is still running,
-    /// waiting on the user or unsaved, so its next open reads what was
-    /// appended. Its live ID stays, as after an idle retire. True when clients
-    /// can read it again now; while a turn runs they are told when it settles.
-    pub async fn close_if_quiet(&self, stored: &str) -> Result<bool> {
-        let lock = self.open_lock(stored);
-        let _guard = lock.lock().await;
+    /// Adds a message to a section outside its turns, such as a dream report;
+    /// a running process keeps going. True when clients can read the section
+    /// again now. While a turn runs they are told when it settles, which is
+    /// always after the message is stored.
+    pub fn append_outside_turn(&self, stored: &str, message: Value) -> Result<bool> {
+        store::append(&self.home, stored, message)?;
         let running = self.sessions.lock().unwrap().get(stored).cloned();
-        let Some(s) = running else {
-            return Ok(true);
-        };
-        // Checked and retired under the session's locks, so a message sent
-        // meanwhile either lands first or opens it again.
-        if self.retire_quiet(&s, f64::INFINITY, false) {
-            self.stop_retired(&s).await;
-            return Ok(true);
-        }
-        let mut state = s.state.lock().unwrap();
-        if state.busy {
-            state.reread = true;
-            return Ok(false);
-        }
-        Ok(true)
-    }
-    /// True while a turn runs in the section.
-    pub fn working(&self, stored: &str) -> bool {
-        self.sessions
-            .lock()
-            .unwrap()
-            .get(stored)
-            .is_some_and(|s| s.state.lock().unwrap().busy)
+        Ok(running.is_none_or(|s| {
+            // The turn's settle takes `reread` under this lock.
+            let mut state = s.state.lock().unwrap();
+            if state.busy && !state.closed {
+                state.reread = true;
+                return false;
+            }
+            true
+        }))
     }
     async fn close_one(&self, owner: &str, stored: &str) -> Result<bool> {
         let lock = self.open_lock(stored);
@@ -1919,10 +1955,11 @@ impl Runtime {
                 return Err(Error::new(4204, "bot does not match section"));
             }
             // An introduction is the section's first input.
-            let s = if method == "hexbot.bots.introduce" {
-                self.open_for_input(caller, &bot, stored).await?
+            let (s, _landing) = if method == "hexbot.bots.introduce" {
+                let (s, landing) = self.open_to_land(caller, &bot, stored).await?;
+                (s, Some(landing))
             } else {
-                self.open_session(caller, &bot, stored).await?
+                (self.open_session(caller, &bot, stored).await?, None)
             };
             let messages = store::history(&self.home, stored)?;
             let summary = store::summary(&self.home, stored)?;
@@ -1993,7 +2030,7 @@ impl Runtime {
             method,
             "prompt.submit" | "image.attach_bytes" | "pdf.attach" | "file.attach"
         );
-        let s = self.live(caller, required(p, "session_id")?, input).await?;
+        let (s, _landing) = self.live(caller, required(p, "session_id")?, input).await?;
         match method {
             "prompt.submit" => {
                 let uploads = match &p["attachments"] {
@@ -2348,6 +2385,7 @@ impl Runtime {
             let parent = self
                 .open_session_locked(owner, bot, stored, None, None, true)
                 .await?;
+            let _landing = Landing::new(&parent)?;
             drop(guard);
             self.submit(&parent, text, true, true, chain, None).await
         }
@@ -3854,7 +3892,7 @@ fn pump(
                 Err(error) => Some(pi_error(error)),
             };
             if let Some(error) = error {
-                let (busy, was_closed) = {
+                let (busy, was_closed, reread) = {
                     let _gate = s.event_gate.lock().unwrap();
                     let mut state = s.state.lock().unwrap();
                     let was_closed = state.closed;
@@ -3863,7 +3901,7 @@ fn pump(
                     state.closed = true;
                     state.error = Some(error.message.clone());
                     state.pending.clear();
-                    (busy, was_closed)
+                    (busy, was_closed, std::mem::take(&mut state.reread))
                 };
                 if busy {
                     runtime.incident(&s, &error.message);
@@ -3877,6 +3915,15 @@ fn pump(
                 if !was_closed {
                     Runtime::cancel_dialogs(&s).await;
                     crate::native_tools::close_session(&runtime.home, &s.stored).await;
+                }
+                // What was added during the turn is read now that it has ended.
+                if reread && !was_closed {
+                    runtime.events.emit(
+                        &s.owner,
+                        None,
+                        "hexbot.sections.changed",
+                        json!({"id":s.stored,"bot":s.bot,"reload":true}),
+                    );
                 }
                 s.permit.lock().unwrap().take();
                 s.settled.send_modify(|v| *v += 1);
@@ -4611,7 +4658,7 @@ rl.on('line',line=>{{const c=JSON.parse(line);emit({{type:'response',id:c.id,com
         // Reads keep the running process; the next input restarts it.
         assert!(Arc::ptr_eq(
             &s,
-            &runtime.live("alice", &s.id, false).await.unwrap()
+            &runtime.live("alice", &s.id, false).await.unwrap().0
         ));
         assert!(Arc::ptr_eq(
             &s,
