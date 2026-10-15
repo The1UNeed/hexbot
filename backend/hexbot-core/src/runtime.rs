@@ -1242,6 +1242,7 @@ impl Runtime {
             if !state.busy {
                 state.output.clear();
                 state.error = None;
+                state.interrupted = false;
                 state.chain = chain.unwrap_or_default();
                 // A background result that finds the section idle starts a turn
                 // nobody waits on: keep the shared hop count, drop the requesters
@@ -1252,8 +1253,8 @@ impl Runtime {
             }
             // Queued input joins the unsettled turn, even if a background
             // result belongs to an older turn. Keep its active requester guard.
+            // It must also keep Stop's cancellation until this turn settles.
             state.busy = true;
-            state.interrupted = false;
             state.last_activity = common::now();
             state
                 .display
@@ -1451,10 +1452,18 @@ impl Runtime {
         Ok(state.output.clone())
     }
     async fn cancel_dialogs(s: &Live) {
-        let mut tasks = {
+        let (mut tasks, owned) = {
             let _gate = s.event_gate.lock().unwrap();
-            s.state.lock().unwrap().interrupted = true;
-            std::mem::take(&mut *s.requests.lock().unwrap())
+            let mut state = s.state.lock().unwrap();
+            state.interrupted = true;
+            let owned = state
+                .pending
+                .keys()
+                .chain(state.tool_dialogs.iter())
+                .cloned()
+                .collect::<std::collections::HashSet<_>>();
+            drop(state);
+            (std::mem::take(&mut *s.requests.lock().unwrap()), owned)
         };
         tasks.abort_all();
         while tasks.join_next().await.is_some() {}
@@ -1462,9 +1471,18 @@ impl Runtime {
             let mut state = s.state.lock().unwrap();
             state.native_approvals.clear();
             state.display.clear();
-            let mut pending = std::mem::take(&mut state.pending);
-            for id in state.tool_dialogs.drain() {
-                pending.insert(id, json!({"method":"input"}));
+            let mut pending = HashMap::new();
+            // Later arrivals belong to the replacement JoinSet. Its response
+            // tasks own their cancellation; taking them here would reply twice.
+            for id in owned {
+                if let Some(request) = state.pending.remove(&id) {
+                    pending.insert(id.clone(), request);
+                }
+                if state.tool_dialogs.remove(&id) {
+                    pending
+                        .entry(id)
+                        .or_insert_with(|| json!({"method":"input"}));
+                }
             }
             pending
         };

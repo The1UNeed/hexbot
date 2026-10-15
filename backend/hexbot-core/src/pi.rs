@@ -468,6 +468,17 @@ impl PiProcess {
         .await;
     }
 
+    /// Hold transport backpressure while runtime tests interleave cancellation.
+    #[cfg(test)]
+    pub(crate) async fn hold_extension_response(&self) -> OwnedSemaphorePermit {
+        self.inner
+            .extension_admission
+            .clone()
+            .acquire_owned()
+            .await
+            .unwrap()
+    }
+
     fn extension_record(&self, id: &str, mut fields: Value) -> Result<Vec<u8>, PiError> {
         if id.is_empty() {
             return Err(PiError::InvalidCommand("extension request id is empty"));
