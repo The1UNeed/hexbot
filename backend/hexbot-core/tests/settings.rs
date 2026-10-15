@@ -2,6 +2,200 @@ use hexbot_core::{db, settings};
 use serde_json::json;
 use std::fs;
 
+// Interleave an unrelated committed write after an incident's reads (attribution
+// and dedup, or resolution), immediately before its first write. No scheduler
+// timing needed.
+mod incident_write_contention {
+    use rusqlite::{Connection, ErrorCode, ffi};
+    use std::{
+        cell::RefCell,
+        ffi::{CStr, c_char, c_int, c_uint, c_void},
+        sync::Once,
+        time::Duration,
+    };
+
+    thread_local! {
+        static WRITER: RefCell<Option<Connection>> = const { RefCell::new(None) };
+        static RESULT: RefCell<Option<rusqlite::Result<usize>>> = const { RefCell::new(None) };
+    }
+
+    unsafe extern "C" fn install(
+        db: *mut ffi::sqlite3,
+        _: *mut *mut c_char,
+        _: *const ffi::sqlite3_api_routines,
+    ) -> c_int {
+        unsafe {
+            ffi::sqlite3_trace_v2(
+                db,
+                ffi::SQLITE_TRACE_STMT,
+                Some(trace),
+                std::ptr::null_mut(),
+            )
+        }
+    }
+
+    unsafe extern "C" fn trace(
+        _: c_uint,
+        _: *mut c_void,
+        statement: *mut c_void,
+        _: *mut c_void,
+    ) -> c_int {
+        let sql = unsafe { ffi::sqlite3_sql(statement.cast()) };
+        if !sql.is_null() {
+            let sql = unsafe { CStr::from_ptr(sql) }.to_bytes();
+            if sql.starts_with(b"INSERT INTO bot_incidents")
+                || sql.starts_with(b"UPDATE bot_incidents SET text=")
+                || sql.starts_with(b"UPDATE bot_incidents SET resolved_at=")
+            {
+                // Take the connection before executing, since it is traced too.
+                if let Some(writer) = WRITER.with_borrow_mut(Option::take) {
+                    RESULT.with_borrow_mut(|result| {
+                        *result = Some(writer.execute(
+                            "UPDATE settings SET value='true' WHERE key='lan_enabled'",
+                            [],
+                        ))
+                    });
+                }
+            }
+        }
+        0
+    }
+
+    fn register() {
+        static REGISTER: Once = Once::new();
+        REGISTER.call_once(|| {
+            assert_eq!(
+                unsafe { ffi::sqlite3_auto_extension(Some(install)) },
+                ffi::SQLITE_OK,
+            )
+        });
+    }
+
+    fn home() -> tempfile::TempDir {
+        register();
+        let home = super::setup();
+        super::db::open(home.path())
+            .unwrap()
+            .execute(
+                "INSERT INTO settings(key,value) VALUES('lan_enabled','false')",
+                [],
+            )
+            .unwrap();
+        home
+    }
+
+    /// Arm a competing writer that fails at once instead of waiting.
+    fn compete(home: &std::path::Path) {
+        let writer = super::db::open(home).unwrap();
+        writer.busy_timeout(Duration::ZERO).unwrap();
+        WRITER.with_borrow_mut(|slot| *slot = Some(writer));
+    }
+
+    fn competed() -> rusqlite::Result<usize> {
+        WRITER.with_borrow_mut(|slot| *slot = None);
+        RESULT
+            .with_borrow_mut(Option::take)
+            .expect("competing write attempted")
+    }
+
+    fn lan_enabled(home: &std::path::Path) -> String {
+        super::db::open(home)
+            .unwrap()
+            .query_row(
+                "SELECT value FROM settings WHERE key='lan_enabled'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap()
+    }
+
+    #[test]
+    fn incident_insert_and_dedup_reserve_the_write_before_reading() {
+        let home = home();
+        let mut incident_id = None;
+        for text in ["First failure", "Repeated failure"] {
+            compete(home.path());
+            let incident = super::settings::record_incident(
+                home.path(),
+                "owl",
+                "turn_failed",
+                text,
+                &super::json!({"section_id":"a"}),
+            );
+            let competed = competed();
+            let incident = incident.expect("incident survives the competing write");
+            assert_eq!(
+                competed.unwrap_err().sqlite_error_code(),
+                Some(ErrorCode::DatabaseBusy)
+            );
+            assert_eq!(incident["text"], text);
+            if let Some(id) = &incident_id {
+                assert_eq!(&incident["id"], id);
+            }
+            incident_id = Some(incident["id"].clone());
+        }
+        assert_eq!(
+            super::db::open(home.path())
+                .unwrap()
+                .query_row(
+                    "SELECT COUNT(*) FROM bot_incidents WHERE resolved_at IS NULL",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            1
+        );
+    }
+
+    #[test]
+    fn incident_resolution_reserves_the_write_before_reading() {
+        let home = home();
+        let incident = super::settings::record_incident(
+            home.path(),
+            "owl",
+            "turn_failed",
+            "Provider failed",
+            &super::json!({"section_id":"a"}),
+        )
+        .unwrap();
+        // The runtime clears a section's failure with this filter when its next
+        // turn succeeds. A deferred read would lose its snapshot to the commit
+        // and fail with SQLITE_BUSY_SNAPSHOT, leaving the bot Stopped.
+        compete(home.path());
+        let resolved = super::settings::resolve_incidents(
+            home.path(),
+            &super::json!({"section_id":"a","kind":"turn_failed"}),
+        );
+        let competed = competed();
+        let resolved = resolved.expect("resolution survives the competing write");
+        assert_eq!(
+            competed.unwrap_err().sqlite_error_code(),
+            Some(ErrorCode::DatabaseBusy)
+        );
+        assert_eq!(resolved.len(), 1);
+        assert_eq!(resolved[0]["id"], incident["id"]);
+        assert!(resolved[0]["resolved_at"].is_number());
+        let conn = super::db::open(home.path()).unwrap();
+        assert_eq!(
+            conn.query_row(
+                "SELECT resolved_at FROM bot_incidents WHERE id=?",
+                [incident["id"].as_str()],
+                |row| row.get::<_, f64>(0),
+            )
+            .unwrap(),
+            resolved[0]["resolved_at"].as_f64().unwrap()
+        );
+        // The refused writer changed nothing and can write once resolution commits.
+        assert_eq!(lan_enabled(home.path()), "false");
+        conn.execute(
+            "UPDATE settings SET value='true' WHERE key='lan_enabled'",
+            [],
+        )
+        .unwrap();
+        assert_eq!(lan_enabled(home.path()), "true");
+    }
+}
+
 fn setup() -> tempfile::TempDir {
     let home = tempfile::tempdir().unwrap();
     db::migrate(home.path()).unwrap();
@@ -203,6 +397,109 @@ fn incidents_deduplicate_truncate_unicode_and_resolve_only_matching_causes() {
             .len(),
         1
     );
+}
+
+#[test]
+fn incident_attribution_requires_a_unique_owned_stored_session_for_the_same_bot() {
+    let home = setup();
+    let conn = db::open(home.path()).unwrap();
+    // These mappings are independent fixtures, not outputs from the normalizer.
+    conn.execute_batch("INSERT INTO bots(name,owner_id) VALUES('sparrow','alice');
+        INSERT INTO rooms(id,name,owner_id) VALUES('one','One','alice'),('two','Two','alice'),('foreign','Foreign','bob');
+        INSERT INTO room_sessions(room_id,bot,stored_session_id,live_session_id) VALUES
+          ('one','owl','unique-stored','live-only'),
+          ('two','sparrow','other-bot','other-live'),
+          ('foreign','owl','foreign-stored','foreign-live');").unwrap();
+    for (kind, section, live, explicit, expected) in [
+        (
+            "turn_failed",
+            Some("unique-stored"),
+            Some("old-live"),
+            None,
+            Some("one"),
+        ),
+        ("turn_failed", Some("other-bot"), None, None, None),
+        ("turn_failed", Some("foreign-stored"), None, None, None),
+        (
+            "turn_failed",
+            Some("live-only"),
+            Some("live-only"),
+            None,
+            None,
+        ),
+        ("turn_failed", None, Some("unique-stored"), None, None),
+        ("connector_error", Some("unique-stored"), None, None, None),
+        (
+            "turn_failed",
+            Some("explicit-stored"),
+            None,
+            Some("two"),
+            Some("two"),
+        ),
+    ] {
+        let row = settings::record_incident(
+            home.path(),
+            "owl",
+            kind,
+            "Failure",
+            &json!({"section_id":section,"session_id":live,"room_id":explicit}),
+        )
+        .unwrap();
+        assert_eq!(row["room_id"], json!(expected), "{section:?}");
+        let saved: Option<String> = conn
+            .query_row(
+                "SELECT room_id FROM bot_incidents WHERE id=?",
+                [row["id"].as_str().unwrap()],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(saved.as_deref(), expected);
+    }
+    conn.execute("UPDATE room_sessions SET stored_session_id='unique-stored' WHERE room_id='foreign' AND bot='owl'", []).unwrap();
+    let owned = settings::record_incident(
+        home.path(),
+        "owl",
+        "turn_failed",
+        "Still owned",
+        &json!({"section_id":"unique-stored"}),
+    )
+    .unwrap();
+    assert_eq!(owned["room_id"], "one", "only owned mappings count");
+    conn.execute("INSERT INTO room_sessions(room_id,bot,stored_session_id) VALUES('two','owl','unique-stored')", []).unwrap();
+    // A legacy row must not pick either room when two owned mappings agree on
+    // the bot and stored ID. A foreign mapping alone also proves nothing.
+    conn.execute(
+        "DELETE FROM bot_incidents WHERE section_id='unique-stored'",
+        [],
+    )
+    .unwrap();
+    let ambiguous = settings::record_incident(
+        home.path(),
+        "owl",
+        "turn_failed",
+        "Ambiguous",
+        &json!({"section_id":"unique-stored"}),
+    )
+    .unwrap();
+    assert!(ambiguous["room_id"].is_null());
+}
+
+#[test]
+fn incident_dedup_keeps_named_rooms_and_global_failures_separate_without_sections() {
+    let home = setup();
+    let mut ids = Vec::new();
+    for room in [None, Some("one"), Some("two")] {
+        let context = json!({"room_id":room});
+        let first =
+            settings::record_incident(home.path(), "owl", "turn_failed", "Failure", &context)
+                .unwrap();
+        let repeated =
+            settings::record_incident(home.path(), "owl", "turn_failed", "Again", &context)
+                .unwrap();
+        assert_eq!(first["id"], repeated["id"]);
+        assert!(!ids.contains(&first["id"]));
+        ids.push(first["id"].clone());
+    }
 }
 
 #[test]
