@@ -1232,3 +1232,223 @@ async fn unexplained_pi_queue_metadata_and_unconfirmed_omissions_fail_closed() {
         runtime.shutdown().await;
     }
 }
+
+#[test]
+fn original_and_steer_acknowledgements_wait_for_private_preflight_dispatch() {
+    // Hold the pump's blocking worker while the independent transport receives
+    // its reply. This tests real request/event scheduling, not injected flags.
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .max_blocking_threads(1)
+        .build()
+        .unwrap()
+        .block_on(async {
+            let (home, runtime, hub) = setup();
+            install_queue_pi(home.path(), false);
+            open(&runtime).await;
+            let s = runtime.sessions.lock().unwrap()["first"].clone();
+            let mut events = hub.subscribe();
+            runtime
+                .submit(&s, "wait", false, false, None, None)
+                .await
+                .unwrap();
+            stop_event(&mut events, |e| e["payload"]["text"] == "projected wait").await;
+            let mut acknowledgements = Vec::new();
+            for steer in [false, true] {
+                let (entered, held) = tokio::sync::oneshot::channel();
+                let (release, released) = std::sync::mpsc::channel();
+                let worker = tokio::task::spawn_blocking(move || {
+                    entered.send(()).unwrap();
+                    released.recv().unwrap();
+                });
+                held.await.unwrap();
+                let input = {
+                    let (runtime, s) = (runtime.clone(), s.clone());
+                    tokio::spawn(async move {
+                        if steer {
+                            runtime.steer(&s, "owner steer").await
+                        } else {
+                            runtime
+                                .submit(&s, "hidden followup", true, true, None, None)
+                                .await
+                        }
+                    })
+                };
+                tokio::time::timeout(Duration::from_secs(5), async {
+                    while s.state.lock().unwrap().submitting == 0 {
+                        tokio::task::yield_now().await;
+                    }
+                })
+                .await
+                .unwrap();
+                // The response has crossed the transport, but its ordered
+                // preflight is still waiting for the held blocking worker.
+                Runtime::command(&s, json!({"type":"get_state"}))
+                    .await
+                    .unwrap();
+                tokio::task::yield_now().await;
+                tokio::task::yield_now().await;
+                let acknowledged_early = input.is_finished();
+                let outstanding = s.state.lock().unwrap().submitting;
+                release.send(()).unwrap();
+                worker.await.unwrap();
+                tokio::time::timeout(Duration::from_secs(5), input)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .unwrap();
+                acknowledgements.push((steer, acknowledged_early, outstanding));
+            }
+            runtime.shutdown().await;
+            assert_eq!(
+                acknowledgements,
+                vec![(false, false, 1), (true, false, 1)],
+                "acknowledgement or submitting escaped ordered dispatch"
+            );
+        });
+}
+
+fn install_held_original_pi(home: &Path) {
+    install_stop_lifecycle_pi(home);
+    let script = home.join("pi.cjs");
+    let source = fs::read_to_string(&script).unwrap().replace(
+        "  if (c.type === 'fail_prompt')",
+        "  if (c.type === 'release_original') {emit({type:'response',id:prompt.id,command:'prompt',success:true,data:{disposition:'started'}});emit({type:'agent_start'});}\n  if (c.type === 'project_original') {emit({type:'message_end',message:{role:'user',content:prompt.message}});prompt=undefined;}\n  if (c.type === 'fail_prompt')",
+    );
+    fs::write(script, source).unwrap();
+}
+
+#[tokio::test]
+async fn late_original_acceptance_keeps_an_active_stop_and_owns_its_abort() {
+    let (home, runtime, hub) = setup();
+    install_held_original_pi(home.path());
+    let id = open(&runtime).await;
+    let s = runtime.sessions.lock().unwrap()["first"].clone();
+    let mut events = hub.subscribe();
+    let input = {
+        let (runtime, s) = (runtime.clone(), s.clone());
+        tokio::spawn(async move { runtime.submit(&s, "reject", true, true, None, None).await })
+    };
+    stop_event(&mut events, |e| e["payload"]["text"] == "prompt waiting").await;
+    let stop = start_stop(&runtime, &id);
+    stop_event(&mut events, |e| e["payload"]["text"] == "abort waiting").await;
+    Runtime::command(&s, json!({"type":"release_original"}))
+        .await
+        .unwrap();
+    input.await.unwrap().unwrap();
+    stop_event(&mut events, |e| e["payload"]["text"] == "abort waiting").await;
+    {
+        let state = s.state.lock().unwrap();
+        assert_eq!(state.stops, 2);
+        assert!(state.busy && state.interrupted && state.recovering);
+        assert!(state.display.is_empty());
+    }
+    let before = hub.since("alice", &id, 0)["latest_seq"].as_u64().unwrap();
+    runtime.event(&s, json!({"type":"extension_ui_request","id":"late-confirm","method":"confirm","title":"Continue?"})).unwrap();
+    Runtime::command(&s, json!({"type":"release_abort"}))
+        .await
+        .unwrap();
+    stop.await.unwrap().unwrap();
+    assert_eq!(s.state.lock().unwrap().stops, 1);
+    assert!(s.state.lock().unwrap().dialogs_cancelled());
+    assert!(published_cards(&hub, &id, before).is_empty());
+    Runtime::command(&s, json!({"type":"project_original"}))
+        .await
+        .unwrap();
+    Runtime::command(&s, json!({"type":"release_abort"}))
+        .await
+        .unwrap();
+    Runtime::command(&s, json!({"type":"release_settled"}))
+        .await
+        .unwrap();
+    let mut ended = s.run_ended.subscribe();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if !s.state.lock().unwrap().recovering {
+                break;
+            }
+            ended.changed().await.unwrap();
+        }
+    })
+    .await
+    .unwrap();
+    {
+        let state = s.state.lock().unwrap();
+        assert_eq!((state.stops, state.submitting), (0, 0));
+        assert!(!state.busy && !state.closed);
+    }
+    let users = store::history(home.path(), "first")
+        .unwrap()
+        .into_iter()
+        .filter(|r| r["role"] == "user")
+        .collect::<Vec<_>>();
+    assert_eq!(users.len(), 1);
+    assert_eq!(users[0]["display_kind"], "hidden");
+    runtime
+        .submit(&s, "next usable run", false, false, None, None)
+        .await
+        .unwrap();
+    assert_fresh_dialog_paths(&runtime, &s, &hub).await;
+    runtime.shutdown().await;
+}
+
+#[tokio::test]
+async fn late_original_started_run_binds_its_full_chain_after_the_old_boundary() {
+    let (home, runtime, hub) = setup();
+    install_held_original_pi(home.path());
+    let id = open(&runtime).await;
+    let s = runtime.sessions.lock().unwrap()["first"].clone();
+    let mut events = hub.subscribe();
+    let chain = Chain {
+        hops: Arc::new(AtomicUsize::new(5)),
+        askers: vec!["caller".into()],
+    };
+    let input = {
+        let (runtime, s, chain) = (runtime.clone(), s.clone(), chain.clone());
+        tokio::spawn(async move {
+            runtime
+                .submit(&s, "reject", true, true, Some(chain), None)
+                .await
+        })
+    };
+    stop_event(&mut events, |e| e["payload"]["text"] == "prompt waiting").await;
+    let stop = start_stop(&runtime, &id);
+    stop_event(&mut events, |e| e["payload"]["text"] == "abort waiting").await;
+    Runtime::command(&s, json!({"type":"release_abort"}))
+        .await
+        .unwrap();
+    stop.await.unwrap().unwrap();
+    Runtime::command(&s, json!({"type":"release_settled"}))
+        .await
+        .unwrap();
+    stop_event(&mut events, |e| e["type"] == "message.complete").await;
+    Runtime::command(&s, json!({"type":"release_original"}))
+        .await
+        .unwrap();
+    input.await.unwrap().unwrap();
+    {
+        let state = s.state.lock().unwrap();
+        assert!(state.busy && !state.interrupted && state.recovering);
+        assert_eq!(state.stops, 0);
+        assert!(Arc::ptr_eq(&state.chain.hops, &chain.hops));
+        assert_eq!(state.chain.hops.load(Ordering::Relaxed), 5);
+        assert!(state.chain.askers.is_empty()); // A fresh background result has no waiter.
+        let retained = state.inputs.front().unwrap();
+        assert_eq!(retained.chain.askers, chain.askers);
+        assert!(Arc::ptr_eq(&retained.chain.hops, &chain.hops));
+        assert_eq!(retained.display, "hidden");
+    }
+    Runtime::command(&s, json!({"type":"project_original"}))
+        .await
+        .unwrap();
+    Runtime::command(&s, json!({"type":"release_settled"}))
+        .await
+        .unwrap();
+    stop_event(&mut events, |e| e["type"] == "message.complete").await;
+    runtime
+        .submit(&s, "next usable run", false, false, None, None)
+        .await
+        .unwrap();
+    assert_fresh_dialog_paths(&runtime, &s, &hub).await;
+    runtime.shutdown().await;
+}

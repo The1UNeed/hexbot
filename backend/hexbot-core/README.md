@@ -139,7 +139,13 @@ it also installs over SSH when nobody is signed in at the screen.
   The daemon resubmits the retained original envelopes in ledger order into
   the same session, retaining prompt intents, images, file references and Chain.
   Transport preflight dispositions share the ordered event stream so identical
-  owner and hidden input cannot exchange display intents. No past context or
+  owner and hidden input cannot exchange display intents. Original submission,
+  steering and replay acknowledgements wait for that ordered preflight dispatch.
+  A prompt that starts after the old Stop has ended owns a fresh operation;
+  recovery waits for its settlement instead of treating it as queued input.
+  Acceptance during an active Stop, or a replay overtaken by another Stop,
+  transfers cancellation ownership before the acknowledgement can finish.
+  No past context or
   frozen prompt/tool options are rebuilt. Client dialog answers claim the event
   gate through the response enqueue; Stop rejects later claims with 4204.
 - `profiles/<bot>/pi/` is the bot's Pi agent directory. The daemon rewrites

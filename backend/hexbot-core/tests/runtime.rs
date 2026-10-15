@@ -5,6 +5,8 @@ use std::{
     path::{Path, PathBuf},
     time::Duration,
 };
+#[path = "support/preflight_pi.rs"]
+mod preflight_pi;
 #[path = "support/stop_pi.rs"]
 mod stop_pi;
 mod support;

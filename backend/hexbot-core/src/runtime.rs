@@ -84,10 +84,15 @@ impl StopGuard {
         if state.closed {
             return Err(Error::new(4001, "session not found"));
         }
+        Ok(Self::claim(s, &mut state))
+    }
+    /// Caller holds event_gate and state, so late preflight cannot reopen dialogs
+    /// between accepting an operation and transferring its cancellation owner.
+    fn claim(s: &Arc<Live>, state: &mut State) -> Self {
         state.stops += 1;
         state.recovering = true;
         state.stop_epoch += 1;
-        Ok(Self(s.clone()))
+        Self(s.clone())
     }
 }
 /// Waiting input reserves its place before Stop releases admission. Cancellation
@@ -121,6 +126,12 @@ struct PendingInput {
     intent: String,
     in_pi: bool,
     queued: bool,
+    /// The send attempt, independent of the original durable input identity.
+    stop_epoch: u64,
+    /// Ordered dispatch, rather than transport receipt, releases submitting.
+    preflight: bool,
+    /// This attempt resends an intent accepted before an earlier Stop.
+    replaying: bool,
     command: Value,
     display: String,
     chain: Chain,
@@ -1418,6 +1429,9 @@ impl Runtime {
                                 intent: intent.clone(),
                                 in_pi: true,
                                 queued: false,
+                                stop_epoch: state.stop_epoch,
+                                preflight: false,
+                                replaying: false,
                                 command: command.clone(),
                                 display: if hidden { "hidden" } else { "normal" }.into(),
                                 chain: input_chain.unwrap_or_else(|| state.chain.clone()),
@@ -1451,16 +1465,18 @@ impl Runtime {
         tokio::spawn(async move {
             let committed = reply.is_ok();
             let response = match reply {
-                Ok(reply) => reply.wait().await.map_err(pi_error).and_then(|reply| {
-                    if reply.success {
-                        Ok(())
-                    } else {
-                        Err(Error::new(
-                            5201,
-                            reply.error.unwrap_or_else(|| "Prompt rejected".into()),
-                        ))
-                    }
-                }),
+                Ok(reply) => Self::input_preflight(&s, intent.as_ref().unwrap(), reply)
+                    .await
+                    .and_then(|reply| {
+                        if reply.success {
+                            Ok(())
+                        } else {
+                            Err(Error::new(
+                                5201,
+                                reply.error.unwrap_or_else(|| "Prompt rejected".into()),
+                            ))
+                        }
+                    }),
                 Err(error) => Err(error),
             };
             let _gate = s.event_gate.lock().unwrap();
@@ -1822,21 +1838,21 @@ impl Runtime {
             .upgrade()
             .ok_or_else(|| Error::new(5201, "daemon is stopping"))?;
         let stop = StopGuard::start(s)?;
-        // Finish Stop even if its RPC caller disconnects. The guard covers all
-        // cleanup and concurrent Stops; no request task can strand its count.
-        tokio::spawn(async move {
-            let s = &stop.0;
-            let result = runtime.abort_turn(s, deadline).await;
-            if result.is_ok() {
-                let (runtime, s) = (runtime.clone(), s.clone());
-                tokio::spawn(async move {
-                    runtime.resume_stopped_inputs(s).await;
-                });
-            }
-            result
-        })
-        .await
-        .map_err(|error| Error::new(5201, error.to_string()))?
+        // The owned task survives RPC disconnect, just like late preflight Stop.
+        tokio::spawn(runtime.finish_stop(stop, deadline))
+            .await
+            .map_err(|error| Error::new(5201, error.to_string()))?
+    }
+    async fn finish_stop(self: Arc<Self>, stop: StopGuard, deadline: Duration) -> Result<()> {
+        let s = &stop.0;
+        let result = self.abort_turn(s, deadline).await;
+        if result.is_ok() {
+            let (runtime, s) = (self.clone(), s.clone());
+            tokio::spawn(async move {
+                runtime.resume_stopped_inputs(s).await;
+            });
+        }
+        result
     }
     pub async fn interrupt_stored(&self, owner: &str, stored: &str) -> Result<bool> {
         let s = self.sessions.lock().unwrap().get(stored).cloned();
@@ -3510,30 +3526,7 @@ impl Runtime {
         }
         match event["type"].as_str().unwrap_or("") {
             "hexbot_input_preflight" => {
-                let mut state = s.state.lock().unwrap();
-                if let Some(index) = state
-                    .inputs
-                    .iter()
-                    .position(|input| input.intent == event["intent"])
-                {
-                    let disposition = event["disposition"].as_str().unwrap_or("");
-                    if matches!(disposition, "started" | "queued") {
-                        let mut input = state.inputs.remove(index).unwrap();
-                        input.queued = disposition == "queued";
-                        let at = if !input.queued {
-                            0
-                        } else if input.command["type"] == "steer" {
-                            state
-                                .inputs
-                                .iter()
-                                .position(|other| other.queued && other.command["type"] != "steer")
-                                .unwrap_or(state.inputs.len())
-                        } else {
-                            state.inputs.len()
-                        };
-                        state.inputs.insert(at, input);
-                    }
-                }
+                self.accept_input(s, &event);
             }
             "agent_start" => {
                 self.emit(s, "message.start", json!({}));

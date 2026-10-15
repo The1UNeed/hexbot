@@ -3,6 +3,104 @@
 use super::*;
 
 impl Runtime {
+    /// Transport replies may arrive before their private event is dispatched.
+    /// Keep submitting owned until that event has bound disposition and lifetime.
+    pub(super) async fn input_preflight(
+        s: &Live,
+        intent: &str,
+        reply: crate::pi::InputReply,
+    ) -> Result<crate::pi::PiResponse> {
+        let mut ended = s.run_ended.subscribe();
+        let response = reply.wait().await.map_err(pi_error)?;
+        loop {
+            {
+                let state = s.state.lock().unwrap();
+                if state.closed {
+                    return Err(Error::new(5201, "session closed"));
+                }
+                // Removal also proves dispatch: user projections follow preflight.
+                if state
+                    .inputs
+                    .iter()
+                    .find(|input| input.intent == intent)
+                    .is_none_or(|input| input.preflight)
+                {
+                    return Ok(response);
+                }
+            }
+            ended
+                .changed()
+                .await
+                .map_err(|_| Error::new(5201, "session closed"))?;
+        }
+    }
+
+    /// Runs under event_gate in transport order, before any new run's events.
+    pub(super) fn accept_input(&self, s: &Arc<Live>, event: &Value) {
+        let stop = {
+            let mut state = s.state.lock().unwrap();
+            let Some(index) = state
+                .inputs
+                .iter()
+                .position(|input| input.intent == event["intent"])
+            else {
+                return;
+            };
+            let mut input = state.inputs.remove(index).unwrap();
+            input.preflight = true;
+            let disposition = event["disposition"].as_str().unwrap_or("");
+            let mut stop = None;
+            if matches!(disposition, "started" | "queued") {
+                input.queued = disposition == "queued";
+                if !input.queued {
+                    // A started prompt owns a new Pi operation, even if the daemon
+                    // still considered the previous operation busy at enqueue.
+                    state.busy = true;
+                    let late = state.stop_epoch != input.stop_epoch;
+                    if late && (state.stops != 0 || input.replaying) {
+                        // An active Stop, or a second Stop of replay, still owns
+                        // this operation. Claim before waking its acknowledgement.
+                        state.interrupted = true;
+                        stop = Some(StopGuard::claim(s, &mut state));
+                    } else if state.stops == 0 {
+                        state.output.clear();
+                        state.error = None;
+                        state.interrupted = false;
+                        state.chain = input.chain.clone();
+                        if !input.replaying && input.command["streamingBehavior"] == "followUp" {
+                            state.chain.askers.clear();
+                        }
+                        if late {
+                            state.display.push_front(input.display.clone());
+                        }
+                    }
+                }
+                let at = if !input.queued {
+                    0
+                } else if input.command["type"] == "steer" {
+                    state
+                        .inputs
+                        .iter()
+                        .position(|other| other.queued && other.command["type"] != "steer")
+                        .unwrap_or(state.inputs.len())
+                } else {
+                    state.inputs.len()
+                };
+                state.inputs.insert(at, input);
+            } else {
+                state.inputs.insert(index, input);
+            }
+            s.run_ended.send_modify(|v| *v += 1);
+            stop
+        };
+        if let Some(stop) = stop {
+            let runtime = self.weak.upgrade().unwrap();
+            tokio::spawn(async move {
+                let _ = runtime.finish_stop(stop, DEADLINE).await;
+            });
+        }
+    }
+
     pub(super) async fn input_slot(s: &Live) -> Result<tokio::sync::MutexGuard<'_, ()>> {
         let mut ended = s.run_ended.subscribe();
         // Keep one lock future so ordinary wakeups retain this input's FIFO
@@ -66,6 +164,10 @@ impl Runtime {
                             .try_input(&input.command, &input.intent)
                             .map_err(pi_error)?;
                         input.in_pi = true;
+                        input.queued = false;
+                        input.stop_epoch = state.stop_epoch;
+                        input.preflight = false;
+                        input.replaying = true;
                         state.inputs[index] = input.clone();
                         let fresh = !state.busy;
                         if fresh {
@@ -80,8 +182,8 @@ impl Runtime {
                         state.submitting += 1;
                         (reply, input.intent, fresh)
                     };
-                    let response = next.0.wait().await.map_err(pi_error);
-                    let (retry, late_acceptance) = {
+                    let response = Self::input_preflight(&s, &next.1, next.0).await;
+                    let retry = {
                         let _gate = s.event_gate.lock().unwrap();
                         let mut state = s.state.lock().unwrap();
                         state.submitting -= 1;
@@ -102,21 +204,8 @@ impl Runtime {
                             }
                         }
                         s.run_ended.send_modify(|v| *v += 1);
-                        (
-                            retry,
-                            state.stop_epoch != epoch
-                                && response.as_ref().is_ok_and(|reply| reply.success),
-                        )
+                        retry
                     };
-                    if late_acceptance {
-                        // An idle abort can return during preflight. A prompt
-                        // accepted after it needs a real abort boundary of its
-                        // own before the next usable run is admitted.
-                        let stop = StopGuard::start(&s)?;
-                        self.abort_turn(&s, DEADLINE).await?;
-                        drop(stop);
-                        break;
-                    }
                     if retry {
                         break;
                     }
@@ -237,10 +326,14 @@ impl Runtime {
                     } else {
                         state.chain.clone()
                     };
+                    let stop_epoch = state.stop_epoch;
                     state.inputs.push_back(PendingInput {
                         intent: intent.clone(),
                         in_pi: true,
                         queued: false,
+                        stop_epoch,
+                        preflight: false,
+                        replaying: false,
                         command,
                         display: "normal".into(),
                         chain: chain.clone(),
@@ -265,16 +358,19 @@ impl Runtime {
                     .ok_or_else(|| Error::new(5201, "daemon is stopping"))?;
                 let s = s.clone();
                 return tokio::spawn(async move {
-                    let response = reply.wait().await.map_err(pi_error).and_then(|reply| {
-                        if reply.success {
-                            Ok(())
-                        } else {
-                            Err(Error::new(
-                                5201,
-                                reply.error.unwrap_or_else(|| "Steering rejected".into()),
-                            ))
-                        }
-                    });
+                    let response =
+                        Self::input_preflight(&s, &intent, reply)
+                            .await
+                            .and_then(|reply| {
+                                if reply.success {
+                                    Ok(())
+                                } else {
+                                    Err(Error::new(
+                                        5201,
+                                        reply.error.unwrap_or_else(|| "Steering rejected".into()),
+                                    ))
+                                }
+                            });
                     let _gate = s.event_gate.lock().unwrap();
                     let mut state = s.state.lock().unwrap();
                     state.submitting -= 1;

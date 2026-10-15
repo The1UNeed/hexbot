@@ -45,7 +45,7 @@ When the bot searches, it leaves out the section it is in, which it already has 
 
 ## Stop, archive, and delete
 
-Use **Stop** to interrupt a running answer. The section stays available, and you can send another message once the bot is idle. Queued background results run before your next message. A background result arriving while the answer stops waits until it has stopped, then continues the section. The new answer can ask questions and request approvals.
+Use **Stop** to interrupt a running answer. The section stays available, and you can send another message once the bot is idle. Queued background results run before your next message. A result accepted just after Stop finishes can start the next answer itself. A background result arriving while the answer stops waits until it has stopped, then continues the section. The new answer can ask questions and request approvals.
 
 Archiving hides a section from the active list and keeps its history. To bring it back, find it in Settings, Archive, where you can search titles, first messages, and bot names, or filter by bot, and choose Restore. The bot's Sections settings list its archived sections too. Deleting removes that section and its history permanently. It leaves the bot's memory alone; edit Memory separately when you want to remove a remembered fact.
 

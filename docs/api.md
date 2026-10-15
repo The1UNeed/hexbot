@@ -85,6 +85,10 @@ data model. The native transport and event projection live in
   each input's original display intent, images, file references and Chain.
   Replay uses acknowledged intents and actual user projections, so identical
   text remains distinct even when Pi omits it from returned queue metadata.
+  A delayed original submission that starts after Stop finishes runs once as
+  fresh work. Its acknowledgement records the new operation before recovery
+  or later input can proceed. An active Stop keeps cancellation ownership until
+  its cleanup finishes.
   Recovery keeps the same Pi session, stored history, prompt and tools.
   Idle Stop needs no run-settlement event. A new owner prompt or `/compact`
   arriving while idle recovery finishes waits for the admission handoff; it
