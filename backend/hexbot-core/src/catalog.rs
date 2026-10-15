@@ -365,9 +365,15 @@ fn shape_bot(home: &Path, caller: &str, row: Value) -> Result<Value> {
         .take(2)
         .cloned()
         .collect::<Vec<_>>();
-    // Retry needs an existing owned room or an open private section. Connector
-    // and global failures remain relevant even after their original chat is gone.
+    // Hidden native runs have no catalog section. Require their bot and owner,
+    // and exclude deleted sessions and catalog entries hidden by other filters.
+    // Connector and global failures outlive their original chat.
     let conn = db::open(home)?;
+    runtime_store::open(home)?;
+    conn.execute(
+        "ATTACH DATABASE ? AS runtime",
+        [home.join("hexbot-runtime.db").to_string_lossy().as_ref()],
+    )?;
     let incident = rows(
         &conn,
         "SELECT i.* FROM bot_incidents i JOIN bots b ON b.name=i.bot
@@ -379,6 +385,11 @@ fn shape_bot(home: &Path, caller: &str, row: Value) -> Result<Value> {
                         WHERE s.stored_session_id=i.section_id AND s.bot=i.bot AND r.owner_id=b.owner_id)
                     OR EXISTS(SELECT 1 FROM sections s WHERE s.id=i.section_id
                         AND s.bot=i.bot AND s.owner_id=b.owner_id AND s.archived_at IS NULL)
+                    OR (NOT EXISTS(SELECT 1 FROM sections s WHERE s.id=i.section_id)
+                        AND NOT EXISTS(SELECT 1 FROM room_sessions s WHERE s.stored_session_id=i.section_id)
+                        AND EXISTS(SELECT 1 FROM runtime.native_sessions s WHERE s.stored_id=i.section_id
+                            AND s.bot=i.bot AND s.owner=b.owner_id)
+                        AND NOT EXISTS(SELECT 1 FROM runtime.native_deleted d WHERE d.session_id=i.section_id))
                 END
          ) ORDER BY i.created_at DESC LIMIT 1",
         &[&name],

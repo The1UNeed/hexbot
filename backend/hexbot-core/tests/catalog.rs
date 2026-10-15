@@ -549,6 +549,35 @@ fn bot_reads_skip_stale_retry_causes_and_show_the_latest_remaining_incident() {
         INSERT INTO room_sessions(room_id,bot,stored_session_id) VALUES('room','research-owl','stored'),('foreign','research-owl','foreign-stored'),('room','writer','wrong-bot-stored');
         INSERT INTO bot_incidents(id,bot,kind,text,created_at) VALUES('older','research-owl','turn_failed','Global failure',1);").unwrap();
     call(h, "alice", "hexbot.sections.archive", json!({"id":section}));
+    let native = runtime_store::open(h).unwrap();
+    // Native metadata must not turn archived, foreign, or wrongly mapped
+    // conversations into hidden jobs. A pending deletion can retain its row.
+    for stored in [
+        section.as_str(),
+        "other-bot",
+        "foreign-section",
+        "foreign-stored",
+        "wrong-bot-stored",
+        "tombstoned",
+        "hidden",
+        "foreign-native",
+        "other-bot-native",
+    ] {
+        let (owner, bot) = match stored {
+            "foreign-native" => ("bob", "research-owl"),
+            "other-bot-native" => ("alice", "writer"),
+            _ => ("alice", "research-owl"),
+        };
+        native
+            .execute(
+                "INSERT INTO native_sessions(stored_id,owner,bot,prompt) VALUES(?,?,?,'')",
+                rusqlite::params![stored, owner, bot],
+            )
+            .unwrap();
+    }
+    native
+        .execute("INSERT INTO native_deleted VALUES('tombstoned')", [])
+        .unwrap();
     for (kind, stored, room, expected) in [
         (
             "turn_failed",
@@ -557,6 +586,20 @@ fn bot_reads_skip_stale_retry_causes_and_show_the_latest_remaining_incident() {
             "Global failure",
         ),
         ("turn_failed", Some("deleted"), None, "Global failure"),
+        ("turn_failed", Some("tombstoned"), None, "Global failure"),
+        (
+            "turn_failed",
+            Some("foreign-native"),
+            None,
+            "Global failure",
+        ),
+        (
+            "turn_failed",
+            Some("other-bot-native"),
+            None,
+            "Global failure",
+        ),
+        ("turn_failed", Some("hidden"), None, "Latest failure"),
         ("turn_failed", Some("other-bot"), None, "Global failure"),
         (
             "turn_failed",
