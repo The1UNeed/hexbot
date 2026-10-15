@@ -771,16 +771,20 @@ devices, and removes the invite and update methods.
 `hexbot.memory.user.changed {}`, `hexbot.network.changed {}`. Session-less,
 broadcast to every connection.
 Connect registration and disconnection emit `hexbot.connect.changed {}`.
-Room mutations emit `hexbot.rooms.changed {id}`. Every persisted room event
+Room mutations emit `hexbot.rooms.changed {id, deleted?}`. Room deletion,
+including last-member removal, sets `deleted: true` and then emits an
+owner-scoped, session-less `hexbot.bots.changed {}`. Every persisted room event
 emits `hexbot.rooms.event {room_id, event}`. Turn state changes emit
 `hexbot.rooms.turn {room_id, bot, live_session_id, status}`. Room events go
 to the owner.
 Dream triggers emit `hexbot.dreaming.changed {bot}`.
 Connector mutations emit `hexbot.connectors.changed {connector, bot?}` and
-`hexbot.bots.changed`. Opening or resolving an incident emits
+`hexbot.bots.changed`. Recording a runtime failure emits
 `hexbot.bots.incident {bot, section_id, room_id, session_id, incident: {id,
-kind, connector, text, created_at, resolved_at}}` followed by
-`hexbot.bots.changed {name}`.
+bot, section_id, room_id, session_id, kind, connector, text, created_at,
+resolved_at}}`. Room failures include their room ID in both the payload and
+incident. Bot reads return that ID in `status_detail.room_id` for attributable
+legacy room failures too. Resolving an incident does not emit an incident event.
 
 ## Pairing and auth over HTTP
 

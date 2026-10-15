@@ -206,6 +206,109 @@ fn incidents_deduplicate_truncate_unicode_and_resolve_only_matching_causes() {
 }
 
 #[test]
+fn incident_attribution_requires_a_unique_owned_stored_session_for_the_same_bot() {
+    let home = setup();
+    let conn = db::open(home.path()).unwrap();
+    // These mappings are independent fixtures, not outputs from the normalizer.
+    conn.execute_batch("INSERT INTO bots(name,owner_id) VALUES('sparrow','alice');
+        INSERT INTO rooms(id,name,owner_id) VALUES('one','One','alice'),('two','Two','alice'),('foreign','Foreign','bob');
+        INSERT INTO room_sessions(room_id,bot,stored_session_id,live_session_id) VALUES
+          ('one','owl','unique-stored','live-only'),
+          ('two','sparrow','other-bot','other-live'),
+          ('foreign','owl','foreign-stored','foreign-live');").unwrap();
+    for (kind, section, live, explicit, expected) in [
+        (
+            "turn_failed",
+            Some("unique-stored"),
+            Some("old-live"),
+            None,
+            Some("one"),
+        ),
+        ("turn_failed", Some("other-bot"), None, None, None),
+        ("turn_failed", Some("foreign-stored"), None, None, None),
+        (
+            "turn_failed",
+            Some("live-only"),
+            Some("live-only"),
+            None,
+            None,
+        ),
+        ("turn_failed", None, Some("unique-stored"), None, None),
+        ("connector_error", Some("unique-stored"), None, None, None),
+        (
+            "turn_failed",
+            Some("explicit-stored"),
+            None,
+            Some("two"),
+            Some("two"),
+        ),
+    ] {
+        let row = settings::record_incident(
+            home.path(),
+            "owl",
+            kind,
+            "Failure",
+            &json!({"section_id":section,"session_id":live,"room_id":explicit}),
+        )
+        .unwrap();
+        assert_eq!(row["room_id"], json!(expected), "{section:?}");
+        let saved: Option<String> = conn
+            .query_row(
+                "SELECT room_id FROM bot_incidents WHERE id=?",
+                [row["id"].as_str().unwrap()],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(saved.as_deref(), expected);
+    }
+    conn.execute("UPDATE room_sessions SET stored_session_id='unique-stored' WHERE room_id='foreign' AND bot='owl'", []).unwrap();
+    let owned = settings::record_incident(
+        home.path(),
+        "owl",
+        "turn_failed",
+        "Still owned",
+        &json!({"section_id":"unique-stored"}),
+    )
+    .unwrap();
+    assert_eq!(owned["room_id"], "one", "only owned mappings count");
+    conn.execute("INSERT INTO room_sessions(room_id,bot,stored_session_id) VALUES('two','owl','unique-stored')", []).unwrap();
+    // A legacy row must not pick either room when two owned mappings agree on
+    // the bot and stored ID. A foreign mapping alone also proves nothing.
+    conn.execute(
+        "DELETE FROM bot_incidents WHERE section_id='unique-stored'",
+        [],
+    )
+    .unwrap();
+    let ambiguous = settings::record_incident(
+        home.path(),
+        "owl",
+        "turn_failed",
+        "Ambiguous",
+        &json!({"section_id":"unique-stored"}),
+    )
+    .unwrap();
+    assert!(ambiguous["room_id"].is_null());
+}
+
+#[test]
+fn incident_dedup_keeps_named_rooms_and_global_failures_separate_without_sections() {
+    let home = setup();
+    let mut ids = Vec::new();
+    for room in [None, Some("one"), Some("two")] {
+        let context = json!({"room_id":room});
+        let first =
+            settings::record_incident(home.path(), "owl", "turn_failed", "Failure", &context)
+                .unwrap();
+        let repeated =
+            settings::record_incident(home.path(), "owl", "turn_failed", "Again", &context)
+                .unwrap();
+        assert_eq!(first["id"], repeated["id"]);
+        assert!(!ids.contains(&first["id"]));
+        ids.push(first["id"].clone());
+    }
+}
+
+#[test]
 fn native_usage_merges_legacy_and_counts_cached_input_without_cross_user_leaks() {
     let home = setup();
     usage(home.path());

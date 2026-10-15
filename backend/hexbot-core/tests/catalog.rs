@@ -1,4 +1,4 @@
-use hexbot_core::{catalog, db, memory::MemoryStore, runtime_store};
+use hexbot_core::{catalog, db, memory::MemoryStore, runtime_store, settings};
 use serde_json::{Value, json};
 use std::{fs, path::Path};
 fn setup() -> tempfile::TempDir {
@@ -535,6 +535,193 @@ fn incidents_take_precedence_and_clear_status_resolves_them() {
         json!({"name":"research-owl"}),
     );
     assert_eq!(cleared["bot"]["status"], "idle");
+}
+
+#[test]
+fn bot_reads_skip_stale_retry_causes_and_show_the_latest_remaining_incident() {
+    let home = setup();
+    let h = home.path();
+    let section = create(h)["section"]["id"].as_str().unwrap().to_owned();
+    let conn = db::open(h).unwrap();
+    conn.execute_batch("INSERT INTO bots(name,owner_id) VALUES('writer','alice');
+        INSERT INTO sections(id,bot,owner_id) VALUES('other-bot','writer','alice'),('foreign-section','research-owl','bob');
+        INSERT INTO rooms(id,name,owner_id,archived_at) VALUES('room','Room','alice',1),('foreign','Foreign','bob',NULL);
+        INSERT INTO room_sessions(room_id,bot,stored_session_id) VALUES('room','research-owl','stored'),('foreign','research-owl','foreign-stored'),('room','writer','wrong-bot-stored');
+        INSERT INTO bot_incidents(id,bot,kind,text,created_at) VALUES('older','research-owl','turn_failed','Global failure',1);").unwrap();
+    call(h, "alice", "hexbot.sections.archive", json!({"id":section}));
+    for (kind, stored, room, expected) in [
+        (
+            "turn_failed",
+            Some(section.as_str()),
+            None,
+            "Global failure",
+        ),
+        ("turn_failed", Some("deleted"), None, "Global failure"),
+        ("turn_failed", Some("other-bot"), None, "Global failure"),
+        (
+            "turn_failed",
+            Some("foreign-section"),
+            None,
+            "Global failure",
+        ),
+        (
+            "turn_failed",
+            Some("foreign-stored"),
+            None,
+            "Global failure",
+        ),
+        (
+            "turn_failed",
+            Some("wrong-bot-stored"),
+            None,
+            "Global failure",
+        ),
+        ("turn_failed", None, Some("deleted-room"), "Global failure"),
+        ("turn_failed", None, Some("foreign"), "Global failure"),
+        ("turn_failed", Some("stored"), None, "Latest failure"),
+        ("turn_failed", None, Some("room"), "Latest failure"),
+        ("turn_failed", None, None, "Latest failure"),
+        (
+            "connector_error",
+            Some("deleted"),
+            Some("deleted-room"),
+            "Latest failure",
+        ),
+    ] {
+        conn.execute("DELETE FROM bot_incidents WHERE id='latest'", [])
+            .unwrap();
+        conn.execute("INSERT INTO bot_incidents(id,bot,section_id,room_id,kind,connector,text,created_at) VALUES('latest','research-owl',?,?,?,'github','Latest failure',2)", rusqlite::params![stored, room, kind]).unwrap();
+        let get = call(
+            h,
+            "alice",
+            "hexbot.bots.get",
+            json!({"name":"research-owl"}),
+        );
+        let list = call(h, "alice", "hexbot.bots.list", json!({}));
+        for bot in [&get["bot"], &list["bots"][0]] {
+            assert_eq!(bot["status"], "stopped");
+            assert_eq!(
+                bot["status_detail"]["text"], expected,
+                "{stored:?} {room:?}"
+            );
+            if stored == Some("stored") {
+                assert_eq!(bot["status_detail"]["room_id"], "room");
+            }
+        }
+    }
+    assert_eq!(
+        conn.query_row(
+            "SELECT COUNT(*) FROM bot_incidents WHERE resolved_at IS NOT NULL",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        0
+    );
+    conn.execute_batch("DELETE FROM bot_incidents WHERE id='older'; UPDATE bot_incidents SET kind='turn_failed',room_id='deleted-room';").unwrap();
+    assert_eq!(
+        catalog::bot(h, "alice", "research-owl").unwrap()["status"],
+        "idle"
+    );
+}
+
+#[test]
+fn section_deletion_resolves_only_its_bots_private_retry() {
+    let home = setup();
+    let h = home.path();
+    let section = create(h)["section"]["id"].as_str().unwrap().to_owned();
+    let sibling = call(
+        h,
+        "alice",
+        "hexbot.sections.create",
+        json!({"bot":"research-owl"}),
+    )["section"]["id"]
+        .clone();
+    call(h, "bob", "hexbot.bots.create", json!({"name":"writer"}));
+    let conn = db::open(h).unwrap();
+    let mut incidents = Vec::new();
+    for (bot, kind, context) in [
+        ("research-owl", "turn_failed", json!({"section_id":section})),
+        ("research-owl", "turn_failed", json!({"section_id":sibling})),
+        ("research-owl", "turn_failed", json!({})),
+        (
+            "research-owl",
+            "turn_failed",
+            json!({"section_id":section,"room_id":"room"}),
+        ),
+        (
+            "research-owl",
+            "connector_error",
+            json!({"section_id":section,"connector":"github"}),
+        ),
+        ("writer", "turn_failed", json!({"section_id":section})),
+    ] {
+        incidents.push(settings::record_incident(h, bot, kind, "Failure", &context).unwrap());
+    }
+    conn.execute(
+        "UPDATE bot_incidents SET created_at=0 WHERE id=?",
+        [incidents[4]["id"].as_str().unwrap()],
+    )
+    .unwrap();
+    call(h, "alice", "hexbot.sections.delete", json!({"id":section}));
+    for (index, row) in incidents.iter().enumerate() {
+        let resolved: Option<f64> = conn
+            .query_row(
+                "SELECT resolved_at FROM bot_incidents WHERE id=?",
+                [row["id"].as_str().unwrap()],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(resolved.is_some(), index == 0, "{row}");
+    }
+    // Ignore failures from a section deleted by an older daemon without
+    // resolving its unrelated connector, global, room or sibling incidents.
+    conn.execute(
+        "UPDATE bot_incidents SET resolved_at=NULL WHERE id=?",
+        [incidents[0]["id"].as_str().unwrap()],
+    )
+    .unwrap();
+    let bot = catalog::bot(h, "alice", "research-owl").unwrap();
+    assert_eq!(bot["status"], "stopped");
+    assert_ne!(bot["status_detail"]["section_id"], json!(section));
+}
+
+#[test]
+fn section_deletion_preserves_owned_room_mappings_even_when_ambiguous() {
+    for mapping in ["unique", "ambiguous", "foreign", "other-bot"] {
+        let home = setup();
+        let h = home.path();
+        let section = create(h)["section"]["id"].as_str().unwrap().to_owned();
+        let conn = db::open(h).unwrap();
+        conn.execute_batch("INSERT INTO rooms(id,name,owner_id) VALUES('one','One','alice'),('two','Two','alice'),('foreign','Foreign','bob');").unwrap();
+        let (room, bot) = match mapping {
+            "foreign" => ("foreign", "research-owl"),
+            "other-bot" => ("one", "writer"),
+            _ => ("one", "research-owl"),
+        };
+        conn.execute(
+            "INSERT INTO room_sessions(room_id,bot,stored_session_id) VALUES(?,?,?)",
+            rusqlite::params![room, bot, section],
+        )
+        .unwrap();
+        if mapping == "ambiguous" {
+            conn.execute("INSERT INTO room_sessions(room_id,bot,stored_session_id) VALUES('two','research-owl',?)", [&section]).unwrap();
+        }
+        conn.execute("INSERT INTO bot_incidents(id,bot,section_id,kind,text,created_at) VALUES('legacy','research-owl',?,'turn_failed','Failure',1)", [&section]).unwrap();
+        call(h, "alice", "hexbot.sections.delete", json!({"id":section}));
+        let resolved: Option<f64> = conn
+            .query_row(
+                "SELECT resolved_at FROM bot_incidents WHERE id='legacy'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            resolved.is_none(),
+            matches!(mapping, "unique" | "ambiguous"),
+            "{mapping}"
+        );
+    }
 }
 
 #[test]

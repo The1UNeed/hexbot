@@ -1170,7 +1170,11 @@ pub fn remove_bot(home: &Path, owner: &str, room: &str, bot: &str) -> Result<Val
 /// Delete a room and its bots' room transcripts. Callers check ownership first.
 pub fn delete(home: &Path, room: &str) -> Result<Value> {
     purge_transcripts(home, room)?;
-    db::open(home)?.execute("DELETE FROM rooms WHERE id=?", [room])?;
+    let mut conn = db::open(home)?;
+    let tx = conn.transaction()?;
+    crate::settings::retire_room_incidents(&tx, room)?;
+    tx.execute("DELETE FROM rooms WHERE id=?", [room])?;
+    tx.commit()?;
     Ok(json!({"deleted":true}))
 }
 fn purge_transcripts(home: &Path, room: &str) -> Result<()> {

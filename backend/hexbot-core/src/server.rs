@@ -612,6 +612,10 @@ impl App {
             return;
         };
         self.events.emit(owner, None, &event, payload.clone());
+        if group == "rooms" && payload["deleted"] == true {
+            self.events
+                .emit(owner, None, "hexbot.bots.changed", json!({}));
+        }
         if group == "connectors" {
             self.events
                 .emit(owner, None, "hexbot.bots.changed", payload);
