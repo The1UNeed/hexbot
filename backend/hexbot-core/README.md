@@ -132,6 +132,24 @@ it also installs over SSH when nobody is signed in at the screen.
   and uploads or messages still on their way in prevent retirement; that
   includes the restart that moves a chat to new tools or a new model. Replay
   retention is bounded by session count and bytes.
+  Stop also blocks retirement and input admission through its cleanup and queue
+  recovery. Pi 1.0.1 retains queued user input on abort. After Stop, the old
+  operation and its preflights finish before `clear_queue` clears Pi's actual
+  queues. Its text metadata can omit identical queued messages; acknowledged
+  queued preflights and actual user projections determine what remains. Unknown
+  metadata or an omitted input without a queued preflight still fails closed.
+  The daemon resubmits the retained original envelopes in ledger order into
+  the same session, retaining prompt intents, images, file references and Chain.
+  Transport preflight dispositions share the ordered event stream so identical
+  owner and hidden input cannot exchange display intents. Original submission,
+  steering and replay acknowledgements wait for that ordered preflight dispatch.
+  A prompt that starts after the old Stop has ended owns a fresh operation;
+  recovery waits for its settlement instead of treating it as queued input.
+  Acceptance during an active Stop, or a replay overtaken by another Stop,
+  transfers cancellation ownership before the acknowledgement can finish.
+  Stop recovery keeps past context and frozen prompt/tool options. Client dialog
+  answers claim the event gate through the response enqueue; Stop rejects later
+  claims with 4204.
 - `profiles/<bot>/pi/` is the bot's Pi agent directory. The daemon rewrites
   `auth.json`, `models.json`, and the `compaction` key of `settings.json`
   atomically before every Pi start and whenever credentials change; other

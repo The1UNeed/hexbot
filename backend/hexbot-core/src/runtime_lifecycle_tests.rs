@@ -1,5 +1,8 @@
 use super::*;
 
+#[path = "runtime_stop_tests.rs"]
+mod stop_tests;
+
 fn setup() -> (common::TestHome, Arc<Runtime>, EventHub) {
     let home = common::TestHome::new();
     db::migrate(home.path()).unwrap();
@@ -32,8 +35,12 @@ fn setup() -> (common::TestHome, Arc<Runtime>, EventHub) {
             r#"#!/usr/bin/env node
 const fs=require('node:fs'),rl=require('node:readline').createInterface({{input:process.stdin}});
 const emit=v=>process.stdout.write(JSON.stringify(v)+'\n');
+let heldAborts=[];
 fs.appendFileSync({logfile},JSON.stringify({{pid:process.pid,args:process.argv.slice(2),environment:process.env,config:JSON.parse(fs.readFileSync(process.env.HEXBOT_SESSION_CONFIG))}})+'\n');
-rl.on('line',line=>{{const c=JSON.parse(line);if(c.type==='extension_ui_response'){{fs.appendFileSync({dialogs},JSON.stringify(c)+'\n');if(c.id.startsWith('probe:'))emit({{type:'extension_ui_request',method:'setStatus',statusText:JSON.stringify(c)}});return;}}emit({{type:'response',id:c.id,command:c.type,success:true,data:{{}}}});if(c.type==='prompt'){{emit({{type:'agent_start'}});emit({{type:'message_end',message:{{role:'user',content:c.message}}}});if(c.message!=='wait')emit({{type:'agent_settled'}});}}if(c.type==='abort')emit({{type:'agent_settled'}});}});
+rl.on('line',line=>{{const c=JSON.parse(line);
+if(c.type==='abort'&&fs.existsSync(__dirname+'/hold-abort')){{heldAborts.push(c);emit({{type:'extension_ui_request',method:'setStatus',statusText:'abort waiting'}});return;}}
+if(c.type==='release_abort'){{for(const abort of heldAborts)emit({{type:'response',id:abort.id,command:'abort',success:true,data:{{}}}});heldAborts=[];emit({{type:'agent_settled'}});}}
+if(c.type==='extension_ui_response'){{fs.appendFileSync({dialogs},JSON.stringify(c)+'\n');if(c.id.startsWith('probe:'))emit({{type:'extension_ui_request',method:'setStatus',statusText:JSON.stringify(c)}});return;}}emit({{type:'response',id:c.id,command:c.type,success:true,data:{{}}}});if(c.type==='prompt'){{emit({{type:'agent_start'}});emit({{type:'message_end',message:{{role:'user',content:c.message}}}});if(c.message!=='wait')emit({{type:'agent_settled'}});}}if(c.type==='abort')emit({{type:'agent_settled'}});}});
 "#
         ),
     )
@@ -275,6 +282,7 @@ async fn compaction_prompt_is_saved_only_when_adopted_and_preserves_other_option
 #[tokio::test]
 async fn interrupts_never_leave_a_prompt_adoption_unsaved_or_unanswered() {
     let (home, runtime, hub) = setup();
+    fs::write(home.path().join("hold-abort"), "").unwrap();
     open(&runtime).await;
     let s = runtime.sessions.lock().unwrap()["first"].clone();
     let original = processes(home.path())[0]["config"]["prompt"]
@@ -299,9 +307,17 @@ async fn interrupts_never_leave_a_prompt_adoption_unsaved_or_unanswered() {
     };
     let request = |id: &str, name: &str, args: Value| json!({"type":"extension_ui_request","id":id,"method":"input","title":format!("__HEXBOT_TOOL__{}",json!({"name":name,"args":args}))});
     let mut events = hub.subscribe();
-    // The turn was interrupted before the adoptions arrive, and is again
-    // while their replies are on their way.
-    runtime.interrupt_stored("alice", "first").await.unwrap();
+    // Keep Stop outstanding while the requests arrive. A completed idle abort
+    // can already have settled, so it cannot establish this cancellation window.
+    let start_stop = || {
+        let runtime = runtime.clone();
+        tokio::spawn(async move { runtime.interrupt_stored("alice", "first").await })
+    };
+    let first_stop = start_stop();
+    stop_tests::stop_event(&mut events, |event| {
+        event["type"] == "status.update" && event["payload"]["text"] == "abort waiting"
+    })
+    .await;
     runtime
         .event(&s, request("probe:late", "hexbot_todo_context", json!({})))
         .unwrap();
@@ -325,14 +341,18 @@ async fn interrupts_never_leave_a_prompt_adoption_unsaved_or_unanswered() {
         .unwrap();
     // Saved as the request arrives, before anything can be aborted.
     assert_eq!(saved(), next);
-    runtime.interrupt_stored("alice", "first").await.unwrap();
+    let second_stop = start_stop();
     let mut replies = HashMap::new();
+    let mut stopping_again = false;
     tokio::time::timeout(Duration::from_secs(5), async {
-        while replies.len() < 3 {
+        while replies.len() < 3 || !stopping_again {
             let event = events.recv().await.unwrap();
             let text = event.frame["params"]["payload"]["text"]
                 .as_str()
                 .unwrap_or("");
+            if text == "abort waiting" {
+                stopping_again = true;
+            }
             if let Ok(reply) = serde_json::from_str::<Value>(text) {
                 replies.insert(reply["id"].as_str().unwrap().to_owned(), reply);
             }
@@ -348,6 +368,20 @@ async fn interrupts_never_leave_a_prompt_adoption_unsaved_or_unanswered() {
     assert_eq!(answer("probe:refused")["error"], "prompt was not offered");
     assert_eq!(answer("probe:saved"), json!({"result":{"adopted":true}}));
     assert_eq!(saved(), next);
+    assert!(!first_stop.is_finished());
+    assert!(!second_stop.is_finished());
+    Runtime::command(&s, json!({"type":"release_abort"}))
+        .await
+        .unwrap();
+    for stop in [first_stop, second_stop] {
+        assert!(
+            tokio::time::timeout(Duration::from_secs(5), stop)
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap()
+        );
+    }
     runtime.shutdown().await;
 }
 #[tokio::test]
@@ -2105,11 +2139,18 @@ async fn reviewer_rechecks_pending_and_projected_owner_restrictions() {
     let script = home.path().join("pi.cjs");
     let source = fs::read_to_string(&script).unwrap().replace("const fs=require('node:fs')", r#"if(process.argv.includes('--no-session')){const emit=v=>process.stdout.write(JSON.stringify(v)+'\n');require('node:readline').createInterface({input:process.stdin}).on('line',line=>{const c=JSON.parse(line);emit({type:'response',id:c.id,command:c.type,success:true,data:{}});if(c.type!=='prompt')return;const socket=require('node:net').connect(Number(require('node:fs').readFileSync(__dirname+'/review-port','utf8')),'127.0.0.1',()=>socket.write('reviewing\n'));socket.once('data',()=>{emit({type:'message_end',message:{role:'assistant',content:[{type:'text',text:'{"decision":"allow","risk":"low"}'}],stopReason:'stop'}});emit({type:'agent_settled'});socket.end();});});return;}
 const fs=require('node:fs')"#);
+    // These owner inputs join a live run, as steering does in Pi. Keep the
+    // generic prompt fixture from settling while a synthetic review is pending.
+    let source = source.replace("if(c.type==='extension_ui_response')", "if(c.type==='steer'||(c.type==='prompt'&&c.streamingBehavior==='followUp')){emit({type:'response',id:c.id,command:c.type,success:true,data:{disposition:'queued'}});return;}if(c.type==='extension_ui_response')");
     fs::write(script, source).unwrap();
     let live = open(&runtime).await;
     let s = runtime.sessions.lock().unwrap()["first"].clone();
     let ask = |id| json!({"type":"extension_ui_request","id":id,"method":"select","title":format!("__HEXBOT_APPROVAL__{}", json!({"tool":"bash","command":"publish report","input":{"command":"publish report","full_access":true},"cwd":"/work","review":true})),"options":["once","session","deny"]});
     let mut events = hub.subscribe();
+    runtime
+        .submit(&s, "wait", false, false, None, None)
+        .await
+        .unwrap();
     runtime
         .call(
             "alice",

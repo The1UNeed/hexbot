@@ -24,6 +24,9 @@ data model. The native transport and event projection live in
 ## Core methods the client calls directly
 
 - Chat: `prompt.submit {session_id, text, attachments?}`, `session.interrupt`, `session.steer`.
+  `session.steer {session_id, text}` steers a healthy busy run. During Stop or
+  manual compaction it waits before staging input; when idle it starts a fresh
+  run. Close or process exit rejects a waiting steer with a session error.
 - History: `session.history {session_id}`, `session.events.since` on reconnect.
 - Attachments: `image.attach_bytes {session_id, content_base64, filename}`,
   `file.attach {session_id, data_url, name}`, `pdf.attach {session_id, content_base64}`.
@@ -69,6 +72,30 @@ data model. The native transport and event projection live in
   retains explicit GitHub-token authentication; unavailable stored login,
   configured arguments beyond `--acp`/`--stdio`, or incompatible isolation
   flags also produce a one-step card.
+  Stop cancels pending approvals, questions and Auto reviews. Approvals and
+  questions arriving while the turn is stopping are cancelled before Pi's abort
+  finishes, without publishing new cards. A client answer that Stop has already
+  claimed returns 4204. An answer committed to Pi before Stop can finish;
+  duplicate answers cannot commit again. Partial clarification answers remain
+  waiting, and a failed final enqueue leaves the last question retryable.
+  Queued input arriving during Stop waits until Stop finishes and the stopped
+  run or command completes, then starts or joins a fresh run. Input already
+  accepted into Pi's queue is recovered at that boundary too, before later
+  input is admitted. Pi's steering-before-follow-up order is preserved, with
+  each input's original display intent, images, file references and Chain.
+  Replay uses acknowledged intents and actual user projections, so identical
+  text remains distinct even when Pi omits it from returned queue metadata.
+  A delayed original submission that starts after Stop finishes runs once as
+  fresh work. Its acknowledgement records the new operation before recovery
+  or later input can proceed. An active Stop keeps cancellation ownership until
+  its cleanup finishes.
+  Recovery keeps the same Pi session, stored history, prompt and tools.
+  Idle Stop needs no run-settlement event. A new owner prompt or `/compact`
+  arriving while idle recovery finishes waits for the admission handoff; it
+  does not return 4002 just because the recovery worker has not run yet. An
+  active Stop, unfinished run, or input reserved ahead of it still returns 4002.
+  That run accepts tools, approvals and questions again.
+  If abort fails or times out, Pi exits and waiting deliveries report an error.
   Without OS isolation, shell commands require user approval even with
   `full_access`; review cannot replace
   it. An explicit Allow for now (`session`) can cover unreviewed requests when offered.

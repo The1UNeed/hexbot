@@ -739,6 +739,23 @@ test('escaped server values survive Pi resolution without commands or substituti
   }
 });
 
+test('tools recover when Stop stops cancelling the settings bridge', async t => {
+  const f = fixture(t, 'off', ['file', 'terminal'], {mcpServers:['fixture']});
+  await f.handlers.before_agent_start({}, f.ctx);
+  const input = f.ctx.ui.input;
+  let stopped = true;
+  f.ctx.ui.input = title => stopped && title.includes('hexbot_session_settings') ? undefined : input(title);
+  const calls = [
+    ['bash', {command:'pwd'}],
+    ...['read', 'write', 'edit', 'grep', 'find', 'ls'].map(name => [name, {path:f.home}]),
+    ['mcp__fixture__read', {}],
+    ['codemode', {code:'mcp__fixture__read({})'}],
+  ];
+  for (const [name, args] of calls) assert.equal((await f.gate(name, args))?.block, true, name);
+  stopped = false;
+  for (const [name, args] of calls) assert.equal(await f.gate(name, args), undefined, name);
+});
+
 test('connected tool approvals follow annotations and allow a whole server only when chosen', async t => {
   for (const mode of ['manual', 'smart', 'off']) {
     const f = fixture(t, mode, [], {mcpServers:['a__long-name','b']});

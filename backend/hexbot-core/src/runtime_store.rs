@@ -1158,8 +1158,8 @@ fn persist_pi_message(
         let body = text(&message["content"]);
         let intent: Option<(String, String)> = conn
             .query_row(
-                "SELECT id,display_kind FROM native_prompt_intents WHERE session_id=? AND text=? AND consumed_by IS NULL ORDER BY created_at,rowid LIMIT 1",
-                params![stored, body],
+                "SELECT id,display_kind FROM native_prompt_intents WHERE session_id=? AND consumed_by IS NULL AND (id=? OR (? IS NULL AND text=?)) ORDER BY created_at,rowid LIMIT 1",
+                params![stored, seed.and_then(|s| s["_input_intent"].as_str()), seed.and_then(|s| s["_input_intent"].as_str()), body],
                 |r| Ok((r.get(0)?, r.get(1)?)),
             )
             .optional()?;
@@ -1174,6 +1174,9 @@ fn persist_pi_message(
     let mut projected = projection(message, display.as_deref());
     if let (Some(projected), Some(seed)) = (&mut projected, seed.and_then(Value::as_object)) {
         for (key, value) in seed {
+            if key == "_input_intent" {
+                continue;
+            }
             projected[key] = value.clone();
         }
     }
