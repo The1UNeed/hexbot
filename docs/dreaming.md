@@ -21,6 +21,10 @@ The native scheduler and digest builder live in
   start wait for the next dream, so the time windows do not overlap. A first
   dream starts at the beginning of history; failed or interrupted dreams do not
   advance the lower cutoff.
+  An unreadable older database does not stop a dream whose conversations are
+  available in native history. If any conversation still needs that older
+  database, the dream fails and leaves its cutoff and proposals unchanged so
+  that history can be read after the database is repaired.
   It retains the newest 12,000 characters per conversation,
   caps the complete serialized digest at 60,000 bytes, and reports how many
   conversations it left out as `omitted_conversations`. Titles keep their
