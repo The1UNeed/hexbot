@@ -175,12 +175,13 @@ impl App {
             None
         };
         let mut affected_rooms = Vec::new();
+        let mut retirements = Vec::new();
         // Deletes are orchestrated here alone: one busy check, one close pass.
         if method == "hexbot.sections.delete" {
             let stored = common::required(p, "id")?;
             catalog::section(&self.home, owner, stored)?;
             // The catalog removes its row before its history.
-            self.runtime.retire_stored(owner, stored).await?;
+            retirements.push(self.runtime.retire_for_delete(owner, stored).await?);
         }
         if method == "hexbot.bots.delete" {
             let bot = common::required(p, "name")?;
@@ -211,10 +212,17 @@ impl App {
                     .stop_internal(room["id"].as_str().unwrap_or(""))
                     .await?;
             }
-            let sessions = catalog::prepare_bot_delete(&self.home, owner, bot)?;
+            let home = self.home.clone();
+            let caller = owner.to_owned();
+            let name = bot.to_owned();
+            let sessions = tokio::task::spawn_blocking(move || {
+                catalog::retire_bot_delete(&home, &caller, &name)
+            })
+            .await
+            .map_err(|error| Error::new(5200, format!("bot retirement failed: {error}")))??;
             let prepared: Result<()> = async {
                 for session in sessions {
-                    self.runtime.retire_stored(
+                    self.runtime.close_stored(
                         common::required(&session, "owner")?,
                         common::required(&session, "id")?,
                     ).await?;
@@ -258,11 +266,27 @@ impl App {
             )?;
             if deleting {
                 // Close before metadata cascades remove the only stored-id mapping.
+                let targets = rooms::delete_targets(&self.home, &db::open(&self.home)?, room)?;
                 self.rooms.stop_internal(room).await?;
-                for session in std::mem::take(&mut removed_sessions) {
-                    self.runtime
-                        .close_stored(owner, common::required(&session, "stored_session_id")?)
-                        .await?;
+                removed_sessions.clear();
+                let prepared: Result<()> = async {
+                    for target in targets {
+                        retirements.push(
+                            self.runtime
+                                .retire_for_room_delete(
+                                    common::required(&target, "owner")?,
+                                    common::required(&target, "id")?,
+                                    room,
+                                )
+                                .await?,
+                        );
+                    }
+                    Ok(())
+                }
+                .await;
+                if let Err(error) = prepared {
+                    self.runtime.rollback_retirements(retirements).await?;
+                    return Err(error);
                 }
             }
         }
@@ -380,6 +404,9 @@ impl App {
         };
         if result.is_err() && method == "hexbot.bots.delete" {
             catalog::rollback_bot_delete(&self.home, common::required(p, "name")?)?;
+        }
+        if result.is_err() && !retirements.is_empty() {
+            self.runtime.rollback_retirements(retirements).await?;
         }
         let mut result = result?;
         // Opening a room restores its open approval and question cards.
