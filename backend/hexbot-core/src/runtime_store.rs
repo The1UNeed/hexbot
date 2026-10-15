@@ -349,12 +349,19 @@ pub(crate) fn with_section_delete(
         let retirement = claim_retirement(&tx, targets)?;
         let mut previous = Vec::new();
         for target in &retirement.targets {
-            let pending: bool = tx.query_row(
-                "SELECT EXISTS(SELECT 1 FROM native_delete_pending WHERE session_id=?)",
-                [target],
-                |r| r.get(0),
-            )?;
-            if !pending {
+            let pending = tx
+                .query_row(
+                    "SELECT root_id,cataloged FROM native_delete_pending WHERE session_id=?",
+                    [target],
+                    |r| Ok((r.get::<_, String>(0)?, r.get::<_, bool>(1)?)),
+                )
+                .optional()?;
+            let Some((root, cataloged)) = pending else {
+                continue;
+            };
+            // A prior catalog commit remains terminal even if finalizing its
+            // markers failed. Never change that deletion's options/provenance.
+            if cataloged && !listed.contains(&root) {
                 continue;
             }
             previous.push((
@@ -371,7 +378,19 @@ pub(crate) fn with_section_delete(
                     },
                 )
                 .optional()?,
+                root,
+                cataloged,
             ));
+            // This request can commit a cataloged child independently of a
+            // still-retiring parent. Persist its own recovery root *before*
+            // catalog COMMIT, so a crash or final-marker fault cannot let the
+            // parent's later rollback reopen the committed child/subtree.
+            if listed.contains(stored) {
+                tx.execute(
+                    "UPDATE native_delete_pending SET root_id=?,cataloged=1 WHERE session_id=?",
+                    params![stored, target],
+                )?;
+            }
             tx.execute("INSERT INTO native_delete_options VALUES(?,?,?,?) ON CONFLICT(session_id) DO UPDATE SET purge=excluded.purge", params![target,bot,owner,purge])?;
         }
         tx.commit()?;
@@ -380,7 +399,11 @@ pub(crate) fn with_section_delete(
             // Restore only provisional options changed above, then release this
             // attempt. Runtime retirement has its own independent claim.
             let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-            for (target, options) in previous {
+            for (target, options, root, cataloged) in previous {
+                tx.execute(
+                    "UPDATE native_delete_pending SET root_id=?,cataloged=? WHERE session_id=?",
+                    params![root, cataloged, target],
+                )?;
                 if let Some((bot, owner, purge)) = options {
                     tx.execute(
                         "UPDATE native_delete_options SET bot=?,owner=?,purge=? WHERE session_id=?",
@@ -520,7 +543,14 @@ fn purge(home: &Path, stored: &str, retry_completed: bool) -> Result<()> {
             )
             .optional()?
         {
-            crate::catalog::purge_legacy_history(home, &bot, stored)?;
+            let protected = if retry_completed {
+                HashSet::new()
+            } else {
+                conn.prepare("SELECT session_id FROM native_delete_completed")?
+                    .query_map([], |r| r.get(0))?
+                    .collect::<rusqlite::Result<HashSet<String>>>()?
+            };
+            crate::catalog::purge_legacy_history(home, &bot, stored, &protected)?;
         }
         // Older ownerless tombstones cannot identify a legacy database. Keep
         // that compatibility behavior while completing the native cleanup.
@@ -608,7 +638,7 @@ pub fn fresh(home: &Path, stored: &str) -> Result<bool> {
         |r| r.get(0),
     )?)
 }
-/// Recover provisional markers by their original root, without unmarking an
+/// Recover provisional markers by their catalog operation, without unmarking an
 /// earlier committed descendant. Once the catalog root is gone, cleanup is
 /// destructive and must stay retryable even if files or legacy storage fail.
 pub fn finish_deletes(home: &Path) -> Result<()> {

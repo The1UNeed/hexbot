@@ -1831,9 +1831,9 @@ impl Runtime {
     async fn close_one(&self, owner: &str, stored: &str) -> Result<bool> {
         let lock = self.open_lock(stored);
         let _guard = lock.lock().await;
-        let alias: Option<(String, String)> = store::open(&self.home)?
+        let alias: Option<(String, Option<String>)> = store::open(&self.home)?
             .query_row(
-                "SELECT s.owner,l.live_id FROM native_live_sessions l JOIN native_sessions s ON s.stored_id=l.stored_id WHERE l.stored_id=?",
+                "SELECT s.owner,l.live_id FROM native_sessions s LEFT JOIN native_live_sessions l ON l.stored_id=s.stored_id WHERE s.stored_id=?",
                 [stored],
                 |r| Ok((r.get(0)?, r.get(1)?)),
             )
@@ -1896,7 +1896,10 @@ impl Runtime {
             )?;
             return Ok(true);
         }
-        if let Some((_, live_id)) = alias {
+        // Native tools can exist before a Pi process opens, or after it retires.
+        // Cancel and clean those sessions even without an in-memory Pi session.
+        crate::native_tools::close_session(&self.home, stored).await;
+        if let Some((_, Some(live_id))) = alias {
             self.events.forget(owner, &live_id);
             db::open(&self.home)?.execute(
                 "UPDATE sections SET last_live_session_id=NULL WHERE id=? AND last_live_session_id=?",

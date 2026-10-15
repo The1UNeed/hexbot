@@ -8,7 +8,7 @@ use base64::{Engine, engine::general_purpose::STANDARD};
 use rusqlite::{Connection, OpenFlags, OptionalExtension, TransactionBehavior, params};
 use serde_json::{Value, json};
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeSet, HashSet},
     fs,
     path::{Path, PathBuf},
 };
@@ -112,7 +112,7 @@ fn section_row(home: &Path, caller: &str, id: &str) -> Result<Value> {
     owner(home, caller, row["owner_id"].as_str().unwrap_or(""))?;
     Ok(row)
 }
-fn legacy_ids(conn: &Connection, id: &str) -> Result<Vec<String>> {
+fn legacy_ids(conn: &Connection, id: &str, protected: &HashSet<String>) -> Result<Vec<String>> {
     let columns = rows(conn, "PRAGMA table_info(sessions)", &[])?;
     let has = |key: &str| columns.iter().any(|c| c["name"] == key);
     let predicate = if has("session_key") {
@@ -120,15 +120,28 @@ fn legacy_ids(conn: &Connection, id: &str) -> Result<Vec<String>> {
     } else {
         "id=?1"
     };
+    let fields = if has("session_key") {
+        "id,session_key"
+    } else {
+        "id"
+    };
     let query = if has("parent_session_id") {
         format!(
-            "WITH RECURSIVE chain(id) AS (SELECT id FROM sessions WHERE {predicate} UNION SELECT s.id FROM sessions s JOIN chain c ON s.parent_session_id=c.id) SELECT id FROM chain"
+            "WITH RECURSIVE chain(id) AS (SELECT id FROM sessions WHERE {predicate} UNION SELECT s.id FROM sessions s JOIN chain c ON s.parent_session_id=c.id) SELECT {fields} FROM sessions WHERE id IN (SELECT id FROM chain)"
         )
     } else {
-        format!("SELECT id FROM sessions WHERE {predicate}")
+        format!("SELECT {fields} FROM sessions WHERE {predicate}")
     };
+    // Traverse protected nodes too: an unfinished legacy-only descendant still
+    // needs cleanup. Both legacy IDs and catalog session-key aliases identify
+    // completed targets whose replacement artifacts bulk cleanup must preserve.
     Ok(rows(conn, &query, &[&id])?
         .into_iter()
+        .filter(|r| {
+            !["id", "session_key"]
+                .iter()
+                .any(|key| r[key].as_str().is_some_and(|id| protected.contains(id)))
+        })
         .filter_map(|r| r["id"].as_str().map(str::to_owned))
         .collect())
 }
@@ -1562,14 +1575,19 @@ fn delete_section(home: &Path, caller: &str, id: &str, purge: bool) -> Result<Op
 }
 
 /// Retryable after the catalog row and native session metadata have gone.
-pub(crate) fn purge_legacy_history(home: &Path, bot: &str, id: &str) -> Result<()> {
+pub(crate) fn purge_legacy_history(
+    home: &Path,
+    bot: &str,
+    id: &str,
+    protected: &HashSet<String>,
+) -> Result<()> {
     let path = profile(home, bot)?.join("state.db");
     safe(home, &path)?;
     if path.try_exists()? {
         let mut conn = Connection::open(path)?;
         conn.busy_timeout(std::time::Duration::from_secs(10))?;
         let tx = conn.transaction()?;
-        for key in legacy_ids(&tx, id)? {
+        for key in legacy_ids(&tx, id, protected)? {
             tx.execute("DELETE FROM messages WHERE session_id=?", [&key])?;
             tx.execute("DELETE FROM sessions WHERE id=?", [&key])?;
         }

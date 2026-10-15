@@ -1615,3 +1615,402 @@ fn migration_failures_preserve_retention_and_skip_unreadable_canonical_chats() {
         }
     }
 }
+
+#[test]
+fn retained_nested_delete_survives_failed_parent_and_restart() {
+    check_committed_nested_delete(false);
+}
+#[test]
+fn purged_nested_delete_survives_failed_parent_and_restart() {
+    check_committed_nested_delete(true);
+}
+fn check_committed_nested_delete(purge: bool) {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    for marker_fault in [false, true] {
+        let home = tempfile::tempdir().unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        let h = home.path();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let pi = h.join("pi.cjs");
+        fs::write(&pi, format!(r#"#!/usr/bin/env node
+const net = require('node:net');
+const rl = require('node:readline').createInterface({{input: process.stdin}});
+rl.on('line', line => {{
+  const c = JSON.parse(line);
+  if (c.type !== 'extension_ui_response') process.stdout.write(JSON.stringify({{type:'response',id:c.id,command:c.type,success:true,data:{{}}}})+'\n');
+}});
+process.on('SIGTERM', () => {{
+  const s = net.connect({port}, '127.0.0.1', () => s.write('stopping\n'));
+  s.on('data', () => process.exit(0));
+}});
+"#)).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&pi, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let app = App::new(h.into(), "127.0.0.1:0".parse().unwrap(), pi.clone(), None).unwrap();
+        let made = catalog::call(
+            h,
+            "local",
+            "hexbot.bots.create",
+            &json!({"name":"owl","description":"Fixture"}),
+        )
+        .unwrap()
+        .unwrap();
+        let root = made["section"]["id"].as_str().unwrap().to_owned();
+        fs::write(h.join("profiles/owl/config.yaml"), "model:\n  provider: openai\n  default: fixture\ntools:\n  enabled_toolsets: [todo, skills]\n").unwrap();
+        db::open(h)
+            .unwrap()
+            .execute(
+                "INSERT OR REPLACE INTO settings VALUES('workspace_dir',?)",
+                [json!(workspace.path()).to_string()],
+            )
+            .unwrap();
+        run(async {
+            let listener = tokio::net::TcpListener::from_std(listener).unwrap();
+            app.call("local", "hexbot.sections.open", &json!({"id":root}))
+                .await
+                .unwrap();
+            let catalog_db = db::open(h).unwrap();
+            catalog_db
+                .execute(
+                    "INSERT INTO sections(id,bot,owner_id) VALUES('child','owl','local')",
+                    [],
+                )
+                .unwrap();
+            // Fail at COMMIT after the parent's DELETE has succeeded.
+            catalog_db.execute_batch("CREATE TABLE parent_commit_fault(section_id TEXT REFERENCES sections(id) DEFERRABLE INITIALLY DEFERRED)").unwrap();
+            catalog_db
+                .execute("INSERT INTO parent_commit_fault VALUES(?)", [&root])
+                .unwrap();
+            let native = runtime_store::open(h).unwrap();
+            for (stored, parent) in [("child", root.as_str()), ("grandchild", "child")] {
+                native.execute("INSERT INTO native_sessions VALUES(?,'local','owl','frozen',?)", rusqlite::params![stored, json!({"parent_session":parent,"cwd":workspace.path(),"skill_catalog":["keep"]}).to_string()]).unwrap();
+                runtime_store::append(h, stored, json!({"role":"user","text":"original"})).unwrap();
+                fs::write(
+                    runtime_store::session_dir(h, stored)
+                        .unwrap()
+                        .join("retained"),
+                    "original",
+                )
+                .unwrap();
+            }
+            if marker_fault {
+                native.execute_batch("CREATE TRIGGER fail_child_finalize BEFORE DELETE ON native_delete_pending WHEN OLD.session_id='child' BEGIN SELECT RAISE(ABORT,'child final marker fault'); END").unwrap();
+            }
+            let parent_app = app.clone();
+            let parent_root = root.clone();
+            let parent = tokio::spawn(async move {
+                parent_app
+                    .call(
+                        "local",
+                        "hexbot.sections.delete",
+                        &json!({"id":parent_root,"purge_memory":false}),
+                    )
+                    .await
+            });
+            let (mut stopped, _) =
+                tokio::time::timeout(std::time::Duration::from_secs(5), listener.accept())
+                    .await
+                    .unwrap()
+                    .unwrap();
+            let mut signal = [0; 9];
+            stopped.read_exact(&mut signal).await.unwrap();
+            assert_eq!(&signal, b"stopping\n");
+            let child = app
+                .call(
+                    "local",
+                    "hexbot.sections.delete",
+                    &json!({"id":"child","purge_memory":purge}),
+                )
+                .await
+                .unwrap();
+            assert_eq!(child["deleted"], true);
+            assert_eq!(child.get("history_pending").is_some(), marker_fault);
+            assert!(!parent.is_finished(), "lost the real shutdown barrier");
+            if marker_fault {
+                native
+                    .execute_batch("DROP TRIGGER fail_child_finalize")
+                    .unwrap();
+            }
+            stopped.write_all(b"release\n").await.unwrap();
+            assert!(parent.await.unwrap().is_err());
+            assert!(catalog::section(h, "local", &root).is_ok());
+            assert!(catalog::section(h, "local", "child").is_err());
+            assert_eq!(
+                runtime_store::append(h, "child", json!({"role":"user","text":"late"}))
+                    .unwrap_err()
+                    .code,
+                4001
+            );
+            app.shutdown().await;
+        });
+        drop(app);
+        // Actual App startup runs provisional rollback and purge recovery.
+        let app = App::new(h.into(), "127.0.0.1:0".parse().unwrap(), pi, None).unwrap();
+        let skill = h.join("profiles/owl/skills/plan/SKILL.md");
+        fs::create_dir_all(skill.parent().unwrap()).unwrap();
+        let original = "---\nname: plan\ndescription: Use for planning.\n---\nOriginal skill.\n";
+        fs::write(&skill, original).unwrap();
+        for stored in ["child", "grandchild"] {
+            for (tool, args) in [
+                (
+                    "todo_list",
+                    json!({"todos":[{"id":"late","content":"after delete","status":"pending"}]}),
+                ),
+                (
+                    "skill_manage",
+                    json!({"operations":[{"name":"plan","action":"patch","old_string":"Original skill.","new_string":"Written after deletion."}]}),
+                ),
+            ] {
+                assert_eq!(
+                    run(product::call(h, "local", "owl", stored, tool, &args))
+                        .unwrap()
+                        .unwrap_err()
+                        .code,
+                    4001,
+                    "purge={purge}, marker_fault={marker_fault}, {stored}, {tool}"
+                );
+            }
+            assert_eq!(
+                runtime_store::append(h, stored, json!({"role":"user","text":"late"}))
+                    .unwrap_err()
+                    .code,
+                4001
+            );
+            assert_eq!(
+                runtime_store::history(h, stored).unwrap().len(),
+                usize::from(!purge)
+            );
+            let native = runtime_store::open(h).unwrap();
+            let policy: (String, String, bool) = native
+                .query_row(
+                    "SELECT bot,owner,purge FROM native_delete_options WHERE session_id=?",
+                    [stored],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                )
+                .unwrap();
+            assert_eq!(policy, ("owl".into(), "local".into(), purge));
+            assert_eq!(
+                native
+                    .query_row(
+                        "SELECT EXISTS(SELECT 1 FROM native_delete_completed WHERE session_id=?)",
+                        [stored],
+                        |r| r.get::<_, bool>(0)
+                    )
+                    .unwrap(),
+                purge
+            );
+            if !purge {
+                let (prompt, options): (String, String) = native
+                    .query_row(
+                        "SELECT prompt,options FROM native_sessions WHERE stored_id=?",
+                        [stored],
+                        |r| Ok((r.get(0)?, r.get(1)?)),
+                    )
+                    .unwrap();
+                assert_eq!(prompt, "frozen");
+                assert_eq!(
+                    serde_json::from_str::<Value>(&options).unwrap()["skill_catalog"],
+                    json!(["keep"])
+                );
+            }
+            assert_eq!(
+                h.join("runtime/sessions")
+                    .join(stored)
+                    .join("retained")
+                    .exists(),
+                !purge
+            );
+        }
+        assert_eq!(fs::read_to_string(skill).unwrap(), original);
+        assert!(runtime_store::session_dir(h, &root).is_ok());
+        run(app.shutdown());
+    }
+}
+
+#[test]
+fn failed_nested_catalog_commit_restores_provisional_provenance() {
+    let mut fixture = Fixture::new();
+    let h = fixture.home.path();
+    let catalog_db = db::open(h).unwrap();
+    catalog_db
+        .execute(
+            "INSERT INTO sections(id,bot,owner_id) VALUES(?,'owl','local')",
+            [&fixture.child],
+        )
+        .unwrap();
+    run(fixture.app.runtime.retire_stored("local", &fixture.id)).unwrap();
+    let native = runtime_store::open(h).unwrap();
+    let before = hexbot_core::common::rows(
+        &native,
+        "SELECT * FROM native_delete_pending ORDER BY session_id",
+        &[],
+    )
+    .unwrap();
+    let options = policies(h);
+    catalog_db.execute_batch("CREATE TABLE child_commit_fault(section_id TEXT REFERENCES sections(id) DEFERRABLE INITIALLY DEFERRED)").unwrap();
+    catalog_db
+        .execute("INSERT INTO child_commit_fault VALUES(?)", [&fixture.child])
+        .unwrap();
+    assert!(
+        catalog::call(
+            h,
+            "local",
+            "hexbot.sections.delete",
+            &json!({"id":fixture.child,"purge_memory":false})
+        )
+        .unwrap()
+        .is_err()
+    );
+    assert_eq!(
+        hexbot_core::common::rows(
+            &native,
+            "SELECT * FROM native_delete_pending ORDER BY session_id",
+            &[]
+        )
+        .unwrap(),
+        before
+    );
+    assert_eq!(policies(h), options);
+    fixture.restart();
+    for stored in [&fixture.id, &fixture.child] {
+        assert!(runtime_store::session_dir(fixture.home.path(), stored).is_ok());
+        runtime_store::append(
+            fixture.home.path(),
+            stored,
+            json!({"role":"user","text":"still live"}),
+        )
+        .unwrap();
+    }
+    run(fixture.app.shutdown());
+}
+
+#[test]
+fn legacy_recursion_skips_completed_aliases_and_visits_unfinished_descendants() {
+    for alias in [false, true] {
+        check_completed_legacy_descendant(alias);
+    }
+}
+fn check_completed_legacy_descendant(alias: bool) {
+    let mut fixture = Fixture::new();
+    let legacy_child = if alias {
+        "legacy-child".to_owned()
+    } else {
+        fixture.child.clone()
+    };
+    let session_key = alias.then_some(fixture.child.clone());
+    let path = fixture.home.path().to_owned();
+    let h = path.as_path();
+    let legacy = rusqlite::Connection::open(h.join("profiles/owl/state.db")).unwrap();
+    legacy.execute_batch("ALTER TABLE sessions ADD COLUMN parent_session_id TEXT; ALTER TABLE sessions ADD COLUMN session_key TEXT").unwrap();
+    legacy
+        .execute(
+            "INSERT INTO sessions VALUES(?,?,?)",
+            rusqlite::params![legacy_child, fixture.id, session_key],
+        )
+        .unwrap();
+    legacy
+        .execute(
+            "INSERT INTO messages VALUES(2,?,'user','original')",
+            [&legacy_child],
+        )
+        .unwrap();
+    let native = runtime_store::open(h).unwrap();
+    native.execute_batch(&format!("CREATE TRIGGER fail_parent_cleanup BEFORE DELETE ON native_sessions WHEN OLD.stored_id='{}' BEGIN SELECT RAISE(ABORT,'parent cleanup fault'); END", fixture.id)).unwrap();
+    assert_eq!(
+        fixture.dispatch_delete("local", Some(true)).unwrap(),
+        json!({"deleted":true,"history_pending":true})
+    );
+    assert!(fixture.completed(&fixture.child));
+    legacy
+        .execute(
+            "INSERT INTO sessions VALUES(?,?,?)",
+            rusqlite::params![legacy_child, fixture.id, session_key],
+        )
+        .unwrap();
+    legacy
+        .execute(
+            "INSERT INTO messages VALUES(2,?,'user','replacement')",
+            [&legacy_child],
+        )
+        .unwrap();
+    legacy
+        .execute(
+            "INSERT INTO sessions VALUES('unfinished-leaf',?,NULL)",
+            [&legacy_child],
+        )
+        .unwrap();
+    legacy.execute_batch(&format!("INSERT INTO messages VALUES(3,'unfinished-leaf','user','unfinished'); CREATE TABLE repeated_cleanup(id TEXT); CREATE TRIGGER observe_repeat BEFORE DELETE ON sessions WHEN OLD.id='{legacy_child}' BEGIN INSERT INTO repeated_cleanup VALUES(OLD.id); END")).unwrap();
+    native
+        .execute_batch("DROP TRIGGER fail_parent_cleanup")
+        .unwrap();
+    fixture.restart();
+    assert!(fixture.completed(&fixture.id));
+    assert!(fixture.completed(&fixture.child));
+    assert_eq!(
+        legacy
+            .query_row("SELECT count(*) FROM repeated_cleanup", [], |r| r
+                .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        legacy
+            .query_row(
+                "SELECT count(*) FROM messages WHERE session_id=?",
+                [&legacy_child],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        legacy
+            .query_row(
+                "SELECT count(*) FROM messages WHERE session_id='unfinished-leaf'",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+        0
+    );
+    // Bot bulk cleanup must not revisit completed targets either.
+    run(fixture
+        .app
+        .call("local", "hexbot.bots.delete", &json!({"name":"owl"})))
+    .unwrap();
+    assert_eq!(
+        legacy
+            .query_row("SELECT count(*) FROM repeated_cleanup", [], |r| r
+                .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+    // Explicit storage retry still removes replaced legacy artifacts. Restore
+    // the profile that bot deletion removed, then use the completed child's ID.
+    fs::create_dir_all(h.join("profiles/owl")).unwrap();
+    drop(legacy);
+    let legacy = rusqlite::Connection::open(h.join("profiles/owl/state.db")).unwrap();
+    legacy.execute_batch("CREATE TABLE sessions(id TEXT PRIMARY KEY,parent_session_id TEXT,session_key TEXT); CREATE TABLE messages(session_id TEXT)").unwrap();
+    legacy
+        .execute(
+            "INSERT INTO sessions VALUES(?,NULL,?)",
+            rusqlite::params![legacy_child, session_key],
+        )
+        .unwrap();
+    legacy
+        .execute("INSERT INTO messages VALUES(?)", [&legacy_child])
+        .unwrap();
+    runtime_store::delete(h, &fixture.child).unwrap();
+    assert_eq!(
+        legacy
+            .query_row("SELECT count(*) FROM messages", [], |r| r.get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+    run(fixture.app.shutdown());
+}
