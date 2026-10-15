@@ -359,7 +359,7 @@ pub fn record_incident(
         return Err(Error::new(4202, "invalid incident kind"));
     }
     let mut conn = db::open(home)?;
-    let tx = conn.transaction()?;
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
     let connector = context["connector"].as_str();
     let section = context["section_id"].as_str();
     let mut attribution =

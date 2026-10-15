@@ -2,6 +2,122 @@ use hexbot_core::{db, settings};
 use serde_json::json;
 use std::fs;
 
+// Interleave an unrelated committed write after the incident's attribution and
+// dedup reads, immediately before its first write. No scheduler timing needed.
+mod incident_write_contention {
+    use rusqlite::{Connection, ErrorCode, ffi};
+    use std::{
+        cell::RefCell,
+        ffi::{CStr, c_char, c_int, c_uint, c_void},
+        sync::Once,
+        time::Duration,
+    };
+
+    thread_local! {
+        static WRITER: RefCell<Option<Connection>> = const { RefCell::new(None) };
+        static RESULT: RefCell<Option<rusqlite::Result<usize>>> = const { RefCell::new(None) };
+    }
+
+    unsafe extern "C" fn install(
+        db: *mut ffi::sqlite3,
+        _: *mut *mut c_char,
+        _: *const ffi::sqlite3_api_routines,
+    ) -> c_int {
+        unsafe {
+            ffi::sqlite3_trace_v2(
+                db,
+                ffi::SQLITE_TRACE_STMT,
+                Some(trace),
+                std::ptr::null_mut(),
+            )
+        }
+    }
+
+    unsafe extern "C" fn trace(
+        _: c_uint,
+        _: *mut c_void,
+        statement: *mut c_void,
+        _: *mut c_void,
+    ) -> c_int {
+        let sql = unsafe { ffi::sqlite3_sql(statement.cast()) };
+        if !sql.is_null() {
+            let sql = unsafe { CStr::from_ptr(sql) }.to_bytes();
+            if sql.starts_with(b"INSERT INTO bot_incidents")
+                || sql.starts_with(b"UPDATE bot_incidents SET text=")
+            {
+                // Take the connection before executing, since it is traced too.
+                if let Some(writer) = WRITER.with_borrow_mut(Option::take) {
+                    RESULT.with_borrow_mut(|result| {
+                        *result = Some(writer.execute(
+                            "UPDATE settings SET value='true' WHERE key='lan_enabled'",
+                            [],
+                        ))
+                    });
+                }
+            }
+        }
+        0
+    }
+
+    #[test]
+    fn incident_insert_and_dedup_reserve_the_write_before_reading() {
+        static REGISTER: Once = Once::new();
+        REGISTER.call_once(|| {
+            assert_eq!(
+                unsafe { ffi::sqlite3_auto_extension(Some(install)) },
+                ffi::SQLITE_OK,
+            )
+        });
+        let home = super::setup();
+        let writer = super::db::open(home.path()).unwrap();
+        writer
+            .execute(
+                "INSERT INTO settings(key,value) VALUES('lan_enabled','false')",
+                [],
+            )
+            .unwrap();
+        drop(writer);
+        let mut incident_id = None;
+        for text in ["First failure", "Repeated failure"] {
+            let writer = super::db::open(home.path()).unwrap();
+            writer.busy_timeout(Duration::ZERO).unwrap();
+            WRITER.with_borrow_mut(|slot| *slot = Some(writer));
+            let incident = super::settings::record_incident(
+                home.path(),
+                "owl",
+                "turn_failed",
+                text,
+                &super::json!({"section_id":"a"}),
+            );
+            WRITER.with_borrow_mut(|slot| *slot = None);
+            let competed = RESULT
+                .with_borrow_mut(Option::take)
+                .expect("competing write attempted");
+            let incident = incident.expect("incident survives the competing write");
+            assert_eq!(
+                competed.unwrap_err().sqlite_error_code(),
+                Some(ErrorCode::DatabaseBusy)
+            );
+            assert_eq!(incident["text"], text);
+            if let Some(id) = &incident_id {
+                assert_eq!(&incident["id"], id);
+            }
+            incident_id = Some(incident["id"].clone());
+        }
+        assert_eq!(
+            super::db::open(home.path())
+                .unwrap()
+                .query_row(
+                    "SELECT COUNT(*) FROM bot_incidents WHERE resolved_at IS NULL",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            1
+        );
+    }
+}
+
 fn setup() -> tempfile::TempDir {
     let home = tempfile::tempdir().unwrap();
     db::migrate(home.path()).unwrap();
