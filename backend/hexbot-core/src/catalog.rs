@@ -3759,6 +3759,11 @@ mod parity_tests {
             for title in ["Dreams", "Night notes"] {
                 let home = tempfile::tempdir().unwrap();
                 legacy_log(home.path(), title, true, true);
+                // The ordinary conversation is fully native, beside a log
+                // whose legacy import may still be unfinished.
+                let workspace = tempfile::tempdir().unwrap();
+                runtime_store::import_hermes(home.path(), "owl", "ordinary", workspace.path())
+                    .unwrap();
                 let conn = db::open(home.path()).unwrap();
                 conn.execute_batch("INSERT INTO dreams(id,bot,started_at,status,summary) VALUES('later','owl',20,'complete','Later report'); UPDATE sections SET updated_at=20.001 WHERE id='log';").unwrap();
                 Connection::open(profile(home.path(), "owl").unwrap().join("state.db")).unwrap().execute_batch("INSERT INTO messages(id,session_id,role,content,timestamp) VALUES(4,'log','assistant','Later report',20);").unwrap();
@@ -4020,9 +4025,17 @@ mod parity_tests {
             for mixed in [false, true] {
                 let home = tempfile::tempdir().unwrap();
                 legacy_log(home.path(), "Initial notes", false, true);
+                let workspace = tempfile::tempdir().unwrap();
+                runtime_store::import_hermes(home.path(), "owl", "ordinary", workspace.path())
+                    .unwrap();
                 one_chat_per_bot(home.path()).unwrap();
                 assert_eq!(ids_of(home.path(), "owl"), ["ordinary"]);
                 db::open(home.path()).unwrap().execute("INSERT INTO sections(id,bot,owner_id,title,updated_at) VALUES('later-log','owl','alice',?,20.001)", [title]).unwrap();
+                // This log is native-only. Its first open completes the import
+                // before the human reply below; the older log stays legacy.
+                let workspace = tempfile::tempdir().unwrap();
+                runtime_store::import_hermes(home.path(), "owl", "later-log", workspace.path())
+                    .unwrap();
                 said(
                     home.path(),
                     "later-log",

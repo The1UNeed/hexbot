@@ -308,6 +308,131 @@ fn consume_proposals(home: &Path, bot: &str, dream: &str, ids: &[&str]) -> Resul
     Ok(())
 }
 
+// Pi emits message_end before its durable append. Check the log against the
+// journal without reconciling a possibly live file, rewriting it, or billing.
+// A recovery flag or an import file alone cannot vouch for later projections.
+fn native_log_ready(home: &Path, stored: &str, since: f64) -> Result<bool> {
+    common::identifier(stored)?;
+    let path = home
+        .join("runtime/sessions")
+        .join(stored)
+        .join("conversation.jsonl");
+    let metadata = match fs::metadata(&path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error.into()),
+    };
+    // Use the same whole-second margin as compaction_summaries for idle files.
+    if metadata
+        .modified()
+        .ok()
+        .and_then(|at| at.duration_since(std::time::UNIX_EPOCH).ok())
+        .is_some_and(|at| at.as_secs_f64() < since - 1.0)
+    {
+        return Ok(true);
+    }
+    let bytes = match fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error.into()),
+    };
+    let mut recorded = HashMap::<String, usize>::new();
+    for row in common::rows(
+        &runtime_store::open(home)?,
+        "SELECT p.raw_json FROM native_pi_journal p LEFT JOIN native_messages m ON m.session_id=p.session_id AND m.seq=p.projection_seq WHERE p.session_id=? AND (p.projection_seq IS NULL OR m.seq IS NOT NULL)",
+        &[&stored],
+    )? {
+        let message: Value = serde_json::from_str(row["raw_json"].as_str().unwrap_or(""))
+            .map_err(|e| Error::new(5200, e.to_string()))?;
+        *recorded.entry(message.to_string()).or_default() += 1;
+    }
+    // Before the first reconcile, imported entries carry their exact committed
+    // display row in `hexbot`. Classification may only have added a dream flag.
+    let mut imported = None;
+    let mut header = false;
+    for line in bytes.split(|byte| *byte == b'\n') {
+        if line.iter().all(u8::is_ascii_whitespace) {
+            continue;
+        }
+        let entry: Value =
+            serde_json::from_slice(line).map_err(|e| Error::new(5200, e.to_string()))?;
+        if !header {
+            if entry["type"] != "session" || entry["version"] != 3 {
+                return Err(Error::new(5200, "Conversation header needs recovery"));
+            }
+            header = true;
+            continue;
+        }
+        let message = match entry["type"].as_str() {
+            Some("message") => entry["message"].clone(),
+            Some("custom_message") => {
+                let at = entry["timestamp"]
+                    .as_str()
+                    .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+                    .ok_or_else(|| Error::new(5200, "Conversation timestamp needs recovery"))?;
+                json!({"role":"custom","content":entry["content"],"customType":entry["customType"],"display":entry["display"],"details":entry["details"],"timestamp":at.timestamp_millis() as f64})
+            }
+            _ => continue,
+        };
+        // Pi also journals empty system/tool catalog updates. Runtime does not
+        // project these internal records; they contain no dialogue to learn.
+        if message["role"] == "system" && runtime_store::text(&message["content"]).is_empty() {
+            continue;
+        }
+        let count = recorded.entry(message.to_string()).or_default();
+        if *count > 0 {
+            *count -= 1;
+            continue;
+        }
+        let mut seed = entry["hexbot"].clone();
+        let legacy = seed["row_id"]
+            .as_str()
+            .is_some_and(|id| id.starts_with("legacy-"))
+            && seed["text"] == runtime_store::text(&message["content"])
+            && seed["role"]
+                == match message["role"].as_str() {
+                    Some("toolResult") => json!("tool"),
+                    _ => message["role"].clone(),
+                };
+        if let Some(object) = seed.as_object_mut() {
+            object.remove("dream");
+        }
+        if imported.is_none() {
+            let mut projections = HashMap::<String, usize>::new();
+            for row in common::rows(
+                &runtime_store::open(home)?,
+                "SELECT message_json FROM native_messages WHERE session_id=?",
+                &[&stored],
+            )? {
+                let mut message: Value =
+                    serde_json::from_str(row["message_json"].as_str().unwrap_or(""))
+                        .map_err(|e| Error::new(5200, e.to_string()))?;
+                if let Some(object) = message.as_object_mut() {
+                    object.remove("dream");
+                }
+                *projections.entry(message.to_string()).or_default() += 1;
+            }
+            imported = Some(projections);
+        }
+        let count = imported
+            .as_mut()
+            .unwrap()
+            .entry(seed.to_string())
+            .or_default();
+        if !legacy || *count == 0 {
+            return Err(Error::new(
+                5200,
+                format!("Conversation {stored} must be recovered before dreaming"),
+            ));
+        }
+        *count -= 1;
+    }
+    if !header {
+        return Err(Error::new(5200, "Conversation header needs recovery"));
+    }
+    Ok(true)
+}
+
 /// Return bounded transcripts, newest conversations first when a busy day exceeds one prompt.
 /// Archived sections remain part of durable learning. Earlier dream reports in
 /// the chat are the dream's output, not its input, and tool results are left out:
@@ -398,6 +523,43 @@ pub fn build_digest(
                     format!("Conversation {id} must be recovered before dreaming"),
                 ));
             }
+            let fresh = runtime_store::fresh(home, id)?;
+            let log_ready = native_log_ready(home, id, since)?;
+            // A missing log must not substitute older legacy rows for native
+            // dialogue. Fresh display-only input can precede the first Pi open.
+            let has_dialogue: bool = native.query_row(
+                "SELECT EXISTS(SELECT 1 FROM native_messages WHERE session_id=? AND COALESCE(json_extract(message_json,'$.dream'),0)<>1)",
+                [id],
+                |r| r.get(0),
+            )?;
+            let journal_exists: bool = native.query_row(
+                "SELECT EXISTS(SELECT 1 FROM native_pi_journal WHERE session_id=?)",
+                [id],
+                |r| r.get(0),
+            )?;
+            let mut native_complete = fresh || log_ready || !legacy_path.try_exists()?;
+            if !native_complete && has_dialogue && !journal_exists {
+                // A healthy older database can prove it has no source for
+                // native-only input. Never infer that from a failed read.
+                if legacy.is_none() {
+                    legacy = Some(rusqlite::Connection::open_with_flags(
+                        &legacy_path,
+                        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+                    )?);
+                }
+                let exists: bool = legacy.as_ref().unwrap().query_row(
+                    "SELECT EXISTS(SELECT 1 FROM sessions WHERE session_key=?1 OR id=?1)",
+                    [id],
+                    |r| r.get(0),
+                )?;
+                native_complete = !exists;
+            }
+            if !log_ready && (journal_exists || has_dialogue && !native_complete) {
+                return Err(Error::new(
+                    5200,
+                    format!("Conversation {id} must be recovered before dreaming"),
+                ));
+            }
             if let Some(replacement) = adopted[id]["target"].as_str() {
                 let exists: bool = conn.query_row(
                     "SELECT EXISTS(SELECT 1 FROM sections WHERE id=?)",
@@ -413,23 +575,13 @@ pub fn build_digest(
             }
             let mut transcript = vec![];
             let mut latest = 0f64;
-            let fresh = runtime_store::fresh(home, id)?;
             let native_exists = fresh
                 || native.query_row(
                     "SELECT EXISTS(SELECT 1 FROM native_sessions WHERE stored_id=?1) OR EXISTS(SELECT 1 FROM native_messages WHERE session_id=?1)",
                     [id],
                     |row| row.get::<_, bool>(0),
                 )?;
-            // Runtime saves options before importing. Only a fresh section or
-            // the JSONL written after the import transaction proves that an
-            // existing legacy transcript is no longer needed here.
-            let native_complete = fresh
-                || home
-                    .join("runtime/sessions")
-                    .join(id)
-                    .join("conversation.jsonl")
-                    .try_exists()?
-                || !legacy_path.try_exists()?;
+            // Saved options alone do not prove that legacy import completed.
             let mut compactions = vec![];
             if native_exists && native_complete {
                 if let Some(reports) = &native_reports {

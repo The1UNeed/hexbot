@@ -24,8 +24,11 @@ The native scheduler and digest builder live in
   An unreadable older database does not stop a dream whose conversations are
   available in native history. Saved session options alone do not prove an
   older conversation was imported. New chats carry their existing fresh marker;
-  older chats need the conversation file written after import. If any
-  conversation still needs that older database, or native recovery is unfinished
+  older chats need a completed import or a healthy older database that proves
+  it has no matching source. Durable Pi messages must also match their saved native journal or committed import projections.
+  This check only reads the log; it never recovers or rewrites a running chat.
+  A missing log cannot replace newer native dialogue with older legacy rows.
+  If any conversation still needs that older database, or native recovery is unfinished
   or quarantined, the dream fails and leaves its cutoff and proposals unchanged
   so that history can be read after repair and recovery.
   It retains the newest 12,000 characters per conversation,

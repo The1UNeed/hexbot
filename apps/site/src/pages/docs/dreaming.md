@@ -14,7 +14,7 @@ Hexbot creates a daily dream schedule for each bot. The default time is 3:00 AM 
 
 Each dream reviews activity from the start of the last successful dream up to, but excluding, its own start. Both starts are rounded down to whole milliseconds. Messages and compaction summaries at or after that start wait for the next dream, so the time windows do not overlap. The first dream reviews earlier history. Failed or interrupted dreams leave the lower cutoff unchanged.
 
-An unreadable database from an older Hexbot version does not stop a dream when its conversations are available in native history. If a conversation still needs that database, or its import or recovery is unfinished, the dream fails and leaves its cutoff and proposals unchanged. Repairing and recovering the conversation makes that history eligible for the next dream. New empty chats can still dream from notes and proposals.
+An unreadable database from an older Hexbot version does not stop a dream when its conversations are available in native history. If a conversation still needs that database, or its log is missing or has messages that have not reached native history, the dream fails and leaves its cutoff and proposals unchanged. Repairing and recovering the conversation makes that history eligible for the next dream. New empty chats can still dream from notes and proposals.
 
 Dreaming must be enabled for the daemon and for the individual bot. You can also run a bot's dream now from its Dreaming controls. The status shows the last run, next run, and any error.
 
