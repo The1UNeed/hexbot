@@ -112,7 +112,9 @@ pub fn descriptors(home: &Path, bot: &str) -> Result<Vec<Value>> {
 fn ensure_session(home: &Path, owner: &str, bot: &str, session: &str) -> Result<()> {
     common::bot_owner(home, owner, bot)?;
     common::identifier(session)?;
-    let actual: Option<(String, String)> = runtime_store::open(home)?
+    let conn = runtime_store::open(home)?;
+    runtime_store::check_deleted(&conn, session)?;
+    let actual: Option<(String, String)> = conn
         .query_row(
             "SELECT owner,bot FROM native_sessions WHERE stored_id=?",
             [session],
@@ -1332,28 +1334,34 @@ pub async fn call(
     let args = args.clone();
     Some(
         tokio::task::spawn_blocking(move || {
-            let (home, owner, bot, session, name, args) = (
-                home.as_path(),
-                owner.as_str(),
-                bot.as_str(),
-                session.as_str(),
-                name.as_str(),
-                &args,
-            );
-            ensure_session(home, owner, bot, session)?;
-            if !matches!(name, "skills_list" | "skill_view")
-                && !connectors::toolsets(home, bot)?.iter().any(|s| s == family)
-            {
-                return Err(Error::new(4302, format!("tool is disabled: {name}")));
-            }
-            match name {
-                "todo" | "todo_list" => todo(home, session, args),
-                "session_search" => search_sessions(home, owner, bot, session, args),
-                "skills_list" => list_skills(home, bot, args),
-                "skill_view" => view_skill(home, bot, args),
-                "skill_manage" => manage_skills(home, bot, args),
-                _ => unreachable!(),
-            }
+            runtime_store::with_product_tool(&home, || {
+                let (home, owner, bot, session, name, args) = (
+                    home.as_path(),
+                    owner.as_str(),
+                    bot.as_str(),
+                    session.as_str(),
+                    name.as_str(),
+                    &args,
+                );
+                ensure_session(home, owner, bot, session)?;
+                if !matches!(name, "skills_list" | "skill_view")
+                    && !connectors::toolsets(home, bot)?.iter().any(|s| s == family)
+                {
+                    return Err(Error::new(4302, format!("tool is disabled: {name}")));
+                }
+                #[cfg(test)]
+                deletion_tests::admitted(home);
+                #[cfg(test)]
+                let _finished = deletion_tests::Finished(home);
+                match name {
+                    "todo" | "todo_list" => todo(home, session, args),
+                    "session_search" => search_sessions(home, owner, bot, session, args),
+                    "skills_list" => list_skills(home, bot, args),
+                    "skill_view" => view_skill(home, bot, args),
+                    "skill_manage" => manage_skills(home, bot, args),
+                    _ => unreachable!(),
+                }
+            })
         })
         .await
         .unwrap_or_else(|error| {
@@ -1364,6 +1372,10 @@ pub async fn call(
         }),
     )
 }
+
+#[cfg(test)]
+#[path = "product_tool_deletion_tests.rs"]
+pub(crate) mod deletion_tests;
 
 #[cfg(test)]
 mod history_index_tests {

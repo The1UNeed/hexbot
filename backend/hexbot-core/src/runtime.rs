@@ -1437,10 +1437,21 @@ impl Runtime {
             return Err(Error::new(4202, "prompt was not offered"));
         };
         // Update only our keys: a concurrent model switch owns its keys.
-        store::open(&self.home)?.execute(
-            "UPDATE native_sessions SET prompt=?,options=json_set(options,'$.prompt',?,'$.skills',json(?)) WHERE stored_id=? AND owner=? AND prompt IS NOT ?",
+        let mut conn = store::open(&self.home)?;
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let changed = tx.execute(
+            "UPDATE native_sessions SET prompt=?,options=json_set(options,'$.prompt',?,'$.skills',json(?)) WHERE stored_id=? AND owner=? AND prompt IS NOT ? AND NOT EXISTS(SELECT 1 FROM native_deleted WHERE session_id=stored_id)",
             params![prompt, prompt, json!(skills).to_string(), s.stored, s.owner, prompt],
         )?;
+        // An unchanged live prompt is already adopted. Classify zero rows in
+        // the same transaction so deletion cannot race the idempotence check.
+        if changed == 0 && !tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM native_sessions WHERE stored_id=? AND owner=? AND NOT EXISTS(SELECT 1 FROM native_deleted WHERE session_id=stored_id))",
+            params![s.stored, s.owner], |r| r.get::<_, bool>(0),
+        )? {
+            return Err(Error::new(4001, "session not found"));
+        }
+        tx.commit()?;
         Ok(json!({"adopted":true}))
     }
     /// Pi switches to an offered prompt unless the daemon refuses it, so the
@@ -2109,32 +2120,70 @@ impl Runtime {
         Ok(false)
     }
     pub async fn delete_stored(&self, owner: &str, stored: &str) -> Result<()> {
-        let targets = self.retire_stored(owner, stored).await?;
-        let result = store::delete(&self.home, stored);
-        if result.is_err() {
-            for target in targets {
-                store::unmark_deleted(&self.home, &target)?;
-            }
-        }
-        result
+        self.retire_stored(owner, stored).await?;
+        // A partial purge must remain blocked and discoverable for cleanup.
+        store::delete(&self.home, stored)
     }
     /// Tombstones a section and its delegated tasks and stops them, ready for
     /// the catalog to delete it. Returns what it tombstoned.
     pub async fn retire_stored(&self, owner: &str, stored: &str) -> Result<Vec<String>> {
+        Ok(self.retire_for_delete(owner, stored).await?.targets)
+    }
+    pub(crate) async fn retire_for_delete(
+        &self,
+        owner: &str,
+        stored: &str,
+    ) -> Result<store::Retirement> {
+        self.retire_for_catalog(owner, stored, None).await
+    }
+    pub(crate) async fn retire_for_room_delete(
+        &self,
+        owner: &str,
+        stored: &str,
+        room: &str,
+    ) -> Result<store::Retirement> {
+        self.retire_for_catalog(owner, stored, Some(room.to_owned()))
+            .await
+    }
+    async fn retire_for_catalog(
+        &self,
+        owner: &str,
+        stored: &str,
+        room: Option<String>,
+    ) -> Result<store::Retirement> {
         // Serialize the tombstone with open, then let close acquire the same lock.
-        let targets = {
+        let retirement = {
             let lock = self.open_lock(stored);
             let _guard = lock.lock().await;
-            store::mark_deleted(&self.home, stored)?
+            let home = self.home.clone();
+            let stored = stored.to_owned();
+            tokio::task::spawn_blocking(move || match room {
+                Some(room) => store::mark_room_retiring(&home, &stored, &room),
+                None => store::mark_retiring(&home, &stored),
+            })
+            .await
+            .map_err(|error| Error::new(5200, format!("section retirement failed: {error}")))??
         };
         // Keep the original set: a partial purge can remove descendant relationships.
         if let Err(error) = self.close_stored(owner, stored).await {
-            for target in targets {
-                store::unmark_deleted(&self.home, &target)?;
-            }
+            self.rollback_retirements(vec![retirement]).await?;
             return Err(error);
         }
-        Ok(targets)
+        Ok(retirement)
+    }
+    pub(crate) async fn rollback_retirements(
+        &self,
+        retirements: Vec<store::Retirement>,
+    ) -> Result<()> {
+        let home = self.home.clone();
+        tokio::task::spawn_blocking(move || {
+            for retirement in retirements {
+                store::rollback_retiring(&home, &retirement)?;
+            }
+            Ok(())
+        })
+        .await
+        .map_err(|error| Error::new(5200, format!("section rollback failed: {error}")))?
     }
     pub async fn close_stored(&self, owner: &str, stored: &str) -> Result<bool> {
         let mut closed = false;
@@ -2177,9 +2226,9 @@ impl Runtime {
     async fn close_one(&self, owner: &str, stored: &str) -> Result<bool> {
         let lock = self.open_lock(stored);
         let _guard = lock.lock().await;
-        let alias: Option<(String, String)> = store::open(&self.home)?
+        let alias: Option<(String, Option<String>)> = store::open(&self.home)?
             .query_row(
-                "SELECT s.owner,l.live_id FROM native_live_sessions l JOIN native_sessions s ON s.stored_id=l.stored_id WHERE l.stored_id=?",
+                "SELECT s.owner,l.live_id FROM native_sessions s LEFT JOIN native_live_sessions l ON l.stored_id=s.stored_id WHERE s.stored_id=?",
                 [stored],
                 |r| Ok((r.get(0)?, r.get(1)?)),
             )
@@ -2243,7 +2292,10 @@ impl Runtime {
             )?;
             return Ok(true);
         }
-        if let Some((_, live_id)) = alias {
+        // Native tools can exist before a Pi process opens, or after it retires.
+        // Cancel and clean those sessions even without an in-memory Pi session.
+        crate::native_tools::close_session(&self.home, stored).await;
+        if let Some((_, Some(live_id))) = alias {
             self.events.forget(owner, &live_id);
             db::open(&self.home)?.execute(
                 "UPDATE sections SET last_live_session_id=NULL WHERE id=? AND last_live_session_id=?",
@@ -2531,10 +2583,14 @@ impl Runtime {
                 }
                 Self::command(&s, json!({"type":"set_model","provider":target["provider"],"modelId":target["id"]})).await?;
                 let conn = store::open(&self.home)?;
-                conn.execute(
-                    "UPDATE native_sessions SET options=json_set(options,'$.model',json(?),'$.provider',json(?)) WHERE stored_id=?",
-                    params![target["id"].to_string(), target["provider"].to_string(), s.stored],
-                )?;
+                // Pi may have replied before deletion closed it. Serialize the
+                // patch with the tombstone before changing live state or events.
+                if conn.execute(
+                    "UPDATE native_sessions SET options=json_set(options,'$.model',json(?),'$.provider',json(?)) WHERE stored_id=? AND owner=? AND NOT EXISTS(SELECT 1 FROM native_deleted WHERE session_id=stored_id)",
+                    params![target["id"].to_string(), target["provider"].to_string(), s.stored, s.owner],
+                )? == 0 {
+                    return Err(Error::new(4001, "session not found"));
+                }
                 {
                     let mut model = s.model.lock().unwrap();
                     model[0] = target["provider"].clone();
@@ -3271,6 +3327,7 @@ impl Runtime {
                     let session = session
                         .upgrade()
                         .ok_or_else(|| Error::new(5201, "session closed"))?;
+                    store::check_deleted(&store::open(&runtime.home)?, &session.stored)?;
                     let saved: String = store::open(&runtime.home)?.query_row(
                         "SELECT options FROM native_sessions WHERE stored_id=?",
                         [&session.stored],
@@ -3365,6 +3422,7 @@ impl Runtime {
     }
     async fn tool(&self, s: &Arc<Live>, name: &str, args: &Value) -> Result<Value> {
         common::bot_owner(&self.home, &s.owner, &s.bot)?;
+        store::check_deleted(&store::open(&self.home)?, &s.stored)?;
         let bot_owner: String = db::open(&self.home)?.query_row(
             "SELECT owner_id FROM bots WHERE name=?",
             [&s.bot],

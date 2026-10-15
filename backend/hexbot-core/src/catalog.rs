@@ -8,7 +8,7 @@ use base64::{Engine, engine::general_purpose::STANDARD};
 use rusqlite::{Connection, OpenFlags, OptionalExtension, TransactionBehavior, params};
 use serde_json::{Value, json};
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeSet, HashSet},
     fs,
     path::{Path, PathBuf},
 };
@@ -112,7 +112,7 @@ fn section_row(home: &Path, caller: &str, id: &str) -> Result<Value> {
     owner(home, caller, row["owner_id"].as_str().unwrap_or(""))?;
     Ok(row)
 }
-fn legacy_ids(conn: &Connection, id: &str) -> Result<Vec<String>> {
+fn legacy_ids(conn: &Connection, id: &str, protected: &HashSet<String>) -> Result<Vec<String>> {
     let columns = rows(conn, "PRAGMA table_info(sessions)", &[])?;
     let has = |key: &str| columns.iter().any(|c| c["name"] == key);
     let predicate = if has("session_key") {
@@ -120,15 +120,28 @@ fn legacy_ids(conn: &Connection, id: &str) -> Result<Vec<String>> {
     } else {
         "id=?1"
     };
+    let fields = if has("session_key") {
+        "id,session_key"
+    } else {
+        "id"
+    };
     let query = if has("parent_session_id") {
         format!(
-            "WITH RECURSIVE chain(id) AS (SELECT id FROM sessions WHERE {predicate} UNION SELECT s.id FROM sessions s JOIN chain c ON s.parent_session_id=c.id) SELECT id FROM chain"
+            "WITH RECURSIVE chain(id) AS (SELECT id FROM sessions WHERE {predicate} UNION SELECT s.id FROM sessions s JOIN chain c ON s.parent_session_id=c.id) SELECT {fields} FROM sessions WHERE id IN (SELECT id FROM chain)"
         )
     } else {
-        format!("SELECT id FROM sessions WHERE {predicate}")
+        format!("SELECT {fields} FROM sessions WHERE {predicate}")
     };
+    // Traverse protected nodes too: an unfinished legacy-only descendant still
+    // needs cleanup. Both legacy IDs and catalog session-key aliases identify
+    // completed targets whose replacement artifacts bulk cleanup must preserve.
     Ok(rows(conn, &query, &[&id])?
         .into_iter()
+        .filter(|r| {
+            !["id", "session_key"]
+                .iter()
+                .any(|key| r[key].as_str().is_some_and(|id| protected.contains(id)))
+        })
         .filter_map(|r| r["id"].as_str().map(str::to_owned))
         .collect())
 }
@@ -1687,52 +1700,42 @@ fn update_bot(home: &Path, caller: &str, p: &Value) -> Result<Value> {
 /// the latter as a section the user can still open or retry deleting.
 fn delete_section(home: &Path, caller: &str, id: &str, purge: bool) -> Result<Option<Error>> {
     let row = section_row(home, caller, id)?;
-    // Tombstoned first, so nothing opens it or writes to it again.
-    runtime_store::mark_deleted(home, id)?;
-    let removed = (|| {
-        let mut conn = db::open(home)?;
-        let tx = conn.transaction()?;
-        tx.execute("DELETE FROM sections WHERE id=?", [id])?;
-        // Room and connector failures still have a cause outside this section.
-        tx.execute(
-            "UPDATE bot_incidents SET resolved_at=? WHERE section_id=? AND bot=?
-             AND kind='turn_failed' AND room_id IS NULL AND resolved_at IS NULL
-             AND EXISTS(SELECT 1 FROM bots b WHERE b.name=bot_incidents.bot AND b.owner_id=?4)
-             AND NOT EXISTS(SELECT 1 FROM room_sessions s JOIN rooms r ON r.id=s.room_id
-                 WHERE s.stored_session_id=bot_incidents.section_id
-                 AND s.bot=bot_incidents.bot AND r.owner_id=?4)",
-            params![now(), id, row["bot"].as_str(), caller],
-        )?;
-        tx.execute(
-            "UPDATE bots SET last_activity_at=? WHERE name=?",
-            params![now(), row["bot"].as_str()],
-        )?;
-        tx.commit()?;
-        Ok(())
-    })();
-    if let Err(error) = removed {
-        runtime_store::unmark_deleted(home, id)?;
-        return Err(error);
-    }
-    let purged = (|| {
-        runtime_store::delete(home, id)?;
-        if purge {
-            let path = profile(home, row["bot"].as_str().unwrap_or(""))?.join("state.db");
-            safe(home, &path)?;
-            if path.exists() {
-                let mut conn = Connection::open(path)?;
-                conn.busy_timeout(std::time::Duration::from_secs(10))?;
-                let tx = conn.transaction()?;
-                for key in legacy_ids(&tx, id)? {
-                    tx.execute("DELETE FROM messages WHERE session_id=?", [&key])?;
-                    tx.execute("DELETE FROM sessions WHERE id=?", [&key])?;
-                }
-                tx.commit()?;
+    let pending = runtime_store::with_section_delete(
+        home,
+        id,
+        required(&row, "bot")?,
+        required(&row, "owner_id")?,
+        purge,
+        || {
+            let mut conn = db::open(home)?;
+            let tx = conn.transaction()?;
+            if tx.execute("DELETE FROM sections WHERE id=?", [id])? == 0 {
+                return Err(Error::new(4204, "section not found"));
             }
-        }
-        Ok::<_, Error>(())
-    })();
-    if let Err(error) = purged {
+            // Room and connector failures still have a cause outside this section.
+            tx.execute(
+                "UPDATE bot_incidents SET resolved_at=? WHERE section_id=? AND bot=?
+                 AND kind='turn_failed' AND room_id IS NULL AND resolved_at IS NULL
+                 AND EXISTS(SELECT 1 FROM bots b WHERE b.name=bot_incidents.bot AND b.owner_id=?4)
+                 AND NOT EXISTS(SELECT 1 FROM room_sessions s JOIN rooms r ON r.id=s.room_id
+                     WHERE s.stored_session_id=bot_incidents.section_id
+                     AND s.bot=bot_incidents.bot AND r.owner_id=?4)",
+                params![now(), id, row["bot"].as_str(), caller],
+            )?;
+            tx.execute(
+                "UPDATE bots SET last_activity_at=? WHERE name=?",
+                params![now(), row["bot"].as_str()],
+            )?;
+            tx.commit()?;
+            Ok(())
+        },
+    )?;
+    let cleaned = if purge {
+        runtime_store::delete_pending(home, id)
+    } else {
+        pending.map_or(Ok(()), Err)
+    };
+    if let Err(error) = cleaned {
         let error = Error::new(
             error.code,
             format!("Deleted section {id}, but not all of its history yet: {error}"),
@@ -1742,6 +1745,27 @@ fn delete_section(home: &Path, caller: &str, id: &str, purge: bool) -> Result<Op
         return Ok(Some(error));
     }
     Ok(None)
+}
+
+pub(crate) fn purge_legacy_history(
+    home: &Path,
+    bot: &str,
+    id: &str,
+    protected: &HashSet<String>,
+) -> Result<()> {
+    let path = profile(home, bot)?.join("state.db");
+    safe(home, &path)?;
+    if path.try_exists()? {
+        let mut conn = Connection::open(path)?;
+        conn.busy_timeout(std::time::Duration::from_secs(10))?;
+        let tx = conn.transaction()?;
+        for key in legacy_ids(&tx, id, protected)? {
+            tx.execute("DELETE FROM messages WHERE session_id=?", [&key])?;
+            tx.execute("DELETE FROM sessions WHERE id=?", [&key])?;
+        }
+        tx.commit()?;
+    }
+    Ok(())
 }
 
 // A bot deletion spans the catalog, native SQLite store and profile directory.
@@ -1762,11 +1786,34 @@ fn bot_delete_journal(conn: &Connection, name: &str) -> Result<Option<Value>> {
 }
 
 pub fn prepare_bot_delete(home: &Path, caller: &str, name: &str) -> Result<Vec<Value>> {
+    runtime_store::with_tombstone(home, || prepare_bot_delete_locked(home, caller, name))
+}
+
+fn prepare_bot_delete_locked(home: &Path, caller: &str, name: &str) -> Result<Vec<Value>> {
     let mut conn = db::open(home)?;
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let targets = prepare_bot_delete_in(home, caller, name, &tx)?;
     tx.commit()?;
     Ok(targets)
+}
+
+pub(crate) fn retire_bot_delete(home: &Path, caller: &str, name: &str) -> Result<Vec<Value>> {
+    runtime_store::with_tombstone(home, || {
+        let targets = prepare_bot_delete_locked(home, caller, name)?;
+        let mut conn = db::open(home)?;
+        let journal = bot_delete_journal(&conn, name)?.unwrap();
+        // The journal must precede retirement in the other store, including if
+        // this process stops between these commits. Retention is not changed.
+        if let Err(error) =
+            runtime_store::mark_bot_retiring(home, &targets, required(&journal, "attempt")?)
+        {
+            let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            rollback_bot_delete_in(home, name, &tx, Some(&targets), false)?;
+            tx.commit()?;
+            return Err(error);
+        }
+        Ok(targets)
+    })
 }
 
 fn prepare_bot_delete_in(
@@ -1776,7 +1823,8 @@ fn prepare_bot_delete_in(
     conn: &Connection,
 ) -> Result<Vec<Value>> {
     bot_owner(home, caller, name)?;
-    let previous = if let Some(journal) = bot_delete_journal(conn, name)? {
+    let journal = bot_delete_journal(conn, name)?;
+    let previous = if let Some(journal) = &journal {
         if journal["committed"] == true {
             return Err(Error::new(
                 4208,
@@ -1792,11 +1840,10 @@ fn prepare_bot_delete_in(
     };
     // Validate the profile boundary before retiring anything.
     safe(home, &profile(home, name)?.join("memories/MEMORY.md"))?;
-    let mut targets = rows(
-        &runtime_store::open(home)?,
-        "SELECT stored_id AS id,owner FROM native_sessions WHERE bot=?",
-        &[&name],
-    )?;
+    let mut targets = runtime_store::owned_sessions(home, name)?
+        .into_iter()
+        .map(|session| json!({"id":session["stored_id"],"owner":session["owner"]}))
+        .collect::<Vec<_>>();
     targets.extend(rows(conn, "SELECT id,owner_id AS owner FROM sections WHERE bot=? UNION SELECT stored_session_id AS id,owner_id AS owner FROM room_sessions JOIN rooms ON rooms.id=room_sessions.room_id WHERE room_sessions.bot=?", &[&name, &name])?);
     // A repeated preparation may discover new sessions, but must retain the
     // original exact targets even if their catalog/native mappings disappeared.
@@ -1817,18 +1864,21 @@ fn prepare_bot_delete_in(
         "INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
         params![
             format!("{BOT_DELETE_PREFIX}{name}"),
-            json!({"targets":targets,"committed":false,"name_reserved":true}).to_string()
+            json!({"targets":targets,"committed":false,"name_reserved":true,
+                "attempt":journal.as_ref().and_then(|j|j["attempt"].as_str()).map(str::to_owned).unwrap_or_else(id)}).to_string()
         ],
     )?;
     Ok(targets)
 }
 
 pub fn rollback_bot_delete(home: &Path, name: &str) -> Result<()> {
-    let mut conn = db::open(home)?;
-    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-    rollback_bot_delete_in(home, name, &tx, None)?;
-    tx.commit()?;
-    Ok(())
+    runtime_store::with_tombstone(home, || {
+        let mut conn = db::open(home)?;
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        rollback_bot_delete_in(home, name, &tx, None, false)?;
+        tx.commit()?;
+        Ok(())
+    })
 }
 
 fn rollback_bot_delete_in(
@@ -1836,6 +1886,7 @@ fn rollback_bot_delete_in(
     name: &str,
     conn: &Connection,
     expected: Option<&[Value]>,
+    recovering: bool,
 ) -> Result<()> {
     if let Some(journal) = bot_delete_journal(conn, name)? {
         if journal["committed"] == true {
@@ -1847,9 +1898,12 @@ fn rollback_bot_delete_in(
         if expected.is_some_and(|expected| expected != targets) {
             return Ok(());
         }
-        for target in targets {
-            runtime_store::unmark_deleted(home, required(target, "id")?)?;
-        }
+        runtime_store::rollback_bot_retiring(
+            home,
+            targets,
+            journal["attempt"].as_str(),
+            recovering,
+        )?;
         conn.execute(
             "DELETE FROM settings WHERE key=?",
             [format!("{BOT_DELETE_PREFIX}{name}")],
@@ -1859,6 +1913,12 @@ fn rollback_bot_delete_in(
 }
 
 fn finish_bot_delete(home: &Path, name: &str) -> Result<()> {
+    // A product closure may need either SQLite writer to finish. Wait for its
+    // real work before reserving the catalog writer used to order name reuse.
+    runtime_store::with_tombstone(home, || finish_bot_delete_locked(home, name))
+}
+
+fn finish_bot_delete_locked(home: &Path, name: &str) -> Result<()> {
     let mut conn = db::open(home)?;
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
     // Another cleanup may have completed since the caller enumerated journals.
@@ -1866,7 +1926,7 @@ fn finish_bot_delete(home: &Path, name: &str) -> Result<()> {
         return Ok(());
     };
     if journal["committed"] != true {
-        rollback_bot_delete_in(home, name, &tx, None)?;
+        rollback_bot_delete_in(home, name, &tx, None, true)?;
         tx.commit()?;
         return Ok(());
     }
@@ -1897,9 +1957,7 @@ fn finish_bot_delete(home: &Path, name: &str) -> Result<()> {
     let targets = journal["targets"]
         .as_array()
         .ok_or_else(|| Error::new(5200, "Invalid bot deletion journal"))?;
-    for target in targets {
-        runtime_store::delete(home, required(target, "id")?)?;
-    }
+    runtime_store::purge_bot_targets(home, name, targets)?;
     let jobs = runtime_store::open(home)?;
     jobs.execute("DELETE FROM native_jobs WHERE bot=?", [name])?;
     jobs.execute("DELETE FROM native_job_imports WHERE bot=?", [name])?;
@@ -1970,8 +2028,8 @@ pub(crate) fn pending_bot_delete_targets(home: &Path) -> Result<BTreeSet<String>
 
 fn delete_bot(home: &Path, caller: &str, name: &str) -> Result<Value> {
     // Persist retirement provenance before touching the separate native store.
-    let targets = prepare_bot_delete(home, caller, name)?;
-    let committed = (|| {
+    let targets = retire_bot_delete(home, caller, name)?;
+    let committed = runtime_store::with_tombstone(home, || {
         let mut conn = db::open(home)?;
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let journal = bot_delete_journal(&tx, name)?;
@@ -1984,9 +2042,6 @@ fn delete_bot(home: &Path, caller: &str, name: &str) -> Result<Value> {
             ));
         }
         bot_owner(home, caller, name)?;
-        for target in &targets {
-            runtime_store::mark_deleted(home, required(target, "id")?)?;
-        }
         tx.execute("DELETE FROM sections WHERE bot=?", [name])?;
         // Threads where this bot asked others stay with their recipients.
         tx.execute("UPDATE sections SET archived_at=? WHERE peer_bot=? AND owner_id=? AND archived_at IS NULL", params![now(), name, caller])?;
@@ -2003,12 +2058,15 @@ fn delete_bot(home: &Path, caller: &str, name: &str) -> Result<Value> {
         )?;
         tx.commit()?;
         Ok::<_, Error>(())
-    })();
+    });
     if let Err(error) = committed {
-        let mut conn = db::open(home)?;
-        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        rollback_bot_delete_in(home, name, &tx, Some(&targets))?;
-        tx.commit()?;
+        runtime_store::with_tombstone(home, || {
+            let mut conn = db::open(home)?;
+            let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            rollback_bot_delete_in(home, name, &tx, Some(&targets), false)?;
+            tx.commit()?;
+            Ok(())
+        })?;
         return Err(error);
     }
     if let Err(error) = finish_bot_delete(home, name) {
@@ -3286,12 +3344,13 @@ mod parity_tests {
                     .is_empty(),
                 committed
             );
-            // Older history stays unread after a committed deletion, even on restart.
+            // The combined deletion contract retries identifiable legacy cleanup
+            // after the catalog commit; failed decisions keep it byte for byte.
             assert_eq!(
                 legacy
                     .query_row("SELECT count(*) FROM messages", [], |r| r.get::<_, i64>(0))
                     .unwrap(),
-                1
+                i64::from(!committed)
             );
             for id in ["new", "old", "stuck"] {
                 assert_eq!(

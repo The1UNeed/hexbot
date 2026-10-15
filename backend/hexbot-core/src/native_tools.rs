@@ -591,64 +591,78 @@ pub async fn call(
             .or_insert_with(|| tokio::sync::watch::channel(false).0)
             .subscribe()
     };
-    let cwd = section_workdir(home, bot, stored)?;
-    let request = SECTION_CWD.scope(cwd, async {
-        if let Some(result) =
-            crate::native_product_tools::call(home, owner, bot, stored, name, args).await
-        {
-            return result;
-        }
-        if let Some(result) =
-            crate::native_external_tools::call(home, owner, bot, name, args.clone()).await
-        {
-            return result;
-        }
-        let family =
-            family(name).ok_or_else(|| Error::new(4204, format!("unknown native tool: {name}")))?;
-        if !enabled(home, bot, family)? {
-            return Err(Error::new(4302, format!("tool is disabled: {name}")));
-        }
-        let cfg = common::merged_config(home, bot)?;
-        let env = connectors::credentials(home, bot)?;
-        let available = if name == "text_to_speech" {
-            speech_set_up(
-                home,
-                &cfg,
-                &env,
-                text(args, "provider", text(&cfg["tts"], "provider", "edge")),
-            )
-        } else {
-            set_up(home, &cfg, &env, family)
-        };
-        if !available {
-            return Err(Error::new(
-                4302,
-                format!("tool is not set up on this computer: {name}"),
-            ));
-        }
-        match name {
-            "web_search" => search(&cfg, &env, args).await,
-            "web_extract" => extract(home, bot, &cfg, &env, args).await,
-            "execute_code" => execute_code(home, bot, stored, &cfg, &env, args).await,
-            "vision_analyze" => vision(home, bot, &cfg, &env, args).await,
-            "computer_use" => computer_use(home, bot, stored, &cfg, &env, args).await,
-            "text_to_speech" => speech(home, bot, &cfg, &env, args).await,
-            "image_generate" => image_generate(home, bot, &cfg, &env, args).await,
-            "browser_exec" => browser_exec().await,
-            "browser_cdp" => browser_cdp(&cfg, &env, args).await,
-            "browser_navigate" | "browser_snapshot" | "browser_click" | "browser_type"
-            | "browser_scroll" | "browser_back" | "browser_press" | "browser_get_images"
-            | "browser_vision" | "browser_console" => {
-                browser_tool(home, bot, stored, &cfg, &env, name, args).await
-            }
-            _ => Err(Error::new(4204, format!("unknown native tool: {name}"))),
-        }
-    });
+    // Close must either signal this call or finish before its tombstone check.
+    crate::runtime_store::check_deleted(&crate::runtime_store::open(home)?, stored)?;
+    #[cfg(test)]
+    deletion_tests::checked(home).await;
+    let request = async {
+        let cwd = section_workdir(home, bot, stored)?;
+        SECTION_CWD
+            .scope(cwd, async {
+                if let Some(result) =
+                    crate::native_product_tools::call(home, owner, bot, stored, name, args).await
+                {
+                    return result;
+                }
+                if let Some(result) =
+                    crate::native_external_tools::call(home, owner, bot, name, args.clone()).await
+                {
+                    return result;
+                }
+                let family = family(name)
+                    .ok_or_else(|| Error::new(4204, format!("unknown native tool: {name}")))?;
+                if !enabled(home, bot, family)? {
+                    return Err(Error::new(4302, format!("tool is disabled: {name}")));
+                }
+                let cfg = common::merged_config(home, bot)?;
+                let env = connectors::credentials(home, bot)?;
+                let available = if name == "text_to_speech" {
+                    speech_set_up(
+                        home,
+                        &cfg,
+                        &env,
+                        text(args, "provider", text(&cfg["tts"], "provider", "edge")),
+                    )
+                } else {
+                    set_up(home, &cfg, &env, family)
+                };
+                if !available {
+                    return Err(Error::new(
+                        4302,
+                        format!("tool is not set up on this computer: {name}"),
+                    ));
+                }
+                match name {
+                    "web_search" => search(&cfg, &env, args).await,
+                    "web_extract" => extract(home, bot, &cfg, &env, args).await,
+                    "execute_code" => execute_code(home, bot, stored, &cfg, &env, args).await,
+                    "vision_analyze" => vision(home, bot, &cfg, &env, args).await,
+                    "computer_use" => computer_use(home, bot, stored, &cfg, &env, args).await,
+                    "text_to_speech" => speech(home, bot, &cfg, &env, args).await,
+                    "image_generate" => image_generate(home, bot, &cfg, &env, args).await,
+                    "browser_exec" => browser_exec().await,
+                    "browser_cdp" => browser_cdp(&cfg, &env, args).await,
+                    "browser_navigate" | "browser_snapshot" | "browser_click" | "browser_type"
+                    | "browser_scroll" | "browser_back" | "browser_press"
+                    | "browser_get_images" | "browser_vision" | "browser_console" => {
+                        browser_tool(home, bot, stored, &cfg, &env, name, args).await
+                    }
+                    _ => Err(Error::new(4204, format!("unknown native tool: {name}"))),
+                }
+            })
+            .await
+    };
+    #[cfg(test)]
+    deletion_tests::ready(home).await;
     tokio::select! {
-        result=request=>result,
+        biased;
         _=async {while !*stopped.borrow(){if stopped.changed().await.is_err(){break}}}=>Err(Error::new(5201,"tool interrupted")),
+        result=request=>result,
     }
 }
+#[cfg(test)]
+#[path = "native_tool_deletion_tests.rs"]
+mod deletion_tests;
 fn web_backend(
     cfg: &Value,
     env: &std::collections::BTreeMap<String, String>,
@@ -1134,6 +1148,13 @@ pub fn register_dispatcher(home: &Path, stored: &str, callback: ToolDispatcher) 
         .unwrap_or_else(|e| e.into_inner())
         .insert((home.to_owned(), stored.to_owned()), callback);
 }
+pub(crate) fn dispatcher(home: &Path, stored: &str) -> Option<ToolDispatcher> {
+    dispatchers()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(&(home.to_owned(), stored.to_owned()))
+        .cloned()
+}
 type KernelMap = HashMap<(PathBuf, String, String), Arc<Mutex<Option<Kernel>>>>;
 fn kernels() -> &'static Mutex<KernelMap> {
     static KERNELS: OnceLock<Mutex<KernelMap>> = OnceLock::new();
@@ -1288,11 +1309,7 @@ async fn execute_code(
             let Some(tool) = value["hexbot_tool"].as_str() else {
                 return Ok(value);
             };
-            let dispatcher = dispatchers()
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .get(&(home.to_owned(), stored.to_owned()))
-                .cloned();
+            let dispatcher = dispatcher(home, stored);
             let result = if tool == "execute_code" {
                 Err(Error::new(4202, "execute_code cannot call itself"))
             } else if let Some(dispatcher) = dispatcher {
