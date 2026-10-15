@@ -308,20 +308,45 @@ it.each(['room', 'unmount', 'daemon', 'epoch', 'install', 'same-url'] as const)(
   }
 )
 
-it('keeps an unloaded roster distinct from a deleted bot on Close', async () => {
-  useBots.setState({ byName: {}, loaded: false })
-  const held = deferred()
-  call.mockReturnValue(held.promise)
-  const view = await mount()
-  expect(await screen.findByText('Loading…')).toBeVisible()
-  close()
-  expect(view.router.state.location.pathname).toBe('/b/owl/settings/profile')
-  expect(call.mock.calls.every(([method]) => method === 'hexbot.bots.list')).toBe(true)
-  await act(async () => held.resolve({ bots: [] }))
-  expect(await screen.findByText('This bot no longer exists.')).toBeVisible()
-  close()
-  await waitFor(() => expect(view.router.state.location.pathname).toBe('/onboarding'))
-})
+it.each([
+  ['loading', 'Close'],
+  ['loading', 'Escape'],
+  ['failed', 'Close'],
+  ['failed', 'Escape']
+] as const)(
+  'a %s roster leaves on %s through Home and keeps the remembered chat',
+  async (roster, exit) => {
+    useBots.setState({ byName: {}, error: null, loaded: false, loading: false })
+    const remembered = { bot: 'owl', section: 'owl-chat' }
+    useUi.setState({ lastSection: remembered })
+    const held = deferred()
+    call.mockImplementation((method: string) =>
+      method !== 'hexbot.bots.list'
+        ? reply(method)
+        : roster === 'loading'
+          ? held.promise
+          : Promise.reject(new Error('Roster unavailable'))
+    )
+    const view = await mount()
+    expect(await screen.findByText('Loading…')).toBeVisible()
+
+    if (roster === 'failed') {
+      await waitFor(() => expect(useBots.getState().error).toBe('Roster unavailable'))
+    }
+
+    if (exit === 'Close') {
+      close()
+    } else {
+      fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Escape', code: 'Escape' })
+    }
+
+    await waitFor(() => expect(view.router.state.location.pathname).toBe('/b/owl/s/owl-chat'))
+    await act(async () => held.resolve({ bots: [] }))
+    expect(view.router.state.location.pathname).toBe('/b/owl/s/owl-chat')
+    expect(useUi.getState().lastSection).toEqual(remembered)
+    expect(call.mock.calls.every(([method]) => method === 'hexbot.bots.list')).toBe(true)
+  }
+)
 it('a deleted bot leaves a different remembered chat intact', async () => {
   useBots.setState({ byName: {}, loaded: true })
   const remembered = { bot: 'yak', section: 'yak-chat' }

@@ -469,3 +469,207 @@ it('retains ordinary chat input, attachments and message retry', async () => {
     )
   ).toBe(true)
 })
+
+const stagedChip = () => screen.queryByRole('button', { name: 'Remove plan.txt' })
+
+async function stageOwnerFile(view: Awaited<ReturnType<typeof mount>>) {
+  expect(await screen.findByText('canonical history')).toBeVisible()
+  fireEvent.change(screen.getByRole('textbox', { name: 'Message' }), {
+    target: { value: 'Please read the attached plan' }
+  })
+  fireEvent.change(view.container.querySelector('input[type=file]')!, {
+    target: { files: [new File(['plan body'], 'plan.txt', { type: 'text/plain' })] }
+  })
+  expect(stagedChip()).toBeVisible()
+}
+
+/** Later canonical lookups wait for the test; history reads name the current live ID. */
+function holdLookups() {
+  const state = {
+    hold: false,
+    live: 'canonical',
+    lookups: [] as ReturnType<typeof deferred>[],
+    release() {
+      state.hold = false
+      state.lookups.forEach(lookup => lookup.resolve({ section: canonical }))
+    }
+  }
+
+  call.mockImplementation((method: string, input: Record<string, unknown>) => {
+    if (method === 'hexbot.sections.create' && state.hold) {
+      const lookup = deferred()
+      state.lookups.push(lookup)
+
+      return lookup.promise
+    }
+
+    return method === 'hexbot.sections.open' && input.id === 'canonical'
+      ? Promise.resolve({
+          section: section('canonical', { live_session_id: state.live }),
+          messages: [{ role: 'assistant', text: 'canonical history' }]
+        })
+      : reply(method, input)
+  })
+
+  return state
+}
+
+it.each(['connection drop', 'daemon restart', 'same URL'] as const)(
+  'keeps staged files on the validated owner chat across a %s',
+  async action => {
+    const state = holdLookups()
+    const view = await mount('/b/owl/s/canonical')
+    await stageOwnerFile(view)
+    state.hold = true
+
+    if (action === 'connection drop') {
+      // ConnectionSupervisor.handleDrop, then hydrate on the same daemon.
+      await act(async () => useConnection.getState().setDaemon(null))
+      await act(async () => useConnection.getState().setDaemon({ one_chat: true } as DaemonInfo))
+    }
+
+    if (action === 'daemon restart') {
+      // adoptEpoch: the old process's live IDs are gone.
+      state.live = 'canonical-restarted'
+      await act(async () => {
+        useSections.getState().clearLive()
+        useConnection.getState().setEpoch('second')
+      })
+      await act(async () => useConnection.getState().setDaemon({ one_chat: true } as DaemonInfo))
+    }
+
+    if (action === 'same URL') {
+      await act(async () => {
+        view.router.history.push('/b/owl/s/canonical')
+      })
+    }
+
+    await waitFor(() => expect(state.lookups.length).toBeGreaterThan(0))
+    const waiting = screen.getByRole('textbox', { name: 'Message' })
+    expect(waiting).toBeDisabled()
+    expect(waiting).toHaveValue('Please read the attached plan')
+    expect(stagedChip()).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Send' })).toBeDisabled()
+    fireEvent.keyDown(waiting, { key: 'Enter' })
+    fireEvent.drop(view.container.firstElementChild!, {
+      dataTransfer: { files: [new File(['late'], 'late.txt')] }
+    })
+    await act(async () => {})
+    expect(screen.queryByText('late.txt')).toBeNull()
+    expect(calls('file.attach')).toHaveLength(0)
+    expect(calls('prompt.submit')).toHaveLength(0)
+
+    await act(async () => state.release())
+    await waitFor(() => expect(screen.getByRole('textbox', { name: 'Message' })).toBeEnabled())
+    expect(stagedChip()).toBeVisible()
+    fireEvent.keyDown(screen.getByRole('textbox', { name: 'Message' }), { key: 'Enter' })
+    await waitFor(() => expect(stagedChip()).toBeNull())
+    expect(calls('file.attach')).toHaveLength(1)
+    expect(calls('file.attach')[0]![1]).toMatchObject({ name: 'plan.txt', session_id: state.live })
+    expect(calls('prompt.submit')).toHaveLength(1)
+    expect(calls('prompt.submit')[0]![1]).toEqual({
+      session_id: state.live,
+      text: 'Please read the attached plan'
+    })
+  }
+)
+
+it('a lookup from before a daemon restart cannot enable the kept composer', async () => {
+  const state = holdLookups()
+  const view = await mount('/b/owl/s/canonical')
+  await stageOwnerFile(view)
+  state.hold = true
+  const opened = calls('hexbot.sections.open').length
+  await act(async () => useConnection.getState().setDaemon(null))
+  await waitFor(() => expect(state.lookups).toHaveLength(1))
+  state.live = 'canonical-restarted'
+  await act(async () => {
+    useSections.getState().clearLive()
+    useConnection.getState().setEpoch('second')
+  })
+  await waitFor(() => expect(state.lookups.length).toBeGreaterThan(1))
+  const stale = state.lookups.length
+  await act(async () => useConnection.getState().setDaemon({ one_chat: true } as DaemonInfo))
+  await waitFor(() => expect(state.lookups.length).toBeGreaterThan(stale))
+
+  // Every lookup from an earlier daemon state answers first.
+  await act(async () =>
+    state.lookups.slice(0, -1).forEach(lookup => lookup.resolve({ section: canonical }))
+  )
+  const composer = screen.getByRole('textbox', { name: 'Message' })
+  expect(composer).toBeDisabled()
+  fireEvent.keyDown(composer, { key: 'Enter' })
+  await act(async () => {})
+  expect(calls('hexbot.sections.open')).toHaveLength(opened)
+  expect(calls('file.attach')).toHaveLength(0)
+  expect(calls('prompt.submit')).toHaveLength(0)
+
+  await act(async () => state.lookups.at(-1)!.resolve({ section: canonical }))
+  await waitFor(() => expect(screen.getByRole('textbox', { name: 'Message' })).toBeEnabled())
+  fireEvent.keyDown(screen.getByRole('textbox', { name: 'Message' }), { key: 'Enter' })
+  await waitFor(() => expect(calls('prompt.submit')).toHaveLength(1))
+  expect(calls('file.attach').map(([, params]) => params.session_id)).toEqual([
+    'canonical-restarted'
+  ])
+  expect(calls('prompt.submit')[0]![1]).toEqual({
+    session_id: 'canonical-restarted',
+    text: 'Please read the attached plan'
+  })
+})
+
+it.each(['another daemon', 'another installation', 'a peer thread'] as const)(
+  'does not carry staged files to %s',
+  async action => {
+    useConnection.setState({ daemon: { one_chat: true, install_id: 'first' } as DaemonInfo })
+    const state = holdLookups()
+    const view = await mount('/b/owl/s/canonical')
+    await stageOwnerFile(view)
+    state.hold = true
+    const held = deferred()
+
+    if (action === 'another daemon') {
+      await act(async () =>
+        useConnection.getState().setTarget({ kind: 'local', origin: 'http://other' })
+      )
+    }
+
+    if (action === 'another installation') {
+      // A reconnect may still be the same daemon until its info answers.
+      await act(async () => useConnection.getState().setDaemon(null))
+      expect(screen.getByRole('textbox', { name: 'Message' })).toBeDisabled()
+      expect(stagedChip()).toBeVisible()
+      await act(async () =>
+        useConnection.getState().setDaemon({ one_chat: true, install_id: 'second' } as DaemonInfo)
+      )
+    }
+
+    if (action === 'a peer thread') {
+      call.mockImplementation((method: string, input: Record<string, unknown>) =>
+        method === 'hexbot.sections.list' ? held.promise : reply(method, input)
+      )
+      await act(async () => {
+        await view.router.navigate({
+          to: '/b/$bot/s/$section',
+          params: { bot: 'owl', section: 'peer' }
+        })
+      })
+    }
+
+    expect(screen.queryByRole('textbox', { name: 'Message' })).toBeNull()
+    expect(stagedChip()).toBeNull()
+
+    if (action === 'a peer thread') {
+      await act(async () => held.resolve({ sections: [peer] }))
+      expect(await screen.findByText('Which file?')).toBeVisible()
+      expect(screen.queryByRole('textbox', { name: 'Message' })).toBeNull()
+    } else {
+      await waitFor(() => expect(state.lookups.length).toBeGreaterThan(0))
+      await act(async () => state.release())
+      await waitFor(() => expect(screen.getByRole('textbox', { name: 'Message' })).toBeEnabled())
+    }
+
+    expect(stagedChip()).toBeNull()
+    expect(calls('file.attach')).toHaveLength(0)
+    expect(calls('prompt.submit')).toHaveLength(0)
+  }
+)
