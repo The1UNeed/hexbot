@@ -673,3 +673,96 @@ it.each(['another daemon', 'another installation', 'a peer thread'] as const)(
     expect(calls('prompt.submit')).toHaveLength(0)
   }
 )
+
+it.each([
+  'same',
+  'untagged',
+  'unidentified',
+  'installation',
+  'target',
+  'epoch',
+  'upgrade'
+] as const)('revalidates an older pick after reconnect: %s', async action => {
+  modern = false
+
+  const info = {
+    one_chat: false,
+    ...(['untagged', 'unidentified'].includes(action) ? {} : { install_id: 'first' })
+  } as unknown as DaemonInfo
+
+  useConnection.setState({ daemon: info, epoch: action === 'unidentified' ? null : 'first' })
+  const view = await mount()
+  fireEvent.click(await screen.findByRole('button', { name: /old/ }))
+  expect(await screen.findByText('old history')).toBeVisible()
+  call.mockClear()
+  const heldInfo = deferred()
+  const heldCanonical = deferred()
+  call.mockImplementation((method: string, input: Record<string, unknown>) =>
+    method === 'hexbot.info'
+      ? heldInfo.promise
+      : method === 'hexbot.sections.create'
+        ? heldCanonical.promise
+        : reply(method, input)
+  )
+  await act(async () => {
+    if (action === 'target') {
+      useConnection.getState().setTarget({ kind: 'local', origin: 'http://other' })
+    } else if (action === 'epoch') {
+      useSections.getState().clearLive()
+      useConnection.getState().setEpoch('second')
+    } else {
+      useConnection.getState().setDaemon(null)
+    }
+  })
+  await waitFor(() => expect(calls('hexbot.info').length).toBeGreaterThan(0))
+  const pendingInput = screen.queryByRole('textbox', { name: 'Message' })
+
+  if (pendingInput) {
+    expect(pendingInput).toBeDisabled()
+    fireEvent.keyDown(pendingInput, { key: 'Enter' })
+  }
+
+  expect(calls('prompt.submit')).toHaveLength(0)
+  expect(calls('hexbot.sections.open')).toHaveLength(0)
+
+  const next = {
+    ...info,
+    ...(action === 'installation' ? { install_id: 'second' } : {}),
+    one_chat: action === 'upgrade'
+  } as DaemonInfo
+
+  await act(async () => {
+    modern = action === 'upgrade'
+    useConnection.getState().setDaemon(next)
+    heldInfo.resolve(next)
+  })
+
+  if (action === 'upgrade') {
+    await waitFor(() => expect(calls('hexbot.sections.create').length).toBeGreaterThan(0))
+    expect(calls('hexbot.sections.open')).toHaveLength(0)
+    expect(screen.queryByRole('dialog')).toBeNull()
+    await act(async () => heldCanonical.resolve({ section: canonical }))
+    expect(await screen.findByText('canonical history')).toBeVisible()
+    expect(view.router.state.location.pathname).toBe('/b/owl/s/canonical')
+  } else if (action === 'same' || action === 'untagged') {
+    await waitFor(() => expect(screen.getByRole('textbox', { name: 'Message' })).toBeEnabled())
+    expect(screen.queryByRole('dialog')).toBeNull()
+    expect(calls('hexbot.sections.unarchive').length).toBeGreaterThan(0)
+    expect(view.router.state.location.pathname).toBe('/b/owl/s/old')
+  } else {
+    expect(await screen.findByRole('dialog')).toBeVisible()
+    expect(calls('hexbot.sections.open')).toHaveLength(0)
+    expect(calls('hexbot.sections.unarchive')).toHaveLength(0)
+    fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Escape' })
+    expect(useSections.getState().choosing).toBeNull()
+
+    return
+  }
+
+  fireEvent.change(screen.getByRole('textbox', { name: 'Message' }), {
+    target: { value: 'Reconnected' }
+  })
+  fireEvent.keyDown(screen.getByRole('textbox', { name: 'Message' }), { key: 'Enter' })
+  await waitFor(() => expect(calls('prompt.submit')).toHaveLength(1))
+  expect(calls('prompt.submit')[0]![1].session_id).toBe(action === 'upgrade' ? 'canonical' : 'old')
+})

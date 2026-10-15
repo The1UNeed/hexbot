@@ -17,7 +17,7 @@ import {
   sectionsUnarchive
 } from '../lib/api'
 import { KICKOFF_MARKER } from '../lib/bot-kickoff'
-import type { Bot, BotStatus, Message, Section } from '../lib/types'
+import type { Bot, BotStatus, DaemonInfo, Message, Section } from '../lib/types'
 
 import { useConnection } from './connection'
 import { useTranscripts } from './transcripts'
@@ -187,13 +187,41 @@ const reloads = new Map<string, number>()
 /** Share history reads so a slower concurrent snapshot cannot replace a newer one. */
 const opening = new Map<string, ReturnType<SectionsState['open']>>()
 
-/** Each bot's chat on an older daemon, remembered for the current connection. */
+/** Each bot's chat on an older daemon, remembered across its reconnects. */
 const picked = new Map<string, string>()
+let pickedDaemon: DaemonInfo | null = null
 let chatGeneration = 0
+
+const differentDaemon = (daemon: DaemonInfo) =>
+  pickedDaemon &&
+  (pickedDaemon.install_id !== daemon.install_id ||
+    Boolean(pickedDaemon.one_chat) !== Boolean(daemon.one_chat))
+
+function rememberDaemon(daemon: DaemonInfo) {
+  if (differentDaemon(daemon)) {
+    picked.clear()
+  }
+
+  pickedDaemon = daemon
+}
 
 /** Whether the daemon names each bot's one chat; one from before keeps many sections per bot. */
 export async function oneChat(): Promise<boolean> {
-  return Boolean((useConnection.getState().daemon ?? (await daemonInfo())).one_chat)
+  const { target, epoch, daemon } = useConnection.getState()
+  const generation = chatGeneration
+  const info = daemon ?? (await daemonInfo())
+  const next = useConnection.getState()
+
+  if (
+    target === next.target &&
+    epoch === next.epoch &&
+    generation === chatGeneration &&
+    (!next.daemon || next.daemon === info)
+  ) {
+    rememberDaemon(info)
+  }
+
+  return Boolean(info.one_chat)
 }
 
 /**
@@ -479,11 +507,22 @@ export const useSections = create<SectionsState>((set, get) => ({
 
 useConnection.subscribe((next, previous) => {
   const changed = next.target !== previous.target || next.epoch !== previous.epoch
+  const identityChanged = next.daemon && differentDaemon(next.daemon)
 
-  if (changed || (!next.daemon && previous.daemon)) {
+  if (changed || identityChanged || (!next.daemon && previous.daemon)) {
     useSections.getState().choosing?.pick(null)
     chatGeneration++
+  }
+
+  // With no target or process identity, a reconnect cannot prove this is the
+  // same daemon. Otherwise keep the pick dormant until info is checked again.
+  if (changed || (!next.daemon && previous.daemon && (!next.target || !next.epoch))) {
     picked.clear()
+    pickedDaemon = null
+  }
+
+  if (next.daemon) {
+    rememberDaemon(next.daemon)
   }
 
   if (changed) {

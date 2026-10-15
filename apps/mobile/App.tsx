@@ -845,9 +845,9 @@ function MobileApp() {
             changeTab('rooms')
             return
           }
-          // Questions and approvals belong to the waiting conversation's live ID.
+          // Pulse follows the reported conversation, including work between bots.
           // A normal bot tap still resolves its owner chat through the daemon.
-          const thread = b?.status === 'needs_you'
+          const thread = b
             ? mobile.sections.find(s =>
                 s.id === detail?.section_id && s.bot === b.name && s.peer_bot &&
                 (!detail.session_id || !s.live_session_id || detail.session_id === s.live_session_id)
