@@ -19,7 +19,7 @@ export function ChatChooser() {
 
   return (
     <Dialog
-      description="This daemon is older than the app and keeps several sections for each bot. Pick one to continue. When the daemon updates, the one you carry on in stays unless it began with a dream report, and the others are deleted after a full backup."
+      description="This daemon is older than the app and keeps several sections for each bot. Pick one to continue. Your choice is saved on the daemon. When it updates, this conversation stays and the others are deleted after a full backup. A section containing only dream reports gives way to a conversation."
       onOpenChange={open => !open && choosing?.pick(null)}
       open={Boolean(choosing)}
       title={`Continue with ${name}`}

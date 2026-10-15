@@ -1,3 +1,4 @@
+import { JsonRpcGatewayError } from '@hermes/shared'
 import { useNavigate, useParams } from '@tanstack/react-router'
 import { ArrowDown, Copy, File, PanelRight, RotateCcw, X } from 'lucide-react'
 import { type CSSProperties, isValidElement, useEffect, useMemo, useRef, useState } from 'react'
@@ -23,6 +24,7 @@ import type {
   ClarifyRequest
 } from '../../lib/types'
 import { useBot, useBots } from '../../stores/bots'
+import { useConnection } from '../../stores/connection'
 import { connectorsActions } from '../../stores/connectors'
 import { draftsActions } from '../../stores/drafts'
 import {
@@ -582,13 +584,7 @@ export function CheckingRow({ bot, transcript }: { bot?: Bot; transcript?: Trans
       <LiveStatus
         computer
         face={
-          <Avatar
-            className="hex-think"
-            {...botFace(bot)}
-            mood="working"
-            name={name}
-            size="sm"
-          />
+          <Avatar className="hex-think" {...botFace(bot)} mood="working" name={name} size="sm" />
         }
         message={{ ...message, checking }}
         name={name}
@@ -973,6 +969,10 @@ function BotConversation() {
   const clarifies = useMemo(() => transcript?.clarifies ?? [], [transcript?.clarifies])
   const streaming = Boolean(transcript?.streamingMessageId)
   const [unavailable, setUnavailable] = useState<string | null>(null)
+  const [openFailure, setOpenFailure] = useState<{ section: string; message: string } | null>(null)
+  const [openAttempt, setOpenAttempt] = useState(0)
+  const target = useConnection(state => state.target)
+  const epoch = useConnection(state => state.epoch)
   const stoppedHere = stoppedCardFor(bot, params.section ?? null, messages)
 
   const status = sectionStatusOf(
@@ -988,18 +988,56 @@ function BotConversation() {
       : null
 
   useEffect(() => {
-    if (params.section && !liveId && unavailable !== params.section) {
-      const { bot: botName, section: sectionId } = params
+    let cancelled = false
+
+    const current = () =>
+      !cancelled &&
+      target === useConnection.getState().target &&
+      epoch === useConnection.getState().epoch
+
+    setOpenFailure(null)
+    setUnavailable(null)
+
+    if (params.section && !liveId) {
+      const botName = params.bot
+      const sectionId = params.section
       sectionsActions()
         .open(sectionId)
-        .catch(async () => {
+        .catch(async error => {
+          if (!current()) {
+            return
+          }
+
+          const failed = (failure: unknown) => {
+            if (current()) {
+              setOpenFailure({
+                section: sectionId,
+                message: failure instanceof Error ? failure.message : String(failure)
+              })
+            }
+          }
+
+          if (!(error instanceof JsonRpcGatewayError) || error.code !== 4204) {
+            failed(error)
+
+            return
+          }
+
           // A section deleted when each bot moved to one chat, or one from another
           // daemon: open this bot's chat if it is here.
-          const chat = botName
-            ? await sectionsActions()
-                .chat(botName)
-                .catch(() => null)
-            : null
+          let chat
+
+          try {
+            chat = botName ? await sectionsActions().chat(botName, current) : null
+          } catch (failure) {
+            failed(failure)
+
+            return
+          }
+
+          if (!current()) {
+            return
+          }
 
           if (chat && chat.id !== sectionId) {
             void navigate({
@@ -1011,13 +1049,25 @@ function BotConversation() {
             return
           }
 
+          // It still exists: the missing reply raced a catalog change. Retry
+          // opening it instead of permanently suppressing this route.
+          if (chat) {
+            failed(error)
+
+            return
+          }
+
           // Not here at all: say so instead of bouncing through `/`, which would
           // remember it and come back here.
           setUnavailable(sectionId)
           uiActions().setLastSection(null)
         })
     }
-  }, [liveId, navigate, params, unavailable])
+
+    return () => {
+      cancelled = true
+    }
+  }, [liveId, navigate, params.bot, params.section, target, epoch, openAttempt])
   useEffect(() => {
     if (atBottom) {
       toEnd()
@@ -1153,7 +1203,17 @@ function BotConversation() {
         ref={viewport}
         style={{ paddingBottom: composerHeight + 8, paddingTop: 60 }}
       >
-        {unavailable === params.section && !liveId ? (
+        {openFailure && openFailure.section === params.section && !liveId ? (
+          <div
+            className="grid h-full place-content-center justify-items-center gap-4 p-8 text-center"
+            role="alert"
+          >
+            <p>{openFailure.message}</p>
+            <Button onClick={() => setOpenAttempt(attempt => attempt + 1)} size="sm">
+              Retry
+            </Button>
+          </div>
+        ) : unavailable === params.section && !liveId ? (
           <div className="hex-rise grid h-full place-content-center justify-items-center gap-4 p-8 text-center">
             <Avatar {...botFace(bot)} name={name} size="xl" />
             <div>

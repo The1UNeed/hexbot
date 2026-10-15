@@ -8,8 +8,8 @@ export const ROOMS_QUERY = { include_archived: true }
 /**
  * A bot's chat on a daemon from before one chat per bot, which keeps many
  * sections and makes another on every create. Its update keeps the one with
- * the latest conversation unless that is its Dreams log, which its list
- * cannot tell apart, renamed or not. So the chat is certain only while at
+ * the latest conversation, giving way only for report-only logs, which its
+ * list cannot tell apart, renamed or not. So the chat is certain only while at
  * most one section has something said; otherwise those are the choices,
  * open ones first, newest first. Null for a bot with none: create makes it.
  * Never a teammate thread.
@@ -58,9 +58,11 @@ export async function botChat(
     section = 'section' in found ? found.section : found.choices.find(s => s.id === picked.get(bot))
     if (!section) return found
   }
+  // Older daemons update recency even for an open section. Persist the pick
+  // before remembering it, so an upgrade keeps it without another message.
+  const opened = await rpc<{ section: Section }>('hexbot.sections.unarchive', { id: section.id })
   picked.set(bot, section.id)
-  if (!section.archived_at) return { section }
-  return rpc<{ section: Section }>('hexbot.sections.unarchive', { id: section.id })
+  return opened
 }
 /**
  * The room Rooms shows: the picked one while it is open or not archived,

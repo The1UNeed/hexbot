@@ -147,7 +147,7 @@ fn history_summary(home: &Path, row: &Value) -> Result<(String, i64)> {
         ));
     }
     // An older store that cannot be read counts as empty until it can.
-    let Some((preview, count, _)) = legacy_history(home, row)? else {
+    let Some((preview, count, _)) = legacy_history(home, row, &BTreeSet::new())? else {
         return Ok((String::new(), 0));
     };
     runtime_store::open(home)?.execute(
@@ -158,7 +158,11 @@ fn history_summary(home: &Path, row: &Value) -> Result<(String, i64)> {
 }
 /// The section's preview, message count and newest message time in the store
 /// from before the native daemon, or none when that store cannot be read.
-fn legacy_history(home: &Path, row: &Value) -> Result<Option<(String, i64, f64)>> {
+fn legacy_history(
+    home: &Path,
+    row: &Value,
+    reports: &BTreeSet<String>,
+) -> Result<Option<(String, i64, f64)>> {
     let id = row["id"].as_str().unwrap_or("");
     let name = row["bot"].as_str().unwrap_or("");
     let path = profile(home, name)?.join("state.db");
@@ -176,8 +180,15 @@ fn legacy_history(home: &Path, row: &Value) -> Result<Option<(String, i64, f64)>
             return Ok(None);
         }
     };
+    let conversation = |m: &&Value| {
+        !(m["role"] == "assistant"
+            && m["content"]
+                .as_str()
+                .is_some_and(|text| reports.contains(text)))
+    };
     let count = messages
         .iter()
+        .filter(conversation)
         .filter(|m| matches!(m["role"].as_str(), Some("user" | "assistant" | "tool")))
         .count() as i64;
     let preview = messages
@@ -192,6 +203,7 @@ fn legacy_history(home: &Path, row: &Value) -> Result<Option<(String, i64, f64)>
         .unwrap_or_default();
     let latest = messages
         .iter()
+        .filter(conversation)
         .filter_map(|m| m["timestamp"].as_f64())
         .fold(0.0, f64::max);
     Ok(Some((preview, count, latest)))
@@ -255,14 +267,16 @@ pub fn chat_section(home: &Path, caller: &str, name: &str) -> Result<Value> {
         "SELECT * FROM sections WHERE bot=? AND owner_id=? AND peer_bot IS NULL ORDER BY updated_at DESC,id",
         &[&name, &caller],
     )?;
-    // One that recovery set aside would not open; it stays, waiting for repair.
-    let quarantined = runtime_store::open(home)?
-        .prepare("SELECT session_id FROM native_quarantine")?
+    // Failed recovery includes transient I/O, not only damaged data. Both
+    // stay for repair; neither would open. Recovery runs before serving RPCs,
+    // never here under the catalog write lock.
+    let unavailable = runtime_store::open(home)?
+        .prepare("SELECT session_id FROM native_quarantine UNION SELECT session_id FROM native_unrecovered")?
         .query_map([], |r| r.get::<_, String>(0))?
         .collect::<std::result::Result<BTreeSet<_>, _>>()?;
     let healthy = candidates
         .into_iter()
-        .filter(|row| !quarantined.contains(row["id"].as_str().unwrap_or("")))
+        .filter(|row| !unavailable.contains(row["id"].as_str().unwrap_or("")))
         .collect();
     // Ranked as the upgrade ranks them: sections it could not remove never
     // put a dream log ahead of a conversation.
@@ -312,7 +326,7 @@ fn setting(conn: &Connection, key: &str) -> Result<Value> {
         .unwrap_or(Value::Null))
 }
 /// A bot's chats with how much was said in each and when it was last said.
-/// The count is -1 for a dream log with no report to mark and -2 for a
+/// The count is -1 for a legacy log containing only known reports and -2 for a
 /// section whose history from before the native daemon cannot be read.
 fn chat_candidates(
     home: &Path,
@@ -326,16 +340,33 @@ fn chat_candidates(
         // leaves the conversation there; the copy writes its log last.
         let id = row["id"].as_str().unwrap_or("").to_owned();
         let native = native_history(home, &row)?;
+        // A log can become a real conversation. Only stored report metadata
+        // excludes messages; neither its title nor its assistant's wording does.
+        let reports = if logs.contains(&id) {
+            count = runtime_store::open(home)?.query_row(
+                "SELECT COUNT(*) FROM native_messages WHERE session_id=? AND COALESCE(json_extract(message_json,'$.dream'),0)<>1 AND json_extract(message_json,'$.role') IN ('user','assistant','tool')",
+                [&id], |r| r.get(0),
+            )?;
+            rows(
+                &db::open(home)?,
+                "SELECT summary FROM dreams WHERE bot=? AND summary<>''",
+                &[&row["bot"].as_str()],
+            )?
+            .into_iter()
+            .filter_map(|r| r["summary"].as_str().map(str::to_owned))
+            .collect()
+        } else {
+            BTreeSet::new()
+        };
         let mut legacy_latest = 0.0;
         let mut readable = true;
-        if !native
-            && !home
-                .join("runtime/sessions")
-                .join(&id)
-                .join("conversation.jsonl")
-                .exists()
+        if !home
+            .join("runtime/sessions")
+            .join(&id)
+            .join("conversation.jsonl")
+            .exists()
         {
-            match legacy_history(home, &row)? {
+            match legacy_history(home, &row, &reports)? {
                 Some((_, legacy_count, latest)) => {
                     count = count.max(legacy_count);
                     legacy_latest = latest;
@@ -354,9 +385,9 @@ fn chat_candidates(
         if said > row["updated_at"].as_f64().unwrap_or(0.0) {
             row["updated_at"] = json!(said);
         }
-        // A log known only from before the native daemon has no reports to
-        // mark, so it never stays.
-        if logs.contains(&id) && !native {
+        // A legacy report-only log has no conversation to keep. Native logs
+        // keep their already marked reports when there is no better chat.
+        if logs.contains(&id) && !native && count == 0 {
             count = -1;
         }
         if !readable {
@@ -366,15 +397,15 @@ fn chat_candidates(
     }
     Ok(result)
 }
-/// Best first: readable, then something said, then not the dream log, then
-/// not put away, then newest.
+/// Best first: readable, then dialogue, then not a report-only log, then
+/// not put away, then newest. A mixed log competes as a conversation.
 fn rank_chats(sections: &mut [(Value, i64)], logs: &BTreeSet<String>) {
     sections.sort_by(|(a, a_count), (b, b_count)| {
         let rank = |row: &Value, count: i64| {
             (
                 count > -2,
                 count > 0,
-                !logs.contains(row["id"].as_str().unwrap_or("")),
+                count > 0 || !logs.contains(row["id"].as_str().unwrap_or("")),
                 row["archived_at"].is_null(),
             )
         };
@@ -541,11 +572,14 @@ pub fn one_chat_per_bot(home: &Path) -> Result<()> {
             .optional()
             .map_err(Error::from)
             .and_then(|activity| {
-                delete_section(home, &owner, &id, true)?;
+                let pending = delete_section(home, &owner, &id, true)?;
                 conn.execute(
                     "UPDATE bots SET last_activity_at=? WHERE name=?",
                     params![activity.flatten(), bot],
                 )?;
+                if let Some(error) = pending {
+                    return Err(error);
+                }
                 Ok(())
             });
         if let Err(error) = deleted {
@@ -1483,8 +1517,10 @@ fn update_bot(home: &Path, caller: &str, p: &Value) -> Result<Value> {
 /// after it: a stop before the row goes leaves the section as it was, and one
 /// after leaves history no section reads, which the next start removes
 /// (`runtime_store::finish_deletes`). With `purge` the bot's older store loses
-/// the section too.
-fn delete_section(home: &Path, caller: &str, id: &str, purge: bool) -> Result<()> {
+/// the section too. An error means the catalog delete failed; Some(error)
+/// means it committed but history cleanup failed. Callers must not present
+/// the latter as a section the user can still open or retry deleting.
+fn delete_section(home: &Path, caller: &str, id: &str, purge: bool) -> Result<Option<Error>> {
     let row = section_row(home, caller, id)?;
     // Tombstoned first, so nothing opens it or writes to it again.
     runtime_store::mark_deleted(home, id)?;
@@ -1527,9 +1563,15 @@ fn delete_section(home: &Path, caller: &str, id: &str, purge: bool) -> Result<()
         Ok::<_, Error>(())
     })();
     if let Err(error) = purged {
-        eprintln!("Deleted section {id}, but not all of its history yet: {error}");
+        let error = Error::new(
+            error.code,
+            format!("Deleted section {id}, but not all of its history yet: {error}"),
+        )
+        .with_data(json!({"section_deleted":id}));
+        eprintln!("{error}");
+        return Ok(Some(error));
     }
-    Ok(())
+    Ok(None)
 }
 
 pub fn call(home: &Path, caller: &str, method: &str, p: &Value) -> Option<Result<Value>> {
@@ -1582,7 +1624,11 @@ pub fn call(home: &Path, caller: &str, method: &str, p: &Value) -> Option<Result
                 caller,
                 &json!({"bot":name,"include_archived":true,"include_threads":true}),
             )? {
-                delete_section(home, caller, s["id"].as_str().unwrap_or(""), true)?;
+                if let Some(error) =
+                    delete_section(home, caller, s["id"].as_str().unwrap_or(""), true)?
+                {
+                    return Err(error);
+                }
             }
             // Threads where this bot asked others stay with them, closed: a new bot with the
             // same name starts its own.
@@ -1632,13 +1678,17 @@ pub fn call(home: &Path, caller: &str, method: &str, p: &Value) -> Option<Result
             Ok(json!({"section":chat_section(home,caller,required(p,"bot")?)?}))
         }
         "hexbot.sections.delete" => {
-            delete_section(
+            let pending = delete_section(
                 home,
                 caller,
                 required(p, "id")?,
                 p["purge_memory"].as_bool().unwrap_or(true),
             )?;
-            Ok(json!({"deleted":true}))
+            Ok(if pending.is_some() {
+                json!({"deleted":true,"history_pending":true})
+            } else {
+                json!({"deleted":true})
+            })
         }
         "hexbot.sections.close" => {
             let id = required(p, "id")?;
@@ -1908,7 +1958,7 @@ mod parity_tests {
                  INSERT INTO bots(name,owner_id,last_activity_at) VALUES('owl','alice',7),('fox','alice',NULL),('ant','alice',NULL),('bee','alice',NULL),('cat','alice',NULL);
                  INSERT INTO sections(id,bot,owner_id,title,title_dirty) VALUES('bee_dreams','bee','alice','Dreams',0),('cat_chat','cat','alice','Dreams',1);
                  INSERT INTO bot_incidents(id,bot,section_id,kind,created_at) VALUES('failed','owl','put_away','turn_failed',1);
-                 INSERT INTO dreams(id,bot,started_at,status,summary) VALUES('d1','fox',1,'complete','In fox_dreams');
+                 INSERT INTO dreams(id,bot,started_at,status,summary) VALUES('d1','fox',1,'complete','In fox_dreams'),('owl_report','owl',1,'complete','In owl_dreams'),('bee_report','bee',1,'complete','Last night I learned');
                  INSERT INTO sections(id,bot,owner_id,title,title_by) VALUES('dog_chat','dog','alice','Dreams','bot');
                  INSERT INTO sections(id,bot,owner_id,title,updated_at) VALUES('kit_named','kit','alice','Dreams',9),('kit_old','kit','alice','Old',2);
                  INSERT INTO bots(name,owner_id) VALUES('dog','alice'),('elk','alice'),('fly','alice'),('gnu','alice'),('hen','alice'),('ivy','alice'),('jay','alice'),('kit','alice'),('lynx','alice'),('mole','alice');
@@ -2576,8 +2626,8 @@ mod parity_tests {
         assert!(
             runtime_store::import_hermes(home.path(), "yak", "yak_b", workspace.path()).is_err()
         );
-        // Repaired, its dream log is found at the first lookup, and the
-        // conversation is its chat even though the log is newer.
+        // Repaired, the mixed log is a conversation too, and its newer
+        // dialogue makes it the chat at the first lookup.
         fs::remove_file(yak.join("state.db")).unwrap();
         Connection::open(yak.join("state.db"))
             .unwrap()
@@ -2590,7 +2640,7 @@ mod parity_tests {
             .unwrap();
         assert_eq!(
             chat_section(home.path(), "alice", "yak").unwrap()["id"],
-            "yak_b"
+            "yak_log"
         );
         runtime_store::import_hermes(home.path(), "yak", "yak_log", workspace.path()).unwrap();
         assert_eq!(
@@ -2627,6 +2677,379 @@ mod parity_tests {
                 json!({"role":"user","text":format!("In {id}"),"timestamp":time}),
             );
         }
+    }
+    #[test]
+    fn unreadable_native_chats_stay_for_repair_but_are_never_canonical() {
+        for healthy in [false, true] {
+            let home = tempfile::tempdir().unwrap();
+            db::migrate(home.path()).unwrap();
+            db::open(home.path()).unwrap().execute_batch(
+                "INSERT INTO users(id,display_name,role,created_at) VALUES('alice','Alice','admin',0);
+                 INSERT INTO bots(name,owner_id) VALUES('owl','alice');
+                 INSERT INTO sections(id,bot,owner_id,title,updated_at) VALUES('unreadable','owl','alice','Unreadable',9);",
+            ).unwrap();
+            said(
+                home.path(),
+                "unreadable",
+                json!({"role":"user","text":"Keep me","timestamp":9}),
+            );
+            let path = home
+                .path()
+                .join("runtime/sessions/unreadable/conversation.jsonl");
+            fs::create_dir_all(&path).unwrap();
+            fs::write(path.join("kept"), "for repair").unwrap();
+            if healthy {
+                db::open(home.path()).unwrap().execute_batch(
+                    "INSERT INTO sections(id,bot,owner_id,title,updated_at) VALUES('healthy','owl','alice','Healthy',2);",
+                ).unwrap();
+                said(
+                    home.path(),
+                    "healthy",
+                    json!({"role":"user","text":"Open me","timestamp":2}),
+                );
+            }
+            one_chat_per_bot(home.path()).unwrap();
+            let selected = chat_section(home.path(), "alice", "owl").unwrap();
+            let id = selected["id"].as_str().unwrap();
+            assert_ne!(id, "unreadable");
+            if healthy {
+                assert_eq!(id, "healthy");
+            }
+            runtime_store::reconcile(home.path(), "owl", id, "alice").unwrap();
+            let workspace = tempfile::tempdir().unwrap();
+            runtime_store::import_hermes(home.path(), "owl", id, workspace.path()).unwrap();
+            assert_eq!(chat_section(home.path(), "alice", "owl").unwrap()["id"], id);
+            assert!(ids_of(home.path(), "owl").contains(&"unreadable".to_owned()));
+            assert_eq!(fs::read_to_string(path.join("kept")).unwrap(), "for repair");
+            assert_eq!(
+                runtime_store::history(home.path(), "unreadable").unwrap()[0]["text"],
+                "Keep me"
+            );
+            // A later start may recover the repaired chat, but never reruns the deletes.
+            fs::remove_dir_all(&path).unwrap();
+            fs::write(
+                &path,
+                "{\"type\":\"session\",\"version\":3,\"id\":\"unreadable\"}\n",
+            )
+            .unwrap();
+            runtime_store::reconcile_all(home.path()).unwrap();
+            one_chat_per_bot(home.path()).unwrap();
+            assert!(ids_of(home.path(), "owl").contains(&"unreadable".to_owned()));
+            assert_eq!(
+                chat_section(home.path(), "alice", "owl").unwrap()["id"],
+                "unreadable"
+            );
+        }
+    }
+    #[cfg(unix)]
+    #[test]
+    fn native_recovery_does_not_mistake_denied_metadata_for_a_missing_file() {
+        use std::os::unix::fs::PermissionsExt;
+        let home = tempfile::tempdir().unwrap();
+        db::migrate(home.path()).unwrap();
+        owl_with_four_conversations(home.path());
+        let dir = runtime_store::session_dir(home.path(), "new").unwrap();
+        let path = dir.join("conversation.jsonl");
+        fs::write(
+            &path,
+            "{\"type\":\"session\",\"version\":3,\"id\":\"new\"}\n",
+        )
+        .unwrap();
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o000)).unwrap();
+        if fs::read(&path).is_ok() {
+            fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).unwrap();
+            return; // Root can read through these permissions.
+        }
+        one_chat_per_bot(home.path()).unwrap();
+        let selected = chat_section(home.path(), "alice", "owl").unwrap();
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).unwrap();
+        assert_eq!(ids_of(home.path(), "owl"), ["mid", "new", "old", "stuck"]);
+        assert_eq!(selected["id"], "mid");
+        assert!(path.is_file());
+        runtime_store::reconcile_all(home.path()).unwrap();
+        assert_eq!(
+            chat_section(home.path(), "alice", "owl").unwrap()["id"],
+            "new"
+        );
+    }
+    #[test]
+    fn a_failed_native_history_purge_stops_the_upgrade_and_retries_only_cleanup() {
+        let home = tempfile::tempdir().unwrap();
+        db::migrate(home.path()).unwrap();
+        owl_with_four_conversations(home.path());
+        runtime_store::open(home.path()).unwrap().execute_batch(
+            "CREATE TRIGGER stuck BEFORE DELETE ON native_messages WHEN OLD.session_id='mid' BEGIN SELECT RAISE(ABORT,'history purge failed'); END;",
+        ).unwrap();
+        one_chat_per_bot(home.path()).unwrap();
+        assert_eq!(ids_of(home.path(), "owl"), ["new", "old", "stuck"]);
+        assert_eq!(
+            runtime_store::history(home.path(), "mid").unwrap()[0]["text"],
+            "In mid"
+        );
+        assert!(
+            runtime_store::append(
+                home.path(),
+                "mid",
+                json!({"role":"user","text":"No resurrection"})
+            )
+            .is_err()
+        );
+        runtime_store::open(home.path())
+            .unwrap()
+            .execute_batch("DROP TRIGGER stuck;")
+            .unwrap();
+        runtime_store::finish_deletes(home.path()).unwrap();
+        one_chat_per_bot(home.path()).unwrap();
+        assert!(
+            runtime_store::history(home.path(), "mid")
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(ids_of(home.path(), "owl"), ["new", "old", "stuck"]);
+        for id in ["old", "stuck"] {
+            assert_eq!(
+                runtime_store::history(home.path(), id).unwrap()[0]["text"],
+                format!("In {id}")
+            );
+        }
+        assert_eq!(
+            fs::read_dir(home.path().join("backups")).unwrap().count(),
+            1
+        );
+    }
+    #[test]
+    fn a_failed_legacy_purge_stops_the_upgrade_after_the_catalog_commit() {
+        let home = tempfile::tempdir().unwrap();
+        db::migrate(home.path()).unwrap();
+        owl_with_four_conversations(home.path());
+        let profile = profile(home.path(), "owl").unwrap();
+        fs::create_dir_all(&profile).unwrap();
+        Connection::open(profile.join("state.db")).unwrap().execute_batch(
+            "CREATE TABLE sessions(id TEXT,session_key TEXT,parent_session_id TEXT,model_config TEXT,source TEXT);
+             CREATE TABLE messages(id INTEGER,session_id TEXT,role TEXT,content TEXT,timestamp REAL);
+             INSERT INTO sessions(id,session_key) VALUES('mid','mid');
+             INSERT INTO messages VALUES(1,'mid','user','Older copy',5);
+             CREATE TRIGGER stuck BEFORE DELETE ON messages BEGIN SELECT RAISE(ABORT,'legacy purge failed'); END;",
+        ).unwrap();
+        one_chat_per_bot(home.path()).unwrap();
+        assert_eq!(ids_of(home.path(), "owl"), ["new", "old", "stuck"]);
+        assert!(
+            runtime_store::history(home.path(), "mid")
+                .unwrap()
+                .is_empty()
+        );
+        assert!(runtime_store::session_dir(home.path(), "mid").is_err());
+        let legacy = Connection::open(profile.join("state.db")).unwrap();
+        assert_eq!(
+            legacy
+                .query_row("SELECT count(*) FROM messages", [], |r| r.get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+        legacy.execute_batch("DROP TRIGGER stuck;").unwrap();
+        runtime_store::finish_deletes(home.path()).unwrap();
+        one_chat_per_bot(home.path()).unwrap();
+        assert_eq!(ids_of(home.path(), "owl"), ["new", "old", "stuck"]);
+    }
+    #[test]
+    fn a_committed_section_delete_reports_pending_history_as_success() {
+        let home = tempfile::tempdir().unwrap();
+        db::migrate(home.path()).unwrap();
+        owl_with_four_conversations(home.path());
+        runtime_store::open(home.path()).unwrap().execute_batch(
+            "CREATE TRIGGER stuck BEFORE DELETE ON native_messages WHEN OLD.session_id='mid' BEGIN SELECT RAISE(ABORT,'history purge failed'); END;",
+        ).unwrap();
+        let result = call(
+            home.path(),
+            "alice",
+            "hexbot.sections.delete",
+            &json!({"id":"mid"}),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(result["deleted"], true);
+        assert_eq!(result["history_pending"], true);
+        assert_eq!(ids_of(home.path(), "owl"), ["new", "old", "stuck"]);
+        assert!(runtime_store::session_dir(home.path(), "mid").is_err());
+    }
+    fn legacy_log(home: &Path, title: &str, dialogue: bool, ordinary: bool) {
+        db::migrate(home).unwrap();
+        let conn = db::open(home).unwrap();
+        conn.execute_batch(
+            "INSERT INTO users(id,display_name,role,created_at) VALUES('alice','Alice','admin',0);
+             INSERT INTO bots(name,owner_id) VALUES('owl','alice');
+             INSERT INTO dreams(id,bot,started_at,status,summary) VALUES('dream','owl',1,'complete','Stored report');",
+        ).unwrap();
+        conn.execute("INSERT INTO sections(id,bot,owner_id,title,updated_at) VALUES('log','owl','alice',?,3)", [title]).unwrap();
+        if ordinary {
+            conn.execute_batch("INSERT INTO sections(id,bot,owner_id,title,updated_at) VALUES('ordinary','owl','alice','Trip',9)").unwrap();
+            said(
+                home,
+                "ordinary",
+                json!({"role":"user","text":"Trip plans","timestamp":9}),
+            );
+        }
+        let dir = profile(home, "owl").unwrap();
+        fs::create_dir_all(&dir).unwrap();
+        let legacy = Connection::open(dir.join("state.db")).unwrap();
+        legacy.execute_batch(
+            "CREATE TABLE sessions(id TEXT,session_key TEXT,parent_session_id TEXT,model_config TEXT,source TEXT);
+             CREATE TABLE messages(id INTEGER,session_id TEXT,role TEXT,content TEXT,timestamp REAL);
+             INSERT INTO sessions(id,session_key) VALUES('log','log');
+             INSERT INTO messages VALUES(1,'log','assistant','Stored report',1);",
+        ).unwrap();
+        if dialogue {
+            legacy.execute_batch("INSERT INTO messages VALUES(2,'log','user','Human question',2),(3,'log','assistant','Actual reply',3)").unwrap();
+        }
+        legacy
+            .execute_batch("ALTER TABLE messages ADD COLUMN active INTEGER DEFAULT 1")
+            .unwrap();
+    }
+    #[test]
+    fn a_legacy_dream_log_with_dialogue_is_a_chat_before_and_after_import() {
+        for title in ["Dreams", "Night notes"] {
+            let home = tempfile::tempdir().unwrap();
+            legacy_log(home.path(), title, true, false);
+            one_chat_per_bot(home.path()).unwrap();
+            assert_eq!(ids_of(home.path(), "owl"), ["log"]);
+            assert_eq!(
+                chat_section(home.path(), "alice", "owl").unwrap()["id"],
+                "log"
+            );
+            let digest = crate::dreaming::build_digest(home.path(), "owl", 0.0, f64::MAX, None)
+                .unwrap()
+                .to_string();
+            assert!(digest.contains("Human question") && digest.contains("Actual reply"));
+            assert!(!digest.contains("Stored report"));
+            let dir = runtime_store::session_dir(home.path(), "log").unwrap();
+            let workspace = tempfile::tempdir().unwrap();
+            // A failed projection transaction leaves the legacy conversation
+            // eligible; retry imports it with its report markers intact.
+            runtime_store::open(home.path()).unwrap().execute_batch(
+                "CREATE TRIGGER refuse_import BEFORE INSERT ON native_messages BEGIN SELECT RAISE(ABORT,'import failed'); END;",
+            ).unwrap();
+            assert!(
+                runtime_store::import_hermes(home.path(), "owl", "log", workspace.path()).is_err()
+            );
+            assert_eq!(
+                chat_section(home.path(), "alice", "owl").unwrap()["id"],
+                "log"
+            );
+            runtime_store::open(home.path())
+                .unwrap()
+                .execute_batch("DROP TRIGGER refuse_import")
+                .unwrap();
+            runtime_store::import_hermes(home.path(), "owl", "log", workspace.path()).unwrap();
+            let history = runtime_store::history(home.path(), "log").unwrap();
+            assert_eq!(
+                history
+                    .iter()
+                    .map(|m| (m["text"].as_str().unwrap(), m["dream"] == true))
+                    .collect::<Vec<_>>(),
+                [
+                    ("Stored report", true),
+                    ("Human question", false),
+                    ("Actual reply", false)
+                ]
+            );
+            let context = fs::read_to_string(dir.join("conversation.jsonl")).unwrap();
+            assert!(context.contains("Actual reply"));
+            assert!(!context.contains("Stored report"));
+        }
+    }
+    #[test]
+    fn persisting_an_older_chat_selection_survives_upgrade_without_a_message() {
+        for mixed_log in [false, true] {
+            for archived in [false, true] {
+                let home = tempfile::tempdir().unwrap();
+                legacy_log(home.path(), "Night notes", mixed_log, true);
+                if !mixed_log {
+                    Connection::open(profile(home.path(), "owl").unwrap().join("state.db")).unwrap().execute_batch(
+                        "DELETE FROM messages; INSERT INTO messages(id,session_id,role,content,timestamp) VALUES(1,'log','user','Ordinary older chat',2);",
+                    ).unwrap();
+                }
+                if archived {
+                    db::open(home.path())
+                        .unwrap()
+                        .execute("UPDATE sections SET archived_at=3 WHERE id='log'", [])
+                        .unwrap();
+                }
+                // This exact RPC and SQL also exist on the pre-feature main.
+                let selected = call(
+                    home.path(),
+                    "alice",
+                    "hexbot.sections.unarchive",
+                    &json!({"id":"log"}),
+                )
+                .unwrap()
+                .unwrap();
+                assert!(selected["section"]["updated_at"].as_f64().unwrap() > 9.0);
+                assert_eq!(selected["section"]["title"], "Night notes");
+                one_chat_per_bot(home.path()).unwrap();
+                assert_eq!(ids_of(home.path(), "owl"), ["log"]);
+                assert_eq!(
+                    chat_section(home.path(), "alice", "owl").unwrap()["id"],
+                    "log"
+                );
+            }
+        }
+    }
+    #[test]
+    fn legacy_report_only_logs_yield_but_real_dialogue_competes_by_recency() {
+        for dialogue in [false, true] {
+            let home = tempfile::tempdir().unwrap();
+            legacy_log(home.path(), "Night notes", dialogue, true);
+            one_chat_per_bot(home.path()).unwrap();
+            assert_eq!(ids_of(home.path(), "owl"), ["ordinary"]);
+        }
+        let home = tempfile::tempdir().unwrap();
+        legacy_log(home.path(), "Night notes", false, false);
+        one_chat_per_bot(home.path()).unwrap();
+        assert!(ids_of(home.path(), "owl").is_empty());
+        assert_ne!(
+            chat_section(home.path(), "alice", "owl").unwrap()["id"],
+            "log"
+        );
+        // A title alone is insufficient evidence that the assistant's text is a report.
+        let home = tempfile::tempdir().unwrap();
+        legacy_log(home.path(), "Dreams", true, false);
+        db::open(home.path())
+            .unwrap()
+            .execute("DELETE FROM dreams", [])
+            .unwrap();
+        one_chat_per_bot(home.path()).unwrap();
+        assert_eq!(ids_of(home.path(), "owl"), ["log"]);
+    }
+    #[test]
+    fn legacy_dialogue_counts_even_when_a_native_report_precedes_import() {
+        let home = tempfile::tempdir().unwrap();
+        legacy_log(home.path(), "Night notes", true, true);
+        said(
+            home.path(),
+            "log",
+            json!({"role":"assistant","text":"Another report","dream":true,"timestamp":8}),
+        );
+        call(
+            home.path(),
+            "alice",
+            "hexbot.sections.unarchive",
+            &json!({"id":"log"}),
+        )
+        .unwrap()
+        .unwrap();
+        one_chat_per_bot(home.path()).unwrap();
+        assert_eq!(ids_of(home.path(), "owl"), ["log"]);
+        let workspace = tempfile::tempdir().unwrap();
+        runtime_store::import_hermes(home.path(), "owl", "log", workspace.path()).unwrap();
+        let history = runtime_store::history(home.path(), "log").unwrap();
+        assert_eq!(history.iter().filter(|m| m["dream"] == true).count(), 2);
+        assert!(history.iter().any(|m| m["text"] == "Human question"));
+        assert!(history.iter().any(|m| m["text"] == "Actual reply"));
+        let digest = crate::dreaming::build_digest(home.path(), "owl", 0.0, f64::MAX, None)
+            .unwrap()
+            .to_string();
+        assert!(digest.contains("Human question") && digest.contains("Actual reply"));
+        assert!(!digest.contains("Stored report") && !digest.contains("Another report"));
     }
     #[test]
     fn a_delete_that_fails_keeps_the_rest_for_good() {
@@ -2678,8 +3101,8 @@ mod parity_tests {
         }
         one_chat_per_bot(home.path()).unwrap();
         fs::set_permissions(&stuck, fs::Permissions::from_mode(0o700)).unwrap();
-        // Stuck is deleted all the same; only its folder is left.
-        assert_eq!(ids_of(home.path(), "owl"), ["new"]);
+        // Stuck's catalog delete committed, but cleanup stops the migration.
+        assert_eq!(ids_of(home.path(), "owl"), ["new", "old"]);
         assert!(
             runtime_store::history(home.path(), "stuck")
                 .unwrap()
@@ -2688,6 +3111,8 @@ mod parity_tests {
         assert!(stuck.exists());
         runtime_store::finish_deletes(home.path()).unwrap();
         assert!(!home.path().join("runtime/sessions/stuck").exists());
+        one_chat_per_bot(home.path()).unwrap();
+        assert_eq!(ids_of(home.path(), "owl"), ["new", "old"]);
         assert_eq!(
             runtime_store::history(home.path(), "new").unwrap()[0]["text"],
             "In new"

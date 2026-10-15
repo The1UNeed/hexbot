@@ -215,27 +215,34 @@ A bot has one chat with its owner: the one section of that bot with no
 conversations in `room_sessions`, not here. On its first start after the
 upgrade the daemon keeps one chat per bot (`catalog::one_chat_per_bot`, once,
 recorded as the `one_chat_per_bot` setting): for a bot with several, the one
-with something said, then not the old Dreams log, then not archived, then
-newest, and deletes the others with their history. It runs in `App::new`
+with non-report dialogue, then not archived, then newest, and deletes the
+others with their history. It runs in `App::new`
 before `Runtime::new`, so no client is connected, and it is tried once. Before
 deleting anything it makes a fresh full copy of `hexbot.db`,
 `hexbot-runtime.db`, the affected bots' `state.db` and all of
 `runtime/sessions` in `<home>/backups/one-chat-per-bot-<time>/`, so it needs
 about that much free disk space. The setting is written before the first
-delete. If anything fails (the copy, `reconcile_all`, removing a catalog row)
-the error is logged, an unfinished copy (`one-chat-per-bot-<time>.partial`)
+delete. If copying, `reconcile_all`, catalog deletion or history cleanup
+fails, the error is logged, an unfinished copy (`one-chat-per-bot-<time>.partial`)
 is removed, nothing more is deleted, the setting is written anyway, and the
 daemon starts; the sections left are kept for good and no later start deletes
-any. Each delete is the one `hexbot.sections.delete` makes, so a section is
-whole or gone. A bot with a conversation that recovery set aside or could not
-read, or whose `state.db` cannot be read, keeps all its sections. Sections
+any. Each delete is the one `hexbot.sections.delete` makes: once its catalog
+row is gone it stays deleted, even if history cleanup fails. Native cleanup
+retries at startup; it never resumes the migration's remaining deletes.
+A bot with a conversation that recovery set aside or could not read, or whose `state.db` cannot be read, keeps all its sections. Sections
 made later, by an older build, are never deleted. `hexbot.sections.create`,
 and a dream posting its report, rank a bot's healthy sections the same way,
-so a kept Dreams log never outranks a conversation. A section that recovery
-set aside, or whose history is only in a `state.db` that cannot be read, is
-never the chat, since it would not open; when nothing else is left, `create`
+so a report-only Dreams log never outranks a conversation. A mixed log with
+non-report dialogue competes as a conversation; the daemon filters reports
+using stored dream summaries and message markers, never title or prefix
+heuristics. Unreadable history stays untouched. A section that recovery
+set aside or could not recover, or whose history is only in an unreadable
+`state.db`, is never the chat, since it would not open; when nothing else is left, `create`
 makes a new General chat and the other stays for repair. Sections `create`
 makes are recorded in `native_fresh` and open without reading `state.db`.
+Transient native recovery failures are recorded in `native_unrecovered`, so
+lookup skips them without rereading the Pi logs or attempting recovery under
+the catalog write lock. A successful recovery on a later start clears the record.
 Before anything else, the upgrade finds each bot's old Dreams logs and
 records them as the `dream_logs` setting, with the bots it could read as
 `dream_log_bots`: only in those logs are messages matching a dream summary
@@ -269,11 +276,15 @@ returned by `open`.
   than pick from their own list, which cannot tell a section recovery set
   aside. A daemon without `one_chat` in `hexbot.info` makes a new section on
   every call, so clients there list the bot's sections and call `create`
-  only when it has none. Its upgrade keeps the latest conversation unless
-  that is its `Dreams` log, which its list cannot tell apart, so a client
+  only when it has none. Its upgrade keeps the latest conversation, giving
+  way only for a report-only log, which its list cannot tell apart, so a client
   opens a section by itself only while at most one has something said (the
   newest open one when none has); otherwise the user picks among those, once
-  per bot while the app runs. A chosen archived section is unarchived first.
+  per bot while the app runs. Every resolved choice is persisted with
+  `hexbot.sections.unarchive`, supported by older daemons: it updates
+  `updated_at` even for an open section. The pick is remembered only after
+  that RPC succeeds. A real conversation then survives upgrade without
+  another message. Cancelled or obsolete lookups do not save a choice.
 - `hexbot.sections.thread {bot, peer}` → `{section: Section | null}`: the
   caller's thread on `bot` whose sender is `peer`. It never creates one.
 - `hexbot.sections.open {id}` → `{section: Section, messages: [Message],
@@ -281,6 +292,11 @@ returned by `open`.
   bot's profile; idempotent if live). If the bot is waiting on an approval,
   the daemon sends its `approval.request` event again so a reloaded client
   gets the card back; clients dedupe on `request_id`.
+  A missing catalog section returns code `4204`. The web app resolves the
+  bot's canonical chat only for that code; other open failures keep the
+  selected route and offer Retry. Returning the same canonical ID also
+  offers Retry rather than declaring that chat unavailable. Late replies
+  from an obsolete route or daemon do not redirect the current view.
 
 `Context = {tokens, window, compact_at, compacting, recounting, seq}` is how
 full the section's context is: Pi's own estimate of the tokens the next
@@ -305,7 +321,7 @@ model switch. In a room each bot keeps its own section, so the room has no
 context of its own; the meter belongs to bot sections.
 - `hexbot.sections.rename {id, title}` → `{section: Section}`
 - `hexbot.sections.archive {id}` / `hexbot.sections.unarchive {id}` → `{section}`
-- `hexbot.sections.delete {id, purge_memory?: true}` → `{deleted: true}`
+- `hexbot.sections.delete {id, purge_memory?: true}` → `{deleted: true, history_pending?: true}`
   Current clients offer none of these three for a chat; they stay for older
   clients. The next `create` brings a deleted chat back empty.
   (closes the live session, `session.delete` on the stored row). The
@@ -315,7 +331,10 @@ context of its own; the meter belongs to bot sections.
   what a stop after it left (`runtime_store::finish_deletes`). With
   `purge_memory: false` the core transcript in `state.db` is left in place;
   with `true`, rows that could not be removed from `state.db` stay there
-  unread, and the delete still succeeds.
+  unread, and the delete still succeeds. If any history cleanup fails after
+  the catalog commit, `history_pending: true` reports that the section is
+  already deleted with cleanup incomplete. A catalog failure returns an
+  error and removes the tombstone, leaving the section usable.
   The bot's memory is not touched either way.
 - `hexbot.sections.touch {id}` is internal; activity is stamped by the plugin
   on `message.complete`. It also sets the section's `done_at`.

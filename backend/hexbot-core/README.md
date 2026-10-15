@@ -537,7 +537,11 @@ Pi's changing server section is hidden by the forced-prompt projection.
 
 Hidden turns include prompt submission in their 30-minute deadline.
 Recovery quarantines damaged data; transient I/O or SQLite failures leave the
-files in place for a later attempt. A quarantined section moves its
+files in place for a later attempt. Startup records transient failures in
+`native_unrecovered` so canonical chat lookup can skip those sections without
+repeating recovery under the catalog write lock. A later successful startup
+recovery clears the record. Filesystem access errors count as failures, never
+as missing logs. A quarantined section moves its
 `conversation.jsonl` aside as `conversation.quarantine-<id>.jsonl` and refuses
 to open until a `conversation.jsonl` is put back; the next daemon start then
 recovers that file and lifts the quarantine if it is sound.

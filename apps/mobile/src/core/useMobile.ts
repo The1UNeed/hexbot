@@ -57,6 +57,8 @@ export function useMobile() {
   const roomEvents = useRef<RoomEvent[]>([])
   const loadingEvents = useRef<GatewayEvent[] | null>(null)
   const openSequence = useRef(0)
+  // Navigation starts before canonical lookup; history sync has its own sequence.
+  const navigation = useRef(0)
   const refreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const mounted = useRef(true)
   /** Sessions holding files uploaded here for a message that was not sent. */
@@ -67,6 +69,13 @@ export function useMobile() {
   const [choosing, setChoosing] = useState<{ bot: Bot; choices: Section[] } | null>(null)
   /** Each bot's chat on an older daemon, so the user is asked once while the app runs. */
   const picked = useRef(new Map<string, string>())
+  const cancelNavigation = useCallback(() => {
+    navigation.current++
+    openSequence.current++
+    loadingEvents.current = null
+    setChoosing(null)
+    setLoading(false)
+  }, [])
   const rpc: Rpc = useCallback(async (method, params = {}) => {
     const current = session.current
     if (!current || current.client.connectionState !== 'open')
@@ -108,13 +117,12 @@ export function useMobile() {
   }, [])
   const leave = useCallback(() => {
     releaseStaged()
-    openSequence.current++
-    loadingEvents.current = null
+    cancelNavigation()
     routeRef.current = null
     liveId.current = null
     setRoute(null)
     setHasEarlier(false)
-  }, [releaseStaged])
+  }, [releaseStaged, cancelNavigation])
   const refresh = useCallback(async () => {
     const current = session.current
     clearModels()
@@ -334,6 +342,7 @@ export function useMobile() {
   eventRef.current = onEvent
   const activate = useCallback(
     async (daemon: SavedDaemon, suppliedToken?: string) => {
+      cancelNavigation()
       const token = suppliedToken ?? (await loadToken(daemon.id))
       if (!token) throw new Error('This saved connection has no credential. Pair it again.')
       releaseStaged()
@@ -363,6 +372,7 @@ export function useMobile() {
           if (failure) setError(failure.message)
           if (state === 'connected') setError(null)
           if (state === 'revoked') {
+            leave()
             void forgetDaemon(daemon.id).then(loadDaemons).then(setSaved)
             setActive(null)
             setRoute(null)
@@ -380,7 +390,7 @@ export function useMobile() {
       await selectDaemon(daemon.id)
       await next.connect()
     },
-    [onEvent, releaseStaged, clearModels]
+    [onEvent, releaseStaged, clearModels, cancelNavigation, leave]
   )
   useEffect(() => {
     mounted.current = true
@@ -397,6 +407,9 @@ export function useMobile() {
     })
     return () => {
       mounted.current = false
+      navigation.current++
+      openSequence.current++
+      loadingEvents.current = null
       subscription.remove()
       session.current?.stop()
       if (refreshTimer.current) clearTimeout(refreshTimer.current)
@@ -424,11 +437,25 @@ export function useMobile() {
     }
   }
   const openSection = async (bot: Bot, section?: Section) => {
+    cancelNavigation()
+    const generation = navigation.current
+    const current = session.current
+    const stale = () =>
+      !mounted.current || generation !== navigation.current || session.current !== current
+    // Guard each boundary too: an abandoned old-daemon list must not create
+    // or unarchive a section, or change its remembered pick, after it returns.
+    const lookup: Rpc = async (method, params) => {
+      if (stale()) throw new Error('Navigation cancelled.')
+      const result = await rpc(method, params)
+      if (stale()) throw new Error('Navigation cancelled.')
+      return result as never
+    }
     setLoading(true)
     setError(null)
     try {
-      const oneChat = (info ?? (await rpc<DaemonInfo>('hexbot.info'))).one_chat === true
-      const found = await botChat(rpc, bot.name, oneChat, picked.current, section)
+      const oneChat = (info ?? (await lookup<DaemonInfo>('hexbot.info'))).one_chat === true
+      const found = await botChat(lookup, bot.name, oneChat, picked.current, section)
+      if (stale()) return
       if ('choices' in found) {
         setChoosing({ bot, choices: found.choices })
         return
@@ -443,18 +470,21 @@ export function useMobile() {
       setChat(emptyChat())
       await syncChat()
     } catch (e) {
-      setError(errorText(e))
+      if (!stale()) setError(errorText(e))
     } finally {
-      setLoading(false)
+      if (!stale()) setLoading(false)
     }
   }
   /** Opens the section picked on an older daemon, or nothing when none is. */
   const choose = (section: Section | null) => {
     const asked = choosing
-    setChoosing(null)
+    cancelNavigation()
     if (asked && section) void openSection(asked.bot, section)
   }
   const openRoom = async (room: Room) => {
+    cancelNavigation()
+    const generation = navigation.current
+    const stale = () => !mounted.current || generation !== navigation.current
     setLoading(true)
     setError(null)
     releaseStaged()
@@ -466,9 +496,9 @@ export function useMobile() {
     try {
       await syncRoom(room.id)
     } catch (e) {
-      setError(errorText(e))
+      if (!stale()) setError(errorText(e))
     } finally {
-      setLoading(false)
+      if (!stale()) setLoading(false)
     }
   }
   /**
@@ -640,7 +670,7 @@ export function useMobile() {
     },
     back: leave,
     disconnect: async () => {
-      releaseStaged()
+      leave()
       session.current?.stop()
       session.current = null
       setActive(null)
@@ -650,7 +680,7 @@ export function useMobile() {
     },
     remove: async (id: string) => {
       if (active?.id === id) {
-        releaseStaged()
+        leave()
         session.current?.stop()
         session.current = null
         setActive(null)
