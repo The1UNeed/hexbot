@@ -273,6 +273,85 @@ async fn compaction_prompt_is_saved_only_when_adopted_and_preserves_other_option
     runtime.shutdown().await;
 }
 #[tokio::test]
+async fn retained_deletion_refuses_prompt_adoption_before_live_close() {
+    check_deleted_prompt_adoption(false).await;
+}
+
+#[tokio::test]
+async fn purged_deletion_refuses_prompt_adoption_without_recreating_row() {
+    check_deleted_prompt_adoption(true).await;
+}
+
+async fn check_deleted_prompt_adoption(purge: bool) {
+    for unchanged in [false, true] {
+        let (home, runtime, hub) = setup();
+        let s = runtime.open_session("alice", "owl", "first").await.unwrap();
+        let original = processes(home.path())[0]["config"]["prompt"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        fs::write(home.path().join("profiles/owl/SOUL.md"), "Changed soul").unwrap();
+        let offer = runtime
+            .tool(&s, "hexbot_session_prompt", &prompt_hash(&original))
+            .await
+            .unwrap();
+        let next = offer["text"].as_str().unwrap();
+        if unchanged {
+            runtime.adopt_prompt(&s, &adopt(next)).unwrap();
+        }
+        // Public deletion commits markers before close_one can take the event
+        // gate. An adoption arriving in that interval is still a real event.
+        store::mark_deleted(home.path(), "first").unwrap();
+        if purge {
+            store::delete(home.path(), "first").unwrap();
+        }
+        let saved = || {
+            common::rows(
+                &store::open(home.path()).unwrap(),
+                "SELECT prompt,options FROM native_sessions WHERE stored_id='first'",
+                &[],
+            )
+            .unwrap()
+        };
+        let before = saved();
+        let model = s.model.lock().unwrap().clone();
+        assert!(!s.state.lock().unwrap().closed);
+        let mut events = hub.subscribe();
+        runtime.event(&s, json!({"type":"extension_ui_request","id":"probe:deleted-adopt","method":"input","title":format!("__HEXBOT_TOOL__{}",json!({"name":"hexbot_session_prompt","args":{"adopt":adopt(next)}}))})).unwrap();
+        let reply = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let event = events.recv().await.unwrap();
+                if let Some(text) = event.frame["params"]["payload"]["text"].as_str()
+                    && let Ok(reply) = serde_json::from_str::<Value>(text)
+                    && reply["id"] == "probe:deleted-adopt"
+                {
+                    break serde_json::from_str::<Value>(reply["value"].as_str().unwrap()).unwrap();
+                }
+            }
+        })
+        .await
+        .unwrap();
+        assert!(
+            reply["error"].is_string(),
+            "deleted adoption falsely succeeded: {reply}"
+        );
+        assert_eq!(
+            runtime.adopt_prompt(&s, &adopt(next)).unwrap_err().code,
+            4001
+        );
+        assert_eq!(saved(), before, "deleted prompt/options changed");
+        assert_eq!(*s.model.lock().unwrap(), model);
+        if !purge {
+            let options: Value =
+                serde_json::from_str(before[0]["options"].as_str().unwrap()).unwrap();
+            assert_eq!(options["prompt"], if unchanged { next } else { &original });
+            assert_eq!(options["tools"], json!(s.tools));
+        }
+        runtime.shutdown().await;
+    }
+}
+
+#[tokio::test]
 async fn interrupts_never_leave_a_prompt_adoption_unsaved_or_unanswered() {
     let (home, runtime, hub) = setup();
     open(&runtime).await;

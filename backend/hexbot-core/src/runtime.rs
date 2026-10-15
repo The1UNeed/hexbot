@@ -1342,10 +1342,21 @@ impl Runtime {
             return Err(Error::new(4202, "prompt was not offered"));
         };
         // Update only our keys: a concurrent model switch owns its keys.
-        store::open(&self.home)?.execute(
-            "UPDATE native_sessions SET prompt=?,options=json_set(options,'$.prompt',?,'$.skills',json(?)) WHERE stored_id=? AND owner=? AND prompt IS NOT ?",
+        let mut conn = store::open(&self.home)?;
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let changed = tx.execute(
+            "UPDATE native_sessions SET prompt=?,options=json_set(options,'$.prompt',?,'$.skills',json(?)) WHERE stored_id=? AND owner=? AND prompt IS NOT ? AND NOT EXISTS(SELECT 1 FROM native_deleted WHERE session_id=stored_id)",
             params![prompt, prompt, json!(skills).to_string(), s.stored, s.owner, prompt],
         )?;
+        // An unchanged live prompt is already adopted. Classify zero rows in
+        // the same transaction so deletion cannot race the idempotence check.
+        if changed == 0 && !tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM native_sessions WHERE stored_id=? AND owner=? AND NOT EXISTS(SELECT 1 FROM native_deleted WHERE session_id=stored_id))",
+            params![s.stored, s.owner], |r| r.get::<_, bool>(0),
+        )? {
+            return Err(Error::new(4001, "session not found"));
+        }
+        tx.commit()?;
         Ok(json!({"adopted":true}))
     }
     /// Pi switches to an offered prompt unless the daemon refuses it, so the
@@ -2212,10 +2223,14 @@ impl Runtime {
                 }
                 Self::command(&s, json!({"type":"set_model","provider":target["provider"],"modelId":target["id"]})).await?;
                 let conn = store::open(&self.home)?;
-                conn.execute(
-                    "UPDATE native_sessions SET options=json_set(options,'$.model',json(?),'$.provider',json(?)) WHERE stored_id=?",
-                    params![target["id"].to_string(), target["provider"].to_string(), s.stored],
-                )?;
+                // Pi may have replied before deletion closed it. Serialize the
+                // patch with the tombstone before changing live state or events.
+                if conn.execute(
+                    "UPDATE native_sessions SET options=json_set(options,'$.model',json(?),'$.provider',json(?)) WHERE stored_id=? AND owner=? AND NOT EXISTS(SELECT 1 FROM native_deleted WHERE session_id=stored_id)",
+                    params![target["id"].to_string(), target["provider"].to_string(), s.stored, s.owner],
+                )? == 0 {
+                    return Err(Error::new(4001, "session not found"));
+                }
                 {
                     let mut model = s.model.lock().unwrap();
                     model[0] = target["provider"].clone();

@@ -15,6 +15,9 @@
   they use the existing busy timeouts, with no sleeps. Unit tests cover
   overlapping retirement claims and real todo/skill writes whose awaiters were
   cancelled. All deletion fixtures use disposable homes.
+  `tests/runtime_config.rs` pauses the caller after Pi records a model reply,
+  then completes deletion on another executor before resuming the caller.
+  Prompt adoption tests also exercise the interval between tombstoning and close.
 - Pi runtime: `node --test backend/pi-runtime/*.test.mjs` after
   `npm ci --prefix backend/pi-runtime --ignore-scripts --no-audit --no-fund`.
   CI runs the Rust and Pi suites on Linux and macOS. Approval tests use a stub
