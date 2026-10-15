@@ -153,8 +153,10 @@ The native scheduler and digest builder live in
   another agent turn, and it is shown, not said: the bot's Pi conversation
   does not include it. Posting it never stops the chat's process: open
   clients read the chat again at once or, while a turn runs, when it ends.
-  Updating from the old separate `Dreams` section keeps it only when the bot
-  has no other conversation, archived or not, and then marks its reports.
+  On upgrade, a report-only old `Dreams` log gives way to a conversation.
+  A mixed log competes by its non-report conversation activity. If old reports
+  make a saved choice ambiguous, all competing histories stay. Kept logs have
+  their reports marked.
   Reports an earlier build left in the old store are marked when the chat
   first opens, so they never enter the bot's context either. A dream skips
   them in a kept Dreams log that was never opened.
