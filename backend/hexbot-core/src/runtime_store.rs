@@ -9,8 +9,49 @@ use std::{
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     fs,
     path::{Path, PathBuf},
+    sync::{Arc, Mutex, OnceLock, RwLock, RwLockReadGuard, RwLockWriteGuard, Weak},
     time::Duration,
 };
+
+/// One boundary per store, including every delegated source. Product work is
+/// synchronous and shares the read side; tombstoning waits for it to finish.
+/// Take this before any database transaction or skills/config/todo lock. Never
+/// hold it over an await, approval, Python kernel or ordinary async tool.
+fn product_boundary(home: &Path) -> Result<Arc<RwLock<()>>> {
+    static LOCKS: OnceLock<Mutex<HashMap<PathBuf, Weak<RwLock<()>>>>> = OnceLock::new();
+    let home = fs::canonicalize(home)?;
+    let mut locks = LOCKS.get_or_init(Default::default).lock().unwrap();
+    locks.retain(|_, lock| lock.strong_count() > 0);
+    if let Some(lock) = locks.get(&home).and_then(Weak::upgrade) {
+        return Ok(lock);
+    }
+    let lock = Arc::new(RwLock::new(()));
+    locks.insert(home, Arc::downgrade(&lock));
+    Ok(lock)
+}
+
+pub(crate) fn with_product_tool<T>(home: &Path, work: impl FnOnce() -> Result<T>) -> Result<T> {
+    let boundary = product_boundary(home)?;
+    let _guard: RwLockReadGuard<'_, ()> = boundary
+        .read()
+        .map_err(|_| crate::Error::new(5200, "product tool boundary unavailable"))?;
+    work()
+}
+
+fn with_tombstone<T>(home: &Path, work: impl FnOnce() -> Result<T>) -> Result<T> {
+    let boundary = product_boundary(home)?;
+    #[cfg(test)]
+    if matches!(
+        boundary.try_write(),
+        Err(std::sync::TryLockError::WouldBlock)
+    ) {
+        crate::native_product_tools::deletion_tests::deletion_waiting(home);
+    }
+    let _guard: RwLockWriteGuard<'_, ()> = boundary
+        .write()
+        .map_err(|_| crate::Error::new(5200, "product tool boundary unavailable"))?;
+    work()
+}
 
 pub fn open(home: &Path) -> Result<Connection> {
     fs::create_dir_all(home)?;
@@ -192,14 +233,17 @@ fn descendant_ids(conn: &Connection, stored: &str) -> Result<Vec<String>> {
     .map(|row| common::required(&row, "id").map(str::to_owned))
     .collect()
 }
-fn mark_targets(conn: &Connection, stored: &str) -> Result<Vec<String>> {
+fn mark_targets(conn: &Connection, stored: &str) -> Result<(Vec<String>, Vec<String>)> {
     let targets = descendant_ids(conn, stored)?;
+    let mut inserted = Vec::new();
     for target in &targets {
         common::identifier(target)?;
         if delete_completed(conn, target)? {
             continue;
         }
-        conn.execute("INSERT OR IGNORE INTO native_deleted VALUES(?)", [target])?;
+        if conn.execute("INSERT OR IGNORE INTO native_deleted VALUES(?)", [target])? > 0 {
+            inserted.push(target.clone());
+        }
         // Keep ownership after native_sessions and the catalog row have gone,
         // including when removing the session directory failed.
         conn.execute(
@@ -207,14 +251,30 @@ fn mark_targets(conn: &Connection, stored: &str) -> Result<Vec<String>> {
             [target],
         )?;
     }
-    Ok(targets)
+    Ok((targets, inserted))
 }
 pub fn mark_deleted(home: &Path, stored: &str) -> Result<Vec<String>> {
+    Ok(mark_retiring(home, stored)?.0)
+}
+pub(crate) fn mark_retiring(home: &Path, stored: &str) -> Result<(Vec<String>, Vec<String>)> {
+    with_tombstone(home, || {
+        let mut conn = open(home)?;
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let targets = mark_targets(&tx, stored)?;
+        tx.commit()?;
+        Ok(targets)
+    })
+}
+/// A failed close may undo only the markers it inserted, never an earlier
+/// retained deletion or a completed purge, even if it is in the same tree.
+pub(crate) fn rollback_retiring(home: &Path, inserted: &[String]) -> Result<()> {
     let mut conn = open(home)?;
     let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-    let targets = mark_targets(&tx, stored)?;
+    for target in inserted {
+        tx.execute("DELETE FROM native_deleted WHERE session_id=?", [target])?;
+    }
     tx.commit()?;
-    Ok(targets)
+    Ok(())
 }
 /// Save the requested disposition before the catalog transaction. The root's
 /// catalog ownership also covers sections never opened in the native runtime.
@@ -225,16 +285,18 @@ pub(crate) fn mark_section_deleted(
     owner: &str,
     purge: bool,
 ) -> Result<()> {
-    let mut conn = open(home)?;
-    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-    for target in mark_targets(&tx, stored)? {
-        tx.execute(
-            "INSERT INTO native_delete_options VALUES(?,?,?,?) ON CONFLICT(session_id) DO UPDATE SET purge=excluded.purge",
-            params![target, bot, owner, purge],
-        )?;
-    }
-    tx.commit()?;
-    Ok(())
+    with_tombstone(home, || {
+        let mut conn = open(home)?;
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        for target in mark_targets(&tx, stored)?.0 {
+            tx.execute(
+                "INSERT INTO native_delete_options VALUES(?,?,?,?) ON CONFLICT(session_id) DO UPDATE SET purge=excluded.purge",
+                params![target, bot, owner, purge],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    })
 }
 pub fn unmark_deleted(home: &Path, stored: &str) -> Result<()> {
     let mut conn = open(home)?;
@@ -264,23 +326,26 @@ fn delete_completed(conn: &Connection, stored: &str) -> Result<bool> {
 pub fn delete(home: &Path, stored: &str) -> Result<()> {
     // Commit every descendant's ownership and purge intent before any rows go.
     // A retry can then find children whose parent relationship was removed.
-    let mut conn = open(home)?;
-    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-    let targets = mark_targets(&tx, stored)?;
-    for target in &targets {
-        // An explicit delete retries even a completed ID, for example when
-        // removing a newly replaced leaf symlink. Startup and owner cleanup
-        // select only unfinished IDs.
-        tx.execute(
-            "DELETE FROM native_delete_completed WHERE session_id=?",
-            [target],
-        )?;
-        tx.execute(
-            "UPDATE native_delete_options SET purge=1 WHERE session_id=?",
-            [target],
-        )?;
-    }
-    tx.commit()?;
+    let targets = with_tombstone(home, || {
+        let mut conn = open(home)?;
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let targets = mark_targets(&tx, stored)?.0;
+        for target in &targets {
+            // An explicit delete retries even a completed ID, for example when
+            // removing a newly replaced leaf symlink. Startup and owner cleanup
+            // select only unfinished IDs.
+            tx.execute(
+                "DELETE FROM native_delete_completed WHERE session_id=?",
+                [target],
+            )?;
+            tx.execute(
+                "UPDATE native_delete_options SET purge=1 WHERE session_id=?",
+                [target],
+            )?;
+        }
+        tx.commit()?;
+        Ok(targets)
+    })?;
     for stored in targets.iter().rev() {
         let mut conn = open(home)?;
         let tx = conn.transaction()?;
@@ -345,10 +410,11 @@ fn remove_session_files(home: &Path, stored: &str) -> Result<()> {
 /// Sections still on a bot's previous provider and model move with the bot from
 /// their next message, and take its new thinking level if they had its old one.
 /// A section on another model, like a scheduled job with its own, keeps both.
+/// Deleted sections keep their retained options exactly as they were.
 pub fn follow_bot_model(home: &Path, bot: &str, before: &Value, after: &Value) -> Result<()> {
     let conn = open(home)?;
     let rows = conn
-        .prepare("SELECT stored_id,options FROM native_sessions WHERE bot=?")?
+        .prepare("SELECT stored_id,options FROM native_sessions WHERE bot=? AND NOT EXISTS(SELECT 1 FROM native_deleted WHERE session_id=stored_id)")?
         .query_map([bot], |r| {
             Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
         })?
@@ -377,7 +443,7 @@ pub fn follow_bot_model(home: &Path, bot: &str, before: &Value, after: &Value) -
         }
         if moved {
             conn.execute(
-                "UPDATE native_sessions SET options=? WHERE stored_id=?",
+                "UPDATE native_sessions SET options=? WHERE stored_id=? AND NOT EXISTS(SELECT 1 FROM native_deleted WHERE session_id=stored_id)",
                 params![options.to_string(), stored],
             )?;
         }

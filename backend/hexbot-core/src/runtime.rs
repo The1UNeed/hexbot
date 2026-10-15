@@ -1751,16 +1751,20 @@ impl Runtime {
     /// the catalog to delete it. Returns what it tombstoned.
     pub async fn retire_stored(&self, owner: &str, stored: &str) -> Result<Vec<String>> {
         // Serialize the tombstone with open, then let close acquire the same lock.
-        let targets = {
+        let (targets, inserted) = {
             let lock = self.open_lock(stored);
             let _guard = lock.lock().await;
-            store::mark_deleted(&self.home, stored)?
+            let home = self.home.clone();
+            let stored = stored.to_owned();
+            tokio::task::spawn_blocking(move || store::mark_retiring(&home, &stored))
+                .await
+                .map_err(|error| {
+                    Error::new(5200, format!("section retirement failed: {error}"))
+                })??
         };
         // Keep the original set: a partial purge can remove descendant relationships.
         if let Err(error) = self.close_stored(owner, stored).await {
-            for target in targets {
-                store::unmark_deleted(&self.home, &target)?;
-            }
+            store::rollback_retiring(&self.home, &inserted)?;
             return Err(error);
         }
         Ok(targets)

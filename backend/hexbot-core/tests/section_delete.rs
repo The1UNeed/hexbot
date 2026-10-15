@@ -550,6 +550,189 @@ fn failed_public_section_delete_keeps_data_and_unmarks_descendants() {
 }
 
 #[test]
+fn failed_close_preserves_prior_retained_tombstones_and_legacy_only_ownership() {
+    for legacy_only in [true, false] {
+        let mut fixture = Fixture::new();
+        let h = fixture.home.path();
+        let conn = runtime_store::open(h).unwrap();
+        if legacy_only {
+            conn.execute(
+                "DELETE FROM native_sessions WHERE stored_id=?",
+                [&fixture.id],
+            )
+            .unwrap();
+            fixture.dispatch_delete("local", Some(false)).unwrap();
+        } else {
+            // The child was already retained before a fresh parent deletion.
+            conn.execute("INSERT INTO native_deleted VALUES(?)", [&fixture.child])
+                .unwrap();
+            conn.execute(
+                "INSERT INTO native_delete_options VALUES(?,'owl','local',0)",
+                [&fixture.child],
+            )
+            .unwrap();
+        }
+        let before = hexbot_core::common::rows(
+            &conn,
+            "SELECT * FROM native_delete_options ORDER BY session_id",
+            &[],
+        )
+        .unwrap();
+        // A concrete close failure after tombstoning: the child's live alias
+        // belongs to a different owner. No process or provider is needed.
+        conn.execute(
+            "UPDATE native_sessions SET owner='bob' WHERE stored_id=?",
+            [&fixture.child],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT OR REPLACE INTO native_live_sessions VALUES(?,'fault-alias')",
+            [&fixture.child],
+        )
+        .unwrap();
+        assert_eq!(
+            run(fixture.app.runtime.retire_stored("local", &fixture.id))
+                .unwrap_err()
+                .code,
+            4302
+        );
+        assert_eq!(
+            hexbot_core::common::rows(
+                &conn,
+                "SELECT * FROM native_delete_options ORDER BY session_id",
+                &[]
+            )
+            .unwrap(),
+            before
+        );
+        let tombstones: Vec<String> = conn
+            .prepare("SELECT session_id FROM native_deleted ORDER BY session_id")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        let mut expected = if legacy_only {
+            vec![fixture.id.clone(), fixture.child.clone()]
+        } else {
+            vec![fixture.child.clone()]
+        };
+        expected.sort();
+        assert_eq!(tombstones, expected);
+        let source = if legacy_only {
+            fixture.id.clone()
+        } else {
+            fixture.child.clone()
+        };
+        assert_eq!(
+            run(product::call(
+                h,
+                "local",
+                "owl",
+                &source,
+                "todo_list",
+                &json!({"todos":[]})
+            ))
+            .unwrap()
+            .unwrap_err()
+            .code,
+            4001
+        );
+        assert!(
+            runtime_store::owned_sessions(h, "owl")
+                .unwrap()
+                .iter()
+                .any(|r| r["stored_id"] == source.as_str())
+        );
+        conn.execute(
+            "UPDATE native_sessions SET owner='local' WHERE stored_id=?",
+            [&fixture.child],
+        )
+        .unwrap();
+        drop(conn);
+        fixture.restart();
+        run(fixture
+            .app
+            .call("local", "hexbot.bots.delete", &json!({"name":"owl"})))
+        .unwrap();
+        assert!(fixture.completed(&source));
+        run(fixture.app.shutdown());
+    }
+}
+
+#[test]
+fn model_changes_preserve_retained_options_and_follow_live_and_hidden_sources() {
+    let fixture = Fixture::new();
+    let h = fixture.home.path();
+    fs::write(
+        h.join("profiles/owl/config.yaml"),
+        "model:\n  provider: openai\n  default: old\n  reasoning_effort: high\n",
+    )
+    .unwrap();
+    let options = json!({"provider":"openai","model":"old","reasoning_effort":"high","frozen":"keep","skill_catalog":["plan"]}).to_string();
+    let conn = runtime_store::open(h).unwrap();
+    conn.execute(
+        "UPDATE native_sessions SET options=? WHERE stored_id=?",
+        rusqlite::params![options, fixture.id],
+    )
+    .unwrap();
+    for id in ["live-control", "hidden-control"] {
+        conn.execute(
+            "INSERT INTO native_sessions VALUES(?,'local','owl','frozen',?)",
+            rusqlite::params![id, options],
+        )
+        .unwrap();
+    }
+    db::open(h).unwrap().execute("INSERT INTO sections(id,bot,owner_id,title) VALUES('live-control','owl','local','Control')",[]).unwrap();
+    conn.execute(
+        "INSERT INTO native_live_sessions VALUES('live-control','live-control-alias')",
+        [],
+    )
+    .unwrap();
+    fixture.dispatch_delete("local", Some(false)).unwrap();
+    let before = hexbot_core::common::rows(
+        &conn,
+        "SELECT * FROM native_sessions WHERE stored_id=?",
+        &[&fixture.id],
+    )
+    .unwrap();
+    let pi = fs::read(fixture.pi_path(&fixture.id)).unwrap();
+    catalog::call(
+        h,
+        "local",
+        "hexbot.bots.update",
+        &json!({"name":"owl","provider":"anthropic","model":"new","reasoning_effort":"low"}),
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(
+        hexbot_core::common::rows(
+            &conn,
+            "SELECT * FROM native_sessions WHERE stored_id=?",
+            &[&fixture.id]
+        )
+        .unwrap(),
+        before
+    );
+    assert_eq!(fs::read(fixture.pi_path(&fixture.id)).unwrap(), pi);
+    for id in ["live-control", "hidden-control"] {
+        let raw: String = conn
+            .query_row(
+                "SELECT options FROM native_sessions WHERE stored_id=?",
+                [id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let mut expected: Value = serde_json::from_str(&options).unwrap();
+        expected["provider"] = json!("anthropic");
+        expected["model"] = json!("new");
+        expected["reasoning_effort"] = json!("low");
+        assert_eq!(serde_json::from_str::<Value>(&raw).unwrap(), expected);
+    }
+    run(fixture.app.shutdown());
+}
+
+#[test]
 fn bot_delete_waits_for_catalog_commit_before_purging_or_completing_history() {
     let fixture = Fixture::new();
     db::open(fixture.home.path()).unwrap().execute_batch("CREATE TRIGGER refuse_delete BEFORE DELETE ON sections BEGIN SELECT RAISE(ABORT,'fixture'); END;").unwrap();

@@ -53,6 +53,8 @@ Use **Stop** to interrupt a running answer. The chat stays, and you can send ano
 
 Deleting the bot removes its profile, chat, memory, and scheduled jobs. Stop its active work first. Back up the daemon's data directory before removing a bot you may need again.
 
+An older app or API client can still delete a section and ask to keep its history. That conversation stays closed after a restart, and deleting the bot removes its retained history too. Deletion waits for task list and skill writes already in progress, even when their waiting calls were cancelled. Changing the bot's model leaves retained conversation settings alone.
+
 ## Updating from earlier versions
 
 Earlier versions let you keep many sections per bot. The first time the updated daemon starts, it keeps one section of each bot as its chat and deletes the others with their history. It prefers a section where something was said, then one that isn't the old Dreams log (the section earlier versions posted dream reports to, renamed or not), then one you had not archived, then the newest. A bot left with no section gets a new chat when you first open it. The bot's memory and notes stay.
