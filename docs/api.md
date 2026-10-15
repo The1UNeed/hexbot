@@ -307,16 +307,29 @@ context of its own; the meter belongs to bot sections.
 - `hexbot.sections.archive {id}` / `hexbot.sections.unarchive {id}` → `{section}`
 - `hexbot.sections.delete {id, purge_memory?: true}` → `{deleted: true}`
   Current clients offer none of these three for a chat; they stay for older
-  clients. The next `create` brings a deleted chat back empty.
-  (closes the live session, `session.delete` on the stored row). The
-  section is tombstoned, its catalog row goes in a transaction of its own,
-  and only then its runtime history and `runtime/sessions/<id>`: a stop
-  before the row goes leaves the section whole, and the next start removes
-  what a stop after it left (`runtime_store::finish_deletes`). With
-  `purge_memory: false` the core transcript in `state.db` is left in place;
-  with `true`, rows that could not be removed from `state.db` stay there
-  unread, and the delete still succeeds.
-  The bot's memory is not touched either way.
+  clients. The next `create` brings a deleted chat back empty with a new ID.
+  Deletion closes the live session and its delegated tasks, removes the catalog
+  row and permanently blocks the deleted IDs from reopening or accepting late
+  messages or delegated results.
+  By default, or with `purge_memory: true`, it deletes native transcripts,
+  session settings, Pi files in `runtime/sessions/<id>` and matching legacy
+  `state.db` sessions and messages, including descendants. With
+  `purge_memory: false`, those records and files remain across daemon restarts.
+  Retained history is no longer available through the section or session APIs;
+  there is no restore RPC. The historical parameter name refers to section
+  history. Neither choice changes the bot's `MEMORY.md` or daily notes.
+  The durable tombstone and retention choice precede the catalog transaction;
+  history removal follows its commit. A stop before that commit keeps the
+  section whole. After it, startup preserves retained history or retries an
+  interrupted purge. A durable completion marker prevents later startups from
+  repeating successful native, file and legacy cleanup; the tombstone remains.
+  Product tools and Python tool callbacks also reject deleted source IDs,
+  including retained conversations. Cleanup failures after the catalog commit
+  are logged and deletion still succeeds. Old tombstones without a retention
+  choice keep their original purge behavior. Legacy cleanup requires known bot
+  ownership; older tombstones that have lost it can leave unread legacy rows.
+  Usage accounting and upgrade backups are kept. `hexbot.bots.delete` purges the bot's owned
+  history, including retained sections whose catalog rows have already gone.
 - `hexbot.sections.touch {id}` is internal; activity is stamped by the plugin
   on `message.complete`. It also sets the section's `done_at`.
 - `hexbot.sections.mark_read {id}` → `{section: Section}` clears `done_at`:

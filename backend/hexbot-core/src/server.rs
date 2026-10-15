@@ -202,14 +202,10 @@ impl App {
                     .await?;
             }
             // Sections, room conversations and hidden jobs, each under its owner.
-            let sessions = common::rows(
-                &crate::runtime_store::open(&self.home)?,
-                "SELECT stored_id,owner FROM native_sessions WHERE bot=?",
-                &[&bot],
-            )?;
+            let sessions = crate::runtime_store::owned_sessions(&self.home, bot)?;
             for session in sessions {
                 self.runtime
-                    .delete_stored(
+                    .retire_stored(
                         common::required(&session, "owner")?,
                         common::required(&session, "stored_id")?,
                     )

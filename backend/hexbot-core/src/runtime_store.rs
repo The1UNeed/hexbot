@@ -29,6 +29,8 @@ pub fn open(home: &Path) -> Result<Connection> {
       CREATE INDEX IF NOT EXISTS idx_native_prompt_intents_session ON native_prompt_intents(session_id,consumed_by);
       CREATE TABLE IF NOT EXISTS native_summaries(session_id TEXT PRIMARY KEY, message_count INTEGER NOT NULL, preview TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS native_deleted(session_id TEXT PRIMARY KEY);
+      CREATE TABLE IF NOT EXISTS native_delete_options(session_id TEXT PRIMARY KEY REFERENCES native_deleted(session_id) ON DELETE CASCADE,bot TEXT NOT NULL,owner TEXT NOT NULL,purge INTEGER NOT NULL);
+      CREATE TABLE IF NOT EXISTS native_delete_completed(session_id TEXT PRIMARY KEY REFERENCES native_deleted(session_id) ON DELETE CASCADE);
       CREATE TABLE IF NOT EXISTS native_quarantine(session_id TEXT PRIMARY KEY, error TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS native_fresh(session_id TEXT PRIMARY KEY);
       CREATE TRIGGER IF NOT EXISTS summary_session_insert AFTER INSERT ON native_sessions BEGIN DELETE FROM native_summaries WHERE session_id=NEW.stored_id; END;
@@ -110,18 +112,20 @@ pub fn history_version(conn: &Connection, stored: &str) -> Result<i64> {
         .unwrap_or(0))
 }
 pub fn append(home: &Path, stored: &str, mut message: Value) -> Result<()> {
-    let conn = open(home)?;
-    check_deleted(&conn, stored)?;
+    let mut conn = open(home)?;
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    check_deleted(&tx, stored)?;
     if message.get("timestamp").is_none() {
         message["timestamp"] = json!(common::now());
     }
     if message.get("row_id").is_none() {
         message["row_id"] = json!(id());
     }
-    conn.execute(
+    tx.execute(
         "INSERT INTO native_messages(session_id,seq,message_json) SELECT ?1,COALESCE(MAX(seq),0)+1,?2 FROM native_messages WHERE session_id=?1",
         params![stored, message.to_string()],
     )?;
+    tx.commit()?;
     Ok(())
 }
 pub fn preview(text: &str) -> String {
@@ -176,8 +180,11 @@ pub fn summary(home: &Path, stored: &str) -> Result<Value> {
     Ok(json!({"preview":preview,"message_count":count}))
 }
 pub fn descendants(home: &Path, stored: &str) -> Result<Vec<String>> {
+    descendant_ids(&open(home)?, stored)
+}
+fn descendant_ids(conn: &Connection, stored: &str) -> Result<Vec<String>> {
     common::rows(
-        &open(home)?,
+        conn,
         "WITH RECURSIVE tree(id) AS (SELECT ?1 UNION SELECT s.stored_id FROM native_sessions s JOIN tree t ON json_extract(s.options,'$.parent_session')=t.id) SELECT id FROM tree",
         &[&stored],
     )?
@@ -185,32 +192,98 @@ pub fn descendants(home: &Path, stored: &str) -> Result<Vec<String>> {
     .map(|row| common::required(&row, "id").map(str::to_owned))
     .collect()
 }
+fn mark_targets(conn: &Connection, stored: &str) -> Result<Vec<String>> {
+    let targets = descendant_ids(conn, stored)?;
+    for target in &targets {
+        common::identifier(target)?;
+        if delete_completed(conn, target)? {
+            continue;
+        }
+        conn.execute("INSERT OR IGNORE INTO native_deleted VALUES(?)", [target])?;
+        // Keep ownership after native_sessions and the catalog row have gone,
+        // including when removing the session directory failed.
+        conn.execute(
+            "INSERT OR IGNORE INTO native_delete_options SELECT stored_id,bot,owner,1 FROM native_sessions WHERE stored_id=?",
+            [target],
+        )?;
+    }
+    Ok(targets)
+}
 pub fn mark_deleted(home: &Path, stored: &str) -> Result<Vec<String>> {
     let mut conn = open(home)?;
-    let tx = conn.transaction()?;
-    let targets = descendants(home, stored)?;
-    for target in &targets {
-        tx.execute("INSERT OR IGNORE INTO native_deleted VALUES(?)", [target])?;
-    }
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    let targets = mark_targets(&tx, stored)?;
     tx.commit()?;
     Ok(targets)
 }
+/// Save the requested disposition before the catalog transaction. The root's
+/// catalog ownership also covers sections never opened in the native runtime.
+pub(crate) fn mark_section_deleted(
+    home: &Path,
+    stored: &str,
+    bot: &str,
+    owner: &str,
+    purge: bool,
+) -> Result<()> {
+    let mut conn = open(home)?;
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    for target in mark_targets(&tx, stored)? {
+        tx.execute(
+            "INSERT INTO native_delete_options VALUES(?,?,?,?) ON CONFLICT(session_id) DO UPDATE SET purge=excluded.purge",
+            params![target, bot, owner, purge],
+        )?;
+    }
+    tx.commit()?;
+    Ok(())
+}
 pub fn unmark_deleted(home: &Path, stored: &str) -> Result<()> {
     let mut conn = open(home)?;
-    let tx = conn.transaction()?;
-    for target in descendants(home, stored)? {
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    for target in descendant_ids(&tx, stored)? {
         tx.execute("DELETE FROM native_deleted WHERE session_id=?", [target])?;
     }
     tx.commit()?;
     Ok(())
 }
+pub fn owned_sessions(home: &Path, bot: &str) -> Result<Vec<Value>> {
+    common::rows(
+        &open(home)?,
+        "SELECT stored_id,owner FROM (SELECT stored_id,owner,bot FROM native_sessions UNION SELECT session_id AS stored_id,owner,bot FROM native_delete_options) WHERE bot=?1 AND stored_id NOT IN (SELECT session_id FROM native_delete_completed)",
+        &[&bot],
+    )
+}
+fn delete_completed(conn: &Connection, stored: &str) -> Result<bool> {
+    Ok(conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM native_delete_completed WHERE session_id=?)",
+        [stored],
+        |r| r.get(0),
+    )?)
+}
+/// Purge native rows, files and identifiable legacy history before recording
+/// completion. The permanent tombstone still rejects late opens and writes.
 pub fn delete(home: &Path, stored: &str) -> Result<()> {
-    common::identifier(stored)?;
-    let targets = descendants(home, stored)?;
+    // Commit every descendant's ownership and purge intent before any rows go.
+    // A retry can then find children whose parent relationship was removed.
+    let mut conn = open(home)?;
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    let targets = mark_targets(&tx, stored)?;
+    for target in &targets {
+        // An explicit delete retries even a completed ID, for example when
+        // removing a newly replaced leaf symlink. Startup and owner cleanup
+        // select only unfinished IDs.
+        tx.execute(
+            "DELETE FROM native_delete_completed WHERE session_id=?",
+            [target],
+        )?;
+        tx.execute(
+            "UPDATE native_delete_options SET purge=1 WHERE session_id=?",
+            [target],
+        )?;
+    }
+    tx.commit()?;
     for stored in targets.iter().rev() {
         let mut conn = open(home)?;
         let tx = conn.transaction()?;
-        tx.execute("INSERT OR IGNORE INTO native_deleted VALUES(?)", [stored])?;
         tx.execute("DELETE FROM native_summaries WHERE session_id=?", [stored])?;
         tx.execute("DELETE FROM native_quarantine WHERE session_id=?", [stored])?;
         tx.execute("DELETE FROM native_fresh WHERE session_id=?", [stored])?;
@@ -228,10 +301,44 @@ pub fn delete(home: &Path, stored: &str) -> Result<()> {
         )?;
         tx.execute("DELETE FROM native_sessions WHERE stored_id=?", [stored])?;
         tx.commit()?;
-        let path = home.join("runtime/sessions").join(stored);
-        if path.exists() {
-            fs::remove_dir_all(path)?;
+        remove_session_files(home, stored)?;
+        if let Some(bot) = conn
+            .query_row(
+                "SELECT bot FROM native_delete_options WHERE session_id=?",
+                [stored],
+                |r| r.get::<_, String>(0),
+            )
+            .optional()?
+        {
+            crate::catalog::purge_legacy_history(home, &bot, stored)?;
         }
+        // Older ownerless tombstones cannot identify a legacy database. Keep
+        // that compatibility behavior while completing the native cleanup.
+        conn.execute(
+            "INSERT OR IGNORE INTO native_delete_completed VALUES(?)",
+            [stored],
+        )?;
+    }
+    Ok(())
+}
+fn remove_session_files(home: &Path, stored: &str) -> Result<()> {
+    common::identifier(stored)?;
+    // Never follow a replaced parent folder out of the daemon home. A leaf
+    // symlink can be unlinked safely, including a dangling one.
+    for parent in [home.join("runtime"), home.join("runtime/sessions")] {
+        if fs::symlink_metadata(parent).is_ok_and(|m| m.file_type().is_symlink()) {
+            return Err(crate::Error::new(
+                4202,
+                "session path must not contain symlinks",
+            ));
+        }
+    }
+    let path = home.join("runtime/sessions").join(stored);
+    match fs::symlink_metadata(&path) {
+        Ok(meta) if meta.is_dir() => fs::remove_dir_all(path)?,
+        Ok(_) => fs::remove_file(path)?,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
+        Err(error) => return Err(error.into()),
     }
     Ok(())
 }
@@ -290,44 +397,42 @@ pub fn fresh(home: &Path, stored: &str) -> Result<bool> {
         |r| r.get(0),
     )?)
 }
-/// Finishes the deletes a stop cut short, before the runtime starts. A
-/// section is tombstoned, then loses its catalog row, then its history. One
-/// whose row is still there was never deleted and opens again; one whose row
-/// is gone loses what is left of its history here. Rows in a bot's older
-/// `state.db` stay: no section reads them any more.
+/// Finish interrupted destructive deletes before the runtime starts. A catalog
+/// row still present rolls back its tombstone tree. Otherwise retention is
+/// permanent; old tombstones without options keep their original purge behavior.
 pub fn finish_deletes(home: &Path) -> Result<()> {
     let tombstones = open(home)?
-        .prepare("SELECT session_id FROM native_deleted")?
-        .query_map([], |r| r.get::<_, String>(0))?
+        .prepare("SELECT d.session_id,COALESCE(o.purge,1)<>0,c.session_id IS NOT NULL FROM native_deleted d LEFT JOIN native_delete_options o USING(session_id) LEFT JOIN native_delete_completed c USING(session_id)")?
+        .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, bool>(1)?, r.get::<_, bool>(2)?)))?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     let catalog = crate::db::open(home)?;
-    let mut gone = vec![];
-    for id in tombstones {
-        let listed: bool = catalog.query_row(
-            "SELECT EXISTS(SELECT 1 FROM sections WHERE id=?)",
-            [&id],
-            |r| r.get(0),
-        )?;
-        if listed {
-            unmark_deleted(home, &id)?;
-        } else {
-            gone.push(id);
+    let listed = catalog
+        .prepare("SELECT id FROM sections")?
+        .query_map([], |r| r.get::<_, String>(0))?
+        .collect::<rusqlite::Result<HashSet<_>>>()?;
+    // Roll back whole trees first. A child in the original snapshot may have
+    // lost its tombstone when its still-listed parent was rolled back.
+    for (id, _, _) in &tombstones {
+        if listed.contains(id) {
+            unmark_deleted(home, id)?;
         }
     }
     let conn = open(home)?;
-    for id in gone {
-        // A delegated task of a section that stays was untombstoned with it.
-        let (deleted, left): (bool, bool) = conn.query_row(
-            "SELECT EXISTS(SELECT 1 FROM native_deleted WHERE session_id=?1), EXISTS(SELECT 1 FROM native_sessions WHERE stored_id=?1) OR EXISTS(SELECT 1 FROM native_messages WHERE session_id=?1) OR EXISTS(SELECT 1 FROM native_pi_journal WHERE session_id=?1)",
-            [&id],
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        )?;
-        // One leftover that will not go must not keep the others.
-        if deleted
-            && (left || home.join("runtime/sessions").join(&id).exists())
-            && let Err(error) = delete(home, &id)
-        {
-            eprintln!("Could not finish deleting {id}: {}", error.message);
+    for (id, purge, completed) in tombstones {
+        if purge && !completed && !listed.contains(&id) {
+            let pending: bool = conn.query_row(
+                "SELECT EXISTS(SELECT 1 FROM native_deleted WHERE session_id=?1) AND NOT EXISTS(SELECT 1 FROM native_delete_completed WHERE session_id=?1)",
+                [&id],
+                |r| r.get(0),
+            )?;
+            if !pending {
+                continue;
+            }
+            // One leftover that will not go must not keep the others. Failed
+            // native, file or legacy cleanup leaves no completion marker.
+            if let Err(error) = delete(home, &id) {
+                eprintln!("Could not finish deleting {id}: {}", error.message);
+            }
         }
     }
     Ok(())
@@ -746,8 +851,12 @@ pub fn stage_prompt(home: &Path, stored: &str, text: &str, display: &str) -> Res
     if !matches!(display, "normal" | "hidden") {
         return Err(crate::Error::new(4202, "invalid prompt display kind"));
     }
+    let mut conn = open(home)?;
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    check_deleted(&tx, stored)?;
     let id = id();
-    open(home)?.execute("INSERT INTO native_prompt_intents(id,session_id,text,display_kind,created_at) VALUES (?,?,?,?,?)",params![id,stored,text,display,common::now()])?;
+    tx.execute("INSERT INTO native_prompt_intents(id,session_id,text,display_kind,created_at) VALUES (?,?,?,?,?)",params![id,stored,text,display,common::now()])?;
+    tx.commit()?;
     Ok(id)
 }
 pub fn reject_prompt(home: &Path, stored: &str, intent: &str) -> Result<()> {
@@ -1054,6 +1163,7 @@ pub fn reconcile(home: &Path, bot: &str, stored: &str, owner: &str) -> Result<()
     let active = active_ids(&entries)?;
     let mut conn = open(home)?;
     let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    check_deleted(&tx, stored)?;
     let known: Option<(String, String)> = tx
         .query_row(
             "SELECT owner,bot FROM native_sessions WHERE stored_id=?",
@@ -1460,7 +1570,7 @@ pub fn reconcile_all(home: &Path) -> Result<BTreeSet<String>> {
     let mut unrecovered = BTreeSet::new();
     let sessions = common::rows(
         &open(home)?,
-        "SELECT stored_id,owner,bot FROM native_sessions ORDER BY stored_id",
+        "SELECT stored_id,owner,bot FROM native_sessions WHERE stored_id NOT IN (SELECT session_id FROM native_deleted) ORDER BY stored_id",
         &[],
     )?;
     for session in sessions {
@@ -1535,7 +1645,7 @@ fn check_quarantine(home: &Path, stored: &str) -> Result<()> {
     Ok(())
 }
 
-fn check_deleted(conn: &Connection, stored: &str) -> Result<()> {
+pub(crate) fn check_deleted(conn: &Connection, stored: &str) -> Result<()> {
     let deleted: bool = conn.query_row(
         "SELECT EXISTS(SELECT 1 FROM native_deleted WHERE session_id=?)",
         [stored],

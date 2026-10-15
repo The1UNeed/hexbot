@@ -1479,15 +1479,21 @@ fn update_bot(home: &Path, caller: &str, p: &Value) -> Result<Value> {
     crate::settings::mirror(home, &profile(home, name)?)?;
     Ok(json!({"bot":bot(home,caller,name)?}))
 }
-/// The catalog row goes first, in a transaction of its own, and the history
-/// after it: a stop before the row goes leaves the section as it was, and one
-/// after leaves history no section reads, which the next start removes
-/// (`runtime_store::finish_deletes`). With `purge` the bot's older store loses
-/// the section too.
+/// The tombstone and retention choice precede the catalog transaction. History
+/// goes only after that transaction commits and only for a destructive delete.
 fn delete_section(home: &Path, caller: &str, id: &str, purge: bool) -> Result<()> {
     let row = section_row(home, caller, id)?;
     // Tombstoned first, so nothing opens it or writes to it again.
-    runtime_store::mark_deleted(home, id)?;
+    if let Err(error) = runtime_store::mark_section_deleted(
+        home,
+        id,
+        required(&row, "bot")?,
+        required(&row, "owner_id")?,
+        purge,
+    ) {
+        runtime_store::unmark_deleted(home, id)?;
+        return Err(error);
+    }
     let removed = (|| {
         let mut conn = db::open(home)?;
         let tx = conn.transaction()?;
@@ -1508,26 +1514,25 @@ fn delete_section(home: &Path, caller: &str, id: &str, purge: bool) -> Result<()
         runtime_store::unmark_deleted(home, id)?;
         return Err(error);
     }
-    let purged = (|| {
-        runtime_store::delete(home, id)?;
-        if purge {
-            let path = profile(home, row["bot"].as_str().unwrap_or(""))?.join("state.db");
-            safe(home, &path)?;
-            if path.exists() {
-                let mut conn = Connection::open(path)?;
-                conn.busy_timeout(std::time::Duration::from_secs(10))?;
-                let tx = conn.transaction()?;
-                for key in legacy_ids(&tx, id)? {
-                    tx.execute("DELETE FROM messages WHERE session_id=?", [&key])?;
-                    tx.execute("DELETE FROM sessions WHERE id=?", [&key])?;
-                }
-                tx.commit()?;
-            }
-        }
-        Ok::<_, Error>(())
-    })();
-    if let Err(error) = purged {
+    if purge && let Err(error) = runtime_store::delete(home, id) {
         eprintln!("Deleted section {id}, but not all of its history yet: {error}");
+    }
+    Ok(())
+}
+
+/// Retryable after the catalog row and native session metadata have gone.
+pub(crate) fn purge_legacy_history(home: &Path, bot: &str, id: &str) -> Result<()> {
+    let path = profile(home, bot)?.join("state.db");
+    safe(home, &path)?;
+    if path.try_exists()? {
+        let mut conn = Connection::open(path)?;
+        conn.busy_timeout(std::time::Duration::from_secs(10))?;
+        let tx = conn.transaction()?;
+        for key in legacy_ids(&tx, id)? {
+            tx.execute("DELETE FROM messages WHERE session_id=?", [&key])?;
+            tx.execute("DELETE FROM sessions WHERE id=?", [&key])?;
+        }
+        tx.commit()?;
     }
     Ok(())
 }
@@ -1583,6 +1588,11 @@ pub fn call(home: &Path, caller: &str, method: &str, p: &Value) -> Option<Result
                 &json!({"bot":name,"include_archived":true,"include_threads":true}),
             )? {
                 delete_section(home, caller, s["id"].as_str().unwrap_or(""), true)?;
+            }
+            // Retained sections have no catalog row. Include hidden sessions and
+            // tombstone ownership left behind by interrupted file removal.
+            for session in runtime_store::owned_sessions(home, name)? {
+                runtime_store::delete(home, required(&session, "stored_id")?)?;
             }
             // Threads where this bot asked others stay with them, closed: a new bot with the
             // same name starts its own.

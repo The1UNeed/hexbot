@@ -1743,14 +1743,9 @@ impl Runtime {
         Ok(false)
     }
     pub async fn delete_stored(&self, owner: &str, stored: &str) -> Result<()> {
-        let targets = self.retire_stored(owner, stored).await?;
-        let result = store::delete(&self.home, stored);
-        if result.is_err() {
-            for target in targets {
-                store::unmark_deleted(&self.home, &target)?;
-            }
-        }
-        result
+        self.retire_stored(owner, stored).await?;
+        // A partial purge must remain blocked and discoverable for cleanup.
+        store::delete(&self.home, stored)
     }
     /// Tombstones a section and its delegated tasks and stops them, ready for
     /// the catalog to delete it. Returns what it tombstoned.
@@ -3007,6 +3002,7 @@ impl Runtime {
                     let session = session
                         .upgrade()
                         .ok_or_else(|| Error::new(5201, "session closed"))?;
+                    store::check_deleted(&store::open(&runtime.home)?, &session.stored)?;
                     let saved: String = store::open(&runtime.home)?.query_row(
                         "SELECT options FROM native_sessions WHERE stored_id=?",
                         [&session.stored],
@@ -3101,6 +3097,7 @@ impl Runtime {
     }
     async fn tool(&self, s: &Arc<Live>, name: &str, args: &Value) -> Result<Value> {
         common::bot_owner(&self.home, &s.owner, &s.bot)?;
+        store::check_deleted(&store::open(&self.home)?, &s.stored)?;
         let bot_owner: String = db::open(&self.home)?.query_row(
             "SELECT owner_id FROM bots WHERE name=?",
             [&s.bot],
