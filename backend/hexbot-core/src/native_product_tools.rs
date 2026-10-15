@@ -830,16 +830,20 @@ fn read_session(
                 "SELECT * FROM messages WHERE session_id=? ORDER BY id",
                 &[&legacy_id],
             )? {
+                // A dream report an earlier build posted is not the bot speaking.
+                // Judged on the stored row: a reply with tool calls or other
+                // content can share a report's text once flattened.
+                if runtime_store::dream_report_text(&row)
+                    .is_some_and(|text| reports.contains(&text))
+                {
+                    continue;
+                }
                 let content = row["content"].as_str().unwrap_or("");
                 let content = serde_json::from_str::<Value>(content)
                     .ok()
                     .filter(Value::is_array)
                     .map(|v| runtime_store::text(&v))
                     .unwrap_or_else(|| content.to_owned());
-                // A dream report an earlier build posted is not the bot speaking.
-                if row["role"] == "assistant" && reports.contains(&content) {
-                    continue;
-                }
                 messages.push(json!({
                     "id": row["id"],
                     "role": row["role"],
