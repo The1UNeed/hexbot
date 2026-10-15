@@ -384,6 +384,20 @@ pub fn build_digest(
             &[&bot],
         )? {
             let id = section["id"].as_str().unwrap_or("");
+            let native = runtime_store::open(home)?;
+            let unavailable: bool = native.query_row(
+                "SELECT EXISTS(SELECT 1 FROM native_unrecovered WHERE session_id=?1) OR EXISTS(SELECT 1 FROM native_quarantine WHERE session_id=?1)",
+                [id],
+                |r| r.get(0),
+            )?;
+            if unavailable {
+                // A projection can predate durable messages that recovery has
+                // not read yet, even when its adoption version is unchanged.
+                return Err(Error::new(
+                    5200,
+                    format!("Conversation {id} must be recovered before dreaming"),
+                ));
+            }
             if let Some(replacement) = adopted[id]["target"].as_str() {
                 let exists: bool = conn.query_row(
                     "SELECT EXISTS(SELECT 1 FROM sections WHERE id=?)",
@@ -399,17 +413,25 @@ pub fn build_digest(
             }
             let mut transcript = vec![];
             let mut latest = 0f64;
-            let native_exists = if home.join("hexbot-runtime.db").exists() {
-                runtime_store::open(home)?.query_row(
+            let fresh = runtime_store::fresh(home, id)?;
+            let native_exists = fresh
+                || native.query_row(
                     "SELECT EXISTS(SELECT 1 FROM native_sessions WHERE stored_id=?1) OR EXISTS(SELECT 1 FROM native_messages WHERE session_id=?1)",
                     [id],
                     |row| row.get::<_, bool>(0),
-                )?
-            } else {
-                false
-            };
+                )?;
+            // Runtime saves options before importing. Only a fresh section or
+            // the JSONL written after the import transaction proves that an
+            // existing legacy transcript is no longer needed here.
+            let native_complete = fresh
+                || home
+                    .join("runtime/sessions")
+                    .join(id)
+                    .join("conversation.jsonl")
+                    .try_exists()?
+                || !legacy_path.try_exists()?;
             let mut compactions = vec![];
-            if native_exists {
+            if native_exists && native_complete {
                 if let Some(reports) = &native_reports {
                     // Use the same structural evidence as the catalog classifier.
                     // Raw tool/reasoning blocks can disprove an old display marker.
