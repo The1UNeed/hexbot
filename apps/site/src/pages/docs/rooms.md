@@ -34,6 +34,8 @@ A daemon belongs to one person, so you are the only person in its rooms. Rooms w
 
 Archiving hides a room but keeps its history. Deleting it removes the room and its history; each bot's own memory is left as it is.
 
+While a room is being deleted, new messages and bot starts are refused. Closing the app lets the daemon finish deletion. If another bot joins while the last bot is being removed, the room stays available.
+
 ## Bots working together
 
 A bot can ask another of your bots for help, outside any room. Each bot has a description that the others read to decide whom to ask. Write it in the bot's settings under Profile. If you leave it blank, Hexbot writes one from the bot's soul and keeps it out of sight. A bot learns who is on its team when its chat starts, and again when the chat summarises older messages, so a new bot or a changed description reaches it then.

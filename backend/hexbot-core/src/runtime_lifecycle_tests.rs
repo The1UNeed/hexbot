@@ -4255,6 +4255,10 @@ async fn event_persistence_waits_off_workers_and_preserves_message_order() {
 #[tokio::test]
 async fn concurrent_deliveries_reserve_writes_before_reading_the_target_section() {
     let (home, runtime, _) = setup();
+    db::open(home.path())
+        .unwrap()
+        .execute("INSERT INTO bots(name,owner_id) VALUES('cat','alice')", [])
+        .unwrap();
     open(&runtime).await;
     let s = runtime.sessions.lock().unwrap()["first"].clone();
     let barrier = std::sync::Barrier::new(8);

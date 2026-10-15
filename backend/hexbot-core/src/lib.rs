@@ -3,6 +3,7 @@
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
 compile_error!("The Hexbot daemon supports macOS and Linux only");
 
+mod admission;
 pub mod auth;
 pub mod catalog;
 pub mod cli;
