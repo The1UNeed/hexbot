@@ -49,7 +49,7 @@ Use **Stop** to interrupt a running answer. The section stays available, and you
 
 Archiving hides a section from the active list and keeps its history. To bring it back, find it in Settings, Archive, where you can search titles, first messages, and bot names, or filter by bot, and choose Restore. The bot's Sections settings list its archived sections too. Deleting removes that section and its history permanently. It leaves the bot's memory alone; edit Memory separately when you want to remove a remembered fact.
 
-A failed turn in an archived section no longer gives the bot a Stopped status. Restoring the section brings its failure back until you retry or clear it. Deleting the section clears only its private turn failures. Connector problems and failures in rooms or other conversations remain.
+A failed turn in an archived section does not give the bot a Stopped status. Restoring the section brings its failure back until you retry or clear it. Deleting the section clears only its private turn failures. Connector problems and failures in rooms or other conversations remain.
 
 Deleting the bot removes its profile, sections, memory, and scheduled jobs. Stop its active work first. Back up the daemon's data directory before removing a bot you may need again.
 

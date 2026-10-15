@@ -26,7 +26,7 @@ When a limit is reached, the room shows a notice and stays idle until you send a
 
 Tool approvals appear in the room like approvals in a normal section. A room can use its own approval mode. Reloading restores open approval and question cards. A tool reads "Running" until it completes, including while it waits for approval.
 
-When Stopped shows a failed room turn, it identifies the room, including after the daemon restarts. Hexbot also recovers the room for older failures when that bot's saved conversation belongs to exactly one of your rooms.
+The daemon stores room context with failures recorded by the bot runtime and preserves it across restarts. It also recovers the room for older failures when that bot's saved conversation belongs to exactly one of your rooms.
 
 ## Membership and history
 
