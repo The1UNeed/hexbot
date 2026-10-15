@@ -30,14 +30,14 @@ export function DeleteBot({ bot, onDelete }: { bot: Bot; onDelete: () => Promise
             </Button>
           )
         }
-        description="Removes the bot, every section, and its memory."
+        description="Removes the bot, its chat, and its memory."
         title="Delete bot"
       />
       {confirming ? (
         <div className="hex-fade space-y-3 px-4 py-4">
           <p className="text-[length:var(--text-secondary)]">
-            Type <strong className="font-semibold">{bot.name}</strong> to delete this bot and all of
-            its sections.
+            Type <strong className="font-semibold">{bot.name}</strong> to delete this bot and its
+            chat.
           </p>
           <Input
             aria-label="Confirm bot name"

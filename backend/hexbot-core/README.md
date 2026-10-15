@@ -105,6 +105,17 @@ it also installs over SSH when nobody is signed in at the screen.
   directory. Existing Python `state.db` history is imported once, including
   hidden and tool messages. New native turns are not mirrored into legacy
   Python history. There is no Python rollback package.
+  Section deletion commits its catalog decision before purging history.
+  Requested legacy purges persist exact native targets, bot, owner and the
+  decision root in `native_delete_options`/`native_delete_pending`, then save
+  identifiable legacy IDs before removing native relationships. Startup retries
+  incomplete cleanup even when native rows and files are gone. Completed
+  targets remain tombstoned. A failed catalog decision rolls back its own
+  request without changing raw history or frozen options. `purge_memory: false`
+  still purges native history and leaves legacy history alone. Old tombstones
+  without ownership metadata retain their native-only recovery behavior.
+  The one-shot upgrade backup already copies the entire runtime database,
+  including these requests; cleanup retries do not rerun its deletion plan.
   Session recovery reconciles Pi's durable log with native history and usage;
   replaying an already recorded message does not duplicate it or its cost.
   `native_history_versions` counts, by trigger, every change to a session's
@@ -128,8 +139,10 @@ it also installs over SSH when nobody is signed in at the screen.
   sections require no transcript reads. A deleted section disappears at the
   next query, and `delete` drops its version row with the rest of its history.
 - Settled Pi processes retire after 15 idle minutes. Session IDs remain valid;
-  a later RPC resumes the durable session. Staged files and pending questions
-  prevent retirement. Replay retention is bounded by session count and bytes.
+  a later RPC resumes the durable session. Staged files, pending questions,
+  and uploads or messages still on their way in prevent retirement; that
+  includes the restart that moves a chat to new tools or a new model. Replay
+  retention is bounded by session count and bytes.
 - `profiles/<bot>/pi/` is the bot's Pi agent directory. The daemon rewrites
   `auth.json`, `models.json`, and the `compaction` key of `settings.json`
   atomically before every Pi start and whenever credentials change; other
@@ -344,7 +357,7 @@ level sends Apple Events. A command that needs more sets `full_access` with a
 `reason` on the bash tool. Manual asks the user; Auto reviews the command and
 asks about risky or unreviewable steps. An allowed command runs with the
 sandbox's base layer only. File-tool writes to shell profiles and login items
-use user approval, subject to explicit section grants; full-access shell
+use user approval, subject to an explicit Allow for now; full-access shell
 commands use model review. In Manual the shell sandbox is read-only and every
 file change asks. Manual scheduled scripts cannot write artifacts. Manual asks
 before browser page scripts; Auto reviews them. Both modes ask before
@@ -384,7 +397,7 @@ restricted bridge for provider authentication, request adaptation and tool-free
 ACP completion. Reported reviewer usage is recorded without chat text and
 counts toward section totals, room turn budgets and daily token budgets.
 Reviewed Auto cards offer Approve and Deny only, and never use remembered
-section grants.
+Allow for now grants.
 
 The workspace scan is breadth-first, through three nested folders, skipping
 policy dependency/runtime folders and shared temporary roots. Manual searches
@@ -440,7 +453,7 @@ is missing or cannot start, a startup warning records the lack of OS isolation,
 `hexbot.info` reports `sandbox: null` so Settings can show a notice,
 Manual and Auto require user approval for shell commands and code runs,
 including full-access commands. Model review cannot replace that approval;
-an explicit section grant can cover later shell requests. Scheduled scripts
+an explicit Allow for now can cover later shell requests. Scheduled scripts
 refuse to run.
 Provider keys reach the agent through its auth file. The selected Bedrock or Vertex provider also receives its cloud environment settings; shell and scheduled script children do not.
 The Python environment does not include `HEXBOT_HOME`.
@@ -481,8 +494,8 @@ rejected; new sections skip existing SSE entries with a warning.
 
 Manual asks for every connected-tool call. Auto runs tools with
 `readOnlyHint: true` freely and reviews other calls individually. Resource tools
-are read-only. In Manual, Allow in this section covers that server until the Pi
-process ends. Reviewed Auto calls offer no section grant. Bypass never asks.
+are read-only. In Manual, Allow for now covers that server until the Pi
+process ends. Reviewed Auto calls never offer it. Bypass never asks.
 Codemode itself needs no approval, but every nested tool call passes the same gates.
 Its QuickJS worker has no Node, filesystem, or network globals. Its `models`
 helpers can call provider APIs using session credentials and incur costs.
@@ -535,7 +548,11 @@ Pi's changing server section is hidden by the forced-prompt projection.
 
 Hidden turns include prompt submission in their 30-minute deadline.
 Recovery quarantines damaged data; transient I/O or SQLite failures leave the
-files in place for a later attempt. A quarantined section moves its
+files in place for a later attempt. Startup records transient failures in
+`native_unrecovered` so canonical chat lookup can skip those sections without
+repeating recovery under the catalog write lock. A later successful startup
+recovery clears the record. Filesystem access errors count as failures, never
+as missing logs. A quarantined section moves its
 `conversation.jsonl` aside as `conversation.quarantine-<id>.jsonl` and refuses
 to open until a `conversation.jsonl` is put back; the next daemon start then
 recovers that file and lifts the quarantine if it is sound.

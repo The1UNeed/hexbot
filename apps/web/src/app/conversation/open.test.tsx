@@ -1,0 +1,214 @@
+import { JsonRpcGatewayError } from '@hermes/shared'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
+
+import { setActiveRpc } from '../../lib/rpc'
+import type { Bot, DaemonInfo, Section } from '../../lib/types'
+import { useBots } from '../../stores/bots'
+import { useConnection } from '../../stores/connection'
+import { useSections } from '../../stores/sections'
+import { useTranscripts } from '../../stores/transcripts'
+import { useUi } from '../../stores/ui'
+
+import { ConversationColumn } from './index'
+
+const navigate = vi.fn()
+let params = { bot: 'owl', section: 'old' }
+vi.mock('@tanstack/react-router', () => {
+  const router = {
+    matchRoutes: () => [{ params: params }],
+    history: { location: {}, subscribe: () => () => {} },
+    subscribe: () => () => {}
+  }
+
+  return {
+    useRouter: () => router,
+    useNavigate: () => navigate,
+    useParams: () => params
+  }
+})
+
+const section = (id: string, live: string | null = null) =>
+  ({
+    id,
+    bot: 'owl',
+    title: 'Trip',
+    live_session_id: live,
+    archived_at: null,
+    message_count: 1,
+    peer_bot: null
+  }) as Section
+
+const remembered = { bot: 'owl', section: 'old' }
+
+const deferred = () => {
+  let resolve!: (value: unknown) => void
+  let reject!: (error: Error) => void
+
+  const promise = new Promise((yes, no) => {
+    resolve = yes
+    reject = no
+  })
+
+  return { promise, resolve, reject }
+}
+
+let call: ReturnType<typeof vi.fn>
+
+const reply = (method: string, input: { id?: string } = {}) =>
+  Promise.resolve(
+    method === 'hexbot.sections.open'
+      ? { section: section(input.id ?? 'old', `live-${input.id}`), messages: [] }
+      : method === 'hexbot.sections.create'
+        ? { section: section(params.section) }
+        : { connectors: [] }
+  )
+
+beforeEach(() => {
+  params = { bot: 'owl', section: 'old' }
+  navigate.mockReset()
+  Element.prototype.scrollIntoView = vi.fn()
+  useConnection.setState({
+    target: { kind: 'local' },
+    epoch: 'first',
+    daemon: { one_chat: true } as DaemonInfo
+  })
+  useBots.setState({ byName: { owl: { name: 'owl', display_name: 'Owl' } as Bot }, loaded: true })
+  useSections.setState({
+    byId: { old: section('old') },
+    idsByBot: { owl: ['old'] },
+    liveSessionId: {},
+    choosing: null
+  })
+  useTranscripts.setState({ bySession: {} })
+  useUi.setState({ lastSection: remembered })
+  call = vi.fn(reply)
+  setActiveRpc({ call } as never)
+})
+
+it.each([
+  new JsonRpcGatewayError('Provider preparation failed', { code: 5200 }),
+  new JsonRpcGatewayError('Pi session not found', { code: 4001 }),
+  new Error('Network disconnected')
+])('keeps the selected route and retries a temporary open failure: %s', async error => {
+  let attempts = 0
+  call.mockImplementation((method: string, input: { id?: string }) => {
+    if (method === 'hexbot.sections.open' && attempts++ === 0) {
+      return Promise.reject(error)
+    }
+
+    return reply(method, input)
+  })
+  render(<ConversationColumn />)
+  expect(await screen.findByRole('alert')).toHaveTextContent(error.message)
+  expect(useUi.getState().lastSection).toEqual(remembered)
+  expect(call.mock.calls.filter(([method]) => method === 'hexbot.sections.create')).toHaveLength(1)
+  expect(attempts).toBe(1)
+  fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
+  await waitFor(() => expect(useSections.getState().liveSessionId.old).toBe('live-old'))
+  expect(screen.queryByRole('alert')).toBeNull()
+  expect(navigate).not.toHaveBeenCalled()
+  expect(useUi.getState().lastSection).toEqual(remembered)
+  expect(attempts).toBe(2)
+})
+it('redirects a genuinely deleted old ID to the canonical chat', async () => {
+  call.mockImplementation((method: string, input: { id?: string }) => {
+    if (method === 'hexbot.sections.open') {
+      return Promise.reject(new JsonRpcGatewayError('section not found', { code: 4204 }))
+    }
+
+    if (method === 'hexbot.sections.create') {
+      return Promise.resolve({ section: section('canonical') })
+    }
+
+    return reply(method, input)
+  })
+  render(<ConversationColumn />)
+  await waitFor(() =>
+    expect(navigate).toHaveBeenCalledWith({
+      to: '/b/$bot/s/$section',
+      params: { bot: 'owl', section: 'canonical' },
+      replace: true
+    })
+  )
+})
+it('offers Retry when a missing reply resolves to the same catalog ID', async () => {
+  call.mockImplementation((method: string, input: { id?: string }) =>
+    method === 'hexbot.sections.open'
+      ? Promise.reject(new JsonRpcGatewayError('section not found', { code: 4204 }))
+      : reply(method, input)
+  )
+  render(<ConversationColumn />)
+  expect(await screen.findByRole('button', { name: 'Retry' })).toBeVisible()
+  expect(screen.queryByText('This chat is no longer available')).toBeNull()
+  expect(useUi.getState().lastSection).toEqual(remembered)
+  expect(navigate).not.toHaveBeenCalled()
+})
+it.each(['navigate', 'daemon', 'unmount'] as const)(
+  'ignores a late missing-section failure after %s',
+  async action => {
+    const old = deferred()
+    let held = false
+    call.mockImplementation((method: string, input: { id?: string }) => {
+      if (method === 'hexbot.sections.open' && input.id === 'old' && !held) {
+        held = true
+
+        return old.promise
+      }
+
+      return reply(method, input)
+    })
+    const view = render(<ConversationColumn />)
+    await waitFor(() => expect(held).toBe(true))
+
+    const canonicalCalls = call.mock.calls.filter(
+      ([method]) => method === 'hexbot.sections.create'
+    ).length
+
+    if (action === 'navigate') {
+      params = { bot: 'owl', section: 'new' }
+      view.rerender(<ConversationColumn />)
+    }
+
+    if (action === 'daemon') {
+      act(() =>
+        useConnection.setState({ target: { kind: 'local', origin: 'http://another-daemon' } })
+      )
+    }
+
+    if (action === 'unmount') {
+      view.unmount()
+    }
+
+    await act(async () => {
+      old.reject(new JsonRpcGatewayError('section not found', { code: 4204 }))
+    })
+    expect(call.mock.calls.filter(([method]) => method === 'hexbot.sections.create')).toHaveLength(
+      canonicalCalls + (action === 'daemon' ? 1 : 0)
+    )
+    expect(navigate).not.toHaveBeenCalled()
+    expect(useUi.getState().lastSection).toEqual(remembered)
+  }
+)
+it('ignores late canonical resolution after navigation', async () => {
+  const canonical = deferred()
+  call.mockImplementation((method: string, input: { id?: string }) => {
+    if (method === 'hexbot.sections.open' && input.id === 'old') {
+      return Promise.reject(new JsonRpcGatewayError('section not found', { code: 4204 }))
+    }
+
+    if (method === 'hexbot.sections.create') {
+      return canonical.promise
+    }
+
+    return reply(method, input)
+  })
+  const view = render(<ConversationColumn />)
+  await waitFor(() => expect(call).toHaveBeenCalledWith('hexbot.sections.create', { bot: 'owl' }))
+  params = { bot: 'owl', section: 'new' }
+  view.rerender(<ConversationColumn />)
+  await act(async () => {
+    canonical.resolve({ section: section('canonical') })
+  })
+  expect(navigate).not.toHaveBeenCalled()
+  expect(useUi.getState().lastSection).toEqual(remembered)
+})

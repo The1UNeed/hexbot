@@ -172,7 +172,7 @@ describe('approvals and questions in a room', () => {
 
   it.each([
     ['Approve', 'once'],
-    ['Allow in this section', 'session'],
+    ['Allow for now', 'session'],
     ['Deny', 'deny']
   ])(
     'shows the owner the card on the live turn; %s answers it and it goes',

@@ -8,7 +8,7 @@ Each bot has its own soul and memory. About you is shared by all of your bots, a
 
 ## Soul
 
-A bot's soul is who it is: how it behaves and speaks. You edit it in the bot's settings under Soul. The bot may edit it too, when you ask it to change or when it learns how you want it to work, and it tells you when it does. A change to the soul applies from the next section you start. Long sections can also pick it up after compaction, as described below.
+A bot's soul is who it is: how it behaves and speaks. You edit it in the bot's settings under Soul. The bot may edit it too, when you ask it to change or when it learns how you want it to work, and it tells you when it does. The bot's chat picks up a change to the soul after it next summarises older messages, as described below.
 
 ## Memory
 
@@ -24,11 +24,11 @@ You can read, edit, and delete notes by day in the bot's settings under Memory. 
 
 Whenever a bot writes to its memory, its notes, or its soul during a conversation, a small "Memory updated", "Note added", or "Soul updated" mark appears under its reply. Open it to see what changed.
 
-Hexbot includes each bot's own memory in its starting prompt. Each bot also has searchable history over its own sections and the rooms it belongs to. Starting a new section gives the conversation a new context window without erasing that history.
+Hexbot includes each bot's own memory in its starting prompt. Each bot also has searchable history over its chat, from before the chat's latest summary, and the rooms it belongs to.
 
-A new section reads the current soul, memory, and About you text into its starting context. Sections started on Hexbot 0.1.6 or later can pick up changes after Hexbot compacts them, usually from your next message. If the bot is still working when it compacts, it keeps the earlier text until the next compaction. Sections started on an earlier version keep their starting text, as do sections whose built-in instructions or tools changed in an update. After editing these settings, start a new section when you need the bot to begin with the updated text right away. In-conversation memory edits remain part of the conversation that made them.
+The chat reads the current soul, memory, and About you text into its starting context and picks up changes after Hexbot compacts it, usually from your next message. If the bot is still working when it compacts, it keeps the earlier text until the next compaction. A change to the bot's tools or connectors, or an update that changes Hexbot's tools, also brings the current text in from your next message. In-conversation memory edits remain part of the conversation that made them.
 
-Archiving a section hides it from the active list. Deleting a section removes the conversation and its history. The bot's memory and notes stay as they are; edit them yourself if something should go. Treat deletion as permanent. Deleting a bot deletes its notes with it.
+A chat is never archived or deleted on its own. The bot's memory and notes stay as they are until you or a dream edit them. Deleting a bot deletes its chat and notes with it; treat that as permanent.
 
 ## About you
 

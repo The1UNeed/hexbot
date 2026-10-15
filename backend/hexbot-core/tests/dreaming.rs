@@ -130,34 +130,52 @@ fn digest_preserves_archived_sources_filters_time_and_caps_unicode() {
     );
 }
 #[tokio::test]
-async fn dreams_use_restricted_tools_persist_snapshots_and_reuse_the_dreams_section() {
+async fn dreams_use_restricted_tools_persist_snapshots_and_report_in_the_chat() {
     let home = setup();
     let hub = EventHub::new();
     let mut receiver = hub.subscribe();
     let runtime =
         Runtime::new(home.path().into(), hub.clone(), fake_pi(home.path(), false)).unwrap();
     let dreams = Dreaming::new(home.path().into(), runtime.clone(), hub);
-    for _ in 0..2 {
+    for open in [false, true] {
+        if open {
+            runtime
+                .call("alice", "hexbot.sections.open", &json!({"id":"chat"}))
+                .await
+                .unwrap()
+                .unwrap();
+        }
         dreams
             .call("alice", "hexbot.dreaming.run_now", &json!({"bot":"owl"}))
             .await
             .unwrap()
             .unwrap();
+        // An idle chat, open or not, can be read again now, and says so.
+        let mut posted = event(&mut receiver, "hexbot.sections.changed").await;
+        while posted["reload"].is_null() {
+            posted = event(&mut receiver, "hexbot.sections.changed").await;
+        }
+        assert_eq!(posted["reload"], true);
         let changed = event(&mut receiver, "hexbot.dreaming.changed").await;
         assert_eq!(changed["dream"]["status"], "complete");
         assert_eq!(changed["dream"]["memory_before"], "before");
         assert_eq!(changed["dream"]["memory_after"], "before");
     }
+    // Reports go into the bot's one chat, marked as reports.
     let rows = common::rows(
         &db::open(home.path()).unwrap(),
-        "SELECT id FROM sections WHERE title='Dreams'",
+        "SELECT id FROM sections",
         &[],
     )
     .unwrap();
     assert_eq!(rows.len(), 1);
-    let history = runtime_store::history(home.path(), rows[0]["id"].as_str().unwrap()).unwrap();
+    let history = runtime_store::history(home.path(), "chat").unwrap();
     assert_eq!(history.len(), 2);
-    assert!(history.iter().all(|m| m["role"] == "assistant"));
+    assert!(
+        history
+            .iter()
+            .all(|m| m["role"] == "assistant" && m["dream"] == true)
+    );
     dreams.shutdown().await;
     runtime.shutdown().await;
 }
@@ -817,18 +835,17 @@ async fn paired_clients_manage_jobs_through_the_same_owner_scoped_scheduler() {
     );
 }
 
-/// The Dreams section is the dream's output, and fetched pages are not what
-/// the user or the bot said; neither feeds the next dream. A teammate's reply
-/// through message_bot still does.
+/// Dream reports in the chat are the dream's output, and fetched pages are not
+/// what the user or the bot said; neither feeds the next dream. A teammate's
+/// reply through message_bot still does.
 #[test]
-fn digest_skips_the_dreams_section_and_tool_results() {
+fn digest_skips_dream_reports_and_tool_results() {
     let home = setup();
     let h = home.path();
-    db::open(h).unwrap().execute("INSERT INTO sections(id,bot,owner_id,title,created_at,updated_at) VALUES ('dreams','owl','alice','Dreams',0,0)", []).unwrap();
     runtime_store::append(
         h,
-        "dreams",
-        json!({"role":"assistant","text":"Yesterday I learned the user likes tea","timestamp":200}),
+        "chat",
+        json!({"role":"assistant","text":"Yesterday I learned the user likes tea","dream":true,"timestamp":200}),
     )
     .unwrap();
     runtime_store::append(
@@ -866,6 +883,50 @@ fn digest_skips_the_dreams_section_and_tool_results() {
     assert!(!text.contains("Old teammate reply"));
     assert_eq!(digest["sections"].as_array().unwrap().len(), 2);
     assert_eq!(digest["omitted_conversations"], 0);
+}
+
+/// A Dreams log the upgrade kept and nobody opened since still holds earlier
+/// reports in the old store. The next dream skips them there and keeps what
+/// the user and the bot said, there and in other chats.
+#[test]
+fn digest_skips_reports_in_a_dream_log_kept_in_the_old_store() {
+    let home = setup();
+    let h = home.path();
+    db::open(h).unwrap().execute_batch(
+        "INSERT INTO sections(id,bot,owner_id,title,created_at,updated_at) VALUES ('dreams','owl','alice','Dreams',0,0);
+         INSERT INTO dreams(id,bot,started_at,status,summary) VALUES ('d1','owl',150,'complete','Last night I learned tea');",
+    )
+    .unwrap();
+    let legacy = rusqlite::Connection::open(h.join("profiles/owl/state.db")).unwrap();
+    legacy.execute_batch("CREATE TABLE sessions(id TEXT,session_key TEXT);
+        CREATE TABLE messages(id INTEGER PRIMARY KEY,session_id TEXT,role TEXT,content TEXT,timestamp REAL,active INTEGER);
+        INSERT INTO sessions VALUES ('dreams','dreams'),('chat','chat');
+        INSERT INTO messages VALUES
+            (1,'dreams','assistant','Last night I learned tea',200,1),
+            (2,'dreams','user','Also, I take it black',201,1),
+            (3,'dreams','assistant','Noted',202,1),
+            (4,'chat','user','What did you learn?',203,1),
+            (5,'chat','assistant','Last night I learned tea',204,1);").unwrap();
+    let digest = dreaming::build_digest(h, "owl", 100.0, f64::MAX, None).unwrap();
+    let transcript = |id: &str| {
+        digest["sections"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|section| section["id"] == id)
+            .map(|section| section["transcript"].clone())
+    };
+    assert_eq!(
+        transcript("dreams"),
+        Some(json!("user: Also, I take it black\nassistant: Noted"))
+    );
+    // A reply in a chat that reads like a report is still the bot speaking.
+    assert_eq!(
+        transcript("chat"),
+        Some(json!(
+            "user: What did you learn?\nassistant: Last night I learned tea"
+        ))
+    );
 }
 
 /// One proposal that does not fit the digest's proposal budget is skipped,

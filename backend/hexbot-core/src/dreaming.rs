@@ -309,8 +309,8 @@ fn consume_proposals(home: &Path, bot: &str, dream: &str, ids: &[&str]) -> Resul
 }
 
 /// Return bounded transcripts, newest conversations first when a busy day exceeds one prompt.
-/// Archived sections remain part of durable learning. The bot's own Dreams
-/// section is the dream's output, not its input, and tool results are left out:
+/// Archived sections remain part of durable learning. Earlier dream reports in
+/// the chat are the dream's output, not its input, and tool results are left out:
 /// the dream learns from what the user and the bot said, not from fetched pages.
 /// Another bot's reply through message_bot is speech, so it stays.
 /// Activity is restricted to [since, until), where until is this dream's start.
@@ -342,6 +342,19 @@ pub fn build_digest(
     let mut proposals = vec![];
     let mut notes = vec![];
     if room.is_none() {
+        // An older build can add an unmarked log after migration. A dream
+        // may run before anyone opens the chat; classify before reading input.
+        let dream_logs = crate::catalog::classify_dream_logs(home, bot)?;
+        let adopted = crate::common::rows(
+            &conn,
+            "SELECT key,value FROM settings WHERE key='dream_chat_adoptions'",
+            &[],
+        )?;
+        let adopted: Value = adopted
+            .first()
+            .and_then(|r| r["value"].as_str())
+            .and_then(|s| serde_json::from_str(s).ok())
+            .unwrap_or(Value::Null);
         proposals = pending_proposals(&conn, bot, until)?;
         notes = recent_notes(home, bot, notes_watermark(&conn, bot, since)?)?;
         let legacy_path = home.join("profiles").join(bot).join("state.db");
@@ -353,14 +366,25 @@ pub fn build_digest(
         } else {
             None
         };
-        // Every surface knows the dream log by its title, as `post_summary` does;
-        // a section the user titled "Dreams" is already that log to the app.
         for section in common::rows(
             &conn,
-            "SELECT id,title FROM sections WHERE bot=? AND COALESCE(title,'')<>'Dreams' ORDER BY created_at,id",
+            "SELECT id,title FROM sections WHERE bot=? ORDER BY created_at,id",
             &[&bot],
         )? {
             let id = section["id"].as_str().unwrap_or("");
+            if let Some(replacement) = adopted[id]["target"].as_str() {
+                let exists: bool = conn.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM sections WHERE id=?)",
+                    [replacement],
+                    |r| r.get(0),
+                )?;
+                let version: i64 = runtime_store::open(home)?.query_row("SELECT COALESCE((SELECT version FROM native_history_versions WHERE session_id=?),0)", [id], |r| r.get(0))?;
+                // A client from before one-chat may still write to the old ID.
+                // Only omit the exact snapshot already copied to the owner chat.
+                if exists && adopted[id]["version"] == version {
+                    continue;
+                }
+            }
             let mut transcript = vec![];
             let mut latest = 0f64;
             let native_exists = if home.join("hexbot-runtime.db").exists() {
@@ -375,8 +399,12 @@ pub fn build_digest(
             let mut compactions = vec![];
             if native_exists {
                 // Summaries are a bonus; one unreadable file must not stop the dream.
-                compactions =
-                    runtime_store::compaction_summaries(home, id, since, until).unwrap_or_default();
+                // Old log summaries were generated with reports in context.
+                // Read its original human dialogue instead of recycling those summaries.
+                if !dream_logs.contains(id) {
+                    compactions = runtime_store::compaction_summaries(home, id, since, until)
+                        .unwrap_or_default();
+                }
                 for (at, _) in &compactions {
                     latest = latest.max(*at);
                 }
@@ -384,6 +412,7 @@ pub fn build_digest(
                     let at = message["timestamp"].as_f64().unwrap_or(0.0);
                     if at < since
                         || at >= until
+                        || message["dream"] == true
                         || message["role"] == "tool" && message["name"] != "message_bot"
                     {
                         continue;
@@ -404,6 +433,8 @@ pub fn build_digest(
                     )
                     .optional()?;
                 if let Some(session) = session {
+                    // Reports an earlier build posted to a dream log it kept.
+                    let reports = runtime_store::legacy_reports(home, bot, id)?;
                     for message in common::rows(
                         store,
                         "SELECT * FROM messages WHERE session_id=? AND active=1 AND COALESCE(timestamp,0)>=? AND COALESCE(timestamp,0)<? ORDER BY id",
@@ -417,6 +448,11 @@ pub fn build_digest(
                             .as_str()
                             .map(str::to_owned)
                             .unwrap_or_else(|| message["content"].to_string());
+                        if runtime_store::dream_report_text(&message)
+                            .is_some_and(|text| reports.contains(&text))
+                        {
+                            continue;
+                        }
                         latest = latest.max(message["timestamp"].as_f64().unwrap_or(0.0));
                         transcript.push(format!(
                             "{}: {}",
@@ -1086,27 +1122,15 @@ impl Dreaming {
             }
         }
     }
+    /// The report goes into the bot's chat, marked so later dreams skip it.
+    /// It is shown, not said: the bot's conversation does not include it.
     async fn post_summary(&self, owner: &str, bot: &str, output: &str) -> Result<()> {
-        let section = {
-            let mut conn = db::open(&self.home)?;
-            let tx = conn.transaction()?;
-            let existing:Option<String>=tx.query_row("SELECT id FROM sections WHERE bot=? AND owner_id=? AND title='Dreams' ORDER BY created_at LIMIT 1",params![bot,owner],|r|r.get(0)).optional()?;
-            let id = if let Some(id) = existing {
-                id
-            } else {
-                let id = common::id();
-                let now = common::now();
-                tx.execute("INSERT INTO sections(id,bot,title,owner_id,created_at,updated_at) VALUES (?,?,'Dreams',?,?,?)",params![id,bot,owner,now,now])?;
-                id
-            };
-            tx.commit()?;
-            id
-        };
-        self.runtime.close_stored(owner, &section).await?;
-        runtime_store::append(
-            &self.home,
-            &section,
-            json!({"role":"assistant","text":output,"timestamp":common::now()}),
+        let chat = crate::catalog::chat_section(&self.home, owner, bot)?;
+        let section = common::required(&chat, "id")?;
+        // Open clients read the chat again now, or when a running turn settles.
+        let reload = self.runtime.append_outside_turn(
+            section,
+            json!({"role":"assistant","text":output,"dream":true,"timestamp":common::now()}),
         )?;
         db::open(&self.home)?.execute(
             "UPDATE sections SET updated_at=? WHERE id=?",
@@ -1116,7 +1140,7 @@ impl Dreaming {
             owner,
             None,
             "hexbot.sections.changed",
-            json!({"id":section,"bot":bot}),
+            json!({"id":section,"bot":bot,"reload":reload}),
         );
         Ok(())
     }

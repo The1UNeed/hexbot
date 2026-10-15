@@ -21,11 +21,16 @@ Three facts shape most decisions:
   The existing frontend contract stays in `apps/`.
 - **Prompt caching is sacred.** A section is one persistent Pi session
   that reuses a cached prefix every turn. Do not mutate past context, swap
-  toolsets, or rebuild the system prompt mid-conversation. The one exception:
-  after a compatible section compacts, refresh its prompt only if the next
+  toolsets, or rebuild the system prompt mid-conversation. Two exceptions.
+  After a compatible section compacts, refresh its prompt only if the next
   provider request starts a new run. This picks up the bot's current name,
   soul, memory, About you, teammates, and skill catalog. If the active run
-  resumes first, keep its prompt until another compaction.
+  resumes first, keep its prompt until another compaction. And because a
+  bot's chat never ends, when the bot's tools or connected servers change,
+  or an update changes Hexbot's own tools, the chat is rebuilt with them at
+  its next message (`tools_stale` in `runtime.rs`); that one request misses
+  the cache. Rooms, threads between bots, jobs and delegates keep what
+  they started with.
 - **One product, two packages, three channels.** Full package (app plus
   daemon) and client-only package (app alone) are build-time editions
   (`HEXBOT_EDITION`). The installer offers them as Full and Client, plus
@@ -48,16 +53,17 @@ Use these words consistently in code, UI copy, docs, and commit messages.
 - **Track**: the channel an installed app takes updates from, Stable or Nightly. Defaults to the channel the build came from; the user switches it in Settings, Updates.
 - **Update server**: `updates.hexbot.app`, a Cloudflare R2 bucket holding every package, the electron-updater feed files, the native daemon archives, and the installers with their `install/<track>.json` manifests. Written only by `release.yml`.
 - **Bot**: a named agent with its own soul, model, skills, and memory. One bot profile with independent Pi conversations managed by the daemon.
-- **Section** = **conversation** = **thread**: one persistent chat with a bot or inside a room. A section lives until the user archives or deletes it. Each section is its own Pi session with its own context window.
+- **Chat**: your one ongoing conversation with a bot, like a contact in a messaging app. A bot has exactly one chat with you; it never ends, and summarising older messages keeps it going. There is no new chat, archive, or delete; deleting the bot deletes it. Its dream reports appear in it.
+- **Section** = **conversation** = **thread**: the daemon's name for one persistent Pi session with its own context window: a bot's chat, a room conversation, or a thread in which one bot asks another for help. UI copy says chat, room, or conversation, not section.
 - **Room**: a group chat with one or more humans and any number of bots. May have a **main bot** that responds when nobody is @-mentioned.
 - **Turn**: one user message and everything the bots do in response. The room turn engine (`backend/hexbot-core/src/rooms.rs`) decides who speaks.
 - **Soul**: a bot's persona, the `SOUL.md` in its profile. The user and the bot both edit it; the bot says so when it does.
-- **Visual**: an interactive HTML page (chart, table, diagram, mockup) a bot shows in a section with `hexbot_show_html`. It sits in a bubble above the bot's final reply, in a sandboxed frame, and can open beside the chat as a tab. Not available in rooms.
+- **Visual**: an interactive HTML page (chart, table, diagram, mockup) a bot shows in its chat with `hexbot_show_html`. It sits in a bubble above the bot's final reply, in a sandboxed frame, and can open beside the chat as a tab. Not available in rooms.
 - **Notes**: a bot's daily record in `memories/notes/YYYY-MM-DD.md`. The bot appends during conversations; dreaming folds what lasts into memory. The user can edit or delete a day. Days older than 30 days are removed when notes are read, listed, appended, or a dream runs.
-- **Memory**: a bot's durable facts, preferences, and lessons, the `MEMORY.md` in its profile. The bot writes it during chat, dreaming curates it, the user can edit it. Deleting a section removes its history and leaves memory alone.
+- **Memory**: a bot's durable facts, preferences, and lessons, the `MEMORY.md` in its profile. The bot writes it during chat, dreaming curates it, the user can edit it.
 - **About you**: one text per user, written only by the user and read by every bot they own (`users/<id>/user.md`).
 - **Dreaming**: a bot's daily pass over recent notes and conversations that folds what matters into its memory.
-- **Auto mode**: the default approval mode. Bots work freely inside the workspace; shell commands run in an OS sandbox with no network. A step outside it is reviewed by the section's model first: routine steps run, risky or unreviewable ones ask the user for that step. The review is a model judgment, not containment (`SECURITY.md`, `DESIGN.md`). The daemon calls it `smart`. The other modes are Manual (read-only sandbox, every file change asks) and Bypass (no prompts and no sandbox; the daemon calls it `off`).
+- **Auto mode**: the default approval mode. Bots work freely inside the workspace; shell commands run in an OS sandbox with no network. A step outside it is reviewed by the bot's model first: routine steps run, risky or unreviewable ones ask the user for that step. The review is a model judgment, not containment (`SECURITY.md`, `DESIGN.md`). The daemon calls it `smart`. The other modes are Manual (read-only sandbox, every file change asks) and Bypass (no prompts and no sandbox; the daemon calls it `off`).
 - **Pairing**: connecting an app to a daemon with a one-time code or link over LAN. Never depends on Connect.
 - **Hex Connect**: the optional cloud service at connect.hexbot.app (Clerk auth, Cloudflare tunnels) for reaching a daemon from outside the LAN. Brokers identity and a hostname; chat traffic never passes through it.
 - **`hermes` identifiers**: some code names keep a `hermes` prefix for compatibility with existing installs: `HERMES_HOME` and other `HERMES_*` variables, `@hermes/shared`, the `hermes_session_at` cookie. Do not rename them. Never write "Hermes" in UI copy, docs, or prompts; the only exceptions are the credits to Hermes Agent in `README.md`, `NOTICE`, the site, and Settings, About.

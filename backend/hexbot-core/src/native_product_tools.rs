@@ -6,7 +6,7 @@ use crate::{Error, Result, catalog, common, connectors, db, runtime_store};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde_json::{Value, json};
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     fs,
     path::{Path, PathBuf},
     sync::{
@@ -783,6 +783,7 @@ fn legacy_stamp(path: &Path) -> Result<Option<Vec<(std::time::SystemTime, u64)>>
 fn read_session(
     conn: &Connection,
     legacy: Option<&Connection>,
+    reports: &HashSet<String>,
     section: &Value,
     version: i64,
 ) -> Result<RecallSession> {
@@ -797,6 +798,10 @@ fn read_session(
     for row in native {
         let m: Value = serde_json::from_str(text(&row, "message_json"))
             .map_err(|_| Error::new(5200, "invalid stored message"))?;
+        // A dream report is shown in the chat, not said in it.
+        if m["dream"] == true {
+            continue;
+        }
         let body = m["text"]
             .as_str()
             .map(str::to_owned)
@@ -804,7 +809,7 @@ fn read_session(
         messages.push(json!({"id":row["seq"],"role":m["role"],"content":body,"timestamp":m["timestamp"],"tool_name":m["tool_name"],"tool_calls":m["tool_calls"],"tool_call_id":m["tool_call_id"]}));
     }
     let has_native: bool = conn.query_row(
-        "SELECT EXISTS(SELECT 1 FROM native_messages WHERE session_id=?)",
+        "SELECT EXISTS(SELECT 1 FROM native_messages WHERE session_id=? AND json_extract(message_json,'$.dream') IS NOT 1)",
         [id],
         |r| r.get(0),
     )?;
@@ -825,6 +830,14 @@ fn read_session(
                 "SELECT * FROM messages WHERE session_id=? ORDER BY id",
                 &[&legacy_id],
             )? {
+                // A dream report an earlier build posted is not the bot speaking.
+                // Judged on the stored row: a reply with tool calls or other
+                // content can share a report's text once flattened.
+                if runtime_store::dream_report_text(&row)
+                    .is_some_and(|text| reports.contains(&text))
+                {
+                    continue;
+                }
                 let content = row["content"].as_str().unwrap_or("");
                 let content = serde_json::from_str::<Value>(content)
                     .ok()
@@ -918,11 +931,15 @@ fn recall(
     let legacy_path = catalog::profile(home, &key.bot)?.join("state.db");
     safe_path(home, &legacy_path)?;
     let legacy = legacy_stamp(&legacy_path)?;
+    // A store that cannot be read leaves the sections' newer history to search.
     let legacy_db = if legacy.is_some() {
-        Some(Connection::open_with_flags(
-            &legacy_path,
-            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
-        )?)
+        Connection::open_with_flags(&legacy_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .and_then(|conn| {
+                conn.query_row("SELECT COUNT(*) FROM sqlite_master", [], |_| Ok(()))?;
+                Ok(conn)
+            })
+            .map_err(|error| catalog::unreadable_store(&key.bot, &error.into()))
+            .ok()
     } else {
         None
     };
@@ -964,7 +981,12 @@ fn recall(
             Some(session) => delete_session(&tx, &session)?,
             None => (),
         };
-        let mut session = read_session(&conn, legacy_db.as_ref(), section, version)?;
+        let reports = if legacy_db.is_some() {
+            runtime_store::legacy_reports(home, &key.bot, id)?
+        } else {
+            HashSet::new()
+        };
+        let mut session = read_session(&conn, legacy_db.as_ref(), &reports, section, version)?;
         index_session(&tx, &mut session, roles)?;
         index.sessions.push(session);
     }
@@ -1014,8 +1036,20 @@ fn search_sessions(home: &Path, owner: &str, bot: &str, current: &str, p: &Value
         roles: roles.iter().copied().collect::<Vec<_>>().join(","),
     };
     let excluded = if target == bot { current } else { "" };
-    let mut index = recall(home, &key, &roles, excluded)?;
-    let result = answer(&mut index, target, p, excluded);
+    // A bot's chat never ends, so what it summarised away is history to search;
+    // only what came after its latest summary is left out as already in view.
+    let summarised = if excluded.is_empty() {
+        None
+    } else {
+        runtime_store::summarised_before(home, excluded)?
+    };
+    let mut index = recall(
+        home,
+        &key,
+        &roles,
+        if summarised.is_some() { "" } else { excluded },
+    )?;
+    let result = answer(&mut index, target, p, excluded, summarised);
     // The cache is best effort: a failure to keep the index never replaces
     // the answer; the next search rebuilds it.
     let _ = store_index(key, index);
@@ -1024,12 +1058,52 @@ fn search_sessions(home: &Path, owner: &str, bot: &str, current: &str, p: &Value
 /// The answer for one asking section: the index minus `excluded`, the section
 /// whose history is already in the asking bot's context. Read from the same
 /// kept rows every section of the bot shares, it is what a rebuild without
-/// that section would give.
-fn answer(index: &mut RecallIndex, target: &str, p: &Value, excluded: &str) -> Result<Value> {
+/// that section would give. A section `summarised` before a row keeps the
+/// messages ahead of that row, which its context holds only as a summary.
+fn answer(
+    index: &mut RecallIndex,
+    target: &str,
+    p: &Value,
+    excluded: &str,
+    summarised: Option<i64>,
+) -> Result<Value> {
+    // How many of the asking section's messages came before its latest summary.
+    let earlier = summarised.and_then(|kept| {
+        let session = index.sessions.iter().find(|s| s.id == excluded)?;
+        Some(
+            session
+                .messages
+                .iter()
+                .position(|m| m["id"].as_i64().is_none_or(|seq| seq >= kept))
+                .unwrap_or(session.messages.len()),
+        )
+    });
+    let before = index
+        .sessions
+        .iter()
+        .find(|s| s.id == excluded)
+        .zip(earlier)
+        .map(|(s, count)| RecallSession {
+            id: s.id.clone(),
+            title: s.title.clone(),
+            started: s.started,
+            updated: s.updated,
+            archived: s.archived,
+            version: s.version,
+            messages: s.messages[..count].to_vec(),
+            rowids: s.rowids,
+            bytes: 0,
+        });
     let sessions = index
         .sessions
         .iter()
-        .filter(|s| s.id != excluded)
+        .filter_map(|s| {
+            if s.id == excluded {
+                before.as_ref()
+            } else {
+                Some(s)
+            }
+        })
         .collect::<Vec<_>>();
     let limit = p["limit"].as_u64().unwrap_or(3).clamp(1, 10) as usize;
     let window = p["window"].as_u64().unwrap_or(5).clamp(1, 20) as usize;
@@ -1115,7 +1189,12 @@ fn answer(index: &mut RecallIndex, target: &str, p: &Value, excluded: &str) -> R
     // finish rolls back and releases the savepoint even when MATCH fails.
     let savepoint = index.index.savepoint()?;
     let result = (|| {
-        if let Some(session) = index.sessions.iter().find(|s| s.id == excluded) {
+        if let Some(count) = earlier {
+            savepoint.execute(
+                "DELETE FROM recall WHERE session_id=? AND CAST(message_index AS INTEGER)>=?",
+                params![excluded, count as i64],
+            )?;
+        } else if let Some(session) = index.sessions.iter().find(|s| s.id == excluded) {
             delete_session(&savepoint, session)?;
         }
         answer_matches(&savepoint, &sessions, target, p, query, limit, window)
@@ -1369,7 +1448,7 @@ mod history_index_tests {
                     answer_matches(&fresh.index, &sessions, "owl", &args, "alpha OR beta", 3, 5)
                         .unwrap();
                 assert_eq!(
-                    answer(&mut cached, "owl", &args, "current").unwrap(),
+                    answer(&mut cached, "owl", &args, "current", None).unwrap(),
                     oracle
                 );
                 assert!(cached.index.is_autocommit());
@@ -1391,7 +1470,8 @@ mod history_index_tests {
                     &mut cached,
                     "owl",
                     &json!({"query":"\"unterminated"}),
-                    "current"
+                    "current",
+                    None
                 )
                 .unwrap_err()
                 .code,
@@ -1400,6 +1480,38 @@ mod history_index_tests {
             assert!(cached.index.is_autocommit());
             assert_eq!(scores(&cached.index), before);
         }
+    }
+    #[test]
+    fn a_summarised_chat_searches_what_came_before_its_summary() {
+        let chat = session("chat", &["alpha early", "alpha later", "alpha now"]);
+        let mut cached = build(vec![session("room", &["beta"]), chat]);
+        let args = json!({"query":"alpha","detail":"full","window":0});
+        let found = |result: Value| {
+            result["results"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .flat_map(|r| r["messages"].as_array().unwrap().clone())
+                .map(|m| m["content"].as_str().unwrap().to_owned())
+                .collect::<Vec<_>>()
+        };
+        // The summary kept the third: the first two are only a summary in context now.
+        let result = answer(&mut cached, "owl", &args, "chat", Some(2)).unwrap();
+        assert_eq!(result["count"], 1);
+        assert!(!found(result.clone()).contains(&"alpha now".to_owned()));
+        let read = answer(
+            &mut cached,
+            "owl",
+            &json!({"session_id":"chat"}),
+            "chat",
+            Some(2),
+        )
+        .unwrap();
+        assert_eq!(read["message_count"], 2);
+        // Never summarised: the whole chat is in context and left out.
+        let result = answer(&mut cached, "owl", &args, "chat", None).unwrap();
+        assert_eq!(result["count"], 0);
+        assert!(cached.index.is_autocommit());
     }
 
     #[test]
@@ -1413,9 +1525,17 @@ mod history_index_tests {
             json!({"role":"assistant","tool_calls":calls}),
         )
         .unwrap();
+        runtime_store::append(
+            home.path(),
+            "native",
+            json!({"role":"assistant","text":"Last night I learned","dream":true}),
+        )
+        .unwrap();
         let section = json!({"id":"native","title":"Native"});
-        let native = read_session(&conn, None, &section, 1).unwrap();
+        let native = read_session(&conn, None, &HashSet::new(), &section, 1).unwrap();
         assert_eq!(shaped(&native.messages[0], None)["tool_calls"], calls);
+        // Dream reports stay out of history search.
+        assert_eq!(native.messages.len(), 1);
         assert!(native.bytes > (8 << 20) + MESSAGE_BYTES);
         let legacy = Connection::open_in_memory().unwrap();
         legacy.execute_batch("CREATE TABLE sessions(id TEXT,session_key TEXT); CREATE TABLE messages(id INTEGER,session_id TEXT,role TEXT,content TEXT,tool_calls TEXT); INSERT INTO sessions VALUES('legacy','legacy');").unwrap();
@@ -1425,8 +1545,118 @@ mod history_index_tests {
                 [calls.to_string()],
             )
             .unwrap();
-        let legacy = read_session(&conn, Some(&legacy), &json!({"id":"legacy"}), 0).unwrap();
+        let legacy = read_session(
+            &conn,
+            Some(&legacy),
+            &HashSet::new(),
+            &json!({"id":"legacy"}),
+            0,
+        )
+        .unwrap();
         assert!(legacy.bytes > (8 << 20) + MESSAGE_BYTES);
+    }
+
+    #[test]
+    fn reports_in_an_unopened_dream_log_are_not_the_bot_speaking() {
+        let home = tempfile::tempdir().unwrap();
+        db::migrate(home.path()).unwrap();
+        db::open(home.path())
+            .unwrap()
+            .execute_batch(
+                "INSERT INTO users(id,display_name,role,created_at) VALUES('alice','Alice','admin',0);
+                 INSERT INTO bots(name,owner_id) VALUES('owl','alice');
+                 INSERT INTO sections(id,bot,owner_id,title) VALUES('log','owl','alice','Dreams'),('chat','owl','alice','Chat');
+                 INSERT INTO dreams(id,bot,started_at,status,summary) VALUES('d1','owl',1,'complete','Owl learned');
+                 INSERT INTO settings(key,value) VALUES('dream_logs','[\"log\"]');",
+            )
+            .unwrap();
+        let owl = home.path().join("profiles/owl");
+        fs::create_dir_all(&owl).unwrap();
+        Connection::open(owl.join("state.db"))
+            .unwrap()
+            .execute_batch(
+                "CREATE TABLE sessions(id TEXT,session_key TEXT);
+                 CREATE TABLE messages(id INTEGER,session_id TEXT,role TEXT,content TEXT,timestamp REAL);
+                 INSERT INTO sessions VALUES('log','log'),('chat','chat');
+                 INSERT INTO messages VALUES(1,'log','assistant','Owl learned',1),(2,'log','user','Why?',2),(3,'chat','user','Say it',3),(4,'chat','assistant','Owl learned',4);",
+            )
+            .unwrap();
+        let key = RecallKey {
+            home: home.path().to_owned(),
+            owner: "alice".to_owned(),
+            bot: "owl".to_owned(),
+            roles: String::new(),
+        };
+        let index = recall(
+            home.path(),
+            &key,
+            &BTreeSet::from(["user", "assistant"]),
+            "",
+        )
+        .unwrap();
+        let said = |id: &str| {
+            index
+                .sessions
+                .iter()
+                .find(|s| s.id == id)
+                .unwrap()
+                .messages
+                .iter()
+                .map(|m| text(m, "content").to_owned())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(said("log"), ["Why?"]);
+        // The same words in a chat are the bot's.
+        assert_eq!(said("chat"), ["Say it", "Owl learned"]);
+    }
+
+    #[test]
+    fn a_damaged_older_store_leaves_newer_history_searchable() {
+        let home = tempfile::tempdir().unwrap();
+        db::migrate(home.path()).unwrap();
+        db::open(home.path())
+            .unwrap()
+            .execute_batch(
+                "INSERT INTO users(id,display_name,role,created_at) VALUES('alice','Alice','admin',0);
+                 INSERT INTO bots(name,owner_id) VALUES('owl','alice');
+                 INSERT INTO sections(id,bot,owner_id,title) VALUES('chat','owl','alice','Chat'),('old','owl','alice','Old');",
+            )
+            .unwrap();
+        let owl = home.path().join("profiles/owl");
+        fs::create_dir_all(&owl).unwrap();
+        fs::write(owl.join("state.db"), "not a database").unwrap();
+        runtime_store::append(
+            home.path(),
+            "chat",
+            json!({"role":"user","text":"Plans for Friday","timestamp":1}),
+        )
+        .unwrap();
+        let key = RecallKey {
+            home: home.path().to_owned(),
+            owner: "alice".to_owned(),
+            bot: "owl".to_owned(),
+            roles: String::new(),
+        };
+        let index = recall(
+            home.path(),
+            &key,
+            &BTreeSet::from(["user", "assistant"]),
+            "",
+        )
+        .unwrap();
+        let said = |id: &str| {
+            index
+                .sessions
+                .iter()
+                .find(|s| s.id == id)
+                .unwrap()
+                .messages
+                .iter()
+                .map(|m| text(m, "content").to_owned())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(said("chat"), ["Plans for Friday"]);
+        assert!(said("old").is_empty());
     }
 
     #[test]

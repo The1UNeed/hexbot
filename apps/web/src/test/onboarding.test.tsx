@@ -1,5 +1,15 @@
+import {
+  createMemoryHistory,
+  createRootRoute,
+  createRoute,
+  createRouter,
+  RouterProvider
+} from '@tanstack/react-router'
+import type * as Router from '@tanstack/react-router'
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import type { ComponentType } from 'react'
 
+import { ChatChooser } from '../app/chat-chooser'
 import { Avatar } from '../components/ui/avatar'
 import { HEXBOT_ACT_NAMES } from '../components/ui/hexbot-act'
 import { HexbotMark } from '../components/ui/wordmark'
@@ -15,16 +25,50 @@ import {
   JobsStep,
   landingSection,
   MeetStep,
+  Route,
   ToolsStep,
   WelcomeStep
 } from '../routes/onboarding'
+import { useBots } from '../stores/bots'
+import { useConnection } from '../stores/connection'
 
 const ui = vi.hoisted(() => ({
   lastSection: null as { bot: string; section: string } | null,
   setLastSection: vi.fn()
 }))
 
+const navigate = vi.hoisted(() => vi.fn())
+
 vi.mock('../stores/ui', () => ({ uiActions: () => ui }))
+
+vi.mock('@tanstack/react-router', async importOriginal => ({
+  ...(await importOriginal<typeof Router>()),
+  useNavigate: () => navigate
+}))
+
+async function renderPage(chooser = false) {
+  const OnboardingPage = Route.options.component as ComponentType
+
+  const root = createRootRoute({
+    component: () => (
+      <>
+        <OnboardingPage />
+        {chooser ? <ChatChooser /> : null}
+      </>
+    )
+  })
+
+  const page = createRoute({ getParentRoute: () => root, path: '/onboarding' })
+
+  const router = createRouter({
+    history: createMemoryHistory({ initialEntries: ['/onboarding'] }),
+    routeTree: root.addChildren([page])
+  })
+
+  await router.load()
+
+  return render(<RouterProvider router={router} />)
+}
 
 describe('onboarding', () => {
   it.each([
@@ -37,30 +81,169 @@ describe('onboarding', () => {
     expect(initialOnboardingStep(input)).toBe(expected)
   })
 
-  it('lands in the section the user was in, any recent one, or a new one', async () => {
+  it('lands in the chat the daemon names for the bot the user was with', async () => {
     const bot = (name: string, sections: string[]) =>
       ({ name, sections_recent: sections.map(id => ({ id })) }) as unknown as Bot
 
-    const call = vi.fn(() => Promise.resolve({ section: { id: 's-new' } }))
+    const call = vi.fn((method: string, params?: { bot?: string }) =>
+      Promise.resolve(
+        method === 'hexbot.info' ? { one_chat: true } : { section: { id: `chat-${params?.bot}` } }
+      )
+    )
+
     setActiveRpc({ call } as never)
 
     expect(await landingSection([])).toBeNull()
 
+    // The section remembered here may be gone since the upgrade, or set aside by recovery.
     ui.lastSection = { bot: 'scout', section: 's-old' }
     expect(await landingSection([bot('bea', ['s-2']), bot('scout', [])])).toEqual({
       bot: 'scout',
-      section: 's-old'
+      section: 'chat-scout'
     })
+    expect(call).toHaveBeenCalledWith('hexbot.sections.create', { bot: 'scout' })
 
+    // A bot talked to before, not its recent list: one recovery set aside is never its chat.
     ui.lastSection = { bot: 'gone', section: 's-x' }
     expect(await landingSection([bot('quiet', []), bot('bea', ['s-2'])])).toEqual({
       bot: 'bea',
-      section: 's-2'
+      section: 'chat-bea'
     })
 
-    expect(await landingSection([bot('quiet', [])])).toEqual({ bot: 'quiet', section: 's-new' })
+    expect(await landingSection([bot('quiet', [])])).toEqual({
+      bot: 'quiet',
+      section: 'chat-quiet'
+    })
     expect(call).toHaveBeenCalledWith('hexbot.sections.create', { bot: 'quiet' })
     ui.lastSection = null
+  })
+
+  it('keeps the section the user was in on an older daemon, which names no chat', async () => {
+    const call = vi.fn((_method: string) => Promise.resolve({ version: '0.1.6' }))
+    setActiveRpc({ call } as never)
+    ui.lastSection = { bot: 'scout', section: 's-picked' }
+
+    expect(
+      await landingSection([{ name: 'scout', sections_recent: [] } as unknown as Bot])
+    ).toEqual({ bot: 'scout', section: 's-picked' })
+    // Not asked again which section, and none made.
+    expect(call.mock.calls.map(([method]) => method)).toEqual(['hexbot.info'])
+    ui.lastSection = null
+  })
+
+  it('offers Continue, not provider setup, when no section is picked on an older daemon', async () => {
+    const ada = { display_name: 'Ada', name: 'ada', sections_recent: [{ id: 'trip' }] } as never
+
+    const said = (id: string, updated_at: number) => ({
+      archived_at: null,
+      bot: 'ada',
+      id,
+      message_count: 4,
+      peer_bot: null,
+      preview: '',
+      title: id,
+      updated_at
+    })
+
+    const call = vi.fn((method: string) =>
+      Promise.resolve(
+        {
+          'hexbot.bots.list': { bots: [ada] },
+          'hexbot.memory.user.get': { cap: 2000, text: 'Name: Alex', updated_at: 1 },
+          'hexbot.sections.list': { sections: [said('Night notes', 9), said('Trip', 5)] },
+          'hexbot.sections.unarchive': { section: said('Trip', 20) }
+        }[method] ?? {}
+      )
+    )
+
+    setActiveRpc({ call } as never)
+    navigate.mockClear()
+    ui.setLastSection.mockClear()
+    useConnection.setState({ daemon: { version: '0.1.6' } as never, status: 'connected' })
+    useBots.setState({ byName: { ada }, loaded: true, order: ['ada'] } as never)
+
+    try {
+      await renderPage(true)
+
+      fireEvent.keyDown(await screen.findByRole('dialog'), { key: 'Escape' })
+
+      expect(await screen.findByRole('heading', { name: 'Continue with Ada' })).toBeVisible()
+      expect(screen.queryByText('Connect a provider')).toBeNull()
+      expect(navigate).not.toHaveBeenCalled()
+      expect(call).not.toHaveBeenCalledWith('hexbot.sections.create', expect.anything())
+      expect(call).not.toHaveBeenCalledWith('hexbot.sections.unarchive', expect.anything())
+
+      // Continue asks again, and opens what is picked.
+      fireEvent.click(screen.getByRole('button', { name: 'Continue' }))
+      fireEvent.click(await screen.findByRole('button', { name: /Trip/ }))
+
+      await waitFor(() =>
+        expect(navigate).toHaveBeenCalledWith({
+          params: { bot: 'ada', section: 'Trip' },
+          to: '/b/$bot/s/$section'
+        })
+      )
+      expect(ui.setLastSection).toHaveBeenCalledWith({ bot: 'ada', section: 'Trip' })
+      expect(call).toHaveBeenCalledWith('hexbot.sections.unarchive', { id: 'Trip' })
+      expect(call).not.toHaveBeenCalledWith('hexbot.sections.create', expect.anything())
+    } finally {
+      useConnection.setState({ daemon: null, status: 'idle' } as never)
+      useBots.setState({ byName: {}, loaded: false, order: [] } as never)
+    }
+  })
+
+  it('keeps a failed canonical chat on Continue and retries without opening the saved section', async () => {
+    const bot = { display_name: 'Scout', name: 'scout', sections_recent: [] } as never
+    const create = vi.fn().mockRejectedValueOnce(new Error('Chat unavailable'))
+
+    const call = vi.fn((method: string) => {
+      if (method === 'hexbot.sections.create') {
+        return create()
+      }
+
+      return Promise.resolve(
+        {
+          'hexbot.bots.list': { bots: [bot] },
+          'hexbot.memory.user.get': { cap: 2000, text: 'Name: Alex', updated_at: 1 }
+        }[method] ?? {}
+      )
+    })
+
+    setActiveRpc({ call } as never)
+    navigate.mockClear()
+    ui.setLastSection.mockClear()
+    ui.lastSection = { bot: 'scout', section: 'quarantined' }
+    useConnection.setState({ daemon: { one_chat: true } as never, status: 'connected' })
+    useBots.setState({ byName: { scout: bot }, loaded: true, order: ['scout'] } as never)
+
+    try {
+      await renderPage()
+
+      expect(await screen.findByRole('heading', { name: 'Continue with Scout' })).toBeVisible()
+      expect(screen.getByRole('alert')).toHaveTextContent('Chat unavailable')
+      expect(screen.queryByText('Connect a provider')).toBeNull()
+      expect(navigate).not.toHaveBeenCalled()
+      expect(ui.setLastSection).not.toHaveBeenCalled()
+
+      let resolve!: (value: { section: { id: string } }) => void
+      create.mockImplementationOnce(() => new Promise(done => (resolve = done)))
+      const button = screen.getByRole('button', { name: 'Continue' })
+      fireEvent.click(button)
+      expect(button).toBeDisabled()
+      await waitFor(() => expect(create).toHaveBeenCalledTimes(2))
+      await act(async () => resolve({ section: { id: 'canonical' } }))
+
+      expect(navigate).toHaveBeenCalledWith({
+        params: { bot: 'scout', section: 'canonical' },
+        to: '/b/$bot/s/$section'
+      })
+      expect(ui.setLastSection).toHaveBeenCalledWith({ bot: 'scout', section: 'canonical' })
+      expect(call).not.toHaveBeenCalledWith('hexbot.sections.list', expect.anything())
+    } finally {
+      ui.lastSection = null
+      useConnection.setState({ daemon: null, status: 'idle' } as never)
+      useBots.setState({ byName: {}, loaded: false, order: [] } as never)
+    }
   })
 
   it('compiles the init page answers into About you, skipping blanks', () => {
@@ -116,9 +299,11 @@ describe('onboarding', () => {
   })
 
   it('saves legacy About you when the daemon has no rename method', async () => {
-    const call = vi.fn((method: string) => method === 'hexbot.users.me.set'
-      ? Promise.reject({ code: -32601, message: 'Unknown method' })
-      : Promise.resolve({ cap: 2000, text: 'Name: Alex', updated_at: 1 }))
+    const call = vi.fn((method: string) =>
+      method === 'hexbot.users.me.set'
+        ? Promise.reject({ code: -32601, message: 'Unknown method' })
+        : Promise.resolve({ cap: 2000, text: 'Name: Alex', updated_at: 1 })
+    )
 
     setActiveRpc({ call } as never)
     const onContinue = vi.fn()
@@ -189,9 +374,7 @@ describe('onboarding', () => {
 
     const before = Number(screen.getByRole('progressbar').getAttribute('aria-valuenow'))
     rerender(
-      <InstallStep
-        progress={[uv, { message: 'Installing voice tools', stage: 'dependencies' }]}
-      />
+      <InstallStep progress={[uv, { message: 'Installing voice tools', stage: 'dependencies' }]} />
     )
     expect(screen.getByRole('status')).toHaveTextContent('Installing voice tools')
     expect(document.querySelector('[data-act]')).toHaveAttribute('data-act', 'type')

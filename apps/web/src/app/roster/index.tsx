@@ -1,13 +1,5 @@
 import { useNavigate, useParams } from '@tanstack/react-router'
-import {
-  ChevronDown,
-  ChevronRight,
-  MoreHorizontal,
-  Plus,
-  Search,
-  Settings,
-  SquarePen
-} from 'lucide-react'
+import { Plus, Search, Settings, SquarePen } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 
 import { Avatar, PersonAvatar } from '../../components/ui/avatar'
@@ -19,7 +11,6 @@ import { ContextMenu, Menu } from '../../components/ui/menu'
 import { RoomCluster } from '../../components/ui/room-cluster'
 import { Select } from '../../components/ui/select'
 import { StatusDot, StatusTag } from '../../components/ui/status-dot'
-import { Title } from '../../components/ui/title'
 import { providerModels, sectionsMarkRead } from '../../lib/api'
 import { approvalModes } from '../../lib/approval-modes'
 import {
@@ -35,6 +26,7 @@ import { cn } from '../../lib/cn'
 import { reasoningOptions, runningLevel } from '../../lib/reasoning'
 import { toMillis } from '../../lib/time'
 import type { Bot, ModelOption, ReasoningEffort, Room, RoomEvent, Section } from '../../lib/types'
+import { useChatSelection } from '../../lib/use-chat-selection'
 import { useBotList, useBots } from '../../stores/bots'
 import { useConnection } from '../../stores/connection'
 import { useDrafts } from '../../stores/drafts'
@@ -43,11 +35,9 @@ import { roomStatus, roomUnread, useRoomList, useRooms } from '../../stores/room
 import {
   botStatusWithLive,
   introduceBot,
-  isThread,
   type LiveSections,
   liveSectionsOf,
   sectionsActions,
-  sectionStatusOf,
   useSections
 } from '../../stores/sections'
 import { useSettings } from '../../stores/settings'
@@ -64,11 +54,6 @@ const rowFocus = 'ring-1 ring-foreground/40'
 
 // Stable empty array: a fresh [] per render would re-render forever.
 const NO_EVENTS: RoomEvent[] = []
-
-const sectionTime = (section: Section) => toMillis(section.updated_at ?? section.created_at)
-
-/** A section whose bot finished a turn the user has not seen on any device. */
-const unseen = (section: Section, active?: string) => section.id !== active && !!section.done_at
 
 export function relativeTime(raw: number | null): string {
   const value = toMillis(raw)
@@ -176,236 +161,87 @@ function RoomRow({
   )
 }
 
-type Drafts = Record<string, string>
-
-/** A section the user has sent or typed something in. Until then it stays off the roster. */
-export const touched = (section: Section, drafts: Drafts = {}) =>
-  section.message_count > 0 || Boolean(section.preview) || Boolean(drafts[section.id])
-
-/**
- * Sections the roster lists: touched ones, minus the bot's background Dreams
- * section and the threads in which other bots ask it for help.
- */
-export const listed = (section: Section, drafts: Drafts = {}) =>
-  touched(section, drafts) && section.title !== 'Dreams' && !isThread(section)
-
-/**
- * The sections listed under a bot, newest first. Folded, only the two most recent from
- * the last 14 days plus the open section; expanded, every unarchived one.
- */
-export function visibleRecentSections(
-  bot: Bot,
-  expanded: boolean,
-  all: Section[],
-  active?: string,
-  drafts: Drafts = {}
-): Section[] {
-  // Prefer the live sections store; the bot row's recent list can lag behind.
-  const sections = [...(all.length ? all : bot.sections_recent)]
-    .filter(section => !section.archived_at && listed(section, drafts))
-    .sort((a, b) => sectionTime(b) - sectionTime(a))
-
-  if (expanded) {
-    return sections
-  }
-
-  const recent = sections
-    .filter(section => Date.now() - sectionTime(section) < 14 * DAY)
-    .slice(0, 2)
-
-  const current = sections.find(section => section.id === active)
-
-  return current && !recent.includes(current)
-    ? [...recent, current].sort((a, b) => sectionTime(b) - sectionTime(a))
-    : recent
-}
-
-interface BotRowsProps {
-  active?: string
+interface BotRowProps {
+  active: boolean
   bot: Bot
-  drafts: Drafts
-  expanded: boolean
+  draft: boolean
   focused: string | null
   live: LiveSections
-  onArchive: (section: Section) => void
-  onDelete: (section: Section) => void
-  onExpand: () => void
-  onOpen: (bot: string, section: string) => void
+  onOpen: (bot: string) => void
   onSettings: (bot: string) => void
-  onStart: (bot: string) => void
   query: string
   sections: Section[]
 }
 
-/** Which of a bot's rows match the roster search: the bot itself, or section titles. */
-function matchBot(bot: Bot, sections: Section[], query: string, drafts: Drafts = {}) {
-  const matchesBot = `${bot.display_name} ${bot.name}`.toLowerCase().includes(query)
+/** A bot and its one chat with you: opening the row opens the chat. */
+function BotRow({
+  active,
+  bot,
+  draft,
+  focused,
+  live,
+  onOpen,
+  onSettings,
+  query,
+  sections
+}: BotRowProps) {
+  if (query && !`${bot.display_name} ${bot.name}`.toLowerCase().includes(query)) {
+    return null
+  }
 
+  // Prefer the live sections store; the bot row's recent list can lag behind.
   const available = [
     ...sections,
     ...bot.sections_recent.filter(recent => !sections.some(section => section.id === recent.id))
   ]
 
-  const matching = available.filter(
-    section => listed(section, drafts) && section.title.toLowerCase().includes(query)
-  )
-
-  return { available, matchesBot, matching }
-}
-
-function BotRows({
-  active,
-  bot,
-  drafts,
-  expanded,
-  focused,
-  live,
-  onArchive,
-  onDelete,
-  onExpand,
-  onOpen,
-  onSettings,
-  onStart,
-  query,
-  sections
-}: BotRowsProps) {
-  const { available, matchesBot, matching } = matchBot(bot, sections, query, drafts)
-
-  if (query && !matchesBot && matching.length === 0) {
-    return null
-  }
-
-  const rows = query ? matching : visibleRecentSections(bot, expanded, available, active, drafts)
-
-  const canExpand =
-    !query &&
-    (expanded ||
-      available.filter(section => !section.archived_at && listed(section, drafts)).length >
-        rows.length ||
-      // The daemon's total counts empty and archived sections: trust it only until ours load.
-      (sections.length === 0 && bot.sections_total > rows.length))
-
-  // An open section with no row of its own (untouched, or Dreams) selects the bot row.
-  const selected =
-    available.some(section => section.id === active) && !rows.some(row => row.id === active)
-
   const label = bot.title || bot.description
   const status = botStatusWithLive(bot, available, live)
 
+  // A turn finished that you have not seen on any device.
   const dot =
-    status === 'idle' && available.some(section => !section.archived_at && unseen(section, active))
-      ? 'done'
-      : status
+    status === 'idle' && !active && available.some(section => section.done_at) ? 'done' : status
 
   return (
-    <div data-testid="bot-group">
-      <ContextMenu
-        items={[
-          { label: 'New section', onSelect: () => onStart(bot.name) },
-          { label: 'Settings', onSelect: () => onSettings(bot.name) }
-        ]}
+    <ContextMenu items={[{ label: 'Settings', onSelect: () => onSettings(bot.name) }]}>
+      <button
+        className={cn(
+          rowClass,
+          active && 'bg-background shadow-card',
+          focused === `bot:${bot.name}` && rowFocus
+        )}
+        data-roster-id={`bot:${bot.name}`}
+        onClick={() => onOpen(bot.name)}
+        type="button"
       >
-        <button
-          className={cn(
-            rowClass,
-            selected && 'bg-background shadow-card',
-            focused === `bot:${bot.name}` && rowFocus
-          )}
-          data-roster-id={`bot:${bot.name}`}
-          onClick={() => onStart(bot.name)}
-          type="button"
-        >
-          <span className="relative shrink-0">
-            <Avatar {...botFace(bot)} name={bot.display_name} size="lg" />
-            <StatusDot status={dot} />
-          </span>
-          <span className="min-w-0 flex-1">
-            <span className="flex items-baseline gap-2">
-              <span className="min-w-0 flex-1 truncate font-semibold">{bot.display_name}</span>
+        <span className="relative shrink-0">
+          <Avatar {...botFace(bot)} name={bot.display_name} size="lg" />
+          <StatusDot status={dot} />
+        </span>
+        <span className="min-w-0 flex-1">
+          <span className="flex items-baseline gap-2">
+            <span className="min-w-0 flex-1 truncate font-semibold">{bot.display_name}</span>
+            {status === 'idle' && draft ? (
+              <SquarePen aria-label="Draft" className="shrink-0 text-muted" size={12} />
+            ) : (
               <StatusTag status={status} />
-            </span>
-            {label ? (
-              <span className="block truncate text-[length:var(--text-secondary)] text-muted">
-                {label}
-              </span>
-            ) : null}
+            )}
           </span>
-        </button>
-      </ContextMenu>
-      {rows.length > 0 || canExpand ? (
-        <div className="mb-1 ml-5 flex flex-col gap-px border-l border-border pr-1 pl-1.5">
-          {rows.map(section => {
-            const status = sectionStatusOf(bot, section.id, live)
-            const dot = status === 'idle' && unseen(section, active) ? 'done' : status
-
-            const actions = [
-              { label: 'Archive', onSelect: () => onArchive(section) },
-              { label: 'Delete', onSelect: () => onDelete(section) }
-            ]
-
-            return (
-              <ContextMenu items={actions} key={section.id}>
-                <div
-                  className={cn(
-                    'group/row flex items-center rounded-[10px] pr-1 transition-colors hover:bg-foreground/[0.04] data-[popup-open]:bg-foreground/[0.04]',
-                    active === section.id && 'bg-background shadow-card'
-                  )}
-                >
-                  <button
-                    className={cn(
-                      'flex min-w-0 flex-1 items-center gap-2 rounded-control px-2 py-1 text-left text-[length:var(--text-meta)] outline-none',
-                      active === section.id ? 'text-foreground' : 'text-muted',
-                      focused === `section:${section.id}` && rowFocus
-                    )}
-                    data-roster-id={`section:${section.id}`}
-                    onClick={() => onOpen(bot.name, section.id)}
-                    type="button"
-                  >
-                    <span className="relative grid size-[12px] shrink-0 place-items-center">
-                      {dot === 'idle' && drafts[section.id] ? (
-                        <SquarePen aria-label="Draft" size={12} />
-                      ) : (
-                        <StatusDot className="static size-2 border-0" status={dot} />
-                      )}
-                    </span>
-                    <Title className="min-w-0 flex-1 truncate" text={section.title} />
-                    <StatusTag status={status === 'needs_you' ? status : undefined} />
-                  </button>
-                  <Menu
-                    items={actions}
-                    trigger={
-                      <button
-                        aria-label={`Section actions for ${section.title}`}
-                        className="grid size-6 shrink-0 place-items-center rounded-full text-muted opacity-0 transition-opacity group-hover/row:opacity-100 hover:text-foreground focus-visible:opacity-100 data-[popup-open]:opacity-100"
-                        type="button"
-                      >
-                        <MoreHorizontal size={14} />
-                      </button>
-                    }
-                  />
-                </div>
-              </ContextMenu>
-            )
-          })}
-          {canExpand ? (
-            <button
-              className="flex items-center gap-1 px-2 py-0.5 text-[length:var(--text-meta)] text-muted hover:text-foreground"
-              onClick={onExpand}
-              type="button"
-            >
-              {expanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
-              {expanded ? 'Show recent' : 'More'}
-            </button>
+          {label ? (
+            <span className="block truncate text-[length:var(--text-secondary)] text-muted">
+              {label}
+            </span>
           ) : null}
-        </div>
-      ) : null}
-    </div>
+        </span>
+      </button>
+    </ContextMenu>
   )
 }
 
 export function RosterColumn() {
   const params = useParams({ strict: false }) as { bot?: string; section?: string }
   const navigate = useNavigate()
+  const { cancel: cancelChat, selectChat } = useChatSelection()
   const bots = useBotList()
   const rooms = useRoomList()
   const sectionMap = useSections(state => state.byId)
@@ -413,7 +249,6 @@ export function RosterColumn() {
   const connection = useConnection()
   const me = useMe(state => state.me)
   const [query, setQuery] = useState('')
-  const [expanded, setExpanded] = useState<Set<string>>(new Set())
   const [botDialog, setBotDialog] = useState(false)
   const [roomDialog, setRoomDialog] = useState(false)
 
@@ -520,17 +355,14 @@ export function RosterColumn() {
 
   const anyMatch =
     !query ||
-    roster.some(entry => {
-      if (entry.kind === 'room') {
-        return (entry.item as Room).name.toLowerCase().includes(query)
-      }
-
-      const bot = entry.item as Bot
-      const own = Object.values(sectionMap).filter(section => section.bot === bot.name)
-      const { matchesBot, matching } = matchBot(bot, own, query, drafts)
-
-      return matchesBot || matching.length > 0
-    })
+    roster.some(entry =>
+      (entry.kind === 'room'
+        ? (entry.item as Room).name
+        : `${(entry.item as Bot).display_name} ${(entry.item as Bot).name}`
+      )
+        .toLowerCase()
+        .includes(query)
+    )
 
   const open = (bot: string, section: string) => {
     void sectionsActions()
@@ -547,86 +379,16 @@ export function RosterColumn() {
   const openBotSettings = (bot: string) =>
     void navigate({ to: '/b/$bot/settings/$tab', params: { bot, tab: rememberedTab(bot) } })
 
-  /** After archiving or deleting the open section, land on the bot's next one (or a new one). */
-  const leaveSection = async (bot: string, sectionId: string) => {
-    if (params.section !== sectionId) {
-      return
-    }
-
-    const next = Object.values(useSections.getState().byId)
-      .filter(
-        item =>
-          item.bot === bot && !item.archived_at && item.id !== sectionId && listed(item, drafts)
-      )
-      .sort((a, b) => toMillis(b.updated_at) - toMillis(a.updated_at))[0]
-
-    if (next) {
-      open(bot, next.id)
-    } else {
-      await createSection(bot)
-    }
-  }
-
-  const archiveSection = async (section: Section) => {
-    await sectionsActions().archive(section.id)
-    await leaveSection(section.bot, section.id)
-  }
-
-  const deleteSection = async (section: Section) => {
-    if (!window.confirm(`Delete “${section.title}”? Its history goes with it.`)) {
-      return
-    }
-
-    await sectionsActions().remove(section.id)
-    await leaveSection(section.bot, section.id)
-  }
-
   /**
-   * A fresh section: the bot's untouched one if it has any, else a new one. It stays off
-   * the roster until the first message, so asking twice never piles up empty sections.
+   * The bot's one chat, as the daemon names it: this window's list cannot
+   * tell one recovery set aside. An older daemon's may be picked by the user.
    */
-  const createSection = async (bot = params.bot ?? ordered[0]?.name) => {
-    if (!bot) {
-      return
+  const openChat = async (bot: string) => {
+    const chat = await selectChat(bot)
+
+    if (chat) {
+      open(bot, chat.id)
     }
-
-    const blank = Object.values(useSections.getState().byId)
-      .filter(item => item.bot === bot && !item.archived_at && !touched(item, drafts))
-      .sort((a, b) => toMillis(b.updated_at) - toMillis(a.updated_at))[0]
-
-    // An empty section has no stored session, so it does not survive a daemon restart.
-    const alive =
-      blank &&
-      (await sectionsActions()
-        .open(blank.id)
-        .then(() => true)
-        .catch(() => false))
-
-    if (blank && !alive) {
-      await sectionsActions()
-        .remove(blank.id)
-        .catch(() => undefined)
-    }
-
-    open(bot, (blank && alive ? blank : await sectionsActions().create(bot)).id)
-  }
-
-  const expandBot = async (name: string) => {
-    if (!expanded.has(name)) {
-      await sectionsActions().refresh({ bot: name, include_archived: true })
-    }
-
-    setExpanded(current => {
-      const next = new Set(current)
-
-      if (next.has(name)) {
-        next.delete(name)
-      } else {
-        next.add(name)
-      }
-
-      return next
-    })
   }
 
   const keyboard = (event: React.KeyboardEvent) => {
@@ -693,9 +455,12 @@ export function RosterColumn() {
           <label className="relative block min-w-0 flex-1">
             <Search className="absolute top-1/2 left-3 -translate-y-1/2 text-muted" size={14} />
             <Input
-              aria-label="Search bots and sections"
+              aria-label="Search bots and rooms"
               className="h-9 rounded-full border-transparent bg-foreground/[0.05] pl-9 focus-visible:border-transparent focus-visible:bg-background focus-visible:shadow-card"
-              onChange={event => setQuery(event.target.value.toLowerCase())}
+              onChange={event => {
+                cancelChat()
+                setQuery(event.target.value.toLowerCase())
+              }}
               placeholder="Search"
               value={query}
             />
@@ -709,12 +474,6 @@ export function RosterColumn() {
                   setNewStyle(styleForName(`bot-${ordered.length}`))
                   setBotDialog(true)
                 }
-              },
-              {
-                'data-testid': 'roster-new-section',
-                disabled: !ordered.length,
-                label: 'New section',
-                onSelect: () => void createSection()
               },
               {
                 'data-testid': 'roster-new-room',
@@ -750,7 +509,7 @@ export function RosterColumn() {
         ) : null}
         {query && !anyMatch ? (
           <p className="px-3 py-6 text-center text-[length:var(--text-secondary)] text-muted">
-            No bots, rooms or sections match “{query}”.
+            No bots or rooms match “{query}”.
           </p>
         ) : null}
         {roster.map(entry =>
@@ -765,20 +524,17 @@ export function RosterColumn() {
               room={entry.item as Room}
             />
           ) : (
-            <BotRows
-              active={params.section}
+            <BotRow
+              active={Boolean(params.section) && params.bot === (entry.item as Bot).name}
               bot={entry.item as Bot}
-              drafts={drafts}
-              expanded={expanded.has((entry.item as Bot).name)}
+              draft={Object.values(sectionMap).some(
+                section => section.bot === (entry.item as Bot).name && Boolean(drafts[section.id])
+              )}
               focused={focused}
               key={`bot:${(entry.item as Bot).name}`}
               live={liveSections}
-              onArchive={section => void archiveSection(section)}
-              onDelete={section => void deleteSection(section)}
-              onExpand={() => void expandBot((entry.item as Bot).name)}
-              onOpen={open}
+              onOpen={name => void openChat(name)}
               onSettings={openBotSettings}
-              onStart={name => void createSection(name)}
               query={query}
               sections={Object.values(sectionMap).filter(
                 section => section.bot === (entry.item as Bot).name
@@ -814,7 +570,7 @@ export function RosterColumn() {
         </div>
       </div>
       <Dialog
-        description="A face and a name. It will ask you the rest in its first section."
+        description="A face and a name. It will ask you the rest in your chat."
         onOpenChange={value => {
           setBotDialog(value)
 

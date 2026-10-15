@@ -68,7 +68,7 @@ export interface HomeScreenProps {
 
   bots: BotSummary[]
   onOpenBot: (id: string) => void
-  /** Opens where a busy bot is working or waiting, such as its thread or room. */
+  /** Opens where a busy bot is working or waiting, such as its chat or room. */
   onOpenPulse?: (id: string) => void
   /** Long press on a bot, such as opening its profile. */
   onBotLongPress?: (id: string) => void
@@ -238,9 +238,7 @@ function BotsTab({
   const visible = useMemo(
     () =>
       bots
-        .filter(bot =>
-          matches(query, bot.name, bot.title, bot.description, bot.preview, bot.latestThread)
-        )
+        .filter(bot => matches(query, bot.name, bot.title, bot.description, bot.preview))
         .sort(
           (a, b) =>
             (PINNED[a.status ?? ''] ?? 9) - (PINNED[b.status ?? ''] ?? 9) ||
@@ -293,7 +291,7 @@ function BotsTab({
             <View style={styles.search}>
               <SearchField
                 onChangeText={setQuery}
-                placeholder="Search bots and threads"
+                placeholder="Search bots"
                 testID="bots-search"
                 value={query}
               />
@@ -319,7 +317,7 @@ function BotsTab({
 
 /**
  * A bot as a post: face, name and role, what it is for, and a quote from
- * its latest thread. The whole post opens the bot's threads.
+ * its chat. The whole post opens your chat with the bot.
  */
 function BotPost({
   bot,
@@ -335,11 +333,10 @@ function BotPost({
   const status = bot.status && bot.status !== 'idle' && bot.status !== 'done' ? bot.status : null
   const statusColor =
     status === 'working' ? theme.info : status === 'needs_you' ? theme.accent : theme.danger
-  const threads = bot.threadCount ?? 0
 
   return (
     <Pressable
-      accessibilityHint="Opens this bot's threads"
+      accessibilityHint="Opens your chat with this bot"
       accessibilityLabel={[
         bot.name,
         bot.title,
@@ -385,33 +382,23 @@ function BotPost({
               { backgroundColor: theme.fill, borderLeftColor: withAlpha(tint, 0.9) }
             ]}
           >
-            {bot.latestThread ? (
-              <Text numberOfLines={1} variant="footnote" style={styles.quoteTitle}>
-                {bot.latestThread}
-              </Text>
-            ) : null}
             <Text numberOfLines={2} tone="muted" variant="footnote">
               {bot.preview}
             </Text>
           </View>
         ) : null}
-        {status || threads > 0 ? (
+        {status ? (
           <View style={styles.postFoot}>
-            {status ? (
-              <View style={[styles.chip, { backgroundColor: withAlpha(statusColor, 0.12) }]}>
-                <View style={[styles.dot, { backgroundColor: statusColor }]} />
-                <Text
-                  numberOfLines={1}
-                  style={[styles.chipText, { color: statusColor }]}
-                  variant="caption"
-                >
-                  {bot.activity && status === 'working' ? bot.activity : STATUS_LABELS[status]}
-                </Text>
-              </View>
-            ) : null}
-            <Text style={styles.threads} tone="muted" variant="caption">
-              {threads === 1 ? '1 thread' : threads > 0 ? `${threads} threads` : ''}
-            </Text>
+            <View style={[styles.chip, { backgroundColor: withAlpha(statusColor, 0.12) }]}>
+              <View style={[styles.dot, { backgroundColor: statusColor }]} />
+              <Text
+                numberOfLines={1}
+                style={[styles.chipText, { color: statusColor }]}
+                variant="caption"
+              >
+                {bot.activity && status === 'working' ? bot.activity : STATUS_LABELS[status]}
+              </Text>
+            </View>
           </View>
         ) : null}
       </View>
@@ -881,10 +868,8 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10,
     paddingVertical: 7
   },
-  quoteTitle: { fontWeight: '600' },
   rule: { height: StyleSheet.hairlineWidth },
   search: { paddingBottom: 4, paddingHorizontal: 16 },
-  threads: { marginLeft: 'auto' },
   tile: {
     borderRadius: 20,
     justifyContent: 'space-between',

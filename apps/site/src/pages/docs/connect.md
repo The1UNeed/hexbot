@@ -32,7 +32,7 @@ You can also register from the app: open Settings, choose Connect, and press **S
 
 ## Open a daemon in a browser
 
-On your daemons page, press **Open in browser** next to an online daemon. Connect sends the browser to the daemon, which asks Connect to confirm who you are, and you land in your rooms and sections. Nothing to install: this works on a phone, a tablet, or someone else's computer.
+On your daemons page, press **Open in browser** next to an online daemon. Connect sends the browser to the daemon, which asks Connect to confirm who you are, and you land in your bots and rooms. Nothing to install: this works on a phone, a tablet, or someone else's computer.
 
 The browser then appears in that daemon's Settings under Devices with a name like "Safari on iPhone", and you can revoke it there like any paired device. Going straight to the daemon's address shows a sign-in page with the same **Sign in with Hex Connect** button.
 

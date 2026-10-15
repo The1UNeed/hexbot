@@ -283,12 +283,8 @@ try {
     )
   }
   const section = bots.owl.section.id
-  await rpc('hexbot.sections.rename', { id: section, title: 'Daily brief' })
-  const trip = (await rpc('hexbot.sections.create', { bot: 'owl' })).section.id
-  await rpc('hexbot.sections.rename', { id: trip, title: 'Tokyo trip' })
-  const old = (await rpc('hexbot.sections.create', { bot: 'owl' })).section.id
-  await rpc('hexbot.sections.rename', { id: old, title: 'Old errands' })
-  await rpc('hexbot.sections.archive', { id: old })
+  // A bot has one chat: asking for another returns it.
+  assert.equal((await rpc('hexbot.sections.create', { bot: 'owl' })).section.id, section)
   const room = (
     await rpc('hexbot.rooms.create', { name: 'Our team', members: ['owl', 'fox'], main_bot: 'owl' })
   ).room
@@ -335,42 +331,41 @@ try {
   await shot('daemon-switcher')
   await page.getByTestId('daemon-switcher-close').click()
   await expect(page.getByTestId('daemon-switcher')).not.toBeVisible()
+  // The bot row opens its one chat.
   await page.getByTestId('bot-row-owl').click()
-  await expect(page.getByTestId(`thread-row-${section}`)).toBeVisible()
-  await expect(page.getByTestId(`thread-row-${trip}`)).toBeVisible()
-  await expect(page.getByTestId(`thread-row-${old}`)).not.toBeVisible()
-  await page.getByTestId('threads-model').click()
-  // The menu asks each connected provider for its current list: mobile-live
-  // exists only in LM Studio's live /models reply. Providers without a key or
-  // sign-in are left out.
-  await expect(page.getByTestId('threads-model-menu-model-lmstudio-mobile-live')).toBeVisible({
-    timeout: 30000
-  })
-  await expect(page.locator('[data-testid^="threads-model-menu-model-nous-"]')).toHaveCount(0)
-  // The daemon knows no levels for mobile-test, so every level is offered, as on the web.
-  await expect(page.getByTestId('threads-model-menu-level-max')).toBeVisible()
-  await page.getByTestId('threads-model-menu-level-high').click()
-  const owl = async () => (await rpc('hexbot.bots.get', { name: 'owl' })).bot
-  await expect.poll(async () => (await owl()).reasoning_effort).toBe('high')
-  await expect(page.getByTestId('threads-model')).toContainText('High')
-  await shot('model-menu')
-  // A model without thinking runs with it off, whatever level is saved.
-  await page.getByTestId('threads-model-menu-model-lmstudio-mobile-live').click()
-  await expect.poll(async () => (await owl()).model).toBe('mobile-live')
-  await expect(page.getByTestId('threads-model-menu-no-thinking')).toBeVisible()
-  await expect(page.getByTestId('threads-model')).not.toContainText('High')
-  await page.getByTestId('threads-model-menu-model-lmstudio-mobile-test').click()
-  await expect.poll(async () => (await owl()).model).toBe('mobile-test')
-  await expect(page.getByTestId('threads-model')).toContainText('High')
-  await page.getByTestId('threads-model-menu-backdrop').click({ position: { x: 12, y: 12 } })
-  await page.getByTestId(`thread-row-${section}`).click()
   await expect(page.getByTestId('chat-empty')).toBeVisible()
-  // The intro reads the level the model runs at, like the pill.
-  await expect(page.getByTestId('chat-intro-model')).toHaveText('mobile-test, thinking high')
   await expect(page.getByText('Opening conversation', { exact: true })).not.toBeVisible({
     timeout: 30000
   })
-  await shot('thread-empty')
+  await page.getByTestId('chat-settings').click()
+  await page.getByTestId('manage-models').click()
+  // The menu asks each connected provider for its current list: mobile-live
+  // exists only in LM Studio's live /models reply. Providers without a key or
+  // sign-in are left out.
+  await expect(page.getByTestId('manage-models-menu-model-lmstudio-mobile-live')).toBeVisible({
+    timeout: 30000
+  })
+  await expect(page.locator('[data-testid^="manage-models-menu-model-nous-"]')).toHaveCount(0)
+  // The daemon knows no levels for mobile-test, so every level is offered, as on the web.
+  await expect(page.getByTestId('manage-models-menu-level-max')).toBeVisible()
+  await page.getByTestId('manage-models-menu-level-high').click()
+  await expect(page.getByTestId('manage-models')).toContainText('High')
+  await shot('model-menu')
+  // A model without thinking runs with it off, whatever level is saved.
+  await page.getByTestId('manage-models-menu-model-lmstudio-mobile-live').click()
+  await expect(page.getByTestId('manage-models-menu-no-thinking')).toBeVisible()
+  await expect(page.getByTestId('manage-models')).not.toContainText('High')
+  await page.getByTestId('manage-models-menu-model-lmstudio-mobile-test').click()
+  await expect(page.getByTestId('manage-models')).toContainText('High')
+  await page.getByTestId('manage-models-menu-backdrop').click({ position: { x: 12, y: 12 } })
+  await page.getByTestId('management-sheet-action').click()
+  const owl = async () => (await rpc('hexbot.bots.get', { name: 'owl' })).bot
+  await expect.poll(async () => (await owl()).reasoning_effort).toBe('high')
+  assert.equal((await owl()).model, 'mobile-test')
+  await expect(page.getByTestId('management-sheet')).not.toBeVisible()
+  // The intro reads the level the model runs at, like the picker.
+  await expect(page.getByTestId('chat-intro-model')).toHaveText('mobile-test, thinking high')
+  await shot('chat-empty')
   await page.getByTestId('chat-input').fill('Check the mobile connection')
   await page.getByTestId('chat-send').click()
   await expect(
@@ -437,7 +432,7 @@ try {
     buffer: Buffer.from('A brief from the phone.')
   })
   await expect(page.getByText('brief.txt', { exact: true })).toBeVisible()
-  // A file another app staged on this thread and never sent stays out of this message.
+  // A file another app staged on this chat and never sent stays out of this message.
   const live = (await rpc('hexbot.sections.list', { include_archived: true })).sections.find(
     s => s.id === section
   ).live_session_id
@@ -476,12 +471,6 @@ try {
   await shot('tool-card')
   await page.getByTestId('tool-sheet-close').click()
   await expect(page.getByTestId('tool-sheet')).not.toBeVisible()
-  await page.getByTestId('chat-title').click()
-  await expect(page.getByTestId(`sections-row-${trip}`)).toBeVisible()
-  await settle()
-  await shot('thread-switcher')
-  await page.getByTestId('sections-close').click()
-  await expect(page.getByTestId('sections')).not.toBeVisible()
   await page.getByTestId('chat-settings').click()
   await expect(page.getByTestId('field-persona')).toBeVisible()
   await settle()
@@ -515,42 +504,6 @@ try {
   await page.getByTestId('management-sheet-back').click()
   await page.getByTestId('management-sheet-close').click()
   await expect(page.getByTestId('management-sheet')).not.toBeVisible()
-  await page.getByTestId('chat-new-section').click()
-  await expect(page.getByTestId('chat-empty')).toBeVisible()
-  await expect(page.getByText('Opening conversation', { exact: true })).not.toBeVisible({
-    timeout: 30000
-  })
-  await shot('thread-new')
-  await page.getByRole('button', { name: 'Back', exact: true }).click()
-  await expect(page.getByTestId('threads-screen')).toBeVisible()
-  await page.getByTestId(`thread-actions-${trip}`).click()
-  await settle()
-  await shot('thread-options')
-  await page.getByTestId('field-title').fill('Tokyo trip, November')
-  await page.getByTestId('management-sheet-action').click()
-  await expect
-    .poll(
-      async () =>
-        (await rpc('hexbot.sections.list', { include_archived: true })).sections.find(
-          s => s.id === trip
-        ).title
-    )
-    .toBe('Tokyo trip, November')
-  await page.getByTestId('threads-shelf').click()
-  await expect(page.getByTestId(`thread-row-${old}`)).toBeVisible()
-  await shot('threads-archived')
-  await page.getByTestId(`thread-restore-${old}`).click()
-  await expect
-    .poll(
-      async () =>
-        (await rpc('hexbot.sections.list', { include_archived: true })).sections.find(
-          s => s.id === old
-        ).archived_at
-    )
-    .toBe(null)
-  await page.getByTestId('threads-shelf').click()
-  await expect(page.getByTestId(`thread-row-${old}`)).toBeVisible()
-  await shot('threads')
   await page.getByRole('button', { name: 'Back', exact: true }).click()
   await page.getByTestId('home-tabs-rooms').click()
   await expect(page.getByTestId('rooms-view')).toBeVisible()
@@ -705,7 +658,6 @@ try {
   await page.getByTestId('management-sheet-close').click()
   await expect(page.getByTestId('management-sheet')).not.toBeVisible()
   await page.getByTestId('bot-row-owl').click()
-  await page.getByTestId(`thread-row-${section}`).click()
   await expect(
     page.getByText('Your daemon received this from mobile. The connection is working.', {
       exact: true
@@ -717,7 +669,6 @@ try {
   // A reload keeps metadata, but the browser preview intentionally has no persistent secrets.
   // Reconnect the same client by disconnecting and selecting its saved target.
   await page.getByRole('button', { name: 'Back', exact: true }).click()
-  await page.getByRole('button', { name: 'Back', exact: true }).click()
   await page.getByTestId('home-tabs-daemon').click()
   await page.getByTestId('daemon-disconnect').click()
   await expect(page.getByTestId('connection-screen')).toBeVisible()
@@ -726,7 +677,6 @@ try {
   await page.getByTestId('home-tabs-bots').click()
   await expect(page.getByTestId('bot-row-owl')).toBeVisible({ timeout: 30000 })
   await page.getByTestId('bot-row-owl').click()
-  await page.getByTestId(`thread-row-${section}`).click()
   await expect(
     page.getByText('Your daemon received this from mobile. The connection is working.', {
       exact: true
@@ -750,9 +700,9 @@ try {
       'sandboxed bot visual',
       'attachment-only send delivered to Pi, clears chips after acceptance, and leaves out a file staged by another app',
       'approval gates a real file write',
-      'bot feed, thread list, rename, archive shelf and restore',
+      'bot feed, and one chat per bot opened from its row',
       'model menu lists connected providers from their live lists and shows the level the model runs at',
-      'thread switcher, tool card and new thread',
+      'tool card',
       'soul editing',
       'isolated bot memory',
       'About you',

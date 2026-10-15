@@ -20,15 +20,15 @@ Credentials belong to the daemon deployment, not to one bot. Every bot on that d
 
 Provider settings also hold two deployment-wide choices. The **default model** is pre-filled whenever you create a bot. The optional **fallback** is the model every bot switches to when its own provider is down or rate limited.
 
-Treat provider keys like passwords. Do not paste them into a chat, a bot persona, or a project file. Hexbot stores credentials in the daemon's private configuration. Replacing a provider key updates open sections before their next provider request.
+Treat provider keys like passwords. Do not paste them into a chat, a bot persona, or a project file. Hexbot stores credentials in the daemon's private configuration. Replacing a provider key applies to open chats from their next provider request.
 
 ## Choose a model
 
-Each bot has a provider and model. The picker lists only providers you have set up, with a short curated list on top. For OpenAI Codex, OpenRouter and local servers it shows the models the provider offers right now; other providers use the catalog that ships with Hexbot. A section can also carry a temporary model override.
+Each bot has a provider and model. The picker lists only providers you have set up, with a short curated list on top. For OpenAI Codex, OpenRouter and local servers it shows the models the provider offers right now; other providers use the catalog that ships with Hexbot. A chat can also carry a temporary model override.
 
-Each bot also has a reasoning level in its Model settings. The list shows only the levels the chosen model supports, for example Low, High and Max for GLM-5.3 Flash. Higher levels think longer before answering and use more tokens. The default is Medium, or the next level up the model supports. Choose it when you create a bot, so the bot's first section starts at that level.
+Each bot also has a reasoning level in its Model settings. The list shows only the levels the chosen model supports, for example Low, High and Max for GLM-5.3 Flash. Higher levels think longer before answering and use more tokens. The default is Medium, or the next level up the model supports. Choose it when you create a bot, so the bot's chat starts at that level.
 
-A new model or level applies from the next message in every section still on the previous one. The first reply after a switch rereads the conversation without the provider's prompt cache, so it costs more than usual.
+A new model or level applies from the next message, in the chat and in rooms still on the previous one. The first reply after a switch rereads the conversation without the provider's prompt cache, so it costs more than usual.
 
 LM Studio lists the models available at its local `/v1/models` endpoint when you open its model picker. Start LM Studio's server before choosing a model. If discovery fails, the daemon's current configured model stays in the list.
 
@@ -45,9 +45,9 @@ model:
   default: your-loaded-model
 ```
 
-Replace `your-loaded-model` with an actual model name on that server. Refresh provider settings and start a new section after configuration changes. For an authenticated endpoint, configure its credentials on the daemon too. Local models need the capabilities your task uses, such as tool calling or image input.
+Replace `your-loaded-model` with an actual model name on that server. Refresh provider settings after configuration changes; the chat uses them from your next message. For an authenticated endpoint, configure its credentials on the daemon too. Local models need the capabilities your task uses, such as tool calling or image input.
 
-Tell the daemon the model's context window when it cannot find out itself. When a section's context fills, the daemon summarises its oldest part, starting at 75% of the window or later. The reserve defaults to 16,384 tokens and the recent context kept defaults to 20,000 tokens; both are capped at a quarter of the model's window. A model the daemon does not know is assumed to have 32,768 tokens, so a larger model would be summarised far earlier than it needs to be.
+Tell the daemon the model's context window when it cannot find out itself. When a chat's context fills, the daemon summarises its oldest part, starting at 75% of the window or later. The reserve defaults to 16,384 tokens and the recent context kept defaults to 20,000 tokens; both are capped at a quarter of the model's window. A model the daemon does not know is assumed to have 32,768 tokens, so a larger model would be summarised far earlier than it needs to be.
 
 For Ollama, set `context_length` under `model`. The daemon sends it to the custom endpoint as `num_ctx` and uses that window for every model there, including fallback models:
 
@@ -73,7 +73,7 @@ model_overrides:
       max_output_tokens: 8192
 ```
 
-`model_overrides.<provider>.<model>` also accepts `supports_reasoning` and `supports_vision`. A `_default` entry under a provider applies to every model of that provider the daemon has no metadata for. On the custom endpoint, `model.context_length` takes precedence over these window overrides. Project files are never read for this: a `.pi` directory in the workspace does not change how a section is summarised.
+`model_overrides.<provider>.<model>` also accepts `supports_reasoning` and `supports_vision`. A `_default` entry under a provider applies to every model of that provider the daemon has no metadata for. On the custom endpoint, `model.context_length` takes precedence over these window overrides. Project files are never read for this: a `.pi` directory in the workspace does not change how a chat is summarised.
 
 LM Studio's default endpoint is `http://127.0.0.1:1234/v1`. Start its server and load a model before selecting it in Hexbot. Use the LM Studio provider for its model discovery.
 
@@ -101,4 +101,4 @@ Rooms, private teammate exchanges, delegated subtasks, scheduled jobs, and dream
 
 ## Remove access
 
-Clear a provider key, or sign out of a subscription provider, in settings to stop new requests through that provider, including requests from open sections. Bots configured for it will need another model before they can reply.
+Clear a provider key, or sign out of a subscription provider, in settings to stop new requests through that provider, including requests from open chats. Bots configured for it will need another model before they can reply.

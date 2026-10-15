@@ -1,9 +1,8 @@
-import { createFileRoute, useNavigate } from '@tanstack/react-router'
+import { createFileRoute, redirect, useNavigate } from '@tanstack/react-router'
 import {
   BookOpen,
   Brain,
   Cpu,
-  MessagesSquare,
   Plug,
   ShieldCheck,
   SlidersHorizontal,
@@ -11,7 +10,7 @@ import {
   UserRound,
   Wrench
 } from 'lucide-react'
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 
 import { AppShell } from '../app/app-shell'
 import {
@@ -28,10 +27,22 @@ import {
   type SettingsTabItem
 } from '../components/ui/settings-shell'
 import { botFace } from '../lib/avatar-builder'
+import { useChatSelection } from '../lib/use-chat-selection'
 import { useBots } from '../stores/bots'
-import { useUi } from '../stores/ui'
+import { sectionsActions } from '../stores/sections'
+import { uiActions } from '../stores/ui'
 
 export const Route = createFileRoute('/b/$bot/settings/$tab')({
+  // A removed tab, such as Sections from before chats, opens Profile.
+  beforeLoad: ({ params }) => {
+    if (!isBotSettingsTab(params.tab)) {
+      throw redirect({
+        params: { bot: params.bot, tab: 'profile' },
+        replace: true,
+        to: '/b/$bot/settings/$tab'
+      })
+    }
+  },
   component: BotSettingsDialog,
   validateSearch: (search: Record<string, unknown>): { connector?: string } =>
     typeof search.connector === 'string' && search.connector ? { connector: search.connector } : {}
@@ -45,7 +56,6 @@ const ICONS: Record<BotSettingsTab, SettingsTabItem['icon']> = {
   model: Cpu,
   persona: Sparkles,
   profile: UserRound,
-  sections: MessagesSquare,
   skills: BookOpen,
   tools: Wrench
 }
@@ -53,7 +63,7 @@ const ICONS: Record<BotSettingsTab, SettingsTabItem['icon']> = {
 const GROUPS: { ids: BotSettingsTab[]; label?: string }[] = [
   { ids: ['profile', 'persona', 'model'] },
   { ids: ['memory', 'tools', 'connectors', 'skills'], label: 'Abilities' },
-  { ids: ['approvals', 'sections', 'advanced'], label: 'Manage' }
+  { ids: ['approvals', 'advanced'], label: 'Manage' }
 ]
 
 const TABS: SettingsTabGroup<BotSettingsTab>[] = GROUPS.map(group => ({
@@ -68,7 +78,8 @@ function BotSettingsDialog() {
   const bot = useBots(state => state.byName[botName])
   const loaded = useBots(state => state.loaded)
   const refresh = useBots(state => state.refresh)
-  const lastSection = useUi(state => state.lastSection)
+  const { startSelection } = useChatSelection()
+  const [closeError, setCloseError] = useState<string | null>(null)
   useEffect(() => {
     if (!loaded) {
       void refresh()
@@ -80,12 +91,50 @@ function BotSettingsDialog() {
     }
   }, [botName, tab])
 
-  const close = () => {
-    const section = lastSection?.bot === botName ? lastSection.section : bot?.sections_recent[0]?.id
+  const close = async () => {
+    const current = startSelection()
+    const missing = () => useBots.getState().loaded && !useBots.getState().byName[botName]
 
-    void (section
-      ? navigate({ params: { bot: botName, section }, to: '/b/$bot/s/$section' })
-      : navigate({ to: '/' }))
+    const exitMissing = () => {
+      if (!current() || !missing()) {
+        return false
+      }
+
+      // Home restores the remembered chat. Forget only this deleted bot's pick.
+      if (uiActions().lastSection?.bot === botName) {
+        uiActions().setLastSection(null)
+      }
+
+      void navigate({ to: '/' })
+
+      return true
+    }
+
+    setCloseError(null)
+
+    if (exitMissing()) {
+      return
+    }
+
+    // Without a roster this bot may or may not exist: look nothing up and
+    // forget nothing. Home restores the remembered chat, which checks itself.
+    if (!useBots.getState().loaded && !useBots.getState().byName[botName]) {
+      void navigate({ to: '/' })
+
+      return
+    }
+
+    try {
+      const section = await sectionsActions().chat(botName, () => current() && !missing())
+
+      if (current() && !exitMissing() && section) {
+        void navigate({ params: { bot: botName, section: section.id }, to: '/b/$bot/s/$section' })
+      }
+    } catch (error) {
+      if (current() && !exitMissing()) {
+        setCloseError(error instanceof Error ? error.message : String(error))
+      }
+    }
   }
 
   const current = isBotSettingsTab(tab) ? tab : 'profile'
@@ -112,12 +161,17 @@ function BotSettingsDialog() {
         }
         label={`${name} bot settings`}
         navLabel="Bot settings tabs"
-        onClose={close}
+        onClose={() => void close()}
         onSelect={item =>
           void navigate({ params: { bot: botName, tab: item }, to: '/b/$bot/settings/$tab' })
         }
         tabs={TABS}
       >
+        {closeError ? (
+          <p className="px-6 pt-4 text-danger" role="alert">
+            {closeError}
+          </p>
+        ) : null}
         {bot ? (
           <BotSettingsPanel bot={bot} connector={connector} tab={current} />
         ) : (

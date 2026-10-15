@@ -21,7 +21,6 @@ import {
   connectorsSetup,
   providerModels,
   providersList,
-  sectionsCreate,
   settingsGet,
   settingsSet,
   userMemoryGet,
@@ -30,6 +29,7 @@ import {
 import {
   avatarPng,
   type AvatarStyle,
+  botFace,
   DEFAULT_AVATAR_STYLE,
   styleForName
 } from '../lib/avatar-builder'
@@ -39,18 +39,12 @@ import { type DaemonProgress, getBridge, hasLocalRuntime, isElectron } from '../
 import { cn } from '../lib/cn'
 import { connectTo, setLocalDaemonPort } from '../lib/connection'
 import { reasoningOptions, runningLevel } from '../lib/reasoning'
-import type {
-  Bot,
-  Connector,
-  ModelOption,
-  Provider,
-  ReasoningEffort,
-  Section
-} from '../lib/types'
+import type { Bot, Connector, ModelOption, Provider, ReasoningEffort, Section } from '../lib/types'
+import { useChatSelection } from '../lib/use-chat-selection'
 import { useBots } from '../stores/bots'
 import { useConnection } from '../stores/connection'
 import { unknownMethod, useMe } from '../stores/me'
-import { introduceBot } from '../stores/sections'
+import { introduceBot, oneChat, sectionsActions } from '../stores/sections'
 import { type LastSection, uiActions } from '../stores/ui'
 
 export const Route = createFileRoute('/onboarding')({ component: OnboardingPage })
@@ -60,6 +54,7 @@ type OnboardingStep =
   | 'bot'
   | 'choice'
   | 'connect'
+  | 'continue'
   | 'deciding'
   | 'defaults'
   | 'install'
@@ -86,30 +81,93 @@ export function initialOnboardingStep(input: {
 }
 
 /**
- * Where onboarding ends for someone who already has bots: the section they
- * were in, else any bot's latest section, else a new section on the first
- * bot. Null when there are no bots yet.
+ * The bot onboarding ends with for someone who already has bots: the one
+ * they were with, else one they have talked to, else the first.
  */
-export async function landingSection(bots: Bot[]): Promise<LastSection | null> {
-  if (!bots.length) {
+export function landingBot(bots: Bot[]): Bot | undefined {
+  const last = uiActions().lastSection
+
+  return (
+    bots.find(bot => bot.name === last?.bot) ??
+    bots.find(bot => bot.sections_recent.length) ??
+    bots[0]
+  )
+}
+
+/**
+ * Where onboarding ends for someone who already has bots: the chat of
+ * `landingBot` as the daemon names it, never the section remembered here,
+ * which the upgrade may have deleted or recovery set aside. An older daemon
+ * names no chat, so there the section they were in stays theirs. Null when
+ * there are no bots yet, or when an older daemon asked which section to
+ * continue and the user picked none.
+ */
+export async function landingSection(
+  bots: Bot[],
+  current: () => boolean = () => true
+): Promise<LastSection | null> {
+  const bot = landingBot(bots)
+
+  if (!bot || !current()) {
     return null
   }
 
   const last = uiActions().lastSection
 
-  if (last && bots.some(bot => bot.name === last.bot)) {
-    return last
+  if (last?.bot === bot.name && !(await oneChat())) {
+    return current() ? last : null
   }
 
-  const recent = bots.find(bot => bot.sections_recent.length)
-
-  if (recent) {
-    return { bot: recent.name, section: recent.sections_recent[0]!.id }
+  if (!current()) {
+    return null
   }
 
-  const { section } = await sectionsCreate(bots[0]!.name)
+  const section = await sectionsActions().chat(bot.name, current)
 
-  return { bot: bots[0]!.name, section: section.id }
+  return current() && section ? { bot: bot.name, section: section.id } : null
+}
+
+/**
+ * Where someone with bots waits when their chat did not open: an older
+ * daemon asked which section to continue and they picked none, or the daemon
+ * failed. Continue asks again; nothing is opened or made until then.
+ */
+export function ContinueStep({
+  bot,
+  error,
+  onContinue
+}: {
+  bot: Bot
+  error: null | string
+  onContinue: () => Promise<void>
+}) {
+  const [busy, setBusy] = useState(false)
+
+  return (
+    <SetupFrame subtitle="Pick up where you left off." title={`Continue with ${bot.display_name}`}>
+      <div className="grid w-full flex-1 place-items-center py-8">
+        <Avatar {...botFace(bot)} name={bot.display_name} size="xl" />
+      </div>
+      <SetupActions className="pb-[12vh]">
+        <Button
+          busy={busy}
+          className={PILL}
+          onClick={() => {
+            setBusy(true)
+            void onContinue().finally(() => setBusy(false))
+          }}
+          variant="primary"
+        >
+          Continue
+        </Button>
+      </SetupActions>
+      {error ? (
+        <p className="pb-10 text-center text-secondary text-danger" role="alert">
+          {error}
+        </p>
+      ) : null}
+    </SetupFrame>
+  )
 }
 
 /**
@@ -201,7 +259,19 @@ const STAGES: { acts: HexbotActName[]; id: string; label: string; weight: number
   { acts: ['catch', 'download', 'fish'], id: 'uv', label: 'Fetching the installer', weight: 5 },
   { acts: ['type', 'read', 'tinker'], id: 'python', label: 'Installing Python', weight: 35 },
   {
-    acts: ['type', 'tinker', 'juggle', 'hammer', 'coffee', 'lift', 'drum', 'read', 'dance', 'wand', 'balloon'],
+    acts: [
+      'type',
+      'tinker',
+      'juggle',
+      'hammer',
+      'coffee',
+      'lift',
+      'drum',
+      'read',
+      'dance',
+      'wand',
+      'balloon'
+    ],
     id: 'dependencies',
     label: 'Installing voice tools',
     weight: 35
@@ -684,8 +754,8 @@ export function AboutStep({
       <label className="block space-y-2">
         <span className="font-medium">How your bots should talk to you</span>
         <span className="block text-secondary text-muted">
-          Tone, length, language, anything a bot should keep in mind. You can change all of
-          this later in Settings, Memory.
+          Tone, length, language, anything a bot should keep in mind. You can change all of this
+          later in Settings, Memory.
         </span>
         <Textarea
           data-testid="onboarding-about-preferences"
@@ -939,9 +1009,7 @@ export function ToolsStep({
                   <span className="block font-medium">{item.name}</span>
                   <span className="block text-secondary text-muted">{item.description}</span>
                 </span>
-                <Chip tone={item.state === 'ready' ? 'success' : 'neutral'}>
-                  {item.state_text}
-                </Chip>
+                <Chip tone={item.state === 'ready' ? 'success' : 'neutral'}>{item.state_text}</Chip>
               </button>
               {open ? (
                 <div className="border-t border-border bg-background px-4 py-4">
@@ -964,7 +1032,7 @@ export function ToolsStep({
       </ul>
       <p className="text-center text-secondary text-muted">
         {ready.length === 0
-          ? 'Bots cannot use a tool until it is set up. You can do it later in a bot\'s Connectors.'
+          ? "Bots cannot use a tool until it is set up. You can do it later in a bot's Connectors."
           : `${ready.length} set up. Add more now, or later in a bot's Connectors.`}
       </p>
       <SetupActions>
@@ -985,6 +1053,7 @@ function BotStep({
   configured,
   defaultModel,
   onBack,
+  startSelection,
   onCreated,
   onCreating,
   onError
@@ -992,7 +1061,8 @@ function BotStep({
   configured: Provider[]
   defaultModel: string | null
   onBack: () => void
-  onCreated: (bot: Bot, section: Section) => void
+  startSelection: () => () => boolean
+  onCreated: (bot: Bot, section: Section, current: () => boolean) => void
   /** The page shows a full-screen "getting ready" state while this is true. */
   onCreating?: (creating: boolean) => void
   onError: (message: string) => void
@@ -1014,6 +1084,7 @@ function BotStep({
   const [reasoning, setReasoning] = useState<null | ReasoningEffort>(null)
   const [model, setModel] = useState(() => defaultModel?.split('/').slice(1).join('/') ?? '')
   const [busy, setBusy] = useState(false)
+  const creating = useRef(false)
   const chosen = models.find(item => item.id === model)
 
   useEffect(() => {
@@ -1057,15 +1128,21 @@ function BotStep({
   const valid = HANDLE_PATTERN.test(name) && displayName.trim() && provider && model
 
   const create = async () => {
-    if (!valid) {
+    if (!valid || creating.current) {
       return
     }
 
+    creating.current = true
+    const current = startSelection()
     setBusy(true)
     onCreating?.(true)
 
     try {
       const avatar = await avatarPng(style)
+
+      if (!current()) {
+        return
+      }
 
       const result = await botsCreate({
         ...(avatar ? { avatar } : {}),
@@ -1080,11 +1157,16 @@ function BotStep({
         title: title.trim()
       })
 
-      onCreated(result.bot, result.section)
+      if (current()) {
+        onCreated(result.bot, result.section, current)
+      }
     } catch (reason) {
-      onCreating?.(false)
-      onError(String(reason))
+      if (current()) {
+        onCreating?.(false)
+        onError(String(reason))
+      }
     } finally {
+      creating.current = false
       setBusy(false)
     }
   }
@@ -1147,9 +1229,7 @@ function BotStep({
         </div>
       </div>
       <details className="group">
-        <summary className="cursor-pointer text-secondary text-muted">
-          Customise the soul
-        </summary>
+        <summary className="cursor-pointer text-secondary text-muted">Customise the soul</summary>
         <div className="mt-3 space-y-3">
           <Input
             aria-label="Bot title"
@@ -1231,6 +1311,7 @@ function BotStep({
 
 function OnboardingPage() {
   const navigate = useNavigate()
+  const { startSelection } = useChatSelection()
   const connected = useConnection(state => state.status === 'connected')
   const hasBots = useBots(state => state.order.length > 0)
 
@@ -1240,26 +1321,42 @@ function OnboardingPage() {
   const [defaultModel, setDefaultModel] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [creating, setCreating] = useState(false)
+  // The bots of someone whose chat did not open, and why, for Continue.
+  const [unopened, setUnopened] = useState<{ bots: Bot[]; error: null | string } | null>(null)
   const onError = useCallback((message: string) => setError(message), [])
 
   const finish = useCallback(
-    (bots: Bot[]) =>
-      landingSection(bots)
-        .then(last => {
-          if (!last) {
-            setStep('providers')
+    async (bots: Bot[], current = startSelection()) => {
+      if (!current()) {
+        return
+      }
 
-            return
-          }
+      try {
+        const last = await landingSection(bots, current)
 
+        if (!current()) {
+          return
+        }
+
+        if (last) {
           uiActions().setLastSection(last)
           void navigate({ to: '/b/$bot/s/$section', params: last })
-        })
-        .catch(reason => {
-          setError(String(reason))
+        } else if (bots.length) {
+          // An older daemon asked which section to continue and none was
+          // picked: that opens nothing, and these bots are still here.
+          setUnopened({ bots, error: null })
+          setStep('continue')
+        } else {
           setStep('providers')
-        }),
-    [navigate]
+        }
+      } catch (reason) {
+        if (current()) {
+          setUnopened({ bots, error: String(reason) })
+          setStep('continue')
+        }
+      }
+    },
+    [navigate, startSelection]
   )
 
   // One decision per visit, taken once the daemon is connected and never
@@ -1267,31 +1364,38 @@ function OnboardingPage() {
   // never written (its Skip writes an empty text, so the form only mounts
   // once the read says the file is absent), then the user's section, or
   // provider setup when there are no bots yet.
-  const decided = useRef(false)
+  const decided = useRef<null | (() => boolean)>(null)
   const afterAbout = useRef<() => void>(() => setStep('providers'))
 
   const decide = useCallback(() => {
-    if (decided.current) {
+    if (decided.current?.()) {
       return
     }
 
-    decided.current = true
+    const current = startSelection()
+    decided.current = current
     setStep('deciding')
     void Promise.all([userMemoryGet(), botsList()])
       .then(([memory, list]) => {
+        if (!current()) {
+          return
+        }
+
         if (memory.updated_at === null) {
-          afterAbout.current = () => void finish(list.bots)
+          afterAbout.current = () => void finish(list.bots, current)
           setStep('about')
         } else {
-          void finish(list.bots)
+          void finish(list.bots, current)
         }
       })
       .catch(reason => {
-        decided.current = false
-        setError(String(reason))
-        setStep('providers')
+        if (current()) {
+          decided.current = null
+          setError(String(reason))
+          setStep('providers')
+        }
       })
-  }, [finish])
+  }, [finish, startSelection])
 
   // Decided when the button is pressed, not when the page mounts, so a daemon
   // that connected while the welcome screen was up is taken into account.
@@ -1360,6 +1464,14 @@ function OnboardingPage() {
     return null
   }
 
+  if (step === 'continue') {
+    const bot = landingBot(unopened?.bots ?? [])
+
+    return unopened && bot ? (
+      <ContinueStep bot={bot} error={unopened.error} onContinue={() => finish(unopened.bots)} />
+    ) : null
+  }
+
   if (creating) {
     return (
       <main className="grid min-h-screen place-items-center bg-background text-foreground">
@@ -1422,9 +1534,7 @@ function OnboardingPage() {
 
   return (
     <SetupFrame subtitle={copy[1]} title={copy[0]}>
-      {step === 'about' ? (
-        <AboutStep onContinue={() => afterAbout.current()} onError={onError} />
-      ) : null}
+      {step === 'about' ? <AboutStep onContinue={afterAbout.current} onError={onError} /> : null}
 
       {step === 'providers' ? (
         <ProvidersStep
@@ -1454,7 +1564,11 @@ function OnboardingPage() {
           configured={configured}
           defaultModel={defaultModel}
           onBack={() => setStep('tools')}
-          onCreated={(bot, section) => {
+          onCreated={(bot, section, current) => {
+            if (!current()) {
+              return
+            }
+
             const last = { bot: bot.name, section: section.id }
             uiActions().setLastSection(last)
             void navigate({ to: '/b/$bot/s/$section', params: last })
@@ -1462,6 +1576,7 @@ function OnboardingPage() {
           }}
           onCreating={setCreating}
           onError={onError}
+          startSelection={startSelection}
         />
       ) : null}
 

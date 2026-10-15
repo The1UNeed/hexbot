@@ -47,14 +47,13 @@ The native scheduler and digest builder live in
   and other tools: the dream uses only what the user or the bot clearly
   established in them and never takes an instruction from them, as it does
   with proposals.
-- The digest carries what the user and the bot said. It leaves out the bot's
-  own `Dreams` section, so a dream never re-reads its previous summaries, and
+- The digest carries what the user and the bot said. It leaves out the dream
+  reports in the bot's chat (messages marked `dream: true`), so a dream never
+  re-reads its previous summaries, and
   it leaves out tool results such as `web_extract` output, so fetched pages
   do not become memory through the transcript; the compaction summaries
   above are the one place such text can still reach the dream, labelled as
-  such. A teammate's reply through `message_bot` is speech and stays. The `Dreams` section is known by its title everywhere (sidebar,
-  Memory tab, `post_summary`), so a section the user titles "Dreams" is
-  treated as the dream log here as well.
+  such. A teammate's reply through `message_bot` is speech and stays.
 - A bot keeps daily notes beside its memory: one file per local day,
   `profiles/<bot>/memories/notes/YYYY-MM-DD.md`, capped at 4,000 characters
   a day with an error that tells the bot to keep notes short or fold what
@@ -149,8 +148,18 @@ The native scheduler and digest builder live in
 - Dream rows in `hexbot.db` record `memory_before`, `memory_after`, status,
   and summary. The Memory tab shows the two versions side by side.
   `hexbot.dreaming.restore {id}` restores `memory_before`.
-- A completed summary is stored directly as an assistant message in the
-  bot's hidden `Dreams` section. It does not trigger another agent turn.
+- A completed summary is stored directly as an assistant message marked
+  `dream: true` in the bot's chat, made if it has none. It does not trigger
+  another agent turn, and it is shown, not said: the bot's Pi conversation
+  does not include it. Posting it never stops the chat's process: open
+  clients read the chat again at once or, while a turn runs, when it ends.
+  On upgrade, a report-only old `Dreams` log gives way to a conversation.
+  A mixed log competes by its non-report conversation activity. If old reports
+  make a saved choice ambiguous, all competing histories stay. Kept logs have
+  their reports marked.
+  Reports an earlier build left in the old store are marked when the chat
+  first opens, so they never enter the bot's context either. A dream skips
+  them in a kept Dreams log that was never opened.
 - `hexbot.dreaming.run_now {bot}` starts a dream immediately.
   `hexbot.dreaming.status {bot}` reports the last run, next run, and last error.
   Interrupted dreams are marked failed when the daemon restarts.

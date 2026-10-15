@@ -385,7 +385,7 @@ test('Auto asks before full access, with the bot reason, and before writes outsi
 
 test('Auto reviews every step outside the sandbox, whatever was allowed before', async t => {
   const f = fixture(t, 'manual', ['terminal']);
-  // A section grant from Manual does not carry into Auto's reviewed steps.
+  // An Allow for now grant from Manual does not carry into Auto's reviewed steps.
   f.ctx.choice = 'session';
   assert.equal(await f.gate('bash', {command:'make', full_access:true}), undefined);
   assert.equal(await f.gate('bash', {command:'make', full_access:true}), undefined);

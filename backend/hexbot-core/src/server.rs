@@ -41,6 +41,7 @@ pub struct App {
     proofs: Arc<dpop::Proofs>,
     logins: Mutex<HashMap<String, BrowserLogin>>,
     auth_connection: Mutex<rusqlite::Connection>,
+    bot_lifecycle: Arc<tokio::sync::Mutex<()>>,
     pub address: SocketAddr,
     _network_guard: common::DaemonListener,
     pub web_dist: Option<PathBuf>,
@@ -79,6 +80,17 @@ impl App {
         web_dist: Option<PathBuf>,
     ) -> Result<Arc<Self>> {
         db::migrate(&home)?;
+        if let Err(error) = crate::runtime_store::finish_deletes(&home) {
+            eprintln!("Could not finish deleting sections: {}", error.message);
+        }
+        // Before any client can connect. The daemon starts without it; it
+        // fails this way only before it deletes anything.
+        if let Err(error) = catalog::one_chat_per_bot(&home) {
+            eprintln!(
+                "The upgrade to one chat per bot stopped before deleting anything and runs again on the next start: {}",
+                error.message
+            );
+        }
         let events = EventHub::new();
         let runtime = Runtime::new(home.clone(), events.clone(), pi)?;
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
@@ -113,6 +125,7 @@ impl App {
         Ok(Arc::new(Self {
             memory: MemoryStore::new(home.clone()),
             auth_connection: Mutex::new(db::open(&home)?),
+            bot_lifecycle: Arc::new(tokio::sync::Mutex::new(())),
             home,
             events,
             runtime,
@@ -134,6 +147,7 @@ impl App {
         Ok(Arc::new(Self {
             memory: MemoryStore::new(self.home.clone()),
             auth_connection: Mutex::new(db::open(&self.home)?),
+            bot_lifecycle: self.bot_lifecycle.clone(),
             home: self.home.clone(),
             events: self.events.clone(),
             runtime: self.runtime.clone(),
@@ -153,12 +167,20 @@ impl App {
             return Err(Error::new(5200, "Reconnect to continue"));
         }
         common::user(&self.home, owner)?;
+        // Order name reuse with retirement, commit and rollback, including
+        // requests through a rebound listener. Never hold a SQLite lock over await.
+        let _bot_lifecycle = if matches!(method, "hexbot.bots.create" | "hexbot.bots.delete") {
+            Some(self.bot_lifecycle.lock().await)
+        } else {
+            None
+        };
         let mut affected_rooms = Vec::new();
         // Deletes are orchestrated here alone: one busy check, one close pass.
         if method == "hexbot.sections.delete" {
             let stored = common::required(p, "id")?;
             catalog::section(&self.home, owner, stored)?;
-            self.runtime.delete_stored(owner, stored).await?;
+            // The catalog removes its row before its history.
+            self.runtime.retire_stored(owner, stored).await?;
         }
         if method == "hexbot.bots.delete" {
             let bot = common::required(p, "name")?;
@@ -189,31 +211,28 @@ impl App {
                     .stop_internal(room["id"].as_str().unwrap_or(""))
                     .await?;
             }
-            // Sections, room conversations and hidden jobs, each under its owner.
-            let sessions = common::rows(
-                &crate::runtime_store::open(&self.home)?,
-                "SELECT stored_id,owner FROM native_sessions WHERE bot=?",
-                &[&bot],
-            )?;
-            for session in sessions {
-                self.runtime
-                    .delete_stored(
+            let sessions = catalog::prepare_bot_delete(&self.home, owner, bot)?;
+            let prepared: Result<()> = async {
+                for session in sessions {
+                    self.runtime.retire_stored(
                         common::required(&session, "owner")?,
-                        common::required(&session, "stored_id")?,
-                    )
-                    .await?;
-            }
-            // Threads where this bot asked others are archived below; stop any still answering
-            // or waiting on the owner, since their panel can no longer be opened.
-            let threads = common::rows(
-                &db::open(&self.home)?,
-                "SELECT id FROM sections WHERE peer_bot=? AND owner_id=? AND archived_at IS NULL",
-                &[&bot, &owner],
-            )?;
-            for thread in threads {
-                self.runtime
-                    .close_stored(owner, common::required(&thread, "id")?)
-                    .await?;
+                        common::required(&session, "id")?,
+                    ).await?;
+                }
+                // Stop recipient threads before archiving them in the catalog transaction.
+                let threads = common::rows(
+                    &db::open(&self.home)?,
+                    "SELECT id FROM sections WHERE peer_bot=? AND owner_id=? AND archived_at IS NULL",
+                    &[&bot, &owner],
+                )?;
+                for thread in threads {
+                    self.runtime.close_stored(owner, common::required(&thread, "id")?).await?;
+                }
+                Ok(())
+            }.await;
+            if let Err(error) = prepared {
+                catalog::rollback_bot_delete(&self.home, bot)?;
+                return Err(error);
             }
         }
         let mut removed_sessions = Vec::new();
@@ -309,6 +328,9 @@ impl App {
                 "sandbox": crate::credentials::sandbox(),
                 // Clients describe Manual, Auto and Bypass only to a daemon that has them.
                 "approvals": "sandbox",
+                // `hexbot.sections.create` returns the bot's one chat; an older
+                // daemon makes a new section every time.
+                "one_chat": true,
                 "home": self.home
             })),
             "hexbot.rooms.stop" => {
@@ -355,8 +377,11 @@ impl App {
                     Err(Error::new(-32601, format!("unknown method: {method}")))
                 }
             }
-        }?;
-        let mut result = result;
+        };
+        if result.is_err() && method == "hexbot.bots.delete" {
+            catalog::rollback_bot_delete(&self.home, common::required(p, "name")?)?;
+        }
+        let mut result = result?;
         // Opening a room restores its open approval and question cards.
         if method == "hexbot.rooms.get" {
             for turn in result["room"]["turns"].as_array().into_iter().flatten() {
