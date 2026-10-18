@@ -881,8 +881,7 @@ export function messagesFromHistory(
   const prefix = options.sender ? `@${options.sender}: ` : null
   // Tool rows carry no arguments; the assistant row that made the call does,
   // as the JSON the model wrote. Parsed, they match live `tool.start` args.
-  const callArgs = new Map<string, unknown>()
-  const callOwners = new Map<string, HistoryRow | null>()
+  const callOwners = new Map<string, HistoryRow[]>()
   const formatted = new Map<HistoryRow, Message>()
   const dreams = new Set<Message>()
   const rowCounts = new Map<string, number>()
@@ -899,18 +898,10 @@ export function messagesFromHistory(
     }
 
     for (const call of Array.isArray(row.tool_calls) ? row.tool_calls : []) {
-      const { function: fn, id } = (call ?? {}) as {
-        function?: { arguments?: unknown }
-        id?: unknown
-      }
+      const { id } = (call ?? {}) as { id?: unknown }
 
       if (typeof id === 'string') {
-        // Duplicate declarations do not establish an owner, even across rows.
-        callOwners.set(id, callOwners.has(id) ? null : row)
-
-        if (typeof fn?.arguments === 'string') {
-          callArgs.set(id, parseArguments(fn.arguments))
-        }
+        callOwners.set(id, [...(callOwners.get(id) ?? []), row])
       }
     }
   }
@@ -928,7 +919,24 @@ export function messagesFromHistory(
 
     if (row.role === 'tool') {
       const toolId = String(row.tool_call_id ?? row.tool_id)
-      const owner = callOwners.get(toolId)
+
+      const parentId =
+        typeof row.parent_tool_call_id === 'string' ? row.parent_tool_call_id : undefined
+
+      const declarations = callOwners.get(parentId ?? toolId) ?? []
+
+      const candidates = declarations.filter(
+        owner => !row.turn_id || !owner.turn_id || row.turn_id === owner.turn_id
+      )
+
+      const owner = candidates.length === 1 ? candidates[0] : undefined
+
+      const declaration =
+        !parentId && owner?.tool_calls && Array.isArray(owner.tool_calls)
+          ? owner.tool_calls.find(call => call?.id === toolId)
+          : undefined
+
+      const args = declaration?.function?.arguments
       const previous = messages.at(-1)
 
       const messageId =
@@ -951,7 +959,12 @@ export function messagesFromHistory(
 
       const call = {
         messageId,
-        args: row.args ?? (owner ? callArgs.get(toolId) : null) ?? null,
+        ...(parentId && { parentToolCallId: parentId }),
+        args:
+          row.args ??
+          ((owner?.row_id == null || messageId) && typeof args === 'string'
+            ? parseArguments(args)
+            : null),
         durationS: null,
         name: String(row.name ?? 'tool'),
         result: row.text ?? null,
@@ -977,7 +990,7 @@ export function messagesFromHistory(
           args: nested.arguments ?? null,
           durationS: nested.durationMs == null ? null : nested.durationMs / 1000,
           name: nested.name,
-          parentToolCallId: nested.id.slice(0, nested.id.lastIndexOf('/')) || call.toolId,
+          parentToolCallId: call.toolId,
           result: nested.error ?? null,
           startedAt: 0,
           status: nested.status === 'error' ? ('error' as const) : ('ok' as const),

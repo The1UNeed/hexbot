@@ -1,3 +1,4 @@
+import { findToolOccurrence } from '../lib/tool-occurrence'
 import type { Message, ToolCall } from '../lib/types'
 
 import type { Transcript, TranscriptMessage } from './transcripts'
@@ -31,28 +32,25 @@ export function hydrateHistory(
 
   const previous = new Map(existing.messages.map(message => [message.id, message]))
 
-  const tools = new Map(
-    existing.messages.flatMap(message =>
-      message.toolCalls.map(tool => [tool.toolId, tool] as const)
+  const tools = existing.messages.flatMap(message => message.toolCalls)
+  const stored = history.flatMap(message => message.toolCalls)
+
+  const fragmentOwners = (source: string | undefined) =>
+    history.flatMap(row =>
+      !reports.has(row.id) ? (row.fragmentIds ?? []).filter(id => id === source).map(() => row) : []
     )
-  )
 
-  const sources = new Map<string, Set<string>>()
+  const matchingLive = (tool: ToolCall) => {
+    const live = findToolOccurrence(tool, tools)
 
-  for (const message of existing.messages) {
-    for (const tool of message.toolCalls) {
-      if (tool.messageId) {
-        const owners = sources.get(tool.toolId) ?? new Set<string>()
-        owners.add(tool.messageId)
-        sources.set(tool.toolId, owners)
-      }
-    }
-  }
+    const owners = fragmentOwners(live?.messageId)
 
-  for (const [id, owners] of sources) {
-    if (owners.size > 1) {
-      tools.delete(id)
-    }
+    return live &&
+      (!tool.messageId || live.messageId === tool.messageId) &&
+      (!live.messageId || owners.length === 1) &&
+      findToolOccurrence(live, stored) === tool
+      ? live
+      : undefined
   }
 
   const emptied = new Set<Message>()
@@ -62,19 +60,16 @@ export function hydrateHistory(
   for (const message of history) {
     const hadTools = message.toolCalls.length > 0
     message.toolCalls = message.toolCalls.filter(tool => {
-      const source =
-        tool.messageId ??
-        (sources.get(tool.toolId)?.size === 1 ? tools.get(tool.toolId)?.messageId : undefined)
+      const source = tool.messageId ?? matchingLive(tool)?.messageId
 
-      const owners = history.filter(
-        row => !reports.has(row.id) && row.fragmentIds?.includes(source ?? '')
-      )
+      const owners = fragmentOwners(source)
 
       if (owners.length !== 1 || owners[0] === message) {
         return true
       }
 
-      owners[0]!.toolCalls = [...owners[0]!.toolCalls, { ...tool, messageId: source }]
+      tool.messageId = source
+      owners[0]!.toolCalls = [...owners[0]!.toolCalls, tool]
       const cards = message.clarifies?.filter(card => card.requestId === tool.toolId) ?? []
 
       if (cards.length) {
@@ -141,9 +136,11 @@ export function hydrateHistory(
       usage: live?.usage ?? final?.usage ?? message.usage,
       error: live?.error ?? final?.error ?? message.error,
       status: live?.status ?? final?.status ?? message.status,
-      toolCalls: message.toolCalls.map(tool =>
-        tools.has(tool.toolId) ? mergeTool(tool, tools.get(tool.toolId)!) : tool
-      )
+      toolCalls: message.toolCalls.map(tool => {
+        const live = matchingLive(tool)
+
+        return live ? mergeTool(tool, live) : tool
+      })
     }
   })
 
@@ -155,9 +152,7 @@ export function hydrateHistory(
     )
   )
 
-  const storedTools = new Set(
-    history.flatMap(message => message.toolCalls.map(tool => tool.toolId))
-  )
+  const storedTools = history.flatMap(message => message.toolCalls)
 
   for (const live of local.flatMap(message => splitLive(message, history, reports))) {
     if (adopted.has(live.id)) {
@@ -238,23 +233,21 @@ export function hydrateHistory(
       .flatMap(message => message.toolCalls)
       .filter(tool => tool.messageId && selected.has(tool.messageId))
 
-    const liveTools = live.toolCalls.filter(
-      tool => !storedTools.has(tool.toolId) || (tool.messageId && selected.has(tool.messageId))
-    )
+    const liveTools = live.toolCalls.filter(tool => {
+      const stored = findToolOccurrence(tool, storedTools)
+
+      return (
+        !stored ||
+        (!(tool.messageId && tool.messageId === stored.messageId) && matchingLive(stored) !== tool)
+      )
+    })
 
     const merged: TranscriptMessage = {
       ...live,
       ...(live.parts || closed.length ? { parts: closed.map(part => part.text) } : {}),
       ...(live.partIds || closed.length ? { partIds: closed.map(part => part.id) } : {}),
       text: live.textId ? (storedParts.get(live.textId) ?? live.text) : live.text,
-      toolCalls: [
-        ...new Map(
-          [...selectedTools, ...liveTools].map(tool => [
-            tool.toolId,
-            tools.has(tool.toolId) ? mergeTool(tool, tools.get(tool.toolId)!) : tool
-          ])
-        ).values()
-      ]
+      toolCalls: [...selectedTools, ...liveTools]
     }
 
     if (!selected.size) {
@@ -413,7 +406,7 @@ function subset(message: Message, ids: Set<string>): Message[] {
 }
 
 function mergeTool(stored: ToolCall, live: ToolCall): ToolCall {
-  if (stored.messageId && live.messageId && stored.messageId !== live.messageId) {
+  if (!findToolOccurrence(stored, [live])) {
     return stored
   }
 

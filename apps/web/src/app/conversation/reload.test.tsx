@@ -375,7 +375,7 @@ it('keeps pagination, equal interims and an HTML tool through hydration and the 
   const loading = useSections.getState().open('chat')
   await act(async () => {
     event('message.delta', { text: 'Later tail' })
-    event('tool.complete', { tool_id: 'visual-1', result_text: 'Shown' })
+    event('tool.complete', { message_id: '68', tool_id: 'visual-1', result_text: 'Shown' })
     held.resolve({ section, messages: rows })
     await loading
   })

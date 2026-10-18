@@ -253,26 +253,21 @@ export function routeEvent(event: GatewayEvent, deps: EventRouterDeps = {}): voi
     active.activeTurnId &&
     payload.turn_id !== active.activeTurnId
 
-  if (otherTurn && event.type !== 'message.start') {
-    // A delayed completion cannot settle a newer run. A known old tool may
-    // still finish, but it must not create a bubble in the newer run.
-    if (
-      event.type === 'tool.complete' &&
-      active.messages.some(message =>
-        message.toolCalls.some(tool => tool.toolId === payload.tool_id)
-      )
-    ) {
-      transcripts.toolComplete(sessionId, payload as ToolCompletePayload)
-    }
-
-    return
-  }
-
   if (/^(message\.|tool\.|reasoning\.|thinking\.|approval\.|clarify\.|error$)/.test(event.type)) {
     transcripts.eventIdentity(sessionId, {
       turnId: typeof payload.turn_id === 'string' ? payload.turn_id : undefined,
       messageId: typeof payload.message_id === 'string' ? payload.message_id : undefined
     })
+  }
+
+  if (otherTurn && event.type !== 'message.start') {
+    // A delayed completion cannot settle a newer run. A known old tool may
+    // still finish, but it must not create a bubble in the newer run.
+    if (event.type === 'tool.complete') {
+      transcripts.toolComplete(sessionId, payload as ToolCompletePayload)
+    }
+
+    return
   }
 
   switch (event.type) {

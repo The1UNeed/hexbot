@@ -642,25 +642,44 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
     },
 
     toolStart(sessionId, payload) {
-      const call: ToolCall = {
-        messageId: get().bySession[sessionId]?.identity?.messageId,
-        args: payload.args ?? payload.args_text ?? null,
-        durationS: null,
-        name: String(payload.name ?? 'tool'),
-        result: null,
-        startedAt: Date.now(),
-        status: 'running',
-        ...(payload.parent_tool_call_id && { parentToolCallId: payload.parent_tool_call_id }),
-        summary: payload.context,
-        toolId: String(payload.tool_id ?? nextMessageId('t'))
-      }
-
       update(sessionId, transcript => {
-        const parent =
-          payload.parent_tool_call_id &&
-          transcript.messages.find(message =>
-            message.toolCalls.some(tool => tool.toolId === payload.parent_tool_call_id)
-          )
+        if (
+          transcript.identity?.messageId &&
+          transcript.messages.flatMap(message =>
+            (message.fragmentIds ?? []).filter(id => id === transcript.identity?.messageId)
+          ).length > 1
+        ) {
+          return transcript
+        }
+
+        const parents = transcript.messages.flatMap(message =>
+          message.toolCalls
+            .filter(
+              tool =>
+                tool.toolId === payload.parent_tool_call_id &&
+                (!transcript.identity?.messageId ||
+                  tool.messageId === transcript.identity.messageId) &&
+                (!transcript.identity?.turnId ||
+                  !message.turnId ||
+                  message.turnId === transcript.identity.turnId)
+            )
+            .map(tool => ({ message, tool }))
+        )
+
+        const parent = payload.parent_tool_call_id && parents.length === 1 ? parents[0] : undefined
+
+        const call: ToolCall = {
+          messageId: transcript.identity?.messageId ?? parent?.tool.messageId,
+          args: payload.args ?? payload.args_text ?? null,
+          durationS: null,
+          name: String(payload.name ?? 'tool'),
+          result: null,
+          startedAt: Date.now(),
+          status: 'running',
+          ...(payload.parent_tool_call_id && { parentToolCallId: payload.parent_tool_call_id }),
+          summary: payload.context,
+          toolId: String(payload.tool_id ?? nextMessageId('t'))
+        }
 
         const append = (message: TranscriptMessage) => ({
           ...closePart(message),
@@ -668,7 +687,7 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
         })
 
         return parent
-          ? replaceMessage(transcript, parent.id, append)
+          ? replaceMessage(transcript, parent.message.id, append)
           : withCurrentAssistant(transcript, append)
       })
     },
@@ -676,32 +695,57 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
     toolComplete(sessionId, payload) {
       const toolId = payload.tool_id === undefined ? null : String(payload.tool_id)
       const result = payload.result ?? payload.result_text ?? null
-
-      const failed =
-        typeof result === 'object' &&
-        result !== null &&
-        'error' in (result as Record<string, unknown>)
+      const failed = typeof result === 'object' && result !== null && 'error' in result
 
       update(sessionId, transcript => {
-        const index = toolId
-          ? transcript.messages.findLastIndex(message =>
-              message.toolCalls.some(call => call.toolId === toolId)
+        const source = transcript.identity?.messageId
+        const turn = transcript.identity?.turnId
+
+        const otherTurn =
+          turn &&
+          transcript.turnActive &&
+          transcript.activeTurnId &&
+          turn !== transcript.activeTurnId
+
+        if (
+          source &&
+          transcript.messages.flatMap(message =>
+            (message.fragmentIds ?? []).filter(id => id === source)
+          ).length > 1
+        ) {
+          return transcript
+        }
+
+        const candidates = transcript.messages.flatMap(message =>
+          message.toolCalls
+            .filter(
+              call =>
+                call.toolId === toolId &&
+                (!payload.parent_tool_call_id ||
+                  call.parentToolCallId === payload.parent_tool_call_id) &&
+                (!turn ||
+                  message.turnId === turn ||
+                  (!message.turnId && (!otherTurn || (source && call.messageId === source))))
             )
-          : -1
+            .map(call => ({ message, call }))
+        )
 
-        if (index >= 0) {
-          const target = transcript.messages[index]
+        const exact = source ? candidates.filter(({ call }) => call.messageId === source) : []
 
-          if (!target) {
-            return transcript
-          }
+        const matches = exact.length
+          ? exact
+          : candidates.filter(({ call }) => !source || !call.messageId)
 
-          return replaceMessage(transcript, target.id, message => ({
+        const target = matches.length === 1 ? matches[0] : undefined
+
+        if (target) {
+          return replaceMessage(transcript, target.message.id, message => ({
             ...message,
             toolCalls: message.toolCalls.map(call =>
-              call.toolId === toolId
+              call === target.call
                 ? {
                     ...call,
+                    messageId: call.messageId ?? source,
                     args: payload.args ?? call.args,
                     durationS: payload.duration_s ?? call.durationS,
                     result,
@@ -714,14 +758,36 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
           }))
         }
 
-        // A completion without a matching start (reconnect mid-tool): render
-        // it as a finished call rather than dropping it.
-        return withCurrentAssistant(transcript, message => ({
+        // An ambiguous completion cannot pick a call or create a duplicate.
+        // A delayed old completion also cannot open a bubble in the current run.
+        if (matches.length || otherTurn) {
+          return transcript
+        }
+
+        const parents = payload.parent_tool_call_id
+          ? transcript.messages.flatMap(message =>
+              message.toolCalls
+                .filter(
+                  call =>
+                    call.toolId === payload.parent_tool_call_id &&
+                    (!source || call.messageId === source) &&
+                    (!turn || !message.turnId || message.turnId === turn)
+                )
+                .map(call => ({ message, call }))
+            )
+          : []
+
+        const parent = parents.length === 1 ? parents[0] : undefined
+
+        // A completion without a matching start (reconnect mid-tool) remains
+        // a separate occurrence, keeping its explicit parent when supplied.
+        const append = (message: Message): Message => ({
           ...message,
           toolCalls: [
             ...message.toolCalls,
             {
-              messageId: transcript.identity?.messageId,
+              messageId: source ?? parent?.call.messageId,
+              ...(payload.parent_tool_call_id && { parentToolCallId: payload.parent_tool_call_id }),
               args: payload.args ?? null,
               durationS: payload.duration_s ?? null,
               name: String(payload.name ?? 'tool'),
@@ -733,7 +799,11 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
             }
           ],
           workUntil: Date.now()
-        }))
+        })
+
+        return parent
+          ? replaceMessage(transcript, parent.message.id, append)
+          : withCurrentAssistant(transcript, append)
       })
     },
 
