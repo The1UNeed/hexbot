@@ -3,6 +3,9 @@
 use super::*;
 
 pub(super) struct InputBoundary {
+    // Keep deletion outside the actual enqueue, including callers that reuse
+    // a Live after its opener's admission has ended.
+    _admission: Vec<tokio::sync::OwnedRwLockReadGuard<()>>,
     _open: Option<tokio::sync::OwnedMutexGuard<()>>,
     _landing: Option<Landing>,
 }
@@ -62,11 +65,13 @@ impl Runtime {
                 self.check_input_alias(previous)?;
                 store::session_dir(&self.home, &previous.stored)?;
                 common::bot_owner(&self.home, &previous.owner, &previous.bot)?;
+                let admission = self.admit_session(&previous.bot, &previous.stored, None)?;
                 let landing = Landing::new(previous)?;
                 self.register_worker_bridge(previous);
                 return Ok((
                     previous.clone(),
                     InputBoundary {
+                        _admission: admission,
                         _open: None,
                         _landing: Some(landing),
                     },
@@ -141,9 +146,13 @@ impl Runtime {
                 ));
             }
             self.register_worker_bridge(&s);
+            // open_session_locked owned admission through startup. Re-enter
+            // after it returns, before this caller can enqueue on that Live.
+            let admission = self.admit_session(&s.bot, &s.stored, None)?;
             return Ok((
                 s,
                 InputBoundary {
+                    _admission: admission,
                     _open: Some(open),
                     _landing: None,
                 },

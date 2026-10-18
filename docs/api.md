@@ -231,9 +231,11 @@ inside the Hexbot home, symlinks included.
 - `hexbot.bots.clear_status {name}` → `{bot: Bot}`. Closes every open incident
   for the bot.
 - `hexbot.bots.delete {name}` → `{deleted: true}` (deletes the profile
-  directory, all rows, the bot's scheduled jobs, and the memory proposals those jobs left; refuses with 4211 if any of its sections is live
-  and mid-turn — `session.active_list` status `working` or `waiting` —
-  with `data.sections: [{id, status}]`).
+  directory, all rows, the bot's scheduled jobs, and the memory proposals those jobs left;
+  refuses with 4211 while any conversation has active work, Stop cleanup or
+  recovery, or input reserved to run next, with `data.sections: [{id, status}]`).
+  Reserved input and Stop recovery report `working` in this refusal even after
+  the previous run has settled. Deletion can proceed once that work finishes.
 
 ### Sections
 

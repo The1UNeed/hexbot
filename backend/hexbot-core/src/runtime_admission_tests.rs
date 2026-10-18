@@ -1363,3 +1363,225 @@ async fn closing_a_failed_start_rejects_older_waiters_before_alias_reopen() {
     assert_eq!(history[0]["text"], "new owner");
     runtime.shutdown().await;
 }
+
+#[tokio::test]
+async fn bot_deletion_waits_for_stop_recovery_and_the_input_it_admits() {
+    let (home, runtime, _) = setup();
+    drop(runtime);
+    idle_stop_pi(home.path());
+    let room = crate::rooms::call(
+        home.path(),
+        "alice",
+        "hexbot.rooms.create",
+        &json!({"name":"Race","members":["owl"],"main_bot":"owl"}),
+    )
+    .unwrap()
+    .unwrap()["room"]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    db::open(home.path())
+        .unwrap()
+        .execute(
+            "INSERT INTO room_sessions(room_id,bot,stored_session_id) VALUES(?,'owl','room-owl')",
+            [&room],
+        )
+        .unwrap();
+    // No ambient runtime: App startup must not start description work here.
+    let h = home.path().to_path_buf();
+    let app = std::thread::spawn(move || {
+        crate::server::App::new(
+            h.clone(),
+            "127.0.0.1:0".parse().unwrap(),
+            h.join("pi.cjs"),
+            None,
+        )
+        .unwrap()
+    })
+    .join()
+    .unwrap();
+    let runtime = app.runtime.clone();
+    let mut events = app.events.subscribe();
+    let id = open(&runtime).await;
+    runtime
+        .ensure_hidden("alice", "owl", "room-owl")
+        .await
+        .unwrap();
+    let chat = runtime.sessions.lock().unwrap()["first"].clone();
+    let room_live = runtime.sessions.lock().unwrap()["room-owl"].clone();
+    // Idle Stop leaves only queue recovery. A background result reserves its
+    // place behind it before deletion starts.
+    let recovery = chat.recovery_gate.lock().await;
+    runtime
+        .call_inner("alice", "session.interrupt", &json!({"session_id":id}))
+        .await
+        .unwrap();
+    let waiting = runtime.submit(&chat, "background result", true, true, None, None);
+    tokio::pin!(waiting);
+    assert!(futures_util::poll!(waiting.as_mut()).is_pending());
+    // Past its final busy check, deletion would stop the bot's room next.
+    fs::write(home.path().join("hold-abort"), "hold room Stop").unwrap();
+    let mut deleting = {
+        let app = app.clone();
+        tokio::spawn(async move {
+            app.call("alice", "hexbot.bots.delete", &json!({"name":"owl"}))
+                .await
+        })
+    };
+    let refusal = tokio::select! {
+        result = &mut deleting => result.unwrap().unwrap_err(),
+        _ = stop_tests::stop_event(&mut events, |e| e["payload"]["text"] == "abort waiting") => {
+            drop(recovery);
+            let started = waiting.await;
+            Runtime::command(&room_live, json!({"type":"release_abort"})).await.unwrap();
+            panic!(
+                "deletion passed its final busy check during Stop recovery; the waiting result then returned {started:?} and deletion {:?}",
+                deleting.await.unwrap()
+            );
+        }
+    };
+    assert_eq!(refusal.code, 4211);
+    assert!(
+        refusal.data.unwrap()["sections"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|s| s["id"] == "first")
+    );
+    assert!(crate::catalog::bot(home.path(), "alice", "owl").is_ok());
+    // The admitted result keeps its place and runs once recovery finishes.
+    fs::remove_file(home.path().join("hold-abort")).unwrap();
+    let mut settled = chat.settled.subscribe();
+    drop(recovery);
+    assert_eq!(waiting.await.unwrap()["status"], "submitted");
+    settled.changed().await.unwrap();
+    let results = store::history(home.path(), "first")
+        .unwrap()
+        .into_iter()
+        .filter(|r| r["text"] == "background result")
+        .collect::<Vec<_>>();
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0]["display_kind"], "hidden");
+    let intents: (usize, usize) = store::open(home.path()).unwrap().query_row(
+        "SELECT count(*),count(consumed_by) FROM native_prompt_intents WHERE session_id='first' AND text='background result'",
+        [], |r| Ok((r.get(0)?, r.get(1)?)),
+    ).unwrap();
+    assert_eq!(intents, (1, 1));
+    // Once the bot is idle again, the same deletion goes ahead.
+    assert_eq!(
+        app.call("alice", "hexbot.bots.delete", &json!({"name":"owl"}))
+            .await
+            .unwrap()["deleted"],
+        true
+    );
+    assert!(crate::catalog::bot(home.path(), "alice", "owl").is_err());
+    app.shutdown().await;
+}
+
+#[tokio::test]
+async fn reserved_input_is_busy_before_it_starts_a_run() {
+    let (home, runtime, hub) = setup();
+    let id = open(&runtime).await;
+    let s = runtime.sessions.lock().unwrap()["first"].clone();
+    let gate = s.input_gate.lock().await;
+    let waiting = runtime.steer(&s, "reserved steer");
+    tokio::pin!(waiting);
+    assert!(futures_util::poll!(waiting.as_mut()).is_pending());
+    assert!(!s.state.lock().unwrap().busy);
+    assert_eq!(
+        runtime.busy_sections("owl"),
+        vec![json!({"id":"first","status":"working","owner_id":"alice"})]
+    );
+    let mut events = hub.subscribe();
+    drop(gate);
+    assert_eq!(waiting.await.unwrap()["status"], "queued");
+    stop_tests::stop_event(&mut events, |e| e["type"] == "message.complete").await;
+    assert!(runtime.busy_sections("owl").is_empty());
+    assert_eq!(
+        store::history(home.path(), "first")
+            .unwrap()
+            .iter()
+            .filter(|r| r["text"] == "reserved steer")
+            .count(),
+        1
+    );
+    runtime
+        .call_inner("alice", "session.close", &json!({"session_id":id}))
+        .await
+        .unwrap();
+    assert!(runtime.busy_sections("owl").is_empty());
+    runtime.shutdown().await;
+}
+
+#[tokio::test]
+async fn existing_process_input_obeys_bot_and_room_deletion_admission() {
+    for room_scope in [false, true] {
+        let (home, runtime, hub) = setup();
+        let id = open(&runtime).await;
+        let s = runtime.sessions.lock().unwrap()["first"].clone();
+        let scope = if room_scope {
+            let room = crate::rooms::call(
+                home.path(),
+                "alice",
+                "hexbot.rooms.create",
+                &json!({"name":"Admission","members":["owl"],"main_bot":"owl"}),
+            )
+            .unwrap()
+            .unwrap()["room"]["id"]
+                .as_str()
+                .unwrap()
+                .to_owned();
+            db::open(home.path()).unwrap().execute("INSERT INTO room_sessions(room_id,bot,stored_session_id) VALUES(?,'owl','first')", [&room]).unwrap();
+            crate::admission::Scope::Room(room)
+        } else {
+            crate::admission::Scope::Bot("owl".into())
+        };
+        let deletion = runtime.admission.pause(scope).await;
+        // These callers already own a Live, so they bypass a new process open.
+        for queued in [false, true] {
+            assert_eq!(
+                runtime
+                    .submit(&s, "late prompt", queued, queued, None, None)
+                    .await
+                    .unwrap_err()
+                    .code,
+                4211
+            );
+        }
+        assert_eq!(
+            runtime.steer(&s, "late steer").await.unwrap_err().code,
+            4211
+        );
+        assert!(runtime.busy_sections("owl").is_empty());
+        assert!(store::history(home.path(), "first").unwrap().is_empty());
+        let intents: usize = store::open(home.path())
+            .unwrap()
+            .query_row(
+                "SELECT count(*) FROM native_prompt_intents WHERE session_id='first'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(intents, 0);
+        drop(deletion);
+        let mut events = hub.subscribe();
+        runtime
+            .call_inner(
+                "alice",
+                "session.steer",
+                &json!({"session_id":id,"text":"after deletion boundary"}),
+            )
+            .await
+            .unwrap();
+        stop_tests::stop_event(&mut events, |e| e["type"] == "message.complete").await;
+        assert_eq!(
+            store::history(home.path(), "first")
+                .unwrap()
+                .iter()
+                .filter(|r| r["text"] == "after deletion boundary")
+                .count(),
+            1
+        );
+        runtime.shutdown().await;
+    }
+}

@@ -51,7 +51,7 @@ Each night's [dream](/docs/dreaming/) report appears in the chat as a message fr
 
 Use **Stop** to interrupt a running answer. The chat stays available, and you can send another message once the bot is idle. Queued background results run before your next message. A result accepted just after Stop finishes can start the next answer itself. A background result arriving while the answer stops waits until it has stopped, then continues the chat. The new answer can ask questions and request approvals.
 
-Deleting the bot removes its profile, chat, memory, and scheduled jobs. Stop its active work first. Back up the daemon's data directory before removing a bot you may need again.
+Deleting the bot removes its profile, chat, memory, and scheduled jobs. Stop its active work first, then wait for Stop cleanup and any queued results to finish. Deletion is refused while that work remains. Back up the daemon's data directory before removing a bot you may need again.
 
 While deletion runs, new bot starts are refused, including jobs and CLI runs. Closing the app lets the daemon finish deletion. If deletion fails, the bot can work again.
 

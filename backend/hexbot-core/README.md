@@ -161,6 +161,10 @@ it also installs over SSH when nobody is signed in at the screen.
   Stop recovery keeps past context and frozen prompt/tool options. Client dialog
   answers claim the event gate through the response enqueue; Stop rejects later
   claims with 4204.
+  Bot deletion treats Stop cleanup, recovery and reserved input as active work,
+  even when the old Pi run has settled. Input admission on an existing process
+  holds the shared bot/room boundary through enqueue. Deletion refuses pending
+  work and prevents later input from starting after its final busy check.
 - `profiles/<bot>/pi/` is the bot's Pi agent directory. The daemon rewrites
   `auth.json`, `models.json`, and the `compaction` key of `settings.json`
   atomically before every Pi start and whenever credentials change; other

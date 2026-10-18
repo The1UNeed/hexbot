@@ -2753,7 +2753,17 @@ impl Runtime {
             .filter(|s| s.bot == bot)
             .filter_map(|s| {
                 let state = s.state.lock().unwrap();
-                state.busy.then(|| {
+                // Stop can settle the run before recovery admits its retained
+                // input. Reservations also own work before Pi starts a run.
+                let active = !state.closed
+                    && (state.busy
+                        || state.stops != 0
+                        || state.recovering
+                        || state.submitting != 0
+                        || !state.inputs.is_empty()
+                        || state.landing != 0
+                        || s.input_waiters.load(Ordering::Acquire) != 0);
+                active.then(|| {
                     json!({
                         "id": s.stored,
                         "status": if state.pending.is_empty() {

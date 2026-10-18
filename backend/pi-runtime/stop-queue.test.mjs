@@ -61,7 +61,7 @@ test('Pi retains follow-ups through abort and an idle prompt starts a fresh run'
     if (['agent_start', 'agent_settled'].includes(event.type)) events.push(event.type);
     if (event.type === 'message_end' && event.message.role === 'user') events.push(`user:${event.message.content.map(block => block.text).join('')}`);
   });
-  const run = session.prompt('block');
+  const run = session.prompt('block', {preflightResult:value => { events.push(`preflight:${value}`); }});
   await started.promise;
   let disposition;
   const followUp = message => session.prompt(message, {streamingBehavior:'followUp', preflightResult:value => { disposition = value; }});
@@ -76,7 +76,7 @@ test('Pi retains follow-ups through abort and an idle prompt starts a fresh run'
   await Promise.all([abort, run]);
   assert.equal(session.isStreaming, false);
   assert.equal(session.pendingMessageCount, 2);
-  assert.deepEqual(events, ['before:block', 'agent_start', 'user:block', 'agent_settled']);
+  assert.deepEqual(events, ['before:block', 'preflight:started', 'agent_start', 'user:block', 'agent_settled']);
   assert.deepEqual(requests, ['block']);
 
   await followUp('result after abort');
@@ -84,7 +84,7 @@ test('Pi retains follow-ups through abort and an idle prompt starts a fresh run'
   assert.equal(session.pendingMessageCount, 0);
   assert.deepEqual(requests, ['block', 'result after abort', 'result before abort', 'result during abort']);
   assert.deepEqual(events, [
-    'before:block', 'agent_start', 'user:block', 'agent_settled',
+    'before:block', 'preflight:started', 'agent_start', 'user:block', 'agent_settled',
     'before:result after abort', 'agent_start', 'user:result after abort',
     'user:result before abort', 'user:result during abort', 'agent_settled',
   ]);
