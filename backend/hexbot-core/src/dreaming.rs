@@ -308,6 +308,17 @@ fn consume_proposals(home: &Path, bot: &str, dream: &str, ids: &[&str]) -> Resul
     Ok(())
 }
 
+/// Hidden instructions Hexbot's Pi extension adds to a chat: the todo list
+/// after a compaction and the notice that the fallback model took over.
+/// Neither the user nor the bot said them, so the digest leaves them out, and
+/// the runtime journals them only when it reconciles the log.
+fn hexbot_instruction(kind: &Value, hidden: bool) -> bool {
+    hidden
+        && kind
+            .as_str()
+            .is_some_and(|kind| matches!(kind, "hexbot_todo" | "hexbot_fallback"))
+}
+
 // Pi emits message_end before its durable append. Check the log against the
 // journal without reconciling a possibly live file, rewriting it, or billing.
 // A recovery flag or an import file alone cannot vouch for later projections.
@@ -365,6 +376,12 @@ fn native_log_ready(home: &Path, stored: &str, since: f64) -> Result<bool> {
         }
         let message = match entry["type"].as_str() {
             Some("message") => entry["message"].clone(),
+            // Not input to the digest. Any other custom message must match.
+            Some("custom_message")
+                if hexbot_instruction(&entry["customType"], entry["display"] == false) =>
+            {
+                continue;
+            }
             Some("custom_message") => {
                 let at = entry["timestamp"]
                     .as_str()
@@ -437,6 +454,7 @@ fn native_log_ready(home: &Path, stored: &str, since: f64) -> Result<bool> {
 /// Archived sections remain part of durable learning. Earlier dream reports in
 /// the chat are the dream's output, not its input, and tool results are left out:
 /// the dream learns from what the user and the bot said, not from fetched pages.
+/// Hexbot's hidden todo and fallback instructions are left out for the same reason.
 /// Another bot's reply through message_bot is speech, so it stays.
 /// Activity is restricted to [since, until), where until is this dream's start.
 /// A section Pi compacted in that interval also carries those summaries
@@ -660,6 +678,10 @@ pub fn build_digest(
                         || at >= until
                         || message["dream"] == true
                         || message["role"] == "tool" && message["name"] != "message_bot"
+                        || hexbot_instruction(
+                            &message["custom_type"],
+                            message["display_kind"] == "hidden",
+                        )
                     {
                         continue;
                     }
