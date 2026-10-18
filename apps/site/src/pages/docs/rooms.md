@@ -34,7 +34,7 @@ A daemon belongs to one person, so you are the only person in its rooms. Rooms w
 
 Archiving hides a room but keeps its history. Deleting it removes the room and its history; each bot's own memory is left as it is.
 
-While a room is being deleted, new messages and bot starts are refused. Closing the app lets the daemon finish deletion. If another bot joins while the last bot is being removed, the room stays available.
+While a room is being deleted, new messages and bot starts are refused. Closing the app lets the daemon finish deletion. If another bot joins while the last bot is being removed, the room stays available. A message saved just before a member removal stays if the room survives. If its bot response could not start during removal, it waits for the next room message or a daemon restart.
 
 ## Bots working together
 

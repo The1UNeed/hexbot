@@ -109,8 +109,10 @@ it also installs over SSH when nobody is signed in at the screen.
   Requested legacy purges persist exact native targets, bot, owner and the
   decision root in `native_delete_options`/`native_delete_pending`, then save
   identifiable legacy IDs before removing native relationships. Startup retries
-  incomplete cleanup even when native rows and files are gone. Completed
-  targets remain tombstoned. A failed catalog decision rolls back its own
+  incomplete cleanup even when native rows and files are gone. Conflicting
+  ownership or a reference from retained legacy history leaves the request
+  pending; restarting alone cannot resolve the conflict. Completed targets
+  remain tombstoned. A failed catalog decision rolls back its own
   request without changing raw history or frozen options. `purge_memory: false`
   still purges native history and leaves legacy history alone. Old tombstones
   without ownership metadata retain their native-only recovery behavior.

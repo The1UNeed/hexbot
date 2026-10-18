@@ -379,8 +379,10 @@ context of its own; the meter belongs to bot sections.
   what a stop after it left (`runtime_store::finish_deletes`). With
   `purge_memory: false` the core transcript in `state.db` is left in place;
   with `true`, cleanup ownership and the catalog decision are saved before
-  that row goes. Startup retries native files and identifiable legacy history
-  until cleanup finishes, including when native rows are already gone.
+  that row goes. Startup retries native files and identifiable legacy history,
+  including when native rows are already gone. Conflicting ownership or a
+  reference from a retained legacy conversation keeps cleanup pending;
+  restarting alone cannot resolve that conflict.
   Older untagged tombstones have no legacy ownership to recover.
   If any history cleanup fails after
   the catalog commit, `history_pending: true` reports that the section is
@@ -497,8 +499,10 @@ and its bots run as the owner.
   New posts, worker starts and mapped conversation opens fail with 4211 while
   deletion waits or runs. Opens already in progress finish before the daemon
   captures and closes its conversations. Cancelling the request lets the daemon
-  finish the operation. Member removals are ordered per room and pause new work
-  until the operation finishes. Bots may still join while its processes close;
+  finish the operation. Member removals are ordered per room and reject new
+  starts with 4211 until the operation finishes. An already accepted post stays
+  saved if the room survives removal, but a blocked bot response waits for the
+  next room post or startup reconciliation. Bots may still join while its processes close;
   a join can keep the room when its last bot was being removed.
 - `hexbot.rooms.mark_read {id, seq}` → `{room}`
 
