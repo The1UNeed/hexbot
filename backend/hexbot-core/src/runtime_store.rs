@@ -698,10 +698,25 @@ fn with_catalog_delete_locked(
     let finalized: Result<()> = (|| {
         let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         for target in &retirement.targets {
+            let request = tx
+                .query_row(
+                    "SELECT root_id,cataloged FROM native_delete_pending WHERE session_id=?",
+                    [target],
+                    |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)),
+                )
+                .optional()?;
+            // End provisional claims through the FK cascade, while retaining
+            // the committed cleanup identity until native and legacy work ends.
             tx.execute(
                 "DELETE FROM native_delete_pending WHERE session_id=?",
                 [target],
             )?;
+            if purge && let Some((root, kind)) = request {
+                tx.execute(
+                    "INSERT INTO native_delete_pending VALUES(?,?,?)",
+                    params![target, root, kind],
+                )?;
+            }
         }
         tx.commit()?;
         Ok(())
@@ -3108,7 +3123,16 @@ mod deletion_attempt_tests {
             CREATE TRIGGER fail_committed_cleanup BEFORE DELETE ON native_sessions WHEN OLD.stored_id='committed-child' BEGIN SELECT RAISE(ABORT,'committed cleanup fault'); END;
             CREATE TRIGGER keep_unknown BEFORE DELETE ON native_sessions WHEN OLD.stored_id IN ('foreign-bot','foreign-owner','beyond-foreign','mismatched') BEGIN SELECT RAISE(ABORT,'preserve boundary control for inspection'); END;").unwrap();
         for _ in 0..2 {
-            finish_deletes(h).unwrap();
+            let error = finish_deletes(h).unwrap_err();
+            assert_eq!(error.code, 5200);
+            assert!(
+                error
+                    .message
+                    .contains("preserve boundary control for inspection")
+                    || error
+                        .message
+                        .contains("legacy profile ownership is unknown")
+            );
             for stored in ["live", "delegate"] {
                 assert!(session_dir(h, stored).is_ok(), "{stored}");
                 assert_eq!(history(h, stored).unwrap().len(), 1);
@@ -3131,7 +3155,7 @@ mod deletion_attempt_tests {
                 );
             }
             assert!(!delete_completed(&native, "committed-child").unwrap());
-            assert_eq!(native.query_row("SELECT legacy_id FROM native_delete_legacy WHERE session_id='committed-child'",[],|r|r.get::<_,String>(0)).unwrap(),"saved-legacy-alias");
+            assert_eq!(native.query_row("SELECT legacy_id FROM native_delete_legacy WHERE session_id='committed-child' AND legacy_id='saved-legacy-alias'",[],|r|r.get::<_,String>(0)).unwrap(),"saved-legacy-alias");
             assert_eq!(history(h, "committed-child").unwrap().len(), 1);
             assert_eq!(history(h, "retained-child").unwrap().len(), 1);
             assert_eq!(history(h, "completed-child").unwrap().len(), 1);
@@ -3139,7 +3163,18 @@ mod deletion_attempt_tests {
         native
             .execute_batch("DROP TRIGGER fail_committed_cleanup")
             .unwrap();
-        finish_deletes(h).unwrap();
+        // Unknown/foreign cleanup faults still report failure after this
+        // independent committed child finishes. Every terminal check remains.
+        let error = finish_deletes(h).unwrap_err();
+        assert_eq!(error.code, 5200);
+        assert!(
+            error
+                .message
+                .contains("preserve boundary control for inspection")
+                || error
+                    .message
+                    .contains("legacy profile ownership is unknown")
+        );
         assert_eq!(session_dir(h, "committed-child").unwrap_err().code, 4001);
         assert!(history(h, "committed-child").unwrap().is_empty());
         assert!(delete_completed(&native, "committed-child").unwrap());

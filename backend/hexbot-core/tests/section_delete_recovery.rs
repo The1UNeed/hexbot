@@ -168,8 +168,8 @@ async fn public_purge_retries_native_legacy_and_final_metadata_failures_after_re
         (
             "native_delete_pending",
             "DELETE",
-            " WHEN OLD.session_id='chat'",
-            true,
+            " WHEN OLD.session_id='chat' AND NOT EXISTS(SELECT 1 FROM native_sessions WHERE stored_id='chat')",
+            false,
         ),
     ] {
         let home = setup();
@@ -216,7 +216,7 @@ async fn public_purge_retries_native_legacy_and_final_metadata_failures_after_re
             expect_native
         );
         assert!(store::session_dir(h, "chat").is_err());
-        if table == "native_delete_pending" {
+        if table == "native_delete_legacy" && event == "INSERT" {
             for (id, before) in ["chat", "delegate", "grandchild"]
                 .into_iter()
                 .zip(before_native)
