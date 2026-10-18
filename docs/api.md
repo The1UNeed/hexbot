@@ -320,7 +320,12 @@ returned by `open`.
   made titled `General` on first use. An archived chat comes back. A `title`
   from an older client is ignored. Clients call it for the bot's chat rather
   than pick from their own list, which cannot tell a section recovery set
-  aside. A daemon without `one_chat` in `hexbot.info` makes a new section on
+  aside. A retained old Dreams conversation stays the chat while it is open,
+  including accepted messages, uploads and background work. Once it closes or
+  retires, a later lookup can move it to a chat without the old reports in
+  model context. Opening its old ID then returns `4002` with the replacement
+  ID; the client must resolve the bot's chat again before sending input.
+  A daemon without `one_chat` in `hexbot.info` makes a new section on
   every call, so clients there list the bot's sections and call `create`
   only when it has none. Its upgrade keeps the latest conversation, giving
   way only for a report-only log, which its list cannot tell apart, so a client

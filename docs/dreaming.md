@@ -172,7 +172,10 @@ The native scheduler and digest builder live in
   On upgrade, a report-only old `Dreams` log gives way to a conversation.
   A mixed log competes by its non-report conversation activity. If old reports
   make a saved choice ambiguous, all competing histories stay. Kept logs have
-  their reports marked.
+  their reports marked. If an older client still has a mixed log open, the move to a
+  chat waits for it to close or retire, keeping all accepted input and replies.
+  After the move, an older client must open the bot's chat again to continue;
+  the old conversation refuses new input.
   Reports an earlier build left in the old store are marked when the chat
   first opens, so they never enter the bot's context either. A dream skips
   them in a kept Dreams log that was never opened.

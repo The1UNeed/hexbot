@@ -212,6 +212,17 @@ it also installs over SSH when nobody is signed in at the screen.
   Only the bot's name, soul, memory, About you, teammates and skill catalog
   can change. Guidance and tool changes still reach new sections only.
   Native live session IDs remain distinct from stored section IDs.
+  Forking a retained Dream source takes an exclusive conversation file lease
+  through catalog publication. Runtime open/recovery, its process, input
+  landings, parked uploads after a failed restart and background work hold
+  shared leases, so lookup keeps that source
+  until they finish and the process closes or retires. Projection writes and
+  recovery also take shared leases. No catalog writer waits for a source.
+  An opener checks the committed adoption under its lease before changing
+  options or starting Pi; old source IDs return 4002 with the canonical ID.
+  Lock files stay outside session directories so cleanup cannot replace their
+  inodes. A process crash releases leases; the existing pending-fork decision
+  still owns recovery and cleanup.
 - HTTP cookies, pairing, device revocation, JSON-RPC names, error objects,
   owner-scoped events, replay sequence numbers, and replay epochs preserve the
   existing client contract. LAN setting changes restart the listener and close

@@ -123,10 +123,15 @@ impl Drop for Landing {
 }
 /// Uploads moving to a section's new process. If it never starts they wait
 /// for the next open of the section instead of being lost.
+struct Parked {
+    uploads: Vec<Staged>,
+    _lease: Arc<fs::File>,
+}
 struct Moving<'a> {
-    parked: &'a Mutex<HashMap<String, Vec<Staged>>>,
+    parked: &'a Mutex<HashMap<String, Parked>>,
     stored: &'a str,
     uploads: Vec<Staged>,
+    lease: Arc<fs::File>,
 }
 impl Drop for Moving<'_> {
     fn drop(&mut self) {
@@ -135,7 +140,11 @@ impl Drop for Moving<'_> {
                 .lock()
                 .unwrap()
                 .entry(self.stored.to_owned())
-                .or_default()
+                .or_insert_with(|| Parked {
+                    uploads: vec![],
+                    _lease: self.lease.clone(),
+                })
+                .uploads
                 .append(&mut self.uploads);
         }
     }
@@ -155,6 +164,9 @@ struct Live {
     stored: String,
     id: String,
     process: PiProcess,
+    // Also held by the event pump, input landings and background callers.
+    // A retained Dream source cannot be adopted while any of them can write.
+    _conversation_lease: Arc<fs::File>,
     state: Mutex<State>,
     settled: watch::Sender<u64>,
     tools: Vec<Value>,
@@ -206,7 +218,7 @@ pub struct Runtime {
     description_refreshes: Mutex<HashMap<String, bool>>,
     warned_servers: Mutex<std::collections::HashSet<String>>,
     /// Uploads of sections whose new process failed to start, by section.
-    parked: Mutex<HashMap<String, Vec<Staged>>>,
+    parked: Mutex<HashMap<String, Parked>>,
     /// Orders context reports across sessions and idle restarts. Seeded from
     /// the clock so a report after a daemon restart still outranks the last
     /// one a client kept.
@@ -656,6 +668,8 @@ impl Runtime {
         input: bool,
     ) -> Result<Arc<Live>> {
         let admission = Arc::new(self.admit_session(bot, stored, overrides)?);
+        let conversation_lease = Arc::new(store::conversation_lease(&self.home, stored)?);
+        crate::catalog::check_chat_source(&self.home, stored)?;
         if self.stopping.load(Ordering::Acquire) {
             return Err(Error::new(5201, "daemon is shutting down"));
         }
@@ -668,6 +682,7 @@ impl Runtime {
             parked: &self.parked,
             stored,
             uploads: vec![],
+            lease: conversation_lease.clone(),
         };
         if let Some(s) = running {
             if s.owner != owner {
@@ -692,6 +707,7 @@ impl Runtime {
                 .lock()
                 .unwrap()
                 .remove(stored)
+                .map(|parked| parked.uploads)
                 .unwrap_or_default();
         }
         let permit = match self.capacity.clone().try_acquire_owned() {
@@ -815,10 +831,12 @@ impl Runtime {
                 cwd.clone(),
             );
             let work_admission = admission.clone();
+            let work_lease = conversation_lease.clone();
             tokio::task::spawn_blocking(move || {
                 // Cancellation of the opener must still wait for its actual
                 // import/recovery work before deletion takes its snapshot.
                 let _admission = work_admission;
+                let _lease = work_lease;
                 store::import_hermes(&home, &bot, &stored, &cwd)?;
                 store::reconcile(&home, &bot, &stored, &owner)
             })
@@ -969,6 +987,7 @@ impl Runtime {
             stored: stored.into(),
             id: live_id,
             process,
+            _conversation_lease: conversation_lease,
             state: Mutex::new(State {
                 busy: false,
                 closed: false,
@@ -1894,6 +1913,7 @@ impl Runtime {
                 .lock()
                 .unwrap()
                 .remove(stored)
+                .map(|parked| parked.uploads)
                 .unwrap_or_default(),
         );
         if let Some(s) = s {

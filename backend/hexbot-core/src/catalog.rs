@@ -499,12 +499,34 @@ pub(crate) fn chat_fork_barrier(home: &Path, phase: &str) -> Result<()> {
 #[path = "catalog_fork_tests.rs"]
 mod fork_tests;
 
+/// Checked under the opener's shared conversation lease. Adoption holds the
+/// exclusive lease through commit, so an old ID cannot admit input in between.
+pub(crate) fn check_chat_source(home: &Path, source: &str) -> Result<()> {
+    let conn = db::open(home)?;
+    if let Some(target) = setting(&conn, "dream_chat_adoptions")?[source]["target"].as_str() {
+        let present: bool = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sections s JOIN sections t ON t.bot=s.bot AND t.owner_id=s.owner_id WHERE s.id=? AND t.id=? AND t.peer_bot IS NULL)",
+            params![source, target], |r| r.get(0),
+        )?;
+        if present {
+            return Err(Error::new(
+                4002,
+                format!(
+                    "This conversation moved to the bot's chat ({target}). Open the chat to continue."
+                ),
+            ));
+        }
+    }
+    Ok(())
+}
+
 pub fn chat_section(home: &Path, caller: &str, name: &str) -> Result<Value> {
     bot_owner(home, caller, name)?;
     // Before the transaction: finding the bot's dream logs may write.
     let logs = dream_logs(home, name)?;
     // The writer and connection must drop before cleanup, on every error path.
     let mut forked = PendingChat { home, id: None };
+    let mut source_lease = None;
     let mut conn = db::open(home)?;
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let candidates = rows(
@@ -550,7 +572,18 @@ pub fn chat_section(home: &Path, caller: &str, name: &str) -> Result<Value> {
         .filter(|candidate| candidate.count >= 0)
         .and_then(|candidate| candidate.row["id"].as_str().map(str::to_owned));
     let id = if let Some(mut id) = existing {
-        if logs.contains(&id) {
+        if logs.contains(&id) && {
+            let lease = runtime_store::conversation_lock(home, &id)?;
+            match lease.try_lock() {
+                Ok(()) => source_lease = Some(lease),
+                // Keep the source as the chat until its runtime, accepted input,
+                // uploads and background work have finished. Never stop them to
+                // migrate, and never wait for them under the catalog writer.
+                Err(fs::TryLockError::WouldBlock) => (),
+                Err(fs::TryLockError::Error(error)) => return Err(error.into()),
+            }
+            source_lease.is_some()
+        } {
             let reports = rows(
                 &tx,
                 "SELECT summary FROM dreams WHERE bot=? AND summary<>''",

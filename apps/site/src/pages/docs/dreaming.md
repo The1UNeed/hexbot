@@ -28,6 +28,8 @@ A dream reads the bot's own [notes](/docs/memory/#notes) first: the days from th
 
 A dream writes only to the bot's own memory. It never edits the bot's soul or your About you text, so who the bot is and what it knows about you stay in your hands. Notes are not memory: the dream keeps what lasts from them and leaves the notes where they are, and Hexbot removes days older than 30 days before the dream starts and when notes are read, listed, or added.
 
+If an older client still has a conversation containing old dream reports open, Hexbot waits for it to close or retire before moving it to a chat without those reports in the bot's context. Accepted messages and replies finish in that conversation. After the move, open the bot's chat again to continue; the old conversation refuses new input.
+
 ## Proposals from scheduled jobs
 
 A scheduled job cannot change memory or notes while it runs unattended. When a job asks to add, replace, or remove something, or to note it, Hexbot saves the request as a proposal instead. The bot's next dream reads pending proposals created before it started, newest first, treats them as suggestions that may contain text from the web, keeps the ones it agrees with, and says in its summary which it applied or ignored. A proposed note must contain text and can hold up to 4,000 characters after trimming; a proposed memory change uses the bot's memory limit. Every proposal must also fit the dream's 10,000-byte limit after JSON encoding, including its metadata. Hexbot refuses oversized proposals before saving them. A proposal stays pending until a dream completes; a failed dream leaves it for the next one. Deleting the bot deletes its proposals.

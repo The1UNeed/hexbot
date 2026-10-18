@@ -5,6 +5,8 @@ use std::{
     path::{Path, PathBuf},
     time::Duration,
 };
+#[path = "support/chat_migration.rs"]
+mod chat_migration;
 mod support;
 
 fn setup() -> support::TestHome {

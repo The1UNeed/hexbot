@@ -54,6 +54,31 @@ pub fn open(home: &Path) -> Result<Connection> {
     crate::db::migrate_runtime(&conn)?;
     Ok(conn)
 }
+/// Separate from session directories so cleanup cannot replace a locked inode.
+/// Openers hold a shared lease through recovery and the process's lifetime.
+/// Adoption takes the exclusive lease without waiting, through catalog commit.
+pub(crate) fn conversation_lock(home: &Path, stored: &str) -> Result<fs::File> {
+    common::identifier(stored)?;
+    let dir = home.join("runtime/conversation-locks");
+    fs::create_dir_all(&dir)?;
+    Ok(fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(dir.join(stored))?)
+}
+pub(crate) fn conversation_lease(home: &Path, stored: &str) -> Result<fs::File> {
+    let file = conversation_lock(home, stored)?;
+    match file.try_lock_shared() {
+        Ok(()) => Ok(file),
+        Err(fs::TryLockError::WouldBlock) => Err(crate::Error::new(
+            4002,
+            "This conversation is moving to the bot's chat. Open the chat to continue.",
+        )),
+        Err(fs::TryLockError::Error(error)) => Err(error.into()),
+    }
+}
 pub fn history(home: &Path, stored: &str) -> Result<Vec<Value>> {
     let conn = open(home)?;
     let mut stmt = conn.prepare(
@@ -116,6 +141,7 @@ pub fn history_version(conn: &Connection, stored: &str) -> Result<i64> {
         .unwrap_or(0))
 }
 pub fn append(home: &Path, stored: &str, mut message: Value) -> Result<()> {
+    let _lease = conversation_lease(home, stored)?;
     let conn = open(home)?;
     check_deleted(&conn, stored)?;
     if message.get("timestamp").is_none() {
@@ -887,6 +913,7 @@ pub(crate) fn classify_dream_reports(
     stored: &str,
     reports: &BTreeSet<String>,
 ) -> Result<()> {
+    let _lease = conversation_lease(home, stored)?;
     let mut conn = open(home)?;
     let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
     for row in common::rows(
@@ -1292,7 +1319,8 @@ pub fn import_hermes(home: &Path, bot: &str, stored: &str, cwd: &Path) -> Result
 /// on the selected branch rather than transferring those generated summaries.
 /// Display history still includes reports, marked as output; usage stays on the
 /// original conversation and is never billed again for this copy.
-/// The caller reserves the target and owns cleanup, including internal errors.
+/// The caller holds the source's exclusive conversation lease through catalog
+/// publication, reserves the target and owns cleanup, including internal errors.
 pub(crate) fn fork_dream_chat(
     home: &Path,
     bot: &str,
@@ -1451,6 +1479,7 @@ pub fn project_seeded(
     display: Option<&str>,
     seed: Option<&Value>,
 ) -> Result<()> {
+    let _lease = conversation_lease(home, stored)?;
     common::identifier(stored)?;
     common::identifier(bot)?;
     let mut conn = open(home)?;
@@ -1757,6 +1786,7 @@ fn legacy_projection(
 /// context edits and compaction summaries never rewrite a user's displayed past.
 /// Billing includes all branches because those model calls already happened.
 pub fn reconcile(home: &Path, bot: &str, stored: &str, owner: &str) -> Result<()> {
+    let _lease = conversation_lease(home, stored)?;
     common::identifier(bot)?;
     common::identifier(stored)?;
     check_quarantine(home, stored)?;
