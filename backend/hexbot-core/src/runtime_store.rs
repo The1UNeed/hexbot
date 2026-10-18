@@ -80,7 +80,10 @@ pub(crate) fn conversation_lease(home: &Path, stored: &str) -> Result<fs::File> 
     }
 }
 pub fn history(home: &Path, stored: &str) -> Result<Vec<Value>> {
-    let conn = open(home)?;
+    history_with_conn(&open(home)?, stored)
+}
+/// Read the caller's native snapshot without opening or migrating a connection.
+pub(crate) fn history_with_conn(conn: &Connection, stored: &str) -> Result<Vec<Value>> {
     let mut stmt = conn.prepare(
         "SELECT m.message_json FROM native_messages m LEFT JOIN native_pi_journal p ON p.session_id=m.session_id AND p.projection_seq=m.seq WHERE m.session_id=? AND (p.active IS NULL OR p.active=1) ORDER BY m.seq",
     )?;
