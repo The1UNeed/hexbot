@@ -276,7 +276,12 @@ healthy replacement. Dream input omits the copied source snapshot and its old
 summaries; later writes from old clients remain eligible. Copied usage is zero;
 original usage remains on the original conversation.
 
-Bot deletion retires sessions before changing the catalog, then atomically
+Bot deletion blocks new bot starts and waits for opens already in progress,
+including hidden jobs, CLI runs and room turns. New starts fail with 4211 while
+deletion waits or runs. One-shot description and review processes also finish
+shutting down before cleanup, even if their caller was cancelled. Active turns
+still refuse deletion with 4211, including work that became active while opens
+were draining. It retires sessions before changing the catalog, then atomically
 removes its sections, bot and room mappings before purging history or profile
 files. A `pending_bot_delete:<name>` settings journal records exact native,
 legacy-only, room and delegated targets and the catalog commit decision. Startup
@@ -489,6 +494,12 @@ and its bots run as the owner.
 - `hexbot.rooms.archive {id}` → `{room}`
 - `hexbot.rooms.unarchive {id}` → `{room}`
 - `hexbot.rooms.delete {id}` → `{deleted: true}`
+  New posts, worker starts and mapped conversation opens fail with 4211 while
+  deletion waits or runs. Opens already in progress finish before the daemon
+  captures and closes its conversations. Cancelling the request lets the daemon
+  finish the operation. Member removals are ordered per room and pause new work
+  until the operation finishes. Bots may still join while its processes close;
+  a join can keep the room when its last bot was being removed.
 - `hexbot.rooms.mark_read {id, seq}` → `{room}`
 
 Room turns use hidden sessions on each bot profile. The daemon waits
