@@ -50,6 +50,96 @@ impl ProviderRequest {
             .unwrap();
     }
 }
+// Only the two launchers used by the real-Pi suites are supported. Resolve the
+// lexical launcher before following npm's .bin symlink, and never borrow modules
+// from another installation when the selected runtime is incomplete.
+fn instrumented_pi_modules(executable: &Path) -> Result<(PathBuf, bool), String> {
+    let parent = executable.parent().ok_or("Pi launcher has no parent")?;
+    let staged = executable.ends_with("pi/hexbot-pi");
+    let modules = if staged {
+        parent.join("node_modules/@earendil-works")
+    } else if executable.ends_with("node_modules/.bin/pi") {
+        parent.parent().unwrap().join("@earendil-works")
+    } else {
+        return Err(format!("unsupported Pi launcher: {}", executable.display()));
+    };
+    let mut required = vec![
+        executable.to_path_buf(),
+        modules.join("pi-coding-agent/dist/core/agent-session.js"),
+        modules.join("pi-agent-core/dist/agent.js"),
+        modules.join("pi-coding-agent/dist/cli.js"),
+    ];
+    if staged {
+        required.push(parent.parent().unwrap().join("node"));
+        required.push(parent.join("search-tools.mjs"));
+    }
+    for file in required {
+        if !file.is_file() {
+            return Err(format!(
+                "selected Pi installation is missing {}",
+                file.display()
+            ));
+        }
+    }
+    Ok((
+        fs::canonicalize(modules).map_err(|error| error.to_string())?,
+        staged,
+    ))
+}
+
+#[test]
+fn instrumented_pi_layout_selection_stays_with_the_selected_runtime() {
+    let root = tempfile::tempdir().unwrap();
+    let repo = root.path().join("repository/node_modules");
+    let bundle = root.path().join("bundle");
+    for (launcher, modules, staged) in [
+        (repo.join(".bin/pi"), repo.join("@earendil-works"), false),
+        (
+            bundle.join("pi/hexbot-pi"),
+            bundle.join("pi/node_modules/@earendil-works"),
+            true,
+        ),
+    ] {
+        let cli = modules.join("pi-coding-agent/dist/cli.js");
+        let mut files = vec![
+            launcher.clone(),
+            cli.clone(),
+            modules.join("pi-coding-agent/dist/core/agent-session.js"),
+            modules.join("pi-agent-core/dist/agent.js"),
+        ];
+        if staged {
+            files.extend([bundle.join("node"), bundle.join("pi/search-tools.mjs")]);
+        }
+        for file in files {
+            fs::create_dir_all(file.parent().unwrap()).unwrap();
+            fs::write(file, "fixture").unwrap();
+        }
+        assert_eq!(
+            instrumented_pi_modules(&launcher).unwrap(),
+            (fs::canonicalize(&modules).unwrap(), staged)
+        );
+        if staged {
+            // A complete installation at the old, wrong location is no fallback.
+            fs::create_dir_all(bundle.join("@earendil-works")).unwrap();
+            for package in ["pi-coding-agent", "pi-agent-core"] {
+                fs::rename(
+                    modules.join(package),
+                    bundle.join("@earendil-works").join(package),
+                )
+                .unwrap();
+            }
+        } else {
+            fs::remove_file(&cli).unwrap();
+        }
+        assert!(
+            instrumented_pi_modules(&launcher)
+                .unwrap_err()
+                .contains(&modules.display().to_string())
+        );
+    }
+    assert!(instrumented_pi_modules(&bundle.join("other-pi")).is_err());
+}
+
 impl PiFixture {
     async fn new(instrument: &str) -> Self {
         let home = setup();
@@ -109,18 +199,16 @@ impl PiFixture {
         if !instrument.is_empty() && instrument != "nested" {
             // Only the owned launcher is instrumented. All dependency files and
             // the private extension remain unchanged. Holds await HTTP barriers.
-            let modules = executable
-                .parent()
-                .unwrap()
-                .parent()
-                .unwrap()
-                .join("@earendil-works");
+            let (modules, staged) = instrumented_pi_modules(&executable).unwrap();
             let session = modules.join("pi-coding-agent/dist/core/agent-session.js");
             let agent = modules.join("pi-agent-core/dist/agent.js");
             let cli = modules.join("pi-coding-agent/dist/cli.js");
             let wrapper = home.path().join("identity-pi.mjs");
             let source = format!(
                 r#"#!/usr/bin/env node
+import {{realpathSync}} from 'node:fs';
+// The staged launcher also runs search-tools.mjs. Instrument only its Pi CLI.
+if (!{staged} || realpathSync(process.argv[1]) === {cli}) {{
 const {{AgentSession}} = await import({session});
 const {{Agent}} = await import({agent});
 const mode = {mode};
@@ -159,20 +247,35 @@ if (mode === 'transform') {{
   const prompt = AgentSession.prototype.prompt;
   AgentSession.prototype.prompt = async function(text,...args) {{ const result = await prompt.call(this,text,...args); if(text === '/handled-fixture') this._emit({{type:'extension_ui_request',method:'notify',message:'identity handled boundary'}}); return result; }};
 }}
-await import({cli});
+if (!{staged}) await import({cli});
+}}
 "#,
                 session = json!(session.to_string_lossy()),
                 agent = json!(agent.to_string_lossy()),
                 cli = json!(cli.to_string_lossy()),
-                mode = json!(instrument)
+                mode = json!(instrument),
+                staged = staged,
             );
             fs::write(&wrapper, source).unwrap();
+            executable = if staged {
+                // Keep the packaged Node and search-tool setup in the selected
+                // launcher. The preload changes only this owned test process.
+                let launcher = home.path().join("identity-pi");
+                let quote = |text: &str| format!("'{}'", text.replace('\'', "'\"'\"'"));
+                let preload = format!("--import={}", json!(wrapper.to_string_lossy()));
+                fs::write(&launcher, format!(
+                    "#!/bin/sh\nset -eu\nexport NODE_OPTIONS=\"${{NODE_OPTIONS:+$NODE_OPTIONS }}\"{}\nexec {} \"$@\"\n",
+                    quote(&preload), quote(&executable.to_string_lossy())
+                )).unwrap();
+                launcher
+            } else {
+                wrapper
+            };
             #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt;
-                fs::set_permissions(&wrapper, fs::Permissions::from_mode(0o755)).unwrap();
+                fs::set_permissions(&executable, fs::Permissions::from_mode(0o755)).unwrap();
             }
-            executable = wrapper;
         }
         if instrument == "nested" {
             let script =
