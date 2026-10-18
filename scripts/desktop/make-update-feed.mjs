@@ -99,6 +99,20 @@ for (const arch of ['arm64', 'x64']) {
   prepared++
 }
 
+const windows = files.find(file => file === `${prefix}-${version}-win-x64.exe`)
+if (windows) {
+  const destination = join(feedRoot, 'win', 'x64')
+  const payload = await entry(join(outputDirectory, windows))
+  await mkdir(destination, { recursive: true })
+  await cp(join(outputDirectory, windows), join(destination, windows))
+  // NSIS differential updates request the adjacent blockmap.
+  const blockmap = `${windows}.blockmap`
+  if (files.includes(blockmap)) await cp(join(outputDirectory, blockmap), join(destination, blockmap))
+  await writeFeedMetadata(destination, channel, 'win', manifest([payload], payload))
+  console.log('Prepared win/x64')
+  prepared++
+}
+
 const linuxYml = join(outputDirectory, 'latest-linux.yml')
 const linuxManifest = await readFile(linuxYml, 'utf8').catch(() => undefined)
 if (linuxManifest) {

@@ -7,6 +7,7 @@ import { loadDownloads } from '../lib/downloads'
 import { toolGroups } from '../lib/tools'
 
 const downloads = await loadDownloads()
+const platforms = downloads?.full.some(build => build.key === 'windows') ? 'Mac, Linux, or Windows' : 'Mac or Linux'
 const github = 'https://github.com/The1UNeed/hexbot'
 const label = downloads?.channel === 'stable' ? '' : 'nightly'
 
@@ -35,7 +36,7 @@ const software = {
   '@type': 'SoftwareApplication',
   name: 'Hexbot',
   applicationCategory: 'BusinessApplication',
-  operatingSystem: 'macOS, Linux',
+  operatingSystem: downloads?.full.some(build => build.key === 'windows') ? 'macOS, Linux, Windows' : 'macOS, Linux',
   description: 'A self-hosted team of AI agents with names, faces, and memory of their own. Rooms for people and bots, your choice of model, running on your own machine.',
   url: 'https://hexbot.app/',
   downloadUrl: 'https://hexbot.app/download/',
@@ -56,10 +57,10 @@ const software = {
     <h1 class="display relative mx-auto mt-6 max-w-[15em] text-[clamp(2.4rem,6vw,3.9rem)]">
       <span class="rise">Your team of agents</span><br /><span class="rise rise-2">works, remembers,</span><br /><span class="rise rise-3">and communicates.</span>
     </h1>
-    <p class="lede rise rise-4 relative mx-auto mt-6">Hexbot bots have faces, names, and their own models. They use real tools, keep a memory of your work, and talk with you and each other in rooms, all on your own Mac or Linux machine.</p>
+    <p class="lede rise rise-4 relative mx-auto mt-6">Hexbot bots have faces, names, and their own models. They use real tools, keep a memory of your work, and talk with you and each other in rooms, all on your own {platforms} computer.</p>
     <div class="rise rise-5 relative mt-8 flex flex-col items-center gap-4">
       <div class="flex flex-wrap justify-center gap-3">
-        <a class="button button-lg" href="/download/"><span data-download-label={label}>Download{label && ' nightly'} for Mac</span></a>
+        <a class="button button-lg" href="/download/"><span data-download-label={label} data-download-targets={JSON.stringify(downloads?.full.map(build => build.key) ?? [])}>Download{label && ' nightly'}</span></a>
         <a class="button button-lg button-quiet" href="/how-it-works/">See how it works</a>
       </div>
       <p class="text-[15px] text-mute">Free and open source. Nightly builds only for now. <a class="text-ink underline decoration-line underline-offset-4 hover:text-accent" href={github}>GitHub</a></p>
@@ -144,7 +145,7 @@ const software = {
     <div class="flex flex-col gap-5 text-[1.0625rem]">
       <p>Conversations, memory, files, and provider keys live in <code class="rounded-md bg-wash px-1.5 py-0.5 font-mono text-[.92em]">~/.hexbot</code> on the machine running the daemon. Bring your own API key or a subscription you already pay for, from more than 50 model providers.</p>
       <ul class="flex flex-col gap-3 border-t border-line pt-5">
-        <li class="grid gap-1 sm:grid-cols-[12rem_1fr]"><strong class="font-semibold">Approvals</strong><span class="text-mute">Bots work inside a sandboxed workspace. Anything outside it, from internet access to a file change elsewhere, waits for you.</span></li>
+        <li class="grid gap-1 sm:grid-cols-[12rem_1fr]"><strong class="font-semibold">Approvals</strong><span class="text-mute">On macOS and Linux, bots use a workspace sandbox. Auto reviews steps outside it and asks about risky ones. Windows asks before each command or code run.</span></li>
         <li class="grid gap-1 sm:grid-cols-[12rem_1fr]"><strong class="font-semibold">Devices you can revoke</strong><span class="text-mute">Every paired phone and laptop appears in settings with a revoke button.</span></li>
         <li class="grid gap-1 sm:grid-cols-[12rem_1fr]"><strong class="font-semibold">Delete means delete</strong><span class="text-mute">Removing a conversation removes its history for good.</span></li>
         <li class="grid gap-1 sm:grid-cols-[12rem_1fr]"><strong class="font-semibold">Connect stays out of the way</strong><span class="text-mute">Hex Connect brokers your identity and a hostname. Chat traffic never passes through it.</span></li>
@@ -158,7 +159,7 @@ const software = {
     <h2 class="display-sm mt-6 text-[clamp(2rem,5vw,3rem)]">Join the nightly early access.</h2>
     <p class="lede mx-auto mt-3">For now Hexbot ships only as nightly builds: a new one each day the code changes, and your copy updates itself. Expect rough edges, and <a href={`${github}/issues`}>tell us what breaks</a>.</p>
     <div class="mt-7 flex flex-col items-center gap-3">
-      <a class="button" href="/download/"><span data-download-label={label}>Download{label && ' nightly'} for Mac</span></a>
+      <a class="button" href="/download/"><span data-download-label={label} data-download-targets={JSON.stringify(downloads?.full.map(build => build.key) ?? [])}>Download{label && ' nightly'}</span></a>
       {downloads && (
         <details class="more w-full">
           <summary class="button button-quiet">More options<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m4 6 4 4 4-4"/></svg></summary>

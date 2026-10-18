@@ -25,14 +25,14 @@ export interface Item {
 }
 
 /** What an option puts on this computer, and where. */
-export function optionItems(option: InstallOption, locations: Locations, macos: boolean): Item[] {
+export function optionItems(option: InstallOption, locations: Locations, macos: boolean, windows = false): Item[] {
   const data = tildify(locations.hexbotHome, locations.home)
   const apps = tildify(locations.apps, locations.home)
 
   switch (option) {
     case 'headless':
       return [
-        { label: 'The daemon, as a background service that starts on its own', where: data },
+        { label: windows ? 'The daemon, as a background service while you are signed in' : 'The daemon, as a background service that starts on its own', where: data },
         {
           label: 'The hexbot command, to pair devices and check on the daemon',
           where: tildify(locations.cli, locations.home)
@@ -93,7 +93,8 @@ export function tildify(path: string, home: string): string {
     return '~'
   }
 
-  return path.startsWith(`${home}/`) ? `~${path.slice(home.length)}` : path
+  return path.startsWith(`${home}/`) || path.toLowerCase().startsWith(`${home.toLowerCase()}\\`)
+    ? `~${path.slice(home.length)}` : path
 }
 
 /** The headline for a progress event; the engine's own message goes underneath. */

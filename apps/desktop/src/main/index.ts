@@ -42,6 +42,7 @@ import {
 const currentDirectory = dirname(fileURLToPath(import.meta.url))
 const rendererDirectory = join(currentDirectory, '../renderer')
 const webDevUrl = app.isPackaged ? undefined : resolveWebDevUrl()
+if (process.platform === 'win32') app.setAppUserModelId(__HEXBOT_APP_ID__)
 if (!app.isPackaged) app.setName(hasRuntime ? 'Hexbot (dev)' : 'Hexbot Client (dev)')
 const devIcon = !app.isPackaged ? join(currentDirectory, '../../resources/icon-dev.png') : undefined
 // Keep Chromium's profile (localStorage, caches) inside the Hexbot home so an
@@ -305,7 +306,7 @@ else {
   app.on('second-instance', (_event, argv) => {
     const link = argv.find(arg => arg.startsWith('hexbot://'))
     if (link) navigate(link)
-    else void createWindow()
+    else void showWindow()
   })
   app.on('open-url', (event, url) => {
     event.preventDefault()
@@ -342,7 +343,10 @@ else {
     })
     daemon.on('update-requested', (version: string) => void handleDaemonUpdateRequest(version))
     await createWindow()
-    createTray(daemon, () => void showWindow())
+    createTray(daemon, () => void showWindow(), () => {
+      void bootstrap(sendProgress).then(() => daemon.start()).catch((error: Error) =>
+        dialog.showErrorBox('Daemon could not start', error.message))
+    })
     // Starts the startup check and the poller (updater.ts); dev builds stay off.
     void getUpdateState()
     app.on('activate', () => void showWindow())

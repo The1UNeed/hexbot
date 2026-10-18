@@ -8,7 +8,7 @@ The repository contains the Rust daemon, pinned Pi agent runtime, React web app,
 
 ## Prerequisites
 
-Install Git, rustup, Node.js 26.5.0, and pnpm 10.29.3. The repository pins the Rust toolchain in `rust-toolchain.toml` and the package manager in the root `package.json`. Rust builds need the platform's compiler tools, such as Xcode Command Line Tools on macOS or a C compiler on Linux.
+Install Git, rustup, Node.js 26.5.0, and pnpm 10.29.3. The repository pins the Rust toolchain in `rust-toolchain.toml` and the package manager in the root `package.json`. Rust builds need the platform's compiler tools, such as Xcode Command Line Tools on macOS a C compiler on Linux, or Visual Studio Build Tools with the Desktop development with C++ workload and a Windows SDK on Windows. Windows builds use the MSVC Rust toolchain.
 
 ```sh
 git clone https://github.com/The1UNeed/hexbot.git
@@ -61,7 +61,7 @@ Run this in a terminal to receive a one-time browser sign-in link. For another b
 
 For persistent use, choose a dedicated data directory and use it consistently for the daemon and CLI. Keep Node and the Pi runtime available. Copying the Rust binary alone does not install Pi, the web bundle, or bundled skills. See the [native daemon guide](https://github.com/The1UNeed/hexbot/blob/main/backend/hexbot-core/README.md) for runtime paths and packaging details.
 
-A daemon built from source needs its own optional tool dependencies. Install Python for code execution, Poppler for PDF page rendering, and a browser or computer-use driver when enabling those tools. Linux needs bubblewrap for sandboxed commands and scheduled scripts; follow [Install](/docs/install/#linux).
+A daemon built from source needs its own optional tool dependencies. Install Python for code execution, Poppler for PDF page rendering, and a browser or computer-use driver when enabling those tools. Windows has no command sandbox and scheduled scripts refuse to run there. Linux needs bubblewrap for sandboxed commands and scheduled scripts; follow [Install](/docs/install/#linux).
 
 The daemon defaults to localhost. Enable LAN access only when you want other devices to connect, then follow [Pairing and LAN](/docs/pairing-and-lan/), [Tailscale](/docs/tailscale/), or [Hex Connect](/docs/connect/). A service-managed or redirected process does not print a sign-in link; use a pairing code instead.
 

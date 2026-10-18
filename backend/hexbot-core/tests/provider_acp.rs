@@ -1,6 +1,9 @@
-use hexbot_core::{common, credentials, db, provider_acp as acp, runtime_store};
+#[cfg(not(windows))]
+use hexbot_core::{common, credentials};
+use hexbot_core::{db, provider_acp as acp, runtime_store};
 use serde_json::{Value, json};
 use std::fs;
+#[cfg(not(windows))]
 use tokio::io::{AsyncBufReadExt, AsyncReadExt};
 
 const SERVER: &str = r#"
@@ -98,6 +101,7 @@ fn args() -> Value {
     json!({"model":"copilot-acp","context":{"systemPrompt":"private system","tools":[{"name":"memory","parameters":{"type":"object"}}],"messages":[{"role":"user","content":[{"type":"text","text":"Remember tea"}]}]}})
 }
 
+#[cfg(not(windows))]
 #[tokio::test]
 async fn real_process_handshake_transcript_chunks_and_tool_calls() {
     let home = setup("normal", true);
@@ -120,6 +124,7 @@ async fn real_process_handshake_transcript_chunks_and_tool_calls() {
 }
 /// Copilot's own tools run outside the section's toolsets, approval mode, and sandbox,
 /// so no permission is granted and no file bridge exists, whatever the section allows.
+#[cfg(not(windows))]
 #[tokio::test]
 async fn copilot_tools_are_never_granted() {
     for file in [true, false] {
@@ -142,6 +147,7 @@ async fn copilot_tools_are_never_granted() {
 }
 /// The child starts from the same allowlist as every other child process, plus the
 /// GitHub login variables Copilot CLI needs; provider and daemon secrets stay home.
+#[cfg(not(windows))]
 #[tokio::test]
 async fn child_environment_is_an_allowlist() {
     let home = setup("env", true);
@@ -182,6 +188,7 @@ async fn child_environment_is_an_allowlist() {
 }
 /// The child runs in the same sandbox as scripts: daemon credentials are unreadable
 /// (bubblewrap serves them empty), the workspace beside the home is not.
+#[cfg(not(windows))]
 #[tokio::test]
 async fn child_cannot_read_daemon_credentials() {
     if !hexbot_core::credentials::isolation_available() {
@@ -222,6 +229,7 @@ async fn missing_cli_reports_install_instructions_without_a_sandbox() {
             .contains("Could not start Copilot ACP command")
     );
 }
+#[cfg(not(windows))]
 #[tokio::test]
 async fn process_exit_invalid_json_remote_errors_and_timeout_fail_promptly() {
     for (mode, expected) in [
@@ -243,6 +251,7 @@ async fn process_exit_invalid_json_remote_errors_and_timeout_fail_promptly() {
         assert!(result.message.contains(expected), "{}", result.message);
     }
 }
+#[cfg(not(windows))]
 #[tokio::test]
 async fn cancellation_interrupts_the_turn_and_reaps_child() {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -292,28 +301,47 @@ async fn cancellation_interrupts_the_turn_and_reaps_child() {
     assert!(common::identifier("s").is_ok());
 }
 /// A relative command is found in the session workspace, where the child starts.
+#[cfg(not(windows))]
 #[tokio::test]
-#[cfg(unix)]
 async fn relative_command_resolves_against_the_workspace() {
     let home = setup("normal", true);
-    let launcher = home.workspace().join("copilot");
+    let launcher = home.workspace().join("copilot.cjs");
     fs::write(
         &launcher,
-        format!(
-            "#!/bin/sh\nexec node '{}' normal\n",
-            home.path().join("fake-acp.cjs").display()
-        ),
+        format!("process.argv.splice(2, 0, 'normal');\n{SERVER}"),
     )
     .unwrap();
-    use std::os::unix::fs::PermissionsExt;
-    fs::set_permissions(&launcher, fs::Permissions::from_mode(0o755)).unwrap();
     fs::write(
         home.path().join(".env"),
-        "HEXBOT_COPILOT_ACP_COMMAND=./copilot\nHEXBOT_COPILOT_ACP_ARGS=\n",
+        "HEXBOT_COPILOT_ACP_COMMAND=./copilot.cjs\nHEXBOT_COPILOT_ACP_ARGS=\n",
     )
     .unwrap();
     let result = acp::complete(home.path(), "owl", "s", &args())
         .await
         .unwrap();
     assert_eq!(result["text"], "Done");
+}
+
+#[cfg(windows)]
+#[tokio::test]
+async fn windows_acp_refuses_to_start_without_base_credential_isolation() {
+    let home = setup("normal", true);
+    let marker = home.workspace().join("launched.txt");
+    fs::write(
+        home.path().join("fake-acp.cjs"),
+        format!(
+            "require('node:fs').writeFileSync({}, 'unsafe');",
+            serde_json::to_string(&marker).unwrap()
+        ),
+    )
+    .unwrap();
+    let error = acp::complete(home.path(), "owl", "s", &args())
+        .await
+        .unwrap_err();
+    assert!(
+        error
+            .message
+            .contains("credential isolation is not supported")
+    );
+    assert!(!marker.exists());
 }

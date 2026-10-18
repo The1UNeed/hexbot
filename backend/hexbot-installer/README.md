@@ -24,7 +24,8 @@ Foreign services and wrappers do not block Client or Full installs and are
 left alone during uninstall. Track selection falls back to Nightly only when
 the Stable manifest returns 404.
 
-`Paths::from_env()` respects `HOME`, `HEXBOT_HOME`, `HEXBOT_INSTALL_APPS_DIR`,
+`Paths::from_env()` respects `HOME` (`USERPROFILE` on Windows), Windows
+`LOCALAPPDATA`, `HEXBOT_HOME`, `HEXBOT_INSTALL_APPS_DIR`,
 `HEXBOT_SERVICE_ROOT`, and `HEXBOT_SERVICE_NO_LOAD`. Explicit `Paths` let tests
 and other front ends avoid global environment changes. `HEXBOT_UPDATE_URL`
 sets the update server; `HEXBOT_TRACK` is a terminal default. Flags override it.
@@ -50,6 +51,23 @@ and desktop entry; icon extraction is skipped and reported as a warning.
 Detected deb installs must be removed with the package manager before a
 change or uninstall. Installer operations do not run sudo.
 
+Windows x64 installs verified per-user NSIS packages into
+`%LOCALAPPDATA%\Programs\<appId>`. NSIS owns executable replacement, Start menu
+shortcuts, registry entries, and the uninstaller used by automatic app updates.
+The engine verifies the packaged app id from `resources/app.asar` before
+repairing or removing an app. App ids distinguish Client, Full, Stable,
+Nightly, and Dev. Quit the app before repair, change, or uninstall.
+
+Windows Headless uses `hexbot.exe` in the native archive,
+`~/.hexbot/runtime/native-executable.exe` as its stable dispatcher, and
+`~/.local/bin/hexbot.cmd` for the CLI. Its per-user Task Scheduler job starts
+at sign-in and runs while that account is signed in. The task definition is
+`~/.config/hexbot/daemon.xml`. Uninstall verifies both the local definition
+and the registered task before stopping or deleting it. Daemon shutdown uses
+a named event tied to its PID and home, then waits for the daemon lock.
+Windows activation compares the runtime selection under the daemon's lock,
+so a concurrent update causes a retry instead of overwriting a newer runtime.
+
 Uninstall keeps bot data unless `remove_data` is true. It removes the active
 runtime launcher and selection file so retained runtime caches are not
 mistaken for an installed Headless service on the next run.
@@ -66,3 +84,6 @@ sh -n apps/site/public/install.sh
 Tests use a local HTTP server on a dynamically allocated port, fake native
 commands, and isolated homes, apps, and service directories. They never load
 launchd or systemd services or read the developer's daemon state.
+Windows tests also exercise file-lock contention and reject junctions that
+would redirect runtime removal. The release smoke test uses real Windows
+packages in an isolated profile on a Windows runner.

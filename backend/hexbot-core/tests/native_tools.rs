@@ -439,15 +439,16 @@ async fn vision_crop_and_openai_image_edit_send_actual_image_bytes() {
     assert!(String::from_utf8_lossy(&body).contains("name=\"image[]\""));
     server.abort();
 }
-#[cfg(unix)]
 fn script(home: &Path, name: &str, code: &str) -> std::path::PathBuf {
-    use std::os::unix::fs::PermissionsExt;
-    let path = home.join(name);
-    std::fs::write(&path, format!("#!/usr/bin/env python3\n{code}")).unwrap();
-    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let path = home.join(name).with_extension("cjs");
+    std::fs::write(&path, code).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
     path
 }
-#[cfg(unix)]
 #[tokio::test]
 async fn cloud_browser_creates_uses_and_releases_session() {
     let requests: Requests = Default::default();
@@ -485,9 +486,8 @@ async fn cloud_browser_creates_uses_and_releases_session() {
     let cli = script(
         h.path(),
         "agent-browser-test",
-        r#"import json,sys,pathlib
-with pathlib.Path(__file__).with_suffix('.log').open('a') as f: f.write(json.dumps(sys.argv[1:])+'\n')
-print(json.dumps({'success':True,'data':{'snapshot':'[e1] Button','refs':{'e1':'Button'}}}))
+        r#"require('node:fs').appendFileSync(__filename.replace(/\.cjs$/, '.log'), JSON.stringify(process.argv.slice(2))+'\n');
+console.log(JSON.stringify({success:true,data:{snapshot:'[e1] Button',refs:{e1:'Button'}}}));
 "#,
     );
     let mut config = common::read_config(h.path()).unwrap();
@@ -522,30 +522,66 @@ print(json.dumps({'success':True,'data':{'snapshot':'[e1] Button','refs':{'e1':'
     assert!(log.contains("wss://browser.invalid/session"));
     server.abort();
 }
-#[cfg(unix)]
+
+#[cfg(windows)]
+#[tokio::test]
+async fn windows_browser_daemon_survives_commands_and_stops_with_the_section() {
+    let h = home(json!({"tools":{"enabled_toolsets":["browser"]}}));
+    let cli = script(
+        h.path(),
+        "browser-session",
+        r#"
+const fs=require('node:fs'), marker=__filename+'.pid';
+const reply=()=>console.log(JSON.stringify({success:true,data:{snapshot:'ready'}}));
+if(fs.existsSync(marker)) {
+ const pid=Number(fs.readFileSync(marker,'utf8'));
+ try { process.kill(pid, process.argv.includes('close')?'SIGTERM':0); reply(); }
+ catch(error) { console.log(JSON.stringify({success:false,error:'browser daemon stopped between commands'})); }
+} else {
+ const child=require('node:child_process').spawn(process.execPath,
+  ['-e', "process.send('ready'); setTimeout(()=>process.exit(0),20000)"],
+  {detached:true,stdio:['ignore','ignore','ignore','ipc']});
+ child.once('message',()=>{fs.writeFileSync(marker,String(child.pid)); child.unref(); child.disconnect(); reply();});
+}
+"#,
+    );
+    let mut config = common::read_config(h.path()).unwrap();
+    config["browser"]["command"] = json!(cli);
+    common::write_config(h.path(), &config).unwrap();
+    for _ in 0..2 {
+        assert_eq!(
+            call(h.path(), "browser_snapshot", json!({})).await.unwrap()["data"]["snapshot"],
+            "ready"
+        );
+    }
+    let pid = std::fs::read_to_string(cli.with_extension("cjs.pid")).unwrap();
+    native_tools::close_session(h.path(), "conversation").await;
+    let status = tokio::process::Command::new("node").args(["-e", &format!("try{{process.kill({pid},0);process.exit(1)}}catch(e){{process.exit(e.code==='ESRCH'?0:2)}}")]).status().await.unwrap();
+    assert!(status.success(), "browser daemon survived section close");
+}
+
 #[tokio::test]
 async fn computer_actions_use_captured_window_and_snapshot_token() {
     let h = home(json!({"tools":{"enabled_toolsets":["computer_use"]}}));
     let driver = script(
         h.path(),
         "cua-driver-test",
-        r#"import json,sys,pathlib,os
-for line in sys.stdin:
- r=json.loads(line)
- if 'id' not in r: continue
- method=r.get('method')
- if method=='initialize': result={'protocolVersion':'2024-11-05','capabilities':{'tools':{}},'serverInfo':{'name':'cua-test','version':'1'}}
- elif method=='tools/list': result={'tools':[{'name':n,'inputSchema':{'type':'object','properties':{}},'description':n} for n in ['start_session','end_session','list_windows','get_window_state','click']]}
- elif method=='tools/call':
-  name=r['params']['name'];args=r['params'].get('arguments',{})
-  with pathlib.Path(__file__).with_suffix('.log').open('a') as f: f.write(json.dumps({'name':name,'args':args,'secret':os.getenv('OPENAI_API_KEY')})+'\n')
-  data={}
-  if name=='list_windows': data={'windows':[{'pid':42,'window_id':7,'app_name':'Test App','z_index':1,'is_on_screen':True}]}
-  elif name=='get_window_state': data={'elements':[{'element_index':1,'element_token':'snapshot-1:1','role':'button','label':'Run'}]}
-  elif name=='click': data={'ok':True,'verdict':'confirmed'}
-  result={'structuredContent':data,'content':[{'type':'text','text':json.dumps(data)}]}
- else: result={}
- print(json.dumps({'jsonrpc':'2.0','id':r['id'],'result':result}),flush=True)
+        r#"const fs=require('node:fs');
+require('node:readline').createInterface({input:process.stdin}).on('line', line => {
+ const r=JSON.parse(line); if(!('id' in r)) return; let result={};
+ if(r.method==='initialize') result={protocolVersion:'2024-11-05',capabilities:{tools:{}},serverInfo:{name:'cua-test',version:'1'}};
+ else if(r.method==='tools/list') result={tools:['start_session','end_session','list_windows','get_window_state','click'].map(name=>({name,inputSchema:{type:'object',properties:{}},description:name}))};
+ else if(r.method==='tools/call') {
+  const name=r.params.name,args=r.params.arguments??{};
+  fs.appendFileSync(__filename.replace(/\.cjs$/,'.log'),JSON.stringify({name,args,secret:process.env.OPENAI_API_KEY??null})+'\n');
+  let data={};
+  if(name==='list_windows') data={windows:[{pid:42,window_id:7,app_name:'Test App',z_index:1,is_on_screen:true}]};
+  else if(name==='get_window_state') data={elements:[{element_index:1,element_token:'snapshot-1:1',role:'button',label:'Run'}]};
+  else if(name==='click') data={ok:true,verdict:'confirmed'};
+  result={structuredContent:data,content:[{type:'text',text:JSON.stringify(data)}]};
+ }
+ console.log(JSON.stringify({jsonrpc:'2.0',id:r.id,result}));
+});
 "#,
     );
     let mut cfg = common::read_config(h.path()).unwrap();
@@ -777,7 +813,6 @@ fn missing_explicit_optional_commands_are_not_advertised() {
             .any(|d| matches!(d["name"].as_str(), Some("computer_use" | "browser_exec")))
     );
 }
-#[cfg(unix)]
 #[test]
 fn tools_are_offered_only_once_set_up() {
     let h = home(json!({"tools":{"enabled_toolsets":["tts","vision"]}}));
@@ -795,24 +830,17 @@ fn tools_are_offered_only_once_set_up() {
     assert!(missing.contains(&"tts") && missing.contains(&"vision"));
     assert!(!offered("text_to_speech") && !offered("vision_analyze"));
 
-    script(h.path(), "edge-tts", "");
+    cfg["tts"]["edge"]["command"] = json!(script(h.path(), "edge-tts", ""));
     cfg["auxiliary"]["vision"]["base_url"] = json!("http://127.0.0.1:9");
     common::write_config(h.path(), &cfg).unwrap();
     let missing = native_tools::not_set_up(h.path(), "tester").unwrap();
     assert!(!missing.contains(&"tts") && !missing.contains(&"vision"));
     assert!(offered("text_to_speech") && offered("vision_analyze"));
 }
-#[cfg(unix)]
 #[tokio::test]
 async fn browser_use_backend_is_not_set_up() {
     let h =
         home(json!({"tools":{"enabled_toolsets":["browser"]},"browser":{"backend":"browser-use"}}));
-    std::fs::create_dir_all(h.path().join("bin")).unwrap();
-    script(
-        &h.path().join("bin"),
-        "uvx",
-        "import sys,json,os\nprint(json.dumps({'args':sys.argv[1:],'code':sys.stdin.read(),'session':os.environ['BU_NAME']}))",
-    );
     // browser_exec needs network interception that was never ported, so the
     // browser-use backend leaves the browser toolset without a working tool.
     assert!(

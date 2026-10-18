@@ -4,6 +4,8 @@
 //! asks every question itself before it calls in, so confirmations here
 //! always answer yes.
 
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
+
 mod platform;
 
 use hexbot_installer::{
@@ -303,9 +305,15 @@ fn daemon(paths: &Paths, args: &[&str]) -> hexbot_installer::Result<String> {
 
 fn daemon_command(paths: &Paths, args: &[&str]) -> std::process::Command {
     let mut command = std::process::Command::new(paths.executable());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    }
     command
         .args(args)
         .env("HOME", &paths.home)
+        .env("USERPROFILE", &paths.home)
         .env("HEXBOT_HOME", &paths.hexbot_home)
         .env("HEXBOT_SERVICE_ROOT", &paths.service_root)
         .env(
@@ -373,8 +381,11 @@ async fn open_app(app: AppHandle, path: PathBuf) -> CommandResult<()> {
 }
 
 fn is_app(path: &Path) -> bool {
-    path.extension()
-        .is_some_and(|extension| extension == "app" || extension == "AppImage")
+    path.extension().is_some_and(|extension| {
+        extension == "app"
+            || extension == "AppImage"
+            || cfg!(windows) && path.file_name() == Some(std::ffi::OsStr::new("Hexbot.exe"))
+    })
 }
 
 #[tauri::command]
@@ -436,6 +447,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn daemon_commands_clean_the_appimage_environment() {
         // Put the inherited environment in a subprocess, not the parallel test runner.
         const CHILD: &str = "HEXBOT_TEST_APPIMAGE_CHILD";
@@ -463,6 +475,8 @@ mod tests {
             return;
         }
         let paths = Paths {
+            local_data: None,
+            user_programs: None,
             home: "/tmp/hexbot-test/home".into(),
             hexbot_home: "/tmp/hexbot-test/state".into(),
             service_root: "/tmp/hexbot-test/services".into(),
@@ -557,6 +571,12 @@ mod tests {
         assert!(!is_app(Path::new(
             "/home/a/.local/share/applications/app.hexbot.client.desktop"
         )));
+        assert_eq!(
+            is_app(Path::new(
+                "C:/Users/a/AppData/Local/Programs/app.hexbot.desktop/Hexbot.exe"
+            )),
+            cfg!(windows)
+        );
     }
 
     #[test]

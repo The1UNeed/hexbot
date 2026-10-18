@@ -15,12 +15,13 @@ export type Downloads = {
 
 export const releasesUrl = 'https://github.com/The1UNeed/hexbot/releases'
 
-// One entry per row of `full` and `client`, in feed order.
+// Match rows by key so unpublished platforms cannot shift another platform's label.
 export const targets = [
   { key: 'mac-arm64', os: 'mac', name: 'Mac (Apple Silicon)', pill: 'Apple Silicon (.dmg)' },
   { key: 'mac-x64', os: 'mac', name: 'Mac (Intel)', pill: 'Intel (.dmg)' },
   { key: 'linux', os: 'linux', name: 'Linux', pill: 'AppImage' },
   { key: 'linux-deb', os: 'linux', name: 'Linux', pill: 'deb package' },
+  { key: 'windows', os: 'windows', name: 'Windows (x64)', pill: 'Windows x64 (.exe)' },
 ] as const
 
 let cached: Promise<Downloads | null> | undefined
@@ -28,16 +29,22 @@ export function loadDownloads(): Promise<Downloads | null> {
   return (cached ??= load())
 }
 
+type Packages = { mac: Record<string, string>; linux: Record<string, string>; windows?: { x64?: string } }
+
+export function packageRows(edition: 'full' | 'client', m: Packages): Build[] {
+  return [
+    { key: 'mac-arm64', label: 'macOS, Apple Silicon', url: `${updates}/${edition}/mac/arm64/${m.mac.arm64}` },
+    { key: 'mac-x64', label: 'macOS, Intel', url: `${updates}/${edition}/mac/x64/${m.mac.x64}` },
+    { key: 'linux', label: 'Linux AppImage', url: `${updates}/${edition}/linux/x64/${m.linux.AppImage}` },
+    { key: 'linux-deb', label: 'Linux deb', url: `${updates}/${edition}/linux/x64/${m.linux.deb}` },
+    ...(m.windows?.x64 ? [{ key: 'windows', label: 'Windows x64', url: `${updates}/${edition}/win/x64/${m.windows.x64}` }] : []),
+  ]
+}
+
 async function load(): Promise<Downloads | null> {
   if (manifest.published === true) {
-    const rows = (edition: 'full' | 'client', m: { mac: Record<string, string>; linux: Record<string, string> }): Build[] => [
-      { label: 'macOS, Apple Silicon', url: `${updates}/${edition}/mac/arm64/${m.mac.arm64}` },
-      { label: 'macOS, Intel', url: `${updates}/${edition}/mac/x64/${m.mac.x64}` },
-      { label: 'Linux AppImage', url: `${updates}/${edition}/linux/x64/${m.linux.AppImage}` },
-      { label: 'Linux deb', url: `${updates}/${edition}/linux/x64/${m.linux.deb}` },
-    ]
     const { version } = manifest
-    return { channel: 'stable', version, built: `Version ${version}`, full: rows('full', manifest), client: rows('client', manifest.client) }
+    return { channel: 'stable', version, built: `Version ${version}`, full: packageRows('full', manifest), client: packageRows('client', manifest.client) }
   }
   const nightly = await nightlyDownloads()
   if (!nightly) return null

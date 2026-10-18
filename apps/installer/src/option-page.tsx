@@ -111,7 +111,7 @@ export function OptionPage({
       title={`Hexbot ${name}`}
     >
       <dl className="divide-y divide-border border-y border-border text-[length:var(--text-body)]">
-        {optionItems(option, locations, macos).map(item => (
+        {optionItems(option, locations, macos, detection.target?.startsWith('windows')).map(item => (
           <div className="flex items-baseline justify-between gap-6 py-2.5" key={item.label}>
             <dt>{item.label}</dt>
             <dd className="selectable shrink-0 font-mono text-[length:var(--text-secondary)] text-muted">

@@ -632,9 +632,12 @@ mod tests {
             config(home.path(), "owl", "video_gen").unwrap()["fal"],
             json!({"model":"B","timeout":60})
         );
-        let outside = tempfile::tempdir().unwrap();
-        std::os::unix::fs::symlink(outside.path(), home.path().join("profiles/link")).unwrap();
-        assert!(config(home.path(), "link", "video_gen").is_err());
+        #[cfg(unix)]
+        {
+            let outside = tempfile::tempdir().unwrap();
+            std::os::unix::fs::symlink(outside.path(), home.path().join("profiles/link")).unwrap();
+            assert!(config(home.path(), "link", "video_gen").is_err());
+        }
     }
     #[test]
     fn video_schema_has_a_complete_description_and_parameters() {

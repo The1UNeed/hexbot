@@ -44,7 +44,7 @@ test('creates a bot, chats, and creates another section', async () => {
     if (process.env.HEXBOT_E2E_CLIENT === '1') {
       // Exercise a real pairing against a LAN-enabled daemon.
       const code = execFileSync(
-        resolve(repoRoot, 'backend/hexbot-core/target/debug/hexbot'),
+        resolve(repoRoot, `backend/hexbot-core/target/debug/hexbot${process.platform === 'win32' ? '.exe' : ''}`),
         ['pair'],
         {
           cwd: repoRoot,

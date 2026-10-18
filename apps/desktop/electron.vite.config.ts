@@ -1,11 +1,15 @@
 import { defineConfig } from 'electron-vite'
 
+const channel = process.env.HEXBOT_CHANNEL ?? 'dev'
+const appId = `app.hexbot.${process.env.HEXBOT_EDITION === 'client' ? 'client' : 'desktop'}${channel === 'stable' ? '' : `.${channel}`}`
+
 // Build-time constants for the main process, declared in src/global.d.ts.
 // The main process is built as an SSR bundle, where `import.meta.env.*` is
 // never replaced, so plain globals carry the values instead.
 export default defineConfig({
   main: {
     define: {
+      __HEXBOT_APP_ID__: JSON.stringify(appId),
       __HEXBOT_CRASH_URL__: JSON.stringify(process.env.HEXBOT_CRASH_URL ?? ''),
       __HEXBOT_CHANNEL__: JSON.stringify(process.env.HEXBOT_CHANNEL ?? 'dev'),
       // 'full' bundles the daemon runtime; 'client' only connects to one.

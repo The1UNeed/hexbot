@@ -743,6 +743,14 @@ impl Runtime {
                 include_bytes!("../../pi-runtime/isolation.ts").as_slice(),
             ),
             (
+                "paths.ts",
+                include_bytes!("../../pi-runtime/paths.ts").as_slice(),
+            ),
+            (
+                "windows-shell.ts",
+                include_bytes!("../../pi-runtime/windows-shell.ts").as_slice(),
+            ),
+            (
                 "credential-policy.json",
                 include_bytes!("../../pi-runtime/credential-policy.json").as_slice(),
             ),
@@ -3555,6 +3563,27 @@ impl Runtime {
                             ),
                             _ => json!(["once", "deny"]),
                         };
+                        // A Windows shell escape loses AppContainer's file and
+                        // credential restrictions. Only the owner can allow it.
+                        if cfg!(windows)
+                            && matches!(
+                                payload["tool"].as_str(),
+                                Some("bash" | "terminal" | "powershell")
+                            )
+                            && (payload["input"]["full_access"] == true
+                                || payload["review"] == true)
+                        {
+                            payload["review"] = json!(false);
+                            payload["choices"] = json!(["once", "deny"]);
+                            let notice = "This command runs outside OS containment and can read or change your files, including credentials and Hexbot data.";
+                            let reason = payload["reason"].as_str().unwrap_or("").trim();
+                            payload["reason"] =
+                                json!(if reason.is_empty() || reason.contains(notice) {
+                                    notice.to_owned()
+                                } else {
+                                    format!("{notice} {reason}")
+                                });
+                        }
                         // Kept so a client that opens the section later sees the card.
                         request["approval_payload"] = payload;
                         if request["approval_payload"]["review"] == true {
@@ -4827,12 +4856,19 @@ mod code_environment_tests {
     use super::*;
     #[tokio::test]
     async fn python_child_does_not_receive_connector_credentials() {
-        let home = tempfile::tempdir().unwrap();
+        let home = common::TestHome::new();
         db::migrate(home.path()).unwrap();
         db::open(home.path())
             .unwrap()
             .execute_batch(
-                "INSERT INTO users(id,display_name,role,created_at) VALUES('alice','Alice','admin',0);INSERT INTO bots(name,owner_id,workdir) VALUES('owl','alice','/tmp');INSERT INTO sections(id,bot,owner_id) VALUES('first','owl','alice');",
+                "INSERT INTO users(id,display_name,role,created_at) VALUES('alice','Alice','admin',0);INSERT INTO bots(name,owner_id) VALUES('owl','alice');INSERT INTO sections(id,bot,owner_id) VALUES('first','owl','alice');",
+            )
+            .unwrap();
+        db::open(home.path())
+            .unwrap()
+            .execute(
+                "UPDATE bots SET workdir=? WHERE name='owl'",
+                [home.workspace().to_string_lossy()],
             )
             .unwrap();
         common::atomic_write(

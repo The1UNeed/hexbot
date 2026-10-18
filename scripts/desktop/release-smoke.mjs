@@ -14,7 +14,7 @@ import { execFile } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { dirname, join, resolve } from 'node:path'
+import { dirname, join, relative, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
 import { finalizeRelease } from './finalize-release.mjs'
@@ -30,7 +30,7 @@ const parseOutputs = stdout =>
   Object.fromEntries(
     stdout
       .trim()
-      .split('\n')
+      .split(/\r?\n/)
       .map(line => line.split(/=(.*)/s).slice(0, 2))
   )
 
@@ -103,7 +103,9 @@ try {
         `${prefix}-${version}-mac-x64.zip`,
         `${prefix}-${version}-mac-x64.dmg`,
         `${prefix}-${version}-linux-x86_64.AppImage`,
-        `${prefix}-${version}-linux-amd64.deb`
+        `${prefix}-${version}-linux-amd64.deb`,
+        `${prefix}-${version}-win-x64.exe`,
+        `${prefix}-${version}-win-x64.exe.blockmap`
       ]) {
         files[name] = `${channel} ${edition} ${name}`
         await writeFile(join(output, name), files[name])
@@ -154,6 +156,9 @@ try {
     assert.match(linux, new RegExp(`^version: ${version.replaceAll('.', '\\.')}$`, 'm'))
     await readFile(join(feedRoot, edition, 'linux/x64', `${prefix}-${version}-linux-x86_64.AppImage`))
     await readFile(join(feedRoot, edition, 'linux/x64', `${prefix}-${version}-linux-amd64.deb`))
+    const windows = await readFile(join(feedRoot, edition, 'win/x64', `${feed}.yml`), 'utf8')
+    assert.ok(windows.includes(`path: ${prefix}-${version}-win-x64.exe`))
+    await readFile(join(feedRoot, edition, 'win/x64', `${prefix}-${version}-win-x64.exe.blockmap`))
   }
   // Both channels wrote into the same directories without clobbering each other.
   await readFile(join(feedRoot, 'full/mac/arm64/latest-mac.yml'))
@@ -162,27 +167,28 @@ try {
 
   for (const [channel, version] of [['stable', stable.version], ['nightly', nightly.version]]) {
     for (const [target, app, buildTarget] of [
-      ['macos-aarch64', 'mac-arm64.dmg', 'darwin-arm64'], ['macos-x86_64', 'mac-x64.dmg', 'darwin-x64'], ['linux-x86_64', 'linux-x86_64.AppImage', 'linux-x64']
+      ['macos-aarch64', 'mac-arm64.dmg', 'darwin-arm64'], ['macos-x86_64', 'mac-x64.dmg', 'darwin-x64'], ['linux-x86_64', 'linux-x86_64.AppImage', 'linux-x64'], ['windows-x86_64', 'windows-x86_64.exe', 'win32-x64']
     ]) {
       const bundle = join(work, `native-${channel}-${target}`)
       const install = join(feedRoot, 'install', version)
       await mkdir(bundle, { recursive: true })
       await mkdir(install, { recursive: true })
-      await writeFile(join(bundle, 'hexbot'), target)
+      const entrypoint = buildTarget.startsWith('win32') ? 'hexbot.exe' : 'hexbot'
+      await writeFile(join(bundle, entrypoint), target)
       await writeFile(join(bundle, 'manifest.json'), JSON.stringify({
         version, target: buildTarget, builtAt: 1,
-        files: { hexbot: createHash('sha256').update(target).digest('hex') }
+        files: { [entrypoint]: createHash('sha256').update(target).digest('hex') }
       }))
       await run(process.execPath, [join(scripts, 'make-native-update.mjs'), bundle, feedRoot])
       const native = JSON.parse(await readFile(join(feedRoot, 'daemon/native', version, target, 'manifest.json'), 'utf8'))
       assert.equal(native.path, `daemon/native/${version}/${target}/hexbot-native-${version}-${target}.tar.gz`)
-      await writeFile(join(install, `hexbot-install-${version}-${target}`), target)
+      await writeFile(join(install, `hexbot-install-${version}-${target}${buildTarget.startsWith('win32') ? '.exe' : ''}`), target)
       await writeFile(join(install, `HexbotInstaller-${version}-${app}`), target)
     }
     await run(process.execPath, [join(scripts, 'make-install-manifest.mjs'), '--channel', channel, '--version', version, feedRoot])
     const signed = signUpdates(feedRoot, { channel, version, key: testKey(), expected: testPublicKey() })
     for (const signature of signed) {
-      const path = signature.includes('/install/') ? join(feedRoot, 'install', `${channel}.json`) : signature.slice(0, -4)
+      const path = relative(feedRoot, signature).split(sep)[0] === 'install' ? join(feedRoot, 'install', `${channel}.json`) : signature.slice(0, -4)
       const bytes = await readFile(path)
       const text = await readFile(signature, 'utf8')
       assert.ok(verifies(testPublicKey(), bytes, text), `signature for ${path}`)
@@ -191,9 +197,9 @@ try {
     const manifest = JSON.parse(await readFile(join(feedRoot, 'install', `${channel}.json`), 'utf8'))
     assert.equal(manifest.version, version)
     assert.equal(manifest.minInstaller, MIN_INSTALLER)
-    assert.equal(Object.keys(manifest.targets).length, 3)
+    assert.equal(Object.keys(manifest.targets).length, 4)
     for (const entry of Object.values(manifest.targets)) assert.equal(Object.keys(entry).length, 5)
-    assert.equal((await readFile(join(feedRoot, 'install', `${channel}.txt`), 'utf8')).trim().split('\n').length, 3)
+    assert.equal((await readFile(join(feedRoot, 'install', `${channel}.txt`), 'utf8')).trim().split(/\r?\n/).length, 4)
   }
   console.log('native/install manifests and signing: every target and option, stable and nightly')
 
@@ -220,6 +226,8 @@ try {
   assert.equal(manifest.published, true)
   assert.equal(manifest.version, stable.version)
   assert.equal(manifest.mac.arm64, `Hexbot-${stable.version}-mac-arm64.dmg`)
+  assert.equal(manifest.windows.x64, `Hexbot-${stable.version}-win-x64.exe`)
+  assert.equal(manifest.client.windows.x64, `HexbotClient-${stable.version}-win-x64.exe`)
   assert.equal(manifest.client.linux.deb, `HexbotClient-${stable.version}-linux-amd64.deb`)
   for (const [cask, hashes] of [
     ['hexbot.rb', result.full.hashes],

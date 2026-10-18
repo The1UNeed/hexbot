@@ -13,7 +13,7 @@ import { createHash } from 'node:crypto'
 import { execFile, spawn } from 'node:child_process'
 import { promisify } from 'node:util'
 import { existsSync } from 'node:fs'
-import { chmod, mkdir, readFile, writeFile } from 'node:fs/promises'
+import { chmod, mkdir, readFile, realpath, writeFile } from 'node:fs/promises'
 import net from 'node:net'
 import { homedir } from 'node:os'
 import { delimiter, dirname, resolve } from 'node:path'
@@ -33,6 +33,14 @@ export function validateDevArgs(args) {
     throw new Error('--backend was removed; pnpm dev uses the native daemon')
 }
 
+export async function isLiveDevHome(path, live = resolve(homedir(), '.hexbot')) {
+  const canonical = async value => {
+    const path = await realpath(value).catch(() => resolve(value))
+    return process.platform === 'win32' ? path.toLowerCase() : path
+  }
+  return await canonical(path) === await canonical(live)
+}
+
 export function derivePorts(path) {
   const hash = createHash('sha256').update(path).digest()
   const base = 9200 + (hash.readUInt16BE(0) % 700)
@@ -40,11 +48,11 @@ export function derivePorts(path) {
 }
 
 export async function ensurePiRuntime(directory, run = promisify(execFile)) {
-  const digest = createHash('sha256').update(await readFile(resolve(directory, 'package-lock.json'))).digest('hex')
+  const digest = createHash('sha256').update((await readFile(resolve(directory, 'package-lock.json'), 'utf8')).replaceAll('\r\n', '\n')).digest('hex')
   const marker = resolve(directory, 'node_modules/.hexbot-lock-sha256')
-  if (existsSync(resolve(directory, 'node_modules/.bin/pi')) &&
+  if (existsSync(resolve(directory, process.platform === 'win32' ? 'node_modules/.bin/pi.cmd' : 'node_modules/.bin/pi')) &&
       await readFile(marker, 'utf8').catch(() => '') === digest) return
-  await run('npm', ['ci', '--ignore-scripts', '--no-audit', '--no-fund'], { cwd: directory, maxBuffer: 32 * 1024 * 1024 })
+  await run(process.platform === 'win32' ? 'npm.cmd' : 'npm', ['ci', '--ignore-scripts', '--no-audit', '--no-fund'], { cwd: directory, shell: process.platform === 'win32', maxBuffer: 32 * 1024 * 1024 })
   await writeFile(marker, digest)
 }
 
@@ -57,6 +65,14 @@ export async function prepareDevRuntime(home, hexbot, pi, overrides = {}) {
     ...overrides
   }
   for (const tool of ['rg', 'fd']) await installTool(tool, deps)
+  if (deps.platform === 'win32') {
+    const launcher = resolve(home, 'runtime/hexbot-pi.mjs')
+    const search = new URL('../desktop/search-tools.mjs', import.meta.url).href
+    const script = pi.endsWith('.js') || pi.endsWith('.mjs') ? pi : resolve(repositoryRoot, 'backend/pi-runtime/node_modules/@earendil-works/pi-coding-agent/dist/cli.js')
+    await writeFile(launcher, `import { pathToFileURL } from 'node:url';\nconst { prepareSearchTools } = await import(${JSON.stringify(search)});\nawait prepareSearchTools(${JSON.stringify(binDirectory)}, process.env.PI_CODING_AGENT_DIR);\nawait import(pathToFileURL(${JSON.stringify(script)}).href);\n`)
+    return { HEXBOT_HOME: home, HEXBOT_EXECUTABLE: hexbot, HEXBOT_PI_EXECUTABLE: process.execPath, HEXBOT_PI_SCRIPT: launcher,
+      PATH: [binDirectory, process.env.PATH ?? ''].join(delimiter) }
+  }
   const quote = value => "'" + value.replaceAll("'", "'\"'\"'") + "'"
   const launcher = resolve(home, 'runtime/hexbot-pi')
   await writeFile(launcher, '#!/bin/sh\nset -eu\n' +
@@ -129,6 +145,7 @@ function start(label, command, commandArgs, env) {
   const child = spawn(command, commandArgs, {
     cwd: repositoryRoot,
     detached: process.platform !== 'win32',
+    shell: process.platform === 'win32' && command.endsWith('.cmd'),
     env: { ...process.env, ...env },
     stdio: 'inherit'
   })
@@ -149,7 +166,10 @@ function stop(code = 0) {
   for (const child of children) {
     if (child.exitCode !== null) continue
     try {
-      if (process.platform === 'win32') child.kill('SIGTERM')
+      if (process.platform === 'win32') {
+        // taskkill /T is scoped to the child PID and includes its descendants.
+        spawn('taskkill.exe', ['/PID', String(child.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' })
+      }
       else process.kill(-child.pid, 'SIGTERM')
     } catch {
       child.kill('SIGTERM')
@@ -164,11 +184,11 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   try {
     validateDevArgs(args)
     const home = resolve(option('--home') ?? resolve(repositoryRoot, '.hexbot'))
-    if (home === resolve(homedir(), '.hexbot'))
+    if (await isLiveDevHome(home))
       throw new Error('Refusing to run a dev daemon against ~/.hexbot, the live install')
     await mkdir(home, { recursive: true })
-    const hexbot = resolve(repositoryRoot, 'backend/hexbot-core/target/debug/hexbot')
-    const pi = resolve(repositoryRoot, 'backend/pi-runtime/node_modules/.bin/pi')
+    const hexbot = resolve(repositoryRoot, `backend/hexbot-core/target/debug/hexbot${process.platform === 'win32' ? '.exe' : ''}`)
+    const pi = resolve(repositoryRoot, process.platform === 'win32' ? 'backend/pi-runtime/node_modules/@earendil-works/pi-coding-agent/dist/cli.js' : 'backend/pi-runtime/node_modules/.bin/pi')
     console.log('[dev] building the Rust daemon')
     const run = promisify(execFile)
     await run('cargo', ['build', '--locked', '--manifest-path', resolve(repositoryRoot, 'backend/hexbot-core/Cargo.toml'), '--bin', 'hexbot'], { cwd: repositoryRoot, maxBuffer: 32 * 1024 * 1024 })

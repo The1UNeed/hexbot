@@ -395,18 +395,12 @@ async fn only_adopted_prompts_survive_idle_retirement_and_daemon_restart() {
         restarted.shutdown().await;
     }
 }
-#[cfg(unix)]
 fn assert_exited(process: &Value) {
-    let pid = process["pid"].as_i64().unwrap() as libc::pid_t;
+    let pid = process["pid"].as_u64().unwrap() as u32;
     // shutdown waits for the owned child to be reaped, so no timing sleeps are needed.
-    assert_eq!(
-        unsafe { libc::kill(pid, 0) },
-        -1,
+    assert!(
+        !crate::platform::process_alive(pid),
         "child {pid} survived shutdown"
-    );
-    assert_eq!(
-        std::io::Error::last_os_error().raw_os_error(),
-        Some(libc::ESRCH)
     );
 }
 #[tokio::test]
@@ -418,7 +412,6 @@ async fn idle_restart_preserves_live_id_prompt_tools_and_client_watermarks() {
     age(&runtime);
     assert_eq!(runtime.retire_idle(common::now() - 900.).await.unwrap(), 1);
     assert!(runtime.sessions.lock().unwrap().is_empty());
-    #[cfg(unix)]
     assert_exited(&before[0]);
     assert_eq!(
         db::open(home.path())
@@ -471,7 +464,6 @@ async fn idle_restart_preserves_live_id_prompt_tools_and_client_watermarks() {
         1
     );
     runtime.shutdown().await;
-    #[cfg(unix)]
     assert_exited(&after[1]);
 }
 #[tokio::test]
@@ -763,7 +755,6 @@ async fn concurrent_lazy_reopen_starts_one_child_and_explicit_close_invalidates_
         0
     );
     for process in processes(home.path()) {
-        #[cfg(unix)]
         assert_exited(&process);
     }
     runtime.shutdown().await;
@@ -825,7 +816,6 @@ async fn intentional_close_of_busy_turn_does_not_report_failure_incident() {
     let mut events = hub.subscribe();
     assert!(runtime.close_stored("alice", "first").await.unwrap());
     for process in processes(home.path()) {
-        #[cfg(unix)]
         assert_exited(&process);
     }
     while let Ok(event) = events.try_recv() {
@@ -1432,6 +1422,48 @@ async fn reopening_a_section_replays_the_approval_it_is_waiting_on() {
     runtime.shutdown().await;
 }
 
+#[cfg(windows)]
+#[tokio::test]
+async fn windows_shell_escape_always_asks_the_owner_and_never_starts_a_reviewer() {
+    let (home, runtime, hub) = setup();
+    open(&runtime).await;
+    let session = runtime.sessions.lock().unwrap()["first"].clone();
+    let mut events = hub.subscribe();
+    for tool in ["bash", "terminal", "powershell"] {
+        runtime
+            .event(
+                &session,
+                json!({
+                    "type":"extension_ui_request", "id":tool, "method":"select",
+                    "title":format!("__HEXBOT_APPROVAL__{}", json!({
+                        "tool":tool,"command":"echo hello","review":true,
+                        "input":{"command":"echo hello","full_access":true}
+                    })), "options":["once","session","deny"]
+                }),
+            )
+            .unwrap();
+        let payload = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let event = events.recv().await.unwrap();
+                if event.frame["params"]["type"] == "approval.request" {
+                    break event.frame["params"]["payload"].clone();
+                }
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(payload["choices"], json!(["once", "deny"]));
+        assert!(
+            payload["reason"]
+                .as_str()
+                .unwrap()
+                .contains("outside OS containment")
+        );
+        assert_eq!(processes(home.path()).len(), 1);
+    }
+    runtime.shutdown().await;
+}
+
 #[tokio::test]
 async fn auto_review_runs_routine_steps_and_asks_about_risky_ones() {
     let (home, runtime, hub) = setup();
@@ -1465,7 +1497,7 @@ const fs=require('node:fs')"#,
             "id": id,
             "method": "select",
             "title": format!("__HEXBOT_APPROVAL__{}", json!({
-                "tool": "bash",
+                "tool": if cfg!(windows) { "mcp__fixture__command" } else { "bash" },
                 "command": command,
                 "reason": "Run outside the sandbox.",
                 "review": true,
@@ -2048,7 +2080,7 @@ const fs=require('node:fs')"#,
                 json!({
                     "type":"extension_ui_request", "id":mode, "method":"select",
                     "title":format!("__HEXBOT_APPROVAL__{}", json!({
-                        "tool":"bash", "command":mode, "input":{"command":mode,"full_access":true},
+                        "tool":if cfg!(windows) {"mcp__fixture__command"} else {"bash"}, "command":mode, "input":{"command":mode,"full_access":true},
                         "cwd":"/work", "review":true,
                     })), "options":["once","session","deny"],
                 }),
@@ -2104,7 +2136,7 @@ const fs=require('node:fs')"#);
     fs::write(script, source).unwrap();
     let live = open(&runtime).await;
     let s = runtime.sessions.lock().unwrap()["first"].clone();
-    let ask = |id| json!({"type":"extension_ui_request","id":id,"method":"select","title":format!("__HEXBOT_APPROVAL__{}", json!({"tool":"bash","command":"publish report","input":{"command":"publish report","full_access":true},"cwd":"/work","review":true})),"options":["once","session","deny"]});
+    let ask = |id| json!({"type":"extension_ui_request","id":id,"method":"select","title":format!("__HEXBOT_APPROVAL__{}", json!({"tool":if cfg!(windows) {"mcp__fixture__command"} else {"bash"},"command":"publish report","input":{"command":"publish report","full_access":true},"cwd":"/work","review":true})),"options":["once","session","deny"]});
     let mut events = hub.subscribe();
     runtime
         .call(
@@ -2588,7 +2620,7 @@ async fn actual_pi_reviewer_supports_acp_without_workspace_or_native_tools() {
     .unwrap();
     let script = home.path().join("review-acp.cjs");
     fs::write(&script, r#"#!/usr/bin/env node
-const assert=require('node:assert/strict'),fs=require('node:fs');for(const flag of ['--no-custom-instructions','--available-tools=','--disable-builtin-mcps','--no-auto-update'])assert.ok(process.argv.includes(flag));assert.ok(process.env.COPILOT_HOME.startsWith(process.env.HOME+'/'));assert.ok(process.env.XDG_CONFIG_HOME.startsWith(process.env.HOME+'/'));assert.deepEqual(fs.readdirSync(process.env.COPILOT_HOME),[]);assert.deepEqual(fs.readdirSync(process.env.XDG_CONFIG_HOME),[]);const send=v=>process.stdout.write(JSON.stringify({jsonrpc:'2.0',...v})+'\n');let prompt;require('node:readline').createInterface({input:process.stdin}).on('line',line=>{const r=JSON.parse(line);if(r.method==='initialize'){assert.deepEqual(r.params.clientCapabilities.fs,{readTextFile:false,writeTextFile:false});send({id:r.id,result:{protocolVersion:1}});}else if(r.method==='session/new'){assert.deepEqual(fs.readdirSync(r.params.cwd),[]);assert.deepEqual(r.params.mcpServers,[]);send({id:r.id,result:{sessionId:'review'}});}else if(r.method==='session/prompt'){const text=r.params.prompt[0].text;assert.match(text,/You review one step a Hexbot bot/);assert.match(text,/Available tools \(OpenAI function schema\):\n\[\]/);assert.doesNotMatch(text,/INJECTED-REVIEWER-INSTRUCTION/);prompt=r.id;send({id:10,method:'session/request_permission',params:{sessionId:'review',toolCall:{title:'Write unsafe file'},options:[{optionId:'yes',kind:'allow_once'}]}});}else if(r.id===10){assert.deepEqual(r.result,{outcome:{outcome:'cancelled'}});send({id:11,method:'fs/write_text_file',params:{sessionId:'review',path:'unsafe',content:'bad'}});}else if(r.id===11){assert.ok(r.error);assert.equal(fs.existsSync('unsafe'),false);send({method:'session/update',params:{sessionId:'review',update:{sessionUpdate:'agent_message_chunk',content:{type:'text',text:'{"decision":"allow","risk":"low"}'}}}});send({id:prompt,result:{stopReason:'end_turn'}});}});"#).unwrap();
+const assert=require('node:assert/strict'),fs=require('node:fs');for(const flag of ['--no-custom-instructions','--available-tools=','--disable-builtin-mcps','--no-auto-update'])assert.ok(process.argv.includes(flag));assert.ok(process.env.COPILOT_HOME.startsWith(require('node:path').join(process.env.HOME,require('node:path').sep)));assert.ok(process.env.XDG_CONFIG_HOME.startsWith(require('node:path').join(process.env.HOME,require('node:path').sep)));assert.deepEqual(fs.readdirSync(process.env.COPILOT_HOME),[]);assert.deepEqual(fs.readdirSync(process.env.XDG_CONFIG_HOME),[]);const send=v=>process.stdout.write(JSON.stringify({jsonrpc:'2.0',...v})+'\n');let prompt;require('node:readline').createInterface({input:process.stdin}).on('line',line=>{const r=JSON.parse(line);if(r.method==='initialize'){assert.deepEqual(r.params.clientCapabilities.fs,{readTextFile:false,writeTextFile:false});send({id:r.id,result:{protocolVersion:1}});}else if(r.method==='session/new'){assert.deepEqual(fs.readdirSync(r.params.cwd),[]);assert.deepEqual(r.params.mcpServers,[]);send({id:r.id,result:{sessionId:'review'}});}else if(r.method==='session/prompt'){const text=r.params.prompt[0].text;assert.match(text,/You review one step a Hexbot bot/);assert.match(text,/Available tools \(OpenAI function schema\):\n\[\]/);assert.doesNotMatch(text,/INJECTED-REVIEWER-INSTRUCTION/);prompt=r.id;send({id:10,method:'session/request_permission',params:{sessionId:'review',toolCall:{title:'Write unsafe file'},options:[{optionId:'yes',kind:'allow_once'}]}});}else if(r.id===10){assert.deepEqual(r.result,{outcome:{outcome:'cancelled'}});send({id:11,method:'fs/write_text_file',params:{sessionId:'review',path:'unsafe',content:'bad'}});}else if(r.id===11){assert.ok(r.error);assert.equal(fs.existsSync('unsafe'),false);send({method:'session/update',params:{sessionId:'review',update:{sessionUpdate:'agent_message_chunk',content:{type:'text',text:'{"decision":"allow","risk":"low"}'}}}});send({id:prompt,result:{stopReason:'end_turn'}});}});"#).unwrap();
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -2620,6 +2652,16 @@ const assert=require('node:assert/strict'),fs=require('node:fs');for(const flag 
         )
         .await
         .unwrap();
+    if cfg!(windows) {
+        assert!(
+            failed,
+            "ACP review must fail closed without credential isolation"
+        );
+        assert_eq!(review::verdict(&text, false), None);
+        assert!(!home.workspace().join("unsafe").exists());
+        runtime.shutdown().await;
+        return;
+    }
     assert!(!failed, "ACP reviewer did not complete: {text}");
     assert_eq!(review::verdict(&text, false), None);
     assert!(!home.workspace().join("unsafe").exists());

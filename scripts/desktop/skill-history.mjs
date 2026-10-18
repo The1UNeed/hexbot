@@ -12,7 +12,7 @@ const entries = dir => sorted(readdirSync(dir).filter(name => !name.startsWith('
 
 // For each sorted relative POSIX path: path + NUL + executable (0/1) + NUL +
 // decimal byte length + NUL + bytes. Empty directories and dotfiles are ignored.
-export function fingerprint(dir) {
+export function fingerprint(dir, { ignoreExecutable = process.platform === 'win32' } = {}) {
   const files = []
   function walk(path) {
     for (const name of entries(path)) {
@@ -29,20 +29,20 @@ export function fingerprint(dir) {
   for (const file of sorted(files)) {
     const path = join(dir, file)
     const bytes = readFileSync(path)
-    hash.update(`${file}\0${lstatSync(path).mode & 0o111 ? 1 : 0}\0${bytes.length}\0`)
+    hash.update(`${file}\0${!ignoreExecutable && (lstatSync(path).mode & 0o111) ? 1 : 0}\0${bytes.length}\0`)
     hash.update(bytes)
   }
   return hash.digest('hex')
 }
 
-export function currentFingerprints(root) {
+export function currentFingerprints(root, options) {
   const result = {}
   function walk(path) {
     const names = entries(path)
     if (path !== root && names.includes('SKILL.md')) {
       const name = basename(path)
       if (result[name]) throw new Error(`Duplicate bundled skill: ${name}`)
-      result[name] = fingerprint(path)
+      result[name] = fingerprint(path, options)
       return
     }
     for (const name of names) {
@@ -61,12 +61,13 @@ export function generateHistory(repo = repository) {
   }
   const history = new Map()
   const add = root => {
-    for (const [name, hash] of Object.entries(currentFingerprints(root))) {
-      if (!history.has(name)) history.set(name, new Set())
-      history.get(name).add(hash)
-    }
+    for (const ignoreExecutable of [false, true])
+      for (const [name, hash] of Object.entries(currentFingerprints(root, { ignoreExecutable }))) {
+        if (!history.has(name)) history.set(name, new Set())
+        history.get(name).add(hash)
+      }
   }
-  const commits = git(['log', '--format=%H', '--', 'skills']).toString().trim().split('\n').filter(Boolean)
+  const commits = git(['log', '--format=%H', '--', 'skills']).toString().trim().split(/\r?\n/).filter(Boolean)
   for (const commit of commits) {
     const temp = mkdtempSync(join(tmpdir(), 'hexbot-skill-history-'))
     try {

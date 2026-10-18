@@ -56,7 +56,7 @@ fn safe(home: &Path, path: &Path) -> Result<()> {
     let mut current = home.to_path_buf();
     for part in relative.components() {
         current.push(part);
-        if fs::symlink_metadata(&current).is_ok_and(|m| m.file_type().is_symlink()) {
+        if fs::symlink_metadata(&current).is_ok_and(|m| crate::platform::is_link(&m)) {
             return Err(Error::new(4202, "profile path must not contain symlinks"));
         }
     }

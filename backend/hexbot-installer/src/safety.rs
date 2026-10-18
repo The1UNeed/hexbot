@@ -1,12 +1,11 @@
-use crate::{
-    Installer, Progress, ProgressCallback, Result, check_output, fail, install_ownership,
-    remove_path,
-};
+#[cfg(unix)]
+use crate::check_output;
+use crate::{Installer, Progress, ProgressCallback, Result, fail, install_ownership, remove_path};
+#[cfg(unix)]
+use std::os::{fd::AsRawFd, unix::fs::MetadataExt};
 use std::{
     fs,
     io::ErrorKind,
-    os::fd::AsRawFd,
-    os::unix::fs::MetadataExt,
     path::{Path, PathBuf},
     time::{Duration, Instant},
 };
@@ -22,7 +21,7 @@ fn check_internal(home: &Path, relative: &str) -> Result<()> {
     for part in Path::new(relative).components() {
         path.push(part);
         match fs::symlink_metadata(&path) {
-            Ok(meta) if meta.file_type().is_symlink() => {
+            Ok(meta) if is_link(&meta) => {
                 if relative == "runtime/native-executable" && path == root.join(relative) {
                     let target = fs::read_link(&path)?;
                     let target = if target.is_absolute() {
@@ -51,46 +50,127 @@ fn check_internal(home: &Path, relative: &str) -> Result<()> {
     Ok(())
 }
 
-pub(crate) fn appimage_running(proc: &Path, app: &Path) -> Result<bool> {
-    let entries = match fs::read_dir(proc) {
-        Ok(entries) => entries,
-        Err(e) if e.kind() == ErrorKind::NotFound => return Ok(false),
-        Err(e) => return Err(e.into()),
-    };
-    let app = app.canonicalize().unwrap_or_else(|_| app.to_owned());
-    for entry in entries {
-        let entry = entry?;
-        if entry.file_name().to_string_lossy().parse::<u32>().is_err() {
-            continue;
-        }
-        let Ok(meta) = entry.metadata() else {
-            continue;
-        };
-        if meta.uid() != unsafe { libc::getuid() } {
-            continue;
-        }
-        let bytes = match fs::read(entry.path().join("environ")) {
-            Ok(bytes) => bytes,
-            // Linux hides the environment of non-dumpable processes (keyrings,
-            // setuid helpers, other namespaces) and of processes that just
-            // exited. A running AppImage is an ordinary, readable process.
-            Err(_) => continue,
-        };
-        for value in bytes
-            .split(|b| *b == 0)
-            .filter_map(|v| v.strip_prefix(b"APPIMAGE="))
-        {
-            use std::os::unix::ffi::OsStrExt;
-            let path = Path::new(std::ffi::OsStr::from_bytes(value));
-            if path.canonicalize().unwrap_or_else(|_| path.to_owned()) == app {
-                return Ok(true);
-            }
+#[cfg(all(test, windows))]
+mod windows_tests {
+    use super::*;
+    use crate::{Paths, Target};
+
+    fn engine(root: &Path) -> Installer {
+        Installer {
+            paths: Paths {
+                local_data: None,
+                user_programs: None,
+                home: root.join("user"),
+                hexbot_home: root.join("state"),
+                apps_override: Some(root.join("apps")),
+                opt_override: None,
+                service_root: root.join("services"),
+                service_no_load: true,
+            },
+            target: Target::WindowsX86_64,
+            base_url: String::new(),
         }
     }
-    Ok(false)
+
+    #[test]
+    fn installation_lock_waits_until_the_first_installer_finishes() {
+        let root = tempfile::tempdir().unwrap();
+        let first = engine(root.path()).lock_installation(&mut |_| {}).unwrap();
+        let second = engine(root.path());
+        let (send, receive) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let _guard = second
+                .lock_installation(&mut |event| {
+                    send.send(event.stage).unwrap();
+                })
+                .unwrap();
+        });
+        assert_eq!(
+            receive.recv_timeout(Duration::from_secs(10)).unwrap(),
+            "wait"
+        );
+        drop(first);
+        worker.join().unwrap();
+    }
+
+    #[test]
+    fn junctions_cannot_redirect_runtime_removal() {
+        let root = tempfile::tempdir().unwrap();
+        let engine = engine(root.path());
+        fs::create_dir_all(&engine.paths.hexbot_home).unwrap();
+        let outside = root.path().join("outside");
+        fs::create_dir(&outside).unwrap();
+        fs::write(outside.join("keep"), "owned elsewhere").unwrap();
+        assert!(
+            std::process::Command::new("cmd.exe")
+                .args(["/d", "/c", "mklink", "/J"])
+                .arg(engine.paths.hexbot_home.join("runtime"))
+                .arg(&outside)
+                .status()
+                .unwrap()
+                .success()
+        );
+        assert!(engine.preflight_home_removal().is_err());
+        assert_eq!(
+            fs::read_to_string(outside.join("keep")).unwrap(),
+            "owned elsewhere"
+        );
+    }
+}
+
+pub(crate) fn appimage_running(proc: &Path, app: &Path) -> Result<bool> {
+    #[cfg(windows)]
+    {
+        let _ = (proc, app);
+        Ok(false)
+    }
+    #[cfg(unix)]
+    {
+        let entries = match fs::read_dir(proc) {
+            Ok(entries) => entries,
+            Err(e) if e.kind() == ErrorKind::NotFound => return Ok(false),
+            Err(e) => return Err(e.into()),
+        };
+        let app = app.canonicalize().unwrap_or_else(|_| app.to_owned());
+        for entry in entries {
+            let entry = entry?;
+            if entry.file_name().to_string_lossy().parse::<u32>().is_err() {
+                continue;
+            }
+            let Ok(meta) = entry.metadata() else {
+                continue;
+            };
+            if meta.uid() != unsafe { libc::getuid() } {
+                continue;
+            }
+            let bytes = match fs::read(entry.path().join("environ")) {
+                Ok(bytes) => bytes,
+                // Linux hides the environment of non-dumpable processes (keyrings,
+                // setuid helpers, other namespaces) and of processes that just
+                // exited. A running AppImage is an ordinary, readable process.
+                Err(_) => continue,
+            };
+            for value in bytes
+                .split(|b| *b == 0)
+                .filter_map(|v| v.strip_prefix(b"APPIMAGE="))
+            {
+                use std::os::unix::ffi::OsStrExt;
+                let path = Path::new(std::ffi::OsStr::from_bytes(value));
+                if path.canonicalize().unwrap_or_else(|_| path.to_owned()) == app {
+                    return Ok(true);
+                }
+            }
+        }
+        Ok(false)
+    }
 }
 
 fn alive(pid: i32) -> bool {
+    #[cfg(windows)]
+    {
+        crate::windows::process_executable(pid as u32).is_some()
+    }
+    #[cfg(unix)]
     unsafe {
         libc::kill(pid, 0) == 0
             || std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH)
@@ -98,6 +178,10 @@ fn alive(pid: i32) -> bool {
 }
 
 fn process_executable(pid: i32) -> Option<PathBuf> {
+    #[cfg(windows)]
+    {
+        crate::windows::process_executable(pid as u32)
+    }
     #[cfg(target_os = "linux")]
     {
         fs::read_link(format!("/proc/{pid}/exe")).ok()
@@ -116,28 +200,72 @@ fn process_executable(pid: i32) -> Option<PathBuf> {
     }
 }
 
+pub(crate) fn is_link(metadata: &fs::Metadata) -> bool {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        metadata.file_attributes() & 0x400 != 0
+    }
+    #[cfg(unix)]
+    {
+        metadata.file_type().is_symlink()
+    }
+}
+
+fn try_lock(file: &fs::File) -> std::io::Result<bool> {
+    #[cfg(unix)]
+    {
+        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
+            return Ok(true);
+        }
+        let error = std::io::Error::last_os_error();
+        if error.kind() == ErrorKind::WouldBlock {
+            Ok(false)
+        } else {
+            Err(error)
+        }
+    }
+    #[cfg(windows)]
+    match file.try_lock() {
+        Ok(()) => Ok(true),
+        Err(fs::TryLockError::WouldBlock) => Ok(false),
+        Err(fs::TryLockError::Error(error)) => Err(error),
+    }
+}
+
 /// Take an exclusive lock, saying what the installer waits for when it is held.
 fn lock_or_wait(
     file: fs::File,
     progress: &mut ProgressCallback<'_>,
     waiting: &str,
 ) -> Result<fs::File> {
-    let mut blocking = false;
-    loop {
-        let operation = if blocking {
-            libc::LOCK_EX
-        } else {
-            libc::LOCK_EX | libc::LOCK_NB
-        };
-        if unsafe { libc::flock(file.as_raw_fd(), operation) } == 0 {
-            return Ok(file);
-        }
-        let error = std::io::Error::last_os_error();
-        if error.kind() == ErrorKind::WouldBlock && !blocking {
+    #[cfg(windows)]
+    {
+        if !try_lock(&file)? {
             progress(Progress::new("wait", waiting));
-            blocking = true;
-        } else if error.kind() != ErrorKind::Interrupted {
-            return Err(error.into());
+            file.lock()?;
+        }
+        Ok(file)
+    }
+    #[cfg(unix)]
+    {
+        let mut blocking = false;
+        loop {
+            let operation = if blocking {
+                libc::LOCK_EX
+            } else {
+                libc::LOCK_EX | libc::LOCK_NB
+            };
+            if unsafe { libc::flock(file.as_raw_fd(), operation) } == 0 {
+                return Ok(file);
+            }
+            let error = std::io::Error::last_os_error();
+            if error.kind() == ErrorKind::WouldBlock && !blocking {
+                progress(Progress::new("wait", waiting));
+                blocking = true;
+            } else if error.kind() != ErrorKind::Interrupted {
+                return Err(error.into());
+            }
         }
     }
 }
@@ -149,19 +277,25 @@ impl Installer {
         &self,
         progress: &mut ProgressCallback<'_>,
     ) -> Result<fs::File> {
-        use std::os::unix::fs::OpenOptionsExt;
         self.paths.validate()?;
         let path = self.paths.installer_lock(self.target);
         fs::create_dir_all(path.parent().ok_or("Invalid installer lock path")?)?;
-        let file = fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .mode(0o600)
-            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
-            .open(path)?;
-        if !file.metadata()?.is_file() {
+        let mut options = fs::OpenOptions::new();
+        options.read(true).write(true).create(true).truncate(false);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options
+                .mode(0o600)
+                .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC);
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::OpenOptionsExt;
+            options.custom_flags(0x0020_0000); // FILE_FLAG_OPEN_REPARSE_POINT
+        }
+        let file = options.open(path)?;
+        if !file.metadata()?.is_file() || is_link(&file.metadata()?) {
             return fail("The installer lock must be a regular file.");
         }
         lock_or_wait(
@@ -222,7 +356,9 @@ impl Installer {
         self.paths.validate()?;
         for relative in [
             "runtime/native-executable",
+            "runtime/native-executable.exe",
             "runtime/native-current.json",
+            "runtime/native-dispatcher.sha256",
             "runtime/native",
             "runtime/native-running.json",
             "native-daemon.lock",
@@ -242,27 +378,32 @@ impl Installer {
         // Do not depend on a working native-executable pointer to uninstall a service.
         if !self.paths.service_no_load {
             if self.target.is_macos() {
-                let uid = unsafe { libc::getuid() };
-                let mut stopped = false;
-                for domain in [format!("gui/{uid}"), format!("user/{uid}")] {
-                    stopped |= self
-                        .paths
-                        .command("launchctl")
-                        .args(["bootout", &domain])
-                        .arg(&file)
-                        .output()?
-                        .status
-                        .success();
-                }
-                if !stopped {
-                    check_output(
-                        self.paths
+                #[cfg(unix)]
+                {
+                    let uid = unsafe { libc::getuid() };
+                    let mut stopped = false;
+                    for domain in [format!("gui/{uid}"), format!("user/{uid}")] {
+                        stopped |= self
+                            .paths
                             .command("launchctl")
-                            .args(["unload", "-w"])
+                            .args(["bootout", &domain])
                             .arg(&file)
-                            .output()?,
-                    )?;
+                            .output()?
+                            .status
+                            .success();
+                    }
+                    if !stopped {
+                        check_output(
+                            self.paths
+                                .command("launchctl")
+                                .args(["unload", "-w"])
+                                .arg(&file)
+                                .output()?,
+                        )?;
+                    }
                 }
+            } else if self.target.is_windows() {
+                self.remove_windows_service(&file)?;
             } else {
                 let _ = self
                     .paths
@@ -272,7 +413,7 @@ impl Installer {
             }
         }
         self.remove_owned_path(&file)?;
-        if !self.paths.service_no_load && !self.target.is_macos() {
+        if !self.paths.service_no_load && self.target == crate::Target::LinuxX86_64 {
             let _ = self
                 .paths
                 .command("systemctl")
@@ -297,13 +438,9 @@ impl Installer {
             Err(e) if e.kind() == ErrorKind::NotFound => None,
             Err(e) => return Err(e.into()),
         };
-        let try_lock = || {
-            lock.as_ref().is_none_or(|f| unsafe {
-                libc::flock(f.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) == 0
-            })
-        };
+        let try_lock = || -> std::io::Result<bool> { lock.as_ref().map_or(Ok(true), try_lock) };
         // A free lock means any running record is stale, even if its PID was reused.
-        if try_lock() {
+        if try_lock()? {
             return Ok(lock);
         }
         let record_path = self.paths.hexbot_home.join("runtime/native-running.json");
@@ -318,6 +455,7 @@ impl Installer {
             .filter(|p| *p > 0 && *p <= i32::MAX as i64)
             .map(|p| p as i32);
         if let Some(pid) = pid.filter(|p| alive(*p)) {
+            #[cfg(unix)]
             let owner = fs::read_to_string(&lock_path)
                 .ok()
                 .and_then(|s| s.trim().parse::<i32>().ok());
@@ -326,18 +464,24 @@ impl Installer {
                 .and_then(|v| v["executable"].as_str())
                 .and_then(|p| Path::new(p).canonicalize().ok());
             let actual = process_executable(pid).and_then(|p| p.canonicalize().ok());
-            if owner != Some(pid)
-                || recorded.is_none()
-                || actual != recorded
-                || pid == std::process::id() as i32
+            #[cfg(unix)]
+            if owner != Some(pid) {
+                return fail(STOP);
+            }
+            if recorded.is_none() || actual != recorded || pid == std::process::id() as i32 {
+                return fail(STOP);
+            }
+            #[cfg(unix)]
             {
-                return fail(STOP);
+                if unsafe { libc::kill(pid, libc::SIGTERM) } != 0 {
+                    return fail(STOP);
+                }
             }
-            if unsafe { libc::kill(pid, libc::SIGTERM) } != 0 {
-                return fail(STOP);
-            }
+            #[cfg(windows)]
+            crate::windows::request_shutdown(pid as u32, &self.paths.hexbot_home)
+                .map_err(|_| STOP)?;
             let deadline = Instant::now() + Duration::from_secs(15);
-            while !try_lock() {
+            while !try_lock()? {
                 if Instant::now() >= deadline {
                     return fail(STOP);
                 }
@@ -350,7 +494,7 @@ impl Installer {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use crate::{Paths, Target};
@@ -361,6 +505,8 @@ mod tests {
     fn engine(root: &Path) -> Installer {
         Installer {
             paths: Paths {
+                local_data: None,
+                user_programs: None,
                 opt_override: None,
                 home: root.join("user"),
                 hexbot_home: root.join("hexbot"),

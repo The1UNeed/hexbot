@@ -5,15 +5,16 @@
 // Any failure returns null and the page falls back to the GitHub listing.
 export const updates = 'https://updates.hexbot.app'
 
-export type Build = { label: string; url: string; size?: number }
+export type Build = { key: string; label: string; url: string; size?: number }
 export type Downloads = { version: string; full: Build[]; client: Build[] }
 
 // One row per build on the download page: label, feed directory, feed file, artifact.
 const targets = [
-  ['macOS, Apple Silicon', 'mac/arm64', 'nightly-mac.yml', /\.dmg$/],
-  ['macOS, Intel', 'mac/x64', 'nightly-mac.yml', /\.dmg$/],
-  ['Linux AppImage', 'linux/x64', 'nightly-linux.yml', /\.AppImage$/],
-  ['Linux deb', 'linux/x64', 'nightly-linux.yml', /\.deb$/]
+  ['mac-arm64', 'macOS, Apple Silicon', 'mac/arm64', 'nightly-mac.yml', /\.dmg$/],
+  ['mac-x64', 'macOS, Intel', 'mac/x64', 'nightly-mac.yml', /\.dmg$/],
+  ['linux', 'Linux AppImage', 'linux/x64', 'nightly-linux.yml', /\.AppImage$/],
+  ['linux-deb', 'Linux deb', 'linux/x64', 'nightly-linux.yml', /\.deb$/],
+  ['windows', 'Windows x64', 'win/x64', 'nightly.yml', /\.exe$/],
 ] as const
 
 export type FeedFile = { url: string; size?: number }
@@ -38,8 +39,9 @@ export function nightlyDate(version: string): string | null {
   return date.toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric', timeZone: 'UTC' })
 }
 
-async function fetchText(url: string): Promise<string> {
+async function fetchText(url: string): Promise<string | null> {
   const response = await fetch(url, { signal: AbortSignal.timeout(10_000) })
+  if (response.status === 404) return null
   if (!response.ok) throw new Error(`${url}: ${response.status}`)
   return response.text()
 }
@@ -50,22 +52,27 @@ export async function nightlyDownloads(load = fetchText): Promise<Downloads | nu
     const edition = async (name: 'full' | 'client') => {
       const feeds = new Map<string, FeedFile[]>()
       const rows: Build[] = []
-      for (const [label, dir, feed, artifact] of targets) {
+      for (const [key, label, dir, feed, artifact] of targets) {
         const url = `${updates}/${name}/${dir}`
         if (!feeds.has(dir)) {
-          const parsed = parseFeed(await load(`${url}/${feed}`))
+          const text = await load(`${url}/${feed}`)
+          // Older releases have no Windows artifacts. Never invent a URL.
+          if (text === null && key === 'windows') continue
+          const parsed = text === null ? null : parseFeed(text)
           if (!parsed) throw new Error(`${url}/${feed} is not an update feed`)
           versions.add(parsed.version)
           feeds.set(dir, parsed.files)
         }
         const file = feeds.get(dir)!.find(f => artifact.test(f.url))
         if (!file) throw new Error(`${url}/${feed} names no ${artifact.source} file`)
-        rows.push({ label, url: `${url}/${file.url}`, size: file.size })
+        rows.push({ key, label, url: `${url}/${file.url}`, size: file.size })
       }
       return rows
     }
     const [full, client] = [await edition('full'), await edition('client')]
-    // Six feed files, one version. Anything else is a half-uploaded nightly.
+    if (full.some(b => b.key === 'windows') !== client.some(b => b.key === 'windows'))
+      throw new Error('Windows nightly is missing an edition')
+    // All published feeds must name one version.
     if (versions.size !== 1) throw new Error(`Nightly feeds disagree: ${[...versions].join(', ')}`)
     return { version: [...versions][0], full, client }
   } catch (error) {

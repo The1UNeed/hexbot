@@ -20,6 +20,10 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  windows:
+    name: Windows
+    uses: ./.github/workflows/windows.yml
+
   rust-components:
     name: Rust daemon and Pi integration (${{ matrix.os }})
     strategy:

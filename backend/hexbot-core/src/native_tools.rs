@@ -116,6 +116,7 @@ pub(crate) fn section_workdir(home: &Path, bot: &str, stored: &str) -> Result<Pa
 }
 /// Resolve existing symlinks before checking both allowed roots, including new output paths.
 fn media_path(home: &Path, bot: &str, value: &str) -> Result<PathBuf> {
+    crate::platform::validate_path(Path::new(value))?;
     let cwd = workdir(home, bot)?;
     let artifacts = artifacts_dir(home, bot)?;
     let input = PathBuf::from(value);
@@ -233,7 +234,11 @@ fn python_command(
     .to_owned()
 }
 fn edge_command(home: &Path, options: &Value) -> String {
-    let managed = home.join("bin/edge-tts");
+    let managed = if cfg!(windows) {
+        home.join("runtime/tools/edge-tts/Scripts/edge-tts.exe")
+    } else {
+        home.join("bin/edge-tts")
+    };
     let fallback = if managed.is_file() {
         managed
     } else {
@@ -1107,6 +1112,7 @@ for line in sys.stdin:
 struct Kernel {
     sandbox: (Option<crate::credentials::Confine>, PathBuf),
     child: Child,
+    _tree: crate::pi::ChildTree,
     input: ChildStdin,
     output: BufReader<ChildStdout>,
 }
@@ -1238,21 +1244,22 @@ async fn execute_code(
             })?,
         };
         desktop_environment(&mut command);
-        let mut child = command
+        command
             .args(["-u", "-c", KERNEL])
             .current_dir(&sandbox.1)
             .env("PYTHONUNBUFFERED", "1")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
-            .kill_on_drop(true)
-            .spawn()
+            .kill_on_drop(true);
+        let (mut child, tree) = crate::pi::spawn_child(&mut command)
             .map_err(|_| failure(format!("Python code runtime could not start: {python}")))?;
         *kernel = Some(Kernel {
             sandbox: sandbox.clone(),
             input: child.stdin.take().expect("piped stdin"),
             output: BufReader::new(child.stdout.take().expect("piped stdout")),
             child,
+            _tree: tree,
         });
     }
     let worker = kernel.as_mut().expect("kernel initialized");
@@ -1329,14 +1336,22 @@ async fn execute_code(
         }
     }
 }
-async fn run(mut command: Command, input: &[u8], seconds: u64) -> Result<Value> {
+async fn run(command: Command, input: &[u8], seconds: u64) -> Result<Value> {
+    run_child(command, input, seconds)
+        .await
+        .map(|(result, _tree)| result)
+}
+async fn run_child(
+    mut command: Command,
+    input: &[u8],
+    seconds: u64,
+) -> Result<(Value, crate::pi::ChildTree)> {
     command
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
-    let mut child = command
-        .spawn()
+    let (mut child, tree) = crate::pi::spawn_child(&mut command)
         .map_err(|e| failure(format!("tool command could not start: {e}")))?;
     let mut stdin = child.stdin.take().expect("piped stdin");
     let mut stdout = child.stdout.take().expect("piped stdout");
@@ -1378,7 +1393,7 @@ async fn run(mut command: Command, input: &[u8], seconds: u64) -> Result<Value> 
     })
     .await;
     match result {
-        Ok(v) => v,
+        Ok(v) => v.map(|value| (value, tree)),
         Err(_) => {
             let _ = child.kill().await;
             let _ = child.wait().await;
@@ -1797,7 +1812,8 @@ async fn speech(
             common::atomic_write(&output, &audio)?;
         }
         "edge" => {
-            let mut command = Command::new(edge_command(home, options));
+            let mut command =
+                crate::pi::executable_command(Path::new(&edge_command(home, options)));
             command
                 .args([
                     "--text",
@@ -1828,7 +1844,7 @@ async fn speech(
             let executable = custom["command"]
                 .as_str()
                 .ok_or_else(|| failure("custom speech provider needs a command executable"))?;
-            let mut command = Command::new(executable);
+            let mut command = crate::pi::executable_command(Path::new(executable));
             for arg in custom["args"].as_array().into_iter().flatten() {
                 command.arg(
                     arg.as_str()
@@ -2637,6 +2653,8 @@ async fn image_bytes(home: &Path, bot: &str, value: &str) -> Result<(String, Vec
     Err(Error::new(4202, "invalid image data"))
 }
 struct Browser {
+    #[cfg(windows)]
+    children: std::sync::Mutex<Vec<crate::pi::ChildTree>>,
     proxy: common::BrowserProxy,
     name: String,
     command: Vec<String>,
@@ -2657,11 +2675,28 @@ fn browsers() -> &'static Mutex<BrowserMap> {
 }
 fn on_path(command: &str) -> Option<PathBuf> {
     let cwd = std::env::current_dir().ok()?;
+    if crate::pi::javascript_entry(Path::new(command)) {
+        let path = cwd.join(command);
+        if path.is_file() {
+            return Some(path);
+        }
+    }
+    // npm on Windows supplies batch wrappers. Use its known JavaScript entry
+    // directly so browser arguments never pass through cmd.exe.
+    #[cfg(windows)]
+    if matches!(command, "npx" | "npx.cmd") {
+        let entry = std::env::split_paths(&std::env::var_os("PATH")?)
+            .map(|directory| directory.join("node_modules/npm/bin/npx-cli.js"))
+            .find(|path| path.is_file());
+        if entry.is_some() {
+            return entry;
+        }
+    }
     if let Some(path) = common::command_path(command, &cwd) {
         return Some(path);
     }
     let mut directories = vec![];
-    if let Some(home) = std::env::var_os("HOME") {
+    if let Some(home) = crate::platform::user_home() {
         let home = PathBuf::from(home);
         directories.push(home.join(".local/bin"));
         directories.push(home.join(".cargo/bin"));
@@ -2673,7 +2708,7 @@ fn on_path(command: &str) -> Option<PathBuf> {
     ]);
     directories
         .into_iter()
-        .map(|path| path.join(command))
+        .map(|path| path.join(crate::platform::executable_name(command)))
         .find(|p| common::executable_file(p))
 }
 fn browser_use_command(home: &Path, cfg: &Value) -> Option<Vec<String>> {
@@ -2683,7 +2718,9 @@ fn browser_use_command(home: &Path, cfg: &Value) -> Option<Vec<String>> {
     for managed in [true, false] {
         for name in ["browser-use", "uvx"] {
             let path = if managed {
-                let path = home.join("bin").join(name);
+                let path = home
+                    .join("bin")
+                    .join(crate::platform::executable_name(name));
                 common::executable_file(&path).then_some(path)
             } else {
                 on_path(name)
@@ -2707,7 +2744,10 @@ fn browser_command(cfg: &Value) -> Vec<String> {
         vec![path.to_string_lossy().into_owned()]
     } else {
         vec![
-            "npx".into(),
+            on_path("npx")
+                .unwrap_or_else(|| "npx".into())
+                .to_string_lossy()
+                .into_owned(),
             "--ignore-scripts".into(),
             "--prefer-offline".into(),
             "-y".into(),
@@ -2730,6 +2770,8 @@ async fn launch_browser(
         .join(stored);
     fs::create_dir_all(&directory)?;
     let mut browser = Browser {
+        #[cfg(windows)]
+        children: std::sync::Mutex::new(Vec::new()),
         proxy: common::BrowserProxy::start(common::allow_private_urls(home, bot)?).await?,
         name: format!("hexbot-{}", common::id()),
         command: browser_command(cfg),
@@ -2806,7 +2848,7 @@ async fn launch_browser(
     Ok(browser)
 }
 fn agent_command(browser: &Browser, verb: &str, args: &[String]) -> Command {
-    let mut command = Command::new(&browser.command[0]);
+    let mut command = crate::pi::executable_command(Path::new(&browser.command[0]));
     command.args(&browser.command[1..]);
     desktop_environment(&mut command);
     command
@@ -2833,7 +2875,22 @@ fn agent_command(browser: &Browser, verb: &str, args: &[String]) -> Command {
     command
 }
 async fn agent_browser(browser: &Browser, verb: &str, args: &[String]) -> Result<Value> {
-    let result = run(agent_command(browser, verb, args), b"", 120).await?;
+    let (result, tree) = run_child(agent_command(browser, verb, args), b"", 120).await?;
+    // agent-browser starts a persistent browser daemon. Keep that job for the
+    // section's lifetime, then close it after the explicit browser close.
+    #[cfg(windows)]
+    {
+        let mut children = browser
+            .children
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        children.retain(crate::pi::ChildTree::active);
+        if tree.active() {
+            children.push(tree);
+        }
+    }
+    #[cfg(not(windows))]
+    drop(tree);
     let output = result["output"].as_str().unwrap_or("");
     let parsed: Value = serde_json::from_str(output)
         .unwrap_or_else(|_| json!({"success":false,"error":result["stderr"]}));
@@ -2991,7 +3048,7 @@ async fn browser_tool(
                         .to_lowercase()
                         .contains("executable doesn't exist")) =>
         {
-            let mut command = Command::new(&browser.command[0]);
+            let mut command = crate::pi::executable_command(Path::new(&browser.command[0]));
             command.args(&browser.command[1..]).arg("install");
             desktop_environment(&mut command);
             let install = run(command, b"", 300).await?;

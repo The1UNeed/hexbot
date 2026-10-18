@@ -686,6 +686,18 @@ async fn actual_pi_acp_stream_cancels_native_permissions() {
     })
     .await
     .unwrap();
+    if cfg!(windows) {
+        assert_eq!(response["payload"]["status"], "error");
+        assert!(
+            response["payload"]["error"]
+                .as_str()
+                .unwrap()
+                .contains("credential isolation is not supported")
+        );
+        assert!(!home.workspace().join("permission.json").exists());
+        runtime.shutdown().await;
+        return;
+    }
     let permission: Value =
         serde_json::from_slice(&fs::read(home.workspace().join("permission.json")).unwrap())
             .unwrap();

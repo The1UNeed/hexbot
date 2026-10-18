@@ -1,6 +1,9 @@
 # Auto-generated files — collapse diffs and exclude from language stats
 pnpm-lock.yaml linguist-generated=true
 
+# Keep checksums and source fixtures identical across platforms.
+* text=auto eol=lf
+
 # Enforce LF for scripts that run inside Linux containers.
 # Without this, Windows checkout converts to CRLF and breaks `exec` in the
 # container entrypoint with "no such file or directory".

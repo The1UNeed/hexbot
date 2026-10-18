@@ -42,6 +42,22 @@ linux:
   category: Utility
   executableName: hexbot
   artifactName: Hexbot-${version}-linux-${arch}.${ext}
+win:
+  icon: build/icon.png
+  verifyUpdateCodeSignature: true
+  target:
+    - target: nsis
+      arch:
+        - x64
+  executableName: Hexbot
+  artifactName: Hexbot-${version}-win-${arch}.${ext}
+nsis:
+  oneClick: true
+  perMachine: false
+  allowElevation: false
+  deleteAppDataOnUninstall: false
+  runAfterFinish: false
+  uninstallDisplayName: ${productName}
 deb:
   depends:
     - libgtk-3-0

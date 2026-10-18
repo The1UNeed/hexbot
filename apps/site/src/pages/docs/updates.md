@@ -34,7 +34,7 @@ without it still use `url`. Downloads must stay on the configured origin.
 
 These signatures do not cover Electron's app update feeds, the initial installer
 download, or the legacy Python handoff source package. macOS app updates rely on
-code signing; Linux AppImage updates use checksums only. The legacy source
+code signing; Windows app updates check the configured Authenticode publisher; Linux AppImage updates use checksums only. The legacy source
 package trusts HTTPS before its native signature check can run.
 
 Existing Python background services try to install the native daemon during their

@@ -31,6 +31,8 @@ pub fn paths(root: &Path) -> Paths {
     let home = root.join("home");
     fs::create_dir_all(&home).unwrap();
     Paths {
+        local_data: None,
+        user_programs: None,
         opt_override: None,
         hexbot_home: home.join(".hexbot"),
         apps_override: Some(root.join("apps")),
@@ -41,9 +43,12 @@ pub fn paths(root: &Path) -> Paths {
 }
 
 pub fn executable(path: &Path, bytes: &[u8]) {
-    use std::os::unix::fs::PermissionsExt;
     fs::write(path, bytes).unwrap();
-    fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+    }
 }
 
 pub fn bundle(path: &Path, id: &str) {
@@ -105,6 +110,7 @@ pub fn app_artifact_for_track(
 }
 
 /// A version-bearing package in the formats shipped by electron-builder.
+#[cfg(unix)]
 pub fn versioned_app_artifact(
     root: &Path,
     base: &str,
@@ -313,6 +319,8 @@ pub fn cli(paths: &Paths, base: &str, arguments: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_hexbot-install"))
         .args(arguments)
         .env("HOME", &paths.home)
+        .env("USERPROFILE", &paths.home)
+        .env("LOCALAPPDATA", paths.home.join("AppData/Local"))
         .env("HEXBOT_HOME", &paths.hexbot_home)
         .env(
             "HEXBOT_INSTALL_APPS_DIR",

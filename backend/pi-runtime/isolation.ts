@@ -2,21 +2,32 @@
 // profile for Python and scheduled scripts from the same credential-policy.json;
 // a parity test there compares the two outputs.
 import {readFileSync, readdirSync, readlinkSync, realpathSync, existsSync, statSync, lstatSync, openSync, opendirSync, fstatSync, readSync, closeSync, constants, type Dirent} from 'node:fs';
-import {createHash} from 'node:crypto';
-import {join, relative, resolve, dirname, basename} from 'node:path';
+import {createHash, randomUUID} from 'node:crypto';
+import {join, relative, resolve, dirname, basename, isAbsolute, parse, sep} from 'node:path';
 import {homedir, tmpdir} from 'node:os';
 import {spawnSync} from 'node:child_process';
+import {fold, foldCase, within} from './paths.ts';
+export {fold, foldCase, within} from './paths.ts';
+import {powerShellExecutable, powerShellArgs} from './windows-shell.ts';
 export const credentialPolicy = JSON.parse(readFileSync(new URL('./credential-policy.json', import.meta.url), 'utf8'));
 const quote = (s: string) => "'" + s.replaceAll("'", "'\\''") + "'";
 const regexEscape = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 // macOS and Windows file systems ignore case, so every path comparison and policy
 // matcher does too (the sandbox itself matches the on-disk path, whatever case a
 // child spells).
-export const foldCase = process.platform === 'darwin' || process.platform === 'win32';
-export const fold = (s: string) => foldCase ? s.toLowerCase() : s;
 export const policyRegex = (source: string) => new RegExp(source, foldCase ? 'i' : '');
 // Write policy entries are absolute or relative to the user's home.
-export const policyRoot = (entry: string) => entry.startsWith('/') ? entry : join(homedir(), entry);
+export function policyRoot(entry: string): string | undefined {
+  if (entry.startsWith('%')) {
+    if (process.platform !== 'win32') return undefined;
+    const match = entry.match(/^%([^%]+)%(.*)$/);
+    if (!match) return undefined;
+    const key = Object.keys(process.env).find(key => key.toLowerCase() === match[1].toLowerCase());
+    const root = key && process.env[key];
+    return root && isAbsolute(root) ? join(root, match[2].replace(/^[\\/]+/, '')) : undefined;
+  }
+  return isAbsolute(entry) ? entry : join(homedir(), entry);
+}
 // Seatbelt regexes use character pairs rather than JavaScript's i flag.
 const sandboxRegex = (source: string) => foldCase ? source.replace(/[a-z]/gi, c => `[${c.toLowerCase()}${c.toUpperCase()}]`) : source;
 export const privateKeyName = (name: string) => !policyRegex(credentialPolicy.sshPublic).test(name);
@@ -32,8 +43,8 @@ function secretPaths(home: string): string[] {
   const walk = (dir: string) => {
     for (const entry of entries(dir)) {
       const path = join(dir, entry.name), local = relative(home, path);
-      if (policyRegex(credentialPolicy.basename).test(entry.name) || policyRegex(credentialPolicy.home).test(local)) add(path);
-      else if (entry.isDirectory() && !credentialPolicy.skip.includes(fold(entry.name)) && fold(local) !== 'runtime/sessions') walk(path);
+      if (policyRegex(credentialPolicy.basename).test(entry.name) || policyRegex(credentialPolicy.home).test(local.split(sep).join('/'))) add(path);
+      else if (entry.isDirectory() && !credentialPolicy.skip.includes(fold(entry.name)) && fold(local.split(sep).join('/')) !== 'runtime/sessions') walk(path);
     }
   };
   walk(home);
@@ -53,13 +64,17 @@ let bwrap: string | null | undefined;
 export function probeIsolation(): string | null {
   if (bwrap !== undefined) return bwrap;
   bwrap = null;
+  if (process.platform === 'win32') {
+    const executable = process.env.HEXBOT_DAEMON_EXECUTABLE;
+    if (executable && isAbsolute(executable) && existsSync(executable) && spawnSync(executable, ['__sandbox', '--probe'], {timeout:15000, windowsHide:true}).status === 0) bwrap = executable;
+  }
   if (process.platform === 'linux') {
     const candidate = (process.env.PATH ?? '').split(':').map(dir => join(dir, 'bwrap')).find(existsSync);
     if (candidate && spawnSync(candidate, ['--die-with-parent', '--unshare-pid', '--ro-bind', '/', '/', '--proc', '/proc', '--', '/usr/bin/env', 'true'], {timeout:5000}).status === 0) bwrap = candidate;
   }
   return bwrap;
 }
-// macOS always sandboxes (sandbox-exec fails closed). Elsewhere only bubblewrap does.
+// macOS fails closed through sandbox-exec; Linux and Windows require a successful native sandbox probe.
 export const isolationAvailable = () => process.platform === 'darwin' || !!probeIsolation();
 // A path that does not exist yet resolves through its existing parent, and a
 // dangling link to where its target would be.
@@ -70,7 +85,7 @@ function realRoot(path: string, hops = 0): string {
     if (error.code !== 'ENOENT' || dirname(path) === path) throw error;
     let link: string | undefined;
     try { if (hops < LINK_HOPS && lstatSync(path).isSymbolicLink()) link = readlinkSync(path); } catch { /* Not there. */ }
-    if (link !== undefined) return realRoot(link.startsWith('/') ? link : realRoot(dirname(path)) + '/' + link, hops + 1);
+    if (link !== undefined) return realRoot(isAbsolute(link) ? link : realRoot(dirname(path)) + sep + link, hops + 1);
     return join(realRoot(dirname(path)), basename(path));
   }
 }
@@ -81,6 +96,7 @@ function deniedWrites(): string[] {
   const denied: string[] = [];
   for (const entry of credentialPolicy.write.deny as string[]) {
     const root = policyRoot(entry);
+    if (!root) continue;
     const real = realRoot(root);
     for (const path of [root, real]) if (!denied.includes(path)) denied.push(path);
   }
@@ -96,6 +112,7 @@ export function readDenied(): string[] {
   const denied: string[] = [];
   for (const entry of credentialPolicy.readDeny as string[]) {
     const root = policyRoot(entry);
+    if (!root) continue;
     // A profile path that cannot be resolved (unreadable, a loop) is denied as named.
     let real = root;
     try { real = realRoot(root); } catch { /* Keep the name. */ }
@@ -122,7 +139,6 @@ const WORKSPACE_DEPTH = 3, WORKSPACE_DIRS = 1000, WORKSPACE_ENTRIES = 50;
 export const SCAN_REASON = 'The workspace safety scan exceeded its directory budget. This command needs approval: retry with full_access and a reason.';
 export const SCAN_FILE_REASON = 'The workspace safety scan reached its directory budget, so Git protection is partial. Approve this file change only if you trust its destination.';
 // Inside a writable root, as the sandboxes and file tools compare paths.
-export const within = (path: string, roots: string[]) => roots.some(root => fold(path) === fold(root) || fold(path).startsWith(fold(root).replace(/\/$/, '') + '/'));
 // A command can create the files the scan reads (.git pointers, commondir,
 // configs and their includes), so they are opened without blocking and read only
 // when they are small regular files: a FIFO or device would stall the daemon.
@@ -163,8 +179,8 @@ function configEntries(text: Buffer): [string, string][] {
   // git config only parses; it does not run hooks, aliases or commands. Use system
   // Git, never a workspace executable from PATH, and give it the bytes already
   // read: with --no-includes it opens no file, so includes are followed here.
-  const parsed = spawnSync('/usr/bin/git', ['config', '--no-includes', '--null', '--file', '-', '--path', '--get-regexp', '^(core.hookspath|include.path|includeif\\..*\\.path)$'], {
-    input: text, encoding: 'utf8', timeout: GIT_TIMEOUT, env: {PATH: process.env.PATH, HOME: homedir()},
+  const parsed = spawnSync(gitExecutable(), ['config', '--no-includes', '--null', '--file', '-', '--path', '--get-regexp', '^(core.hookspath|include.path|includeif\\..*\\.path)$'], {
+    input: text, encoding: 'utf8', timeout: GIT_TIMEOUT, env: {PATH: process.env.PATH, HOME: process.env.HOME ?? homedir(), ...process.platform === 'win32' ? {SystemRoot:process.env.SystemRoot, USERPROFILE:process.env.USERPROFILE} : {}},
   });
   // Exit 1 without a message is "no matching settings"; a missing Git (the macOS
   // shim without developer tools) also exits 1, but says so.
@@ -178,6 +194,17 @@ function configEntries(text: Buffer): [string, string][] {
   configCache.set(key, entries);
   return entries;
 }
+// Never resolve Git through the workspace's PATH. Git for Windows installs in
+// these user or administrator chosen program directories.
+export function gitExecutable(): string {
+  if (process.platform !== 'win32') return '/usr/bin/git';
+  const roots = [process.env.ProgramFiles, process.env['ProgramFiles(x86)'], process.env.LOCALAPPDATA && join(process.env.LOCALAPPDATA, 'Programs')].filter(Boolean) as string[];
+  for (const root of roots) for (const subdir of ['cmd', 'bin']) {
+    const file = join(root, 'Git', subdir, 'git.exe');
+    if (existsSync(file)) return file;
+  }
+  throw new Error('Git for Windows is required to inspect repository hook configuration.');
+}
 // The user's own Git configuration applies to every repository: a global
 // core.hooksPath such as .githooks names a folder in each worktree. The files
 // are the ones Git reads: GIT_CONFIG_GLOBAL replaces ~/.gitconfig and the XDG
@@ -186,11 +213,13 @@ function configEntries(text: Buffer): [string, string][] {
 // system file elsewhere; it is not read.
 const SYSTEM_GIT_CONFIGS = ['/etc/gitconfig', '/opt/homebrew/etc/gitconfig', '/usr/local/etc/gitconfig'];
 export function globalGitConfigs(env: NodeJS.ProcessEnv = process.env): string[] {
-  const set = (name: string) => env[name] || undefined;
-  const files = set('GIT_CONFIG_GLOBAL') ? [set('GIT_CONFIG_GLOBAL')!] : set('HOME') ? [join(set('HOME')!, '.gitconfig'), join(set('XDG_CONFIG_HOME') ?? join(set('HOME')!, '.config'), 'git/config')] : [];
+  const set = (name: string) => env[name] || (process.platform === 'win32' ? Object.entries(env).find(([key]) => key.toLowerCase() === name.toLowerCase())?.[1] : undefined);
+  const home = set('HOME') ?? (process.platform === 'win32' ? set('USERPROFILE') : undefined);
+  const files = set('GIT_CONFIG_GLOBAL') ? [set('GIT_CONFIG_GLOBAL')!] : home ? [join(home, '.gitconfig'), join(set('XDG_CONFIG_HOME') ?? join(home, '.config'), 'git/config')] : [];
+  const system = process.platform === 'win32' ? [set('ProgramFiles') && join(set('ProgramFiles')!, 'Git/etc/gitconfig'), set('ProgramFiles(x86)') && join(set('ProgramFiles(x86)')!, 'Git/etc/gitconfig'), set('LOCALAPPDATA') && join(set('LOCALAPPDATA')!, 'Programs/Git/etc/gitconfig'), set('ProgramData') && join(set('ProgramData')!, 'Git/config')].filter(Boolean) as string[] : SYSTEM_GIT_CONFIGS;
   const noSystem = set('GIT_CONFIG_NOSYSTEM');
-  if (!noSystem || /^(0|false|no|off)$/i.test(noSystem)) files.push(...set('GIT_CONFIG_SYSTEM') ? [set('GIT_CONFIG_SYSTEM')!] : SYSTEM_GIT_CONFIGS);
-  return files.filter(file => file.startsWith('/'));
+  if (!noSystem || /^(0|false|no|off)$/i.test(noSystem)) files.push(...set('GIT_CONFIG_SYSTEM') ? [set('GIT_CONFIG_SYSTEM')!] : system);
+  return files.filter(isAbsolute);
 }
 // git: Git metadata, config files and configured folders, as named and as real
 // paths. worktrees: the folders their repositories belong to. files: targets Git
@@ -198,7 +227,7 @@ export function globalGitConfigs(env: NodeJS.ProcessEnv = process.env): string[]
 // the way to any of them. cause: why Git configuration could not be scanned,
 // when a limit stopped it.
 export type WorkspaceScan = {git: string[], secrets: string[], worktrees: string[], files: string[], links: string[], exhausted: boolean, failure?: string, cause?: string};
-export function workspaceProtected(roots: string[], limit = WORKSPACE_DIRS): WorkspaceScan {
+export function workspaceProtected(roots: string[], limit = WORKSPACE_DIRS, gitEnv: NodeJS.ProcessEnv = process.env): WorkspaceScan {
   let exhausted = false, failure: string | undefined, cause: string | undefined;
   const git = new Set<string>(), secrets = new Set<string>(), worktrees = new Set<string>(), files = new Set<string>(), links = new Set<string>();
   const add = (set: Set<string>, path: string) => { set.add(path); set.add(realRoot(path)); };
@@ -208,8 +237,9 @@ export function workspaceProtected(roots: string[], limit = WORKSPACE_DIRS): Wor
   // it, so a `..` after a link leaves the link's target, not the link's folder.
   // Links inside locked Git metadata (exempt) are locked with it.
   const linked = (path: string, exempt: string[] = []) => {
-    const parts = path.split('/').reverse();
-    let dir = '/';
+    const root = parse(path).root;
+    const parts = path.slice(root.length).split(process.platform === 'win32' ? /[\\/]/ : /\//).reverse();
+    let dir = root;
     for (let hops = 0; parts.length;) {
       const part = parts.pop()!;
       if (!part || part === '.') continue;
@@ -219,12 +249,13 @@ export function workspaceProtected(roots: string[], limit = WORKSPACE_DIRS): Wor
       try { if (lstatSync(next).isSymbolicLink()) link = readlinkSync(next); } catch { /* Not there yet. */ }
       if (link === undefined || ++hops > LINK_HOPS) { dir = next; continue; }
       if (within(next, scanned) && !scanned.some(root => fold(root) === fold(next)) && !within(next, exempt)) links.add(next);
-      if (link.startsWith('/')) dir = '/';
-      parts.push(...link.split('/').reverse());
+      const root = parse(link).root;
+      if (root) dir = root;
+      parts.push(...link.slice(root.length).split(process.platform === 'win32' ? /[\\/]/ : /\//).reverse());
     }
   };
   const pointerTarget = (base: string, value: string) => {
-    const path = value.startsWith('/') ? value : base + '/' + value;
+    const path = isAbsolute(value) ? process.platform === 'win32' && parse(value).root === '\\' ? parse(base).root + value.slice(1) : value : base + sep + value;
     linked(path);
     return realRoot(path);
   };
@@ -245,7 +276,7 @@ export function workspaceProtected(roots: string[], limit = WORKSPACE_DIRS): Wor
   // Settings from the user's own configuration matter only where they name a
   // folder inside the scanned roots; the rest is outside the sandbox already.
   const hooks = (dirs: string[], worktree: string) => {
-    const queue = [...dirs.flatMap(dir => [join(dir, 'config'), join(dir, 'config.worktree')]).map(file => ({file, depth: 0, user: false})), ...globalGitConfigs().map(file => ({file, depth: 0, user: true}))];
+    const queue = [...dirs.flatMap(dir => [join(dir, 'config'), join(dir, 'config.worktree')]).map(file => ({file, depth: 0, user: false})), ...globalGitConfigs(gitEnv).map(file => ({file, depth: 0, user: true}))];
     const visited = new Set<string>(), own = new Set<string>();
     for (let i = 0; i < queue.length; i++) {
       const {file, depth, user} = queue[i];
@@ -444,6 +475,7 @@ function confined(workspace: string[]) {
   const config: string[] = [];
   for (const entry of credentialPolicy.write.ask as string[]) {
     const root = policyRoot(entry);
+    if (!root) continue;
     for (const path of [root, realRoot(root)]) if (!config.includes(path)) config.push(path);
   }
   return {writable, config};
@@ -512,7 +544,26 @@ export function processLimit(): number | undefined {
   const listed = spawnSync('ps', [...process.platform === 'linux' ? ['-L'] : [], '-U', String(process.getuid?.() ?? ''), '-o', 'pid='], {encoding: 'utf8', timeout: 5000});
   return listed.status === 0 ? listed.stdout.split('\n').filter(Boolean).length + PROCESS_HEADROOM : undefined;
 }
+const windowsLeases = new Map<string, {executable: string, home: string, id: string}>();
+export function cleanupIsolatedCommand(command: string): void {
+  const lease = windowsLeases.get(command);
+  windowsLeases.delete(command);
+  if (!lease) return;
+  const cleanup = spawnSync(lease.executable, ['__sandbox', '--cleanup', lease.home, lease.id], {timeout:15000, windowsHide:true});
+  if (cleanup.status !== 0) throw new Error('The Windows sandbox could not finish cleaning up its child processes and permissions.');
+}
 export function isolatedCommand(command: string, home: string, outputs: string[] = [], workspace?: string[], searchRoots: string[] = workspace ?? []): string {
+  if (process.platform === 'win32') {
+    const executable = probeIsolation();
+    // Full access on Windows leaves containment and always needs the user.
+    if (!executable || !workspace) return command;
+    const id = randomUUID();
+    const spec = JSON.stringify({home, readRoots:searchRoots, writeRoots:workspace.filter(path => path !== tmpdir() && path !== '/tmp' && (!within(path, [home]) || outputs.some(output => within(path, [output])))), id});
+    const quote = (value: string) => "'" + value.replaceAll("'", "''") + "'";
+    const wrapped = '& ' + [executable, '__sandbox', spec, '--', powerShellExecutable(), ...powerShellArgs(command)].map(quote).join(' ') + '; exit $LASTEXITCODE';
+    windowsLeases.set(wrapped, {executable, home, id});
+    return wrapped;
+  }
   // A command that cannot be capped does not run.
   if (workspace) {
     const limit = processLimit();

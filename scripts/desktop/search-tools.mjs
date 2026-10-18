@@ -22,11 +22,12 @@ async function onPath(tool, wanted, path = process.env.PATH ?? '') {
   return false
 }
 
-export async function prepareSearchTools(source, agentDirectory, log = message => console.error(message)) {
+export async function prepareSearchTools(source, agentDirectory, log = message => console.error(message), platform = process.platform) {
   if (!agentDirectory) throw new Error('PI_CODING_AGENT_DIR is required')
   const bin = join(agentDirectory, 'bin')
   await mkdir(bin, { recursive: true })
-  for (const tool of ['rg', 'fd']) {
+  for (const name of ['rg', 'fd']) {
+    const tool = `${name}${platform === 'win32' ? '.exe' : ''}`
     const wanted = await fingerprint(join(source, tool))
     if (!wanted) throw new Error(`Verified ${tool} is missing from ${source}`)
     const destination = join(bin, tool)

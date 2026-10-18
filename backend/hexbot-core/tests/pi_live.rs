@@ -10,10 +10,26 @@ use serde_json::json;
 async fn pinned_pi_accepts_commands_in_an_isolated_home() {
     let executable =
         std::env::var_os("HEXBOT_TEST_PI").expect("set HEXBOT_TEST_PI to the Pi 1.0.1 executable");
-    let version = std::process::Command::new(&executable)
-        .arg("--version")
-        .output()
-        .expect("start Pi");
+    let executable = std::path::PathBuf::from(executable);
+    let javascript = executable
+        .extension()
+        .is_some_and(|ext| matches!(ext.to_str(), Some("js" | "mjs" | "cjs")));
+    let mut version = if javascript {
+        let mut command = std::process::Command::new(
+            std::env::var_os("HEXBOT_NODE_EXECUTABLE").unwrap_or_else(|| "node".into()),
+        );
+        command.arg(&executable);
+        command
+    } else {
+        let mut command = std::process::Command::new(&executable);
+        if executable.file_stem().is_some_and(|name| name == "node")
+            && let Some(script) = std::env::var_os("HEXBOT_PI_SCRIPT")
+        {
+            command.arg(script);
+        }
+        command
+    };
+    let version = version.arg("--version").output().expect("start Pi");
     assert!(version.status.success());
     assert_eq!(String::from_utf8_lossy(&version.stdout).trim(), "1.0.1");
     let dir = tempfile::tempdir().unwrap();

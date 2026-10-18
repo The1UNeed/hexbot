@@ -32,6 +32,19 @@ pub fn resolved(path: &Path) -> io::Result<PathBuf> {
 }
 
 pub fn wrapper_home(text: &str) -> Option<PathBuf> {
+    #[cfg(windows)]
+    if let Some(home) = text
+        .lines()
+        .find_map(|line| line.strip_prefix("@rem HEXBOT_HOME_JSON="))
+    {
+        let home = PathBuf::from(serde_json::from_str::<String>(home).ok()?);
+        let executable = home.join("runtime/native-executable.exe");
+        return (windows_wrapper(&home, &executable)
+            .ok()?
+            .replace("\r\n", "\n")
+            == text.replace("\r\n", "\n"))
+        .then_some(home);
+    }
     if !text.lines().any(|line| line == WRAPPER_MARKER) {
         return None;
     }
@@ -49,7 +62,31 @@ pub fn wrapper_home(text: &str) -> Option<PathBuf> {
     (shell_quote(&decoded) == value).then(|| PathBuf::from(decoded))
 }
 
+#[cfg(windows)]
+pub fn windows_wrapper(home: &Path, executable: &Path) -> io::Result<String> {
+    let quote = |path: &Path| -> io::Result<String> {
+        let path = path
+            .to_str()
+            .ok_or_else(|| io::Error::other("CLI paths must be UTF-8"))?;
+        if path.chars().any(|ch| ch.is_control() || ch == '"') {
+            return Err(io::Error::other("Invalid CLI path"));
+        }
+        Ok(path.replace('%', "%%"))
+    };
+    let home_json = serde_json::to_string(&home.to_string_lossy()).map_err(io::Error::other)?;
+    Ok(format!(
+        "@echo off\r\n@rem {WRAPPER_MARKER}\r\n@rem HEXBOT_HOME_JSON={home_json}\r\nsetlocal DisableDelayedExpansion\r\nset \"HEXBOT_HOME={}\"\r\n\"{}\" %*\r\nexit /b %errorlevel%\r\n",
+        quote(home)?,
+        quote(executable)?
+    ))
+}
+
 pub fn wrapper_owned(path: &Path, home: &Path) -> bool {
+    #[cfg(windows)]
+    if path.extension().is_some_and(|extension| extension == "exe") {
+        return windows_cli_home(path)
+            .is_ok_and(|owner| resolved(&owner).ok() == resolved(home).ok());
+    }
     fs::symlink_metadata(path).is_ok_and(|m| m.is_file())
         && fs::read_to_string(path)
             .ok()
@@ -60,6 +97,45 @@ pub fn wrapper_owned(path: &Path, home: &Path) -> bool {
                     .zip(resolved(home).ok())
                     .is_some_and(|(a, b)| a == b)
             })
+}
+
+#[cfg(windows)]
+pub fn windows_cli_receipt(home: &Path, executable: &Path) -> io::Result<Vec<u8>> {
+    use sha2::{Digest, Sha256};
+    let digest = format!("{:x}", Sha256::digest(fs::read(executable)?));
+    serde_json::to_vec(&serde_json::json!({"marker":WRAPPER_MARKER,"home":home,"sha256":digest}))
+        .map_err(io::Error::other)
+}
+
+#[cfg(windows)]
+pub fn windows_cli_home(executable: &Path) -> io::Result<PathBuf> {
+    use sha2::{Digest, Sha256};
+    let metadata = fs::symlink_metadata(executable)?;
+    use std::os::windows::fs::MetadataExt;
+    if !metadata.is_file() || metadata.file_attributes() & 0x400 != 0 {
+        return Err(io::Error::other("The Hexbot CLI must be an ordinary file"));
+    }
+    let receipt = executable.with_file_name("hexbot-cli.json");
+    let metadata = fs::symlink_metadata(&receipt)?;
+    if !metadata.is_file() || metadata.file_attributes() & 0x400 != 0 {
+        return Err(io::Error::other(
+            "The Hexbot CLI receipt must be an ordinary file",
+        ));
+    }
+    let receipt: serde_json::Value =
+        serde_json::from_slice(&fs::read(&receipt)?).map_err(io::Error::other)?;
+    let digest = format!("{:x}", Sha256::digest(fs::read(executable)?));
+    if receipt["marker"] != WRAPPER_MARKER || receipt["sha256"].as_str() != Some(digest.as_str()) {
+        return Err(io::Error::other(
+            "The Hexbot CLI receipt cannot be verified",
+        ));
+    }
+    let home = PathBuf::from(
+        receipt["home"]
+            .as_str()
+            .ok_or_else(|| io::Error::other("Missing Hexbot CLI home"))?,
+    );
+    resolved(&home)
 }
 
 fn xml_string(text: &str, key: &str, array: bool) -> Option<String> {
@@ -82,6 +158,18 @@ fn xml_string(text: &str, key: &str, array: bool) -> Option<String> {
             .replace("&gt;", ">")
             .replace("&amp;", "&"),
     )
+}
+
+#[cfg(windows)]
+pub fn windows_task_name(home: &Path) -> io::Result<String> {
+    use sha2::{Digest, Sha256};
+    let home = resolved(home)?
+        .to_string_lossy()
+        .replace('\\', "/")
+        .to_lowercase();
+    let home = home.strip_prefix("//?/").unwrap_or(&home);
+    let digest = format!("{:x}", Sha256::digest(home.as_bytes()));
+    Ok(format!("Hexbot daemon {}", &digest[..16]))
 }
 
 fn unit_value(text: &str, prefix: &str, suffix: &str) -> Option<String> {
@@ -112,6 +200,10 @@ fn unit_value(text: &str, prefix: &str, suffix: &str) -> Option<String> {
 }
 
 pub fn check_service(path: &Path, home: &Path, macos: bool) -> io::Result<()> {
+    #[cfg(windows)]
+    if path.extension().is_some_and(|extension| extension == "xml") {
+        return check_windows_service(path, home);
+    }
     let metadata = match fs::symlink_metadata(path) {
         Ok(metadata) => metadata,
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
@@ -183,9 +275,75 @@ pub fn check_service(path: &Path, home: &Path, macos: bool) -> io::Result<()> {
     Ok(())
 }
 
+#[cfg(windows)]
+fn task_element(text: &str, tag: &str) -> Option<String> {
+    let opening = format!("<{tag}>");
+    let closing = format!("</{tag}>");
+    let mut pieces = text.split(&opening);
+    pieces.next()?;
+    let content = pieces.next()?.split_once(&closing)?.0;
+    if pieces.next().is_some() {
+        return None;
+    }
+    Some(
+        content
+            .replace("&quot;", "\"")
+            .replace("&apos;", "'")
+            .replace("&lt;", "<")
+            .replace("&gt;", ">")
+            .replace("&amp;", "&"),
+    )
+}
+
+#[cfg(windows)]
+fn check_windows_service(path: &Path, home: &Path) -> io::Result<()> {
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error),
+    };
+    if !metadata.file_type().is_file() {
+        return Err(io::Error::other(
+            "Refusing a linked or non-file Hexbot task definition",
+        ));
+    }
+    let text = fs::read_to_string(path)?;
+    check_windows_service_text(&text, home)
+}
+
+#[cfg(windows)]
+pub fn check_windows_service_text(text: &str, home: &Path) -> io::Result<()> {
+    let expected = resolved(home)?;
+    let owner = task_element(text, "Description")
+        .and_then(|text| text.strip_prefix("Hexbot daemon for ").map(PathBuf::from))
+        .ok_or_else(|| io::Error::other("Cannot identify the owner of the Hexbot task"))?;
+    if resolved(&owner)? != expected {
+        return Err(io::Error::other("The Hexbot task belongs to another home"));
+    }
+    let executable = task_element(text, "Command")
+        .ok_or_else(|| io::Error::other("Cannot identify the Hexbot task executable"))?;
+    let executable = Path::new(&executable);
+    let stable = expected.join("runtime/native-executable.exe");
+    let selected = resolved(executable)?;
+    let arguments = task_element(text, "Arguments").and_then(|args| {
+        args.strip_prefix("service-run \"")
+            .and_then(|args| args.strip_suffix('"'))
+            .map(PathBuf::from)
+    });
+    if selected != resolved(&stable)?
+        || arguments.as_deref().and_then(|home| resolved(home).ok()) != Some(expected)
+    {
+        return Err(io::Error::other(
+            "The Hexbot task executable does not belong to this home",
+        ));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
     #[test]
     fn service_ownership_checks_home_and_executable_on_both_platforms() {
         let root = tempfile::tempdir().unwrap();
@@ -222,5 +380,21 @@ mod tests {
             .unwrap();
             assert!(check_service(&file, &home, macos).is_err());
         }
+    }
+    #[cfg(windows)]
+    #[test]
+    fn windows_wrapper_preserves_literal_paths_and_rejects_modified_commands() {
+        let root = tempfile::tempdir().unwrap();
+        let home = root.path().join("percent% space & unicode-你好");
+        fs::create_dir(&home).unwrap();
+        let executable = home.join("runtime/native-executable.exe");
+        let text = windows_wrapper(&home, &executable).unwrap();
+        assert_eq!(wrapper_home(&text), Some(home.clone()));
+        assert!(text.contains("percent%%"));
+        assert!(wrapper_home(&text.replace(" %*", " injected %*")).is_none());
+        let path = root.path().join("hexbot.cmd");
+        fs::write(&path, text).unwrap();
+        assert!(wrapper_owned(&path, &home));
+        assert!(!wrapper_owned(&path, root.path()));
     }
 }

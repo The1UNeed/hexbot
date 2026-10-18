@@ -13,23 +13,21 @@ page is the procedure and the one-time setup. Modelled on T3 Code's
   that file and refuses one that is already tagged), computes the nightly
   version, refuses an empty `HEXBOT_UPDATE_SIGNING_KEY` before builds or tag
   creation, and stops a scheduled nightly when `main` has not moved.
-- `check` runs `ci.yml`: Rust/Pi, Rust installer tests and clippy on macOS and
-  Linux, POSIX bootstrap syntax and ShellCheck, service handoff, web, desktop,
+- `check` runs `ci.yml`: Rust/Pi, Rust installer tests and clippy on macOS,
+  Linux, and Windows, POSIX bootstrap syntax and ShellCheck, service handoff, web, desktop,
   site, Connect, and the desktop script tests. Windowed installer typecheck
   and tests run when its package exists. Nothing is built until CI passes.
-- `build` makes six packages in parallel: full and client for macOS arm64,
-  macOS x64, and Linux x64, signed and notarized when the Apple secrets are
-  present.
-- `installer` builds `hexbot-install` for the same three targets. When
+- `build` makes eight packages in parallel: full and client for macOS arm64,
+  macOS x64, Linux x64, and Windows x64. Windows signing is required for a release. macOS packages are signed and notarized when the Apple secrets are present.
+- `installer` builds `hexbot-install` for the same four targets. When
   `apps/installer/package.json` exists it also builds Hexbot Installer with
-  Tauri as a DMG or AppImage. macOS terminal binaries use the same Developer
+  Tauri as a DMG, AppImage, or Windows executable. macOS terminal binaries use the same Developer
   ID certificate as the app and are notarized when the Apple API secrets
-  exist. Tauri uses the same secrets; builds without a certificate are ad-hoc
-  signed. Linux installs WebKitGTK 4.1 and the other Tauri build dependencies.
+  exist. macOS Tauri builds use the same Apple secrets; macOS builds without a certificate are ad-hoc signed. Linux installs WebKitGTK 4.1 and the other Tauri build dependencies.
 - `publish` builds the update feed, uploads it to `updates.hexbot.app` when
   the R2 secrets are present, reads the feed back through the public URL to
   confirm it announces the new version, then creates the GitHub release with
-  every DMG, ZIP, AppImage, deb, blockmap and installer. It also builds
+  every DMG, ZIP, AppImage, deb, EXE, blockmap and installer. It also builds
   `install/<channel>.json` and `.txt` from the collected update tree, verifies
   the payloads, publishes versioned installers under `install/<version>/`,
   and rewrites the channel files with `no-cache`. The public install JSON
@@ -51,7 +49,7 @@ resolution, feed, manifest, and cask scripts against synthetic packages, so
 a broken release script fails before tag day.
 
 Full packages bundle the native daemon, pinned Node and Pi, checksum-verified
-ripgrep and fd, web assets and skills. Targets are macOS arm64, macOS x64 and Linux x64. Both macOS jobs use
+ripgrep and fd, web assets and skills. Targets are macOS arm64, macOS x64, Linux x64, and Windows x64. Windows builds use the MSVC Rust target and publish NSIS Full and Client installers. Both macOS jobs use
 the arm64 `macos-26` runner; the Intel job builds with Cargo's
 `x86_64-apple-darwin` target, downloads darwin-x64 Node and installs npm
 packages with `--cpu=x64 --os=darwin`. Rosetta runs the Intel runtime probe.
@@ -176,10 +174,9 @@ node scripts/desktop/dist.mjs --mac --dir
      `v0.x.y-alpha.N` tag on the commit it built.
    - Or tag and push: `git tag v0.x.y-alpha.N && git push origin v0.x.y-alpha.N`.
 
-7. Watch the run: preflight, check, six package builds, three installer builds,
+7. Watch the run: preflight, check, eight package builds, four installer builds,
    publish, finalize. Confirm the GitHub release lists 4 package DMGs, 4 ZIPs,
-   2 AppImages and 2 debs. It also lists three terminal installers and, once
-   the Tauri app exists, two installer DMGs and one installer AppImage.
+   2 AppImages, 2 debs, and 2 Windows app EXEs. It also lists four terminal installers, two installer DMGs, one installer AppImage, and one Windows Hexbot Installer EXE.
    Confirm `finalize` pushed a commit to `main`.
 8. The site rebuilds on its own from the `finalize` commit (`docs/deploy.md`).
    Publish the updated casks through the Homebrew tap.
@@ -246,7 +243,8 @@ move an app to the other track. The native runtime counts both the package
 so a crash between the two writes of an activation keeps the floor. The
 installer rechecks after downloading while holding a shared installation lock
 (`~/Library/Application Support/Hexbot/installer.lock` on macOS,
-`~/.local/state/hexbot/installer.lock` on Linux) through replacement and
+`~/.local/state/hexbot/installer.lock` on Linux,
+`%LOCALAPPDATA%\Hexbot\installer.lock` on Windows) through replacement and
 receipt writing, and reports "Waiting for another Hexbot installer to finish."
 while another installer holds it. Uninstall with data removal refuses a
 `HEXBOT_HOME` that contains the lock. Headless also rechecks under the daemon's
@@ -266,8 +264,8 @@ track changes may install an older version.
 Not covered by these manifest signatures:
 
 - Electron's `.yml` app feeds. macOS app updates rely on code signing;
-  Linux AppImage updates use checksums only.
-- `install.sh`, its `.txt` index, and the initial installer download. These
+  Windows app updates verify the configured Authenticode publisher; Linux AppImage updates use checksums only.
+- `install.sh`, `install.ps1`, their `.txt` index, and the initial installer download. These
   trust HTTPS to the site and update server.
 - `daemon/hexbot-src-<version>.tar.gz`, the legacy Python handoff source
   package. The legacy updater executes this unsigned package before its
@@ -341,6 +339,12 @@ a stapled ticket. Tauri receives the same certificate and password, the
 derived signing identity, and the API key ID, issuer and `.p8` path through
 its environment variables. See [Tauri's macOS signing documentation](https://v2.tauri.app/distribute/sign/macos/).
 
+### Windows signing
+
+Production Windows builds require `WIN_CSC_LINK` and `WIN_CSC_KEY_PASSWORD`. The release preflight refuses to publish without them. The certificate must identify the publisher expected by the app updater. Keep Windows signing separate from the Apple certificate variables. Validate signatures on Full, Client, the native executables, and both installer entry points before publishing.
+
+An unsigned CI artifact can test installation and runtime behavior. It does not verify Authenticode, SmartScreen reputation, or the signed update path. Treat those as release checks, and never turn an unsigned test build into the public Windows release.
+
 ### Optional
 
 - `SITE_DEPLOY_HOOK_URL` (secret): the `release-workflow` deploy hook on the
@@ -404,6 +408,17 @@ On Linux x86_64:
 - Start the daemon, pair a client, restart the machine, and confirm saved
   state remains available.
 - Check update discovery from the matching track.
+
+On Windows x64, use a fresh VM and a normal user account:
+
+- Verify the Authenticode publisher on Full, Client, the native runtime, and both installers.
+- Install Full and Client separately, including paths with spaces and non-ASCII characters. Confirm Client provisions no daemon runtime.
+- Run the PowerShell bootstrap against the published track and check the downloaded installer's checksum.
+- Install Headless, pair from another device, then test service stop, start, restart, and logon startup. The per-user Scheduled Task requires the user to stay signed in.
+- Check `hexbot.cmd`, `hexbot://` pairing, file selection, daemon shutdown, and uninstall with data kept and removed.
+- Check same-track app updates and remote native daemon updates. Windows must select a new version without replacing a running executable.
+- Exercise the documented command-isolation policy and its failure path. A process-launch test alone is not evidence of sandbox containment.
+- Record VM image, Windows build, artifact hashes, commands, and results. Keep unsigned test results distinct from signed release validation.
 
 ## Troubleshooting
 

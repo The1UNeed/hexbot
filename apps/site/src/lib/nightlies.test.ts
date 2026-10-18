@@ -10,7 +10,8 @@ const entry = (version: string): NightlyEntry => ({
       'mac-arm64': `Hexbot-${version}-mac-arm64.dmg`,
       'mac-x64': `Hexbot-${version}-mac-x64.dmg`,
       linux: `Hexbot-${version}-linux-x86_64.AppImage`,
-      'linux-deb': `Hexbot-${version}-linux-amd64.deb`
+      'linux-deb': `Hexbot-${version}-linux-amd64.deb`,
+      windows: `Hexbot-${version}-win-x64.exe`
     },
     client: {}
   }
@@ -25,7 +26,8 @@ describe('nightlyRows', () => {
       label: 'Mac, Apple Silicon',
       url: 'https://updates.hexbot.app/full/mac/arm64/Hexbot-0.1.5-nightly.20260913.2-mac-arm64.dmg'
     })
-    expect(rows[1].files).toHaveLength(4)
+    expect(rows[1].files).toHaveLength(5)
+    expect(rows[1].files[4].url).toBe('https://updates.hexbot.app/full/win/x64/Hexbot-0.1.5-nightly.20260912.1-win-x64.exe')
   })
 
   it('adds the current build on top when the index lags or is missing', () => {

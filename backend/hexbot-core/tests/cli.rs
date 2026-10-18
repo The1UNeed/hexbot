@@ -139,16 +139,11 @@ async fn offline_bot_lifecycle_and_device_output_match_python_cli() {
     );
     assert!(!h.join("profiles/owl").exists());
 }
-#[cfg(unix)]
 #[tokio::test]
 async fn offline_mutation_refuses_a_home_owned_by_unreachable_daemon() {
-    use std::os::fd::AsRawFd;
     let h = home();
     let file = fs::File::create(h.path().join("native-daemon.lock")).unwrap();
-    assert_eq!(
-        unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) },
-        0
-    );
+    assert!(hexbot_core::platform::try_lock(&file).unwrap());
     assert_eq!(
         cli::execute(h.path(), &args(&["bots", "create", "owl"]))
             .await

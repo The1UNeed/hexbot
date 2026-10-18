@@ -12,3 +12,13 @@ test('native builds allow Intel macOS on Apple Silicon and reject other cross bu
   assert.throws(() => nativeBuildEnvironment(['--linux', '--arm64'], 'linux', 'x64'), /runner/)
   assert.throws(() => parseBuildArgs(['--mac', '--backend', 'python']), /removed/)
 })
+
+
+test('Windows native builds require an x64 Windows runner', () => {
+  assert.deepEqual(nativeBuildEnvironment(['--win', '--x64'], 'win32', 'x64'), {
+    HEXBOT_BUILD_PLATFORM: 'win32', HEXBOT_BUILD_ARCH: 'x64'
+  })
+  assert.throws(() => nativeBuildEnvironment(['--win', '--arm64'], 'win32', 'arm64'), /x64 runner/)
+  assert.throws(() => nativeBuildEnvironment(['--win', '--x64'], 'darwin', 'arm64'), /runner/)
+  assert.throws(() => nativeBuildEnvironment(['--win', '--mac'], 'win32', 'x64'), /one native/)
+})

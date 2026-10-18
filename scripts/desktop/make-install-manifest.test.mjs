@@ -6,12 +6,13 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 import { promisify } from 'node:util'
+import { fileURLToPath } from 'node:url'
 import { MIN_INSTALLER, makeInstallManifest } from './make-install-manifest.mjs'
 import { appId } from './release-version.mjs'
 import { feedMetadataName } from './update-feed-utils.mjs'
 
 const hash = (contents, algorithm, encoding) => createHash(algorithm).update(contents).digest(encoding)
-const targets = [['macos-aarch64', 'mac', 'arm64'], ['macos-x86_64', 'mac', 'x64'], ['linux-x86_64', 'linux', 'x64']]
+const targets = [['macos-aarch64', 'mac', 'arm64'], ['macos-x86_64', 'mac', 'x64'], ['linux-x86_64', 'linux', 'x64'], ['windows-x86_64', 'win', 'x64']]
 
 async function fixture(t, channel = 'stable', version = '0.1.5-alpha.1', baseUrl = 'https://updates.hexbot.app') {
   const root = await mkdtemp(join(tmpdir(), 'hexbot-install-manifest-'))
@@ -23,7 +24,7 @@ async function fixture(t, channel = 'stable', version = '0.1.5-alpha.1', baseUrl
   for (const [target, os, arch] of targets) {
     for (const edition of ['full', 'client']) {
       const prefix = edition === 'full' ? 'Hexbot' : 'HexbotClient'
-      const name = os === 'mac' ? `${prefix}-${version}-mac-${arch}.zip` : `${prefix}-${version}-linux-x86_64.AppImage`
+      const name = os === 'mac' ? `${prefix}-${version}-mac-${arch}.zip` : os === 'win' ? `${prefix}-${version}-win-x64.exe` : `${prefix}-${version}-linux-x86_64.AppImage`
       const path = `${edition}/${os}/${arch}`
       const content = `${edition} ${target}`
       await put(`${path}/${name}`, content)
@@ -36,8 +37,8 @@ async function fixture(t, channel = 'stable', version = '0.1.5-alpha.1', baseUrl
     await put(`${path}/${filename}`, target)
     await put(`${path}/manifest.json`, JSON.stringify({ version, target, format: 'tar.gz', size: target.length,
       sha256: hash(target, 'sha256', 'hex'), url: `${baseUrl}/${path}/${filename}` }))
-    await put(`install/${version}/hexbot-install-${version}-${target}`, target)
-    await put(`install/${version}/HexbotInstaller-${version}-${os === 'mac' ? `mac-${arch}.dmg` : 'linux-x86_64.AppImage'}`, target)
+    await put(`install/${version}/hexbot-install-${version}-${target}${os === 'win' ? '.exe' : ''}`, target)
+    await put(`install/${version}/HexbotInstaller-${version}-${os === 'mac' ? `mac-${arch}.dmg` : os === 'win' ? 'windows-x86_64.exe' : 'linux-x86_64.AppImage'}`, target)
   }
   return { root, options: { channel, version } }
 }
@@ -54,7 +55,7 @@ test('install manifests cover every option, target and track with verified metad
     for (const [target, os] of targets) {
       const entry = manifest.targets[target]
       assert.deepEqual(Object.keys(entry), ['full', 'client', 'headless', 'installer', 'installerApp'])
-      assert.equal(entry.full.format, os === 'mac' ? 'zip' : 'AppImage')
+      assert.equal(entry.full.format, os === 'mac' ? 'zip' : os === 'win' ? 'exe' : 'AppImage')
       assert.equal(entry.client.format, entry.full.format)
       assert.equal(entry.full.productName, channel === 'stable' ? 'Hexbot [alpha]' : 'Hexbot Nightly')
       assert.equal(entry.client.productName, channel === 'stable' ? 'Hexbot Client [alpha]' : 'Hexbot Client Nightly')
@@ -64,7 +65,7 @@ test('install manifests cover every option, target and track with verified metad
       assert.equal(entry.headless.manifest, `daemon/native/${version}/${target}/manifest.json`)
       assert.equal(entry.installer.sha256, hash(target, 'sha256', 'hex'))
       assert.equal(entry.installer.size, target.length)
-      assert.ok(entry.installerApp.url.endsWith(os === 'mac' ? '.dmg' : '.AppImage'))
+      assert.ok(entry.installerApp.url.endsWith(os === 'mac' ? '.dmg' : os === 'win' ? '.exe' : '.AppImage'))
       for (const option of Object.values(entry)) {
         assert.ok(!option.path.startsWith('/') && !option.path.includes('://'))
         assert.equal(option.url, `https://mirror.example/updates/${option.path}`)
@@ -118,9 +119,9 @@ test('the CLI parses options around the update root and rejects typos', async t 
   const { root, options } = await fixture(t)
   const script = new URL('./make-install-manifest.mjs', import.meta.url)
   const run = promisify(execFile)
-  await run(process.execPath, [script.pathname, '--channel', options.channel, '--version', options.version, root, '--base-url', 'https://mirror.example'])
+  await run(process.execPath, [fileURLToPath(script), '--channel', options.channel, '--version', options.version, root, '--base-url', 'https://mirror.example'])
   assert.ok((await readFile(join(root, 'install/stable.txt'), 'utf8')).includes('https://mirror.example/install/'))
-  await assert.rejects(run(process.execPath, [script.pathname, root, '--typo']), /Unexpected argument/)
+  await assert.rejects(run(process.execPath, [fileURLToPath(script), root, '--typo']), /Unexpected argument/)
 })
 
 test('native metadata must include the base URL path prefix', async t => {

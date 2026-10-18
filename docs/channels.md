@@ -13,7 +13,7 @@ its desktop app (see "Borrowed from T3 Code" at the end).
 | App id | `app.hexbot.desktop`, `app.hexbot.client` | `app.hexbot.desktop.nightly`, `app.hexbot.client.nightly` | `app.hexbot.desktop.dev`, `app.hexbot.client.dev` |
 | Trigger | Push of a `v<version>` tag, or by hand on `main` | 09:00 UTC daily when `main` moved, or by hand | You |
 | GitHub release | `v<version>`; "latest" for a plain `X.Y.Z`, prerelease otherwise | `v<version>` prerelease, last 14 kept | None |
-| Update feed | `latest-*.yml` on `updates.hexbot.app` | `nightly-*.yml` and `nightlies.json` on `updates.hexbot.app` | None |
+| Update feed | `latest*.yml` on `updates.hexbot.app` | `nightly*.yml` and `nightlies.json` on `updates.hexbot.app` | None |
 | Auto-updates | Yes, stable track | Yes, nightly track | No |
 | Website | hexbot.app/download once published, Homebrew casks | hexbot.app/download until the first stable release, read from the nightly feed at build time | `README.md`, "Develop" |
 | Data directory | `~/.hexbot` | `~/.hexbot` (shared with stable; back it up) | `<checkout>/.hexbot`, never `~/.hexbot` |
@@ -35,14 +35,14 @@ lives in a small set of files:
 | File | Channel | Role |
 | --- | --- | --- |
 | `.github/workflows/ci.yml` | all | Tests and builds on every push and pull request. Publishes nothing. Also called by `release.yml`. Ends with `release-smoke.mjs` |
-| `.github/workflows/release.yml` | stable, nightly | One workflow for both channels: `preflight` picks the channel and version, `check` runs CI, `build` makes six packages, `installer` builds terminal and windowed installers, `publish` uploads the feeds and installers, creates the GitHub release, and after a nightly redeploys the site, `finalize` (stable only) commits the website manifest and casks |
+| `.github/workflows/release.yml` | stable, nightly | One workflow for both channels: `preflight` picks the channel and version, `check` runs CI, `build` makes eight packages, `installer` builds terminal and windowed installers, `publish` uploads the feeds and installers, creates the GitHub release, and after a nightly redeploys the site, `finalize` (stable only) commits the website manifest and casks |
 | `scripts/desktop/release-version.mjs` | stable, nightly | Channel and version rules: tag must match `package.json`, nightly version format, product names. Tested in `packaging.test.mjs` |
 | `scripts/desktop/set-version.mjs` | all | Writes one version into `apps/desktop/package.json`, which Rust reads at build time |
 | `scripts/desktop/dist.mjs` | all | `--channel stable\|nightly\|dev` sets the product name and app id passed to electron-builder |
 | `scripts/desktop/make-update-feed.mjs` | stable, nightly | Builds the `updates.hexbot.app` directory tree from a build output: artifacts plus `latest-*.yml` or `nightly-*.yml` |
 | `scripts/desktop/make-install-manifest.mjs` | stable, nightly | Reads the update tree and writes `install/<track>.json` for Headless, Client and Full, plus `install/<track>.txt` with terminal installer URLs and SHA-256 checksums |
-| `install/<track>.json`, `install/<track>.txt` on the update server | stable, nightly | Current installer manifest and POSIX bootstrap index, rewritten with `no-cache` |
-| `install/<version>/` on the update server | stable, nightly | Immutable terminal installer binaries and Hexbot Installer DMG/AppImage files for each target |
+| `install/<track>.json`, `install/<track>.txt` on the update server | stable, nightly | Current installer manifest and terminal bootstrap index, rewritten with `no-cache` |
+| `install/<version>/` on the update server | stable, nightly | Immutable terminal installer binaries and Hexbot Installer DMG/AppImage/EXE files for each target |
 | `scripts/desktop/finalize-release.mjs` | stable | Rewrites `apps/site/public/downloads/manifest.json` and both Homebrew casks for a version |
 | `scripts/desktop/release-smoke.mjs` | stable, nightly | Runs the scripts above the way `release.yml` does, against synthetic packages. CI runs it on every push |
 | `scripts/dev/run.mjs` | dev | `pnpm dev`: daemon and web bundle (or Electron) from the checkout with a per-checkout home and ports |
@@ -79,7 +79,7 @@ and the casks.
 ## Nightly
 
 `release.yml` runs at 09:00 UTC. If `main` has not moved since the last
-nightly it stops in `preflight`. Otherwise it builds all six packages as
+nightly it stops in `preflight`. Otherwise it builds all eight packages as
 `<base>-nightly.<YYYYMMDD>.<run number>` and publishes a GitHub prerelease
 with that tag. `<base>` is the version the nightly leads to: the next patch
 after a plain `X.Y.Z` in `package.json`, or the same `X.Y.Z` when
@@ -94,6 +94,8 @@ last 14 nightlies are kept on GitHub; the update feed keeps every artifact.
 Nightly packages carry the purple icon from
 `apps/desktop/build/icon-nightly.icon`, so a nightly install is easy to tell
 apart from stable in the Dock.
+
+Windows production releases require Authenticode signing credentials. Windows ARM64 is not built. The site offers Windows links only when the corresponding manifests or update feeds name those artifacts.
 
 Nightly macOS packages are code-signed when the Apple signing secrets are
 present and ad-hoc signed otherwise. The packages are notarized only when the
@@ -135,6 +137,7 @@ full/mac/arm64/nightly-mac.yml      nightly feed
 full/mac/arm64/Hexbot-<v>-mac-arm64.zip|.dmg
 full/mac/x64/...
 full/linux/x64/latest-linux.yml, nightly-linux.yml, Hexbot-<v>-linux-x64.AppImage|.deb
+full/win/x64/latest.yml, nightly.yml, Hexbot-<v>-win-x64.exe
 client/...                          the same for HexbotClient-*
 daemon/native/<v>/<target>/manifest.json   native archive url/path, version, target and SHA-256
 daemon/native/<v>/<target>/manifest.json.sig   immutable release signatures
@@ -143,8 +146,8 @@ daemon/hexbot-src-<v>.tar.gz               handoff for existing Python services
 install/stable.json, install/nightly.json   install options, URLs, sizes and checksums
 install/stable.txt, install/nightly.txt     <target> <sha256> <url> for the CLI installer only
 install/<v>/<track>.json.sig               immutable install manifest signatures
-install/<v>/hexbot-install-<v>-<target>     terminal installer, one per native target
-install/<v>/HexbotInstaller-<v>-mac-arm64.dmg|mac-x64.dmg|linux-x86_64.AppImage
+install/<v>/hexbot-install-<v>-<target>     terminal installer, one per native target, .exe on Windows
+install/<v>/HexbotInstaller-<v>-mac-arm64.dmg|mac-x64.dmg|linux-x86_64.AppImage|windows-x86_64.exe
 ```
 
 Versioned artifacts and `.sig` files are immutable; the `.yml` files and
@@ -187,10 +190,10 @@ its machine. The daemon says how, through `update_capability` in
   `<home>/runtime/update-status.json` for `hexbot.update.status`, then
   relaunches and starts the new daemon. The app's track decides what is
   installed, so an app on the stable track cannot be pushed a nightly.
-- `service`: launchd or systemd runs the daemon. It downloads the manifest at
+- `service`: launchd, systemd, or a Windows per-user logon Scheduled Task runs the daemon. It downloads the manifest at
   `daemon/native/<v>/<target>/manifest.json`, verifies its release signature,
   then downloads the matching archive and checks its SHA-256 and reported
-  version. It switches `runtime/native-executable` and restarts. Targets are `macos-aarch64`, `macos-x86_64` and `linux-x86_64`.
+  version. It switches `runtime/native-executable` and restarts. Targets are `macos-aarch64`, `macos-x86_64`, `linux-x86_64`, and `windows-x86_64`. Windows uses the stable `runtime/native-executable.exe` dispatcher and the selected version in `runtime/native-current.json` because a running executable cannot be replaced. The task runs only while the user is signed in.
   It retains the active runtime and its predecessor, protecting any older
   runtime still used by a running daemon. `HEXBOT_UPDATE_URL` selects an HTTPS
   mirror. Signed manifests retain an absolute `url` for older clients and add
@@ -249,8 +252,7 @@ Different on purpose:
   self-hosted; switching to `provider: github` is a one-line change in
   `electron-builder.base.yml` if that ever makes sense.
 - Nightlies run once a day, not every 30 minutes with a six-hour gap.
-- Two editions (full and client) instead of one app, and no Windows build
-  yet.
+- Two editions, full and client, instead of one app. Windows x64 uses NSIS installers; macOS and Linux keep their existing formats.
 - No npm package to publish: the daemon ships inside the full package and the
   app updates it on launch.
 - Old nightlies are pruned to the last 14 on GitHub.

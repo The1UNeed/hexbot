@@ -6,11 +6,15 @@ import type { Installers } from '../lib/installers'
 
 interface Props { downloads: Downloads; installers?: Installers | null }
 const { downloads, installers } = Astro.props
-const rows = (edition: 'full' | 'client', os?: 'mac' | 'linux') =>
-  downloads[edition].map((build, i) => ({ build, target: targets[i], edition })).filter(r => !os || r.target.os === os)
+const rows = (edition: 'full' | 'client', os?: 'mac' | 'linux' | 'windows') =>
+  downloads[edition].flatMap(build => {
+    const target = targets.find(target => target.key === build.key)
+    return target && (!os || target.os === os) ? [{ build, target, edition }] : []
+  })
 const groups = [
   ['Hexbot for Mac', 'Apple Silicon or Intel. Updates itself.', rows('full', 'mac')],
   ['Hexbot for Linux', 'An AppImage for any distribution, or a deb for Debian and Ubuntu. Updates itself.', rows('full', 'linux')],
+  ['Hexbot for Windows', 'For x64 computers. Installs for your account and updates itself.', rows('full', 'windows')],
   ['Hexbot Client', 'Just the app, for a second computer that connects to the one running your bots.', rows('client')],
 ] as const
 ---
@@ -29,7 +33,7 @@ const groups = [
       </div>
     </div>
   )}
-  {groups.map(([title, blurb, list]) => (
+  {groups.filter(([, , list]) => list.length).map(([title, blurb, list]) => (
     <div class="rounded-[20px] bg-wash p-6">
       <h3 class="text-[1.15rem] font-semibold">{title}</h3>
       <p class="mt-1 text-mute">{blurb}</p>
@@ -37,7 +41,7 @@ const groups = [
         {list.map(({ build, target, edition }) => (
           <a class="pill" href={build.url} download data-artifact="package" data-edition={edition} data-target={target.key} data-name={target.name}>
             <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 2v8m0 0 3-3M8 10 5 7M3 13h10"/></svg>
-            {edition === 'client' ? `${target.os === 'mac' ? 'Mac, ' : 'Linux, '}${target.pill}` : target.pill}
+            {edition === 'client' ? `${target.name}, ${target.pill}` : target.pill}
           </a>
         ))}
         <a class="pill" href={releasesUrl}>GitHub</a>

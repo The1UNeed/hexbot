@@ -80,6 +80,7 @@ impl Runtime {
             .and_then(|s| s.to_str())
             .filter(|s| !s.is_empty() && *s != "..")
             .ok_or_else(|| Error::new(4202, "invalid attachment name"))?;
+        crate::platform::validate_path(Path::new(name))?;
         if method == "pdf.attach" {
             return self.attach_pdf(s, p, name, &bytes).await;
         }
@@ -172,7 +173,7 @@ impl Runtime {
         let renderer = config["attachments"]["pdf_renderer"]
             .as_str()
             .unwrap_or("pdftoppm");
-        let mut command = tokio::process::Command::new(renderer);
+        let mut command = crate::pi::executable_command(Path::new(renderer));
         command
             .args([
                 "-png",
@@ -186,20 +187,24 @@ impl Runtime {
             .arg(&input)
             .arg(tmp.path().join("page"))
             .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
             .kill_on_drop(true);
-        let output = tokio::time::timeout(Duration::from_secs(120), command.output())
+        let renderer_error = |error: std::io::Error| {
+            Error::new(
+                5028,
+                if error.kind() == std::io::ErrorKind::NotFound {
+                    "pdftoppm is unavailable. Install Poppler and add it to PATH.".into()
+                } else {
+                    format!("pdftoppm could not start: {error}")
+                },
+            )
+        };
+        let (child, _tree) = crate::pi::spawn_child(&mut command).map_err(renderer_error)?;
+        let output = tokio::time::timeout(Duration::from_secs(120), child.wait_with_output())
             .await
             .map_err(|_| Error::new(5028, "pdftoppm timed out (>120s)"))?
-            .map_err(|error| {
-                Error::new(
-                    5028,
-                    if error.kind() == std::io::ErrorKind::NotFound {
-                        "pdftoppm not installed (poppler-utils package required)".into()
-                    } else {
-                        format!("pdftoppm could not start: {error}")
-                    },
-                )
-            })?;
+            .map_err(renderer_error)?;
         if !output.status.success() {
             return Err(Error::new(5028, "pdftoppm failed to render this PDF"));
         }

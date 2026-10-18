@@ -19,7 +19,22 @@ const options = (): ServiceFileOptions => ({
   logDir: join(hexbotHome(), 'logs')
 })
 
+// The daemon owns the Windows Task Scheduler definition and home checks.
+// Calling its CLI keeps app and Headless service setup identical.
+export async function windowsService(
+  action: 'install' | 'uninstall' | 'status',
+  run: (command: string, args: string[], options?: { env: NodeJS.ProcessEnv; windowsHide: boolean }) => Promise<unknown> = exec
+): Promise<{ installed: boolean; running: boolean } | undefined> {
+  const result = await run(hexbotExecutable(), ['service', action, ...(action === 'status' ? ['--json'] : [])],
+    { env: { ...process.env, HEXBOT_HOME: hexbotHome() }, windowsHide: true }) as { stdout?: string }
+  if (action !== 'status') return undefined
+  const status = JSON.parse(result.stdout ?? '') as { installed?: unknown; running?: unknown }
+  if (typeof status.installed !== 'boolean' || typeof status.running !== 'boolean') throw new Error('Invalid daemon service status')
+  return { installed: status.installed, running: status.running }
+}
+
 export async function installService(): Promise<void> {
+  if (process.platform === 'win32') { await windowsService('install'); return }
   const file = servicePath()
   await mkdir(dirname(file), { recursive: true })
   await mkdir(join(hexbotHome(), 'logs'), { recursive: true })
@@ -43,6 +58,7 @@ export async function uninstallService(
   file = servicePath(), targetPlatform = process.platform,
   run: (command: string, args: string[]) => Promise<unknown> = exec
 ): Promise<void> {
+  if (targetPlatform === 'win32') { await windowsService('uninstall', run); return }
   if (targetPlatform === 'darwin') {
     let stopped = false
     for (const domain of launchdDomains()) {
@@ -67,6 +83,9 @@ export async function serviceStatus(
   file = servicePath(), targetPlatform = process.platform,
   run: (command: string, args: string[]) => Promise<unknown> = exec
 ): Promise<{ installed: boolean; running: boolean }> {
+  if (targetPlatform === 'win32') {
+    try { return (await windowsService('status', run))! } catch { return { installed: false, running: false } }
+  }
   if (targetPlatform === 'darwin') {
     const content = await readFile(file, 'utf8').catch(() => '')
     const homes = [...content.matchAll(/<key>HEXBOT_HOME<\/key>\s*<string>([^<]*)<\/string>/g)]
@@ -114,6 +133,7 @@ export async function migrateLegacyService(
   file = servicePath(), targetPlatform = process.platform,
   config = options(), run: (command: string, args: string[]) => Promise<unknown> = exec
 ): Promise<void> {
+  if (targetPlatform === 'win32') return
   const old = await readFile(file, 'utf8').catch((error: NodeJS.ErrnoException) => {
     if (error.code === 'ENOENT') return ''
     throw error

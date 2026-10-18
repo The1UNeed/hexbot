@@ -207,11 +207,11 @@ Not covered by those signatures:
 - The legacy `daemon/hexbot-src-<version>.tar.gz` handoff source package.
   It trusts HTTPS and executes before the native signature check, so that
   check does not authenticate the handoff package itself.
-- The terminal installer script, its `.txt` index, and initial installer
-  download. The script follows no redirects but still trusts HTTPS to
+- The terminal installer scripts, `install.sh` and `install.ps1`, their `.txt` index, and initial installer
+  download. The scripts follow no redirects but still trusts HTTPS to
   `hexbot.app` and the update server.
 - Electron app update feeds. macOS updates rely on code signing;
-  Linux AppImage updates use checksums only.
+  Windows app updates verify the configured Authenticode publisher; Linux AppImage updates use checksums only.
 
 See [release signing](docs/release.md#update-signing) for key rotation and
 mirror support.

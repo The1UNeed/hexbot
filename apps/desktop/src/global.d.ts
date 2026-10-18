@@ -9,3 +9,4 @@ declare module '*?raw' {
   const text: string
   export default text
 }
+declare const __HEXBOT_APP_ID__: string

@@ -13,7 +13,13 @@ it('pins every downloaded tool for each supported target', () => {
     expect(asset.url).toContain(asset.version)
     expect(asset.sha256).toMatch(/^[a-f0-9]{64}$/)
   }
-  expect(() => toolAsset('rg', 'win32', 'x64')).toThrow('Unsupported')
+  for (const tool of ['uv', 'rg', 'fd'] as const) {
+    const asset = toolAsset(tool, 'win32', 'x64')
+    expect(asset.url).toMatch(/x86_64-pc-windows-msvc\.zip$/)
+    expect(asset.sha256).toMatch(/^[a-f0-9]{64}$/)
+    expect(asset.member).toMatch(/(?:^|\/)\w+\.exe$/)
+  }
+  expect(() => toolAsset('rg', 'win32', 'arm64')).toThrow('Unsupported')
 })
 
 it('rejects a bad download checksum before extraction or execution', async () => {
@@ -40,7 +46,7 @@ it('rejects a bad download checksum before extraction or execution', async () =>
 it('pins every voice dependency with hashes for managed Python', async () => {
   const { readFile } = await import('node:fs/promises')
   const requirements = await readFile(new URL('../../../../../backend/hexbot-core/assets/edge-tts.requirements.txt', import.meta.url), 'utf8')
-  const entries = requirements.split('\n').filter(line => line && !line.startsWith('#'))
+  const entries = requirements.split(/\r?\n/).filter(line => line && !line.startsWith('#'))
   const pins = entries.filter(line => !line.startsWith(' '))
   expect(pins).toContain('edge-tts==7.2.7 \\')
   for (const pin of pins) expect(pin).toMatch(/^[a-z][a-z0-9-]*==[0-9][^ ]* \\$/)

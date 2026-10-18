@@ -1,24 +1,26 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {mkdtempSync, mkdirSync, writeFileSync, readFileSync, symlinkSync, rmSync, realpathSync, existsSync} from 'node:fs';
+import {windows, nullDevice, outsideTemporaryRoot, normalize, environmentCommand, useHome, symlinkSync} from './test-support.mjs';
+import {gitExecutable, isolationAvailable} from './isolation.ts';
+import {mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, realpathSync, existsSync} from 'node:fs';
 import {createServer} from 'node:net';
 import {once} from 'node:events';
 import {tmpdir, homedir} from 'node:os';
-import {join} from 'node:path';
+import {join, delimiter} from 'node:path';
 import {execFileSync} from 'node:child_process';
 import hexbot, {canonicalPath, credentialPath, protectedPath, shellEnvironment, sanitizeSearchResult, hostWriteTier, escapeMcpValues} from './extension.ts';
 
 // Scans read the user's own Git configuration. These tests use none, so the
 // developer's ~/.gitconfig and system config cannot change their results.
-process.env.GIT_CONFIG_GLOBAL = '/dev/null';
+process.env.GIT_CONFIG_GLOBAL = nullDevice;
 process.env.GIT_CONFIG_NOSYSTEM = '1';
 // A repository as `git init` makes it (HEAD, objects, refs, config), with
 // settings added to its config.
 const gitInit = (dir, settings = []) => {
-  execFileSync('/usr/bin/git', ['init', '-q', dir]);
-  for (const [key, value] of settings) execFileSync('/usr/bin/git', ['-C', dir, 'config', '--add', key, value]);
+  execFileSync(gitExecutable(), ['init', '-q', dir]);
+  for (const [key, value] of settings) execFileSync(gitExecutable(), ['-C', dir, 'config', '--add', key, value]);
 };
-const gitConfig = (dir, key, value) => execFileSync('/usr/bin/git', ['-C', dir, 'config', key, value]);
+const gitConfig = (dir, key, value) => execFileSync(gitExecutable(), ['-C', dir, 'config', key, value]);
 
 // These gates assume the OS sandbox is in place, as it always is on macOS. On
 // Linux the probe looks for bwrap on PATH, so a stand-in that passes the probe
@@ -26,8 +28,9 @@ const gitConfig = (dir, key, value) => execFileSync('/usr/bin/git', ['-C', dir, 
 // covers the real sandbox; the no-sandbox path has its own test below.
 const shims = mkdtempSync(join(tmpdir(), 'hexbot-bwrap-shim-'));
 writeFileSync(join(shims, 'bwrap'), '#!/bin/sh\nwhile [ "$#" -gt 0 ] && [ "$1" != "--" ]; do shift; done\n[ "$#" -gt 0 ] && shift\nexec "$@"\n', {mode:0o755});
-process.env.PATH = `${shims}:${process.env.PATH ?? ''}`;
+process.env.PATH = `${shims}${delimiter}${process.env.PATH ?? ''}`;
 process.on('exit', () => rmSync(shims, {recursive:true, force:true}));
+const sandboxed = isolationAvailable();
 
 function fixture(t, mode = 'manual', enabledToolsets = [], extra = {}) {
   const home = mkdtempSync(join(tmpdir(), 'hexbot-gates-'));
@@ -61,7 +64,7 @@ function fixture(t, mode = 'manual', enabledToolsets = [], extra = {}) {
   return {home, handlers, tools, settings, ctx, requests, choices, models, registrations, notices, activeTools, sent, gate, run, swap};
 }
 
-test('case cannot disguise credential or host configuration paths on case-insensitive file systems', {skip: process.platform !== 'darwin'}, async t => {
+test('case cannot disguise credential or host configuration paths on case-insensitive file systems', {skip: !['darwin', 'win32'].includes(process.platform)}, async t => {
   const f = fixture(t, 'manual', ['file']);
   mkdirSync(join(f.home, 'profiles/owl'), {recursive:true});
   writeFileSync(join(f.home, 'profiles/owl/auth.json'), 'secret');
@@ -92,11 +95,12 @@ test('bash children cannot inherit provider or connector credentials', async t =
   const f=fixture(t,'smart',['terminal']);
   const previous=process.env.OPENAI_API_KEY;process.env.OPENAI_API_KEY='test-provider-secret';
   t.after(()=>{if(previous===undefined)delete process.env.OPENAI_API_KEY;else process.env.OPENAI_API_KEY=previous;});
-  await f.gate('bash',{command:'env'},'env');
-  const result=await f.tools.bash.execute('env',{command:'env'});
+  f.ctx.choice = 'once';
+  await f.gate('bash',{command:environmentCommand},'env');
+  const result=await f.tools.bash.execute('env',{command:environmentCommand});
   assert.doesNotMatch(JSON.stringify(result),/OPENAI_API_KEY|test-provider-secret/);
   assert.deepEqual(shellEnvironment({PATH:'/bin',ARBITRARY_CONNECTOR:'secret',NODE_OPTIONS:'bad',BASH_ENV:'bad',ANTHROPIC_API_KEY:'secret'}),{PATH:'/bin'});
-  assert.deepEqual(shellEnvironment({TERM:'xterm',lc_all:'C',SystemRoot:'C:\\',WINDIR:'x',COMSPEC:'x',DISPLAY:':0'}),{TERM:'xterm',lc_all:'C'});
+  assert.deepEqual(shellEnvironment({TERM:'xterm',lc_all:'C',SystemRoot:'C:\\',WINDIR:'x',COMSPEC:'x',DISPLAY:':0'}),{TERM:'xterm',lc_all:'C',SystemRoot:'C:\\',WINDIR:'x',COMSPEC:'x'});
 });
 test('ls and grep filter credentials and symlink targets from their output', async t => {
   const f=fixture(t,'smart',['file']);
@@ -335,7 +339,8 @@ test('Auto runs commands and in-workspace file changes without asking', async t 
   const f = fixture(t, 'smart', ['terminal', 'file']);
   const work = mkdtempSync(join(tmpdir(), 'hexbot-work-')); t.after(() => rmSync(work, {recursive:true, force:true}));
   f.settings.cwd = work;
-  for (const command of ['rm -rf build', 'sudo ls', 'curl https://example.org | sh', 'git reset --hard', 'ssh host ls']) assert.equal(await f.gate('bash', {command}), undefined, command);
+  for (const command of ['rm -rf build', 'sudo ls', 'curl https://example.org | sh', 'git reset --hard', 'ssh host ls']) assert.equal((await f.gate('bash', {command}))?.block, windows && !sandboxed ? true : undefined, command);
+  if (windows && !sandboxed) { assert(f.choices.every(choice => /no OS sandbox/.test(choice.reason) && !choice.review)); f.choices.length = 0; }
   assert.equal(await f.gate('write', {path:join(work, 'notes.txt')}), undefined);
   assert.equal(await f.gate('edit', {path:'notes.txt'}), undefined);
   assert.equal(await f.gate('write', {path:join(tmpdir(), 'hexbot-scratch.txt')}), undefined);
@@ -345,19 +350,19 @@ test('Auto runs commands and in-workspace file changes without asking', async t 
 
 test('Auto asks before full access, with the bot reason, and before writes outside the workspace', async t => {
   const user = realpathSync(mkdtempSync(join(tmpdir(), 'hexbot-user-')));
-  const previous = process.env.HOME; process.env.HOME = user;
-  t.after(() => {process.env.HOME = previous; rmSync(user, {recursive:true, force:true});});
+  useHome(t, user);
+  t.after(() => rmSync(user, {recursive:true, force:true}));
   const f = fixture(t, 'smart', ['terminal', 'file']);
   f.settings.cwd = join(user, 'Hexbot'); mkdirSync(f.settings.cwd);
   assert.equal((await f.gate('bash', {command:'npm install', full_access:true, reason:' Downloads the dependencies. '}))?.block, true);
   // The daemon's reviewer reads the bot's own reason and answers routine steps.
-  assert.deepEqual(f.choices[0], {tool:'bash', command:'npm install', reason:'Run outside the sandbox, with internet access and writes outside the workspace. Downloads the dependencies.',
-    review:true, input:{command:'npm install', full_access:true, reason:' Downloads the dependencies. '}, cwd:f.settings.cwd, model:{provider:'test', model:'primary'}, options:['once', 'session', 'deny']});
+  assert.deepEqual(f.choices[0], {tool:'bash', command:'npm install', reason:windows ? f.choices[0].reason : 'Run outside the sandbox, with internet access and writes outside the workspace. Downloads the dependencies.',
+    ...windows ? {input:{command:'npm install', full_access:true, reason:' Downloads the dependencies. '}} : {review:true, input:{command:'npm install', full_access:true, reason:' Downloads the dependencies. '}, cwd:f.settings.cwd, model:{provider:'test', model:'primary'}}, options:windows ? ['once', 'deny'] : ['once', 'session', 'deny']});
   // The temp folders are part of the workspace; /usr/local is not.
   assert.equal(await f.gate('write', {path:join(user, 'scratch.txt')}), undefined);
   assert.equal((await f.gate('write', {path:'/usr/local/hexbot-elsewhere.txt'}))?.block, true);
   assert.match(f.choices[1].reason, /outside the workspace/);
-  assert.equal(f.choices[1].command, '/usr/local/hexbot-elsewhere.txt');
+  assert.equal(f.choices[1].command, canonicalPath('/usr/local/hexbot-elsewhere.txt', f.settings.cwd));
   assert.equal(f.choices[1].review, true);
   assert.equal(f.choices[1].overwrites, false);
   // A workspace that holds shell profiles still asks before changing them.
@@ -383,7 +388,7 @@ test('Auto asks before full access, with the bot reason, and before writes outsi
   assert.deepEqual(f.choices[6].model, {provider:'test', model:'fallback'});
 });
 
-test('Auto reviews every step outside the sandbox, whatever was allowed before', async t => {
+test('Auto reviews every step outside the sandbox, whatever was allowed before', {skip:windows && 'requires an OS sandbox; Windows always asks the user'}, async t => {
   const f = fixture(t, 'manual', ['terminal']);
   // A section grant from Manual does not carry into Auto's reviewed steps.
   f.ctx.choice = 'session';
@@ -404,7 +409,7 @@ test('Auto reviews every step outside the sandbox, whatever was allowed before',
   assert.match((await f.gate('bash', {command:'curl -sL https://example.com', full_access:true}))?.reason, /approval mode changed/);
 });
 
-test('a reviewed command cannot run in a working directory changed during review', async t => {
+test('a reviewed command cannot run in a working directory changed during review', {skip:windows && 'requires an OS sandbox; Windows approval rechecks are covered separately'}, async t => {
   const f = fixture(t, 'smart', ['terminal']);
   const work = realpathSync(mkdtempSync(join(tmpdir(), 'hexbot-reviewed-cwd-')));
   t.after(() => rmSync(work, {recursive:true, force:true}));
@@ -430,12 +435,12 @@ test('a reviewed command cannot run in a working directory changed during review
   f.ctx.ui.select = select;
   const result = await f.run('bash', {...input, command:'pwd'});
   assert.equal(f.choices[1].cwd, second);
-  assert.match(JSON.stringify(result), new RegExp(second));
+  assert(normalize(result.structuredContent.output).includes(normalize(second)));
 });
 
 test('a reviewed file create cannot turn into an overwrite before execution', async t => {
   const f = fixture(t, 'smart', ['file']);
-  const outside = realpathSync(mkdtempSync('/var/tmp/hexbot-reviewed-write-'));
+  const outside = realpathSync(mkdtempSync(join(outsideTemporaryRoot, 'hexbot-reviewed-write-')));
   t.after(() => rmSync(outside, {recursive:true, force:true}));
   f.settings.cwd = join(outside, 'workspace'); mkdirSync(f.settings.cwd);
   const path = join(outside, 'report.txt');
@@ -454,7 +459,7 @@ test('a reviewed file create cannot turn into an overwrite before execution', as
 
 test('a reviewed file write retains its resolved destination when a link changes during review', async t => {
   const f = fixture(t, 'smart', ['file']);
-  const outside = realpathSync(mkdtempSync('/var/tmp/hexbot-reviewed-target-'));
+  const outside = realpathSync(mkdtempSync(join(outsideTemporaryRoot, 'hexbot-reviewed-target-')));
   t.after(() => rmSync(outside, {recursive:true, force:true}));
   f.settings.cwd = join(outside, 'workspace'); mkdirSync(f.settings.cwd);
   const first = join(outside, 'first.txt'), second = join(outside, 'second.txt');
@@ -479,13 +484,14 @@ test('Manual asks before every file change and full access, not before reads or 
   const f = fixture(t, 'manual', ['terminal', 'file']);
   const work = mkdtempSync(join(tmpdir(), 'hexbot-work-')); t.after(() => rmSync(work, {recursive:true, force:true}));
   f.settings.cwd = work;
-  assert.equal(await f.gate('bash', {command:'ls'}), undefined);
+  assert.equal((await f.gate('bash', {command:'ls'}))?.block, windows && !sandboxed ? true : undefined);
+  if (windows && !sandboxed) { assert.match(f.choices[0].reason, /no OS sandbox/); f.choices.length = 0; }
   assert.equal(await f.gate('read', {path:'notes.txt'}), undefined);
   assert.equal(await f.gate('grep', {path:'.', pattern:'x'}), undefined);
   assert.equal((await f.gate('write', {path:join(work, 'notes.txt')}))?.block, true);
   assert.match(f.choices[0].reason, /Manual mode asks/);
   assert.equal((await f.gate('bash', {command:'make', full_access:true}))?.block, true);
-  assert.match(f.choices[1].reason, /No reason given/);
+  assert.match(f.choices[1].reason, windows && !sandboxed ? /no OS sandbox/ : /No reason given/);
   // Manual never hands a step to Auto's reviewer.
   assert.equal(f.choices[1].review, undefined);
   assert.equal((await f.gate('browser_console', {expression:'document.title'}))?.block, true);
@@ -496,7 +502,7 @@ test('Manual asks before every file change and full access, not before reads or 
   assert.equal(await f.gate('edit', {path:'notes.txt'}), undefined);
 });
 
-test('allowing for the section covers later requests of the same kind only', async t => {
+test('allowing for the section covers later requests of the same kind only', {skip:windows && 'Windows commands require approval for each call'}, async t => {
   const f = fixture(t, 'manual', ['terminal']);
   f.ctx.choice = 'session';
   assert.equal(await f.gate('bash', {command:'curl a', full_access:true, reason:'r'}), undefined);
@@ -516,7 +522,7 @@ test('Bypass is plain Pi: no prompts, credential checks or sandbox', async t => 
   const previous = process.env.HEXBOT_TEST_VALUE; process.env.HEXBOT_TEST_VALUE = 'inherited';
   t.after(() => {if (previous === undefined) delete process.env.HEXBOT_TEST_VALUE; else process.env.HEXBOT_TEST_VALUE = previous;});
   await f.gate('bash', {command:'env'}, 'plain');
-  const result = JSON.stringify(await f.tools.bash.execute('plain', {command:'echo "$HEXBOT_TEST_VALUE"; cat .env'}));
+  const result = JSON.stringify(await f.tools.bash.execute('plain', {command:windows ? 'Write-Output $env:HEXBOT_TEST_VALUE; Get-Content .env' : 'echo "$HEXBOT_TEST_VALUE"; cat .env'}));
   assert.match(result, /inherited/); assert.match(result, /bypass-secret/);
   assert.equal(f.choices.length, 0);
 });
@@ -524,6 +530,7 @@ test('Bypass is plain Pi: no prompts, credential checks or sandbox', async t => 
 test('failed bash results keep the exit code and add a hint only inside the sandbox', async t => {
   const f = fixture(t, 'manual', ['terminal']);
   const input = {command:'echo failed; exit 7'};
+  f.ctx.choice = 'once';
   for (const mode of ['manual', 'smart', 'off']) {
     f.settings.approvalMode = mode;
     const result = await f.run('bash', input);
@@ -532,7 +539,7 @@ test('failed bash results keep the exit code and add a hint only inside the sand
     assert.equal(result.structuredContent.output.trim(), 'failed');
     const text = result.content.map(item => item.text).join('\n');
     assert.match(text, /Command exited with code 7/);
-    if (mode === 'off') assert.doesNotMatch(text, /run it again with full_access/);
+    if (mode === 'off' || !sandboxed) assert.doesNotMatch(text, /run it again with full_access/);
     else assert.match(text, /run it again with full_access/);
   }
   f.settings.approvalMode = 'manual';
@@ -569,7 +576,7 @@ test('the sandbox follows the mode, and an approved full_access command leaves i
   assert.match(await run({command:connect}), /connected/);
 });
 
-test('without an OS sandbox every shell command asks in Manual and Auto', async t => {
+test('without an OS sandbox every shell command asks in Manual and Auto', {skip:windows && 'POSIX shell fixture; native Windows approval is covered separately'}, async t => {
   const {execFileSync} = await import('node:child_process');
   const {chmodSync} = await import('node:fs');
   const home = mkdtempSync(join(tmpdir(), 'hexbot-unsandboxed-'));
@@ -619,8 +626,8 @@ test('without an OS sandbox every shell command asks in Manual and Auto', async 
 
 test('file tools never write credential stores or daemon configuration outside Bypass', async t => {
   const user = mkdtempSync(join(tmpdir(), 'hexbot-user-'));
-  const previous = process.env.HOME; process.env.HOME = user;
-  t.after(() => {process.env.HOME = previous; rmSync(user, {recursive:true, force:true});});
+  useHome(t, user);
+  t.after(() => rmSync(user, {recursive:true, force:true}));
   for (const mode of ['manual', 'smart']) {
     const f = fixture(t, mode, ['file']);
     for (const path of [join(user, '.netrc'), join(user, '.git-credentials'), join(user, '.aws/credentials'), join(user, '.config/gh/hosts.yml'), join(user, '.kube/config'), '~/.npmrc', '/etc/hosts']) {
@@ -669,9 +676,10 @@ test('SSH public files stay readable, private keys and auth stores do not, and c
 
 test('user bash runs in the sandbox with a sanitized environment outside Bypass', async t => {
   const f = fixture(t, 'smart', ['terminal']);
-  const permitted = await f.handlers.user_bash({command:'env'}, f.ctx);
+  f.ctx.choice = 'once';
+  const permitted = await f.handlers.user_bash({command:environmentCommand}, f.ctx);
   let output = '';
-  const result = await permitted.operations.exec('env', f.home, {env:{PATH:process.env.PATH, OPENAI_API_KEY:'secret'}, onData:data => output += data});
+  const result = await permitted.operations.exec(environmentCommand, f.home, {env:{...shellEnvironment(process.env), OPENAI_API_KEY:'secret'}, onData:data => output += data});
   assert.equal(result.exitCode, 0); assert.doesNotMatch(output, /OPENAI_API_KEY|secret/);
 });
 
@@ -683,6 +691,7 @@ test('execution refuses a call whose mode or file changed after the gate allowed
   // Pi gates parallel calls before running them: a Bypass decision must not run after Manual is chosen.
   assert.equal(await f.gate('bash', {command:'echo plain'}, 'early'), undefined);
   f.settings.approvalMode = 'manual';
+  f.ctx.choice = 'once';
   await assert.rejects(f.tools.bash.execute('early', {command:'echo plain'}, undefined, undefined, f.ctx), /approval mode changed/);
   // A call checked for one working directory does not run in another.
   assert.equal(await f.gate('bash', {command:'echo moved'}, 'moved'), undefined);
@@ -698,7 +707,7 @@ test('execution refuses a call whose mode or file changed after the gate allowed
   assert.equal(await f.gate('write', {path:'link/note.txt', content:'x'}, 'swap'), undefined);
   rmSync(join(work, 'link')); symlinkSync(outside, join(work, 'link'));
   await assert.rejects(f.tools.write.execute('swap', {path:'link/note.txt', content:'x'}, undefined, undefined, f.ctx), /file changed/);
-  assert.equal(f.choices.length, 0);
+  assert.equal(f.choices.length, windows && !sandboxed ? 1 : 0);
 });
 
 for (const mode of ['manual', 'smart']) test(`identity keys are blocked by both file guard stages in ${mode}`, async t => {
@@ -833,7 +842,7 @@ test('jobs and delegates deny file, shell and browser approvals without opening 
         assert.match(denied.reason, /needs approval.*visible section/, name);
       }
       assert.equal(f.choices.length, 0);
-      assert.equal(await f.gate('bash', {command:'echo confined'}), undefined);
+      assert.equal((await f.gate('bash', {command:'echo confined'}))?.block, windows && !sandboxed ? true : undefined);
       assert.equal(await f.gate('read', {path:join(f.settings.cwd, 'note.txt')}), undefined);
       if (mode === 'smart') assert.equal(await f.gate('write', {path:join(f.settings.cwd, 'note.txt'), content:'Allowed'}), undefined);
     }
@@ -932,11 +941,12 @@ test('an exhausted safety scan blocks the command and requires an approved full-
   for (let i = 0; i < 1001; i++) mkdirSync(join(work, String(i)));
   const command = await f.gate('bash', {command:'echo harmless'});
   if (process.platform === 'linux') assert.match(command.reason, /budget.*approval/);
+  else if (windows && !sandboxed) { assert.equal(command.block, true); assert.match(f.choices[0].reason, /no OS sandbox/); f.choices.length = 0; }
   else assert.equal(command, undefined);
   assert.equal(f.choices.length, 0);
   f.ctx.choice = 'once';
   assert.equal(await f.gate('bash', {command:'echo harmless', full_access:true, reason:'The safety scan exceeded its budget.'}), undefined);
-  assert.match(f.choices[0].reason, /outside the sandbox/);
+  assert.match(f.choices[0].reason, windows ? sandboxed ? /outside OS containment/ : /no OS sandbox/ : /outside the sandbox/);
 });
 
 test('file tools ask and can write and edit when a workspace scan is incomplete', async t => {
@@ -992,7 +1002,7 @@ test('an incomplete scan asks once per file change and never widens a section ap
   assert.equal(f.choices.length, asked + 1);
 });
 
-test('on Linux a command asks when a missing Git target would pin a repository or Git is reached through a link', async t => {
+test('on Linux a command asks when a missing Git target would pin a repository or Git is reached through a link', {skip:windows && 'Linux/macOS sandbox behavior'}, async t => {
   const work = realpathSync(mkdtempSync(join(tmpdir(), 'hexbot-pin-')));
   t.after(() => rmSync(work, {recursive:true, force:true}));
   const f = fixture(t, 'smart', ['terminal'], {cwd:work});

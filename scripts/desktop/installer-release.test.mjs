@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { execFile } from 'node:child_process'
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { delimiter, dirname, join } from 'node:path'
 import test from 'node:test'
 import { promisify } from 'node:util'
 
@@ -18,18 +18,20 @@ test('windowed installer release step handles bundle names with spaces on every 
   t.after(() => rm(root, { recursive: true, force: true }))
   await mkdir(join(root, 'bin'))
   await mkdir(join(root, 'installer-artifacts'))
-  await writeFile(join(root, 'bin/pnpm'), `#!${process.execPath}\nimport fs from 'node:fs'; import path from 'node:path'; fs.mkdirSync(path.dirname(process.env.BUNDLE_PATH), { recursive: true }); fs.writeFileSync(process.env.BUNDLE_PATH, 'bundle'); fs.writeFileSync('arguments.json', JSON.stringify(process.argv.slice(2)));\n`, { mode: 0o755 })
+  await writeFile(join(root, 'bin/pnpm'), `#!/usr/bin/env node\nimport fs from 'node:fs'; import path from 'node:path'; fs.mkdirSync(path.dirname(process.env.BUNDLE_PATH), { recursive: true }); fs.writeFileSync(process.env.BUNDLE_PATH, 'bundle'); fs.writeFileSync('arguments.json', JSON.stringify(process.argv.slice(2)));\n`, { mode: 0o755 })
   const version = '0.1.5-nightly.20261003.42'
   for (const [target, suffix, bundles] of [
     ['aarch64-apple-darwin', 'mac-arm64.dmg', 'dmg'],
     ['x86_64-apple-darwin', 'mac-x64.dmg', 'dmg'],
-    ['x86_64-unknown-linux-gnu', 'linux-x86_64.AppImage', 'appimage']
+    ['x86_64-unknown-linux-gnu', 'linux-x86_64.AppImage', 'appimage'],
+    ['x86_64-pc-windows-msvc', 'windows-x86_64.exe', 'nsis']
   ]) {
     const extension = suffix.split('.').at(-1)
+    const windows = target.endsWith('windows-msvc')
     const bundle = join(root, 'apps/installer/src-tauri/target', target, 'release/bundle', bundles, `Hexbot Installer.${extension}`)
     const substituted = script.replaceAll('${{ matrix.rust-target }}', target)
       .replaceAll('${{ matrix.app-suffix }}', suffix).replaceAll('${{ matrix.bundles }}', bundles)
-    const options = { cwd: root, env: { ...process.env, VERSION: version, BUNDLE_PATH: bundle, PATH: `${join(root, 'bin')}:${process.env.PATH}` } }
+    const options = { cwd: root, env: { ...process.env, RUNNER_OS: windows ? 'Windows' : 'Linux', VERSION: version, BUNDLE_PATH: bundle, PATH: `${join(root, 'bin')}${delimiter}${process.env.PATH}` } }
     await run('bash', ['-c', substituted], options)
     assert.equal(await readFile(join(root, 'installer-artifacts', `HexbotInstaller-${version}-${suffix}`), 'utf8'), 'bundle')
     const args = JSON.parse(await readFile(join(root, 'arguments.json'), 'utf8'))

@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import {windows, nullDevice, normalize, symlinkSync} from './test-support.mjs';
+import {gitExecutable} from './isolation.ts';
 import {spawn, execFileSync} from 'node:child_process';
 import {mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync} from 'node:fs';
 import {join} from 'node:path';
@@ -9,15 +11,15 @@ import {isolatedCommand, probeIsolation} from './isolation.ts';
 
 // Scans read the user's own Git configuration. These tests use none, so the
 // developer's ~/.gitconfig and system config cannot change their results.
-process.env.GIT_CONFIG_GLOBAL = '/dev/null';
+process.env.GIT_CONFIG_GLOBAL = nullDevice;
 process.env.GIT_CONFIG_NOSYSTEM = '1';
 // A repository as `git init` makes it (HEAD, objects, refs, config), with
 // settings added to its config.
 const gitInit = (dir, settings = []) => {
-  execFileSync('/usr/bin/git', ['init', '-q', dir]);
-  for (const [key, value] of settings) execFileSync('/usr/bin/git', ['-C', dir, 'config', '--add', key, value]);
+  execFileSync(gitExecutable(), ['init', '-q', dir]);
+  for (const [key, value] of settings) execFileSync(gitExecutable(), ['-C', dir, 'config', '--add', key, value]);
 };
-const gitConfig = (dir, key, value) => execFileSync('/usr/bin/git', ['-C', dir, 'config', key, value]);
+const gitConfig = (dir, key, value) => execFileSync(gitExecutable(), ['-C', dir, 'config', key, value]);
 
 // The Linux tests run the real bubblewrap when it passes the daemon's probe.
 // CI installs it; Ubuntu 24.04 needs the AppArmor profile from the install docs.
@@ -149,7 +151,7 @@ test('walk skips heavy trees while policy still covers their names', {skip:proce
   assert.doesNotMatch(command,/regex #/);
 });
 
-test('an unusable bubblewrap is probed once and commands fall back to approval guards', async t => {
+test('an unusable bubblewrap is probed once and commands fall back to approval guards', {skip:windows && 'POSIX sandbox profile'}, async t => {
   const {execFileSync} = await import('node:child_process');
   const {chmodSync, readFileSync} = await import('node:fs');
   const home = mkdtempSync(join(tmpdir(), 'hexbot-bwrap-'));
@@ -164,7 +166,7 @@ test('an unusable bubblewrap is probed once and commands fall back to approval g
   assert.equal(readFileSync(counter,'utf8'),'probe\n');
 });
 
-test('bubblewrap binds the home read-only and only reopens the requested output directories', async t => {
+test('bubblewrap binds the home read-only and only reopens the requested output directories', {skip:windows && 'POSIX sandbox profile'}, async t => {
   const {execFileSync} = await import('node:child_process');
   const {realpathSync} = await import('node:fs');
   const home=mkdtempSync(join(tmpdir(),'hexbot-bwrap-bind-'));
@@ -174,14 +176,14 @@ test('bubblewrap binds the home read-only and only reopens the requested output 
   for (const name of ['connect-identity.key', 'profiles/owl/connect-identity.key']) writeFileSync(join(home,name),'secret');
   const user=join(home,'user'); mkdirSync(join(user,'.ssh/nested'),{recursive:true});
   const policy = JSON.parse(readFileSync(new URL('./credential-policy.json', import.meta.url), 'utf8'));
-  for (const local of policy.write.deny) { const file = join(user, local); mkdirSync(join(file, '..'), {recursive:true}); writeFileSync(file, 'keep'); }
+  for (const local of policy.write.deny.filter(entry => !entry.startsWith('%'))) { const file = join(user, local); mkdirSync(join(file, '..'), {recursive:true}); writeFileSync(file, 'keep'); }
   for (const file of ['known_hosts','config','id_ed25519.pub','nested/id_ed25519','github','deploy_key','authorized_keys']) writeFileSync(join(user,'.ssh',file),'fixture');
   const moduleUrl=new URL('./isolation.ts',import.meta.url).href;
   const script=`Object.defineProperty(process,'platform',{value:'linux'}); const {bwrapArguments}=await import(${JSON.stringify(moduleUrl)}); console.log(bwrapArguments(${JSON.stringify(home)},[${JSON.stringify(outputs)}]).map(arg => "'" + arg + "'").join(' '));`;
   const command=execFileSync(process.execPath,['--input-type=module','-e',script],{env:{...process.env,HOME:user,PATH:home},encoding:'utf8'});
   assert.ok(command.includes(`'--ro-bind' '${home}' '${home}'`));
   for (const name of ['connect-identity.key', 'profiles/owl/connect-identity.key']) assert.ok(command.includes(`'--ro-bind' '/dev/null' '${join(home,name)}'`), name);
-  for (const local of policy.write.deny) assert.ok(command.includes(`'--ro-bind' '${join(user,local)}' '${join(user,local)}'`), local);
+  for (const local of policy.write.deny.filter(entry => !entry.startsWith('%'))) assert.ok(command.includes(`'--ro-bind' '${join(user,local)}' '${join(user,local)}'`), local);
   assert.ok(command.includes(`'--bind' '${realpathSync(outputs)}' '${realpathSync(outputs)}'`));
   assert.ok(!command.includes(`'--bind' '${realpathSync(workspace)}'`), 'an in-home workspace is never bound writable');
   assert.ok(command.includes(`'--tmpfs' '${join(home,'desktop-data')}' '--remount-ro'`));
@@ -196,7 +198,7 @@ test('fake user home protects uncommon SSH keys and explicit auth files', async 
   const base = mkdtempSync(join(tmpdir(), 'hexbot-ssh-policy-'));
   t.after(() => rmSync(base, {recursive:true, force:true}));
   const script = `const {credentialPath}=await import(${JSON.stringify(new URL('./extension.ts',import.meta.url).href)}); const {isolatedCommand}=await import(${JSON.stringify(new URL('./isolation.ts',import.meta.url).href)}); const home=process.env.HOME; for(const file of ['github','deploy_key','nested/config']) if(!credentialPath(home+'/.ssh/'+file,home+'/hexbot')) throw Error(file); for(const file of ['config','known_hosts.old','id.pub','authorized_keys']) if(credentialPath(home+'/.ssh/'+file,home+'/hexbot')) throw Error(file); for(const file of ['.codex/auth.json','.hermes/auth.json','.hermes/.env']) if(!credentialPath(home+'/'+file,home+'/hexbot')) throw Error(file); console.log(isolatedCommand('true',home));`;
-  const result = execFileSync(process.execPath, ['--input-type=module','-e',script], {env:{...process.env,HOME:base},encoding:'utf8'});
+  const result = execFileSync(process.execPath, ['--input-type=module','-e',script], {env:{...process.env,HOME:base,...windows ? {USERPROFILE:base} : {}},encoding:'utf8'});
   if (process.platform === 'darwin') for (const binary of ['/usr/bin/open','/bin/launchctl','/usr/bin/osascript']) assert.ok(result.includes(`(literal "${binary}")`));
 });
 
@@ -222,7 +224,7 @@ test('macOS sandbox denies fake HOME SSH keys while allowing public SSH files', 
   for (const name of ['github','deploy_key','config','known_hosts','key.pub','authorized_keys']) writeFileSync(join(base,'.ssh',name),'fixture');
   const command = `for key in github deploy_key; do cat '${base}/.ssh/'"$key" >/dev/null 2>&1 && exit 10; done; for public in config known_hosts key.pub authorized_keys; do cat '${base}/.ssh/'"$public" >/dev/null || exit 11; done`;
   const script = `const {isolatedCommand}=await import(${JSON.stringify(new URL('./isolation.ts',import.meta.url).href)}); const {spawnSync}=await import('node:child_process'); const r=spawnSync('/bin/bash',['-c',isolatedCommand(${JSON.stringify(command)},process.env.HOME)],{encoding:'utf8'}); if(r.status!==0) throw Error(r.stderr+'status '+r.status);`;
-  execFileSync(process.execPath, ['--input-type=module','-e',script], {env:{...process.env,HOME:base},encoding:'utf8'});
+  execFileSync(process.execPath, ['--input-type=module','-e',script], {env:{...process.env,HOME:base,...windows ? {USERPROFILE:base} : {}},encoding:'utf8'});
 });
 
 test('sandbox case policy covers uppercase secrets and permits uppercase public keys', {skip: process.platform !== 'darwin'}, async t => {
@@ -235,7 +237,7 @@ test('sandbox case policy covers uppercase secrets and permits uppercase public 
   writeFileSync(join(home, 'profiles/owl/AUTH.JSON'), 'private');
   writeFileSync(join(base, '.ssh/ID_ED25519.PUB'), 'public');
   const script = `const {sandboxProfile, isolatedCommand}=await import(${JSON.stringify(new URL('./isolation.ts', import.meta.url).href)}); const {spawnSync}=await import('node:child_process'); const profile=sandboxProfile(${JSON.stringify(home)}); if(!profile.includes('/profiles/owl/AUTH.JSON')) throw Error('uppercase secret not enumerated'); const command=${JSON.stringify(`cat '${home}/profiles/owl/AUTH.JSON' >/dev/null 2>&1 && exit 10; cat '${base}/.ssh/ID_ED25519.PUB' || exit 11`)}; const result=spawnSync('/bin/bash',['-c',isolatedCommand(command,${JSON.stringify(home)})],{encoding:'utf8'}); if(result.status!==0) throw Error(result.stderr+'status '+result.status); process.stdout.write(result.stdout);`;
-  assert.equal(execFileSync(process.execPath, ['--input-type=module','-e',script], {env:{...process.env,HOME:base},encoding:'utf8'}), 'public');
+  assert.equal(execFileSync(process.execPath, ['--input-type=module','-e',script], {env:{...process.env,HOME:base,...windows ? {USERPROFILE:base} : {}},encoding:'utf8'}), 'public');
 });
 
 // Codex's workspace sandbox: no network, writes only inside the workspace, and
@@ -295,7 +297,7 @@ test('macOS Auto and Manual refuse network listeners; approved full access permi
   }
 });
 
-test('bubblewrap confines a workspace command to its folders without a network', async t => {
+test('bubblewrap confines a workspace command to its folders without a network', {skip:windows && 'POSIX sandbox profile'}, async t => {
   const {execFileSync} = await import('node:child_process');
   const {realpathSync} = await import('node:fs');
   const home = realpathSync(mkdtempSync(join(tmpdir(), 'hexbot-bwrap-confine-')));
@@ -369,7 +371,7 @@ test('every sandbox level refuses Apple Events', {skip:process.platform !== 'dar
   for (const workspace of [[home], [], undefined]) assert.ok(sandboxProfile(home, [], workspace).includes('(deny appleevent-send)'));
 });
 
-test('bubblewrap keeps existing git folders read-only and masks project secrets in the workspace', async t => {
+test('bubblewrap keeps existing git folders read-only and masks project secrets in the workspace', {skip:windows && 'POSIX sandbox profile'}, async t => {
   const {execFileSync} = await import('node:child_process');
   const {realpathSync} = await import('node:fs');
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'hexbot-bwrap-git-')));
@@ -390,7 +392,7 @@ test('bubblewrap keeps existing git folders read-only and masks project secrets 
 });
 
 test('secret and Git scans include read-only roots, symlink targets, linked worktrees and bare repositories', async t => {
-  const {realpathSync, symlinkSync} = await import('node:fs');
+  const {realpathSync} = await import('node:fs');
   const {workspaceProtected, bwrapArguments} = await import('./isolation.ts');
   const base = realpathSync(mkdtempSync(join(tmpdir(), 'hexbot-scan-')));
   t.after(() => rmSync(base, {recursive:true, force:true}));
@@ -452,7 +454,7 @@ test('macOS refuses secret renames, browser ancestor renames and linked Git writ
 
 test('directory commondir and configured hooks, including ignored paths and includes, are protected', async t => {
   const {spawnSync} = await import('node:child_process');
-  const {realpathSync, symlinkSync, existsSync} = await import('node:fs');
+  const {realpathSync, existsSync} = await import('node:fs');
   const {workspaceProtected, bwrapArguments, sandboxProfile} = await import('./isolation.ts');
   const {writeDenial} = await import('./extension.ts');
   const base = realpathSync(mkdtempSync(join(tmpdir(), 'hexbot-config-hooks-')));
@@ -522,7 +524,7 @@ const masksLast = args => {
 
 test('repository hook paths outside the workspace never bind, lock or refuse host folders', async t => {
   const {spawnSync} = await import('node:child_process');
-  const {realpathSync, symlinkSync} = await import('node:fs');
+  const {realpathSync} = await import('node:fs');
   const {homedir} = await import('node:os');
   const {bwrapArguments, readDenied, sandboxProfile, workspaceProtected} = await import('./isolation.ts');
   const {writeDenial} = await import('./extension.ts');
@@ -659,7 +661,7 @@ test('a global core.hooksPath is protected in each worktree inside the workspace
   gitInit(join(work, 'lib'), [['core.hooksPath', 'tools/hooks']]);
   for (const path of [home, join(work, 'app/.githooks'), join(work, 'lib/tools'), join(xdg, 'git')]) mkdirSync(path, {recursive:true});
   writeFileSync(join(xdg, 'git/config'), `[include]\n\tpath = more\n[core]\n\thooksPath = .githooks\n`);
-  writeFileSync(join(xdg, 'git/more'), `[core]\n\thooksPath = ${join(base, 'outside-hooks')}\n`);
+  writeFileSync(join(xdg, 'git/more'), `[core]\n\thooksPath = ${normalize(join(base, 'outside-hooks'))}\n`);
   const run = (code, cwd = work) => {
     const script = `const {bwrapArguments, sandboxProfile, workspaceProtected}=await import(${JSON.stringify(new URL('./isolation.ts', import.meta.url).href)}); const {writeDenial}=await import(${JSON.stringify(new URL('./extension.ts', import.meta.url).href)}); const [home, work] = process.argv.slice(1); ${code}`;
     const result = spawnSync(process.execPath, ['--input-type=module', '-e', script, home, cwd], {encoding:'utf8', timeout:20000, env:{...process.env, GIT_CONFIG_GLOBAL:join(xdg, 'git/config')}});
@@ -698,6 +700,11 @@ test('a global core.hooksPath is protected in each worktree inside the workspace
 
 test('Git configuration files follow GIT_CONFIG_GLOBAL, GIT_CONFIG_SYSTEM and GIT_CONFIG_NOSYSTEM', async () => {
   const {globalGitConfigs} = await import('./isolation.ts');
+  if (windows) {
+    assert.deepEqual(globalGitConfigs({HOME:'C:\\h', GIT_CONFIG_GLOBAL:'C:\\g', GIT_CONFIG_NOSYSTEM:'1'}), ['C:\\g']);
+    assert.deepEqual(globalGitConfigs({HOME:'C:\\h', XDG_CONFIG_HOME:'C:\\x', GIT_CONFIG_SYSTEM:'C:\\s'}), ['C:\\h\\.gitconfig', 'C:\\x\\git\\config', 'C:\\s']);
+    return;
+  }
   assert.deepEqual(globalGitConfigs({HOME:'/h'}), ['/h/.gitconfig', '/h/.config/git/config', '/etc/gitconfig', '/opt/homebrew/etc/gitconfig', '/usr/local/etc/gitconfig']);
   assert.deepEqual(globalGitConfigs({HOME:'/h', XDG_CONFIG_HOME:'/x', GIT_CONFIG_SYSTEM:'/s'}), ['/h/.gitconfig', '/x/git/config', '/s']);
   assert.deepEqual(globalGitConfigs({HOME:'/h', GIT_CONFIG_GLOBAL:'/g', GIT_CONFIG_NOSYSTEM:'1'}), ['/g']);
@@ -706,7 +713,7 @@ test('Git configuration files follow GIT_CONFIG_GLOBAL, GIT_CONFIG_SYSTEM and GI
 
 test('a missing target never pins a repository folder, and links to Git metadata are locked or ask', async t => {
   const {spawnSync} = await import('node:child_process');
-  const {realpathSync, symlinkSync} = await import('node:fs');
+  const {realpathSync} = await import('node:fs');
   const {bwrapArguments, sandboxProfile, workspaceProtected, lockedGit} = await import('./isolation.ts');
   const base = realpathSync(mkdtempSync(join(tmpdir(), 'hexbot-pin-')));
   t.after(() => rmSync(base, {recursive:true, force:true}));
@@ -766,7 +773,7 @@ test('a missing target never pins a repository folder, and links to Git metadata
 
 test('links inside Git metadata lock their targets, links before a .. are found, and only locked targets hold a missing one', async t => {
   const {spawnSync} = await import('node:child_process');
-  const {realpathSync, symlinkSync} = await import('node:fs');
+  const {realpathSync} = await import('node:fs');
   const {bwrapArguments, sandboxProfile, workspaceProtected} = await import('./isolation.ts');
   const base = realpathSync(mkdtempSync(join(tmpdir(), 'hexbot-metadata-links-')));
   t.after(() => rmSync(base, {recursive:true, force:true}));
@@ -809,7 +816,7 @@ test('links inside Git metadata lock their targets, links before a .. are found,
   symlinkSync('../store/nested', join(app, 'hooks-link'));
   const scan = workspaceProtected([work]);
   assert.deepEqual(scan.links, [join(app, 'hooks-link')]);
-  assert.ok(scan.git.includes(join(work, 'store/hooks')));
+  assert.ok(scan.git.includes(windows ? realpathSync(join(app, 'hooks-link/../hooks')) : join(work, 'store/hooks')));
   assert.throws(() => bwrapArguments(home, [], [work]), /symbolic link.*app\/hooks-link.*retry with full_access/);
   if (process.platform === 'darwin') {
     const run = command => spawnSync('/usr/bin/sandbox-exec', ['-p', sandboxProfile(home, [], [work]), '/bin/bash', '-c', command], {cwd:work, encoding:'utf8'});
@@ -860,7 +867,7 @@ test('a nested repository made by git init keeps its relative hooks path in its 
 
 test('a link between Git metadata and its target in the workspace is locked or asks', async t => {
   const {spawnSync} = await import('node:child_process');
-  const {realpathSync, symlinkSync} = await import('node:fs');
+  const {realpathSync} = await import('node:fs');
   const {bwrapArguments, sandboxProfile, workspaceProtected, lockedGit} = await import('./isolation.ts');
   const base = realpathSync(mkdtempSync(join(tmpdir(), 'hexbot-metadata-chain-')));
   t.after(() => rmSync(base, {recursive:true, force:true}));

@@ -17,6 +17,7 @@ const kinds = [
   ['mac-x64', 'Mac, Intel', 'mac/x64'],
   ['linux', 'Linux AppImage', 'linux/x64'],
   ['linux-deb', 'Linux deb', 'linux/x64'],
+  ['windows', 'Windows x64', 'win/x64'],
 ] as const
 
 export function nightlyRows(entries: NightlyEntry[], current?: Pick<Downloads, 'version'> | null): NightlyRow[] {

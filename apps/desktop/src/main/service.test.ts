@@ -7,6 +7,11 @@ import { hexbotHome } from './backend/paths'
 import { migrateLegacyService } from './service'
 import { launchdPlist, systemdUnit } from './service-files'
 
+vi.mock('electron', () => ({ app: { isPackaged: false } }))
+
+const uid = process.getuid?.() ?? 501
+if (!process.getuid) Object.defineProperty(process, 'getuid', { configurable: true, value: () => uid })
+
 for (const platform of ['darwin', 'linux'] as const) {
   it(`migrates ${platform} services once, removing the legacy PATH`, async () => {
     const root = await mkdtemp(join(tmpdir(), 'hexbot-service-'))
@@ -157,6 +162,30 @@ it('only reports the Linux service for this home, decoding systemd escapes', asy
     expect(run).toHaveBeenCalledWith('systemctl', ['--user', 'is-active', 'hexbot'])
     expect(await serviceStatus(file, 'linux', async () => { throw new Error('Stopped') }))
       .toEqual({ installed: true, running: false })
+  } finally {
+    vi.unstubAllEnvs()
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+it('uses the daemon CLI for Windows service lifecycle and validates its status', async () => {
+  const { windowsService, serviceStatus, uninstallService } = await import('./service')
+  const root = await mkdtemp(join(tmpdir(), 'hexbot-windows-service-'))
+  const executable = join(root, 'hexbot.exe')
+  const run = vi.fn(async () => ({ stdout: JSON.stringify({ installed: true, running: false, manager: 'task-scheduler' }) }))
+  try {
+    await writeFile(executable, 'fixture')
+    vi.stubEnv('HEXBOT_EXECUTABLE', executable)
+    vi.stubEnv('HEXBOT_HOME', root)
+    await windowsService('install', run)
+    expect(run).toHaveBeenLastCalledWith(executable, ['service', 'install'],
+      expect.objectContaining({ windowsHide: true, env: expect.objectContaining({ HEXBOT_HOME: root }) }))
+    expect(await serviceStatus('', 'win32', run)).toEqual({ installed: true, running: false })
+    expect(run).toHaveBeenLastCalledWith(executable, ['service', 'status', '--json'], expect.any(Object))
+    await uninstallService('', 'win32', run)
+    expect(run).toHaveBeenLastCalledWith(executable, ['service', 'uninstall'], expect.any(Object))
+    expect(await serviceStatus('', 'win32', async () => ({ stdout: '{"installed":"true"}' })))
+      .toEqual({ installed: false, running: false })
   } finally {
     vi.unstubAllEnvs()
     await rm(root, { recursive: true, force: true })

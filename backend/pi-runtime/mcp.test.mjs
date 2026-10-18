@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import {stopChild} from './test-support.mjs';
 import {spawn} from 'node:child_process';
 import {createServer} from 'node:http';
 import {once, EventEmitter} from 'node:events';
@@ -13,7 +14,7 @@ import {shellEnvironment} from './extension.ts';
 const root = fileURLToPath(new URL('.', import.meta.url));
 test('real Pi connects on the first codemode call, gates nested tools, and freezes declarations', {timeout:45000}, async t => {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), 'hexbot-pi-mcp-')));
-  t.after(() => rmSync(dir, {recursive:true,force:true}));
+
   const home = join(dir, 'home'), cwd = join(dir, 'work'), agent = join(home, 'pi');
   mkdirSync(agent, {recursive:true}); mkdirSync(join(cwd,'.pi'), {recursive:true});
   const serverCwd = join(home, 'runtime/mcp/fixture');
@@ -40,10 +41,10 @@ test('real Pi connects on the first codemode call, gates nested tools, and freez
   writeFileSync(configPath, JSON.stringify(config));
   const secret = '!echo secret-$HOME-${KEY}';
   let serverToken = secret;
-  const env = {...shellEnvironment(process.env),PI_CODING_AGENT_DIR:agent,HEXBOT_SESSION_CONFIG:configPath};
+  const env = {...shellEnvironment(process.env),PI_CODING_AGENT_DIR:agent,HEXBOT_SESSION_CONFIG:configPath,...process.env.HEXBOT_DAEMON_EXECUTABLE ? {HEXBOT_DAEMON_EXECUTABLE:process.env.HEXBOT_DAEMON_EXECUTABLE} : {}};
   assert(!JSON.stringify(env).includes(secret));
   const child = spawn(process.execPath, [join(root,'node_modules/@earendil-works/pi-coding-agent/dist/cli.js'),'--mode','rpc','--no-approve','--session',session,'--no-extensions','-e','builtin:mcp','-e','builtin:codemode','-e',join(root,'extension.ts'),'--no-builtin-tools','--exclude-tools','powershell','--provider','fixture','--model','test'], {cwd,env,stdio:['pipe','pipe','pipe']});
-  t.after(async () => {if (child.exitCode === null) {child.kill('SIGTERM'); await once(child,'exit');}});
+  t.after(async () => {await stopChild(child); rmSync(dir, {recursive:true,force:true});});
   child.stderr.on('data', data => errors.push(String(data)));
   const bus = new EventEmitter();
   let registrations = 0, choice = 'deny';
@@ -95,10 +96,12 @@ test('real Pi connects on the first codemode call, gates nested tools, and freez
   // Pi reconnects asynchronously. Wait for the fixture's initialization event,
   // not a sleep; the immediate call may fail while the old client is closing.
   let watcher;
-  const reconnected = new Promise(resolve => {
+  const reconnected = new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {watcher?.close(); reject(new Error('MCP fixture did not reconnect: ' + JSON.stringify({registrations, errors, events:events.filter(event => ['extension_error', 'extension_ui_request'].includes(event.type)).map(event => ({type:event.type, method:event.method}))})));}, 15000);
+    t.after(() => clearTimeout(timer));
     watcher = watch(dir, () => {
       try {
-        if (JSON.parse(readFileSync(join(dir,'child.json'))).token === serverToken) { watcher.close(); resolve(); }
+        if (JSON.parse(readFileSync(join(dir,'child.json'))).token === serverToken) { clearTimeout(timer); watcher.close(); resolve(); }
       } catch { /* A write may still be in progress. */ }
     });
   });

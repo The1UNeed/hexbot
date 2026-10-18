@@ -18,7 +18,7 @@ function Notes({ notes }: { notes: string[] }) {
 }
 
 function isApp(path: string): boolean {
-  return path.endsWith('.app') || path.endsWith('.AppImage')
+  return path.endsWith('.app') || path.endsWith('.AppImage') || path.toLowerCase().endsWith('.exe')
 }
 
 /** Client and Full: open the app that was just installed. */

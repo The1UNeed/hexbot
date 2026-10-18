@@ -10,6 +10,10 @@ use std::{
 #[derive(Debug, Clone)]
 pub struct Paths {
     pub home: PathBuf,
+    /// Windows honors redirected Local AppData. Explicit test paths can leave it unset.
+    pub local_data: Option<PathBuf>,
+    /// FOLDERID_UserProgramFiles can be redirected independently of Local AppData.
+    pub user_programs: Option<PathBuf>,
     pub hexbot_home: PathBuf,
     pub apps_override: Option<PathBuf>,
     pub opt_override: Option<PathBuf>,
@@ -19,13 +23,28 @@ pub struct Paths {
 
 impl Paths {
     pub fn from_env() -> Result<Self> {
-        let home = PathBuf::from(env::var_os("HOME").ok_or("HOME is not set.")?);
+        let home = PathBuf::from(
+            env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" })
+                .or_else(|| env::var_os("HOME"))
+                .ok_or("The user home directory is not set.")?,
+        );
+        let apps_override = env::var_os("HEXBOT_INSTALL_APPS_DIR").map(PathBuf::from);
+        #[cfg(windows)]
+        let user_programs = if apps_override.is_none() { Some(crate::windows::user_programs()?) } else { None };
+        #[cfg(not(windows))]
+        let user_programs = None;
         let paths = Self {
+            user_programs,
+            local_data: if cfg!(windows) {
+                env::var_os("LOCALAPPDATA").map(PathBuf::from)
+            } else {
+                None
+            },
             hexbot_home: env::var_os("HEXBOT_HOME")
                 .map(PathBuf::from)
                 .unwrap_or_else(|| home.join(".hexbot")),
             opt_override: env::var_os("HEXBOT_INSTALL_OPT_DIR").map(PathBuf::from),
-            apps_override: env::var_os("HEXBOT_INSTALL_APPS_DIR").map(PathBuf::from),
+            apps_override,
             service_root: env::var_os("HEXBOT_SERVICE_ROOT")
                 .map(PathBuf::from)
                 .unwrap_or_else(|| home.clone()),
@@ -41,6 +60,8 @@ impl Paths {
             .into_iter()
             .chain(self.apps_override.iter())
             .chain(self.opt_override.iter())
+            .chain(self.local_data.iter())
+            .chain(self.user_programs.iter())
         {
             if !path.is_absolute()
                 || path
@@ -66,22 +87,34 @@ impl Paths {
         if target.is_macos() {
             self.home
                 .join("Library/Application Support/Hexbot/installer.lock")
+        } else if target.is_windows() {
+            self.windows_local_data().join("Hexbot/installer.lock")
         } else {
             self.home.join(".local/state/hexbot/installer.lock")
         }
     }
     pub fn executable(&self) -> PathBuf {
-        self.hexbot_home.join("runtime/native-executable")
+        self.hexbot_home.join(if cfg!(windows) {
+            "runtime/native-executable.exe"
+        } else {
+            "runtime/native-executable"
+        })
     }
     pub fn desktop_dir(&self) -> PathBuf {
         self.home.join(".local/share/applications")
     }
     pub fn wrapper(&self) -> PathBuf {
-        self.home.join(".local/bin/hexbot")
+        self.home.join(if cfg!(windows) {
+            ".local/bin/hexbot.exe"
+        } else {
+            ".local/bin/hexbot"
+        })
     }
     pub fn service_file(&self, target: Target) -> PathBuf {
         self.service_root.join(if target.is_macos() {
             "Library/LaunchAgents/app.hexbot.daemon.plist"
+        } else if target.is_windows() {
+            ".config/hexbot/daemon.xml"
         } else {
             ".config/systemd/user/hexbot.service"
         })
@@ -96,9 +129,17 @@ impl Paths {
                 PathBuf::from("/Applications"),
                 self.home.join("Applications"),
             ]
+        } else if target.is_windows() {
+            vec![self.user_programs.clone().unwrap_or_else(|| self.windows_local_data().join("Programs"))]
         } else {
             vec![self.home.join(".local/share/hexbot")]
         }
+    }
+
+    fn windows_local_data(&self) -> PathBuf {
+        self.local_data
+            .clone()
+            .unwrap_or_else(|| self.home.join("AppData/Local"))
     }
 
     pub fn install_apps_dir(&self, target: Target) -> Result<PathBuf> {
@@ -114,8 +155,14 @@ impl Paths {
 
     pub(crate) fn command(&self, executable: impl AsRef<std::ffi::OsStr>) -> Command {
         let mut command = Command::new(executable);
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+        }
         command
             .env("HOME", &self.home)
+            .env("USERPROFILE", &self.home)
             .env("HEXBOT_HOME", &self.hexbot_home)
             .env("HEXBOT_SERVICE_ROOT", &self.service_root)
             .env(
@@ -202,6 +249,10 @@ pub fn detect_at(paths: &Paths, target: Target) -> Result<Installed> {
                         managed_by_dpkg: false,
                     });
                 }
+            } else if target.is_windows() {
+                if let Some(app) = crate::windows::installed_app(&path)? {
+                    installed.apps.push(app);
+                }
             } else if let Some(id) = appimage_id(&path, installed.receipt.as_ref()) {
                 installed.apps.push(InstalledApp {
                     option: app_option(&id).expect("known app id"),
@@ -214,7 +265,9 @@ pub fn detect_at(paths: &Paths, target: Target) -> Result<Installed> {
         }
     }
     // Explicit paths isolate discovery from the system's package database.
-    if !target.is_macos() && (paths.apps_override.is_none() || paths.opt_override.is_some()) {
+    if target == Target::LinuxX86_64
+        && (paths.apps_override.is_none() || paths.opt_override.is_some())
+    {
         let opt = paths.opt_override.as_deref().unwrap_or(Path::new("/opt"));
         installed.apps.extend(dpkg_apps(opt, |path| {
             paths
@@ -229,15 +282,14 @@ pub fn detect_at(paths: &Paths, target: Target) -> Result<Installed> {
 }
 
 fn dpkg_pattern(path: &Path) -> std::ffi::OsString {
-    use std::os::unix::ffi::{OsStrExt, OsStringExt};
-    let mut pattern = Vec::new();
-    for &byte in path.as_os_str().as_bytes() {
-        if matches!(byte, b'[' | b']' | b'*' | b'?' | b'\\') {
-            pattern.push(b'\\');
+    let mut pattern = String::new();
+    for ch in path.to_string_lossy().chars() {
+        if matches!(ch, '[' | ']' | '*' | '?' | '\\') {
+            pattern.push('\\');
         }
-        pattern.push(byte);
+        pattern.push(ch);
     }
-    std::ffi::OsString::from_vec(pattern)
+    pattern.into()
 }
 
 fn dpkg_apps(opt: &Path, owned: impl Fn(&Path) -> bool) -> Vec<InstalledApp> {
@@ -362,17 +414,28 @@ fn appimage_id(path: &Path, receipt: Option<&Receipt>) -> Option<String> {
 }
 
 pub(crate) fn writable_directory(path: &Path) -> bool {
-    use std::os::unix::ffi::OsStrExt;
-    let Some(existing) = path.ancestors().find(|p| p.exists()) else {
-        return false;
-    };
-    if !existing.is_dir() {
-        return false;
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        let Some(existing) = path.ancestors().find(|p| p.exists()) else {
+            return false;
+        };
+        if !existing.is_dir() {
+            return false;
+        }
+        let Ok(path) = std::ffi::CString::new(existing.as_os_str().as_bytes()) else {
+            return false;
+        };
+        unsafe { libc::access(path.as_ptr(), libc::W_OK | libc::X_OK) == 0 }
     }
-    let Ok(path) = std::ffi::CString::new(existing.as_os_str().as_bytes()) else {
-        return false;
-    };
-    unsafe { libc::access(path.as_ptr(), libc::W_OK | libc::X_OK) == 0 }
+    #[cfg(windows)]
+    {
+        // Access checks must use the directory's ACL, not its readonly attribute.
+        // Creating an unnamed scratch file has no lasting effect.
+        path.ancestors()
+            .find(|p| p.exists())
+            .is_some_and(|existing| existing.is_dir() && tempfile::tempfile_in(existing).is_ok())
+    }
 }
 
 fn choose_apps_dir(dirs: Vec<PathBuf>) -> Result<PathBuf> {
@@ -381,7 +444,7 @@ fn choose_apps_dir(dirs: Vec<PathBuf>) -> Result<PathBuf> {
         .ok_or_else(|| "The apps directory is not writable.".into())
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     #[test]
@@ -449,6 +512,8 @@ mod tests {
         fs::create_dir(opt.join("Hexbot Nightly")).unwrap();
         fs::create_dir(opt.join("HexbotBackup")).unwrap();
         let paths = Paths {
+            local_data: None,
+            user_programs: None,
             home: root.path().join("user"),
             hexbot_home: root.path().join("user/.hexbot"),
             apps_override: Some(root.path().join("apps")),
@@ -569,6 +634,8 @@ exit 1
         );
         assert!(!fallback.exists());
         let paths = Paths {
+            local_data: None,
+            user_programs: None,
             home: root.path().join("user"),
             hexbot_home: root.path().join("user/.hexbot"),
             apps_override: Some(fallback.clone()),

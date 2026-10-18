@@ -40,8 +40,19 @@ fn start(home: &Path) -> Child {
         .spawn()
         .unwrap()
 }
+fn request_stop(child: &Child, home: &Path) {
+    #[cfg(unix)]
+    {
+        let _ = home;
+        assert_eq!(
+            unsafe { libc::kill(child.id().unwrap() as i32, libc::SIGTERM) },
+            0
+        );
+    }
+    #[cfg(windows)]
+    hexbot_core::platform::request_shutdown(child.id().unwrap(), home).unwrap();
+}
 #[tokio::test]
-#[cfg(unix)]
 async fn listener_restart_single_owner_and_graceful_shutdown() {
     let home = tempfile::tempdir().unwrap();
     let mut child = start(home.path());
@@ -146,9 +157,7 @@ async fn listener_restart_single_owner_and_graceful_shutdown() {
         assert_eq!(state["host"], if lan { "0.0.0.0" } else { "127.0.0.1" });
     }
     // Leave a WebSocket open: graceful shutdown must actively close it.
-    unsafe {
-        libc::kill(child.id().unwrap() as i32, libc::SIGTERM);
-    }
+    request_stop(&child, home.path());
     let status = tokio::time::timeout(Duration::from_secs(10), child.wait())
         .await
         .unwrap()
@@ -158,9 +167,7 @@ async fn listener_restart_single_owner_and_graceful_shutdown() {
     let mut restarted = start(home.path());
     let mut output = BufReader::new(restarted.stdout.take().unwrap());
     ready(&mut output).await;
-    unsafe {
-        libc::kill(restarted.id().unwrap() as i32, libc::SIGTERM);
-    }
+    request_stop(&restarted, home.path());
     assert!(
         tokio::time::timeout(Duration::from_secs(10), restarted.wait())
             .await
@@ -172,7 +179,6 @@ async fn listener_restart_single_owner_and_graceful_shutdown() {
 /// Only a hand-started daemon prints the link: the app signs itself in with the
 /// private token file, and a log file must not hold a usable code.
 #[tokio::test]
-#[cfg(unix)]
 async fn serve_keeps_sign_in_links_out_of_pipes_and_supervisor_logs() {
     async fn ready_with_link(output: &mut BufReader<ChildStdout>) -> (u16, Option<String>) {
         tokio::time::timeout(Duration::from_secs(15), async {
@@ -201,9 +207,7 @@ async fn serve_keeps_sign_in_links_out_of_pipes_and_supervisor_logs() {
     let (port, link) = ready_with_link(&mut output).await;
     assert_eq!(link, None, "piped stdout must not hold a sign-in code");
     assert!(port > 0);
-    unsafe {
-        libc::kill(child.id().unwrap() as i32, libc::SIGTERM);
-    }
+    request_stop(&child, home.path());
     assert!(child.wait().await.unwrap().success());
     let supervised = tempfile::tempdir().unwrap();
     let mut child = Command::new(env!("CARGO_BIN_EXE_hexbot"))
@@ -221,9 +225,7 @@ async fn serve_keeps_sign_in_links_out_of_pipes_and_supervisor_logs() {
     let mut output = BufReader::new(child.stdout.take().unwrap());
     let (_, link) = ready_with_link(&mut output).await;
     assert_eq!(link, None);
-    unsafe {
-        libc::kill(child.id().unwrap() as i32, libc::SIGTERM);
-    }
+    request_stop(&child, supervised.path());
     assert!(child.wait().await.unwrap().success());
 }
 #[test]

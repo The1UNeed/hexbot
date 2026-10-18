@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto'
 import { existsSync } from 'node:fs'
 import { chmod, cp, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, symlink, writeFile } from 'node:fs/promises'
 import { arch, platform } from 'node:os'
-import { basename, dirname, join } from 'node:path'
+import { basename, dirname, isAbsolute, join, relative, win32 } from 'node:path'
 import { spawn } from 'node:child_process'
 
 import { app } from 'electron'
@@ -51,7 +51,7 @@ export async function runChild(
 ): Promise<void> {
   await mkdir(join(hexbotHome(), 'logs'), { recursive: true })
   await new Promise<void>((resolve, reject) => {
-    const child = spawn(command, args, { cwd: options.cwd, env: options.env ?? process.env })
+    const child = spawn(command, args, { cwd: options.cwd, env: options.env ?? process.env, windowsHide: true })
     const pending = new Map<NodeJS.ReadableStream, string>()
     const consume = (stream: NodeJS.ReadableStream, chunk: Buffer): void => {
       void appendLog(chunk)
@@ -101,7 +101,7 @@ async function verifyNativeRuntime(
   const manifest = await readManifest(directory)
   if (manifest.version !== deps.appVersion || manifest.target !== `${deps.platform}-${deps.arch}`)
     throw new Error('Native runtime version or architecture does not match this app')
-  const required = ['hexbot', 'hexbot-core', 'node', 'pi/hexbot-pi', 'pi/package-lock.json',
+  const required = [...(deps.platform === 'win32' ? ['hexbot.exe', 'node.exe', 'pi/hexbot-pi.mjs'] : ['hexbot', 'hexbot-core', 'node', 'pi/hexbot-pi']), 'pi/package-lock.json',
     'pi/node_modules/@earendil-works/pi-coding-agent/dist/cli.js']
   if (!manifest.files || required.some(file => !manifest.files[file]))
     throw new Error('Native runtime manifest is incomplete')
@@ -124,8 +124,11 @@ export async function installCodeRuntime(deps: BootstrapDeps): Promise<void> {
   await mkdir(binDir(), { recursive: true })
   await mkdir(runtimeDir(), { recursive: true })
   const toolDeps = { ...deps, binDirectory: binDir(), stagingDirectory: runtimeDir() }
-  const python = join(binDir(), 'python3.11')
-  const voice = join(binDir(), 'edge-tts')
+  const windows = deps.platform === 'win32'
+  const pythonReceipt = join(runtimeDir(), 'code-python.txt')
+  let python = windows ? (await readFile(pythonReceipt, 'utf8').catch(() => '')).trim() : join(binDir(), 'python3.11')
+  const environment = join(runtimeDir(), 'tools', 'edge-tts')
+  const voice = windows ? join(environment, 'Scripts', 'edge-tts.exe') : join(binDir(), 'edge-tts')
   const voiceReceipt = join(runtimeDir(), 'tools', 'edge-tts.requirements.txt')
   const voiceCurrent = deps.exists(voice) && await readFile(voiceReceipt, 'utf8').catch(() => '') === voiceRequirements
   if (deps.exists(python) && voiceCurrent) return
@@ -141,25 +144,32 @@ export async function installCodeRuntime(deps: BootstrapDeps): Promise<void> {
     await deps.run(uv, ['python', 'install', '--no-bin', '3.11'], options)
     let executable = ''
     await deps.run(uv, ['python', 'find', '--no-project', '--managed-python', '3.11'], options, line => {
-      if (line.startsWith('/')) executable = line.trim()
+      const candidate = line.trim()
+      if (isAbsolute(candidate) || (windows && win32.isAbsolute(candidate))) executable = candidate
     })
     if (!executable) throw new Error('Managed code interpreter was not found')
-    await rm(python, { force: true })
-    await symlink(executable, python)
+    if (windows) {
+      python = executable
+      await writeFile(pythonReceipt, executable)
+    } else {
+      await rm(python, { force: true })
+      await symlink(executable, python)
+    }
   }
   if (!voiceCurrent) {
     // Every package is pinned with its hash, so a new upstream release never reaches this machine.
     deps.emit({ stage: 'dependencies', message: 'Installing voice tools' })
-    const environment = join(runtimeDir(), 'tools', 'edge-tts')
     await rm(voiceReceipt, { force: true })
     await rm(environment, { recursive: true, force: true })
     await deps.run(uv, ['venv', '--no-project', '--python', python, environment], options)
     const requirements = join(environment, 'requirements.txt')
     await writeFile(requirements, voiceRequirements)
-    await deps.run(uv, ['pip', 'install', '--python', join(environment, 'bin', 'python'),
+    await deps.run(uv, ['pip', 'install', '--python', join(environment, windows ? 'Scripts' : 'bin', windows ? 'python.exe' : 'python'),
       '--require-hashes', '--no-deps', '--no-build', '-r', requirements], options)
-    await rm(voice, { force: true })
-    await symlink(join(environment, 'bin', 'edge-tts'), voice)
+    if (!windows) {
+      await rm(voice, { force: true })
+      await symlink(join(environment, 'bin', 'edge-tts'), voice)
+    }
     await writeFile(voiceReceipt, voiceRequirements)
   }
 }
@@ -195,7 +205,7 @@ export async function pruneNativeRuntimes(active: string, previous?: string): Pr
   for (const entry of await readdir(root, { withFileTypes: true })) {
     if (!entry.isDirectory() || entry.name.includes('.staging-') || entry.name.startsWith('.')) continue
     const directory = join(root, entry.name)
-    if (!keep.has(directory) && existsSync(join(directory, 'hexbot')))
+    if (!keep.has(directory) && (existsSync(join(directory, 'hexbot')) || existsSync(join(directory, 'hexbot.exe'))))
       await rm(directory, { recursive: true, force: true })
   }
 }
@@ -212,9 +222,10 @@ async function selectedRuntime(deps: BootstrapDeps): Promise<SelectedRuntime | u
     const selected = JSON.parse(await readFile(join(runtimeDir(), 'native-current.json'), 'utf8')) as {
       version: string; executable: string; previous?: string; files?: Record<string, string>
     }
-    const executable = await realpath(nativeServiceExecutable())
+    const executable = await realpath(deps.platform === 'win32' ? selected.executable : nativeServiceExecutable())
     const nativeRoot = await realpath(join(runtimeDir(), 'native'))
-    if (executable !== selected.executable || !executable.startsWith(`${nativeRoot}/`)) return undefined
+    const location = relative(nativeRoot, executable)
+    if (executable !== await realpath(selected.executable) || !location || location.startsWith('..') || isAbsolute(location)) return undefined
     const directory = dirname(executable)
     const manifest = await readManifest(directory)
     await verifyNativeRuntime(directory, { ...deps, appVersion: selected.version }, selected.files ?? manifest.files)
@@ -275,11 +286,37 @@ async function activateNativeRuntime(destination: string, deps: BootstrapDeps, f
   }
 }
 
+async function installWindowsNativeRuntime(source: string, builtAt: number, deps: BootstrapDeps): Promise<void> {
+  // Rust owns the activation lock, executable copies and Task Scheduler's
+  // stable dispatcher. Refuse a stale selection if another app or the CLI
+  // installs an update while Python and voice tools are being prepared.
+  const selection = await readFile(join(runtimeDir(), 'native-current.json')).catch((error: NodeJS.ErrnoException) => {
+    if (error.code !== 'ENOENT') throw error
+    return undefined
+  })
+  const selected = await selectedRuntime(deps)
+  const activate = !selected || selected.builtAt < builtAt
+  if (activate) {
+    await probe(deps, join(source, 'node.exe'), [join(source, 'pi/hexbot-pi.mjs'), '--version'])
+    await probe(deps, join(source, 'hexbot.exe'), ['version'])
+  }
+  await installCodeRuntime(deps)
+  if (activate) await deps.run(join(source, 'hexbot.exe'), ['setup', '--activate', '--no-code-tools', '--no-cli', '--json'], {
+    env: { ...process.env, HEXBOT_HOME: hexbotHome(),
+      HEXBOT_EXPECTED_NATIVE_SELECTION: selection ? createHash('sha256').update(selection).digest('hex') : 'none' }
+  })
+}
+
 async function installNativeRuntime(deps: BootstrapDeps): Promise<void> {
   const source = join(deps.resourcesPath, 'hexbot-native')
   deps.emit({ stage: 'runtime', message: 'Preparing Hexbot runtime' })
   const signedHashes = await verifyNativeRuntime(source, deps)
   const { builtAt = 0 } = await readManifest(source)
+  if (deps.platform === 'win32') {
+    await installWindowsNativeRuntime(source, builtAt, deps)
+    deps.emit({ stage: 'done', message: 'Hexbot runtime is ready', percent: 100 })
+    return
+  }
   // The newest build wins whichever app or updater installed it, so Stable and
   // Nightly apps sharing this home never go back to an older daemon.
   const selected = await selectedRuntime(deps)

@@ -41,6 +41,7 @@ fn target_names_match_the_release_manifest() {
         ("macos", "aarch64", "macos-aarch64"),
         ("macos", "x86_64", "macos-x86_64"),
         ("linux", "x86_64", "linux-x86_64"),
+        ("windows", "x86_64", "windows-x86_64"),
     ] {
         let target = Target::from_platform(os, arch).unwrap();
         assert_eq!(target.to_string(), expected);
@@ -49,7 +50,7 @@ fn target_names_match_the_release_manifest() {
             format!("\"{expected}\"")
         );
     }
-    assert!(Target::from_platform("windows", "x86_64").is_err());
+    assert!(Target::from_platform("windows", "aarch64").is_err());
     assert!(Target::from_platform("linux", "aarch64").is_err());
 }
 
@@ -71,7 +72,11 @@ fn receipt_round_trip_and_legacy_detection_are_isolated() {
     assert_eq!(read.channel, Track::Nightly);
     assert_eq!(read.paths, receipt.paths);
     fs::remove_file(paths.receipt()).unwrap();
-    let target = Target::detect().unwrap();
+    let target = if cfg!(windows) {
+        Target::LinuxX86_64
+    } else {
+        Target::detect().unwrap()
+    };
     let apps = paths.apps_override.as_ref().unwrap();
     fs::create_dir_all(apps).unwrap();
     if target.is_macos() {

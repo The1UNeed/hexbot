@@ -113,15 +113,25 @@ fn mint(
         json!({"device_token": token, "device_id": id, "owner_id":owner, "daemon_name":daemon_name()}),
     )
 }
+#[cfg(any(unix, test))]
 fn hostname(bytes: &[u8]) -> Option<String> {
     let length = bytes.iter().position(|b| *b == 0).unwrap_or(bytes.len());
     (length > 0).then(|| String::from_utf8_lossy(&bytes[..length]).into_owned())
 }
 pub fn daemon_name() -> String {
-    let mut bytes = [0u8; 256];
-    // The buffer is valid for its entire length and is read only after gethostname returns.
-    if unsafe { libc::gethostname(bytes.as_mut_ptr().cast(), bytes.len()) } == 0
-        && let Some(name) = hostname(&bytes)
+    #[cfg(unix)]
+    {
+        let mut bytes = [0u8; 256];
+        // The buffer is valid for its entire length and is read only after gethostname returns.
+        if unsafe { libc::gethostname(bytes.as_mut_ptr().cast(), bytes.len()) } == 0
+            && let Some(name) = hostname(&bytes)
+        {
+            return name;
+        }
+    }
+    #[cfg(windows)]
+    if let Ok(name) = std::env::var("COMPUTERNAME")
+        && !name.is_empty()
     {
         return name;
     }
@@ -256,6 +266,8 @@ pub fn local_token(home: &Path) -> Result<String> {
             .optional()?
             .is_some();
         if valid {
+            #[cfg(windows)]
+            crate::windows_sandbox::protect_private_path(&path, false)?;
             #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt;

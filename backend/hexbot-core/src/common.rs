@@ -7,10 +7,24 @@ pub fn pi_executable() -> Result<std::path::PathBuf> {
     if let Some(path) = std::env::var_os("HEXBOT_PI_EXECUTABLE").filter(|path| !path.is_empty()) {
         return Ok(path.into());
     }
+    if let Some(root) = bundled_root() {
+        let candidate = root.join(if cfg!(windows) {
+            "pi/hexbot-pi.mjs"
+        } else {
+            "pi/hexbot-pi"
+        });
+        if candidate.is_file() {
+            return Ok(candidate);
+        }
+    }
     #[cfg(debug_assertions)]
     {
-        let candidate = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../pi-runtime/node_modules/.bin/pi");
+        let candidate =
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(if cfg!(windows) {
+                "../pi-runtime/node_modules/@earendil-works/pi-coding-agent/dist/cli.js"
+            } else {
+                "../pi-runtime/node_modules/.bin/pi"
+            });
         if candidate.is_file() {
             return Ok(candidate);
         }
@@ -19,6 +33,15 @@ pub fn pi_executable() -> Result<std::path::PathBuf> {
         5200,
         "Pi runtime missing. Set HEXBOT_PI_EXECUTABLE to the Pi launcher",
     ))
+}
+
+/// Packaged assets sit beside the daemon. Source builds retain their dev paths.
+pub fn bundled_root() -> Option<std::path::PathBuf> {
+    let executable = std::env::current_exe().ok()?;
+    let root = executable.parent()?;
+    root.join("manifest.json")
+        .is_file()
+        .then(|| root.to_owned())
 }
 
 pub fn now() -> f64 {
@@ -37,6 +60,7 @@ pub fn required<'a>(p: &'a Value, key: &str) -> Result<&'a str> {
         .ok_or_else(|| Error::new(4200, format!("missing parameter: {key}")))
 }
 pub fn identifier(value: &str) -> Result<()> {
+    crate::platform::validate_path(Path::new(value))?;
     if value.is_empty()
         || matches!(value, "." | "..")
         || value
@@ -110,6 +134,8 @@ pub fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
         .ok_or_else(|| Error::new(4202, "invalid path"))?;
     fs::create_dir_all(parent)?;
     let mut tmp = tempfile::NamedTempFile::new_in(parent)?;
+    #[cfg(windows)]
+    crate::windows_sandbox::protect_private_path(tmp.path(), false)?;
     tmp.write_all(bytes)?;
     tmp.as_file().sync_all()?;
     tmp.persist(path).map_err(|e| Error::from(e.error))?;
@@ -418,25 +444,42 @@ pub fn read_regular_text(path: &Path, limit: usize) -> Result<String> {
         .map_err(|_| Error::new(4202, "file is not UTF-8 text"))
 }
 pub fn managed_python(home: &Path) -> std::path::PathBuf {
+    #[cfg(windows)]
+    if let Ok(path) = fs::read_to_string(home.join("runtime/code-python.txt")) {
+        let path = std::path::PathBuf::from(path.trim());
+        if path.is_absolute() && path.is_file() {
+            return path;
+        }
+    }
     let managed = home.join("bin/python3.11");
     if managed.is_file() {
         managed
     } else {
-        "python3".into()
+        if cfg!(windows) {
+            "python.exe"
+        } else {
+            "python3"
+        }
+        .into()
     }
 }
 
 /// Expand a leading `~` or `~/` to the user's home directory.
 pub fn expand_home(path: &str) -> Result<std::path::PathBuf> {
-    expand_home_in(path, std::env::var_os("HOME"))
+    crate::platform::validate_path(Path::new(path))?;
+    expand_home_in(path, crate::platform::user_home())
 }
 fn expand_home_in(path: &str, home: Option<std::ffi::OsString>) -> Result<std::path::PathBuf> {
-    if path == "~" || path.starts_with("~/") {
+    if path == "~" || path.starts_with("~/") || cfg!(windows) && path.starts_with("~\\") {
         // Without HOME the path would silently become relative to the daemon's cwd.
         let home = home
             .filter(|home| !home.is_empty())
             .ok_or_else(|| Error::new(4202, "HOME is not set, so ~ cannot be expanded"))?;
-        Ok(std::path::PathBuf::from(home).join(path.strip_prefix("~/").unwrap_or("")))
+        Ok(std::path::PathBuf::from(home).join(
+            path.strip_prefix("~/")
+                .or_else(|| path.strip_prefix("~\\"))
+                .unwrap_or(""),
+        ))
     } else {
         Ok(std::path::PathBuf::from(path))
     }
@@ -855,12 +898,22 @@ async fn proxy_request(client: &mut tokio::net::TcpStream, allow_private: bool) 
 
 /// Locate a child command in its workspace or PATH, without extra search roots.
 pub fn command_path(program: &str, cwd: &Path) -> Option<std::path::PathBuf> {
-    if program.contains(std::path::MAIN_SEPARATOR) {
-        let path = cwd.join(program);
-        return executable_file(&path).then_some(path);
+    #[cfg(windows)]
+    let mut names = vec![program.to_owned()];
+    #[cfg(not(windows))]
+    let names = [program.to_owned()];
+    #[cfg(windows)]
+    if std::path::Path::new(program).extension().is_none() {
+        names.extend([format!("{program}.exe"), format!("{program}.com")]);
+    }
+    if program.contains(std::path::MAIN_SEPARATOR) || program.contains('/') {
+        return names
+            .iter()
+            .map(|name| cwd.join(name))
+            .find(|path| executable_file(path));
     }
     std::env::split_paths(&std::env::var_os("PATH")?)
-        .map(|dir| cwd.join(dir).join(program))
+        .flat_map(|dir| names.iter().map(move |name| cwd.join(&dir).join(name)))
         .find(|path| executable_file(path))
 }
 pub(crate) fn executable_file(path: &Path) -> bool {
@@ -875,9 +928,12 @@ pub(crate) fn executable_file(path: &Path) -> bool {
         use std::os::unix::fs::PermissionsExt;
         meta.permissions().mode() & 0o111 != 0
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
     {
-        true
+        path.extension().is_some_and(|extension| {
+            extension.to_string_lossy().eq_ignore_ascii_case("exe")
+                || extension.to_string_lossy().eq_ignore_ascii_case("com")
+        })
     }
 }
 
@@ -969,10 +1025,13 @@ mod tool_safety_tests {
         assert_eq!(cfg["list"], json!([3]));
         assert!(!allow_private_urls(home.path(), "owl").unwrap());
         assert!(merged_config(home.path(), "../escape").is_err());
-        let outside = tempfile::tempdir().unwrap();
-        std::os::unix::fs::symlink(outside.path(), home.path().join("profiles/link")).unwrap();
-        assert!(merged_config(home.path(), "link").is_err());
-        assert!(allow_private_urls(home.path(), "link").is_err());
+        #[cfg(unix)]
+        {
+            let outside = tempfile::tempdir().unwrap();
+            std::os::unix::fs::symlink(outside.path(), home.path().join("profiles/link")).unwrap();
+            assert!(merged_config(home.path(), "link").is_err());
+            assert!(allow_private_urls(home.path(), "link").is_err());
+        }
     }
 
     #[test]

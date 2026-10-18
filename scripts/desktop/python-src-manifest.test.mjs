@@ -40,5 +40,5 @@ test('the actually staged handoff package imports with its signature verifier', 
   const destination = await mkdtemp(join(tmpdir(), 'hexbot-handoff-import-'))
   t.after(() => rm(destination, { recursive: true, force: true }))
   await stagePythonSource(fileURLToPath(new URL('../../', import.meta.url)), destination, { nativeTransitionVersion: '1.2.3' })
-  execFileSync('python3', ['-I', '-c', 'import sys; sys.path.insert(0, sys.argv[1]); import hexbot.cli; from hexbot import native_transition, update_signature; assert native_transition.update_signature is update_signature', destination], { cwd: destination })
+  execFileSync(process.platform === 'win32' ? 'python' : 'python3', ['-I', '-c', 'import sys; sys.path.insert(0, sys.argv[1]); import hexbot.cli; from hexbot import native_transition, update_signature; assert native_transition.update_signature is update_signature', destination], { cwd: destination })
 })

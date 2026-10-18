@@ -10,9 +10,11 @@ import { createNativeArchive, launchers, nativeTarget, stageNativeRuntime, rustT
 const exec = promisify(execFile)
 test('target supports both desktop architectures and Linux arm64', () => {
   for (const os of ['darwin', 'linux']) for (const arch of ['x64', 'arm64']) assert.equal(nativeTarget(os, arch), `${os}-${arch}`)
-  assert.throws(() => nativeTarget('win32', 'x64'), /Unsupported/)
+  assert.equal(nativeTarget('win32', 'x64'), 'win32-x64')
+  assert.equal(rustTarget('win32', 'x64'), 'x86_64-pc-windows-msvc')
+  assert.throws(() => nativeTarget('win32', 'arm64'), /Unsupported/)
 })
-test('launchers preserve arguments and resolve paths containing spaces', async () => {
+test('launchers preserve arguments and resolve paths containing spaces', { skip: process.platform === 'win32' }, async () => {
   const root = await mkdtemp(join(tmpdir(), 'hexbot native '))
   try {
     await mkdir(join(root, 'pi'))
@@ -38,7 +40,7 @@ test('stage builds locked dependencies, validates Pi and emits artifact checksum
     await writeFile(join(root, 'apps/desktop/package.json'), JSON.stringify({ version: '1.2.3' }))
     await writeFile(join(root, 'backend/pi-runtime/package.json'), JSON.stringify({ dependencies: { '@earendil-works/pi-coding-agent': '1.0.1' } }))
     await writeFile(join(root, 'backend/pi-runtime/package-lock.json'), '{}')
-    await writeFile(join(root, `backend/hexbot-core/target/${rustTarget(process.platform, process.arch)}/release/hexbot`), 'daemon')
+    await writeFile(join(root, `backend/hexbot-core/target/${rustTarget(process.platform, process.arch)}/release/hexbot${process.platform === 'win32' ? '.exe' : ''}`), 'daemon')
     const node = join(root, 'node'); await writeFile(node, 'node')
     const calls = []
     const result = await stageNativeRuntime({ repository: root, nodeExecutable: node, download: async url => ['rg', 'fd'].map(tool => toolAsset(tool, process.platform, process.arch)).find(asset => asset.url === url).sha256, run: async (command, args, options) => {
@@ -56,8 +58,8 @@ test('stage builds locked dependencies, validates Pi and emits artifact checksum
     assert.equal(await readFile(join(result.destination, 'skills/.history.json'), 'utf8'), '{}\n')
     const manifest = JSON.parse(await readFile(join(result.destination, 'manifest.json'), 'utf8'))
     assert.equal(manifest.piVersion, '1.0.1'); assert.equal(manifest.version, '1.2.3')
-    assert.match(manifest.files['hexbot-core'], /^[a-f0-9]{64}$/)
-    for (const file of ['bin/rg', 'bin/fd', 'pi/search-tools.mjs']) assert.match(manifest.files[file], /^[a-f0-9]{64}$/)
+    assert.match(manifest.files[process.platform === 'win32' ? 'hexbot.exe' : 'hexbot-core'], /^[a-f0-9]{64}$/)
+    for (const file of [`bin/rg${process.platform === 'win32' ? '.exe' : ''}`, `bin/fd${process.platform === 'win32' ? '.exe' : ''}`, 'pi/search-tools.mjs']) assert.match(manifest.files[file], /^[a-f0-9]{64}$/)
     assert(Number.isSafeInteger(manifest.builtAt) && manifest.builtAt > 0)
     const cargo = calls.find(c => c.command === 'cargo').args
     assert(cargo.includes('--locked'))
@@ -74,18 +76,19 @@ test('archive dereferences npm links and records the update format', async () =>
   try {
     const bundle = join(root, 'bundle'); await mkdir(bundle)
     await writeFile(join(bundle, 'manifest.json'), JSON.stringify({ version: '1.2.3', target: nativeTarget() }))
-    await writeFile(join(bundle, 'hexbot'), 'executable')
-    await symlink('hexbot', join(bundle, 'alias'))
+    await mkdir(join(bundle, 'original'))
+    await writeFile(join(bundle, 'original/hexbot'), 'executable')
+    await symlink(join(bundle, 'original'), join(bundle, 'alias'), process.platform === 'win32' ? 'junction' : 'dir')
     const archive = join(root, 'native.tar.gz')
     const manifest = await createNativeArchive(bundle, archive)
-    assert.equal(manifest.format, 'tar.gz'); assert.equal(manifest.entrypoint, 'hexbot')
+    assert.equal(manifest.format, 'tar.gz'); assert.equal(manifest.entrypoint, process.platform === 'win32' ? 'hexbot.exe' : 'hexbot')
     const unpacked = join(root, 'unpacked'); await mkdir(unpacked)
     await exec('tar', ['-xzf', archive, '-C', unpacked])
     assert.equal(manifest.size, (await stat(archive)).size)
     assert.equal(manifest.unpacked_size, await directoryBytes(unpacked))
-    assert.notEqual((await stat(join(unpacked, 'hexbot'))).ino, (await stat(join(unpacked, 'alias'))).ino)
-    await rm(join(unpacked, 'hexbot'))
-    assert.equal(await readFile(join(unpacked, 'alias'), 'utf8'), 'executable')
+    assert.notEqual((await stat(join(unpacked, 'original/hexbot'))).ino, (await stat(join(unpacked, 'alias/hexbot'))).ino)
+    await rm(join(unpacked, 'original/hexbot'))
+    assert.equal(await readFile(join(unpacked, 'alias/hexbot'), 'utf8'), 'executable')
   } finally { await rm(root, { recursive: true, force: true }) }
 })
 
@@ -100,9 +103,12 @@ test('standalone Node rejects unpinned versions and tampered archives without fe
     await assert.rejects(standaloneNode('/unused', os, arch), /checksum mismatch/)
   }
   assert.equal(urls.length, 4)
-  assert.ok(urls.every(url => url.endsWith('.tar.gz') && url.includes(`/v${NODE_VERSION}/`)))
+  assert.match(NODE_SHA256['win32-x64'], /^[a-f0-9]{64}$/)
+  await assert.rejects(standaloneNode('/unused', 'win32', 'x64'), /checksum mismatch/)
+  assert.equal(urls.length, 5)
+  assert.ok(urls.every(url => /\.(tar\.gz|zip)$/.test(url) && url.includes(`/v${NODE_VERSION}/`)))
   await assert.rejects(standaloneNode('/unused', 'darwin', 'arm64', '99.0.0'), /not pinned/)
-  assert.equal(urls.length, 4)
+  assert.equal(urls.length, 5)
 })
 
 test('macOS update archives omit AppleDouble files and extended attributes', { skip: process.platform !== 'darwin' }, async () => {

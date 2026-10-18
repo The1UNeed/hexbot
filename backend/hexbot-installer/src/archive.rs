@@ -54,6 +54,7 @@ fn extract_native_limited(archive: &Path, root: &Path, limit: u64) -> Result<()>
         let mut entry = entry?;
         let path = entry.path()?.into_owned();
         if path.is_absolute()
+            || path.to_string_lossy().contains(['\\', ':'])
             || path.components().any(|c| {
                 matches!(
                     c,
@@ -62,6 +63,31 @@ fn extract_native_limited(archive: &Path, root: &Path, limit: u64) -> Result<()>
             })
         {
             return fail("The native archive contains an unsafe path.");
+        }
+        #[cfg(windows)]
+        for part in path.components().filter_map(|part| {
+            if let Component::Normal(value) = part {
+                value.to_str()
+            } else {
+                None
+            }
+        }) {
+            let base = part
+                .split('.')
+                .next()
+                .unwrap_or_default()
+                .to_ascii_uppercase();
+            if part.ends_with([' ', '.'])
+                || part.contains(['<', '>', '"', '|', '?', '*'])
+                || matches!(base.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+                || matches!(
+                    base.strip_prefix("COM")
+                        .or_else(|| base.strip_prefix("LPT")),
+                    Some("1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9")
+                )
+            {
+                return fail("The native archive contains an unsafe Windows path.");
+            }
         }
         let kind = entry.header().entry_type();
         if !kind.is_file() && !kind.is_dir() {

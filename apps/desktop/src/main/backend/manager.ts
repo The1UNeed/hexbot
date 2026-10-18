@@ -148,6 +148,7 @@ export class DaemonManager extends EventEmitter {
     this.setStatus({ state: 'starting', port })
     const child = spawn(hexbotExecutable(), ['serve', '--port', String(port)], {
       cwd: daemonDirectory(),
+      windowsHide: true,
       env: {
         ...process.env,
         HEXBOT_HOME: hexbotHome(),

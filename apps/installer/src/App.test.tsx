@@ -2,7 +2,8 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-libra
 
 import type { Detection, InstallerApi, InstallResult, OnProgress } from './api'
 import { App } from './App'
-import { HeadlessDone } from './done'
+import { optionItems, tildify } from './copy'
+import { AppDone, HeadlessDone } from './done'
 
 vi.mock('@tauri-apps/api/core', () => ({
   Channel: class {},
@@ -111,6 +112,24 @@ afterEach(cleanup)
 const click = (name: RegExp | string) => fireEvent.click(screen.getByRole('button', { name }))
 
 describe('installer', () => {
+  it('opens the Windows app and describes the logon service', () => {
+    const home = 'C:\\Users\\Sam'
+    const executable = `${home}\\AppData\\Local\\Programs\\app.hexbot.desktop\\Hexbot.exe`
+
+    const detection = { ...fresh, platform: 'windows/x86_64', target: 'windows-x86_64', locations: {
+      home, apps: `${home}\\AppData\\Local\\Programs`, cli: `${home}\\.local\\bin\\hexbot.cmd`, hexbotHome: `${home}\\.hexbot`
+    } }
+
+    const api = fakeApi(detection)
+    const result = { ...headlessResult(), receipt: { ...headlessResult().receipt, option: 'full' as const, paths: [executable] } }
+
+    render(<AppDone api={api} detection={detection} job={{ kind: 'install', from: null, option: 'full', track: 'nightly' }} notes={[]} result={result} />)
+    click('Open Hexbot')
+    expect(api.openApp).toHaveBeenCalledWith(executable)
+    expect(tildify(`${home}\\.hexbot`, home)).toBe('~\\.hexbot')
+    expect(optionItems('headless', detection.locations, false, true)[0]?.label).toContain('while you are signed in')
+  })
+
   it('shows only package manager advice and Quit for a detected deb', async () => {
     const api = fakeApi({ ...installedFull, installed: {
       ...installedFull.installed!, apps: [{ path: '/opt/Hexbot', managed_by_dpkg: true }]

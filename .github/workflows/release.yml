@@ -11,8 +11,8 @@
 #            moved since the last nightly. Version <base>-nightly.<date>.<run>.
 #            Always a prerelease; the last 14 are kept.
 #
-# Both channels: six packages (full and client, for macOS arm64, macOS x64,
-# Linux x64) plus native daemon archives and installers, the update feed on
+# Both channels: eight packages (full and client, for macOS arm64, macOS x64,
+# Linux x64, Windows x64) plus native daemon archives and installers, the update feed on
 # updates.hexbot.app when the R2 secrets are present, and a GitHub release
 # with every package. Signing and notarization
 # happen when the Apple secrets are present and are skipped otherwise.
@@ -45,6 +45,10 @@ on:
 # Jobs that publish ask for more below.
 permissions:
   contents: read
+
+defaults:
+  run:
+    shell: bash
 
 # One publisher per channel at a time. A queued run waits; it never cancels a
 # running one, so a half-published release cannot happen.
@@ -116,6 +120,16 @@ jobs:
           HEXBOT_UPDATE_SIGNING_KEY: ${{ secrets.HEXBOT_UPDATE_SIGNING_KEY }}
           HEXBOT_UPDATE_SIGNING_KEY_NEXT: ${{ secrets.HEXBOT_UPDATE_SIGNING_KEY_NEXT }}
         run: node scripts/desktop/update-signing.mjs check
+      - name: Validate the Windows signing certificate
+        if: steps.resolve.outputs.build == 'true'
+        env:
+          WIN_CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
+          WIN_CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
+        run: |
+          if [ -z "$WIN_CSC_LINK" ] || [ -z "$WIN_CSC_KEY_PASSWORD" ]; then
+            echo '::error::Windows releases require WIN_CSC_LINK (base64 PKCS#12 certificate) and WIN_CSC_KEY_PASSWORD.'
+            exit 1
+          fi
 
   check:
     name: Check
@@ -131,7 +145,7 @@ jobs:
       fail-fast: false
       matrix:
         edition: [full, client]
-        build: [mac-arm64, mac-x64, linux-x64]
+        build: [mac-arm64, mac-x64, linux-x64, windows-x64]
         include:
           # macOS 26 runners carry Xcode 26, whose actool compiles the layered
           # Icon Composer icon (scripts/desktop/dist.mjs). Both architectures
@@ -146,6 +160,9 @@ jobs:
           - build: linux-x64
             runner: ubuntu-22.04
             target: --linux --x64
+          - build: windows-x64
+            runner: windows-2025
+            target: --win --x64
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
     env:
@@ -208,12 +225,29 @@ jobs:
       - name: Build the package
         env:
           HEXBOT_CRASH_URL: ${{ vars.HEXBOT_CRASH_URL }}
-        run: node scripts/desktop/dist.mjs ${{ matrix.target }} --channel "$CHANNEL" ${{ matrix.edition == 'client' && '--client' || '' }}
+          WIN_CSC_LINK: ${{ runner.os == 'Windows' && secrets.WIN_CSC_LINK || '' }}
+          WIN_CSC_KEY_PASSWORD: ${{ runner.os == 'Windows' && secrets.WIN_CSC_KEY_PASSWORD || '' }}
+          HEXBOT_REQUIRE_WINDOWS_SIGNING: ${{ runner.os == 'Windows' && '1' || '' }}
+        run: |
+          if [ "$RUNNER_OS" = Windows ]; then
+            pnpm --filter ./apps/desktop run 'dist:win${{ matrix.edition == 'client' && ':client' || '' }}' --channel "$CHANNEL"
+          else
+            node scripts/desktop/dist.mjs ${{ matrix.target }} --channel "$CHANNEL" ${{ matrix.edition == 'client' && '--client' || '' }}
+          fi
       - name: Verify packaged macOS signatures and launch
         if: runner.os == 'macOS'
         env:
           HEXBOT_PACKAGED_TEST_EDITION: ${{ matrix.edition }}
         run: HEXBOT_PACKAGED_TEST_DIR="$GITHUB_WORKSPACE/apps/desktop/release" node --test scripts/desktop/runtime-signing.test.mjs
+      - name: Verify packaged Windows signatures and native update bytes
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          HEXBOT_PACKAGED_TEST_EDITION: ${{ matrix.edition }}
+          HEXBOT_REQUIRE_WINDOWS_SIGNING: '1'
+        run: |
+          $env:HEXBOT_PACKAGED_TEST_DIR = "$env:GITHUB_WORKSPACE/apps/desktop/release"
+          node --test scripts/desktop/runtime-signing.test.mjs
       - name: List the output
         run: ls -l apps/desktop/release
       # The minimal backend/python-handoff package for existing Python services
@@ -243,6 +277,10 @@ jobs:
             [ -d "${bundles[0]}" ]
             bundle="${bundles[0]}"
           fi
+          if [ "$RUNNER_OS" = Windows ]; then
+            bundle=apps/desktop/release/win-unpacked/resources/hexbot-native
+            [ -f "$bundle/hexbot.exe" ]
+          fi
           node scripts/desktop/make-native-update.mjs "$bundle" native-updates
       - uses: actions/upload-artifact@v7
         if: matrix.edition == 'full'
@@ -258,6 +296,7 @@ jobs:
             apps/desktop/release/*.zip
             apps/desktop/release/*.AppImage
             apps/desktop/release/*.deb
+            apps/desktop/release/*.exe
             apps/desktop/release/*.blockmap
             apps/desktop/release/latest-linux.yml
           if-no-files-found: error
@@ -288,6 +327,12 @@ jobs:
             target: linux-x86_64
             app-suffix: linux-x86_64.AppImage
             bundles: appimage
+          - build: windows-x64
+            runner: windows-2025
+            rust-target: x86_64-pc-windows-msvc
+            target: windows-x86_64
+            app-suffix: windows-x86_64.exe
+            bundles: nsis
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
     env:
@@ -373,7 +418,9 @@ jobs:
           set -euo pipefail
           cargo build --release --locked --manifest-path backend/hexbot-installer/Cargo.toml --target '${{ matrix.rust-target }}'
           mkdir -p installer-artifacts
-          cp 'backend/hexbot-installer/target/${{ matrix.rust-target }}/release/hexbot-install' "installer-artifacts/hexbot-install-$VERSION-${{ matrix.target }}"
+          extension=''
+          if [ "$RUNNER_OS" = Windows ]; then extension=.exe; fi
+          cp "backend/hexbot-installer/target/${{ matrix.rust-target }}/release/hexbot-install$extension" "installer-artifacts/hexbot-install-$VERSION-${{ matrix.target }}$extension"
       - name: Sign and notarize the macOS CLI installer
         if: runner.os == 'macOS'
         run: |
@@ -390,8 +437,22 @@ jobs:
             xcrun notarytool submit "$RUNNER_TEMP/installer-notarize.zip" --key "$APPLE_API_KEY_PATH" --key-id "$APPLE_API_KEY" --issuer "$APPLE_API_ISSUER" --wait --output-format json > "$RUNNER_TEMP/installer-notarize.json"
             node -e 'const fs=require("fs"); const result=JSON.parse(fs.readFileSync(`${process.env.RUNNER_TEMP}/installer-notarize.json`)); if(result.status!=="Accepted") throw Error(`Installer notarization ${result.status}`)'
           fi
+      - name: Build the Windows windowed installer
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          WIN_CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
+          WIN_CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
+        run: |
+          $config = Join-Path $env:RUNNER_TEMP 'hexbot-installer-build.json'
+          @{ version = $env:VERSION; bundle = @{ windows = @{ signCommand = @{ cmd = 'pwsh'; args = @('-NoProfile', '-NonInteractive', '-File', "$env:GITHUB_WORKSPACE/scripts/desktop/sign-windows.ps1", '-Path', '%1') } } } } | ConvertTo-Json -Depth 10 | Set-Content $config
+          pnpm --filter ./apps/installer run tauri build --target '${{ matrix.rust-target }}' --bundles nsis --config $config
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          $bundles = @(Get-ChildItem 'apps/installer/src-tauri/target/${{ matrix.rust-target }}/release/bundle/nsis/*.exe')
+          if ($bundles.Count -ne 1) { throw 'Expected exactly one windowed installer bundle' }
+          Copy-Item $bundles[0].FullName "installer-artifacts/HexbotInstaller-$env:VERSION-${{ matrix.app-suffix }}"
       - name: Build the windowed installer
-        if: hashFiles('apps/installer/package.json') != ''
+        if: hashFiles('apps/installer/package.json') != '' && runner.os != 'Windows'
         env:
           APPIMAGE_EXTRACT_AND_RUN: '1'
         run: |
@@ -404,6 +465,13 @@ jobs:
           bundles=(apps/installer/src-tauri/target/${{ matrix.rust-target }}/release/bundle/${{ matrix.bundles }}/*."$extension")
           if [ "${#bundles[@]}" -ne 1 ]; then echo '::error::Expected exactly one windowed installer bundle'; exit 1; fi
           cp "${bundles[0]}" "installer-artifacts/HexbotInstaller-$VERSION-${{ matrix.app-suffix }}"
+      - name: Sign and verify Windows installers
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          WIN_CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
+          WIN_CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
+        run: ./scripts/desktop/sign-windows.ps1 -Path (Get-ChildItem installer-artifacts/*.exe).FullName
       - name: Clean up macOS signing
         if: always() && runner.os == 'macOS'
         run: |
@@ -464,7 +532,7 @@ jobs:
           missing=()
           if [ ! -f apps/installer/package.json ]; then missing=(--allow-missing); fi
           node scripts/desktop/make-install-manifest.mjs --channel "$CHANNEL" --version "$VERSION" dist/updates "${missing[@]}"
-          node --input-type=module -e 'import fs from "node:fs"; const m=JSON.parse(fs.readFileSync(`dist/updates/install/${process.env.CHANNEL}.json`)); for(const target of ["macos-aarch64","macos-x86_64","linux-x86_64"]) for(const option of ["full","client","headless","installer"]) if(!m.targets[target]?.[option]) throw Error(`Missing ${target}/${option}`)'
+          node --input-type=module -e 'import fs from "node:fs"; const m=JSON.parse(fs.readFileSync(`dist/updates/install/${process.env.CHANNEL}.json`)); for(const target of ["macos-aarch64","macos-x86_64","linux-x86_64","windows-x86_64"]) for(const option of ["full","client","headless","installer"]) if(!m.targets[target]?.[option]) throw Error(`Missing ${target}/${option}`)'
           find dist/updates -type f | sort
       # Daemons, installers, and the Python handoff install nothing without these
       # signatures. The step checks each one against packaging/update-signing-key.pub.
@@ -517,7 +585,8 @@ jobs:
           feed=$([ "$CHANNEL" = stable ] && echo latest || echo nightly)
           signed='import {readFileSync} from "node:fs"; import {releaseKeys, verifies} from "./scripts/desktop/update-signing.mjs"; const [manifest, signature] = process.argv.slice(1); if (!verifies(releaseKeys(), readFileSync(manifest), readFileSync(signature, "utf8"))) { console.error(`::error::${manifest} is not signed by the release key`); process.exit(1) }'
           for path in full/mac/arm64/$feed-mac.yml full/mac/x64/$feed-mac.yml full/linux/x64/$feed-linux.yml \
-                      client/mac/arm64/$feed-mac.yml client/mac/x64/$feed-mac.yml client/linux/x64/$feed-linux.yml; do
+                      client/mac/arm64/$feed-mac.yml client/mac/x64/$feed-mac.yml client/linux/x64/$feed-linux.yml \
+                      full/win/x64/$feed.yml client/win/x64/$feed.yml; do
             url="https://updates.hexbot.app/$path"
             if curl -fsS --retry 5 --retry-delay 5 "$url" | grep -x "version: $VERSION" > /dev/null; then
               echo "ok  $url"
@@ -526,7 +595,7 @@ jobs:
               exit 1
             fi
           done
-          for target in macos-aarch64 macos-x86_64 linux-x86_64; do
+          for target in macos-aarch64 macos-x86_64 linux-x86_64 windows-x86_64; do
             url="https://updates.hexbot.app/daemon/native/$VERSION/$target/manifest.json"
             curl -fsS --retry 5 --retry-delay 5 "$url" > native-manifest.json
             curl -fsS --retry 5 --retry-delay 5 "$url.sig" > native-manifest.json.sig
@@ -579,7 +648,7 @@ jobs:
           fi
           # The feed files stay on updates.hexbot.app; both editions write a
           # latest-linux.yml and GitHub asset names must be unique.
-          assets=(release/full/*.{dmg,zip,AppImage,deb,blockmap} release/client/*.{dmg,zip,AppImage,deb,blockmap} release/daemon/*.tar.gz release/install/*)
+          assets=(release/full/*.{dmg,zip,AppImage,deb,exe,blockmap} release/client/*.{dmg,zip,AppImage,deb,exe,blockmap} release/daemon/*.tar.gz release/install/*)
           if [ "${#assets[@]}" -eq 0 ]; then echo '::error::No packages to upload'; exit 1; fi
           echo "Uploading ${#assets[@]} assets"
           gh release create "$TAG" --target "$GITHUB_SHA" --title "$title" "${notes_args[@]}" \

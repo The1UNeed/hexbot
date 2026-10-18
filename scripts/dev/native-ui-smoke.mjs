@@ -22,11 +22,12 @@ const desktop = flags.includes('--desktop')
 const edition = flags.find(flag => flag.startsWith('--edition='))?.split('=')[1] || 'full'
 assert(['full', 'client'].includes(edition), 'Edition must be full or client')
 assert(flags.every(flag => flag === '--desktop' || flag.startsWith('--edition=')), 'Unknown smoke option')
-const daemonPath = process.env.HEXBOT_SMOKE_DAEMON || path.join(root, 'backend/hexbot-core/target/debug/hexbot')
-const piPath = process.env.HEXBOT_TEST_PI || path.join(root, 'backend/pi-runtime/node_modules/.bin/pi')
+const daemonPath = process.env.HEXBOT_SMOKE_DAEMON || path.join(root, `backend/hexbot-core/target/debug/hexbot${process.platform === 'win32' ? '.exe' : ''}`)
+const piScript = process.platform === 'win32' ? path.join(root, 'backend/pi-runtime/node_modules/@earendil-works/pi-coding-agent/dist/cli.js') : undefined
+const piPath = process.env.HEXBOT_TEST_PI || (piScript ? process.execPath : path.join(root, 'backend/pi-runtime/node_modules/.bin/pi'))
 const webDist = path.join(root, 'apps/web/dist')
 await Promise.all([access(daemonPath), access(piPath), access(path.join(webDist, 'index.html'))])
-assert.equal((await promisify(execFile)(piPath, ['--version'])).stdout.trim(), '1.0.1')
+assert.equal((await promisify(execFile)(piPath, [...(piScript ? [piScript] : []), '--version'])).stdout.trim(), '1.0.1')
 const home = await mkdtemp(path.join(tmpdir(), 'hexbot-native-ui-'))
 // The daemon refuses a workspace inside its home.
 const workspace = await mkdtemp(path.join(tmpdir(), 'hexbot-native-ui-workspace-'))
@@ -81,7 +82,7 @@ try {
   // An existing About you (even empty, as Skip leaves it) keeps the first-run page out of the chat flow.
   await mkdir(path.join(home, 'users', 'local'), { recursive: true })
   await writeFile(path.join(home, 'users', 'local', 'user.md'), '')
-  const daemonEnv = { ...process.env, HEXBOT_HOME: home, HEXBOT_PI_EXECUTABLE: piPath, HEXBOT_WEB_DIST: webDist }
+  const daemonEnv = { ...process.env, HEXBOT_HOME: home, HEXBOT_PI_EXECUTABLE: piPath, ...(piScript ? { HEXBOT_PI_SCRIPT: piScript } : {}), HEXBOT_WEB_DIST: webDist }
   daemon = spawn(daemonPath, ['serve', '--host', '127.0.0.1', '--port', '0'], { cwd: root, env: daemonEnv, stdio: ['ignore', 'pipe', 'pipe'] })
   daemon.stderr.on('data', data => { daemonLog += data })
   const port = await new Promise((resolve, reject) => {
@@ -137,12 +138,12 @@ try {
     await copyFile(path.join(home, 'local-device.token'), path.join(desktopHome, 'local-device.token'))
     const desktopRoot = path.join(root, 'apps/desktop')
     // Build into a private directory so testing one edition cannot overwrite another.
-    await promisify(execFile)(path.join(desktopRoot, 'node_modules/.bin/electron-vite'), ['build', '--outDir', path.join(desktopBuild, 'out')], {
+    await promisify(execFile)(process.execPath, [path.join(path.dirname(require.resolve('electron-vite/package.json')), 'bin/electron-vite.js'), 'build', '--outDir', path.join(desktopBuild, 'out')], {
       cwd: desktopRoot, env: { ...process.env, HEXBOT_EDITION: edition }, timeout: 120_000
     })
     const manifest = JSON.parse(await readFile(path.join(desktopRoot, 'package.json'), 'utf8'))
     await writeFile(path.join(desktopBuild, 'package.json'), JSON.stringify(manifest))
-    await symlink(path.join(desktopRoot, 'node_modules'), path.join(desktopBuild, 'node_modules'), 'dir')
+    await symlink(path.join(desktopRoot, 'node_modules'), path.join(desktopBuild, 'node_modules'), process.platform === 'win32' ? 'junction' : 'dir')
     await cp(webDist, path.join(desktopBuild, 'out/renderer'), { recursive: true })
     await mkdir(path.join(desktopBuild, 'resources'))
     for (const name of await readdir(path.join(desktopRoot, 'resources'))) {
@@ -265,6 +266,7 @@ try {
     daemon.kill('SIGTERM')
     await Promise.race([once(daemon, 'exit'), new Promise(resolve => setTimeout(resolve, 10_000).unref())])
     if (daemon.exitCode === null) daemon.kill('SIGKILL')
+    await Promise.race([once(daemon, 'exit'), new Promise(resolve => setTimeout(resolve, 2000).unref())])
   }
   model.closeAllConnections()
   await new Promise(resolve => model.close(resolve))

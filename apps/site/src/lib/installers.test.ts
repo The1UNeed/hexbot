@@ -7,6 +7,7 @@ const base = `https://updates.hexbot.app/install/${version}`
 const manifest = (channel: string, targets: Record<string, unknown> = {
   'macos-aarch64': { full: {}, installerApp: { url: `${base}/HexbotInstaller-${version}-mac-arm64.dmg`, sha256: 'a', size: 9 } },
   'macos-x86_64': { full: {}, installerApp: { url: `${base}/HexbotInstaller-${version}-mac-x64.dmg`, sha256: 'b', size: 9 } },
+  'windows-x86_64': { full: {}, installerApp: { url: `${base}/HexbotInstaller-${version}-windows-x86_64.exe`, sha256: 'd', size: 9 } },
   'linux-x86_64': { full: {}, installerApp: { url: `${base}/HexbotInstaller-${version}-linux-x86_64.AppImage`, sha256: 'c', size: 9 } },
 }) => ({ schema: 1, channel, version, minInstaller: version, targets })
 
@@ -18,6 +19,7 @@ describe('readManifest', () => {
       ['mac-arm64', `${base}/HexbotInstaller-${version}-mac-arm64.dmg`],
       ['mac-x64', `${base}/HexbotInstaller-${version}-mac-x64.dmg`],
       ['linux', `${base}/HexbotInstaller-${version}-linux-x86_64.AppImage`],
+      ['windows', `${base}/HexbotInstaller-${version}-windows-x86_64.exe`],
     ])
   })
 

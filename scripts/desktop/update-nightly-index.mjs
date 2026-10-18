@@ -15,6 +15,7 @@ export function nightlyFiles(version) {
   const names = prefix => ({
     'mac-arm64': `${prefix}-${version}-mac-arm64.dmg`,
     'mac-x64': `${prefix}-${version}-mac-x64.dmg`,
+    windows: `${prefix}-${version}-win-x64.exe`,
     linux: `${prefix}-${version}-linux-x86_64.AppImage`,
     'linux-deb': `${prefix}-${version}-linux-amd64.deb`
   })

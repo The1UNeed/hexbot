@@ -5,6 +5,8 @@ extends: ./electron-builder.base.yml
 appId: app.hexbot.client
 productName: Hexbot Client
 artifactName: HexbotClient-${version}-${os}-${arch}.${ext}
+win:
+  artifactName: HexbotClient-${version}-win-${arch}.${ext}
 linux:
   executableName: hexbot-client
   artifactName: HexbotClient-${version}-linux-${arch}.${ext}

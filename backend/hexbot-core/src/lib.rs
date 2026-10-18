@@ -1,7 +1,7 @@
 //! Native Hexbot daemon with Pi agent sessions and the existing frontend contract.
 
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
-compile_error!("The Hexbot daemon supports macOS and Linux only");
+#[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
+compile_error!("The Hexbot daemon supports macOS, Linux and Windows only");
 
 pub mod auth;
 pub mod catalog;
@@ -21,6 +21,7 @@ pub mod native_external_tools;
 pub mod native_product_tools;
 pub mod native_tools;
 pub mod pi;
+pub mod platform;
 pub mod provider_acp;
 pub mod providers;
 pub mod rooms;
@@ -32,10 +33,16 @@ pub mod services;
 pub mod settings;
 pub mod setup;
 pub mod skills;
+#[cfg(unix)]
+pub mod system_service;
+#[cfg(windows)]
+#[path = "system_service_windows.rs"]
 pub mod system_service;
 pub mod team;
 mod update_path;
 pub mod update_signature;
+#[cfg(windows)]
+pub mod windows_sandbox;
 
 pub fn version() -> String {
     serde_json::from_str::<serde_json::Value>(include_str!("../../../apps/desktop/package.json"))

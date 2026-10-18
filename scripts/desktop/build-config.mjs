@@ -19,6 +19,7 @@ export function iconOptions(channel, iconComposer) {
   if (channel === 'stable') return iconComposer ? ['-c.mac.icon=build/Hexbot.icon'] : []
   return [
     `-c.mac.icon=build/icon-${channel}.${iconComposer ? 'icon' : 'icns'}`,
-    `-c.linux.icon=resources/icon-${channel}.png`
+    `-c.linux.icon=resources/icon-${channel}.png`,
+    `-c.win.icon=resources/icon-${channel}.png`
   ]
 }

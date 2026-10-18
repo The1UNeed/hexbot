@@ -29,6 +29,15 @@ describe('describeDownload', () => {
     })
   })
 
+  it('reads Windows packages and the Windows installer', () => {
+    expect(describeDownload(`${updates}/full/win/x64/Hexbot-0.1.6-win-x64.exe`)).toEqual({
+      artifact: 'package', edition: 'full', os: 'win', arch: 'x64', format: 'exe', version: '0.1.6', channel: 'stable',
+    })
+    expect(describeDownload(`${updates}/install/0.1.6/HexbotInstaller-0.1.6-windows-x86_64.exe`)).toEqual({
+      artifact: 'installer', os: 'win', arch: 'x64', format: 'exe', version: '0.1.6', channel: 'stable',
+    })
+  })
+
   it('ignores other links', () => {
     expect(describeDownload(`${updates}/install/0.1.6/hexbot-install-0.1.6-macos-aarch64`)).toBeNull()
     expect(describeDownload('https://github.com/The1UNeed/hexbot/releases')).toBeNull()

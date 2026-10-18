@@ -31,7 +31,10 @@ HEXBOT_HOME="$test_home" backend/hexbot-core/target/debug/hexbot serve --port 91
 ```
 
 `HEXBOT_PI_EXECUTABLE` selects an explicit Pi executable; `HEXBOT_WEB_DIST`
-selects the built web bundle. Full desktop packages include Rust, Node, Pi,
+selects the built web bundle. JavaScript Pi entries launch through Node directly;
+`HEXBOT_PI_SCRIPT` supplies the script when the executable is Node itself.
+Installed bundles discover their own Node, Pi, web assets and skills beside the
+daemon. Full desktop packages include Rust, Node, Pi,
 web assets, and skills from `skills/`. Desktop bootstrap provisions an isolated Python interpreter
 for code tools and pinned edge-tts for free voice, separately from the daemon.
 Client-only packages contain no daemon. Native package
@@ -56,12 +59,33 @@ The shared tool pins and voice requirements live in `assets/`; the app uses the
 same files and receipts. An existing installation can run `hexbot setup` to repair
 its code tools and CLI wrapper without replacing the daemon bundle.
 
-`hexbot service install` installs and starts a per-user launchd or systemd service.
+Windows x64 bundles use `hexbot.exe`, `node.exe` and `pi/hexbot-pi.mjs`.
+Run `.\hexbot.exe setup --activate` in PowerShell. The default home is
+`%USERPROFILE%\.hexbot`, and the CLI is a native
+`%USERPROFILE%\.local\bin\hexbot.exe` with an ownership receipt beside it.
+It preserves Unicode paths and arguments without a batch file. Add that bin
+directory to the user Path. `--no-cli` skips CLI installation for app bootstrap.
+Windows keeps the selected bundle in `runtime/native-current.json` and uses an
+immutable `runtime/native-executable.exe` dispatcher, so selecting an update
+does not replace a running executable. Setup verifies its digest receipt;
+repairing a damaged dispatcher requires stopping the daemon first.
+
+`hexbot service install` installs and starts a per-user launchd service, systemd
+service or Windows Task Scheduler task.
 Use `uninstall`, `start`, `stop`, or `restart` to manage it, `status --json` to inspect
 it, and `logs [-f]` to read its logs. Linux installation also tries to enable
 lingering so the daemon can stay up after logout. `HEXBOT_SERVICE_ROOT` replaces
 `HOME` for service file locations; `HEXBOT_SERVICE_NO_LOAD=1` skips service-manager
 commands. Tests use both with temporary directories.
+
+On Windows the task starts at sign-in and requires that Windows account to stay
+signed in. It runs without an administrator prompt or a stored password. Its
+definition is `%USERPROFILE%\.config\hexbot\daemon.xml`; a temporary
+`HEXBOT_SERVICE_ROOT` redirects that file for tests. `service stop` requests
+graceful shutdown through an event tied to the daemon PID and canonical home,
+then waits for it to finish. Background task processes detach their console and
+write to the service logs. Task names include the home's hash so different
+Windows accounts cannot overwrite each other's task.
 
 `hexbot status [--json]` reports the daemon, LAN addresses, Tailscale IPv4, Hex
 Connect hostname, service, and sandbox. It works before the first daemon start.

@@ -54,14 +54,18 @@ export async function startDaemon(
 ): Promise<RunningDaemon> {
   const port = requestedPort ?? (await pickFreePort())
   const child = spawn(
-    resolve(repoRoot, 'backend/hexbot-core/target/debug/hexbot'),
+    resolve(repoRoot, `backend/hexbot-core/target/debug/hexbot${process.platform === 'win32' ? '.exe' : ''}`),
     ['serve', '--port', String(port), ...(lan ? ['--lan'] : [])],
     {
       cwd: repoRoot,
       detached: process.platform !== 'win32',
+      windowsHide: true,
       env: {
         ...process.env, HEXBOT_HOME: home, HERMES_HOME: undefined,
-        HEXBOT_PI_EXECUTABLE: resolve(repoRoot, 'backend/pi-runtime/node_modules/.bin/pi')
+        HEXBOT_PI_EXECUTABLE: resolve(repoRoot, process.platform === 'win32'
+          ? 'backend/pi-runtime/node_modules/@earendil-works/pi-coding-agent/dist/cli.js'
+          : 'backend/pi-runtime/node_modules/.bin/pi'),
+        HEXBOT_NODE_EXECUTABLE: process.execPath
       },
       stdio: ['ignore', 'pipe', 'pipe']
     }

@@ -56,8 +56,8 @@ test('a directory or symlink cannot stand in for the marker', t => {
   fs.mkdirSync(marker)
   assert.throws(() => prepareRoot(root, os.homedir()), /no .hexbot-dev-fake marker/)
   fs.rmdirSync(marker)
-  fs.writeFileSync(path.join(root, 'file'), '')
-  fs.symlinkSync(path.join(root, 'file'), marker)
+  fs.mkdirSync(path.join(root, 'target'))
+  fs.symlinkSync(path.join(root, 'target'), marker, process.platform === 'win32' ? 'junction' : 'dir')
   assert.throws(() => prepareRoot(root, os.homedir()), /no .hexbot-dev-fake marker/)
 })
 
@@ -70,7 +70,7 @@ test('a marked root cannot bypass protected paths, including through a symlink',
   fs.writeFileSync(path.join(state, '.hexbot-dev-fake'), '')
   const link = path.join(directory, 'link')
 
-  fs.symlinkSync(state, link)
+  fs.symlinkSync(state, link, process.platform === 'win32' ? 'junction' : 'dir')
   for (const root of [home, state, link, path.join(link, 'new')]) {
     assert.throws(() => prepareRoot(root, home), /overlaps your real home/)
   }

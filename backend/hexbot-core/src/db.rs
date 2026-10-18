@@ -115,6 +115,11 @@ const COLUMNS: &[(&str, &str, &str)] = &[
 
 /// Open the explicitly selected database without running schema migrations.
 pub fn open(home: &Path) -> Result<Connection> {
+    #[cfg(windows)]
+    {
+        fs::create_dir_all(home)?;
+        crate::windows_sandbox::protect_private_path(home, true)?;
+    }
     #[cfg(unix)]
     {
         use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
@@ -125,7 +130,7 @@ pub fn open(home: &Path) -> Result<Connection> {
         fs::set_permissions(home, fs::Permissions::from_mode(0o700))?;
     }
     let database = home.join("hexbot.db");
-    if fs::symlink_metadata(&database).is_ok_and(|metadata| metadata.file_type().is_symlink()) {
+    if fs::symlink_metadata(&database).is_ok_and(|metadata| crate::platform::is_link(&metadata)) {
         return Err(Error::new(5200, "database must not be a symlink"));
     }
     let connection = Connection::open(database)?;

@@ -6,7 +6,7 @@ description: Start, pair, and manage the native Hexbot daemon from a terminal.
 
 The native `hexbot` command starts the daemon, runs it as a service, manages bots, devices and Hex Connect, lists rooms, and sends one-shot messages.
 
-A [Headless](/docs/install/#headless) install puts the command in `~/.local/bin/hexbot`. It always runs the daemon version that is currently installed, so it keeps working after an update.
+A [Headless](/docs/install/#headless) install puts the command in `~/.local/bin/hexbot`, or `%USERPROFILE%\.local\bin\hexbot.cmd` on Windows. It always runs the daemon version that is currently installed, so it keeps working after an update.
 
 ```sh
 hexbot --help
@@ -53,7 +53,7 @@ hexbot service logs -f
 hexbot service uninstall
 ```
 
-`install` writes a per-user service and starts it: a launchd agent at `~/Library/LaunchAgents/app.hexbot.daemon.plist` on macOS, a systemd user unit at `~/.config/systemd/user/hexbot.service` on Linux. These are the same files the app writes for "Start the daemon at login". The service starts the daemon at login and restarts it if it stops, and it lets an app on another computer update the daemon. On Linux, `install` also enables lingering so the daemon keeps running after you log out. `status --json` prints `installed`, `running`, `manager`, and `file`. `logs -f` follows the log until you press Ctrl-C. `uninstall` stops the service and removes its file; your data stays.
+`install` writes a per-user service and starts it: a launchd agent at `~/Library/LaunchAgents/app.hexbot.daemon.plist` on macOS, a systemd user unit at `~/.config/systemd/user/hexbot.service` on Linux, or a per-user logon Scheduled Task on Windows. The Windows definition is stored in `%USERPROFILE%\.config\hexbot\daemon.xml`; it runs only while that account is signed in. These are the same files the app writes for "Start the daemon at login". The service starts the daemon at login and restarts it if it stops, and it lets an app on another computer update the daemon. On Linux, `install` also enables lingering so the daemon keeps running after you log out. `status --json` prints `installed`, `running`, `manager`, and `file`. `logs -f` follows the log until you press Ctrl-C. `uninstall` stops the service and removes its file; your data stays.
 
 ## Set up an installed runtime
 

@@ -10,6 +10,10 @@ import { DaemonManager, backoffSchedule, findFreePort, parseReadyLine, parseUpda
 
 const spawnDaemon = vi.hoisted(() => vi.fn())
 vi.mock('node:child_process', () => ({ spawn: spawnDaemon }))
+vi.mock('./paths', async importOriginal => {
+  const paths = await importOriginal<typeof import('./paths')>()
+  return { ...paths, hexbotExecutable: () => join(paths.hexbotHome(), 'runtime/native-executable') }
+})
 vi.mock('electron', () => ({ app: { on: () => undefined, isPackaged: true } }))
 
 describe('a daemon that already owns the home', () => {

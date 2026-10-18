@@ -45,6 +45,8 @@ pub enum Target {
     MacosX86_64,
     #[serde(rename = "linux-x86_64")]
     LinuxX86_64,
+    #[serde(rename = "windows-x86_64")]
+    WindowsX86_64,
 }
 
 impl Target {
@@ -57,12 +59,17 @@ impl Target {
             ("macos", "aarch64") => Ok(Self::MacosAarch64),
             ("macos", "x86_64") => Ok(Self::MacosX86_64),
             ("linux", "x86_64") => Ok(Self::LinuxX86_64),
+            ("windows", "x86_64") => Ok(Self::WindowsX86_64),
             _ => fail(format!("Hexbot is not available for {os}/{arch}.")),
         }
     }
 
     pub fn is_macos(self) -> bool {
-        self != Self::LinuxX86_64
+        matches!(self, Self::MacosAarch64 | Self::MacosX86_64)
+    }
+
+    pub fn is_windows(self) -> bool {
+        self == Self::WindowsX86_64
     }
 }
 
@@ -72,6 +79,7 @@ impl fmt::Display for Target {
             Self::MacosAarch64 => "macos-aarch64",
             Self::MacosX86_64 => "macos-x86_64",
             Self::LinuxX86_64 => "linux-x86_64",
+            Self::WindowsX86_64 => "windows-x86_64",
         })
     }
 }

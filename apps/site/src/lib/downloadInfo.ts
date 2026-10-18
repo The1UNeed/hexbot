@@ -7,7 +7,7 @@
 export type DownloadInfo = {
   artifact: 'installer' | 'package'
   edition?: 'full' | 'client'
-  os: 'mac' | 'linux'
+  os: 'mac' | 'linux' | 'win'
   arch: 'arm64' | 'x64'
   format: string
   version: string
@@ -16,19 +16,19 @@ export type DownloadInfo = {
 
 export function describeDownload(href: string): DownloadInfo | null {
   const { pathname } = new URL(href, 'https://hexbot.app')
-  const installer = pathname.match(/^\/install\/[^/]+\/HexbotInstaller-(.+)-(mac|linux)-(arm64|x64|x86_64)\.(\w+)$/)
+  const installer = pathname.match(/^\/install\/[^/]+\/HexbotInstaller-(.+)-(mac|linux|windows)-(arm64|x64|x86_64)\.(\w+)$/)
   if (installer) {
     const [, version, os, arch, format] = installer
     return {
       artifact: 'installer',
-      os: os as DownloadInfo['os'],
+      os: os === 'windows' ? 'win' : os as DownloadInfo['os'],
       arch: arch === 'arm64' ? 'arm64' : 'x64',
       format,
       version,
       channel: version.includes('nightly') ? 'nightly' : 'stable',
     }
   }
-  const match = pathname.match(/^\/(full|client)\/(mac|linux)\/(arm64|x64)\/Hexbot(?:Client)?-(.+)-(?:mac|linux)-\w+\.(\w+)$/)
+  const match = pathname.match(/^\/(full|client)\/(mac|linux|win)\/(arm64|x64)\/Hexbot(?:Client)?-(.+)-(?:mac|linux|win)-\w+\.(\w+)$/)
   if (!match) return null
   const [, edition, os, arch, version, format] = match
   return {

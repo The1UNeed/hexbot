@@ -13,6 +13,7 @@ const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..')
 export function downloadsManifest(version) {
   const names = prefix => ({
     mac: { arm64: `${prefix}-${version}-mac-arm64.dmg`, x64: `${prefix}-${version}-mac-x64.dmg` },
+    windows: { x64: `${prefix}-${version}-win-x64.exe` },
     linux: {
       // electron-builder's ${arch} is x86_64 for AppImage and amd64 for deb.
       AppImage: `${prefix}-${version}-linux-x86_64.AppImage`,

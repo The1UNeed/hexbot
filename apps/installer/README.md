@@ -1,7 +1,7 @@
 # Hexbot Installer
 
 The windowed installer: a small Tauri app (`.dmg` on macOS, AppImage on
-Linux) that installs Hexbot **Headless**, **Client**, or **Full** and fetches
+Linux, `.exe` on Windows x64) that installs Hexbot **Headless**, **Client**, or **Full** and fetches
 only the chosen option's files. Run again, it offers Update or repair,
 Change, or Uninstall. It drives the same engine as the terminal installer,
 `backend/hexbot-installer`; the screens are React and Tailwind with the app's
@@ -25,7 +25,7 @@ pnpm --filter ./apps/installer run dev:fake   # the real window, against a fake 
 `?installed=full`, `?unsupported`, `?fail=apply`, `?hold=python`, `?speed=0`
 (see `src/dev/preview.ts`).
 
-`dev:fake` builds a synthetic release in a temp directory (a fake Full and
+On macOS and Linux, `dev:fake` builds a synthetic release in a temp directory (a fake Full and
 Client app and a native archive whose `hexbot` script stands in for the
 daemon), serves it from `127.0.0.1`, and runs `tauri dev` with `HOME`,
 `HEXBOT_HOME`, `HEXBOT_INSTALL_APPS_DIR`, and `HEXBOT_SERVICE_ROOT` in that
@@ -51,3 +51,10 @@ dependencies too, so refresh it (`cargo update -p hexbot-installer`) when
 The icons in `src-tauri/icons` come from
 `pnpm tauri icon ../desktop/build/icon.png -o src-tauri/icons`, keeping the
 desktop sizes only.
+
+Windows builds include `icons/icon.ico`. Windows app packages use the same
+per-user NSIS metadata and uninstallers as app updates. The finished screen
+opens the installed `Hexbot.exe`; Headless explains that its background
+service runs while the Windows account is signed in. Windows verification
+uses real NSIS and native packages in an isolated runner profile rather than
+the Unix shell fixtures from `dev:fake`.

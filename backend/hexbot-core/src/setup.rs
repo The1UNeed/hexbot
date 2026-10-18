@@ -1,24 +1,35 @@
 //! Standalone native runtime and managed code tools installation.
+#[cfg(unix)]
 use crate::install_ownership::{WRAPPER_MARKER, shell_quote};
 use crate::{Error, Result, common, services};
 use serde::Deserialize;
 use serde_json::{Value, json};
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 use std::{
     collections::BTreeMap,
     fs,
     future::Future,
     io::Write,
-    os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
 };
 use tokio::process::Command;
 
 const VOICE_REQUIREMENTS: &str = include_str!("../assets/edge-tts.requirements.txt");
+#[cfg(unix)]
 const REQUIRED_FILES: &[&str] = &[
     "hexbot",
     "hexbot-core",
     "node",
     "pi/hexbot-pi",
+    "pi/package-lock.json",
+    "pi/node_modules/@earendil-works/pi-coding-agent/dist/cli.js",
+];
+#[cfg(windows)]
+const REQUIRED_FILES: &[&str] = &[
+    "hexbot.exe",
+    "node.exe",
+    "pi/hexbot-pi.mjs",
     "pi/package-lock.json",
     "pi/node_modules/@earendil-works/pi-coding-agent/dist/cli.js",
 ];
@@ -28,6 +39,8 @@ fn target() -> String {
         "{}-{}",
         if cfg!(target_os = "macos") {
             "darwin"
+        } else if cfg!(windows) {
+            "win32"
         } else {
             "linux"
         },
@@ -62,7 +75,11 @@ fn verify_runtime(directory: &Path) -> Result<Manifest> {
     }
     let root = directory.canonicalize()?;
     for (file, digest) in &manifest.files {
-        if file.starts_with('/')
+        crate::platform::validate_path(Path::new(file))?;
+        if !Path::new(file)
+            .components()
+            .all(|part| matches!(part, std::path::Component::Normal(_)))
+            || file.starts_with('/')
             || file.contains('\\')
             || file.split('/').any(|part| matches!(part, "" | "." | ".."))
         {
@@ -133,7 +150,13 @@ fn activate(home: &Path, source: &Path, emit: &impl Fn(&str, &str)) -> Result<()
     copy_runtime(&source, staging.path(), &source, &mut Vec::new())?;
     verify_runtime(staging.path())?;
     emit("activate", "Activating the native runtime");
-    services::publish_native(&native, &manifest.version, staging.path(), "hexbot", None)?;
+    services::publish_native(
+        &native,
+        &manifest.version,
+        staging.path(),
+        &crate::platform::executable_name("hexbot"),
+        None,
+    )?;
     Ok(())
 }
 
@@ -146,6 +169,7 @@ struct Release {
 }
 struct Asset {
     version: String,
+    #[cfg(unix)]
     directory: String,
     url: String,
     sha256: String,
@@ -164,7 +188,16 @@ fn tool_asset(tool: &str, target: &str) -> Result<Asset> {
     let directory = format!("{}{triple}", release.name);
     Ok(Asset {
         version: release.version.clone(),
-        url: format!("{}/{directory}.tar.gz", release.url),
+        url: format!(
+            "{}/{directory}.{}",
+            release.url,
+            if target.starts_with("win32-") {
+                "zip"
+            } else {
+                "tar.gz"
+            }
+        ),
+        #[cfg(unix)]
         directory,
         sha256: sha256.clone(),
     })
@@ -184,7 +217,7 @@ where
     Fut: Future<Output = Result<()>>,
 {
     let bin = home.join("bin");
-    let executable = bin.join(tool);
+    let executable = bin.join(crate::platform::executable_name(tool));
     let receipt = bin.join(format!("{tool}-version"));
     let recorded: Value = fs::read(&receipt)
         .ok()
@@ -208,10 +241,48 @@ where
     }
     let extracted = staging.path().join("extracted");
     fs::create_dir(&extracted)?;
+    #[cfg(unix)]
     services::extract_archive(&archive, &extracted, 512 * 1024 * 1024)?;
+    #[cfg(unix)]
     let source = extracted.join(&asset.directory).join(tool);
+    #[cfg(windows)]
+    let source = {
+        use std::io::Read;
+        let mut archive = zip::ZipArchive::new(fs::File::open(&archive)?)
+            .map_err(|error| Error::new(5243, format!("Invalid code runtime archive: {error}")))?;
+        let name = crate::platform::executable_name(tool);
+        let mut entry = archive.by_name(&name).map_err(|error| {
+            Error::new(5243, format!("Code runtime executable is missing: {error}"))
+        })?;
+        if !entry.is_file() || entry.size() > 128 * 1024 * 1024 {
+            return Err(Error::new(5243, "Invalid code runtime executable"));
+        }
+        let source = extracted.join(&name);
+        let mut bytes = Vec::new();
+        entry
+            .by_ref()
+            .take(128 * 1024 * 1024 + 1)
+            .read_to_end(&mut bytes)?;
+        if bytes.len() > 128 * 1024 * 1024 {
+            return Err(Error::new(
+                5243,
+                "Code runtime executable exceeds byte limit",
+            ));
+        }
+        fs::write(&source, bytes)?;
+        source
+    };
+    #[cfg(unix)]
     fs::set_permissions(&source, fs::Permissions::from_mode(0o755))?;
-    fs::rename(source, &executable)?;
+    let mut staged = tempfile::NamedTempFile::new_in(&bin)?;
+    std::io::copy(&mut fs::File::open(source)?, staged.as_file_mut())?;
+    #[cfg(unix)]
+    staged
+        .as_file()
+        .set_permissions(fs::Permissions::from_mode(0o755))?;
+    staged
+        .persist(&executable)
+        .map_err(|error| Error::from(error.error))?;
     common::atomic_write(
         &receipt,
         json!({"version":asset.version,"sha256":services::file_sha256(&executable)?})
@@ -221,16 +292,20 @@ where
     Ok(executable)
 }
 async fn run_uv(home: &Path, uv: &Path, args: &[&str]) -> Result<String> {
-    let output = Command::new(uv)
+    let mut command = Command::new(uv);
+    command
         .args(args)
         .current_dir(home.join("runtime"))
         .env("UV_PYTHON_INSTALL_DIR", home.join("python"))
         .env("UV_PYTHON_BIN_DIR", home.join("bin"))
         .env("UV_CACHE_DIR", home.join("runtime/uv-cache"))
         .stdin(std::process::Stdio::null())
-        .kill_on_drop(true)
-        .output()
-        .await?;
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true);
+    let (child, mut tree) = crate::pi::spawn_child(&mut command)?;
+    let output = child.wait_with_output().await?;
+    tree.finish()?;
     fs::create_dir_all(home.join("logs"))?;
     let mut log = fs::OpenOptions::new()
         .create(true)
@@ -257,7 +332,12 @@ fn remove_file(path: &Path) -> Result<()> {
     }
 }
 fn voice_current(home: &Path) -> bool {
-    home.join("bin/edge-tts").exists()
+    home.join(if cfg!(windows) {
+        "runtime/tools/edge-tts/Scripts/edge-tts.exe"
+    } else {
+        "bin/edge-tts"
+    })
+    .exists()
         && fs::read_to_string(home.join("runtime/tools/edge-tts.requirements.txt"))
             .is_ok_and(|text| text == VOICE_REQUIREMENTS)
 }
@@ -268,9 +348,9 @@ async fn install_code_runtime(home: &Path, emit: &impl Fn(&str, &str)) -> Result
     let _lock = tokio::task::spawn_blocking(move || services::activation_lock(&runtime))
         .await
         .map_err(|e| Error::new(5243, e.to_string()))??;
-    let python = home.join("bin/python3.11");
+    let python = common::managed_python(home);
     let current = voice_current(home);
-    if python.exists() && current {
+    if python.is_absolute() && python.exists() && current {
         return Ok(());
     }
     let uv = install_tool(
@@ -281,7 +361,7 @@ async fn install_code_runtime(home: &Path, emit: &impl Fn(&str, &str)) -> Result
         emit,
     )
     .await?;
-    if !python.exists() {
+    let python = if !python.is_absolute() || !python.exists() {
         emit("python", "Installing Python for code tools");
         run_uv(home, &uv, &["python", "install", "--no-bin", "3.11"]).await?;
         let output = run_uv(
@@ -292,12 +372,28 @@ async fn install_code_runtime(home: &Path, emit: &impl Fn(&str, &str)) -> Result
         .await?;
         let executable = output
             .lines()
-            .rfind(|line| line.starts_with('/'))
+            .rfind(|line| Path::new(line.trim()).is_absolute())
             .ok_or_else(|| Error::new(5243, "Managed code interpreter was not found"))?
             .trim();
-        remove_file(&python)?;
-        std::os::unix::fs::symlink(executable, &python)?;
-    }
+        let executable = PathBuf::from(executable);
+        if !executable.is_file() {
+            return Err(Error::new(5243, "Managed code interpreter was not found"));
+        }
+        #[cfg(unix)]
+        {
+            let python = home.join("bin/python3.11");
+            remove_file(&python)?;
+            std::os::unix::fs::symlink(&executable, &python)?;
+        }
+        #[cfg(windows)]
+        common::atomic_write(
+            &home.join("runtime/code-python.txt"),
+            executable.to_string_lossy().as_bytes(),
+        )?;
+        executable
+    } else {
+        python
+    };
     if !current {
         emit("voice", "Installing voice tools");
         let environment = home.join("runtime/tools/edge-tts");
@@ -329,7 +425,13 @@ async fn install_code_runtime(home: &Path, emit: &impl Fn(&str, &str)) -> Result
                 "pip",
                 "install",
                 "--python",
-                &environment.join("bin/python").to_string_lossy(),
+                &environment
+                    .join(if cfg!(windows) {
+                        "Scripts/python.exe"
+                    } else {
+                        "bin/python"
+                    })
+                    .to_string_lossy(),
                 "--require-hashes",
                 "--no-deps",
                 "--no-build",
@@ -338,15 +440,18 @@ async fn install_code_runtime(home: &Path, emit: &impl Fn(&str, &str)) -> Result
             ],
         )
         .await?;
-        let voice = home.join("bin/edge-tts");
-        remove_file(&voice)?;
-        std::os::unix::fs::symlink(environment.join("bin/edge-tts"), voice)?;
+        #[cfg(unix)]
+        {
+            let voice = home.join("bin/edge-tts");
+            remove_file(&voice)?;
+            std::os::unix::fs::symlink(environment.join("bin/edge-tts"), voice)?;
+        }
         common::atomic_write(&receipt, VOICE_REQUIREMENTS.as_bytes())?;
     }
     Ok(())
 }
 fn link_cli(home: &Path, user_home: &Path, emit: &impl Fn(&str, &str)) -> Result<()> {
-    let executable = home.join("runtime/native-executable");
+    let executable = crate::platform::stable_executable(home);
     if !executable.is_file() {
         return Err(Error::new(
             5243,
@@ -356,7 +461,31 @@ fn link_cli(home: &Path, user_home: &Path, emit: &impl Fn(&str, &str)) -> Result
     let bin = user_home.join(".local/bin");
     fs::create_dir_all(&bin)?;
     // Replace only a wrapper this command wrote; another `hexbot` stays put.
-    let wrapper_path = bin.join("hexbot");
+    let wrapper_path = bin.join(if cfg!(windows) {
+        "hexbot.exe"
+    } else {
+        "hexbot"
+    });
+    #[cfg(windows)]
+    if wrapper_path.with_file_name("hexbot-cli.json").exists() && !wrapper_path.exists() {
+        let receipt: Value =
+            serde_json::from_slice(&fs::read(wrapper_path.with_file_name("hexbot-cli.json"))?)
+                .map_err(|_| {
+                    Error::new(5243, "The existing Hexbot CLI receipt cannot be identified")
+                })?;
+        let owner = receipt["home"]
+            .as_str()
+            .and_then(|home| crate::install_ownership::resolved(Path::new(home)).ok());
+        if receipt["marker"] != crate::install_ownership::WRAPPER_MARKER
+            || owner != Some(home.canonicalize()?)
+        {
+            emit(
+                "link",
+                "Left the existing CLI receipt alone; it belongs to another installation",
+            );
+            return Ok(());
+        }
+    }
     if !matches!(fs::symlink_metadata(&wrapper_path), Err(e) if e.kind() == std::io::ErrorKind::NotFound)
         && !crate::install_ownership::wrapper_owned(&wrapper_path, home)
     {
@@ -370,36 +499,64 @@ fn link_cli(home: &Path, user_home: &Path, emit: &impl Fn(&str, &str)) -> Result
         );
         return Ok(());
     }
+    #[cfg(windows)]
+    if wrapper_path.is_file()
+        && services::file_sha256(&wrapper_path)? == services::file_sha256(&executable)?
+    {
+        emit(
+            "link",
+            &format!("CLI installed at {}", wrapper_path.display()),
+        );
+        return Ok(());
+    }
+    #[cfg(unix)]
     let wrapper = format!(
         "#!/bin/sh\n{WRAPPER_MARKER}\nexport HEXBOT_HOME={}\nexec {} \"$@\"\n",
         shell_quote(&home.to_string_lossy()),
         shell_quote(&executable.to_string_lossy())
     );
     let staged = tempfile::NamedTempFile::new_in(&bin)?;
+    #[cfg(unix)]
     fs::write(staged.path(), wrapper)?;
+    #[cfg(windows)]
+    fs::copy(&executable, staged.path())?;
+    #[cfg(unix)]
     fs::set_permissions(staged.path(), fs::Permissions::from_mode(0o755))?;
-    fs::rename(staged.path(), bin.join("hexbot"))?;
+    staged
+        .persist(&wrapper_path)
+        .map_err(|error| Error::from(error.error))?;
+    #[cfg(windows)]
+    common::atomic_write(
+        &bin.join("hexbot-cli.json"),
+        &crate::install_ownership::windows_cli_receipt(home, &wrapper_path)?,
+    )?;
     emit(
         "link",
-        &format!("CLI installed at {}", bin.join("hexbot").display()),
+        &format!("CLI installed at {}", wrapper_path.display()),
     );
     if !std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()).any(|p| p == bin) {
         emit(
             "link",
-            "Add to your shell profile: export PATH=\"$HOME/.local/bin:$PATH\"",
+            if cfg!(windows) {
+                "Add %USERPROFILE%\\.local\\bin to your user Path in Windows settings"
+            } else {
+                "Add to your shell profile: export PATH=\"$HOME/.local/bin:$PATH\""
+            },
         );
     }
     Ok(())
 }
 
 pub async fn run(home: &Path, args: &[String]) -> Result<()> {
-    if args
-        .iter()
-        .any(|arg| !matches!(arg.as_str(), "--activate" | "--no-code-tools" | "--json"))
-    {
+    if args.iter().any(|arg| {
+        !matches!(
+            arg.as_str(),
+            "--activate" | "--no-code-tools" | "--no-cli" | "--json"
+        )
+    }) {
         return Err(Error::new(
             4200,
-            "setup accepts --activate, --no-code-tools and --json",
+            "setup accepts --activate, --no-code-tools, --no-cli and --json",
         ));
     }
     let json = args.iter().any(|a| a == "--json");
@@ -411,9 +568,12 @@ pub async fn run(home: &Path, args: &[String]) -> Result<()> {
         }
     };
     let user_home = PathBuf::from(
-        std::env::var_os("HOME").ok_or_else(|| Error::new(4200, "HOME is required"))?,
+        crate::platform::user_home()
+            .ok_or_else(|| Error::new(4200, "The user home directory is required"))?,
     );
     fs::create_dir_all(home)?;
+    #[cfg(windows)]
+    crate::windows_sandbox::protect_private_path(home, true)?;
     let home = home.canonicalize()?;
     if args.iter().any(|a| a == "--activate") {
         let executable = std::env::current_exe()?.canonicalize()?;
@@ -425,12 +585,80 @@ pub async fn run(home: &Path, args: &[String]) -> Result<()> {
     if !args.iter().any(|a| a == "--no-code-tools") {
         install_code_runtime(&home, &emit).await?;
     }
-    link_cli(&home, &user_home, &emit)?;
+    if !args.iter().any(|arg| arg == "--no-cli") {
+        link_cli(&home, &user_home, &emit)?;
+    }
     emit("done", "Hexbot setup complete");
     Ok(())
 }
 
-#[cfg(test)]
+#[cfg(all(test, windows))]
+mod windows_tests {
+    use super::*;
+    fn runtime(root: &Path) {
+        let mut files = BTreeMap::new();
+        for file in REQUIRED_FILES {
+            let path = root.join(file);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(&path, file.as_bytes()).unwrap();
+            files.insert(*file, services::file_sha256(&path).unwrap());
+        }
+        fs::write(
+            root.join("manifest.json"),
+            json!({"version":crate::version(),"target":target(),"files":files}).to_string(),
+        )
+        .unwrap();
+    }
+    #[test]
+    fn windows_bundle_activation_selects_an_exe_without_symlinks() {
+        let source = tempfile::tempdir().unwrap();
+        let home = tempfile::tempdir().unwrap();
+        let user = tempfile::tempdir().unwrap();
+        runtime(source.path());
+        activate(home.path(), source.path(), &|_, _| {}).unwrap();
+        let selected = crate::platform::selected_native(home.path()).unwrap();
+        assert_eq!(selected.file_name().unwrap(), "hexbot.exe");
+        let stable = crate::platform::stable_executable(home.path());
+        assert!(!crate::platform::is_link(
+            &fs::symlink_metadata(&stable).unwrap()
+        ));
+        assert_eq!(
+            fs::read_to_string(home.path().join("runtime/native-dispatcher.sha256")).unwrap(),
+            services::file_sha256(&stable).unwrap()
+        );
+        link_cli(home.path(), user.path(), &|_, _| {}).unwrap();
+        assert!(crate::install_ownership::wrapper_owned(
+            &user.path().join(".local/bin/hexbot.exe"),
+            home.path()
+        ));
+        fs::write(source.path().join("node.exe"), "tampered").unwrap();
+        assert!(activate(home.path(), source.path(), &|_, _| {}).is_err());
+        assert_eq!(
+            crate::platform::selected_native(home.path()).unwrap(),
+            selected
+        );
+    }
+    #[test]
+    fn windows_manifest_and_tool_pins_cover_native_launchers() {
+        let source = tempfile::tempdir().unwrap();
+        runtime(source.path());
+        assert_eq!(verify_runtime(source.path()).unwrap().target, "win32-x64");
+        assert!(
+            tool_asset("uv", "win32-x64")
+                .unwrap()
+                .url
+                .ends_with("uv-x86_64-pc-windows-msvc.zip")
+        );
+        let mut manifest: Value =
+            serde_json::from_slice(&fs::read(source.path().join("manifest.json")).unwrap())
+                .unwrap();
+        manifest["files"][r"C:\outside.exe"] = json!("bad");
+        fs::write(source.path().join("manifest.json"), manifest.to_string()).unwrap();
+        assert!(verify_runtime(source.path()).is_err());
+    }
+}
+
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     fn runtime(root: &Path) {

@@ -25,10 +25,10 @@ test('default dev packaging preserves the platform and builder flags', () => {
 test('nightly and dev packages select their own icon, with and without Icon Composer', () => {
   for (const channel of ['dev', 'nightly']) {
     assert.deepEqual(iconOptions(channel, true), [
-      `-c.mac.icon=build/icon-${channel}.icon`, `-c.linux.icon=resources/icon-${channel}.png`
+      `-c.mac.icon=build/icon-${channel}.icon`, `-c.linux.icon=resources/icon-${channel}.png`, `-c.win.icon=resources/icon-${channel}.png`
     ])
     assert.deepEqual(iconOptions(channel, false), [
-      `-c.mac.icon=build/icon-${channel}.icns`, `-c.linux.icon=resources/icon-${channel}.png`
+      `-c.mac.icon=build/icon-${channel}.icns`, `-c.linux.icon=resources/icon-${channel}.png`, `-c.win.icon=resources/icon-${channel}.png`
     ])
   }
   assert.deepEqual(iconOptions('stable', true), ['-c.mac.icon=build/Hexbot.icon'])

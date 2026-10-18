@@ -6,7 +6,7 @@
 
 use std::{
     collections::HashMap,
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::Stdio,
     sync::{
         Arc,
@@ -236,6 +236,232 @@ impl Drop for CancelRequest {
 }
 
 use crate::credentials::inherited_environment;
+
+/// JavaScript entry points run through Node directly, including on Windows.
+/// Batch launchers would reparse the section's arguments through cmd.exe.
+pub(crate) fn javascript_entry(executable: &Path) -> bool {
+    executable
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| {
+            ["js", "mjs", "cjs"]
+                .iter()
+                .any(|kind| extension.eq_ignore_ascii_case(kind))
+        })
+}
+
+pub(crate) fn executable_command(executable: &Path) -> Command {
+    if javascript_entry(executable) {
+        let bundled = executable
+            .parent()
+            .and_then(Path::parent)
+            .map(|root| root.join(if cfg!(windows) { "node.exe" } else { "node" }))
+            .filter(|path| path.is_file());
+        let node = std::env::var_os("HEXBOT_NODE_EXECUTABLE")
+            .map(PathBuf::from)
+            .or(bundled)
+            .unwrap_or_else(|| PathBuf::from("node"));
+        let mut command = Command::new(node);
+        command.arg(executable);
+        command
+    } else {
+        Command::new(executable)
+    }
+}
+
+/// Retain the Windows job until all protocol IO has stopped. The child starts
+/// suspended, so it cannot create a descendant before joining the job.
+pub(crate) struct ChildTree {
+    #[cfg(windows)]
+    _job: std::os::windows::io::OwnedHandle,
+    #[cfg(windows)]
+    sandbox: Option<crate::windows_sandbox::SandboxCleanup>,
+}
+
+pub(crate) fn spawn_child(
+    command: &mut Command,
+) -> std::io::Result<(tokio::process::Child, ChildTree)> {
+    #[cfg(windows)]
+    if Path::new(command.as_std().get_program())
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| {
+            ["cmd", "bat"]
+                .iter()
+                .any(|kind| extension.eq_ignore_ascii_case(kind))
+        })
+    {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "Batch launchers require a native executable or JavaScript entry point",
+        ));
+    }
+    command.kill_on_drop(true);
+    #[cfg(windows)]
+    let cleanup = crate::windows_sandbox::cleanup_command(command.as_std());
+    #[cfg(windows)]
+    command.creation_flags(
+        windows_sys::Win32::System::Threading::CREATE_SUSPENDED
+            | windows_sys::Win32::System::Threading::CREATE_NO_WINDOW,
+    );
+    let mut child = command.spawn()?;
+    match ChildTree::attach(
+        &child,
+        #[cfg(windows)]
+        cleanup,
+    ) {
+        Ok(tree) => Ok((child, tree)),
+        Err(error) => {
+            let _ = child.start_kill();
+            Err(error)
+        }
+    }
+}
+
+impl Drop for ChildTree {
+    fn drop(&mut self) {
+        let _ = self.finish();
+    }
+}
+
+impl ChildTree {
+    pub(crate) fn finish(&mut self) -> std::io::Result<()> {
+        #[cfg(not(windows))]
+        {
+            Ok(())
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::io::AsRawHandle;
+            // Closing the job also kills descendants, but termination completes
+            // asynchronously. Wait before publishing shutdown or removing grants.
+            unsafe {
+                windows_sys::Win32::System::JobObjects::TerminateJobObject(
+                    self._job.as_raw_handle(),
+                    1,
+                )
+            };
+            let deadline = std::time::Instant::now() + Duration::from_secs(2);
+            while self.active() && std::time::Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            if self.active() {
+                return Err(std::io::Error::other("child job could not stop"));
+            }
+            if let Some(cleanup) = &mut self.sandbox {
+                cleanup
+                    .cleanup()
+                    .map_err(|_| std::io::Error::other("sandbox cleanup failed"))?;
+            }
+            Ok(())
+        }
+    }
+}
+
+impl ChildTree {
+    #[cfg(windows)]
+    pub(crate) fn active(&self) -> bool {
+        use std::os::windows::io::AsRawHandle;
+        use windows_sys::Win32::System::JobObjects::{
+            JOBOBJECT_BASIC_ACCOUNTING_INFORMATION, JobObjectBasicAccountingInformation,
+            QueryInformationJobObject,
+        };
+        let mut accounting: JOBOBJECT_BASIC_ACCOUNTING_INFORMATION = unsafe { std::mem::zeroed() };
+        let success = unsafe {
+            QueryInformationJobObject(
+                self._job.as_raw_handle(),
+                JobObjectBasicAccountingInformation,
+                (&mut accounting as *mut JOBOBJECT_BASIC_ACCOUNTING_INFORMATION).cast(),
+                std::mem::size_of_val(&accounting) as u32,
+                std::ptr::null_mut(),
+            )
+        };
+        success == 0 || accounting.ActiveProcesses > 0
+    }
+
+    fn attach(
+        child: &tokio::process::Child,
+        #[cfg(windows)] cleanup: Option<crate::windows_sandbox::SandboxCleanup>,
+    ) -> std::io::Result<Self> {
+        #[cfg(not(windows))]
+        {
+            let _ = child;
+            Ok(Self {})
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
+            use windows_sys::Win32::{
+                Foundation::INVALID_HANDLE_VALUE,
+                System::{
+                    Diagnostics::ToolHelp::{
+                        CreateToolhelp32Snapshot, TH32CS_SNAPTHREAD, THREADENTRY32, Thread32First,
+                        Thread32Next,
+                    },
+                    JobObjects::{
+                        AssignProcessToJobObject, CreateJobObjectW,
+                        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+                        JobObjectExtendedLimitInformation, SetInformationJobObject,
+                    },
+                    Threading::{OpenThread, ResumeThread, THREAD_SUSPEND_RESUME},
+                },
+            };
+            let failure = std::io::Error::last_os_error;
+            // Every handle here is uniquely owned and never inherited by children.
+            let raw = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
+            if raw.is_null() {
+                return Err(failure());
+            }
+            let job = unsafe { OwnedHandle::from_raw_handle(raw) };
+            let mut limits: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { std::mem::zeroed() };
+            limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+            if unsafe {
+                SetInformationJobObject(
+                    raw,
+                    JobObjectExtendedLimitInformation,
+                    (&limits as *const JOBOBJECT_EXTENDED_LIMIT_INFORMATION).cast(),
+                    std::mem::size_of_val(&limits) as u32,
+                )
+            } == 0
+            {
+                return Err(failure());
+            }
+            let process = child
+                .raw_handle()
+                .ok_or_else(|| std::io::Error::other("child handle unavailable"))?;
+            if unsafe { AssignProcessToJobObject(raw, process) } == 0 {
+                return Err(failure());
+            }
+            let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0) };
+            if snapshot == INVALID_HANDLE_VALUE {
+                return Err(failure());
+            }
+            let snapshot = unsafe { OwnedHandle::from_raw_handle(snapshot) };
+            let mut thread: THREADENTRY32 = unsafe { std::mem::zeroed() };
+            thread.dwSize = std::mem::size_of_val(&thread) as u32;
+            let mut found = unsafe { Thread32First(snapshot.as_raw_handle(), &mut thread) };
+            while found != 0 {
+                if Some(thread.th32OwnerProcessID) == child.id() {
+                    let handle =
+                        unsafe { OpenThread(THREAD_SUSPEND_RESUME, 0, thread.th32ThreadID) };
+                    if handle.is_null() {
+                        return Err(failure());
+                    }
+                    let handle = unsafe { OwnedHandle::from_raw_handle(handle) };
+                    if unsafe { ResumeThread(handle.as_raw_handle()) } == u32::MAX {
+                        return Err(failure());
+                    }
+                    return Ok(Self {
+                        _job: job,
+                        sandbox: cleanup,
+                    });
+                }
+                found = unsafe { Thread32Next(snapshot.as_raw_handle(), &mut thread) };
+            }
+            Err(std::io::Error::other("suspended child thread unavailable"))
+        }
+    }
+}
 pub fn provider_environment(name: &str, provider: &str) -> bool {
     inherited_environment(name)
         || match provider {
@@ -262,7 +488,16 @@ impl PiProcess {
         }
         // Diagnostics can contain credentials or model inputs. Discard them at
         // the OS boundary rather than retaining or returning them with errors.
-        let mut child = Command::new(&options.executable)
+        let mut command = executable_command(&options.executable);
+        if options
+            .executable
+            .file_stem()
+            .is_some_and(|name| name == "node")
+            && let Some(script) = std::env::var_os("HEXBOT_PI_SCRIPT")
+        {
+            command.arg(script);
+        }
+        command
             .args(&options.args)
             .env_clear()
             .envs(std::env::vars().filter(|(name, _)| inherited_environment(name)))
@@ -272,9 +507,16 @@ impl PiProcess {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
-            .kill_on_drop(true)
-            .spawn()
-            .map_err(|_| PiError::Io("spawn"))?;
+            .kill_on_drop(true);
+        #[cfg(windows)]
+        command.env(
+            "HEXBOT_DAEMON_EXECUTABLE",
+            std::env::var_os("HEXBOT_DAEMON_EXECUTABLE")
+                .map(PathBuf::from)
+                .or_else(|| std::env::current_exe().ok())
+                .ok_or(PiError::Io("daemon executable"))?,
+        );
+        let (mut child, tree) = spawn_child(&mut command).map_err(|_| PiError::Io("spawn"))?;
         let stdin = child.stdin.take().ok_or(PiError::Io("stdin"))?;
         let stdout = child.stdout.take().ok_or(PiError::Io("stdout"))?;
         let (requests, request_rx) = mpsc::channel(options.request_capacity);
@@ -284,7 +526,7 @@ impl PiProcess {
         let max_record_bytes = options.max_record_bytes;
         let admission = Semaphore::new(options.request_capacity);
         tokio::spawn(supervise(
-            child, stdin, stdout, request_rx, event_tx, stop_rx, done_tx, options,
+            child, tree, stdin, stdout, request_rx, event_tx, stop_rx, done_tx, options,
         ));
         Ok((
             Self {
@@ -585,6 +827,7 @@ async fn terminal(done: &mut watch::Receiver<Option<PiError>>) -> PiError {
 #[allow(clippy::too_many_arguments)]
 async fn supervise(
     mut child: tokio::process::Child,
+    mut tree: ChildTree,
     mut stdin: tokio::process::ChildStdin,
     mut stdout: tokio::process::ChildStdout,
     mut requests: mpsc::Receiver<Request>,
@@ -708,11 +951,13 @@ async fn supervise(
         writer.abort();
         let _ = writer.await;
     }
+    let cleanup_failed = tree.finish().is_err() || cleanup_failed;
     let reason = if cleanup_failed {
         PiError::Cleanup
     } else {
         reason
     };
+    drop(tree);
     done.send_replace(Some(reason.clone()));
     for (_, request) in pending {
         let _ = request.reply.send(Err(reason.clone()));
@@ -729,6 +974,8 @@ fn signal_termination(child: &mut tokio::process::Child) -> bool {
         // The child is still owned and unreaped, so this PID cannot be reused.
         return unsafe { libc::kill(pid as libc::pid_t, libc::SIGTERM) } == 0;
     }
+    #[cfg(not(unix))]
+    let _ = child;
     false
 }
 

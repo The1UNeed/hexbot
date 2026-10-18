@@ -2,11 +2,11 @@ import assert from 'node:assert/strict'
 import { execFile } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import test from 'node:test'
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { delimiter, join } from 'node:path'
 import { promisify } from 'node:util'
-import { derivePorts, printsSignInLink, validateDevArgs, ensurePiRuntime, prepareDevRuntime, pairingCode } from './run.mjs'
+import { derivePorts, isLiveDevHome, printsSignInLink, validateDevArgs, ensurePiRuntime, prepareDevRuntime, pairingCode } from './run.mjs'
 import { downloadTool, toolAsset } from '../../apps/desktop/src/main/backend/tools.ts'
 
 test('dev ports derive from the checkout path and stay apart per worktree', () => {
@@ -25,12 +25,12 @@ test('dev shares pinned search tool installs, refreshes receipts and puts them o
   const deps = {
     download: async (url, destination) => {
       downloads.push(url)
-      assert.equal(destination.endsWith('archive.tar.gz'), true)
+      assert.equal(destination.endsWith(process.platform === 'win32' ? 'archive.zip' : 'archive.tar.gz'), true)
       return assets.find(asset => asset.url === url).sha256
     },
     run: async (command, args) => {
       assert.equal(command, 'tar')
-      assert.equal(args[0], '-xzf')
+      assert.equal(args[0], process.platform === 'win32' ? '-xf' : '-xzf')
       const executable = join(args[3], args[4])
       await mkdir(join(executable, '..'), { recursive: true })
       await writeFile(executable, '#!/bin/sh\necho pinned search tool\n')
@@ -40,13 +40,13 @@ test('dev shares pinned search tool installs, refreshes receipts and puts them o
     const env = await prepareDevRuntime(root, '/dev/hexbot', '/dev/pi', deps)
     assert.equal(env.HEXBOT_HOME, root)
     assert.equal(env.HEXBOT_EXECUTABLE, '/dev/hexbot')
-    assert.equal(env.HEXBOT_PI_EXECUTABLE, join(root, 'runtime/hexbot-pi'))
+    assert.equal(env.HEXBOT_PI_EXECUTABLE, process.platform === 'win32' ? process.execPath : join(root, 'runtime/hexbot-pi'))
     assert.equal(env.PATH.split(delimiter)[0], join(root, 'bin'))
     assert.deepEqual(downloads, assets.map(asset => asset.url))
     await prepareDevRuntime(root, '/dev/hexbot', '/dev/pi', deps)
     assert.equal(downloads.length, 2)
-    await writeFile(join(root, 'bin/rg'), 'tampered cached executable')
-    await rm(join(root, 'bin/fd'))
+    await writeFile(join(root, `bin/rg${process.platform === 'win32' ? '.exe' : ''}`), 'tampered cached executable')
+    await rm(join(root, `bin/fd${process.platform === 'win32' ? '.exe' : ''}`))
     await prepareDevRuntime(root, '/dev/hexbot', '/dev/pi', deps)
     assert.deepEqual(downloads, [...assets, ...assets].map(asset => asset.url))
     for (const [index, tool] of ['rg', 'fd'].entries())
@@ -61,14 +61,14 @@ test('dev shares pinned search tool installs, refreshes receipts and puts them o
     await chmod(pi, 0o755)
     const agent = join(root, 'profile/pi')
     await mkdir(join(agent, 'bin'), { recursive: true })
-    for (const tool of ['rg', 'fd']) await writeFile(join(agent, 'bin', tool), 'old unverified download')
+    for (const tool of ['rg', 'fd']) await writeFile(join(agent, 'bin', tool + (process.platform === 'win32' ? '.exe' : '')), 'old unverified download')
     const managed = await prepareDevRuntime(root, '/dev/hexbot', pi, deps)
-    const { stdout } = await promisify(execFile)(managed.HEXBOT_PI_EXECUTABLE, ['--mode', 'rpc'], {
+    const { stdout } = await promisify(execFile)(managed.HEXBOT_PI_EXECUTABLE, [...(managed.HEXBOT_PI_SCRIPT ? [managed.HEXBOT_PI_SCRIPT] : []), '--mode', 'rpc'], {
       env: { ...process.env, ...managed, PI_CODING_AGENT_DIR: agent }
     })
-    assert.equal(stdout.trim(), `${join(agent, 'bin/rg')} ${join(agent, 'bin/fd')}`)
+    assert.equal(stdout.trim(), `${join(agent, `bin/rg${process.platform === 'win32' ? '.exe' : ''}`)} ${join(agent, `bin/fd${process.platform === 'win32' ? '.exe' : ''}`)}`)
     for (const tool of ['rg', 'fd'])
-      assert.equal(await readFile(join(agent, 'bin', tool), 'utf8'), await readFile(join(root, 'bin', tool), 'utf8'))
+      assert.equal(await readFile(join(agent, 'bin', tool + (process.platform === 'win32' ? '.exe' : '')), 'utf8'), await readFile(join(root, 'bin', tool + (process.platform === 'win32' ? '.exe' : '')), 'utf8'))
   } finally { await rm(root, { recursive: true, force: true }) }
 })
 
@@ -86,7 +86,7 @@ for (const badTool of ['rg', 'fd']) test(`dev rejects an unverified ${badTool} b
         await writeFile(executable, 'verified')
       }
     }), /checksum mismatch/)
-    assert.equal(extracted.includes(badTool), false)
+    assert.equal(extracted.includes(badTool + (process.platform === 'win32' ? '.exe' : '')), false)
     await assert.rejects(readFile(join(root, 'bin', `${badTool}-version`)), { code: 'ENOENT' })
   } finally { await rm(root, { recursive: true, force: true }) }
 })
@@ -118,10 +118,10 @@ test('dev installs Pi on first run, lockfile changes and missing executables', a
   try {
     const lock = join(root, 'package-lock.json')
     const marker = join(root, 'node_modules/.hexbot-lock-sha256')
-    const pi = join(root, 'node_modules/.bin/pi')
+    const pi = join(root, process.platform === 'win32' ? 'node_modules/.bin/pi.cmd' : 'node_modules/.bin/pi')
     let installs = 0
     const run = async (command, args, options) => {
-      assert.equal(command, 'npm'); assert.ok(args.includes('ci')); assert.ok(args.includes('--ignore-scripts'))
+      assert.equal(command, process.platform === 'win32' ? 'npm.cmd' : 'npm'); assert.ok(args.includes('ci')); assert.ok(args.includes('--ignore-scripts'))
       assert.equal(options.cwd, root)
       installs++
       await mkdir(join(root, 'node_modules/.bin'), { recursive: true })
@@ -149,4 +149,17 @@ test('dev prints a sign-in link only to an unsupervised terminal', () => {
   assert.equal(printsSignInLink(true, {XPC_SERVICE_NAME:'0'}), true)
   assert.equal(printsSignInLink(false, {}), false)
   for (const env of [{HEXBOT_SUPERVISOR:'dev'}, {INVOCATION_ID:'systemd'}, {XPC_SERVICE_NAME:'app.hexbot.daemon'}]) assert.equal(printsSignInLink(true, env), false)
+})
+
+test('dev refuses a live home reached through another directory name', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'hexbot-dev-home-'))
+  try {
+    const live = join(root, '.hexbot')
+    await mkdir(live)
+    const alias = join(root, 'alias')
+    await symlink(live, alias, process.platform === 'win32' ? 'junction' : 'dir')
+    assert.equal(await isLiveDevHome(alias, live), true)
+    assert.equal(await isLiveDevHome(join(root, 'isolated'), live), false)
+    if (process.platform === 'win32') assert.equal(await isLiveDevHome(live.toUpperCase(), live), true)
+  } finally { await rm(root, { recursive: true, force: true }) }
 })

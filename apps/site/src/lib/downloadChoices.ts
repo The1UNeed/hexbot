@@ -12,6 +12,9 @@ export type DownloadChoice = {
 export function downloadChoices(downloads: Downloads | null, installers: Installers | null): DownloadChoice[] {
   return [
     ...(installers?.builds ?? []).map(build => ({ ...build, kind: 'installer' as const })),
-    ...(downloads?.full ?? []).map((build, i) => ({ ...targets[i], url: build.url, kind: 'full' as const })),
+    ...(downloads?.full ?? []).flatMap(build => {
+      const target = targets.find(target => target.key === build.key)
+      return target ? [{ ...target, url: build.url, kind: 'full' as const }] : []
+    }),
   ]
 }

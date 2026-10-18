@@ -1,5 +1,5 @@
 // Build one desktop package.
-//   --mac|--linux        platform (required)
+//   --mac|--linux|--win  platform (required)
 //   --client             the client-only edition (no daemon runtime)
 //   --channel <name>     stable | nightly | dev (default dev). See docs/channels.md.
 // Remaining arguments go to electron-builder.
@@ -34,12 +34,19 @@ const channelArgs = [
   `-c.extraMetadata.productName=${name}`,
   ...(channel === 'stable' ? [] : [`-c.appId=${appId(channel, client)}`])
 ]
-if (!builderArgs.some(arg => arg === '--mac' || arg === '--linux'))
+if (builderArgs.includes('--win')) channelArgs.push(
+  // NSIS uses package.name for its default per-user installation folder.
+  // Keep editions and channels in separate directories and registry records.
+  `-c.extraMetadata.name=${appId(channel, client)}`,
+  `-c.extraMetadata.hexbotAppId=${appId(channel, client)}`
+)
+if (!builderArgs.some(arg => ['--mac', '--linux', '--win'].includes(arg)))
   throw new Error(
-    'Usage: node scripts/desktop/dist.mjs --mac|--linux [--client] [--channel stable|nightly|dev] [electron-builder options]'
+    'Usage: node scripts/desktop/dist.mjs --mac|--linux|--win [--client] [--channel stable|nightly|dev] [electron-builder options]'
   )
 
 const env = { ...process.env, HEXBOT_EDITION: client ? 'client' : 'full', HEXBOT_CHANNEL: channel }
+if (builderArgs.includes('--win') && env.HEXBOT_REQUIRE_WINDOWS_SIGNING === '1') channelArgs.push('-c.forceCodeSigning=true')
 if (!client) Object.assign(env, nativeBuildEnvironment(builderArgs))
 if (!env.CSC_LINK && !env.CSC_NAME) env.CSC_IDENTITY_AUTO_DISCOVERY = 'false'
 
@@ -59,7 +66,12 @@ const iconArgs = iconOptions(channel, await iconComposerAvailable())
 
 function run(command, commandArgs) {
   return new Promise((resolveRun, reject) => {
-    const child = spawn(command, commandArgs, { cwd: desktopRoot, env, stdio: 'inherit' })
+    // pnpm exposes its JS entrypoint to scripts. It avoids executing a .cmd
+    // through a shell on Windows, including quoted product names and paths.
+    const script = process.platform === 'win32' ? process.env.npm_execpath : undefined
+    if (process.platform === 'win32' && !script)
+      return reject(new Error('On Windows, run packaging through pnpm run dist:win or dist:win:client.'))
+    const child = spawn(script ? process.execPath : command, script ? [script, ...commandArgs] : commandArgs, { cwd: desktopRoot, env, stdio: 'inherit', windowsHide: true })
     child.once('error', reject)
     child.once('exit', code =>
       code === 0

@@ -65,7 +65,7 @@ pub fn open(app: &Path) -> hexbot_installer::Result<()> {
 /// The installer itself runs from an AppImage, whose runtime points GTK and
 /// friends into its own mount. Hexbot is a different AppImage and must start
 /// with the user's environment, not the installer's.
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "linux")]
 pub fn open(app: &Path) -> hexbot_installer::Result<()> {
     use std::os::unix::process::CommandExt;
     let mut command = std::process::Command::new(app);
@@ -76,5 +76,17 @@ pub fn open(app: &Path) -> hexbot_installer::Result<()> {
         .process_group(0);
     hexbot_installer::sanitize_appimage_env(&mut command);
     command.spawn()?;
+    Ok(())
+}
+
+#[cfg(windows)]
+pub fn open(app: &Path) -> hexbot_installer::Result<()> {
+    use std::os::windows::process::CommandExt;
+    std::process::Command::new(app)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .creation_flags(0x0000_0008) // DETACHED_PROCESS
+        .spawn()?;
     Ok(())
 }

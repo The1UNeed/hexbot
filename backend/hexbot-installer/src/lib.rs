@@ -9,6 +9,7 @@ mod types;
 mod update_path;
 #[path = "../../hexbot-core/src/update_signature.rs"]
 pub mod update_signature;
+mod windows;
 
 pub use archive::{extract_native, verify_file};
 pub use detect::{Paths, app_option, detect, detect_at, read_receipt, sanitize_appimage_env};
@@ -294,7 +295,7 @@ impl Installer {
             ));
             self.remove_owned_path(&app.staging)?;
         }
-        if !self.target.is_macos() {
+        if self.target == Target::LinuxX86_64 {
             for base in ["app.hexbot.desktop", "app.hexbot.client"] {
                 for suffix in ["", ".nightly", ".dev"] {
                     self.remove_owned_path(
@@ -315,6 +316,9 @@ impl Installer {
             self.remove_owned_path(&self.paths.wrapper())?;
         }
         self.remove_owned_path(&self.paths.receipt())?;
+        // Windows cannot remove the locked file while its handle is open. Keep
+        // the global installer lock and let the stopped daemon's guard go first.
+        drop(_daemon_lock);
         if remove_data {
             self.remove_owned_path(&self.paths.hexbot_home)?;
         }
@@ -330,9 +334,7 @@ impl Installer {
     }
 
     fn validate_data_removal(&self) -> Result<()> {
-        if fs::symlink_metadata(&self.paths.hexbot_home)
-            .is_ok_and(|meta| meta.file_type().is_symlink())
-        {
+        if fs::symlink_metadata(&self.paths.hexbot_home).is_ok_and(|meta| safety::is_link(&meta)) {
             return fail(format!(
                 "~/.hexbot is a link to {}. Delete that folder yourself if you want the data gone.",
                 fs::read_link(&self.paths.hexbot_home)?.display()
@@ -347,7 +349,7 @@ impl Installer {
             }
             // Deleting a held lock would let the next installer lock a new file.
             let lock = self.paths.installer_lock(self.target);
-            let resolved = home.join(lock.strip_prefix(&self.paths.home)?);
+            let resolved = install_ownership::resolved(&lock)?;
             if lock.starts_with(&self.paths.hexbot_home) || resolved.starts_with(&data) {
                 return fail(format!(
                     "{} also holds the installer lock. Delete the Hexbot data in it yourself.",
@@ -389,6 +391,7 @@ impl Installer {
         self.refuse_downgrade(manifest)?;
         if option == InstallOption::Headless {
             self.preflight_ownership()?;
+            self.preflight_home_removal()?;
         }
         let artifact = manifest.artifact(self.target, option)?;
         let identity = if option == InstallOption::Headless {
@@ -417,6 +420,7 @@ impl Installer {
         self.refuse_downgrade(manifest)?;
         if option == InstallOption::Headless {
             self.preflight_ownership()?;
+            self.preflight_home_removal()?;
         }
         let enable_lan = option == InstallOption::Headless
             && self.detect()?.option() != Some(InstallOption::Headless);
@@ -432,17 +436,20 @@ impl Installer {
             let unpacked = staging.path().join("native");
             progress(Progress::new("extract", "Extracting the daemon."));
             extract_native(&download, &unpacked)?;
-            let binary = unpacked.join("hexbot");
+            let binary = unpacked.join(if self.target.is_windows() {
+                "hexbot.exe"
+            } else {
+                "hexbot"
+            });
             // The daemon may have activated a newer runtime since the check above.
             let activation = self.lock_activation(progress)?;
             self.refuse_downgrade(manifest)?;
             self.run_holding(
                 &binary,
                 &["setup", "--activate", "--json"],
-                &activation,
+                activation,
                 progress,
             )?;
-            drop(activation);
             if enable_lan {
                 self.run(&self.paths.executable(), &["lan", "on"], false, progress)?;
                 progress(Progress::new(
@@ -457,7 +464,7 @@ impl Installer {
                 progress,
             )?;
             status = self.status().ok();
-            if !self.target.is_macos()
+            if self.target == Target::LinuxX86_64
                 && !sandbox_available(status.as_ref(), || command_exists("bwrap"))
             {
                 warnings.push("Bubblewrap is missing or unusable. Auto mode needs it for the sandbox. For installation and the Ubuntu 24.04 AppArmor fix, see https://hexbot.app/docs/install/#linux.".into());
@@ -476,6 +483,8 @@ impl Installer {
                 &mut warnings,
                 progress,
             )?
+        } else if self.target.is_windows() {
+            self.install_windows(&download, artifact, identity.unwrap(), progress)?
         } else {
             self.install_linux(&download, artifact, identity.unwrap(), progress)?
         };
@@ -528,7 +537,13 @@ impl Installer {
             .product_name
             .as_deref()
             .ok_or("The app name is missing from the manifest.")?;
-        if name.is_empty() || name.contains(['/', '\\', '\n', '\r']) || name == "." || name == ".."
+        if name.is_empty()
+            || name.contains(['/', '\\', '\n', '\r'])
+            || name == "."
+            || name == ".."
+            || self.target.is_windows()
+                && (name.contains(['<', '>', ':', '"', '|', '?', '*'])
+                    || name.ends_with([' ', '.']))
         {
             return fail("The manifest contains an invalid app name.");
         }
@@ -717,23 +732,39 @@ impl Installer {
         &self,
         executable: &Path,
         args: &[&str],
-        lock: &fs::File,
+        lock: fs::File,
         progress: &mut ProgressCallback<'_>,
     ) -> Result<()> {
-        use std::os::{fd::AsRawFd, unix::process::CommandExt};
-        let fd = lock.as_raw_fd();
         let mut command = self.paths.command(executable);
-        command
-            .args(args)
-            .env("HEXBOT_ACTIVATION_LOCK_FD", fd.to_string());
-        // Only this child inherits the descriptor; fcntl is async-signal-safe.
-        unsafe {
-            command.pre_exec(move || {
-                if libc::fcntl(fd, libc::F_SETFD, 0) == -1 {
-                    return Err(std::io::Error::last_os_error());
-                }
-                Ok(())
-            });
+        command.args(args);
+        #[cfg(unix)]
+        {
+            use std::os::{fd::AsRawFd, unix::process::CommandExt};
+            let fd = lock.as_raw_fd();
+            command.env("HEXBOT_ACTIVATION_LOCK_FD", fd.to_string());
+            // Only this child inherits the descriptor; fcntl is async-signal-safe.
+            unsafe {
+                command.pre_exec(move || {
+                    if libc::fcntl(fd, libc::F_SETFD, 0) == -1 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                    Ok(())
+                });
+            }
+        }
+        #[cfg(windows)]
+        {
+            use sha2::{Digest, Sha256};
+            let selected =
+                match fs::read(self.paths.hexbot_home.join("runtime/native-current.json")) {
+                    Ok(bytes) => format!("{:x}", Sha256::digest(bytes)),
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => "none".into(),
+                    Err(error) => return Err(error.into()),
+                };
+            command.env("HEXBOT_EXPECTED_NATIVE_SELECTION", selected);
+            // Windows locks belong to a process. Setup compares this selection
+            // under its own activation lock before publishing a new runtime.
+            drop(lock);
         }
         self.run_command(command, args, true, progress)
     }
@@ -812,8 +843,11 @@ impl Installer {
             "remove",
             format!("Removing {}.", app.path.display()),
         ));
+        if self.target.is_windows() {
+            return self.uninstall_windows(app);
+        }
         self.remove_owned_path(&app.path)?;
-        if !self.target.is_macos() {
+        if self.target == Target::LinuxX86_64 {
             if app
                 .path
                 .file_stem()
@@ -833,7 +867,11 @@ impl Installer {
 
     // Replacing or deleting an app while it runs breaks it mid-session.
     fn require_quit(&self, app: &Path) -> Result<()> {
-        if !self.target.is_macos() && safety::appimage_running(Path::new("/proc"), app)? {
+        if self.target.is_windows() {
+            return windows::require_quit(app);
+        }
+        if self.target == Target::LinuxX86_64 && safety::appimage_running(Path::new("/proc"), app)?
+        {
             return fail(format!(
                 "Quit {}, then run the installer again.",
                 app.display()
@@ -918,6 +956,8 @@ fn remove_path(path: &Path) -> Result<()> {
 }
 
 fn executable(path: &Path) -> Result<()> {
+    #[cfg(windows)]
+    let _ = path;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;

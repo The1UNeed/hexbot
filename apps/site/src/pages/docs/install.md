@@ -1,7 +1,7 @@
 ---
 layout: ../../layouts/Docs.astro
 title: Install
-description: Install Hexbot on macOS or Linux as Full, Client, or Headless.
+description: Install Hexbot on macOS, Linux, or Windows x64 as Full, Client, or Headless.
 ---
 
 Hexbot has two parts: the **daemon**, which runs your bots, rooms, and memory, and the **app** you talk to them in. Install one of three options on each computer:
@@ -14,7 +14,7 @@ Full and Client install side by side and update independently. One daemon is eno
 
 Options and tracks are separate choices: Full, Client, and Headless describe what is installed; Stable and Nightly describe which builds you receive. Stable and Nightly share the same `~/.hexbot` data, so back it up before trying a nightly.
 
-Hexbot runs on macOS 12 or later (Apple Silicon or Intel) and on x86-64 Linux with glibc 2.35 or later, such as Ubuntu 22.04 or Debian 12. If the daemon cannot run on your system, the installer or first launch says so.
+Hexbot runs on macOS 12 or later (Apple Silicon or Intel) and on x86-64 Linux with glibc 2.35 or later, such as Ubuntu 22.04 or Debian 12. Windows builds target x64 computers. Windows ARM64 and 32-bit Windows are not supported. The [download page](/download/) lists the builds that have been published. If the daemon cannot run on your system, the installer or first launch says so.
 
 ## Two ways to install
 
@@ -22,7 +22,7 @@ Both ways offer the same three options and download only the files for the optio
 
 ### Hexbot Installer
 
-The [download page](/download/) offers the Hexbot Installer for your computer: a .dmg for macOS, an AppImage for Linux. Open it, choose Full, Client, or Headless, and install. On Linux, make the AppImage executable first (right-click it, or `chmod +x` it).
+The [download page](/download/) offers the Hexbot Installer for your computer: a .dmg for macOS, an AppImage for Linux, or an .exe for Windows x64 when published. Open it, choose Full, Client, or Headless, and install. On Linux, make the AppImage executable first (right-click it, or `chmod +x` it).
 
 ### Terminal
 
@@ -30,7 +30,7 @@ The [download page](/download/) offers the Hexbot Installer for your computer: a
 curl -fsSL https://hexbot.app/install.sh | sh
 ```
 
-This works over SSH. The script picks the build for your computer, downloads the terminal installer, checks its SHA-256 checksum, and asks which option to install. To skip the question, name the option:
+For Windows, use the [PowerShell instructions](#windows). The command above works over SSH on macOS and Linux. The script picks the build for your computer, downloads the terminal installer, checks its SHA-256 checksum, and asks which option to install. To skip the question, name the option:
 
 ```sh
 curl -fsSL https://hexbot.app/install.sh | sh -s -- --headless
@@ -66,6 +66,7 @@ One installer changes Hexbot at a time. A second one, terminal or windowed, wait
 
 - **macOS**: Full and Client go to `/Applications`, or to `~/Applications` when `/Applications` is not writable.
 - **Linux**: Full and Client are AppImages in `~/.local/share/hexbot`, with a desktop entry, an icon, and a handler for `hexbot://` pairing links. The installer never uses `sudo`. If you installed a deb package yourself, remove it with your package manager before you change or uninstall with the installer.
+- **Windows**: Full and Client install for your account under `%LOCALAPPDATA%\Programs`, with separate folders for each edition and channel. They do not need administrator access.
 - **Headless**: see [What Headless sets up](#what-headless-sets-up).
 
 The installer records what it installed in `~/.hexbot/install.json`.
@@ -78,8 +79,9 @@ The Full and Client packages are still on the [download page](/download/#all) un
 - Intel for older Macs
 - AppImage for a portable Linux app
 - deb for Debian, Ubuntu, and related distributions
+- exe for Windows x64, once the download page lists it
 
-Windows and Linux ARM packages are not provided.
+Windows ARM64 and Linux ARM packages are not provided.
 
 ## First launch
 
@@ -110,10 +112,10 @@ Or open the Hexbot Installer and choose Headless. When it finishes, the installe
 
 - The daemon runtime in `~/.hexbot/runtime`, checked against its SHA-256 checksum.
 - Python 3.11 for code tools and the voice tools, inside `~/.hexbot`, each checked against a pinned checksum, as Full does on first launch.
-- A user service that starts the daemon at login and restarts it if it stops: `~/Library/LaunchAgents/app.hexbot.daemon.plist` on macOS, `~/.config/systemd/user/hexbot.service` on Linux. On Linux the installer also enables lingering (`loginctl enable-linger`), so the daemon keeps running after you log out and starts at boot; if that fails it says so.
-- The `hexbot` command in `~/.local/bin`. If that directory is not on your `PATH`, setup prints the line to add to your shell profile.
+- A user service that starts the daemon at login and restarts it if it stops: `~/Library/LaunchAgents/app.hexbot.daemon.plist` on macOS, `~/.config/systemd/user/hexbot.service` on Linux. On Windows it registers a per-user logon Scheduled Task, which runs only while you are signed in. On Linux the installer also enables lingering (`loginctl enable-linger`), so the daemon keeps running after you log out and starts at boot; if that fails it says so.
+- The `hexbot` command in `~/.local/bin`, as `hexbot.cmd` on Windows. If that directory is not on your `PATH`, setup prints how to run the command.
 
-On Linux, install bubblewrap for the sandbox; see [Linux](#linux). The installer reminds you when it is missing.
+On Linux, install bubblewrap for the sandbox; see [Linux](#linux). The installer reminds you when it is missing. Windows has no OS sandbox; see [Windows](#windows) for approval and unattended-work limits.
 
 ### Connect from another computer
 
@@ -154,6 +156,28 @@ This stops and removes the service, the daemon runtime, and the `hexbot` command
 ## macOS
 
 The Hexbot Installer and the direct downloads are .dmg files. Open the installer from the .dmg; for a direct download, drag Hexbot to Applications. Public releases are signed and notarized. If macOS says it cannot check the app, open System Settings, Privacy and Security, and choose Open Anyway. If macOS reports a damaged or unidentified app, verify that you downloaded it from `hexbot.app` and try the current release again.
+
+## Windows
+
+Windows x64 downloads appear on the [download page](/download/) when they are published. Open the Hexbot Installer .exe to choose Full, Client, or Headless. The windowed installer first installs Hexbot Installer for your account. If WebView2 is missing, its setup downloads that runtime. A direct Full or Client .exe installs that app for your Windows account.
+
+To use the terminal installer, run these commands in PowerShell:
+
+```powershell
+$installer = Join-Path $env:TEMP "hexbot-$([guid]::NewGuid()).ps1"
+Invoke-WebRequest -UseBasicParsing https://hexbot.app/install.ps1 -OutFile $installer
+powershell -NoProfile -ExecutionPolicy Bypass -File $installer
+```
+
+Add the same flags as on macOS and Linux, for example `--headless`, `--nightly`, `--repair`, or `--uninstall`, after `$installer` on the last line. The bootstrap checks the terminal executable's SHA-256 checksum before starting it. It stops if the selected track has no Windows installer.
+
+Windows stores your data in `%USERPROFILE%\.hexbot` and its command wrapper in `%USERPROFILE%\.local\bin\hexbot.cmd`. Add that bin directory to your user `PATH`, or run the full path printed by setup. Start a new terminal after changing `PATH`.
+
+Headless and "Start the daemon at login" use a per-user Scheduled Task. Keep that Windows account signed in for remote devices, reminders, and other background work. Logging out stops the daemon. This is not a machine-wide Windows service.
+
+Windows currently has no OS sandbox. Manual and Auto ask before every shell command and Python code run, even inside the workspace. An approved command has your Windows account's full access to files and the network. Scheduled scripts refuse to run in every mode. Pair a Windows Client with a macOS or Linux daemon when you need sandboxed commands or unattended scripts. See [Approvals](/docs/approvals/).
+
+Windows Firewall may ask about the daemon when you enable "Allow other devices". Allow it only on a trusted private network. Keep the port closed to the public internet; use Tailscale or Hex Connect for remote access.
 
 ## Linux
 

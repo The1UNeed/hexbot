@@ -20,7 +20,7 @@ type Socket =
 
 pub const USAGE: &str = concat!(
     "hexbot serve [--host IP] [--port N] [--lan | --no-lan]\n",
-    "hexbot setup [--activate] [--no-code-tools] [--json]\n",
+    "hexbot setup [--activate] [--no-code-tools] [--no-cli] [--json]\n",
     "hexbot service install | uninstall | start | stop | restart | status [--json] | logs [-f]\n",
     "hexbot status [--json]\n",
     "hexbot pair\n",
@@ -95,13 +95,11 @@ fn offline_lock(home: &Path) -> Result<std::fs::File> {
         options.mode(0o600);
     }
     let file = options.open(home.join("native-daemon.lock"))?;
-    #[cfg(unix)]
     {
-        use std::os::fd::AsRawFd;
         // A daemon holds the lock a moment before it answers, and so does a child process
         // forked while the lock was open. Give either a second to settle.
         for attempt in 0..20 {
-            if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
+            if crate::platform::try_lock(&file)? {
                 return Ok(file);
             }
             if attempt < 19 {
@@ -233,6 +231,33 @@ async fn input(prompt: String) -> Result<String> {
     let mut interrupt = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())?;
     eprint!("{prompt}");
     std::io::stderr().flush()?;
+    #[cfg(windows)]
+    {
+        use std::os::windows::thread::JoinHandleExt;
+        use windows_sys::Win32::System::IO::CancelSynchronousIo;
+        let (send, receive) = tokio::sync::oneshot::channel();
+        let reader = std::thread::spawn(move || {
+            let mut line = String::new();
+            let result = std::io::stdin()
+                .read_line(&mut line)
+                .map(|_| line.trim().to_owned());
+            let _ = send.send(result);
+        });
+        let result = tokio::select! {
+            result = receive => result.map_err(|_| Error::new(5200, "Terminal reader stopped"))?.map_err(Into::into),
+            _ = tokio::signal::ctrl_c() => {
+                let mut interval = tokio::time::interval(Duration::from_millis(1));
+                while !reader.is_finished() {
+                    unsafe { CancelSynchronousIo(reader.as_raw_handle()) };
+                    interval.tick().await;
+                }
+                Err(Error::new(5200, "Command interrupted"))
+            }
+        };
+        // CancelSynchronousIo releases a console ReadFile before the worker is joined.
+        let _ = reader.join();
+        result
+    }
     #[cfg(unix)]
     {
         use std::{

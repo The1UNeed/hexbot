@@ -33,16 +33,19 @@ function show(target: Target) {
   const builds: DownloadChoice[] = JSON.parse(primary.dataset.builds ?? '[]')
   const build = builds.find(build => build.key === target)
   if (target === 'other' || !build) {
-    title.textContent = 'Hexbot runs on Mac and Linux.'
-    sub.textContent = document.querySelector('#dl-terminal')
-      ? 'Install it on a Mac or a Linux computer, or on a server with the terminal command below. Then reach your bots from this device with a pairing link.'
-      : 'Download it on a Mac or a Linux computer. Then reach your bots from this device with a pairing link.'
+    title.textContent = 'Choose a computer to run Hexbot.'
+    sub.textContent = target === 'windows'
+      ? 'A Windows x64 build is not available on this track. Choose an available download below, or connect this device to a daemon on another computer.'
+      : document.querySelector('#dl-terminal')
+      ? 'Choose an available download below, or install on another computer with the terminal command. Then reach your bots from this device with a pairing link.'
+      : 'Choose an available download below. Then reach your bots from this device with a pairing link.'
     primary.hidden = true
+    for (const element of document.querySelectorAll<HTMLElement>('[data-os], [data-for]')) element.hidden = true
     return
   }
   const name = build.name
   const kind = build.kind
-  const os = target === 'linux' ? 'linux' : 'mac'
+  const os = target === 'linux' ? 'linux' : target === 'windows' ? 'windows' : 'mac'
   primary.href = build.url
   for (const element of document.querySelectorAll<HTMLElement>('[data-os], [data-for]'))
     element.hidden = (!!element.dataset.os && element.dataset.os !== os) || (!!element.dataset.for && element.dataset.for !== kind)

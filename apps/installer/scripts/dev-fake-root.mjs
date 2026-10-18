@@ -2,14 +2,22 @@ import fs from 'node:fs'
 import path from 'node:path'
 
 const marker = '.hexbot-dev-fake'
-const inside = (child, parent) => child === parent || child.startsWith(`${parent}${path.sep}`)
+const inside = (child, parent) => {
+  if (process.platform === 'win32') {
+    child = child.toLowerCase()
+    parent = parent.toLowerCase()
+  }
+
+  return child === parent || child.startsWith(`${parent}${path.sep}`)
+}
 
 /** Claim only new, empty, or previously marked roots before rebuilding fake files. */
 export function prepareRoot(directory, realHome) {
   const root = path.resolve(directory)
 
   realHome = fs.realpathSync(realHome)
-  const protectedDirs = [path.join(realHome, '.hexbot'), '/Applications', path.join(realHome, 'Library')]
+  const protectedDirs = [path.join(realHome, '.hexbot'), '/Applications', path.join(realHome, 'Library'),
+    path.join(realHome, 'AppData/Local/Programs'), path.join(realHome, '.config/hexbot'), path.join(realHome, '.local/bin')]
   const check = candidate => {
     if (inside(realHome, candidate) || protectedDirs.some(dir => inside(candidate, dir))) {
       throw new Error(`Refusing to use ${root}: it overlaps your real home or Hexbot install.`)

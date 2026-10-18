@@ -16,7 +16,7 @@ use std::{
     time::Duration,
 };
 use tokio::{
-    process::{Child, Command},
+    process::Child,
     sync::{Mutex, watch},
     task::JoinHandle,
 };
@@ -769,6 +769,10 @@ fn cloudflared_asset() -> Result<(&'static str, &'static str)> {
             "cloudflared-linux-amd64",
             "14ecae0dd17ba74f8055e22b8f5b5acc3cbb5a9c3be4e7d6507fe1c4eadaea95",
         )),
+        ("windows", "x86_64") => Ok((
+            "cloudflared-windows-amd64.exe",
+            "82781b3ba8cb66c0f8fbc7d34974bc4bd8eb1fcc76f27badb97eb4cc7060f5ad",
+        )),
         _ => Err(Error::new(5242, "unsupported cloudflared platform")),
     }
 }
@@ -804,7 +808,7 @@ fn verified_cloudflared(asset: &Path, expected: &str, compressed: bool) -> Resul
 }
 fn install_cloudflared(binary: &Path, bytes: &[u8]) -> Result<()> {
     // Always compare with the pinned asset, including a cached executable.
-    if fs::symlink_metadata(binary).is_ok_and(|m| m.file_type().is_symlink())
+    if fs::symlink_metadata(binary).is_ok_and(|m| crate::platform::is_link(&m))
         || fs::read(binary).ok().as_deref() != Some(bytes)
     {
         let mut temporary =
@@ -844,7 +848,9 @@ async fn ensure_cloudflared_asset(
 ) -> Result<PathBuf> {
     let directory = home.join("bin");
     fs::create_dir_all(&directory)?;
-    let binary = directory.join(format!("cloudflared-{CLOUDFLARED_VERSION}"));
+    let binary = directory.join(crate::platform::executable_name(&format!(
+        "cloudflared-{CLOUDFLARED_VERSION}"
+    )));
     let asset = directory.join(format!("{name}-{CLOUDFLARED_VERSION}.asset"));
     let compressed = name.ends_with(".tgz");
     let bytes = match verified_cloudflared(&asset, digest, compressed) {
@@ -947,7 +953,7 @@ fn spawn_cloudflared(
     port: u16,
     metrics: u16,
     token: &str,
-) -> Result<Child> {
+) -> Result<(Child, crate::pi::ChildTree)> {
     common::atomic_write(
         settings,
         &serde_json::to_vec(&json!({"ingress":[{"service":format!("http://127.0.0.1:{port}")}]}))
@@ -957,7 +963,8 @@ fn spawn_cloudflared(
         .create(true)
         .append(true)
         .open(logs)?;
-    Command::new(binary)
+    let mut command = crate::pi::executable_command(binary);
+    command
         .arg("tunnel")
         .arg("--config")
         .arg(settings)
@@ -971,9 +978,8 @@ fn spawn_cloudflared(
         .stdin(Stdio::null())
         .stdout(log.try_clone()?)
         .stderr(log)
-        .kill_on_drop(true)
-        .spawn()
-        .map_err(Into::into)
+        .kill_on_drop(true);
+    crate::pi::spawn_child(&mut command).map_err(Into::into)
 }
 /// Why one cloudflared lifetime ended.
 enum Outcome {
@@ -992,7 +998,7 @@ async fn run_tunnel(
     fs::create_dir_all(home.join("logs"))?;
     let logs = home.join("logs/cloudflared.log");
     let metrics = free_port()?;
-    let child = spawn_cloudflared(
+    let (child, tree) = spawn_cloudflared(
         &binary,
         &tunnel_settings,
         &logs,
@@ -1016,6 +1022,7 @@ async fn run_tunnel(
             .build()
             .ok();
         let mut child = child;
+        let mut tree = tree;
         let mut backoff = 1;
         let mut failures = 0;
         let mut repair_interval = timing.repair_interval;
@@ -1053,6 +1060,11 @@ async fn run_tunnel(
                     },
                 }
             };
+            if let Err(error) = tree.finish() {
+                tunnel_service.data.lock().await.error =
+                    Some(format!("cloudflared cleanup failed: {error}"));
+                break 'supervise;
+            }
             {
                 let mut data = tunnel_service.data.lock().await;
                 data.running = false;
@@ -1116,8 +1128,9 @@ async fn run_tunnel(
                     Ok(child)
                 });
                 match restarted {
-                    Ok(new_child) => {
+                    Ok((new_child, new_tree)) => {
                         child = new_child;
+                        tree = new_tree;
                         break;
                     }
                     Err(_) => {
@@ -1439,7 +1452,8 @@ pub(crate) fn native_directory(home: &Path) -> Result<PathBuf> {
     for part in ["runtime", "native"] {
         directory.push(part);
         match fs::symlink_metadata(&directory) {
-            Ok(metadata) if metadata.file_type().is_dir() => {}
+            Ok(metadata)
+                if metadata.file_type().is_dir() && !crate::platform::is_link(&metadata) => {}
             Ok(_) => {
                 return Err(Error::new(
                     5243,
@@ -1467,7 +1481,9 @@ fn prune_native(
         let entry = entry?;
         let path = entry.path();
         if !entry.file_type()?.is_dir()
-            || !path.join("hexbot").is_file()
+            || !path
+                .join(crate::platform::executable_name("hexbot"))
+                .is_file()
             || entry.file_name().to_string_lossy().starts_with('.')
             || entry.file_name().to_string_lossy().contains(".staging-")
         {
@@ -1500,7 +1516,7 @@ pub fn prune_current_native(home: &Path) -> Result<()> {
     };
     let metadata: Value =
         serde_json::from_slice(&metadata).map_err(|error| Error::new(5243, error.to_string()))?;
-    let active = runtime.join("native-executable").canonicalize()?;
+    let active = crate::platform::selected_native(home)?;
     let native = native_directory(home)?;
     if !active.starts_with(&native) {
         return Err(Error::new(5243, "invalid native runtime selection"));
@@ -1513,15 +1529,18 @@ pub fn prune_current_native(home: &Path) -> Result<()> {
 // Unknown running state defers cleanup. Setup can run from a different bundle
 // than the daemon which still owns this home's lock.
 fn recorded_native_runtime(native: &Path) -> Result<Option<PathBuf>> {
-    use std::os::fd::AsRawFd;
     let runtime = native
         .parent()
         .ok_or_else(|| Error::new(5243, "Missing runtime directory"))?;
     let home = runtime
         .parent()
         .ok_or_else(|| Error::new(5243, "Missing home"))?;
-    let locked = match fs::File::open(home.join("native-daemon.lock")) {
-        Ok(file) => unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) != 0 },
+    let locked = match fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(home.join("native-daemon.lock"))
+    {
+        Ok(file) => !crate::platform::try_lock(&file)?,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
         Err(e) => return Err(e.into()),
     };
@@ -1536,8 +1555,7 @@ fn recorded_native_runtime(native: &Path) -> Result<Option<PathBuf>> {
         .as_i64()
         .filter(|pid| *pid > 0 && *pid <= i32::MAX as i64)
         .ok_or_else(|| Error::new(5243, "Invalid running daemon PID"))? as i32;
-    let alive = unsafe { libc::kill(pid, 0) } == 0
-        || std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH);
+    let alive = crate::platform::process_alive(pid as u32);
     if !alive && !locked {
         return Ok(None);
     }
@@ -1560,32 +1578,29 @@ fn recorded_native_runtime(native: &Path) -> Result<Option<PathBuf>> {
 }
 
 pub(crate) fn activation_lock(runtime: &Path) -> Result<fs::File> {
-    use std::os::fd::AsRawFd;
     let file = fs::OpenOptions::new()
         .create(true)
         .truncate(false)
         .write(true)
+        .read(true)
         .open(runtime.join("activate.lock"))?;
-    let inherited = std::env::var("HEXBOT_ACTIVATION_LOCK_FD")
-        .ok()
-        .and_then(|fd| fd.parse().ok());
-    if let Some(held) = inherited_activation_lock(&file, inherited) {
-        return Ok(held);
-    }
-    loop {
-        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) } == 0 {
-            return Ok(file);
-        }
-        let error = std::io::Error::last_os_error();
-        if error.kind() != std::io::ErrorKind::Interrupted {
-            return Err(error.into());
+    #[cfg(unix)]
+    {
+        let inherited = std::env::var("HEXBOT_ACTIVATION_LOCK_FD")
+            .ok()
+            .and_then(|fd| fd.parse().ok());
+        if let Some(held) = inherited_activation_lock(&file, inherited) {
+            return Ok(held);
         }
     }
+    crate::platform::lock(&file)?;
+    Ok(file)
 }
 
 /// The installer holds the activation lock across its version check and
 /// `hexbot setup --activate`, and passes the locked descriptor down. Use it
 /// only if it is this lock file and the lock is already ours to take.
+#[cfg(unix)]
 fn inherited_activation_lock(file: &fs::File, fd: Option<i32>) -> Option<fs::File> {
     use std::os::fd::{AsRawFd, FromRawFd};
     use std::os::unix::fs::MetadataExt;
@@ -1620,10 +1635,22 @@ pub(crate) fn publish_native(
         .parent()
         .ok_or_else(|| Error::new(5243, "Missing runtime directory"))?;
     let _lock = activation_lock(runtime)?;
+    #[cfg(windows)]
+    if let Ok(expected) = std::env::var("HEXBOT_EXPECTED_NATIVE_SELECTION") {
+        let current = match fs::read(runtime.join("native-current.json")) {
+            Ok(bytes) => format!("{:x}", Sha256::digest(bytes)),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => "none".into(),
+            Err(error) => return Err(error.into()),
+        };
+        if current != expected {
+            return Err(Error::new(
+                5243,
+                "The selected runtime changed during installation; retry the installation",
+            ));
+        }
+    }
     if let Some(requested) = newer_than_selected {
-        let selected = runtime
-            .join("native-executable")
-            .canonicalize()
+        let selected = crate::platform::selected_native(runtime.parent().unwrap())
             .ok()
             .and_then(|executable| fs::read(executable.with_file_name("manifest.json")).ok())
             .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
@@ -1654,8 +1681,11 @@ fn activate_native_locked(native: &Path, version: &str, executable: &Path) -> Re
             "native update launcher escaped its runtime directory",
         ));
     }
-    let stable = runtime.join("native-executable");
-    let previous = stable.canonicalize().ok();
+    let home = runtime
+        .parent()
+        .ok_or_else(|| Error::new(5243, "Missing home directory"))?;
+    let stable = crate::platform::stable_executable(home);
+    let previous = crate::platform::selected_native(home).ok();
     // Replacing a symlink never follows its previous target. A directory cannot
     // be replaced this way and must be rejected before updating the metadata.
     if fs::symlink_metadata(&stable).is_ok_and(|m| m.file_type().is_dir()) {
@@ -1670,6 +1700,55 @@ fn activate_native_locked(native: &Path, version: &str, executable: &Path) -> Re
         std::os::unix::fs::symlink(&executable, temporary.path().join("launcher"))?;
         temporary
     };
+    #[cfg(windows)]
+    {
+        let missing = match fs::symlink_metadata(&stable) {
+            Ok(metadata) => {
+                if !metadata.is_file() || crate::platform::is_link(&metadata) {
+                    return Err(Error::new(
+                        5243,
+                        "The native dispatcher must be an ordinary file",
+                    ));
+                }
+                fs::read_to_string(runtime.join("native-dispatcher.sha256"))
+                    .ok()
+                    .as_deref()
+                    != Some(file_sha256(&stable)?.as_str())
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => true,
+            Err(error) => return Err(error.into()),
+        };
+        if missing {
+            let home_lock = fs::OpenOptions::new()
+                .create(true)
+                .truncate(false)
+                .read(true)
+                .write(true)
+                .open(home.join("native-daemon.lock"))?;
+            if !crate::platform::try_lock(&home_lock)? {
+                return Err(Error::new(
+                    5243,
+                    "Stop the daemon before repairing its native dispatcher",
+                ));
+            }
+            let mut launcher = tempfile::NamedTempFile::new_in(runtime)?;
+            std::io::copy(&mut fs::File::open(&executable)?, launcher.as_file_mut())?;
+            launcher.as_file().sync_all()?;
+            launcher.persist(&stable).map_err(|error| {
+                Error::new(
+                    5243,
+                    format!(
+                        "Stop Hexbot before repairing its native dispatcher: {}",
+                        error.error
+                    ),
+                )
+            })?;
+            common::atomic_write(
+                &runtime.join("native-dispatcher.sha256"),
+                file_sha256(&stable)?.as_bytes(),
+            )?;
+        }
+    }
     let manifest = native_manifest(&executable, version);
     common::atomic_write(
         &runtime.join("native-current.json"),
@@ -2100,7 +2179,11 @@ async fn native_update(home: &Path, version: &str, service: &Service) -> Result<
     let entrypoint = manifest
         .get("entrypoint")
         .and_then(Value::as_str)
-        .unwrap_or("hexbot");
+        .unwrap_or(if cfg!(windows) {
+            "hexbot.exe"
+        } else {
+            "hexbot"
+        });
     common::identifier(entrypoint)?;
     if manifest["format"] == "tar.gz" {
         extract_archive(tmp.path(), staging.path(), 4 * 1024 * 1024 * 1024)?;
@@ -2118,14 +2201,15 @@ async fn native_update(home: &Path, version: &str, service: &Service) -> Result<
         use std::os::unix::fs::PermissionsExt;
         fs::set_permissions(&staged_executable, fs::Permissions::from_mode(0o700))?;
     }
-    let mut child = Command::new(&staged_executable)
+    let mut command = crate::pi::executable_command(&staged_executable);
+    command
         .arg("version")
         .env("HEXBOT_HOME", home)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
-        .kill_on_drop(true)
-        .spawn()?;
+        .kill_on_drop(true);
+    let (mut child, mut tree) = crate::pi::spawn_child(&mut command)?;
     let checked = tokio::time::timeout(Duration::from_secs(15), async {
         use tokio::io::AsyncReadExt;
         let mut output = Vec::new();
@@ -2153,6 +2237,7 @@ async fn native_update(home: &Path, version: &str, service: &Service) -> Result<
             return Err(Error::new(5243, "updated daemon version check timed out"));
         }
     };
+    tree.finish()?;
     if !exit.success() || String::from_utf8_lossy(&output).trim() != version {
         return Err(Error::new(
             5243,

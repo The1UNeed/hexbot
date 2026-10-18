@@ -15,7 +15,8 @@ export const MIN_INSTALLER = '0.1.5-0'
 const targets = [
   ['macos-aarch64', 'mac', 'arm64'],
   ['macos-x86_64', 'mac', 'x64'],
-  ['linux-x86_64', 'linux', 'x64']
+  ['linux-x86_64', 'linux', 'x64'],
+  ['windows-x86_64', 'win', 'x64']
 ]
 
 async function exists(path) {
@@ -86,7 +87,7 @@ export async function makeInstallManifest(root, { channel, version, baseUrl = 'h
         if (!file.url || /[/\\]/.test(file.url) || file.url === '..') throw new Error(`Invalid artifact URL: ${feedPath}`)
         if (!(await exists(join(root, directory, file.url)))) throw new Error(`Referenced file is missing: ${directory}/${file.url}`)
       }
-      const format = os === 'mac' ? 'zip' : 'AppImage'
+      const format = os === 'mac' ? 'zip' : os === 'win' ? 'exe' : 'AppImage'
       const file = feed.files.find(file => file.url.endsWith(`.${format}`))
       if (!file) {
         if (allowMissing) continue
@@ -109,9 +110,9 @@ export async function makeInstallManifest(root, { channel, version, baseUrl = 'h
       options.headless = { url: url(path), path, sha256: metadata.sha256, size: metadata.size,
         format: 'tar.gz', manifest: `${native}/manifest.json` }
     }
-    const appName = os === 'mac' ? `mac-${arch}.dmg` : 'linux-x86_64.AppImage'
+    const appName = os === 'mac' ? `mac-${arch}.dmg` : os === 'win' ? 'windows-x86_64.exe' : 'linux-x86_64.AppImage'
     for (const [option, filename] of [
-      ['installer', `hexbot-install-${version}-${target}`],
+      ['installer', `hexbot-install-${version}-${target}${os === 'win' ? '.exe' : ''}`],
       ['installerApp', `HexbotInstaller-${version}-${appName}`]
     ]) {
       const path = `install/${version}/${filename}`

@@ -127,18 +127,33 @@ async fn complete_in_dir(
             "Could not start Copilot ACP command '{executable}'. Install GitHub Copilot CLI or configure HEXBOT_COPILOT_ACP_COMMAND."
         ))
     };
-    let Some(program) = common::command_path(&executable, cwd) else {
+    let javascript = crate::pi::javascript_entry(Path::new(&executable));
+    let Some(program) = common::command_path(&executable, cwd).or_else(|| {
+        javascript
+            .then(|| cwd.join(&executable))
+            .filter(|path| path.is_file())
+    }) else {
         return Err(not_started());
     };
+    // ACP needs network access. The Windows workspace AppContainer cannot
+    // provide that while preserving the base credential and daemon-home
+    // restrictions, so neither sessions nor reviewers may launch unrestricted.
+    if cfg!(windows) {
+        return Err(failure(
+            "Copilot ACP is unavailable on Windows because its credential isolation is not supported. Choose another provider or connect to a Mac or Linux daemon.",
+        ));
+    }
     // Copilot's own reads must not reach the daemon's .env, connect.json or auth files,
     // so the child runs in the same sandbox as scripts, with its workspace writable.
+    let entry = crate::pi::executable_command(&program);
     let mut command = crate::credentials::isolated_command(
         home,
-        &program.to_string_lossy(),
+        &entry.as_std().get_program().to_string_lossy(),
         &[cwd.to_path_buf()],
         crate::credentials::Confine::No,
     )?;
     command
+        .args(entry.as_std().get_args())
         .args(command_args)
         .current_dir(cwd)
         .stdin(Stdio::piped())
@@ -161,6 +176,8 @@ async fn complete_in_dir(
             .env("USERPROFILE", dir.path());
         for (name, child) in [
             ("COPILOT_HOME", "copilot"),
+            ("APPDATA", "roaming"),
+            ("LOCALAPPDATA", "local"),
             ("XDG_CONFIG_HOME", "config"),
             ("XDG_CACHE_HOME", "cache"),
             ("XDG_STATE_HOME", "state"),
@@ -186,7 +203,7 @@ async fn complete_in_dir(
         entries.insert(key.clone(), (id.clone(), sender));
     }
     let _lease = Lease { key, id };
-    let mut child = command.spawn().map_err(|_| not_started())?;
+    let (mut child, _tree) = crate::pi::spawn_child(&mut command).map_err(|_| not_started())?;
     let input = child
         .stdin
         .take()
@@ -275,7 +292,8 @@ fn split_args(raw: &str) -> Result<Vec<String>> {
     let mut quote = None;
     let mut escaped = false;
     let mut started = false;
-    for ch in raw.chars() {
+    let mut chars = raw.chars().peekable();
+    while let Some(ch) = chars.next() {
         if escaped {
             current.push(ch);
             escaped = false;
@@ -283,6 +301,11 @@ fn split_args(raw: &str) -> Result<Vec<String>> {
             continue;
         }
         if ch == '\\' && quote != Some('\'') {
+            if cfg!(windows) && !(quote == Some('"') && chars.peek() == Some(&'"')) {
+                current.push(ch);
+                started = true;
+                continue;
+            }
             escaped = true;
             started = true;
             continue;
@@ -315,6 +338,21 @@ fn split_args(raw: &str) -> Result<Vec<String>> {
         args.push(current);
     }
     Ok(args)
+}
+
+#[cfg(all(test, windows))]
+mod windows_arguments {
+    #[test]
+    fn quoted_paths_preserve_windows_separators_and_spaces() {
+        assert_eq!(
+            super::split_args(r#""C:\Users\Name With Spaces\entry.cjs" --acp"#).unwrap(),
+            [r#"C:\Users\Name With Spaces\entry.cjs"#, "--acp"]
+        );
+        assert_eq!(
+            super::split_args(r#"'\\server\share\entry.cjs' --stdio"#).unwrap(),
+            [r#"\\server\share\entry.cjs"#, "--stdio"]
+        );
+    }
 }
 
 struct Wire {

@@ -10,7 +10,7 @@
   in [`backend/hexbot-core/README.md`](../backend/hexbot-core/README.md).
 - Pi runtime: `node --test backend/pi-runtime/*.test.mjs` after
   `npm ci --prefix backend/pi-runtime --ignore-scripts --no-audit --no-fund`.
-  CI runs the Rust and Pi suites on Linux and macOS. Approval tests use a stub
+  CI runs the Rust and Pi suites on Linux, macOS, and Windows. Approval tests use a stub
   sandbox; isolation tests use `sandbox-exec` on macOS and working bubblewrap
   on Linux. CI installs bubblewrap with the AppArmor profile from the install docs.
   Gate regressions change the working directory and resolved file destination
@@ -89,6 +89,16 @@
 - Site: `pnpm --filter ./apps/site run check`.
 - Connect: `pnpm --filter ./apps/connect run typecheck && pnpm --filter ./apps/connect run test --run && pnpm --filter ./apps/connect run lint`.
 
+## Windows validation
+
+Run the Rust daemon, installer, Pi, desktop, site, and release-script suites on a Windows x64 VM as well as their other platforms. Set `HEXBOT_HOME` to a temporary directory. Never use the real `%USERPROFILE%\.hexbot` as a test home.
+
+Build Full, Client, the native runtime, and both installers from the same commit. Use a clean normal-user VM to check install, repair, option changes, uninstall, `hexbot://` pairing, per-user logon task lifecycle, and remote native updates. Include a path with spaces and non-ASCII characters. Test both a fresh home and preserved data. Check that Client installs no daemon or Python.
+
+Keep a report with the Windows build, toolchain versions, artifact hashes, commands, test totals, and skipped checks. Run sandbox tests with real child processes, denied network attempts, and files outside the workspace. Passing cross-compilation or tests that replace the command runner does not establish Windows containment.
+
+Production readiness also needs signed-artifact validation, app update installation, and an interactive first-launch check. An unsigned CI build proves only the behavior it exercised. The [release smoke checks](release.md#smoke-checks) list the release checks.
+
 ## Mobile
 
 `pnpm mobile:check` runs the Expo app's TypeScript, lint, protocol and chat-state tests.
@@ -129,7 +139,11 @@ The engine tests use temporary homes and `HEXBOT_SERVICE_NO_LOAD=1`. They cover
 foreign service ownership, runtime files without a Headless install, LAN
 preservation on repair, macOS app recovery, and status failures after setup.
 The bootstrap suite exercises curl and wget track selection. Only a Stable
-manifest 404 permits a Nightly fallback.
+manifest 404 permits a Nightly fallback. The Windows PowerShell bootstrap
+integration suite is in `apps/site/src/lib/installBootstrap.test.ts` and runs
+with `pnpm --filter ./apps/site run test` on Windows. It serves a compiled
+test executable from loopback, preserves installer arguments, and rejects
+checksum mismatches, duplicate target records, off-origin URLs, and redirects.
 
 For the windowed installer, run
 `cargo test --locked --manifest-path apps/installer/src-tauri/Cargo.toml`

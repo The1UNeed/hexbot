@@ -154,7 +154,7 @@ impl Installer {
         if let Some(version) = app.version.as_deref().and_then(parse) {
             return Ok(Some(version));
         }
-        if app.managed_by_dpkg {
+        if app.managed_by_dpkg || self.target.is_windows() {
             return Ok(asar_version(&app.path.join("resources/app.asar")));
         }
         if self.target.is_macos() {
@@ -229,6 +229,10 @@ fn appimage_version(path: &Path) -> Result<Option<semver::Version>> {
 
 /// Read only package.json from an installed Electron ASAR, without launching it.
 fn asar_version(path: &Path) -> Option<semver::Version> {
+    asar_package(path)?["version"].as_str().and_then(parse)
+}
+
+pub(crate) fn asar_package(path: &Path) -> Option<serde_json::Value> {
     let mut file = fs::File::open(path).ok()?;
     let mut prefix = [0; 16];
     file.read_exact(&mut prefix).ok()?;
@@ -253,8 +257,7 @@ fn asar_version(path: &Path) -> Option<semver::Version> {
     .ok()?;
     let mut bytes = vec![0; size as usize];
     file.read_exact(&mut bytes).ok()?;
-    let package: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
-    package["version"].as_str().and_then(parse)
+    serde_json::from_slice(&bytes).ok()
 }
 
 #[cfg(test)]

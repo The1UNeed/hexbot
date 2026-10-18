@@ -71,6 +71,33 @@ fn patterns() -> &'static Patterns {
 /// matchers do too.
 pub(crate) const FOLD_CASE: bool = cfg!(any(target_os = "macos", windows));
 fn folded(path: &Path) -> PathBuf {
+    #[cfg(windows)]
+    {
+        // canonicalize returns verbatim paths. Compare them with ordinary drive
+        // and UNC paths using the same spelling, including Win32 name aliases.
+        let text = path.to_string_lossy().replace('/', "\\");
+        let text = if text
+            .get(..8)
+            .is_some_and(|p| p.eq_ignore_ascii_case("\\\\?\\UNC\\"))
+        {
+            format!("\\\\{}", &text[8..])
+        } else {
+            text.strip_prefix("\\\\?\\").unwrap_or(&text).to_owned()
+        };
+        return PathBuf::from(
+            text.split('\\')
+                .map(|part| {
+                    if part == "." || part == ".." {
+                        part.to_owned()
+                    } else {
+                        part.trim_end_matches([' ', '.']).to_lowercase()
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("\\"),
+        );
+    }
+    #[cfg(not(windows))]
     if FOLD_CASE {
         PathBuf::from(path.to_string_lossy().to_lowercase())
     } else {
@@ -90,7 +117,7 @@ fn home_credential_name(home: &Path, path: &Path) -> bool {
     })
 }
 pub fn credential_name(home: &Path, path: &Path) -> bool {
-    if std::env::var_os("HOME").is_some_and(|user| {
+    if crate::platform::user_home().is_some_and(|user| {
         user_credential_name(Path::new(&user), path)
             || ssh_credential_name(Path::new(&user), path)
             || store_credential_name(path)
@@ -163,12 +190,25 @@ pub enum WriteTier {
 pub const NEVER_WRITTEN: &str =
     "Credential and system configuration files are never written by tools.";
 /// A write policy entry is absolute or relative to the user's home; `None`
-/// when it is relative and HOME is unset.
+/// when it is relative and the user's home is unavailable. Windows environment
+/// roots are explicit policy entries and never become relative paths.
 fn policy_root(entry: &str) -> Option<PathBuf> {
-    if entry.starts_with('/') {
+    if entry.starts_with('%') {
+        #[cfg(windows)]
+        {
+            let (name, suffix) = entry[1..].split_once('%')?;
+            let root = PathBuf::from(std::env::var_os(name)?);
+            return root
+                .is_absolute()
+                .then(|| root.join(suffix.trim_start_matches('/')));
+        }
+        #[cfg(not(windows))]
+        return None;
+    }
+    if Path::new(entry).is_absolute() {
         Some(PathBuf::from(entry))
     } else {
-        std::env::var_os("HOME").map(|user| PathBuf::from(user).join(entry))
+        crate::platform::user_home().map(|user| PathBuf::from(user).join(entry))
     }
 }
 /// The file tools' tier for a host path.
@@ -232,7 +272,7 @@ fn secret_paths(home: &Path) -> Vec<PathBuf> {
         }
     }
     walk(home, home, &mut paths);
-    if let Some(user) = std::env::var_os("HOME") {
+    if let Some(user) = crate::platform::user_home() {
         let user = PathBuf::from(user);
         walk_ssh(&user.join(".ssh"), &mut paths);
         for local in &policy().user {
@@ -245,6 +285,7 @@ fn secret_paths(home: &Path) -> Vec<PathBuf> {
     cache.insert(home.to_owned(), (Instant::now(), paths.clone()));
     paths
 }
+#[cfg(unix)]
 fn bwrap() -> Option<&'static Path> {
     static BWRAP: OnceLock<Option<PathBuf>> = OnceLock::new();
     BWRAP
@@ -295,6 +336,9 @@ fn bwrap() -> Option<&'static Path> {
 }
 /// The OS sandbox shell and code children run in, for `hexbot.info`.
 pub fn sandbox() -> Option<&'static str> {
+    #[cfg(windows)]
+    return crate::windows_sandbox::available().then_some("appcontainer");
+    #[cfg(not(windows))]
     if cfg!(target_os = "macos") {
         Some("sandbox-exec")
     } else {
@@ -305,17 +349,48 @@ pub fn sandbox() -> Option<&'static str> {
 pub fn isolation_available() -> bool {
     sandbox().is_some()
 }
+/// ACL decisions for a Windows AppContainer. The launcher adds only its unique
+/// SID to these paths, preserving the owner's other ACL entries.
+#[cfg(windows)]
+pub(crate) fn windows_protection(
+    home: &Path,
+    roots: &[PathBuf],
+) -> Result<(Vec<PathBuf>, Vec<PathBuf>)> {
+    let scan = workspace_protected(roots, WORKSPACE_DIRS)?;
+    if scan.failure || scan.exhausted {
+        return Err(Error::new(
+            5240,
+            format!(
+                "The Windows workspace safety scan could not finish{}.",
+                because(&scan)
+            ),
+        ));
+    }
+    let mut unwritable = locked_git(&scan, roots, true)?;
+    let mut unreadable = read_denied();
+    unreadable.extend(secret_paths(home));
+    unreadable.extend(denied_writes()?);
+    unreadable.extend(scan.secrets);
+    unwritable.extend(scan.links.list);
+    for entry in policy().write.ask.iter().chain(&policy().write.file_deny) {
+        if let Some(root) = policy_root(entry) {
+            unwritable.push(real_root(&root).unwrap_or(root));
+        }
+    }
+    Ok((unreadable, unwritable))
+}
 /// Approval card text for code that would run without a sandbox.
+#[cfg(not(windows))]
 pub const UNSANDBOXED_REASON: &str = "Hexbot has no OS sandbox on this system, so this code can read any file you can, including credentials. Install bubblewrap and restart the daemon to restore isolation.";
+#[cfg(windows)]
+pub const UNSANDBOXED_REASON: &str = "Hexbot has no Windows OS sandbox, so this code can read any file you can, including credentials, write outside the workspace, and use the network. Approve only code you trust. Use a paired Mac or Linux daemon for OS isolation.";
 pub fn warn_unavailable_isolation() {
     if isolation_available() {
         return;
     }
     static WARN: std::sync::Once = std::sync::Once::new();
     WARN.call_once(|| {
-        eprintln!(
-            "Hexbot has no OS sandbox on this system (bubblewrap is missing or cannot start). Shell commands and scripts can read any file you can. Manual and Auto ask before every shell command and code run, and scheduled scripts refuse to run. Install bubblewrap and restart the daemon to restore isolation."
-        )
+        eprintln!("{UNSANDBOXED_REASON} Manual and Auto require user approval before shell commands and code runs. Scheduled scripts refuse to run.")
     });
 }
 /// Unattended scripts always require OS isolation.
@@ -325,13 +400,17 @@ pub fn require_isolation() -> Result<()> {
     }
     Err(Error::new(
         4302,
-        "No OS sandbox is available, so scheduled scripts cannot run. Install bubblewrap and restart the daemon.",
+        format!(
+            "No OS sandbox is available, so scheduled scripts cannot run. {UNSANDBOXED_REASON}"
+        ),
     ))
 }
+#[cfg(any(unix, test))]
 fn quoted(path: impl AsRef<str>) -> String {
     serde_json::to_string(path.as_ref()).unwrap()
 }
 /// The extension's escape set, so the profiles compare equal.
+#[cfg(any(unix, test))]
 fn regex_escape(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     for c in text.chars() {
@@ -343,6 +422,7 @@ fn regex_escape(text: &str) -> String {
     out
 }
 // Seatbelt regexes use character pairs for the platform's case policy.
+#[cfg(any(unix, test))]
 fn sandbox_regex(source: &str) -> String {
     source
         .chars()
@@ -355,6 +435,7 @@ fn sandbox_regex(source: &str) -> String {
         })
         .collect()
 }
+#[cfg(any(unix, test))]
 struct Layout {
     roots: Vec<PathBuf>,
     paths: Vec<PathBuf>,
@@ -367,6 +448,7 @@ struct Layout {
 /// workspace (none in Manual) and to a few device files, and shell profiles
 /// and login items read-only even inside it. On Linux /run and /tmp are
 /// private. Matches isolation.ts.
+#[cfg(any(unix, test))]
 const DEVICES: [&str; 5] = [
     "/dev/null",
     "/dev/zero",
@@ -374,12 +456,14 @@ const DEVICES: [&str; 5] = [
     "/dev/stderr",
     "/dev/dtracehelper",
 ];
+#[cfg(any(unix, test))]
 struct Confinement {
     writable: Vec<PathBuf>,
     config: Vec<PathBuf>,
     protected: WorkspaceProtected,
     readable: Vec<PathBuf>,
 }
+#[cfg(any(unix, test))]
 fn confine(workspace: &[PathBuf], search: &[PathBuf]) -> Result<Confinement> {
     let mut writable: Vec<PathBuf> = vec![];
     for path in workspace
@@ -466,7 +550,7 @@ fn denied_writes() -> Result<Vec<PathBuf>> {
 fn read_denied() -> Vec<PathBuf> {
     type ReadCache = HashMap<OsString, (Instant, Vec<PathBuf>)>;
     static CACHE: OnceLock<Mutex<ReadCache>> = OnceLock::new();
-    let user = std::env::var_os("HOME").unwrap_or_default();
+    let user = crate::platform::user_home().unwrap_or_default();
     let mut cache = CACHE.get_or_init(Default::default).lock().unwrap();
     if let Some((at, paths)) = cache.get(&user)
         && at.elapsed() < Duration::from_secs(5)
@@ -500,9 +584,11 @@ fn read_denied() -> Vec<PathBuf> {
 const WORKSPACE_DEPTH: usize = 3;
 const WORKSPACE_DIRS: usize = 1000;
 const WORKSPACE_ENTRIES: usize = 50;
+#[cfg(any(unix, test))]
 fn git_dir_regex() -> String {
     format!("/{}(/|$)", regex_escape(".git"))
 }
+#[cfg(any(unix, test))]
 const SCAN_REASON: &str = "The workspace safety scan exceeded its directory budget, so this code cannot run in the sandbox. Choose a smaller workspace.";
 const SCAN_FILE_REASON: &str = "The workspace safety scan reached its directory budget, so Git protection is partial. Approve this file change only if you trust its destination.";
 /// Paths in the order they were found, each once.
@@ -567,18 +653,26 @@ const GIT_INCLUDES: usize = 64;
 const GIT_SCAN_INCLUDES: usize = 256;
 const GIT_CONFIG_STEPS: usize = 10000;
 fn regular_file(path: &Path) -> Result<Option<Vec<u8>>> {
+    crate::platform::validate_path(path)?;
     use std::io::Read;
+    #[cfg(unix)]
     use std::os::unix::fs::OpenOptionsExt;
-    let file = match std::fs::OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NONBLOCK)
-        .open(path)
-    {
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    options.custom_flags(libc::O_NONBLOCK);
+    // Windows has no Unix FIFO files. Refuse non-files before opening too, so
+    // a directory or special target in a Git pointer is never read.
+    #[cfg(windows)]
+    match std::fs::metadata(path) {
+        Ok(metadata) if !metadata.is_file() => return Ok(None),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.into()),
+        _ => {}
+    }
+    let file = match options.open(path) {
         Ok(file) => file,
-        Err(error)
-            if error.kind() == std::io::ErrorKind::NotFound
-                || [Some(libc::ENOTDIR), Some(libc::ENXIO)].contains(&error.raw_os_error()) =>
-        {
+        Err(error) if missing_git_file(&error) => {
             return Ok(None);
         }
         Err(error) => return Err(error.into()),
@@ -600,11 +694,45 @@ fn regular_file(path: &Path) -> Result<Option<Vec<u8>>> {
     }
     Ok(Some(bytes))
 }
+fn missing_git_file(error: &std::io::Error) -> bool {
+    if error.kind() == std::io::ErrorKind::NotFound {
+        return true;
+    }
+    #[cfg(unix)]
+    return [Some(libc::ENOTDIR), Some(libc::ENXIO)].contains(&error.raw_os_error());
+    #[cfg(not(unix))]
+    false
+}
+/// Never resolve the metadata parser through a workspace-controlled PATH.
+fn git_executable() -> Option<PathBuf> {
+    #[cfg(not(windows))]
+    return Some(PathBuf::from("/usr/bin/git"));
+    #[cfg(windows)]
+    {
+        ["ProgramFiles", "ProgramFiles(x86)", "LOCALAPPDATA"]
+            .into_iter()
+            .filter_map(|name| {
+                let root = PathBuf::from(std::env::var_os(name)?);
+                root.is_absolute().then(|| {
+                    if name == "LOCALAPPDATA" {
+                        root.join("Programs")
+                    } else {
+                        root
+                    }
+                })
+            })
+            .flat_map(|root| [root.join("Git/cmd/git.exe"), root.join("Git/bin/git.exe")])
+            .find(|path| path.is_file())
+    }
+}
 /// Hook settings by a hash of the config contents, so unchanged repositories
 /// cost no Git process. The least recently used entry goes first, and the
 /// cache holds more configs than a scan of the largest workspace reads.
 const GIT_CACHE: usize = 2048;
 fn config_entries(text: &[u8]) -> Result<Vec<(String, String)>> {
+    if text.is_empty() {
+        return Ok(vec![]);
+    }
     use sha2::Digest;
     type ConfigCache = (u64, HashMap<[u8; 32], (u64, Vec<(String, String)>)>);
     static CACHE: OnceLock<Mutex<ConfigCache>> = OnceLock::new();
@@ -624,7 +752,9 @@ fn config_entries(text: &[u8]) -> Result<Vec<(String, String)>> {
     // system Git, never a workspace executable from PATH, and give it the bytes
     // already read: with --no-includes it opens no file, so includes are
     // followed here. It is killed at the deadline.
-    let mut child = std::process::Command::new("/usr/bin/git")
+    let git = git_executable().ok_or_else(unreadable)?;
+    let mut command = std::process::Command::new(&git);
+    command
         .args([
             "config",
             "--no-includes",
@@ -637,30 +767,68 @@ fn config_entries(text: &[u8]) -> Result<Vec<(String, String)>> {
         ])
         .env_clear()
         .env("PATH", std::env::var_os("PATH").unwrap_or_default())
-        .env("HOME", std::env::var_os("HOME").unwrap_or_default())
+        .env(
+            "HOME",
+            std::env::var_os("HOME")
+                .or_else(crate::platform::user_home)
+                .unwrap_or_default(),
+        )
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .map_err(|_| unreadable())?;
-    let pid = child.id() as libc::pid_t;
+        .stderr(std::process::Stdio::piped());
+    #[cfg(windows)]
+    {
+        // Windows loaders also search the process working directory for DLLs.
+        // A workspace must not supply code to this trusted parser.
+        command.current_dir(git.parent().ok_or_else(unreadable)?);
+        for name in ["SystemRoot", "WINDIR", "USERPROFILE"] {
+            if let Some(value) = std::env::var_os(name) {
+                command.env(name, value);
+            }
+        }
+    }
+    let mut child = command.spawn().map_err(|_| unreadable())?;
     let mut stdin = child.stdin.take().ok_or_else(unreadable)?;
+    let mut stdout = child.stdout.take().ok_or_else(unreadable)?;
+    let mut stderr = child.stderr.take().ok_or_else(unreadable)?;
     let input = text.to_vec();
-    let (sender, receiver) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
+    let writer = std::thread::spawn(move || {
         use std::io::Write;
         let _ = stdin.write_all(&input);
-        drop(stdin);
-        let _ = sender.send(child.wait_with_output());
     });
-    let output = match receiver.recv_timeout(GIT_TIMEOUT) {
-        Ok(output) => output.map_err(|_| unreadable())?,
-        Err(_) => {
-            // SAFETY: the waiting thread has not reaped the child, so the pid is still ours.
-            unsafe { libc::kill(pid, libc::SIGKILL) };
-            let _ = receiver.recv();
-            return Err(unreadable());
+    let read = |pipe: &mut dyn std::io::Read| {
+        let mut bytes = vec![];
+        pipe.read_to_end(&mut bytes).map(|_| bytes)
+    };
+    let out = std::thread::spawn(move || read(&mut stdout));
+    let err = std::thread::spawn(move || read(&mut stderr));
+    let started = Instant::now();
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break Ok(status),
+            Ok(None) if started.elapsed() < GIT_TIMEOUT => {
+                std::thread::sleep(Duration::from_millis(5))
+            }
+            _ => {
+                // Retain the Child, which owns the Windows process handle and
+                // Unix PID, until it has been killed and reaped on either OS.
+                let _ = child.kill();
+                let _ = child.wait();
+                break Err(unreadable());
+            }
         }
+    };
+    let _ = writer.join();
+    let output = std::process::Output {
+        status: status?,
+        stdout: out
+            .join()
+            .map_err(|_| unreadable())?
+            .map_err(|_| unreadable())?,
+        stderr: err
+            .join()
+            .map_err(|_| unreadable())?
+            .map_err(|_| unreadable())?,
     };
     // Exit 1 without a message is "no matching settings"; a missing Git (the
     // macOS shim without developer tools) also exits 1, but says so.
@@ -699,6 +867,7 @@ thread_local! {
 /// file, and GIT_CONFIG_SYSTEM or GIT_CONFIG_NOSYSTEM choose the system file,
 /// which is otherwise /etc/gitconfig or Homebrew's. Other Git builds keep a
 /// system file elsewhere; it is not read. Matches isolation.ts.
+#[cfg(not(windows))]
 const SYSTEM_GIT_CONFIGS: [&str; 3] = [
     "/etc/gitconfig",
     "/opt/homebrew/etc/gitconfig",
@@ -710,7 +879,10 @@ fn git_config_files(var: impl Fn(&str) -> Option<OsString>) -> Vec<PathBuf> {
             .filter(|value| !value.is_empty())
             .map(PathBuf::from)
     };
-    let mut files = match (set("GIT_CONFIG_GLOBAL"), set("HOME")) {
+    let home = set("HOME");
+    #[cfg(windows)]
+    let home = home.or_else(|| set("USERPROFILE"));
+    let mut files = match (set("GIT_CONFIG_GLOBAL"), home) {
         (Some(global), _) => vec![global],
         (None, Some(home)) => vec![
             home.join(".gitconfig"),
@@ -728,7 +900,25 @@ fn git_config_files(var: impl Fn(&str) -> Option<OsString>) -> Vec<PathBuf> {
     if system {
         match set("GIT_CONFIG_SYSTEM") {
             Some(path) => files.push(path),
-            None => files.extend(SYSTEM_GIT_CONFIGS.iter().map(PathBuf::from)),
+            None => {
+                #[cfg(not(windows))]
+                files.extend(SYSTEM_GIT_CONFIGS.iter().map(PathBuf::from));
+                #[cfg(windows)]
+                {
+                    for name in ["ProgramFiles", "ProgramFiles(x86)", "LOCALAPPDATA"] {
+                        if let Some(root) = set(name).filter(|root| root.is_absolute()) {
+                            files.push(if name == "LOCALAPPDATA" {
+                                root.join("Programs/Git/etc/gitconfig")
+                            } else {
+                                root.join("Git/etc/gitconfig")
+                            });
+                        }
+                    }
+                    if let Some(root) = set("ProgramData").filter(|root| root.is_absolute()) {
+                        files.push(root.join("Git/config"));
+                    }
+                }
+            }
         }
     }
     files.retain(|file| file.is_absolute());
@@ -796,7 +986,8 @@ fn linked(
     let mut hops = 0;
     while let Some(part) = rest.pop() {
         match part.components().next() {
-            Some(Component::RootDir) => dir = PathBuf::from("/"),
+            Some(Component::Prefix(prefix)) => dir = PathBuf::from(prefix.as_os_str()),
+            Some(Component::RootDir) => dir.push(std::path::MAIN_SEPARATOR.to_string()),
             Some(Component::ParentDir) => {
                 dir.pop();
             }
@@ -1283,6 +1474,7 @@ fn locked_git(scan: &WorkspaceProtected, roots: &[PathBuf], pin: bool) -> Result
         })
         .collect())
 }
+#[cfg(any(unix, test))]
 fn path_ancestors(paths: &[PathBuf]) -> Vec<PathBuf> {
     let mut ancestors = vec![];
     for path in paths {
@@ -1297,8 +1489,9 @@ fn path_ancestors(paths: &[PathBuf]) -> Vec<PathBuf> {
 /// Renaming an ancestor would carry a nested store (~/.config/gh) out from under
 /// its rule, so the directories between the home and a store cannot be renamed
 /// or removed either; creating siblings inside them stays allowed.
+#[cfg(any(unix, test))]
 fn store_ancestors(denied: &[PathBuf]) -> Vec<PathBuf> {
-    let Some(user) = std::env::var_os("HOME").map(PathBuf::from) else {
+    let Some(user) = crate::platform::user_home().map(PathBuf::from) else {
         return vec![];
     };
     let mut homes = vec![user.clone(), real_root(&user).unwrap_or(user)];
@@ -1321,6 +1514,7 @@ fn store_ancestors(denied: &[PathBuf]) -> Vec<PathBuf> {
 fn layout(home: &Path, writable: &[PathBuf], workspace: Option<&[PathBuf]>) -> Result<Layout> {
     layout_scanned(home, writable, workspace, workspace.unwrap_or_default())
 }
+#[cfg(any(unix, test))]
 fn layout_scanned(
     home: &Path,
     writable: &[PathBuf],
@@ -1344,9 +1538,10 @@ fn layout_scanned(
             .transpose()?,
     })
 }
+#[cfg(any(unix, test))]
 fn sandbox_profile(layout: &Layout) -> String {
     let mut filters = vec![];
-    if let Some(user) = std::env::var_os("HOME") {
+    if let Some(user) = crate::platform::user_home() {
         let ssh = PathBuf::from(user).join(".ssh");
         let mut roots = vec![ssh.clone(), std::fs::canonicalize(&ssh).unwrap_or(ssh)];
         roots.dedup();
@@ -1477,6 +1672,7 @@ fn sandbox_profile(layout: &Layout) -> String {
         filters.join(" ")
     )
 }
+#[cfg(any(unix, test))]
 fn bwrap_arguments(layout: &Layout) -> Result<Vec<OsString>> {
     if let Some(confine) = &layout.confine {
         if confine.protected.exhausted {
@@ -1613,7 +1809,9 @@ fn bwrap_arguments(layout: &Layout) -> Result<Vec<OsString>> {
 }
 /// Neither sandbox caps process creation, so a workspace program may start at
 /// most this many more processes than the user already runs.
+#[cfg(unix)]
 const PROCESS_HEADROOM: usize = 512;
+#[cfg(unix)]
 fn process_limit() -> Option<usize> {
     // SAFETY: getuid has no preconditions and cannot fail.
     let uid = unsafe { libc::getuid() };
@@ -1665,62 +1863,79 @@ pub(crate) fn isolated_command_with_outputs(
     confine: Confine,
     approved_outputs: &[PathBuf],
 ) -> Result<tokio::process::Command> {
-    let workspace: Vec<PathBuf> = match confine {
-        Confine::No => vec![],
-        Confine::Workspace => writable
-            .iter()
-            .cloned()
-            .chain([std::env::temp_dir(), PathBuf::from("/tmp")])
-            .collect(),
-        Confine::ReadOnly => approved_outputs
-            .iter()
-            .filter(|path| under(path, home))
-            .cloned()
-            .collect(),
-    };
-    let layout = layout_scanned(
-        home,
-        writable,
-        (confine != Confine::No).then_some(workspace.as_slice()),
-        writable,
-    )?;
-    let mut command = if cfg!(target_os = "macos") {
-        let mut command = tokio::process::Command::new("/usr/bin/sandbox-exec");
-        command.args(["-p", &sandbox_profile(&layout), program]);
-        command
-    } else if let Some(bwrap) = bwrap() {
-        let mut command = tokio::process::Command::new(bwrap);
-        command
-            .args(bwrap_arguments(&layout)?)
-            .arg("--")
-            .arg(program);
-        command
-    } else {
-        warn_unavailable_isolation();
-        tokio::process::Command::new(program)
-    };
-    if confine != Confine::No {
-        // The child applies the cap before it starts the sandbox, which keeps it;
-        // a program that cannot be capped does not start.
-        let limit = process_limit()
-            .ok_or_else(|| Error::new(5240, "Hexbot could not cap processes for the sandbox."))?
-            as libc::rlim_t;
-        // SAFETY: setrlimit is async-signal-safe and touches only this child.
-        unsafe {
-            command.pre_exec(move || {
-                let cap = libc::rlimit {
-                    rlim_cur: limit,
-                    rlim_max: limit,
-                };
-                if libc::setrlimit(libc::RLIMIT_NPROC, &cap) == 0 {
-                    Ok(())
-                } else {
-                    Err(std::io::Error::last_os_error())
-                }
-            });
+    #[cfg(windows)]
+    {
+        if confine != Confine::No && isolation_available() {
+            let roots = if confine == Confine::Workspace {
+                writable
+            } else {
+                approved_outputs
+            };
+            return crate::windows_sandbox::command(home, program, writable, roots);
         }
+        warn_unavailable_isolation();
+        return Ok(tokio::process::Command::new(program));
     }
-    Ok(command)
+    #[cfg(not(windows))]
+    {
+        let workspace: Vec<PathBuf> = match confine {
+            Confine::No => vec![],
+            Confine::Workspace => writable
+                .iter()
+                .cloned()
+                .chain([std::env::temp_dir(), PathBuf::from("/tmp")])
+                .collect(),
+            Confine::ReadOnly => approved_outputs
+                .iter()
+                .filter(|path| under(path, home))
+                .cloned()
+                .collect(),
+        };
+        let layout = layout_scanned(
+            home,
+            writable,
+            (confine != Confine::No).then_some(workspace.as_slice()),
+            writable,
+        )?;
+        let mut command = if cfg!(target_os = "macos") {
+            let mut command = tokio::process::Command::new("/usr/bin/sandbox-exec");
+            command.args(["-p", &sandbox_profile(&layout), program]);
+            command
+        } else if let Some(bwrap) = bwrap() {
+            let mut command = tokio::process::Command::new(bwrap);
+            command
+                .args(bwrap_arguments(&layout)?)
+                .arg("--")
+                .arg(program);
+            command
+        } else {
+            warn_unavailable_isolation();
+            tokio::process::Command::new(program)
+        };
+        #[cfg(unix)]
+        if confine != Confine::No {
+            // The child applies the cap before it starts the sandbox, which keeps it;
+            // a program that cannot be capped does not start.
+            let limit = process_limit().ok_or_else(|| {
+                Error::new(5240, "Hexbot could not cap processes for the sandbox.")
+            })? as libc::rlim_t;
+            // SAFETY: setrlimit is async-signal-safe and touches only this child.
+            unsafe {
+                command.pre_exec(move || {
+                    let cap = libc::rlimit {
+                        rlim_cur: limit,
+                        rlim_max: limit,
+                    };
+                    if libc::setrlimit(libc::RLIMIT_NPROC, &cap) == 0 {
+                        Ok(())
+                    } else {
+                        Err(std::io::Error::last_os_error())
+                    }
+                });
+            }
+        }
+        Ok(command)
+    }
 }
 /// Variables every child may inherit. Provider keys, connector secrets, and runtime
 /// injection variables (NODE_OPTIONS, BASH_ENV) are never on the list.
@@ -1788,6 +2003,101 @@ pub fn check_code(code: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(windows)]
+    #[test]
+    fn windows_paths_compare_drive_unc_verbatim_and_case_aliases() {
+        assert!(under(
+            Path::new(r"\\?\C:\Work\Folder\file.txt"),
+            Path::new(r"c:/work")
+        ));
+        assert!(under(
+            Path::new(r"C:\Work\Folder\file.txt"),
+            Path::new(r"\\?\c:\work")
+        ));
+        assert!(under(
+            Path::new(r"\\?\UNC\Server\Share\Folder"),
+            Path::new(r"\\server\share")
+        ));
+        assert!(!under(
+            Path::new(r"C:\Workspace-else\file.txt"),
+            Path::new(r"C:\Workspace")
+        ));
+        assert!(under(
+            Path::new(r"C:\Work. \file.txt"),
+            Path::new(r"C:\work")
+        ));
+        let home = Path::new(r"C:\Users\Owner\.hexbot");
+        assert!(home_credential_name(
+            home,
+            Path::new(r"\\?\C:\Users\Owner\.hexbot\Profiles\Owl\.ENV")
+        ));
+        assert!(home_credential_name(
+            home,
+            Path::new(r"C:\Users\Owner\.hexbot\runtime\provider-auth\key.json")
+        ));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_git_config_paths_follow_home_userprofile_and_system_overrides() {
+        let env = |name: &str| match name {
+            "USERPROFILE" => Some(OsString::from(r"C:\Users\owner")),
+            "ProgramFiles" => Some(OsString::from(r"C:\Program Files")),
+            "ProgramData" => Some(OsString::from(r"C:\ProgramData")),
+            _ => None,
+        };
+        let files = git_config_files(env);
+        for path in [
+            r"C:\Users\owner\.gitconfig",
+            r"C:\Users\owner\.config\git\config",
+            r"C:\Program Files\Git\etc\gitconfig",
+            r"C:\ProgramData\Git\config",
+        ] {
+            assert!(files.contains(&PathBuf::from(path)), "{path}");
+        }
+        let files = git_config_files(|name| match name {
+            "HOME" => Some(OsString::from(r"C:\git-home")),
+            "USERPROFILE" => Some(OsString::from(r"C:\Users\owner")),
+            "GIT_CONFIG_NOSYSTEM" => Some(OsString::from("true")),
+            _ => None,
+        });
+        assert_eq!(
+            files,
+            vec![
+                PathBuf::from(r"C:\git-home\.gitconfig"),
+                PathBuf::from(r"C:\git-home\.config\git\config")
+            ]
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_browser_credentials_profiles_and_native_programs_are_protected() {
+        for entry in [
+            "%LOCALAPPDATA%/Google",
+            "%LOCALAPPDATA%/Microsoft/Edge",
+            "%APPDATA%/Mozilla",
+        ] {
+            let root = policy_root(entry).expect("Windows supplies AppData directories");
+            assert!(
+                read_denied().iter().any(|denied| under(&root, denied)),
+                "{entry}"
+            );
+        }
+        for entry in [
+            "%APPDATA%/Microsoft/Credentials",
+            "%LOCALAPPDATA%/Microsoft/Vault",
+            "%SystemRoot%",
+            "%LOCALAPPDATA%/Programs",
+        ] {
+            let root = policy_root(entry).expect("Windows supplies system/profile directories");
+            assert_eq!(host_write_tier(&root), Some(WriteTier::Deny), "{entry}");
+        }
+        let startup =
+            policy_root("%APPDATA%/Microsoft/Windows/Start Menu/Programs/Startup").unwrap();
+        assert_eq!(host_write_tier(&startup), Some(WriteTier::Ask));
+    }
+
     /// A repository as `git init` makes it (HEAD, objects, refs, config), with
     /// settings added to its config.
     fn git_init(dir: &Path, settings: &[(&str, &str)]) {
@@ -1797,9 +2107,12 @@ mod tests {
         }
     }
     fn git(args: &[&str]) {
-        let status = std::process::Command::new("/usr/bin/git")
+        let status = std::process::Command::new(git_executable().expect("Git is installed"))
             .args(args)
-            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env(
+                "GIT_CONFIG_GLOBAL",
+                if cfg!(windows) { "NUL" } else { "/dev/null" },
+            )
             .env("GIT_CONFIG_NOSYSTEM", "1")
             .status()
             .unwrap();
@@ -1825,19 +2138,14 @@ mod tests {
             "SSH_AUTH_SOCK",
             "TERM",
             "lc_all",
-        ] {
-            assert!(inherited_environment(name), "{name}");
-        }
-        for name in [
-            "NODE_OPTIONS",
-            "BASH_ENV",
-            "OPENAI_API_KEY",
             "SystemRoot",
             "WINDIR",
             "PATHEXT",
             "COMSPEC",
-            "DISPLAY",
         ] {
+            assert!(inherited_environment(name), "{name}");
+        }
+        for name in ["NODE_OPTIONS", "BASH_ENV", "OPENAI_API_KEY", "DISPLAY"] {
             assert!(!inherited_environment(name), "{name}");
         }
         assert!(display_environment("DISPLAY") && display_environment("WAYLAND_DISPLAY"));
@@ -1940,7 +2248,7 @@ mod tests {
             denied: denied_writes().unwrap(),
             confine: None,
         });
-        if let Some(user) = std::env::var_os("HOME") {
+        if let Some(user) = crate::platform::user_home() {
             let user = PathBuf::from(user);
             let aws = quoted(user.join(".aws").to_string_lossy());
             assert!(profile.contains(&format!("(literal {aws}) (subpath {aws})")));
@@ -2158,6 +2466,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn sandbox_blocks_secret_moves_and_linked_git_writes() {
         if !isolation_available() {
@@ -2275,6 +2584,7 @@ mod tests {
             .is_none_or(|first| !(first..rest.len()).any(host_bind))
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn repository_hook_paths_outside_the_workspace_never_bind_or_lock_host_folders() {
         let base = tempfile::tempdir().unwrap();
@@ -2396,6 +2706,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn fifos_in_git_metadata_and_includes_do_not_stall_the_scan() {
         use std::os::unix::ffi::OsStrExt;
@@ -2586,6 +2897,7 @@ mod tests {
         TEST_GIT_CONFIGS.with(|files| files.borrow_mut().clear());
     }
 
+    #[cfg(unix)]
     #[test]
     fn git_config_files_follow_the_git_environment() {
         let env = |pairs: &'static [(&'static str, &'static str)]| {
@@ -2633,6 +2945,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn a_missing_target_never_pins_a_repository_and_links_to_git_are_locked_or_refused() {
         let base = tempfile::tempdir().unwrap();
@@ -2769,6 +3082,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn links_inside_git_metadata_lock_their_targets_and_only_locked_targets_hold_a_missing_one()
      {
@@ -2886,6 +3200,7 @@ mod tests {
         assert!(!binds(&args(&plain).unwrap()).contains(&plain));
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn a_nested_repository_made_by_git_init_keeps_its_relative_hooks_path_in_its_own_folder()
     {
@@ -2965,6 +3280,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn a_link_between_git_metadata_and_its_target_in_the_workspace_is_locked_or_refused() {
         let base = tempfile::tempdir().unwrap();
@@ -3110,6 +3426,7 @@ mod tests {
     }
 
     /// The extension builds the same sandbox for Pi's bash tool from the same policy.
+    #[cfg(unix)]
     #[test]
     fn sandbox_policy_matches_the_extension() {
         let base = tempfile::tempdir().unwrap();
@@ -3293,7 +3610,7 @@ mod tests {
     }
     #[test]
     fn host_write_tiers_follow_the_policy() {
-        let Some(user) = std::env::var_os("HOME").map(PathBuf::from) else {
+        let Some(user) = crate::platform::user_home().map(PathBuf::from) else {
             return;
         };
         for path in [
@@ -3309,6 +3626,7 @@ mod tests {
                 "{path}"
             );
         }
+        #[cfg(unix)]
         assert_eq!(
             host_write_tier(Path::new("/etc/hosts")),
             Some(WriteTier::Deny)
@@ -3449,6 +3767,7 @@ mod tests {
         );
     }
     /// Neither sandbox caps processes, so a workspace program runs behind a limit.
+    #[cfg(unix)]
     #[tokio::test]
     async fn confined_programs_cannot_start_unbounded_processes() {
         if !isolation_available() {
@@ -3490,13 +3809,19 @@ mod tests {
     /// The deny tier holds for any program, by any spelling; run in a child with a
     /// scratch HOME because the stores are enumerated from the user's home.
     #[tokio::test]
+    #[cfg(unix)]
     #[ignore = "run by credential_stores_are_unwritable_in_the_sandbox"]
     async fn credential_stores_unwritable_child() {
         let user = PathBuf::from(std::env::var_os("HOME").unwrap());
         if !isolation_available() {
             let home = tempfile::tempdir().unwrap();
             let args = bwrap_arguments(&layout(home.path(), &[], None).unwrap()).unwrap();
-            for local in &policy().write.deny {
+            for local in policy()
+                .write
+                .deny
+                .iter()
+                .filter(|local| !local.starts_with('%'))
+            {
                 let path = user.join(local);
                 assert!(
                     args.windows(3).any(|args| args
@@ -3533,10 +3858,16 @@ mod tests {
             "ok\n"
         );
     }
+    #[cfg(unix)]
     #[test]
     fn credential_stores_are_unwritable_in_the_sandbox() {
         let user = tempfile::tempdir().unwrap();
-        for local in &policy().write.deny {
+        for local in policy()
+            .write
+            .deny
+            .iter()
+            .filter(|local| !local.starts_with('%'))
+        {
             let path = user.path().join(local);
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
             if [
@@ -3575,6 +3906,7 @@ mod tests {
             String::from_utf8_lossy(&output.stderr)
         );
     }
+    #[cfg(unix)]
     #[tokio::test]
     async fn identity_key_is_hidden_in_auto_and_manual_sandboxes() {
         if !isolation_available() {

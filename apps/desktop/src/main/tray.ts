@@ -36,7 +36,7 @@ export function trayMenuTemplate(
 }
 
 let tray: Tray | undefined
-export function createTray(manager: DaemonManager, openWindow: () => void): Tray {
+export function createTray(manager: DaemonManager, openWindow: () => void, startDaemon = (): void => { void manager.start() }): Tray {
   const icon = nativeImage.createFromPath(
     join(
       app.getAppPath(),
@@ -48,7 +48,7 @@ export function createTray(manager: DaemonManager, openWindow: () => void): Tray
   tray = new Tray(icon)
   const actions: TrayMenuActions = {
     openWindow,
-    startDaemon: () => void manager.start(),
+    startDaemon,
     stopDaemon: () => void manager.stop(),
     quit: () => app.quit()
   }

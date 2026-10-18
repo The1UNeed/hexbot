@@ -15,7 +15,7 @@ fn home() -> Result<PathBuf> {
         let mut path = PathBuf::from(home);
         if path.starts_with("~") {
             path = PathBuf::from(
-                std::env::var_os("HOME")
+                hexbot_core::platform::user_home()
                     .ok_or_else(|| Error::new(4200, "HOME is required to expand ~"))?,
             )
             .join(path.strip_prefix("~").unwrap());
@@ -26,7 +26,8 @@ fn home() -> Result<PathBuf> {
         return Ok(path);
     }
     Ok(PathBuf::from(
-        std::env::var_os("HOME").ok_or_else(|| Error::new(4200, "HEXBOT_HOME is required"))?,
+        hexbot_core::platform::user_home()
+            .ok_or_else(|| Error::new(4200, "HEXBOT_HOME or a user home directory is required"))?,
     )
     .join(".hexbot"))
 }
@@ -135,12 +136,8 @@ fn lock_home(home: &Path) -> Result<std::fs::File> {
         options.mode(0o600);
     }
     let mut file = options.open(path)?;
-    #[cfg(unix)]
-    {
-        use std::os::fd::AsRawFd;
-        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
-            return Err(Error::new(4208, "a daemon already owns this home"));
-        }
+    if !hexbot_core::platform::try_lock(&file)? {
+        return Err(Error::new(4208, "a daemon already owns this home"));
     }
     refuse_legacy_listener(home)?;
     file.set_len(0)?;
@@ -157,7 +154,25 @@ fn prints_sign_in_link(terminal: bool, env: impl Fn(&str) -> Option<String>) -> 
         && env("XPC_SERVICE_NAME").is_none_or(|name| name == "0")
 }
 async fn run() -> Result<()> {
-    let arguments = std::env::args().skip(1).collect::<Vec<_>>();
+    #[allow(unused_mut)]
+    let mut arguments = std::env::args().skip(1).collect::<Vec<_>>();
+    #[allow(unused_mut)]
+    let mut service_home: Option<PathBuf> = None;
+    #[cfg(windows)]
+    if arguments
+        .first()
+        .is_some_and(|command| command == "service-run")
+    {
+        if arguments.len() != 2 {
+            return Err(Error::new(4200, "Invalid daemon task arguments"));
+        }
+        let path = PathBuf::from(&arguments[1]);
+        if !path.is_absolute() {
+            return Err(Error::new(4200, "Daemon task home must be absolute"));
+        }
+        service_home = Some(path);
+        arguments = vec!["serve".into()];
+    }
     let mut args = arguments.clone().into_iter();
     let command = args.next().unwrap_or_else(|| "help".into());
     if matches!(command.as_str(), "--version" | "version" | "-V") {
@@ -175,7 +190,8 @@ async fn run() -> Result<()> {
         );
         return Ok(());
     }
-    let home = home()?;
+    let home = service_home.map(Ok).unwrap_or_else(home)?;
+    hexbot_core::platform::validate_path(&home)?;
 
     if let Some(result) = hexbot_core::cli::dispatch(&home, &arguments).await {
         return result;
@@ -290,9 +306,10 @@ async fn run() -> Result<()> {
     let pi = common::pi_executable()?;
     let dist = std::env::var_os("HEXBOT_WEB_DIST")
         .map(PathBuf::from)
+        .or_else(|| common::bundled_root().map(|root| root.join("web")))
         .or_else(|| Some(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../apps/web/dist")))
         .filter(|p| p.join("index.html").is_file());
-    let signal = shutdown_signal();
+    let signal = shutdown_signal(&home)?;
     tokio::pin!(signal);
     let mut previous: Option<std::sync::Arc<App>> = None;
     loop {
@@ -445,17 +462,27 @@ async fn run() -> Result<()> {
                 use std::os::unix::process::CommandExt;
                 return Err(next.exec().into());
             }
+            #[cfg(windows)]
+            {
+                drop(_lock);
+                if std::env::var_os("HEXBOT_NATIVE_DISPATCHER").is_some() {
+                    std::process::exit(75);
+                }
+                next.spawn()?;
+                return Ok(());
+            }
         }
     }
     Ok(())
 }
 /// Registers the handlers before returning, so a SIGTERM or SIGINT that arrives
 /// between the ready line and the first poll still shuts the daemon down cleanly.
-fn shutdown_signal() -> impl std::future::Future<Output = ()> {
+#[cfg(unix)]
+fn shutdown_signal(_home: &Path) -> Result<impl std::future::Future<Output = ()>> {
     use tokio::signal::unix::{SignalKind, signal};
     let term = signal(SignalKind::terminate()).ok();
     let interrupt = signal(SignalKind::interrupt()).ok();
-    async move {
+    Ok(async move {
         let wait = |signal: Option<tokio::signal::unix::Signal>| async move {
             match signal {
                 Some(mut signal) => {
@@ -465,10 +492,93 @@ fn shutdown_signal() -> impl std::future::Future<Output = ()> {
             }
         };
         tokio::select! {_=wait(term)=>{},_=wait(interrupt)=>{}}
+    })
+}
+#[cfg(windows)]
+fn shutdown_signal(home: &Path) -> Result<impl std::future::Future<Output = ()>> {
+    let event = hexbot_core::platform::ShutdownEvent::create(home)?;
+    Ok(async move {
+        let requested = async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_millis(100));
+            loop {
+                interval.tick().await;
+                if event.signalled() {
+                    return;
+                }
+            }
+        };
+        tokio::select! { _=tokio::signal::ctrl_c()=>{}, _=requested=>{} }
+    })
+}
+
+#[cfg(windows)]
+async fn dispatch_selected_native() -> Result<Option<i32>> {
+    let executable = std::env::current_exe()?;
+    let name = executable.file_name().unwrap_or_default().to_string_lossy();
+    let home = if name.eq_ignore_ascii_case("native-executable.exe") {
+        executable
+            .parent()
+            .and_then(Path::parent)
+            .ok_or_else(|| Error::new(5243, "Missing Hexbot home"))?
+            .to_owned()
+    } else if name.eq_ignore_ascii_case("hexbot.exe")
+        && executable.with_file_name("hexbot-cli.json").exists()
+    {
+        hexbot_core::platform::cli_home(&executable)?
+    } else {
+        return Ok(None);
+    };
+    loop {
+        let selected = hexbot_core::platform::selected_native(&home)?;
+        let mut command = tokio::process::Command::new(selected);
+        command
+            .args(std::env::args_os().skip(1))
+            .env("HEXBOT_HOME", &home)
+            .env("HEXBOT_NATIVE_DISPATCHER", "1");
+        if std::env::args().nth(1).as_deref() == Some("service-run") {
+            command.env("HEXBOT_SUPERVISOR", "service");
+            command.creation_flags(windows_sys::Win32::System::Threading::CREATE_NO_WINDOW);
+            std::fs::create_dir_all(home.join("logs"))?;
+            command.stdout(
+                std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(home.join("logs/service.log"))?,
+            );
+            command.stderr(
+                std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(home.join("logs/service-error.log"))?,
+            );
+        }
+        let status = hexbot_core::platform::supervised_status(&mut command).await?;
+        if status.code() != Some(75) {
+            return Ok(Some(status.code().unwrap_or(1)));
+        }
     }
 }
 #[tokio::main]
 async fn main() {
+    #[cfg(windows)]
+    if std::env::args().nth(1).as_deref() == Some("service-run") {
+        // Task Scheduler uses a console PE entry point. Detach before starting
+        // the daemon so closing a console cannot stop the background task.
+        unsafe { windows_sys::Win32::System::Console::FreeConsole() };
+    }
+    #[cfg(windows)]
+    if std::env::args().nth(1).as_deref() == Some("__sandbox") {
+        std::process::exit(hexbot_core::windows_sandbox::run_helper());
+    }
+    #[cfg(windows)]
+    match dispatch_selected_native().await {
+        Ok(Some(code)) => std::process::exit(code),
+        Ok(None) => {}
+        Err(error) => {
+            eprintln!("{error}");
+            std::process::exit(1);
+        }
+    }
     if let Err(error) = run().await {
         if std::env::args().nth(1).as_deref() == Some("setup")
             && std::env::args().any(|arg| arg == "--json")

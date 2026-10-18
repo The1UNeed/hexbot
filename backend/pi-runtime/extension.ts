@@ -1,11 +1,14 @@
 /** Hexbot's frozen session tools and approval bridge. Pi owns the agent loop. */
 import { createHash } from 'node:crypto';
-import { readFileSync, realpathSync, lstatSync, readlinkSync, statSync, existsSync } from 'node:fs';
+import { readFileSync, realpathSync, statSync, existsSync } from 'node:fs';
 import { resolve, dirname, basename, relative, sep, join } from 'node:path';
 import { homedir, tmpdir } from 'node:os';
-import { createBashTool, createReadTool, createWriteTool, createEditTool, createGrepTool, createFindTool, createLsTool } from '@earendil-works/pi-coding-agent';
-import {credentialPolicy, fold, isolatedCommand, isolationAvailable, policyRegex, policyRoot, privateKeyName, probeIsolation, readDenied, secretFileName, gitDirectory, SCAN_REASON, SCAN_FILE_REASON, within, workspaceProtected, lockedGit, scanFailureReason} from './isolation.ts';
+import { createBashTool, createPowerShellTool, createReadTool, createWriteTool, createEditTool, createGrepTool, createFindTool, createLsTool } from '@earendil-works/pi-coding-agent';
+import {credentialPolicy, fold, isolatedCommand, cleanupIsolatedCommand, isolationAvailable, policyRegex, policyRoot, privateKeyName, probeIsolation, readDenied, secretFileName, gitDirectory, SCAN_REASON, SCAN_FILE_REASON, within, workspaceProtected, lockedGit, scanFailureReason} from './isolation.ts';
 import { registerAcp } from './acp.ts';
+import {canonicalPath, expandHome} from './paths.ts';
+import {createWindowsShellOperations} from './windows-shell.ts';
+export {canonicalPath, expandHome} from './paths.ts';
 import { lazyStream } from '@earendil-works/pi-ai';
 import { builtinProviders } from '@earendil-works/pi-ai/providers/all';
 
@@ -135,7 +138,7 @@ export default function hexbot(pi: any) {
   // inside it. Manual: the sandbox is read-only and every file change asks. Off
   // (Bypass): no approval prompts or sandbox. Revocation still applies. A command
   // that needs more sets full_access; Auto reviews it before asking the user.
-  const workspaceRoots = () => [live.cwd ?? config.cwd, ...live.outputDirs ?? [], tmpdir(), '/tmp'];
+  const workspaceRoots = () => [live.cwd ?? config.cwd, ...live.outputDirs ?? [], tmpdir(), ...process.platform === 'win32' ? [] : ['/tmp']];
   const workspace = () => live.approvalMode === 'manual' ? [] : workspaceRoots();
   const inWorkspace = (path: string) => {
     const target = canonicalPath(path, process.cwd());
@@ -220,10 +223,14 @@ export default function hexbot(pi: any) {
       if (event.toolName === 'bash') {
         if (!isolationAvailable()) {
           // Requesting full access cannot bypass the missing-sandbox user card.
-          ask = {key: 'shell:unsandboxed', command: event.input.command, reason: 'Hexbot has no OS sandbox on this system, so this command can read and change any file you can. Install bubblewrap and restart the daemon to restore isolation.'};
+          ask = {key:'shell:unsandboxed', command:event.input.command, ...process.platform === 'win32' ? {once:true} : {}, reason:process.platform === 'win32'
+            ? 'Hexbot has no OS sandbox on this system. This command runs outside OS containment and can read or change your files, including credentials and Hexbot data.'
+            : 'Hexbot has no OS sandbox on this system, so this command can read and change any file you can. Install bubblewrap and restart the daemon to restore isolation.'};
         } else if (event.input.full_access === true) {
           const why = typeof event.input.reason === 'string' && event.input.reason.trim() ? event.input.reason.trim() : 'No reason given.';
-          ask = {key: 'shell:full-access', command: event.input.command, reason: 'Run outside the sandbox, with internet access and writes outside the workspace. ' + why};
+          ask = process.platform === 'win32'
+            ? {key:'shell:full-access', command:event.input.command, once:true, reason:'This command runs outside OS containment and can read or change your files, including credentials and Hexbot data. ' + why}
+            : {key:'shell:full-access', command:event.input.command, reason:'Run outside the sandbox, with internet access and writes outside the workspace. ' + why};
         }
       }
       if (process.platform === 'linux' && event.toolName === 'bash' && levelFor(event.input) === 'confined' && isolationAvailable()) {
@@ -250,10 +257,10 @@ export default function hexbot(pi: any) {
       const overwrites = review && event.toolName === 'write' ? existsSync(ask.command) : undefined;
       if (overwrites !== undefined) checked({overwrites});
       const model = ctx.model ? {model: {provider: ctx.model.provider, model: ctx.model.id}} : {};
-      const reviewed = review ? {review: true, input: event.input, cwd, ...model, ...overwrites !== undefined ? {overwrites} : {}} : {};
+      const reviewed = review ? {review: true, input: event.input, cwd, ...model, ...overwrites !== undefined ? {overwrites} : {}} : process.platform === 'win32' && event.toolName === 'bash' ? {input:event.input} : {};
       const choice = await ctx.ui.select('__HEXBOT_APPROVAL__' + JSON.stringify({tool: event.toolName, command: ask.command, reason: ask.reason, ...reviewed}),
         ask.once ? ['once', 'deny'] : ['once', 'session', 'deny']);
-      if (mcp || review) {
+      if (mcp || review || event.toolName === 'bash') {
         // Pi emits execution_start before tool_call. Its public API has no MCP
         // execute wrapper; the last blocking hook is this gate. Recheck after UI,
         // and after a review: the user may change the mode or working directory.
@@ -280,14 +287,15 @@ export default function hexbot(pi: any) {
   // Refresh cwd at execution time without rewriting the cached prompt or history.
   // The bash schema gains Codex's escalation fields in every mode, so a mode
   // change never changes the cached tool list.
-  const factories: any = {bash: createBashTool, read: createReadTool, write: createWriteTool, edit: createEditTool, grep: createGrepTool, find: createFindTool, ls: createLsTool};
+  const terminal = process.platform === 'win32' ? (cwd: string, options: any) => ({...createPowerShellTool(cwd, options), name: 'bash'}) : createBashTool;
+  const factories: any = {bash: terminal, read: createReadTool, write: createWriteTool, edit: createEditTool, grep: createGrepTool, find: createFindTool, ls: createLsTool};
   const enabled = (name: string) => Array.isArray(config.restricted) ? config.restricted.includes(name) :
     config.enabledToolsets?.includes(name === 'bash' ? 'terminal' : 'file');
   for (const [name, factory] of Object.entries(factories) as [string, any][]) {
     if (!enabled(name)) continue;
     wrapped.add(name);
     const bypass = () => live.approvalMode === 'off';
-    const options = (level: Level = 'confined', denied = readDenied()) => name === 'bash' ? {spawnHook: (c: any) => level === 'none' ? c : {...c, command: spawnFor(level, c.command), env: shellEnvironment(c.env)}} :
+    const options = (level: Level = 'confined', denied = readDenied()) => name === 'bash' ? {...process.platform === 'win32' ? {operations:createWindowsShellOperations({cleanup:cleanupIsolatedCommand})} : {}, spawnHook: (c: any) => level === 'none' ? c : {...c, command: spawnFor(level, c.command), env: shellEnvironment(c.env)}} :
       name === 'grep' && !bypass() ? {operations: {isDirectory: (path: string) => statSync(path).isDirectory(), readFile: (path: string) => credentialPath(path, live.home, denied) ? '' : readFileSync(path, 'utf8')}} : {};
     const tool = factory(config.cwd, options());
     const definition = name === 'bash' ? {
@@ -310,10 +318,10 @@ export default function hexbot(pi: any) {
         const level = allowed.level;
         try {
           const result = await factory(cwd, options(level)).execute(id, {command: args.command, timeout: args.timeout}, signal, update);
-          if (level === 'confined' && result.isError) result.content.push({type: 'text', text: sandboxNote()});
+          if (level === 'confined' && isolationAvailable() && result.isError) result.content.push({type: 'text', text: sandboxNote()});
           return result;
         } catch (error: any) {
-          if (level !== 'confined' || !/Command exited with code/.test(error?.message ?? '')) throw error;
+          if (level !== 'confined' || !isolationAvailable() || !/Command exited with code/.test(error?.message ?? '')) throw error;
           throw new Error(error.message + '\n\n' + sandboxNote());
         }
       }
@@ -347,8 +355,9 @@ export default function hexbot(pi: any) {
     const level = levelFor({});
     return {operations: {exec: async (command: string, cwd: string, opts: any) => {
       const {createLocalBashOperations} = await import('@earendil-works/pi-coding-agent');
-      if (level === 'none') return createLocalBashOperations().exec(command, live.cwd ?? cwd, opts);
-      return createLocalBashOperations().exec(spawnFor(level, command), live.cwd ?? cwd, {...opts, env: shellEnvironment(opts.env ?? process.env)});
+      const operations = process.platform === 'win32' ? createWindowsShellOperations({cleanup:cleanupIsolatedCommand}) : createLocalBashOperations();
+      if (level === 'none') return operations.exec(command, live.cwd ?? cwd, opts);
+      return operations.exec(spawnFor(level, command), live.cwd ?? cwd, {...opts, env: shellEnvironment(opts.env ?? process.env)});
     }}};
   });
 
@@ -467,32 +476,7 @@ export function sanitizeSearchResult(value: any, name: string, base: string, hom
   return value;
 }
 
-// Shell spellings of the user's home: ~, ~/x, ~user/x, $HOME and ${HOME}.
-export function expandHome(path: string): string {
-  const user = process.env.USER ?? basename(homedir());
-  return path.replace(/\$\{HOME\}|\$HOME\b/g, homedir())
-    .replace(/^~([^/]*)/, (_match, name) => !name || name === user ? homedir() : join(dirname(homedir()), name));
-}
-// realpathSync.native returns the on-disk case; comparisons fold it (isolation.ts).
-export function canonicalPath(path: string, cwd: string, depth = 0): string {
-  if (depth > 40) throw new Error("Too many symbolic links");
-  const expanded = expandHome(path);
-  // Resolve each component before '..', including a symlink followed by a parent.
-  let current = expanded.startsWith(sep) ? sep : cwd;
-  for (const part of expanded.split(sep)) {
-    if (!part || part === '.') continue;
-    current = part === '..' ? dirname(current) : join(current, part);
-    try { current = realpathSync.native(current); }
-    catch (error: any) {
-      if (error.code !== 'ENOENT') throw error;
-      try {
-        if (lstatSync(current).isSymbolicLink()) current = canonicalPath(readlinkSync(current), dirname(current), depth + 1);
-      } catch (error: any) { if (error.code !== 'ENOENT') throw error; }
-    }
-  }
-  return current;
-}
-const under = (path: string, root: string) => fold(path) === fold(root) || fold(path).startsWith(fold(root) + sep);
+const under = (path: string, root: string) => within(path, [root]);
 export function credentialPath(path: string, home: string, denied = readDenied()): boolean {
   const lexical = resolve(path);
   path = canonicalPath(path, process.cwd());
@@ -510,7 +494,7 @@ function credentialName(path: string, home: string, denied: string[]): boolean {
   // Credential stores such as ~/.aws and ~/.netrc are private to reads too.
   if ((credentialPolicy.write.deny as string[]).some(entry => {
     const store = policyRoot(entry);
-    return under(path, store) || under(path, canonicalPath(store, process.cwd()));
+    return !!store && (under(path, store) || under(path, canonicalPath(store, process.cwd())));
   })) return true;
   if (denied.some(store => under(path, store))) return true;
   const name = basename(path);
@@ -521,7 +505,7 @@ function credentialName(path: string, home: string, denied: string[]): boolean {
   if (!home) throw new Error('Hexbot home is unavailable');
   const root = under(path, resolve(home)) ? resolve(home) : canonicalPath(home, process.cwd());
   const local = relative(fold(root), fold(path)).split(sep).join('/');
-  return !local.startsWith('../') && (policyRegex(credentialPolicy.basename).test(name) || policyRegex(credentialPolicy.home).test(local));
+  return under(path, root) && (policyRegex(credentialPolicy.basename).test(name) || policyRegex(credentialPolicy.home).test(local));
 }
 // Steps outside the sandbox that Auto's reviewer may let through; connected tools too.
 const REVIEWED = ['shell:full-access', 'file:outside', 'browser_console'];
@@ -535,6 +519,7 @@ export function hostWriteTier(input: string, cwd: string, fileTool = false): 'de
   for (const [tier, list] of tiers) {
     for (const entry of credentialPolicy.write[list] as string[]) {
       const root = policyRoot(entry);
+      if (!root) continue;
       if (targets.some(target => under(target, root) || under(target, canonicalPath(root, cwd)))) return tier;
     }
   }
@@ -549,7 +534,7 @@ export function writeDenial(input: string, cwd: string, home: string, outputs: s
   // writable root (hooksPath = / or the home) would refuse every write, so it is
   // ignored here as it is in the sandboxes; the folders it can name outside the
   // workspace stay refused.
-  const roots = [cwd, ...outputs, tmpdir(), '/tmp'].map(root => canonicalPath(root, cwd));
+  const roots = [cwd, ...outputs, tmpdir(), ...process.platform === 'win32' ? [] : ['/tmp']].map(root => canonicalPath(root, cwd));
   const git = scan.git.filter(target => !roots.some(root => within(root, [target]) && fold(root) !== fold(target)));
   if (git.some(root => under(path, root) || under(root, path))) return 'Git metadata is read-only. Use an approved full_access command.';
   if (protectedPath(path, home, outputs)) return 'This path is protected. Use the soul or memory tool for bot notes.';

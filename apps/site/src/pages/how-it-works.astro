@@ -6,7 +6,7 @@ const steps: Step[] = [
   {
     title: 'Install one app',
     text: [
-      'Download Hexbot for Mac or Linux and choose "Run on this machine". The app starts the daemon: the part that runs your bots, keeps their memory, and serves the app.',
+      'Download Hexbot for your computer and choose "Run on this machine". The app starts the daemon: the part that runs your bots, keeps their memory, and serves the app.',
       'The daemon keeps working when you close the window, so scheduled jobs and long tasks carry on.',
     ],
     link: ['Install', '/docs/install/'],
@@ -57,7 +57,7 @@ const steps: Step[] = [
   {
     title: 'You approve what matters',
     text: [
-      'Bots work inside a sandboxed workspace and ask before stepping outside it: a command that needs the internet, a file change elsewhere on your computer. Manual mode asks before every change; Bypass asks nothing.',
+      'On macOS and Linux, bots use a workspace sandbox. Auto reviews steps outside it and asks about risky ones. Windows has no OS sandbox and asks before every command or code run. Manual asks before every file change; Bypass asks nothing.',
     ],
     link: ['Approvals', '/docs/approvals/'],
   },

@@ -1023,6 +1023,7 @@ impl Drop for SseReader {
 enum McpTransport {
     Stdio {
         _child: Child,
+        _tree: crate::pi::ChildTree,
         input: ChildStdin,
         output: BufReader<ChildStdout>,
     },
@@ -1223,7 +1224,7 @@ impl McpSession {
             let command = entry["command"]
                 .as_str()
                 .ok_or_else(|| transport_error("server has no command or URL"))?;
-            let mut cmd = tokio::process::Command::new(command);
+            let mut cmd = crate::pi::executable_command(Path::new(command));
             if entry["probe_env"] == true {
                 crate::credentials::shell_environment(&mut cmd);
             } else if entry["isolated_env"] == true {
@@ -1244,13 +1245,13 @@ impl McpSession {
                     cmd.env(k, v.as_str().unwrap_or(""));
                 }
             }
-            let mut child = cmd
-                .spawn()
+            let (mut child, tree) = crate::pi::spawn_child(&mut cmd)
                 .map_err(|e| transport_error(format!("could not start server: {e}")))?;
             let input = child.stdin.take().unwrap();
             let output = BufReader::new(child.stdout.take().unwrap());
             McpTransport::Stdio {
                 _child: child,
+                _tree: tree,
                 input,
                 output,
             }

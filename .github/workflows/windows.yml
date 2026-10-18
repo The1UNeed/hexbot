@@ -1,0 +1,215 @@
+# Test-only Windows VMs. Reused by CI and safe to dispatch on a feature branch.
+name: Windows validation
+
+on:
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: pwsh
+
+jobs:
+  native:
+    name: Windows Rust and Pi
+    runs-on: windows-2025
+    timeout-minutes: 45
+    steps:
+      - run: git config --global core.autocrlf false
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 26
+      - run: rustup show active-toolchain
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          workspaces: |
+            backend/hexbot-core
+            backend/hexbot-installer
+      - name: Build the native sandbox helper
+        run: cargo build --locked --manifest-path backend/hexbot-core/Cargo.toml --bin hexbot
+      - name: Require real AppContainer containment
+        run: |
+          $env:HEXBOT_DAEMON_EXECUTABLE = "$env:GITHUB_WORKSPACE/backend/hexbot-core/target/debug/hexbot.exe"
+          & $env:HEXBOT_DAEMON_EXECUTABLE __sandbox --probe
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - run: cargo fmt --check --manifest-path backend/hexbot-core/Cargo.toml
+      - run: cargo test --locked --no-fail-fast --manifest-path backend/hexbot-core/Cargo.toml
+        if: ${{ !cancelled() }}
+        env:
+          HEXBOT_DAEMON_EXECUTABLE: ${{ github.workspace }}/backend/hexbot-core/target/debug/hexbot.exe
+      - run: cargo clippy --locked --manifest-path backend/hexbot-core/Cargo.toml --all-targets -- -D warnings
+      - run: cargo test --locked --manifest-path backend/hexbot-installer/Cargo.toml
+        if: ${{ !cancelled() }}
+      - run: cargo clippy --locked --manifest-path backend/hexbot-installer/Cargo.toml --all-targets -- -D warnings
+      - run: npm ci --prefix backend/pi-runtime --ignore-scripts --no-audit --no-fund
+        if: ${{ !cancelled() }}
+      - name: Pi extension and MCP integration
+        if: ${{ !cancelled() }}
+        env:
+          HEXBOT_REQUIRE_SANDBOX_TESTS: '1'
+          HEXBOT_DAEMON_EXECUTABLE: ${{ github.workspace }}/backend/hexbot-core/target/debug/hexbot.exe
+        run: node scripts/dev/run-bounded.mjs 720000 node --test --test-timeout=180000 backend/pi-runtime/*.test.mjs
+      - name: Real Pi sessions and recovery
+        run: |
+          $env:HEXBOT_PI_EXECUTABLE = (Get-Command node).Source
+          $env:HEXBOT_PI_SCRIPT = "$env:GITHUB_WORKSPACE/backend/pi-runtime/node_modules/@earendil-works/pi-coding-agent/dist/cli.js"
+          $env:HEXBOT_TEST_PI = $env:HEXBOT_PI_EXECUTABLE
+          cargo test --locked --manifest-path backend/hexbot-core/Cargo.toml --test pi_live -- --ignored
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          cargo test --locked --manifest-path backend/hexbot-core/Cargo.toml --test runtime -- --ignored
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          cargo test --locked --manifest-path backend/hexbot-core/Cargo.toml --test runtime_recovery -- --ignored
+          exit $LASTEXITCODE
+
+  desktop:
+    name: Windows apps and packages
+    runs-on: windows-2025
+    timeout-minutes: 75
+    steps:
+      - run: git config --global core.autocrlf false
+      - uses: actions/checkout@v7
+      - name: Set disposable evidence path
+        run: '"HEXBOT_SMOKE_ARTIFACTS=$env:RUNNER_TEMP/hexbot-windows-evidence" >> $env:GITHUB_ENV'
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 26
+          cache: pnpm
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+      - run: rustup show active-toolchain
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          workspaces: |
+            backend/hexbot-core
+            backend/hexbot-installer
+            apps/installer/src-tauri
+      - run: pnpm install --frozen-lockfile
+      - run: npm ci --prefix backend/pi-runtime --ignore-scripts --no-audit --no-fund
+      - run: pnpm --filter ./apps/site run test
+      - run: pnpm --filter ./apps/web run typecheck
+      - run: pnpm --filter ./apps/web run test --run
+      - run: pnpm --filter ./apps/web run lint
+      - run: pnpm --filter ./apps/desktop run typecheck
+      - run: pnpm --filter ./apps/desktop run test --run
+      - run: pnpm --filter ./apps/installer run typecheck
+      - run: pnpm --filter ./apps/installer run test --run
+      - run: pnpm --filter ./apps/installer run lint
+      - name: Release and dev script tests
+        run: node scripts/dev/run-bounded.mjs 600000 node --test scripts/desktop/*.test.mjs scripts/dev/*.test.mjs
+      - run: node scripts/desktop/release-smoke.mjs
+      - run: cargo test --locked --manifest-path apps/installer/src-tauri/Cargo.toml
+      - run: cargo clippy --locked --manifest-path apps/installer/src-tauri/Cargo.toml --all-targets -- -D warnings
+      # This certificate is trusted only inside this disposable VM. Production
+      # releases require the separately configured Authenticode certificate.
+      - name: Create a temporary Windows signing identity
+        run: |
+          $certificate = New-SelfSignedCertificate -Type CodeSigningCert -Subject 'CN=Hexbot Windows VM Test' -CertStoreLocation Cert:\CurrentUser\My -HashAlgorithm SHA256
+          $password = [Convert]::ToBase64String([Security.Cryptography.RandomNumberGenerator]::GetBytes(32))
+          Write-Output "::add-mask::$password"
+          $pfx = Join-Path $env:RUNNER_TEMP 'hexbot-test-signing.pfx'
+          $public = Join-Path $env:RUNNER_TEMP 'hexbot-test-signing.cer'
+          Export-PfxCertificate -Cert $certificate -FilePath $pfx -Password (ConvertTo-SecureString $password -AsPlainText -Force) | Out-Null
+          Export-Certificate -Cert $certificate -FilePath $public | Out-Null
+          Import-Certificate -FilePath $public -CertStoreLocation Cert:\CurrentUser\Root | Out-Null
+          Import-Certificate -FilePath $public -CertStoreLocation Cert:\CurrentUser\TrustedPublisher | Out-Null
+          $encoded = [Convert]::ToBase64String([IO.File]::ReadAllBytes($pfx))
+          Write-Output "::add-mask::$encoded"
+          "WIN_CSC_LINK=$encoded" >> $env:GITHUB_ENV
+          "WIN_CSC_KEY_PASSWORD=$password" >> $env:GITHUB_ENV
+          'HEXBOT_REQUIRE_WINDOWS_SIGNING=1' >> $env:GITHUB_ENV
+          Remove-Item $pfx
+          New-Item -ItemType Directory -Path windows-packages -Force | Out-Null
+          $version = (Get-Content apps/desktop/package.json | ConvertFrom-Json).version
+          $parts = $version.Split('-')[0].Split('.')
+          $next = "$($parts[0]).$($parts[1]).$([int]$parts[2] + 1)-alpha.1"
+          @{ current = $version; next = $next } | ConvertTo-Json | Set-Content windows-packages/versions.json
+      - name: Package full app
+        run: pnpm --filter ./apps/desktop run dist:win --channel stable
+      - name: Verify signed Full runtime and native update archive
+        run: |
+          $env:HEXBOT_NATIVE_TEST_BUNDLE = "$env:GITHUB_WORKSPACE/apps/desktop/release/win-unpacked/resources/hexbot-native"
+          $env:HEXBOT_PACKAGED_TEST_DIR = "$env:GITHUB_WORKSPACE/apps/desktop/release"
+          $env:HEXBOT_PACKAGED_TEST_EDITION = 'full'
+          node --test scripts/desktop/runtime-signing.test.mjs
+      - name: Preserve full package
+        run: |
+          New-Item -ItemType Directory -Path windows-packages/full -Force | Out-Null
+          Copy-Item apps/desktop/release/Hexbot-*.exe* windows-packages/full/
+      - name: Installed native runtime
+        run: |
+          $env:HEXBOT_NATIVE_TEST_BUNDLE = "$env:GITHUB_WORKSPACE/apps/desktop/resources/hexbot-native"
+          pnpm --filter ./apps/desktop run test --run src/main/backend/native-bootstrap.test.ts
+      - name: Archive native daemon
+        run: node scripts/desktop/make-native-update.mjs apps/desktop/release/win-unpacked/resources/hexbot-native windows-packages/updates
+      - run: cargo build --locked --manifest-path backend/hexbot-core/Cargo.toml --bin hexbot
+      - name: Browser against the Windows daemon and Pi
+        run: |
+          pnpm --filter ./apps/desktop exec playwright install chromium
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          node scripts/dev/run-bounded.mjs 180000 node scripts/dev/native-ui-smoke.mjs
+      - name: Electron full against the Windows daemon and Pi
+        run: node scripts/dev/run-bounded.mjs 180000 node scripts/dev/native-ui-smoke.mjs --desktop --edition=full
+      - name: Electron client against the Windows daemon and Pi
+        run: node scripts/dev/run-bounded.mjs 180000 node scripts/dev/native-ui-smoke.mjs --desktop --edition=client
+      - name: Package client app
+        run: pnpm --filter ./apps/desktop run dist:win:client --channel stable
+      - name: Verify signed Client package
+        run: |
+          $env:HEXBOT_PACKAGED_TEST_DIR = "$env:GITHUB_WORKSPACE/apps/desktop/release"
+          $env:HEXBOT_PACKAGED_TEST_EDITION = 'client'
+          node --test scripts/desktop/runtime-signing.test.mjs
+      - name: Preserve client package
+        run: |
+          New-Item -ItemType Directory -Path windows-packages/client -Force | Out-Null
+          Copy-Item apps/desktop/release/HexbotClient-*.exe* windows-packages/client/
+      - name: Build next-version Full and Client update packages
+        run: |
+          $versions = Get-Content windows-packages/versions.json | ConvertFrom-Json
+          node scripts/desktop/set-version.mjs $versions.next
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          pnpm --filter ./apps/desktop run dist:win --channel stable
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          New-Item -ItemType Directory -Path windows-packages/next/full -Force | Out-Null
+          Copy-Item "apps/desktop/release/Hexbot-$($versions.next)-win-x64.exe*" windows-packages/next/full/
+          node scripts/desktop/make-native-update.mjs apps/desktop/release/win-unpacked/resources/hexbot-native windows-packages/updates
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          pnpm --filter ./apps/desktop run dist:win:client --channel stable
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          New-Item -ItemType Directory -Path windows-packages/next/client -Force | Out-Null
+          Copy-Item "apps/desktop/release/HexbotClient-$($versions.next)-win-x64.exe*" windows-packages/next/client/
+          node scripts/desktop/set-version.mjs $versions.current
+      - name: Installed Electron and NSIS updates
+        run: node scripts/dev/run-bounded.mjs 600000 node scripts/dev/windows-updater-smoke.mjs windows-packages
+      - name: Build terminal and windowed installers
+        run: |
+          cargo build --locked --manifest-path backend/hexbot-installer/Cargo.toml
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          cargo build --locked --release --manifest-path backend/hexbot-installer/Cargo.toml
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          $config = Join-Path $env:RUNNER_TEMP 'hexbot-installer-build.json'
+          @{ bundle = @{ windows = @{ signCommand = @{ cmd = 'pwsh'; args = @('-NoProfile', '-NonInteractive', '-File', "$env:GITHUB_WORKSPACE/scripts/desktop/sign-windows.ps1", '-Path', '%1') } } } } | ConvertTo-Json -Depth 10 | Set-Content $config
+          pnpm --filter ./apps/installer run tauri build --bundles nsis --config $config
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          New-Item -ItemType Directory -Path windows-packages/installers -Force | Out-Null
+          $bundles = @(Get-ChildItem 'apps/installer/src-tauri/target/release/bundle/nsis/*.exe')
+          if ($bundles.Count -ne 1) { throw 'Expected exactly one windowed installer bundle' }
+          $version = (Get-Content windows-packages/versions.json | ConvertFrom-Json).current
+          Copy-Item $bundles[0].FullName "windows-packages/installers/HexbotInstaller-$version-windows-x86_64.exe"
+      - name: Sign and verify the terminal and windowed installers
+        run: ./scripts/desktop/sign-windows.ps1 -Path @('backend/hexbot-installer/target/debug/hexbot-install.exe', 'backend/hexbot-installer/target/release/hexbot-install.exe', 'apps/installer/src-tauri/target/release/hexbot-installer-app.exe')
+      - name: Windows install, repair, change and uninstall
+        run: node scripts/dev/run-bounded.mjs 600000 node scripts/dev/windows-install-smoke.mjs windows-packages
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: windows-packages-and-evidence
+          path: |
+            windows-packages
+            ${{ runner.temp }}/hexbot-windows-evidence
+          if-no-files-found: warn

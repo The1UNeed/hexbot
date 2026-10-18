@@ -112,3 +112,69 @@ test('packaged macOS apps launch with their shipped signatures and entitlements'
     }
   } finally { await rm(home, { recursive: true, force: true }) }
 })
+
+async function verifyWindowsBinary(file) {
+  assert.equal((await readFile(file)).subarray(0, 2).toString(), 'MZ', `${file} is not a Windows executable`)
+  if (process.env.WIN_CSC_LINK || process.env.HEXBOT_REQUIRE_WINDOWS_SIGNING === '1') {
+    const signature = await run('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
+      '(Get-AuthenticodeSignature -LiteralPath $env:HEXBOT_TEST_SIGNED_FILE).Status.ToString()'],
+    { env: { ...process.env, HEXBOT_TEST_SIGNED_FILE: file }, windowsHide: true })
+    assert.equal(signature.stdout.trim(), 'Valid', `Invalid Authenticode signature: ${file}`)
+  }
+}
+
+async function verifyWindowsRuntime(bundle, home) {
+  const { createHash } = await import('node:crypto')
+  const manifest = JSON.parse(await readFile(join(bundle, 'manifest.json'), 'utf8'))
+  assert.equal(manifest.target, 'win32-x64')
+  for (const [file, expected] of Object.entries(manifest.files))
+    assert.equal(createHash('sha256').update(await readFile(join(bundle, file))).digest('hex'), expected, file)
+  const env = { ...process.env, HEXBOT_HOME: home }
+  for (const file of ['hexbot.exe', 'node.exe', 'bin/rg.exe', 'bin/fd.exe'])
+    await verifyWindowsBinary(join(bundle, file))
+  const node = await run(join(bundle, 'node.exe'), ['-e', 'console.log(6 * 7)'], { env, windowsHide: true })
+  assert.equal(node.stdout.trim(), '42')
+  const pi = await run(join(bundle, 'node.exe'), [join(bundle, 'pi/hexbot-pi.mjs'), '--version'], { env, windowsHide: true })
+  assert.equal(pi.stdout.trim(), manifest.piVersion)
+  const daemon = await run(join(bundle, 'hexbot.exe'), ['version'], { env, windowsHide: true })
+  assert.equal(daemon.stdout.trim(), manifest.version)
+  for (const tool of ['rg', 'fd']) {
+    const result = await run(join(bundle, 'bin', `${tool}.exe`), ['--version'], { env, windowsHide: true })
+    assert.ok(result.stdout.trim(), `${tool} did not start`)
+  }
+}
+
+test('bundled Windows Node, Pi, daemon and search tools start without shell launchers', {
+  skip: process.platform !== 'win32' || !process.env.HEXBOT_NATIVE_TEST_BUNDLE
+}, async () => {
+  const home = await mkdtemp(join(tmpdir(), 'hexbot windows runtime '))
+  try { await verifyWindowsRuntime(process.env.HEXBOT_NATIVE_TEST_BUNDLE, home) }
+  finally { await rm(home, { recursive: true, force: true }) }
+})
+
+test('packaged Windows editions contain the expected runtime and preserve signed update bytes', {
+  skip: process.platform !== 'win32' || !process.env.HEXBOT_PACKAGED_TEST_DIR
+}, async () => {
+  const release = process.env.HEXBOT_PACKAGED_TEST_DIR
+  const packaged = join(release, 'win-unpacked')
+  await verifyWindowsBinary(join(packaged, 'Hexbot.exe'))
+  const bundle = join(packaged, 'resources/hexbot-native')
+  const hasRuntime = Boolean((await stat(bundle).catch(() => undefined))?.isDirectory())
+  if (process.env.HEXBOT_PACKAGED_TEST_EDITION)
+    assert.equal(hasRuntime, process.env.HEXBOT_PACKAGED_TEST_EDITION === 'full')
+  if (!hasRuntime) return
+  const home = await mkdtemp(join(tmpdir(), 'hexbot windows packaged '))
+  try {
+    await verifyWindowsRuntime(bundle, home)
+    const update = await makeNativeUpdate(bundle, join(home, 'updates'))
+    assert.equal(update.manifest.entrypoint, 'hexbot.exe')
+    assert.equal(update.manifest.target, 'windows-x86_64')
+    const extracted = join(home, 'extracted')
+    const { mkdir } = await import('node:fs/promises')
+    await mkdir(extracted)
+    await run('tar', ['-xzf', join(update.directory, update.filename), '-C', extracted])
+    for (const file of ['hexbot.exe', 'node.exe', 'bin/rg.exe', 'bin/fd.exe'])
+      assert.deepEqual(await readFile(join(extracted, file)), await readFile(join(bundle, file)))
+    await verifyWindowsRuntime(extracted, home)
+  } finally { await rm(home, { recursive: true, force: true }) }
+})

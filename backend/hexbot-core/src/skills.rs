@@ -14,6 +14,7 @@ pub(crate) static LOCK: RwLock<()> = RwLock::new(());
 
 pub(crate) fn relative(value: &str) -> Result<PathBuf> {
     let path = Path::new(value);
+    crate::platform::validate_path(path)?;
     if value.is_empty()
         || path.is_absolute()
         || path
@@ -30,6 +31,7 @@ pub(crate) fn relative(value: &str) -> Result<PathBuf> {
 }
 /// `root` is trusted and may itself be a symlink (a linked `HEXBOT_HOME`).
 pub(crate) fn safe_path(root: &Path, path: &Path) -> Result<()> {
+    crate::platform::validate_path(path)?;
     let relative = path
         .strip_prefix(root)
         .map_err(|_| Error::new(4202, "path is outside the bot directory"))?;
@@ -39,7 +41,7 @@ pub(crate) fn safe_path(root: &Path, path: &Path) -> Result<()> {
             return Err(Error::new(4202, "invalid skill path"));
         }
         cursor.push(part);
-        if fs::symlink_metadata(&cursor).is_ok_and(|m| m.file_type().is_symlink()) {
+        if fs::symlink_metadata(&cursor).is_ok_and(|m| crate::platform::is_link(&m)) {
             return Err(Error::new(4202, "skill paths must not contain symlinks"));
         }
     }
@@ -60,7 +62,7 @@ pub(crate) fn frontmatter(content: &str) -> (Value, String) {
 }
 pub(crate) fn walk_files(root: &Path, path: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
     // Here `root` is a skill directory, never the home, so it must be real.
-    if fs::symlink_metadata(root).is_ok_and(|m| m.file_type().is_symlink()) {
+    if fs::symlink_metadata(root).is_ok_and(|m| crate::platform::is_link(&m)) {
         return Err(Error::new(4202, "skill paths must not contain symlinks"));
     }
     safe_path(root, path)?;
@@ -141,6 +143,7 @@ pub struct Skill {
 fn bundled_root() -> PathBuf {
     let path = std::env::var_os("HEXBOT_BUNDLED_SKILLS")
         .map(PathBuf::from)
+        .or_else(|| common::bundled_root().map(|root| root.join("skills")))
         .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../skills"));
     path.canonicalize().unwrap_or(path)
 }

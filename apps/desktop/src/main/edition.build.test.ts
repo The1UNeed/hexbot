@@ -11,13 +11,13 @@ import { afterAll, describe, expect, it } from 'vitest'
 // main-process build never replaces. Build the main process for real and
 // check the value is baked in.
 const desktopRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..')
-const electronVite = join(desktopRoot, 'node_modules/.bin/electron-vite')
+const electronVite = join(desktopRoot, 'node_modules/electron-vite/bin/electron-vite.js')
 const outputs: string[] = []
 
 async function buildMain(edition: string): Promise<string> {
   const outDir = await mkdtemp(join(tmpdir(), `hexbot-${edition}-`))
   outputs.push(outDir)
-  await promisify(execFile)(electronVite, ['build', '--outDir', outDir], {
+  await promisify(execFile)(process.execPath, [electronVite, 'build', '--outDir', outDir], {
     cwd: desktopRoot,
     env: { ...process.env, HEXBOT_EDITION: edition }
   })

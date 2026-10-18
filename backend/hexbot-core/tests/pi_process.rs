@@ -48,6 +48,93 @@ process.stdin.on('data', chunk => {{
 }
 
 #[tokio::test]
+async fn javascript_entry_points_preserve_spaces_unicode_and_shell_metacharacters() {
+    let mut fixture =
+        Fixture::new("function receive(request) { reply(request, {args:process.argv.slice(2)}); }");
+    let script = fixture._home.path().join("Pi 中文 & (fixture).cjs");
+    fs::rename(&fixture.options.args[0], &script).unwrap();
+    fixture.options.executable = script;
+    fixture.options.args = vec!["space and 中文".into(), "& whoami | echo %PATH%".into()];
+    let (process, _) = fixture.spawn();
+    let response = process
+        .request(json!({"type":"get_state"}), DEADLINE)
+        .await
+        .unwrap();
+    assert_eq!(response.data.unwrap()["args"], json!(fixture.options.args));
+    process.shutdown().await.unwrap();
+}
+
+#[cfg(windows)]
+#[tokio::test]
+async fn windows_batch_launchers_are_refused_before_argument_expansion() {
+    let mut fixture = Fixture::new("function receive(request) { reply(request, {}); }");
+    let batch = fixture._home.path().join("unsafe.cmd");
+    let marker = fixture._home.path().join("expanded.txt");
+    fs::write(
+        &batch,
+        format!("@echo unsafe > \"{}\"\r\n", marker.display()),
+    )
+    .unwrap();
+    fixture.options.executable = batch;
+    fixture.options.args = vec!["%PATH% & whoami".into()];
+    assert!(matches!(
+        PiProcess::spawn(fixture.options.clone()),
+        Err(PiError::Io("spawn"))
+    ));
+    assert!(!marker.exists());
+}
+
+#[cfg(windows)]
+#[tokio::test]
+async fn windows_job_reaps_descendants_on_shutdown_cancellation_and_parent_exit() {
+    for action in ["shutdown", "timeout", "drop", "parent_exit"] {
+        let fixture = Fixture::new(
+            r#"
+const child = require('node:child_process').spawn(process.execPath,
+  ['-e', "process.send('ready'); setInterval(() => {}, 1000)"],
+  {detached:true, stdio:['ignore','inherit','ignore','ipc']});
+child.once('message', () => send({type:'descendant_ready', pid:process.pid, child:child.pid}));
+function receive(request) { if(request.type === 'parent_exit') process.exit(0); }
+"#,
+        );
+        let (process, mut events) = fixture.spawn();
+        let ready = tokio::time::timeout(DEADLINE, events.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(ready["type"], "descendant_ready");
+        match action {
+            "shutdown" => process.shutdown().await.unwrap(),
+            "timeout" => assert_eq!(
+                process
+                    .request_cancellable(json!({"type":"wait"}), Duration::from_millis(100))
+                    .await
+                    .unwrap_err(),
+                PiError::Timeout
+            ),
+            "parent_exit" => {
+                assert!(
+                    process
+                        .request(json!({"type":"parent_exit"}), DEADLINE)
+                        .await
+                        .is_err()
+                );
+            }
+            "drop" => drop(process),
+            _ => unreachable!(),
+        }
+        assert!(
+            tokio::time::timeout(DEADLINE, events.recv())
+                .await
+                .unwrap()
+                .is_err()
+        );
+        assert_dead(ready["pid"].as_u64().unwrap()).await;
+        assert_dead(ready["child"].as_u64().unwrap()).await;
+    }
+}
+
+#[tokio::test]
 async fn correlates_out_of_order_responses_and_preserves_unicode_events() {
     let fixture = Fixture::new(
         r#"

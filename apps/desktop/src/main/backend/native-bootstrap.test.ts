@@ -11,12 +11,17 @@ import { performBootstrap, pruneNativeRuntimes, type BootstrapDeps } from './boo
 const migration = vi.hoisted(() => vi.fn(async () => undefined))
 vi.mock('../service', () => ({ migrateLegacyService: migration }))
 
-const bundleFiles = ['hexbot', 'hexbot-core', 'node', 'pi/hexbot-pi', 'pi/package-lock.json',
-  'pi/node_modules/@earendil-works/pi-coding-agent/dist/cli.js']
+const windows = process.platform === 'win32'
+const daemonFile = windows ? 'hexbot.exe' : 'hexbot-core'
+const launcherFile = windows ? 'hexbot.exe' : 'hexbot'
+const nodeFile = windows ? 'node.exe' : 'node'
+const piFile = windows ? 'pi/hexbot-pi.mjs' : 'pi/hexbot-pi'
 const sha256 = (text: string): string => createHash('sha256').update(text).digest('hex')
 
 // A fake full-package home: the app bundle under resources and a mocked uv, tar and Pi.
-async function fixture() {
+async function fixture(windows = process.platform === 'win32') {
+  const bundleFiles = [...(windows ? ['hexbot.exe', 'node.exe', 'pi/hexbot-pi.mjs'] : ['hexbot', 'hexbot-core', 'node', 'pi/hexbot-pi']), 'pi/package-lock.json',
+    'pi/node_modules/@earendil-works/pi-coding-agent/dist/cli.js']
   const root = await mkdtemp(join(tmpdir(), 'hexbot-native-bootstrap-'))
   const home = join(root, 'home')
   const source = join(root, 'resources', 'hexbot-native')
@@ -27,7 +32,7 @@ async function fixture() {
     files[file] = sha256(file)
   }
   const bundle = async (version: string, builtAt?: number): Promise<void> =>
-    writeFile(join(source, 'manifest.json'), JSON.stringify({ version, target: 'darwin-arm64', files, builtAt }))
+    writeFile(join(source, 'manifest.json'), JSON.stringify({ version, target: windows ? 'win32-x64' : 'darwin-arm64', files, builtAt }))
   const commands: { command: string; args: string[] }[] = []
   const run: BootstrapDeps['run'] = async (command, args, _options, onLine) => {
     commands.push({ command, args })
@@ -37,24 +42,25 @@ async function fixture() {
       await writeFile(path, 'tool')
     }
     if (args[0] === 'python' && args[1] === 'find') {
-      const python = join(home, 'python', 'managed', 'bin', 'python3.11')
+      const python = join(home, 'python', 'managed', windows ? 'Scripts' : 'bin', windows ? 'python.exe' : 'python3.11')
       await mkdir(dirname(python), { recursive: true })
       await writeFile(python, '#!/bin/sh')
       onLine?.(python)
     }
-    if (args[0] === 'venv') await mkdir(join(args.at(-1)!, 'bin'), { recursive: true })
-    if (args[0] === 'pip') await writeFile(join(dirname(args[args.indexOf('--python') + 1]!), 'edge-tts'), '#!/bin/sh')
+    if (args[0] === 'venv') await mkdir(join(args.at(-1)!, windows ? 'Scripts' : 'bin'), { recursive: true })
+    if (args[0] === 'pip') await writeFile(join(dirname(args[args.indexOf('--python') + 1]!), windows ? 'edge-tts.exe' : 'edge-tts'), '#!/bin/sh')
   }
   const downloads: string[] = []
   const download = async (url: string): Promise<string> => {
     downloads.push(url)
-    return (['uv', 'rg', 'fd'] as Tool[]).map(tool => toolAsset(tool, 'darwin', 'arm64')).find(asset => asset.url === url)!.sha256
+    return (['uv', 'rg', 'fd'] as Tool[]).map(tool => toolAsset(tool, windows ? 'win32' : 'darwin', windows ? 'x64' : 'arm64')).find(asset => asset.url === url)!.sha256
   }
   const options = (appVersion: string): Partial<BootstrapDeps> => ({ appIsPackaged: true, appVersion,
-    resourcesPath: join(root, 'resources'), exists: existsSync, run, download, platform: 'darwin', arch: 'arm64' })
-  const probes = (): number => commands.filter(item => item.command.endsWith('/pi/hexbot-pi')).length
+    resourcesPath: join(root, 'resources'), exists: existsSync, run, download, platform: windows ? 'win32' : 'darwin', arch: windows ? 'x64' : 'arm64' })
+  const probes = (): number => commands.filter(item => windows ? item.args[0]?.endsWith(join('pi', 'hexbot-pi.mjs')) : item.command.endsWith(join('pi', 'hexbot-pi'))).length
   const stable = join(home, 'runtime/native-executable')
-  const selected = async (): Promise<string> => dirname(await realpath(stable))
+  const selected = async (): Promise<string> => dirname(await realpath(windows
+    ? (JSON.parse(await readFile(join(home, 'runtime/native-current.json'), 'utf8')) as { executable: string }).executable : stable))
   const oldHome = process.env.HEXBOT_HOME
   process.env.HEXBOT_HOME = home
   const close = async (): Promise<void> => {
@@ -65,7 +71,7 @@ async function fixture() {
   return { root, home, source, files, bundle, commands, downloads, run, options, probes, stable, selected, close }
 }
 
-describe('native runtime bootstrap', () => {
+describe.skipIf(windows)('Unix native runtime bootstrap', () => {
   it('installs verified Rust/Pi and hash-locked code and voice runtimes', async () => {
     const f = await fixture()
     try {
@@ -76,17 +82,17 @@ describe('native runtime bootstrap', () => {
       expect([...new Set(progress.map(value => value.stage))]).toEqual(['runtime', 'uv', 'python', 'dependencies', 'done'])
       let installed = join(f.home, 'runtime/native/1.0.0')
       expect(await f.selected()).toBe(await realpath(installed))
-      expect(await readFile(join(installed, 'hexbot-core'), 'utf8')).toBe('hexbot-core')
+      expect(await readFile(join(installed, daemonFile), 'utf8')).toBe(daemonFile)
       expect(f.probes()).toBe(1)
-      expect(f.commands.some(item => item.command.endsWith('/hexbot') && item.args[0] === 'version')).toBe(true)
+      expect(f.commands.some(item => item.command.endsWith(join(launcherFile)) && item.args[0] === 'version')).toBe(true)
       // The bundle ships verified search tools; first launch downloads only the installer.
-      expect(f.downloads).toEqual([toolAsset('uv', 'darwin', 'arm64').url])
+      expect(f.downloads).toEqual([toolAsset('uv', windows ? 'win32' : 'darwin', windows ? 'x64' : 'arm64').url])
       for (const tool of ['rg', 'fd']) expect(existsSync(join(f.home, 'bin', tool))).toBe(false)
       const pip = f.commands.find(item => item.args[0] === 'pip')!.args
       expect(pip).toEqual(expect.arrayContaining(['--require-hashes', '--no-deps', '--no-build']))
-      expect(await readFile(pip.at(-1)!, 'utf8')).toMatch(/^edge-tts==7\.2\.7 \\\n {4}--hash=sha256:[a-f0-9]{64}$/m)
+      expect(await readFile(pip.at(-1)!, 'utf8')).toMatch(/^edge-tts==7\.2\.7 \\\r?\n {4}--hash=sha256:[a-f0-9]{64}$/m)
       expect(f.commands.some(item => item.args[0] === 'tool' || item.args[0] === 'sync')).toBe(false)
-      expect(existsSync(join(f.home, 'bin/edge-tts'))).toBe(true)
+      expect(existsSync(windows ? join(f.home, 'runtime/tools/edge-tts/Scripts/edge-tts.exe') : join(f.home, 'bin/edge-tts'))).toBe(true)
 
       // A second launch copies, probes and installs nothing.
       const setupCalls = f.commands.length
@@ -99,13 +105,13 @@ describe('native runtime bootstrap', () => {
       expect(f.commands.slice(setupCalls).map(item => item.args[0])).toEqual(['venv', 'pip'])
 
       // A damaged runtime is copied again from the verified bundle.
-      await writeFile(join(installed, 'hexbot-core'), 'broken')
+      await writeFile(join(installed, daemonFile), 'broken')
       await performBootstrap(f.options('1.0.0'))
       expect(f.probes()).toBe(2)
       installed = await f.selected()
-      expect(await readFile(join(installed, 'hexbot-core'), 'utf8')).toBe('hexbot-core')
+      expect(await readFile(join(installed, daemonFile), 'utf8')).toBe(daemonFile)
 
-      await writeFile(join(f.source, 'pi/hexbot-pi'), 'broken')
+      await writeFile(join(f.source, piFile), 'broken')
       await f.bundle('3.0.0', 300)
       await expect(performBootstrap(f.options('3.0.0'))).rejects.toThrow('checksum failed')
       expect(await f.selected()).toBe(installed)
@@ -147,15 +153,17 @@ describe('native runtime bootstrap', () => {
       // Signing changes Node and the daemon after the staging manifest was written.
       const updated = join(f.home, 'runtime/native/2.0.0-update')
       await cp(await f.selected(), updated, { recursive: true })
-      await writeFile(join(updated, 'node'), 'signed node')
-      await writeFile(join(updated, 'hexbot-core'), 'signed daemon')
-      await writeFile(join(updated, 'manifest.json'), JSON.stringify({ version: '3.0.0', target: 'darwin-arm64', builtAt: 300,
-        files: { ...f.files, node: sha256('signed node'), 'hexbot-core': sha256('signed daemon') } }))
-      await rm(f.stable)
-      await symlink(await realpath(join(updated, 'hexbot')), f.stable)
+      await writeFile(join(updated, nodeFile), 'signed node')
+      await writeFile(join(updated, daemonFile), 'signed daemon')
+      await writeFile(join(updated, 'manifest.json'), JSON.stringify({ version: '3.0.0', target: windows ? 'win32-x64' : 'darwin-arm64', builtAt: 300,
+        files: { ...f.files, [nodeFile]: sha256('signed node'), [daemonFile]: sha256('signed daemon') } }))
+      if (!windows) {
+        await rm(f.stable)
+        await symlink(await realpath(join(updated, launcherFile)), f.stable)
+      }
       await writeFile(join(f.home, 'runtime/native-current.json'), JSON.stringify({
-        version: '3.0.0', executable: await realpath(join(updated, 'hexbot')),
-        files: { ...f.files, node: sha256('signed node'), 'hexbot-core': sha256('signed daemon') }
+        version: '3.0.0', executable: await realpath(join(updated, launcherFile)),
+        files: { ...f.files, [nodeFile]: sha256('signed node'), [daemonFile]: sha256('signed daemon') }
       }))
       for (let launch = 0; launch < 3; launch += 1) await performBootstrap(f.options('2.0.0'))
       expect(await f.selected()).toBe(await realpath(updated))
@@ -173,7 +181,7 @@ describe('native runtime bootstrap', () => {
       const installed = await f.selected()
       await f.bundle('2.0.0', 200)
       const run: BootstrapDeps['run'] = async (command, args, options, onLine) => {
-        if (command.endsWith('/hexbot') && args[0] === 'version') {
+        if (command.endsWith(launcherFile) && args[0] === 'version') {
           onLine?.("hexbot-core: /lib/x86_64-linux-gnu/libc.so.6: version `GLIBC_2.34' not found")
           throw new Error(`${command} exited with code 1`)
         }
@@ -199,10 +207,11 @@ it.skipIf(!process.env.HEXBOT_NATIVE_TEST_BUNDLE)('boots a real packaged native 
       resourcesPath: dirname(source), platform: process.platform, arch: process.arch })
     const { execFile, spawn } = await import('node:child_process')
     const { promisify } = await import('node:util')
-    const launcher = join(root, 'runtime/native-executable')
+    const launcher = windows ? (JSON.parse(await readFile(join(root, 'runtime/native-current.json'), 'utf8')) as { executable: string }).executable : join(root, 'runtime/native-executable')
     const result = await promisify(execFile)(launcher, ['version'])
     expect(result.stdout.trim()).toBe(metadata.version)
-    const pi = await promisify(execFile)(join(root, 'runtime/native', metadata.version, 'pi/hexbot-pi'), ['--version'])
+    const piRoot = windows ? dirname(launcher) : join(root, 'runtime/native', metadata.version)
+    const pi = await promisify(execFile)(join(piRoot, windows ? 'node.exe' : 'pi/hexbot-pi'), windows ? [join(piRoot, 'pi/hexbot-pi.mjs'), '--version'] : ['--version'])
     expect(pi.stdout).toContain('1.0.1')
     const daemon = spawn(launcher, ['serve', '--port', '0', '--host', '127.0.0.1'], {
       env: { ...process.env, HEXBOT_HOME: root }, stdio: ['ignore', 'pipe', 'pipe']
@@ -230,12 +239,13 @@ it.skipIf(!process.env.HEXBOT_NATIVE_TEST_BUNDLE)('boots a real packaged native 
       await stopped
       clearTimeout(kill)
     }
-    const code = await promisify(execFile)(join(root, 'bin/python3.11'), ['-c', 'print(6 * 7)'])
+    const python = windows ? (await readFile(join(root, 'runtime/code-python.txt'), 'utf8')).trim() : join(root, 'bin/python3.11')
+    const code = await promisify(execFile)(python, ['-c', 'print(6 * 7)'])
     expect(code.stdout.trim()).toBe('42')
-    const voice = await promisify(execFile)(join(root, 'bin/edge-tts'), ['--version'])
+    const voice = await promisify(execFile)(windows ? join(root, 'runtime/tools/edge-tts/Scripts/edge-tts.exe') : join(root, 'bin/edge-tts'), ['--version'])
     expect(voice.stdout).toContain('7.2.7')
     for (const tool of ['rg', 'fd']) {
-      const version = await promisify(execFile)(join(root, 'runtime/native', metadata.version, 'bin', tool), ['--version'])
+      const version = await promisify(execFile)(join(piRoot, 'bin', `${tool}${windows ? '.exe' : ''}`), ['--version'])
       expect(version.stdout).toContain(toolAsset(tool as Tool, process.platform, process.arch).version)
     }
   } finally {
@@ -281,7 +291,7 @@ it('pruning protects a running runtime until its process has exited', async () =
     const { rename } = await import('node:fs/promises')
     const moved = join(root, 'elsewhere')
     await rename(native, moved)
-    await symlink(moved, native)
+    await symlink(moved, native, process.platform === 'win32' ? 'junction' : 'dir')
     await expect(pruneNativeRuntimes(actual[3]!, actual[2])).rejects.toThrow('symbolic links')
     expect(existsSync(join(moved, 'previous-random/hexbot'))).toBe(true)
   } finally {
@@ -289,4 +299,52 @@ it('pruning protects a running runtime until its process has exited', async () =
     else process.env.HEXBOT_HOME = oldHome
     await rm(root, { recursive: true, force: true })
   }
+})
+
+
+it('delegates Windows activation to the locked native setup and preserves newer selections', async () => {
+  const f = await fixture(true)
+  const activations: { command: string; args: string[]; env?: NodeJS.ProcessEnv }[] = []
+  const run: BootstrapDeps['run'] = async (command, args, options, onLine) => {
+    if (args[0] === 'setup') activations.push({ command, args, env: options?.env })
+    return f.run(command, args, options, onLine)
+  }
+  try {
+    await f.bundle('1.0.0', 100)
+    await performBootstrap({ ...f.options('1.0.0'), run })
+    expect(activations).toHaveLength(1)
+    expect(activations[0]?.command).toBe(join(f.source, 'hexbot.exe'))
+    expect(activations[0]?.args).toEqual(['setup', '--activate', '--no-code-tools', '--no-cli', '--json'])
+    expect(activations[0]?.env).toEqual(expect.objectContaining({ HEXBOT_HOME: f.home, HEXBOT_EXPECTED_NATIVE_SELECTION: 'none' }))
+    expect(existsSync(f.stable)).toBe(false)
+    expect(f.commands.some(item => item.command.endsWith('node.exe') && item.args[0]?.endsWith(join('pi', 'hexbot-pi.mjs')))).toBe(true)
+    const interpreter = (await readFile(join(f.home, 'runtime/code-python.txt'), 'utf8')).trim()
+    expect(interpreter).toBe(join(f.home, 'python/managed/Scripts/python.exe'))
+    expect(f.commands.find(item => item.args[0] === 'pip')?.args).toContain(join(f.home, 'runtime/tools/edge-tts/Scripts/python.exe'))
+    expect(existsSync(join(f.home, 'runtime/tools/edge-tts/Scripts/edge-tts.exe'))).toBe(true)
+
+    // The native boundary rejects a changed selection under its activation lock.
+    const snapshot = '{"fixture":"prior selected runtime"}'
+    await writeFile(join(f.home, 'runtime/native-current.json'), snapshot)
+    await expect(performBootstrap({ ...f.options('1.0.0'), run: async (command, args, options, onLine) => {
+      if (args[0] === 'setup') {
+        expect(options?.env?.HEXBOT_EXPECTED_NATIVE_SELECTION).toBe(sha256(snapshot))
+        throw new Error('The selected runtime changed during installation')
+      }
+      return f.run(command, args, options, onLine)
+    } })).rejects.toThrow('selected runtime changed')
+
+    // An older app verifies the existing newer runtime and leaves selection to Rust.
+    await f.bundle('2.0.0', 200)
+    const installed = join(f.home, 'runtime/native/2.0.0-from-core')
+    await cp(f.source, installed, { recursive: true })
+    await writeFile(join(f.home, 'runtime/native-current.json'), JSON.stringify({
+      version: '2.0.0', executable: await realpath(join(installed, 'hexbot.exe'))
+    }))
+    await f.bundle('1.0.0', 100)
+    const calls = f.commands.length
+    await performBootstrap({ ...f.options('1.0.0'), run })
+    expect(f.commands).toHaveLength(calls)
+    expect(activations).toHaveLength(1)
+  } finally { await f.close() }
 })
