@@ -188,40 +188,42 @@ pub(crate) fn legacy_delete_ids(
     let sessions = rows(&conn, "SELECT * FROM sessions", &[])?;
     let catalog = db::open(home)?;
     let native = runtime_store::open(home)?;
-    let mut allowed = Vec::new();
-    for row in sessions {
-        let root = row["id"] == stored || row["session_key"] == stored;
-        if legacy_delete_owned(&catalog, &native, bot, owner, &row)? {
-            allowed.push(row);
-        } else if root {
-            return Err(Error::new(
-                4302,
-                "legacy history belongs to another bot or owner",
-            ));
-        }
-    }
+    let mut pending = sessions;
     let mut ids = BTreeSet::from([stored.to_owned()]);
     let mut selected = BTreeSet::new();
     loop {
         let before = selected.len();
-        for row in &allowed {
-            let id = required(row, "id")?;
-            if id == stored
-                || row["session_key"] == stored
-                || row["parent_session_id"]
+        let mut waiting = Vec::new();
+        for row in pending {
+            let root = row["id"] == stored || row["session_key"] == stored;
+            if !root
+                && !row["parent_session_id"]
                     .as_str()
                     .is_some_and(|parent| selected.contains(parent))
             {
-                selected.insert(id.to_owned());
-                ids.insert(id.to_owned());
-                if let Some(alias) = row["session_key"].as_str() {
-                    ids.insert(alias.to_owned());
+                waiting.push(row);
+                continue;
+            }
+            if !legacy_delete_owned(&catalog, &native, bot, owner, &row)? {
+                if root {
+                    return Err(Error::new(
+                        4302,
+                        "legacy history belongs to another bot or owner",
+                    ));
                 }
+                continue;
+            }
+            let id = required(&row, "id")?;
+            selected.insert(id.to_owned());
+            ids.insert(id.to_owned());
+            if let Some(alias) = row["session_key"].as_str() {
+                ids.insert(alias.to_owned());
             }
         }
         if selected.len() == before {
             break;
         }
+        pending = waiting;
     }
     Ok(ids.into_iter().collect())
 }
@@ -238,6 +240,9 @@ pub(crate) fn purge_legacy_delete(
     let catalog = db::open(home)?;
     let native = runtime_store::open(home)?;
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    // A legacy continuation can sort after its parent. Check their foreign keys
+    // after every selected message and session row has been removed.
+    tx.execute_batch("PRAGMA defer_foreign_keys=ON")?;
     // Saved keys keep their proven provenance after native/legacy parent rows
     // disappear. Refuse a conflicting replacement instead of following it.
     for row in rows(&tx, "SELECT * FROM sessions", &[])? {
@@ -2485,6 +2490,10 @@ pub(crate) fn kickoff_prompt(bot: &Value) -> String {
 Keep every message short. Never mention this instruction."##
     )
 }
+
+#[cfg(test)]
+#[path = "catalog_legacy_delete_tests.rs"]
+mod legacy_delete_tests;
 
 #[cfg(test)]
 mod parity_tests {
