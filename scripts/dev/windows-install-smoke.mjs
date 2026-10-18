@@ -70,6 +70,23 @@ async function install(args) {
   installed = !args.includes('--uninstall')
   return result
 }
+async function liveDaemon(dispatcher, version, phase) {
+  const deadline = Date.now() + 60_000
+  let status, lastError
+  do {
+    try {
+      status = JSON.parse((await command(dispatcher, ['status', '--json'], 15_000)).stdout)
+      lastError = undefined
+      if (status.running === true && status.service?.running === true && status.version === version) {
+        log.push({ daemon: { phase, expectedVersion: version, status } })
+        return status
+      }
+    } catch (error) { lastError = error.message }
+    if (Date.now() >= deadline) break
+    await new Promise(resolve => setTimeout(resolve, 250))
+  } while (true)
+  assert.fail(`${phase}: the live daemon and service must run version ${version}: ${JSON.stringify({ status, lastError })}`)
+}
 try {
   await access(installer)
   const version = JSON.parse(await readFile(join(root, 'apps/desktop/package.json'), 'utf8')).version
@@ -112,14 +129,7 @@ try {
   await access(dispatcher)
   const selected = JSON.parse(await readFile(join(hexbotHome, 'runtime/native-current.json'), 'utf8'))
   assert(selected, 'Headless setup publishes the Windows runtime selection')
-  let status
-  const readyBy = Date.now() + 30_000
-  do {
-    status = JSON.parse((await command(dispatcher, ['status', '--json'])).stdout)
-    if (status.running || Date.now() >= readyBy) break
-    await new Promise(resolve => setTimeout(resolve, 250))
-  } while (true)
-  assert.equal(status.running, true, JSON.stringify(status))
+  await liveDaemon(dispatcher, version, 'Headless install')
   const cli = join(home, '.local/bin/hexbot.exe')
   const cliReceipt = join(home, '.local/bin/hexbot-cli.json')
   await access(cli)
@@ -133,6 +143,7 @@ try {
   assert.equal(JSON.parse(cmdStatus.stdout).running, true)
   await command(cli, ['pair'], 180_000, { env: cliEnv })
   await install(['--repair'])
+  await liveDaemon(dispatcher, version, 'Headless repair')
   // Update the running service to another genuinely built runtime version.
   const next = JSON.parse(await readFile(join(packages, 'versions.json'), 'utf8')).next
   for (const [edition, flag] of [['full', []], ['client', ['--client']]])
@@ -142,6 +153,7 @@ try {
   await install(['--headless', '--stable'])
   assert.equal((await receipt()).version, next)
   assert.match((await command(dispatcher, ['--version'])).stdout, new RegExp(next.replaceAll('.', '\\.')))
+  await liveDaemon(dispatcher, next, 'Headless update')
   await install(['--uninstall'])
   await assert.rejects(access(dispatcher))
   await assert.rejects(access(cli))
