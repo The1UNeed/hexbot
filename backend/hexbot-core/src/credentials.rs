@@ -1224,8 +1224,12 @@ fn record_metadata(
     path: &Path,
     worktree: &Path,
 ) {
-    if git_metadata(protected, configs, path, worktree).is_err() {
+    if let Err(error) = git_metadata(protected, configs, path, worktree) {
         protected.failure = true;
+        protected.cause.get_or_insert(format!(
+            "Git metadata at '{}' could not be read: {error}",
+            path.display()
+        ));
     }
 }
 fn workspace_protected(roots: &[PathBuf], limit: usize) -> Result<WorkspaceProtected> {

@@ -132,6 +132,28 @@ pub struct Runtime {
     /// one a client kept.
     usage_seq: AtomicU64,
 }
+/// A one-shot session's workdir, removed with a bounded retry.
+///
+/// The job guard waits for the child tree to stop, but Windows can keep the
+/// directory's handles for a moment after that, so a single removal loses the
+/// race. Dropping also covers a caller that aborts the one-shot future
+/// mid-flight and skips its ordinary cleanup path.
+struct WorkdirGuard(std::path::PathBuf);
+impl Drop for WorkdirGuard {
+    fn drop(&mut self) {
+        for _ in 0..40 {
+            if !self.0.exists() || std::fs::remove_dir_all(&self.0).is_ok() {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+        eprintln!(
+            "One-shot workdir could not be removed: {}",
+            self.0.display()
+        );
+    }
+}
+
 impl Runtime {
     pub fn new(home: PathBuf, events: EventHub, pi_executable: PathBuf) -> Result<Arc<Self>> {
         crate::credentials::warn_unavailable_isolation();
@@ -2416,6 +2438,12 @@ impl Runtime {
         // as Pi startup and provider work. Keep resources alive through cleanup.
         let deadline = tokio::time::Instant::now() + timeout;
         let dir = tempfile::tempdir()?;
+        // Windows can keep the workdir's handles briefly after the child tree
+        // stops, and a caller that aborts this future skips the cleanup below,
+        // so removal retries and also runs during unwind. Declaration order
+        // matters: the child tree drops first, this guard second, the RAII
+        // tempdir last.
+        let workdir = WorkdirGuard(dir.path().to_path_buf());
         let mut started = None;
         let result = tokio::time::timeout_at(deadline, async {
             let profile = self.home.join("profiles").join(bot);
@@ -2567,24 +2595,8 @@ impl Runtime {
         if let Some(process) = started {
             let _ = process.shutdown().await;
         }
-        // The job guard waits for the child tree to stop, but Windows can keep
-        // the workdir's handles for a moment after that; retry briefly so the
-        // directory really disappears, as it does on Unix.
-        let workdir = dir.path().to_path_buf();
         drop(dir);
-        for attempt in 0..40 {
-            if !workdir.exists() || std::fs::remove_dir_all(&workdir).is_ok() {
-                break;
-            }
-            if attempt == 39 {
-                eprintln!(
-                    "One-shot workdir could not be removed: {}",
-                    workdir.display()
-                );
-            } else {
-                tokio::time::sleep(Duration::from_millis(25)).await;
-            }
-        }
+        drop(workdir);
         // A failed call reads as a failed result; callers decide what that means.
         match result {
             Ok(Ok(text)) => Ok(text),
