@@ -337,9 +337,37 @@ function withCurrentAssistant(
     ? transcript.messages.find(message => message.id === currentId)
     : undefined
 
+  const source = transcript.identity?.messageId
+
+  const owners = source
+    ? transcript.messages.filter(message => message.fragmentIds?.includes(source))
+    : []
+
+  if (owners.length === 1 && owners[0] !== current) {
+    return replaceMessage(transcript, owners[0]!.id, message => ({
+      ...patch(identifyMessage(message, transcript.identity)),
+      streaming: message.streaming
+    }))
+  }
+
   if (current) {
-    return replaceMessage(transcript, current.id, message =>
-      patch(identifyMessage(message, transcript.identity))
+    const crossed =
+      source &&
+      !current.fragmentIds?.includes(source) &&
+      transcript.messages
+        .slice(transcript.messages.indexOf(current) + 1)
+        .some(message => !message.createdAt)
+
+    if (!crossed) {
+      return replaceMessage(transcript, current.id, message =>
+        patch(identifyMessage(message, transcript.identity))
+      )
+    }
+
+    // A newly identified fragment cannot inherit an earlier fragment's position
+    // across history installed since the previous event. Its row is not here yet.
+    transcript = replaceMessage(transcript, current.id, message =>
+      settle({ ...message, streaming: false })
     )
   }
 
@@ -418,7 +446,7 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
         const existing = state.bySession[sessionId]
 
         if (existing && hydration) {
-          const restored = hydrateHistory(existing, messages)
+          const restored = hydrateHistory(existing, messages, new Set(hydration.reports))
 
           return {
             bySession: {
@@ -584,6 +612,13 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
           streaming: true,
           thinking: (message.thinking ?? '') + text,
           thinkingId: transcript.identity?.messageId ?? message.thinkingId,
+          thinkingByFragment: transcript.identity?.messageId
+            ? {
+                ...message.thinkingByFragment,
+                [transcript.identity.messageId]:
+                  (message.thinkingByFragment?.[transcript.identity.messageId] ?? '') + text
+              }
+            : message.thinkingByFragment,
           workUntil: Date.now()
         }))
       )
@@ -686,6 +721,7 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
           toolCalls: [
             ...message.toolCalls,
             {
+              messageId: transcript.identity?.messageId,
               args: payload.args ?? null,
               durationS: payload.duration_s ?? null,
               name: String(payload.name ?? 'tool'),

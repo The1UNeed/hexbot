@@ -342,6 +342,8 @@ export interface Message {
   thinking?: string
   /** Fragment that produced this reasoning trace, when known. */
   thinkingId?: string
+  /** Reasoning retained separately when one bubble folds several source fragments. */
+  thinkingByFragment?: Record<string, string>
   toolCalls: ToolCall[]
   usage?: Usage | null
   /** When the last reasoning or tool event landed; with `createdAt` it times the work. */

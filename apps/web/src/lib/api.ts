@@ -862,7 +862,7 @@ export const clarifyAnswered = (clarify: ClarifyRequest) =>
 
 /**
  * Turn the Hexbot `session.history` projection into transcript messages.
- * Tool rows fold into the assistant message that precedes them, matching how
+ * Tool rows fold into the assistant message that issued their call, matching how
  * live `tool.start` / `tool.complete` events are rendered.
  */
 /**
@@ -882,8 +882,38 @@ export function messagesFromHistory(
   // Tool rows carry no arguments; the assistant row that made the call does,
   // as the JSON the model wrote. Parsed, they match live `tool.start` args.
   const callArgs = new Map<string, unknown>()
-  const callMessages = new Map<string, string>()
+  const callOwners = new Map<string, HistoryRow | null>()
+  const formatted = new Map<HistoryRow, Message>()
+  const dreams = new Set<Message>()
+  const rowCounts = new Map<string, number>()
   const reports = new Set(rows.filter(row => row.dream === true).map(row => String(row.row_id)))
+
+  for (const row of rows) {
+    if (row.row_id != null) {
+      const id = String(row.row_id)
+      rowCounts.set(id, (rowCounts.get(id) ?? 0) + 1)
+    }
+
+    if (row.role !== 'assistant' || row.dream === true) {
+      continue
+    }
+
+    for (const call of Array.isArray(row.tool_calls) ? row.tool_calls : []) {
+      const { function: fn, id } = (call ?? {}) as {
+        function?: { arguments?: unknown }
+        id?: unknown
+      }
+
+      if (typeof id === 'string') {
+        // Duplicate declarations do not establish an owner, even across rows.
+        callOwners.set(id, callOwners.has(id) ? null : row)
+
+        if (typeof fn?.arguments === 'string') {
+          callArgs.set(id, parseArguments(fn.arguments))
+        }
+      }
+    }
+  }
 
   for (const row of rows) {
     let text = typeof row.text === 'string' ? row.text : ''
@@ -896,27 +926,32 @@ export function messagesFromHistory(
       text = text.slice(prefix.length)
     }
 
-    for (const call of Array.isArray(row.tool_calls) ? row.tool_calls : []) {
-      const { function: fn, id } = (call ?? {}) as {
-        function?: { arguments?: unknown }
-        id?: unknown
-      }
-
-      if (typeof id === 'string' && typeof fn?.arguments === 'string') {
-        callArgs.set(id, parseArguments(fn.arguments))
-
-        if (row.row_id != null) {
-          callMessages.set(id, String(row.row_id))
-        }
-      }
-    }
-
     if (row.role === 'tool') {
-      const target = messages.at(-1)
+      const toolId = String(row.tool_call_id ?? row.tool_id)
+      const owner = callOwners.get(toolId)
+      const previous = messages.at(-1)
+
+      const messageId =
+        owner?.row_id != null && rowCounts.get(String(owner.row_id)) === 1
+          ? String(owner.row_id)
+          : undefined
+
+      // Preserve the old presentation for projections with no row identities.
+      // Identified or ambiguous calls stay unbound until ownership is proven.
+      const target = owner
+        ? owner.row_id == null || messageId
+          ? formatted.get(owner)
+          : undefined
+        : !callOwners.has(toolId) &&
+            !previous?.fragmentIds &&
+            previous?.role === 'assistant' &&
+            !dreams.has(previous)
+          ? previous
+          : undefined
 
       const call = {
-        messageId: callMessages.get(String(row.tool_call_id ?? row.tool_id)) ?? target?.textId,
-        args: row.args ?? callArgs.get(String(row.tool_call_id ?? row.tool_id)) ?? null,
+        messageId,
+        args: row.args ?? (owner ? callArgs.get(toolId) : null) ?? null,
         durationS: null,
         name: String(row.name ?? 'tool'),
         result: row.text ?? null,
@@ -924,7 +959,7 @@ export function messagesFromHistory(
         startedAt: 0,
         status: row.is_error === true ? ('error' as const) : ('ok' as const),
         summary: typeof row.context === 'string' ? row.context : undefined,
-        toolId: String(row.tool_id ?? row.row_id ?? nextMessageId('t'))
+        toolId: String(row.tool_id ?? row.tool_call_id ?? row.row_id ?? nextMessageId('t'))
       }
 
       const clarify =
@@ -961,7 +996,7 @@ export function messagesFromHistory(
           attachments: [],
           clarifies: clarify ? [clarify] : undefined,
           createdAt: 0,
-          id: nextMessageId(),
+          id: String(row.row_id ?? nextMessageId()),
           role: 'assistant',
           streaming: false,
           text: '',
@@ -986,6 +1021,7 @@ export function messagesFromHistory(
       role === 'assistant' &&
       row.dream !== true &&
       previous?.role === 'assistant' &&
+      !dreams.has(previous) &&
       !reports.has(previous.id) &&
       previous.turnId === (typeof row.turn_id === 'string' ? row.turn_id : undefined) &&
       previous.toolCalls.length &&
@@ -1002,11 +1038,12 @@ export function messagesFromHistory(
         ...(previous.fragmentIds ?? []),
         ...(previous.textId ? [previous.textId] : [])
       ]
+      formatted.set(row, previous)
 
       continue
     }
 
-    messages.push({
+    const message: Message = {
       attachments: [],
       createdAt: 0,
       id: String(row.row_id ?? nextMessageId()),
@@ -1021,7 +1058,14 @@ export function messagesFromHistory(
       streaming: false,
       text,
       toolCalls: []
-    })
+    }
+
+    messages.push(message)
+    formatted.set(row, message)
+
+    if (row.dream === true) {
+      dreams.add(message)
+    }
   }
 
   return messages

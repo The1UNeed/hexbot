@@ -5,7 +5,8 @@ import type { Transcript, TranscriptMessage } from './transcripts'
 /** History owns durable rows. Only input and fragment IDs prove overlap. */
 export function hydrateHistory(
   existing: Transcript,
-  snapshot: Message[]
+  snapshot: Message[],
+  reports: Set<string>
 ): Pick<Transcript, 'messages' | 'durableFragments'> {
   const cardEnds = new Set(
     [...existing.approvals, ...existing.clarifies].flatMap(card =>
@@ -30,14 +31,78 @@ export function hydrateHistory(
 
   const previous = new Map(existing.messages.map(message => [message.id, message]))
 
-  const local = existing.messages.filter(
-    message => message.createdAt && !history.some(row => row.id === message.id)
-  )
-
   const tools = new Map(
     existing.messages.flatMap(message =>
       message.toolCalls.map(tool => [tool.toolId, tool] as const)
     )
+  )
+
+  const sources = new Map<string, Set<string>>()
+
+  for (const message of existing.messages) {
+    for (const tool of message.toolCalls) {
+      if (tool.messageId) {
+        const owners = sources.get(tool.toolId) ?? new Set<string>()
+        owners.add(tool.messageId)
+        sources.set(tool.toolId, owners)
+      }
+    }
+  }
+
+  for (const [id, owners] of sources) {
+    if (owners.size > 1) {
+      tools.delete(id)
+    }
+  }
+
+  const emptied = new Set<Message>()
+
+  // A legacy result can lack its call declaration in the snapshot. A live
+  // tool's explicit fragment ID can still prove its owner, never its position.
+  for (const message of history) {
+    const hadTools = message.toolCalls.length > 0
+    message.toolCalls = message.toolCalls.filter(tool => {
+      const source =
+        tool.messageId ??
+        (sources.get(tool.toolId)?.size === 1 ? tools.get(tool.toolId)?.messageId : undefined)
+
+      const owners = history.filter(
+        row => !reports.has(row.id) && row.fragmentIds?.includes(source ?? '')
+      )
+
+      if (owners.length !== 1 || owners[0] === message) {
+        return true
+      }
+
+      owners[0]!.toolCalls = [...owners[0]!.toolCalls, { ...tool, messageId: source }]
+      const cards = message.clarifies?.filter(card => card.requestId === tool.toolId) ?? []
+
+      if (cards.length) {
+        owners[0]!.clarifies = [
+          ...(owners[0]!.clarifies ?? []),
+          ...cards.map(card => ({ ...card, messageId: source }))
+        ]
+        message.clarifies = message.clarifies?.filter(card => card.requestId !== tool.toolId)
+      }
+
+      return false
+    })
+
+    if (
+      hadTools &&
+      !message.toolCalls.length &&
+      !message.fragmentIds?.length &&
+      !message.text &&
+      !message.clarifies?.length
+    ) {
+      emptied.add(message)
+    }
+  }
+
+  history.splice(0, history.length, ...history.filter(message => !emptied.has(message)))
+
+  const local = existing.messages.filter(
+    message => message.createdAt && !history.some(row => row.id === message.id)
   )
 
   const inputs = local.filter(message => message.role === 'user')
@@ -58,8 +123,10 @@ export function hydrateHistory(
   let messages: TranscriptMessage[] = history.map(message => {
     const live = previous.get(message.id)
 
-    const reasoning = local.find(
-      candidate => candidate.thinkingId && message.fragmentIds?.includes(candidate.thinkingId)
+    const reasoning = local.find(candidate =>
+      message.fragmentIds?.some(
+        id => candidate.thinkingByFragment?.[id] !== undefined || candidate.thinkingId === id
+      )
     )
 
     const final = local.find(
@@ -70,8 +137,7 @@ export function hydrateHistory(
       ...message,
       attachments:
         attachments.get(message.id) ?? previous.get(message.id)?.attachments ?? message.attachments,
-      thinking: live?.thinking ?? reasoning?.thinking ?? message.thinking,
-      thinkingId: live?.thinkingId ?? reasoning?.thinkingId ?? message.thinkingId,
+      ...reasoningFor(message, live ?? reasoning ?? message),
       usage: live?.usage ?? final?.usage ?? message.usage,
       error: live?.error ?? final?.error ?? message.error,
       status: live?.status ?? final?.status ?? message.status,
@@ -93,7 +159,7 @@ export function hydrateHistory(
     history.flatMap(message => message.toolCalls.map(tool => tool.toolId))
   )
 
-  for (const live of local) {
+  for (const live of local.flatMap(message => splitLive(message, history, reports))) {
     if (adopted.has(live.id)) {
       continue
     }
@@ -230,6 +296,98 @@ function chunks(message: Message) {
   ]
 }
 
+/** Keep each source fragment on its own side of a durable input or report. */
+function splitLive(
+  message: TranscriptMessage,
+  history: Message[],
+  reports: Set<string>
+): TranscriptMessage[] {
+  if (message.role !== 'assistant' || !message.fragmentIds?.length) {
+    return [message]
+  }
+
+  let region = 0
+  const regions = new Map<string, number>()
+
+  for (const row of history) {
+    if (
+      row.role !== 'assistant' ||
+      reports.has(row.id) ||
+      !row.turnId ||
+      row.turnId !== message.turnId
+    ) {
+      region++
+    } else {
+      for (const id of row.fragmentIds ?? []) {
+        regions.set(id, region)
+      }
+    }
+  }
+
+  const group = (id: string | undefined) => (id ? regions.get(id) : undefined) ?? region
+  const groups = new Map<number, string[]>()
+
+  for (const id of message.fragmentIds) {
+    const at = group(id)
+    groups.set(at, [...(groups.get(at) ?? []), id])
+  }
+
+  if (groups.size < 2) {
+    return [message]
+  }
+
+  const current = group(message.textId ?? message.partIds?.at(-1) ?? message.fragmentIds.at(-1))
+
+  return [...groups].map(([at, ids]) => {
+    const parts = chunks(message)
+      .slice(0, -1)
+      .filter(part => group(part.id) === at)
+
+    const ownsText = group(message.textId) === at
+
+    return {
+      ...message,
+      id: at === current ? message.id : `${message.id}:${ids[0]}`,
+      fragmentIds: ids,
+      parts: parts.map(part => part.text),
+      partIds: parts.map(part => part.id),
+      text: ownsText ? message.text : '',
+      textId: ownsText ? message.textId : undefined,
+      ...reasoningFor({ ...message, fragmentIds: ids }, message, at === current),
+      toolCalls: message.toolCalls.filter(tool => group(tool.messageId) === at),
+      clarifies: message.clarifies?.filter(card => group(card.messageId) === at),
+      streaming: at === current && message.streaming,
+      usage: at === current ? message.usage : undefined,
+      error: at === current ? message.error : undefined,
+      status: at === current ? message.status : undefined
+    }
+  })
+}
+
+function reasoningFor(
+  target: Message,
+  source: Message,
+  unbound = true
+): Pick<Message, 'thinking' | 'thinkingId' | 'thinkingByFragment'> {
+  const entries = (target.fragmentIds ?? []).flatMap(id =>
+    source.thinkingByFragment?.[id] !== undefined
+      ? [[id, source.thinkingByFragment[id]] as const]
+      : []
+  )
+
+  const owns = source.thinkingId ? target.fragmentIds?.includes(source.thinkingId) : unbound
+
+  return {
+    thinking: entries.length
+      ? entries.map(([, text]) => text).join('')
+      : owns
+        ? source.thinking
+        : undefined,
+    thinkingId: entries.at(-1)?.[0] ?? (owns ? source.thinkingId : undefined),
+    thinkingByFragment: entries.length ? Object.fromEntries(entries) : undefined
+  }
+}
+
 /** Split a folded history bubble by its explicit source fragments. */
 function subset(message: Message, ids: Set<string>): Message[] {
   if (!ids.size) {
@@ -247,12 +405,18 @@ function subset(message: Message, ids: Set<string>): Message[] {
       partIds: parts.slice(0, -1).map(part => part.id),
       text: parts.at(-1)?.text ?? '',
       textId: parts.at(-1)?.id,
+      ...reasoningFor({ ...message, fragmentIds: [...ids] }, message),
+      clarifies: message.clarifies?.filter(card => card.messageId && ids.has(card.messageId)),
       toolCalls: message.toolCalls.filter(tool => tool.messageId && ids.has(tool.messageId))
     }
   ]
 }
 
 function mergeTool(stored: ToolCall, live: ToolCall): ToolCall {
+  if (stored.messageId && live.messageId && stored.messageId !== live.messageId) {
+    return stored
+  }
+
   return {
     ...(live.status === 'running' ? { ...live, ...stored } : { ...stored, ...live }),
     messageId: live.messageId ?? stored.messageId,
