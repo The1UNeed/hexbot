@@ -86,6 +86,10 @@ fn command(args: &[String]) -> Result<(&'static str, Value)> {
 }
 
 fn offline_lock(home: &Path) -> Result<std::fs::File> {
+    crate::platform::validate_home(home)?;
+    #[cfg(windows)]
+    crate::windows_sandbox::create_private_dir_all(home)?;
+    #[cfg(not(windows))]
     std::fs::create_dir_all(home)?;
     let mut options = std::fs::OpenOptions::new();
     options.create(true).read(true).write(true).truncate(false);
@@ -100,6 +104,8 @@ fn offline_lock(home: &Path) -> Result<std::fs::File> {
         // forked while the lock was open. Give either a second to settle.
         for attempt in 0..20 {
             if crate::platform::try_lock(&file)? {
+                #[cfg(windows)]
+                crate::windows_sandbox::recover_stale(home)?;
                 return Ok(file);
             }
             if attempt < 19 {
@@ -233,7 +239,7 @@ async fn input(prompt: String) -> Result<String> {
     std::io::stderr().flush()?;
     #[cfg(windows)]
     {
-        use std::os::windows::thread::JoinHandleExt;
+        use std::os::windows::io::AsRawHandle;
         use windows_sys::Win32::System::IO::CancelSynchronousIo;
         let (send, receive) = tokio::sync::oneshot::channel();
         let reader = std::thread::spawn(move || {

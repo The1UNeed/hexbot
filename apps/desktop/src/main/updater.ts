@@ -1,6 +1,8 @@
 import { EventEmitter } from 'node:events'
 import { app } from 'electron'
-import electronUpdater from 'electron-updater'
+import electronUpdater, { type NsisUpdater } from 'electron-updater'
+import { dirname } from 'node:path'
+import { readInstallIdentity } from './install-identity'
 import {
   defaultUpdateChannel,
   readUpdateChannel,
@@ -79,6 +81,12 @@ function configure(): Promise<void> {
     if (disabled) {
       log.info(`updater off: ${disabled}`)
       return
+    }
+    if (process.platform === 'win32') {
+      // The NSIS marker selects the original registry identity at this path,
+      // even when the downloaded installer was built for the other track.
+      await readInstallIdentity()
+      ;(autoUpdater as NsisUpdater).installDirectory = dirname(process.execPath)
     }
     autoUpdater.logger = log
     autoUpdater.autoDownload = false

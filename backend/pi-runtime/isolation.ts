@@ -180,7 +180,7 @@ function configEntries(text: Buffer): [string, string][] {
   // Git, never a workspace executable from PATH, and give it the bytes already
   // read: with --no-includes it opens no file, so includes are followed here.
   const parsed = spawnSync(gitExecutable(), ['config', '--no-includes', '--null', '--file', '-', '--path', '--get-regexp', '^(core.hookspath|include.path|includeif\\..*\\.path)$'], {
-    input: text, encoding: 'utf8', timeout: GIT_TIMEOUT, env: {PATH: process.env.PATH, HOME: process.env.HOME ?? homedir(), ...process.platform === 'win32' ? {SystemRoot:process.env.SystemRoot, USERPROFILE:process.env.USERPROFILE} : {}},
+    input: text, encoding: 'utf8', timeout: GIT_TIMEOUT, env: {PATH: process.env.PATH, HOME: gitScanEnvironment().HOME ?? homedir(), ...process.platform === 'win32' ? {SystemRoot:process.env.SystemRoot, USERPROFILE:process.env.USERPROFILE} : {}},
   });
   // Exit 1 without a message is "no matching settings"; a missing Git (the macOS
   // shim without developer tools) also exits 1, but says so.
@@ -211,6 +211,14 @@ export function gitExecutable(): string {
 // file, and GIT_CONFIG_SYSTEM or GIT_CONFIG_NOSYSTEM choose the system file,
 // which is otherwise /etc/gitconfig or Homebrew's. Other Git builds keep a
 // system file elsewhere; it is not read.
+const GIT_SCAN_ENV = ['HOME', 'GIT_CONFIG_GLOBAL', 'GIT_CONFIG_SYSTEM', 'GIT_CONFIG_NOSYSTEM', 'XDG_CONFIG_HOME'];
+// The daemon preserves only these owner settings before sanitizing Pi's launch
+// environment. They affect protection scans, never the executed command.
+export function gitScanEnvironment(env: NodeJS.ProcessEnv = process.env): Record<string, string> {
+  const owner = env.HEXBOT_GIT_SCAN_ENV ? JSON.parse(env.HEXBOT_GIT_SCAN_ENV) : env;
+  if (!owner || typeof owner !== 'object' || Array.isArray(owner)) throw new Error('The owner Git scan settings are unavailable.');
+  return Object.fromEntries(GIT_SCAN_ENV.filter(key => typeof owner[key] === 'string').map(key => [key, owner[key]]));
+}
 const SYSTEM_GIT_CONFIGS = ['/etc/gitconfig', '/opt/homebrew/etc/gitconfig', '/usr/local/etc/gitconfig'];
 export function globalGitConfigs(env: NodeJS.ProcessEnv = process.env): string[] {
   const set = (name: string) => env[name] || (process.platform === 'win32' ? Object.entries(env).find(([key]) => key.toLowerCase() === name.toLowerCase())?.[1] : undefined);
@@ -227,7 +235,7 @@ export function globalGitConfigs(env: NodeJS.ProcessEnv = process.env): string[]
 // the way to any of them. cause: why Git configuration could not be scanned,
 // when a limit stopped it.
 export type WorkspaceScan = {git: string[], secrets: string[], worktrees: string[], files: string[], links: string[], exhausted: boolean, failure?: string, cause?: string};
-export function workspaceProtected(roots: string[], limit = WORKSPACE_DIRS, gitEnv: NodeJS.ProcessEnv = process.env): WorkspaceScan {
+export function workspaceProtected(roots: string[], limit = WORKSPACE_DIRS, gitEnv: NodeJS.ProcessEnv = {...process.env, ...gitScanEnvironment()}): WorkspaceScan {
   let exhausted = false, failure: string | undefined, cause: string | undefined;
   const git = new Set<string>(), secrets = new Set<string>(), worktrees = new Set<string>(), files = new Set<string>(), links = new Set<string>();
   const add = (set: Set<string>, path: string) => { set.add(path); set.add(realRoot(path)); };
@@ -513,10 +521,10 @@ export function bwrapArguments(home: string, outputs: string[] = [], workspace?:
   const args = confine ? ['--die-with-parent', '--new-session', '--unshare-pid', '--unshare-net', '--ro-bind', '/', '/', '--dev', '/dev', '--proc', '/proc', '--tmpfs', '/run', '--tmpfs', '/tmp'] : ['--die-with-parent', '--unshare-pid', '--bind', '/', '/', '--proc', '/proc'];
   if (confine) for (const path of confine.writable) if (path !== '/tmp') args.push('--bind', path, path);
   if (confine) for (const path of [...new Set(searchRoots.filter(existsSync).map(p => realpathSync(p)))]) {
-    if (!confine.writable.some(root => path === root || path.startsWith(root + '/'))) args.push('--ro-bind', path, path);
+    if (!confine.writable.some(root => within(path, [root]))) args.push('--ro-bind', path, path);
   }
   for (const root of roots) args.push('--ro-bind', root, root);
-  for (const path of writable) if (!confine || confine.writable.some(root => path === root || path.startsWith(root + '/'))) args.push('--bind', path, path);
+  for (const path of writable) if (!confine || confine.writable.some(root => within(path, [root]))) args.push('--bind', path, path);
   // Host binds come before every mask, so a later bind can never uncover one.
   const scan = confine && workspaceProtected(searchRoots);
   if (scan) {
@@ -558,7 +566,7 @@ export function isolatedCommand(command: string, home: string, outputs: string[]
     // Full access on Windows leaves containment and always needs the user.
     if (!executable || !workspace) return command;
     const id = randomUUID();
-    const spec = JSON.stringify({home, readRoots:searchRoots, writeRoots:workspace.filter(path => path !== tmpdir() && path !== '/tmp' && (!within(path, [home]) || outputs.some(output => within(path, [output])))), id});
+    const spec = JSON.stringify({home, gitEnv:gitScanEnvironment(), readRoots:searchRoots, writeRoots:workspace.filter(path => path !== tmpdir() && path !== '/tmp' && (!within(path, [home]) || outputs.some(output => within(path, [output])))), id});
     const quote = (value: string) => "'" + value.replaceAll("'", "''") + "'";
     const wrapped = '& ' + [executable, '__sandbox', spec, '--', powerShellExecutable(), ...powerShellArgs(command)].map(quote).join(' ') + '; exit $LASTEXITCODE';
     windowsLeases.set(wrapped, {executable, home, id});

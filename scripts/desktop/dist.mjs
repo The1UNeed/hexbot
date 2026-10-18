@@ -37,6 +37,7 @@ const channelArgs = [
 if (builderArgs.includes('--win')) channelArgs.push(
   // NSIS uses package.name for its default per-user installation folder.
   // Keep editions and channels in separate directories and registry records.
+  `-c.nsis.guid=${appId(channel, client)}`,
   `-c.extraMetadata.name=${appId(channel, client)}`,
   `-c.extraMetadata.hexbotAppId=${appId(channel, client)}`
 )

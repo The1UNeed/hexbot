@@ -37,6 +37,11 @@ to a card. Copilot ACP currently reports zero token usage and cost, so its
 reviews add no measured usage to budgets or totals. Ordinary ACP chat keeps
 its existing login behavior.
 
+Copilot ACP is unavailable when the daemon runs on Windows because its
+credential isolation is not supported there. This applies to ordinary chat
+and approval review. Choose another provider or pair with a macOS or Linux
+daemon. A review that cannot run asks you to approve the step.
+
 ## Manual
 
 Manual is for work you want to watch closely. Reads are free; every change asks.

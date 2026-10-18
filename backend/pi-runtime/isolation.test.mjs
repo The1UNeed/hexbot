@@ -733,7 +733,7 @@ test('a missing target never pins a repository folder, and links to Git metadata
   assert.match(error, /do not exist yet.*retry with full_access/);
   assert.ok(!error.includes('.husky'), error);
   // The same scan with the nested repository as the workspace.
-  assert.throws(() => bwrapArguments(home, [], [join(work, 'app')]), /app\/\.githooks/);
+  assert.throws(() => bwrapArguments(home, [], [join(work, 'app')]), /app[\\/]\.githooks/);
   writeFileSync(join(work, '.gitconfig.local'), '');
   mkdirSync(join(work, 'app/.githooks'));
   const args = bwrapArguments(home, [], [work]);
@@ -756,7 +756,7 @@ test('a missing target never pins a repository folder, and links to Git metadata
   gitConfig(join(work, 'app'), 'core.hooksPath', 'hooks-link');
   const scan = workspaceProtected([work]);
   assert.deepEqual([...scan.links].sort(), [join(work, 'app/hooks-link'), join(work, 'linked/.git')]);
-  assert.throws(() => bwrapArguments(home, [], [work]), /symbolic links.*app\/hooks-link.*linked\/\.git.*retry with full_access/s);
+  assert.throws(() => bwrapArguments(home, [], [work]), /symbolic links.*app[\\/]hooks-link.*linked[\\/]\.git.*retry with full_access/s);
   const locked = lockedGit(scan, [work]);
   for (const path of ['app/hooks-link', 'linked/.git', 'store/hooks', 'store/linked-git']) assert.ok(locked.includes(join(work, path)), path);
   if (process.platform === 'darwin') {
@@ -802,7 +802,7 @@ test('links inside Git metadata lock their targets, links before a .. are found,
   }
   // A dangling hooks link names a folder the command could create.
   rmSync(join(work, '.githooks'), {recursive:true});
-  assert.throws(() => bwrapArguments(home, [], [work]), new RegExp(`does not exist yet.*mkdir -p '${join(work, '.githooks')}'`));
+  assert.throws(() => bwrapArguments(home, [], [work]), error => /does not exist yet.*mkdir -p/.test(error.message) && error.message.includes(join(work, '.githooks')));
   if (process.platform === 'darwin') {
     const result = spawnSync('/usr/bin/sandbox-exec', ['-p', sandboxProfile(home, [], [work]), '/bin/bash', '-c', 'mkdir .githooks'], {cwd:work, encoding:'utf8'});
     assert.notEqual(result.status, 0);
@@ -817,7 +817,7 @@ test('links inside Git metadata lock their targets, links before a .. are found,
   const scan = workspaceProtected([work]);
   assert.deepEqual(scan.links, [join(app, 'hooks-link')]);
   assert.ok(scan.git.includes(windows ? realpathSync(join(app, 'hooks-link/../hooks')) : join(work, 'store/hooks')));
-  assert.throws(() => bwrapArguments(home, [], [work]), /symbolic link.*app\/hooks-link.*retry with full_access/);
+  assert.throws(() => bwrapArguments(home, [], [work]), /symbolic link.*app[\\/]hooks-link.*retry with full_access/);
   if (process.platform === 'darwin') {
     const run = command => spawnSync('/usr/bin/sandbox-exec', ['-p', sandboxProfile(home, [], [work]), '/bin/bash', '-c', command], {cwd:work, encoding:'utf8'});
     for (const command of ['echo x > store/hooks/pre-commit', 'rm app/hooks-link']) assert.notEqual(run(command).status, 0, command);
@@ -827,7 +827,7 @@ test('links inside Git metadata lock their targets, links before a .. are found,
   // read-only.
   const plain = join(base, 'plain');
   gitInit(plain, [['core.hooksPath', '/'], ['core.hooksPath', '.githooks']]);
-  assert.throws(() => bwrapArguments(home, [], [plain]), new RegExp(`does not exist yet.*mkdir -p '${join(plain, '.githooks')}'`));
+  assert.throws(() => bwrapArguments(home, [], [plain]), error => /does not exist yet.*mkdir -p/.test(error.message) && error.message.includes(join(plain, '.githooks')));
   mkdirSync(join(plain, '.githooks'));
   assert.ok(!binds(bwrapArguments(home, [], [plain])).includes(plain));
 });
@@ -848,7 +848,7 @@ test('a nested repository made by git init keeps its relative hooks path in its 
   assert.deepEqual([...scan.worktrees].sort(), [api, web]);
   for (const path of [join(web, '.husky/_'), join(api, '.githooks')]) assert.ok(scan.git.includes(path), path);
   // The missing .githooks would pin the api repository, so Linux asks.
-  assert.throws(() => bwrapArguments(home, [], [work]), new RegExp(`does not exist yet.*mkdir -p '${join(api, '.githooks')}'`));
+  assert.throws(() => bwrapArguments(home, [], [work]), error => /does not exist yet.*mkdir -p/.test(error.message) && error.message.includes(join(api, '.githooks')));
   if (process.platform === 'darwin') {
     const run = (command, cwd) => spawnSync('/usr/bin/sandbox-exec', ['-p', sandboxProfile(home, [], [work]), '/bin/bash', '-c', command], {cwd, encoding:'utf8'});
     for (const [cwd, command] of [[web, 'echo x > .husky/_/pre-commit'], [web, 'rm -r .husky/_'], [api, 'mkdir -p .githooks']]) {
@@ -882,7 +882,7 @@ test('a link between Git metadata and its target in the workspace is locked or a
   symlinkSync('store/hooks', join(app, '.githooks'));
   const scan = workspaceProtected([work]);
   assert.deepEqual(scan.links, [join(app, '.githooks')]);
-  assert.throws(() => bwrapArguments(home, [], [work]), /symbolic link.*app\/\.githooks.*retry with full_access/);
+  assert.throws(() => bwrapArguments(home, [], [work]), /symbolic link.*app[\\/]\.githooks.*retry with full_access/);
   const locked = lockedGit(scan, [work]);
   for (const path of ['.git', '.githooks', 'store/hooks']) assert.ok(locked.includes(join(app, path)), path);
   if (process.platform === 'darwin') {

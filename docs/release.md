@@ -415,7 +415,7 @@ On Windows x64, use a fresh VM and a normal user account:
 - Install Full and Client separately, including paths with spaces and non-ASCII characters. Confirm Client provisions no daemon runtime.
 - Run the PowerShell bootstrap against the published track and check the downloaded installer's checksum.
 - Install Headless, pair from another device, then test service stop, start, restart, and logon startup. The per-user Scheduled Task requires the user to stay signed in.
-- Check `hexbot.cmd`, `hexbot://` pairing, file selection, daemon shutdown, and uninstall with data kept and removed.
+- Check `hexbot.exe`, `hexbot://` pairing, file selection, daemon shutdown, and uninstall with data kept and removed.
 - Check same-track app updates and remote native daemon updates. Windows must select a new version without replacing a running executable.
 - Exercise the documented command-isolation policy and its failure path. A process-launch test alone is not evidence of sandbox containment.
 - Record VM image, Windows build, artifact hashes, commands, and results. Keep unsigned test results distinct from signed release validation.

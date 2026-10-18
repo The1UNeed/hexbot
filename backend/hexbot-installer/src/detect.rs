@@ -30,7 +30,11 @@ impl Paths {
         );
         let apps_override = env::var_os("HEXBOT_INSTALL_APPS_DIR").map(PathBuf::from);
         #[cfg(windows)]
-        let user_programs = if apps_override.is_none() { Some(crate::windows::user_programs()?) } else { None };
+        let user_programs = if apps_override.is_none() {
+            Some(crate::windows::user_programs()?)
+        } else {
+            None
+        };
         #[cfg(not(windows))]
         let user_programs = None;
         let paths = Self {
@@ -130,7 +134,11 @@ impl Paths {
                 self.home.join("Applications"),
             ]
         } else if target.is_windows() {
-            vec![self.user_programs.clone().unwrap_or_else(|| self.windows_local_data().join("Programs"))]
+            vec![
+                self.user_programs
+                    .clone()
+                    .unwrap_or_else(|| self.windows_local_data().join("Programs")),
+            ]
         } else {
             vec![self.home.join(".local/share/hexbot")]
         }
@@ -214,6 +222,7 @@ pub fn detect() -> Result<Installed> {
 pub fn detect_at(paths: &Paths, target: Target) -> Result<Installed> {
     paths.validate()?;
     let mut installed = Installed {
+        target: Some(target),
         receipt: read_receipt(&paths.receipt())?,
         service: paths.service_file(target).exists()
             && install_ownership::check_service(
@@ -261,6 +270,18 @@ pub fn detect_at(paths: &Paths, target: Target) -> Result<Installed> {
                     version: None,
                     managed_by_dpkg: false,
                 });
+            }
+        }
+    }
+    #[cfg(windows)]
+    if target.is_windows() && paths.apps_override.is_none() {
+        for app in crate::windows::registered_apps()? {
+            if !installed
+                .apps
+                .iter()
+                .any(|found| found.path.canonicalize().ok() == app.path.canonicalize().ok())
+            {
+                installed.apps.push(app);
             }
         }
     }

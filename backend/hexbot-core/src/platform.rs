@@ -110,6 +110,29 @@ pub fn validate_path(path: &Path) -> Result<()> {
     Ok(())
 }
 
+/// A daemon home must be a directory within a drive or share, never its root.
+pub fn validate_home(path: &Path) -> Result<()> {
+    validate_path(path)?;
+    #[cfg(windows)]
+    {
+        let canonical = path.canonicalize().unwrap_or_else(|_| path.to_owned());
+        if !path.is_absolute()
+            || path
+                .components()
+                .any(|part| matches!(part, std::path::Component::ParentDir))
+            || !canonical
+                .components()
+                .any(|part| matches!(part, std::path::Component::Normal(_)))
+        {
+            return Err(Error::new(
+                4202,
+                "The Hexbot home must be a directory inside a Windows drive or share",
+            ));
+        }
+    }
+    Ok(())
+}
+
 pub fn stable_executable(home: &Path) -> PathBuf {
     home.join("runtime")
         .join(executable_name("native-executable"))
@@ -292,6 +315,11 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn windows_paths_require_unambiguous_file_names() {
+        for path in [r"C:\", r"\\server\share\"] {
+            validate_path(Path::new(path)).unwrap();
+            assert!(validate_home(Path::new(path)).is_err());
+        }
+        assert!(validate_home(Path::new(r"C:\folder\..")).is_err());
         for path in [
             r"C:\workspace\file.txt",
             r"\\server\share\file.txt",

@@ -6,7 +6,7 @@ description: Start, pair, and manage the native Hexbot daemon from a terminal.
 
 The native `hexbot` command starts the daemon, runs it as a service, manages bots, devices and Hex Connect, lists rooms, and sends one-shot messages.
 
-A [Headless](/docs/install/#headless) install puts the command in `~/.local/bin/hexbot`, or `%USERPROFILE%\.local\bin\hexbot.cmd` on Windows. It always runs the daemon version that is currently installed, so it keeps working after an update.
+A [Headless](/docs/install/#headless) install puts the command in `~/.local/bin/hexbot`, or `%USERPROFILE%\.local\bin\hexbot.exe` on Windows. It always runs the daemon version that is currently installed, so it keeps working after an update.
 
 ```sh
 hexbot --help

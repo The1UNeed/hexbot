@@ -133,9 +133,10 @@ pub fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
         .parent()
         .ok_or_else(|| Error::new(4202, "invalid path"))?;
     fs::create_dir_all(parent)?;
-    let mut tmp = tempfile::NamedTempFile::new_in(parent)?;
     #[cfg(windows)]
-    crate::windows_sandbox::protect_private_path(tmp.path(), false)?;
+    let mut tmp = crate::windows_sandbox::private_tempfile_in(parent)?;
+    #[cfg(not(windows))]
+    let mut tmp = tempfile::NamedTempFile::new_in(parent)?;
     tmp.write_all(bytes)?;
     tmp.as_file().sync_all()?;
     tmp.persist(path).map_err(|e| Error::from(e.error))?;

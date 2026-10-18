@@ -126,6 +126,18 @@ impl Service {
     async fn install(&self) -> Result<()> {
         let task = self.task_name()?;
         self.check_file()?;
+        if !self.no_load {
+            platform::selected_native(&self.home)?;
+            let dispatcher = platform::stable_executable(&self.home);
+            if !fs::symlink_metadata(&dispatcher)
+                .is_ok_and(|metadata| metadata.is_file() && !platform::is_link(&metadata))
+            {
+                return Err(Error::new(
+                    5243,
+                    "Run hexbot setup --activate before installing the daemon task",
+                ));
+            }
+        }
         let existing = self.existing().await?;
         let sid = if self.no_load {
             "S-1-5-21-0".into()
@@ -322,5 +334,34 @@ mod tests {
         let text = definition(&path, "S-1-5-21-0");
         install_ownership::check_windows_service_text(&text, &path).unwrap();
         assert!(install_ownership::check_windows_service_text(&text, home.path()).is_err());
+    }
+    #[tokio::test]
+    async fn task_file_lifecycle_preserves_other_homes() {
+        let root = tempfile::tempdir().unwrap();
+        let home = root.path().join("home 你好 & space");
+        fs::create_dir(&home).unwrap();
+        let file = root.path().join("service/daemon.xml");
+        let service = Service {
+            home: home.clone(),
+            file: file.clone(),
+            no_load: true,
+        };
+        service.install().await.unwrap();
+        assert_eq!(service.status().await["installed"], true);
+        assert_eq!(service.status().await["running"], false);
+        service.start().await.unwrap();
+        service.stop().await.unwrap();
+        let foreign = Service {
+            home: root.path().to_owned(),
+            file: file.clone(),
+            no_load: true,
+        };
+        assert!(foreign.install().await.is_err());
+        assert!(foreign.stop().await.is_err());
+        assert!(foreign.uninstall().await.is_err());
+        assert!(file.is_file());
+        service.uninstall().await.unwrap();
+        assert_eq!(service.status().await["installed"], false);
+        assert!(!file.exists());
     }
 }

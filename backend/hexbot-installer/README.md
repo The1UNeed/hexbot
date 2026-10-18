@@ -51,16 +51,24 @@ and desktop entry; icon extraction is skipped and reported as a warning.
 Detected deb installs must be removed with the package manager before a
 change or uninstall. Installer operations do not run sudo.
 
-Windows x64 installs verified per-user NSIS packages into
-`%LOCALAPPDATA%\Programs\<appId>`. NSIS owns executable replacement, Start menu
+Windows x64 installs verified per-user NSIS packages into the Windows
+User Program Files folder, normally `%LOCALAPPDATA%\Programs\<appId>`. The
+installer resolves this known folder directly, including redirects, and
+discovers custom install paths from validated per-user registry entries.
+NSIS owns executable replacement, Start menu
 shortcuts, registry entries, and the uninstaller used by automatic app updates.
 The engine verifies the packaged app id from `resources/app.asar` before
-repairing or removing an app. App ids distinguish Client, Full, Stable,
-Nightly, and Dev. Quit the app before repair, change, or uninstall.
+repairing or removing an app. A bounded `hexbot-install.ini` marker preserves
+the initial installation's identity across track changes; its id must match
+the registered installation path and the package must belong to the same
+edition. Stable and Nightly can be installed separately. Repair follows the
+selected app's current packaged version and track. Quit the app before
+repair, change, or uninstall.
 
 Windows Headless uses `hexbot.exe` in the native archive,
 `~/.hexbot/runtime/native-executable.exe` as its stable dispatcher, and
-`~/.local/bin/hexbot.cmd` for the CLI. Its per-user Task Scheduler job starts
+`~/.local/bin/hexbot.exe` for the CLI, with a verified `hexbot-cli.json`
+ownership receipt beside it. Its per-user Task Scheduler job starts
 at sign-in and runs while that account is signed in. The task definition is
 `~/.config/hexbot/daemon.xml`. Uninstall verifies both the local definition
 and the registered task before stopping or deleting it. Daemon shutdown uses

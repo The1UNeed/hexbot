@@ -22,6 +22,7 @@ describe.skipIf(process.platform !== 'win32')('Windows terminal bootstrap', () =
   let executableStatus = 200
   const requests: string[] = []
   let result: string
+  let withoutHashCmdlet: string
   const bootstrap = fileURLToPath(new URL('../../public/install.ps1', import.meta.url))
   const quote = (value: string) => `'${value.replaceAll("'", "''")}'`
 
@@ -33,6 +34,8 @@ describe.skipIf(process.platform !== 'win32')('Windows terminal bootstrap', () =
     const source = join(temporary, 'installer.cs')
     const target = join(temporary, 'installer.exe')
     result = join(temporary, 'result.txt')
+    withoutHashCmdlet = join(temporary, 'without-hash-cmdlet.ps1')
+    await writeFile(withoutHashCmdlet, `function Get-FileHash { throw 'Get-FileHash is unavailable in this host.' }\n& ${quote(bootstrap)} @args\n`)
     await writeFile(source, 'using System; using System.IO; public class Installer { public static int Main(string[] args) { File.WriteAllText(Environment.GetEnvironmentVariable("HEXBOT_BOOTSTRAP_RESULT"), String.Join("|", args)); return 0; } }')
     const compiled = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', `Add-Type -TypeDefinition ([IO.File]::ReadAllText(${quote(source)})) -OutputAssembly ${quote(target)} -OutputType ConsoleApplication`], { encoding: 'utf8' })
     expect(compiled.status, compiled.stderr).toBe(0)
@@ -69,10 +72,10 @@ describe.skipIf(process.platform !== 'win32')('Windows terminal bootstrap', () =
     if (temporary) await rm(temporary, { recursive: true, force: true })
   })
 
-  async function run() {
+  async function run(script = bootstrap) {
     await rm(result, { force: true })
     return new Promise<{ status: number; output: string }>(resolve => {
-      execFile('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', bootstrap, '--headless', '--yes'], {
+      execFile('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', script, '--headless', '--yes'], {
         env: { ...process.env, HEXBOT_UPDATE_URL: base, HEXBOT_TRACK: '', HEXBOT_BOOTSTRAP_RESULT: result },
         timeout: 20_000,
       }, (error, stdout, stderr) => resolve({ status: error ? (typeof error.code === 'number' ? error.code : 1) : 0, output: `${stdout}${stderr}` }))
@@ -84,6 +87,18 @@ describe.skipIf(process.platform !== 'win32')('Windows terminal bootstrap', () =
     expect(status, output).toBe(0)
     expect(await readFile(result, 'utf8')).toBe('--headless|--yes')
     expect(requests).toEqual(['/install/stable.json', '/install/nightly.txt', '/installer.exe'])
+  }, 30_000)
+
+  it('verifies downloaded bytes without the Get-FileHash cmdlet', async () => {
+    const { status, output } = await run(withoutHashCmdlet)
+    expect(status, output).toBe(0)
+    expect(await readFile(result, 'utf8')).toBe('--headless|--yes')
+
+    index = `windows-x86_64 ${'0'.repeat(64)} ${base}/installer.exe\n`
+    const failed = await run(withoutHashCmdlet)
+    expect(failed.status).not.toBe(0)
+    expect(failed.output).toContain('The installer checksum does not match.')
+    await expect(readFile(result)).rejects.toThrow()
   }, 30_000)
 
   it('requires HTTP 200 and never falls back from a stable server error', async () => {

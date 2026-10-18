@@ -330,6 +330,18 @@ impl Installer {
             &self.paths.hexbot_home,
             self.target.is_macos(),
         )?;
+        #[cfg(windows)]
+        if fs::symlink_metadata(self.paths.wrapper()).is_ok() {
+            let owner = install_ownership::windows_cli_home(&self.paths.wrapper())
+                .map_err(|_| "Cannot verify the existing Hexbot CLI; left it alone.")?;
+            if install_ownership::resolved(&self.paths.hexbot_home)? != owner {
+                return fail(format!(
+                    "The Hexbot CLI belongs to {}. Uninstall it from there first.",
+                    owner.display()
+                ));
+            }
+        }
+        #[cfg(unix)]
         if let Ok(text) = fs::read_to_string(self.paths.wrapper())
             && let Some(owner) = install_ownership::wrapper_home(&text)
             && !install_ownership::wrapper_owned(&self.paths.wrapper(), &self.paths.hexbot_home)

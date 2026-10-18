@@ -32,19 +32,6 @@ pub fn resolved(path: &Path) -> io::Result<PathBuf> {
 }
 
 pub fn wrapper_home(text: &str) -> Option<PathBuf> {
-    #[cfg(windows)]
-    if let Some(home) = text
-        .lines()
-        .find_map(|line| line.strip_prefix("@rem HEXBOT_HOME_JSON="))
-    {
-        let home = PathBuf::from(serde_json::from_str::<String>(home).ok()?);
-        let executable = home.join("runtime/native-executable.exe");
-        return (windows_wrapper(&home, &executable)
-            .ok()?
-            .replace("\r\n", "\n")
-            == text.replace("\r\n", "\n"))
-        .then_some(home);
-    }
     if !text.lines().any(|line| line == WRAPPER_MARKER) {
         return None;
     }
@@ -60,25 +47,6 @@ pub fn wrapper_home(text: &str) -> Option<PathBuf> {
         .strip_suffix('\'')?
         .replace("'\\''", "'");
     (shell_quote(&decoded) == value).then(|| PathBuf::from(decoded))
-}
-
-#[cfg(windows)]
-pub fn windows_wrapper(home: &Path, executable: &Path) -> io::Result<String> {
-    let quote = |path: &Path| -> io::Result<String> {
-        let path = path
-            .to_str()
-            .ok_or_else(|| io::Error::other("CLI paths must be UTF-8"))?;
-        if path.chars().any(|ch| ch.is_control() || ch == '"') {
-            return Err(io::Error::other("Invalid CLI path"));
-        }
-        Ok(path.replace('%', "%%"))
-    };
-    let home_json = serde_json::to_string(&home.to_string_lossy()).map_err(io::Error::other)?;
-    Ok(format!(
-        "@echo off\r\n@rem {WRAPPER_MARKER}\r\n@rem HEXBOT_HOME_JSON={home_json}\r\nsetlocal DisableDelayedExpansion\r\nset \"HEXBOT_HOME={}\"\r\n\"{}\" %*\r\nexit /b %errorlevel%\r\n",
-        quote(home)?,
-        quote(executable)?
-    ))
 }
 
 pub fn wrapper_owned(path: &Path, home: &Path) -> bool {
@@ -109,7 +77,6 @@ pub fn windows_cli_receipt(home: &Path, executable: &Path) -> io::Result<Vec<u8>
 
 #[cfg(windows)]
 pub fn windows_cli_home(executable: &Path) -> io::Result<PathBuf> {
-    use sha2::{Digest, Sha256};
     let metadata = fs::symlink_metadata(executable)?;
     use std::os::windows::fs::MetadataExt;
     if !metadata.is_file() || metadata.file_attributes() & 0x400 != 0 {
@@ -124,17 +91,19 @@ pub fn windows_cli_home(executable: &Path) -> io::Result<PathBuf> {
     }
     let receipt: serde_json::Value =
         serde_json::from_slice(&fs::read(&receipt)?).map_err(io::Error::other)?;
-    let digest = format!("{:x}", Sha256::digest(fs::read(executable)?));
-    if receipt["marker"] != WRAPPER_MARKER || receipt["sha256"].as_str() != Some(digest.as_str()) {
-        return Err(io::Error::other(
-            "The Hexbot CLI receipt cannot be verified",
-        ));
-    }
     let home = PathBuf::from(
         receipt["home"]
             .as_str()
             .ok_or_else(|| io::Error::other("Missing Hexbot CLI home"))?,
     );
+    let expected: serde_json::Value =
+        serde_json::from_slice(&windows_cli_receipt(&home, executable)?)
+            .map_err(io::Error::other)?;
+    if receipt != expected {
+        return Err(io::Error::other(
+            "The Hexbot CLI receipt cannot be verified",
+        ));
+    }
     resolved(&home)
 }
 
@@ -297,12 +266,13 @@ fn task_element(text: &str, tag: &str) -> Option<String> {
 
 #[cfg(windows)]
 fn check_windows_service(path: &Path, home: &Path) -> io::Result<()> {
+    use std::os::windows::fs::MetadataExt;
     let metadata = match fs::symlink_metadata(path) {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
         Err(error) => return Err(error),
     };
-    if !metadata.file_type().is_file() {
+    if !metadata.file_type().is_file() || metadata.file_attributes() & 0x400 != 0 {
         return Err(io::Error::other(
             "Refusing a linked or non-file Hexbot task definition",
         ));
@@ -324,6 +294,17 @@ pub fn check_windows_service_text(text: &str, home: &Path) -> io::Result<()> {
         .ok_or_else(|| io::Error::other("Cannot identify the Hexbot task executable"))?;
     let executable = Path::new(&executable);
     let stable = expected.join("runtime/native-executable.exe");
+    use std::os::windows::fs::MetadataExt;
+    match fs::symlink_metadata(&stable) {
+        Ok(metadata) if !metadata.is_file() || metadata.file_attributes() & 0x400 != 0 => {
+            return Err(io::Error::other(
+                "The Hexbot task dispatcher must be an ordinary file",
+            ));
+        }
+        Ok(_) => {}
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
+    }
     let selected = resolved(executable)?;
     let arguments = task_element(text, "Arguments").and_then(|args| {
         args.strip_prefix("service-run \"")
@@ -383,18 +364,21 @@ mod tests {
     }
     #[cfg(windows)]
     #[test]
-    fn windows_wrapper_preserves_literal_paths_and_rejects_modified_commands() {
+    fn windows_cli_receipt_preserves_unicode_homes_and_rejects_tampering() {
         let root = tempfile::tempdir().unwrap();
         let home = root.path().join("percent% space & unicode-你好");
         fs::create_dir(&home).unwrap();
-        let executable = home.join("runtime/native-executable.exe");
-        let text = windows_wrapper(&home, &executable).unwrap();
-        assert_eq!(wrapper_home(&text), Some(home.clone()));
-        assert!(text.contains("percent%%"));
-        assert!(wrapper_home(&text.replace(" %*", " injected %*")).is_none());
-        let path = root.path().join("hexbot.cmd");
-        fs::write(&path, text).unwrap();
-        assert!(wrapper_owned(&path, &home));
-        assert!(!wrapper_owned(&path, root.path()));
+        let executable = root.path().join("hexbot.exe");
+        fs::write(&executable, "native dispatcher").unwrap();
+        let receipt = executable.with_file_name("hexbot-cli.json");
+        fs::write(&receipt, windows_cli_receipt(&home, &executable).unwrap()).unwrap();
+        assert!(wrapper_owned(&executable, &home));
+        assert_eq!(
+            windows_cli_home(&executable).unwrap(),
+            home.canonicalize().unwrap()
+        );
+        assert!(!wrapper_owned(&executable, root.path()));
+        fs::write(&executable, "foreign native executable").unwrap();
+        assert!(!wrapper_owned(&executable, &home));
     }
 }

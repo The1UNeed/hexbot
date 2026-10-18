@@ -1,5 +1,177 @@
 use super::*;
 
+#[cfg(windows)]
+#[tokio::test]
+async fn native_file_dispatch_rejects_windows_stream_device_and_drive_aliases() {
+    let (home, runtime, _) = setup();
+    fs::write(
+        home.path().join("profiles/owl/config.yaml"),
+        "model:\n  provider: openai\n  default: fixture\ntools:\n  enabled_toolsets: [file]\n",
+    )
+    .unwrap();
+    open(&runtime).await;
+    runtime.register_worker_bridge(&runtime.sessions.lock().unwrap()["first"].clone());
+    let dispatcher = crate::native_tools::dispatcher(home.path(), "first").unwrap();
+    for mode in ["manual", "smart", "off"] {
+        db::open(home.path())
+            .unwrap()
+            .execute("UPDATE bots SET approval_mode=? WHERE name='owl'", [mode])
+            .unwrap();
+        for path in [
+            r".env:backup",
+            r".env::$DATA",
+            r"auth.json:backup",
+            r"safe\..\.env::$DATA",
+            r"C:relative.txt",
+            r"\Windows\win.ini",
+            r"\\.\NUL",
+            r"\??\C:\Windows\win.ini",
+            r"\\?\GLOBALROOT\Device\HarddiskVolume1\secret",
+            "CON",
+            "NUL.txt",
+            "note.txt.",
+        ] {
+            for tool in ["read_file", "write_file", "patch"] {
+                let result = tokio::time::timeout(Duration::from_secs(3), dispatcher(tool.into(), json!({"path":path,"content":"unsafe","old_string":"secret","new_string":"unsafe"}))).await.expect("invalid paths must not wait for approval");
+                assert_eq!(result.unwrap_err().code, 4202, "{tool} {path} {mode}");
+            }
+        }
+    }
+    runtime.shutdown().await;
+}
+
+#[tokio::test]
+async fn native_file_approval_rechecks_current_section_settings() {
+    let (home, runtime, hub) = setup();
+    fs::write(
+        home.path().join("profiles/owl/config.yaml"),
+        "model:\n  provider: openai\n  default: fixture\ntools:\n  enabled_toolsets: [file]\n",
+    )
+    .unwrap();
+    let id = open(&runtime).await;
+    runtime.register_worker_bridge(&runtime.sessions.lock().unwrap()["first"].clone());
+    let destination = home.workspace().join("approved.txt");
+    let changed_workdir = home.workspace().with_file_name("changed-workspace");
+    let mut events = hub.subscribe();
+    for changed in ["mode", "cwd", "none"] {
+        db::open(home.path())
+            .unwrap()
+            .execute(
+                "UPDATE bots SET approval_mode='manual',workdir=NULL WHERE name='owl'",
+                [],
+            )
+            .unwrap();
+        let dispatcher = crate::native_tools::dispatcher(home.path(), "first").unwrap();
+        let input = json!({"path":destination,"content":"approved"});
+        let task = tokio::spawn(async move { dispatcher("write_file".into(), input).await });
+        let request = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let event = events.recv().await.unwrap();
+                if event.frame["params"]["type"] == "approval.request" {
+                    break event.frame["params"]["payload"]["request_id"].clone();
+                }
+            }
+        })
+        .await
+        .unwrap();
+        match changed {
+            "mode" => {
+                db::open(home.path())
+                    .unwrap()
+                    .execute("UPDATE bots SET approval_mode='off' WHERE name='owl'", [])
+                    .unwrap();
+            }
+            "cwd" => {
+                db::open(home.path())
+                    .unwrap()
+                    .execute(
+                        "UPDATE bots SET workdir=? WHERE name='owl'",
+                        [changed_workdir.to_string_lossy()],
+                    )
+                    .unwrap();
+            }
+            _ => {}
+        }
+        runtime
+            .call(
+                "alice",
+                "approval.respond",
+                &json!({"session_id":id,"request_id":request,"choice":"once"}),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        let result = task.await.unwrap();
+        if changed == "none" {
+            assert_eq!(result.unwrap()["success"], true);
+            assert_eq!(fs::read_to_string(&destination).unwrap(), "approved");
+        } else {
+            let error = result.unwrap_err();
+            assert_eq!(error.code, 4302);
+            assert!(error.message.contains("settings changed"));
+            assert!(!destination.exists());
+        }
+    }
+    runtime.shutdown().await;
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn native_file_approval_rechecks_a_retargeted_symlink() {
+    let (home, runtime, hub) = setup();
+    fs::write(
+        home.path().join("profiles/owl/config.yaml"),
+        "model:\n  provider: openai\n  default: fixture\ntools:\n  enabled_toolsets: [file]\n",
+    )
+    .unwrap();
+    db::open(home.path())
+        .unwrap()
+        .execute(
+            "UPDATE bots SET approval_mode='manual' WHERE name='owl'",
+            [],
+        )
+        .unwrap();
+    let id = open(&runtime).await;
+    runtime.register_worker_bridge(&runtime.sessions.lock().unwrap()["first"].clone());
+    let first = home.workspace().join("first");
+    let second = home.workspace().join("second");
+    fs::create_dir(&first).unwrap();
+    fs::create_dir(&second).unwrap();
+    let link = home.workspace().join("destination");
+    std::os::unix::fs::symlink(&first, &link).unwrap();
+    let dispatcher = crate::native_tools::dispatcher(home.path(), "first").unwrap();
+    let input = json!({"path":link.join("note.txt"),"content":"approved"});
+    let mut events = hub.subscribe();
+    let task = tokio::spawn(async move { dispatcher("write_file".into(), input).await });
+    let request = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let event = events.recv().await.unwrap();
+            if event.frame["params"]["type"] == "approval.request" {
+                break event.frame["params"]["payload"]["request_id"].clone();
+            }
+        }
+    })
+    .await
+    .unwrap();
+    fs::remove_file(&link).unwrap();
+    std::os::unix::fs::symlink(&second, &link).unwrap();
+    runtime
+        .call(
+            "alice",
+            "approval.respond",
+            &json!({"session_id":id,"request_id":request,"choice":"once"}),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    let error = task.await.unwrap().unwrap_err();
+    assert_eq!(error.code, 4302);
+    assert!(error.message.contains("destination changed"));
+    assert!(!first.join("note.txt").exists());
+    assert!(!second.join("note.txt").exists());
+    runtime.shutdown().await;
+}
+
 fn setup() -> (common::TestHome, Arc<Runtime>, EventHub) {
     let home = common::TestHome::new();
     db::migrate(home.path()).unwrap();

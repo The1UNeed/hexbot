@@ -174,7 +174,7 @@ Backend tests wait on events and RPC replies, never on `sleep`.
 
 Windows builds target x64 with the MSVC Rust toolchain. Full and Client use NSIS installers; Headless uses the native `windows-x86_64` archive. The runtime ships as `win32-x64`. Windows ARM64 is not built.
 
-Keep platform filenames explicit: `hexbot.exe` and `node.exe` in the runtime, with the CLI wrapper `hexbot.cmd` in `~/.local/bin`. A per-user logon Scheduled Task starts the daemon only while that user is signed in. The stable `runtime/native-executable.exe` dispatcher selects the immutable runtime in `runtime/native-current.json`; never replace a running executable.
+Keep platform filenames explicit: `hexbot.exe` and `node.exe` in the runtime, with the native CLI launcher `hexbot.exe` in `~/.local/bin`, alongside its owned `hexbot-cli.json` receipt. A per-user logon Scheduled Task starts the daemon only while that user is signed in. The stable `runtime/native-executable.exe` dispatcher selects the immutable runtime in `runtime/native-current.json`; never replace a running executable.
 
 Test Windows behavior in a Windows VM. Cross-compilation and Unix command-runner mocks cannot establish process, installer, update, or isolation behavior. Keep unsigned test artifacts separate from signed release validation. The site offers Windows links only when published manifests or feeds name the artifacts.
 

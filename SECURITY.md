@@ -85,6 +85,10 @@ redaction, and pattern checks do not provide equivalent containment.
   CLI login or configuration. Configured ACP arguments beyond `--acp` and
   `--stdio`, missing auth or incompatible isolation flags make review
   unavailable and produce a user card.
+- On Windows, Copilot ACP sessions and reviewers refuse to start because the
+  required credential isolation is unavailable. They never launch with
+  unrestricted host access as a fallback. Other providers remain available;
+  an unavailable review produces a user card.
 - Bypass removes prompts and sandboxing and is available only to the admin.
 
 macOS also matches `.git` paths and secret filenames created during a command. It

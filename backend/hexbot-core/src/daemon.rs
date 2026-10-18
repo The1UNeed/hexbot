@@ -126,6 +126,10 @@ fn finish_native_transition(home: &Path) -> Result<()> {
 }
 
 fn lock_home(home: &Path) -> Result<std::fs::File> {
+    hexbot_core::platform::validate_home(home)?;
+    #[cfg(windows)]
+    hexbot_core::windows_sandbox::create_private_dir_all(home)?;
+    #[cfg(not(windows))]
     std::fs::create_dir_all(home)?;
     let path = home.join("native-daemon.lock");
     let mut options = std::fs::OpenOptions::new();
@@ -139,6 +143,8 @@ fn lock_home(home: &Path) -> Result<std::fs::File> {
     if !hexbot_core::platform::try_lock(&file)? {
         return Err(Error::new(4208, "a daemon already owns this home"));
     }
+    #[cfg(windows)]
+    hexbot_core::windows_sandbox::recover_stale(home)?;
     refuse_legacy_listener(home)?;
     file.set_len(0)?;
     write!(file, "{}", std::process::id())?;
@@ -191,7 +197,7 @@ async fn run() -> Result<()> {
         return Ok(());
     }
     let home = service_home.map(Ok).unwrap_or_else(home)?;
-    hexbot_core::platform::validate_path(&home)?;
+    hexbot_core::platform::validate_home(&home)?;
 
     if let Some(result) = hexbot_core::cli::dispatch(&home, &arguments).await {
         return result;
@@ -507,7 +513,12 @@ fn shutdown_signal(home: &Path) -> Result<impl std::future::Future<Output = ()>>
                 }
             }
         };
-        tokio::select! { _=tokio::signal::ctrl_c()=>{}, _=requested=>{} }
+        let interrupt = async {
+            if tokio::signal::ctrl_c().await.is_err() {
+                std::future::pending::<()>().await;
+            }
+        };
+        tokio::select! { _=interrupt=>{}, _=requested=>{} }
     })
 }
 

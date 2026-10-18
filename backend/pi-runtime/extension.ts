@@ -287,7 +287,10 @@ export default function hexbot(pi: any) {
   // Refresh cwd at execution time without rewriting the cached prompt or history.
   // The bash schema gains Codex's escalation fields in every mode, so a mode
   // change never changes the cached tool list.
-  const terminal = process.platform === 'win32' ? (cwd: string, options: any) => ({...createPowerShellTool(cwd, options), name: 'bash'}) : createBashTool;
+  const terminal = process.platform === 'win32' ? (cwd: string, options: any) => {
+    const tool = createPowerShellTool(cwd, options);
+    return {...tool, name:'bash', description:tool.description.replace('PowerShell command', 'Windows PowerShell 5.1 command')};
+  } : createBashTool;
   const factories: any = {bash: terminal, read: createReadTool, write: createWriteTool, edit: createEditTool, grep: createGrepTool, find: createFindTool, ls: createLsTool};
   const enabled = (name: string) => Array.isArray(config.restricted) ? config.restricted.includes(name) :
     config.enabledToolsets?.includes(name === 'bash' ? 'terminal' : 'file');

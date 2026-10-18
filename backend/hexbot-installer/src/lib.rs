@@ -217,7 +217,12 @@ impl Installer {
     pub fn repair(&self, progress: &mut ProgressCallback<'_>) -> Result<InstallResult> {
         let receipt = read_receipt(&self.paths.receipt())?
             .ok_or("No install receipt was found. Choose an option to install.")?;
-        self.apply(receipt.option, receipt.channel, progress)
+        let track = if self.target.is_windows() {
+            self.detect()?.track().unwrap_or(receipt.channel)
+        } else {
+            receipt.channel
+        };
+        self.apply(receipt.option, track, progress)
     }
 
     pub fn change(
@@ -310,9 +315,17 @@ impl Installer {
         // The runtimes are not user data; bots, memory and settings stay.
         self.remove_owned_path(&self.paths.executable())?;
         self.remove_owned_path(&self.paths.hexbot_home.join("runtime/native-current.json"))?;
+        self.remove_owned_path(
+            &self
+                .paths
+                .hexbot_home
+                .join("runtime/native-dispatcher.sha256"),
+        )?;
         self.remove_owned_path(&self.paths.hexbot_home.join("runtime/native"))?;
         // `hexbot setup` marks the wrapper it writes; leave anyone else's `hexbot`.
         if install_ownership::wrapper_owned(&self.paths.wrapper(), &self.paths.hexbot_home) {
+            #[cfg(windows)]
+            self.remove_owned_path(&self.paths.wrapper().with_file_name("hexbot-cli.json"))?;
             self.remove_owned_path(&self.paths.wrapper())?;
         }
         self.remove_owned_path(&self.paths.receipt())?;

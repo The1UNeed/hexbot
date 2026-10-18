@@ -28,7 +28,7 @@ use windows_sys::Win32::{
             DENY_ACCESS, EXPLICIT_ACCESS_W, GRANT_ACCESS, GetNamedSecurityInfoW, REVOKE_ACCESS,
             SE_FILE_OBJECT, SetEntriesInAclW, SetNamedSecurityInfoW,
         },
-        DACL_SECURITY_INFORMATION,
+        DACL_SECURITY_INFORMATION, FreeSid,
         Isolation::{
             CreateAppContainerProfile, DeleteAppContainerProfile, GetAppContainerFolderPath,
         },
@@ -77,6 +77,26 @@ pub struct Spec {
     pub read_roots: Vec<PathBuf>,
     pub write_roots: Vec<PathBuf>,
     pub id: String,
+    #[serde(default)]
+    pub git_env: BTreeMap<String, String>,
+    #[serde(default)]
+    pub read_only: bool,
+}
+pub fn git_scan_environment() -> BTreeMap<String, String> {
+    [
+        "HOME",
+        "GIT_CONFIG_GLOBAL",
+        "GIT_CONFIG_SYSTEM",
+        "GIT_CONFIG_NOSYSTEM",
+        "XDG_CONFIG_HOME",
+    ]
+    .into_iter()
+    .filter_map(|name| {
+        std::env::var(name)
+            .ok()
+            .map(|value| (name.to_owned(), value))
+    })
+    .collect()
 }
 fn helper_executable() -> Result<PathBuf> {
     let executable = std::env::var_os("HEXBOT_DAEMON_EXECUTABLE")
@@ -134,12 +154,15 @@ pub(crate) fn command(
     program: &str,
     readable: &[PathBuf],
     writable: &[PathBuf],
+    read_only: bool,
 ) -> Result<tokio::process::Command> {
     let spec = Spec {
         home: home.canonicalize()?,
         read_roots: readable.to_vec(),
         write_roots: writable.to_vec(),
         id: uuid::Uuid::new_v4().to_string(),
+        git_env: git_scan_environment(),
+        read_only,
     };
     let mut command = tokio::process::Command::new(helper_executable()?);
     command
@@ -155,6 +178,8 @@ struct Lease {
     job: String,
     sid: String,
     helper_pid: u32,
+    #[serde(default)]
+    helper_started: u64,
     paths: Vec<PathBuf>,
 }
 fn failed(context: impl std::fmt::Display) -> Error {
@@ -172,6 +197,12 @@ unsafe fn wide_string(value: *const u16) -> String {
         length += 1;
     }
     String::from_utf16_lossy(unsafe { std::slice::from_raw_parts(value, length) })
+}
+struct AppSid(PSID);
+impl Drop for AppSid {
+    fn drop(&mut self) {
+        unsafe { FreeSid(self.0) };
+    }
 }
 struct Local(*mut c_void);
 impl Drop for Local {
@@ -244,12 +275,8 @@ impl Drop for AclLock {
         unsafe { windows_sys::Win32::System::Threading::ReleaseMutex(self.0.as_raw_handle()) };
     }
 }
-pub fn protect_private_path(path: &Path, directory: bool) -> Result<()> {
+fn private_descriptor(directory: bool) -> Result<Local> {
     use windows_sys::Win32::Security::Authorization::ConvertStringSecurityDescriptorToSecurityDescriptorW;
-    use windows_sys::Win32::Security::{
-        GetSecurityDescriptorDacl, PROTECTED_DACL_SECURITY_INFORMATION,
-    };
-    platform::validate_path(path)?;
     let sid = current_user_sid()?;
     let inherit = if directory { "OICI" } else { "" };
     let sddl = format!("D:P(A;{inherit};FA;;;SY)(A;{inherit};FA;;;{sid})");
@@ -265,9 +292,17 @@ pub fn protect_private_path(path: &Path, directory: bool) -> Result<()> {
     {
         return Err(last("build private permissions"));
     }
-    let _descriptor = Local(descriptor);
+    Ok(Local(descriptor))
+}
+pub fn protect_private_path(path: &Path, directory: bool) -> Result<()> {
+    use windows_sys::Win32::Security::{
+        GetSecurityDescriptorDacl, PROTECTED_DACL_SECURITY_INFORMATION,
+    };
+    platform::validate_path(path)?;
+    let descriptor = private_descriptor(directory)?;
     let (mut present, mut defaulted, mut acl) = (0, 0, null_mut());
-    if unsafe { GetSecurityDescriptorDacl(descriptor, &mut present, &mut acl, &mut defaulted) } == 0
+    if unsafe { GetSecurityDescriptorDacl(descriptor.0, &mut present, &mut acl, &mut defaulted) }
+        == 0
         || present == 0
     {
         return Err(last("read private permissions"));
@@ -289,6 +324,70 @@ pub fn protect_private_path(path: &Path, directory: bool) -> Result<()> {
             "set private permissions for {}: {result}",
             path.display()
         )));
+    }
+    Ok(())
+}
+/// Create an empty temporary file with its private DACL in the same system
+/// call that creates the file. No other account can retain an early read handle.
+pub fn private_tempfile_in(parent: &Path) -> Result<tempfile::NamedTempFile> {
+    use windows_sys::Win32::{
+        Foundation::{GENERIC_READ, GENERIC_WRITE, INVALID_HANDLE_VALUE},
+        Security::SECURITY_ATTRIBUTES,
+        Storage::FileSystem::{
+            CREATE_NEW, CreateFileW, FILE_ATTRIBUTE_NORMAL, FILE_SHARE_DELETE, FILE_SHARE_READ,
+            FILE_SHARE_WRITE,
+        },
+    };
+    platform::validate_path(parent)?;
+    let descriptor = private_descriptor(false)?;
+    let attributes = SECURITY_ATTRIBUTES {
+        nLength: size_of::<SECURITY_ATTRIBUTES>() as u32,
+        lpSecurityDescriptor: descriptor.0,
+        bInheritHandle: 0,
+    };
+    Ok(tempfile::Builder::new().make_in(parent, |path| {
+        let handle = unsafe {
+            CreateFileW(
+                wide(path.as_os_str()).as_ptr(),
+                GENERIC_READ | GENERIC_WRITE,
+                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                &attributes,
+                CREATE_NEW,
+                FILE_ATTRIBUTE_NORMAL,
+                null_mut(),
+            )
+        };
+        if handle == INVALID_HANDLE_VALUE {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(unsafe { fs::File::from_raw_handle(handle) })
+    })?)
+}
+/// New directories receive their private DACL at creation. Existing selected
+/// homes are repaired before the daemon opens or creates any credential files.
+pub fn create_private_dir_all(path: &Path) -> Result<()> {
+    use windows_sys::Win32::{
+        Security::SECURITY_ATTRIBUTES, Storage::FileSystem::CreateDirectoryW,
+    };
+    platform::validate_path(path)?;
+    if path.is_dir() {
+        return protect_private_path(path, true);
+    }
+    if let Some(parent) = path.parent().filter(|parent| !parent.is_dir()) {
+        create_private_dir_all(parent)?;
+    }
+    let descriptor = private_descriptor(true)?;
+    let attributes = SECURITY_ATTRIBUTES {
+        nLength: size_of::<SECURITY_ATTRIBUTES>() as u32,
+        lpSecurityDescriptor: descriptor.0,
+        bInheritHandle: 0,
+    };
+    if unsafe { CreateDirectoryW(wide(path.as_os_str()).as_ptr(), &attributes) } == 0 {
+        let error = std::io::Error::last_os_error();
+        if error.raw_os_error() != Some(183) {
+            return Err(error.into());
+        }
+        protect_private_path(path, true)?;
     }
     Ok(())
 }
@@ -322,6 +421,85 @@ pub fn cleanup_command(command: &std::process::Command) -> Option<SandboxCleanup
         path: lease_path(&spec.home, &spec.id).ok()?,
     })
 }
+fn process_started(pid: u32) -> Result<Option<u64>> {
+    use windows_sys::Win32::{
+        Foundation::FILETIME,
+        System::Threading::{
+            GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE,
+        },
+    };
+    let raw = unsafe {
+        OpenProcess(
+            PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE,
+            0,
+            pid,
+        )
+    };
+    if raw.is_null() {
+        let error = std::io::Error::last_os_error();
+        return if error.raw_os_error() == Some(87) {
+            Ok(None)
+        } else {
+            Err(error.into())
+        };
+    }
+    let handle = unsafe { OwnedHandle::from_raw_handle(raw) };
+    if unsafe { WaitForSingleObject(handle.as_raw_handle(), 0) } == WAIT_OBJECT_0 {
+        return Ok(None);
+    }
+    let (mut created, mut exited, mut kernel, mut user): (FILETIME, FILETIME, FILETIME, FILETIME) =
+        unsafe { zeroed() };
+    if unsafe {
+        GetProcessTimes(
+            handle.as_raw_handle(),
+            &mut created,
+            &mut exited,
+            &mut kernel,
+            &mut user,
+        )
+    } == 0
+    {
+        return Err(last("read helper process identity"));
+    }
+    Ok(Some(
+        (u64::from(created.dwHighDateTime) << 32) | u64::from(created.dwLowDateTime),
+    ))
+}
+fn lease_active(lease: &Lease) -> Result<bool> {
+    Ok(process_started(lease.helper_pid)?
+        .is_some_and(|started| lease.helper_started == 0 || started == lease.helper_started))
+}
+/// Repair interrupted runs after acquiring the daemon's home lock. Never touch
+/// a live helper, including one whose PID was subsequently reused.
+pub fn recover_stale(home: &Path) -> Result<()> {
+    let dir = home.join("runtime/windows-sandbox");
+    let entries = match fs::read_dir(&dir) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error.into()),
+    };
+    for (count, entry) in entries.enumerate() {
+        if count >= 1000 {
+            return Err(failed("too many interrupted sandbox leases to recover"));
+        }
+        let entry = entry?;
+        if entry
+            .path()
+            .extension()
+            .is_none_or(|extension| extension != "json")
+        {
+            continue;
+        }
+        if !entry.file_type()?.is_file() {
+            return Err(failed("unexpected sandbox lease entry"));
+        }
+        let lease: Lease = serde_json::from_slice(&fs::read(entry.path())?).map_err(failed)?;
+        if !lease_active(&lease)? {
+            SandboxCleanup { path: entry.path() }.cleanup()?;
+        }
+    }
+    Ok(())
+}
 impl SandboxCleanup {
     pub fn cleanup(&mut self) -> Result<()> {
         let bytes = match fs::read(&self.path) {
@@ -330,10 +508,16 @@ impl SandboxCleanup {
             Err(error) => return Err(error.into()),
         };
         let lease: Lease = serde_json::from_slice(&bytes).map_err(failed)?;
-        if lease.helper_pid != std::process::id() && platform::process_alive(lease.helper_pid) {
-            return Err(failed(
-                "cannot remove permissions while its helper is running",
-            ));
+        if lease.helper_pid != std::process::id() {
+            let start = Instant::now();
+            while lease_active(&lease)? {
+                if start.elapsed() > Duration::from_secs(5) {
+                    return Err(failed(
+                        "cannot remove permissions while its helper is running",
+                    ));
+                }
+                std::thread::sleep(Duration::from_millis(5));
+            }
         }
         // A killed launcher closes its job handle, which kills descendants.
         // Open the named job when it still exists and wait for termination
@@ -361,6 +545,17 @@ impl SandboxCleanup {
         Ok(())
     }
 }
+fn output_root(home: &Path, path: &Path) -> bool {
+    let Ok(local) = path.strip_prefix(home) else {
+        return false;
+    };
+    let parts: Vec<_> = local.iter().collect();
+    (parts.len() >= 3 && parts[0] == "profiles" && parts[2] == "artifacts")
+        || (parts.len() >= 4
+            && parts[0] == "runtime"
+            && parts[1] == "sessions"
+            && parts[3] == "attachments")
+}
 struct ProfileOnError(Option<Vec<u16>>);
 impl Drop for ProfileOnError {
     fn drop(&mut self) {
@@ -372,7 +567,7 @@ impl Drop for ProfileOnError {
 struct Session {
     spec: Spec,
     lease: Lease,
-    sid: Local,
+    sid: AppSid,
     profile: PathBuf,
     cleanup: SandboxCleanup,
 }
@@ -395,6 +590,35 @@ impl Session {
             }
         }
         let name = format!("hexbot.{}", spec.id);
+        let mut derived = null_mut();
+        let result = unsafe {
+            windows_sys::Win32::Security::Isolation::DeriveAppContainerSidFromAppContainerName(
+                wide(&name).as_ptr(),
+                &mut derived,
+            )
+        };
+        if result < 0 {
+            return Err(failed(format!("derive AppContainer SID: {result:#x}")));
+        }
+        let derived = AppSid(derived);
+        let lease = Lease {
+            profile: name.clone(),
+            job: format!("Local\\HexbotSandbox-{}", spec.id),
+            sid: sid_text(derived.0)?,
+            helper_pid: std::process::id(),
+            helper_started: process_started(std::process::id())?
+                .ok_or_else(|| failed("helper identity is unavailable"))?,
+            paths: vec![],
+        };
+        let parent = path.parent().ok_or_else(|| failed("invalid lease path"))?;
+        fs::create_dir_all(parent)?;
+        let mut journal = private_tempfile_in(parent)?;
+        use std::io::Write;
+        journal.write_all(&serde_json::to_vec(&lease).map_err(failed)?)?;
+        journal.as_file().sync_all()?;
+        journal
+            .persist_noclobber(&path)
+            .map_err(|error| Error::from(error.error))?;
         let mut sid = null_mut();
         let result = unsafe {
             CreateAppContainerProfile(
@@ -407,10 +631,11 @@ impl Session {
             )
         };
         if result < 0 {
+            let _ = fs::remove_file(&path);
             return Err(failed(format!("create profile: {result:#x}")));
         }
         let mut profile_on_error = ProfileOnError(Some(wide(&name)));
-        let sid = Local(sid);
+        let sid = AppSid(sid);
         let text = sid_text(sid.0)?;
         let mut profile = null_mut();
         let result = unsafe { GetAppContainerFolderPath(wide(&text).as_ptr(), &mut profile) };
@@ -420,14 +645,9 @@ impl Session {
         }
         let profile_path = PathBuf::from(unsafe { wide_string(profile) });
         unsafe { CoTaskMemFree(profile.cast()) };
-        fs::create_dir_all(path.parent().ok_or_else(|| failed("invalid lease path"))?)?;
-        let lease = Lease {
-            profile: name,
-            job: format!("Local\\HexbotSandbox-{}", spec.id),
-            sid: text,
-            helper_pid: std::process::id(),
-            paths: vec![],
-        };
+        if lease.sid != text {
+            return Err(failed("AppContainer SID changed during creation"));
+        }
         let session = Self {
             spec,
             lease,
@@ -456,8 +676,31 @@ impl Session {
         edit_acl(&path, self.sid.0, mode, rights, inherit)
     }
     fn prepare(&mut self, executable: &Path) -> Result<()> {
-        let (unreadable, unwritable) =
-            credentials::windows_protection(&self.spec.home, &self.spec.read_roots)?;
+        let runtime = executable
+            .parent()
+            .filter(|runtime| {
+                !["SystemRoot", "ProgramFiles", "ProgramFiles(x86)"]
+                    .iter()
+                    .filter_map(std::env::var_os)
+                    .map(PathBuf::from)
+                    .any(|root| credentials::under(runtime, &root))
+            })
+            .map(Path::to_owned);
+        if let Some(runtime) = &runtime {
+            if !self
+                .spec
+                .read_roots
+                .iter()
+                .any(|root| credentials::under(runtime, root))
+            {
+                self.spec.read_roots.push(runtime.clone());
+            }
+        }
+        let (unreadable, unwritable) = credentials::windows_protection(
+            &self.spec.home,
+            &self.spec.read_roots,
+            &self.spec.git_env,
+        )?;
         self.spec.write_roots.retain(|root| {
             if !credentials::under(root, &self.spec.home) {
                 return true;
@@ -472,6 +715,24 @@ impl Session {
                     && parts[1] == "sessions"
                     && parts[3] == "attachments")
         });
+        if self.spec.read_roots.iter().any(|root| {
+            unreadable
+                .iter()
+                .any(|protected| credentials::under(root, protected))
+        }) {
+            return Err(failed(
+                "a selected root is inside a protected credential directory",
+            ));
+        }
+        if self.spec.write_roots.iter().any(|root| {
+            unwritable
+                .iter()
+                .any(|protected| credentials::under(root, protected))
+        }) {
+            return Err(failed(
+                "a writable root is inside protected configuration or Git metadata",
+            ));
+        }
         // An explicit home deny beats grants inherited from a broad workspace.
         // Explicit grants on validated output folders override the inherited
         // deny there without reopening any of the surrounding home.
@@ -510,24 +771,8 @@ impl Session {
             self.edit(&root, DENY_ACCESS, CONTROL, true)?;
             self.edit(&root, DENY_ACCESS, DELETE, false)?;
         }
-        // The executable can be a private managed Python distribution. Read its
-        // own directory, without making the rest of the Hexbot home readable.
-        if let Some(runtime) = executable.parent() {
-            let system = ["SystemRoot", "ProgramFiles", "ProgramFiles(x86)"]
-                .iter()
-                .filter_map(std::env::var_os)
-                .map(PathBuf::from)
-                .any(|root| credentials::under(runtime, &root));
-            if !system
-                && !self
-                    .spec
-                    .read_roots
-                    .iter()
-                    .any(|root| credentials::under(runtime, root))
-            {
-                self.edit(runtime, GRANT_ACCESS, READ, true)?;
-                self.edit(runtime, DENY_ACCESS, WRITE, true)?;
-            }
+        if let Some(runtime) = &runtime {
+            self.edit(runtime, DENY_ACCESS, WRITE, true)?;
         }
         let write_roots = self.spec.write_roots.clone();
         for root in write_roots {
@@ -539,6 +784,67 @@ impl Session {
             )?;
             self.edit(&root, DENY_ACCESS, CONTROL, true)?;
             self.edit(&root, DENY_ACCESS, DELETE, false)?;
+        }
+        let output_roots: Vec<_> = self
+            .spec
+            .read_roots
+            .iter()
+            .filter(|root| output_root(&self.spec.home, root))
+            .cloned()
+            .collect();
+        let mut visited = 0;
+        for output in output_roots {
+            let mut queue = std::collections::VecDeque::from([output]);
+            while let Some(dir) = queue.pop_front() {
+                for entry in fs::read_dir(&dir)? {
+                    let entry = entry?;
+                    visited += 1;
+                    if visited > 50000 {
+                        return Err(failed(
+                            "selected output folders are too large to share safely",
+                        ));
+                    }
+                    let path = entry.path();
+                    let metadata = fs::symlink_metadata(&path)?;
+                    if platform::is_link(&metadata) {
+                        continue;
+                    }
+                    if unreadable
+                        .iter()
+                        .any(|protected| credentials::under(&path, protected))
+                        || credentials::credential_name(&self.spec.home, &path)
+                    {
+                        continue;
+                    }
+                    let writable = self
+                        .spec
+                        .write_roots
+                        .iter()
+                        .any(|root| credentials::under(&path, root))
+                        && !unwritable
+                            .iter()
+                            .any(|protected| credentials::under(&path, protected));
+                    self.edit(
+                        &path,
+                        GRANT_ACCESS,
+                        READ | if writable {
+                            FILE_GENERIC_WRITE | DELETE
+                        } else {
+                            0
+                        },
+                        true,
+                    )?;
+                    self.edit(
+                        &path,
+                        DENY_ACCESS,
+                        if writable { CONTROL } else { WRITE },
+                        true,
+                    )?;
+                    if metadata.is_dir() {
+                        queue.push_back(path);
+                    }
+                }
+            }
         }
         // AppContainer profiles normally grant their SID Full Control. Replace
         // that grant before launch, including the directories created by Windows.
@@ -566,7 +872,7 @@ impl Session {
         self.edit(
             &profile,
             GRANT_ACCESS,
-            READ | if self.spec.write_roots.is_empty() {
+            READ | if self.spec.read_only {
                 0
             } else {
                 FILE_GENERIC_WRITE | DELETE
@@ -576,11 +882,7 @@ impl Session {
         self.edit(
             &profile,
             DENY_ACCESS,
-            if self.spec.write_roots.is_empty() {
-                WRITE
-            } else {
-                CONTROL
-            },
+            if self.spec.read_only { WRITE } else { CONTROL },
             true,
         )?;
         Ok(())
@@ -838,7 +1140,7 @@ fn run_at(spec: Spec, args: &[OsString], cwd: &Path, timeout: Option<Duration>) 
         args,
         cwd,
         timeout,
-        Some((&session.sid, &session.profile)),
+        Some((session.sid.0, &session.profile)),
         &session.lease.job,
     )?;
     session.cleanup.cleanup()?;
@@ -849,7 +1151,7 @@ fn launch(
     args: &[OsString],
     cwd: &Path,
     timeout: Option<Duration>,
-    sandbox: Option<(&Local, &Path)>,
+    sandbox: Option<(PSID, &Path)>,
     job_name: &str,
 ) -> Result<u32> {
     let job = Job::new(job_name)?;
@@ -862,7 +1164,7 @@ fn launch(
         stderr.as_raw_handle(),
     ];
     let capabilities = SECURITY_CAPABILITIES {
-        AppContainerSid: sandbox.map_or(null_mut(), |(sid, _)| sid.0),
+        AppContainerSid: sandbox.map_or(null_mut(), |(sid, _)| sid),
         Capabilities: null_mut(),
         CapabilityCount: 0,
         Reserved: 0,
@@ -1068,6 +1370,11 @@ exit 0"#,
             read_roots: vec![work.clone()],
             write_roots: if writable { vec![work.clone()] } else { vec![] },
             id: uuid::Uuid::new_v4().to_string(),
+            read_only: !writable,
+            git_env: BTreeMap::from([
+                ("GIT_CONFIG_NOSYSTEM".into(), "1".into()),
+                ("GIT_CONFIG_GLOBAL".into(), "NUL".into()),
+            ]),
         };
         let status = run_at(
             spec,
@@ -1138,6 +1445,11 @@ exit 0"#,
                         read_roots: vec![work.clone()],
                         write_roots: vec![work.clone()],
                         id: uuid::Uuid::new_v4().to_string(),
+                        read_only: false,
+                        git_env: BTreeMap::from([
+                            ("GIT_CONFIG_NOSYSTEM".into(), "1".into()),
+                            ("GIT_CONFIG_GLOBAL".into(), "NUL".into()),
+                        ]),
                     };
                     run_at(
                         spec,
@@ -1201,6 +1513,11 @@ exit 0"#,
             read_roots: vec![root.path().to_owned(), artifacts.clone()],
             write_roots: vec![root.path().to_owned(), artifacts.clone()],
             id: uuid::Uuid::new_v4().to_string(),
+            read_only: false,
+            git_env: BTreeMap::from([
+                ("GIT_CONFIG_NOSYSTEM".into(), "1".into()),
+                ("GIT_CONFIG_GLOBAL".into(), "NUL".into()),
+            ]),
         };
         let status = run_at(
             spec,
@@ -1244,6 +1561,11 @@ exit 0"#,
             read_roots: vec![work.clone()],
             write_roots: vec![work.clone()],
             id: uuid::Uuid::new_v4().to_string(),
+            read_only: false,
+            git_env: BTreeMap::from([
+                ("GIT_CONFIG_NOSYSTEM".into(), "1".into()),
+                ("GIT_CONFIG_GLOBAL".into(), "NUL".into()),
+            ]),
         };
         let path = lease_path(&home, &spec.id).unwrap();
         let status = run_at(

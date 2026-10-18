@@ -12,38 +12,271 @@ use std::{
 const EXECUTABLE: &str = "Hexbot.exe";
 
 pub(crate) fn installed_app(directory: &Path) -> Result<Option<InstalledApp>> {
-    let Some(id) = directory.file_name().and_then(|name| name.to_str()) else {
-        return Ok(None);
-    };
-    let Some(option) = app_option(id) else {
-        return Ok(None);
-    };
+    installed_app_with(directory, registered_location)
+}
+
+fn same_edition(initial: &str, payload: &str) -> bool {
+    app_option(initial).is_some()
+        && app_option(initial) == app_option(payload)
+        && initial.ends_with(".dev") == payload.ends_with(".dev")
+}
+
+fn installed_app_with(
+    directory: &Path,
+    registered: impl Fn(&str) -> Result<Option<PathBuf>>,
+) -> Result<Option<InstalledApp>> {
     if !fs::symlink_metadata(directory)
         .is_ok_and(|metadata| metadata.is_dir() && !crate::safety::is_link(&metadata))
     {
         return Ok(None);
+    }
+    for (path, directory_expected) in [
+        (directory.join("resources"), true),
+        (directory.join("resources/app.asar"), false),
+        (directory.join(EXECUTABLE), false),
+    ] {
+        if !fs::symlink_metadata(path).is_ok_and(|metadata| {
+            !crate::safety::is_link(&metadata)
+                && if directory_expected {
+                    metadata.is_dir()
+                } else {
+                    metadata.is_file()
+                }
+        }) {
+            return Ok(None);
+        }
     }
     let Some(package) =
         crate::installed_version::asar_package(&directory.join("resources/app.asar"))
     else {
         return Ok(None);
     };
-    if package["name"] != id
-        || package["hexbotAppId"] != id
-        || !directory.join(EXECUTABLE).is_file()
+    let Some(payload) = package["hexbotAppId"]
+        .as_str()
+        .filter(|id| app_option(id).is_some())
+    else {
+        return Ok(None);
+    };
+    if package["name"] != payload
+        || package["version"]
+            .as_str()
+            .is_none_or(|version| semver::Version::parse(version).is_err())
     {
         return Ok(None);
     }
+    let id = match installation_id(&directory.join("hexbot-install.ini"))? {
+        Some(id) => {
+            if !same_edition(&id, payload) {
+                return Ok(None);
+            }
+            let Some(registered) = registered(&id)? else {
+                return Ok(None);
+            };
+            if registered.canonicalize().ok() != directory.canonicalize().ok()
+                || !registered.is_absolute()
+                || registered
+                    .components()
+                    .any(|part| matches!(part, std::path::Component::ParentDir))
+            {
+                return Ok(None);
+            }
+            id
+        }
+        None => {
+            // Before persistent install identities, the directory and package
+            // both named the same build. A missing marker cannot authorize a
+            // cross-track or arbitrarily named installation.
+            if directory.file_name().and_then(|name| name.to_str()) != Some(payload) {
+                return Ok(None);
+            }
+            payload.to_owned()
+        }
+    };
     Ok(Some(InstalledApp {
         path: directory.to_owned(),
-        option,
-        app_id: id.to_owned(),
+        option: app_option(&id).expect("validated install id"),
+        app_id: id,
         version: package["version"].as_str().map(str::to_owned),
         managed_by_dpkg: false,
     }))
 }
 
+fn installation_id(path: &Path) -> Result<Option<String>> {
+    use std::io::Read;
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.into()),
+    };
+    if !metadata.is_file() || crate::safety::is_link(&metadata) || metadata.len() > 4096 {
+        return fail("The Windows app's installation identity is invalid; left it alone.");
+    }
+    let mut bytes = Vec::new();
+    fs::File::open(path)?.take(4097).read_to_end(&mut bytes)?;
+    if bytes.len() > 4096 {
+        return fail("The Windows app's installation identity is too large.");
+    }
+    let text = if let Some(bytes) = bytes.strip_prefix(&[0xff, 0xfe]) {
+        if bytes.len() % 2 != 0 {
+            return fail("The Windows app's installation identity is invalid.");
+        }
+        String::from_utf16(
+            &bytes
+                .chunks_exact(2)
+                .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+                .collect::<Vec<_>>(),
+        )?
+    } else {
+        String::from_utf8(bytes)?
+            .trim_start_matches('\u{feff}')
+            .to_owned()
+    };
+    let mut lines = text.lines().filter(|line| !line.is_empty());
+    let id = if lines.next() == Some("[installation]") {
+        lines.next().and_then(|line| line.strip_prefix("appId="))
+    } else {
+        None
+    };
+    match id.filter(|id| app_option(id).is_some() && lines.next().is_none()) {
+        Some(id) => Ok(Some(id.to_owned())),
+        None => fail("The Windows app's installation identity is invalid; left it alone."),
+    }
+}
+
+#[cfg(windows)]
+pub(crate) fn user_programs() -> Result<PathBuf> {
+    use std::os::windows::ffi::OsStringExt;
+    use windows_sys::Win32::{
+        System::Com::CoTaskMemFree,
+        UI::Shell::{FOLDERID_UserProgramFiles, KF_FLAG_DONT_VERIFY, SHGetKnownFolderPath},
+    };
+    let mut pointer = std::ptr::null_mut();
+    // Read the configured location without creating it on the option screen.
+    let result = unsafe {
+        SHGetKnownFolderPath(
+            &FOLDERID_UserProgramFiles,
+            KF_FLAG_DONT_VERIFY as u32,
+            std::ptr::null_mut(),
+            &mut pointer,
+        )
+    };
+    let path = if result >= 0 && !pointer.is_null() {
+        let mut len = 0;
+        while len < 32768 && unsafe { *pointer.add(len) } != 0 {
+            len += 1;
+        }
+        (len < 32768).then(|| {
+            PathBuf::from(std::ffi::OsString::from_wide(unsafe {
+                std::slice::from_raw_parts(pointer, len)
+            }))
+        })
+    } else {
+        None
+    };
+    if !pointer.is_null() {
+        unsafe { CoTaskMemFree(pointer.cast()) };
+    }
+    path.filter(|path| path.is_absolute()).ok_or_else(|| {
+        format!("Could not resolve the Windows programs folder, HRESULT {result:#x}.").into()
+    })
+}
+
+#[cfg(not(windows))]
+fn registered_location(_: &str) -> Result<Option<PathBuf>> {
+    Ok(None)
+}
+
+#[cfg(windows)]
+fn registered_location(id: &str) -> Result<Option<PathBuf>> {
+    use std::os::windows::ffi::OsStringExt;
+    use windows_sys::Win32::{
+        Foundation::{ERROR_FILE_NOT_FOUND, ERROR_SUCCESS},
+        System::Registry::{HKEY_CURRENT_USER, RRF_RT_REG_SZ, RegGetValueW},
+    };
+    if app_option(id).is_none() {
+        return fail("Invalid Windows installation id.");
+    }
+    let key: Vec<u16> = format!("Software\\{id}\0").encode_utf16().collect();
+    let name: Vec<u16> = "InstallLocation\0".encode_utf16().collect();
+    let mut size = 0;
+    let result = unsafe {
+        RegGetValueW(
+            HKEY_CURRENT_USER,
+            key.as_ptr(),
+            name.as_ptr(),
+            RRF_RT_REG_SZ,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            &mut size,
+        )
+    };
+    if result == ERROR_FILE_NOT_FOUND {
+        return Ok(None);
+    }
+    if result != ERROR_SUCCESS {
+        return Err(std::io::Error::from_raw_os_error(result as i32).into());
+    }
+    if size == 0 || size > 65536 || size % 2 != 0 {
+        return fail("The Windows app's registered install location is invalid.");
+    }
+    let mut buffer = vec![0u16; size as usize / 2];
+    let result = unsafe {
+        RegGetValueW(
+            HKEY_CURRENT_USER,
+            key.as_ptr(),
+            name.as_ptr(),
+            RRF_RT_REG_SZ,
+            std::ptr::null_mut(),
+            buffer.as_mut_ptr().cast(),
+            &mut size,
+        )
+    };
+    if result != ERROR_SUCCESS {
+        return Err(std::io::Error::from_raw_os_error(result as i32).into());
+    }
+    buffer.truncate(size as usize / 2);
+    while buffer.last() == Some(&0) {
+        buffer.pop();
+    }
+    if buffer.contains(&0) {
+        return fail("The Windows app's registered install location contains a null character.");
+    }
+    Ok(Some(PathBuf::from(std::ffi::OsString::from_wide(&buffer))))
+}
+
+#[cfg(windows)]
+pub(crate) fn registered_apps() -> Result<Vec<InstalledApp>> {
+    registered_apps_with(registered_location)
+}
+
+#[cfg(any(test, windows))]
+fn registered_apps_with(
+    lookup: impl Fn(&str) -> Result<Option<PathBuf>>,
+) -> Result<Vec<InstalledApp>> {
+    let mut apps = Vec::new();
+    for base in ["app.hexbot.desktop", "app.hexbot.client"] {
+        for suffix in ["", ".nightly", ".dev"] {
+            let id = format!("{base}{suffix}");
+            if let Some(directory) = lookup(&id)?
+                && let Some(app) = installed_app_with(&directory, &lookup)?
+                && app.app_id == id
+            {
+                apps.push(app);
+            }
+        }
+    }
+    Ok(apps)
+}
+
 impl Installer {
+    fn windows_app_destination(&self, id: &str) -> Result<PathBuf> {
+        let installed = self.detect()?;
+        match existing_destination(&installed, id) {
+            Some(path) => Ok(path),
+            None => Ok(self.paths.planned_apps_dir(self.target)?.join(id)),
+        }
+    }
+
     pub(crate) fn install_windows(
         &self,
         download: &Path,
@@ -54,11 +287,12 @@ impl Installer {
         if artifact.format.as_deref() != Some("exe") {
             return fail("The Windows app installer format is not supported.");
         }
-        let directory = self.paths.install_apps_dir(self.target)?.join(id);
+        let directory = self.windows_app_destination(id)?;
+        fs::create_dir_all(directory.parent().ok_or("Invalid Windows app directory.")?)?;
         if fs::symlink_metadata(&directory).is_ok() {
             let installed = installed_app(&directory)?
                 .ok_or("An unrelated app already uses the install path.")?;
-            if installed.app_id != id {
+            if !same_edition(&installed.app_id, id) {
                 return fail("The app id does not match the install path.");
             }
             self.require_quit(&directory)?;
@@ -75,7 +309,9 @@ impl Installer {
         if !status.success() {
             return fail(format!("The Windows app installer failed with {status}."));
         }
-        if installed_app(&directory)?.is_none() || !uninstaller(&directory).is_file() {
+        if installed_app(&directory)?.is_none_or(|app| !same_edition(&app.app_id, id))
+            || !uninstaller(&directory).is_file()
+        {
             return fail(
                 "The Windows app installer did not create the expected app and uninstaller.",
             );
@@ -119,7 +355,7 @@ impl Installer {
             // alone cannot authorize removal of an unrelated registered task.
             let task = crate::install_ownership::windows_task_name(&self.paths.hexbot_home)?;
             let output = self.task_scheduler(&task, None,
-                "try{$task=$folder.GetTask($env:HEXBOT_INSTALL_TASK_NAME);$task.Xml}catch{if($_.Exception.HResult -eq -2147024894){exit 3};throw}")?;
+                "try{$task=$folder.GetTask($env:HEXBOT_INSTALL_TASK_NAME);$task.Xml}catch{$error=$_.Exception;while($error.InnerException){$error=$error.InnerException};if($error.HResult -eq -2147024894){exit 3};throw}")?;
             if output.status.code() == Some(3) {
                 return Ok(());
             }
@@ -195,6 +431,41 @@ impl Installer {
         stderr.read_to_end(&mut output.stderr)?;
         Ok(output)
     }
+}
+
+fn existing_destination(installed: &crate::Installed, id: &str) -> Option<PathBuf> {
+    let target = if id.ends_with(".nightly") {
+        crate::Track::Nightly
+    } else {
+        crate::Track::Stable
+    };
+    let current_track = |app: &&InstalledApp| {
+        app.version
+            .as_deref()
+            .and_then(|version| semver::Version::parse(version).ok())
+            .map(|version| {
+                if version.pre.as_str().starts_with("nightly.") {
+                    crate::Track::Nightly
+                } else {
+                    crate::Track::Stable
+                }
+            })
+            == Some(target)
+    };
+    let same = |app: &&InstalledApp| same_edition(&app.app_id, id);
+    let selected = installed.receipt.as_ref().and_then(|receipt| {
+        installed.apps.iter().find(|app| {
+            receipt
+                .paths
+                .iter()
+                .any(|path| path == &app.path || path.parent() == Some(app.path.as_path()))
+        })
+    });
+    selected
+        .filter(|app| same(app) && current_track(app))
+        .or_else(|| installed.apps.iter().find(|app| app.app_id == id))
+        .or_else(|| installed.apps.iter().filter(same).find(current_track))
+        .map(|app| app.path.clone())
 }
 
 fn uninstaller(directory: &Path) -> PathBuf {
@@ -380,6 +651,7 @@ mod tests {
         let engine = Installer {
             paths: crate::Paths {
                 local_data: None,
+                user_programs: None,
                 home,
                 hexbot_home: root.path().join("state"),
                 apps_override: Some(apps),
@@ -425,5 +697,185 @@ mod tests {
             )
             .is_ok()
         );
+    }
+
+    #[test]
+    fn redirected_programs_location_and_explicit_override_remain_distinct() {
+        let root = tempfile::tempdir().unwrap();
+        let redirected = root.path().join("redirected-programs");
+        asar(
+            &redirected.join("app.hexbot.desktop"),
+            "app.hexbot.desktop",
+            "1.2.3",
+        );
+        let mut paths = crate::Paths {
+            home: root.path().join("home"),
+            local_data: Some(root.path().join("redirected-appdata")),
+            user_programs: Some(redirected.clone()),
+            hexbot_home: root.path().join("state"),
+            apps_override: None,
+            opt_override: None,
+            service_root: root.path().join("services"),
+            service_no_load: true,
+        };
+        assert_eq!(
+            paths.app_dirs(crate::Target::WindowsX86_64),
+            vec![redirected]
+        );
+        let apps = paths.app_dirs(crate::Target::WindowsX86_64);
+        assert!(
+            installed_app(&apps[0].join("app.hexbot.desktop"))
+                .unwrap()
+                .is_some()
+        );
+        let explicit = root.path().join("isolated-programs");
+        paths.apps_override = Some(explicit.clone());
+        assert_eq!(paths.app_dirs(crate::Target::WindowsX86_64), vec![explicit]);
+    }
+
+    #[test]
+    fn cross_track_payload_retains_verified_install_identity_and_current_track() {
+        let root = tempfile::tempdir().unwrap();
+        let directory = root.path().join("custom-directory-name");
+        asar(&directory, "app.hexbot.desktop.nightly", "1.2.4-nightly.1");
+        let marker = directory.join("hexbot-install.ini");
+        fs::write(&marker, "[installation]\r\nappId=app.hexbot.desktop\r\n").unwrap();
+        let lookup = |id: &str| Ok((id == "app.hexbot.desktop").then(|| directory.clone()));
+        let app = installed_app_with(&directory, lookup).unwrap().unwrap();
+        assert_eq!(app.app_id, "app.hexbot.desktop");
+        let installed = crate::Installed {
+            target: Some(crate::Target::WindowsX86_64),
+            receipt: Some(crate::Receipt {
+                option: crate::InstallOption::Full,
+                channel: crate::Track::Stable,
+                version: "1.2.3".into(),
+                paths: vec![directory.join(EXECUTABLE)],
+                installed_at: String::new(),
+            }),
+            apps: vec![app],
+            ..Default::default()
+        };
+        assert_eq!(installed.track(), Some(crate::Track::Nightly));
+        assert_eq!(installed.version(), Some("1.2.4-nightly.1"));
+        assert_eq!(
+            existing_destination(&installed, "app.hexbot.desktop.nightly"),
+            Some(directory.clone())
+        );
+        assert!(
+            installed_app_with(&directory, |_| Ok(Some(root.path().join("unrelated"))))
+                .unwrap()
+                .is_none()
+        );
+        asar(&directory, "app.hexbot.client.nightly", "1.2.4-nightly.1");
+        assert!(installed_app_with(&directory, lookup).unwrap().is_none());
+        asar(&directory, "app.hexbot.desktop.dev", "1.2.4");
+        assert!(installed_app_with(&directory, lookup).unwrap().is_none());
+    }
+
+    #[test]
+    fn stable_and_nightly_initial_installs_keep_separate_destinations() {
+        let root = tempfile::tempdir().unwrap();
+        let app = |id: &str, version: &str| InstalledApp {
+            path: root.path().join(id),
+            option: crate::InstallOption::Full,
+            app_id: id.into(),
+            version: Some(version.into()),
+            managed_by_dpkg: false,
+        };
+        let installed = crate::Installed {
+            apps: vec![
+                app("app.hexbot.desktop", "1.2.3"),
+                app("app.hexbot.desktop.nightly", "1.2.4-nightly.1"),
+            ],
+            ..Default::default()
+        };
+        for id in ["app.hexbot.desktop", "app.hexbot.desktop.nightly"] {
+            assert_eq!(
+                existing_destination(&installed, id),
+                Some(root.path().join(id))
+            );
+        }
+        assert!(existing_destination(&installed, "app.hexbot.client").is_none());
+    }
+
+    #[test]
+    fn registered_custom_directory_is_discovered_and_foreign_entries_are_ignored() {
+        let root = tempfile::tempdir().unwrap();
+        let directory = root.path().join("user-picked-install-path");
+        asar(&directory, "app.hexbot.client.nightly", "1.2.4-nightly.1");
+        fs::write(
+            directory.join("hexbot-install.ini"),
+            "[installation]\r\nappId=app.hexbot.client.nightly\r\n",
+        )
+        .unwrap();
+        let apps = registered_apps_with(|id| {
+            Ok((id == "app.hexbot.client.nightly").then(|| directory.clone()))
+        })
+        .unwrap();
+        assert_eq!(apps.len(), 1);
+        assert_eq!(apps[0].path, directory);
+        assert!(
+            registered_apps_with(|id| Ok((id == "app.hexbot.desktop").then(|| directory.clone())))
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn installation_marker_rejects_duplicates_and_unbounded_content() {
+        let root = tempfile::tempdir().unwrap();
+        let marker = root.path().join("hexbot-install.ini");
+        for text in [
+            "[installation]\nappId=app.hexbot.desktop\nappId=app.hexbot.client\n",
+            "[installation]\nappId=app.hexbot.desktop\n[other]\n",
+            "[installation]\nappId=org.example.app\n",
+        ] {
+            fs::write(&marker, text).unwrap();
+            assert!(installation_id(&marker).is_err());
+        }
+        fs::write(&marker, vec![b'X'; 4097]).unwrap();
+        assert!(installation_id(&marker).is_err());
+        let mut utf16 = vec![0xff, 0xfe];
+        utf16.extend(
+            "[installation]\r\nappId=app.hexbot.desktop\r\n"
+                .encode_utf16()
+                .flat_map(u16::to_le_bytes),
+        );
+        fs::write(&marker, utf16).unwrap();
+        assert_eq!(
+            installation_id(&marker).unwrap().as_deref(),
+            Some("app.hexbot.desktop")
+        );
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn known_programs_folder_ignores_local_appdata_environment() {
+        const CHILD: &str = "HEXBOT_TEST_KNOWN_PROGRAMS_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let root = tempfile::tempdir().unwrap();
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "windows::tests::known_programs_folder_ignores_local_appdata_environment",
+                ])
+                .env(CHILD, "1")
+                .env("LOCALAPPDATA", root.path())
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{} {}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+        } else {
+            let folder = user_programs().unwrap();
+            assert!(folder.is_absolute());
+            assert_ne!(
+                folder,
+                PathBuf::from(std::env::var_os("LOCALAPPDATA").unwrap()).join("Programs")
+            );
+        }
     }
 }

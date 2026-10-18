@@ -3,12 +3,11 @@ import {existsSync} from 'node:fs';
 import {isAbsolute, join} from 'node:path';
 
 // Never search the working directory or PATH for an executable that runs before
-// the OS sandbox. Both supported shells disable profiles and startup scripts.
+// the OS sandbox. Use the stock shell exercised by the native containment probe; disable its
+// profiles and startup scripts.
 export function powerShellExecutable(): string {
-  for (const path of [
-    process.env.ProgramFiles && join(process.env.ProgramFiles, 'PowerShell/7/pwsh.exe'),
-    join(process.env.SystemRoot ?? 'C:\\Windows', 'System32/WindowsPowerShell/v1.0/powershell.exe'),
-  ]) if (path && existsSync(path)) return path;
+  const path = join(process.env.SystemRoot ?? 'C:\\Windows', 'System32/WindowsPowerShell/v1.0/powershell.exe');
+  if (existsSync(path)) return path;
   throw new Error('Windows PowerShell could not be found.');
 }
 export const powerShellArgs = (command: string) => ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-OutputFormat', 'Text', '-EncodedCommand', Buffer.from("try { [Console]::OutputEncoding=[System.Text.Encoding]::UTF8; $OutputEncoding=[System.Text.Encoding]::UTF8 } catch {}\n$ProgressPreference='SilentlyContinue'\n" + command, 'utf16le').toString('base64')];

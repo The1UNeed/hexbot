@@ -392,7 +392,7 @@ impl ChildTree {
         {
             use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
             use windows_sys::Win32::{
-                Foundation::INVALID_HANDLE_VALUE,
+                Foundation::{FILETIME, INVALID_HANDLE_VALUE},
                 System::{
                     Diagnostics::ToolHelp::{
                         CreateToolhelp32Snapshot, TH32CS_SNAPTHREAD, THREADENTRY32, Thread32First,
@@ -403,7 +403,10 @@ impl ChildTree {
                         JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
                         JobObjectExtendedLimitInformation, SetInformationJobObject,
                     },
-                    Threading::{OpenThread, ResumeThread, THREAD_SUSPEND_RESUME},
+                    Threading::{
+                        GetThreadTimes, OpenThread, ResumeThread, THREAD_QUERY_LIMITED_INFORMATION,
+                        THREAD_SUSPEND_RESUME,
+                    },
                 },
             };
             let failure = std::io::Error::last_os_error;
@@ -440,25 +443,59 @@ impl ChildTree {
             let mut thread: THREADENTRY32 = unsafe { std::mem::zeroed() };
             thread.dwSize = std::mem::size_of_val(&thread) as u32;
             let mut found = unsafe { Thread32First(snapshot.as_raw_handle(), &mut thread) };
+            let mut threads = Vec::new();
             while found != 0 {
                 if Some(thread.th32OwnerProcessID) == child.id() {
-                    let handle =
-                        unsafe { OpenThread(THREAD_SUSPEND_RESUME, 0, thread.th32ThreadID) };
+                    let handle = unsafe {
+                        OpenThread(
+                            THREAD_SUSPEND_RESUME | THREAD_QUERY_LIMITED_INFORMATION,
+                            0,
+                            thread.th32ThreadID,
+                        )
+                    };
                     if handle.is_null() {
                         return Err(failure());
                     }
                     let handle = unsafe { OwnedHandle::from_raw_handle(handle) };
-                    if unsafe { ResumeThread(handle.as_raw_handle()) } == u32::MAX {
+                    let mut creation: FILETIME = unsafe { std::mem::zeroed() };
+                    let mut exit: FILETIME = unsafe { std::mem::zeroed() };
+                    let mut kernel: FILETIME = unsafe { std::mem::zeroed() };
+                    let mut user: FILETIME = unsafe { std::mem::zeroed() };
+                    if unsafe {
+                        GetThreadTimes(
+                            handle.as_raw_handle(),
+                            &mut creation,
+                            &mut exit,
+                            &mut kernel,
+                            &mut user,
+                        )
+                    } == 0
+                    {
                         return Err(failure());
                     }
-                    return Ok(Self {
-                        _job: job,
-                        sandbox: cleanup,
-                    });
+                    let created =
+                        ((creation.dwHighDateTime as u64) << 32) | creation.dwLowDateTime as u64;
+                    threads.push((created, handle));
                 }
                 found = unsafe { Thread32Next(snapshot.as_raw_handle(), &mut thread) };
             }
-            Err(std::io::Error::other("suspended child thread unavailable"))
+            threads.sort_by_key(|(created, _)| *created);
+            let Some((created, primary)) = threads.first() else {
+                return Err(std::io::Error::other("suspended child thread unavailable"));
+            };
+            // Injected auxiliary threads need not be suspended and snapshot
+            // order is unspecified. The primary thread was created first.
+            if threads.get(1).is_some_and(|(next, _)| next == created) {
+                return Err(std::io::Error::other("primary child thread is ambiguous"));
+            }
+            match unsafe { ResumeThread(primary.as_raw_handle()) } {
+                1 => Ok(Self {
+                    _job: job,
+                    sandbox: cleanup,
+                }),
+                u32::MAX => Err(failure()),
+                _ => Err(std::io::Error::other("primary child thread did not resume")),
+            }
         }
     }
 }
@@ -515,6 +552,12 @@ impl PiProcess {
                 .map(PathBuf::from)
                 .or_else(|| std::env::current_exe().ok())
                 .ok_or(PiError::Io("daemon executable"))?,
+        );
+        #[cfg(windows)]
+        command.env(
+            "HEXBOT_GIT_SCAN_ENV",
+            serde_json::to_string(&crate::windows_sandbox::git_scan_environment())
+                .map_err(|_| PiError::Io("Git scan environment"))?,
         );
         let (mut child, tree) = spawn_child(&mut command).map_err(|_| PiError::Io("spawn"))?;
         let stdin = child.stdin.take().ok_or(PiError::Io("stdin"))?;

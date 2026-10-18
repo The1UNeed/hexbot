@@ -155,11 +155,7 @@ fn detection() -> hexbot_installer::Result<Detection> {
         installed: installed.option().map(|option| InstalledView {
             option,
             track: installed.track(),
-            version: installed
-                .receipt
-                .as_ref()
-                .map(|r| r.version.clone())
-                .or_else(|| installed.apps.iter().find_map(|a| a.version.clone())),
+            version: installed.version().map(str::to_owned),
             service: installed.service,
             apps: installed.apps.clone(),
         }),

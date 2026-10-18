@@ -69,6 +69,9 @@ data model. The native transport and event projection live in
   retains explicit GitHub-token authentication; unavailable stored login,
   configured arguments beyond `--acp`/`--stdio`, or incompatible isolation
   flags also produce a one-step card.
+  On Windows, Copilot ACP chat and reviewers refuse to start because their
+  required credential isolation is unavailable. A review failure asks the user
+  for that step; it never launches an unrestricted ACP process.
   Without OS isolation, shell commands require user approval even with
   `full_access`; review cannot replace
   it. Explicit section grants can cover unreviewed requests when offered.

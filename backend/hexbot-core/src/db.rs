@@ -117,8 +117,8 @@ const COLUMNS: &[(&str, &str, &str)] = &[
 pub fn open(home: &Path) -> Result<Connection> {
     #[cfg(windows)]
     {
-        fs::create_dir_all(home)?;
-        crate::windows_sandbox::protect_private_path(home, true)?;
+        crate::platform::validate_home(home)?;
+        crate::windows_sandbox::create_private_dir_all(home)?;
     }
     #[cfg(unix)]
     {
@@ -442,7 +442,8 @@ fn fold_core_memory(connection: &Connection, home: &Path) -> Result<()> {
         let users = home.join("users");
         let directory = users.join(owner);
         for path in [&users, &directory] {
-            if fs::symlink_metadata(path).is_ok_and(|metadata| metadata.file_type().is_symlink()) {
+            if fs::symlink_metadata(path).is_ok_and(|metadata| crate::platform::is_link(&metadata))
+            {
                 return Err(Error::new(
                     5200,
                     "legacy memory directory must not be a symlink",

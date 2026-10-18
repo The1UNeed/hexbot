@@ -21,6 +21,7 @@ import { resolveWebDevUrl } from './dev-url'
 import { edition, hasRuntime, requireRuntime } from './edition'
 import { parseDeepLink } from './deep-link'
 import { notify } from './notify'
+import { readInstallIdentity } from './install-identity'
 import { pair, pairingReply, pairWithGrant, type GrantPairOptions, type PairOptions } from './pair'
 import { installService, serviceStatus, uninstallService } from './service'
 import { createTray } from './tray'
@@ -42,7 +43,7 @@ import {
 const currentDirectory = dirname(fileURLToPath(import.meta.url))
 const rendererDirectory = join(currentDirectory, '../renderer')
 const webDevUrl = app.isPackaged ? undefined : resolveWebDevUrl()
-if (process.platform === 'win32') app.setAppUserModelId(__HEXBOT_APP_ID__)
+if (process.platform === 'win32') app.setAppUserModelId(app.isPackaged ? await readInstallIdentity() : __HEXBOT_APP_ID__)
 if (!app.isPackaged) app.setName(hasRuntime ? 'Hexbot (dev)' : 'Hexbot Client (dev)')
 const devIcon = !app.isPackaged ? join(currentDirectory, '../../resources/icon-dev.png') : undefined
 // Keep Chromium's profile (localStorage, caches) inside the Hexbot home so an

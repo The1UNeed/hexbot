@@ -72,7 +72,7 @@ pub(crate) fn walk_files(root: &Path, path: &Path, out: &mut Vec<PathBuf>) -> Re
     for entry in fs::read_dir(path)? {
         let entry = entry?;
         let kind = entry.file_type()?;
-        if kind.is_symlink() {
+        if crate::platform::is_link(&fs::symlink_metadata(entry.path())?) {
             return Err(Error::new(4202, "skill paths must not contain symlinks"));
         }
         if kind.is_dir() {
@@ -593,6 +593,9 @@ fn fingerprint(dir: &Path) -> Result<Option<String>> {
                 continue;
             }
             let kind = entry.file_type()?;
+            if crate::platform::is_link(&fs::symlink_metadata(entry.path())?) {
+                return Ok(false);
+            }
             if kind.is_dir() {
                 if !collect(&entry.path(), files)? {
                     return Ok(false);
@@ -668,7 +671,7 @@ fn deduplicate(
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
         Err(error) => return Err(error.into()),
     };
-    if !metadata.is_dir() || metadata.file_type().is_symlink() {
+    if !metadata.is_dir() || crate::platform::is_link(&metadata) {
         return Ok(());
     }
     if dir.join("SKILL.md").exists() {

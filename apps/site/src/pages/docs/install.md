@@ -66,7 +66,7 @@ One installer changes Hexbot at a time. A second one, terminal or windowed, wait
 
 - **macOS**: Full and Client go to `/Applications`, or to `~/Applications` when `/Applications` is not writable.
 - **Linux**: Full and Client are AppImages in `~/.local/share/hexbot`, with a desktop entry, an icon, and a handler for `hexbot://` pairing links. The installer never uses `sudo`. If you installed a deb package yourself, remove it with your package manager before you change or uninstall with the installer.
-- **Windows**: Full and Client install for your account under `%LOCALAPPDATA%\Programs`, with separate folders for each edition and channel. They do not need administrator access.
+- **Windows**: Full and Client install for your account under the Windows user Programs folder, usually `%LOCALAPPDATA%\Programs`, with separate folders for each edition and channel. They do not need administrator access.
 - **Headless**: see [What Headless sets up](#what-headless-sets-up).
 
 The installer records what it installed in `~/.hexbot/install.json`.
@@ -113,7 +113,7 @@ Or open the Hexbot Installer and choose Headless. When it finishes, the installe
 - The daemon runtime in `~/.hexbot/runtime`, checked against its SHA-256 checksum.
 - Python 3.11 for code tools and the voice tools, inside `~/.hexbot`, each checked against a pinned checksum, as Full does on first launch.
 - A user service that starts the daemon at login and restarts it if it stops: `~/Library/LaunchAgents/app.hexbot.daemon.plist` on macOS, `~/.config/systemd/user/hexbot.service` on Linux. On Windows it registers a per-user logon Scheduled Task, which runs only while you are signed in. On Linux the installer also enables lingering (`loginctl enable-linger`), so the daemon keeps running after you log out and starts at boot; if that fails it says so.
-- The `hexbot` command in `~/.local/bin`, as `hexbot.cmd` on Windows. If that directory is not on your `PATH`, setup prints how to run the command.
+- The `hexbot` command in `~/.local/bin`, as `hexbot.exe` on Windows. If that directory is not on your `PATH`, setup prints how to run the command.
 
 On Linux, install bubblewrap for the sandbox; see [Linux](#linux). The installer reminds you when it is missing. Windows has no OS sandbox; see [Windows](#windows) for approval and unattended-work limits.
 
@@ -171,7 +171,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File $installer
 
 Add the same flags as on macOS and Linux, for example `--headless`, `--nightly`, `--repair`, or `--uninstall`, after `$installer` on the last line. The bootstrap checks the terminal executable's SHA-256 checksum before starting it. It stops if the selected track has no Windows installer.
 
-Windows stores your data in `%USERPROFILE%\.hexbot` and its command wrapper in `%USERPROFILE%\.local\bin\hexbot.cmd`. Add that bin directory to your user `PATH`, or run the full path printed by setup. Start a new terminal after changing `PATH`.
+Windows stores your data in `%USERPROFILE%\.hexbot` and its native command launcher in `%USERPROFILE%\.local\bin\hexbot.exe`. Add that bin directory to your user `PATH`, or run the full path printed by setup. Start a new terminal after changing `PATH`.
 
 Headless and "Start the daemon at login" use a per-user Scheduled Task. Keep that Windows account signed in for remote devices, reminders, and other background work. Logging out stops the daemon. This is not a machine-wide Windows service.
 

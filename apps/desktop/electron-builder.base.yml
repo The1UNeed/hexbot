@@ -52,6 +52,7 @@ win:
   executableName: Hexbot
   artifactName: Hexbot-${version}-win-${arch}.${ext}
 nsis:
+  include: build/installer.nsh
   oneClick: true
   perMachine: false
   allowElevation: false

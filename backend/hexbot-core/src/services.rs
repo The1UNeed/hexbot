@@ -663,7 +663,9 @@ pub fn apply_public_url(home: &Path, hostname: Option<&str>) -> Result<()> {
     if home.join("profiles").is_dir() {
         for entry in fs::read_dir(home.join("profiles"))? {
             let entry = entry?;
-            if entry.file_type()?.is_dir() {
+            if entry.file_type()?.is_dir()
+                && !crate::platform::is_link(&fs::symlink_metadata(entry.path())?)
+            {
                 targets.push(entry.path());
             }
         }
@@ -1481,6 +1483,7 @@ fn prune_native(
         let entry = entry?;
         let path = entry.path();
         if !entry.file_type()?.is_dir()
+            || crate::platform::is_link(&fs::symlink_metadata(&path)?)
             || !path
                 .join(crate::platform::executable_name("hexbot"))
                 .is_file()
@@ -2471,7 +2474,7 @@ pub async fn call(home: &Path, caller: &str, method: &str, p: &Value) -> Option<
     )
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
 #[path = "../tests/fixtures/connect_tunnel.rs"]
 mod tunnel_tests;
 

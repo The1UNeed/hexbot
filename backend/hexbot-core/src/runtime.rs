@@ -2770,23 +2770,55 @@ impl Runtime {
                         }
                         let live = runtime.session_settings(&session)?;
                         let raw = PathBuf::from(required(&args, "path")?);
-                        let path = if raw.is_absolute() {
+                        crate::platform::validate_path(&raw)?;
+                        let requested = if raw.is_absolute() {
                             raw
                         } else {
                             PathBuf::from(live["cwd"].as_str().unwrap_or(".")).join(raw)
                         };
+                        let writable = std::iter::once(&live["cwd"])
+                            .chain(live["outputDirs"].as_array().into_iter().flatten())
+                            .filter_map(|value| value.as_str().map(PathBuf::from))
+                            .collect::<Vec<_>>();
                         let (path, ask, reason) = guarded_file_path(
                             &runtime.home,
-                            &path,
+                            &requested,
                             name != "read_file",
                             live["approvalMode"].as_str().unwrap_or("manual"),
-                            &std::iter::once(&live["cwd"])
-                                .chain(live["outputDirs"].as_array().into_iter().flatten())
-                                .filter_map(|v| v.as_str().map(PathBuf::from))
-                                .collect::<Vec<_>>(),
+                            &writable,
                         )?;
                         if ask && !runtime.native_approval(&session, json!({"tool":name,"toolCall":{"title":path.to_string_lossy()},"input":args,"reason":reason})).await? {
                             return Err(Error::new(4302, "The user denied this action."));
+                        }
+                        if ask {
+                            let current = runtime.session_settings(&session)?;
+                            let stopped = {
+                                let state = session.state.lock().unwrap();
+                                state.closed || state.interrupted
+                            };
+                            if stopped
+                                || current["approvalMode"] != live["approvalMode"]
+                                || current["cwd"] != live["cwd"]
+                                || current["outputDirs"] != live["outputDirs"]
+                            {
+                                return Err(Error::new(
+                                    4302,
+                                    "The section settings changed while approval was pending. Try this action again.",
+                                ));
+                            }
+                            let (checked, _, _) = guarded_file_path(
+                                &runtime.home,
+                                &requested,
+                                name != "read_file",
+                                current["approvalMode"].as_str().unwrap_or("manual"),
+                                &writable,
+                            )?;
+                            if checked != path {
+                                return Err(Error::new(
+                                    4302,
+                                    "The file destination changed while approval was pending. Try this action again.",
+                                ));
+                            }
                         }
                         return match name.as_str() {
                             "read_file" => {
@@ -4902,7 +4934,7 @@ mod code_environment_tests {
 
 /// The checked target and whether a write needs approval: every write in Manual;
 /// in Auto, writes outside `writable` and host configuration files from
-/// credential-policy.json. Bypass checks nothing.
+/// credential-policy.json. Bypass skips permission checks.
 fn guarded_file_path(
     home: &Path,
     path: &Path,
@@ -4911,9 +4943,16 @@ fn guarded_file_path(
     writable: &[PathBuf],
 ) -> Result<(PathBuf, bool, Option<String>)> {
     fn resolve(path: &Path) -> Result<PathBuf> {
+        crate::platform::validate_path(path)?;
         let mut resolved = PathBuf::new();
         for component in path.components() {
             match component {
+                std::path::Component::Prefix(_) => {
+                    // A drive prefix alone is drive-relative. Wait for its
+                    // root component before asking Windows to resolve it.
+                    resolved.push(component);
+                    continue;
+                }
                 std::path::Component::ParentDir => {
                     resolved.pop();
                 }
@@ -4921,7 +4960,10 @@ fn guarded_file_path(
                 _ => resolved.push(component),
             }
             match fs::canonicalize(&resolved) {
-                Ok(path) => resolved = path,
+                Ok(path) => {
+                    crate::platform::validate_path(&path)?;
+                    resolved = path;
+                }
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                     if fs::symlink_metadata(&resolved).is_ok_and(|m| m.file_type().is_symlink()) {
                         let link = fs::read_link(&resolved)?;
@@ -5008,6 +5050,53 @@ fn guarded_file_path(
 #[cfg(test)]
 mod file_bridge_tests {
     use super::*;
+    #[cfg(windows)]
+    #[test]
+    fn file_bridge_rejects_actual_ntfs_streams_before_access() {
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path().join("home");
+        let work = temp.path().join("work");
+        fs::create_dir_all(home.join("profiles/owl/pi")).unwrap();
+        fs::create_dir(&work).unwrap();
+        for base in [
+            home.join(".env"),
+            home.join("profiles/owl/pi/auth.json"),
+            work.join("public.txt"),
+        ] {
+            fs::write(&base, "default stream secret").unwrap();
+            let named = PathBuf::from(format!("{}:backup", base.display()));
+            let default = PathBuf::from(format!("{}::$DATA", base.display()));
+            fs::write(&named, "named stream secret").unwrap();
+            // Exercise real NTFS streams, not just names that look like them.
+            assert_eq!(fs::read_to_string(&named).unwrap(), "named stream secret");
+            assert_eq!(
+                fs::read_to_string(&default).unwrap(),
+                "default stream secret"
+            );
+            for mode in ["manual", "smart", "off"] {
+                for path in [&named, &default] {
+                    for write in [false, true] {
+                        assert_eq!(
+                            guarded_file_path(
+                                &home,
+                                path,
+                                write,
+                                mode,
+                                std::slice::from_ref(&work)
+                            )
+                            .unwrap_err()
+                            .code,
+                            4202,
+                            "{path:?} {mode} {write}"
+                        );
+                    }
+                }
+            }
+            assert_eq!(fs::read_to_string(&base).unwrap(), "default stream secret");
+            assert_eq!(fs::read_to_string(&named).unwrap(), "named stream secret");
+        }
+    }
+
     #[test]
     fn file_bridge_protects_linked_and_bare_git_metadata() {
         let temp = tempfile::tempdir().unwrap();

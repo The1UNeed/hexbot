@@ -548,6 +548,7 @@ fn link_cli(home: &Path, user_home: &Path, emit: &impl Fn(&str, &str)) -> Result
 }
 
 pub async fn run(home: &Path, args: &[String]) -> Result<()> {
+    crate::platform::validate_home(home)?;
     if args.iter().any(|arg| {
         !matches!(
             arg.as_str(),
@@ -571,9 +572,10 @@ pub async fn run(home: &Path, args: &[String]) -> Result<()> {
         crate::platform::user_home()
             .ok_or_else(|| Error::new(4200, "The user home directory is required"))?,
     );
-    fs::create_dir_all(home)?;
     #[cfg(windows)]
-    crate::windows_sandbox::protect_private_path(home, true)?;
+    crate::windows_sandbox::create_private_dir_all(home)?;
+    #[cfg(not(windows))]
+    fs::create_dir_all(home)?;
     let home = home.canonicalize()?;
     if args.iter().any(|a| a == "--activate") {
         let executable = std::env::current_exe()?.canonicalize()?;

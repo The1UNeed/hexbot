@@ -1,11 +1,11 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {execFileSync} from 'node:child_process';
-import {mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync} from 'node:fs';
+import {existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync} from 'node:fs';
 import {join, parse} from 'node:path';
 import {tmpdir} from 'node:os';
 import hexbot, {canonicalPath, credentialPath, protectedPath, shellEnvironment, writeDenial} from './extension.ts';
-import {gitExecutable, globalGitConfigs, isolationAvailable, isolatedCommand, policyRoot, within, workspaceProtected} from './isolation.ts';
+import {gitExecutable, gitScanEnvironment, globalGitConfigs, isolationAvailable, isolatedCommand, policyRoot, within, workspaceProtected} from './isolation.ts';
 import {nullDevice, windows} from './test-support.mjs';
 
 function workspace(t) {
@@ -23,6 +23,14 @@ test('containment compares path components and accepts roots with trailing separ
   assert.equal(within(cwd + '-other', [cwd]), false);
   assert.equal(within(root, [cwd]), false);
   assert.equal(within(cwd, [parse(cwd).root]), true);
+});
+
+test('owner Git scan settings are whitelisted and kept out of command environments', () => {
+  const inherited = {HOME:'owner-home', GIT_CONFIG_GLOBAL:'owner-config', GIT_CONFIG_NOSYSTEM:'1', NODE_OPTIONS:'untrusted', GIT_CONFIG_COUNT:'1'};
+  const env = {HEXBOT_GIT_SCAN_ENV:JSON.stringify(inherited), GIT_CONFIG_GLOBAL:'sanitized'};
+  assert.deepEqual(gitScanEnvironment(env), {HOME:'owner-home', GIT_CONFIG_GLOBAL:'owner-config', GIT_CONFIG_NOSYSTEM:'1'});
+  assert.deepEqual(shellEnvironment(env), {});
+  assert.throws(() => gitScanEnvironment({HEXBOT_GIT_SCAN_ENV:'[]'}), /owner Git scan settings/);
 });
 
 test('Windows drive, UNC and mixed separator paths retain their roots', {skip:!windows}, t => {
@@ -133,7 +141,7 @@ test('native Windows shell preserves approvals and environment and fails closed 
   const select = ctx.ui.select;
   ctx.ui.select = async title => {const answer = await select(title); settings.cwd = root; return answer;};
   const changed = String(++id); assert.match((await gate({command, full_access:true}, changed)).reason, /working directory changed/);
-  await assert.rejects(tools.bash.execute(changed, {command}, undefined, undefined, ctx), /working directory changed/);
+  await assert.rejects(tools.bash.execute(changed, {command}, undefined, undefined, ctx), /Try again/);
   settings.cwd = cwd; ctx.ui.select = select;
   if (!process.env.HEXBOT_DAEMON_EXECUTABLE) return;
   settings.approvalMode = 'off'; choice = 'deny';
@@ -149,4 +157,5 @@ test('a missing native process helper cannot run even an approved Windows comman
   const env = {...process.env}; delete env.HEXBOT_DAEMON_EXECUTABLE;
   const script = `const {createWindowsShellOperations}=await import(${JSON.stringify(new URL('./windows-shell.ts', import.meta.url).href)}); try {await createWindowsShellOperations().exec(${JSON.stringify(`[IO.File]::WriteAllText('${marker.replaceAll("'", "''")}', 'bad')`)}, ${JSON.stringify(cwd)}, {onData(){}}); process.exitCode=1;} catch(error) {if(!/native Hexbot process helper is unavailable/.test(error.message)) throw error; console.log('refused');}`;
   assert.match(execFileSync(process.execPath, ['--input-type=module', '-e', script], {env, encoding:'utf8'}), /refused/);
+  assert.equal(existsSync(marker), false);
 });

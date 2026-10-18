@@ -193,6 +193,10 @@ pub const NEVER_WRITTEN: &str =
 /// when it is relative and the user's home is unavailable. Windows environment
 /// roots are explicit policy entries and never become relative paths.
 fn policy_root(entry: &str) -> Option<PathBuf> {
+    #[cfg(windows)]
+    if entry.starts_with('/') {
+        return None;
+    }
     if entry.starts_with('%') {
         #[cfg(windows)]
         {
@@ -355,8 +359,26 @@ pub fn isolation_available() -> bool {
 pub(crate) fn windows_protection(
     home: &Path,
     roots: &[PathBuf],
+    git_env: &std::collections::BTreeMap<String, String>,
 ) -> Result<(Vec<PathBuf>, Vec<PathBuf>)> {
-    let scan = workspace_protected(roots, WORKSPACE_DIRS)?;
+    let global = git_config_files(|name| {
+        git_env.get(name).map(OsString::from).or_else(|| {
+            if [
+                "HOME",
+                "GIT_CONFIG_GLOBAL",
+                "GIT_CONFIG_SYSTEM",
+                "GIT_CONFIG_NOSYSTEM",
+                "XDG_CONFIG_HOME",
+            ]
+            .contains(&name)
+            {
+                None
+            } else {
+                std::env::var_os(name)
+            }
+        })
+    });
+    let scan = workspace_protected_with_configs(roots, WORKSPACE_DIRS, global)?;
     if scan.failure || scan.exhausted {
         return Err(Error::new(
             5240,
@@ -934,6 +956,7 @@ fn global_git_configs() -> Vec<PathBuf> {
 #[derive(Default)]
 struct GitConfigs {
     roots: Vec<PathBuf>,
+    global: Vec<PathBuf>,
     files: HashMap<PathBuf, Vec<(String, String)>>,
     includes: HashSet<PathBuf>,
     steps: usize,
@@ -1026,7 +1049,7 @@ fn git_hooks(
         .iter()
         .flat_map(|dir| [dir.join("config"), dir.join("config.worktree")])
         .map(|file| (file, 0, false))
-        .chain(global_git_configs().into_iter().map(|file| (file, 0, true)))
+        .chain(configs.global.iter().cloned().map(|file| (file, 0, true)))
         .collect();
     let mut visited = HashSet::new();
     let mut own = HashSet::new();
@@ -1173,8 +1196,16 @@ fn record_metadata(
     }
 }
 fn workspace_protected(roots: &[PathBuf], limit: usize) -> Result<WorkspaceProtected> {
+    workspace_protected_with_configs(roots, limit, global_git_configs())
+}
+fn workspace_protected_with_configs(
+    roots: &[PathBuf],
+    limit: usize,
+    global: Vec<PathBuf>,
+) -> Result<WorkspaceProtected> {
     let mut protected = WorkspaceProtected::default();
     let mut configs = GitConfigs {
+        global,
         roots: roots
             .iter()
             .filter_map(|root| real_root(root).ok())
@@ -1871,7 +1902,13 @@ pub(crate) fn isolated_command_with_outputs(
             } else {
                 approved_outputs
             };
-            return crate::windows_sandbox::command(home, program, writable, roots);
+            return crate::windows_sandbox::command(
+                home,
+                program,
+                writable,
+                roots,
+                confine == Confine::ReadOnly,
+            );
         }
         warn_unavailable_isolation();
         return Ok(tokio::process::Command::new(program));

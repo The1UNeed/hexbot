@@ -318,6 +318,18 @@ export const OPEN_SOURCE: OpenSourceGroup[] = [
         repository: 'https://github.com/rust-lang/flate2-rs'
       },
       {
+        license: 'MIT',
+        name: 'zip',
+        packages: ['zip'],
+        repository: 'https://github.com/zip-rs/zip2'
+      },
+      {
+        license: 'MIT OR Apache-2.0',
+        name: 'windows-rs',
+        packages: ['windows-sys'],
+        repository: 'https://github.com/microsoft/windows-rs'
+      },
+      {
         license: 'MIT OR Apache-2.0',
         name: 'tempfile',
         packages: ['tempfile'],

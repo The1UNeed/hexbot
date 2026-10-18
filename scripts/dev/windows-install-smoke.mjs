@@ -2,7 +2,7 @@
 // The debug installer alone trusts the public fixture signing key used here.
 import assert from 'node:assert/strict'
 import { createReadStream } from 'node:fs'
-import { access, copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { access, copyFile, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises'
 import { execFile } from 'node:child_process'
 import { once } from 'node:events'
 import http from 'node:http'
@@ -20,7 +20,7 @@ const updates = join(packages, 'updates')
 const installer = join(root, 'backend/hexbot-installer/target/debug/hexbot-install.exe')
 const run = promisify(execFile)
 const temporary = await mkdtemp(join(tmpdir(), 'hexbot Windows install '))
-const home = join(temporary, 'user')
+const home = join(temporary, '用户 测试')
 const hexbotHome = join(home, '.hexbot')
 const apps = join(home, 'AppData/Local/Programs')
 const serviceRoot = join(temporary, 'services')
@@ -52,9 +52,9 @@ delete env.HEXBOT_PI_EXECUTABLE
 delete env.HEXBOT_PI_SCRIPT
 let installed = false
 const receipt = () => readFile(join(hexbotHome, 'install.json'), 'utf8').then(JSON.parse)
-async function command(executable, args, timeout = 180_000) {
+async function command(executable, args, timeout = 180_000, options = {}) {
   try {
-    const result = await run(executable, args, { env, timeout, maxBuffer: 32 * 1024 * 1024 })
+    const result = await run(executable, args, { env, timeout, maxBuffer: 32 * 1024 * 1024, ...options })
     log.push({ executable, args, ...result })
     return result
   } catch (error) {
@@ -118,7 +118,18 @@ try {
     await new Promise(resolve => setTimeout(resolve, 250))
   } while (true)
   assert.equal(status.running, true, JSON.stringify(status))
-  await command(dispatcher, ['pair'])
+  const cli = join(home, '.local/bin/hexbot.exe')
+  const cliReceipt = join(home, '.local/bin/hexbot-cli.json')
+  await access(cli)
+  assert.equal(await realpath(JSON.parse(await readFile(cliReceipt, 'utf8')).home), await realpath(hexbotHome))
+  // The native shim must choose its receipt's Unicode home even when a shell
+  // inherits a different HEXBOT_HOME. Keep the default Windows console code page.
+  const cliEnv = { ...env, HEXBOT_HOME: join(temporary, 'unrelated-home') }
+  assert.equal(JSON.parse((await command(cli, ['status', '--json'], 180_000, { env: cliEnv })).stdout).running, true)
+  const cmd = process.env.ComSpec || 'cmd.exe'
+  const cmdStatus = await command(cmd, ['/d', '/s', '/c', `""${cli}" status --json"`], 180_000, { env: cliEnv, windowsVerbatimArguments: true })
+  assert.equal(JSON.parse(cmdStatus.stdout).running, true)
+  await command(cli, ['pair'], 180_000, { env: cliEnv })
   await install(['--repair'])
   // Update the running service to another genuinely built runtime version.
   const next = JSON.parse(await readFile(join(packages, 'versions.json'), 'utf8')).next
@@ -131,13 +142,15 @@ try {
   assert.match((await command(dispatcher, ['--version'])).stdout, new RegExp(next.replaceAll('.', '\\.')))
   await install(['--uninstall'])
   await assert.rejects(access(dispatcher))
+  await assert.rejects(access(cli))
+  await assert.rejects(access(cliReceipt))
   assert.equal(await readFile(sentinel, 'utf8'), 'User data survives repair, change and uninstall.')
   // Removal of data is a separate explicit action.
   await install(['--uninstall', '--remove-data'])
   await assert.rejects(access(sentinel))
   assert(requests.some(path => path.endsWith('.exe')), 'NSIS installer payloads were downloaded')
   assert(requests.some(path => path.endsWith('.tar.gz')), 'Native daemon archive was downloaded')
-  console.log(JSON.stringify({ passed: true, scenarios: ['NSIS Full install', 'repair', 'change Full to Client', 'app uninstall', 'Headless activation', 'Task Scheduler service', 'pairing', 'Headless repair', 'running service update', 'service uninstall', 'preserve and remove data'], packages, artifacts }, null, 2))
+  console.log(JSON.stringify({ passed: true, scenarios: ['NSIS Full install', 'repair', 'change Full to Client', 'app uninstall', 'Headless activation', 'Task Scheduler service', 'Unicode native CLI under the default cmd code page', 'pairing', 'Headless repair', 'running service update', 'service uninstall', 'preserve and remove data'], packages, artifacts }, null, 2))
 } finally {
   if (installed) await install(['--uninstall']).catch(error => console.error(`Cleanup: ${error.message}`))
   server.closeAllConnections()

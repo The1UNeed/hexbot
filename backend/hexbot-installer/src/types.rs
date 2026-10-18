@@ -195,6 +195,8 @@ pub struct InstalledApp {
 
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct Installed {
+    #[serde(skip)]
+    pub target: Option<Target>,
     pub receipt: Option<Receipt>,
     pub apps: Vec<InstalledApp>,
     pub service: bool,
@@ -203,6 +205,24 @@ pub struct Installed {
 }
 
 impl Installed {
+    pub(crate) fn selected_app(&self) -> Option<&InstalledApp> {
+        let option = self.option()?;
+        if option == InstallOption::Headless {
+            return None;
+        }
+        self.receipt
+            .as_ref()
+            .and_then(|receipt| {
+                self.apps.iter().find(|app| {
+                    app.option == option
+                        && receipt.paths.iter().any(|path| {
+                            path == &app.path || path.parent() == Some(app.path.as_path())
+                        })
+                })
+            })
+            .or_else(|| self.apps.iter().find(|app| app.option == option))
+    }
+
     pub fn option(&self) -> Option<InstallOption> {
         self.receipt
             .as_ref()
@@ -218,17 +238,61 @@ impl Installed {
     }
 
     pub fn track(&self) -> Option<Track> {
-        self.receipt.as_ref().map(|r| r.channel).or_else(|| {
-            self.apps.first().and_then(|a| {
+        if self.target != Some(Target::WindowsX86_64) {
+            return self
+                .receipt
+                .as_ref()
+                .map(|receipt| receipt.channel)
+                .or_else(|| {
+                    self.apps.first().and_then(|app| {
+                        if app.app_id.ends_with(".dev") {
+                            None
+                        } else if app.app_id.ends_with(".nightly") {
+                            Some(Track::Nightly)
+                        } else {
+                            Some(Track::Stable)
+                        }
+                    })
+                });
+        }
+        self.selected_app()
+            .and_then(|a| {
                 if a.app_id.ends_with(".dev") {
                     None
+                } else if let Some(version) = a
+                    .version
+                    .as_deref()
+                    .and_then(|version| semver::Version::parse(version).ok())
+                {
+                    Some(if version.pre.as_str().starts_with("nightly.") {
+                        Track::Nightly
+                    } else {
+                        Track::Stable
+                    })
                 } else if a.app_id.ends_with(".nightly") {
                     Some(Track::Nightly)
                 } else {
                     Some(Track::Stable)
                 }
             })
-        })
+            .or_else(|| self.receipt.as_ref().map(|r| r.channel))
+    }
+
+    pub fn version(&self) -> Option<&str> {
+        if self.target != Some(Target::WindowsX86_64) {
+            return self
+                .receipt
+                .as_ref()
+                .map(|receipt| receipt.version.as_str())
+                .or_else(|| self.apps.iter().find_map(|app| app.version.as_deref()));
+        }
+        self.selected_app()
+            .and_then(|app| app.version.as_deref())
+            .or_else(|| {
+                self.receipt
+                    .as_ref()
+                    .map(|receipt| receipt.version.as_str())
+            })
     }
 }
 

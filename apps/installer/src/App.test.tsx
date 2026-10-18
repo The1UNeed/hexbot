@@ -117,7 +117,7 @@ describe('installer', () => {
     const executable = `${home}\\AppData\\Local\\Programs\\app.hexbot.desktop\\Hexbot.exe`
 
     const detection = { ...fresh, platform: 'windows/x86_64', target: 'windows-x86_64', locations: {
-      home, apps: `${home}\\AppData\\Local\\Programs`, cli: `${home}\\.local\\bin\\hexbot.cmd`, hexbotHome: `${home}\\.hexbot`
+      home, apps: `${home}\\AppData\\Local\\Programs`, cli: `${home}\\.local\\bin\\hexbot.exe`, hexbotHome: `${home}\\.hexbot`
     } }
 
     const api = fakeApi(detection)

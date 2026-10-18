@@ -15,10 +15,10 @@ const required = process.env.HEXBOT_REQUIRE_SANDBOX_TESTS === '1';
 
 test('real Windows sandbox bridge confines PowerShell and cleans permissions after completion, timeout and abort', {skip:!windows || !helper && !required && 'build the native daemon to run AppContainer integration', timeout:120000}, async t => {
   assert(helper && existsSync(helper), 'HEXBOT_DAEMON_EXECUTABLE must name the built daemon');
-  const previous = {HEXBOT_DAEMON_EXECUTABLE:process.env.HEXBOT_DAEMON_EXECUTABLE, GIT_CONFIG_GLOBAL:process.env.GIT_CONFIG_GLOBAL, GIT_CONFIG_NOSYSTEM:process.env.GIT_CONFIG_NOSYSTEM};
+  const previous = {HEXBOT_DAEMON_EXECUTABLE:process.env.HEXBOT_DAEMON_EXECUTABLE, GIT_CONFIG_GLOBAL:process.env.GIT_CONFIG_GLOBAL, GIT_CONFIG_NOSYSTEM:process.env.GIT_CONFIG_NOSYSTEM, HEXBOT_GIT_SCAN_ENV:process.env.HEXBOT_GIT_SCAN_ENV};
   t.after(() => {for (const [key, value] of Object.entries(previous)) {if (value === undefined) delete process.env[key]; else process.env[key] = value;}});
   process.env.HEXBOT_DAEMON_EXECUTABLE = helper;
-  process.env.GIT_CONFIG_GLOBAL = nullDevice; process.env.GIT_CONFIG_NOSYSTEM = '1';
+  process.env.GIT_CONFIG_GLOBAL = nullDevice; process.env.GIT_CONFIG_NOSYSTEM = '1'; delete process.env.HEXBOT_GIT_SCAN_ENV;
   assert.equal(isolationAvailable(), true, 'the real native containment probe must pass');
   const root = realpathSync.native(mkdtempSync(join(tmpdir(), 'hexbot-pi-appcontainer-')));
   t.after(() => rmSync(root, {recursive:true, force:true}));
@@ -47,6 +47,21 @@ Write-Output 'sandbox works 🦉'`);
   assert.equal(readFileSync(join(work, 'result.txt'), 'utf8'), 'written');
   assert.equal(readFileSync(join(output, 'result.txt'), 'utf8'), 'output');
   assert.equal(readFileSync(join(root, 'outside.txt'), 'utf8'), 'outside');
+  // A Git override kept by the owner must still protect the hooks it loads,
+  // even though the command receives a sanitized environment without overrides.
+  const global = join(root, 'owner.gitconfig');
+  mkdirSync(join(work, '.githooks'));
+  writeFileSync(global, '[core]\n\thooksPath = .githooks\n');
+  process.env.HEXBOT_GIT_SCAN_ENV = JSON.stringify({HOME:process.env.HOME, GIT_CONFIG_GLOBAL:global, GIT_CONFIG_NOSYSTEM:'1'});
+  delete process.env.GIT_CONFIG_GLOBAL;
+  const hooks = await run(`$ErrorActionPreference='Stop';
+if ($env:GIT_CONFIG_GLOBAL) {exit 10};
+try {[IO.File]::WriteAllText(${quote(join(work, '.githooks/pre-commit'))}, 'bad'); exit 11} catch {};
+[IO.File]::WriteAllText(${quote(join(work, 'ordinary.txt'))}, 'allowed'); Write-Output 'owner hooks protected'`);
+  assert.equal(hooks.exitCode, 0, hooks.text);
+  assert.match(hooks.text, /owner hooks protected/);
+  assert.equal(existsSync(join(work, '.githooks/pre-commit')), false);
+  process.env.GIT_CONFIG_GLOBAL = nullDevice; delete process.env.HEXBOT_GIT_SCAN_ENV;
   const manual = await run(`try {[IO.File]::WriteAllText(${quote(join(work, 'manual.txt'))}, 'bad'); exit 11} catch {}; Write-Output 'read only'`, []);
   assert.equal(manual.exitCode, 0, manual.text);
   assert.equal(existsSync(join(work, 'manual.txt')), false);

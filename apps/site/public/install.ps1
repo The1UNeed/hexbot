@@ -56,7 +56,18 @@ function Invoke-HexbotBootstrap {
         Write-Host "Downloading the Hexbot installer ($track)."
         $executable = Join-Path $temporary 'hexbot-install.exe'
         Get-HexbotFile $address $executable | Out-Null
-        if ((Get-FileHash -LiteralPath $executable -Algorithm SHA256).Hash.ToLowerInvariant() -cne $checksum) {
+        # Use .NET directly so checksum verification does not depend on the
+        # PowerShell module search path inherited from the caller.
+        $sha256 = [Security.Cryptography.SHA256]::Create()
+        $stream = $null
+        try {
+            $stream = [IO.File]::OpenRead($executable)
+            $actual = [BitConverter]::ToString($sha256.ComputeHash($stream)).Replace('-', '').ToLowerInvariant()
+        } finally {
+            if ($stream) { $stream.Dispose() }
+            $sha256.Dispose()
+        }
+        if ($actual -cne $checksum) {
             throw 'The installer checksum does not match. Run the install command again.'
         }
         & $executable @InstallerArguments
