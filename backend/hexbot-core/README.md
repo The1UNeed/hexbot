@@ -116,6 +116,11 @@ it also installs over SSH when nobody is signed in at the screen.
   request without changing raw history or frozen options. `purge_memory: false`
   retains native history, raw logs and frozen options as well as legacy history.
   Reading retained history still requires the original bot configuration.
+  Catalog deletion and process retirement use the catalog's bot and owner even
+  before a legacy chat has a native root. Each foreign ancestor stops traversal,
+  including a different bot with the same owner. Unknown ownership authorizes
+  only the retirement root, also on restart. Explicit low-level store deletion
+  remains a separate destructive operation.
   Old tombstones without ownership metadata retain their native-only recovery
   behavior.
   The one-shot upgrade backup already copies the entire runtime database,

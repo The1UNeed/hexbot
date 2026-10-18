@@ -2078,7 +2078,7 @@ pub(crate) fn retire_bot_delete(home: &Path, caller: &str, name: &str) -> Result
         // The journal must precede retirement in the other store, including if
         // this process stops between these commits. Retention is not changed.
         if let Err(error) =
-            runtime_store::mark_bot_retiring(home, &targets, required(&journal, "attempt")?)
+            runtime_store::mark_bot_retiring(home, name, &targets, required(&journal, "attempt")?)
         {
             let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
             rollback_bot_delete_in(home, name, &tx, Some(&targets), false)?;

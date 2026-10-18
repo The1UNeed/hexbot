@@ -238,20 +238,57 @@ fn descendant_ids(conn: &Connection, stored: &str) -> Result<Vec<String>> {
     .map(|row| common::required(&row, "id").map(str::to_owned))
     .collect()
 }
-fn deletion_targets(conn: &Connection, stored: &str) -> Result<Vec<String>> {
-    let ownership = conn.query_row(
+fn deletion_owner(conn: &Connection, stored: &str) -> Result<Option<(String, String)>> {
+    Ok(conn.query_row(
         "SELECT bot,owner FROM native_sessions WHERE stored_id=?1 UNION SELECT bot,owner FROM native_delete_options WHERE session_id=?1 LIMIT 1",
         [stored], |r| Ok((r.get::<_, String>(0)?,r.get::<_, String>(1)?)),
-    ).optional()?;
+    ).optional()?)
+}
+fn owned_deletion_targets(
+    conn: &Connection,
+    stored: &str,
+    bot: &str,
+    owner: &str,
+) -> Result<Vec<String>> {
+    let foreign: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM native_sessions WHERE stored_id=?1 AND (bot<>?2 OR owner<>?3)) OR EXISTS(SELECT 1 FROM native_delete_options WHERE session_id=?1 AND (bot<>?2 OR owner<>?3))", params![stored,bot,owner], |r| r.get(0))?;
+    if foreign {
+        return Err(crate::Error::new(
+            4302,
+            "history belongs to another bot or owner",
+        ));
+    }
+    common::rows(conn,
+        "WITH RECURSIVE tree(id) AS (SELECT ?1 UNION SELECT s.stored_id FROM native_sessions s JOIN tree t ON json_extract(s.options,'$.parent_session')=t.id WHERE s.bot=?2 AND s.owner=?3 AND NOT EXISTS(SELECT 1 FROM native_delete_options o WHERE o.session_id=s.stored_id AND (o.bot<>?2 OR o.owner<>?3))) SELECT id FROM tree",
+        &[&stored,&bot,&owner])?.into_iter().map(|row| common::required(&row,"id").map(str::to_owned)).collect()
+}
+/// Explicit storage deletion and genuinely ownerless old tombstones retain
+/// their native-only traversal. Catalog retirement must never use that fallback.
+fn deletion_targets(conn: &Connection, stored: &str) -> Result<Vec<String>> {
+    let ownership = deletion_owner(conn, stored)?;
     let Some((bot, owner)) = ownership else {
         return descendant_ids(conn, stored);
     };
-    common::rows(conn,
-        "WITH RECURSIVE tree(id) AS (SELECT ?1 UNION SELECT s.stored_id FROM native_sessions s JOIN tree t ON json_extract(s.options,'$.parent_session')=t.id WHERE s.bot=?2 AND s.owner=?3) SELECT id FROM tree",
-        &[&stored,&bot,&owner])?.into_iter().map(|row| common::required(&row,"id").map(str::to_owned)).collect()
+    owned_deletion_targets(conn, stored, &bot, &owner)
 }
-fn mark_targets(conn: &Connection, stored: &str, cataloged: bool) -> Result<Vec<String>> {
-    let targets = deletion_targets(conn, stored)?;
+fn retirement_targets(home: &Path, conn: &Connection, stored: &str) -> Result<Vec<String>> {
+    let ownership = crate::db::open(home)?.query_row(
+        "SELECT bot,owner_id FROM sections WHERE id=?1 UNION SELECT s.bot,r.owner_id FROM room_sessions s JOIN rooms r ON r.id=s.room_id JOIN bots b ON b.name=s.bot AND b.owner_id=r.owner_id WHERE s.stored_session_id=?1 LIMIT 1",
+        [stored], |r| Ok((r.get::<_, String>(0)?,r.get::<_, String>(1)?)),
+    ).optional()?.or(deletion_owner(conn, stored)?);
+    match ownership {
+        Some((bot, owner)) => owned_deletion_targets(conn, stored, &bot, &owner),
+        None => Ok(vec![stored.to_owned()]),
+    }
+}
+pub(crate) fn retiring_descendants(home: &Path, stored: &str) -> Result<Vec<String>> {
+    retirement_targets(home, &open(home)?, stored)
+}
+fn mark_targets(
+    conn: &Connection,
+    stored: &str,
+    cataloged: bool,
+    targets: Vec<String>,
+) -> Result<Vec<String>> {
     for target in &targets {
         common::identifier(target)?;
         if delete_completed(conn, target)? {
@@ -362,7 +399,12 @@ pub fn mark_deleted(home: &Path, stored: &str) -> Result<Vec<String>> {
         let listed = catalog_ids(home)?;
         let mut conn = open(home)?;
         let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        let targets = mark_targets(&tx, stored, listed.contains(stored))?;
+        let targets = mark_targets(
+            &tx,
+            stored,
+            listed.contains(stored),
+            deletion_targets(&tx, stored)?,
+        )?;
         tx.commit()?;
         Ok(targets)
     })
@@ -372,7 +414,12 @@ pub(crate) fn mark_retiring(home: &Path, stored: &str) -> Result<Retirement> {
         let listed = catalog_ids(home)?;
         let mut conn = open(home)?;
         let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        let targets = mark_targets(&tx, stored, listed.contains(stored))?;
+        let targets = mark_targets(
+            &tx,
+            stored,
+            listed.contains(stored),
+            retirement_targets(home, &tx, stored)?,
+        )?;
         let retirement = claim_retirement(&tx, targets)?;
         tx.commit()?;
         Ok(retirement)
@@ -382,7 +429,7 @@ pub(crate) fn mark_room_retiring(home: &Path, stored: &str, room: &str) -> Resul
     with_tombstone(home, || {
         let mut conn = open(home)?;
         let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        let targets = mark_targets(&tx, stored, false)?;
+        let targets = mark_targets(&tx, stored, false, retirement_targets(home, &tx, stored)?)?;
         for target in &targets {
             tx.execute("UPDATE native_delete_pending SET root_id=?,cataloged=2 WHERE session_id=? AND cataloged=0 AND root_id=?", params![room,target,stored])?;
         }
@@ -434,13 +481,19 @@ pub(crate) fn rollback_retiring(home: &Path, retirement: &Retirement) -> Result<
 
 /// The catalog journal persists this attempt before native retirement starts.
 /// Callers already hold the product boundary, before either database writer.
-pub(crate) fn mark_bot_retiring(home: &Path, targets: &[Value], attempt: &str) -> Result<()> {
+pub(crate) fn mark_bot_retiring(
+    home: &Path,
+    bot: &str,
+    targets: &[Value],
+    attempt: &str,
+) -> Result<()> {
     let listed = catalog_ids(home)?;
     let mut conn = open(home)?;
     let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
     for target in targets {
         let stored = common::required(target, "id")?;
-        for id in mark_targets(&tx, stored, listed.contains(stored))? {
+        let owned = owned_deletion_targets(&tx, stored, bot, common::required(target, "owner")?)?;
+        for id in mark_targets(&tx, stored, listed.contains(stored), owned)? {
             tx.execute("INSERT OR IGNORE INTO native_delete_claims SELECT ?1,session_id FROM native_delete_pending WHERE session_id=?2", params![attempt,id])?;
         }
     }
@@ -594,14 +647,8 @@ fn with_catalog_delete_locked(
         let stored = common::required(root, "id")?;
         let bot = common::required(root, "bot")?;
         let owner = common::required(root, "owner")?;
-        let foreign: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM native_sessions WHERE stored_id=?1 AND (bot<>?2 OR owner<>?3)) OR EXISTS(SELECT 1 FROM native_delete_options WHERE session_id=?1 AND (bot<>?2 OR owner<>?3))", params![stored,bot,owner], |r| r.get(0))?;
-        if foreign {
-            return Err(crate::Error::new(
-                4302,
-                "history belongs to another bot or owner",
-            ));
-        }
-        for target in mark_targets(&tx, stored, listed.contains(stored))? {
+        let owned = owned_deletion_targets(&tx, stored, bot, owner)?;
+        for target in mark_targets(&tx, stored, listed.contains(stored), owned)? {
             targets.insert(
                 target,
                 (
@@ -788,8 +835,24 @@ pub(crate) fn purge_locked(home: &Path, stored: &str, retry_completed: bool) -> 
     let targets = (|| -> Result<Vec<String>> {
         let mut conn = open(home)?;
         let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        let targets = deletion_targets(&tx, stored)?
-            .into_iter()
+        // A modern retirement without ownership claimed only its root. It
+        // cannot gain descendants on restart. Only explicit storage deletion
+        // and genuinely old ownerless markers keep the historical fallback.
+        let ownerless_pending = !retry_completed
+            && deletion_owner(&tx, stored)?.is_none()
+            && tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM native_delete_pending WHERE session_id=?)",
+                [stored],
+                |r| r.get::<_, bool>(0),
+            )?;
+        let selected = if ownerless_pending {
+            vec![stored.to_owned()]
+        } else {
+            deletion_targets(&tx, stored)?
+        };
+        let targets = selected
+            .iter()
+            .cloned()
             .filter_map(|target| match delete_completed(&tx, &target) {
                 Ok(true) if !retry_completed => None,
                 Ok(_) => Some(Ok(target)),
@@ -798,7 +861,7 @@ pub(crate) fn purge_locked(home: &Path, stored: &str, retry_completed: bool) -> 
             .collect::<Result<Vec<_>>>()?;
         // Purging is already past the catalog boundary, or an explicit store
         // delete. It cannot be undone by a still-finishing retirement.
-        mark_targets(&tx, stored, false)?;
+        mark_targets(&tx, stored, false, selected)?;
         for target in &targets {
             tx.execute("INSERT OR IGNORE INTO native_delete_options SELECT stored_id,bot,owner,1 FROM native_sessions WHERE stored_id=?", [target])?;
             // An explicit delete retries even a completed ID, for example when
@@ -2786,6 +2849,44 @@ pub(crate) fn check_deleted(conn: &Connection, stored: &str) -> Result<()> {
 #[cfg(test)]
 mod deletion_attempt_tests {
     use super::*;
+
+    #[test]
+    fn unknown_retirement_never_gains_a_branch_during_restart() {
+        let home = tempfile::tempdir().unwrap();
+        let h = home.path();
+        crate::db::migrate(h).unwrap();
+        let conn = open(h).unwrap();
+        conn.execute("INSERT INTO native_sessions VALUES('child','local','owl','KEEP','{\"parent_session\":\"unknown\"}')", []).unwrap();
+        append(h, "child", json!({"role":"user","text":"KEEP"})).unwrap();
+        fs::write(
+            session_dir(h, "child").unwrap().join("conversation.jsonl"),
+            "RAW",
+        )
+        .unwrap();
+        let before = history(h, "child").unwrap();
+        let retirement = mark_retiring(h, "unknown").unwrap();
+        assert_eq!(retirement.targets, ["unknown"]);
+        for _ in 0..2 {
+            finish_deletes(h).unwrap();
+            assert_eq!(history(h, "child").unwrap(), before);
+            assert_eq!(
+                fs::read(session_dir(h, "child").unwrap().join("conversation.jsonl")).unwrap(),
+                b"RAW"
+            );
+            assert_eq!(
+                conn.query_row(
+                    "SELECT count(*) FROM native_deleted WHERE session_id='child'",
+                    [],
+                    |r| r.get::<_, i64>(0)
+                )
+                .unwrap(),
+                0
+            );
+        }
+        // Explicit store deletion remains a separate destructive operation.
+        delete(h, "unknown").unwrap();
+        assert!(history(h, "child").unwrap().is_empty());
+    }
 
     #[test]
     fn overlapping_retirements_release_only_their_own_provisional_markers() {

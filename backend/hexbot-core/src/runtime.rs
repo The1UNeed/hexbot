@@ -2359,7 +2359,7 @@ impl Runtime {
             .map_err(|error| Error::new(5200, format!("section retirement failed: {error}")))??
         };
         // Keep the original set: a partial purge can remove descendant relationships.
-        if let Err(error) = self.close_stored(owner, stored).await {
+        if let Err(error) = self.close_tree(owner, stored, true).await {
             self.rollback_retirements(vec![retirement]).await?;
             return Err(error);
         }
@@ -2380,6 +2380,9 @@ impl Runtime {
         .map_err(|error| Error::new(5200, format!("section rollback failed: {error}")))?
     }
     pub async fn close_stored(&self, owner: &str, stored: &str) -> Result<bool> {
+        self.close_tree(owner, stored, false).await
+    }
+    async fn close_tree(&self, owner: &str, stored: &str, deleting: bool) -> Result<bool> {
         let mut closed = false;
         let mut pending = VecDeque::from([stored.to_owned()]);
         let mut seen = std::collections::HashSet::new();
@@ -2390,6 +2393,10 @@ impl Runtime {
             // Closing a parent prevents new children. Collect its children only
             // after that boundary, including any whose opening was in progress.
             closed |= self.close_one(owner, &id).await?;
+            if deleting {
+                pending.extend(store::retiring_descendants(&self.home, &id)?);
+                continue;
+            }
             for child in common::rows(
                 &store::open(&self.home)?,
                 "SELECT stored_id FROM native_sessions WHERE json_extract(options,'$.parent_session')=?",
