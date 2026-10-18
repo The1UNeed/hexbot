@@ -8,20 +8,24 @@ use std::{collections::HashSet, path::Path};
 pub fn get(home: &Path, caller: &str, room: &str) -> Result<Value> {
     user(home, caller)?;
     let conn = db::open(home)?;
-    let mut row = rows(&conn, "SELECT * FROM rooms WHERE id=?", &[&room])?
+    get_with_conn(&conn, caller, room)
+}
+
+fn get_with_conn(conn: &rusqlite::Connection, caller: &str, room: &str) -> Result<Value> {
+    let mut row = rows(conn, "SELECT * FROM rooms WHERE id=?", &[&room])?
         .into_iter()
         .next()
         .ok_or_else(|| Error::new(4230, format!("room not found: {room}")))?;
     row["limits"] = json_field(&row["limits_json"]);
     row.as_object_mut().unwrap().remove("limits_json");
     row["members"] = json!(rows(
-        &conn,
+        conn,
         "SELECT m.*,COALESCE(NULLIF(u.display_name,''),NULLIF(b.display_name,'')) AS display_name FROM room_members m LEFT JOIN users u ON m.member_kind='human' AND u.id=m.member_id LEFT JOIN bots b ON m.member_kind='bot' AND b.name=m.member_id WHERE m.room_id=? ORDER BY m.added_at,m.member_id",
         &[&room],
     )?);
     // Running turns let a reconnected client rebuild who is working.
     row["turns"] = json!(rows(
-        &conn,
+        conn,
         "SELECT t.bot,s.live_session_id FROM room_turns t LEFT JOIN room_sessions s ON s.room_id=t.room_id AND s.bot=t.bot WHERE t.room_id=? AND t.status='running' ORDER BY t.started_at,t.bot",
         &[&room],
     )?);
@@ -74,8 +78,21 @@ pub fn append(
     get(home, caller, room)?;
     let mut conn = db::open(home)?;
     let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    let event = append_with_conn(&tx, room, kind, actor_kind, actor, payload)?;
+    tx.commit()?;
+    Ok(event)
+}
+
+fn append_with_conn(
+    conn: &rusqlite::Connection,
+    room: &str,
+    kind: &str,
+    actor_kind: &str,
+    actor: Option<&str>,
+    payload: Value,
+) -> Result<Value> {
     let time = now();
-    tx.execute(
+    conn.execute(
         "INSERT INTO room_events(room_id,seq,kind,actor_kind,actor_id,payload_json,created_at) SELECT ?,COALESCE(MAX(seq),0)+1,?,?,?,?,? FROM room_events WHERE room_id=?",
         params![
             room,
@@ -87,16 +104,15 @@ pub fn append(
             room
         ],
     )?;
-    let seq: i64 = tx.query_row(
+    let seq: i64 = conn.query_row(
         "SELECT MAX(seq) FROM room_events WHERE room_id=?",
         [room],
         |r| r.get(0),
     )?;
-    tx.execute(
+    conn.execute(
         "UPDATE rooms SET updated_at=?,last_activity_at=? WHERE id=?",
         params![time, time, room],
     )?;
-    tx.commit()?;
     Ok(
         json!({"room_id":room,"seq":seq,"kind":kind,"actor_kind":actor_kind,"actor_id":actor,"payload":payload,"created_at":time}),
     )
@@ -271,23 +287,29 @@ pub fn call(home: &Path, caller: &str, method: &str, p: &Value) -> Option<Result
             }
             "hexbot.rooms.add_member" => {
                 let room = required(p, "id")?;
-                get(home, caller, room)?;
+                let mut conn = conn;
+                let tx =
+                    conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+                // Recheck existence under the same writer as removal. A join
+                // ordered after deletion must report room not found.
+                get_with_conn(&tx, caller, room)?;
                 let bot = required(p, "bot")?;
                 accessible_bot(home, caller, bot)?;
-                conn.execute(
+                tx.execute(
                     "INSERT INTO room_members VALUES (?,'bot',?,?,?,NULL,0) ON CONFLICT(room_id,member_kind,member_id) DO UPDATE SET left_at=NULL,added_by=excluded.added_by,added_at=excluded.added_at,last_read_seq=0",
                     params![room, bot, caller, now()],
                 )?;
-                let event = append(
-                    home,
-                    caller,
+                let event = append_with_conn(
+                    &tx,
                     room,
                     "member.added",
                     "human",
                     Some(caller),
                     json!({"bot":bot}),
                 )?;
-                Ok(json!({"room":get(home,caller,room)?,"event":event}))
+                let result = get_with_conn(&tx, caller, room)?;
+                tx.commit()?;
+                Ok(json!({"room":result,"event":event}))
             }
             "hexbot.rooms.send" => Ok(json!({
                 "event": append(
@@ -1175,8 +1197,12 @@ fn legacy_usage(
 /// Remove a bot the owner chose; removing the last bot deletes the room.
 /// Callers check ownership first.
 pub fn remove_bot(home: &Path, owner: &str, room: &str, bot: &str) -> Result<Value> {
-    let conn = db::open(home)?;
-    if conn.execute(
+    user(home, owner)?;
+    let mut conn = db::open(home)?;
+    // App closes processes before calling here. Reserve only the synchronous
+    // catalog decision, so joins can still commit while those processes close.
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    if tx.execute(
         "UPDATE room_members SET left_at=? WHERE room_id=? AND member_kind='bot' AND member_id=? AND left_at IS NULL",
         params![now(), room, bot],
     )? == 0
@@ -1186,26 +1212,28 @@ pub fn remove_bot(home: &Path, owner: &str, room: &str, bot: &str) -> Result<Val
             format!("active room member not found: {bot}"),
         ));
     }
-    let event = append(
-        home,
-        owner,
+    get_with_conn(&tx, owner, room)?;
+    let event = append_with_conn(
+        &tx,
         room,
         "member.left",
         "human",
         Some(owner),
         json!({"bot":bot}),
     )?;
-    let mut result = get(home, owner, room)?;
+    let mut result = get_with_conn(&tx, owner, room)?;
     if active_bots(&result).is_empty() {
-        delete(home, room)?;
+        delete_with_conn(home, &tx, room)?;
         result["deleted"] = json!(true);
-        return Ok(json!({"room":result,"event":event}));
+    } else {
+        tx.execute(
+            "UPDATE rooms SET main_bot=NULL WHERE id=? AND main_bot=?",
+            params![room, bot],
+        )?;
+        result = get_with_conn(&tx, owner, room)?;
     }
-    conn.execute(
-        "UPDATE rooms SET main_bot=NULL WHERE id=? AND main_bot=?",
-        params![room, bot],
-    )?;
-    Ok(json!({"room":get(home,owner,room)?,"event":event}))
+    tx.commit()?;
+    Ok(json!({"room":result,"event":event}))
 }
 /// Delete a room and its bots' room transcripts. Callers check ownership first.
 pub fn delete(home: &Path, room: &str) -> Result<Value> {
@@ -1213,11 +1241,15 @@ pub fn delete(home: &Path, room: &str) -> Result<Value> {
     // Reserve the metadata write before destructive transcript cleanup and the
     // incident reads; a deferred snapshot cannot upgrade after another writer.
     let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-    purge_transcripts(home, &tx, room)?;
-    crate::settings::retire_room_incidents(&tx, room)?;
-    tx.execute("DELETE FROM rooms WHERE id=?", [room])?;
+    delete_with_conn(home, &tx, room)?;
     tx.commit()?;
     Ok(json!({"deleted":true}))
+}
+fn delete_with_conn(home: &Path, conn: &rusqlite::Connection, room: &str) -> Result<()> {
+    purge_transcripts(home, conn, room)?;
+    crate::settings::retire_room_incidents(conn, room)?;
+    conn.execute("DELETE FROM rooms WHERE id=?", [room])?;
+    Ok(())
 }
 fn purge_transcripts(home: &Path, conn: &rusqlite::Connection, room: &str) -> Result<()> {
     for row in rows(
