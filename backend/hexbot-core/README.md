@@ -114,8 +114,10 @@ it also installs over SSH when nobody is signed in at the screen.
   pending; restarting alone cannot resolve the conflict. Completed targets
   remain tombstoned. A failed catalog decision rolls back its own
   request without changing raw history or frozen options. `purge_memory: false`
-  still purges native history and leaves legacy history alone. Old tombstones
-  without ownership metadata retain their native-only recovery behavior.
+  retains native history, raw logs and frozen options as well as legacy history.
+  Reading retained history still requires the original bot configuration.
+  Old tombstones without ownership metadata retain their native-only recovery
+  behavior.
   The one-shot upgrade backup already copies the entire runtime database,
   including these requests; cleanup retries do not rerun its deletion plan.
   Session recovery reconciles Pi's durable log with native history and usage;
