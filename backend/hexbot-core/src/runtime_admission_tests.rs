@@ -1441,6 +1441,7 @@ async fn bot_deletion_waits_for_stop_recovery_and_the_input_it_admits() {
         }
     };
     assert_eq!(refusal.code, 4211);
+    assert!(refusal.message.contains("unfinished work"));
     assert!(
         refusal.data.unwrap()["sections"]
             .as_array()

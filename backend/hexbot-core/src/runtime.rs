@@ -157,10 +157,11 @@ struct Staged {
     refs: Vec<String>,
     files: Vec<PathBuf>,
 }
+type SessionAdmission = Arc<Vec<tokio::sync::OwnedRwLockReadGuard<()>>>;
 /// Input on its way into a section: an upload being staged or a message being
 /// sent. Taken under the open lock, so the section cannot retire before the
 /// input lands; closing the section still ends it.
-struct Landing(Arc<Live>);
+struct Landing(Arc<Live>, Option<SessionAdmission>);
 /// One-shot calls have no stored ID for deletion to close. Keep their
 /// admission until actual process cleanup, even if their caller is cancelled.
 struct AdmittedPi {
@@ -189,7 +190,11 @@ impl Landing {
         state.landing += 1;
         #[cfg(test)]
         s.landed.notify_one();
-        Ok(Self(s.clone()))
+        Ok(Self(s.clone(), None))
+    }
+
+    fn into_admission(mut self) -> Option<SessionAdmission> {
+        self.1.take()
     }
 }
 impl Drop for Landing {
@@ -727,11 +732,22 @@ impl Runtime {
         common::identifier(stored)?;
         let lock = self.open_lock(stored);
         let _guard = lock.lock().await;
+        let admission = Arc::new(self.admit_session(bot, stored, None)?);
         let s = self
-            .open_session_locked(owner, bot, stored, None, None, true, false)
+            .open_session_locked(
+                owner,
+                bot,
+                stored,
+                None,
+                None,
+                true,
+                false,
+                admission.clone(),
+            )
             .await?;
         // Retiring takes the open lock too, so the section is still open here.
-        let landing = Landing::new(&s)?;
+        let mut landing = Landing::new(&s)?;
+        landing.1 = Some(admission);
         Ok((s, landing))
     }
     async fn open_session_with_tools(
@@ -767,8 +783,11 @@ impl Runtime {
             };
         let lock = self.open_lock(stored);
         let _guard = lock.lock().await;
-        self.open_session_locked(owner, bot, stored, restricted, overrides, input, false)
-            .await
+        let admission = Arc::new(self.admit_session(bot, stored, overrides)?);
+        self.open_session_locked(
+            owner, bot, stored, restricted, overrides, input, false, admission,
+        )
+        .await
     }
     #[allow(clippy::too_many_arguments)]
     async fn open_session_locked(
@@ -780,8 +799,8 @@ impl Runtime {
         overrides: Option<&Value>,
         input: bool,
         admitting: bool,
+        admission: SessionAdmission,
     ) -> Result<Arc<Live>> {
-        let admission = Arc::new(self.admit_session(bot, stored, overrides)?);
         if self.stopping.load(Ordering::Acquire) {
             return Err(Error::new(5201, "daemon is shutting down"));
         }
@@ -1594,6 +1613,7 @@ impl Runtime {
             }
         });
     }
+    #[cfg(test)]
     async fn submit(
         &self,
         s: &Arc<Live>,
@@ -1602,6 +1622,20 @@ impl Runtime {
         queued: bool,
         chain: Option<Chain>,
         uploads: Option<&[String]>,
+    ) -> Result<Value> {
+        self.submit_admitted(s, text, hidden, queued, chain, uploads, None)
+            .await
+    }
+    #[allow(clippy::too_many_arguments)]
+    async fn submit_admitted(
+        &self,
+        s: &Arc<Live>,
+        text: &str,
+        hidden: bool,
+        queued: bool,
+        chain: Option<Chain>,
+        uploads: Option<&[String]>,
+        mut admission: Option<SessionAdmission>,
     ) -> Result<Value> {
         if self.stopping.load(Ordering::Acquire) {
             return Err(Error::new(5201, "daemon is shutting down"));
@@ -1629,7 +1663,7 @@ impl Runtime {
         if compact {
             let mut ended = s.run_ended.subscribe();
             loop {
-                let (current, _open) = self.input_session(&s, false).await?;
+                let (current, _open) = self.input_session(&s, false, admission.take()).await?;
                 s = current;
                 {
                     let _gate = s.event_gate.lock().unwrap();
@@ -1723,7 +1757,7 @@ impl Runtime {
         let mut command = json!({"type":"prompt","message":text});
         let mut chain = chain;
         let (sent, dropped, intent, reply, fresh) = loop {
-            let (current, _open) = self.input_session(&s, true).await?;
+            let (current, _open) = self.input_session(&s, true, admission.take()).await?;
             s = current;
             let mut run_ended = s.run_ended.subscribe();
             let staged = {
@@ -2026,8 +2060,8 @@ impl Runtime {
         let mut settled = s.settled.subscribe();
         let before = *settled.borrow();
         let finished = tokio::time::timeout(deadline, async {
-            self.submit(&s, text, true, false, chain, None).await?;
-            drop(landing);
+            self.submit_admitted(&s, text, true, false, chain, None, landing.into_admission())
+                .await?;
             loop {
                 if *settled.borrow() != before {
                     break;
@@ -2533,13 +2567,14 @@ impl Runtime {
                     ));
                 }
                 let bot = crate::catalog::bot(&self.home, caller, &bot)?;
-                self.submit(
+                self.submit_admitted(
                     &s,
                     &crate::catalog::kickoff_prompt(&bot),
                     true,
                     false,
                     None,
                     None,
+                    _landing.and_then(Landing::into_admission),
                 )
                 .await?;
                 return Ok(json!({"section":section,"submitted":true}));
@@ -2610,15 +2645,16 @@ impl Runtime {
                 };
                 // Actual admission owns its own boundary after every wait; this
                 // initial landing must not prevent its configuration restart.
-                drop(_landing);
+                let admission = _landing.and_then(Landing::into_admission);
                 let result = self
-                    .submit(
+                    .submit_admitted(
                         &s,
                         required(p, "text")?,
                         p["display_kind"] == "hidden",
                         p["queued"] == true,
                         None,
                         uploads.as_deref(),
+                        admission,
                     )
                     .await?;
                 if p["display_kind"] != "hidden"
@@ -2847,12 +2883,23 @@ impl Runtime {
                 ));
             }
             // A chat takes its bot's current tools; other sections keep theirs.
+            let admission = Arc::new(self.admit_session(bot, stored, None)?);
             let parent = self
-                .open_session_locked(owner, bot, stored, None, None, true, false)
+                .open_session_locked(
+                    owner,
+                    bot,
+                    stored,
+                    None,
+                    None,
+                    true,
+                    false,
+                    admission.clone(),
+                )
                 .await?;
             let _landing = Landing::new(&parent)?;
             drop(guard);
-            self.submit(&parent, text, true, true, chain, None).await
+            self.submit_admitted(&parent, text, true, true, chain, None, Some(admission))
+                .await
         }
         .await;
         if let Err(error) = result {
@@ -5491,6 +5538,11 @@ rl.on('line',line=>{{const c=JSON.parse(line);emit({{type:'response',id:c.id,com
                 Some(&json!({"parent_session":"first"})),
                 false,
                 false,
+                Arc::new(
+                    runtime
+                        .admit_session("owl", "child", Some(&json!({"parent_session":"first"})))
+                        .unwrap(),
+                ),
             )
             .await
             .unwrap();

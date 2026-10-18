@@ -5,7 +5,7 @@ use super::*;
 pub(super) struct InputBoundary {
     // Keep deletion outside the actual enqueue, including callers that reuse
     // a Live after its opener's admission has ended.
-    _admission: Vec<tokio::sync::OwnedRwLockReadGuard<()>>,
+    _admission: SessionAdmission,
     _open: Option<tokio::sync::OwnedMutexGuard<()>>,
     _landing: Option<Landing>,
 }
@@ -34,8 +34,13 @@ impl Runtime {
         &self,
         previous: &Arc<Live>,
         refresh: bool,
+        admission: Option<SessionAdmission>,
     ) -> Result<(Arc<Live>, InputBoundary)> {
         self.check_input_alias(previous)?;
+        let admission = match admission {
+            Some(admission) => admission,
+            None => Arc::new(self.admit_session(&previous.bot, &previous.stored, None)?),
+        };
         let target = self
             .sessions
             .lock()
@@ -65,7 +70,6 @@ impl Runtime {
                 self.check_input_alias(previous)?;
                 store::session_dir(&self.home, &previous.stored)?;
                 common::bot_owner(&self.home, &previous.owner, &previous.bot)?;
-                let admission = self.admit_session(&previous.bot, &previous.stored, None)?;
                 let landing = Landing::new(previous)?;
                 self.register_worker_bridge(previous);
                 return Ok((
@@ -101,6 +105,7 @@ impl Runtime {
                     None,
                     refresh,
                     true,
+                    admission.clone(),
                 )
                 .await?;
             if s.input_generation != previous.input_generation {
@@ -146,9 +151,6 @@ impl Runtime {
                 ));
             }
             self.register_worker_bridge(&s);
-            // open_session_locked owned admission through startup. Re-enter
-            // after it returns, before this caller can enqueue on that Live.
-            let admission = self.admit_session(&s.bot, &s.stored, None)?;
             return Ok((
                 s,
                 InputBoundary {
@@ -487,7 +489,7 @@ impl Runtime {
         let _reservation = InputAdmission::start(&s);
         let _input = self.input_slot(&s).await?;
         loop {
-            let (current, _open) = self.input_session(&s, true).await?;
+            let (current, _open) = self.input_session(&s, true, None).await?;
             s = current;
             let mut ended = s.run_ended.subscribe();
             let admitted = {
