@@ -500,9 +500,10 @@ and its bots run as the owner.
   deletion waits or runs. Opens already in progress finish before the daemon
   captures and closes its conversations. Cancelling the request lets the daemon
   finish the operation. Member removals are ordered per room and reject new
-  starts with 4211 until the operation finishes. An already accepted post stays
-  saved if the room survives removal, but a blocked bot response waits for the
-  next room post or startup reconciliation. Bots may still join while its processes close;
+  posts and bot starts with 4211 until the operation finishes. An already
+  accepted post stays saved if the room survives removal, but a blocked bot
+  response waits for the next room post or startup reconciliation. Bots may
+  still join while its processes close;
   a join can keep the room when its last bot was being removed.
 - `hexbot.rooms.mark_read {id, seq}` → `{room}`
 
