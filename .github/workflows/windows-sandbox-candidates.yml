@@ -8,6 +8,7 @@ on:
     paths:
       - '.github/workflows/windows-sandbox-candidates.yml'
       - 'scripts/dev/windows-sandbox-candidate-smoke.mjs'
+      - 'scripts/dev/fixtures/windows-psec-token-probe.py'
 
 permissions:
   contents: read
@@ -96,7 +97,7 @@ jobs:
           $account = $null
           try {
             $account = New-LocalUser -Name $name -Password $secure -AccountNeverExpires -PasswordNeverExpires -Description 'Disposable Hexbot PSEC validation'
-            Add-LocalGroupMember -SID 'S-1-5-32-545' -Member $account.SID
+            Add-LocalGroupMember -SID 'S-1-5-32-545' -Member $account
             New-Item -ItemType Directory -Path $fixture | Out-Null
             $acl = [Security.AccessControl.DirectorySecurity]::new()
             $acl.SetAccessRuleProtection($true, $false)
@@ -108,6 +109,8 @@ jobs:
             Copy-Item -LiteralPath $env:HEXBOT_TEST_MXC_EXECUTABLE -Destination (Join-Path $fixture 'wxc-exec.exe')
             Copy-Item -LiteralPath (Get-Command node).Source -Destination (Join-Path $fixture 'node.exe')
             Copy-Item -LiteralPath scripts/dev/windows-sandbox-candidate-smoke.mjs -Destination (Join-Path $fixture 'probe.mjs')
+            New-Item -ItemType Directory -Path (Join-Path $fixture 'fixtures') | Out-Null
+            Copy-Item -LiteralPath scripts/dev/fixtures/windows-psec-token-probe.py -Destination (Join-Path $fixture 'fixtures/windows-psec-token-probe.py')
             New-Item -ItemType Directory -Path (Join-Path $fixture 'temp'), (Join-Path $fixture 'appdata') | Out-Null
             @{
               HEXBOT_TEST_MXC_EXECUTABLE = (Join-Path $fixture 'wxc-exec.exe')

@@ -10,6 +10,8 @@
   in [`backend/hexbot-core/README.md`](../backend/hexbot-core/README.md).
 - Pi runtime: `node --test backend/pi-runtime/*.test.mjs` after
   `npm ci --prefix backend/pi-runtime --ignore-scripts --no-audit --no-fund`.
+  The offline search fixture needs real ripgrep on `PATH` or in `HEXBOT_TEST_SEARCH_BIN`.
+  CI stages checksum-pinned ripgrep and fd in that directory before testing.
   CI runs the Rust and Pi suites on Linux, macOS, and Windows. Approval tests use a stub
   sandbox; isolation tests use `sandbox-exec` on macOS and working bubblewrap
   on Linux. CI installs bubblewrap with the AppArmor profile from the install docs.

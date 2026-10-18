@@ -3914,6 +3914,20 @@ mod tests {
         }
         assert!(check_code("print('hello')").is_ok());
         assert!(check_code(r#"shutil.rmtree(r'C:\project\build')"#).is_ok());
+        for name in ["HOME", "USERPROFILE", "SystemRoot", "WINDIR"] {
+            if let Ok(root) = std::env::var(name)
+                && !root.is_empty()
+            {
+                for spelling in [
+                    root.clone(),
+                    root.replace('\\', "\\\\"),
+                    root.replace('\\', "/"),
+                ] {
+                    let code = format!("shutil.rmtree(r'{spelling}')");
+                    assert!(check_code(&code).is_err(), "{name}: {code}");
+                }
+            }
+        }
     }
     /// The deny tier holds for any program, by any spelling; run in a child with a
     /// scratch HOME because the stores are enumerated from the user's home.

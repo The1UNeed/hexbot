@@ -94,6 +94,8 @@ def inspect(spec, report):
     kernel.LocalFree.restype = ctypes.c_void_p
     kernel.OpenProcess.argtypes = [DWORD, BOOL, DWORD]
     kernel.OpenProcess.restype = HANDLE
+    kernel.QueryInformationJobObject.argtypes = [HANDLE, DWORD, ctypes.c_void_p, DWORD, ctypes.POINTER(DWORD)]
+    kernel.QueryInformationJobObject.restype = BOOL
     kernel.CreateFileW.argtypes = [ctypes.c_wchar_p, DWORD, DWORD, ctypes.c_void_p, DWORD, DWORD, HANDLE]
     kernel.CreateFileW.restype = HANDLE
     security.OpenProcessToken.argtypes = [HANDLE, DWORD, ctypes.POINTER(HANDLE)]
@@ -191,8 +193,21 @@ def inspect(spec, report):
         check(not facts["elevated"], "The child token is elevated")
         check(not facts["uiAccess"], "The child token has UIAccess")
         check(not dangerous, "Dangerous privileges are present, including disabled entries: " + ", ".join(dangerous))
+        check(not capabilities, "The child has capabilities despite an empty requested capability list")
     finally:
         kernel.CloseHandle(token)
+
+    ui_mask = DWORD()
+    returned = DWORD()
+    ctypes.set_last_error(0)
+    queried = bool(kernel.QueryInformationJobObject(None, 4, ctypes.byref(ui_mask), ctypes.sizeof(ui_mask), ctypes.byref(returned)))
+    report["ui"] = {
+        "queried": queried,
+        "immediateJobRestrictions": ui_mask.value if queried else None,
+        "winerror": 0 if queried else ctypes.get_last_error(),
+        # NULL queries the immediate job, not ancestor/effective restrictions.
+        "scope": "immediateJob",
+    }
 
     process_access = []
     for name, mask in [("createThread", 0x0002), ("vmOperation", 0x0008), ("vmRead", 0x0010), ("vmWrite", 0x0020), ("duplicateHandle", 0x0040)]:
@@ -213,13 +228,20 @@ def inspect(spec, report):
         registry_read = {"readable": False, "winerror": error.winerror}
     check(not registry_read["readable"] and registry_read["winerror"] in (2, 3, 5), "The child could read the host registry canary, or the test failed unexpectedly")
     try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, spec["hostRegistryKey"], 0, winreg.KEY_SET_VALUE):
+            pass
+        registry_write = {"openedForWrite": True, "winerror": 0}
+    except OSError as error:
+        registry_write = {"openedForWrite": False, "winerror": error.winerror}
+    check(not registry_write["openedForWrite"] and registry_write["winerror"] in (2, 3, 5), "The child could open the host registry canary for writing, or the test failed unexpectedly")
+    try:
         with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\Run", 0, winreg.KEY_SET_VALUE):
             pass
         autostart = {"openedForWrite": True, "winerror": 0}
     except OSError as error:
         autostart = {"openedForWrite": False, "winerror": error.winerror}
     check(not autostart["openedForWrite"] and autostart["winerror"] in (2, 3, 5), "The child could open HKCU Run for writing, or the test failed unexpectedly")
-    report["registry"] = {"canaryRead": registry_read, "autostartWriteOpen": autostart, "writesAttempted": False}
+    report["registry"] = {"canaryRead": registry_read, "canaryWriteOpen": registry_write, "autostartWriteOpen": autostart, "writesAttempted": False}
 
     pipe = spec.get("pipeName")
     if pipe is None:

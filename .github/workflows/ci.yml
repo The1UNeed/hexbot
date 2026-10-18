@@ -68,6 +68,17 @@ jobs:
       - name: Verify real Pi sessions and native tools
         run: |
           npm ci --prefix ../pi-runtime --ignore-scripts --no-audit --no-fund
+          export HEXBOT_TEST_SEARCH_BIN="$RUNNER_TEMP/hexbot-pi-search/bin"
+          node --input-type=module <<'NODE'
+          import { execFile } from 'node:child_process'
+          import { existsSync } from 'node:fs'
+          import { dirname, join } from 'node:path'
+          import { promisify } from 'node:util'
+          import { downloadTool, installTool } from '../../apps/desktop/src/main/backend/tools.ts'
+          const deps = { binDirectory: process.env.HEXBOT_TEST_SEARCH_BIN, stagingDirectory: join(dirname(process.env.HEXBOT_TEST_SEARCH_BIN), 'staging'),
+            platform: process.platform, arch: process.arch, exists: existsSync, download: downloadTool, run: promisify(execFile) }
+          for (const tool of ['rg', 'fd']) console.log(await installTool(tool, deps))
+          NODE
           node --test ../pi-runtime/*.test.mjs
           HEXBOT_TEST_PI="$GITHUB_WORKSPACE/backend/pi-runtime/node_modules/.bin/pi" cargo test --locked --test pi_live -- --ignored
           HEXBOT_TEST_PI="$GITHUB_WORKSPACE/backend/pi-runtime/node_modules/.bin/pi" cargo test --locked --test runtime -- --ignored

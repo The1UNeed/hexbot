@@ -12,6 +12,8 @@ const OUTPUT_LIMIT = 1024 * 1024, TIMEOUT = 120000;
 // load this worker. The only imports come from the installed, read-only SDK.
 export const searchWorkerSource = `
 import {pathToFileURL} from 'node:url';
+import {statSync} from 'node:fs';
+import {isAbsolute, join} from 'node:path';
 let text = '';
 process.stdin.setEncoding('utf8');
 for await (const part of process.stdin) {
@@ -20,9 +22,14 @@ for await (const part of process.stdin) {
 }
 try {
   const {sdk, name, cwd, args} = JSON.parse(text);
+  const executable = name === 'grep' ? 'rg' : name === 'find' ? 'fd' : undefined;
+  if (!executable) throw new Error('Unsupported file search');
+  const agent = process.env.PI_CODING_AGENT_DIR;
+  try {
+    if (!agent || !isAbsolute(agent) || !statSync(join(agent, 'bin', executable + (process.platform === 'win32' ? '.exe' : ''))).isFile()) throw new Error();
+  } catch {throw new Error('The managed search binary is unavailable. Update or repair Hexbot.');}
   const factories = await import(pathToFileURL(sdk).href);
   const factory = name === 'grep' ? factories.createGrepTool : name === 'find' ? factories.createFindTool : undefined;
-  if (!factory) throw new Error('Unsupported file search');
   // SDK normalization applies to the URL spelling, before decoding, so a
   // Unicode space in the checked native path cannot become another filename.
   const result = await factory(cwd).execute('search', {...args, path:pathToFileURL(args.path).href});
@@ -62,17 +69,25 @@ export async function executeWindowsFileSearch(name, cwd, args, {home, signal} =
   const {sdk, runtime} = sdkLocation(cwd);
   const agent = process.env.PI_CODING_AGENT_DIR;
   if (!agent || !isAbsolute(agent)) throw new Error('The installed search tools are unavailable. Update or repair Hexbot.');
-  const bin = join(agent, 'bin');
-  for (const path of [sdk, runtime, bin]) requireLocalPath(path, cwd, true);
+  for (const path of [sdk, runtime]) requireLocalPath(path, cwd, true);
+  // The launcher can use the verified bundled copy when replacing an old
+  // managed copy failed. Preserve that offline fallback without project PATH.
+  let bin;
+  for (const candidate of [...new Set([join(agent, 'bin'), join(dirname(process.execPath), 'bin'), join(dirname(process.argv[1] ?? process.execPath), '../bin')])]) {
+    const executable = join(candidate, name === 'grep' ? 'rg.exe' : 'fd.exe');
+    requireLocalPath(executable, cwd, true);
+    try {if (statSync(executable).isFile()) {bin = candidate; break;}} catch { /* Try another installed copy. */ }
+  }
+  if (!bin) throw new Error('The installed search binary is unavailable. Update or repair Hexbot.');
   const search = isAbsolute(input) ? input : join(cwd, input);
   const root = statSync(search).isDirectory() ? search : dirname(search);
   const id = randomUUID();
   const spec = {home, id, gitEnv:gitScanEnvironment(), readOnly:true, readRoots:[...new Set([cwd, root, runtime, bin])], writeRoots:[]};
   const inherited = new Set(credentialPolicy.environment.map(name => name.toUpperCase()));
-  const env = Object.fromEntries(Object.entries(process.env).filter(([name]) => inherited.has(name.toUpperCase()) || /^LC_/i.test(name)));
+  const env = Object.fromEntries(Object.entries(process.env).filter(([name]) => name.toUpperCase() !== 'PATH' && (inherited.has(name.toUpperCase()) || /^LC_/i.test(name))));
   // Never let a project PATH or a missing-tool download choose an executable.
   env.PATH = [bin, join(process.env.SystemRoot ?? 'C:\\Windows', 'System32')].join(';');
-  env.PI_CODING_AGENT_DIR = agent;
+  env.PI_CODING_AGENT_DIR = dirname(bin);
   env.PI_OFFLINE = '1';
   const request = JSON.stringify({sdk, name, cwd, args:{...args, path:search}});
   if (Buffer.byteLength(request) > 256 * 1024) throw new Error('Search request exceeds 256 KiB');
