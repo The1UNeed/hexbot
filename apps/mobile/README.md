@@ -120,8 +120,11 @@ submissions to App Store Connect app `6824190699`. EAS stores the signing
 certificate, provisioning profile and assigned App Store Connect API key.
 Production build numbers are stored remotely and increment automatically.
 
-`.eas/workflows/testflight.yml` runs in Expo when mobile or shared app code,
-or workspace package configuration, changes on `main`. It checks the mobile
+The GitHub Release action starts `.eas/workflows/testflight.yml` in Expo
+when its resolved channel is nightly and release checks pass. This includes
+manual nightlies and scheduled nightlies with new commits. Stable releases
+skip iOS. Ordinary pushes to `main` do not start a mobile release.
+The workflow builds the exact release commit. It checks the mobile
 app, builds iOS, then uploads that exact build through the standard EAS
 Submit job. This works on the free Expo plan; the advanced `testflight` job
 for uploading EAS builds requires a paid plan. A failed upload fails the
@@ -135,6 +138,9 @@ One-time setup in the [Expo GitHub settings](https://expo.dev/accounts/the1uneed
    that repository to this EAS project.
 2. Set the app's base directory to `apps/mobile`. Commit and merge the
    workflow files and app configuration into `main` so Expo can read them.
+   Add an Expo access token as the GitHub repository secret `EXPO_TOKEN` so
+   the Release action can start and monitor the workflow. Nightly preflight
+   fails clearly when this secret is missing; stable does not require it.
 3. In App Store Connect, enable automatic distribution on the internal
    TestFlight group that should receive new builds and add the testers once.
    The workflow does not automatically submit external Beta App Reviews.
@@ -143,13 +149,12 @@ Subscribe to EAS Build and EAS Submit result emails in the Expo project's
 Notifications settings to receive success and failure notices.
 
 The stored Apple credentials must be valid and the assigned API key must
-have upload access to this app. No Apple password or GitHub Actions secret
-is needed for these Expo-hosted workflows. Apple processing and any required
+have upload access to this app. Apple credentials stay in Expo; GitHub uses
+only the Expo access token. Apple processing and any required
 review still happen on Apple's schedule. A workflow does not fix an Apple or
 Expo service failure; inspect the failed job before retrying.
 
-To start the same workflow from the repository root without waiting for a
-push, use:
+To start the same workflow directly from the repository root, use:
 
 ```sh
 pnpm mobile:testflight

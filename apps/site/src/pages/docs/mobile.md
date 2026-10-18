@@ -31,9 +31,12 @@ provides development, internal preview and production build profiles.
 
 The iOS beta is distributed through TestFlight. Maintainers use Expo EAS
 Workflows to check the app, create a production build and upload it. Apple
-processes the binary afterward. Once the Expo project is linked to this
-repository with `apps/mobile` as its base directory, mobile and shared app
-changes on `main` start the workflow automatically. Enable automatic
+processes the binary afterward. The GitHub Release action starts Expo for
+nightly releases after checks pass, using the exact release commit. Stable
+releases currently skip iOS. Ordinary pushes to `main` do not release iOS.
+The Expo project must be linked to the repository with `apps/mobile` as its
+base directory, and GitHub needs the `EXPO_TOKEN` repository secret.
+Enable automatic
 distribution on an internal TestFlight group to deliver new builds to its
 testers.
 
