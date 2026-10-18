@@ -53,6 +53,7 @@ jobs:
           if-no-files-found: error
       - run: cargo fmt --check --manifest-path backend/hexbot-core/Cargo.toml
       - name: Select Python for native containment and output tests
+        if: ${{ !cancelled() }}
         run: '"HEXBOT_TEST_PYTHON=$((Get-Command python).Source)" >> $env:GITHUB_ENV'
       - run: cargo test --locked --no-fail-fast --manifest-path backend/hexbot-core/Cargo.toml -- --nocapture
         if: ${{ !cancelled() }}
