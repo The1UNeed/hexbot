@@ -34,3 +34,5 @@ export function symlinkSync(target, path, type) {
   }
   return nativeSymlinkSync(target, path, type);
 }
+
+export const hostPath = path => windows ? /^\/etc\//i.test(path) ? join(process.env.SystemRoot ?? 'C:\\Windows', 'System32/drivers', path.slice(1)) : resolve(path) : path;

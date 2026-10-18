@@ -4,7 +4,7 @@ import {windows, nullDevice, normalize, symlinkSync} from './test-support.mjs';
 import {gitExecutable} from './isolation.ts';
 import {spawn, execFileSync} from 'node:child_process';
 import {mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync} from 'node:fs';
-import {join} from 'node:path';
+import {dirname, join, parse} from 'node:path';
 import {tmpdir} from 'node:os';
 import {createInterface} from 'node:readline';
 import {isolatedCommand, probeIsolation} from './isolation.ts';
@@ -532,10 +532,10 @@ test('repository hook paths outside the workspace never bind, lock or refuse hos
   t.after(() => rmSync(base, {recursive:true, force:true}));
   const home = join(base, 'home'), work = join(base, 'work');
   for (const path of [home, join(work, '.git'), join(work, 'inside-hooks')]) mkdirSync(path, {recursive:true});
-  symlinkSync('/', join(work, 'linked-root'));
-  const ancestors = path => { const list = []; for (let dir = path; ; dir = join(dir, '..')) { list.push(dir); if (dir === '/') return list; } };
-  for (const target of ['/', readDenied()[0], homedir()]) {
-    writeFileSync(join(work, '.git/config'), `[core]\n\thooksPath = ${target}\n`);
+  symlinkSync(parse(work).root, join(work, 'linked-root'));
+  const ancestors = path => { const list = []; for (let dir = path; ; dir = dirname(dir)) { list.push(dir); if (dirname(dir) === dir) return list; } };
+  for (const target of [parse(work).root, readDenied()[0], homedir()]) {
+    writeFileSync(join(work, '.git/config'), `[core]\n\thooksPath = ${normalize(target)}\n`);
     const scan = workspaceProtected([work]);
     assert.equal(scan.failure, undefined, target);
     const args = bwrapArguments(home, [], [work]);
@@ -555,7 +555,7 @@ test('repository hook paths outside the workspace never bind, lock or refuse hos
   // Through a link inside the workspace the target is the host root, but a
   // command could replace the link with a folder of hooks. Bubblewrap cannot
   // protect the link, so the command asks; Seatbelt locks the link itself.
-  writeFileSync(join(work, '.git/config'), `[core]\n\thooksPath = ${join(work, 'linked-root')}\n`);
+  writeFileSync(join(work, '.git/config'), `[core]\n\thooksPath = ${normalize(join(work, 'linked-root'))}\n`);
   assert.deepEqual(workspaceProtected([work]).links, [join(work, 'linked-root')]);
   assert.throws(() => bwrapArguments(home, [], [work]), /symbolic link.*linked-root.*retry with full_access/);
   assert.equal(writeDenial(join(work, 'notes'), work, home), undefined);

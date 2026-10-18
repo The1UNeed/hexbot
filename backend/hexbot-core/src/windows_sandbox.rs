@@ -276,10 +276,14 @@ impl Drop for AclLock {
     }
 }
 fn private_descriptor(directory: bool) -> Result<Local> {
+    private_descriptor_with_inheritance(directory, false)
+}
+fn private_descriptor_with_inheritance(directory: bool, inherit_parent: bool) -> Result<Local> {
     use windows_sys::Win32::Security::Authorization::ConvertStringSecurityDescriptorToSecurityDescriptorW;
     let sid = current_user_sid()?;
     let inherit = if directory { "OICI" } else { "" };
-    let sddl = format!("D:P(A;{inherit};FA;;;SY)(A;{inherit};FA;;;{sid})");
+    let protection = if inherit_parent { "" } else { "P" };
+    let sddl = format!("D:{protection}(A;{inherit};FA;;;SY)(A;{inherit};FA;;;{sid})");
     let mut descriptor = null_mut();
     if unsafe {
         ConvertStringSecurityDescriptorToSecurityDescriptorW(
@@ -330,6 +334,9 @@ pub fn protect_private_path(path: &Path, directory: bool) -> Result<()> {
 /// Create an empty temporary file with its private DACL in the same system
 /// call that creates the file. No other account can retain an early read handle.
 pub fn private_tempfile_in(parent: &Path) -> Result<tempfile::NamedTempFile> {
+    create_tempfile(parent, private_descriptor(false)?)
+}
+fn create_tempfile(parent: &Path, descriptor: Local) -> Result<tempfile::NamedTempFile> {
     use windows_sys::Win32::{
         Foundation::{GENERIC_READ, GENERIC_WRITE, INVALID_HANDLE_VALUE},
         Security::SECURITY_ATTRIBUTES,
@@ -339,7 +346,6 @@ pub fn private_tempfile_in(parent: &Path) -> Result<tempfile::NamedTempFile> {
         },
     };
     platform::validate_path(parent)?;
-    let descriptor = private_descriptor(false)?;
     let attributes = SECURITY_ATTRIBUTES {
         nLength: size_of::<SECURITY_ATTRIBUTES>() as u32,
         lpSecurityDescriptor: descriptor.0,
@@ -362,6 +368,193 @@ pub fn private_tempfile_in(parent: &Path) -> Result<tempfile::NamedTempFile> {
         }
         Ok(unsafe { fs::File::from_raw_handle(handle) })
     })?)
+}
+fn output_home(path: &Path) -> Option<PathBuf> {
+    for ancestor in path.ancestors() {
+        let name = ancestor.file_name()?;
+        if name.eq_ignore_ascii_case("artifacts") {
+            let profiles = ancestor.parent()?.parent()?;
+            if profiles.file_name()?.eq_ignore_ascii_case("profiles") {
+                return profiles.parent().map(Path::to_owned);
+            }
+        }
+        if name.eq_ignore_ascii_case("attachments") {
+            let sessions = ancestor.parent()?.parent()?;
+            if sessions.file_name()?.eq_ignore_ascii_case("sessions")
+                && sessions
+                    .parent()?
+                    .file_name()?
+                    .eq_ignore_ascii_case("runtime")
+            {
+                return sessions.parent()?.parent().map(Path::to_owned);
+            }
+        }
+    }
+    None
+}
+fn verified_active_sids(home: &Path) -> Result<Vec<String>> {
+    let dir = home.join("runtime/windows-sandbox");
+    let entries = match fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(vec![]),
+        Err(error) => return Err(error.into()),
+    };
+    let mut sids = vec![];
+    for (count, entry) in entries.enumerate() {
+        if count >= 1000 {
+            return Err(failed(
+                "too many sandbox leases to verify output permissions",
+            ));
+        }
+        let entry = entry?;
+        if entry
+            .path()
+            .extension()
+            .is_none_or(|extension| extension != "json")
+        {
+            continue;
+        }
+        if !entry.file_type()?.is_file() {
+            return Err(failed("unexpected sandbox lease entry"));
+        }
+        let bytes = match fs::read(entry.path()) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error.into()),
+        };
+        let lease: Lease = serde_json::from_slice(&bytes).map_err(failed)?;
+        if lease_active(&lease)? {
+            let mut raw = null_mut();
+            let result = unsafe {
+                windows_sys::Win32::Security::Isolation::DeriveAppContainerSidFromAppContainerName(
+                    wide(&lease.profile).as_ptr(),
+                    &mut raw,
+                )
+            };
+            if result < 0 {
+                return Err(failed("cannot verify output AppContainer identity"));
+            }
+            let sid = AppSid(raw);
+            if sid_text(sid.0)? != lease.sid {
+                return Err(failed("sandbox lease SID does not match its profile"));
+            }
+            sids.push(lease.sid);
+        }
+    }
+    Ok(sids)
+}
+fn safe_output_parent(parent: &Path, home: &Path) -> Result<bool> {
+    use windows_sys::Win32::Security::{ACCESS_ALLOWED_ACE, ACE_HEADER, GetAce};
+    let current = current_user_sid()?;
+    let allowed = verified_active_sids(home)?;
+    let mut acl = null_mut();
+    let mut descriptor = null_mut();
+    let result = unsafe {
+        GetNamedSecurityInfoW(
+            wide(parent.as_os_str()).as_ptr(),
+            SE_FILE_OBJECT,
+            DACL_SECURITY_INFORMATION,
+            null_mut(),
+            null_mut(),
+            &mut acl,
+            null_mut(),
+            &mut descriptor,
+        )
+    };
+    if result != 0 {
+        return Err(failed(format!("read output-folder permissions: {result}")));
+    }
+    let _descriptor = Local(descriptor);
+    if acl.is_null() {
+        return Ok(false);
+    }
+    for index in 0..u32::from(unsafe { (*acl).AceCount }) {
+        let mut raw = null_mut();
+        if unsafe { GetAce(acl, index, &mut raw) } == 0 {
+            return Err(last("read output-folder ACE"));
+        }
+        let header = unsafe { &*raw.cast::<ACE_HEADER>() };
+        if header.AceType == 1 {
+            continue;
+        }
+        if header.AceType != 0 {
+            return Ok(false);
+        }
+        let ace = raw.cast::<ACCESS_ALLOWED_ACE>();
+        let sid = sid_text(unsafe { std::ptr::addr_of!((*ace).SidStart).cast_mut().cast() })?;
+        if sid != current && sid != "S-1-5-18" && !allowed.contains(&sid) {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+/// Selected outputs inherit the private folder's current and future sandbox
+/// grants. Secret files always keep their protected user/SYSTEM-only DACL.
+pub fn private_tempfile_for(destination: &Path) -> Result<tempfile::NamedTempFile> {
+    let parent = destination
+        .parent()
+        .ok_or_else(|| failed("invalid output path"))?;
+    if let Some(home) = output_home(destination)
+        && !credentials::private_file_path(destination)
+    {
+        let _lock = AclLock::acquire()?;
+        if !safe_output_parent(parent, &home)? {
+            return Err(failed(
+                "the output folder has permissions that cannot be shared safely",
+            ));
+        }
+        create_tempfile(parent, private_descriptor_with_inheritance(false, true)?)
+    } else {
+        private_tempfile_in(parent)
+    }
+}
+fn make_output_inheritable(path: &Path, home: &Path) -> Result<()> {
+    use windows_sys::Win32::Security::UNPROTECTED_DACL_SECURITY_INFORMATION;
+    let _lock = AclLock::acquire()?;
+    let parent = path.parent().ok_or_else(|| failed("invalid output path"))?;
+    if !safe_output_parent(parent, home)? {
+        return Err(failed(
+            "the output folder has permissions that cannot be shared safely",
+        ));
+    }
+    let mut acl = null_mut();
+    let mut descriptor = null_mut();
+    let result = unsafe {
+        GetNamedSecurityInfoW(
+            wide(path.as_os_str()).as_ptr(),
+            SE_FILE_OBJECT,
+            DACL_SECURITY_INFORMATION,
+            null_mut(),
+            null_mut(),
+            &mut acl,
+            null_mut(),
+            &mut descriptor,
+        )
+    };
+    if result != 0 {
+        return Err(failed(format!("read output permissions: {result}")));
+    }
+    let _descriptor = Local(descriptor);
+    if acl.is_null() {
+        return Err(failed("an output has no discretionary ACL"));
+    }
+    let result = unsafe {
+        SetNamedSecurityInfoW(
+            wide(path.as_os_str()).as_ptr(),
+            SE_FILE_OBJECT,
+            DACL_SECURITY_INFORMATION | UNPROTECTED_DACL_SECURITY_INFORMATION,
+            null_mut(),
+            null_mut(),
+            acl,
+            null(),
+        )
+    };
+    if result != 0 {
+        return Err(failed(format!(
+            "inherit private output permissions: {result}"
+        )));
+    }
+    Ok(())
 }
 /// New directories receive their private DACL at creation. Existing selected
 /// homes are repaired before the daemon opens or creates any credential files.
@@ -686,15 +879,14 @@ impl Session {
                     .any(|root| credentials::under(runtime, &root))
             })
             .map(Path::to_owned);
-        if let Some(runtime) = &runtime {
-            if !self
+        if let Some(runtime) = &runtime
+            && !self
                 .spec
                 .read_roots
                 .iter()
                 .any(|root| credentials::under(runtime, root))
-            {
-                self.spec.read_roots.push(runtime.clone());
-            }
+        {
+            self.spec.read_roots.push(runtime.clone());
         }
         let (unreadable, unwritable) = credentials::windows_protection(
             &self.spec.home,
@@ -816,30 +1008,13 @@ impl Session {
                     {
                         continue;
                     }
-                    let writable = self
-                        .spec
-                        .write_roots
+                    if unwritable
                         .iter()
-                        .any(|root| credentials::under(&path, root))
-                        && !unwritable
-                            .iter()
-                            .any(|protected| credentials::under(&path, protected));
-                    self.edit(
-                        &path,
-                        GRANT_ACCESS,
-                        READ | if writable {
-                            FILE_GENERIC_WRITE | DELETE
-                        } else {
-                            0
-                        },
-                        true,
-                    )?;
-                    self.edit(
-                        &path,
-                        DENY_ACCESS,
-                        if writable { CONTROL } else { WRITE },
-                        true,
-                    )?;
+                        .any(|protected| credentials::under(&path, protected))
+                    {
+                        continue;
+                    }
+                    make_output_inheritable(&path, &self.spec.home)?;
                     if metadata.is_dir() {
                         queue.push_back(path);
                     }
@@ -1270,6 +1445,8 @@ pub fn run_helper() -> i32 {
     let args: Vec<_> = std::env::args_os().skip(2).collect();
     let result = if args.first().is_some_and(|arg| arg == "--probe") {
         probe().map(|_| 0)
+    } else if args.first().is_some_and(|arg| arg == "--diagnose") {
+        diagnose().map(|_| 0)
     } else if args.first().is_some_and(|arg| arg == "--unconfined") {
         if args.get(1).is_none_or(|arg| arg != "--") {
             Err(failed("missing program separator"))
@@ -1313,6 +1490,78 @@ pub fn run_helper() -> i32 {
             125
         }
     }
+}
+fn diagnose() -> Result<()> {
+    let root = tempfile::tempdir()?;
+    let home = root.path().join("home");
+    let work = root.path().join("work");
+    create_private_dir_all(&home)?;
+    fs::create_dir_all(&work)?;
+    let source = work.join("network-initialization.cs");
+    let diagnostic = work.join("network-initialization.exe");
+    fs::write(
+        &source,
+        r#"using System;
+using System.Net;
+using System.Net.Sockets;
+class Diagnostic {
+ static void Check(string name,Action action) { Console.WriteLine("CHECK "+name); try { action(); Console.WriteLine("OK"); } catch(Exception error) { Console.WriteLine(error.ToString()); } }
+ static int Main() {
+  Console.WriteLine("C# diagnostic started");
+  Check("ServicePointManager",()=>Console.WriteLine(ServicePointManager.SecurityProtocol));
+  Check("Socket",()=> { using(var socket=new Socket(AddressFamily.InterNetwork,SocketType.Stream,ProtocolType.Tcp)) { Console.WriteLine(socket.AddressFamily); } });
+  Console.WriteLine("C# diagnostic finished"); return 0;
+ }
+}"#,
+    )?;
+    let system = PathBuf::from(
+        std::env::var_os("SystemRoot").ok_or_else(|| failed("SystemRoot is missing"))?,
+    );
+    let compiler = system.join("Microsoft.NET/Framework64/v4.0.30319/csc.exe");
+    let compiled = std::process::Command::new(compiler)
+        .arg("/nologo")
+        .arg(format!("/out:{}", diagnostic.display()))
+        .arg(&source)
+        .status()?;
+    if !compiled.success() {
+        return Err(failed("compile .NET Framework startup diagnostic"));
+    }
+    let mut programs:Vec<(String,Vec<OsString>)>=vec![
+        ("C# network initialization".into(),vec![diagnostic.into_os_string()]),
+        ("cmd".into(),vec![system.join("System32/cmd.exe").into_os_string(),"/d".into(),"/c".into(),"echo ready".into()]),
+        ("Windows PowerShell 5.1".into(),vec![powershell()?.into_os_string(),"-NoProfile".into(),"-NonInteractive".into(),"-Command".into(),"[Console]::WriteLine('PowerShell ready'); [Console]::WriteLine($PSVersionTable.PSVersion.ToString()); exit 0".into()]),
+    ];
+    if let Some(root) = std::env::var_os("ProgramFiles") {
+        let pwsh = PathBuf::from(root).join("PowerShell/7/pwsh.exe");
+        if pwsh.is_file() {
+            programs.push(("PowerShell 7 diagnostic only".into(),vec![pwsh.into_os_string(),"-NoProfile".into(),"-NonInteractive".into(),"-Command".into(),"[Console]::WriteLine('PowerShell 7 ready'); [Console]::WriteLine($PSVersionTable.PSVersion.ToString()); exit 0".into()]));
+        }
+    }
+    for (name, args) in programs {
+        for read_only in [true, false] {
+            eprintln!("Windows sandbox diagnostic: {name}, readOnly={read_only}");
+            let spec = Spec {
+                home: home.clone(),
+                read_roots: vec![work.clone()],
+                write_roots: if read_only {
+                    vec![]
+                } else {
+                    vec![work.clone()]
+                },
+                id: uuid::Uuid::new_v4().to_string(),
+                read_only,
+                git_env: BTreeMap::from([
+                    ("GIT_CONFIG_GLOBAL".into(), "NUL".into()),
+                    ("GIT_CONFIG_NOSYSTEM".into(), "1".into()),
+                ]),
+            };
+            match run_at(spec, &args, &work, Some(Duration::from_secs(12))) {
+                Ok(status) => eprintln!("Windows sandbox diagnostic exit: {status:#x}"),
+                Err(error) => eprintln!("{}", error.message),
+            }
+        }
+    }
+    Ok(())
 }
 fn powershell() -> Result<PathBuf> {
     let root = std::env::var_os("SystemRoot").ok_or_else(|| failed("SystemRoot is missing"))?;

@@ -36,7 +36,7 @@ test('owner Git scan settings are whitelisted and kept out of command environmen
 test('Windows drive, UNC and mixed separator paths retain their roots', {skip:!windows}, t => {
   const {home, cwd} = workspace(t);
   writeFileSync(join(home, 'auth.json'), 'private');
-  for (const path of [join(home, 'auth.json'), join(home, 'auth.json').replaceAll('\\', '/'), home + '\\AUTH.JSON', home + '\\auth.json. ', '\\\\?\\' + home + '\\auth.json']) {
+  for (const path of [join(home, 'auth.json'), join(home, 'auth.json').replaceAll('\\', '/'), home + '\\AUTH.JSON', '\\\\?\\' + home + '\\auth.json']) {
     assert.equal(canonicalPath(path, cwd), canonicalPath(join(home, 'auth.json'), cwd), path);
     assert.equal(credentialPath(path, home), true, path);
   }
@@ -44,7 +44,7 @@ test('Windows drive, UNC and mixed separator paths retain their roots', {skip:!w
   assert.equal(canonicalPath('\\\\localhost\\missing-share\\', cwd), '\\\\localhost\\missing-share\\');
   assert.equal(within('D:\\outside', ['C:\\']), false);
   assert.equal(protectedPath(home + '\\..\\project\\.GIT\\config', home), true);
-  for (const path of ['C:relative', 'C:', home + '\\auth.json:secret', '\\\\.\\PhysicalDrive0']) assert.throws(() => canonicalPath(path, cwd), /Windows/);
+  for (const path of ['C:relative', 'C:', home + '\\auth.json:secret', home + '\\auth.json. ', '\\\\.\\PhysicalDrive0', '\\root-relative', 'NUL', 'con.txt', 'CONIN$', 'COM¹', 'LPT³']) assert.throws(() => canonicalPath(path, cwd), /Windows/);
 });
 
 test('Windows junctions preserve parent traversal and cannot hide Git or credential targets', {skip:!windows}, t => {
@@ -76,7 +76,7 @@ test('Windows Git and credential policy uses native profile and program director
   assert.deepEqual(globalGitConfigs({HOME:cwd, USERPROFILE:home, PROGRAMFILES:'C:\\Program Files', PROGRAMDATA:'C:\\ProgramData', GIT_CONFIG_NOSYSTEM:'false'}).slice(-2), ['C:\\Program Files\\Git\\etc\\gitconfig', 'C:\\ProgramData\\Git\\config']);
   assert.deepEqual(globalGitConfigs({LOCALAPPDATA:'C:\\Users\\Alex\\AppData\\Local'}), ['C:\\Users\\Alex\\AppData\\Local\\Programs\\Git\\etc\\gitconfig']);
   assert.equal(within(join(home, 'note.txt'), [home.toUpperCase()]), true);
-  for (const key of ['SystemRoot', 'USERPROFILE', 'APPDATA', 'LOCALAPPDATA', 'PATHEXT', 'COMSPEC']) if (process.env[key]) assert.equal(shellEnvironment(process.env)[key], process.env[key]);
+  for (const key of ['SystemRoot', 'USERPROFILE', 'APPDATA', 'LOCALAPPDATA', 'PATHEXT', 'COMSPEC']) if (process.env[key]) assert.equal(Object.entries(shellEnvironment(process.env)).find(([name]) => name.toUpperCase() === key.toUpperCase())?.[1], process.env[key]);
 });
 
 test('per-user Git system configuration keeps its configured workspace hooks read-only', {skip:!windows}, t => {

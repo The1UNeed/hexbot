@@ -34,10 +34,22 @@ jobs:
       - name: Require real AppContainer containment
         run: |
           $env:HEXBOT_DAEMON_EXECUTABLE = "$env:GITHUB_WORKSPACE/backend/hexbot-core/target/debug/hexbot.exe"
-          & $env:HEXBOT_DAEMON_EXECUTABLE __sandbox --probe
-          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          & $env:HEXBOT_DAEMON_EXECUTABLE __sandbox --probe 2>&1 | Tee-Object -FilePath Windows-sandbox-probe.log
+          $probeExitCode = $LASTEXITCODE
+          if ($probeExitCode) {
+            & $env:HEXBOT_DAEMON_EXECUTABLE __sandbox --diagnose 2>&1 | Tee-Object -FilePath Windows-sandbox-diagnostics.log
+          }
+          exit $probeExitCode
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: windows-sandbox-probe
+          path: |
+            Windows-sandbox-probe.log
+            Windows-sandbox-diagnostics.log
+          if-no-files-found: error
       - run: cargo fmt --check --manifest-path backend/hexbot-core/Cargo.toml
-      - run: cargo test --locked --no-fail-fast --manifest-path backend/hexbot-core/Cargo.toml
+      - run: cargo test --locked --no-fail-fast --manifest-path backend/hexbot-core/Cargo.toml -- --nocapture
         if: ${{ !cancelled() }}
         env:
           HEXBOT_DAEMON_EXECUTABLE: ${{ github.workspace }}/backend/hexbot-core/target/debug/hexbot.exe
@@ -128,9 +140,13 @@ jobs:
           $version = (Get-Content apps/desktop/package.json | ConvertFrom-Json).version
           $parts = $version.Split('-')[0].Split('.')
           $next = "$($parts[0]).$($parts[1]).$([int]$parts[2] + 1)-alpha.1"
-          @{ current = $version; next = $next } | ConvertTo-Json | Set-Content windows-packages/versions.json
+          $core = $next.Split('-')[0]
+          $nightly = "${core}-nightly.$((Get-Date).ToUniversalTime().ToString('yyyyMMdd')).1"
+          @{ current = $version; next = $next; nightly = $nightly } | ConvertTo-Json | Set-Content windows-packages/versions.json
       - name: Package full app
         run: pnpm --filter ./apps/desktop run dist:win --channel stable
+      - name: Verify Full Windows DLL dependencies
+        run: node scripts/desktop/windows-dependencies.mjs --root apps/desktop/release/win-unpacked
       - name: Verify signed Full runtime and native update archive
         run: |
           $env:HEXBOT_NATIVE_TEST_BUNDLE = "$env:GITHUB_WORKSPACE/apps/desktop/release/win-unpacked/resources/hexbot-native"
@@ -159,6 +175,8 @@ jobs:
         run: node scripts/dev/run-bounded.mjs 180000 node scripts/dev/native-ui-smoke.mjs --desktop --edition=client
       - name: Package client app
         run: pnpm --filter ./apps/desktop run dist:win:client --channel stable
+      - name: Verify Client Windows DLL dependencies
+        run: node scripts/desktop/windows-dependencies.mjs --root apps/desktop/release/win-unpacked
       - name: Verify signed Client package
         run: |
           $env:HEXBOT_PACKAGED_TEST_DIR = "$env:GITHUB_WORKSPACE/apps/desktop/release"
@@ -184,6 +202,22 @@ jobs:
           New-Item -ItemType Directory -Path windows-packages/next/client -Force | Out-Null
           Copy-Item "apps/desktop/release/HexbotClient-$($versions.next)-win-x64.exe*" windows-packages/next/client/
           node scripts/desktop/set-version.mjs $versions.current
+      - name: Build Nightly Full and Client track-switch packages
+        run: |
+          $versions = Get-Content windows-packages/versions.json | ConvertFrom-Json
+          node scripts/desktop/set-version.mjs $versions.nightly
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          pnpm --filter ./apps/desktop run dist:win --channel nightly
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          New-Item -ItemType Directory -Path windows-packages/nightly/full -Force | Out-Null
+          Copy-Item "apps/desktop/release/Hexbot-$($versions.nightly)-win-x64.exe*" windows-packages/nightly/full/
+          node scripts/desktop/make-native-update.mjs apps/desktop/release/win-unpacked/resources/hexbot-native windows-packages/updates
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          pnpm --filter ./apps/desktop run dist:win:client --channel nightly
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          New-Item -ItemType Directory -Path windows-packages/nightly/client -Force | Out-Null
+          Copy-Item "apps/desktop/release/HexbotClient-$($versions.nightly)-win-x64.exe*" windows-packages/nightly/client/
+          node scripts/desktop/set-version.mjs $versions.current
       - name: Installed Electron and NSIS updates
         run: node scripts/dev/run-bounded.mjs 600000 node scripts/dev/windows-updater-smoke.mjs windows-packages
       - name: Build terminal and windowed installers
@@ -201,6 +235,8 @@ jobs:
           if ($bundles.Count -ne 1) { throw 'Expected exactly one windowed installer bundle' }
           $version = (Get-Content windows-packages/versions.json | ConvertFrom-Json).current
           Copy-Item $bundles[0].FullName "windows-packages/installers/HexbotInstaller-$version-windows-x86_64.exe"
+      - name: Verify standalone installer DLL dependencies
+        run: node scripts/desktop/windows-dependencies.mjs --file backend/hexbot-installer/target/release/hexbot-install.exe --file apps/installer/src-tauri/target/release/hexbot-installer-app.exe
       - name: Sign and verify the terminal and windowed installers
         run: ./scripts/desktop/sign-windows.ps1 -Path @('backend/hexbot-installer/target/debug/hexbot-install.exe', 'backend/hexbot-installer/target/release/hexbot-install.exe', 'apps/installer/src-tauri/target/release/hexbot-installer-app.exe')
       - name: Windows install, repair, change and uninstall

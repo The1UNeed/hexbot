@@ -385,6 +385,9 @@ impl MemoryStore {
             .ok_or_else(|| Error::new(4202, "invalid memory path"))?;
         fs::create_dir_all(parent)?;
         self.path(relative)?;
+        #[cfg(windows)]
+        let mut temporary = crate::windows_sandbox::private_tempfile_in(parent)?;
+        #[cfg(not(windows))]
         let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
         temporary.write_all(text.as_bytes())?;
         temporary.as_file().sync_all()?;
@@ -392,6 +395,7 @@ impl MemoryStore {
         temporary
             .persist(&path)
             .map_err(|error| Error::from(error.error))?;
+        #[cfg(unix)]
         fs::File::open(parent)?.sync_all()?;
         Ok(())
     }

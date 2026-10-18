@@ -1667,7 +1667,7 @@ pub(crate) fn publish_native(
     Ok(executable)
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 fn activate_native(native: &Path, version: &str, executable: &Path) -> Result<()> {
     let _lock = activation_lock(native.parent().unwrap())?;
     activate_native_locked(native, version, executable)

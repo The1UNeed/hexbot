@@ -26,6 +26,7 @@ export function policyRoot(entry: string): string | undefined {
     const root = key && process.env[key];
     return root && isAbsolute(root) ? join(root, match[2].replace(/^[\\/]+/, '')) : undefined;
   }
+  if (process.platform === 'win32' && /^[\\/]/.test(entry) && !/^[\\/]{2}/.test(entry)) return undefined;
   return isAbsolute(entry) ? entry : join(homedir(), entry);
 }
 // Seatbelt regexes use character pairs rather than JavaScript's i flag.
@@ -566,7 +567,7 @@ export function isolatedCommand(command: string, home: string, outputs: string[]
     // Full access on Windows leaves containment and always needs the user.
     if (!executable || !workspace) return command;
     const id = randomUUID();
-    const spec = JSON.stringify({home, gitEnv:gitScanEnvironment(), readRoots:searchRoots, writeRoots:workspace.filter(path => path !== tmpdir() && path !== '/tmp' && (!within(path, [home]) || outputs.some(output => within(path, [output])))), id});
+    const spec = JSON.stringify({home, gitEnv:gitScanEnvironment(), readOnly:workspace.length === 0, readRoots:searchRoots, writeRoots:workspace.filter(path => path !== tmpdir() && path !== '/tmp' && (!within(path, [home]) || outputs.some(output => within(path, [output])))), id});
     const quote = (value: string) => "'" + value.replaceAll("'", "''") + "'";
     const wrapped = '& ' + [executable, '__sandbox', spec, '--', powerShellExecutable(), ...powerShellArgs(command)].map(quote).join(' ') + '; exit $LASTEXITCODE';
     windowsLeases.set(wrapped, {executable, home, id});

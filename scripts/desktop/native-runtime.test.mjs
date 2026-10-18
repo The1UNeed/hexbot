@@ -8,6 +8,7 @@ import { promisify } from 'node:util'
 import { toolAsset } from '../../apps/desktop/src/main/backend/tools.ts'
 import { createNativeArchive, launchers, nativeTarget, stageNativeRuntime, rustTarget, pruneRuntimeDependencies, directoryBytes, standaloneNode, NODE_VERSION, NODE_SHA256 } from './native-runtime.mjs'
 const exec = promisify(execFile)
+const tar = process.platform === 'win32' ? join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'tar.exe') : 'tar'
 test('target supports both desktop architectures and Linux arm64', () => {
   for (const os of ['darwin', 'linux']) for (const arch of ['x64', 'arm64']) assert.equal(nativeTarget(os, arch), `${os}-${arch}`)
   assert.equal(nativeTarget('win32', 'x64'), 'win32-x64')
@@ -83,7 +84,7 @@ test('archive dereferences npm links and records the update format', async () =>
     const manifest = await createNativeArchive(bundle, archive)
     assert.equal(manifest.format, 'tar.gz'); assert.equal(manifest.entrypoint, process.platform === 'win32' ? 'hexbot.exe' : 'hexbot')
     const unpacked = join(root, 'unpacked'); await mkdir(unpacked)
-    await exec('tar', ['-xzf', archive, '-C', unpacked])
+    await exec(tar, ['-xzf', archive, '-C', unpacked])
     assert.equal(manifest.size, (await stat(archive)).size)
     assert.equal(manifest.unpacked_size, await directoryBytes(unpacked))
     assert.notEqual((await stat(join(unpacked, 'original/hexbot'))).ino, (await stat(join(unpacked, 'alias/hexbot'))).ino)

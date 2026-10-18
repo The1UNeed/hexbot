@@ -84,7 +84,7 @@ fn folded(path: &Path) -> PathBuf {
         } else {
             text.strip_prefix("\\\\?\\").unwrap_or(&text).to_owned()
         };
-        return PathBuf::from(
+        PathBuf::from(
             text.split('\\')
                 .map(|part| {
                     if part == "." || part == ".." {
@@ -95,7 +95,7 @@ fn folded(path: &Path) -> PathBuf {
                 })
                 .collect::<Vec<_>>()
                 .join("\\"),
-        );
+        )
     }
     #[cfg(not(windows))]
     if FOLD_CASE {
@@ -141,6 +141,24 @@ pub fn credential_name(home: &Path, path: &Path) -> bool {
 pub(crate) fn secret_file_name(name: &str) -> bool {
     let (.., secret, example) = patterns();
     secret.is_match(name) && !example.is_match(name)
+}
+#[cfg(windows)]
+pub(crate) fn private_file_path(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| patterns().0.is_match(name) || secret_file_name(name))
+        || host_write_tier(path) == Some(WriteTier::Deny)
+        || read_denied().iter().any(|root| under(path, root))
+        || path.iter().any(|part| {
+            [
+                "provider-auth",
+                "desktop-data",
+                "windows-sandbox",
+                "approvals",
+            ]
+            .iter()
+            .any(|name| part.eq_ignore_ascii_case(name))
+        })
 }
 fn user_credential_name(user: &Path, path: &Path) -> bool {
     policy().user.iter().any(|local| {
@@ -197,17 +215,20 @@ fn policy_root(entry: &str) -> Option<PathBuf> {
     if entry.starts_with('/') {
         return None;
     }
-    if entry.starts_with('%') {
+    if let Some(suffix_entry) = entry.strip_prefix('%') {
         #[cfg(windows)]
         {
-            let (name, suffix) = entry[1..].split_once('%')?;
+            let (name, suffix) = suffix_entry.split_once('%')?;
             let root = PathBuf::from(std::env::var_os(name)?);
             return root
                 .is_absolute()
                 .then(|| root.join(suffix.trim_start_matches('/')));
         }
         #[cfg(not(windows))]
-        return None;
+        {
+            let _ = suffix_entry;
+            return None;
+        }
     }
     if Path::new(entry).is_absolute() {
         Some(PathBuf::from(entry))
@@ -1911,7 +1932,7 @@ pub(crate) fn isolated_command_with_outputs(
             );
         }
         warn_unavailable_isolation();
-        return Ok(tokio::process::Command::new(program));
+        Ok(tokio::process::Command::new(program))
     }
     #[cfg(not(windows))]
     {

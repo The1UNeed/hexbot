@@ -134,7 +134,7 @@ pub fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
         .ok_or_else(|| Error::new(4202, "invalid path"))?;
     fs::create_dir_all(parent)?;
     #[cfg(windows)]
-    let mut tmp = crate::windows_sandbox::private_tempfile_in(parent)?;
+    let mut tmp = crate::windows_sandbox::private_tempfile_for(path)?;
     #[cfg(not(windows))]
     let mut tmp = tempfile::NamedTempFile::new_in(parent)?;
     tmp.write_all(bytes)?;
@@ -452,6 +452,9 @@ pub fn managed_python(home: &Path) -> std::path::PathBuf {
             return path;
         }
     }
+    #[cfg(windows)]
+    let managed = home.join("bin/python.exe");
+    #[cfg(not(windows))]
     let managed = home.join("bin/python3.11");
     if managed.is_file() {
         managed
@@ -968,7 +971,7 @@ mod workdir_tests {
     #[test]
     fn workdir_expands_a_bare_tilde_and_refuses_the_home() {
         let home = TestHome::new();
-        let user_home = std::env::var_os("HOME")
+        let user_home = crate::platform::user_home()
             .map(std::path::PathBuf::from)
             .unwrap();
         assert_eq!(
@@ -1055,13 +1058,34 @@ mod tool_safety_tests {
     #[test]
     fn managed_interpreter_precedes_path_fallback() {
         let dir = tempfile::tempdir().unwrap();
-        assert_eq!(managed_python(dir.path()), Path::new("python3"));
-        fs::create_dir(dir.path().join("bin")).unwrap();
-        fs::write(dir.path().join("bin/python3.11"), "managed").unwrap();
         assert_eq!(
             managed_python(dir.path()),
-            dir.path().join("bin/python3.11")
+            Path::new(if cfg!(windows) {
+                "python.exe"
+            } else {
+                "python3"
+            })
         );
+        fs::create_dir(dir.path().join("bin")).unwrap();
+        let executable = if cfg!(windows) {
+            "bin/python.exe"
+        } else {
+            "bin/python3.11"
+        };
+        fs::write(dir.path().join(executable), "managed").unwrap();
+        assert_eq!(managed_python(dir.path()), dir.path().join(executable));
+        #[cfg(windows)]
+        {
+            let installed = dir.path().join("managed-python.exe");
+            fs::write(&installed, "python").unwrap();
+            fs::create_dir(dir.path().join("runtime")).unwrap();
+            fs::write(
+                dir.path().join("runtime/code-python.txt"),
+                installed.to_string_lossy().as_bytes(),
+            )
+            .unwrap();
+            assert_eq!(managed_python(dir.path()), installed);
+        }
     }
     #[tokio::test]
     async fn own_listener_is_denied_even_with_private_urls_enabled() {

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {windows, nullDevice, outsideTemporaryRoot, normalize, environmentCommand, useHome, symlinkSync} from './test-support.mjs';
+import {windows, nullDevice, outsideTemporaryRoot, normalize, environmentCommand, useHome, symlinkSync, hostPath} from './test-support.mjs';
 import {gitExecutable, isolationAvailable} from './isolation.ts';
 import {mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, realpathSync, existsSync} from 'node:fs';
 import {createServer} from 'node:net';
@@ -78,7 +78,7 @@ test('case cannot disguise credential or host configuration paths on case-insens
   assert.equal(hostWriteTier(join(homedir(), '.AWS/credentials'), '/tmp'), 'deny');
   assert.equal(hostWriteTier(join(homedir(), '.ZSHRC'), '/tmp'), 'ask');
   assert.equal(hostWriteTier(join(homedir(), 'library/launchagents/x.plist'), '/tmp'), 'ask');
-  assert.equal(hostWriteTier('/ETC/hosts', '/tmp'), 'ask');
+  assert.equal(hostWriteTier(hostPath('/ETC/hosts'), '/tmp'), 'ask');
 });
 test('symlinks and parent components cannot bypass file guards', t => {
   const f=fixture(t); mkdirSync(join(f.home,'profiles/owl/pi'),{recursive:true});
@@ -344,7 +344,7 @@ test('Auto runs commands and in-workspace file changes without asking', async t 
   assert.equal(await f.gate('write', {path:join(work, 'notes.txt')}), undefined);
   assert.equal(await f.gate('edit', {path:'notes.txt'}), undefined);
   assert.equal(await f.gate('write', {path:join(tmpdir(), 'hexbot-scratch.txt')}), undefined);
-  assert.equal(await f.gate('read', {path:'/etc/hosts'}), undefined);
+  assert.equal(await f.gate('read', {path:hostPath('/etc/hosts')}), undefined);
   assert.equal(f.choices.length, 0);
 });
 
@@ -360,9 +360,9 @@ test('Auto asks before full access, with the bot reason, and before writes outsi
     ...windows ? {input:{command:'npm install', full_access:true, reason:' Downloads the dependencies. '}} : {review:true, input:{command:'npm install', full_access:true, reason:' Downloads the dependencies. '}, cwd:f.settings.cwd, model:{provider:'test', model:'primary'}}, options:windows ? ['once', 'deny'] : ['once', 'session', 'deny']});
   // The temp folders are part of the workspace; /usr/local is not.
   assert.equal(await f.gate('write', {path:join(user, 'scratch.txt')}), undefined);
-  assert.equal((await f.gate('write', {path:'/usr/local/hexbot-elsewhere.txt'}))?.block, true);
+  assert.equal((await f.gate('write', {path:hostPath('/usr/local/hexbot-elsewhere.txt')}))?.block, true);
   assert.match(f.choices[1].reason, /outside the workspace/);
-  assert.equal(f.choices[1].command, canonicalPath('/usr/local/hexbot-elsewhere.txt', f.settings.cwd));
+  assert.equal(f.choices[1].command, canonicalPath(hostPath('/usr/local/hexbot-elsewhere.txt'), f.settings.cwd));
   assert.equal(f.choices[1].review, true);
   assert.equal(f.choices[1].overwrites, false);
   // A workspace that holds shell profiles still asks before changing them.
@@ -376,15 +376,15 @@ test('Auto asks before full access, with the bot reason, and before writes outsi
   // A section answer to a reviewed step is not remembered, and never covers shell profiles.
   f.settings.cwd = join(user, 'Hexbot');
   f.ctx.choice = 'session';
-  assert.equal(await f.gate('write', {path:'/usr/local/hexbot-elsewhere.txt'}), undefined);
+  assert.equal(await f.gate('write', {path:hostPath('/usr/local/hexbot-elsewhere.txt')}), undefined);
   f.ctx.choice = 'deny';
-  assert.equal((await f.gate('write', {path:'/usr/local/hexbot-other.txt'}))?.block, true);
+  assert.equal((await f.gate('write', {path:hostPath('/usr/local/hexbot-other.txt')}))?.block, true);
   assert.equal((await f.gate('write', {path:join(user, '.zshrc')}))?.block, true);
   assert.equal(f.choices.length, 6);
   // After the primary model fails, the reviewer uses the fallback Pi switched to.
   f.settings.fallback = {provider:'test', model:'fallback'};
   await f.handlers.agent_before_settle({outcome:'error'}, f.ctx);
-  assert.equal((await f.gate('write', {path:'/usr/local/hexbot-other.txt'}))?.block, true);
+  assert.equal((await f.gate('write', {path:hostPath('/usr/local/hexbot-other.txt')}))?.block, true);
   assert.deepEqual(f.choices[6].model, {provider:'test', model:'fallback'});
 });
 
@@ -474,7 +474,7 @@ test('a reviewed file write retains its resolved destination when a link changes
   };
   await assert.rejects(f.run('write', {path:'report.txt', content:'replacement'}), /file changed after it was checked/);
   assert.equal(f.choices[0].review, true);
-  assert.equal(f.choices[0].command, first);
+  assert.equal(f.choices[0].command, canonicalPath(first, f.settings.cwd));
   assert.equal(f.choices[0].overwrites, true);
   assert.equal(readFileSync(first, 'utf8'), 'first owner data');
   assert.equal(readFileSync(second, 'utf8'), 'second owner data');
@@ -630,9 +630,9 @@ test('file tools never write credential stores or daemon configuration outside B
   t.after(() => rmSync(user, {recursive:true, force:true}));
   for (const mode of ['manual', 'smart']) {
     const f = fixture(t, mode, ['file']);
-    for (const path of [join(user, '.netrc'), join(user, '.git-credentials'), join(user, '.aws/credentials'), join(user, '.config/gh/hosts.yml'), join(user, '.kube/config'), '~/.npmrc', '/etc/hosts']) {
+    for (const path of [join(user, '.netrc'), join(user, '.git-credentials'), join(user, '.aws/credentials'), join(user, '.config/gh/hosts.yml'), join(user, '.kube/config'), '~/.npmrc', hostPath('/etc/hosts')]) {
       for (const tool of ['write', 'edit']) assert.match((await f.gate(tool, {path})).reason, /never written|private/, `${mode} ${tool} ${path}`);
-      if (path !== '/etc/hosts') for (const tool of ['read', 'grep', 'ls']) assert.match((await f.gate(tool, {path})).reason, /private/, `${mode} ${tool} ${path}`);
+      if (path !== hostPath('/etc/hosts')) for (const tool of ['read', 'grep', 'ls']) assert.match((await f.gate(tool, {path})).reason, /private/, `${mode} ${tool} ${path}`);
       await assert.rejects(f.tools.write.execute('write', {path, content:'bad'}), /Try again/);
     }
     for (const path of ['config.yaml', 'bin/script', 'hooks/script', 'profiles/owl/config.yaml', 'skills/script']) {
@@ -644,8 +644,8 @@ test('file tools never write credential stores or daemon configuration outside B
   }
   assert.equal(hostWriteTier('~/.aws/credentials', '/tmp'), 'deny');
   assert.equal(hostWriteTier(join(user, '.zshrc'), '/tmp'), 'ask');
-  assert.equal(hostWriteTier('/etc/hosts', '/tmp'), 'ask');
-  assert.equal(hostWriteTier('/etc/hosts', '/tmp', true), 'deny');
+  assert.equal(hostWriteTier(hostPath('/etc/hosts'), '/tmp'), 'ask');
+  assert.equal(hostWriteTier(hostPath('/etc/hosts'), '/tmp', true), 'deny');
   assert.equal(hostWriteTier(join(user, 'Hexbot/notes.md'), '/tmp'), undefined);
 });
 
@@ -783,7 +783,7 @@ test('nested codemode calls use the same gate and execution id as direct calls',
   assert.equal(await f.handlers.tool_call(event, f.ctx), undefined);
   assert.match(JSON.stringify(await f.tools.bash.execute('c1/1', event.input)), /nested/);
   f.ctx.choice = 'deny';
-  assert.equal((await f.handlers.tool_call({...event,toolName:'write',toolCallId:'c1/2',input:{path:'/usr/local/hexbot-nested.txt',content:'x'}},f.ctx)).block, true);
+  assert.equal((await f.handlers.tool_call({...event,toolName:'write',toolCallId:'c1/2',input:{path:hostPath('/usr/local/hexbot-nested.txt'),content:'x'}},f.ctx)).block, true);
 });
 
 
@@ -1019,4 +1019,20 @@ test('on Linux a command asks when a missing Git target would pin a repository o
   if (process.platform === 'linux') assert.match(linked.reason, /symbolic link.*githooks-link/);
   else assert.equal(linked, undefined);
   assert.equal(f.choices.length, 0);
+});
+
+
+test('Windows file tools reject device and ambiguous paths before bridge requests', {skip:!windows}, async t => {
+  for (const mode of ['manual', 'smart', 'off']) {
+    const f = fixture(t, mode, ['file']);
+    for (const path of ['NUL', 'con.txt', 'PRN', 'AUX', 'CONIN$', 'CONOUT$', 'COM1', 'COM¹.log', 'LPT³', '\\relative', '/relative', 'C:relative', 'C:\\work\\file:stream', 'trailing.', 'trailing ', 'wild*card']) {
+      for (const tool of ['read', 'grep', 'find', 'ls', 'write', 'edit']) {
+        const denied = await f.gate(tool, {path});
+        assert.equal(denied?.block, true, `${mode} ${tool} ${path}`);
+        assert.match(denied.reason, /Windows/, path);
+      }
+    }
+    assert.deepEqual(f.requests, [], 'invalid file paths must not reach the bridge');
+    assert.deepEqual(f.choices, [], 'invalid file paths must not ask for approval');
+  }
 });

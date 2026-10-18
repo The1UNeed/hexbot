@@ -94,6 +94,49 @@ mod windows_tests {
     }
 
     #[test]
+    fn a_locked_cli_keeps_its_receipt_until_uninstall_can_retry() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let root = tempfile::tempdir().unwrap();
+        let engine = engine(root.path());
+        let executable = engine.paths.wrapper();
+        let receipt = executable.with_file_name("hexbot-cli.json");
+        fs::create_dir_all(executable.parent().unwrap()).unwrap();
+        fs::create_dir_all(&engine.paths.hexbot_home).unwrap();
+        fs::write(&executable, b"owned CLI fixture").unwrap();
+        let ownership =
+            install_ownership::windows_cli_receipt(&engine.paths.hexbot_home, &executable).unwrap();
+        fs::write(&receipt, &ownership).unwrap();
+        // A running Windows image denies deletion. Reproduce that sharing
+        // rule while allowing ownership verification to read the executable.
+        let held = fs::OpenOptions::new()
+            .read(true)
+            .share_mode(1)
+            .open(&executable)
+            .unwrap();
+        assert!(install_ownership::wrapper_owned(
+            &executable,
+            &engine.paths.hexbot_home
+        ));
+        let error = engine.uninstall(false, &mut |_| {}).unwrap_err();
+        assert_eq!(
+            error
+                .downcast_ref::<std::io::Error>()
+                .unwrap()
+                .raw_os_error(),
+            Some(32)
+        );
+        assert_eq!(fs::read(&receipt).unwrap(), ownership);
+        assert!(install_ownership::wrapper_owned(
+            &executable,
+            &engine.paths.hexbot_home
+        ));
+        drop(held);
+        engine.uninstall(false, &mut |_| {}).unwrap();
+        assert!(!executable.exists());
+        assert!(!receipt.exists());
+    }
+
+    #[test]
     fn junctions_cannot_redirect_runtime_removal() {
         let root = tempfile::tempdir().unwrap();
         let engine = engine(root.path());

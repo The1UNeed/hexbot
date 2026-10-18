@@ -751,6 +751,10 @@ impl Runtime {
                 include_bytes!("../../pi-runtime/windows-shell.ts").as_slice(),
             ),
             (
+                "windows-mcp.ts",
+                include_bytes!("../../pi-runtime/windows-mcp.ts").as_slice(),
+            ),
+            (
                 "credential-policy.json",
                 include_bytes!("../../pi-runtime/credential-policy.json").as_slice(),
             ),

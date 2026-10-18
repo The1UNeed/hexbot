@@ -12,6 +12,7 @@ import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
 import { makeInstallManifest } from '../desktop/make-install-manifest.mjs'
 import { signUpdates, testKey, testPublicKey } from '../desktop/update-signing.mjs'
+import { verifyWindowsInstallerGui } from './windows-installer-gui-smoke.mjs'
 
 assert.equal(process.platform, 'win32', 'This smoke runs in a Windows VM')
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..')
@@ -47,7 +48,7 @@ server.listen(0, '127.0.0.1')
 await once(server, 'listening')
 const baseUrl = `http://127.0.0.1:${server.address().port}`
 const env = { ...process.env, USERPROFILE: home, HOME: home, LOCALAPPDATA: join(home, 'AppData/Local'), APPDATA: join(home, 'AppData/Roaming'),
-  HEXBOT_HOME: hexbotHome, HEXBOT_INSTALL_APPS_DIR: apps, HEXBOT_SERVICE_ROOT: serviceRoot, HEXBOT_SERVICE_NO_LOAD: '0', HEXBOT_UPDATE_URL: baseUrl }
+  HEXBOT_HOME: `${hexbotHome}\\`, HEXBOT_INSTALL_APPS_DIR: apps, HEXBOT_SERVICE_ROOT: serviceRoot, HEXBOT_SERVICE_NO_LOAD: '0', HEXBOT_UPDATE_URL: baseUrl }
 delete env.HEXBOT_PI_EXECUTABLE
 delete env.HEXBOT_PI_SCRIPT
 let installed = false
@@ -82,6 +83,7 @@ try {
   await copyFile(join(packages, 'installers', `HexbotInstaller-${version}-${target}.exe`), join(installDir, `HexbotInstaller-${version}-${target}.exe`))
   await makeInstallManifest(updates, { channel: 'stable', version, baseUrl, allowMissing: true })
   signUpdates(updates, { channel: 'stable', version, key: testKey(), expected: testPublicKey() })
+  await verifyWindowsInstallerGui(join(installDir, `HexbotInstaller-${version}-${target}.exe`), { root, directory: join(home, 'windowed installer'), env, artifacts, command, log })
   const sentinel = join(hexbotHome, 'keep-user-data.txt')
   await writeFile(sentinel, 'User data survives repair, change and uninstall.')
 

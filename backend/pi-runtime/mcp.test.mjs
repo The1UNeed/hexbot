@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {stopChild} from './test-support.mjs';
+import {stopChild, hostPath} from './test-support.mjs';
 import {spawn} from 'node:child_process';
 import {createServer} from 'node:http';
 import {once, EventEmitter} from 'node:events';
@@ -80,7 +80,7 @@ test('real Pi connects on the first codemode call, gates nested tools, and freez
   assert.deepEqual(JSON.parse(readFileSync(join(dir,'child.json'))), {cwd:serverCwd,token:secret,unrelated:null});
   assert.equal(existsSync(marker), false);
   choice = 'once';
-  script = 'text(await tools.bash({command:"echo nested",full_access:true})); text(await tools.write({path:"/usr/local/hexbot-never-written.txt",content:"x"}));';
+  script = `text(await tools.bash({command:"echo nested",full_access:true})); text(await tools.write({path:${JSON.stringify(hostPath('/usr/local/hexbot-never-written.txt'))},content:"x"}));`;
   // Approve bash, deny the outside write.
   config.approvalMode = 'manual';
   const originalPush = approvals.push.bind(approvals);

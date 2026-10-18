@@ -9,6 +9,7 @@ import { promisify } from 'node:util'
 import { makeNativeUpdate } from './make-native-update.mjs'
 
 const run = promisify(execFile)
+const tar = process.platform === 'win32' ? join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'tar.exe') : 'tar'
 
 test('native updater manifests use Rust targets and checksummed relocatable archives', async () => {
   const root = await mkdtemp(join(tmpdir(), 'hexbot-native-feed-'))
@@ -32,7 +33,7 @@ test('native updater manifests use Rust targets and checksummed relocatable arch
   } finally { await rm(root, { recursive: true, force: true }) }
 })
 
-test('release archives the signed app runtime on both macOS targets and the staged runtime on Linux', async () => {
+test('release archives the packaged macOS and Windows runtimes and staged Linux runtime', async () => {
   const workflow = await readFile(new URL('../../.github/workflows/release.yml', import.meta.url), 'utf8')
   const step = /- name: Archive the native daemon\n[^\n]*\n        run: \|\n([\s\S]*?)(?=      - uses:)/.exec(workflow)
   assert.ok(step, 'Native archive step missing')
@@ -50,23 +51,27 @@ test('release archives the signed app runtime on both macOS targets and the stag
     const staged = join(root, 'apps/desktop/resources/hexbot-native')
     const packaged = join(root, 'apps/desktop/release/mac-arm64/Hexbot [alpha].app/Contents/Resources/hexbot-native')
     for (const [target, runner, expected] of [
-      ['darwin-arm64', 'macOS', 'signed'], ['darwin-x64', 'macOS', 'signed'], ['linux-x64', 'Linux', 'unsigned']
+      ['darwin-arm64', 'macOS', 'signed'], ['darwin-x64', 'macOS', 'signed'], ['linux-x64', 'Linux', 'unsigned'], ['win32-x64', 'Windows', 'signed']
     ]) {
       await rm(join(root, 'apps/desktop/release'), { recursive: true, force: true })
-      for (const [bundle, signature] of [[staged, 'unsigned'], [packaged.replace('mac-arm64', target === 'darwin-x64' ? 'mac' : 'mac-arm64'), 'signed']]) {
+      const windows = target === 'win32-x64'
+      const files = windows ? ['node.exe', 'hexbot.exe'] : ['node', 'hexbot-core']
+      const packagedBundle = windows ? join(root, 'apps/desktop/release/win-unpacked/resources/hexbot-native')
+        : packaged.replace('mac-arm64', target === 'darwin-x64' ? 'mac' : 'mac-arm64')
+      for (const [bundle, signature] of [[staged, 'unsigned'], [packagedBundle, 'signed']]) {
         await mkdir(bundle, { recursive: true })
-        await writeFile(join(bundle, 'manifest.json'), JSON.stringify({ version: '1.2.3', target, builtAt: 123, files: Object.fromEntries(['node', 'hexbot-core'].map(file => [file, createHash('sha256').update(`unsigned ${target} ${file}`).digest('hex')])) }))
-        for (const file of ['node', 'hexbot-core']) await writeFile(join(bundle, file), `${signature} ${target} ${file}`)
+        await writeFile(join(bundle, 'manifest.json'), JSON.stringify({ version: '1.2.3', target, builtAt: 123, files: Object.fromEntries(files.map(file => [file, createHash('sha256').update(`unsigned ${target} ${file}`).digest('hex')])) }))
+        for (const file of files) await writeFile(join(bundle, file), `${signature} ${target} ${file}`)
       }
       await run('bash', ['-c', script], { cwd: root, env: { ...process.env, RUNNER_OS: runner } })
-      const updateTarget = target.replace('darwin', 'macos').replace('arm64', 'aarch64').replace('x64', 'x86_64')
+      const updateTarget = target.replace('darwin', 'macos').replace('win32', 'windows').replace('arm64', 'aarch64').replace('x64', 'x86_64')
       const directory = join(root, 'native-updates/daemon/native/1.2.3', updateTarget)
       const archive = join(directory, `hexbot-native-1.2.3-${updateTarget}.tar.gz`)
       const extracted = join(root, `extracted-${target}`)
       await mkdir(extracted)
-      await run('tar', ['-xzf', archive, '-C', extracted])
+      await run(tar, ['-xzf', archive, '-C', extracted])
       const archived = JSON.parse(await readFile(join(extracted, 'manifest.json'), 'utf8'))
-      for (const file of ['node', 'hexbot-core']) {
+      for (const file of files) {
         const bytes = await readFile(join(extracted, file))
         assert.equal(bytes.toString(), `${expected} ${target} ${file}`)
         assert.equal(archived.files[file], createHash('sha256').update(bytes).digest('hex'))

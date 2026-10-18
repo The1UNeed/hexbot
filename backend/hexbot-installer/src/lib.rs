@@ -324,9 +324,11 @@ impl Installer {
         self.remove_owned_path(&self.paths.hexbot_home.join("runtime/native"))?;
         // `hexbot setup` marks the wrapper it writes; leave anyone else's `hexbot`.
         if install_ownership::wrapper_owned(&self.paths.wrapper(), &self.paths.hexbot_home) {
+            // Windows may refuse to delete a running CLI. Retain its ownership
+            // receipt until deletion succeeds so uninstall can safely retry.
+            self.remove_owned_path(&self.paths.wrapper())?;
             #[cfg(windows)]
             self.remove_owned_path(&self.paths.wrapper().with_file_name("hexbot-cli.json"))?;
-            self.remove_owned_path(&self.paths.wrapper())?;
         }
         self.remove_owned_path(&self.paths.receipt())?;
         // Windows cannot remove the locked file while its handle is open. Keep

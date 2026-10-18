@@ -11,6 +11,9 @@ import { downloadTool, installTool } from '../../apps/desktop/src/main/backend/t
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..')
 const execute = promisify(execFile)
+// Git Bash puts GNU tar on PATH; it treats a Windows drive colon as a host.
+const tarExecutable = () => process.platform === 'win32'
+  ? join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'tar.exe') : 'tar'
 export function nativeTarget(platform = process.platform, arch = process.arch) {
   if (!['darwin', 'linux', 'win32'].includes(platform) || !['arm64', 'x64'].includes(arch) || (platform === 'win32' && arch !== 'x64'))
     throw new Error(`Unsupported native runtime target: ${platform}/${arch}`)
@@ -120,7 +123,7 @@ export async function standaloneNode(directory, platform, arch, version = NODE_V
   const path = join(directory, filename)
   await writeFile(path, archive)
   const executable = windows ? 'node.exe' : 'bin/node'
-  await execute('tar', [windows ? '-xf' : '-xzf', path, '-C', directory, `${name}/${executable}`])
+  await execute(tarExecutable(), [windows ? '-xf' : '-xzf', path, '-C', directory, `${name}/${executable}`])
   return join(directory, name, executable)
 }
 export async function stageNativeRuntime({
@@ -217,7 +220,7 @@ export async function createNativeArchive(directory, destination) {
     }
     await writeFile(join(staging, 'manifest.json'), `${JSON.stringify(metadata, null, 2)}\n`)
     unpackedSize = await directoryBytes(staging)
-    await execute('tar', [
+    await execute(tarExecutable(), [
       ...(process.platform === 'darwin' ? ['--no-mac-metadata', '--no-xattrs'] : []),
       '-czf', destination, '-C', staging, '.'
     ], { env: { ...process.env, COPYFILE_DISABLE: '1' } })

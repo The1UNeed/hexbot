@@ -299,6 +299,8 @@ async fn run() -> Result<()> {
         }
     }
     let _lock = lock_home(&home)?;
+    let signal = shutdown_signal(&home)?;
+    tokio::pin!(signal);
     let executable = std::env::current_exe()?;
     common::atomic_write(
         &home.join("runtime/native-running.json"),
@@ -315,8 +317,6 @@ async fn run() -> Result<()> {
         .or_else(|| common::bundled_root().map(|root| root.join("web")))
         .or_else(|| Some(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../apps/web/dist")))
         .filter(|p| p.join("index.html").is_file());
-    let signal = shutdown_signal(&home)?;
-    tokio::pin!(signal);
     let mut previous: Option<std::sync::Arc<App>> = None;
     loop {
         let enabled = hexbot_core::settings::get(&home)?["lan_enabled"]

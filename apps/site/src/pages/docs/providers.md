@@ -16,6 +16,11 @@ Open Settings, Providers and choose a provider.
 
 Credentials belong to the daemon deployment, not to one bot. Every bot on that daemon may use any configured provider. Setup walks you through the first provider and then lets you add more before it asks for a default.
 
+Copilot ACP requires a macOS or Linux daemon. On Windows, its chat and approval
+review processes refuse to start because their required credential isolation
+is unavailable. Choose another provider, or use the Windows app with a daemon
+on another computer.
+
 ## Default and fallback models
 
 Provider settings also hold two deployment-wide choices. The **default model** is pre-filled whenever you create a bot. The optional **fallback** is the model every bot switches to when its own provider is down or rate limited.

@@ -251,6 +251,10 @@ pub(crate) fn javascript_entry(executable: &Path) -> bool {
 }
 
 pub(crate) fn executable_command(executable: &Path) -> Command {
+    #[cfg(windows)]
+    if let Some(entry) = npm_entry(executable) {
+        return executable_command(&entry);
+    }
     if javascript_entry(executable) {
         let bundled = executable
             .parent()
@@ -267,6 +271,37 @@ pub(crate) fn executable_command(executable: &Path) -> Command {
     } else {
         Command::new(executable)
     }
+}
+
+#[cfg(windows)]
+fn npm_entry(executable: &Path) -> Option<PathBuf> {
+    let name = executable.file_name()?.to_str()?.to_ascii_lowercase();
+    let name = match name.as_str() {
+        "npm" | "npm.cmd" => "npm",
+        "npx" | "npx.cmd" => "npx",
+        _ => return None,
+    };
+    let mut roots = Vec::new();
+    if executable.is_absolute() {
+        roots.push(executable.parent()?.to_owned());
+    } else if executable
+        .parent()
+        .is_some_and(|parent| !parent.as_os_str().is_empty())
+    {
+        return None;
+    } else {
+        roots.extend(std::env::split_paths(
+            &std::env::var_os("PATH").unwrap_or_default(),
+        ));
+        if let Some(node) = crate::common::command_path("node", &std::env::current_dir().ok()?) {
+            roots.push(node.parent()?.to_owned());
+        }
+    }
+    roots
+        .into_iter()
+        .map(|root| root.join(format!("node_modules/npm/bin/{name}-cli.js")))
+        .find(|entry| entry.is_file())
+        .and_then(|entry| entry.canonicalize().ok())
 }
 
 /// Retain the Windows job until all protocol IO has stopped. The child starts

@@ -18,6 +18,18 @@ fn xml(value: &str) -> String {
         .replace('"', "&quot;")
 }
 
+fn request_daemon_shutdown(home: &Path, pid: u32) -> Result<bool> {
+    if !platform::process_alive(pid) {
+        return Ok(false);
+    }
+    match platform::request_shutdown(pid, home) {
+        Ok(()) => Ok(true),
+        // A reused PID without this home's event belongs to another process.
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error.into()),
+    }
+}
+
 fn definition(home: &Path, sid: &str) -> String {
     let executable = xml(&platform::stable_executable(home).to_string_lossy());
     let arguments = xml(&format!("service-run \"{}\"", home.display()));
@@ -42,11 +54,12 @@ struct Service {
 }
 impl Service {
     fn from_env(home: &Path) -> Result<Self> {
+        let home = install_ownership::resolved(home)?;
         let root = std::env::var_os("HEXBOT_SERVICE_ROOT")
             .or_else(platform::user_home)
             .ok_or_else(|| Error::new(4200, "A user home directory is required"))?;
         Ok(Self {
-            home: home.to_owned(),
+            home,
             file: PathBuf::from(root).join(".config/hexbot/daemon.xml"),
             no_load: std::env::var("HEXBOT_SERVICE_NO_LOAD").as_deref() == Ok("1"),
         })
@@ -205,17 +218,17 @@ impl Service {
                 .and_then(|pid| u32::try_from(pid).ok())
             {
                 // The event includes this home's canonical hash, so a stale PID cannot stop another home.
-                if platform::process_alive(pid) {
-                    platform::request_shutdown(pid, &self.home)?;
+                let requested = request_daemon_shutdown(&self.home, pid)?;
+                if requested {
+                    let mut interval = tokio::time::interval(Duration::from_millis(100));
+                    tokio::time::timeout(Duration::from_secs(20), async {
+                        while platform::process_alive(pid) {
+                            interval.tick().await;
+                        }
+                    })
+                    .await
+                    .map_err(|_| Error::new(5243, "The daemon did not finish stopping"))?;
                 }
-                let mut interval = tokio::time::interval(Duration::from_millis(100));
-                tokio::time::timeout(Duration::from_secs(20), async {
-                    while platform::process_alive(pid) {
-                        interval.tick().await;
-                    }
-                })
-                .await
-                .map_err(|_| Error::new(5243, "The daemon did not finish stopping"))?;
             }
         }
         if existing.is_some() {
@@ -326,6 +339,25 @@ pub async fn run(home: &Path, args: &[String]) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn a_stale_record_for_an_unrelated_live_pid_does_not_block_service_removal() {
+        let home = tempfile::tempdir().unwrap();
+        assert!(!request_daemon_shutdown(home.path(), std::process::id()).unwrap());
+        assert!(platform::process_alive(std::process::id()));
+    }
+    #[test]
+    fn service_homes_drop_trailing_separators_before_windows_argument_quoting() {
+        let home = tempfile::tempdir().unwrap();
+        let trailing = PathBuf::from(format!("{}\\", home.path().display()));
+        let service = Service::from_env(&trailing).unwrap();
+        assert_eq!(service.home, home.path().canonicalize().unwrap());
+        assert!(!service.home.to_string_lossy().ends_with('\\'));
+        install_ownership::check_windows_service_text(
+            &definition(&service.home, "S-1-5-21-0"),
+            home.path(),
+        )
+        .unwrap();
+    }
     #[test]
     fn generated_task_retains_ownership_with_spaces_and_xml_characters() {
         let home = tempfile::tempdir().unwrap();

@@ -6,8 +6,9 @@ import { homedir, tmpdir } from 'node:os';
 import { createBashTool, createPowerShellTool, createReadTool, createWriteTool, createEditTool, createGrepTool, createFindTool, createLsTool } from '@earendil-works/pi-coding-agent';
 import {credentialPolicy, fold, isolatedCommand, cleanupIsolatedCommand, isolationAvailable, policyRegex, policyRoot, privateKeyName, probeIsolation, readDenied, secretFileName, gitDirectory, SCAN_REASON, SCAN_FILE_REASON, within, workspaceProtected, lockedGit, scanFailureReason} from './isolation.ts';
 import { registerAcp } from './acp.ts';
-import {canonicalPath, expandHome} from './paths.ts';
+import {canonicalPath, expandHome, validateFilePath} from './paths.ts';
 import {createWindowsShellOperations} from './windows-shell.ts';
+import {installWindowsMcpTransport, windowsMcpServer} from './windows-mcp.ts';
 export {canonicalPath, expandHome} from './paths.ts';
 import { lazyStream } from '@earendil-works/pi-ai';
 import { builtinProviders } from '@earendil-works/pi-ai/providers/all';
@@ -107,12 +108,13 @@ export default function hexbot(pi: any) {
         sessionAllowed.delete(`mcp:${name}`);
       }
     }
+    await installWindowsMcpTransport();
     let complete = true;
     for (const {name, config: entry, revision, error} of servers) {
       if (error) { ctx.ui.notify(error, 'warning'); continue; }
       if (mcpRevisions.has(name) && mcpRevisions.get(name) === revision) continue;
       try {
-        const resolved = {...entry, ...(entry.env && {env: escapeMcpValues(entry.env)}), ...(entry.headers && {headers: escapeMcpValues(entry.headers)})};
+        const resolved = {...windowsMcpServer(entry, live.cwd ?? config.cwd), ...(entry.env && {env: escapeMcpValues(entry.env)}), ...(entry.headers && {headers: escapeMcpValues(entry.headers)})};
         pi.registerMcpServer(name, resolved);
         mcpRevisions.set(name, revision);
         sessionAllowed.delete(`mcp:${name}`);
@@ -166,6 +168,7 @@ export default function hexbot(pi: any) {
     const script = event.toolName === 'codemode' && typeof event.input?.code === 'string' && config.mcpServers?.length;
     if (!['bash', 'read', 'grep', 'find', 'ls', 'write', 'edit'].includes(event.toolName) && !browser && !mcp && !resource && !script) return;
     try {
+      if (['read', 'grep', 'find', 'ls', 'write', 'edit'].includes(event.toolName)) validateFilePath(event.input.path ?? '.');
       await refresh(ctx);
       // Retain what this check saw, even if another gate refreshes live settings.
       checked({mode: live.approvalMode, cwd: live.cwd ?? config.cwd, level: levelFor(event.input)});
@@ -272,8 +275,8 @@ export default function hexbot(pi: any) {
       }
       if (choice === 'session' && !ask.once && !review) sessionAllowed.add(ask.key);
       else if (choice !== 'once' && choice !== 'session') return {block: true, reason: 'The user denied this action.'};
-    } catch {
-      return {block: true, reason: 'The approval settings could not be checked. Try again.'};
+    } catch (error: any) {
+      return {block:true, reason:process.platform === 'win32' && /^Windows |^A Windows |^Use an absolute Windows /.test(error?.message ?? '') ? error.message : 'The approval settings could not be checked. Try again.'};
     }
   };
   // The user's own commands and the code runtime's terminal have no full_access.
@@ -328,6 +331,7 @@ export default function hexbot(pi: any) {
           throw new Error(error.message + '\n\n' + sandboxNote());
         }
       }
+      validateFilePath(args.path ?? '.');
       if (bypass()) return factory(cwd, options()).execute(id, args, signal, ['grep', 'find', 'ls'].includes(name) ? undefined : update);
       // Pass the checked canonical target to Pi too: its lexical normalization
       // of '..' must not select a different file after a symlink was checked.

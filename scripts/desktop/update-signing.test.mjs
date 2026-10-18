@@ -3,7 +3,7 @@ import { spawnSync } from 'node:child_process'
 import { createPublicKey, generateKeyPairSync } from 'node:crypto'
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, relative, sep } from 'node:path'
 import test from 'node:test'
 import { releaseKeys, signUpdates, signingKeys, testKey, testPublicKey, verifies } from './update-signing.mjs'
 
@@ -54,7 +54,7 @@ test('two signature lines support clients trusting either rotation key', t => {
   const keys = [raw(old), raw(next)]
   const written = signUpdates(root, { channel: 'nightly', version: '1.2.3', key: [old, next], expected: keys })
   for (const file of written) {
-    const bytes = readFileSync(file.includes('/install/') ? join(root, 'install/nightly.json') : file.slice(0, -4))
+    const bytes = readFileSync(relative(root, file).split(sep)[0] === 'install' ? join(root, 'install/nightly.json') : file.slice(0, -4))
     const text = readFileSync(file, 'utf8')
     assert.equal(text.trim().split('\n').length, 2)
     for (const key of keys) assert.ok(verifies(key, bytes, text))

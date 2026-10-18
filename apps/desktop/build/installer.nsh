@@ -62,8 +62,25 @@ Var HexbotShortcutName
   ${EndIf}
 !macroend
 
+; Recover an interrupted first install only when both registry records still
+; identify this build's exact directory and uninstaller. Never infer another track.
+!macro hexbotRequireRegisteredBuild DIRECTORY
+  ReadRegStr $R0 HKCU "Software\${HEXBOT_BUILD_ID}" InstallLocation
+  ${If} $R0 != "${DIRECTORY}"
+    !insertmacro hexbotIdentityError
+  ${EndIf}
+  ReadRegStr $R1 HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${HEXBOT_BUILD_ID}" UninstallString
+  StrCpy $R2 '"${DIRECTORY}\Uninstall Hexbot.exe"'
+  StrLen $R3 $R2
+  StrCpy $R1 $R1 $R3
+  ${If} $R1 != $R2
+    !insertmacro hexbotIdentityError
+  ${EndIf}
+!macroend
+
 !macro customHeader
   !macroundef initMultiUser
+  !macroundef GetDParameter
   !include "${BUILD_RESOURCES_DIR}/installer-init.nsh"
 !macroend
 
@@ -119,4 +136,27 @@ Var HexbotShortcutName
   ${If} ${Errors}
     !insertmacro hexbotIdentityError
   ${EndIf}
+!macroend
+
+; The stock helper matches directory prefixes and can kill a separate Nightly
+; install or a native daemon with the same basename. Wait for this exact app's
+; processes instead, and refuse to continue when process inspection fails.
+!macro customCheckAppRunning
+  Push $0
+  Push $1
+  System::Call 'kernel32::SetEnvironmentVariableW(w "HEXBOT_INSTALL_APP_EXECUTABLE", w "$INSTDIR\${APP_EXECUTABLE_FILENAME}")i.r0'
+  ${If} $0 == 0
+    !insertmacro hexbotIdentityError
+  ${EndIf}
+  nsExec::ExecToStack `"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoLogo -NoProfile -NonInteractive -Command "$$ErrorActionPreference='Stop';$$end=[DateTime]::UtcNow.AddSeconds(15);do{$$running=@(Get-CimInstance Win32_Process -Filter 'Name=''Hexbot.exe''' | Where-Object{[string]::Equals($$_.ExecutablePath,$$env:HEXBOT_INSTALL_APP_EXECUTABLE,[StringComparison]::OrdinalIgnoreCase)});if(!$$running.Count){exit 0};Start-Sleep -Milliseconds 200}while([DateTime]::UtcNow -lt $$end);exit 2"`
+  Pop $0
+  Pop $1
+  System::Call 'kernel32::SetEnvironmentVariableW(w "HEXBOT_INSTALL_APP_EXECUTABLE", p 0)'
+  ${If} $0 != 0
+    MessageBox MB_OK|MB_ICONSTOP "Close Hexbot and try again. The installer could not verify that this app has exited." /SD IDOK
+    SetErrorLevel 2
+    Quit
+  ${EndIf}
+  Pop $1
+  Pop $0
 !macroend

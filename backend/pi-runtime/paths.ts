@@ -15,11 +15,8 @@ export function expandHome(path: string): string {
     .replace(process.platform === 'win32' ? /^~([^/\\]*)/ : /^~([^/]*)/, (_match, name) => !name || name === user ? homedir() : join(dirname(homedir()), name));
 }
 
-// Preserve component order: a parent after a symbolic link or junction belongs
-// to the link's destination. resolve() alone would remove it before following it.
-export function canonicalPath(path: string, cwd: string, depth = 0): string {
-  if (depth > 40) throw new Error('Too many symbolic links');
-  let expanded = expandHome(path);
+function normalizedPath(path: string): string {
+  let expanded = path;
   if (process.platform === 'win32') {
     expanded = expanded.replaceAll('/', '\\');
     // Extended paths may spell the same file; device paths and alternate data
@@ -27,17 +24,27 @@ export function canonicalPath(path: string, cwd: string, depth = 0): string {
     if (/^\\\\\?\\UNC\\/i.test(expanded)) expanded = '\\\\' + expanded.slice(8);
     else if (/^\\\\\?\\[a-z]:\\/i.test(expanded)) expanded = expanded.slice(4);
     else if (/^\\\\[?.]\\/.test(expanded)) throw new Error('Windows device paths are unavailable to file tools');
+    if (/^\\(?!\\)/.test(expanded)) throw new Error('A Windows path must include its drive or share');
     if (/^[a-z]:[^\\]/i.test(expanded) || /^[a-z]:$/i.test(expanded)) throw new Error('Use an absolute Windows drive path');
   }
+  if (process.platform === 'win32') for (const part of expanded.slice(parse(expanded).root.length).split(sep)) {
+    if (!part || part === '.' || part === '..') continue;
+    const base = part.split('.')[0].trimEnd().toUpperCase();
+    if (/^(CON|PRN|AUX|NUL|CONIN\$|CONOUT\$|(?:COM|LPT)[1-9¹²³])$/.test(base) || /[. ]$/.test(part) || /[\p{Cc}<>:\x22|?*]/u.test(part)) throw new Error('Windows device names, file streams and ambiguous names are not allowed');
+  }
+  return expanded;
+}
+export function validateFilePath(path: string): void { normalizedPath(expandHome(path)); }
+
+// Preserve component order: a parent after a symbolic link or junction belongs
+// to the link's destination. resolve() alone would remove it before following it.
+export function canonicalPath(path: string, cwd: string, depth = 0): string {
+  if (depth > 40) throw new Error('Too many symbolic links');
+  const expanded = normalizedPath(expandHome(path));
   const root = parse(expanded).root;
   let current = root ? resolve(cwd, root) : realpathSync.native(cwd);
-  for (let part of expanded.slice(root.length).split(sep)) {
+  for (const part of expanded.slice(root.length).split(sep)) {
     if (!part || part === '.') continue;
-    if (process.platform === 'win32' && part !== '..') {
-      if (part.includes(':')) throw new Error('Windows alternate data streams are unavailable to file tools');
-      part = part.replace(/[. ]+$/, '');
-      if (!part) throw new Error('Invalid Windows path component');
-    }
     current = part === '..' ? dirname(current) : join(current, part);
     try { current = realpathSync.native(current); }
     catch (error: any) {

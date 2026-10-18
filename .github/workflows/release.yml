@@ -246,6 +246,8 @@ jobs:
           HEXBOT_PACKAGED_TEST_EDITION: ${{ matrix.edition }}
           HEXBOT_REQUIRE_WINDOWS_SIGNING: '1'
         run: |
+          node scripts/desktop/windows-dependencies.mjs --root apps/desktop/release/win-unpacked
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
           $env:HEXBOT_PACKAGED_TEST_DIR = "$env:GITHUB_WORKSPACE/apps/desktop/release"
           node --test scripts/desktop/runtime-signing.test.mjs
       - name: List the output
@@ -471,7 +473,10 @@ jobs:
         env:
           WIN_CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
           WIN_CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
-        run: ./scripts/desktop/sign-windows.ps1 -Path (Get-ChildItem installer-artifacts/*.exe).FullName
+        run: |
+          node scripts/desktop/windows-dependencies.mjs --file 'backend/hexbot-installer/target/${{ matrix.rust-target }}/release/hexbot-install.exe' --file 'apps/installer/src-tauri/target/${{ matrix.rust-target }}/release/hexbot-installer-app.exe'
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          ./scripts/desktop/sign-windows.ps1 -Path (Get-ChildItem installer-artifacts/*.exe).FullName
       - name: Clean up macOS signing
         if: always() && runner.os == 'macOS'
         run: |

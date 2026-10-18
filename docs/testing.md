@@ -144,6 +144,8 @@ integration suite is in `apps/site/src/lib/installBootstrap.test.ts` and runs
 with `pnpm --filter ./apps/site run test` on Windows. It serves a compiled
 test executable from loopback, preserves installer arguments, and rejects
 checksum mismatches, duplicate target records, off-origin URLs, and redirects.
+It also checks checksum verification when `Get-FileHash` is unavailable to
+the Windows PowerShell 5.1 host, using .NET SHA-256 over the downloaded bytes.
 
 For the windowed installer, run
 `cargo test --locked --manifest-path apps/installer/src-tauri/Cargo.toml`

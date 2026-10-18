@@ -67,7 +67,12 @@ pub fn validate_path(path: &Path) -> Result<()> {
                 },
                 Component::Normal(name) => {
                     let name = name.to_string_lossy();
-                    let base = name.split('.').next().unwrap_or("").to_ascii_uppercase();
+                    let base = name
+                        .split('.')
+                        .next()
+                        .unwrap_or("")
+                        .trim_end_matches(' ')
+                        .to_ascii_uppercase();
                     let reserved = matches!(
                         base.as_str(),
                         "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$"
