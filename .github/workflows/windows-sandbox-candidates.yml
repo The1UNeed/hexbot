@@ -1,0 +1,154 @@
+# Candidate research only: does not enable a production backend or publish files.
+name: Windows sandbox candidates
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ['t3/verify-windows-readiness']
+    paths:
+      - '.github/workflows/windows-sandbox-candidates.yml'
+      - 'scripts/dev/windows-sandbox-candidate-smoke.mjs'
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: pwsh
+
+jobs:
+  psec:
+    name: PSEC only (${{ matrix.runner }}, ${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-2025
+            arch: x64
+            executable-sha256: 090f5d1f7bb93104ab08dcd4e8034ef954aeefcdaf6658dde5f7dff4cfc12f3a
+          - runner: windows-11-arm
+            arch: arm64
+            executable-sha256: 91aa4171e8809f33f19622c381116188eab7d8c8cffad231230a31b58146ee77
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 26
+          architecture: ${{ matrix.arch }}
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+          architecture: ${{ matrix.arch }}
+      # No host preparation, package installation, ACL grants or elevation.
+      # Use only the official release's native CLI after both digest checks.
+      - name: Verify the pinned Microsoft MXC candidate
+        env:
+          MXC_ARCH: ${{ matrix.arch }}
+          MXC_EXECUTABLE_SHA256: ${{ matrix.executable-sha256 }}
+        run: |
+          $evidence = Join-Path $env:RUNNER_TEMP "hexbot-mxc-$env:MXC_ARCH"
+          New-Item -ItemType Directory -Path $evidence -Force | Out-Null
+          "HEXBOT_WINDOWS_PROBE_DIR=$evidence" >> $env:GITHUB_ENV
+          "MXC_DACL_STATE_DIR=$(Join-Path $evidence 'unused-dacl-state')" >> $env:GITHUB_ENV
+          "HEXBOT_TEST_PYTHON=$((Get-Command python).Source)" >> $env:GITHUB_ENV
+          $archive = Join-Path $evidence 'mxc-release-binaries.zip'
+          $url = 'https://github.com/microsoft/mxc/releases/download/v1.0.1/mxc-release-binaries.zip'
+          Invoke-WebRequest -Uri $url -OutFile $archive -TimeoutSec 600
+          $archiveDigest = (Get-FileHash -Algorithm SHA256 -LiteralPath $archive).Hash.ToLowerInvariant()
+          if ($archiveDigest -ne '0e832239454ba7fcd338ff56218a287eef4c0a01c1484084b869f55feff8abe9') {
+            throw 'The pinned MXC release archive checksum does not match'
+          }
+          $executable = Join-Path $evidence 'wxc-exec.exe'
+          $zip = [IO.Compression.ZipFile]::OpenRead($archive)
+          try {
+            $entry = $zip.GetEntry("$env:MXC_ARCH/wxc-exec.exe")
+            if (!$entry) { throw 'The pinned release does not contain the native CLI' }
+            [IO.Compression.ZipFileExtensions]::ExtractToFile($entry, $executable, $true)
+          } finally { $zip.Dispose() }
+          Remove-Item -LiteralPath $archive
+          $digest = (Get-FileHash -Algorithm SHA256 -LiteralPath $executable).Hash.ToLowerInvariant()
+          if ($digest -ne $env:MXC_EXECUTABLE_SHA256) { throw 'The native MXC CLI checksum does not match' }
+          $signature = Get-AuthenticodeSignature -LiteralPath $executable
+          @{
+            version = '1.0.1'; url = $url; archiveSha256 = $archiveDigest; executableSha256 = $digest
+            architecture = $env:MXC_ARCH; processArchitecture = [Runtime.InteropServices.RuntimeInformation]::ProcessArchitecture.ToString()
+            os = [Environment]::OSVersion.VersionString
+            signatureStatus = $signature.Status.ToString(); signer = $signature.SignerCertificate.Subject
+          } | ConvertTo-Json | Set-Content (Join-Path $evidence 'candidate.json')
+          if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -notmatch '(^|,\s*)O=Microsoft Corporation(,|$)') {
+            throw 'The pinned MXC CLI must have a trusted Microsoft Authenticode signature'
+          }
+          "HEXBOT_TEST_MXC_EXECUTABLE=$executable" >> $env:GITHUB_ENV
+      - name: Require PSEC containment without ACL mutation
+        run: node scripts/dev/windows-sandbox-candidate-smoke.mjs
+      - name: Require the same containment as a standard user
+        if: ${{ !cancelled() && env.HEXBOT_TEST_MXC_EXECUTABLE != '' }}
+        run: |
+          $suffix = [Guid]::NewGuid().ToString('N').Substring(0, 10)
+          $name = "HexbotPsec$suffix"
+          $password = 'aA1!' + [Convert]::ToBase64String([Security.Cryptography.RandomNumberGenerator]::GetBytes(32))
+          Write-Output "::add-mask::$password"
+          $secure = ConvertTo-SecureString $password -AsPlainText -Force
+          $fixture = Join-Path "$env:SystemDrive\" "HexbotPsec-$suffix"
+          $child = $null
+          $account = $null
+          try {
+            $account = New-LocalUser -Name $name -Password $secure -AccountNeverExpires -PasswordNeverExpires -Description 'Disposable Hexbot PSEC validation'
+            Get-LocalGroup -SID 'S-1-5-32-545' | Add-LocalGroupMember -Member $account
+            New-Item -ItemType Directory -Path $fixture | Out-Null
+            $acl = [Security.AccessControl.DirectorySecurity]::new()
+            $acl.SetAccessRuleProtection($true, $false)
+            foreach ($sid in @($account.SID.Value, 'S-1-5-18', 'S-1-5-32-544')) {
+              $principal = [Security.Principal.SecurityIdentifier]::new($sid)
+              $acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new($principal, 'FullControl', 'ContainerInherit,ObjectInherit', 'None', 'Allow'))
+            }
+            Set-Acl -LiteralPath $fixture -AclObject $acl
+            Copy-Item -LiteralPath $env:HEXBOT_TEST_MXC_EXECUTABLE -Destination (Join-Path $fixture 'wxc-exec.exe')
+            Copy-Item -LiteralPath (Get-Command node).Source -Destination (Join-Path $fixture 'node.exe')
+            Copy-Item -LiteralPath scripts/dev/windows-sandbox-candidate-smoke.mjs -Destination (Join-Path $fixture 'probe.mjs')
+            New-Item -ItemType Directory -Path (Join-Path $fixture 'temp'), (Join-Path $fixture 'appdata') | Out-Null
+            @{
+              HEXBOT_TEST_MXC_EXECUTABLE = (Join-Path $fixture 'wxc-exec.exe')
+              HEXBOT_TEST_PYTHON = $env:HEXBOT_TEST_PYTHON
+              HEXBOT_WINDOWS_PROBE_DIR = (Join-Path $fixture 'evidence')
+              HEXBOT_REQUIRE_STANDARD_USER = '1'
+              MXC_DACL_STATE_DIR = (Join-Path $fixture 'unused-dacl-state')
+              LOCALAPPDATA = (Join-Path $fixture 'appdata')
+              TEMP = (Join-Path $fixture 'temp'); TMP = (Join-Path $fixture 'temp')
+            } | ConvertTo-Json | Set-Content (Join-Path $fixture 'environment.json')
+            @'
+          $ErrorActionPreference = 'Stop'
+          $env:PSModulePath = $PSHOME + '\Modules'
+          $configuration = [IO.File]::ReadAllText((Join-Path $PSScriptRoot 'environment.json')) | ConvertFrom-Json
+          foreach ($property in $configuration.PSObject.Properties) {
+            [Environment]::SetEnvironmentVariable($property.Name, [string]$property.Value, 'Process')
+          }
+          & (Join-Path $PSScriptRoot 'node.exe') (Join-Path $PSScriptRoot 'probe.mjs') *> (Join-Path $PSScriptRoot 'standard-user.log')
+          exit $LASTEXITCODE
+          '@ | Set-Content (Join-Path $fixture 'run.ps1')
+            $credential = [Management.Automation.PSCredential]::new("$env:COMPUTERNAME\$name", $secure)
+            $child = Start-Process -FilePath "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -ArgumentList @('-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $fixture 'run.ps1')) -WorkingDirectory $fixture -Credential $credential -LoadUserProfile -PassThru
+            if (!$child.WaitForExit(600000)) { throw 'The standard-user candidate exceeded ten minutes' }
+            if ($child.ExitCode -ne 0) { throw "The standard-user candidate failed with exit code $($child.ExitCode)" }
+          } finally {
+            if ($child -and !$child.HasExited) { & taskkill.exe /PID $child.Id /T /F | Out-Null }
+            try {
+              if (Test-Path -LiteralPath $fixture) {
+                $destination = Join-Path $env:HEXBOT_WINDOWS_PROBE_DIR 'standard-user'
+                New-Item -ItemType Directory -Path $destination -Force | Out-Null
+                foreach ($item in @('evidence', 'standard-user.log')) {
+                  $source = Join-Path $fixture $item
+                  if (Test-Path -LiteralPath $source) { Copy-Item -LiteralPath $source -Destination $destination -Recurse -Force }
+                }
+                Remove-Item -LiteralPath $fixture -Recurse -Force
+              }
+            } finally { if ($account) { Remove-LocalUser -Name $name } }
+          }
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: windows-psec-${{ matrix.arch }}
+          path: ${{ runner.temp }}/hexbot-mxc-${{ matrix.arch }}
+          if-no-files-found: error
