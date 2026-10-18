@@ -197,9 +197,12 @@ def run(manifest, evidence):
                     result = session.run_ps("$ErrorActionPreference='Stop'; Get-Content C:\\HexbotVm\\state.json -Raw")
                     if result.status_code == 0:
                         state = json.loads(result.std_out.decode("utf-8-sig"))
-                except (ET.ParseError, OSError, ValueError, winrm.exceptions.WinRMError):
+                # pywinrm 0.5.0 raises transport errors that do not inherit
+                # from WinRMError; tolerate every transient it can produce.
+                except (ET.ParseError, OSError, ValueError, winrm.exceptions.WinRMError,
+                        winrm.exceptions.WinRMOperationTimeoutError, winrm.exceptions.WinRMTransportError):
                     # Setup and the cumulative update both reboot the guest, and
-                    # the WinRM service can briefly answer with a non-XML body
+                    # the WinRM service can briefly answer 500 or a non-XML body
                     # while it starts. All of these are transients.
                     pass
                 if state is not None:
@@ -225,7 +228,8 @@ def run(manifest, evidence):
                             try:
                                 collect(session, evidence)
                                 break
-                            except (ET.ParseError, OSError, ValueError, winrm.exceptions.WinRMError):
+                            except (ET.ParseError, OSError, ValueError, winrm.exceptions.WinRMError,
+                                    winrm.exceptions.WinRMOperationTimeoutError, winrm.exceptions.WinRMTransportError):
                                 if attempt == 2:
                                     raise
                                 time.sleep(10)
