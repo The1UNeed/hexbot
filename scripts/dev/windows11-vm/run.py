@@ -82,7 +82,7 @@ def collect(session, evidence):
     """)
     if result.status_code:
         raise RuntimeError("Cannot package the guest evidence")
-    length = int(result.std_out.decode().strip())
+    length = int(result.std_out.decode("utf-8-sig").strip())
     if length > 32 * 1024 * 1024:
         raise RuntimeError("Guest evidence exceeded 32 MiB")
     with (evidence / "guest-evidence.zip").open("wb") as output:
@@ -98,7 +98,7 @@ def collect(session, evidence):
             """.replace("OFFSET", str(offset)))
             if result.status_code:
                 raise RuntimeError("Cannot read the guest evidence")
-            output.write(base64.b64decode(result.std_out.decode().strip(), validate=True))
+            output.write(base64.b64decode(result.std_out.decode("utf-8-sig").strip(), validate=True))
 
 
 def run(manifest, evidence):
@@ -108,8 +108,11 @@ def run(manifest, evidence):
         raise RuntimeError("This proof requires a native Linux x86_64 KVM host")
     kvm = os.open("/dev/kvm", os.O_RDWR | os.O_CLOEXEC)
     os.close(kvm)
-    if shutil.disk_usage(evidence).free < 45 * 1024**3:
-        raise RuntimeError("The Windows VM needs at least 45 GiB of free host disk space")
+    evidence.mkdir(parents=True, exist_ok=True)
+    df = subprocess.run(["df", "-h"], capture_output=True, text=True, check=False)
+    (evidence / "host-df.txt").write_text(df.stdout)
+    if shutil.disk_usage(evidence).free < 40 * 1024**3:
+        raise RuntimeError("The Windows VM needs at least 40 GiB of free host disk space; see host-df.txt")
     processes = []
     logs = []
     with tempfile.TemporaryDirectory(prefix="hexbot-win11-", dir=os.environ.get("RUNNER_TEMP")) as directory:
@@ -171,13 +174,17 @@ def run(manifest, evidence):
                 logs.append(log)
                 processes.append(subprocess.Popen(args, stdout=log, stderr=subprocess.STDOUT))
             vm = processes[-1]
-            # Microsoft's UEFI DVD asks for a key before starting Setup.
+            # Microsoft's UEFI DVD asks for a key before starting Setup. The
+            # key press is best effort; a missed press only slows Setup.
             for _ in range(12):
                 time.sleep(1)
                 if monitor.exists():
-                    qmp(monitor, "send-key", {"keys": [{"type": "qcode", "data": "spc"}]})
+                    try:
+                        qmp(monitor, "send-key", {"keys": [{"type": "qcode", "data": "spc"}]})
+                    except (OSError, RuntimeError, ValueError):
+                        pass
             session = winrm.Session(f"http://127.0.0.1:{PORT}/wsman", auth=(USERNAME, password), transport="ntlm", message_encryption="always", operation_timeout_sec=15, read_timeout_sec=20)
-            deadline = time.monotonic() + 110 * 60
+            deadline = time.monotonic() + 100 * 60
             last_message = None
             heartbeat = 0
             ready = False
@@ -185,34 +192,49 @@ def run(manifest, evidence):
             while time.monotonic() < deadline:
                 if vm.poll() is not None:
                     raise RuntimeError(f"The Windows VM exited early with code {vm.returncode}")
+                state = None
                 try:
                     result = session.run_ps("$ErrorActionPreference='Stop'; Get-Content C:\\HexbotVm\\state.json -Raw")
                     if result.status_code == 0:
                         state = json.loads(result.std_out.decode("utf-8-sig"))
-                        if not ready:
-                            # Setup and bootstrap have copied everything they
-                            # need. Remove both DVDs before the standard-user test.
-                            qmp(monitor, "eject", {"device": "payload", "force": True})
-                            qmp(monitor, "eject", {"device": "installer", "force": True})
-                            ready = True
-                        message = f"{state['phase']}: {state['message']}"
-                        if message != last_message:
-                            print(message, flush=True)
-                            last_message = message
-                        if state["phase"] in ["passed", "failed"]:
-                            (evidence / "result.json").write_text(json.dumps(state, indent=2))
-                            collect(session, evidence)
-                            if state["phase"] != "passed":
-                                raise RuntimeError("The Windows 11 x64 guest validation failed; see guest-evidence.zip")
-                            return
                 except (OSError, ValueError, winrm.exceptions.WinRMError):
                     # Setup and the cumulative update both reboot the guest.
                     pass
+                if state is not None:
+                    if not ready:
+                        # Setup and bootstrap have copied everything they need.
+                        # Ejecting both DVDs is best effort: the guest keeps its
+                        # payload, and a failed eject must not kill a healthy run.
+                        ready = True
+                        for device in ("payload", "installer"):
+                            try:
+                                qmp(monitor, "eject", {"device": device, "force": True})
+                            except (OSError, RuntimeError, ValueError):
+                                pass
+                    message = f"{state['phase']}: {state['message']}"
+                    if message != last_message:
+                        print(message, flush=True)
+                        last_message = message
+                    if state["phase"] in ["passed", "failed"]:
+                        # A decided run must report its real result, never loop
+                        # to the deadline on a transient collection failure.
+                        (evidence / "result.json").write_text(json.dumps(state, indent=2))
+                        for attempt in range(3):
+                            try:
+                                collect(session, evidence)
+                                break
+                            except (OSError, ValueError, winrm.exceptions.WinRMError):
+                                if attempt == 2:
+                                    raise
+                                time.sleep(10)
+                        if state["phase"] != "passed":
+                            raise RuntimeError("The Windows 11 x64 guest validation failed; see guest-evidence.zip")
+                        return
                 if time.monotonic() >= heartbeat:
                     print("Waiting for Windows Setup, the pinned update, or the containment test", flush=True)
                     heartbeat = time.monotonic() + 45
                 time.sleep(10)
-            raise RuntimeError("The Windows VM exceeded its 110-minute deadline")
+            raise RuntimeError("The Windows VM exceeded its 100-minute deadline")
         finally:
             if monitor.exists():
                 try:

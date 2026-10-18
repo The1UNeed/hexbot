@@ -11,13 +11,23 @@ function Set-Phase([string]$phase, [string]$message) {
 try {
     $phase = if (Test-Path "$root\state.json") { (Get-Content "$root\state.json" -Raw | ConvertFrom-Json).phase } else { '' }
     if ($phase -eq 'passed' -or $phase -eq 'failed') { exit }
-    if ($phase -ne 'rebooting') {
+    # 'rebooting' resumes here after the update restart. 'testing' also
+    # resumes in place after an unexpected reboot instead of re-patching.
+    if ($phase -notin @('rebooting', 'testing')) {
         Set-Phase 'patching' 'Downloading the pinned Microsoft checkpoint and cumulative update'
         $packages = "$root\packages"
         New-Item -ItemType Directory -Path $packages -Force | Out-Null
         foreach ($update in $manifest.updates) {
             $file = Join-Path $packages $update.name
-            Invoke-WebRequest -UseBasicParsing -Uri $update.url -OutFile $file -TimeoutSec 1200
+            foreach ($attempt in 1..3) {
+                try {
+                    Invoke-WebRequest -UseBasicParsing -Uri $update.url -OutFile $file -TimeoutSec 1200
+                    break
+                } catch {
+                    if ($attempt -eq 3) { throw }
+                    Start-Sleep -Seconds 10
+                }
+            }
             if ((Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash.ToLowerInvariant() -ne $update.sha256) {
                 throw "The pinned update checksum does not match: $($update.name)"
             }
@@ -75,6 +85,12 @@ try {
     $account = $null
     $child = $null
     $fixture = 'C:\HexbotPsecUser'
+    $fixture = 'C:\HexbotPsecUser'
+    # A testing phase interrupted by an unexpected reboot can leave its
+    # disposable account and fixture behind; clear them so a resumed run
+    # starts clean instead of failing at user creation.
+    try { if (Get-LocalUser -Name $name -ErrorAction SilentlyContinue) { Remove-LocalUser -Name $name } } catch { }
+    if (Test-Path $fixture) { try { Remove-Item -LiteralPath $fixture -Recurse -Force } catch { } }
     try {
         $account = New-LocalUser -Name $name -Password $secure -AccountNeverExpires -PasswordNeverExpires -Description 'Disposable Hexbot PSEC validation'
         Add-LocalGroupMember -SID 'S-1-5-32-545' -Member $account

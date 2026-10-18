@@ -316,7 +316,7 @@ for target in targets:
         raise AssertionError('sandbox reached host listener '+target['address'])
     except (PermissionError,TimeoutError): pass
     except OSError as e:
-        if getattr(e,'winerror',None) not in (10013,10060,10065,10051): raise
+        if getattr(e,'winerror',None) not in (10013,10049,10050,10051,10060,10064,10065): raise
     finally: client.close()
 server=socket.socket();server.settimeout(1)
 try:

@@ -303,6 +303,9 @@ export async function stageWindowsSandboxRuntime({
   try {
     const executable = join(staging, 'wxc-exec.exe')
     await writeFile(executable, bytes, { flag: 'wx', mode: 0o755 })
+    // Authenticode can only be verified on Windows. Staged on another host,
+    // the pinned archive and member digests stay the control, and every
+    // candidate run re-verifies the signature before any containment proof.
     if (process.platform === 'win32') await verifyMicrosoftSandboxSignature(executable, run)
     await mkdir(join(destination, 'licenses'), { recursive: true })
     await writeFile(join(destination, WINDOWS_SANDBOX_FILES[1]), MICROSOFT_MXC_LICENSE)

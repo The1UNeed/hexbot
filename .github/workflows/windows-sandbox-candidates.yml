@@ -146,7 +146,7 @@ jobs:
           $cleanupCode = "const fs=require('node:fs'),p=require('node:path');const root=process.argv[1],cleanupErrors=[];for(const name of ['temp','appdata','unused-dacl-state']){try{fs.rmSync(p.join(root,name),{recursive:true,force:true,maxRetries:3,retryDelay:100})}catch(error){cleanupErrors.push(error.stack)}}fs.writeFileSync(p.join(root,'standard-user-cleanup.json'),JSON.stringify({probeExitCode:Number(process.argv[2]),cleanupErrors},null,2));process.exitCode=cleanupErrors.length?1:0"
           $cleanupExitCode = 1
           try {
-            & (Join-Path $PSScriptRoot 'node.exe') -e $cleanupCode $PSScriptRoot $probeExitCode
+            & (Join-Path $PSScriptRoot 'node.exe') -e $cleanupCode $PSScriptRoot $probeExitCode *> (Join-Path $PSScriptRoot 'standard-user-cleanup.log')
             $cleanupExitCode = $LASTEXITCODE
           } catch { $_ | Out-String | Out-File (Join-Path $PSScriptRoot 'standard-user.log') -Append }
           if ($probeExitCode) { exit $probeExitCode }
@@ -164,7 +164,7 @@ jobs:
             } catch { $cleanupErrors += "Process cleanup: $_" }
             try {
               if (Test-Path -LiteralPath $fixture) {
-                foreach ($item in @('evidence', 'standard-user.log', 'standard-user-cleanup.json')) {
+                foreach ($item in @('evidence', 'standard-user.log', 'standard-user-cleanup.json', 'standard-user-cleanup.log')) {
                   $source = Join-Path $fixture $item
                   if (Test-Path -LiteralPath $source) { Copy-Item -LiteralPath $source -Destination $destination -Recurse -Force }
                 }

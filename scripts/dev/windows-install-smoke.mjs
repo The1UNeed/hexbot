@@ -81,7 +81,7 @@ async function liveDaemon(dispatcher, version, phase) {
         log.push({ daemon: { phase, expectedVersion: version, status } })
         return status
       }
-    } catch (error) { lastError = error.message }
+    } catch (error) { lastError = error.message; status = undefined }
     if (Date.now() >= deadline) break
     await new Promise(resolve => setTimeout(resolve, 250))
   } while (true)
@@ -89,6 +89,12 @@ async function liveDaemon(dispatcher, version, phase) {
 }
 try {
   await access(installer)
+  if (process.env.HEXBOT_SMOKE_REQUIRE_STANDARD_USER === '1') {
+    // The standard-user wrapper must run this lifecycle without elevation.
+    const session = await command('net.exe', ['session'], 15_000).catch(error => error)
+    if (!(typeof session.code === 'number' && session.code !== 0)) throw new Error('The standard-user install smoke must not run elevated; net session must be denied')
+    log.push({ standardUserElevation: 'net session denied as required', code: session.code })
+  }
   const version = JSON.parse(await readFile(join(root, 'apps/desktop/package.json'), 'utf8')).version
   const target = 'windows-x86_64'
   for (const [edition, flag] of [['full', []], ['client', ['--client']]]) {

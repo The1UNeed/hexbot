@@ -180,12 +180,12 @@ try {
     $config = Join-Path $directory 'config.json'
     Write-JsonFile $config @{ sid = $sid; directory = $directory; workspace = $workspace; node = $node; packages = $privatePackages; artifacts = $privateArtifacts; certificate = $certificate; runnerProfile = $env:USERPROFILE }
     $credential = [Management.Automation.PSCredential]::new("$env:COMPUTERNAME\$name", $secure)
-    $arguments = @('-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', "`"$(Join-Path $workspace 'scripts/dev/windows-standard-user-smoke.ps1')`"", '-ChildConfig', "`"$config`"")
+    # Paths under ProgramData\HexbotWindowsVmTests are space-free, so bare
+    # ArgumentList entries avoid version-specific embedded quoting.
+    $arguments = @('-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $workspace 'scripts/dev/windows-standard-user-smoke.ps1'), '-ChildConfig', $config)
     $launch = @{
         FilePath = Join-Path $PSHOME 'pwsh.exe'; ArgumentList = $arguments
         Credential = $credential; LoadUserProfile = $true; WorkingDirectory = $workspace; PassThru = $true
-        RedirectStandardOutput = Join-Path $privateArtifacts 'launcher-output.log'
-        RedirectStandardError = Join-Path $privateArtifacts 'launcher-error.log'
     }
     $privateEnvironment = @{}
     foreach ($variable in @('WIN_CSC_LINK', 'WIN_CSC_KEY_PASSWORD', 'HEXBOT_UPDATE_SIGNING_KEY', 'HEXBOT_UPDATE_SIGNING_KEY_NEXT', 'GITHUB_TOKEN', 'GH_TOKEN', 'ACTIONS_RUNTIME_TOKEN', 'ACTIONS_ID_TOKEN_REQUEST_TOKEN')) {
