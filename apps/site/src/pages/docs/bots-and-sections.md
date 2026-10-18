@@ -43,6 +43,25 @@ The context meter at the top right of the chat shows how much of the model's con
 
 A summary keeps the thread of the work but not every detail. What lasts goes into the bot's memory and notes, and the bot can search the chat's history from before its latest summary when it needs an exact detail.
 
+### Client compatibility
+
+The daemon can advertise optional transcript identity through
+`hexbot.info.transcript_identity`. Clients use a proven input binding to keep
+local uploads with the right user message, and fragment IDs to adopt streamed
+replies from durable history. These fields can be absent, including on queued,
+historical or recovered messages. An acknowledgment or matching text does not
+prove ownership. Clients keep unconfirmed local files separate until the
+daemon supplies a binding. The metadata does not enter the bot's context or
+change usage. The [daemon API source](https://github.com/The1UNeed/hexbot/blob/main/docs/api.md#optional-transcript-identity)
+documents the exact fields and limits.
+
+Clients that submit an explicit attachment list send only those uploads.
+Other staged files remain available for a later message from either paired
+client. An empty list sends text alone and retains pending uploads. Older
+clients that omit the list send every staged upload with their next message.
+Clearing attachments, closing the conversation or deleting the bot removes
+unused staged files. Pending uploads still count toward attachment limits.
+
 ## Dream reports
 
 Each night's [dream](/docs/dreaming/) report appears in the chat as a message from the bot. It is there for you to read; the bot does not see it as something it said, and later dreams skip it.

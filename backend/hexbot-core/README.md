@@ -212,6 +212,17 @@ it also installs over SSH when nobody is signed in at the screen.
   Only the bot's name, soul, memory, About you, teammates and skill catalog
   can change. Guidance and tool changes still reach new sections only.
   Native live session IDs remain distinct from stored section IDs.
+  Forking a retained Dream source takes an exclusive conversation file lease
+  through catalog publication. Runtime open/recovery, its process, input
+  landings, parked uploads after a failed restart and background work hold
+  shared leases, so lookup keeps that source
+  until they finish and the process closes or retires. Projection writes and
+  recovery also take shared leases. No catalog writer waits for a source.
+  An opener checks the committed adoption under its lease before changing
+  options or starting Pi; old source IDs return 4002 with the canonical ID.
+  Lock files stay outside session directories so cleanup cannot replace their
+  inodes. A process crash releases leases; the existing pending-fork decision
+  still owns recovery and cleanup.
 - HTTP cookies, pairing, device revocation, JSON-RPC names, error objects,
   owner-scoped events, replay sequence numbers, and replay epochs preserve the
   existing client contract. LAN setting changes restart the listener and close
@@ -220,6 +231,23 @@ it also installs over SSH when nobody is signed in at the screen.
   per bot and are not exposed in client responses or model event streams.
 
 ## Modules
+
+Transcript identity is optional projection metadata. `runtime_identity.rs`
+observes ordered preflight, actual operations and assistant fragments; it owns
+no admission, Stop, replay or upload policy. A sole `started` input can bind
+the initial real user slot. Queued, steered and raw-only recovered users omit
+`input_id` without a proven binding. `turn_id` identifies each actual Pi
+operation; each assistant fragment's `message_id` equals its projected
+`row_id`. Seeds survive SQLite retries. Reconciliation preserves committed
+metadata through the full-raw journal match without changing Pi messages,
+frozen prompts/options or billing. See [the API contract](../../docs/api.md#optional-transcript-identity).
+
+Explicit attachment lists consume only selected staged uploads. Unselected
+uploads, including another paired client's files, remain available for later
+submission. An empty list retains all staging; omitting the list consumes all
+staging for legacy clients. Rejection restores selected files alongside retained
+and concurrent uploads. Existing staging quotas, restart transfer and explicit
+clear, close and deletion cleanup apply to retained uploads.
 
 | Module | Responsibility |
 | --- | --- |

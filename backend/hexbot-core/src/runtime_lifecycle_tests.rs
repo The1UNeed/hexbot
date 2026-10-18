@@ -5602,3 +5602,189 @@ async fn an_upload_on_its_way_in_keeps_its_section_running() {
     assert!(sent.contains(file["path"].as_str().unwrap()), "{sent}");
     runtime.shutdown().await;
 }
+
+#[tokio::test]
+async fn adopted_retired_source_checks_owner_input_steering_uploads_and_background_returns() {
+    async fn next_event(
+        events: &mut tokio::sync::broadcast::Receiver<crate::events::Event>,
+        kind: &str,
+    ) -> Value {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let event = events.recv().await.unwrap();
+                let p = &event.frame["params"];
+                if p["type"] == kind && (kind != "status.update" || p["payload"]["kind"] == "idle")
+                {
+                    break p.clone();
+                }
+            }
+        })
+        .await
+        .unwrap()
+    }
+    let (home, runtime, hub) = setup();
+    let live = open(&runtime).await;
+    let mut events = hub.subscribe();
+    // A background continuation admitted before adoption still lands normally.
+    runtime
+        .return_result("alice", "owl", "first", "Accepted background result", None)
+        .await;
+    next_event(&mut events, "status.update").await;
+    next_event(&mut events, "hexbot.sections.changed").await;
+    // Retirement also waits for the usage query emitted as the turn settles.
+    let source = runtime.sessions.lock().unwrap()["first"].clone();
+    let mut requests = std::mem::take(&mut *source.requests.lock().unwrap());
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while let Some(result) = requests.join_next().await {
+            result.unwrap();
+        }
+    })
+    .await
+    .unwrap();
+    drop(source);
+    assert!(
+        store::history(home.path(), "first")
+            .unwrap()
+            .iter()
+            .any(|m| m["text"] == "Accepted background result" && m["display_kind"] == "hidden")
+    );
+    age(&runtime);
+    assert_eq!(runtime.retire_idle(common::now()).await.unwrap(), 1);
+    let conn = db::open(home.path()).unwrap();
+    let tx = conn.unchecked_transaction().unwrap();
+    tx.execute_batch("INSERT INTO sections(id,bot,owner_id,title) VALUES('canonical','owl','alice','General'); INSERT INTO settings VALUES('dream_chat_adoptions','{\"first\":{\"target\":\"canonical\",\"version\":0}}');").unwrap();
+    tx.commit().unwrap();
+    let before = store::history(home.path(), "first").unwrap();
+    let usage = store::usage(home.path(), "first").unwrap();
+    let frozen: String = store::open(home.path())
+        .unwrap()
+        .query_row(
+            "SELECT options FROM native_sessions WHERE stored_id='first'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    for method in [
+        "prompt.submit",
+        "session.steer",
+        "image.attach_bytes",
+        "file.attach",
+        "pdf.attach",
+    ] {
+        let error = runtime
+            .call(
+                "alice",
+                method,
+                &json!({"session_id":live,"text":"Unadmitted old input"}),
+            )
+            .await
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(error.code, 4002, "{method}");
+        assert!(error.message.contains("canonical"));
+    }
+    let mut warnings = hub.subscribe();
+    runtime
+        .return_result(
+            "alice",
+            "owl",
+            "first",
+            "Unadmitted background result",
+            None,
+        )
+        .await;
+    let warning = next_event(&mut warnings, "warning").await;
+    assert!(warning.to_string().contains("canonical"));
+    assert_eq!(processes(home.path()).len(), 1);
+    assert_eq!(store::history(home.path(), "first").unwrap(), before);
+    assert_eq!(store::usage(home.path(), "first").unwrap(), usage);
+    assert_eq!(
+        store::open(home.path())
+            .unwrap()
+            .query_row(
+                "SELECT options FROM native_sessions WHERE stored_id='first'",
+                [],
+                |r| r.get::<_, String>(0)
+            )
+            .unwrap(),
+        frozen
+    );
+    assert!(store::history(home.path(), "canonical").unwrap().is_empty());
+    runtime.shutdown().await;
+}
+
+#[tokio::test]
+async fn parked_source_upload_defers_adoption_after_a_failed_process_restart() {
+    let (home, runtime, _) = setup();
+    let h = home.path();
+    db::open(h).unwrap().execute_batch("UPDATE sections SET title='Dreams' WHERE id='first'; INSERT INTO dreams(id,bot,started_at,status,summary) VALUES('d','owl',1,'complete','REPORT');").unwrap();
+    let raw = format!(
+        "{}\n{}\n{}\n",
+        json!({"type":"session","version":3,"id":"first","cwd":home.workspace()}),
+        json!({"type":"message","id":"report","parentId":null,"message":{"role":"assistant","content":"REPORT","timestamp":1000}}),
+        json!({"type":"message","id":"human","parentId":"report","message":{"role":"user","content":"Keep me","timestamp":2000}})
+    );
+    fs::write(
+        store::session_dir(h, "first")
+            .unwrap()
+            .join("conversation.jsonl"),
+        &raw,
+    )
+    .unwrap();
+    let live = open(&runtime).await;
+    let file = runtime
+        .call(
+            "alice",
+            "file.attach",
+            &json!({"session_id":live,"name":"a.txt","data_url":"data:text/plain;base64,YQ=="}),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    // A changed saved model restarts the process, moving the upload with it.
+    store::open(h).unwrap().execute("UPDATE native_sessions SET options=json_set(options,'$.model','another-model') WHERE stored_id='first'",[]).unwrap();
+    let script = h.join("pi.cjs");
+    let working = fs::read_to_string(&script).unwrap();
+    fs::write(&script, "#!/usr/bin/env node\nprocess.exit(1)\n").unwrap();
+    assert!(
+        runtime
+            .call(
+                "alice",
+                "prompt.submit",
+                &json!({"session_id":live,"text":"Try with upload","attachments":[file["id"]]})
+            )
+            .await
+            .unwrap()
+            .is_err()
+    );
+    assert!(runtime.sessions.lock().unwrap().is_empty());
+    assert_eq!(runtime.parked.lock().unwrap().len(), 1);
+    assert_eq!(
+        crate::catalog::chat_section(h, "alice", "owl").unwrap()["id"],
+        "first"
+    );
+    assert!(Path::new(file["path"].as_str().unwrap()).is_file());
+    assert_eq!(
+        fs::read_to_string(h.join("runtime/sessions/first/conversation.jsonl")).unwrap(),
+        raw
+    );
+    fs::write(&script, working).unwrap();
+    let reopened = runtime.open_session("alice", "owl", "first").await.unwrap();
+    assert_eq!(reopened.state.lock().unwrap().staged.len(), 1);
+    assert_eq!(reopened.state.lock().unwrap().staged[0].id, file["id"]);
+    assert_eq!(
+        crate::catalog::chat_section(h, "alice", "owl").unwrap()["id"],
+        "first"
+    );
+    // Clearing an unsubmitted upload is explicit; only then close for migration.
+    runtime.clear_attachments(&reopened).await.unwrap();
+    drop(reopened);
+    runtime.close_stored("alice", "first").await.unwrap();
+    let target = crate::catalog::chat_section(h, "alice", "owl").unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert_ne!(target, "first");
+    assert_eq!(store::usage(h, &target).unwrap()["total_tokens"], 0);
+    runtime.shutdown().await;
+}

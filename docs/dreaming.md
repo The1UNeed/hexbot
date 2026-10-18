@@ -34,6 +34,17 @@ The native scheduler and digest builder live in
   If any conversation still needs that older database, or native recovery is unfinished
   or quarantined, the dream fails and leaves its cutoff and proposals unchanged
   so that history can be read after repair and recovery.
+  Readiness and native history use one read snapshot per conversation. At
+  history selection, a separate reader checks that relevant dialogue and the
+  native/legacy decision have not changed. A change fails the dream before
+  its model call, leaving proposals and the successful cutoff for an ordinary
+  retry. An adopted source must still have its exact copied history version.
+  This check does not lock live chats or refresh the digest with unchecked rows.
+  It covers changes since readiness, including healthy late appends with an
+  earlier streamed timestamp. It does not close the inherited interval after
+  a conversation's final check through successful completion. An in-window
+  append in that later interval can still be passed by the cutoff. Compaction
+  files and the catalog are separate reads, not a shared database/file snapshot.
   It retains the newest 12,000 characters per conversation,
   caps the complete serialized digest at 60,000 bytes, and reports how many
   conversations it left out as `omitted_conversations`. Titles keep their
@@ -172,7 +183,10 @@ The native scheduler and digest builder live in
   On upgrade, a report-only old `Dreams` log gives way to a conversation.
   A mixed log competes by its non-report conversation activity. If old reports
   make a saved choice ambiguous, all competing histories stay. Kept logs have
-  their reports marked.
+  their reports marked. If an older client still has a mixed log open, the move to a
+  chat waits for it to close or retire, keeping all accepted input and replies.
+  After the move, an older client must open the bot's chat again to continue;
+  the old conversation refuses new input.
   Reports an earlier build left in the old store are marked when the chat
   first opens, so they never enter the bot's context either. A dream skips
   them in a kept Dreams log that was never opened.

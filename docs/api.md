@@ -23,18 +23,23 @@ data model. The native transport and event projection live in
 
 ## Core methods the client calls directly
 
-- Chat: `prompt.submit {session_id, text, attachments?}`, `session.interrupt`, `session.steer`.
+- Chat: `prompt.submit {session_id, text, attachments?, input_id?}`,
+  `session.interrupt`, `session.steer {session_id, text, input_id?}`.
 - History: `session.history {session_id}`, `session.events.since` on reconnect.
 - Attachments: `image.attach_bytes {session_id, content_base64, filename}`,
   `file.attach {session_id, data_url, name}`, `pdf.attach {session_id, content_base64}`.
   `attachments.clear {session_id}` clears all unsubmitted attachments and removes
   their staged files. It refuses while the bot is working and keeps the session.
   Each attach call answers with an `id`. `prompt.submit` with
-  `attachments: [id, ...]` sends only those uploads and removes every other
-  staged file in the section first, so a file left by an upload that never
-  made it into a message (another client, a lost reply, a closed screen) never
-  rides a later one. An id that is no longer staged answers 4204 and changes
-  nothing. Without `attachments`, every staged upload goes with the prompt.
+  `attachments: [id, ...]` consumes only those staged uploads. Unselected
+  uploads remain staged for a later submission, including uploads from another
+  paired client. An explicit empty list sends no uploads and retains all staging.
+  An id that is no longer staged answers 4204 and changes nothing. Without
+  `attachments`, every staged upload goes with the prompt as before. Rejected
+  prompts restore selected uploads alongside unselected and newly staged ones.
+  Retained uploads still count toward staging limits, prevent idle retirement,
+  and survive a tools or model restart. `attachments.clear`, session close and
+  section deletion remove unused staged files; submitting an exact list does not.
   Images allow 25 MiB decoded; PDFs and generic files allow 45 MiB.
   Larger attachments return 4202 with the size limit. Browser clients check
   before reading or uploading. WebSocket frames and in-flight request bytes
@@ -86,6 +91,56 @@ the bot's daily token budget without adding reviewer text to the conversation.
 Copilot ACP reports zero token usage and cost, so its reviews add no measured
 usage to these totals or budgets.
 
+### Optional transcript identity
+
+`hexbot.info.transcript_identity: true` advertises authoritative metadata when
+present. A missing or false capability keeps the legacy request shapes.
+Coverage is partial. Historical, recovered, queued and ambiguous rows may omit
+identity fields even when the capability is true.
+
+`prompt.submit` and `session.steer` accept a fresh, lowercase hyphenated,
+nonzero UUID `input_id`. It reserves the existing native prompt-intent key
+before uploads move or Pi receives the command. Invalid or already reserved
+IDs return 4202 without taking another intent or changing staged uploads.
+Successful staged submissions echo a supplied `input_id`; callers that omit
+it retain the original response shape. This is correlation only, with no
+idempotency, retry or automatic resend promise. Manual `/compact` bypasses
+intent staging and may omit the echo and all identity metadata.
+
+A user projection exposes `input_id` only for a proven binding to that actual
+Pi user. The current producer binds the sole identified `started` operation's
+initial user slot through ordered transport preflight, including transformed
+and image input. A queued or steer ACK, equal text, display matching or a late
+RPC reply cannot establish ownership. Same-text queued and steered inputs
+remain unbound, including a follow-up dequeued before a late steer ACK.
+
+`turn_id` names each actual Pi agent operation, independently of room turns,
+visible users and input IDs. One operation may consume several users or no new
+user and produce several assistant fragments. Each actual assistant
+`message_start` allocates `message_id`. Its durable assistant `row_id` is that
+same value, retained through SQLite retries and full-raw reconciliation.
+The existing `message.start` timing remains at `agent_start` and carries only
+`turn_id`. Later deltas, reasoning, interims, tool events and completion carry
+the optional IDs when known. There are no extra legacy starts per fragment.
+Tool-event `message_id` names the assistant that actually owns `toolCallId`.
+Unknown, nested or ambiguous owners omit it. An explicit `parentToolCallId`
+prevents direct-call attribution even when the nested ID equals an earlier
+top-level tool ID. Tool-result history keeps its
+own distinct `row_id` and `tool_call_id`. Cards may omit fragment association.
+
+Terminal metadata is captured at `agent_end`, rather than read from a newer
+operation at settlement. Unmatched settlement cannot finish a known active
+operation. Error, EOF and compact paths do not invent an assistant fragment.
+Independent operations can settle out of order. When their untagged settlements
+cannot be paired, terminal IDs are omitted while durable rows retain their IDs.
+A live fragment ID alone does not prove a durable row. Clients adopt
+authoritative history and keep unresolved local files unconfirmed rather
+than attach them to another user. Committed projection metadata survives
+reconcile/restart. A raw-only recovered occurrence cannot recover a client
+UUID from text, position or an old pending intent and omits `input_id`.
+All identity metadata stays outside the original Pi messages, model context,
+frozen prompts, tools, options and usage records.
+
 ## `hexbot.*` methods
 
 All results are objects. Errors use JSON-RPC error objects with core-style
@@ -99,7 +154,8 @@ mutation methods check ownership.
 
 - `hexbot.info {}` → `{version, hermes_version, daemon_name, install_id,
   auth_required, lan_enabled, addresses: [string], platform, sandbox, home,
-  update_capability, one_chat}`. `one_chat` is true once
+  update_capability, one_chat, transcript_identity?}`. See optional transcript
+  identity above. `one_chat` is true once
   `hexbot.sections.create` returns the bot's one chat; older daemons leave it
   out. `update_capability` is `desktop` when the Hexbot app
   on that machine runs the daemon, `service` when launchd or systemd does,
@@ -320,7 +376,12 @@ returned by `open`.
   made titled `General` on first use. An archived chat comes back. A `title`
   from an older client is ignored. Clients call it for the bot's chat rather
   than pick from their own list, which cannot tell a section recovery set
-  aside. A daemon without `one_chat` in `hexbot.info` makes a new section on
+  aside. A retained old Dreams conversation stays the chat while it is open,
+  including accepted messages, uploads and background work. Once it closes or
+  retires, a later lookup can move it to a chat without the old reports in
+  model context. Opening its old ID then returns `4002` with the replacement
+  ID; the client must resolve the bot's chat again before sending input.
+  A daemon without `one_chat` in `hexbot.info` makes a new section on
   every call, so clients there list the bot's sections and call `create`
   only when it has none. Its upgrade keeps the latest conversation, giving
   way only for a report-only log, which its list cannot tell apart, so a client

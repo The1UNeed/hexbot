@@ -341,3 +341,67 @@ it.each(['navigate', 'daemon', 'epoch', 'unmount'])(
     expect(accepted).toHaveLength(0)
   }
 )
+
+it('submits the optimistic UUID and only its server upload IDs when the daemon supports identity', async () => {
+  useConnection.setState({ daemon: { one_chat: true, transcript_identity: true } as DaemonInfo })
+  const original = call.getMockImplementation()!
+  call.mockImplementation((method, input) => {
+    if (method === 'prompt.submit') {
+      accepted.push(input)
+
+      return Promise.resolve({ status: 'submitted', input_id: input.input_id })
+    }
+
+    return original(method, input)
+  })
+  const view = render(<ConversationColumn />)
+  await screen.findByText('Earlier reply')
+  staged.set('other-client-upload', { session_id: 'durable-id', name: 'private-other.txt' })
+  fireEvent.change(view.container.querySelector('input[type=file]')!, {
+    target: { files: [new File(['own bytes'], 'plan.txt', { type: 'text/plain' })] }
+  })
+  await send()
+  await waitFor(() => expect(accepted).toHaveLength(1))
+  const submitted = accepted[0] as Record<string, unknown>
+
+  const local = useTranscripts
+    .getState()
+    .bySession['durable-id']!.messages.find(message => message.role === 'user')!
+
+  const upload =
+    call.mock.results[call.mock.calls.findIndex(([method]) => method === 'file.attach')]!
+
+  const uploaded = (await upload.value) as { id: string }
+  expect(submitted).toEqual({
+    session_id: 'durable-id',
+    text: 'Read my plan',
+    input_id: local.inputId,
+    attachments: [uploaded.id]
+  })
+  expect(local.inputId).toMatch(
+    /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
+  )
+  expect(local.attachments.map(item => item.id)).toEqual([uploaded.id])
+  expect(submitted.attachments).not.toContain('other-client-upload')
+})
+
+it('gives an explicitly rejected retry a fresh correlation key, without promising idempotency', async () => {
+  useConnection.setState({ daemon: { one_chat: true, transcript_identity: true } as DaemonInfo })
+  render(<ConversationColumn />)
+  await send()
+  await waitFor(() => expect(accepted).toHaveLength(1))
+
+  const inputs = call.mock.calls
+    .filter(([method]) => method === 'prompt.submit')
+    .map(([, input]) => input)
+
+  expect(inputs).toHaveLength(2)
+  expect(inputs[0]!.input_id).toEqual(expect.any(String))
+  expect(inputs[1]!.input_id).toEqual(expect.any(String))
+  expect(inputs[1]!.input_id).not.toBe(inputs[0]!.input_id)
+  expect(
+    useTranscripts
+      .getState()
+      .bySession['durable-id']!.messages.find(message => message.role === 'user')?.inputId
+  ).toBe(inputs[1]!.input_id)
+})
