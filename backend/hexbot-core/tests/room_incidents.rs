@@ -51,20 +51,57 @@ async fn event(
 
 async fn fail_turn(app: &Arc<App>, room: &str, bot: &str) -> Value {
     let mut events = app.events.subscribe();
-    app.call(
-        "local",
-        "hexbot.rooms.send",
-        &json!({"id":room,"text":format!("@{bot} fail this turn")}),
-    )
+    let trigger = app
+        .call(
+            "local",
+            "hexbot.rooms.send",
+            &json!({"id":room,"text":format!("@{bot} fail this turn")}),
+        )
+        .await
+        .unwrap()["event"]["seq"]
+        .clone();
+    let incident = event(&mut events, "hexbot.bots.incident").await;
+    // The terminal room turn can precede the asynchronous context report.
+    // Finish this turn's notifications before asserting what a later RPC emits.
+    tokio::time::timeout(Duration::from_secs(8), async {
+        let (mut terminal, mut failure, mut changed, mut usage) = (false, false, false, false);
+        loop {
+            let frame = events.recv().await.unwrap().frame;
+            let event = &frame["params"];
+            let payload = &event["payload"];
+            match event["type"].as_str() {
+                Some("hexbot.rooms.turn")
+                    if payload["room_id"] == room
+                        && payload["bot"] == bot
+                        && payload["live_session_id"] == incident["session_id"]
+                        && payload["status"] != "running" =>
+                {
+                    terminal = true
+                }
+                Some("hexbot.rooms.event")
+                    if payload["room_id"] == room
+                        && payload["event"]["kind"] == "turn.failed"
+                        && payload["event"]["actor_id"] == bot
+                        && payload["event"]["payload"]["trigger_seq"] == trigger =>
+                {
+                    failure = true
+                }
+                Some("hexbot.sections.changed") if payload["id"] == incident["section_id"] => {
+                    changed = true
+                }
+                Some("session.usage") if event["session_id"] == incident["session_id"] => {
+                    usage = true
+                }
+                _ => {}
+            }
+            if terminal && failure && changed && usage {
+                break;
+            }
+        }
+    })
     .await
     .unwrap();
-    let incident = event(&mut events, "hexbot.bots.incident").await;
-    loop {
-        let turn = event(&mut events, "hexbot.rooms.turn").await;
-        if turn["room_id"] == room && turn["status"] != "running" {
-            return incident;
-        }
-    }
+    incident
 }
 
 async fn failed_room(app: &Arc<App>) -> (String, Value) {
@@ -286,6 +323,88 @@ async fn legacy_room_read_survives_live_rollover_and_dedup_persists_attribution(
     app.shutdown().await;
 }
 
+async fn hold_usage(home: &std::path::Path) -> tokio::net::TcpListener {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let path = home.join("fake-pi.cjs");
+    let script = fs::read_to_string(&path).unwrap();
+    let marker = "const c=JSON.parse(line);emit(";
+    assert_eq!(script.matches(marker).count(), 1);
+    let held = format!(
+        r#"const c=JSON.parse(line);
+if(c.type==='get_session_stats'){{
+ const socket=require('node:net').connect({{host:'127.0.0.1',port:{}}},()=>socket.write('usage-held\n'));
+ socket.once('data',()=>{{emit({{type:'response',id:c.id,command:c.type,success:true,data:{{}}}});socket.end();}});
+ return;
+}}
+emit("#,
+        listener.local_addr().unwrap().port()
+    );
+    fs::write(path, script.replace(marker, &held)).unwrap();
+    listener
+}
+
+#[tokio::test]
+async fn failed_room_waits_for_its_usage_notification_before_returning() {
+    use tokio::io::AsyncWriteExt;
+    let (home, app) = fixture().await;
+    let held_usage = hold_usage(home.path()).await;
+    let mut events = app.events.subscribe();
+    let waiting = failed_room(&app);
+    tokio::pin!(waiting);
+    let (mut control, _) = tokio::time::timeout(Duration::from_secs(8), async {
+        tokio::select! {
+            result = &mut waiting => panic!("failed_room returned before its held usage report: {result:?}"),
+            connection = held_usage.accept() => connection.unwrap(),
+        }
+    }).await.unwrap();
+    tokio::time::timeout(Duration::from_secs(8), async {
+        loop {
+            tokio::select! {
+                biased;
+                result = &mut waiting => panic!("failed_room returned before its held usage report: {result:?}"),
+                event = events.recv() => {
+                    let event = event.unwrap();
+                    if event.frame["params"]["type"] == "hexbot.rooms.turn"
+                        && event.frame["params"]["payload"]["status"] == "failed" {
+                        break;
+                    }
+                }
+            }
+        }
+    }).await.unwrap();
+    assert!(futures_util::poll!(waiting.as_mut()).is_pending());
+    control.write_all(b"release\n").await.unwrap();
+    let (room, failure) = tokio::time::timeout(Duration::from_secs(8), waiting)
+        .await
+        .unwrap();
+    assert_eq!(failure["room_id"], room);
+    db::open(home.path())
+        .unwrap()
+        .execute(
+            "INSERT INTO users(id,display_name,role,created_at) VALUES('bob','Bob','member',0)",
+            [],
+        )
+        .unwrap();
+    let mut after = app.events.subscribe();
+    assert_eq!(
+        app.call(
+            "bob",
+            "hexbot.rooms.remove_member",
+            &json!({"id":room,"bot":"owl"})
+        )
+        .await
+        .unwrap_err()
+        .code,
+        4302
+    );
+    let unexpected = notifications(&mut after);
+    assert!(
+        unexpected.is_empty(),
+        "notifications after unauthorized removal: {unexpected:#?}"
+    );
+    app.shutdown().await;
+}
+
 async fn delete_room(last_member: bool) {
     let (home, app) = fixture().await;
     let (room, failure) = failed_room(&app).await;
@@ -382,7 +501,11 @@ async fn delete_room(last_member: bool) {
         app.call("bob", method, &params).await.unwrap_err().code,
         4302
     );
-    assert!(notifications(&mut events).is_empty());
+    let unexpected = notifications(&mut events);
+    assert!(
+        unexpected.is_empty(),
+        "notifications after unauthorized {method}: {unexpected:#?}"
+    );
     app.call("local", method, &params).await.unwrap();
     let emitted = notifications(&mut events);
     let changed = emitted
