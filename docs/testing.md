@@ -8,6 +8,24 @@
   captured legacy schema fixtures in temporary homes. Local HTTP/SSE/MCP
   fixtures test provider and tool behavior. Actual Pi checks are documented
   in [`backend/hexbot-core/README.md`](../backend/hexbot-core/README.md).
+  `section_delete_recovery` exercises public catalog/App deletions with native,
+  legacy transaction, file and final metadata faults, restart, denied paths,
+  exact aliases, descendants and ownership controls. The catalog library's
+  `section_delete_crash_at_the_real_catalog_commit_recovers_the_decision`
+  kills a child process at socket barriers before and after the actual SQLite
+  catalog COMMIT. It checks rollback versus completed native and legacy erasure.
+  `deletion_admission` holds actual child processes at TCP startup and shutdown
+  barriers. It checks late hidden, CLI, job, teammate and room starts, descendant
+  PIDs, rebound listeners, cancelled requests, concurrent removals and joins,
+  and unrelated rooms. One-shot description PIDs check admission through actual
+  shutdown after cancellation. SQLite and file barriers hold native insertion
+  after ownership checks and actual blocking recovery after caller cancellation.
+  A held accepted turn checks the final busy refusal after admission drains.
+  Bot catalog faults and room faults before mutation
+  check that admission releases and actual jobs and room posts can run again.
+  This prefix still purges room history before its catalog decision; those
+  later room failures, and membership changes before last-member purge failures,
+  are outside the rollback assertions in this suite.
 - Pi runtime: `node --test backend/pi-runtime/*.test.mjs` after
   `npm ci --prefix backend/pi-runtime --ignore-scripts --no-audit --no-fund`.
   CI runs the Rust and Pi suites on Linux and macOS. Approval tests use a stub

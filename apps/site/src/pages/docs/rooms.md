@@ -38,6 +38,8 @@ Archiving hides a room but keeps its history. Deleting it removes the room and i
 
 Deleting a room, including by removing its last bot, clears failures from that room's turns, removes its delegated conversations, and refreshes the bots' statuses. Failures in other surviving rooms, sections, or background runs, connector problems, and failures without a conversation remain. Archiving a room keeps its failed turns available to retry.
 
+While a room is being deleted, new messages and bot starts are refused. Closing the app lets the daemon finish deletion. If another bot joins while the last bot is being removed, the room stays available.
+
 ## Bots working together
 
 A bot can ask another of your bots for help, outside any room. Each bot has a description that the others read to decide whom to ask. Write it in the bot's settings under Profile. If you leave it blank, Hexbot writes one from the bot's soul and keeps it out of sight. A bot learns who is on its team when its chat starts, and again when the chat summarises older messages, so a new bot or a changed description reaches it then.

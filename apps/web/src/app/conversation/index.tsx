@@ -1057,7 +1057,7 @@ function BotConversation() {
     [params.bot, params.section, target, epoch, capability, installation, location, openAttempt]
   )
 
-  const [resolved, setResolved] = useState<{ entry: object; peer: boolean } | null>(null)
+  const [resolved, setResolved] = useState<{ entry: typeof entry; peer: boolean } | null>(null)
   const bot = useBot(params.bot ?? null)
   const botsLoaded = useBots(state => state.loaded)
   const section = useSection(params.section ?? null)
@@ -1066,6 +1066,22 @@ function BotConversation() {
   const ownerInput = ready && !resolved.peer
   const liveId = ready ? loadedLiveId : null
   const transcript = useTranscript(liveId)
+
+  // While the owner chat validated here is checked again (a reconnect, a
+  // daemon restart, the same URL), its composer stays, disabled, so staged
+  // files survive. Another daemon, bot, chat or a peer thread starts without one.
+  const composer = ready
+    ? !resolved.peer
+    : Boolean(
+        resolved &&
+        !resolved.peer &&
+        resolved.entry.target === target &&
+        resolved.entry.bot === params.bot &&
+        resolved.entry.section === params.section &&
+        (!installation ||
+          !resolved.entry.installation ||
+          resolved.entry.installation === installation)
+      )
 
   // Connector tools are named from the bot's catalog ("Connecting to Project tools").
   useEffect(() => {
@@ -1555,7 +1571,7 @@ function BotConversation() {
         </button>
       ) : null}
       <div className="absolute inset-x-0 bottom-0 z-20" ref={composerBox}>
-        {ownerInput ? (
+        {composer ? (
           <div className="relative mx-auto max-w-[52rem] px-1">
             <Composer
               bot={bot}

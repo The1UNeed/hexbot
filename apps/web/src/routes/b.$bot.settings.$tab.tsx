@@ -112,7 +112,15 @@ function BotSettingsDialog() {
 
     setCloseError(null)
 
-    if (exitMissing() || (!useBots.getState().loaded && !useBots.getState().byName[botName])) {
+    if (exitMissing()) {
+      return
+    }
+
+    // Without a roster this bot may or may not exist: look nothing up and
+    // forget nothing. Home restores the remembered chat, which checks itself.
+    if (!useBots.getState().loaded && !useBots.getState().byName[botName]) {
+      void navigate({ to: '/' })
+
       return
     }
 

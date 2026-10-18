@@ -161,6 +161,25 @@ struct Staged {
 /// sent. Taken under the open lock, so the section cannot retire before the
 /// input lands; closing the section still ends it.
 struct Landing(Arc<Live>);
+/// One-shot calls have no stored ID for deletion to close. Keep their
+/// admission until actual process cleanup, even if their caller is cancelled.
+struct AdmittedPi {
+    process: PiProcess,
+    admission: Option<Arc<Vec<tokio::sync::OwnedRwLockReadGuard<()>>>>,
+}
+impl Drop for AdmittedPi {
+    fn drop(&mut self) {
+        if let Some(admission) = self.admission.take()
+            && let Ok(handle) = tokio::runtime::Handle::try_current()
+        {
+            let process = self.process.clone();
+            handle.spawn(async move {
+                let _ = process.shutdown().await;
+                drop(admission);
+            });
+        }
+    }
+}
 impl Landing {
     fn new(s: &Arc<Live>) -> Result<Self> {
         let mut state = s.state.lock().unwrap();
@@ -282,6 +301,7 @@ fn model_choice(options: &Value) -> Value {
     ])
 }
 pub struct Runtime {
+    pub(crate) admission: Arc<crate::admission::Admission>,
     home: PathBuf,
     events: EventHub,
     pi_executable: PathBuf,
@@ -309,6 +329,7 @@ impl Runtime {
         store::open(&home)?.execute("DELETE FROM native_live_sessions", [])?;
         db::open(&home)?.execute("UPDATE sections SET last_live_session_id=NULL", [])?;
         let runtime = Arc::new_cyclic(|weak| Self {
+            admission: Arc::new(crate::admission::Admission::default()),
             home,
             events,
             pi_executable,
@@ -760,6 +781,7 @@ impl Runtime {
         input: bool,
         admitting: bool,
     ) -> Result<Arc<Live>> {
+        let admission = Arc::new(self.admit_session(bot, stored, overrides)?);
         if self.stopping.load(Ordering::Acquire) {
             return Err(Error::new(5201, "daemon is shutting down"));
         }
@@ -929,7 +951,11 @@ impl Runtime {
                 owner.to_owned(),
                 cwd.clone(),
             );
+            let work_admission = admission.clone();
             tokio::task::spawn_blocking(move || {
+                // Cancellation of the opener must still wait for its actual
+                // import/recovery work before deletion takes its snapshot.
+                let _admission = work_admission;
                 store::import_hermes(&home, &bot, &stored, &cwd)?;
                 store::reconcile(&home, &bot, &stored, &owner)
             })
@@ -1173,6 +1199,37 @@ impl Runtime {
             json!({"model":options["model"],"provider":options["provider"]}),
         );
         Ok(s)
+    }
+    fn admit_session(
+        &self,
+        bot: &str,
+        stored: &str,
+        overrides: Option<&Value>,
+    ) -> Result<Vec<tokio::sync::OwnedRwLockReadGuard<()>>> {
+        use crate::admission::Scope;
+        let mut guards = vec![self.admission.enter(Scope::Bot(bot.into()))?];
+        // A delegate belongs to its root's room even before its own options
+        // have been saved. Follow saved parents for later reopen attempts too.
+        let parent = overrides.and_then(|o| o["parent_session"].as_str());
+        let ancestors = common::rows(
+            &store::open(&self.home)?,
+            "WITH RECURSIVE ancestors(id) AS (SELECT ?1 UNION SELECT ?2 WHERE ?2 IS NOT NULL UNION SELECT json_extract(s.options,'$.parent_session') FROM native_sessions s JOIN ancestors a ON s.stored_id=a.id WHERE json_extract(s.options,'$.parent_session') IS NOT NULL) SELECT id FROM ancestors",
+            &[&stored, &parent],
+        )?;
+        let catalog = db::open(&self.home)?;
+        for ancestor in ancestors {
+            for room in common::rows(
+                &catalog,
+                "SELECT room_id FROM room_sessions WHERE stored_session_id=?",
+                &[&required(&ancestor, "id")?],
+            )? {
+                guards.push(
+                    self.admission
+                        .enter(Scope::Room(required(&room, "room_id")?.into()))?,
+                );
+            }
+        }
+        Ok(guards)
     }
     /// The daemon tools and connected servers a section of this bot starts with now.
     fn fresh_tools(
@@ -2797,6 +2854,10 @@ impl Runtime {
         }
     }
     fn record_delivery(&self, s: &Live, to: &str, text: &str) -> Result<(String, String)> {
+        let _admission = self
+            .admission
+            .enter(crate::admission::Scope::Bot(to.into()))?;
+        common::bot_owner(&self.home, &s.owner, to)?;
         let mut conn = db::open(&self.home)?;
         let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         let stored: Option<String> = tx.query_row(
@@ -3034,6 +3095,21 @@ impl Runtime {
         message: &Value,
         timeout: Duration,
     ) -> Result<(String, bool)> {
+        let admission = Arc::new(match parent {
+            Some(parent) => {
+                let guards = self.admit_session(bot, &parent.stored, None)?;
+                common::bot_owner(&self.home, &parent.owner, bot)?;
+                store::session_dir(&self.home, &parent.stored)?;
+                if parent.state.lock().unwrap().closed {
+                    return Err(Error::new(4001, "session not found"));
+                }
+                guards
+            }
+            None => vec![
+                self.admission
+                    .enter(crate::admission::Scope::Bot(bot.into()))?,
+            ],
+        });
         // Credential refresh and its shared grant lock spend the same budget
         // as Pi startup and provider work. Keep resources alive through cleanup.
         let deadline = tokio::time::Instant::now() + timeout;
@@ -3097,8 +3173,8 @@ impl Runtime {
                     .filter(|(name, _)| crate::pi::provider_environment(name, provider.unwrap_or(""))),
             );
             let (process, mut events) = PiProcess::spawn(options).map_err(pi_error)?;
-            started = Some(process);
-            let process = started.as_ref().unwrap();
+            started = Some(AdmittedPi { process, admission: Some(admission.clone()) });
+            let process = &started.as_ref().unwrap().process;
             let response = process
                 .request(
                     json!({"type":"prompt","message":message.to_string()}),
@@ -3186,8 +3262,9 @@ impl Runtime {
             }
         })
         .await;
-        if let Some(process) = started {
-            let _ = process.shutdown().await;
+        if let Some(mut process) = started {
+            let _ = process.process.shutdown().await;
+            process.admission.take();
         }
         // A failed call reads as a failed result; callers decide what that means.
         match result {
@@ -3259,6 +3336,9 @@ impl Runtime {
         Ok(Some((row, soul, key)))
     }
     async fn write_description(&self, bot: &str) -> Result<()> {
+        let _admission = self
+            .admission
+            .enter(crate::admission::Scope::Bot(bot.into()))?;
         let Some((row, soul, key)) = self.description_inputs(bot)? else {
             return Ok(());
         };

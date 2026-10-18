@@ -180,6 +180,71 @@ fn identical_messages_are_distinct_when_pi_entry_ids_differ() {
 }
 
 #[test]
+fn live_cutoff_requires_complete_event_identity_and_rolls_back_uncertain_bindings() {
+    let home = setup();
+    let h = home.path();
+    let old = user("old searchable", 1000);
+    let kept = assistant("kept verbatim", 2000);
+    let entries = vec![
+        entry("old", None, old.clone()),
+        entry("kept", Some("old"), kept.clone()),
+        json!({"type":"compaction","id":"compact","parentId":"kept","firstKeptEntryId":"kept","summary":"Old summarized"}),
+    ];
+    let path = file(h, &entries);
+    store::project_seeded(h, "chat", "alice", "owl", &old, None, None).unwrap();
+    let before = store::history(h, "chat").unwrap();
+    // Disk append can beat native projection. Do not bind the earlier event
+    // and then invent a boundary from a missing kept projection.
+    assert_eq!(store::summarised_before(h, "chat").unwrap_err().code, 5200);
+    let conn = store::open(h).unwrap();
+    let bound = || {
+        conn.query_row(
+            "SELECT COUNT(*) FROM native_pi_journal WHERE entry_id IS NOT NULL",
+            [],
+            |r| r.get::<_, i64>(0),
+        )
+        .unwrap()
+    };
+    assert_eq!(bound(), 0);
+    assert_eq!(store::history(h, "chat").unwrap(), before);
+    store::project_seeded(
+        h,
+        "chat",
+        "alice",
+        "owl",
+        &kept,
+        None,
+        Some(&json!({"row_id":"authoritative-row","dream_report_eligible":false})),
+    )
+    .unwrap();
+    let original = store::history(h, "chat").unwrap();
+    let version = store::history_version(&conn, "chat").unwrap();
+    let bytes = fs::read(&path).unwrap();
+    assert_eq!(store::summarised_before(h, "chat").unwrap(), Some(2));
+    assert_eq!(bound(), 2);
+    assert_eq!(store::history_version(&conn, "chat").unwrap(), version);
+    assert_eq!(store::history(h, "chat").unwrap(), original);
+    assert_eq!(fs::read(&path).unwrap(), bytes);
+    assert_eq!(usage_count(h), 1);
+    // Stable ids are authoritative. Equal displayed text cannot excuse a raw
+    // event change, including a tool call newly attached to that same text.
+    let mut changed = entries.clone();
+    changed[1]["message"]["content"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({"type":"toolCall","id":"c","name":"read","arguments":{"path":"notes.txt"}}));
+    file(h, &changed);
+    assert_eq!(store::summarised_before(h, "chat").unwrap_err().code, 5200);
+    assert_eq!(store::history(h, "chat").unwrap(), original);
+    assert_eq!(usage_count(h), 1);
+    fs::write(&path, &bytes).unwrap();
+    assert_eq!(store::summarised_before(h, "chat").unwrap(), Some(2));
+    reconcile(h);
+    assert_eq!(store::history(h, "chat").unwrap(), original);
+    assert_eq!(usage_count(h), 1);
+}
+
+#[test]
 fn latest_leaf_selects_branch_without_erasing_compacted_history_or_billed_calls() {
     let home = setup();
     let mut entries = vec![
@@ -392,6 +457,173 @@ fn actual_pi_tree_and_compaction_fixture_reconciles_without_a_provider_call() {
     assert!(!context.contains("old branch"));
     reconcile(home.path());
     assert_eq!(texts(home.path()).len(), 4);
+    actual_pi_live_search(&module);
+}
+
+/// The real pinned SessionManager owns every stable id and append. Native
+/// projection runs first, as production's message_end listener does. Each
+/// response is a file barrier, without retirement, reopen or reconciliation.
+fn actual_pi_live_search(module: &Path) {
+    use std::io::{BufRead, BufReader, Write};
+    use std::process::{Command, Stdio};
+    let home = setup();
+    let h = home.path();
+    fs::create_dir_all(h.join("profiles/owl")).unwrap();
+    let path = store::session_dir(h, "chat")
+        .unwrap()
+        .join("conversation.jsonl");
+    let mut child = Command::new("node").args(["--input-type=module", "-e", r#"
+        import {pathToFileURL} from 'node:url';
+        import {createInterface} from 'node:readline';
+        const {SessionManager} = await import(pathToFileURL(process.argv[1]));
+        const {convertToLlm} = await import(pathToFileURL(process.argv[1].replace('session-manager.js', 'messages.js')));
+        const {convertMessages} = await import(pathToFileURL(process.argv[1].replace('pi-coding-agent/dist/core/session-manager.js', 'pi-ai/dist/api/openai-completions.js')));
+        const manager = SessionManager.open(process.argv[2], undefined, process.argv[3]);
+        const model = {id:'model',provider:'test',api:'openai-completions',input:['text'],reasoning:false};
+        for await (const line of createInterface({input:process.stdin})) {
+            const c = JSON.parse(line);
+            let id;
+            if (c.type === 'append') id = manager.appendMessage(c.message);
+            if (c.type === 'compact') id = manager.appendCompaction('Archive summary', c.kept ?? undefined, 100);
+            const context = manager.buildSessionContext().messages;
+            console.log(JSON.stringify({id,context,payload:convertMessages(model,{messages:convertToLlm(context),tools:[]},{},{})}));
+        }
+    "#]).arg(module).arg(&path).arg(h).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::inherit()).spawn().unwrap();
+    let mut input = child.stdin.take().unwrap();
+    let mut output = BufReader::new(child.stdout.take().unwrap());
+    let mut request = |value: Value| -> Value {
+        writeln!(input, "{value}").unwrap();
+        input.flush().unwrap();
+        let mut line = String::new();
+        assert_ne!(output.read_line(&mut line).unwrap(), 0, "Pi fixture exited");
+        serde_json::from_str(&line).unwrap()
+    };
+    let mut tool = assistant("kept tool call", 4000);
+    tool["content"].as_array_mut().unwrap().push(
+        json!({"type":"toolCall","id":"call-1","name":"read","arguments":{"path":"notes.txt"}}),
+    );
+    tool["stopReason"] = json!("toolUse");
+    let messages = [
+        user("old archive question", 1000),
+        assistant("old archive answer", 2000),
+        user("identical", 3000),
+        user("identical", 3000),
+        tool,
+        json!({"role":"toolResult","toolCallId":"call-1","toolName":"read","content":[{"type":"text","text":"kept tool result"}],"isError":false,"timestamp":5000}),
+        assistant("kept final answer", 6000),
+    ];
+    let mut ids = vec![];
+    for message in &messages {
+        store::project_seeded(h, "chat", "alice", "owl", message, None, None).unwrap();
+        ids.push(request(json!({"type":"append","message":message}))["id"].clone());
+    }
+    let original = store::history(h, "chat").unwrap();
+    let usage = store::usage(h, "chat").unwrap();
+    let frozen: (String, String) = store::open(h)
+        .unwrap()
+        .query_row(
+            "SELECT prompt,options FROM native_sessions WHERE stored_id='chat'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .unwrap();
+    let search = || {
+        runtime.block_on(async {
+            hexbot_core::native_product_tools::call(
+                h,
+                "alice",
+                "owl",
+                "chat",
+                "session_search",
+                &json!({"session_id":"chat"}),
+            )
+            .await
+            .unwrap()
+        })
+    };
+    assert_eq!(search().unwrap_err().code, 4205);
+    let before = request(json!({"type":"context"}));
+    assert_eq!(before["context"].as_array().unwrap().len(), 7);
+    let context = request(json!({"type":"compact","kept":ids[3]}));
+    let bytes = fs::read(&path).unwrap();
+    let read = search().unwrap();
+    assert_eq!(read["message_count"], 3, "{read}");
+    assert_eq!(
+        read["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|m| m["id"].as_i64().unwrap())
+            .collect::<Vec<_>>(),
+        [1, 2, 3]
+    );
+    let wire = context["payload"].to_string();
+    assert!(wire.contains("Archive summary"));
+    assert!(!wire.contains("old archive"));
+    assert_eq!(wire.matches("identical").count(), 1);
+    assert!(wire.contains("kept tool result"));
+    let calls = context["payload"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|m| m["tool_calls"].as_array())
+        .flatten()
+        .map(|c| c["id"].clone())
+        .collect::<Vec<_>>();
+    let results = context["payload"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|m| m["role"] == "tool")
+        .map(|m| m["tool_call_id"].clone())
+        .collect::<Vec<_>>();
+    assert_eq!(calls, [json!("call-1")]);
+    assert_eq!(results, calls);
+    println!(
+        "{}",
+        json!({"phase":"live-compacted","read":read,"context":context,"usage":usage})
+    );
+    for _ in 0..2 {
+        assert_eq!(store::summarised_before(h, "chat").unwrap(), Some(4));
+        assert_eq!(store::history(h, "chat").unwrap(), original);
+        assert_eq!(store::usage(h, "chat").unwrap(), usage);
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+    }
+    let all = request(json!({"type":"compact"}));
+    assert_eq!(all["context"].as_array().unwrap().len(), 1);
+    assert_eq!(search().unwrap()["message_count"], 7);
+    let next = user("next event before append", 7000);
+    store::project_seeded(h, "chat", "alice", "owl", &next, None, None).unwrap();
+    assert_eq!(search().unwrap()["message_count"], 7);
+    let next_context = request(json!({"type":"append","message":next}));
+    assert_eq!(search().unwrap()["message_count"], 7);
+    assert!(
+        next_context["payload"]
+            .to_string()
+            .contains("next event before append")
+    );
+    assert_eq!(usage_count(h), 3);
+    assert_eq!(store::usage(h, "chat").unwrap(), usage);
+    let saved: (String, String) = store::open(h)
+        .unwrap()
+        .query_row(
+            "SELECT prompt,options FROM native_sessions WHERE stored_id='chat'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(saved, frozen);
+    drop(input);
+    assert!(child.wait().unwrap().success());
+    // Healthy already-bound recovery remains idempotent after the live checks.
+    reconcile(h);
+    assert_eq!(search().unwrap()["message_count"], 7);
+    assert_eq!(store::usage(h, "chat").unwrap(), usage);
 }
 
 #[test]

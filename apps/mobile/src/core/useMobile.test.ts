@@ -328,10 +328,10 @@ describe('actual App Pulse callback and mobile conversation', () => {
     expect(state.request).toHaveBeenCalledWith(kind === 'approval' ? 'approval.respond' : 'clarify.respond', expect.objectContaining({ session_id: 'live-thread', request_id: 'pending' }))
     expect(state.request.mock.calls.some(([m]) => m === 'hexbot.sections.create')).toBe(false)
   })
-  it.each(['missing', 'working', 'wrong-bot', 'stale-session', 'no-detail'] as const)('keeps ordinary canonical selection for %s status metadata', async why => {
+  it.each(['missing', 'wrong-bot', 'stale-session', 'no-detail'] as const)('keeps ordinary canonical selection for %s status metadata', async why => {
     sections = [section('thread', { peer_bot: 'yak', ...(why === 'wrong-bot' ? { bot: 'yak' } : {}), ...(why === 'stale-session' ? { live_session_id: 'older-live' } : {}) })]
     const hook = await connected()
-    const selected = { ...waiting(why === 'missing' ? 'absent' : 'thread'), status_detail: { section_id: why === 'missing' ? 'absent' : 'thread', room_id: null, session_id: why === 'stale-session' ? 'new-live' : null }, ...(why === 'working' ? { status: 'working' } : {}), ...(why === 'no-detail' ? { status_detail: null } : {}) } as Bot
+    const selected = { ...waiting(why === 'missing' ? 'absent' : 'thread'), status_detail: { section_id: why === 'missing' ? 'absent' : 'thread', room_id: null, session_id: why === 'stale-session' ? 'new-live' : null }, ...(why === 'no-detail' ? { status_detail: null } : {}) } as Bot
     await act(async () => { await pulse(hook.result.current, selected).done() })
     expect(hook.result.current.route).toMatchObject({ section: { id: 'owl-chat' } })
   })
