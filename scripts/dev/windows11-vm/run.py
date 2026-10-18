@@ -197,8 +197,10 @@ def run(manifest, evidence):
                     result = session.run_ps("$ErrorActionPreference='Stop'; Get-Content C:\\HexbotVm\\state.json -Raw")
                     if result.status_code == 0:
                         state = json.loads(result.std_out.decode("utf-8-sig"))
-                except (OSError, ValueError, winrm.exceptions.WinRMError):
-                    # Setup and the cumulative update both reboot the guest.
+                except (ET.ParseError, OSError, ValueError, winrm.exceptions.WinRMError):
+                    # Setup and the cumulative update both reboot the guest, and
+                    # the WinRM service can briefly answer with a non-XML body
+                    # while it starts. All of these are transients.
                     pass
                 if state is not None:
                     if not ready:
@@ -223,7 +225,7 @@ def run(manifest, evidence):
                             try:
                                 collect(session, evidence)
                                 break
-                            except (OSError, ValueError, winrm.exceptions.WinRMError):
+                            except (ET.ParseError, OSError, ValueError, winrm.exceptions.WinRMError):
                                 if attempt == 2:
                                     raise
                                 time.sleep(10)
