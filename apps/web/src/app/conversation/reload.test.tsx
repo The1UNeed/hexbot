@@ -7,7 +7,11 @@ import type { Bot, DaemonInfo, Section } from '../../lib/types'
 import { useBots } from '../../stores/bots'
 import { useConnection } from '../../stores/connection'
 import { useSections } from '../../stores/sections'
-import { useTranscripts } from '../../stores/transcripts'
+import {
+  resetTranscriptEffects,
+  setTranscriptEffects,
+  useTranscripts
+} from '../../stores/transcripts'
 
 import { ConversationColumn } from './index'
 
@@ -92,11 +96,15 @@ beforeEach(() => {
     choosing: null
   })
   useTranscripts.setState({ bySession: {} })
+  setTranscriptEffects({ touchSection: () => {}, notify: () => {}, ackApproval: () => {} })
   texts = ['Previous conversation']
   call = vi.fn(reply)
   setActiveRpc({ call } as never)
 })
-afterEach(() => setActiveRpc(null))
+afterEach(() => {
+  setActiveRpc(null)
+  resetTranscriptEffects()
+})
 
 it.each([false, true])(
   'loads the report after catalog refresh, mounted=%s, reusing the durable live ID',
@@ -201,4 +209,150 @@ it('keeps invalidation after a read error and reloads on Retry after another lis
   expect(await screen.findByText('Dream report')).toBeVisible()
   expect(screen.getAllByText('Previous conversation')).toHaveLength(1)
   expect(screen.queryByRole('alert')).toBeNull()
+})
+
+it.each(['start-delta', 'delta-only', 'already-streaming', 'completed-during-read'])(
+  'renders retained history, report and answer once across %s',
+  async mode => {
+    const event = (type: string, payload: Record<string, unknown> = {}) =>
+      routeEvent({ type, session_id: 'chat', payload } as GatewayEvent)
+
+    const rows = [
+      { role: 'assistant', row_id: 1, text: 'Previous conversation' },
+      { role: 'user', row_id: 2, text: 'Current question' },
+      { role: 'assistant', row_id: 3, text: 'Dream report', dream: true }
+    ]
+
+    const answer = { role: 'assistant', row_id: 4, text: 'Final answer' }
+    await useSections.getState().open('chat')
+    render(<ConversationColumn />)
+    expect(await screen.findByText('Previous conversation')).toBeVisible()
+    await act(async () => {
+      useTranscripts.getState().appendUserMessage('chat', 'Current question')
+
+      if (mode === 'already-streaming') {
+        event('message.start')
+        event('message.delta', { text: 'Prefix before reload ' })
+      }
+    })
+    const held = deferred()
+    let reads = 0
+    call.mockImplementation((method: string) =>
+      method !== 'hexbot.sections.open'
+        ? reply(method)
+        : ++reads === 1
+          ? held.promise
+          : Promise.resolve({ section, messages: [...rows, answer] })
+    )
+    await act(async () => {
+      reload()
+    })
+    expect(screen.getByText('Previous conversation')).toBeVisible()
+    expect(screen.getByText('Current question')).toBeVisible()
+    await waitFor(() => expect(reads).toBe(1))
+    const loading = useSections.getState().open('chat')
+    await act(async () => {
+      if (mode === 'start-delta' || mode === 'completed-during-read') {
+        event('message.start')
+      }
+
+      event('message.delta', { text: 'Live tail' })
+
+      if (mode === 'completed-during-read') {
+        event('message.complete', { text: answer.text })
+      }
+
+      held.resolve({ section, messages: rows })
+      await loading
+    })
+    expect(screen.getByText('Previous conversation')).toBeVisible()
+    expect(screen.getByText('Current question')).toBeVisible()
+    expect(screen.getAllByText('Dream report')).toHaveLength(1)
+
+    if (mode !== 'completed-during-read') {
+      expect(screen.getByRole('status', { name: 'Owl is writing' })).toBeVisible()
+      expect(useTranscripts.getState().bySession.chat!.messages.at(-1)?.text).toBe(
+        mode === 'already-streaming' ? 'Prefix before reload Live tail' : 'Live tail'
+      )
+      await act(async () => {
+        event('message.complete', { text: answer.text })
+        await useSections.getState().open('chat')
+      })
+    }
+
+    expect(screen.getAllByText('Final answer')).toHaveLength(1)
+    expect(screen.getAllByText('Dream report')).toHaveLength(1)
+    expect(reads).toBe(2)
+    expect(screen.queryByRole('status', { name: 'Owl is writing' })).toBeNull()
+  }
+)
+
+it('keeps pagination, equal interims and an HTML tool through hydration and the terminal reread', async () => {
+  const event = (type: string, payload: Record<string, unknown> = {}) =>
+    routeEvent({ type, session_id: 'chat', payload } as GatewayEvent)
+
+  texts = Array.from({ length: 65 }, (_, index) => `Older message ${index}`)
+  const old = history(texts).messages
+  await useSections.getState().open('chat')
+  render(<ConversationColumn />)
+  expect(await screen.findByText('Older message 64')).toBeVisible()
+  expect(screen.queryByText('Older message 0')).toBeNull()
+  fireEvent.click(screen.getByRole('button', { name: 'Load earlier messages' }))
+  expect(screen.getByText('Older message 0')).toBeVisible()
+  await act(async () => {
+    useTranscripts.getState().appendUserMessage('chat', 'Current question')
+    event('message.start')
+    event('message.interim', { text: 'Equal interim' })
+    event('message.interim', { text: 'Equal interim' })
+    event('tool.start', {
+      tool_id: 'visual-1',
+      name: 'hexbot_show_html',
+      args: { html: '<p>chart</p>', title: 'Costs' }
+    })
+  })
+
+  const rows = [
+    ...old,
+    { role: 'user', row_id: 65, text: 'Current question' },
+    { role: 'assistant', row_id: 66, text: 'Dream report', dream: true },
+    { role: 'assistant', row_id: 67, text: 'Equal interim' },
+    { role: 'assistant', row_id: 68, text: 'Equal interim' },
+    { role: 'tool', row_id: 69, tool_id: 'visual-1', name: 'hexbot_show_html', text: 'Shown' }
+  ]
+
+  const held = deferred()
+  let reads = 0
+  call.mockImplementation((method: string) =>
+    method !== 'hexbot.sections.open'
+      ? reply(method)
+      : ++reads === 1
+        ? held.promise
+        : Promise.resolve({
+            section,
+            messages: [...rows, { role: 'assistant', row_id: 70, text: 'Final answer' }]
+          })
+  )
+  await act(async () => {
+    reload()
+  })
+  const loading = useSections.getState().open('chat')
+  await act(async () => {
+    event('message.delta', { text: 'Later tail' })
+    event('tool.complete', { tool_id: 'visual-1', result_text: 'Shown' })
+    held.resolve({ section, messages: rows })
+    await loading
+  })
+  expect(screen.getByText('Older message 0')).toBeVisible()
+  expect(screen.getAllByText('Equal interim')).toHaveLength(2)
+  expect(screen.getAllByTitle('Costs')).toHaveLength(1)
+  expect(screen.getAllByText('Dream report')).toHaveLength(1)
+  await act(async () => {
+    event('message.complete', { text: 'Final answer' })
+    await useSections.getState().open('chat')
+  })
+  expect(screen.getAllByText('Equal interim')).toHaveLength(2)
+  expect(screen.getAllByTitle('Costs')).toHaveLength(1)
+  expect(screen.getAllByText('Dream report')).toHaveLength(1)
+  expect(screen.getAllByText('Final answer')).toHaveLength(1)
+  expect(reads).toBe(2)
 })

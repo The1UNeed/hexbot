@@ -272,6 +272,7 @@ export function routeEvent(event: GatewayEvent, deps: EventRouterDeps = {}): voi
         sessionId,
         typeof payload.message === 'string' ? payload.message : 'Unknown error'
       )
+      useSections.getState().finished(sessionId)
 
       return
 
@@ -283,6 +284,7 @@ export function routeEvent(event: GatewayEvent, deps: EventRouterDeps = {}): voi
         text: text(payload),
         usage: (payload.usage as undefined | Usage) ?? undefined
       })
+      useSections.getState().finished(sessionId)
 
       return
 

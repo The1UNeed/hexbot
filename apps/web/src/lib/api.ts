@@ -863,6 +863,7 @@ export function messagesFromHistory(
   // Tool rows carry no arguments; the assistant row that made the call does,
   // as the JSON the model wrote. Parsed, they match live `tool.start` args.
   const callArgs = new Map<string, unknown>()
+  const reports = new Set(rows.filter(row => row.dream === true).map(row => String(row.row_id)))
 
   for (const row of rows) {
     let text = typeof row.text === 'string' ? row.text : ''
@@ -952,7 +953,9 @@ export function messagesFromHistory(
     // A question ends the message, as it does live, so its card sits between.
     if (
       role === 'assistant' &&
+      row.dream !== true &&
       previous?.role === 'assistant' &&
+      !reports.has(previous.id) &&
       previous.toolCalls.length &&
       !previous.clarifies?.length
     ) {

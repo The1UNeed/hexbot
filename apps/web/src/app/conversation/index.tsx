@@ -1065,7 +1065,7 @@ function BotConversation() {
   const ready = resolved?.entry === entry
   const ownerInput = ready && !resolved.peer
   const liveId = ready ? loadedLiveId : null
-  const transcript = useTranscript(liveId)
+  const transcript = useTranscript(liveId ?? (ready ? section?.live_session_id : null) ?? null)
 
   // While the owner chat validated here is checked again (a reconnect, a
   // daemon restart, the same URL), its composer stays, disabled, so staged

@@ -34,6 +34,8 @@ import type {
   Usage
 } from '../lib/types'
 
+import { hydrateHistory } from './transcript-history'
+
 /** Why an error row exists, when the daemon knows more than the text. */
 export interface ErrorDetail {
   /** Connector catalog id, when the failure came from one (drives "Fix <name>"). */
@@ -64,12 +66,18 @@ export interface Transcript {
   error: null | string
   info: null | SessionInfo
   messages: TranscriptMessage[]
+  /** Durable row IDs before the unacknowledged local tail began. */
+  historyBase?: string[]
+  /** Durable user anchors for live bubbles retained across consecutive reads. */
+  historyUsers?: Record<string, string>
   /** The section this live session belongs to, when known. */
   sectionId?: string
   sessionId: string
   status: null | StatusLine
   /** Id of the assistant message currently receiving deltas. */
   streamingMessageId: null | string
+  /** Remains active when a card closes the current bubble. */
+  turnActive?: boolean
   /**
    * Text of the bubbles a question or approval card closed during this
    * turn. `message.complete` carries the whole turn, so this much is cut
@@ -151,7 +159,12 @@ export interface TranscriptsState {
   messageDelta: (sessionId: string, text: string) => void
   messageInterim: (sessionId: string, text: string, alreadyStreamed?: boolean) => void
   messageStart: (sessionId: string) => void
-  open: (sessionId: string, sectionId: string, messages: Message[]) => void
+  open: (
+    sessionId: string,
+    sectionId: string,
+    messages: Message[],
+    hydration?: { reports: string[] }
+  ) => void
   reasoningDelta: (sessionId: string, text: string) => void
   resolveApproval: (sessionId: string, requestId: string, choice: ApprovalChoice) => void
   sessionContext: (sessionId: string, context: ContextUsage) => void
@@ -310,7 +323,8 @@ function withCurrentAssistant(
   return {
     ...transcript,
     messages: [...transcript.messages, created],
-    streamingMessageId: created.id
+    streamingMessageId: created.id,
+    turnActive: true
   }
 }
 
@@ -319,7 +333,21 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
     set(state => {
       const current = state.bySession[sessionId] ?? emptyTranscript(sessionId)
 
-      return { bySession: { ...state.bySession, [sessionId]: patch(current) } }
+      const next = patch(current)
+
+      if (!next.historyBase && next.messages.some(m => m.createdAt)) {
+        return {
+          bySession: {
+            ...state.bySession,
+            [sessionId]: {
+              ...next,
+              historyBase: current.messages.filter(m => !m.createdAt).map(m => m.id)
+            }
+          }
+        }
+      }
+
+      return { bySession: { ...state.bySession, [sessionId]: next } }
     })
   }
 
@@ -340,9 +368,25 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
     },
     bySession: {},
 
-    open(sessionId, sectionId, messages) {
+    open(sessionId, sectionId, messages, hydration) {
       set(state => {
         const existing = state.bySession[sessionId]
+
+        if (existing && hydration) {
+          const restored = hydrateHistory(existing, messages, new Set(hydration.reports))
+
+          return {
+            bySession: {
+              ...state.bySession,
+              [sessionId]: {
+                ...existing,
+                ...restored,
+                sectionId,
+                clarifies: existing.clarifies.filter(clarifyWaiting)
+              }
+            }
+          }
+        }
 
         // A live transcript that is ahead of the stored history (a message
         // just sent, a reply streaming) wins over the snapshot.
@@ -418,6 +462,7 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
           error: null,
           messages: [...transcript.messages, message],
           streamingMessageId: message.id,
+          turnActive: true,
           turnPrefix: undefined
         }
       })
@@ -596,7 +641,12 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
 
         if (!transcript.streamingMessageId && prefix && !finalText && !payload.error) {
           // The turn ended right after the card: the closed bubble already holds it all.
-          return { ...transcript, turnPrefix: undefined, usage: payload.usage ?? transcript.usage }
+          return {
+            ...transcript,
+            turnActive: false,
+            turnPrefix: undefined,
+            usage: payload.usage ?? transcript.usage
+          }
         }
 
         const finalize = (message: Message): Message => ({
@@ -625,6 +675,7 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
           error: payload.error ?? null,
           status: null,
           streamingMessageId: null,
+          turnActive: false,
           usage: payload.usage ?? next.usage
         }
       })
@@ -820,7 +871,14 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
           })
         }
 
-        return { ...transcript, error: message, messages, streamingMessageId: null }
+        return {
+          ...transcript,
+          error: message,
+          messages,
+          streamingMessageId: null,
+          turnActive: false,
+          turnPrefix: undefined
+        }
       })
     },
 

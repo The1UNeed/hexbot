@@ -84,6 +84,8 @@ export interface SectionsState {
   clearLive: () => void
   /** The daemon closed this section's live session; an open view reads it again. */
   forgetLive: (id: string) => void
+  /** A turn crossing a history read needs a current durable snapshot. */
+  finished: (sessionId: string) => void
   error: null | string
   idsByBot: Record<string, string[]>
   liveSessionId: Record<string, string>
@@ -186,6 +188,8 @@ function mergeSection(state: SectionsState, section: Section): Partial<SectionsS
 const reloads = new Map<string, number>()
 /** Share history reads so a slower concurrent snapshot cannot replace a newer one. */
 const opening = new Map<string, ReturnType<SectionsState['open']>>()
+const terminals = new Map<string, number>()
+const straddling = new Map<string, { id: string; current: () => boolean }>()
 
 /** Each bot's chat on an older daemon, remembered across its reconnects. */
 const picked = new Map<string, string>()
@@ -300,13 +304,22 @@ export const useSections = create<SectionsState>((set, get) => ({
       return pending
     }
 
-    const { target, epoch } = useConnection.getState()
+    const { target, epoch, daemon } = useConnection.getState()
+    const installation = daemon?.install_id
 
-    const current = () =>
-      target === useConnection.getState().target && epoch === useConnection.getState().epoch
+    const current = () => {
+      const next = useConnection.getState()
+
+      return (
+        target === next.target &&
+        epoch === next.epoch &&
+        (!installation || !next.daemon?.install_id || installation === next.daemon.install_id)
+      )
+    }
 
     const read = async (): ReturnType<SectionsState['open']> => {
       const asked = reloads.get(id) ?? 0
+      const completed = new Map(terminals)
       let result
 
       try {
@@ -331,14 +344,31 @@ export const useSections = create<SectionsState>((set, get) => ({
       const { context, messages, pending_clarify, section } = result
       const live = section.live_session_id
 
+      if (live && terminals.get(live) !== completed.get(live)) {
+        return read()
+      }
+
       if (live) {
         useTranscripts.getState().open(
           live,
           id,
           messagesFromHistory(messages ?? []).filter(
             message => !(message.role === 'user' && message.text.includes(KICKOFF_MARKER))
-          )
+          ),
+          {
+            reports: (messages ?? [])
+              .filter(row => row.dream === true)
+              .map(row => String(row.row_id))
+          }
         )
+
+        const transcript = useTranscripts.getState().bySession[live]
+
+        if (transcript?.turnActive) {
+          straddling.set(live, { id, current })
+        } else {
+          straddling.delete(live)
+        }
 
         if (context) {
           useTranscripts.getState().sessionContext(live, context)
@@ -486,6 +516,8 @@ export const useSections = create<SectionsState>((set, get) => ({
   clearLive() {
     set({ liveSessionId: {} })
     useTranscripts.getState().dropAll()
+    straddling.clear()
+    terminals.clear()
   },
 
   forgetLive(id) {
@@ -501,7 +533,36 @@ export const useSections = create<SectionsState>((set, get) => ({
 
       return { liveSessionId }
     })
-    useTranscripts.getState().drop(closed)
+    // Keep the loaded transcript and its stream while the view reads again.
+    const transcript = useTranscripts.getState().bySession[closed]
+
+    if (
+      transcript &&
+      !transcript.messages.length &&
+      !transcript.approvals.length &&
+      !transcript.clarifies.length &&
+      !transcript.status &&
+      !transcript.context &&
+      !transcript.info
+    ) {
+      useTranscripts.getState().drop(closed)
+    }
+  },
+
+  finished(sessionId) {
+    terminals.set(sessionId, (terminals.get(sessionId) ?? 0) + 1)
+    const pending = straddling.get(sessionId)
+    straddling.delete(sessionId)
+
+    if (pending?.current() && get().byId[pending.id]?.live_session_id === sessionId) {
+      const { id } = pending
+      get().forgetLive(id)
+      // Coalesce with a mounted view or an already pending read. A failure
+      // leaves the loaded mapping invalid, so the view retains its Retry path.
+      void get()
+        .open(id)
+        .catch(() => undefined)
+    }
   }
 }))
 
