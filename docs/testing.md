@@ -32,11 +32,15 @@
   retention and foreign mappings stay closed.
   `section_delete_recovery` exercises public catalog/App deletions with native,
   legacy transaction, file and final metadata faults, restart, denied paths,
-  exact aliases, descendants and ownership controls. The catalog library's
+  exact aliases, descendants and ownership controls.
   `section_delete_ownership` compares catalog-only and native roots through
   public and direct deletion, exact foreign bot/owner branches, rollback,
   retention, completion and restart. A foreign ancestor blocks its entire
   branch, including an owned grandchild and live aliases.
+  `unused_chat_fork` repeats missing-log and no-report lookups through both
+  routes, checks restart leaves no empty tombstones, and retries a failed exact
+  reservation removal. Partial-copy and published-adoption faults remain in
+  `chat_fork_cleanup` and the catalog fork tests.
   The catalog library's
   `section_delete_crash_at_the_real_catalog_commit_recovers_the_decision`
   kills a child process at socket barriers before and after the actual SQLite

@@ -495,6 +495,7 @@ fn finish_chat_fork(home: &Path, target: &str) -> Result<()> {
         drop(catalog);
         return runtime_store::discard_chat_fork(
             home,
+            source,
             target,
             required(&row, "bot")?,
             required(&row, "owner")?,
@@ -627,8 +628,6 @@ pub fn chat_section(home: &Path, caller: &str, name: &str) -> Result<Value> {
                     [Value::Object(adopted).to_string()],
                 )?;
                 id = next;
-            } else {
-                forked.id = None;
             }
         }
         tx.execute(
