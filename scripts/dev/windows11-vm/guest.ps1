@@ -3,7 +3,11 @@ $ProgressPreference = 'SilentlyContinue'
 $root = 'C:\HexbotVm'
 $evidence = "$root\evidence"
 $manifest = Get-Content "$root\downloads.json" -Raw | ConvertFrom-Json
+function Beacon([string]$stage) {
+    try { Invoke-WebRequest -UseBasicParsing -Uri ('http://10.0.2.2:15986/beacon/' + $stage) -TimeoutSec 5 } catch { }
+}
 function Set-Phase([string]$phase, [string]$message) {
+    Beacon ('phase-' + $phase)
     $state = @{ phase = $phase; message = $message; time = [DateTime]::UtcNow.ToString('o') }
     $state | ConvertTo-Json | Set-Content "$root\state.next.json"
     Move-Item "$root\state.next.json" "$root\state.json" -Force
@@ -117,6 +121,7 @@ try {
     }
     Set-Phase 'passed' 'The full PSEC candidate passed under a standard Windows 11 x64 user'
 } catch {
+    Beacon ('guest-error-' + ($_.Exception.Message -replace '[^A-Za-z0-9]', '-'))
     Set-Phase 'failed' $_.Exception.Message
 } finally {
     if (Test-Path "$root\state.json") { Copy-Item "$root\state.json" "$evidence\state.json" -Force }

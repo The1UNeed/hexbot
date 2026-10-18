@@ -44,7 +44,7 @@
       <AutoLogon><Password><Value>HEXBOT_GENERATED_PASSWORD</Value><PlainText>true</PlainText></Password><Username>HexbotVmAdmin</Username><Enabled>true</Enabled><LogonCount>3</LogonCount></AutoLogon>
       <OOBE><HideEULAPage>true</HideEULAPage><HideOnlineAccountScreens>true</HideOnlineAccountScreens><HideWirelessSetupInOOBE>true</HideWirelessSetupInOOBE><ProtectYourPC>3</ProtectYourPC></OOBE>
       <FirstLogonCommands><SynchronousCommand wcm:action="add"><Order>1</Order><Description>Start Hexbot VM validation</Description>
-        <CommandLine>powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -Command "$d=(Get-CimInstance Win32_LogicalDisk | Where-Object VolumeName -eq 'HEXBOT_PAYLOAD').DeviceID; &amp; ($d+'\bootstrap.ps1')"</CommandLine>
+        <CommandLine>powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -Command "try{Invoke-WebRequest -UseBasicParsing -Uri 'http://10.0.2.2:15986/beacon/firstlogon' -TimeoutSec 5}catch{}; $d=(Get-CimInstance Win32_LogicalDisk | Where-Object VolumeName -eq 'HEXBOT_PAYLOAD').DeviceID; try{Invoke-WebRequest -UseBasicParsing -Uri ('http://10.0.2.2:15986/beacon/payload-drive-' + $d) -TimeoutSec 5}catch{}; &amp; ($d+'\bootstrap.ps1')"</CommandLine>
       </SynchronousCommand></FirstLogonCommands>
     </component>
   </settings>

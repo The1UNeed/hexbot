@@ -12,15 +12,40 @@ import shutil
 import socket
 import subprocess
 import tempfile
+import threading
 import time
 import urllib.request
 import xml.etree.ElementTree as ET
 import zipfile
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 SOURCE = Path(__file__).resolve().parent
 REPO = SOURCE.parents[2]
 USERNAME = r"HEXBOT-VM\HexbotVmAdmin"
 PORT = 15985
+# The guest reaches this host listener through slirp's 10.0.2.2 gateway alias,
+# so progress beacons arrive even while WinRM is broken or not yet configured.
+BEACON_PORT = 15986
+
+class _BeaconHandler(BaseHTTPRequestHandler):
+    evidence = None
+    lock = threading.Lock()
+    def do_GET(self):
+        with _BeaconHandler.lock:
+            with (_BeaconHandler.evidence / "beacon.log").open("a") as log:
+                log.write(f"{time.strftime('%H:%M:%S')} {self.path}\n")
+        self.send_response(204)
+        self.end_headers()
+    def log_message(self, *args):
+        pass
+
+
+def beacon_server(evidence):
+    _BeaconHandler.evidence = evidence
+    server = ThreadingHTTPServer(("127.0.0.1", BEACON_PORT), _BeaconHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    return server
 
 
 def validate():
@@ -115,6 +140,7 @@ def run(manifest, evidence):
         raise RuntimeError("The Windows VM needs at least 40 GiB of free host disk space; see host-df.txt")
     processes = []
     logs = []
+    beacon = beacon_server(evidence)
     with tempfile.TemporaryDirectory(prefix="hexbot-win11-", dir=os.environ.get("RUNNER_TEMP")) as directory:
         private = Path(directory)
         payload = private / "payload"
@@ -174,9 +200,12 @@ def run(manifest, evidence):
                 logs.append(log)
                 processes.append(subprocess.Popen(args, stdout=log, stderr=subprocess.STDOUT))
             vm = processes[-1]
+            started_at = time.monotonic()
+            last_frame = -1
             # Microsoft's UEFI DVD asks for a key before starting Setup. The
-            # key press is best effort; a missed press only slows Setup.
-            for _ in range(12):
+            # key press is best effort; slow media spin-up can delay the prompt,
+            # so keep pressing for 90 seconds rather than 12.
+            for _ in range(90):
                 time.sleep(1)
                 if monitor.exists():
                     try:
@@ -239,9 +268,24 @@ def run(manifest, evidence):
                 if time.monotonic() >= heartbeat:
                     print("Waiting for Windows Setup, the pinned update, or the containment test", flush=True)
                     heartbeat = time.monotonic() + 45
+                # Capture the guest's display every five minutes so the evidence
+                # shows where Setup, OOBE, or the test actually is.
+                frame = int((time.monotonic() - started_at) // 300)
+                if frame != last_frame:
+                    last_frame = frame
+                    try:
+                        qmp(monitor, "screendump", {"filename": str(evidence / f"screen-{frame:03d}.ppm")})
+                    except (OSError, RuntimeError, ValueError):
+                        pass
+                    for old in sorted(evidence.glob("screen-*.ppm"))[:-4]:
+                        old.unlink(missing_ok=True)
                 time.sleep(10)
             raise RuntimeError("The Windows VM exceeded its 100-minute deadline")
         finally:
+            try:
+                beacon.shutdown()
+            except OSError:
+                pass
             if monitor.exists():
                 try:
                     qmp(monitor, "screendump", {"filename": str(evidence / "display.ppm")})
