@@ -40,7 +40,7 @@ test('release archives the packaged macOS and Windows runtimes and staged Linux 
   const script = step[1].replace(/^          /gm, '')
   const root = await mkdtemp(join(tmpdir(), 'hexbot-release-native-'))
   try {
-    for (const file of ['make-native-update.mjs', 'native-runtime.mjs', 'native-build.mjs']) {
+    for (const file of ['make-native-update.mjs', 'native-runtime.mjs', 'native-build.mjs', 'windows-dependencies.mjs', 'windows-sandbox-runtime.mjs']) {
       await mkdir(join(root, 'scripts/desktop'), { recursive: true })
       await cp(new URL(file, import.meta.url), join(root, 'scripts/desktop', file))
     }
