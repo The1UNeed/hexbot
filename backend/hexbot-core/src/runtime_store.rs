@@ -1567,6 +1567,25 @@ fn projection(message: &Value, display: Option<&str>) -> Option<Value> {
     }
     Some(result)
 }
+/// Hidden instructions Hexbot's Pi extension adds to a chat: the todo list
+/// after a compaction and the notice that the fallback model took over.
+/// Neither the user nor the bot said them.
+pub(crate) fn hexbot_instruction(kind: &Value, hidden: bool) -> bool {
+    hidden
+        && kind
+            .as_str()
+            .is_some_and(|kind| matches!(kind, "hexbot_todo" | "hexbot_fallback"))
+}
+/// Pi log records the live runtime never journals: Pi's empty system/tool
+/// catalog updates and Hexbot's hidden instructions. Only recovery records
+/// them, as hidden rows. Any other message must come through message_end.
+pub(crate) fn journaled_on_recovery(message: &Value) -> bool {
+    match message["role"].as_str() {
+        Some("system") => text(&message["content"]).is_empty(),
+        Some("custom") => hexbot_instruction(&message["customType"], message["display"] == false),
+        _ => false,
+    }
+}
 struct PiRoute<'a> {
     stored: &'a str,
     owner: &'a str,
@@ -2094,8 +2113,9 @@ pub fn summarised_before(home: &Path, stored: &str) -> Result<Option<i64>> {
         };
         let Some(journal) = journal else {
             // The durable append may have beaten native event projection. A
-            // visible message without a row cannot prove a seq cutoff.
-            if projection(&message, None).is_some() {
+            // visible message without a row cannot prove a seq cutoff. A record
+            // the runtime journals only on recovery has no row to prove one.
+            if projection(&message, None).is_some() && !journaled_on_recovery(&message) {
                 return Err(uncertain());
             }
             continue;
