@@ -161,9 +161,16 @@ async fn effects(case: &str) {
     );
     dreams.shutdown().await;
     runtime.shutdown().await;
-    assert_eq!(changed["dream"]["status"], "complete");
-    assert_eq!(pending, 0);
-    assert!(cutoff > 1.);
+    if case == "race" {
+        assert_eq!(changed["dream"]["status"], "failed");
+        assert_eq!(pending, 1);
+        assert_eq!(cutoff, 1.);
+        assert!(prompts.is_empty());
+    } else {
+        assert_eq!(changed["dream"]["status"], "complete");
+        assert_eq!(pending, 0);
+        assert!(cutoff > 1.);
+    }
     assert_eq!(fs::read(&raw).unwrap(), before);
     assert_eq!(
         learned,
@@ -171,6 +178,7 @@ async fn effects(case: &str) {
         "unvalidated projection entered Dream"
     );
     if case == "race" {
+        let until = changed["dream"]["started_at"].as_f64().unwrap();
         let usage = runtime_store::usage(h, "chat").unwrap();
         let journal = common::rows(
             &runtime_store::open(h).unwrap(),
@@ -179,11 +187,11 @@ async fn effects(case: &str) {
         )
         .unwrap();
         // A fresh attempt sees the missing relevant record and refuses it.
-        assert!(build_digest(h, "owl", 1., cutoff, None).is_err());
+        assert!(build_digest(h, "owl", 1., until, None).is_err());
         assert_eq!(fs::read(&raw).unwrap(), before);
         append_raw(h, &message);
         let repaired = fs::read(&raw).unwrap();
-        let retry = build_digest(h, "owl", 1., cutoff, None).unwrap();
+        let retry = build_digest(h, "owl", 1., until, None).unwrap();
         assert_eq!(
             retry["sections"][0]["transcript"]
                 .as_str()
@@ -223,11 +231,17 @@ async fn snapshot_outside_window_projection_is_excluded() {
 }
 
 #[test]
-fn snapshot_keeps_legacy_selection_when_native_input_commits_after_readiness() {
+fn snapshot_defers_legacy_selection_when_native_input_commits_after_readiness() {
     let home = setup();
     let h = home.path();
     let legacy = rusqlite::Connection::open(h.join("profiles/owl/state.db")).unwrap();
     legacy.execute_batch("CREATE TABLE sessions(id TEXT,session_key TEXT); CREATE TABLE messages(id INTEGER PRIMARY KEY,session_id TEXT,role TEXT,content TEXT,timestamp REAL,active INTEGER); INSERT INTO sessions VALUES('physical','chat'); INSERT INTO messages VALUES(1,'physical','user','old legacy speech',100,1);").unwrap();
+    let digest = build_digest(h, "owl", 0., 200., None).unwrap();
+    assert_eq!(
+        digest["sections"][0]["transcript"],
+        "user: old legacy speech"
+    );
+    assert_eq!(digest["omitted_conversations"], 0);
     let owned = h.to_path_buf();
     hooks().lock().unwrap().insert(
         owned.clone(),
@@ -245,16 +259,21 @@ fn snapshot_keeps_legacy_selection_when_native_input_commits_after_readiness() {
             .unwrap();
         }),
     );
-    let digest = build_digest(h, "owl", 0., 200., None).unwrap();
+    assert!(build_digest(h, "owl", 0., 200., None).is_err());
     assert_eq!(
-        digest["sections"][0]["transcript"],
-        "user: old legacy speech"
+        legacy
+            .query_row("SELECT content FROM messages WHERE id=1", [], |r| r
+                .get::<_, String>(0))
+            .unwrap(),
+        "old legacy speech"
     );
-    assert_eq!(digest["omitted_conversations"], 0);
     assert!(runtime_store::fresh(h, "chat").unwrap());
     assert_eq!(runtime_store::history(h, "chat").unwrap().len(), 1);
     assert!(!log_path(h).exists());
 }
+
+#[path = "snapshot_retry.rs"]
+mod retry;
 
 #[test]
 fn snapshot_sees_completed_fallback_classification_and_preserves_raw_evidence() {

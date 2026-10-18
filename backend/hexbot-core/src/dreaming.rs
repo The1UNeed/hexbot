@@ -481,6 +481,52 @@ fn native_log_ready(
     Ok(true)
 }
 
+/// Keep the earlier readiness snapshot only if it still represents the input
+/// at history selection. Never substitute unchecked newer rows into the digest.
+fn validate_native_snapshot(
+    home: &Path,
+    snapshot: &rusqlite::Connection,
+    stored: &str,
+    since: f64,
+    until: f64,
+    adopted: bool,
+) -> Result<()> {
+    let mut current = runtime_store::open(home)?;
+    let current = current.transaction()?;
+    // These flags also govern legacy selection and the no-history paths. Check
+    // them even when no displayed history version changed, including quarantine.
+    let state = |conn: &rusqlite::Connection| -> Result<[bool; 5]> {
+        Ok(conn.query_row(
+            "SELECT
+             EXISTS(SELECT 1 FROM native_unrecovered WHERE session_id=?1) OR EXISTS(SELECT 1 FROM native_quarantine WHERE session_id=?1),
+             EXISTS(SELECT 1 FROM native_fresh WHERE session_id=?1),
+             EXISTS(SELECT 1 FROM native_sessions WHERE stored_id=?1) OR EXISTS(SELECT 1 FROM native_messages WHERE session_id=?1),
+             EXISTS(SELECT 1 FROM native_pi_journal WHERE session_id=?1),
+             EXISTS(SELECT 1 FROM native_messages WHERE session_id=?1 AND COALESCE(json_extract(message_json,'$.dream'),0)<>1)",
+            [stored],
+            |r| Ok([r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?]),
+        )?)
+    };
+    let changed = state(snapshot)? != state(&current)?;
+    let version_changed = runtime_store::history_version(snapshot, stored)?
+        != runtime_store::history_version(&current, stored)?;
+    let dialogue = |conn: &rusqlite::Connection| -> Result<Vec<Value>> {
+        Ok(runtime_store::history_with_conn(conn, stored)?
+            .into_iter()
+            .filter(|message| dream_dialogue(message, since, until))
+            .collect())
+    };
+    // An adopted source is skipped only at its exact copied version. Otherwise
+    // unrelated, out-of-window and hidden writes need not defer a stable input.
+    if changed || version_changed && (adopted || dialogue(snapshot)? != dialogue(&current)?) {
+        return Err(Error::new(
+            5200,
+            format!("Conversation {stored} changed while preparing the dream; retry it"),
+        ));
+    }
+    Ok(())
+}
+
 /// Return bounded transcripts, newest conversations first when a busy day exceeds one prompt.
 /// Archived sections remain part of durable learning. Earlier dream reports in
 /// the chat are the dream's output, not its input, and tool results are left out:
@@ -689,6 +735,7 @@ pub fn build_digest(
                 // A client from before one-chat may still write to the old ID.
                 // Only omit the exact snapshot already copied to the owner chat.
                 if exists && adopted[id]["version"] == version {
+                    validate_native_snapshot(home, &native, id, since, until, true)?;
                     continue;
                 }
             }
@@ -713,7 +760,9 @@ pub fn build_digest(
                 for (at, _) in &compactions {
                     latest = latest.max(*at);
                 }
-                for message in runtime_store::history_with_conn(&native, id)? {
+                let history = runtime_store::history_with_conn(&native, id)?;
+                validate_native_snapshot(home, &native, id, since, until, false)?;
+                for message in history {
                     let at = message["timestamp"].as_f64().unwrap_or(0.0);
                     if !dream_dialogue(&message, since, until) {
                         continue;
@@ -734,7 +783,10 @@ pub fn build_digest(
                         rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
                     )?);
                 }
-                let Some(store) = &legacy else { continue };
+                let Some(store) = &legacy else {
+                    validate_native_snapshot(home, &native, id, since, until, false)?;
+                    continue;
+                };
                 let session: Option<String> = store
                     .query_row(
                         "SELECT id FROM sessions WHERE session_key=?1 OR id=?1 ORDER BY CASE WHEN session_key=?1 THEN 0 ELSE 1 END LIMIT 1",
@@ -771,6 +823,7 @@ pub fn build_digest(
                         ));
                     }
                 }
+                validate_native_snapshot(home, &native, id, since, until, false)?;
             }
             if !transcript.is_empty() || !compactions.is_empty() {
                 let (compactions, transcript) =
