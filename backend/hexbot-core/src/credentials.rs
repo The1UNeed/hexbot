@@ -1253,8 +1253,12 @@ fn workspace_protected_with_configs(
     {
         let dir = match real_root(root) {
             Ok(dir) => dir,
-            Err(_) => {
+            Err(error) => {
                 protected.failure = true;
+                protected.cause.get_or_insert(format!(
+                    "workspace root '{}' could not be resolved: {error}",
+                    root.display()
+                ));
                 continue;
             }
         };
@@ -1299,12 +1303,21 @@ fn workspace_protected_with_configs(
                     }
                     match entry {
                         Ok(entry) => list.push(entry),
-                        Err(_) => protected.failure = true,
+                        Err(error) => {
+                            protected.failure = true;
+                            protected.cause.get_or_insert(format!(
+                                "'{}' could not be listed: {error}",
+                                dir.display()
+                            ));
+                        }
                     }
                 }
             }
-            Err(_) => {
+            Err(error) => {
                 protected.failure = true;
+                protected
+                    .cause
+                    .get_or_insert(format!("'{}' could not be read: {error}", dir.display()));
                 continue;
             }
         }
