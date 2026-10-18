@@ -2939,3 +2939,204 @@ async fn native_only_input_uses_healthy_legacy_absence_without_being_marked_fres
     dreams.shutdown().await;
     runtime.shutdown().await;
 }
+
+// Pi stores an extension's custom message as its own entry, stamped when it is
+// appended, and emits message_end for it like any other message.
+fn custom_message_pi(
+    home: &Path,
+    kind: &str,
+    display: bool,
+    dialogue: &str,
+    text: &str,
+) -> PathBuf {
+    let executable = durable_dream_pi(home);
+    let script = fs::read_to_string(&executable).unwrap();
+    let custom = script
+        .replace(
+            "timestamp:new Date().toISOString(),message:v.message})",
+            "timestamp:new Date(Date.now()+(v.message.role==='custom'?7:0)).toISOString(),...(v.message.role==='custom'?{type:'custom_message',customType:v.message.customType,content:v.message.content,display:v.message.display}:{message:v.message})})",
+        )
+        .replace(
+            "emit({type:'message_end',message:{role:'user',content:c.message}});",
+            &format!(
+                "emit({{type:'message_end',message:{{role:'user',content:c.message}}}});if(c.message==={})emit({{type:'message_end',message:{{role:'custom',customType:{},content:{},display:{display},timestamp:Date.now()}}}});",
+                json!(dialogue),
+                json!(kind),
+                json!(text)
+            ),
+        );
+    assert_eq!(custom.matches("custom_message").count(), 1);
+    assert_eq!(custom.matches("role:'custom'").count(), 1);
+    fs::write(&executable, custom).unwrap();
+    executable
+}
+
+#[tokio::test]
+async fn hexbot_instructions_do_not_block_dreams_but_other_custom_messages_must_match() {
+    let dialogue = "native dialogue beside a custom message";
+    let text = "HIDDEN_INSTRUCTION continue the task";
+    for (kind, display, exempt) in [
+        ("hexbot_fallback", false, true),
+        ("hexbot_todo", false, true),
+        ("hexbot_todo", true, false),
+        ("extension_note", false, false),
+    ] {
+        for scheduled in [false, true] {
+            let home = setup();
+            let h = home.path();
+            enable_dream_now(h);
+            note(h, "owl", Local::now().date_naive(), "daily note");
+            dreaming::propose_memory(
+                h,
+                "alice",
+                "owl",
+                "job",
+                "add",
+                &json!({"text":"pending proposal"}),
+            )
+            .unwrap();
+            let hub = EventHub::new();
+            let mut receiver = hub.subscribe();
+            let pi = custom_message_pi(h, kind, display, dialogue, text);
+            let runtime = Runtime::new(h.into(), hub.clone(), pi).unwrap();
+            let opened = runtime
+                .call("alice", "hexbot.sections.open", &json!({"id":"chat"}))
+                .await
+                .unwrap()
+                .unwrap();
+            runtime
+                .call(
+                    "alice",
+                    "prompt.submit",
+                    &json!({"session_id":opened["section"]["live_session_id"],"text":dialogue}),
+                )
+                .await
+                .unwrap()
+                .unwrap();
+            event(&mut receiver, "message.complete").await;
+            loop {
+                if event(&mut receiver, "status.update").await["kind"] == "idle" {
+                    break;
+                }
+            }
+            // The chat stays live: Pi wrote the custom message, the runtime
+            // journaled only the user and assistant messages.
+            let raw = runtime_store::session_dir(h, "chat")
+                .unwrap()
+                .join("conversation.jsonl");
+            let original = fs::read(&raw).unwrap();
+            let entries = String::from_utf8_lossy(&original)
+                .lines()
+                .map(|line| serde_json::from_str::<Value>(line).unwrap())
+                .collect::<Vec<_>>();
+            assert_eq!(
+                entries
+                    .iter()
+                    .filter(|e| e["type"] == "custom_message"
+                        && e["customType"] == kind
+                        && e["display"] == display
+                        && e["content"] == text)
+                    .count(),
+                1
+            );
+            let native = runtime_store::open(h).unwrap();
+            let custom_rows = || {
+                native
+                    .query_row(
+                        "SELECT count(*) FROM native_pi_journal WHERE session_id='chat' AND json_extract(raw_json,'$.role')='custom'",
+                        [],
+                        |r| r.get::<_, i64>(0),
+                    )
+                    .unwrap()
+            };
+            assert_eq!(custom_rows(), 0);
+            assert_eq!(native.query_row("SELECT (SELECT count(*) FROM native_unrecovered)+(SELECT count(*) FROM native_quarantine)", [], |r| r.get::<_,i64>(0)).unwrap(),0);
+            let frozen = native
+                .query_row(
+                    "SELECT prompt,options FROM native_sessions WHERE stored_id='chat'",
+                    [],
+                    |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
+                )
+                .unwrap();
+            let usage = runtime_store::usage(h, "chat").unwrap();
+            let prompts = fs::read_to_string(h.join("prompts.log")).unwrap();
+            let dreams = Dreaming::new(h.into(), runtime.clone(), hub);
+            let changed = run_digest_dream(&dreams, scheduled, &mut receiver).await;
+            let after = fs::read_to_string(h.join("prompts.log")).unwrap();
+            let conn = db::open(h).unwrap();
+            let cutoff = || {
+                conn.query_row(
+                    "SELECT COALESCE(MAX(started_at),0) FROM dreams WHERE status='complete'",
+                    [],
+                    |r| r.get::<_, f64>(0),
+                )
+                .unwrap()
+            };
+            let pending = || {
+                conn.query_row(
+                    "SELECT count(*) FROM memory_proposals WHERE consumed_at IS NULL",
+                    [],
+                    |r| r.get::<_, i64>(0),
+                )
+                .unwrap()
+            };
+            if exempt {
+                assert_eq!(changed["dream"]["status"], "complete", "{changed}");
+                let dream = &after[prompts.len()..];
+                assert!(dream.contains("daily Hexbot dream") && dream.contains(dialogue));
+                assert!(!dream.contains(text));
+                assert!(cutoff() > 0.);
+                assert_eq!(pending(), 0);
+            } else {
+                assert_eq!(changed["dream"]["status"], "failed", "{changed}");
+                assert!(
+                    changed["dream"]["summary"]
+                        .as_str()
+                        .unwrap()
+                        .contains("must be recovered before dreaming"),
+                    "{changed}"
+                );
+                assert_eq!(after, prompts);
+                assert_eq!(cutoff(), 0.);
+                assert_eq!(pending(), 1);
+            }
+            assert_eq!(fs::read(&raw).unwrap(), original);
+            assert_eq!(runtime_store::usage(h, "chat").unwrap(), usage);
+            assert_eq!(
+                native
+                    .query_row(
+                        "SELECT prompt,options FROM native_sessions WHERE stored_id='chat'",
+                        [],
+                        |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+                    )
+                    .unwrap(),
+                frozen
+            );
+            // Recovery journals the custom message. The digest still reads the
+            // same speech: Hexbot's instruction stays out, anything else is in.
+            runtime.close_stored("alice", "chat").await.unwrap();
+            runtime
+                .call("alice", "hexbot.sections.open", &json!({"id":"chat"}))
+                .await
+                .unwrap()
+                .unwrap();
+            runtime.close_stored("alice", "chat").await.unwrap();
+            assert_eq!(custom_rows(), 1);
+            let digest = dreaming::build_digest(h, "owl", 0., f64::MAX, None)
+                .unwrap()
+                .to_string();
+            assert!(digest.contains(dialogue));
+            assert_eq!(digest.contains(text), !exempt, "{digest}");
+            if !exempt {
+                let changed = run_digest_dream(&dreams, false, &mut receiver).await;
+                assert_eq!(changed["dream"]["status"], "complete", "{changed}");
+                let dream = &fs::read_to_string(h.join("prompts.log")).unwrap()[after.len()..];
+                assert!(dream.contains(dialogue) && dream.contains(text));
+                assert_eq!(pending(), 0);
+            }
+            assert_eq!(fs::read(&raw).unwrap(), original);
+            dreams.shutdown().await;
+            runtime.shutdown().await;
+        }
+    }
+}
