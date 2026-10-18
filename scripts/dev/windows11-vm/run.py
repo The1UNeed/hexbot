@@ -30,10 +30,16 @@ BEACON_PORT = 15986
 class _BeaconHandler(BaseHTTPRequestHandler):
     evidence = None
     lock = threading.Lock()
+    terminal = None
+    terminal_at = 0.0
     def do_GET(self):
         with _BeaconHandler.lock:
             with (_BeaconHandler.evidence / "beacon.log").open("a") as log:
                 log.write(f"{time.strftime('%H:%M:%S')} {self.path}\n")
+            if self.path.startswith("/beacon/phase-passed") or self.path.startswith("/beacon/phase-failed") \
+                    or self.path.startswith("/beacon/bootstrap-error-"):
+                _BeaconHandler.terminal = self.path
+                _BeaconHandler.terminal_at = time.monotonic()
         self.send_response(204)
         self.end_headers()
     def log_message(self, *args):
@@ -265,6 +271,13 @@ def run(manifest, evidence):
                         if state["phase"] != "passed":
                             raise RuntimeError("The Windows 11 x64 guest validation failed; see guest-evidence.zip")
                         return
+                # A terminal beacon means the guest decided its own outcome;
+                # keep waiting briefly for WinRM to return the full state, then
+                # stop instead of heartbeating to the deadline for an hour.
+                if _BeaconHandler.terminal and time.monotonic() - _BeaconHandler.terminal_at > 180:
+                    raise RuntimeError(
+                        f"The guest reported {_BeaconHandler.terminal} through its beacon; see beacon.log"
+                    )
                 if time.monotonic() >= heartbeat:
                     print("Waiting for Windows Setup, the pinned update, or the containment test", flush=True)
                     heartbeat = time.monotonic() + 45

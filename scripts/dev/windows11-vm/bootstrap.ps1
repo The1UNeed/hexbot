@@ -12,6 +12,13 @@ try {
         Copy-Item -LiteralPath (Join-Path $PSScriptRoot $name) -Destination $root -Recurse -Force
     }
     Beacon 'bootstrap-copied'
+    # The unidentified NAT network starts on the Public profile, where WinRM's
+    # firewall exception is refused. This VM talks only to the host forward and
+    # the slirp gateway, so mark every connection Private before remoting.
+    try {
+        Get-NetConnectionProfile | Set-NetConnectionProfile -NetworkCategory Private
+        Beacon 'bootstrap-network-private'
+    } catch { Beacon ('bootstrap-network-error-' + ($_.Exception.Message -replace '[^A-Za-z0-9]', '-')) }
     # Only this disposable VM receives remote administration. The host forwards
     # its WinRM port on 127.0.0.1, and NTLM message encryption stays required.
     Enable-PSRemoting -SkipNetworkProfileCheck -Force | Out-Null
