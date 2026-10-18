@@ -1675,6 +1675,7 @@ impl Runtime {
             let mut ended = s.run_ended.subscribe();
             loop {
                 let (current, _open) = self.input_session(&s, false, admission.take()).await?;
+                admission = Some(_open.admission());
                 s = current;
                 {
                     let _gate = s.event_gate.lock().unwrap();
@@ -1703,6 +1704,7 @@ impl Runtime {
                     .await
                     .map_err(|_| Error::new(5201, "session closed"))?;
             }
+            drop(admission);
             self.emit(&s, "message.start", json!({}));
             let response = s
                 .process
@@ -1769,6 +1771,7 @@ impl Runtime {
         let mut chain = chain;
         let (sent, dropped, intent, reply, fresh) = loop {
             let (current, _open) = self.input_session(&s, true, admission.take()).await?;
+            admission = Some(_open.admission());
             s = current;
             let mut run_ended = s.run_ended.subscribe();
             let staged = {
@@ -1894,6 +1897,7 @@ impl Runtime {
                 .await
                 .map_err(|_| Error::new(5201, "session closed"))?;
         };
+        drop(admission);
         remove_staged(dropped);
         // The acknowledgement/rollback belongs to the input, not its RPC
         // waiter. A disconnected client cannot strand Stop's preflight barrier.
@@ -2952,10 +2956,19 @@ impl Runtime {
                     admission.clone(),
                 )
                 .await?;
-            let _landing = Landing::new(&parent)?;
+            let mut landing = Landing::new(&parent)?;
+            landing.1 = Some(admission);
             drop(guard);
-            self.submit_admitted(&parent, text, true, true, chain, None, Some(admission))
-                .await
+            self.submit_admitted(
+                &parent,
+                text,
+                true,
+                true,
+                chain,
+                None,
+                landing.into_admission(),
+            )
+            .await
         }
         .await;
         if let Err(error) = result {
@@ -3735,15 +3748,22 @@ impl Runtime {
                             Ok(reply) => format!("[reply from {to}] {reply}"),
                             Err(error) => format!("[delivery to {to} failed] {}", error.message),
                         };
-                        runtime
-                            .return_result(
-                                &source.owner,
-                                &source.bot,
-                                &source.stored,
-                                &reply,
-                                Some(continuation),
-                            )
-                            .await;
+                        // Delivery has finished using the old process. Submit its
+                        // reply outside requests, which configuration refresh drains.
+                        // Reserve the work before this request task can finish.
+                        let reservation = InputAdmission::start(&source);
+                        tokio::spawn(async move {
+                            let _reservation = reservation;
+                            runtime
+                                .return_result(
+                                    &source.owner,
+                                    &source.bot,
+                                    &source.stored,
+                                    &reply,
+                                    Some(continuation),
+                                )
+                                .await;
+                        });
                     });
                     Ok(json!({"status":"sent","message_id":message_id,"section_id":stored}))
                 } else {
