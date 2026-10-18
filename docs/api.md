@@ -282,7 +282,7 @@ delete. If copying, `reconcile_all`, catalog deletion or history cleanup
 fails, the error is logged, an unfinished copy (`one-chat-per-bot-<time>.partial`)
 is removed, nothing more is deleted, the setting is written anyway, and the
 daemon starts; the sections left are kept for good and no later start deletes
-any. Each delete is the one `hexbot.sections.delete` makes: once its catalog
+any. Each delete uses the private cleanup helper: once its catalog
 row is gone it stays deleted, even if history cleanup fails. Native cleanup
 retries at startup; it never resumes the migration's remaining deletes.
 A bot with a conversation that recovery set aside or could not read, or whose `state.db` cannot be read, keeps all its sections. Sections
@@ -430,11 +430,22 @@ model switch. In a room each bot keeps its own section, so the room has no
 context of its own; the meter belongs to bot sections.
 - `hexbot.sections.rename {id, title}` → `{section: Section}`
 - `hexbot.sections.archive {id}` / `hexbot.sections.unarchive {id}` → `{section}`
+  Current clients offer neither action for a chat; both remain available to
+  older clients.
 - `hexbot.sections.delete {id, purge_memory?: true}` → `{deleted: true, history_pending?: true}`
-  Current clients offer none of these three for a chat; they stay for older
-  clients. The next `create` brings a deleted chat back empty.
-  (closes the live session, `session.delete` on the stored row). The
-  section is tombstoned, its catalog row goes in a transaction of its own,
+  Deletes only a peer thread (`peer_bot` set). An owned section without
+  `peer_bot` is a bot chat, including archived sections and legacy sections
+  kept for repair. Deleting it returns error `4202`,
+  `A bot chat cannot be deleted; delete the bot to remove it`.
+  Ownership and missing-section errors take precedence. Rejection leaves
+  the live session, pending work, staged uploads and stored history untouched,
+  emits no change or deletion event, and ignores the purge option. Opening
+  or creating the bot's chat still resolves its existing conversation.
+  Deleting the bot removes its chat through bot deletion's existing cleanup;
+  the one-time migration can still retire superseded chats privately.
+  For an allowed peer-thread deletion, the daemon closes the live session
+  (`session.delete` on the stored row). The section is tombstoned,
+  its catalog row goes in a transaction of its own,
   and only then its runtime history and `runtime/sessions/<id>`: a stop
   before the row goes leaves the section whole, and the next start removes
   what a stop after it left (`runtime_store::finish_deletes`). With

@@ -264,6 +264,8 @@ async fn session_search_reuses_its_index_and_follows_every_history_change() {
     let home = setup();
     let h = home.path();
     seed_history(h, 500);
+    // Keep the cache-removal probe on a deletable peer thread.
+    db::open(h).unwrap().execute_batch("INSERT INTO bots(name,owner_id) VALUES('teammate','local'); UPDATE sections SET peer_bot='teammate' WHERE id='s7';").unwrap();
     let section = |method: &str, args: Value| {
         catalog::call(h, "local", method, &args).unwrap().unwrap();
     };
