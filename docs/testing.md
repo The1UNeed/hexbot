@@ -38,8 +38,8 @@
   retention, completion and restart. A foreign ancestor blocks its entire
   branch, including an owned grandchild and live aliases.
   `unused_chat_fork` repeats missing-log and no-report lookups through both
-  routes, checks restart leaves no empty tombstones, and retries a failed exact
-  reservation removal. Partial-copy and published-adoption faults remain in
+  routes, checks restart leaves no empty tombstones, and rejects any reservation
+  writes on the no-copy path. Partial-copy and published-adoption faults remain in
   `chat_fork_cleanup` and the catalog fork tests.
   `bot_journal_section_purge` checks independent public/direct section purges
   under provisional bot journals, explicit and startup rollback, healthy

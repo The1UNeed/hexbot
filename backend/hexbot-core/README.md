@@ -123,8 +123,9 @@ it also installs over SSH when nobody is signed in at the screen.
   remains a separate destructive operation.
   Only committed bot cleanup defers a section's legacy purge to profile
   removal. A provisional bot journal cannot suppress an independent section
-  purge. Unused Dream chat-fork reservations are removed after releasing the
-  catalog writer, without creating permanent tombstones for empty targets.
+  purge. Dream chat forks reserve their cleanup identity only after the log is
+  proven to need copying, before the first target write. No-copy lookups create
+  neither a reservation nor an empty tombstone.
   Old tombstones without ownership metadata retain their native-only recovery
   behavior.
   The one-shot upgrade backup already copies the entire runtime database,

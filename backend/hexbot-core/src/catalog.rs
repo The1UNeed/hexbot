@@ -610,11 +610,21 @@ pub fn chat_section(home: &Path, caller: &str, name: &str) -> Result<Value> {
             if listed {
                 return Err(Error::new(5200, "chat fork target already exists"));
             }
-            runtime_store::prepare_chat_fork(home, &id, &next, name, caller)?;
-            forked.id = Some(next.clone());
-            #[cfg(all(test, unix))]
-            chat_fork_barrier(home, "before_copy")?;
-            if runtime_store::fork_dream_chat(home, name, caller, &id, &next, &reports)? {
+            if runtime_store::fork_dream_chat_with_prepare(
+                home,
+                name,
+                caller,
+                &id,
+                &next,
+                &reports,
+                || {
+                    runtime_store::prepare_chat_fork(home, &id, &next, name, caller)?;
+                    forked.id = Some(next.clone());
+                    #[cfg(all(test, unix))]
+                    chat_fork_barrier(home, "before_copy")?;
+                    Ok(())
+                },
+            )? {
                 #[cfg(all(test, unix))]
                 chat_fork_barrier(home, "after_copy")?;
                 tx.execute("INSERT INTO sections(id,bot,title,owner_id,created_at,updated_at) SELECT ?,bot,CASE WHEN title='Dreams' THEN 'General' ELSE title END,owner_id,created_at,updated_at FROM sections WHERE id=?", params![next, id])?;

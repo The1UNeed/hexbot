@@ -1156,36 +1156,6 @@ pub(crate) fn discard_chat_fork(
         if reservation != (source.into(), bot.into(), owner.into()) {
             return Err(crate::Error::new(5200, "chat fork reservation changed"));
         }
-        // Ok(false) from fork_dream_chat precedes every target write. Prove
-        // that state again under the native writer before releasing only the
-        // exact reservation. No tombstone is needed for an unused random ID.
-        let mut unused = true;
-        for (table, column) in [
-            ("native_sessions", "stored_id"),
-            ("native_messages", "session_id"),
-            ("native_pi_journal", "session_id"),
-            ("native_usage", "session_id"),
-            ("native_deleted", "session_id"),
-            ("native_fresh", "session_id"),
-            ("native_prompt_intents", "session_id"),
-            ("native_summaries", "session_id"),
-            ("native_history_versions", "session_id"),
-            ("native_quarantine", "session_id"),
-            ("native_unrecovered", "session_id"),
-        ] {
-            let present: bool = tx.query_row(
-                &format!("SELECT EXISTS(SELECT 1 FROM {table} WHERE {column}=?)"),
-                [target],
-                |r| r.get(0),
-            )?;
-            unused &= !present;
-        }
-        let path = home.join("runtime/sessions").join(target);
-        unused &= match fs::symlink_metadata(&path) {
-            Ok(_) => false,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => true,
-            Err(error) => return Err(error.into()),
-        };
         let ambiguous: bool = tx.query_row(
         "SELECT EXISTS(SELECT 1 FROM native_sessions WHERE stored_id=?1 OR json_extract(options,'$.parent_session')=?1)
          OR EXISTS(SELECT 1 FROM native_delete_options WHERE session_id=?1)
@@ -1200,11 +1170,6 @@ pub(crate) fn discard_chat_fork(
                 5200,
                 "unpublished chat has another history owner or decision",
             ));
-        }
-        if unused {
-            tx.execute("DELETE FROM native_pending_chat_forks WHERE target=? AND source=? AND bot=? AND owner=?", params![target,source,bot,owner])?;
-            tx.commit()?;
-            return Ok(());
         }
         tx.commit()?;
         delete_one(home, target)?;
@@ -1821,6 +1786,7 @@ pub fn import_hermes(home: &Path, bot: &str, stored: &str, cwd: &Path) -> Result
 /// Ok(false) means no target files or native rows were written.
 /// Release its catalog transaction before deleting that target: deletion takes
 /// the product boundary, which must always precede database writers.
+#[cfg(test)]
 pub(crate) fn fork_dream_chat(
     home: &Path,
     bot: &str,
@@ -1828,6 +1794,18 @@ pub(crate) fn fork_dream_chat(
     source: &str,
     target: &str,
     reports: &HashSet<String>,
+) -> Result<bool> {
+    fork_dream_chat_with_prepare(home, bot, owner, source, target, reports, || Ok(()))
+}
+
+pub(crate) fn fork_dream_chat_with_prepare(
+    home: &Path,
+    bot: &str,
+    owner: &str,
+    source: &str,
+    target: &str,
+    reports: &HashSet<String>,
+    prepare: impl FnOnce() -> Result<()>,
 ) -> Result<bool> {
     common::identifier(source)?;
     common::identifier(target)?;
@@ -1927,6 +1905,9 @@ pub(crate) fn fork_dream_chat(
         lines.push(copied.to_string());
         parent = json!(next);
     }
+    // Parsing and report selection above cannot create a target. Reserve its
+    // cleanup identity only once a copy is required, before its first write.
+    prepare()?;
     mark_fresh(home, target)?;
     #[cfg(all(test, unix))]
     let mut first = true;

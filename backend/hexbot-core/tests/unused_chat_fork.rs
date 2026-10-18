@@ -132,7 +132,7 @@ fn unused_dream_forks_leave_no_reservations_or_permanent_empty_tombstones() {
 }
 
 #[test]
-fn unused_reservation_removal_failure_keeps_identity_without_creating_tombstones() {
+fn false_fork_needs_no_reservation_or_cleanup_even_when_marker_writes_fail() {
     let home = tempfile::tempdir().unwrap();
     let h = home.path();
     fixture(h);
@@ -150,26 +150,15 @@ fn unused_reservation_removal_failure_keeps_identity_without_creating_tombstones
     )
     .unwrap();
     let before = source(h);
-    store::open(h).unwrap().execute_batch("CREATE TRIGGER keep_reservation BEFORE DELETE ON native_pending_chat_forks BEGIN SELECT RAISE(ABORT,'reservation removal failure'); END;").unwrap();
-    assert_eq!(
-        catalog::chat_section(h, "local", "owl").unwrap()["id"],
-        "chat"
-    );
-    let pending = deletion_state(h);
-    assert_eq!(pending["pending"].as_array().unwrap().len(), 1);
-    assert_eq!(pending["deleted"], json!([]));
-    assert_eq!(pending["completed"], json!([]));
-    assert!(store::finish_deletes(h).is_err());
-    assert_eq!(deletion_state(h), pending);
-    store::open(h)
-        .unwrap()
-        .execute_batch("DROP TRIGGER keep_reservation")
-        .unwrap();
-    for _ in 0..2 {
+    let state = deletion_state(h);
+    store::open(h).unwrap().execute_batch("CREATE TRIGGER refuse_reservation BEFORE INSERT ON native_pending_chat_forks BEGIN SELECT RAISE(ABORT,'unexpected unused reservation'); END; CREATE TRIGGER refuse_removal BEFORE DELETE ON native_pending_chat_forks BEGIN SELECT RAISE(ABORT,'unexpected unused cleanup'); END;").unwrap();
+    for _ in 0..3 {
+        assert_eq!(
+            catalog::chat_section(h, "local", "owl").unwrap()["id"],
+            "chat"
+        );
         store::finish_deletes(h).unwrap();
         assert_eq!(source(h), before);
-        assert_eq!(deletion_state(h)["pending"], json!([]));
-        assert_eq!(deletion_state(h)["deleted"], json!([]));
-        assert_eq!(deletion_state(h)["completed"], json!([]));
+        assert_eq!(deletion_state(h), state);
     }
 }
