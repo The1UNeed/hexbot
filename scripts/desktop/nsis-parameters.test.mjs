@@ -10,7 +10,8 @@ import test from 'node:test'
 import { promisify } from 'node:util'
 
 const run = promisify(execFile)
-const nsisPath = path => path.replaceAll('\\', '/').replaceAll('$', '$$')
+// The Windows NSIS preprocessor requires native separators for !include.
+const nsisPath = path => path.replaceAll('$', () => '$$')
 
 async function compilerFixture(name) {
   const require = createRequire(new URL('../../apps/desktop/package.json', import.meta.url))

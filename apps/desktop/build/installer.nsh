@@ -81,7 +81,8 @@ Var HexbotShortcutName
 !macro customHeader
   !macroundef initMultiUser
   !macroundef GetDParameter
-  !include "${BUILD_RESOURCES_DIR}/installer-init.nsh"
+  !addincludedir "${BUILD_RESOURCES_DIR}"
+  !include "installer-init.nsh"
 !macroend
 
 !macro customInstall
