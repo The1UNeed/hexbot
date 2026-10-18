@@ -95,6 +95,10 @@ jobs:
           $fixture = Join-Path "$env:SystemDrive\" "HexbotPsec-$suffix"
           $child = $null
           $account = $null
+          $failure = $null
+          $cleanupErrors = @()
+          $destination = Join-Path $env:HEXBOT_WINDOWS_PROBE_DIR 'standard-user'
+          New-Item -ItemType Directory -Path $destination -Force | Out-Null
           try {
             $account = New-LocalUser -Name $name -Password $secure -AccountNeverExpires -PasswordNeverExpires -Description 'Disposable Hexbot PSEC validation'
             Add-LocalGroupMember -SID 'S-1-5-32-545' -Member $account
@@ -128,27 +132,53 @@ jobs:
           foreach ($property in $configuration.PSObject.Properties) {
             [Environment]::SetEnvironmentVariable($property.Name, [string]$property.Value, 'Process')
           }
-          & (Join-Path $PSScriptRoot 'node.exe') (Join-Path $PSScriptRoot 'probe.mjs') *> (Join-Path $PSScriptRoot 'standard-user.log')
-          exit $LASTEXITCODE
+          $probeExitCode = 1
+          try {
+            & (Join-Path $PSScriptRoot 'node.exe') (Join-Path $PSScriptRoot 'probe.mjs') *> (Join-Path $PSScriptRoot 'standard-user.log')
+            $probeExitCode = $LASTEXITCODE
+          } catch {
+            if ($LASTEXITCODE) { $probeExitCode = $LASTEXITCODE }
+            $_ | Out-String | Out-File (Join-Path $PSScriptRoot 'standard-user.log') -Append
+          }
+          # The Node probe has finished its assertions and ACL snapshots. Only
+          # this account can delete its private native output files normally.
+          # fs.rm removes junctions themselves; it never traverses their targets.
+          $cleanupCode = "const fs=require('node:fs'),p=require('node:path');const root=process.argv[1],cleanupErrors=[];for(const name of ['temp','appdata','unused-dacl-state']){try{fs.rmSync(p.join(root,name),{recursive:true,force:true,maxRetries:3,retryDelay:100})}catch(error){cleanupErrors.push(error.stack)}}fs.writeFileSync(p.join(root,'standard-user-cleanup.json'),JSON.stringify({probeExitCode:Number(process.argv[2]),cleanupErrors},null,2));process.exitCode=cleanupErrors.length?1:0"
+          $cleanupExitCode = 1
+          try {
+            & (Join-Path $PSScriptRoot 'node.exe') -e $cleanupCode $PSScriptRoot $probeExitCode
+            $cleanupExitCode = $LASTEXITCODE
+          } catch { $_ | Out-String | Out-File (Join-Path $PSScriptRoot 'standard-user.log') -Append }
+          if ($probeExitCode) { exit $probeExitCode }
+          exit $cleanupExitCode
           '@ | Set-Content (Join-Path $fixture 'run.ps1')
             $credential = [Management.Automation.PSCredential]::new("$env:COMPUTERNAME\$name", $secure)
             $child = Start-Process -FilePath "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -ArgumentList @('-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $fixture 'run.ps1')) -WorkingDirectory $fixture -Credential $credential -LoadUserProfile -PassThru
             if (!$child.WaitForExit(600000)) { throw 'The standard-user candidate exceeded ten minutes' }
             if ($child.ExitCode -ne 0) { throw "The standard-user candidate failed with exit code $($child.ExitCode)" }
+          } catch {
+            $failure = $_
           } finally {
-            if ($child -and !$child.HasExited) { & taskkill.exe /PID $child.Id /T /F | Out-Null }
+            try {
+              if ($child -and !$child.HasExited) { & taskkill.exe /PID $child.Id /T /F | Out-Null }
+            } catch { $cleanupErrors += "Process cleanup: $_" }
             try {
               if (Test-Path -LiteralPath $fixture) {
-                $destination = Join-Path $env:HEXBOT_WINDOWS_PROBE_DIR 'standard-user'
-                New-Item -ItemType Directory -Path $destination -Force | Out-Null
-                foreach ($item in @('evidence', 'standard-user.log')) {
+                foreach ($item in @('evidence', 'standard-user.log', 'standard-user-cleanup.json')) {
                   $source = Join-Path $fixture $item
                   if (Test-Path -LiteralPath $source) { Copy-Item -LiteralPath $source -Destination $destination -Recurse -Force }
                 }
                 Remove-Item -LiteralPath $fixture -Recurse -Force
               }
-            } finally { if ($account) { Remove-LocalUser -Name $name } }
+            } catch { $cleanupErrors += "Fixture cleanup: $_" }
+            try { if ($account) { Remove-LocalUser -Name $name } }
+            catch { $cleanupErrors += "Account cleanup: $_" }
+            $errorText = $null
+            if ($failure) { $errorText = $failure.ToString() }
+            @{ error = $errorText; cleanupErrors = $cleanupErrors } | ConvertTo-Json | Set-Content (Join-Path $destination 'launcher-result.json')
           }
+          if ($failure) { throw $failure }
+          if ($cleanupErrors.Count) { throw 'The standard-user candidate cleanup failed; see launcher-result.json' }
       - uses: actions/upload-artifact@v7
         if: always()
         with:

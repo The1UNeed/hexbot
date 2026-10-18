@@ -1,0 +1,107 @@
+$ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue'
+$root = 'C:\HexbotVm'
+$evidence = "$root\evidence"
+$manifest = Get-Content "$root\downloads.json" -Raw | ConvertFrom-Json
+function Set-Phase([string]$phase, [string]$message) {
+    $state = @{ phase = $phase; message = $message; time = [DateTime]::UtcNow.ToString('o') }
+    $state | ConvertTo-Json | Set-Content "$root\state.next.json"
+    Move-Item "$root\state.next.json" "$root\state.json" -Force
+}
+try {
+    $phase = if (Test-Path "$root\state.json") { (Get-Content "$root\state.json" -Raw | ConvertFrom-Json).phase } else { '' }
+    if ($phase -eq 'passed' -or $phase -eq 'failed') { exit }
+    if ($phase -ne 'rebooting') {
+        Set-Phase 'patching' 'Downloading the pinned Microsoft checkpoint and cumulative update'
+        $packages = "$root\packages"
+        New-Item -ItemType Directory -Path $packages -Force | Out-Null
+        foreach ($update in $manifest.updates) {
+            $file = Join-Path $packages $update.name
+            Invoke-WebRequest -UseBasicParsing -Uri $update.url -OutFile $file -TimeoutSec 1200
+            if ((Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash.ToLowerInvariant() -ne $update.sha256) {
+                throw "The pinned update checksum does not match: $($update.name)"
+            }
+        }
+        # Microsoft's method 2 installs the target and discovers any required
+        # checkpoint in the same directory. An already superseded checkpoint
+        # must not be forced onto the newer evaluation image separately.
+        $target = Join-Path $packages $manifest.updates[-1].name
+        & dism.exe /Online /Add-Package "/PackagePath:$target" /Quiet /NoRestart "/LogPath:$evidence\update.log"
+        if ($LASTEXITCODE -notin @(0, 3010)) { throw "The Windows update failed with exit code $LASTEXITCODE" }
+        Remove-Item -LiteralPath $packages -Recurse -Force
+        Set-Phase 'rebooting' 'The pinned update is installed; restarting Windows'
+        Restart-Computer -Force
+        exit
+    }
+
+    Set-Phase 'testing' 'Checking Windows 11 x64, Secure Boot, TPM, and standard-user containment'
+    $os = Get-CimInstance Win32_OperatingSystem
+    $version = Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion'
+    $secureBoot = Confirm-SecureBootUEFI
+    $tpm = Get-Tpm
+    $machine = @{
+        caption = $os.Caption; productType = $os.ProductType; architecture = $env:PROCESSOR_ARCHITECTURE
+        build = $version.CurrentBuildNumber; revision = $version.UBR; displayVersion = $version.DisplayVersion
+        secureBoot = $secureBoot; tpmPresent = $tpm.TpmPresent; tpmReady = $tpm.TpmReady
+    }
+    $machine | ConvertTo-Json | Set-Content "$evidence\machine.json"
+    if ($os.ProductType -ne 1 -or $os.Caption -notmatch 'Windows 11' -or $env:PROCESSOR_ARCHITECTURE -ne 'AMD64') {
+        throw 'This proof requires the native Windows 11 x64 client kernel'
+    }
+    if ($version.CurrentBuildNumber -ne '26300' -or $version.UBR -lt 9711) { throw 'The pinned Windows cumulative update is missing' }
+    if (!$secureBoot -or !$tpm.TpmPresent -or !$tpm.TpmReady) { throw 'Secure Boot and a ready TPM are required' }
+
+    $tools = 'C:\Program Files\HexbotVmTools'
+    New-Item -ItemType Directory -Path "$tools\python" -Force | Out-Null
+    Copy-Item "$root\node.exe", "$root\wxc-exec.exe" -Destination $tools
+    Expand-Archive -LiteralPath "$root\python.zip" -DestinationPath "$tools\python" -Force
+    $mxc = "$tools\wxc-exec.exe"
+    if ((Get-FileHash -LiteralPath $mxc -Algorithm SHA256).Hash.ToLowerInvariant() -ne $manifest.mxc.executableSha256) { throw 'The pinned MXC executable checksum does not match' }
+    $signature = Get-AuthenticodeSignature -LiteralPath $mxc
+    if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -notmatch '(^|,\s*)O=Microsoft Corporation(,|$)') {
+        throw 'The MXC executable must have a trusted Microsoft signature'
+    }
+    @{
+        version = '1.0.1'; architecture = 'x64'; sha256 = $manifest.mxc.executableSha256
+        signatureStatus = $signature.Status.ToString(); signer = $signature.SignerCertificate.Subject
+    } | ConvertTo-Json | Set-Content "$evidence\candidate.json"
+
+    $name = 'HexbotPsecUser'
+    $bytes = New-Object byte[] 32
+    $random = [Security.Cryptography.RandomNumberGenerator]::Create()
+    try { $random.GetBytes($bytes) } finally { $random.Dispose() }
+    $password = 'aA1!' + [Convert]::ToBase64String($bytes)
+    $secure = ConvertTo-SecureString $password -AsPlainText -Force
+    $account = $null
+    $child = $null
+    $fixture = 'C:\HexbotPsecUser'
+    try {
+        $account = New-LocalUser -Name $name -Password $secure -AccountNeverExpires -PasswordNeverExpires -Description 'Disposable Hexbot PSEC validation'
+        Add-LocalGroupMember -SID 'S-1-5-32-545' -Member $account
+        New-Item -ItemType Directory -Path $fixture | Out-Null
+        $acl = [Security.AccessControl.DirectorySecurity]::new()
+        $acl.SetAccessRuleProtection($true, $false)
+        foreach ($sid in @($account.SID.Value, 'S-1-5-18', 'S-1-5-32-544')) {
+            $principal = [Security.Principal.SecurityIdentifier]::new($sid)
+            $acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new($principal, 'FullControl', 'ContainerInherit,ObjectInherit', 'None', 'Allow'))
+        }
+        Set-Acl -LiteralPath $fixture -AclObject $acl
+        Copy-Item "$root\probe.mjs", "$root\standard-user.ps1" -Destination $fixture
+        Copy-Item "$root\fixtures" -Destination $fixture -Recurse
+        New-Item -ItemType Directory -Path "$fixture\temp", "$fixture\appdata" | Out-Null
+        $credential = [Management.Automation.PSCredential]::new("$env:COMPUTERNAME\$name", $secure)
+        $child = Start-Process -FilePath "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -ArgumentList @('-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', "$fixture\standard-user.ps1") -WorkingDirectory $fixture -Credential $credential -LoadUserProfile -PassThru
+        if (!$child.WaitForExit(900000)) { throw 'The standard-user containment proof exceeded fifteen minutes' }
+        if ($child.ExitCode -ne 0) { throw "The standard-user containment proof failed with exit code $($child.ExitCode)" }
+    } finally {
+        if ($child -and !$child.HasExited) { & taskkill.exe /PID $child.Id /T /F | Out-Null }
+        if (Test-Path "$fixture\evidence") { Copy-Item "$fixture\evidence" -Destination "$evidence\standard-user" -Recurse -Force }
+        if (Test-Path "$fixture\standard-user.log") { Copy-Item "$fixture\standard-user.log" -Destination $evidence }
+        if ($account) { Remove-LocalUser -Name $name }
+    }
+    Set-Phase 'passed' 'The full PSEC candidate passed under a standard Windows 11 x64 user'
+} catch {
+    Set-Phase 'failed' $_.Exception.Message
+} finally {
+    if (Test-Path "$root\state.json") { Copy-Item "$root\state.json" "$evidence\state.json" -Force }
+}

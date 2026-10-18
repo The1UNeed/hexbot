@@ -255,9 +255,9 @@ async function gone(pid) {
   while (alive(pid) && Date.now() < until) await delay(10);
   assert(!alive(pid), `Sandbox descendant ${pid} survived`);
 }
-async function hostConnection(port) {
+async function hostConnection(port, address = '127.0.0.1') {
   return await new Promise(resolve => {
-    const socket = net.createConnection({ host: '127.0.0.1', port });
+    const socket = net.createConnection({ host: address, port });
     const finish = connected => { socket.destroy(); resolve(connected); };
     socket.setTimeout(1_000, () => finish(false));
     socket.once('error', () => finish(false));
@@ -276,7 +276,7 @@ def identity(handle):
 `;
 const pythonProof = creationIdentity + String.raw`import errno,json,os,pathlib,socket,subprocess,sys,time
 work,home,outputs,external=map(pathlib.Path,sys.argv[1:5])
-mode,hostport,signal=sys.argv[5],int(sys.argv[6]),sys.argv[7]
+mode,targets,signal=sys.argv[5],json.loads(sys.argv[6]),sys.argv[7]
 assert 'HEXBOT_PSEC_HOST_SECRET' not in os.environ,'host environment secret was inherited'
 def denied(action,label):
     try: action()
@@ -309,14 +309,15 @@ else:
     denied(lambda:(work/'ordinary-created.txt').write_text('bad'),'Manual workspace write')
     denied(lambda:(outputs/'result.txt').write_text('bad'),'Manual output creation')
     denied(lambda:(outputs/'initial.txt').write_text('bad'),'Manual output modification')
-client=socket.socket();client.settimeout(1.5)
-try:
-    client.connect(('127.0.0.1',hostport))
-    raise AssertionError('sandbox reached the host listener')
-except (PermissionError,TimeoutError): pass
-except OSError as e:
-    if getattr(e,'winerror',None) not in (10013,10060,10065,10051): raise
-finally: client.close()
+for target in targets:
+    client=socket.socket(socket.AF_INET6 if target['family']==6 else socket.AF_INET);client.settimeout(1.5)
+    try:
+        client.connect((target['address'],target['port']))
+        raise AssertionError('sandbox reached host listener '+target['address'])
+    except (PermissionError,TimeoutError): pass
+    except OSError as e:
+        if getattr(e,'winerror',None) not in (10013,10060,10065,10051): raise
+    finally: client.close()
 server=socket.socket();server.settimeout(1)
 try:
     server.bind(('127.0.0.1',0));server.listen();port=server.getsockname()[1]
@@ -331,7 +332,7 @@ server.close()
 print('HEXBOT_PSEC_PYTHON_OK '+mode,flush=True)
 `;
 
-let host, pipeHost, registryFixture;
+let host, host6, pipeHost, registryFixture;
 try {
   assert.equal(probe.status, 0, `PSEC capability probe failed: ${probe.error ?? probe.stderr}`);
   assert(capabilities, `PSEC capability probe returned invalid JSON: ${probe.stdout}`);
@@ -423,18 +424,32 @@ print(json.dumps({'hostProcessAccess':opened,'registryCanaryReadable':True}))
   });
   let hostAccepts = 0;
   host = net.createServer(socket => { hostAccepts++; socket.destroy(); });
-  host.listen(0, '127.0.0.1');
+  host.listen(0, '0.0.0.0');
   await once(host, 'listening');
   const hostPort = host.address().port;
   const controlAccepted = once(host, 'connection');
   assert(await hostConnection(hostPort), 'The host loopback control must be reachable outside the sandbox');
   await controlAccepted;
+  const nonLoopback = Object.values(os.networkInterfaces()).flat().find(info => info && info.family === 'IPv4' && !info.internal)?.address;
+  assert(nonLoopback, 'A non-loopback IPv4 interface is required for egress proof');
+  const nonLoopbackAccepted = once(host, 'connection');
+  assert(await hostConnection(hostPort, nonLoopback), 'The non-loopback host endpoint must be reachable outside the sandbox');
+  await nonLoopbackAccepted;
+  host6 = net.createServer(socket => { hostAccepts++; socket.destroy(); });
+  host6.listen({ port: 0, host: '::1', ipv6Only: true });
+  await once(host6, 'listening');
+  const hostPort6 = host6.address().port;
+  const control6Accepted = once(host6, 'connection');
+  assert(await hostConnection(hostPort6, '::1'), 'The host IPv6 endpoint must be reachable outside the sandbox');
+  await control6Accepted;
+  const targets = [{ family: 4, address: '127.0.0.1', port: hostPort }, { family: 4, address: nonLoopback, port: hostPort }, { family: 6, address: '::1', port: hostPort6 }];
+  await fs.writeFile(path.join(evidence, 'network-host-controls.json'), JSON.stringify({ targets, reachable: true }, null, 2));
   hostAccepts = 0;
   for (const writable of [false, true]) {
     const mode = writable ? 'auto' : 'manual';
     await checked(`python-${mode}`, async () => {
       const signal = `${mode}-${randomUUID()}`;
-      const run = start(`python-${mode}`, config(writable), python, ['-B', '-c', pythonProof, work, home, outputs, privateFile, mode, String(hostPort), signal]);
+      const run = start(`python-${mode}`, config(writable), python, ['-B', '-c', pythonProof, work, home, outputs, privateFile, mode, JSON.stringify(targets), signal]);
       const ready = await waitReady(run);
       trackProcess(ready.pid, ready.started);
       trackProcess(ready.parent, ready.parentStarted);
@@ -481,6 +496,7 @@ print(json.dumps({'hostProcessAccess':opened,'registryCanaryReadable':True}))
   await fs.writeFile(path.join(evidence, 'workloads.json'), JSON.stringify(reports, null, 2));
   await fs.writeFile(path.join(evidence, 'fixture.json'), JSON.stringify({ fixture, mxc, python, powershell }, null, 2));
   if (host) await new Promise(resolve => host.close(resolve));
+  if (host6) await new Promise(resolve => host6.close(resolve));
   if (pipeHost) await new Promise(resolve => pipeHost.close(resolve));
   if (registryFixture) {
     hostPython(String.raw`import json,sys,winreg

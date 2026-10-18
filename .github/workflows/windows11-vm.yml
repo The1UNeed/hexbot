@@ -1,0 +1,54 @@
+# Candidate research only. No release, package publishing, or production enablement.
+name: Windows 11 x64 VM
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ['t3/verify-windows-readiness']
+    paths:
+      - '.github/workflows/windows11-vm.yml'
+      - 'scripts/dev/windows11-vm/**'
+      - 'scripts/dev/windows-sandbox-candidate-smoke.mjs'
+      - 'scripts/dev/fixtures/windows-psec-token-probe.py'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows11-vm-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  psec:
+    if: github.ref == 'refs/heads/t3/verify-windows-readiness'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 140
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Prepare the ephemeral KVM host
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = x86_64
+          test -c /dev/kvm
+          sudo chown "$(id -u):$(id -g)" /dev/kvm
+          sudo chmod 0600 /dev/kvm
+          # These unused SDKs belong to this disposable GitHub runner image.
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /opt/hostedtoolcache
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends qemu-system-x86 qemu-utils ovmf swtpm xorriso python3-venv
+          python3 -m venv "$RUNNER_TEMP/windows11-tools"
+          "$RUNNER_TEMP/windows11-tools/bin/pip" install --disable-pip-version-check pywinrm==0.5.0
+      - name: Install and patch Windows 11 x64, then require standard-user PSEC containment
+        shell: bash
+        run: |
+          "$RUNNER_TEMP/windows11-tools/bin/python" scripts/dev/windows11-vm/run.py --evidence "$RUNNER_TEMP/windows11-evidence"
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: windows11-x64-vm-evidence
+          path: ${{ runner.temp }}/windows11-evidence
+          if-no-files-found: error
+          retention-days: 7
