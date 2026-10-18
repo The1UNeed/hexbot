@@ -323,7 +323,13 @@ fn dream_dialogue(message: &Value, since: f64, until: f64) -> bool {
         )
 }
 
-fn native_log_ready(home: &Path, stored: &str, since: f64, until: f64) -> Result<bool> {
+fn native_log_ready(
+    home: &Path,
+    native: &rusqlite::Connection,
+    stored: &str,
+    since: f64,
+    until: f64,
+) -> Result<bool> {
     common::identifier(stored)?;
     let path = home
         .join("runtime/sessions")
@@ -339,7 +345,7 @@ fn native_log_ready(home: &Path, stored: &str, since: f64, until: f64) -> Result
     // so even an old file can have a recent projection still waiting on disk.
     let mut recorded = HashMap::<String, (usize, usize)>::new();
     for row in common::rows(
-        &runtime_store::open(home)?,
+        native,
         "SELECT p.raw_json,p.active,m.message_json FROM native_pi_journal p LEFT JOIN native_messages m ON m.session_id=p.session_id AND m.seq=p.projection_seq WHERE p.session_id=? AND (p.projection_seq IS NULL OR m.seq IS NOT NULL)",
         &[&stored],
     )? {
@@ -436,7 +442,7 @@ fn native_log_ready(home: &Path, stored: &str, since: f64, until: f64) -> Result
         if imported.is_none() {
             let mut projections = HashMap::<String, usize>::new();
             for row in common::rows(
-                &runtime_store::open(home)?,
+                native,
                 "SELECT message_json FROM native_messages WHERE session_id=?",
                 &[&stored],
             )? {
@@ -552,7 +558,71 @@ pub fn build_digest(
             &[&bot],
         )? {
             let id = section["id"].as_str().unwrap_or("");
-            let native = runtime_store::open(home)?;
+            // Classification can write projection metadata. Finish it before
+            // opening the read snapshot used by readiness and transcript selection.
+            if let Some(reports) = &native_reports {
+                // Use the same structural evidence as the catalog classifier.
+                // Raw tool/reasoning blocks can disprove an old display marker.
+                let first = runtime_store::open(home)?.query_row(
+                    "SELECT m.message_json,p.raw_json FROM native_messages m LEFT JOIN native_pi_journal p ON p.session_id=m.session_id AND p.projection_seq=m.seq WHERE m.session_id=? ORDER BY m.seq LIMIT 1",
+                    [id],
+                    |r| Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?)),
+                ).optional()?;
+                let first = first
+                    .map(|(shown, raw)| -> Result<Value> {
+                        let shown = serde_json::from_str(&shown)
+                            .map_err(|e| Error::new(5200, e.to_string()))?;
+                        let raw = raw
+                            .map(|s| serde_json::from_str::<Value>(&s))
+                            .transpose()
+                            .map_err(|e| Error::new(5200, e.to_string()))?;
+                        Ok(raw
+                            .filter(|m| runtime_store::dream_report_text(m).is_none())
+                            .unwrap_or(shown))
+                    })
+                    .transpose()?
+                    .unwrap_or(Value::Null);
+                let titled = section["title"] == "Dreams"
+                    && section["title_by"].is_null()
+                    && section["title_dirty"].as_i64().unwrap_or(0) == 0;
+                if dream_logs.contains(id)
+                    || section["peer_bot"].is_null()
+                        && runtime_store::dream_report_text(&first).is_some_and(|text| {
+                            titled || first["dream"] != true && reports.contains(&text)
+                        })
+                {
+                    // Remember native evidence before marking the first
+                    // report, just as the catalog does. A renamed log must
+                    // remain recognizable on the next failed legacy scan.
+                    if !dream_logs.contains(id) {
+                        let mut catalog = db::open(home)?;
+                        let tx = catalog
+                            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+                        let value: Option<String> = tx
+                            .query_row(
+                                "SELECT value FROM settings WHERE key='dream_logs'",
+                                [],
+                                |r| r.get(0),
+                            )
+                            .optional()?;
+                        let mut known: BTreeSet<String> = value
+                            .and_then(|s| serde_json::from_str(&s).ok())
+                            .unwrap_or_default();
+                        known.insert(id.to_owned());
+                        tx.execute(
+                            "INSERT OR REPLACE INTO settings VALUES('dream_logs',?)",
+                            [json!(known).to_string()],
+                        )?;
+                        tx.commit()?;
+                    }
+                    runtime_store::classify_dream_reports(home, id, reports)?;
+                    dream_logs.insert(id.to_owned());
+                }
+            }
+            // WAL readers keep one per-conversation snapshot without blocking
+            // live projection commits or upgrading this transaction to a writer.
+            let mut native = runtime_store::open(home)?;
+            let native = native.transaction()?;
             let unavailable: bool = native.query_row(
                 "SELECT EXISTS(SELECT 1 FROM native_unrecovered WHERE session_id=?1) OR EXISTS(SELECT 1 FROM native_quarantine WHERE session_id=?1)",
                 [id],
@@ -566,8 +636,14 @@ pub fn build_digest(
                     format!("Conversation {id} must be recovered before dreaming"),
                 ));
             }
-            let fresh = runtime_store::fresh(home, id)?;
-            let log_ready = native_log_ready(home, id, since, until)?;
+            let fresh = native.query_row(
+                "SELECT EXISTS(SELECT 1 FROM native_fresh WHERE session_id=?)",
+                [id],
+                |r| r.get::<_, bool>(0),
+            )?;
+            let log_ready = native_log_ready(home, &native, id, since, until)?;
+            #[cfg(test)]
+            snapshot_tests::after_readiness(home, id);
             // A missing log must not substitute older legacy rows for native
             // dialogue. Fresh display-only input can precede the first Pi open.
             let has_dialogue: bool = native.query_row(
@@ -609,7 +685,7 @@ pub fn build_digest(
                     [replacement],
                     |r| r.get(0),
                 )?;
-                let version: i64 = runtime_store::open(home)?.query_row("SELECT COALESCE((SELECT version FROM native_history_versions WHERE session_id=?),0)", [id], |r| r.get(0))?;
+                let version: i64 = native.query_row("SELECT COALESCE((SELECT version FROM native_history_versions WHERE session_id=?),0)", [id], |r| r.get(0))?;
                 // A client from before one-chat may still write to the old ID.
                 // Only omit the exact snapshot already copied to the owner chat.
                 if exists && adopted[id]["version"] == version {
@@ -627,66 +703,6 @@ pub fn build_digest(
             // Saved options alone do not prove that legacy import completed.
             let mut compactions = vec![];
             if native_exists && native_complete {
-                if let Some(reports) = &native_reports {
-                    // Use the same structural evidence as the catalog classifier.
-                    // Raw tool/reasoning blocks can disprove an old display marker.
-                    let first = runtime_store::open(home)?.query_row(
-                        "SELECT m.message_json,p.raw_json FROM native_messages m LEFT JOIN native_pi_journal p ON p.session_id=m.session_id AND p.projection_seq=m.seq WHERE m.session_id=? ORDER BY m.seq LIMIT 1",
-                        [id],
-                        |r| Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?)),
-                    ).optional()?;
-                    let first = first
-                        .map(|(shown, raw)| -> Result<Value> {
-                            let shown = serde_json::from_str(&shown)
-                                .map_err(|e| Error::new(5200, e.to_string()))?;
-                            let raw = raw
-                                .map(|s| serde_json::from_str::<Value>(&s))
-                                .transpose()
-                                .map_err(|e| Error::new(5200, e.to_string()))?;
-                            Ok(raw
-                                .filter(|m| runtime_store::dream_report_text(m).is_none())
-                                .unwrap_or(shown))
-                        })
-                        .transpose()?
-                        .unwrap_or(Value::Null);
-                    let titled = section["title"] == "Dreams"
-                        && section["title_by"].is_null()
-                        && section["title_dirty"].as_i64().unwrap_or(0) == 0;
-                    if dream_logs.contains(id)
-                        || section["peer_bot"].is_null()
-                            && runtime_store::dream_report_text(&first).is_some_and(|text| {
-                                titled || first["dream"] != true && reports.contains(&text)
-                            })
-                    {
-                        // Remember native evidence before marking the first
-                        // report, just as the catalog does. A renamed log must
-                        // remain recognizable on the next failed legacy scan.
-                        if !dream_logs.contains(id) {
-                            let mut catalog = db::open(home)?;
-                            let tx = catalog.transaction_with_behavior(
-                                rusqlite::TransactionBehavior::Immediate,
-                            )?;
-                            let value: Option<String> = tx
-                                .query_row(
-                                    "SELECT value FROM settings WHERE key='dream_logs'",
-                                    [],
-                                    |r| r.get(0),
-                                )
-                                .optional()?;
-                            let mut known: BTreeSet<String> = value
-                                .and_then(|s| serde_json::from_str(&s).ok())
-                                .unwrap_or_default();
-                            known.insert(id.to_owned());
-                            tx.execute(
-                                "INSERT OR REPLACE INTO settings VALUES('dream_logs',?)",
-                                [json!(known).to_string()],
-                            )?;
-                            tx.commit()?;
-                        }
-                        runtime_store::classify_dream_reports(home, id, reports)?;
-                        dream_logs.insert(id.to_owned());
-                    }
-                }
                 // Summaries are a bonus; one unreadable file must not stop the dream.
                 // Old log summaries were generated with reports in context.
                 // Read its original human dialogue instead of recycling those summaries.
@@ -697,7 +713,7 @@ pub fn build_digest(
                 for (at, _) in &compactions {
                     latest = latest.max(*at);
                 }
-                for message in runtime_store::history(home, id)? {
+                for message in runtime_store::history_with_conn(&native, id)? {
                     let at = message["timestamp"].as_f64().unwrap_or(0.0);
                     if !dream_dialogue(&message, since, until) {
                         continue;
@@ -2607,3 +2623,7 @@ mod interpreter_tests {
         assert!(!output.contains("private-test-key"));
     }
 }
+
+#[cfg(test)]
+#[path = "../tests/dreaming/snapshot.rs"]
+mod snapshot_tests;
