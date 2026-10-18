@@ -1025,7 +1025,7 @@ test('on Linux a command asks when a missing Git target would pin a repository o
 test('Windows file tools reject device and ambiguous paths before bridge requests', {skip:!windows}, async t => {
   for (const mode of ['manual', 'smart', 'off']) {
     const f = fixture(t, mode, ['file']);
-    for (const path of ['NUL', 'con.txt', 'PRN', 'AUX', 'CONIN$', 'CONOUT$', 'COM1', 'COM¹.log', 'LPT³', '\\relative', '/relative', 'C:relative', 'C:\\work\\file:stream', 'trailing.', 'trailing ', 'wild*card']) {
+    for (const path of ['NUL', 'con.txt', 'CON .txt', 'PRN', 'AUX', 'CONIN$', 'CONOUT$', 'COM1', 'COM1 .log', 'COM¹.log', 'LPT³', '\\relative', '/relative', 'C:relative', 'C:\\work\\file:stream', 'trailing.', 'trailing ', 'wild*card']) {
       for (const tool of ['read', 'grep', 'find', 'ls', 'write', 'edit']) {
         const denied = await f.gate(tool, {path});
         assert.equal(denied?.block, true, `${mode} ${tool} ${path}`);
@@ -1035,4 +1035,29 @@ test('Windows file tools reject device and ambiguous paths before bridge request
     assert.deepEqual(f.requests, [], 'invalid file paths must not reach the bridge');
     assert.deepEqual(f.choices, [], 'invalid file paths must not ask for approval');
   }
+});
+
+test('guarded Windows file tools reject network paths before approval while Bypass can name them', {skip:!windows}, async t => {
+  const network = '\\\\127.0.0.1\\hexbot-unavailable-test-share\\notes.txt';
+  for (const mode of ['manual', 'smart']) {
+    const f = fixture(t, mode, ['file']);
+    for (const tool of ['read', 'grep', 'find', 'ls', 'write', 'edit']) {
+      const denied = await f.gate(tool, {path:network});
+      assert.equal(denied?.block, true, `${mode} ${tool}`);
+      assert.match(denied.reason, /network paths/i);
+    }
+    assert.deepEqual(f.choices, [], 'network file resolution must not open an approval card');
+  }
+  const bypass = fixture(t, 'off', ['file']);
+  assert.equal(await bypass.gate('read', {path:network}), undefined);
+});
+
+test('Windows read preserves the checked Unicode filename instead of a normalized sibling', {skip:!windows}, async t => {
+  const f = fixture(t, 'smart', ['file']);
+  const path = join(f.home, 'snow\u202fowl.txt');
+  writeFileSync(path, 'exact Unicode filename');
+  writeFileSync(join(f.home, 'snow owl.txt'), 'wrong normalized sibling');
+  const result = await f.run('read', {path});
+  assert.match(JSON.stringify(result), /exact Unicode filename/);
+  assert.doesNotMatch(JSON.stringify(result), /wrong normalized sibling/);
 });

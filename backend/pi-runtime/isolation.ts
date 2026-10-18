@@ -9,6 +9,7 @@ import {spawnSync} from 'node:child_process';
 import {fold, foldCase, within} from './paths.ts';
 export {fold, foldCase, within} from './paths.ts';
 import {powerShellExecutable, powerShellArgs} from './windows-shell.ts';
+import {localPaths, localPathChecksActive, requireLocalPath} from './windows-files.ts';
 export const credentialPolicy = JSON.parse(readFileSync(new URL('./credential-policy.json', import.meta.url), 'utf8'));
 const quote = (s: string) => "'" + s.replaceAll("'", "'\\''") + "'";
 const regexEscape = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -34,13 +35,13 @@ const sandboxRegex = (source: string) => foldCase ? source.replace(/[a-z]/gi, c 
 export const privateKeyName = (name: string) => !policyRegex(credentialPolicy.sshPublic).test(name);
 // Project secrets such as .env, wherever they are; .env.example and the like are not.
 export const secretFileName = (name: string) => policyRegex(credentialPolicy.secretFile).test(name) && !policyRegex(credentialPolicy.secretFileExample).test(name);
-const entries = (dir: string) => { try { return readdirSync(dir, {withFileTypes:true}); } catch { return []; } };
+const entries = (dir: string) => { try { requireLocalPath(dir); return readdirSync(dir, {withFileTypes:true}); } catch { return []; } };
 const cache = new Map<string, {at: number, paths: string[]}>();
 function secretPaths(home: string): string[] {
   const cached = cache.get(home);
   if (cached && Date.now() - cached.at < 5000) return cached.paths;
   const paths = new Set<string>();
-  const add = (path: string) => { paths.add(path); try { paths.add(realpathSync(path)); } catch {} };
+  const add = (path: string) => { paths.add(path); try { requireLocalPath(path); paths.add(realpathSync(path)); } catch {} };
   const walk = (dir: string) => {
     for (const entry of entries(dir)) {
       const path = join(dir, entry.name), local = relative(home, path);
@@ -81,6 +82,7 @@ export const isolationAvailable = () => process.platform === 'darwin' || !!probe
 // dangling link to where its target would be.
 const LINK_HOPS = 40;
 function realRoot(path: string, hops = 0): string {
+  requireLocalPath(path);
   try { return realpathSync.native(path); }
   catch (error: any) {
     if (error.code !== 'ENOENT' || dirname(path) === path) throw error;
@@ -111,6 +113,7 @@ export function readDenied(): string[] {
   const home = homedir(), cached = readCache.get(home);
   if (cached && Date.now() - cached.at < 5000) return cached.paths;
   const denied: string[] = [];
+  if (localPathChecksActive()) localPaths((credentialPolicy.readDeny as string[]).map(policyRoot).filter(Boolean) as string[]);
   for (const entry of credentialPolicy.readDeny as string[]) {
     const root = policyRoot(entry);
     if (!root) continue;
@@ -134,7 +137,12 @@ const GIT_DIR = '/' + regexEscape('.git') + '(/|$)';
 // A folder with HEAD and objects whose name ends in .git is Git metadata. A
 // literal .git belongs to the worktree around it; any other one is a bare
 // repository, its own worktree.
-export const gitDirectory = (path: string) => fold(basename(path)).endsWith('.git') && existsSync(join(path, 'HEAD')) && existsSync(join(path, 'objects'));
+export const gitDirectory = (path: string) => {
+  if (!fold(basename(path)).endsWith('.git')) return false;
+  const head = join(path, 'HEAD'), objects = join(path, 'objects');
+  requireLocalPath(head); requireLocalPath(objects);
+  return existsSync(head) && existsSync(objects);
+};
 export const bareRepository = (path: string) => fold(basename(path)) !== '.git' && gitDirectory(path);
 const WORKSPACE_DEPTH = 3, WORKSPACE_DIRS = 1000, WORKSPACE_ENTRIES = 50;
 export const SCAN_REASON = 'The workspace safety scan exceeded its directory budget. This command needs approval: retry with full_access and a reason.';
@@ -151,6 +159,7 @@ export const SCAN_FILE_REASON = 'The workspace safety scan reached its directory
 // GIT_CONFIG_STEPS settings, so include cycles and fan-out cannot stall it.
 const GIT_FILE_BYTES = 1 << 20, GIT_TIMEOUT = 5000, GIT_INCLUDE_DEPTH = 10, GIT_INCLUDES = 64, GIT_SCAN_INCLUDES = 256, GIT_CONFIG_STEPS = 10000;
 function regularFile(path: string): Buffer | undefined {
+  requireLocalPath(path);
   let fd: number;
   try { fd = openSync(path, constants.O_RDONLY | constants.O_NONBLOCK); }
   catch (error: any) { if (['ENOENT', 'ENOTDIR', 'ENXIO'].includes(error.code)) return undefined; throw error; }
@@ -255,6 +264,7 @@ export function workspaceProtected(roots: string[], limit = WORKSPACE_DIRS, gitE
       if (part === '..') { dir = dirname(dir); continue; }
       const next = join(dir, part);
       let link: string | undefined;
+      requireLocalPath(next);
       try { if (lstatSync(next).isSymbolicLink()) link = readlinkSync(next); } catch { /* Not there yet. */ }
       if (link === undefined || ++hops > LINK_HOPS) { dir = next; continue; }
       if (within(next, scanned) && !scanned.some(root => fold(root) === fold(next)) && !within(next, exempt)) links.add(next);
@@ -355,6 +365,7 @@ export function workspaceProtected(roots: string[], limit = WORKSPACE_DIRS, gitE
     // A section can use a subdirectory of a linked worktree as its cwd.
     for (let parent = dir; dirname(parent) !== parent; parent = dirname(parent)) {
       const marker = join(parent, '.git');
+      requireLocalPath(marker);
       if (existsSync(marker)) recordMetadata(marker);
     }
   }
@@ -367,6 +378,7 @@ export function workspaceProtected(roots: string[], limit = WORKSPACE_DIRS, gitE
     // Record every entry before visiting any child, even at the budget boundary.
     const list: Dirent[] = [];
     try {
+      requireLocalPath(dir);
       const handle = opendirSync(dir);
       try {
         for (let entry; (entry = handle.readSync()) !== null;) {
@@ -377,7 +389,14 @@ export function workspaceProtected(roots: string[], limit = WORKSPACE_DIRS, gitE
     } catch { failure = 'The workspace safety scan could not read a directory. Approve this file change only if you trust its destination.'; continue; }
     if (exhausted) break;
     entriesLeft -= list.length;
+    // Validate children together before stat() or repository-marker discovery
+    // follows any reparse points. Denied entries stay unread and make the scan
+    // incomplete, which keeps the existing one-step approval behavior.
+    const allowed = localPathChecksActive() ? localPaths(list.map(entry => join(dir, entry.name))) : list.map(() => true);
+    const denied = new Set(list.filter((_entry, index) => !allowed[index]).map(entry => entry.name));
+    if (denied.size) failure = 'The workspace safety scan encountered a network path. Approve this file change only if you trust its destination.';
     for (const entry of list.sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0)) {
+      if (denied.has(entry.name)) continue;
       const path = join(dir, entry.name);
       if (fold(entry.name) === '.git') recordMetadata(path, dir);
       else if (bareRepository(path)) recordMetadata(path, path);

@@ -13,9 +13,9 @@ export async function verifyWindowsInstallerGui(wrapper, { root, directory, env,
   const record = { wrapper, directory, errors: [], stdout: '', stderr: '' }
   log.push({ gui: record })
   const runtimeQuery = '$roots = @("Registry::HKEY_LOCAL_MACHINE\\SOFTWARE\\WOW6432Node\\Microsoft\\EdgeUpdate\\Clients", "Registry::HKEY_LOCAL_MACHINE\\SOFTWARE\\Microsoft\\EdgeUpdate\\Clients", "Registry::HKEY_CURRENT_USER\\SOFTWARE\\Microsoft\\EdgeUpdate\\Clients"); $items = @(foreach ($root in $roots) { Get-ChildItem $root -ErrorAction SilentlyContinue | ForEach-Object { Get-ItemProperty $_.PSPath } | Where-Object { $_.name -like "*WebView2*" } | Select-Object name, pv, PSPath }); ConvertTo-Json -InputObject $items -Compress'
-  const runtimes = async () => JSON.parse((await command('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', runtimeQuery])).stdout.trim() || '[]')
+  const runtimes = async () => JSON.parse((await command('pwsh.exe', ['-NoProfile', '-NonInteractive', '-Command', runtimeQuery])).stdout.trim() || '[]')
   const signature = async file => {
-    const result = await command('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', '(Get-AuthenticodeSignature -LiteralPath $env:HEXBOT_TEST_SIGNED_FILE).Status.ToString()'], 180_000, { env: { ...env, HEXBOT_TEST_SIGNED_FILE: file } })
+    const result = await command('pwsh.exe', ['-NoProfile', '-NonInteractive', '-Command', '(Get-AuthenticodeSignature -LiteralPath $env:HEXBOT_TEST_SIGNED_FILE).Status.ToString()'], 180_000, { env: { ...env, HEXBOT_TEST_SIGNED_FILE: file } })
     assert.equal(result.stdout.trim(), 'Valid', `The exact GUI download must have a trusted Authenticode signature: ${file}`)
   }
   record.webviewBefore = await runtimes()

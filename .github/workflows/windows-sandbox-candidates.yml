@@ -96,7 +96,7 @@ jobs:
           $account = $null
           try {
             $account = New-LocalUser -Name $name -Password $secure -AccountNeverExpires -PasswordNeverExpires -Description 'Disposable Hexbot PSEC validation'
-            Get-LocalGroup -SID 'S-1-5-32-545' | Add-LocalGroupMember -Member $account
+            Add-LocalGroupMember -SID 'S-1-5-32-545' -Member $account.SID
             New-Item -ItemType Directory -Path $fixture | Out-Null
             $acl = [Security.AccessControl.DirectorySecurity]::new()
             $acl.SetAccessRuleProtection($true, $false)

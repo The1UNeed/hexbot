@@ -320,7 +320,14 @@ fn skill_content(skill: &Skill) -> Result<Value> {
     walk_files(dir, dir, &mut files)?;
     let mut files = files
         .into_iter()
-        .map(|p| p.strip_prefix(dir).unwrap().to_string_lossy().into_owned())
+        .map(|p| {
+            p.strip_prefix(dir)
+                .unwrap()
+                .components()
+                .map(|part| part.as_os_str().to_string_lossy())
+                .collect::<Vec<_>>()
+                .join("/")
+        })
         .collect::<Vec<_>>();
     files.sort();
     Ok(

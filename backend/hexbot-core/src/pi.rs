@@ -251,10 +251,19 @@ pub(crate) fn javascript_entry(executable: &Path) -> bool {
 }
 
 pub(crate) fn executable_command(executable: &Path) -> Command {
+    executable_command_in(executable, std::env::var_os("PATH").as_deref())
+}
+
+pub(crate) fn executable_command_in(
+    executable: &Path,
+    search_path: Option<&std::ffi::OsStr>,
+) -> Command {
     #[cfg(windows)]
-    if let Some(entry) = npm_entry(executable) {
-        return executable_command(&entry);
+    if let Some(entry) = npm_entry(executable, search_path) {
+        return executable_command_in(&entry, search_path);
     }
+    #[cfg(not(windows))]
+    let _ = search_path;
     if javascript_entry(executable) {
         let bundled = executable
             .parent()
@@ -274,7 +283,7 @@ pub(crate) fn executable_command(executable: &Path) -> Command {
 }
 
 #[cfg(windows)]
-fn npm_entry(executable: &Path) -> Option<PathBuf> {
+fn npm_entry(executable: &Path, search_path: Option<&std::ffi::OsStr>) -> Option<PathBuf> {
     let name = executable.file_name()?.to_str()?.to_ascii_lowercase();
     let name = match name.as_str() {
         "npm" | "npm.cmd" => "npm",
@@ -290,16 +299,16 @@ fn npm_entry(executable: &Path) -> Option<PathBuf> {
     {
         return None;
     } else {
-        roots.extend(std::env::split_paths(
-            &std::env::var_os("PATH").unwrap_or_default(),
-        ));
-        if let Some(node) = crate::common::command_path("node", &std::env::current_dir().ok()?) {
-            roots.push(node.parent()?.to_owned());
-        }
+        roots.extend(std::env::split_paths(search_path.unwrap_or_default()));
     }
     roots
         .into_iter()
-        .map(|root| root.join(format!("node_modules/npm/bin/{name}-cli.js")))
+        .flat_map(|root| {
+            [
+                root.join(format!("node_modules/npm/bin/{name}-cli.js")),
+                root.join(format!("../npm/bin/{name}-cli.js")),
+            ]
+        })
         .find(|entry| entry.is_file())
         .and_then(|entry| entry.canonicalize().ok())
 }
@@ -1134,6 +1143,52 @@ mod environment_policy_tests {
             assert!(provider_environment(name, "google-vertex"));
             assert!(!provider_environment(name, "amazon-bedrock"));
             assert!(!inherited_environment(name));
+        }
+    }
+}
+
+#[cfg(all(test, windows))]
+mod windows_command_tests {
+    use super::*;
+    #[test]
+    fn npm_lookup_uses_owner_path_and_local_node_modules_shims() {
+        let directory = tempfile::tempdir().unwrap();
+        let bin = directory.path().join("node_modules/.bin");
+        let script = directory.path().join("node_modules/npm/bin/npx-cli.js");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::create_dir_all(script.parent().unwrap()).unwrap();
+        std::fs::write(&script, "// fixture").unwrap();
+        std::fs::write(bin.join("npx.cmd"), "@echo must not run").unwrap();
+        let search = std::env::join_paths([&bin]).unwrap();
+        for executable in [PathBuf::from("npx"), bin.join("npx.cmd")] {
+            let command = executable_command_in(&executable, Some(&search));
+            assert_eq!(
+                command.as_std().get_args().next().unwrap(),
+                script.canonicalize().unwrap().as_os_str()
+            );
+        }
+    }
+    #[test]
+    fn npm_launchers_use_the_javascript_entry_without_a_batch_interpreter() {
+        let directory = tempfile::tempdir().unwrap();
+        for name in ["npm", "npx"] {
+            let script = directory
+                .path()
+                .join(format!("node_modules/npm/bin/{name}-cli.js"));
+            std::fs::create_dir_all(script.parent().unwrap()).unwrap();
+            std::fs::write(&script, "// fixture").unwrap();
+            let shim = directory.path().join(format!("{name}.cmd"));
+            std::fs::write(&shim, "@echo batch launchers must not run").unwrap();
+            let command = executable_command(&shim);
+            assert_eq!(
+                command.as_std().get_args().next().unwrap(),
+                script.canonicalize().unwrap().as_os_str()
+            );
+            assert!(
+                !Path::new(command.as_std().get_program())
+                    .extension()
+                    .is_some_and(|extension| extension == "cmd")
+            );
         }
     }
 }

@@ -1224,7 +1224,26 @@ impl McpSession {
             let command = entry["command"]
                 .as_str()
                 .ok_or_else(|| transport_error("server has no command or URL"))?;
-            let mut cmd = crate::pi::executable_command(Path::new(command));
+            let configured_path = entry["env"]
+                .as_object()
+                .into_iter()
+                .flat_map(|values| values.iter())
+                .filter(|(name, _)| name.eq_ignore_ascii_case("PATH"))
+                .filter_map(|(_, value)| value.as_str())
+                .next_back()
+                .or_else(|| {
+                    if entry["probe_env"] == true || entry["isolated_env"] == true {
+                        None
+                    } else {
+                        env.iter()
+                            .rfind(|(name, _)| name.eq_ignore_ascii_case("PATH"))
+                            .map(|(_, value)| value.as_str())
+                    }
+                })
+                .map(std::ffi::OsString::from)
+                .or_else(|| std::env::var_os("PATH"));
+            let mut cmd =
+                crate::pi::executable_command_in(Path::new(command), configured_path.as_deref());
             if entry["probe_env"] == true {
                 crate::credentials::shell_environment(&mut cmd);
             } else if entry["isolated_env"] == true {

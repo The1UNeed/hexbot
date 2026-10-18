@@ -23,6 +23,9 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: 26
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
       - run: rustup show active-toolchain
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
@@ -49,6 +52,8 @@ jobs:
             Windows-sandbox-diagnostics.log
           if-no-files-found: error
       - run: cargo fmt --check --manifest-path backend/hexbot-core/Cargo.toml
+      - name: Select Python for native containment and output tests
+        run: '"HEXBOT_TEST_PYTHON=$((Get-Command python).Source)" >> $env:GITHUB_ENV'
       - run: cargo test --locked --no-fail-fast --manifest-path backend/hexbot-core/Cargo.toml -- --nocapture
         if: ${{ !cancelled() }}
         env:
@@ -59,6 +64,24 @@ jobs:
       - run: cargo clippy --locked --manifest-path backend/hexbot-installer/Cargo.toml --all-targets -- -D warnings
       - run: npm ci --prefix backend/pi-runtime --ignore-scripts --no-audit --no-fund
         if: ${{ !cancelled() }}
+      - name: Stage pinned search tools for real Pi tests
+        if: ${{ !cancelled() }}
+        run: |
+          $env:HEXBOT_TEST_SEARCH_BIN = "$env:RUNNER_TEMP/hexbot-pi-search/bin"
+          @'
+          import { execFile } from 'node:child_process'
+          import { existsSync } from 'node:fs'
+          import { dirname, join } from 'node:path'
+          import { promisify } from 'node:util'
+          import { downloadTool, installTool } from './apps/desktop/src/main/backend/tools.ts'
+          const run = promisify(execFile)
+          const binDirectory = process.env.HEXBOT_TEST_SEARCH_BIN
+          const deps = { binDirectory, stagingDirectory: join(dirname(binDirectory), 'staging'), platform: 'win32', arch: 'x64', exists: existsSync, download: downloadTool,
+            run: (_command, args) => run(join(process.env.SystemRoot, 'System32', 'tar.exe'), args) }
+          for (const tool of ['rg', 'fd']) console.log(await installTool(tool, deps))
+          '@ | node --input-type=module
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          "HEXBOT_TEST_SEARCH_BIN=$env:HEXBOT_TEST_SEARCH_BIN" >> $env:GITHUB_ENV
       - name: Pi extension and MCP integration
         if: ${{ !cancelled() }}
         env:

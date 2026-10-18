@@ -9,6 +9,86 @@ use std::{
     time::Duration,
 };
 mod support;
+
+#[cfg(windows)]
+#[test]
+fn native_cli_preserves_unicode_homes_arguments_and_repeated_setup() {
+    use sha2::{Digest, Sha256};
+    let root = tempfile::tempdir().unwrap();
+    let source = root.path().join("package 你好");
+    let home = root.path().join("home 你好 & percent%");
+    let user = root.path().join("user 你好");
+    fs::create_dir_all(&source).unwrap();
+    fs::create_dir_all(&user).unwrap();
+    let mut files = serde_json::Map::new();
+    for file in [
+        "hexbot.exe",
+        "node.exe",
+        "pi/hexbot-pi.mjs",
+        "pi/package-lock.json",
+        "pi/node_modules/@earendil-works/pi-coding-agent/dist/cli.js",
+    ] {
+        let path = source.join(file);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        if file == "hexbot.exe" {
+            fs::copy(env!("CARGO_BIN_EXE_hexbot"), &path).unwrap();
+        } else {
+            fs::write(&path, file).unwrap();
+        }
+        files.insert(
+            file.into(),
+            json!(format!("{:x}", Sha256::digest(fs::read(&path).unwrap()))),
+        );
+    }
+    fs::write(
+        source.join("manifest.json"),
+        json!({"version":hexbot_core::version(),"target":"win32-x64","files":files}).to_string(),
+    )
+    .unwrap();
+    let invoke = |executable: &Path, args: &[&str]| {
+        std::process::Command::new(executable)
+            .args(args)
+            .env("HEXBOT_HOME", &home)
+            .env("USERPROFILE", &user)
+            .output()
+            .unwrap()
+    };
+    let setup = invoke(
+        &source.join("hexbot.exe"),
+        &["setup", "--activate", "--no-code-tools"],
+    );
+    assert!(
+        setup.status.success(),
+        "{}",
+        String::from_utf8_lossy(&setup.stderr)
+    );
+    let cli = user.join(".local/bin/hexbot.exe");
+    let version = invoke(&cli, &["version"]);
+    assert!(
+        version.status.success(),
+        "{}",
+        String::from_utf8_lossy(&version.stderr)
+    );
+    assert_eq!(
+        String::from_utf8(version.stdout).unwrap().trim(),
+        hexbot_core::version()
+    );
+    let argument = "unknown 你好 & %TEMP% \"quoted\"";
+    let unknown = invoke(&cli, &[argument]);
+    assert!(!unknown.status.success());
+    assert!(
+        String::from_utf8(unknown.stderr)
+            .unwrap()
+            .contains(argument)
+    );
+    let repeated = invoke(&cli, &["setup", "--no-code-tools"]);
+    assert!(
+        repeated.status.success(),
+        "{}",
+        String::from_utf8_lossy(&repeated.stderr)
+    );
+}
+
 fn args(values: &[&str]) -> Vec<String> {
     values.iter().map(|v| (*v).into()).collect()
 }

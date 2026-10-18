@@ -455,7 +455,7 @@ in `credentials.rs` checks that both sides build the same sandbox profile and
 bubblewrap arguments. macOS shell and Python children use
 `sandbox-exec` and fail closed if the profile cannot be applied. Linux uses
 bubblewrap after a successful startup probe, with credential paths masked and a private process
-namespace. Shell, Python, and scheduled scripts cannot write the Hexbot home except
+namespace. On macOS and Linux, shell, Python, and scheduled scripts cannot write the Hexbot home except
 the output folders the daemon chose (artifacts and attachments); a working
 directory saved inside the home before the daemon refused one is ignored, logged
 once, and replaced by the default workspace. SSH private keys are protected; SSH
@@ -466,6 +466,17 @@ Manual and Auto require user approval for shell commands and code runs,
 including full-access commands. Model review cannot replace that approval;
 an explicit section grant can cover later shell requests. Scheduled scripts
 refuse to run.
+
+Windows OS isolation remains disabled while its AppContainer filesystem boundary
+is under review. `hexbot.info` reports `sandbox: null`, and the production startup
+probe fails closed. Manual and Auto require the user's approval for each shell
+command or Python action, including full-access actions. Approved code runs with
+the user's file and network access; a Job Object terminates descendants when the
+action ends. Model review and section grants cannot replace that approval.
+Scheduled scripts and Copilot ACP sessions and reviewers refuse to run. The
+AppContainer diagnostic launcher is an explicit test-only prototype and does not
+enable production isolation. Windows release readiness requires a verified OS
+sandbox.
 Provider keys reach the agent through its auth file. The selected Bedrock or Vertex provider also receives its cloud environment settings; shell and scheduled script children do not.
 The Python environment does not include `HEXBOT_HOME`.
 

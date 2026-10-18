@@ -30,6 +30,23 @@ const pathKey = path => resolve(path).toLowerCase()
 const present = path => access(path).then(() => true, () => false)
 const sha256 = bytes => createHash('sha256').update(bytes).digest('hex')
 
+function updateFeed(version, filename, payload) {
+  const hash = createHash('sha512').update(payload).digest('base64')
+  return `version: ${version}\nfiles:\n  - url: ${filename}\n    sha512: ${hash}\n    size: ${payload.length}\npath: ${filename}\nsha512: ${hash}\nreleaseDate: '${new Date().toISOString()}'\n`
+}
+
+function tamperedInstaller(bytes) {
+  assert(bytes.length > 0x44 && bytes.subarray(0, 2).toString() === 'MZ', 'The signing fixture must be a Windows executable')
+  const header = bytes.readUInt32LE(0x3c)
+  assert(header > 0x40 && header + 4 <= bytes.length, 'The signing fixture must have an unused DOS stub byte')
+  assert(bytes.subarray(header, header + 4).equals(Buffer.from([0x50, 0x45, 0, 0])), 'The signing fixture must retain its PE header')
+  // Windows loads the PE image directly. This DOS stub byte participates in
+  // the Authenticode hash and leaves the PE headers and executable code intact.
+  const changed = Buffer.from(bytes)
+  changed[0x40] ^= 1
+  return changed
+}
+
 async function installedVersion(directory) {
   // Read the package actually replaced by NSIS, independently of updater state.
   const bytes = await readFile(join(directory, 'resources/app.asar'))
@@ -46,7 +63,7 @@ async function installedVersion(directory) {
 }
 
 async function command(executable, args, env) {
-  if (executable === 'powershell.exe') {
+  if (executable === 'pwsh.exe') {
     const script = args.indexOf('-Command') + 1
     args = [...args]
     args[script] = `[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false); ${args[script]}`
@@ -58,7 +75,7 @@ async function command(executable, args, env) {
 
 async function ownedApplications(executable, env) {
   // The executable is inside this test's unique temporary installation directory.
-  const result = await command('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
+  const result = await command('pwsh.exe', ['-NoProfile', '-NonInteractive', '-Command',
     '$items = @(Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -ieq $env:HEXBOT_TEST_APP_EXECUTABLE } | Select-Object ProcessId, ParentProcessId); ConvertTo-Json -InputObject $items -Compress'
   ], { ...env, HEXBOT_TEST_APP_EXECUTABLE: executable })
   return JSON.parse(result.stdout.trim() || '[]')
@@ -75,7 +92,7 @@ async function stopOwnedApplications(executable, env) {
 }
 
 async function registrations(installations, temporary, env) {
-  const result = await command('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', `
+  const result = await command('pwsh.exe', ['-NoProfile', '-NonInteractive', '-Command', `
 $ErrorActionPreference = 'Stop'
 $ids = ConvertFrom-Json $env:HEXBOT_TEST_INSTALL_IDS
 $items = @{}
@@ -108,7 +125,7 @@ foreach ($container in @('Registry::HKEY_CURRENT_USER\\Software', 'Registry::HKE
 }
 
 async function shellFolders(env) {
-  const result = await command('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
+  const result = await command('pwsh.exe', ['-NoProfile', '-NonInteractive', '-Command',
     "@{ desktop = [Environment]::GetFolderPath([Environment+SpecialFolder]::DesktopDirectory, [Environment+SpecialFolderOption]::DoNotVerify); programs = [Environment]::GetFolderPath([Environment+SpecialFolder]::Programs, [Environment+SpecialFolderOption]::DoNotVerify); localAppData = [Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData, [Environment+SpecialFolderOption]::DoNotVerify) } | ConvertTo-Json -Compress"
   ], env)
   const folders = JSON.parse(result.stdout.trim())
@@ -190,8 +207,7 @@ async function exercise(edition) {
     if (await present(`${binaries[kind]}.blockmap`)) files.set(`${names[kind]}.blockmap`, `${binaries[kind]}.blockmap`)
     if (kind === 'current') continue
     const payload = await readFile(binaries[kind])
-    const hash = createHash('sha512').update(payload).digest('base64')
-    feeds[kind === 'nightly' ? 'nightly.yml' : 'latest.yml'] = `version: ${versions[kind]}\nfiles:\n  - url: ${names[kind]}\n    sha512: ${hash}\n    size: ${payload.length}\npath: ${names[kind]}\nsha512: ${hash}\nreleaseDate: '${new Date().toISOString()}'\n`
+    feeds[kind === 'nightly' ? 'nightly.yml' : 'latest.yml'] = updateFeed(versions[kind], names[kind], payload)
   }
   const requests = []
   const log = { edition, versions, temporary, requests, errors: [], launches: [], steps: [] }
@@ -308,6 +324,49 @@ async function exercise(edition) {
     return registry
   }
 
+  async function rejectTamperedUpdate(page) {
+    const original = await readFile(binaries.next)
+    const payload = tamperedInstaller(original)
+    const filename = `${prefix}-${versions.next}-tampered-win-x64.exe`
+    const file = join(temporary, filename)
+    await writeFile(file, payload)
+    const before = await fingerprint(primary)
+    const validFeed = feeds['latest.yml']
+    const proof = {
+      filename, version: versions.next, modifiedOffset: 0x40, peHeaderOffset: payload.readUInt32LE(0x3c),
+      bytes: payload.length, originalSha512: createHash('sha512').update(original).digest('base64'),
+      feedSha512: createHash('sha512').update(payload).digest('base64')
+    }
+    log.invalidSignature = proof
+    assert.notEqual(proof.originalSha512, proof.feedSha512)
+    // Finish any startup check before replacing its feed. The next check and
+    // download must use the modified payload and its correct SHA-512 digest.
+    await page.evaluate(() => window.hexbot.updater.check())
+    const start = requests.length
+    files.set(filename, file)
+    feeds['latest.yml'] = updateFeed(versions.next, filename, payload)
+    try {
+      proof.available = await page.evaluate(() => window.hexbot.updater.check())
+      assert.equal(proof.available.status, 'available', JSON.stringify(proof.available))
+      assert.equal(proof.available.availableVersion, versions.next)
+      proof.rejected = await page.evaluate(() => window.hexbot.updater.download())
+      assert.equal(proof.rejected.status, 'error', 'The installed updater accepted a modified Authenticode payload')
+      assert.equal(proof.rejected.errorContext, 'download')
+      assert.match(proof.rejected.message, /not signed by the application owner/i)
+      assert.equal(proof.rejected.downloadedVersion, null)
+      assert(requests.slice(start).some(request => request.method === 'GET' && request.path === filename), 'The modified installer was not downloaded')
+      assert.equal(await installedVersion(primary.directory), versions.current)
+      assert.deepEqual(await fingerprint(primary), before, 'A rejected installer changed the installed app')
+      await verifyPrimary(versions.current)
+      proof.passed = true
+    } finally {
+      feeds['latest.yml'] = validFeed
+      files.delete(filename)
+    }
+    // The ordinary check/download flow below must recover without deleting
+    // updater caches or changing its verifier after the rejected download.
+  }
+
   async function update(page, channel, kind) {
     const step = { channel, version: versions[kind] }
     log.steps.push(step)
@@ -389,6 +448,7 @@ async function exercise(edition) {
       await expect.poll(() => page.evaluate(() => window.hexbot.daemon.status()), { timeout: 60_000 }).toMatchObject({ state: 'running' })
       await page.evaluate(() => window.hexbot.daemon.stop())
     }
+    await rejectTamperedUpdate(page)
     page = await update(page, 'stable', 'next')
     page = await update(page, 'nightly', 'nightly')
     await update(page, 'stable', 'next')

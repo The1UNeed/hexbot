@@ -26,7 +26,7 @@ export const OPEN_SOURCE: OpenSourceGroup[] = [
       {
         license: 'MIT',
         name: 'Pi',
-        packages: ['@earendil-works/pi-coding-agent'],
+        packages: ['@earendil-works/pi-coding-agent', '@earendil-works/pi-mcp'],
         repository: 'https://github.com/earendil-works/pi'
       },
       { license: 'MIT', name: 'Node.js', repository: 'https://github.com/nodejs/node' },

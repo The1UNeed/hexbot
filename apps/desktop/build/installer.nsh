@@ -148,7 +148,9 @@ Var HexbotShortcutName
   ${If} $0 == 0
     !insertmacro hexbotIdentityError
   ${EndIf}
-  nsExec::ExecToStack `"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoLogo -NoProfile -NonInteractive -Command "$$ErrorActionPreference='Stop';$$end=[DateTime]::UtcNow.AddSeconds(15);do{$$running=@(Get-CimInstance Win32_Process -Filter 'Name=''Hexbot.exe''' | Where-Object{[string]::Equals($$_.ExecutablePath,$$env:HEXBOT_INSTALL_APP_EXECUTABLE,[StringComparison]::OrdinalIgnoreCase)});if(!$$running.Count){exit 0};Start-Sleep -Milliseconds 200}while([DateTime]::UtcNow -lt $$end);exit 2"`
+  ; An updater launched by PowerShell 7 can inherit its incompatible module
+  ; search path. Load only the stock Windows PowerShell modules for inspection.
+  nsExec::ExecToStack `"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoLogo -NoProfile -NonInteractive -Command "$$ErrorActionPreference='Stop';$$env:PSModulePath=$$PSHOME+'\Modules';Import-Module ($$PSHOME+'\Modules\CimCmdlets\CimCmdlets.psd1') -ErrorAction Stop;$$end=[DateTime]::UtcNow.AddSeconds(15);do{$$running=@(Get-CimInstance Win32_Process -Filter 'Name=''Hexbot.exe''' | Where-Object{[string]::Equals($$_.ExecutablePath,$$env:HEXBOT_INSTALL_APP_EXECUTABLE,[StringComparison]::OrdinalIgnoreCase)});if(!$$running.Count){exit 0};Start-Sleep -Milliseconds 200}while([DateTime]::UtcNow -lt $$end);exit 2"`
   Pop $0
   Pop $1
   System::Call 'kernel32::SetEnvironmentVariableW(w "HEXBOT_INSTALL_APP_EXECUTABLE", p 0)'

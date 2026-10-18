@@ -5,7 +5,7 @@ import {spawn} from 'node:child_process';
 import {createServer} from 'node:http';
 import {once, EventEmitter} from 'node:events';
 import {createInterface} from 'node:readline';
-import {mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync, realpathSync, watch} from 'node:fs';
+import {mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync, realpathSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {fileURLToPath} from 'node:url';
@@ -23,9 +23,11 @@ test('real Pi connects on the first codemode call, gates nested tools, and freez
   const marker = join(dir,'untrusted');
   writeFileSync(join(cwd,'.pi/mcp.json'), JSON.stringify({mcpServers:{rogue:{command:process.execPath,args:['-e',`require('node:fs').writeFileSync(${JSON.stringify(marker)},'bad')`]}}}));
   const requests = [], approvals = [], events = [], errors = [];
+  const bus = new EventEmitter();
   let script = 'text(await tools.mcp__fixture__echo({text:"connected"})); text(await tools.mcp__fixture__change({})); text(await tools.bash({command:"echo nested",full_access:true}));';
   const server = createServer(async (req,res) => {
     let body = ''; for await (const chunk of req) body += chunk;
+    if (req.url === '/fixture-ready') {bus.emit('fixture-ready', JSON.parse(body)); res.end('{}'); return;}
     const request = JSON.parse(body); requests.push(request);
     const called = request.messages.at(-1)?.role === 'tool';
     const delta = called ? {role:'assistant',content:'Done'} : {role:'assistant',tool_calls:[{index:0,id:`c${requests.length}`,type:'function',function:{name:'codemode',arguments:JSON.stringify({code:script})}}]};
@@ -46,7 +48,6 @@ test('real Pi connects on the first codemode call, gates nested tools, and freez
   const child = spawn(process.execPath, [join(root,'node_modules/@earendil-works/pi-coding-agent/dist/cli.js'),'--mode','rpc','--no-approve','--session',session,'--no-extensions','-e','builtin:mcp','-e','builtin:codemode','-e',join(root,'extension.ts'),'--no-builtin-tools','--exclude-tools','powershell','--provider','fixture','--model','test'], {cwd,env,stdio:['pipe','pipe','pipe']});
   t.after(async () => {await stopChild(child); rmSync(dir, {recursive:true,force:true});});
   child.stderr.on('data', data => errors.push(String(data)));
-  const bus = new EventEmitter();
   let registrations = 0, choice = 'deny';
   const send = value => child.stdin.write(JSON.stringify(value)+'\n');
   createInterface({input:child.stdout}).on('line', line => {
@@ -57,7 +58,7 @@ test('real Pi connects on the first codemode call, gates nested tools, and freez
         const request = JSON.parse(event.title.slice('__HEXBOT_TOOL__'.length));
         let result = {};
         if (request.name === 'hexbot_session_settings') result = config;
-        if (request.name === 'hexbot_mcp_servers') {registrations++; result = config.mcpState.fixture ? [{name:'fixture',revision:config.mcpState.fixture.revision,config:{cwd:serverCwd,command:process.execPath,args:[join(root,'fixtures/mcp-server.mjs')],env:{FIXTURE_TOKEN:serverToken,FIXTURE_REPORT:join(dir,'child.json')},exposure:'codemode'}}] : [];}
+        if (request.name === 'hexbot_mcp_servers') {registrations++; result = config.mcpState.fixture ? [{name:'fixture',revision:config.mcpState.fixture.revision,config:{cwd:serverCwd,command:process.execPath,args:[join(root,'fixtures/mcp-server.mjs')],env:{FIXTURE_TOKEN:serverToken,FIXTURE_REPORT:join(dir,'child.json'),FIXTURE_READY_URL:`http://127.0.0.1:${server.address().port}/fixture-ready`},exposure:'codemode'}}] : [];}
         send({type:'extension_ui_response',id:event.id,value:JSON.stringify({result})});
       } else if (event.method === 'select') {
         approvals.push(JSON.parse(event.title.slice('__HEXBOT_APPROVAL__'.length)));
@@ -95,17 +96,13 @@ test('real Pi connects on the first codemode call, gates nested tools, and freez
   script = 'text(await tools.mcp__fixture__echo({text:"fresh connection"}));';
   // Pi reconnects asynchronously. Wait for the fixture's initialization event,
   // not a sleep; the immediate call may fail while the old client is closing.
-  let watcher;
   const reconnected = new Promise((resolve, reject) => {
-    const timer = setTimeout(() => {watcher?.close(); reject(new Error('MCP fixture did not reconnect: ' + JSON.stringify({registrations, errors, events:events.filter(event => ['extension_error', 'extension_ui_request'].includes(event.type)).map(event => ({type:event.type, method:event.method}))})));}, 15000);
-    t.after(() => clearTimeout(timer));
-    watcher = watch(dir, () => {
-      try {
-        if (JSON.parse(readFileSync(join(dir,'child.json'))).token === serverToken) { clearTimeout(timer); watcher.close(); resolve(); }
-      } catch { /* A write may still be in progress. */ }
-    });
+    const cleanup = () => {clearTimeout(timer); bus.off('fixture-ready', ready);};
+    const ready = event => {if (event.token === serverToken) {cleanup(); resolve();}};
+    const timer = setTimeout(() => {cleanup(); reject(new Error('MCP fixture did not reconnect'));}, 15000);
+    bus.on('fixture-ready', ready);
+    t.after(cleanup);
   });
-  t.after(() => watcher.close());
   const reconnectStart = events.length;
   await turn('Reconnect');
   await reconnected;

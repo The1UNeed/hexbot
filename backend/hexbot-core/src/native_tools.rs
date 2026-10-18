@@ -118,6 +118,7 @@ pub(crate) fn section_workdir(home: &Path, bot: &str, stored: &str) -> Result<Pa
 fn media_path(home: &Path, bot: &str, value: &str) -> Result<PathBuf> {
     crate::platform::validate_path(Path::new(value))?;
     let cwd = workdir(home, bot)?;
+    crate::platform::validate_local_path_in(&cwd, Path::new(value))?;
     let artifacts = artifacts_dir(home, bot)?;
     let input = PathBuf::from(value);
     if input
@@ -163,8 +164,10 @@ fn media_path(home: &Path, bot: &str, value: &str) -> Result<PathBuf> {
     Ok(path)
 }
 fn artifacts_dir(home: &Path, bot: &str) -> Result<PathBuf> {
+    crate::platform::validate_local_path(home)?;
     let profile = crate::catalog::profile(home, bot)?;
     let dir = profile.join("artifacts");
+    crate::platform::validate_local_path(&dir)?;
     fs::create_dir_all(&dir)?;
     let canonical = fs::canonicalize(&dir)?;
     if !canonical.starts_with(fs::canonicalize(profile)?) {
@@ -178,6 +181,7 @@ fn artifacts_dir(home: &Path, bot: &str) -> Result<PathBuf> {
 fn artifact(home: &Path, bot: &str, kind: &str, extension: &str) -> Result<PathBuf> {
     let root = artifacts_dir(home, bot)?;
     let dir = root.join(kind);
+    crate::platform::validate_local_path(&dir)?;
     fs::create_dir_all(&dir)?;
     let canonical = fs::canonicalize(&dir)?;
     if !canonical.starts_with(fs::canonicalize(root)?) {
@@ -3439,6 +3443,18 @@ mod safety_tests {
             .await
             .is_err()
         );
+    }
+    #[cfg(windows)]
+    #[test]
+    fn media_paths_refuse_loopback_smb_before_access() {
+        let home = fixture();
+        let remote = format!(
+            r"\\127.0.0.1\hexbot-negative-probe-{}\image.png",
+            common::id()
+        );
+        let denied = media_path(home.path(), "owl", &remote).unwrap_err();
+        assert_eq!(denied.code, 4202);
+        assert!(denied.message.contains("Network file paths"));
     }
     #[tokio::test]
     async fn model_url_tools_reject_metadata_before_calling_services() {

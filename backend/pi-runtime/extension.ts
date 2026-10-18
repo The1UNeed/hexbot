@@ -1,14 +1,18 @@
 /** Hexbot's frozen session tools and approval bridge. Pi owns the agent loop. */
 import { createHash } from 'node:crypto';
-import { readFileSync, realpathSync, statSync, existsSync } from 'node:fs';
+import { readFileSync, realpathSync, statSync, existsSync, readdirSync, constants } from 'node:fs';
+import {access as fsAccess, readFile as fsReadFile, writeFile as fsWriteFile, mkdir as fsMkdir} from 'node:fs/promises';
 import { resolve, dirname, basename, relative, sep, join } from 'node:path';
 import { homedir, tmpdir } from 'node:os';
+import {pathToFileURL} from 'node:url';
 import { createBashTool, createPowerShellTool, createReadTool, createWriteTool, createEditTool, createGrepTool, createFindTool, createLsTool } from '@earendil-works/pi-coding-agent';
 import {credentialPolicy, fold, isolatedCommand, cleanupIsolatedCommand, isolationAvailable, policyRegex, policyRoot, privateKeyName, probeIsolation, readDenied, secretFileName, gitDirectory, SCAN_REASON, SCAN_FILE_REASON, within, workspaceProtected, lockedGit, scanFailureReason} from './isolation.ts';
 import { registerAcp } from './acp.ts';
 import {canonicalPath, expandHome, validateFilePath} from './paths.ts';
 import {createWindowsShellOperations} from './windows-shell.ts';
 import {installWindowsMcpTransport, windowsMcpServer} from './windows-mcp.ts';
+import {localPaths, localPathChecksActive, requireLocalPath, withLocalPathChecks} from './windows-files.ts';
+import {executeWindowsFileSearch} from './windows-file-search.mjs';
 export {canonicalPath, expandHome} from './paths.ts';
 import { lazyStream } from '@earendil-works/pi-ai';
 import { builtinProviders } from '@earendil-works/pi-ai/providers/all';
@@ -157,7 +161,7 @@ export default function hexbot(pi: any) {
   const sessionAllowed = new Set<string>();
   const gate = async (event: any, ctx: any) => {
     const allowed: AllowedCall = {mode: live.approvalMode, cwd: live.cwd ?? config.cwd, level: levelFor(event.input)};
-    const denial = await check(event, ctx, call => Object.assign(allowed, call));
+    const denial = await withLocalPathChecks(() => check(event, ctx, call => Object.assign(allowed, call)));
     if (!denial && event.toolCallId && wrapped.has(event.toolName)) allowedCalls.set(event.toolCallId, allowed);
     return denial;
   };
@@ -276,7 +280,7 @@ export default function hexbot(pi: any) {
       if (choice === 'session' && !ask.once && !review) sessionAllowed.add(ask.key);
       else if (choice !== 'once' && choice !== 'session') return {block: true, reason: 'The user denied this action.'};
     } catch (error: any) {
-      return {block:true, reason:process.platform === 'win32' && /^Windows |^A Windows |^Use an absolute Windows /.test(error?.message ?? '') ? error.message : 'The approval settings could not be checked. Try again.'};
+      return {block:true, reason:process.platform === 'win32' && (error?.code === 'HEXBOT_WINDOWS_PATH' || /^Windows |^A Windows |^Use an absolute Windows /.test(error?.message ?? '')) ? error.message : 'The approval settings could not be checked. Try again.'};
     }
   };
   // The user's own commands and the code runtime's terminal have no full_access.
@@ -301,7 +305,24 @@ export default function hexbot(pi: any) {
     if (!enabled(name)) continue;
     wrapped.add(name);
     const bypass = () => live.approvalMode === 'off';
-    const options = (level: Level = 'confined', denied = readDenied()) => name === 'bash' ? {...process.platform === 'win32' ? {operations:createWindowsShellOperations({cleanup:cleanupIsolatedCommand})} : {}, spawnHook: (c: any) => level === 'none' ? c : {...c, command: spawnFor(level, c.command), env: shellEnvironment(c.env)}} :
+    const fileOperations = () => {
+      const checked = <T>(path: string, operation: () => T): T => {requireLocalPath(path, process.cwd(), true); return operation();};
+      const readFile = (path: string) => checked(path, () => fsReadFile(path));
+      const writeFile = (path: string, content: string) => checked(path, () => fsWriteFile(path, content, 'utf8'));
+      if (name === 'read') return {readFile, access:(path: string) => checked(path, () => fsAccess(path, constants.R_OK)), detectImageMimeType:async (path: string) => {
+        const mime = await import(new URL('./utils/mime.js', import.meta.resolve('@earendil-works/pi-coding-agent')).href);
+        return checked(path, () => mime.detectSupportedImageMimeTypeFromFile(path));
+      }};
+      if (name === 'edit') return {readFile, writeFile, access:(path: string) => checked(path, () => fsAccess(path, constants.R_OK | constants.W_OK))};
+      if (name === 'write') return {writeFile, mkdir:(path: string) => checked(path, () => fsMkdir(path, {recursive:true}).then(() => {}))};
+      if (name === 'ls') return {exists:(path: string) => checked(path, () => existsSync(path)), stat:(path: string) => {requireLocalPath(path); return statSync(path);}, readdir:(path: string) => checked(path, () => {
+        const entries = readdirSync(path);
+        const allowed = localPaths(entries.map(entry => join(path, entry)));
+        return entries.filter((_entry, index) => allowed[index]);
+      })};
+    };
+    const options = (level: Level = 'confined', denied?: string[]) => name === 'bash' ? {...process.platform === 'win32' ? {operations:createWindowsShellOperations({cleanup:cleanupIsolatedCommand})} : {}, spawnHook: (c: any) => level === 'none' ? c : {...c, command: spawnFor(level, c.command), env: shellEnvironment(c.env)}} :
+      process.platform === 'win32' && !bypass() && ['read', 'write', 'edit', 'ls'].includes(name) ? {operations:fileOperations()} :
       name === 'grep' && !bypass() ? {operations: {isDirectory: (path: string) => statSync(path).isDirectory(), readFile: (path: string) => credentialPath(path, live.home, denied) ? '' : readFileSync(path, 'utf8')}} : {};
     const tool = factory(config.cwd, options());
     const definition = name === 'bash' ? {
@@ -313,7 +334,7 @@ export default function hexbot(pi: any) {
         reason: {type: 'string', description: 'With full_access: one short sentence, shown to the user, saying why the command needs it.'}
       }, required: ['command']}
     } : {};
-    pi.registerTool({...tool, ...definition, async execute(id: string, args: any, signal: any, update: any, ctx: any) {
+    pi.registerTool({...tool, ...definition, execute:(id: string, args: any, signal: any, update: any, ctx: any) => withLocalPathChecks(async () => {
       const allowed = allowedCalls.get(id);
       allowedCalls.delete(id);
       if (ctx) await refresh(ctx);
@@ -344,17 +365,26 @@ export default function hexbot(pi: any) {
         const denial = writeDenial(args.path ?? '.', cwd, live.home, live.outputDirs);
         if (denial) throw new Error(denial);
       }
+      // Pi normalizes Unicode spaces in plain paths. File URLs preserve the
+      // exact canonical name already checked above. Its read fallback probes
+      // alternate macOS spellings, so require the exact Windows file first.
+      if (process.platform === 'win32' && name === 'read') {
+        requireLocalPath(path, cwd, true);
+        if (!existsSync(path)) throw new Error(`File not found: ${path}`);
+      }
       args = {...args, path};
       // Reuse the same read-deny roots for every candidate and the output filter.
       const denied = readDenied();
       // Avoid streaming unfiltered search output.
-      const result = await factory(cwd, options('confined', denied)).execute(id, args, signal, ['grep', 'find', 'ls'].includes(name) ? undefined : update);
+      const result = process.platform === 'win32' && ['grep', 'find'].includes(name)
+        ? await executeWindowsFileSearch(name, cwd, args, {home:live.home, signal})
+        : await factory(cwd, options('confined', denied)).execute(id, process.platform === 'win32' ? {...args, path:pathToFileURL(path).href} : args, signal, ['grep', 'find', 'ls'].includes(name) ? undefined : update);
       if (['grep', 'find', 'ls'].includes(name)) {
         const base = statSync(path).isDirectory() ? path : dirname(path);
         return sanitizeSearchResult(result, name, base, live.home, denied);
       }
       return result;
-    }});
+    })});
   }
   pi.on('user_bash', async (event: any, ctx: any) => {
     const denial = await gate({toolName: 'bash', input: {command: event.command}}, ctx);
@@ -485,6 +515,7 @@ export function sanitizeSearchResult(value: any, name: string, base: string, hom
 
 const under = (path: string, root: string) => within(path, [root]);
 export function credentialPath(path: string, home: string, denied = readDenied()): boolean {
+  if (localPathChecksActive()) localPaths([join(homedir(), '.ssh'), ...credentialPolicy.user.map((local: string) => join(homedir(), local)), ...credentialPolicy.write.deny.map(policyRoot).filter(Boolean)]);
   const lexical = resolve(path);
   path = canonicalPath(path, process.cwd());
   if (lexical !== path && credentialName(lexical, home, denied)) return true;

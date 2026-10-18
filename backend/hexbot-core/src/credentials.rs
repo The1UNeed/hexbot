@@ -410,6 +410,15 @@ pub(crate) fn windows_protection(
         ));
     }
     let mut unwritable = locked_git(&scan, roots, true)?;
+    // A workspace can itself be selected inside metadata, such as .git/refs.
+    // The Unix mount list only retains descendants of a root, but an ACL root
+    // grant must also retain protected ancestors so preparation rejects it.
+    for path in scan.git.iter() {
+        let path = real_root(path)?;
+        if roots.iter().any(|root| under(root, &path)) && !unwritable.contains(&path) {
+            unwritable.push(path);
+        }
+    }
     let mut unreadable = read_denied();
     unreadable.extend(secret_paths(home));
     unreadable.extend(denied_writes()?);
@@ -553,6 +562,9 @@ fn real_root(path: &Path) -> std::io::Result<PathBuf> {
     real_root_after(path, 0)
 }
 fn real_root_after(path: &Path, hops: usize) -> std::io::Result<PathBuf> {
+    #[cfg(windows)]
+    crate::platform::validate_local_path(path)
+        .map_err(|error| std::io::Error::other(error.message))?;
     match std::fs::canonicalize(path) {
         Ok(path) => Ok(path),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -696,7 +708,7 @@ const GIT_INCLUDES: usize = 64;
 const GIT_SCAN_INCLUDES: usize = 256;
 const GIT_CONFIG_STEPS: usize = 10000;
 fn regular_file(path: &Path) -> Result<Option<Vec<u8>>> {
-    crate::platform::validate_path(path)?;
+    crate::platform::validate_local_path(path)?;
     use std::io::Read;
     #[cfg(unix)]
     use std::os::unix::fs::OpenOptionsExt;
@@ -1250,6 +1262,15 @@ fn workspace_protected_with_configs(
             record_metadata(&mut protected, &mut configs, &dir, &dir);
         }
         for parent in dir.ancestors().filter(|p| p.parent().is_some()) {
+            // Linked worktrees may store metadata in an arbitrarily named
+            // directory. Selecting one of its children must not make it a
+            // writable workspace merely because there is no .git marker here.
+            #[cfg(windows)]
+            if parent.join("HEAD").is_file()
+                && (parent.join("objects").is_dir() || parent.join("commondir").is_file())
+            {
+                record_metadata(&mut protected, &mut configs, parent, parent);
+            }
             let marker = parent.join(".git");
             if marker.exists() {
                 record_metadata(&mut protected, &mut configs, &marker, parent);
@@ -2039,17 +2060,30 @@ pub fn check_code(code: &str) -> Result<()> {
         r#"\b(?:system|popen|run|call|check_call|check_output)\s*\(\s*(?:\[\s*)?["'](?:/[^"']*/)?(?:mkfs(?:\.[a-z0-9]+)?|shutdown|reboot|poweroff)(?:["'\s])"#,
         r#"\b(?:os\.)?kill\s*\(\s*-1\s*,"#,
         r#"\b(?:Popen|run|call|check_call|check_output)\s*\(\s*\[\s*["'](?:/[^"']*/)?rm["']\s*,\s*["']-[^"']*[rR][^"']*["']\s*,\s*["'](?:/|/home|/Users|/etc|/usr|/var|~)["']"#,
-        r#"(?:shutil\.)?rmtree\s*\(\s*os\.environ\s*\[\s*["']HOME["']"#,
+        r#"(?i)(?:shutil\.)?rmtree\s*\(\s*(?:os\.environ\s*(?:\[\s*|\.get\s*\(\s*)|os\.getenv\s*\(\s*)["'](?:HOME|USERPROFILE|SYSTEMROOT|WINDIR)["']"#,
+        r#"(?i)(?:shutil\.)?rmtree\s*\(\s*r?["'](?:[a-z]:[\\/]+|[\\/]{2,}[^\\/"']+[\\/]+[^\\/"']+[\\/]*|%USERPROFILE%|%SYSTEMROOT%|%WINDIR%)["']"#,
         r#"["']/dev/(?:sd[a-z]|disk[0-9]|nvme[0-9]|rdisk[0-9])"#,
     ]).unwrap());
-    let literal_home = std::env::var("HOME").ok().is_some_and(|home| {
-        regex::Regex::new(&format!(
-            r#"(?:rmtree\s*\(\s*|\brm\s+[^\n]*?)["']{}["']"#,
-            regex::escape(&home)
-        ))
-        .unwrap()
-        .is_match(code)
-    });
+    let literal_home = ["HOME", "USERPROFILE", "SystemRoot", "WINDIR"]
+        .into_iter()
+        .filter_map(|name| std::env::var(name).ok())
+        .filter(|path| !path.is_empty())
+        .any(|path| {
+            [
+                path.clone(),
+                path.replace('\\', "\\\\"),
+                path.replace('\\', "/"),
+            ]
+            .into_iter()
+            .any(|path| {
+                regex::Regex::new(&format!(
+                    r#"(?i)(?:rmtree\s*\(\s*r?|\brm\s+[^\n]*?)["']{}[\\/]*["']"#,
+                    regex::escape(&path)
+                ))
+                .unwrap()
+                .is_match(code)
+            })
+        });
     if literal_home || patterns.is_match(code) {
         return Err(Error::new(
             4302,
@@ -2159,6 +2193,7 @@ mod tests {
     /// A repository as `git init` makes it (HEAD, objects, refs, config), with
     /// settings added to its config.
     fn git_init(dir: &Path, settings: &[(&str, &str)]) {
+        let dir = crate::platform::external_path(dir);
         git(&["init", "-q", &dir.to_string_lossy()]);
         for (key, value) in settings {
             git(&["-C", &dir.to_string_lossy(), "config", "--add", key, value]);
@@ -3720,6 +3755,7 @@ mod tests {
                 host_write_tier(&user.join("library/launchagents/x.plist")),
                 Some(WriteTier::Ask)
             );
+            #[cfg(unix)]
             assert_eq!(
                 host_write_tier(Path::new("/ETC/hosts")),
                 Some(WriteTier::Deny)
@@ -3744,10 +3780,15 @@ mod tests {
                 &user.join(".ssh/ID_ED25519.PUB")
             ));
         }
+        #[cfg(unix)]
         assert_eq!(
             host_write_tier(Path::new("/Library/LaunchDaemons/x.plist")),
             Some(WriteTier::Ask)
         );
+        #[cfg(windows)]
+        for path in ["/etc/hosts", "/ETC/hosts", "/Library/LaunchDaemons/x.plist"] {
+            assert_eq!(host_write_tier(Path::new(path)), None, "{path}");
+        }
         for path in ["Hexbot/notes.md", ".config/other/settings.json", ".zshrc.d"] {
             assert_eq!(host_write_tier(&user.join(path)), None, "{path}");
         }
@@ -3859,10 +3900,20 @@ mod tests {
             "os.system('reboot')",
             r#"subprocess.run(["rm", "-rf", "/"])"#,
             r#"shutil.rmtree(os.environ["HOME"])"#,
+            r#"shutil.rmtree(os.environ["USERPROFILE"])"#,
+            r#"shutil.rmtree(os.environ["SystemRoot"])"#,
+            r#"shutil.rmtree(os.getenv('USERPROFILE'))"#,
+            r#"shutil.rmtree(os.environ.get('windir'))"#,
+            r#"shutil.rmtree(r'C:\')"#,
+            r#"shutil.rmtree('C:\\')"#,
+            r#"shutil.rmtree('D:/')"#,
+            r#"shutil.rmtree(r'\\server\share')"#,
+            r#"shutil.rmtree('\\\\server\\share\\')"#,
         ] {
             assert!(check_code(code).is_err(), "{code}");
         }
         assert!(check_code("print('hello')").is_ok());
+        assert!(check_code(r#"shutil.rmtree(r'C:\project\build')"#).is_ok());
     }
     /// The deny tier holds for any program, by any spelling; run in a child with a
     /// scratch HOME because the stores are enumerated from the user's home.

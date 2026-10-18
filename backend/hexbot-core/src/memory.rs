@@ -30,6 +30,9 @@ pub const NOTE_READ_DAYS: i64 = 7;
 // Separate conversations and RPC handlers construct their own MemoryStore.
 // Share the write lock across instances so read-modify-write remains atomic.
 static BOT_WRITES: Mutex<()> = Mutex::new(());
+// Windows marks a removed file pending deletion until the other open handles
+// close. Keep two housekeeping passes from reopening that transient entry.
+static NOTES_PRUNING: Mutex<()> = Mutex::new(());
 
 pub struct MemoryStore {
     home: PathBuf,
@@ -558,6 +561,9 @@ pub fn notes_from(home: &Path, bot: &str, from: NaiveDate) -> Result<Vec<(NaiveD
 /// their days. Nothing but those files is removed. Two callers pruning at
 /// once (a dream and a section) each find the file gone and carry on.
 pub fn prune_notes(home: &Path, bot: &str, today: NaiveDate) -> Result<Vec<NaiveDate>> {
+    let _guard = NOTES_PRUNING
+        .lock()
+        .map_err(|_| Error::new(5200, "notes pruning lock poisoned"))?;
     let mut removed = vec![];
     for date in note_days(home, bot)? {
         if (today - date).num_days() > NOTE_RETENTION_DAYS {

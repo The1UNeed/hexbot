@@ -1656,7 +1656,7 @@ async fn private_threads_open_with_hidden_questions_for_the_owner_only() {
 
 #[tokio::test]
 async fn description_startup_and_catalog_triggers_do_not_block_rpc_replies() {
-    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+    use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
     let home = support::TestHome::new();
     let h = home.path();
     db::migrate(h).unwrap();
@@ -1727,11 +1727,17 @@ rl.on('line',line=>{{const c=JSON.parse(line);emit({{type:'response',id:c.id,com
     }
     for mut socket in pending {
         socket.get_mut().write_all(b"finish\n").await.unwrap();
-        let mut end = String::new();
-        tokio::time::timeout(Duration::from_secs(5), socket.read_line(&mut end))
+        match tokio::time::timeout(Duration::from_secs(5), socket.read(&mut [0; 1]))
             .await
-            .unwrap()
-            .unwrap();
+            .expect("description worker connection remained open")
+        {
+            Ok(0) => {}
+            #[cfg(windows)]
+            Err(error)
+                if error.kind() == std::io::ErrorKind::ConnectionReset
+                    && error.raw_os_error() == Some(10054) => {}
+            other => panic!("expected a closed description worker connection, got {other:?}"),
+        }
     }
     app.shutdown().await;
 }

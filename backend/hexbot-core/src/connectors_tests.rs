@@ -916,18 +916,18 @@ async fn mcp_probe_uses_daemon_cwd_and_only_explicit_credentials_and_clears_stal
         "KEY=explicit\nUNRELATED_SECRET=private\n",
     )
     .unwrap();
-    let fixture = home.path().join("probe.py");
-    fs::write(&fixture, r#"import json,sys,os
-assert os.getcwd() == os.environ['EXPECTED_CWD']
-assert os.environ.get('TOKEN') == 'explicit'
-assert 'UNRELATED_SECRET' not in os.environ
-for line in sys.stdin:
- m=json.loads(line)
- if 'id' not in m: continue
- result={'protocolVersion':'2025-03-26','capabilities':{},'serverInfo':{'name':'probe','version':'1'}} if m['method']=='initialize' else {'tools':[]}
- print(json.dumps({'jsonrpc':'2.0','id':m['id'],'result':result}),flush=True)
+    let fixture = home.path().join("probe.cjs");
+    fs::write(&fixture, r#"const fs=require('node:fs'),assert=require('node:assert/strict');
+const expected=fs.statSync(process.env.EXPECTED_CWD,{bigint:true}),actual=fs.statSync(process.cwd(),{bigint:true});
+assert.equal(actual.dev,expected.dev);assert.equal(actual.ino,expected.ino);
+assert.equal(process.env.TOKEN,'explicit');assert.equal(process.env.UNRELATED_SECRET,undefined);
+require('node:readline').createInterface({input:process.stdin}).on('line',line=>{
+ const m=JSON.parse(line);if(!Object.hasOwn(m,'id'))return;
+ const result=m.method==='initialize'?{protocolVersion:'2025-03-26',capabilities:{},serverInfo:{name:'probe',version:'1'}}:{tools:[]};
+ process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:m.id,result})+'\n');
+});
 "#).unwrap();
-    let entry = json!({"name":"probe","command":"python3","args":[fixture],"env":{"TOKEN":"${KEY}","EXPECTED_CWD":fs::canonicalize(home.path()).unwrap().join("runtime/mcp/owl")}});
+    let entry = json!({"name":"probe","command":"node","args":[fixture],"env":{"TOKEN":"${KEY}","EXPECTED_CWD":fs::canonicalize(home.path()).unwrap().join("runtime/mcp/owl")}});
     rpc(home.path(), "hexbot.connectors.add_mcp", entry.clone()).await;
     rpc(
         home.path(),

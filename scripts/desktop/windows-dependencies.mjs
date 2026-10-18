@@ -1,6 +1,6 @@
 // Check shipped PE imports without using the build machine's installed VC++ runtime.
 // Each --root is one unpacked distribution; --file checks a standalone executable.
-import { lstat, readFile, readdir } from 'node:fs/promises'
+import { lstat, opendir, readFile } from 'node:fs/promises'
 import { basename, dirname, extname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -157,7 +157,7 @@ export async function checkWindowsDependencies({ roots = [], files = [] }, budge
     const root = resolve(input), records = []
     const visit = async (directory, depth) => {
       if (depth > budget.depth) throw new Error('Windows dependency scan exceeded its directory depth limit')
-      for (const entry of await readdir(directory, { withFileTypes: true })) {
+      for await (const entry of await opendir(directory)) {
         if (++entries > budget.entries) throw new Error('Windows dependency scan exceeded its entry limit')
         const file = join(directory, entry.name)
         if (entry.isSymbolicLink()) throw new Error(`${file}: links are not supported in a Windows distribution scan`)

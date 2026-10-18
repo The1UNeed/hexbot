@@ -87,16 +87,18 @@ fn lifecycle_preserves_memory_and_reopens_archived_sections() {
         memory.get_bot("alice", "research-owl").unwrap()["memory_md"],
         "Durable memory"
     );
+    let work = tempfile::tempdir().unwrap();
+    let workdir = work.path().join("work");
     let updated = call(
         h,
         "alice",
         "hexbot.bots.update",
-        json!({"name":"research-owl","display_name":"Owl","persona":"Custom soul","model":"model-b","tools":["files"],"dream_enabled":false,"workdir":" /tmp/work ","approval_mode":"off"}),
+        json!({"name":"research-owl","display_name":"Owl","persona":"Custom soul","model":"model-b","tools":["files"],"dream_enabled":false,"workdir":format!(" {} ",workdir.display()),"approval_mode":"off"}),
     );
     assert_eq!(updated["bot"]["approval_mode"], "off");
     assert_eq!(updated["bot"]["persona"], "Custom soul");
     assert_eq!(updated["bot"]["tools"], json!(["files"]));
-    assert_eq!(updated["bot"]["workdir"], "/tmp/work");
+    assert_eq!(updated["bot"]["workdir"], json!(workdir));
     assert_eq!(updated["bot"]["dream_enabled"], false);
     assert_eq!(updated["bot"]["reasoning_effort"], Value::Null);
     let updated = call(

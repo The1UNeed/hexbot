@@ -44,7 +44,7 @@ test('Windows drive, UNC and mixed separator paths retain their roots', {skip:!w
   assert.equal(canonicalPath('\\\\localhost\\missing-share\\', cwd), '\\\\localhost\\missing-share\\');
   assert.equal(within('D:\\outside', ['C:\\']), false);
   assert.equal(protectedPath(home + '\\..\\project\\.GIT\\config', home), true);
-  for (const path of ['C:relative', 'C:', home + '\\auth.json:secret', home + '\\auth.json. ', '\\\\.\\PhysicalDrive0', '\\root-relative', 'NUL', 'con.txt', 'CONIN$', 'COM¹', 'LPT³']) assert.throws(() => canonicalPath(path, cwd), /Windows/);
+  for (const path of ['C:relative', 'C:', home + '\\auth.json:secret', home + '\\auth.json. ', '\\\\.\\PhysicalDrive0', '\\root-relative', 'NUL', 'con.txt', 'CON .txt', 'COM1 .log', 'CONIN$', 'COM¹', 'LPT³']) assert.throws(() => canonicalPath(path, cwd), /Windows/);
 });
 
 test('Windows junctions preserve parent traversal and cannot hide Git or credential targets', {skip:!windows}, t => {

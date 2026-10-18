@@ -492,7 +492,7 @@ fn expand_home_in(path: &str, home: Option<std::ffi::OsString>) -> Result<std::p
 /// Refuse a working directory inside the daemon home, symlinks included, without creating it.
 /// The tool guards treat the working directory as writable, so it would open the home.
 pub fn check_workdir(home: &Path, configured: &str) -> Result<std::path::PathBuf> {
-    let path = std::path::absolute(expand_home(configured)?)?;
+    let path = expand_home(configured)?;
     if path
         .components()
         .any(|part| part == std::path::Component::ParentDir)
@@ -502,6 +502,8 @@ pub fn check_workdir(home: &Path, configured: &str) -> Result<std::path::PathBuf
             "the working directory must not contain ..",
         ));
     }
+    let path = std::path::absolute(path)?;
+    crate::platform::validate_local_path(&path)?;
     // Canonicalise the deepest existing ancestor; the missing rest cannot be a symlink yet.
     let mut existing = path.as_path();
     while !existing.exists()

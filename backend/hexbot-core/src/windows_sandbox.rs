@@ -102,7 +102,7 @@ fn helper_executable() -> Result<PathBuf> {
     let executable = std::env::var_os("HEXBOT_DAEMON_EXECUTABLE")
         .map(PathBuf::from)
         .map_or_else(std::env::current_exe, Ok)?;
-    platform::validate_path(&executable)?;
+    platform::validate_local_path(&executable)?;
     if !executable.is_absolute()
         || !executable.is_file()
         || executable
@@ -113,41 +113,12 @@ fn helper_executable() -> Result<PathBuf> {
     }
     Ok(executable)
 }
-/// Cache a real launcher/containment probe rather than treating API presence as
-/// a working sandbox. A command-specific setup failure still fails closed.
+const PROTOTYPE_DISABLED: &str = "the Windows AppContainer prototype is disabled because concurrent filesystem ACL changes are not yet safely contained";
+/// Production stays fail-closed until the concurrent ACL/junction and output
+/// parent races pass independent review and real Windows adversarial tests.
+/// A successful startup probe alone does not establish that boundary.
 pub fn available() -> bool {
-    static AVAILABLE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *AVAILABLE.get_or_init(|| {
-        let Ok(executable) = helper_executable() else {
-            return false;
-        };
-        let mut command = std::process::Command::new(executable);
-        command
-            .arg("__sandbox")
-            .arg("--probe")
-            .env_clear()
-            .envs(std::env::vars().filter(|(name, _)| credentials::inherited_environment(name)))
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null());
-        let Ok(mut child) = command.spawn() else {
-            return false;
-        };
-        let start = Instant::now();
-        loop {
-            match child.try_wait() {
-                Ok(Some(status)) => return status.success(),
-                Ok(None) if start.elapsed() < Duration::from_secs(15) => {
-                    std::thread::sleep(Duration::from_millis(10))
-                }
-                _ => {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    return false;
-                }
-            }
-        }
-    })
+    false
 }
 pub(crate) fn command(
     home: &Path,
@@ -156,6 +127,10 @@ pub(crate) fn command(
     writable: &[PathBuf],
     read_only: bool,
 ) -> Result<tokio::process::Command> {
+    if !available() {
+        return Err(failed(PROTOTYPE_DISABLED));
+    }
+    platform::validate_local_path(home)?;
     let spec = Spec {
         home: home.canonicalize()?,
         read_roots: readable.to_vec(),
@@ -302,7 +277,7 @@ pub fn protect_private_path(path: &Path, directory: bool) -> Result<()> {
     use windows_sys::Win32::Security::{
         GetSecurityDescriptorDacl, PROTECTED_DACL_SECURITY_INFORMATION,
     };
-    platform::validate_path(path)?;
+    platform::validate_local_path(path)?;
     let descriptor = private_descriptor(directory)?;
     let (mut present, mut defaulted, mut acl) = (0, 0, null_mut());
     if unsafe { GetSecurityDescriptorDacl(descriptor.0, &mut present, &mut acl, &mut defaulted) }
@@ -345,7 +320,7 @@ fn create_tempfile(parent: &Path, descriptor: Local) -> Result<tempfile::NamedTe
             FILE_SHARE_WRITE,
         },
     };
-    platform::validate_path(parent)?;
+    platform::validate_local_path(parent)?;
     let attributes = SECURITY_ATTRIBUTES {
         nLength: size_of::<SECURITY_ATTRIBUTES>() as u32,
         lpSecurityDescriptor: descriptor.0,
@@ -562,7 +537,7 @@ pub fn create_private_dir_all(path: &Path) -> Result<()> {
     use windows_sys::Win32::{
         Security::SECURITY_ATTRIBUTES, Storage::FileSystem::CreateDirectoryW,
     };
-    platform::validate_path(path)?;
+    platform::validate_local_path(path)?;
     if path.is_dir() {
         return protect_private_path(path, true);
     }
@@ -591,7 +566,7 @@ fn lease_path(home: &Path, id: &str) -> Result<PathBuf> {
     {
         return Err(failed("invalid sandbox identifier"));
     }
-    platform::validate_path(home)?;
+    platform::validate_local_path(home)?;
     if !home.is_absolute() {
         return Err(failed("home must be absolute"));
     }
@@ -773,7 +748,7 @@ impl Session {
             .iter_mut()
             .chain(spec.write_roots.iter_mut())
         {
-            platform::validate_path(root)?;
+            platform::validate_local_path(root)?;
             if !root.is_absolute() {
                 return Err(failed("sandbox roots must be absolute"));
             }
@@ -1146,13 +1121,17 @@ fn executable(program: &OsStr) -> Result<PathBuf> {
     } else {
         std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
             .flat_map(|root| [root.join(program), root.join(program).with_extension("exe")])
-            .find(|candidate| candidate.is_absolute() && candidate.is_file())
+            .find(|candidate| {
+                candidate.is_absolute()
+                    && platform::validate_local_path(candidate).is_ok()
+                    && candidate.is_file()
+            })
             .ok_or_else(|| failed("executable was not found"))?
     };
-    platform::validate_path(&path)?;
+    platform::validate_local_path(&path)?;
     if path
         .extension()
-        .is_none_or(|ext| !ext.eq_ignore_ascii_case("exe"))
+        .is_none_or(|ext| !ext.eq_ignore_ascii_case("exe") && !ext.eq_ignore_ascii_case("com"))
     {
         return Err(failed("sandbox programs must be native executables"));
     }
@@ -1307,6 +1286,7 @@ fn run(spec: Spec, args: &[OsString]) -> Result<u32> {
     run_at(spec, args, &std::env::current_dir()?, None)
 }
 fn run_at(spec: Spec, args: &[OsString], cwd: &Path, timeout: Option<Duration>) -> Result<u32> {
+    platform::validate_local_path(cwd)?;
     let executable = executable(args.first().ok_or_else(|| failed("missing program"))?)?;
     let mut session = Session::new(spec)?;
     session.prepare(&executable)?;
@@ -1444,6 +1424,14 @@ fn launch(
 pub fn run_helper() -> i32 {
     let args: Vec<_> = std::env::args_os().skip(2).collect();
     let result = if args.first().is_some_and(|arg| arg == "--probe") {
+        Err(failed(PROTOTYPE_DISABLED))
+    } else if args.first().is_some_and(|arg| arg == "--probe-prototype") {
+        if std::env::var_os("HEXBOT_TEST_WINDOWS_SANDBOX_PROTOTYPE").as_deref()
+            != Some(OsStr::new("1"))
+        {
+            eprintln!("Windows AppContainer prototype probes require the isolated CI test marker");
+            return 125;
+        }
         probe().map(|_| 0)
     } else if args.first().is_some_and(|arg| arg == "--diagnose") {
         diagnose().map(|_| 0)
@@ -1471,6 +1459,10 @@ pub fn run_helper() -> i32 {
         lease_path(Path::new(&args[1]), &args[2].to_string_lossy())
             .and_then(|path| SandboxCleanup { path }.cleanup())
             .map(|_| 0)
+    } else if std::env::var_os("HEXBOT_TEST_WINDOWS_SANDBOX_PROTOTYPE").as_deref()
+        != Some(OsStr::new("1"))
+    {
+        Err(failed(PROTOTYPE_DISABLED))
     } else {
         args.first()
             .and_then(|value| value.to_str())
@@ -1654,6 +1646,11 @@ mod tests {
     use super::*;
 
     #[test]
+    fn windows_production_containment_stays_disabled_until_the_boundary_is_reviewed() {
+        assert!(!available());
+    }
+
+    #[test]
     fn windows_appcontainer_passes_real_containment_probes() {
         probe().expect("Manual and Auto must both enforce the Windows sandbox");
     }
@@ -1738,10 +1735,169 @@ exit 0"#,
     }
 
     #[test]
+    fn windows_rejects_writable_roots_inside_git_and_linked_metadata() {
+        let base = tempfile::tempdir().unwrap();
+        let home = base.path().join("home");
+        create_private_dir_all(&home).unwrap();
+        for name in ["repo/.git", "linked-metadata"] {
+            let metadata = base.path().join(name);
+            fs::create_dir_all(metadata.join("refs")).unwrap();
+            fs::create_dir_all(metadata.join("objects")).unwrap();
+            fs::write(metadata.join("HEAD"), "ref: refs/heads/main\n").unwrap();
+            fs::write(metadata.join("config"), "").unwrap();
+            let root = metadata.join("refs");
+            let marker = root.join("ran.txt");
+            let spec = Spec {
+                home: home.clone(),
+                read_roots: vec![root.clone()],
+                write_roots: vec![root.clone()],
+                id: uuid::Uuid::new_v4().to_string(),
+                read_only: false,
+                git_env: BTreeMap::from([
+                    ("GIT_CONFIG_NOSYSTEM".into(), "1".into()),
+                    ("GIT_CONFIG_GLOBAL".into(), "NUL".into()),
+                ]),
+            };
+            let result = run_at(
+                spec,
+                &[
+                    powershell().unwrap().into_os_string(),
+                    "-NoProfile".into(),
+                    "-NonInteractive".into(),
+                    "-EncodedCommand".into(),
+                    encoded(&format!(
+                        "[IO.File]::WriteAllText({},'bad')",
+                        ps_path(&marker)
+                    ))
+                    .into(),
+                ],
+                &root,
+                Some(Duration::from_secs(5)),
+            );
+            let error = result.expect_err("metadata root must be rejected");
+            assert!(
+                error
+                    .message
+                    .contains("inside protected configuration or Git metadata"),
+                "metadata root {name} failed for another reason: {}",
+                error.message
+            );
+            assert!(!marker.exists());
+            assert_eq!(fs::read_to_string(metadata.join("config")).unwrap(), "");
+        }
+    }
+
+    #[test]
+    fn windows_python_reads_new_private_outputs_and_keeps_secrets_and_children_contained() {
+        let python = PathBuf::from(std::env::var_os("HEXBOT_TEST_PYTHON").expect(
+            "Windows containment tests require HEXBOT_TEST_PYTHON to name the native Python executable",
+        ));
+        let base = tempfile::tempdir().unwrap();
+        let home = base.path().join("home");
+        create_private_dir_all(&home).unwrap();
+        let work = base.path().join("work");
+        let artifacts = home.join("profiles/owl/artifacts");
+        fs::create_dir_all(&work).unwrap();
+        fs::create_dir_all(&artifacts).unwrap();
+        let initial = artifacts.join("initial.txt");
+        let incoming = artifacts.join("incoming.txt");
+        let secret = artifacts.join(".env");
+        crate::common::atomic_write(&initial, b"initial").unwrap();
+        crate::common::atomic_write(&secret, b"secret").unwrap();
+        let ready = work.join("ready.txt");
+        let child_pid = work.join("child.pid");
+        let script = r#"import pathlib,sys,time,subprocess,socket
+work,outputs=map(pathlib.Path,sys.argv[1:])
+assert (outputs/'initial.txt').read_text()=='initial'
+try:
+    (outputs/'.env').read_text()
+    raise AssertionError('secret was readable')
+except PermissionError:
+    pass
+(work/'ready.txt').write_text('ready')
+deadline=time.monotonic()+10
+while not (outputs/'incoming.txt').exists():
+    if time.monotonic()>deadline: raise AssertionError('native output did not arrive')
+assert (outputs/'incoming.txt').read_text()=='incoming'
+(outputs/'initial.txt').write_text('updated')
+(outputs/'result.txt').write_text('result')
+(outputs/'result.txt').rename(outputs/'moved.txt')
+(outputs/'moved.txt').unlink()
+try:
+    listener=socket.socket()
+    listener.bind(('127.0.0.1',0))
+    listener.listen()
+    raise AssertionError('network listener was permitted')
+except PermissionError:
+    pass
+child=subprocess.Popen([sys.executable,'-B','-c','import time; time.sleep(300)'],creationflags=0x00000008|0x00000200)
+(work/'child.pid').write_text(str(child.pid))
+"#;
+        let spec = Spec {
+            home: home.clone(),
+            read_roots: vec![work.clone(), artifacts.clone()],
+            write_roots: vec![work.clone(), artifacts.clone()],
+            id: uuid::Uuid::new_v4().to_string(),
+            read_only: false,
+            git_env: BTreeMap::from([
+                ("GIT_CONFIG_NOSYSTEM".into(), "1".into()),
+                ("GIT_CONFIG_GLOBAL".into(), "NUL".into()),
+            ]),
+        };
+        let args = vec![
+            python.into_os_string(),
+            "-B".into(),
+            "-c".into(),
+            script.into(),
+            work.clone().into_os_string(),
+            artifacts.into_os_string(),
+        ];
+        let (finished, result) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let status = run_at(spec, &args, &work, Some(Duration::from_secs(20)));
+            finished.send(status).unwrap();
+        });
+        let start = Instant::now();
+        while !ready.exists() {
+            if let Ok(status) = result.try_recv() {
+                panic!("Python exited before accepting native outputs: {status:?}");
+            }
+            assert!(
+                start.elapsed() < Duration::from_secs(20),
+                "Python never became ready"
+            );
+            std::thread::yield_now();
+        }
+        crate::common::atomic_write(&incoming, b"incoming").unwrap();
+        assert_eq!(
+            result
+                .recv_timeout(Duration::from_secs(20))
+                .unwrap()
+                .unwrap(),
+            0
+        );
+        worker.join().unwrap();
+        assert_eq!(fs::read_to_string(initial).unwrap(), "updated");
+        assert_eq!(fs::read_to_string(secret).unwrap(), "secret");
+        let pid: u32 = fs::read_to_string(child_pid).unwrap().parse().unwrap();
+        assert!(
+            process_started(pid).unwrap().is_none(),
+            "detached Python child survived the tool"
+        );
+        assert_eq!(
+            fs::read_dir(home.join("runtime/windows-sandbox"))
+                .unwrap()
+                .count(),
+            0
+        );
+    }
+
+    #[test]
     fn windows_home_stays_read_only_inside_a_broad_workspace_and_outputs_open_explicitly() {
         let root = tempfile::tempdir().unwrap();
         let home = root.path().join("home");
         let artifacts = home.join("profiles/owl/artifacts");
+        create_private_dir_all(&home).unwrap();
         fs::create_dir_all(&artifacts).unwrap();
         fs::write(home.join("config.yaml"), "keep").unwrap();
         fs::write(home.join("auth.json"), "secret").unwrap();

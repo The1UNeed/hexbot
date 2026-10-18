@@ -121,12 +121,12 @@ async fn python_timeout_resets_worker_and_output_is_bounded() {
     .await
     .unwrap();
     assert!(result["output"].as_str().unwrap().len() < 101000);
-    assert_eq!(
-        std::fs::read_to_string(result["output_path"].as_str().unwrap())
-            .unwrap()
-            .len(),
-        500001
-    );
+    let saved = std::fs::read_to_string(result["output_path"].as_str().unwrap()).unwrap();
+    let payload = saved
+        .strip_suffix(if cfg!(windows) { "\r\n" } else { "\n" })
+        .expect("saved output must retain Python's platform newline");
+    assert_eq!(payload.len(), 500000);
+    assert!(payload.bytes().all(|byte| byte == b'x'));
     native_tools::close_session(h.path(), "conversation").await;
 }
 type Requests = Arc<Mutex<Vec<(HeaderMap, Value)>>>;
@@ -590,10 +590,14 @@ require('node:readline').createInterface({input:process.stdin}).on('line', line 
         h.path().join(".env"),
         format!(
             "HEXBOT_CUA_DRIVER_CMD={}\nHERMES_CUA_DRIVER_CMD=/nonexistent\n",
-            driver.display()
+            serde_json::to_string(&driver.to_str().unwrap()).unwrap()
         ),
     )
     .unwrap();
+    assert_eq!(
+        common::env_values(h.path()).unwrap()["HEXBOT_CUA_DRIVER_CMD"],
+        driver.to_str().unwrap()
+    );
     common::write_config(h.path(), &cfg).unwrap();
     assert!(
         native_tools::descriptors(h.path(), "tester")
@@ -603,7 +607,7 @@ require('node:readline').createInterface({input:process.stdin}).on('line', line 
     );
     std::fs::write(
         h.path().join(".env"),
-        format!("OPENAI_API_KEY=must-not-reach-driver\nHEXBOT_CUA_DRIVER_CMD={}\nHERMES_CUA_DRIVER_CMD=/nonexistent\n", driver.display()),
+        format!("OPENAI_API_KEY=must-not-reach-driver\nHEXBOT_CUA_DRIVER_CMD={}\nHERMES_CUA_DRIVER_CMD=/nonexistent\n", serde_json::to_string(&driver.to_str().unwrap()).unwrap()),
     )
     .unwrap();
     assert!(

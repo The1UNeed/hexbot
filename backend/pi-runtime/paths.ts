@@ -1,6 +1,7 @@
 import {realpathSync, lstatSync, readlinkSync} from 'node:fs';
 import {basename, dirname, isAbsolute, join, parse, relative, resolve, sep} from 'node:path';
 import {homedir} from 'node:os';
+import {requireLocalPath} from './windows-files.ts';
 
 export const foldCase = process.platform === 'darwin' || process.platform === 'win32';
 export const fold = (path: string) => foldCase ? path.toLowerCase() : path;
@@ -41,6 +42,7 @@ export function validateFilePath(path: string): void { normalizedPath(expandHome
 export function canonicalPath(path: string, cwd: string, depth = 0): string {
   if (depth > 40) throw new Error('Too many symbolic links');
   const expanded = normalizedPath(expandHome(path));
+  requireLocalPath(expanded, cwd);
   const root = parse(expanded).root;
   let current = root ? resolve(cwd, root) : realpathSync.native(cwd);
   for (const part of expanded.slice(root.length).split(sep)) {

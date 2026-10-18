@@ -451,7 +451,9 @@ async fn invoke(home: &Path, socket: &mut Option<Socket>, method: &str, p: Value
         return remote(socket, method, p).await;
     }
     if method == "hexbot.cli.send" {
-        return offline_send(home, &p).await;
+        // The offline runtime has a large future. Keep it out of every CLI
+        // command's stack frame, including commands using an online daemon.
+        return Box::pin(offline_send(home, &p)).await;
     }
     if method == "hexbot.connect.register_poll" {
         return services::register_poll(home, common::required(&p, "device_code")?, false).await;

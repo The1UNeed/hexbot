@@ -1154,9 +1154,11 @@ async fn long_code_tool_does_not_block_event_pump_or_interrupt() {
     .await
     .unwrap()
     .unwrap();
-    assert_eq!(
-        socket.read_u8().await.unwrap_err().kind(),
-        std::io::ErrorKind::UnexpectedEof
+    assert_socket_closed(&mut socket).await;
+    let pid = String::from_utf8(pid).unwrap().parse::<u32>().unwrap();
+    assert!(
+        !crate::platform::process_alive(pid),
+        "code worker survived interruption"
     );
     let cancelled: Value = serde_json::from_str(
         fs::read_to_string(home.path().join("dialogs.jsonl"))
@@ -1947,7 +1949,7 @@ async fn one_shot_deadline_covers_refresh_and_waiting_for_its_lock() {
             .unwrap(),
         (String::new(), true)
     );
-    one_shot_socket_closed(&mut refresh).await;
+    assert_socket_closed(&mut refresh).await;
     assert!(!home.path().join("one-shot-started").exists());
 
     // A different request owns the same refresh lock. The waiter must spend
@@ -2113,8 +2115,8 @@ async fn one_shot_deadline_is_shared_by_auth_and_provider_work_and_reaps_pi() {
                 (String::new(), true)
             );
         }
-        one_shot_socket_closed(&mut provider).await;
-        one_shot_socket_closed(&mut socket).await;
+        assert_socket_closed(&mut provider).await;
+        assert_socket_closed(&mut socket).await;
         assert!(!cwd.exists());
         // Re-entering the same grant proves cancelled provider work released it.
         let recovered = tokio::spawn({
@@ -2183,15 +2185,21 @@ async fn one_shot_auth_response(
     socket.get_mut().write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await.unwrap();
 }
 
-async fn one_shot_socket_closed(socket: &mut tokio::io::BufReader<tokio::net::TcpStream>) {
+async fn assert_socket_closed(socket: &mut (impl tokio::io::AsyncRead + Unpin)) {
     use tokio::io::AsyncReadExt;
-    assert_eq!(
-        tokio::time::timeout(Duration::from_secs(3), socket.read(&mut [0; 1]))
-            .await
-            .unwrap()
-            .unwrap(),
-        0
-    );
+    match tokio::time::timeout(Duration::from_secs(3), socket.read(&mut [0; 1]))
+        .await
+        .expect("owned process connection remained open")
+    {
+        Ok(0) => {}
+        // TerminateProcess closes a live socket with a reset on Windows.
+        // This is terminal just like EOF; data and all other errors still fail.
+        #[cfg(windows)]
+        Err(error)
+            if error.kind() == std::io::ErrorKind::ConnectionReset
+                && error.raw_os_error() == Some(10054) => {}
+        other => panic!("expected a closed owned-process connection, got {other:?}"),
+    }
 }
 
 #[tokio::test]
@@ -4204,6 +4212,7 @@ async fn absolute_cron_scripts_ask_section_owner_in_manual_and_auto() {
     )
     .unwrap();
     let s = runtime.open_session("alice", "owl", "first").await.unwrap();
+    let script = home.workspace().join("job.py");
     for mode in ["manual", "smart"] {
         db::open(home.path())
             .unwrap()
@@ -4213,12 +4222,13 @@ async fn absolute_cron_scripts_ask_section_owner_in_manual_and_auto() {
         let task = {
             let runtime = runtime.clone();
             let s = s.clone();
+            let script = script.clone();
             tokio::spawn(async move {
                 runtime
                     .tool(
                         &s,
                         "cronjob_manage",
-                        &json!({"action":"create","script":"/tmp/job.sh","schedule":"every 1h"}),
+                        &json!({"action":"create","script":script,"schedule":"every 1h"}),
                     )
                     .await
             })
@@ -4234,6 +4244,7 @@ async fn absolute_cron_scripts_ask_section_owner_in_manual_and_auto() {
         .await
         .unwrap();
         assert_eq!(payload["tool"], "cronjob_manage");
+        assert_eq!(payload["args"]["input"]["script"], json!(script));
         runtime
             .call(
                 "alice",

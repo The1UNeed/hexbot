@@ -71,16 +71,47 @@ const base64 = value => Buffer.from(JSON.stringify(value)).toString('base64');
 const psLiteral = value => `'${value.replaceAll("'", "''")}'`;
 const encoded = value => Buffer.from(value, 'utf16le').toString('base64');
 const fixedAclPaths = [work, path.join(work, 'plain.txt'), path.join(work, '.env'), path.join(work, '.git'), path.join(work, '.git/config'), home, path.join(home, 'auth.json'), outputs, path.join(outputs, 'initial.txt'), privateRoot, privateFile, path.join(work, 'hardlink-alias.txt')];
+// Capture platform support before host inspectors, so an inspector failure can
+// never hide the actual VM's PSEC capability evidence.
+const probe = spawnSync(mxc, ['--probe', '--config-base64', base64(config())], { encoding: 'utf8', windowsHide: true, cwd: work, env: hostEnv, timeout: 20_000 });
+await fs.writeFile(path.join(evidence, 'psec-probe.stdout.log'), probe.stdout ?? '');
+await fs.writeFile(path.join(evidence, 'psec-probe.stderr.log'), probe.stderr ?? '');
+await fs.writeFile(path.join(evidence, 'psec-probe-process.json'), JSON.stringify({ status: probe.status, signal: probe.signal, error: probe.error?.stack }, null, 2));
+let capabilities;
+try {
+  capabilities = JSON.parse((probe.stdout ?? '').replace(/^\uFEFF/, '').trim());
+  await fs.writeFile(path.join(evidence, 'psec-probe.json'), JSON.stringify(capabilities, null, 2));
+} catch { /* The assertion below reports malformed output with native details. */ }
 function aclSnapshot() {
-  const script = `[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false);$ErrorActionPreference='Stop';$paths=ConvertFrom-Json ${psLiteral(JSON.stringify(fixedAclPaths))};$result=@{};foreach($p in $paths){$result[$p]=(Get-Acl -LiteralPath $p).Sddl};$result|ConvertTo-Json -Compress`;
-  const result = spawnSync(powershell, ['-NoProfile', '-NonInteractive', '-EncodedCommand', encoded(script)], { encoding: 'utf8', windowsHide: true, env: hostEnv, timeout: 15_000 });
-  assert.equal(result.status, 0, `Cannot capture native ACL evidence: ${result.stderr}`);
+  const script = String.raw`import ctypes as c,json,sys
+from ctypes import wintypes as w
+a=c.WinDLL('advapi32',use_last_error=True);k=c.WinDLL('kernel32',use_last_error=True)
+a.GetNamedSecurityInfoW.argtypes=[w.LPCWSTR,w.DWORD,w.DWORD]+[c.POINTER(c.c_void_p)]*5
+a.GetNamedSecurityInfoW.restype=w.DWORD
+a.ConvertSecurityDescriptorToStringSecurityDescriptorW.argtypes=[c.c_void_p,w.DWORD,w.DWORD,c.POINTER(c.c_void_p),c.POINTER(w.DWORD)]
+a.ConvertSecurityDescriptorToStringSecurityDescriptorW.restype=w.BOOL
+k.LocalFree.argtypes=[c.c_void_p];k.LocalFree.restype=c.c_void_p
+out={}
+for p in json.loads(sys.argv[1]):
+    sd=c.c_void_p();text=c.c_void_p()
+    status=a.GetNamedSecurityInfoW(p,1,4,None,None,None,None,c.byref(sd))
+    if status: raise OSError(status,'GetNamedSecurityInfoW '+p)
+    try:
+        if not a.ConvertSecurityDescriptorToStringSecurityDescriptorW(sd,1,4,c.byref(text),None): raise c.WinError(c.get_last_error())
+        out[p]=c.wstring_at(text)
+    finally:
+        if text:k.LocalFree(text)
+        if sd:k.LocalFree(sd)
+print(json.dumps(out))
+`;
+  const result = spawnSync(python, ['-B', '-X', 'utf8', '-c', script, JSON.stringify(fixedAclPaths)], { encoding: 'utf8', windowsHide: true, env: hostEnv, timeout: 20_000 });
+  assert.equal(result.status, 0, `Cannot capture native ACL evidence: ${JSON.stringify({ status: result.status, signal: result.signal, error: result.error?.stack, stdout: result.stdout, stderr: result.stderr })}`);
   return JSON.parse(result.stdout.replace(/^\uFEFF/, '').trim());
 }
 const before = aclSnapshot();
 await fs.writeFile(path.join(evidence, 'acl-before.json'), JSON.stringify(before, null, 2));
-const token = spawnSync(powershell, ['-NoProfile', '-NonInteractive', '-EncodedCommand', encoded("$ErrorActionPreference='Stop';$identity=[Security.Principal.WindowsIdentity]::GetCurrent();$principal=[Security.Principal.WindowsPrincipal]::new($identity);[Console]::WriteLine($principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator).ToString().ToLowerInvariant())")], { encoding: 'utf8', windowsHide: true, env: hostEnv, timeout: 15_000 });
-assert.equal(token.status, 0, `Cannot inspect the Windows token: ${token.stderr}`);
+const token = spawnSync(python, ['-B', '-c', "import ctypes;print('true' if ctypes.WinDLL('shell32').IsUserAnAdmin() else 'false')"], { encoding: 'utf8', windowsHide: true, env: hostEnv, timeout: 20_000 });
+assert.equal(token.status, 0, `Cannot inspect the Windows token: ${JSON.stringify({ status: token.status, signal: token.signal, error: token.error?.stack, stdout: token.stdout, stderr: token.stderr })}`);
 assert(['true', 'false'].includes(token.stdout.trim()), 'Windows token inspection returned an invalid result');
 const tokenIsAdmin = token.stdout.trim() === 'true';
 await fs.writeFile(path.join(evidence, 'host.json'), JSON.stringify({ tokenIsAdmin, arch: process.arch, release: os.release(), version: os.version() }, null, 2));
@@ -201,13 +232,8 @@ print('HEXBOT_PSEC_PYTHON_OK '+mode,flush=True)
 
 let host;
 try {
-  const policy = config();
-  const probe = spawnSync(mxc, ['--probe', '--config-base64', base64(policy)], { encoding: 'utf8', windowsHide: true, cwd: work, env: hostEnv, timeout: 20_000 });
-  await fs.writeFile(path.join(evidence, 'psec-probe.stdout.log'), probe.stdout ?? '');
-  await fs.writeFile(path.join(evidence, 'psec-probe.stderr.log'), probe.stderr ?? '');
   assert.equal(probe.status, 0, `PSEC capability probe failed: ${probe.error ?? probe.stderr}`);
-  const capabilities = JSON.parse(probe.stdout.replace(/^\uFEFF/, '').trim());
-  await fs.writeFile(path.join(evidence, 'psec-probe.json'), JSON.stringify(capabilities, null, 2));
+  assert(capabilities, `PSEC capability probe returned invalid JSON: ${probe.stdout}`);
   assert.equal(capabilities.tier, 'base-container', 'This proof requires PSEC, never AppContainer/DACL/BFS fallback');
   assert.equal(capabilities.needsDaclAugmentation, false, 'PSEC proof must not mutate host DACLs');
   assert.equal(capabilities.probes?.baseContainerApiPresent, true, 'BaseContainer API is required');

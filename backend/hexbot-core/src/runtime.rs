@@ -751,6 +751,14 @@ impl Runtime {
                 include_bytes!("../../pi-runtime/windows-shell.ts").as_slice(),
             ),
             (
+                "windows-file-search.mjs",
+                include_bytes!("../../pi-runtime/windows-file-search.mjs").as_slice(),
+            ),
+            (
+                "windows-files.ts",
+                include_bytes!("../../pi-runtime/windows-files.ts").as_slice(),
+            ),
+            (
                 "windows-mcp.ts",
                 include_bytes!("../../pi-runtime/windows-mcp.ts").as_slice(),
             ),
@@ -2775,6 +2783,12 @@ impl Runtime {
                         let live = runtime.session_settings(&session)?;
                         let raw = PathBuf::from(required(&args, "path")?);
                         crate::platform::validate_path(&raw)?;
+                        if live["approvalMode"] != "off" {
+                            crate::platform::validate_local_path_in(
+                                Path::new(live["cwd"].as_str().unwrap_or(".")),
+                                &raw,
+                            )?;
+                        }
                         let requested = if raw.is_absolute() {
                             raw
                         } else {
@@ -4980,6 +4994,16 @@ fn guarded_file_path(
         }
         Ok(resolved)
     }
+    if mode != "off" {
+        // Check local drives and each reparse target before canonicalization
+        // can ask the Windows network redirector to authenticate to a share.
+        for path in std::iter::once(path)
+            .chain(std::iter::once(home))
+            .chain(writable.iter().map(PathBuf::as_path))
+        {
+            crate::platform::validate_local_path(path)?;
+        }
+    }
     let target = resolve(path)?;
     // Bypass is Pi's own behaviour: no checks.
     if mode == "off" {
@@ -5054,6 +5078,42 @@ fn guarded_file_path(
 #[cfg(test)]
 mod file_bridge_tests {
     use super::*;
+    #[cfg(windows)]
+    #[test]
+    fn file_bridge_refuses_loopback_smb_before_canonicalization() {
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path().join("home");
+        let work = temp.path().join("work");
+        fs::create_dir(&home).unwrap();
+        fs::create_dir(&work).unwrap();
+        fs::write(work.join("plain.txt"), "local file").unwrap();
+        // The destination is confined to this machine. A missing share would
+        // still authenticate before returning a network-path error if handed
+        // to canonicalize; these calls must return our policy error instead.
+        let unc = PathBuf::from(format!(
+            r"\\127.0.0.1\hexbot-negative-probe-{}\plain.txt",
+            crate::common::id()
+        ));
+        for mode in ["manual", "smart"] {
+            for write in [false, true] {
+                let denied =
+                    guarded_file_path(&home, &unc, write, mode, std::slice::from_ref(&work))
+                        .unwrap_err();
+                assert_eq!(denied.code, 4202);
+                assert!(denied.message.contains("Network file paths"));
+            }
+            assert!(
+                guarded_file_path(
+                    &home,
+                    &work.join("plain.txt"),
+                    false,
+                    mode,
+                    std::slice::from_ref(&work),
+                )
+                .is_ok()
+            );
+        }
+    }
     #[cfg(windows)]
     #[test]
     fn file_bridge_rejects_actual_ntfs_streams_before_access() {

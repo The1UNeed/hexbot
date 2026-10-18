@@ -470,10 +470,12 @@ async fn run() -> Result<()> {
             }
             #[cfg(windows)]
             {
-                drop(_lock);
                 if std::env::var_os("HEXBOT_NATIVE_DISPATCHER").is_some() {
+                    common::atomic_write(&home.join("runtime/native-restart.json"), &serde_json::to_vec(&serde_json::json!({"pid":std::process::id(),"host":address.ip().to_string(),"port":port})).unwrap())?;
+                    drop(_lock);
                     std::process::exit(75);
                 }
+                drop(_lock);
                 next.spawn()?;
                 return Ok(());
             }
@@ -539,14 +541,16 @@ async fn dispatch_selected_native() -> Result<Option<i32>> {
     } else {
         return Ok(None);
     };
+    let service = std::env::args().nth(1).as_deref() == Some("service-run");
+    let mut arguments = std::env::args_os().skip(1).collect::<Vec<_>>();
     loop {
         let selected = hexbot_core::platform::selected_native(&home)?;
         let mut command = tokio::process::Command::new(selected);
         command
-            .args(std::env::args_os().skip(1))
+            .args(&arguments)
             .env("HEXBOT_HOME", &home)
             .env("HEXBOT_NATIVE_DISPATCHER", "1");
-        if std::env::args().nth(1).as_deref() == Some("service-run") {
+        if service {
             command.env("HEXBOT_SUPERVISOR", "service");
             command.creation_flags(windows_sys::Win32::System::Threading::CREATE_NO_WINDOW);
             std::fs::create_dir_all(home.join("logs"))?;
@@ -563,14 +567,25 @@ async fn dispatch_selected_native() -> Result<Option<i32>> {
                     .open(home.join("logs/service-error.log"))?,
             );
         }
-        let status = hexbot_core::platform::supervised_status(&mut command).await?;
+        let (status, pid) = hexbot_core::platform::supervised_status(&mut command).await?;
         if status.code() != Some(75) {
             return Ok(Some(status.code().unwrap_or(1)));
         }
+        arguments = hexbot_core::platform::restart_arguments(&home, pid)?;
     }
 }
 #[tokio::main]
 async fn main() {
+    #[cfg(windows)]
+    if std::env::args().nth(1).as_deref() == Some("__validate-local-paths") {
+        match hexbot_core::platform::validate_local_paths_cli() {
+            Ok(()) => std::process::exit(0),
+            Err(error) => {
+                eprintln!("{error}");
+                std::process::exit(1);
+            }
+        }
+    }
     #[cfg(windows)]
     if std::env::args().nth(1).as_deref() == Some("service-run") {
         // Task Scheduler uses a console PE entry point. Detach before starting

@@ -1104,8 +1104,10 @@ async fn python_uses_the_section_working_directory() {
     runtime.shutdown().await;
     hexbot_core::native_tools::close_session(home.path(), "section-a").await;
     assert_eq!(
-        result["output"].as_str().unwrap().trim(),
-        workspace.canonicalize().unwrap().to_str().unwrap(),
+        Path::new(result["output"].as_str().unwrap().trim())
+            .canonicalize()
+            .unwrap(),
+        workspace.canonicalize().unwrap(),
         "Python tools ignored the configured section workspace"
     );
 }
