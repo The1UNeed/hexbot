@@ -381,6 +381,18 @@ fn shape_section(home: &Path, row: Value) -> Result<Value> {
 pub fn section(home: &Path, caller: &str, id: &str) -> Result<Value> {
     shape_section(home, section_row(home, caller, id)?)
 }
+/// Public deletion is only for peer threads. Keep owner chats, including
+/// archived or unreadable legacy targets, until their bot is deleted.
+pub(crate) fn check_section_delete(home: &Path, caller: &str, id: &str) -> Result<()> {
+    let row = section_row(home, caller, id)?;
+    if row["peer_bot"].is_null() {
+        return Err(Error::new(
+            4202,
+            "A bot chat cannot be deleted; delete the bot to remove it",
+        ));
+    }
+    Ok(())
+}
 fn list_sections(home: &Path, caller: &str, p: &Value) -> Result<Vec<Value>> {
     user(home, caller)?;
     let bot = p["bot"].as_str();
@@ -2354,10 +2366,12 @@ pub fn call(home: &Path, caller: &str, method: &str, p: &Value) -> Option<Result
             Ok(json!({"section":chat_section(home,caller,required(p,"bot")?)?}))
         }
         "hexbot.sections.delete" => {
+            let id = required(p, "id")?;
+            check_section_delete(home, caller, id)?;
             let pending = delete_section(
                 home,
                 caller,
-                required(p, "id")?,
+                id,
                 p["purge_memory"].as_bool().unwrap_or(true),
             )?;
             Ok(if pending.is_some() {
@@ -2570,7 +2584,7 @@ mod parity_tests {
 
     #[cfg(unix)]
     #[tokio::test]
-    async fn section_delete_crash_at_the_real_catalog_commit_recovers_the_decision() {
+    async fn peer_thread_delete_crash_at_the_real_catalog_commit_recovers_the_decision() {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         const CHILD: &str = "HEXBOT_TEST_SECTION_DELETE_CRASH_HOME";
         if let Some(path) = std::env::var_os(CHILD) {
@@ -2587,6 +2601,7 @@ mod parity_tests {
         for cut in ["before_commit", "after_commit"] {
             let home = home();
             let h = home.path();
+            db::open(h).unwrap().execute_batch("INSERT INTO bots(name,owner_id) VALUES('teammate','alice'); UPDATE sections SET peer_bot='teammate' WHERE id='first';").unwrap();
             said(h, "first", json!({"role":"user","text":"original"}));
             let raw = h.join("runtime/sessions/first/conversation.jsonl");
             fs::create_dir_all(raw.parent().unwrap()).unwrap();
@@ -2598,7 +2613,7 @@ mod parity_tests {
             let socket = h.join("delete-barrier.sock");
             let listener = tokio::net::UnixListener::bind(&socket).unwrap();
             let mut child = std::process::Command::new(std::env::current_exe().unwrap())
-                .args(["--exact","catalog::parity_tests::section_delete_crash_at_the_real_catalog_commit_recovers_the_decision","--nocapture"])
+                .args(["--exact","catalog::parity_tests::peer_thread_delete_crash_at_the_real_catalog_commit_recovers_the_decision","--nocapture"])
                 .env(CHILD,h).spawn().unwrap();
             loop {
                 let (mut stream, _) =
@@ -2650,7 +2665,7 @@ mod parity_tests {
 
     #[cfg(unix)]
     #[tokio::test]
-    async fn late_failed_parent_rollback_preserves_an_independently_committed_child() {
+    async fn late_failed_peer_parent_rollback_preserves_an_independently_committed_child() {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         const CHILD: &str = "HEXBOT_TEST_LATE_SECTION_ROLLBACK_HOME";
         if let Some(path) = std::env::var_os(CHILD) {
@@ -2668,6 +2683,7 @@ mod parity_tests {
         }
         let home = home();
         let h = home.path();
+        db::open(h).unwrap().execute_batch("INSERT INTO bots(name,owner_id) VALUES('teammate','alice'); UPDATE sections SET peer_bot='teammate' WHERE id='first';").unwrap();
         db::open(h).unwrap().execute_batch("INSERT INTO sections(id,bot,owner_id,title) VALUES('delegate','owl','alice','child'); CREATE TRIGGER stop_parent BEFORE DELETE ON sections WHEN OLD.id='first' BEGIN SELECT RAISE(ABORT,'parent failed'); END;").unwrap();
         said(h, "first", json!({"role":"user","text":"original parent"}));
         said(
@@ -2689,7 +2705,7 @@ mod parity_tests {
         let socket = h.join("delete-barrier.sock");
         let listener = tokio::net::UnixListener::bind(&socket).unwrap();
         let mut child=std::process::Command::new(std::env::current_exe().unwrap())
-            .args(["--exact","catalog::parity_tests::late_failed_parent_rollback_preserves_an_independently_committed_child","--nocapture"])
+            .args(["--exact","catalog::parity_tests::late_failed_peer_parent_rollback_preserves_an_independently_committed_child","--nocapture"])
             .env(CHILD,h).spawn().unwrap();
         let (mut stream, _) =
             tokio::time::timeout(std::time::Duration::from_secs(10), listener.accept())
@@ -3740,10 +3756,11 @@ mod parity_tests {
         assert_eq!(ids_of(home.path(), "owl"), ["new", "old", "stuck"]);
     }
     #[test]
-    fn a_committed_section_delete_reports_pending_history_as_success() {
+    fn a_committed_peer_thread_delete_reports_pending_history_as_success() {
         let home = tempfile::tempdir().unwrap();
         db::migrate(home.path()).unwrap();
         owl_with_four_conversations(home.path());
+        db::open(home.path()).unwrap().execute_batch("INSERT INTO bots(name,owner_id) VALUES('teammate','alice'); UPDATE sections SET peer_bot='teammate' WHERE id='mid';").unwrap();
         runtime_store::open(home.path()).unwrap().execute_batch(
             "CREATE TRIGGER stuck BEFORE DELETE ON native_messages WHEN OLD.session_id='mid' BEGIN SELECT RAISE(ABORT,'history purge failed'); END;",
         ).unwrap();

@@ -72,6 +72,8 @@ Use **Stop** to interrupt a running answer. The chat stays, and you can send ano
 
 Deleting the bot removes its profile, chat, memory, and scheduled jobs. Stop its active work first. Back up the daemon's data directory before removing a bot you may need again.
 
+The daemon also protects the chat from an older client's Delete action. It returns `4202`, "A bot chat cannot be deleted; delete the bot to remove it", and keeps the conversation running with its history and pending uploads. This also protects archived chats and older conversations kept for repair. Opening the bot again returns its existing chat. Private conversations between bots can still be deleted, and the one-time upgrade can still remove superseded chats after making its backup.
+
 While deletion runs, new bot starts are refused, including jobs and CLI runs. Closing the app lets the daemon finish deletion. If deletion fails, the bot can work again.
 
 If deletion leaves cleanup pending, its name stays reserved until a daemon restart finishes cleanup. An interrupted deletion from an older build can conflict with a recreated bot or leave a profile whose owner is uncertain. Hexbot preserves that data and reports the conflict in the daemon log for manual recovery.

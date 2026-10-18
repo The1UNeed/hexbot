@@ -218,7 +218,7 @@ impl App {
         // Deletes are orchestrated here: admission, close, catalog decision.
         if method == "hexbot.sections.delete" {
             let stored = common::required(p, "id")?;
-            catalog::section(&self.home, owner, stored)?;
+            catalog::check_section_delete(&self.home, owner, stored)?;
             // The catalog removes its row before its history.
             self.runtime.retire_stored(owner, stored).await?;
         }

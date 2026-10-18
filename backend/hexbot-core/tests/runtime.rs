@@ -1793,8 +1793,9 @@ async fn unreadable_native_history_falls_back_to_a_chat_that_actually_opens() {
 }
 
 #[tokio::test]
-async fn deleting_section_removes_delegated_transcripts() {
+async fn deleting_peer_thread_removes_delegated_transcripts() {
     let home = setup();
+    db::open(home.path()).unwrap().execute_batch("INSERT INTO bots(name,owner_id) VALUES('teammate','alice'); UPDATE sections SET peer_bot='teammate' WHERE id='section-a';").unwrap();
     let app = hexbot_core::server::App::new(
         home.path().into(),
         "127.0.0.1:0".parse().unwrap(),
