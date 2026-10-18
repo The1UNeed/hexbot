@@ -482,3 +482,165 @@ it.each(['chooser', 'unarchive'] as const)(
     expect(call.mock.calls.some(([method]) => method === 'hexbot.sections.create')).toBe(false)
   }
 )
+
+it.each([false, true])(
+  'initial info hydration completes the same visit in Strict Mode=%s',
+  async strict => {
+    useConnection.setState({ daemon: null })
+    const held = deferred()
+    call.mockImplementation((method: string) =>
+      method === 'hexbot.memory.user.get' ? held.promise : reply(method)
+    )
+    const view = await mount(strict)
+    await waitFor(() => expect(call).toHaveBeenCalledWith('hexbot.memory.user.get', {}))
+    await act(async () => {
+      useConnection.getState().setDaemon({ one_chat: true, install_id: 'first' } as DaemonInfo)
+      held.resolve({ text: 'Alex', updated_at: 1 })
+    })
+    await screen.findByText('Owner chat')
+    expect(view.router.state.location.pathname).toBe('/b/owl/s/canonical')
+    expect(call.mock.calls.filter(([name]) => name === 'hexbot.sections.create')).toHaveLength(1)
+  }
+)
+
+it.each([
+  'room',
+  'same-url',
+  'unmount',
+  'daemon',
+  'epoch',
+  'install',
+  'capability',
+  'capability-blip',
+  'install-roundtrip',
+  'target-roundtrip',
+  'epoch-roundtrip'
+] as const)('initial hydration cannot revive a decision superseded by %s', async action => {
+  useConnection.setState({ daemon: null })
+  const held = deferred()
+  call.mockImplementation((method: string) =>
+    method === 'hexbot.memory.user.get' ? held.promise : reply(method)
+  )
+  const view = await mount()
+  await waitFor(() => expect(call).toHaveBeenCalledWith('hexbot.memory.user.get', {}))
+  const target = useConnection.getState().target
+  await act(async () => {
+    if (action === 'room') {
+      await view.router.navigate({ to: '/r/$room', params: { room: 'garden' } })
+    }
+
+    if (action === 'same-url') {
+      view.router.history.push('/onboarding')
+    }
+
+    if (action === 'unmount') {
+      view.unmount()
+    }
+
+    if (action === 'daemon') {
+      useConnection.getState().setTarget({ kind: 'local', origin: 'http://other' })
+    }
+
+    if (action === 'epoch') {
+      useConnection.getState().setEpoch('second')
+    }
+
+    useConnection.getState().setDaemon({ one_chat: true, install_id: 'first' } as DaemonInfo)
+
+    if (action === 'install') {
+      useConnection.getState().setDaemon({ one_chat: true, install_id: 'second' } as DaemonInfo)
+    }
+
+    if (action === 'capability') {
+      useConnection
+        .getState()
+        .setDaemon({ one_chat: false, install_id: 'first' } as unknown as DaemonInfo)
+    }
+
+    if (action === 'capability-blip') {
+      useConnection.getState().setDaemon(null)
+      useConnection.getState().setDaemon({ one_chat: true, install_id: 'first' } as DaemonInfo)
+    }
+
+    if (action === 'install-roundtrip') {
+      useConnection.getState().setDaemon({ one_chat: true, install_id: 'second' } as DaemonInfo)
+      useConnection.getState().setDaemon({ one_chat: true, install_id: 'first' } as DaemonInfo)
+    }
+
+    if (action === 'target-roundtrip') {
+      useConnection.getState().setTarget({ kind: 'local', origin: 'http://other' })
+      useConnection.getState().setTarget(target)
+      useConnection.getState().setEpoch('first')
+      useConnection.getState().setDaemon({ one_chat: true, install_id: 'first' } as DaemonInfo)
+    }
+
+    if (action === 'epoch-roundtrip') {
+      useConnection.getState().setEpoch('second')
+      useConnection.getState().setEpoch('first')
+      useConnection.getState().setDaemon({ one_chat: true, install_id: 'first' } as DaemonInfo)
+    }
+
+    useUi.setState({ lastSection: { bot: 'yak', section: 'new-intent' } })
+    held.resolve({ text: 'Alex', updated_at: 1 })
+  })
+  expect(view.router.state.location.pathname).toBe(action === 'room' ? '/r/garden' : '/onboarding')
+  expect(useUi.getState().lastSection).toEqual({ bot: 'yak', section: 'new-intent' })
+  expect(call.mock.calls.some(([name]) => name === 'hexbot.sections.create')).toBe(false)
+  expect(useSections.getState().choosing).toBeNull()
+})
+
+it.each([false, true])(
+  'initial hydration preserves About you and its completion, existing bots=%s',
+  async hasBots => {
+    existing = hasBots
+    useBots.setState({ byName: hasBots ? { owl: bot } : {}, order: hasBots ? ['owl'] : [] })
+    useConnection.setState({ daemon: null })
+    call.mockImplementation((method: string) =>
+      method === 'hexbot.memory.user.get'
+        ? Promise.resolve({ text: '', updated_at: null })
+        : reply(method)
+    )
+    const view = await mount()
+
+    if (!hasBots) {
+      fireEvent.click(await screen.findByRole('button', { name: /Get started/ }))
+      fireEvent.click(screen.getByRole('button', { name: 'Next' }))
+      fireEvent.click(screen.getByRole('button', { name: 'Next' }))
+    }
+
+    fireEvent.change(await screen.findByLabelText('Your name'), { target: { value: 'Alex' } })
+    await act(async () => {
+      useConnection.getState().setDaemon({ one_chat: true, install_id: 'first' } as DaemonInfo)
+      useBots.setState({ byName: { owl: bot }, order: ['owl'] })
+    })
+    expect(screen.getByLabelText('Your name')).toHaveValue('Alex')
+    expect(call.mock.calls.filter(([name]) => name === 'hexbot.memory.user.get')).toHaveLength(1)
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }))
+
+    if (hasBots) {
+      await screen.findByText('Owner chat')
+      expect(view.router.state.location.pathname).toBe('/b/owl/s/canonical')
+    } else {
+      expect(await screen.findByRole('heading', { name: 'Connect a provider' })).toBeVisible()
+      expect(call.mock.calls.some(([name]) => name === 'hexbot.sections.create')).toBe(false)
+    }
+  }
+)
+
+it('a roster refresh during first-bot creation does not repeat the completed decision', async () => {
+  const view = await firstBot()
+  const held = deferred()
+  call.mockImplementation((method: string) =>
+    method === 'hexbot.bots.create' ? held.promise : reply(method)
+  )
+  fireEvent.click(screen.getByRole('button', { name: 'Create bot' }))
+  await waitFor(() => expect(call).toHaveBeenCalledWith('hexbot.bots.create', expect.anything()))
+  await act(async () => {
+    useBots.setState({ byName: { owl: bot }, order: ['owl'] })
+  })
+  expect(call.mock.calls.filter(([name]) => name === 'hexbot.memory.user.get')).toHaveLength(1)
+  await act(async () => held.resolve({ bot, section: canonical }))
+  await screen.findByText('Owner chat')
+  expect(view.router.state.location.pathname).toBe('/b/owl/s/canonical')
+  expect(call.mock.calls.filter(([name]) => name === 'hexbot.bots.introduce')).toHaveLength(1)
+})

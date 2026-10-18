@@ -8,7 +8,7 @@ use base64::{Engine, engine::general_purpose::STANDARD};
 use rusqlite::{Connection, OpenFlags, OptionalExtension, TransactionBehavior, params};
 use serde_json::{Value, json};
 use std::{
-    collections::{BTreeSet, HashSet},
+    collections::BTreeSet,
     fs,
     path::{Path, PathBuf},
 };
@@ -112,38 +112,195 @@ fn section_row(home: &Path, caller: &str, id: &str) -> Result<Value> {
     owner(home, caller, row["owner_id"].as_str().unwrap_or(""))?;
     Ok(row)
 }
-fn legacy_ids(conn: &Connection, id: &str, protected: &HashSet<String>) -> Result<Vec<String>> {
-    let columns = rows(conn, "PRAGMA table_info(sessions)", &[])?;
-    let has = |key: &str| columns.iter().any(|c| c["name"] == key);
-    let predicate = if has("session_key") {
-        "id=?1 OR session_key=?1"
-    } else {
-        "id=?1"
-    };
-    let fields = if has("session_key") {
-        "id,session_key"
-    } else {
-        "id"
-    };
-    let query = if has("parent_session_id") {
-        format!(
-            "WITH RECURSIVE chain(id) AS (SELECT id FROM sessions WHERE {predicate} UNION SELECT s.id FROM sessions s JOIN chain c ON s.parent_session_id=c.id) SELECT {fields} FROM sessions WHERE id IN (SELECT id FROM chain)"
-        )
-    } else {
-        format!("SELECT {fields} FROM sessions WHERE {predicate}")
-    };
-    // Traverse protected nodes too: an unfinished legacy-only descendant still
-    // needs cleanup. Both legacy IDs and catalog session-key aliases identify
-    // completed targets whose replacement artifacts bulk cleanup must preserve.
-    Ok(rows(conn, &query, &[&id])?
-        .into_iter()
-        .filter(|r| {
-            !["id", "session_key"]
-                .iter()
-                .any(|key| r[key].as_str().is_some_and(|id| protected.contains(id)))
+// The profile identifies old schemas without ownership columns. When a schema
+// or a current mapping does carry ownership, never cross that boundary, even
+// through a continuation whose parent points at the requested conversation.
+fn legacy_delete_owned(
+    catalog: &Connection,
+    native: &Connection,
+    bot: &str,
+    owner: &str,
+    row: &Value,
+) -> Result<bool> {
+    for key in ["owner_id", "owner", "user_id"] {
+        if row[key]
+            .as_str()
+            .is_some_and(|v| !v.is_empty() && v != owner)
+        {
+            return Ok(false);
+        }
+    }
+    if row["bot"]
+        .as_str()
+        .is_some_and(|v| !v.is_empty() && v != bot)
+    {
+        return Ok(false);
+    }
+    for key in ["id", "session_key"] {
+        if let Some(id) = row[key].as_str() {
+            let foreign: bool = catalog.query_row(
+                "SELECT EXISTS(SELECT 1 FROM sections WHERE id=?1 AND (bot<>?2 OR owner_id<>?3))",
+                params![id, bot, owner],
+                |r| r.get(0),
+            )?;
+            let native_foreign: bool = native.query_row("SELECT EXISTS(SELECT 1 FROM native_sessions WHERE stored_id=?1 AND (bot<>?2 OR owner<>?3)) OR EXISTS(SELECT 1 FROM native_delete_options WHERE session_id=?1 AND (bot<>?2 OR owner<>?3))", params![id,bot,owner], |r| r.get(0))?;
+            if foreign || native_foreign {
+                return Ok(false);
+            }
+        }
+    }
+    Ok(true)
+}
+fn legacy_delete_connection(home: &Path, bot: &str, owner: &str) -> Result<Option<Connection>> {
+    let path = profile(home, bot)?.join("state.db");
+    safe(home, &path)?;
+    let current: Option<String> = db::open(home)?
+        .query_row("SELECT owner_id FROM bots WHERE name=?", [bot], |r| {
+            r.get(0)
         })
-        .filter_map(|r| r["id"].as_str().map(str::to_owned))
-        .collect())
+        .optional()?;
+    if current.as_deref().is_some_and(|current| current != owner)
+        || (current.is_none() && path.try_exists()?)
+    {
+        return Err(Error::new(
+            5200,
+            "legacy profile ownership is unknown; kept the cleanup request",
+        ));
+    }
+    if !path.try_exists()? {
+        return Ok(None);
+    }
+    // Do not replace an unavailable database with a new empty file.
+    let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_WRITE)?;
+    conn.busy_timeout(std::time::Duration::from_secs(10))?;
+    Ok(Some(conn))
+}
+
+pub(crate) fn legacy_delete_ids(
+    home: &Path,
+    bot: &str,
+    owner: &str,
+    stored: &str,
+) -> Result<Vec<String>> {
+    let Some(conn) = legacy_delete_connection(home, bot, owner)? else {
+        return Ok(vec![stored.to_owned()]);
+    };
+    let sessions = rows(&conn, "SELECT * FROM sessions", &[])?;
+    let catalog = db::open(home)?;
+    let native = runtime_store::open(home)?;
+    let mut pending = sessions;
+    let mut ids = BTreeSet::from([stored.to_owned()]);
+    let mut selected = BTreeSet::new();
+    loop {
+        let before = selected.len();
+        let mut waiting = Vec::new();
+        for row in pending {
+            let root = row["id"] == stored || row["session_key"] == stored;
+            if !root
+                && !row["parent_session_id"]
+                    .as_str()
+                    .is_some_and(|parent| selected.contains(parent))
+            {
+                waiting.push(row);
+                continue;
+            }
+            if !legacy_delete_owned(&catalog, &native, bot, owner, &row)? {
+                if root {
+                    return Err(Error::new(
+                        4302,
+                        "legacy history belongs to another bot or owner",
+                    ));
+                }
+                continue;
+            }
+            let id = required(&row, "id")?;
+            selected.insert(id.to_owned());
+            // Traverse a completed alias to find unfinished descendants, while
+            // preserving replacement rows for the completed conversation.
+            let mut completed = false;
+            for key in ["id", "session_key"]
+                .iter()
+                .filter_map(|key| row[key].as_str())
+            {
+                completed |= native.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM native_delete_completed WHERE session_id=?)",
+                    [key],
+                    |r| r.get::<_, bool>(0),
+                )?;
+            }
+            if !root && completed {
+                continue;
+            }
+            ids.insert(id.to_owned());
+            if let Some(alias) = row["session_key"].as_str() {
+                ids.insert(alias.to_owned());
+            }
+        }
+        if selected.len() == before {
+            break;
+        }
+        pending = waiting;
+    }
+    Ok(ids.into_iter().collect())
+}
+
+pub(crate) fn purge_legacy_delete(
+    home: &Path,
+    bot: &str,
+    owner: &str,
+    keys: &[String],
+) -> Result<()> {
+    let Some(mut conn) = legacy_delete_connection(home, bot, owner)? else {
+        return Ok(());
+    };
+    let catalog = db::open(home)?;
+    let native = runtime_store::open(home)?;
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    // A legacy continuation can sort after its parent. Check their foreign keys
+    // after every selected message and session row has been removed.
+    tx.execute_batch("PRAGMA defer_foreign_keys=ON")?;
+    // Saved keys keep their proven provenance after native/legacy parent rows
+    // disappear. Refuse a conflicting replacement instead of following it.
+    let mut protected = BTreeSet::new();
+    for row in rows(&tx, "SELECT * FROM sessions", &[])? {
+        let mut completed = false;
+        for key in ["id", "session_key"]
+            .iter()
+            .filter_map(|key| row[key].as_str())
+        {
+            completed |= native.query_row(
+                "SELECT EXISTS(SELECT 1 FROM native_delete_completed WHERE session_id=?)",
+                [key],
+                |r| r.get::<_, bool>(0),
+            )?;
+        }
+        if completed {
+            protected.extend(
+                ["id", "session_key"]
+                    .iter()
+                    .filter_map(|key| row[key].as_str())
+                    .map(str::to_owned),
+            );
+            continue;
+        }
+        if ["id", "session_key"].iter().any(|key| {
+            row[key]
+                .as_str()
+                .is_some_and(|id| keys.iter().any(|key| key == id))
+        }) && !legacy_delete_owned(&catalog, &native, bot, owner, &row)?
+        {
+            return Err(Error::new(4302, "legacy cleanup target changed ownership"));
+        }
+    }
+    for key in keys {
+        if protected.contains(key) {
+            continue;
+        }
+        tx.execute("DELETE FROM messages WHERE session_id=?", [key])?;
+        tx.execute("DELETE FROM sessions WHERE id=?", [key])?;
+    }
+    tx.commit()?;
+    Ok(())
 }
 fn history_summary(home: &Path, row: &Value) -> Result<(String, i64)> {
     let id = row["id"].as_str().unwrap_or("");
@@ -288,12 +445,99 @@ struct PendingChat<'a> {
 impl Drop for PendingChat<'_> {
     fn drop(&mut self) {
         if let Some(id) = &self.id
-            && let Err(error) = runtime_store::discard_dream_chat(self.home, id)
+            && let Err(error) = finish_chat_fork(self.home, id)
         {
             eprintln!("Could not remove uncommitted chat {id}: {error}");
         }
     }
 }
+
+/// Inspect the publication decision while holding the same reservation as the
+/// publisher. A pending identity alone authorizes cleanup of its private copy,
+/// never of a catalog conversation, a bot journal target, or retained history.
+fn finish_chat_fork(home: &Path, target: &str) -> Result<()> {
+    let mut catalog = db::open(home)?;
+    let tx = catalog.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let native = runtime_store::open(home)?;
+    let Some(row) = rows(
+        &native,
+        "SELECT * FROM native_pending_chat_forks WHERE target=?",
+        &[&target],
+    )?
+    .pop() else {
+        return Ok(());
+    };
+    let source = required(&row, "source")?;
+    let adopted = setting(&tx, "dream_chat_adoptions")?;
+    if adopted[source]["target"] == target {
+        // The section and this exact adoption committed together. A later
+        // section read or marker-removal failure cannot unpublish it.
+        native.execute(
+            "DELETE FROM native_pending_chat_forks WHERE target=?",
+            [target],
+        )?;
+    } else {
+        let listed: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sections WHERE id=?1) OR EXISTS(SELECT 1 FROM room_sessions WHERE stored_session_id=?1)",
+            [target], |r| r.get(0),
+        )?;
+        if listed || pending_bot_delete_targets(home)?.contains(target) {
+            return Err(Error::new(
+                5200,
+                "pending chat fork has another catalog owner or decision",
+            ));
+        }
+        // The reservation waited out the sole publisher. Its rolled-back ID
+        // cannot be published later or discovered by bot deletion. Release the
+        // writer before cleanup, which may acquire the product gate in builds
+        // that have one. No catalog writer may wait for that gate.
+        tx.commit()?;
+        drop(catalog);
+        return runtime_store::discard_chat_fork(
+            home,
+            target,
+            required(&row, "bot")?,
+            required(&row, "owner")?,
+        );
+    }
+    tx.commit()?;
+    Ok(())
+}
+
+pub(crate) fn finish_chat_forks(home: &Path) -> Result<()> {
+    let targets = rows(
+        &runtime_store::open(home)?,
+        "SELECT target FROM native_pending_chat_forks ORDER BY target",
+        &[],
+    )?;
+    let mut result = Ok(());
+    for row in targets {
+        let target = required(&row, "target")?;
+        if let Err(error) = finish_chat_fork(home, target) {
+            eprintln!("Could not finish pending chat {target}: {error}");
+            if result.is_ok() {
+                result = Err(error);
+            }
+        }
+    }
+    result
+}
+
+#[cfg(all(test, unix))]
+pub(crate) fn chat_fork_barrier(home: &Path, phase: &str) -> Result<()> {
+    use std::io::{Read, Write};
+    let path = home.join("fork-barrier.sock");
+    if path.try_exists()? {
+        let mut socket = std::os::unix::net::UnixStream::connect(path)?;
+        socket.write_all(phase.as_bytes())?;
+        socket.read_exact(&mut [0])?;
+    }
+    Ok(())
+}
+
+#[cfg(all(test, unix))]
+#[path = "catalog_fork_tests.rs"]
+mod fork_tests;
 
 pub fn chat_section(home: &Path, caller: &str, name: &str) -> Result<Value> {
     bot_owner(home, caller, name)?;
@@ -358,8 +602,20 @@ pub fn chat_section(home: &Path, caller: &str, name: &str) -> Result<Value> {
             .collect();
             let version: i64 = runtime_store::open(home)?.query_row("SELECT COALESCE((SELECT version FROM native_history_versions WHERE session_id=?),0)", [&id], |r| r.get(0))?;
             let next = common::id();
+            let listed: bool = tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM sections WHERE id=?1) OR EXISTS(SELECT 1 FROM room_sessions WHERE stored_session_id=?1)",
+                [&next], |r| r.get(0),
+            )?;
+            if listed {
+                return Err(Error::new(5200, "chat fork target already exists"));
+            }
+            runtime_store::prepare_chat_fork(home, &id, &next, name, caller)?;
             forked.id = Some(next.clone());
+            #[cfg(all(test, unix))]
+            chat_fork_barrier(home, "before_copy")?;
             if runtime_store::fork_dream_chat(home, name, caller, &id, &next, &reports)? {
+                #[cfg(all(test, unix))]
+                chat_fork_barrier(home, "after_copy")?;
                 tx.execute("INSERT INTO sections(id,bot,title,owner_id,created_at,updated_at) SELECT ?,bot,CASE WHEN title='Dreams' THEN 'General' ELSE title END,owner_id,created_at,updated_at FROM sections WHERE id=?", params![next, id])?;
                 let mut adopted = setting(&tx, "dream_chat_adoptions")?
                     .as_object()
@@ -396,7 +652,20 @@ pub fn chat_section(home: &Path, caller: &str, name: &str) -> Result<Value> {
         )?;
         id
     };
+    #[cfg(all(test, unix))]
+    if forked.id.is_some() {
+        chat_fork_barrier(home, "before_commit")?;
+    }
     tx.commit()?;
+    #[cfg(all(test, unix))]
+    if forked.id.is_some() {
+        chat_fork_barrier(home, "after_commit")?;
+    }
+    if let Some(target) = &forked.id
+        && let Err(error) = finish_chat_fork(home, target)
+    {
+        eprintln!("Could not finish pending chat {target}: {error}");
+    }
     forked.id = None;
     section(home, caller, &id)
 }
@@ -1712,7 +1981,7 @@ fn delete_section(home: &Path, caller: &str, id: &str, purge: bool) -> Result<Op
         purge,
         || {
             let mut conn = db::open(home)?;
-            let tx = conn.transaction()?;
+            let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
             if tx.execute("DELETE FROM sections WHERE id=?", [id])? == 0 {
                 return Err(Error::new(4204, "section not found"));
             }
@@ -1730,15 +1999,24 @@ fn delete_section(home: &Path, caller: &str, id: &str, purge: bool) -> Result<Op
                 "UPDATE bots SET last_activity_at=? WHERE name=?",
                 params![now(), row["bot"].as_str()],
             )?;
+            #[cfg(all(test, unix))]
+            section_delete_barrier(home, "before_commit")?;
             tx.commit()?;
+            #[cfg(all(test, unix))]
+            section_delete_barrier(home, "after_commit")?;
             Ok(())
         },
     )?;
-    let cleaned = if purge {
-        runtime_store::delete_pending(home, id)
-    } else {
-        pending.map_or(Ok(()), Err)
-    };
+    let cleaned = pending.map_or_else(
+        || {
+            if purge {
+                runtime_store::delete_pending(home, id)
+            } else {
+                Ok(())
+            }
+        },
+        Err,
+    );
     if let Err(error) = cleaned {
         let error = Error::new(
             error.code,
@@ -1751,23 +2029,14 @@ fn delete_section(home: &Path, caller: &str, id: &str, purge: bool) -> Result<Op
     Ok(None)
 }
 
-pub(crate) fn purge_legacy_history(
-    home: &Path,
-    bot: &str,
-    id: &str,
-    protected: &HashSet<String>,
-) -> Result<()> {
-    let path = profile(home, bot)?.join("state.db");
-    safe(home, &path)?;
+#[cfg(all(test, unix))]
+pub(crate) fn section_delete_barrier(home: &Path, phase: &str) -> Result<()> {
+    use std::io::{Read, Write};
+    let path = home.join("delete-barrier.sock");
     if path.try_exists()? {
-        let mut conn = Connection::open(path)?;
-        conn.busy_timeout(std::time::Duration::from_secs(10))?;
-        let tx = conn.transaction()?;
-        for key in legacy_ids(&tx, id, protected)? {
-            tx.execute("DELETE FROM messages WHERE session_id=?", [&key])?;
-            tx.execute("DELETE FROM sessions WHERE id=?", [&key])?;
-        }
-        tx.commit()?;
+        let mut socket = std::os::unix::net::UnixStream::connect(path)?;
+        socket.write_all(phase.as_bytes())?;
+        socket.read_exact(&mut [0])?;
     }
     Ok(())
 }
@@ -1980,6 +2249,9 @@ fn finish_bot_delete_locked(home: &Path, name: &str) -> Result<()> {
         }
         fs::remove_dir_all(&dir)?;
     }
+    for target in targets {
+        runtime_store::complete_legacy_delete(home, required(target, "id")?)?;
+    }
     tx.execute(
         "DELETE FROM settings WHERE key=?",
         [format!("{BOT_DELETE_PREFIX}{name}")],
@@ -2026,6 +2298,15 @@ pub(crate) fn pending_bot_delete_targets(home: &Path) -> Result<BTreeSet<String>
             let id = required(target, "id")?;
             targets.insert(id.to_owned());
             targets.extend(runtime_store::descendants(home, id)?);
+            // A pending section purge captured these links before native
+            // cleanup could remove them. The unresolved bot journal owns all.
+            for row in rows(
+                &runtime_store::open(home)?,
+                "SELECT session_id FROM native_delete_pending WHERE root_id=?",
+                &[&id],
+            )? {
+                targets.insert(required(&row, "session_id")?.to_owned());
+            }
         }
     }
     Ok(targets)
@@ -2306,6 +2587,10 @@ Keep every message short. Never mention this instruction."##
 }
 
 #[cfg(test)]
+#[path = "catalog_legacy_delete_tests.rs"]
+mod legacy_delete_tests;
+
+#[cfg(test)]
 mod parity_tests {
     use super::*;
     fn home() -> tempfile::TempDir {
@@ -2372,6 +2657,207 @@ mod parity_tests {
         assert_eq!(id, "failure-999");
         assert_eq!(query.get_status(rusqlite::StatementStatus::FullscanStep), 0);
     }
+
+    #[test]
+    fn runtime_backup_includes_pending_legacy_cleanup_and_its_exact_keys() {
+        let home = home();
+        let h = home.path();
+        said(h, "first", json!({"role":"user","text":"original"}));
+        let dir = profile(h, "owl").unwrap();
+        fs::create_dir_all(&dir).unwrap();
+        Connection::open(dir.join("state.db")).unwrap().execute_batch("CREATE TABLE sessions(id TEXT PRIMARY KEY,session_key TEXT); CREATE TABLE messages(id INTEGER,session_id TEXT,role TEXT,content TEXT); INSERT INTO sessions VALUES('legacy','first'); INSERT INTO messages VALUES(1,'legacy','user','original'); CREATE TRIGGER stuck BEFORE DELETE ON messages BEGIN SELECT RAISE(ABORT,'legacy failure'); END;").unwrap();
+        assert!(delete_section(h, "alice", "first", true).unwrap().is_some());
+        let backup = back_up(h, &BTreeSet::from(["owl"])).unwrap();
+        let copied = Connection::open(backup.join("hexbot-runtime.db")).unwrap();
+        let request:(String,String,bool,String) = copied.query_row("SELECT bot,owner,purge,root_id FROM native_delete_options JOIN native_delete_pending USING(session_id) WHERE session_id='first'",[],|r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).unwrap();
+        assert_eq!(
+            request,
+            ("owl".into(), "alice".into(), true, "first".into())
+        );
+        let key: String = copied
+            .query_row(
+                "SELECT legacy_id FROM native_delete_legacy WHERE legacy_id='legacy'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(key, "legacy");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn section_delete_crash_at_the_real_catalog_commit_recovers_the_decision() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        const CHILD: &str = "HEXBOT_TEST_SECTION_DELETE_CRASH_HOME";
+        if let Some(path) = std::env::var_os(CHILD) {
+            call(
+                Path::new(&path),
+                "alice",
+                "hexbot.sections.delete",
+                &json!({"id":"first"}),
+            )
+            .unwrap()
+            .unwrap();
+            return;
+        }
+        for cut in ["before_commit", "after_commit"] {
+            let home = home();
+            let h = home.path();
+            said(h, "first", json!({"role":"user","text":"original"}));
+            let raw = h.join("runtime/sessions/first/conversation.jsonl");
+            fs::create_dir_all(raw.parent().unwrap()).unwrap();
+            fs::write(&raw, "original Pi bytes").unwrap();
+            let dir = profile(h, "owl").unwrap();
+            fs::create_dir_all(&dir).unwrap();
+            let legacy = Connection::open(dir.join("state.db")).unwrap();
+            legacy.execute_batch("CREATE TABLE sessions(id TEXT PRIMARY KEY,session_key TEXT); CREATE TABLE messages(id INTEGER,session_id TEXT,role TEXT,content TEXT); INSERT INTO sessions VALUES('legacy','first'); INSERT INTO messages VALUES(1,'legacy','user','old human history');").unwrap();
+            let socket = h.join("delete-barrier.sock");
+            let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+            let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact","catalog::parity_tests::section_delete_crash_at_the_real_catalog_commit_recovers_the_decision","--nocapture"])
+                .env(CHILD,h).spawn().unwrap();
+            loop {
+                let (mut stream, _) =
+                    tokio::time::timeout(std::time::Duration::from_secs(10), listener.accept())
+                        .await
+                        .unwrap()
+                        .unwrap();
+                let mut phase = [0; 32];
+                let n = stream.read(&mut phase).await.unwrap();
+                if &phase[..n] == cut.as_bytes() {
+                    break;
+                }
+                stream.write_all(&[1]).await.unwrap();
+            }
+            // Kill the actual process at the event boundary, without allowing
+            // any cleanup/error path to run or manufacturing a committed flag.
+            child.kill().unwrap();
+            child.wait().unwrap();
+            fs::remove_file(socket).unwrap();
+            assert!(raw.is_file());
+            assert_eq!(
+                runtime_store::history(h, "first").unwrap()[0]["text"],
+                "original"
+            );
+            assert_eq!(
+                legacy
+                    .query_row("SELECT count(*) FROM messages", [], |r| r.get::<_, i64>(0))
+                    .unwrap(),
+                1
+            );
+            runtime_store::finish_deletes(h).unwrap();
+            runtime_store::finish_deletes(h).unwrap();
+            let committed = cut == "after_commit";
+            assert_eq!(section(h, "alice", "first").is_err(), committed);
+            assert_eq!(raw.is_file(), !committed);
+            assert_eq!(
+                runtime_store::history(h, "first").unwrap().is_empty(),
+                committed
+            );
+            assert_eq!(
+                legacy
+                    .query_row("SELECT count(*) FROM messages", [], |r| r.get::<_, i64>(0))
+                    .unwrap(),
+                i64::from(!committed)
+            );
+            assert_eq!(runtime_store::session_dir(h, "first").is_err(), committed);
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn late_failed_parent_rollback_preserves_an_independently_committed_child() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        const CHILD: &str = "HEXBOT_TEST_LATE_SECTION_ROLLBACK_HOME";
+        if let Some(path) = std::env::var_os(CHILD) {
+            assert!(
+                call(
+                    Path::new(&path),
+                    "alice",
+                    "hexbot.sections.delete",
+                    &json!({"id":"first"})
+                )
+                .unwrap()
+                .is_err()
+            );
+            return;
+        }
+        let home = home();
+        let h = home.path();
+        db::open(h).unwrap().execute_batch("INSERT INTO sections(id,bot,owner_id,title) VALUES('delegate','owl','alice','child'); CREATE TRIGGER stop_parent BEFORE DELETE ON sections WHEN OLD.id='first' BEGIN SELECT RAISE(ABORT,'parent failed'); END;").unwrap();
+        said(h, "first", json!({"role":"user","text":"original parent"}));
+        said(
+            h,
+            "delegate",
+            json!({"role":"user","text":"original child"}),
+        );
+        runtime_store::open(h)
+            .unwrap()
+            .execute(
+                "UPDATE native_sessions SET options=? WHERE stored_id='delegate'",
+                [json!({"parent_session":"first"}).to_string()],
+            )
+            .unwrap();
+        let dir = profile(h, "owl").unwrap();
+        fs::create_dir_all(&dir).unwrap();
+        let legacy = Connection::open(dir.join("state.db")).unwrap();
+        legacy.execute_batch("CREATE TABLE sessions(id TEXT PRIMARY KEY,session_key TEXT); CREATE TABLE messages(id INTEGER,session_id TEXT,role TEXT,content TEXT); INSERT INTO sessions VALUES('legacy-parent','first'),('legacy-child','delegate'); INSERT INTO messages VALUES(1,'legacy-parent','user','parent'),(2,'legacy-child','user','child');").unwrap();
+        let socket = h.join("delete-barrier.sock");
+        let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+        let mut child=std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact","catalog::parity_tests::late_failed_parent_rollback_preserves_an_independently_committed_child","--nocapture"])
+            .env(CHILD,h).spawn().unwrap();
+        let (mut stream, _) =
+            tokio::time::timeout(std::time::Duration::from_secs(10), listener.accept())
+                .await
+                .unwrap()
+                .unwrap();
+        let mut phase = [0; 32];
+        let n = stream.read(&mut phase).await.unwrap();
+        assert_eq!(&phase[..n], b"after_failed_catalog");
+        fs::remove_file(socket).unwrap();
+        // Actual independent catalog COMMIT and full purge while the failed
+        // parent's rollback is paused outside its catalog transaction.
+        assert!(
+            delete_section(h, "alice", "delegate", true)
+                .unwrap()
+                .is_none()
+        );
+        assert!(runtime_store::history(h, "delegate").unwrap().is_empty());
+        assert_eq!(
+            legacy
+                .query_row(
+                    "SELECT count(*) FROM messages WHERE session_id='legacy-child'",
+                    [],
+                    |r| r.get::<_, i64>(0)
+                )
+                .unwrap(),
+            0
+        );
+        stream.write_all(&[1]).await.unwrap();
+        assert!(child.wait().unwrap().success());
+        runtime_store::finish_deletes(h).unwrap();
+        assert!(runtime_store::session_dir(h, "delegate").is_err());
+        assert!(
+            runtime_store::append(h, "delegate", json!({"role":"user","text":"late"})).is_err()
+        );
+        assert!(runtime_store::session_dir(h, "first").is_ok());
+        assert_eq!(
+            runtime_store::history(h, "first").unwrap()[0]["text"],
+            "original parent"
+        );
+        assert_eq!(
+            legacy
+                .query_row(
+                    "SELECT count(*) FROM messages WHERE session_id='legacy-parent'",
+                    [],
+                    |r| r.get::<_, i64>(0)
+                )
+                .unwrap(),
+            1
+        );
+    }
+
     #[test]
     fn model_and_new_bot_config_do_not_copy_secrets() {
         let config = json!({
@@ -2448,11 +2934,19 @@ mod parity_tests {
         );
     }
     fn said(home: &Path, id: &str, message: Value) {
+        let section = db::open(home)
+            .unwrap()
+            .query_row("SELECT owner_id,bot FROM sections WHERE id=?", [id], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+            })
+            .optional()
+            .unwrap()
+            .unwrap_or_else(|| ("alice".into(), "owl".into()));
         runtime_store::open(home)
             .unwrap()
             .execute(
-                "INSERT OR IGNORE INTO native_sessions(stored_id,owner,bot,prompt) VALUES(?,'alice','owl','')",
-                [id],
+                "INSERT OR IGNORE INTO native_sessions(stored_id,owner,bot,prompt) VALUES(?,?,?,'')",
+                params![id,section.0,section.1],
             )
             .unwrap();
         runtime_store::append(home, id, message).unwrap();
@@ -3638,6 +4132,11 @@ mod parity_tests {
             for title in ["Dreams", "Night notes"] {
                 let home = tempfile::tempdir().unwrap();
                 legacy_log(home.path(), title, true, true);
+                // The ordinary conversation is fully native, beside a log
+                // whose legacy import may still be unfinished.
+                let workspace = tempfile::tempdir().unwrap();
+                runtime_store::import_hermes(home.path(), "owl", "ordinary", workspace.path())
+                    .unwrap();
                 let conn = db::open(home.path()).unwrap();
                 conn.execute_batch("INSERT INTO dreams(id,bot,started_at,status,summary) VALUES('later','owl',20,'complete','Later report'); UPDATE sections SET updated_at=20.001 WHERE id='log';").unwrap();
                 Connection::open(profile(home.path(), "owl").unwrap().join("state.db")).unwrap().execute_batch("INSERT INTO messages(id,session_id,role,content,timestamp) VALUES(4,'log','assistant','Later report',20);").unwrap();
@@ -3899,9 +4398,17 @@ mod parity_tests {
             for mixed in [false, true] {
                 let home = tempfile::tempdir().unwrap();
                 legacy_log(home.path(), "Initial notes", false, true);
+                let workspace = tempfile::tempdir().unwrap();
+                runtime_store::import_hermes(home.path(), "owl", "ordinary", workspace.path())
+                    .unwrap();
                 one_chat_per_bot(home.path()).unwrap();
                 assert_eq!(ids_of(home.path(), "owl"), ["ordinary"]);
                 db::open(home.path()).unwrap().execute("INSERT INTO sections(id,bot,owner_id,title,updated_at) VALUES('later-log','owl','alice',?,20.001)", [title]).unwrap();
+                // This log is native-only. Its first open completes the import
+                // before the human reply below; the older log stays legacy.
+                let workspace = tempfile::tempdir().unwrap();
+                runtime_store::import_hermes(home.path(), "owl", "later-log", workspace.path())
+                    .unwrap();
                 said(
                     home.path(),
                     "later-log",

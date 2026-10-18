@@ -13,7 +13,7 @@ pub(crate) enum Scope {
 
 /// Only admission holds a read guard. Deletion drains in-flight opens, then
 /// keeps its write guard through process closure and the catalog decision.
-/// These locks never own either SQLite writer or the product-work boundary.
+/// No SQLite writer is held while waiting for admission.
 #[derive(Default)]
 pub(crate) struct Admission(Mutex<HashMap<Scope, Weak<RwLock<()>>>>);
 

@@ -207,7 +207,7 @@ impl App {
                     .await,
             );
         }
-        let _room_post = if method == "hexbot.rooms.send" {
+        let room_post = if method == "hexbot.rooms.send" {
             Some(self.runtime.admission.enter(crate::admission::Scope::Room(
                 common::required(p, "id")?.into(),
             ))?)
@@ -292,6 +292,9 @@ impl App {
                 .collect::<Vec<_>>();
             // Removing the last bot deletes the room.
             let deleting = method == "hexbot.rooms.delete" || active == [bot];
+            if deleting {
+                self.rooms.stop_internal(room).await?;
+            }
             removed_sessions = common::rows(
                 &db::open(&self.home)?,
                 "SELECT stored_session_id FROM room_sessions WHERE room_id=?1 AND (?2 OR bot=?3)",
@@ -510,7 +513,8 @@ impl App {
                 "hexbot.rooms.event",
                 json!({"room_id":id,"event":result["event"]}),
             );
-            self.rooms.notify(owner, id).await?;
+            self.rooms
+                .notify_admitted(owner, id, room_post.as_ref().unwrap())?;
         }
         if matches!(
             method,
@@ -557,10 +561,8 @@ impl App {
                 .iter()
                 .map(|s| json!({"id":s["id"],"status":s["status"]}))
                 .collect::<Vec<_>>();
-            return Err(
-                Error::new(4211, format!("bot {bot} has a streaming section"))
-                    .with_data(json!({"sections":sections})),
-            );
+            return Err(Error::new(4211, format!("bot {bot} has unfinished work"))
+                .with_data(json!({"sections":sections})));
         }
         Ok(())
     }

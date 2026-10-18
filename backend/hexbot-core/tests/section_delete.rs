@@ -2005,6 +2005,11 @@ fn check_completed_legacy_descendant(alias: bool) {
     legacy
         .execute("INSERT INTO messages VALUES(?)", [&legacy_child])
         .unwrap();
+    assert!(runtime_store::delete(h, &fixture.child).is_err());
+    db::open(h)
+        .unwrap()
+        .execute("INSERT INTO bots(name,owner_id) VALUES('owl','local')", [])
+        .unwrap();
     runtime_store::delete(h, &fixture.child).unwrap();
     assert_eq!(
         legacy

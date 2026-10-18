@@ -978,18 +978,34 @@ async fn attachment_transport_accepts_supported_sizes_and_reports_oversize() {
 async fn websocket_disconnect_during_prompt_ack_keeps_the_section_running() {
     let fixture = Fixture::new(false).await;
     let pi = fixture._directory.path().join("fake-pi.cjs");
-    fs::write(&pi,r#"#!/usr/bin/env node
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+    // Preflight can wait on an extension or auto-compaction. Its release must
+    // be independent of input queued behind the prompt's admission gate.
+    let control = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let script = r#"#!/usr/bin/env node
 const emit=v=>process.stdout.write(JSON.stringify(v)+'\n');
 const rl=require('node:readline').createInterface({input:process.stdin});
+const control=require('node:net').createConnection({host:'127.0.0.1',port:CONTROL_PORT});
 let pending;
-const reply=c=>emit({type:'response',id:c.id,command:c.type,success:true,data:{}});
-rl.on('line',line=>{const c=JSON.parse(line);
-if(c.type==='prompt'){pending=c;emit({type:'agent_start'});emit({type:'message_end',message:{role:'user',content:c.message}});return;}
-reply(c);
-if(c.type==='steer' && pending){reply(pending);pending=null;emit({type:'message_end',message:{role:'user',content:c.message}});emit({type:'message_end',message:{role:'assistant',content:'Completed after disconnect',stopReason:'stop'}});emit({type:'agent_settled'});}
+const reply=(c,data={})=>emit({type:'response',id:c.id,command:c.type,success:true,data});
+require('node:readline').createInterface({input:control}).on('line',line=>{
+if(line==='release' && pending){reply(pending,{disposition:'started'});pending=null;emit({type:'agent_start'});emit({type:'message_end',message:{role:'user',content:'long request'}});control.write('started\n');}
 });
-"#).unwrap();
-    db::open(&fixture.home).unwrap().execute_batch("INSERT INTO bots(name,owner_id) VALUES('owl','local'); INSERT INTO sections(id,bot,owner_id) VALUES('first','owl','local');").unwrap();
+rl.on('line',line=>{const c=JSON.parse(line);
+if(c.type==='prompt'){pending=c;control.write(JSON.stringify({waiting:c.message})+'\n');return;}
+reply(c,c.type==='steer'?{disposition:'queued'}:{});
+if(c.type==='steer'){emit({type:'message_end',message:{role:'user',content:c.message}});emit({type:'message_end',message:{role:'assistant',content:'Completed after disconnect',stopReason:'stop'}});emit({type:'agent_settled'});}
+});
+"#;
+    fs::write(
+        &pi,
+        script.replace(
+            "CONTROL_PORT",
+            &control.local_addr().unwrap().port().to_string(),
+        ),
+    )
+    .unwrap();
+    db::open(&fixture.home).unwrap().execute_batch("INSERT INTO bots(name,owner_id,description) VALUES('owl','local','Fixture bot'); INSERT INTO sections(id,bot,owner_id) VALUES('first','owl','local');").unwrap();
     fs::create_dir_all(fixture.home.join("profiles/owl")).unwrap();
     fs::write(
         fixture.home.join("profiles/owl/config.yaml"),
@@ -1007,15 +1023,42 @@ if(c.type==='steer' && pending){reply(pending);pending=null;emit({type:'message_
     let live = &opened["result"]["section"]["live_session_id"];
     assert!(live.is_string(), "{opened}");
     socket.send(Message::Text(json!({"jsonrpc":"2.0","id":"prompt","method":"prompt.submit","params":{"session_id":live,"text":"long request"}}).to_string().into())).await.unwrap();
-    loop {
-        if frame(&mut socket).await["params"]["type"] == "message.start" {
-            break;
-        }
-    }
+    let (control, _) = tokio::time::timeout(Duration::from_secs(8), control.accept())
+        .await
+        .unwrap()
+        .unwrap();
+    let (reader, mut writer) = control.into_split();
+    let mut lines = BufReader::new(reader).lines();
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(8), lines.next_line())
+            .await
+            .unwrap()
+            .unwrap()
+            .as_deref(),
+        Some(r#"{"waiting":"long request"}"#)
+    );
     socket.close(None).await.unwrap();
     drop(socket);
     let mut reconnected = fixture.socket(&fixture.token).await;
-    // A second client releases the fake's acknowledgement barrier.
+    let status = request(
+        &mut reconnected,
+        "still-running",
+        "session.status",
+        json!({"session_id":live}),
+    )
+    .await;
+    assert_eq!(status["result"]["status"], "working", "{status}");
+    // The disconnected prompt's owned acknowledgement completes without a
+    // steer. Pi acknowledges started input before emitting agent_start.
+    writer.write_all(b"release\n").await.unwrap();
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(8), lines.next_line())
+            .await
+            .unwrap()
+            .unwrap()
+            .as_deref(),
+        Some("started")
+    );
     let reply = request(
         &mut reconnected,
         "finish",
@@ -1047,6 +1090,19 @@ if(c.type==='steer' && pending){reply(pending);pending=null;emit({type:'message_
     )
     .await;
     assert!(history.to_string().contains("Completed after disconnect"));
+    let messages = history["result"]["messages"].as_array().unwrap();
+    for text in ["long request", "finish", "Completed after disconnect"] {
+        assert_eq!(
+            messages.iter().filter(|m| m["text"] == text).count(),
+            1,
+            "{history}"
+        );
+    }
+    let intents: (usize, usize) = hexbot_core::runtime_store::open(&fixture.home).unwrap().query_row(
+        "SELECT count(*),count(consumed_by) FROM native_prompt_intents WHERE session_id='first'",
+        [], |r| Ok((r.get(0)?, r.get(1)?)),
+    ).unwrap();
+    assert_eq!(intents, (2, 2));
     fixture.shutdown().await;
 }
 

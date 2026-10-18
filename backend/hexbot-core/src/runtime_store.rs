@@ -74,9 +74,11 @@ pub fn open(home: &Path) -> Result<Connection> {
       CREATE TABLE IF NOT EXISTS native_delete_pending(session_id TEXT PRIMARY KEY REFERENCES native_deleted(session_id) ON DELETE CASCADE,root_id TEXT NOT NULL,cataloged INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS native_delete_claims(attempt TEXT NOT NULL,session_id TEXT NOT NULL REFERENCES native_delete_pending(session_id) ON DELETE CASCADE,PRIMARY KEY(attempt,session_id));
       CREATE TABLE IF NOT EXISTS native_delete_completed(session_id TEXT PRIMARY KEY REFERENCES native_deleted(session_id) ON DELETE CASCADE);
+      CREATE TABLE IF NOT EXISTS native_delete_legacy(session_id TEXT NOT NULL REFERENCES native_delete_options(session_id) ON DELETE CASCADE,legacy_id TEXT NOT NULL,PRIMARY KEY(session_id,legacy_id));
       CREATE TABLE IF NOT EXISTS native_quarantine(session_id TEXT PRIMARY KEY, error TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS native_unrecovered(session_id TEXT PRIMARY KEY);
       CREATE TABLE IF NOT EXISTS native_fresh(session_id TEXT PRIMARY KEY);
+      CREATE TABLE IF NOT EXISTS native_pending_chat_forks(target TEXT PRIMARY KEY,source TEXT NOT NULL,bot TEXT NOT NULL,owner TEXT NOT NULL);
       CREATE TRIGGER IF NOT EXISTS summary_session_insert AFTER INSERT ON native_sessions BEGIN DELETE FROM native_summaries WHERE session_id=NEW.stored_id; END;
       CREATE TRIGGER IF NOT EXISTS summary_journal_insert AFTER INSERT ON native_pi_journal BEGIN DELETE FROM native_summaries WHERE session_id=NEW.session_id; END;
       CREATE TRIGGER IF NOT EXISTS summary_message_insert AFTER INSERT ON native_messages BEGIN DELETE FROM native_summaries WHERE session_id=NEW.session_id; END;
@@ -236,8 +238,20 @@ fn descendant_ids(conn: &Connection, stored: &str) -> Result<Vec<String>> {
     .map(|row| common::required(&row, "id").map(str::to_owned))
     .collect()
 }
+fn deletion_targets(conn: &Connection, stored: &str) -> Result<Vec<String>> {
+    let ownership = conn.query_row(
+        "SELECT bot,owner FROM native_sessions WHERE stored_id=?1 UNION SELECT bot,owner FROM native_delete_options WHERE session_id=?1 LIMIT 1",
+        [stored], |r| Ok((r.get::<_, String>(0)?,r.get::<_, String>(1)?)),
+    ).optional()?;
+    let Some((bot, owner)) = ownership else {
+        return descendant_ids(conn, stored);
+    };
+    common::rows(conn,
+        "WITH RECURSIVE tree(id) AS (SELECT ?1 UNION SELECT s.stored_id FROM native_sessions s JOIN tree t ON json_extract(s.options,'$.parent_session')=t.id WHERE s.bot=?2 AND s.owner=?3) SELECT id FROM tree",
+        &[&stored,&bot,&owner])?.into_iter().map(|row| common::required(&row,"id").map(str::to_owned)).collect()
+}
 fn mark_targets(conn: &Connection, stored: &str, cataloged: bool) -> Result<Vec<String>> {
-    let targets = descendant_ids(conn, stored)?;
+    let targets = deletion_targets(conn, stored)?;
     for target in &targets {
         common::identifier(target)?;
         if delete_completed(conn, target)? {
@@ -381,12 +395,16 @@ fn release_retirement(
     conn: &Connection,
     retirement: &Retirement,
     listed: &CatalogIds,
+    protected: &BTreeSet<String>,
 ) -> Result<()> {
     conn.execute(
         "DELETE FROM native_delete_claims WHERE attempt=?",
         [&retirement.attempt],
     )?;
     for target in &retirement.targets {
+        if protected.contains(target) {
+            continue;
+        }
         let pending = conn.query_row("SELECT root_id,cataloged FROM native_delete_pending WHERE session_id=? AND NOT EXISTS(SELECT 1 FROM native_delete_claims WHERE session_id=?1)", [target], |r| Ok((r.get::<_,String>(0)?,r.get::<_,i64>(1)?))).optional()?;
         if let Some((root, cataloged)) = pending
             && (cataloged == 0 || listed.root_exists(&root, cataloged))
@@ -404,7 +422,12 @@ pub(crate) fn rollback_retiring(home: &Path, retirement: &Retirement) -> Result<
     let listed = catalog_ids(home)?;
     let mut conn = open(home)?;
     let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-    release_retirement(&tx, retirement, &listed)?;
+    release_retirement(
+        &tx,
+        retirement,
+        &listed,
+        &crate::catalog::pending_bot_delete_targets(home)?,
+    )?;
     tx.commit()?;
     Ok(())
 }
@@ -447,6 +470,7 @@ pub(crate) fn rollback_bot_retiring(
                 attempt: attempt.into(),
             },
             &listed,
+            &BTreeSet::new(),
         )?;
     } else {
         // Old bot journals had no claim ID. Only undo provably provisional
@@ -568,6 +592,15 @@ fn with_catalog_delete_locked(
     let mut targets = BTreeMap::new();
     for root in roots {
         let stored = common::required(root, "id")?;
+        let bot = common::required(root, "bot")?;
+        let owner = common::required(root, "owner")?;
+        let foreign: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM native_sessions WHERE stored_id=?1 AND (bot<>?2 OR owner<>?3)) OR EXISTS(SELECT 1 FROM native_delete_options WHERE session_id=?1 AND (bot<>?2 OR owner<>?3))", params![stored,bot,owner], |r| r.get(0))?;
+        if foreign {
+            return Err(crate::Error::new(
+                4302,
+                "history belongs to another bot or owner",
+            ));
+        }
         for target in mark_targets(&tx, stored, listed.contains(stored))? {
             targets.insert(
                 target,
@@ -628,6 +661,10 @@ fn with_catalog_delete_locked(
     }
     tx.commit()?;
     if let Err(error) = commit_catalog() {
+        #[cfg(all(test, unix))]
+        if decision_kind == 1 {
+            crate::catalog::section_delete_barrier(home, "after_failed_catalog")?;
+        }
         // The boundary excludes overlapping disposition/commit/rollback.
         // Restore only provisional options changed above, then release this
         // attempt. Runtime retirement has its own independent claim.
@@ -649,7 +686,12 @@ fn with_catalog_delete_locked(
                 )?;
             }
         }
-        release_retirement(&tx, &retirement, &listed)?;
+        release_retirement(
+            &tx,
+            &retirement,
+            &listed,
+            &crate::catalog::pending_bot_delete_targets(home)?,
+        )?;
         tx.commit()?;
         return Err(error);
     }
@@ -709,12 +751,29 @@ fn purge(home: &Path, stored: &str, retry_completed: bool) -> Result<()> {
 }
 /// The caller holds the product boundary before reserving a catalog writer.
 pub(crate) fn purge_locked(home: &Path, stored: &str, retry_completed: bool) -> Result<()> {
+    if !retry_completed {
+        let listed = catalog_ids(home)?;
+        let conn = open(home)?;
+        let pending = conn
+            .query_row(
+                "SELECT root_id,cataloged FROM native_delete_pending WHERE session_id=?",
+                [stored],
+                |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)),
+            )
+            .optional()?;
+        if pending.is_some_and(|(root, kind)| listed.root_exists(&root, kind)) {
+            return Err(crate::Error::new(
+                5200,
+                "catalog deletion did not commit; kept the original history",
+            ));
+        }
+    }
     // Commit every descendant's ownership and purge intent before any rows go.
     // A retry can then find children whose parent relationship was removed.
     let targets = (|| -> Result<Vec<String>> {
         let mut conn = open(home)?;
         let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        let targets = descendant_ids(&tx, stored)?
+        let targets = deletion_targets(&tx, stored)?
             .into_iter()
             .filter_map(|target| match delete_completed(&tx, &target) {
                 Ok(true) if !retry_completed => None,
@@ -727,10 +786,6 @@ pub(crate) fn purge_locked(home: &Path, stored: &str, retry_completed: bool) -> 
         mark_targets(&tx, stored, false)?;
         for target in &targets {
             tx.execute("INSERT OR IGNORE INTO native_delete_options SELECT stored_id,bot,owner,1 FROM native_sessions WHERE stored_id=?", [target])?;
-            tx.execute(
-                "DELETE FROM native_delete_pending WHERE session_id=?",
-                [target],
-            )?;
             // An explicit delete retries even a completed ID, for example when
             // removing a newly replaced leaf symlink. Startup and owner cleanup
             // skip completed IDs throughout the tree.
@@ -746,61 +801,103 @@ pub(crate) fn purge_locked(home: &Path, stored: &str, retry_completed: bool) -> 
         tx.commit()?;
         Ok(targets)
     })()?;
-    for stored in targets.iter().rev() {
-        let mut conn = open(home)?;
-        let tx = conn.transaction()?;
-        tx.execute("DELETE FROM native_summaries WHERE session_id=?", [stored])?;
-        tx.execute("DELETE FROM native_quarantine WHERE session_id=?", [stored])?;
-        tx.execute(
-            "DELETE FROM native_unrecovered WHERE session_id=?",
-            [stored],
-        )?;
-        tx.execute("DELETE FROM native_fresh WHERE session_id=?", [stored])?;
-        tx.execute("DELETE FROM native_pi_journal WHERE session_id=?", [stored])?;
-        tx.execute(
-            "DELETE FROM native_prompt_intents WHERE session_id=?",
-            [stored],
-        )?;
-        tx.execute("DELETE FROM native_messages WHERE session_id=?", [stored])?;
-        // Last, after the message delete trigger has bumped it: the session is
-        // tombstoned above, so its history can never be written again.
-        tx.execute(
-            "DELETE FROM native_history_versions WHERE session_id=?",
-            [stored],
-        )?;
-        tx.execute("DELETE FROM native_sessions WHERE stored_id=?", [stored])?;
-        tx.commit()?;
-        remove_session_files(home, stored)?;
-        if let Some(bot) = conn
+    let bot_targets = crate::catalog::pending_bot_delete_targets(home)?;
+    // Freeze aliases for the entire owned tree before native parent links go.
+    // A failed snapshot leaves native history intact; a later legacy failure
+    // cannot prevent the other already-committed native targets from finishing.
+    let conn = open(home)?;
+    let mut legacy = BTreeMap::new();
+    for stored in &targets {
+        let ownership = conn
             .query_row(
-                "SELECT bot FROM native_delete_options WHERE session_id=?",
+                "SELECT bot,owner FROM native_delete_options WHERE session_id=?",
                 [stored],
-                |r| r.get::<_, String>(0),
+                |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
             )
-            .optional()?
+            .optional()?;
+        if let Some((bot, owner)) = ownership
+            && !bot_targets.contains(stored)
         {
-            let protected = if retry_completed {
-                HashSet::new()
-            } else {
-                conn.prepare("SELECT session_id FROM native_delete_completed")?
-                    .query_map([], |r| r.get(0))?
-                    .collect::<rusqlite::Result<HashSet<String>>>()?
-            };
-            crate::catalog::purge_legacy_history(home, &bot, stored, &protected)?;
+            let keys = crate::catalog::legacy_delete_ids(home, &bot, &owner, stored)?;
+            for key in keys {
+                conn.execute(
+                    "INSERT OR IGNORE INTO native_delete_legacy VALUES(?,?)",
+                    params![stored, key],
+                )?;
+            }
+            let keys = conn
+                .prepare("SELECT legacy_id FROM native_delete_legacy WHERE session_id=?")?
+                .query_map([stored], |r| r.get(0))?
+                .collect::<rusqlite::Result<Vec<String>>>()?;
+            legacy.insert(stored.clone(), (bot, owner, keys));
         }
-        // Older ownerless tombstones cannot identify a legacy database. Keep
-        // that compatibility behavior while completing the native cleanup.
-        conn.execute(
-            "INSERT OR IGNORE INTO native_delete_completed VALUES(?)",
-            [stored],
-        )?;
     }
+    let mut result = Ok(());
+    for stored in targets.iter().rev() {
+        // Native relationship failures keep unprocessed ancestors intact. File
+        // or legacy failures leave their own durable request and allow the next
+        // native target to finish, matching the committed tree decision.
+        if let Err(error) = delete_native(home, stored) {
+            if result.is_ok() {
+                result = Err(error);
+            }
+            break;
+        }
+        let cleaned = (|| {
+            remove_session_files(home, stored)?;
+            if !bot_targets.contains(stored) {
+                if let Some((bot, owner, keys)) = legacy.get(stored) {
+                    crate::catalog::purge_legacy_delete(home, bot, owner, keys)?;
+                }
+                complete_legacy_delete(home, stored)?;
+            } else if !delete_completed(&conn, stored)? {
+                conn.execute("INSERT INTO native_delete_completed VALUES(?)", [stored])?;
+            }
+            Ok(())
+        })();
+        if let Err(error) = cleaned
+            && result.is_ok()
+        {
+            result = Err(error);
+        }
+    }
+    result
+}
+
+fn delete_one(home: &Path, stored: &str) -> Result<()> {
+    delete_native(home, stored)?;
+    remove_session_files(home, stored)
+}
+fn delete_native(home: &Path, stored: &str) -> Result<()> {
+    common::identifier(stored)?;
+    let mut conn = open(home)?;
+    let tx = conn.transaction()?;
+    tx.execute("INSERT OR IGNORE INTO native_deleted VALUES(?)", [stored])?;
+    tx.execute("DELETE FROM native_summaries WHERE session_id=?", [stored])?;
+    tx.execute("DELETE FROM native_quarantine WHERE session_id=?", [stored])?;
+    tx.execute(
+        "DELETE FROM native_unrecovered WHERE session_id=?",
+        [stored],
+    )?;
+    tx.execute("DELETE FROM native_fresh WHERE session_id=?", [stored])?;
+    tx.execute("DELETE FROM native_pi_journal WHERE session_id=?", [stored])?;
+    tx.execute(
+        "DELETE FROM native_prompt_intents WHERE session_id=?",
+        [stored],
+    )?;
+    tx.execute("DELETE FROM native_messages WHERE session_id=?", [stored])?;
+    // Last, after the message delete trigger has bumped it: the session is
+    // tombstoned above, so its history can never be written again.
+    tx.execute(
+        "DELETE FROM native_history_versions WHERE session_id=?",
+        [stored],
+    )?;
+    tx.execute("DELETE FROM native_sessions WHERE stored_id=?", [stored])?;
+    tx.commit()?;
     Ok(())
 }
 fn remove_session_files(home: &Path, stored: &str) -> Result<()> {
     common::identifier(stored)?;
-    // Never follow a replaced parent folder out of the daemon home. A leaf
-    // symlink can be unlinked safely, including a dangling one.
     for parent in [home.join("runtime"), home.join("runtime/sessions")] {
         if fs::symlink_metadata(parent).is_ok_and(|m| m.file_type().is_symlink()) {
             return Err(crate::Error::new(
@@ -811,13 +908,35 @@ fn remove_session_files(home: &Path, stored: &str) -> Result<()> {
     }
     let path = home.join("runtime/sessions").join(stored);
     match fs::symlink_metadata(&path) {
-        Ok(meta) if meta.is_dir() => fs::remove_dir_all(path)?,
+        Ok(metadata) if metadata.is_dir() => fs::remove_dir_all(path)?,
         Ok(_) => fs::remove_file(path)?,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => return Err(error.into()),
     }
     Ok(())
 }
+
+/// Bot cleanup calls this only after removing the old profile, while its
+/// catalog journal still reserves the name. A metadata failure keeps that
+/// journal, so an old section request cannot later touch a reused profile.
+pub(crate) fn complete_legacy_delete(home: &Path, stored: &str) -> Result<()> {
+    let mut conn = open(home)?;
+    let tx = conn.transaction()?;
+    if !delete_completed(&tx, stored)? {
+        tx.execute("INSERT INTO native_delete_completed VALUES(?)", [stored])?;
+    }
+    tx.execute(
+        "DELETE FROM native_delete_legacy WHERE session_id=?",
+        [stored],
+    )?;
+    tx.execute(
+        "DELETE FROM native_delete_pending WHERE session_id=?",
+        [stored],
+    )?;
+    tx.commit()?;
+    Ok(())
+}
+
 /// Sections still on a bot's previous provider and model move with the bot from
 /// their next message, and take its new thinking level if they had its old one.
 /// A section on another model, like a scheduled job with its own, keeps both.
@@ -874,12 +993,110 @@ pub fn fresh(home: &Path, stored: &str) -> Result<bool> {
         |r| r.get(0),
     )?)
 }
+/// Reserve an unpublished copy before its first native write. A catalog adoption
+/// is the commit decision; this record survives rollback and process termination.
+pub(crate) fn prepare_chat_fork(
+    home: &Path,
+    source: &str,
+    target: &str,
+    bot: &str,
+    owner: &str,
+) -> Result<()> {
+    common::identifier(source)?;
+    common::identifier(target)?;
+    let target_path = home.join("runtime/sessions").join(target);
+    let present = match fs::symlink_metadata(target_path) {
+        Ok(_) => true,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+        Err(error) => return Err(error.into()),
+    };
+    if source == target || present {
+        return Err(crate::Error::new(5200, "chat fork target already exists"));
+    }
+    let mut conn = open(home)?;
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    for (table, column) in [
+        ("native_sessions", "stored_id"),
+        ("native_messages", "session_id"),
+        ("native_pi_journal", "session_id"),
+        ("native_usage", "session_id"),
+        ("native_deleted", "session_id"),
+        ("native_fresh", "session_id"),
+        ("native_prompt_intents", "session_id"),
+        ("native_summaries", "session_id"),
+        ("native_history_versions", "session_id"),
+        ("native_quarantine", "session_id"),
+        ("native_unrecovered", "session_id"),
+    ] {
+        let present: bool = tx.query_row(
+            &format!("SELECT EXISTS(SELECT 1 FROM {table} WHERE {column}=?)"),
+            [target],
+            |r| r.get(0),
+        )?;
+        if present {
+            return Err(crate::Error::new(5200, "chat fork target already exists"));
+        }
+    }
+    tx.execute(
+        "INSERT INTO native_pending_chat_forks VALUES(?,?,?,?)",
+        params![target, source, bot, owner],
+    )?;
+    tx.commit()?;
+    Ok(())
+}
+
+/// The caller has waited out publication under the catalog reservation, ruled
+/// out other decisions, and released the writer before entering cleanup.
+/// Never traverse descendants or touch a legacy store.
+/// Keep the identity until files, native data and copied zero-charge usage go.
+pub(crate) fn discard_chat_fork(home: &Path, target: &str, bot: &str, owner: &str) -> Result<()> {
+    with_tombstone(home, || {
+        let conn = open(home)?;
+        let ambiguous: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM native_sessions WHERE stored_id=?1 OR json_extract(options,'$.parent_session')=?1)
+         OR EXISTS(SELECT 1 FROM native_delete_options WHERE session_id=?1)
+         OR EXISTS(SELECT 1 FROM native_delete_pending WHERE session_id=?1)
+         OR EXISTS(SELECT 1 FROM native_delete_completed WHERE session_id=?1)
+         OR EXISTS(SELECT 1 FROM native_usage WHERE session_id=?1 AND (bot<>?2 OR owner_id<>?3 OR input_tokens<>0 OR output_tokens<>0 OR cache_read_tokens<>0 OR cache_write_tokens<>0 OR cost<>0))",
+        params![target, bot, owner],
+        |r| r.get(0),
+    )?;
+        if ambiguous {
+            return Err(crate::Error::new(
+                5200,
+                "unpublished chat has another history owner or decision",
+            ));
+        }
+        delete_one(home, target)?;
+        let mut conn = open(home)?;
+        let tx = conn.transaction()?;
+        tx.execute("DELETE FROM native_usage WHERE session_id=?", [target])?;
+        tx.execute(
+            "DELETE FROM native_pending_chat_forks WHERE target=?",
+            [target],
+        )?;
+        tx.commit()?;
+        Ok(())
+    })
+}
+
 /// Recover provisional markers by their catalog operation, without unmarking an
 /// earlier committed descendant. Once the catalog root is gone, cleanup is
 /// destructive and must stay retryable even if files or legacy storage fail.
 pub fn finish_deletes(home: &Path) -> Result<()> {
-    let bot_cleanup = crate::catalog::finish_bot_deletes(home);
-    let protected = crate::catalog::pending_bot_delete_targets(home)?;
+    let mut bot_cleanup = crate::catalog::finish_chat_forks(home);
+    if let Err(error) = crate::catalog::finish_bot_deletes(home)
+        && bot_cleanup.is_ok()
+    {
+        bot_cleanup = Err(error);
+    }
+    let mut protected = crate::catalog::pending_bot_delete_targets(home)?;
+    protected.extend(
+        open(home)?
+            .prepare("SELECT target FROM native_pending_chat_forks")?
+            .query_map([], |r| r.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?,
+    );
     with_tombstone(home, || {
         let listed = catalog_ids(home)?;
         let surviving = surviving_roots(home)?;
@@ -914,13 +1131,13 @@ pub fn finish_deletes(home: &Path) -> Result<()> {
             if listed.root_exists(
                 common::required(&row, "root_id")?,
                 row["cataloged"].as_i64().unwrap_or(0),
-            ) {
-                tx.execute("DELETE FROM native_deleted WHERE session_id=?", [stored])?;
-            } else {
-                tx.execute(
-                    "DELETE FROM native_delete_pending WHERE session_id=?",
-                    [stored],
-                )?;
+            ) && let Err(error) =
+                tx.execute("DELETE FROM native_deleted WHERE session_id=?", [stored])
+            {
+                eprintln!("Could not roll back deleting {stored}: {error}");
+                if bot_cleanup.is_ok() {
+                    bot_cleanup = Err(error.into());
+                }
             }
         }
         tx.commit()?;
@@ -936,6 +1153,9 @@ pub fn finish_deletes(home: &Path) -> Result<()> {
         }
         if let Err(error) = delete_pending(home, &id) {
             eprintln!("Could not finish deleting {id}: {}", error.message);
+            if bot_cleanup.is_ok() {
+                bot_cleanup = Err(error);
+            }
         }
     }
     bot_cleanup
@@ -1451,16 +1671,6 @@ pub fn import_hermes(home: &Path, bot: &str, stored: &str, cwd: &Path) -> Result
     Ok(())
 }
 
-/// Discard only a caller-owned Dream fork whose catalog transaction rolled back.
-/// Ordinary purge keeps billing history; this unpublished copy has zero-charge
-/// usage rows that must go too. The caller must release its catalog writer first.
-pub(crate) fn discard_dream_chat(home: &Path, target: &str) -> Result<()> {
-    with_tombstone(home, || {
-        open(home)?.execute("DELETE FROM native_usage WHERE session_id=?", [target])?;
-        purge_locked(home, target, true)
-    })
-}
-
 /// Starts an independent owner conversation from an already-imported Dream log.
 /// The original JSONL, prompt, journal and cached prefix remain untouched. Old
 /// compaction/branch summaries may contain reports, so replay original messages
@@ -1577,11 +1787,18 @@ pub(crate) fn fork_dream_chat(
         parent = json!(next);
     }
     mark_fresh(home, target)?;
+    #[cfg(all(test, unix))]
+    let mut first = true;
     for mut shown in original.into_iter().chain(missing_reports) {
         if dream_report_text(&shown).is_some_and(|text| reports.contains(&text)) {
             shown["dream"] = json!(true);
         }
         append(home, target, shown)?;
+        #[cfg(all(test, unix))]
+        if first {
+            first = false;
+            crate::catalog::chat_fork_barrier(home, "during_copy")?;
+        }
     }
     let path = session_dir(home, target)?.join("conversation.jsonl");
     common::atomic_write(&path, format!("{}\n", lines.join("\n")).as_bytes())?;
@@ -1740,6 +1957,25 @@ fn projection(message: &Value, display: Option<&str>) -> Option<Value> {
         _ => return None,
     }
     Some(result)
+}
+/// Hidden instructions Hexbot's Pi extension adds to a chat: the todo list
+/// after a compaction and the notice that the fallback model took over.
+/// Neither the user nor the bot said them.
+pub(crate) fn hexbot_instruction(kind: &Value, hidden: bool) -> bool {
+    hidden
+        && kind
+            .as_str()
+            .is_some_and(|kind| matches!(kind, "hexbot_todo" | "hexbot_fallback"))
+}
+/// Pi log records the live runtime never journals: Pi's empty system/tool
+/// catalog updates and Hexbot's hidden instructions. Only recovery records
+/// them, as hidden rows. Any other message must come through message_end.
+pub(crate) fn journaled_on_recovery(message: &Value) -> bool {
+    match message["role"].as_str() {
+        Some("system") => text(&message["content"]).is_empty(),
+        Some("custom") => hexbot_instruction(&message["customType"], message["display"] == false),
+        _ => false,
+    }
 }
 struct PiRoute<'a> {
     stored: &'a str,
@@ -2181,9 +2417,10 @@ fn active_ids(entries: &[Value]) -> Result<HashSet<&str>> {
     }
     Ok(active)
 }
-/// The first display row a section's latest compaction kept, from Pi's
-/// `firstKeptEntryId`: rows before it are in the context only as the summary.
-/// None when it never compacted.
+/// The first display row still in Pi's verbatim context after its latest
+/// compaction. Bind completed live appends without replaying messages, changing
+/// their projections, or billing them again. An incomplete/unknown boundary is
+/// an error, never evidence that every row was summarized.
 pub fn summarised_before(home: &Path, stored: &str) -> Result<Option<i64>> {
     common::identifier(stored)?;
     let path = home
@@ -2195,37 +2432,130 @@ pub fn summarised_before(home: &Path, stored: &str) -> Result<Option<i64>> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(error.into()),
     };
-    let (entries, _, _) = parse_pi_entries(&bytes)?;
+    let uncertain = || {
+        crate::Error::new(
+            5200,
+            "Cannot determine which conversation messages were summarized; the log and saved message journal do not yet agree",
+        )
+    };
+    let (entries, _, torn) = parse_pi_entries(&bytes)?;
+    if torn {
+        return Err(uncertain());
+    }
     let active = active_ids(&entries)?;
     let on_path = |entry: &&Value| entry["id"].as_str().is_some_and(|id| active.contains(id));
-    let Some(kept) = entries
+    let branch = entries.iter().filter(on_path).collect::<Vec<_>>();
+    let Some(compact) = branch
         .iter()
-        .filter(on_path)
-        .rfind(|entry| entry["type"] == "compaction")
-        .map(|entry| entry["firstKeptEntryId"].clone())
+        .rposition(|entry| entry["type"] == "compaction")
     else {
         return Ok(None);
     };
-    let conn = open(home)?;
-    // The kept entry, or the first after it that shows as a row.
-    for entry in entries
+    let kept = branch[compact]["firstKeptEntryId"]
+        .as_str()
+        .ok_or_else(uncertain)?;
+    // Pi uses the compaction's own id when it keeps no earlier entries.
+    let first = branch[..=compact]
         .iter()
-        .filter(on_path)
-        .skip_while(|entry| entry["id"] != kept)
-    {
-        let seq: Option<i64> = conn
-            .query_row(
-                "SELECT projection_seq FROM native_pi_journal WHERE session_id=? AND entry_id=? AND projection_seq IS NOT NULL",
-                params![stored, entry["id"].as_str()],
-                |r| r.get(0),
-            )
-            .optional()?;
-        if seq.is_some() {
-            return Ok(seq);
+        .position(|entry| entry["id"] == kept)
+        .ok_or_else(uncertain)?;
+    let retained = branch[first..]
+        .iter()
+        .filter_map(|entry| entry["id"].as_str())
+        .collect::<HashSet<_>>();
+    let mut conn = open(home)?;
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    check_deleted(&tx, stored)?;
+    let mut earlier = 0;
+    let mut cutoff = None::<i64>;
+    for entry in &entries {
+        let message = match entry["type"].as_str() {
+            Some("message") => entry["message"].clone(),
+            Some("custom_message") => {
+                json!({"role":"custom","content":entry["content"],"customType":entry["customType"],"display":entry["display"],"details":entry["details"],"timestamp":entry_timestamp(entry)*1000.0})
+            }
+            _ => continue,
+        };
+        let entry_id = common::required(entry, "id")?;
+        let raw = message.to_string();
+        let existing: Option<(String, String)> = tx.query_row(
+            "SELECT journal_id,raw_json FROM native_pi_journal WHERE session_id=? AND entry_id=?",
+            params![stored, entry_id], |r| Ok((r.get(0)?, r.get(1)?)),
+        ).optional()?;
+        let journal = if let Some((journal, recorded)) = existing {
+            if recorded != raw {
+                return Err(uncertain());
+            }
+            Some(journal)
+        } else {
+            // Consume occurrences in append order, including abandoned branches.
+            // Equal text, timestamps, or tool arguments alone cannot identify an
+            // event; the entire raw message and its multiplicity must agree.
+            let waiting: Option<String> = tx.query_row(
+                "SELECT journal_id FROM native_pi_journal WHERE session_id=? AND entry_id IS NULL AND raw_json=? ORDER BY rowid LIMIT 1",
+                params![stored, raw], |r| r.get(0),
+            ).optional()?;
+            if let Some(journal) = &waiting {
+                tx.execute(
+                    "UPDATE native_pi_journal SET entry_id=? WHERE journal_id=?",
+                    params![entry_id, journal],
+                )?;
+            }
+            waiting
+        };
+        let Some(journal) = journal else {
+            // The durable append may have beaten native event projection. A
+            // visible message without a row cannot prove a seq cutoff. A record
+            // the runtime journals only on recovery has no row to prove one.
+            if projection(&message, None).is_some() && !journaled_on_recovery(&message) {
+                return Err(uncertain());
+            }
+            continue;
+        };
+        let is_active = active.contains(entry_id);
+        tx.execute(
+            "UPDATE native_pi_journal SET active=? WHERE journal_id=? AND active<>?",
+            params![is_active, journal, is_active],
+        )?;
+        let seq: Option<i64> = tx.query_row(
+            "SELECT projection_seq FROM native_pi_journal WHERE journal_id=?",
+            [&journal],
+            |r| r.get(0),
+        )?;
+        if let Some(seq) = seq.filter(|_| is_active) {
+            if retained.contains(entry_id) {
+                cutoff = Some(cutoff.map_or(seq, |old| old.min(seq)));
+            } else {
+                earlier = earlier.max(seq);
+            }
         }
     }
-    // Nothing kept shows as a row: every row is in the summary.
-    Ok(Some(i64::MAX))
+    // A fully summarized log has a finite boundary too: an event projected
+    // before its next disk append must remain excluded from recall.
+    let cutoff = cutoff.unwrap_or(earlier.checked_add(1).ok_or_else(uncertain)?);
+    if earlier >= cutoff {
+        return Err(uncertain());
+    }
+    let unknown: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM native_pi_journal WHERE session_id=? AND entry_id IS NULL AND projection_seq<?)",
+        params![stored, cutoff], |r| r.get(0),
+    )?;
+    let ids = entries
+        .iter()
+        .filter_map(|entry| entry["id"].as_str())
+        .collect::<HashSet<_>>();
+    let lost = common::rows(
+        &tx,
+        "SELECT entry_id FROM native_pi_journal WHERE session_id=? AND entry_id IS NOT NULL",
+        &[&stored],
+    )?
+    .iter()
+    .any(|row| row["entry_id"].as_str().is_none_or(|id| !ids.contains(id)));
+    if unknown || lost {
+        return Err(uncertain());
+    }
+    tx.commit()?;
+    Ok(Some(cutoff))
 }
 /// Summaries Pi wrote when it compacted this section's current branch in
 /// `[since, until)`, oldest first, as `(timestamp, summary)`. Reads the

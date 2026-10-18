@@ -3,6 +3,9 @@ use super::*;
 #[path = "runtime_stop_tests.rs"]
 mod stop_tests;
 
+#[path = "runtime_admission_tests.rs"]
+mod admission_tests;
+
 fn setup() -> (common::TestHome, Arc<Runtime>, EventHub) {
     let home = common::TestHome::new();
     db::migrate(home.path()).unwrap();

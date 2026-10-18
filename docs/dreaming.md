@@ -21,6 +21,19 @@ The native scheduler and digest builder live in
   start wait for the next dream, so the time windows do not overlap. A first
   dream starts at the beginning of history; failed or interrupted dreams do not
   advance the lower cutoff.
+  An unreadable older database does not stop a dream whose conversations are
+  available in native history. Saved session options alone do not prove an
+  older conversation was imported. New chats carry their existing fresh marker;
+  older chats need a completed import or a healthy older database that proves
+  it has no matching source. Durable Pi messages must also match their saved native journal or committed import projections.
+  The hidden todo list and fallback notice Hexbot's extension adds are
+  exempt: the runtime journals them only when it recovers the log, and the
+  digest leaves them out. Any other custom message must match.
+  This check only reads the log; it never recovers or rewrites a running chat.
+  A missing log cannot replace newer native dialogue with older legacy rows.
+  If any conversation still needs that older database, or native recovery is unfinished
+  or quarantined, the dream fails and leaves its cutoff and proposals unchanged
+  so that history can be read after repair and recovery.
   It retains the newest 12,000 characters per conversation,
   caps the complete serialized digest at 60,000 bytes, and reports how many
   conversations it left out as `omitted_conversations`. Titles keep their
@@ -53,7 +66,10 @@ The native scheduler and digest builder live in
   it leaves out tool results such as `web_extract` output, so fetched pages
   do not become memory through the transcript; the compaction summaries
   above are the one place such text can still reach the dream, labelled as
-  such. A teammate's reply through `message_bot` is speech and stays.
+  such. It also leaves out the hidden `hexbot_todo` and `hexbot_fallback`
+  messages the extension adds after a compaction or a model failure; neither
+  the user nor the bot said them. A teammate's reply through `message_bot`
+  is speech and stays.
 - A bot keeps daily notes beside its memory: one file per local day,
   `profiles/<bot>/memories/notes/YYYY-MM-DD.md`, capped at 4,000 characters
   a day with an error that tells the bot to keep notes short or fold what

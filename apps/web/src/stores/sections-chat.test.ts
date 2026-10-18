@@ -28,7 +28,9 @@ const section = (id: string, overrides: Partial<Section> = {}) =>
     ...overrides
   }) as Section
 
-const daemon = (info: Partial<DaemonInfo>) => info as DaemonInfo
+const daemon = (info: Omit<Partial<DaemonInfo>, 'one_chat'> & { one_chat?: boolean }) =>
+  info as DaemonInfo
+
 const chat = (bot: string) => useSections.getState().chat(bot)
 let listed: Section[] = []
 
@@ -251,4 +253,114 @@ describe('an older daemon’s chat', () => {
       ]
     })
   })
+})
+
+describe('older picks during reconnect', () => {
+  beforeEach(() => {
+    useConnection.setState({
+      target: { kind: 'local' },
+      epoch: 'first',
+      daemon: daemon({ one_chat: false, install_id: 'first' })
+    })
+    useSections.setState({ byId: {}, choosing: null, idsByBot: {}, liveSessionId: {} })
+    vi.mocked(sectionsUnarchive)
+      .mockReset()
+      .mockImplementation(async id => ({ section: section(id) }))
+    vi.mocked(sectionsCreate)
+      .mockReset()
+      .mockResolvedValue({ section: section('canonical') })
+    vi.mocked(daemonInfo).mockReset()
+    vi.mocked(sectionsList).mockReset()
+    listing('writer', section('old'), section('new'))
+  })
+
+  it.each(['list', 'unarchive', 'chooser'] as const)(
+    'a blip cancels the in-flight %s and its callbacks',
+    async boundary => {
+      let complete!: () => void
+
+      if (boundary === 'list') {
+        vi.mocked(sectionsList).mockReturnValueOnce(
+          new Promise(resolve => {
+            complete = () => resolve({ sections: listed })
+          })
+        )
+      }
+
+      if (boundary === 'unarchive') {
+        vi.mocked(sectionsUnarchive).mockReturnValueOnce(
+          new Promise(resolve => {
+            complete = () => resolve({ section: section('old') })
+          })
+        )
+      }
+
+      const pending = chat('writer')
+      let stale: ReturnType<typeof useSections.getState>['choosing'] = null
+
+      if (boundary !== 'list') {
+        await vi.waitFor(() => expect(useSections.getState().choosing).not.toBeNull())
+        stale = useSections.getState().choosing
+
+        if (boundary === 'unarchive') {
+          stale!.pick(section('old'))
+          await vi.waitFor(() => expect(sectionsUnarchive).toHaveBeenCalledOnce())
+        }
+      } else {
+        await vi.waitFor(() => expect(sectionsList).toHaveBeenCalled())
+      }
+
+      useConnection.getState().setDaemon(null)
+      useConnection.getState().setDaemon(daemon({ one_chat: false, install_id: 'first' }))
+      stale?.pick(section('old'))
+      complete?.()
+      expect(await pending).toBeNull()
+      expect(useSections.getState().choosing).toBeNull()
+      expect(useSections.getState().byId.old).toBeUndefined()
+      const retry = chat('writer')
+      await pick(null)
+      expect(await retry).toBeNull()
+    }
+  )
+
+  it.each([false, true])(
+    'an info RPC checks install identity before using an old pick, upgraded=%s',
+    async upgraded => {
+      const first = chat('writer')
+      await pick('old')
+      expect((await first)?.id).toBe('old')
+      useConnection.getState().setDaemon(null)
+      vi.mocked(daemonInfo).mockResolvedValue(daemon({ one_chat: upgraded, install_id: 'second' }))
+      const reconnect = chat('writer')
+
+      if (upgraded) {
+        expect((await reconnect)?.id).toBe('canonical')
+      } else {
+        await pick(null)
+        expect(await reconnect).toBeNull()
+      }
+
+      expect(sectionsUnarchive).toHaveBeenCalledTimes(1)
+      expect(sectionsCreate).toHaveBeenCalledTimes(upgraded ? 1 : 0)
+    }
+  )
+
+  it.each(['install', 'capability'] as const)(
+    'a direct %s change cancels a chooser',
+    async changed => {
+      const pending = chat('writer')
+      await vi.waitFor(() => expect(useSections.getState().choosing).not.toBeNull())
+      const stale = useSections.getState().choosing!
+      useConnection.getState().setDaemon(
+        daemon({
+          one_chat: changed === 'capability',
+          install_id: changed === 'install' ? 'second' : 'first'
+        })
+      )
+      stale.pick(section('old'))
+      expect(await pending).toBeNull()
+      expect(useSections.getState().choosing).toBeNull()
+      expect(sectionsUnarchive).not.toHaveBeenCalled()
+    }
+  )
 })

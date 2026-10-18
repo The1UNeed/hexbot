@@ -231,9 +231,11 @@ inside the Hexbot home, symlinks included.
 - `hexbot.bots.clear_status {name}` → `{bot: Bot}`. Closes every open incident
   for the bot.
 - `hexbot.bots.delete {name}` → `{deleted: true}` (deletes the profile
-  directory, all rows, the bot's scheduled jobs, and the memory proposals those jobs left; refuses with 4211 if any of its sections is live
-  and mid-turn — `session.active_list` status `working` or `waiting` —
-  with `data.sections: [{id, status}]`).
+  directory, all rows, the bot's scheduled jobs, and the memory proposals those jobs left;
+  refuses with 4211 while any conversation has active work, Stop cleanup or
+  recovery, or input reserved to run next, with `data.sections: [{id, status}]`).
+  Reserved input and Stop recovery report `working` in this refusal even after
+  the previous run has settled. Deletion can proceed once that work finishes.
 
 ### Sections
 
@@ -303,11 +305,12 @@ healthy replacement. Dream input omits the copied source snapshot and its old
 summaries; later writes from old clients remain eligible. Copied usage is zero;
 original usage remains on the original conversation.
 
-Bot deletion first blocks new session opens for that bot and waits for opens
-already in progress, including hidden jobs, CLI runs and room turns. New opens
-fail with 4211 until deletion finishes. One-shot description and review processes
-also finish shutting down before cleanup, even if their caller was cancelled.
-Active turns still refuse deletion with 4211. It retires sessions before changing the catalog, then atomically
+Bot deletion blocks new bot starts and waits for opens already in progress,
+including hidden jobs, CLI runs and room turns. New starts fail with 4211 while
+deletion waits or runs. One-shot description and review processes also finish
+shutting down before cleanup, even if their caller was cancelled. Active turns
+still refuse deletion with 4211, including work that became active while opens
+were draining. It retires sessions before changing the catalog, then atomically
 removes its sections, bot and room mappings before purging history or profile
 files. A `pending_bot_delete:<name>` settings journal records exact native,
 legacy-only, room, retained and delegated targets and the catalog commit decision.

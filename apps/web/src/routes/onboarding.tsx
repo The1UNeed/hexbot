@@ -1365,14 +1365,15 @@ function OnboardingPage() {
   // once the read says the file is absent), then the user's section, or
   // provider setup when there are no bots yet.
   const decided = useRef<null | (() => boolean)>(null)
+  const decisionComplete = useRef(false)
   const afterAbout = useRef<() => void>(() => setStep('providers'))
 
   const decide = useCallback(() => {
-    if (decided.current?.()) {
+    if (decisionComplete.current || decided.current?.()) {
       return
     }
 
-    const current = startSelection()
+    const current = startSelection({ hydrate: true })
     decided.current = current
     setStep('deciding')
     void Promise.all([userMemoryGet(), botsList()])
@@ -1380,6 +1381,8 @@ function OnboardingPage() {
         if (!current()) {
           return
         }
+
+        decisionComplete.current = true
 
         if (memory.updated_at === null) {
           afterAbout.current = () => void finish(list.bots, current)

@@ -42,6 +42,8 @@ While a room is being deleted, new messages and bot starts are refused. If delet
 
 Deleting a room, including by removing its last bot, clears failures from that room's turns, removes its delegated conversations, and refreshes the bots' statuses. Failures in other surviving rooms, sections, or background runs, connector problems, and failures without a conversation remain. Archiving a room keeps its failed turns available to retry.
 
+While a room is being deleted or one of its bots is being removed, new messages and bot starts are refused. Closing the app lets the daemon finish deletion. Bots may still join while its processes close. A message saved just before a member removal stays if the room survives. If its bot response could not start during removal, it waits for the next room message or a daemon restart.
+
 ## Bots working together
 
 A bot can ask another of your bots for help, outside any room. Each bot has a description that the others read to decide whom to ask. Write it in the bot's settings under Profile. If you leave it blank, Hexbot writes one from the bot's soul and keeps it out of sight. A bot learns who is on its team when its chat starts, and again when the chat summarises older messages, so a new bot or a changed description reaches it then.

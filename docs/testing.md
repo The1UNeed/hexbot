@@ -30,14 +30,26 @@
   journals in the format of builds before retention, stopped before their
   catalog commit, and restart twice. Committed old deletions, recorded
   retention and foreign mappings stay closed.
-  `tests/deletion_admission.rs` holds actual child processes at TCP startup and
-  shutdown barriers. It checks late hidden, CLI, job and room admission,
-  descendant PIDs, rebound listeners, cancelled requests, rollback recovery,
-  concurrent joins and unrelated rooms. One-shot description PIDs test admission
-  through actual shutdown after cancellation. Hidden, job, public CLI and incoming
-  teammate starts pause before live-ID registration to check deletion waits.
-  It verifies history and raw files
-  remain until the decision and deleted processes are gone before success.
+  `section_delete_recovery` exercises public catalog/App deletions with native,
+  legacy transaction, file and final metadata faults, restart, denied paths,
+  exact aliases, descendants and ownership controls. The catalog library's
+  `section_delete_crash_at_the_real_catalog_commit_recovers_the_decision`
+  kills a child process at socket barriers before and after the actual SQLite
+  catalog COMMIT. It checks rollback versus completed native and legacy erasure.
+  `deletion_admission` holds actual child processes at TCP startup and shutdown
+  barriers. It checks late hidden, CLI, job, teammate and room starts, descendant
+  PIDs, rebound listeners, cancelled requests, concurrent removals and joins,
+  and unrelated rooms. One-shot description PIDs check admission through actual
+  shutdown after cancellation. SQLite and file barriers hold native insertion
+  after ownership checks and actual blocking recovery after caller cancellation.
+  A held accepted turn checks the final busy refusal after admission drains.
+  Bot catalog faults and room faults before mutation
+  check that admission releases and actual jobs and room posts can run again.
+  `room_member_atomicity` checks joins and final-member removal in one catalog
+  transaction. Catalog failure preserves exact native history, raw Pi files,
+  frozen options, incident rows, membership and event sequence before retry.
+  The section recovery false-purge control likewise requires exact retention
+  of native and legacy history, frozen settings and raw files after restart.
 - Pi runtime: `node --test backend/pi-runtime/*.test.mjs` after
   `npm ci --prefix backend/pi-runtime --ignore-scripts --no-audit --no-fund`.
   CI runs the Rust and Pi suites on Linux and macOS. Approval tests use a stub

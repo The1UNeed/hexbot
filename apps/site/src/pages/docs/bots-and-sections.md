@@ -51,7 +51,9 @@ Each night's [dream](/docs/dreaming/) report appears in the chat as a message fr
 
 Use **Stop** to interrupt a running answer. The chat stays available, and you can send another message once the bot is idle. Queued background results run before your next message. A result accepted just after Stop finishes can start the next answer itself. A background result arriving while the answer stops waits until it has stopped, then continues the chat. The new answer can ask questions and request approvals.
 
-Deleting the bot removes its profile, chat, memory, and scheduled jobs. Stop its active work first. Back up the daemon's data directory before removing a bot you may need again.
+Deleting the bot removes its profile, chat, memory, and scheduled jobs. Stop its active work first, then wait for Stop cleanup and any queued results to finish. Deletion is refused while that work remains. Back up the daemon's data directory before removing a bot you may need again.
+
+While deletion runs, new bot starts are refused, including jobs and CLI runs. Closing the app lets the daemon finish deletion. If deletion fails, the bot can work again.
 
 While deletion runs, new bot starts are refused, including jobs and CLI runs. Closing the app lets the daemon finish deletion. If deletion fails, the bot can work again.
 
@@ -69,7 +71,7 @@ Earlier versions let you keep many sections per bot. The first time the updated 
 
 This happens once, at the first start of the updated daemon, before any app or browser can connect. Before it deletes anything, the daemon makes a full copy of its databases and its conversation files in `backups/one-chat-per-bot-<date>-<time>/` in its data directory (`~/.hexbot` by default). The copy is about as large as those files, so the disk needs that much free space.
 
-If anything goes wrong, such as the copy or a history cleanup failing, the daemon deletes nothing more and starts as usual. Sections already removed stay deleted. A later start finishes removing any leftover native history for those sections; it never resumes deleting the remaining sections. History left in an older bot database stays there unread. A section that was not removed keeps its history, even if the daemon stops part way.
+If anything goes wrong, such as the copy or a history cleanup failing, the daemon deletes nothing more and starts as usual. Sections already removed stay deleted. After a committed removal, a later start retries that request's leftover native history and identifiable history in an older bot database. If that older history belongs to another owner or links to a conversation Hexbot must keep, cleanup stays pending and the daemon logs the reason. Restarting alone cannot resolve that conflict. It never resumes deleting the untouched remaining sections. Older untagged tombstones have no legacy ownership to recover. A section that was not removed keeps its history, even if the daemon stops part way.
 
 If a bot's conversations couldn't be read, or the daemon found one of them damaged, the update deletes none of that bot's sections, so their history stays on the daemon. Its chat is then chosen the same way among the sections that open, so a report-only log never outranks a conversation, and the daemon makes a new chat only when none of them can be the chat. Unreadable conversations stay for repair; a later daemon start checks them again. The app shows only that chat and doesn't open the others. Sections an older version makes later are kept too, and the chat is chosen among them the same way. Recreated Dream logs are checked again at chat lookup and before dreaming, so their reports stay out of future dreams.
 

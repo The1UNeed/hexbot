@@ -68,6 +68,8 @@ jobs:
           HEXBOT_TEST_PI="$GITHUB_WORKSPACE/backend/pi-runtime/node_modules/.bin/pi" cargo test --locked --test pi_live -- --ignored
           HEXBOT_TEST_PI="$GITHUB_WORKSPACE/backend/pi-runtime/node_modules/.bin/pi" cargo test --locked --test runtime -- --ignored
           HEXBOT_TEST_PI="$GITHUB_WORKSPACE/backend/pi-runtime/node_modules/.bin/pi" cargo test --locked --test runtime_recovery -- --ignored
+          HEXBOT_TEST_PI="$GITHUB_WORKSPACE/backend/pi-runtime/node_modules/.bin/pi" cargo test --locked --lib runtime::lifecycle_tests::actual_pi_reviewer -- --ignored
+          HEXBOT_TEST_PI="$GITHUB_WORKSPACE/backend/pi-runtime/node_modules/.bin/pi" cargo test --locked --test room_incidents -- --ignored
 
   rust-installer:
     name: Rust installer (${{ matrix.os }})

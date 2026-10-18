@@ -8,9 +8,10 @@ use std::{collections::HashSet, path::Path};
 pub fn get(home: &Path, caller: &str, room: &str) -> Result<Value> {
     user(home, caller)?;
     let conn = db::open(home)?;
-    get_in(&conn, caller, room)
+    get_with_conn(&conn, caller, room)
 }
-fn get_in(conn: &rusqlite::Connection, caller: &str, room: &str) -> Result<Value> {
+
+fn get_with_conn(conn: &rusqlite::Connection, caller: &str, room: &str) -> Result<Value> {
     let mut row = rows(conn, "SELECT * FROM rooms WHERE id=?", &[&room])?
         .into_iter()
         .next()
@@ -77,11 +78,12 @@ pub fn append(
     get(home, caller, room)?;
     let mut conn = db::open(home)?;
     let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-    let event = append_in(&tx, room, kind, actor_kind, actor, payload)?;
+    let event = append_with_conn(&tx, room, kind, actor_kind, actor, payload)?;
     tx.commit()?;
     Ok(event)
 }
-fn append_in(
+
+fn append_with_conn(
     conn: &rusqlite::Connection,
     room: &str,
     kind: &str,
@@ -285,23 +287,29 @@ pub fn call(home: &Path, caller: &str, method: &str, p: &Value) -> Option<Result
             }
             "hexbot.rooms.add_member" => {
                 let room = required(p, "id")?;
-                get(home, caller, room)?;
+                let mut conn = conn;
+                let tx =
+                    conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+                // Recheck existence under the same writer as removal. A join
+                // ordered after deletion must report room not found.
+                get_with_conn(&tx, caller, room)?;
                 let bot = required(p, "bot")?;
                 accessible_bot(home, caller, bot)?;
-                conn.execute(
+                tx.execute(
                     "INSERT INTO room_members VALUES (?,'bot',?,?,?,NULL,0) ON CONFLICT(room_id,member_kind,member_id) DO UPDATE SET left_at=NULL,added_by=excluded.added_by,added_at=excluded.added_at,last_read_seq=0",
                     params![room, bot, caller, now()],
                 )?;
-                let event = append(
-                    home,
-                    caller,
+                let event = append_with_conn(
+                    &tx,
                     room,
                     "member.added",
                     "human",
                     Some(caller),
                     json!({"bot":bot}),
                 )?;
-                Ok(json!({"room":get(home,caller,room)?,"event":event}))
+                let result = get_with_conn(&tx, caller, room)?;
+                tx.commit()?;
+                Ok(json!({"room":result,"event":event}))
             }
             "hexbot.rooms.send" => Ok(json!({
                 "event": append(
@@ -631,9 +639,20 @@ impl RoomEngine {
     }
     /// Wake the room after its owner posts.
     pub async fn notify(self: &Arc<Self>, caller: &str, room: &str) -> Result<()> {
-        let _admission = self
+        let admission = self
             .admission
             .enter(crate::admission::Scope::Room(room.into()))?;
+        self.notify_admitted(caller, room, &admission)
+    }
+
+    // An RPC post already holds admission through persistence. Reuse it so a
+    // queued member removal cannot turn a saved message into a failed send.
+    pub(crate) fn notify_admitted(
+        self: &Arc<Self>,
+        caller: &str,
+        room: &str,
+        _admission: &tokio::sync::OwnedRwLockReadGuard<()>,
+    ) -> Result<()> {
         let owner = get(&self.home, caller, room)?["owner_id"]
             .as_str()
             .unwrap_or(caller)
@@ -1178,14 +1197,17 @@ fn legacy_usage(
 /// Remove a bot the owner chose; removing the last bot deletes the room.
 /// Callers check ownership first.
 pub fn remove_bot(home: &Path, owner: &str, room: &str, bot: &str) -> Result<Value> {
+    user(home, owner)?;
     crate::runtime_store::with_tombstone(home, || {
         let mut conn = db::open(home)?;
+        // Process closure finished before this final membership decision.
+        // Joins remain free to commit until this IMMEDIATE transaction starts.
         let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        get_in(&tx, owner, room)?;
         if tx.execute("UPDATE room_members SET left_at=? WHERE room_id=? AND member_kind='bot' AND member_id=? AND left_at IS NULL", params![now(),room,bot])? == 0 {
             return Err(Error::new(4232, format!("active room member not found: {bot}")));
         }
-        let event = append_in(
+        get_with_conn(&tx, owner, room)?;
+        let event = append_with_conn(
             &tx,
             room,
             "member.left",
@@ -1193,9 +1215,9 @@ pub fn remove_bot(home: &Path, owner: &str, room: &str, bot: &str) -> Result<Val
             Some(owner),
             json!({"bot":bot}),
         )?;
-        let mut result = get_in(&tx, owner, room)?;
+        let mut result = get_with_conn(&tx, owner, room)?;
         if active_bots(&result).is_empty() {
-            let deleted = delete_in(home, room, tx)?;
+            let deleted = delete_with_conn(home, room, tx)?;
             result["deleted"] = json!(true);
             if deleted["history_pending"] == true {
                 result["history_pending"] = json!(true);
@@ -1206,8 +1228,9 @@ pub fn remove_bot(home: &Path, owner: &str, room: &str, bot: &str) -> Result<Val
             "UPDATE rooms SET main_bot=NULL WHERE id=? AND main_bot=?",
             params![room, bot],
         )?;
+        result = get_with_conn(&tx, owner, room)?;
         tx.commit()?;
-        Ok(json!({"room":get(home,owner,room)?,"event":event}))
+        Ok(json!({"room":result,"event":event}))
     })
 }
 /// Delete a room and its bots' room transcripts. Callers check ownership first.
@@ -1215,7 +1238,7 @@ pub fn delete(home: &Path, room: &str) -> Result<Value> {
     crate::runtime_store::with_tombstone(home, || {
         let mut conn = db::open(home)?;
         let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        delete_in(home, room, tx)
+        delete_with_conn(home, room, tx)
     })
 }
 /// Resolve the exact mapped roots before their catalog mappings disappear.
@@ -1247,7 +1270,7 @@ pub(crate) fn delete_targets(
     }
     Ok(targets)
 }
-fn delete_in(home: &Path, room: &str, tx: rusqlite::Transaction<'_>) -> Result<Value> {
+fn delete_with_conn(home: &Path, room: &str, tx: rusqlite::Transaction<'_>) -> Result<Value> {
     let targets = delete_targets(home, &tx, room)?;
     let pending = crate::runtime_store::with_room_delete(home, room, &targets, || {
         crate::settings::retire_room_incidents(&tx, room)?;
@@ -1255,18 +1278,22 @@ fn delete_in(home: &Path, room: &str, tx: rusqlite::Transaction<'_>) -> Result<V
         tx.commit()?;
         Ok(())
     })?;
-    let cleaned = (|| {
-        for target in &targets {
-            crate::runtime_store::purge_locked(home, required(target, "id")?, false)?;
-        }
-        Ok::<_, Error>(())
-    })();
+    let cleaned = pending.map_or_else(
+        || {
+            (|| {
+                for target in &targets {
+                    crate::runtime_store::purge_locked(home, required(target, "id")?, false)?;
+                }
+                Ok::<_, Error>(())
+            })()
+        },
+        Err,
+    );
     if let Err(error) = cleaned {
         eprintln!("Deleted room {room}, but history cleanup is pending: {error}");
         return Ok(json!({"deleted":true,"history_pending":true}));
     }
     // Successful purge also finalizes a pending marker. Empty rooms have no work.
-    debug_assert!(pending.is_none() || !targets.is_empty());
     Ok(json!({"deleted":true}))
 }
 /// Room limits carry the keys the room settings save, each a count or null.

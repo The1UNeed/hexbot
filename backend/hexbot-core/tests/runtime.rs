@@ -541,6 +541,447 @@ async fn actual_pi_falls_back_without_repeating_user_message() {
 
 #[tokio::test]
 #[ignore = "requires HEXBOT_TEST_PI to the pinned Pi executable"]
+async fn actual_pi_todo_and_fallback_reminders_do_not_block_dreams() {
+    use axum::{
+        Json, Router,
+        extract::State,
+        response::{IntoResponse, Response},
+        routing::post,
+    };
+    use hexbot_core::{
+        catalog, common,
+        dreaming::{self, Dreaming},
+    };
+    use std::sync::{Arc, Mutex};
+    const SPEECH: &str = "native dialogue the dream must learn";
+    type Requests = Arc<Mutex<Vec<Value>>>;
+    // The primary model fails the turn that carries SPEECH once, so Hexbot's
+    // extension hands that chat to the fallback model.
+    async fn complete(State(requests): State<Requests>, Json(body): Json<Value>) -> Response {
+        let fail = {
+            let mut requests = requests.lock().unwrap();
+            let fail = body["model"] == "primary"
+                && body.to_string().contains(SPEECH)
+                && !requests.iter().any(|r| r.to_string().contains(SPEECH));
+            requests.push(body.clone());
+            fail
+        };
+        if fail {
+            return (
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error":{"message":"primary is unavailable","type":"server_error"}})),
+            )
+                .into_response();
+        }
+        let data = json!({"id":"r","object":"chat.completion.chunk","created":1,"model":body["model"],"choices":[{"index":0,"delta":{"role":"assistant","content":"Reply from the fixture"},"finish_reason":"stop"}]});
+        (
+            [("content-type", "text/event-stream")],
+            format!("data: {data}\n\ndata: [DONE]\n\n"),
+        )
+            .into_response()
+    }
+    async fn wait(
+        events: &mut tokio::sync::broadcast::Receiver<hexbot_core::events::Event>,
+        kind: &str,
+        payload: impl Fn(&Value) -> bool,
+    ) -> Value {
+        tokio::time::timeout(Duration::from_secs(25), async {
+            loop {
+                let event = events.recv().await.unwrap();
+                if event.frame["params"]["type"] == kind
+                    && payload(&event.frame["params"]["payload"])
+                {
+                    return event.frame["params"]["payload"].clone();
+                }
+            }
+        })
+        .await
+        .unwrap()
+    }
+    let executable = PathBuf::from(std::env::var_os("HEXBOT_TEST_PI").unwrap());
+    // A manual dream while the chat runs, and a scheduled dream after its
+    // process retired without recovery.
+    for scheduled in [false, true] {
+        let requests = Requests::default();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let app = Router::new()
+            .route("/v1/chat/completions", post(complete))
+            .with_state(requests.clone());
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let home = setup();
+        let h = home.path();
+        fs::write(h.join("profiles/owl/config.yaml"),format!("model:\n  provider: lmstudio\n  default: primary\n  api_key: test-key\n  base_url: http://{address}/v1\ntools:\n  enabled_toolsets: []\n")).unwrap();
+        let conn = db::open(h).unwrap();
+        for (key, value) in [
+            ("fallback_model", json!("lmstudio/fallback")),
+            (
+                "dream_time",
+                json!(chrono::Local::now().format("%H:%M").to_string()),
+            ),
+        ] {
+            conn.execute(
+                "INSERT INTO settings(key,value) VALUES(?,?)",
+                [key.to_owned(), value.to_string()],
+            )
+            .unwrap();
+        }
+        fs::create_dir_all(h.join("profiles/owl/pi")).unwrap();
+        fs::write(
+            h.join("profiles/owl/pi/settings.json"),
+            "{\"retry\":{\"enabled\":false}}",
+        )
+        .unwrap();
+        fs::create_dir_all(h.join("profiles/owl/memories/notes")).unwrap();
+        fs::write(
+            h.join("profiles/owl/memories/notes")
+                .join(format!("{}.md", chrono::Local::now().format("%Y-%m-%d"))),
+            "daily note",
+        )
+        .unwrap();
+        dreaming::propose_memory(
+            h,
+            "alice",
+            "owl",
+            "job",
+            "add",
+            &json!({"text":"pending proposal"}),
+        )
+        .unwrap();
+        let hub = EventHub::new();
+        let mut events = hub.subscribe();
+        let runtime = Runtime::new(h.into(), hub.clone(), executable.clone()).unwrap();
+        let chat = catalog::chat_section(h, "alice", "owl").unwrap();
+        let id = chat["id"].as_str().unwrap().to_owned();
+        let opened = runtime
+            .call("alice", "hexbot.sections.open", &json!({"id":id}))
+            .await
+            .unwrap()
+            .unwrap();
+        let live = opened["section"]["live_session_id"].clone();
+        let dir = runtime_store::session_dir(h, &id).unwrap();
+        // A pending todo makes the extension restate the list after Pi's
+        // automatic compaction. The large turn crosses the default window, so
+        // Pi summarizes the turn before it.
+        fs::write(dir.join("todo.json"),json!({"todos":[{"id":"1","content":"finish the quarterly report","status":"pending"}],"revision":1}).to_string()).unwrap();
+        for text in [
+            "an earlier turn for Pi to summarize".to_owned(),
+            format!(
+                "a long turn before compaction {}",
+                "long context ".repeat(12000)
+            ),
+            SPEECH.to_owned(),
+        ] {
+            runtime
+                .call(
+                    "alice",
+                    "prompt.submit",
+                    &json!({"session_id":live,"text":text}),
+                )
+                .await
+                .unwrap()
+                .unwrap();
+            wait(&mut events, "status.update", |p| p["kind"] == "idle").await;
+        }
+        if scheduled {
+            runtime.close_stored("alice", &id).await.unwrap();
+        }
+        let raw = dir.join("conversation.jsonl");
+        let original = fs::read(&raw).unwrap();
+        let entries = String::from_utf8_lossy(&original)
+            .lines()
+            .map(|line| serde_json::from_str::<Value>(line).unwrap())
+            .collect::<Vec<_>>();
+        let reminders = |entries: &[Value]| {
+            entries
+                .iter()
+                .filter(|e| e["type"] == "custom_message" && e["display"] == false)
+                .map(|e| e["customType"].as_str().unwrap().to_owned())
+                .collect::<Vec<_>>()
+        };
+        assert!(entries.iter().any(|e| e["type"] == "compaction"));
+        assert_eq!(reminders(&entries), ["hexbot_todo", "hexbot_fallback"]);
+        let native = runtime_store::open(h).unwrap();
+        let journaled = || {
+            native
+                .query_row(
+                    "SELECT count(*) FROM native_pi_journal WHERE session_id=? AND json_extract(raw_json,'$.role')='custom'",
+                    [&id],
+                    |r| r.get::<_, i64>(0),
+                )
+                .unwrap()
+        };
+        // The runtime journals Pi's custom messages only when it recovers a log.
+        assert_eq!(journaled(), 0);
+        let frozen = native
+            .query_row(
+                "SELECT prompt,options FROM native_sessions WHERE stored_id=?",
+                [&id],
+                |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
+            )
+            .unwrap();
+        let usage = runtime_store::usage(h, &id).unwrap();
+        let sent = requests.lock().unwrap().len();
+        let dreams = Dreaming::new(h.into(), runtime.clone(), hub);
+        if scheduled {
+            dreams.tick_at(common::now()).await.unwrap();
+        } else {
+            dreams
+                .call("alice", "hexbot.dreaming.run_now", &json!({"bot":"owl"}))
+                .await
+                .unwrap()
+                .unwrap();
+        }
+        let changed = wait(&mut events, "hexbot.dreaming.changed", |p| {
+            !p["dream"].is_null()
+        })
+        .await;
+        assert_eq!(changed["dream"]["status"], "complete", "{changed}");
+        let dream = requests.lock().unwrap()[sent..]
+            .iter()
+            .map(Value::to_string)
+            .filter(|r| r.contains("pending proposal"))
+            .collect::<Vec<_>>();
+        assert_eq!(dream.len(), 1);
+        assert!(dream[0].contains(SPEECH), "{}", dream[0]);
+        assert_eq!(
+            conn.query_row(
+                "SELECT count(*) FROM memory_proposals WHERE consumed_at IS NULL",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+            0
+        );
+        assert_eq!(fs::read(&raw).unwrap(), original);
+        assert_eq!(runtime_store::usage(h, &id).unwrap(), usage);
+        assert_eq!(
+            native
+                .query_row(
+                    "SELECT prompt,options FROM native_sessions WHERE stored_id=?",
+                    [&id],
+                    |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+                )
+                .unwrap(),
+            frozen
+        );
+        // Recovery journals both reminders. Neither the user nor the bot said
+        // them, so the digest leaves them out as it did while the chat was live.
+        runtime.close_stored("alice", &id).await.unwrap();
+        runtime
+            .call("alice", "hexbot.sections.open", &json!({"id":id}))
+            .await
+            .unwrap()
+            .unwrap();
+        runtime.close_stored("alice", &id).await.unwrap();
+        assert_eq!(journaled(), 2);
+        let digest = dreaming::build_digest(h, "owl", 0., f64::MAX, None)
+            .unwrap()
+            .to_string();
+        assert!(digest.contains(SPEECH), "{digest}");
+        assert!(!digest.contains("finish the quarterly report"), "{digest}");
+        assert!(!digest.contains("The model service failed"), "{digest}");
+        dreams.shutdown().await;
+        runtime.shutdown().await;
+        server.abort();
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires HEXBOT_TEST_PI to the pinned Pi executable"]
+async fn actual_pi_session_search_reads_history_after_normal_compaction() {
+    use axum::{Json, Router, routing::post};
+    use hexbot_core::{catalog, native_product_tools};
+    const EARLIER: &str = "an earlier turn about the zephyr harbor";
+    const LATER: &str = "a follow-up about the quokka garden";
+    async fn complete(Json(body): Json<Value>) -> ([(&'static str, &'static str); 1], String) {
+        let data = json!({"id":"r","object":"chat.completion.chunk","created":1,"model":body["model"],"choices":[{"index":0,"delta":{"role":"assistant","content":"Reply from the fixture"},"finish_reason":"stop"}]});
+        (
+            [("content-type", "text/event-stream")],
+            format!("data: {data}\n\ndata: [DONE]\n\n"),
+        )
+    }
+    async fn recall(h: &Path, id: &str, args: Value) -> Value {
+        native_product_tools::call(h, "alice", "owl", id, "session_search", &args)
+            .await
+            .unwrap()
+            .unwrap()
+    }
+    // Search from the chat itself finds only what Pi summarized; the kept
+    // turn and everything after it are already in the bot's context.
+    async fn summarized_turn_only(h: &Path, id: &str) {
+        let found = recall(h, id, json!({"query":"zephyr"})).await;
+        assert_eq!(found["count"], 1, "{found}");
+        assert_eq!(found["results"][0]["session_id"], id);
+        for current in ["quokka", "long"] {
+            assert_eq!(
+                recall(h, id, json!({"query":current})).await["count"],
+                0,
+                "{current}"
+            );
+        }
+        let read = recall(h, id, json!({"session_id":id})).await;
+        let said = read["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|m| m["role"] == "user" || m["role"] == "assistant")
+            .map(|m| m["content"].as_str().unwrap().to_owned())
+            .collect::<Vec<_>>();
+        assert_eq!(said, [EARLIER, "Reply from the fixture"], "{read}");
+    }
+    let executable = PathBuf::from(std::env::var_os("HEXBOT_TEST_PI").unwrap());
+    // Pi's own tool catalog record is enough; a pending todo adds the hidden
+    // list the extension restates after compaction.
+    for todo in [false, true] {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let app = Router::new().route("/v1/chat/completions", post(complete));
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let home = setup();
+        let h = home.path();
+        fs::write(h.join("profiles/owl/config.yaml"),format!("model:\n  provider: lmstudio\n  default: primary\n  api_key: test-key\n  base_url: http://{address}/v1\ntools:\n  enabled_toolsets: [session_search]\n")).unwrap();
+        fs::create_dir_all(h.join("profiles/owl/pi")).unwrap();
+        fs::write(
+            h.join("profiles/owl/pi/settings.json"),
+            "{\"retry\":{\"enabled\":false}}",
+        )
+        .unwrap();
+        let hub = EventHub::new();
+        let mut events = hub.subscribe();
+        let runtime = Runtime::new(h.into(), hub, executable.clone()).unwrap();
+        let id = catalog::chat_section(h, "alice", "owl").unwrap()["id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let opened = runtime
+            .call("alice", "hexbot.sections.open", &json!({"id":id}))
+            .await
+            .unwrap()
+            .unwrap();
+        let live = opened["section"]["live_session_id"].clone();
+        let dir = runtime_store::session_dir(h, &id).unwrap();
+        if todo {
+            fs::write(dir.join("todo.json"),json!({"todos":[{"id":"1","content":"finish the quarterly report","status":"pending"}],"revision":1}).to_string()).unwrap();
+        }
+        // The large turn crosses the default window, so Pi automatically
+        // summarizes the turn before it.
+        for text in [
+            EARLIER.to_owned(),
+            format!(
+                "a long turn before compaction {}",
+                "long context ".repeat(12000)
+            ),
+            LATER.to_owned(),
+        ] {
+            runtime
+                .call(
+                    "alice",
+                    "prompt.submit",
+                    &json!({"session_id":live,"text":text}),
+                )
+                .await
+                .unwrap()
+                .unwrap();
+            tokio::time::timeout(Duration::from_secs(25), async {
+                loop {
+                    let event = events.recv().await.unwrap();
+                    if event.frame["params"]["type"] == "status.update"
+                        && event.frame["params"]["payload"]["kind"] == "idle"
+                    {
+                        break;
+                    }
+                }
+            })
+            .await
+            .unwrap();
+        }
+        let raw = dir.join("conversation.jsonl");
+        let original = fs::read(&raw).unwrap();
+        let entries = String::from_utf8_lossy(&original)
+            .lines()
+            .map(|line| serde_json::from_str::<Value>(line).unwrap())
+            .collect::<Vec<_>>();
+        let compactions = entries
+            .iter()
+            .filter(|e| e["type"] == "compaction")
+            .collect::<Vec<_>>();
+        assert_eq!(compactions.len(), 1);
+        let kept = entries
+            .iter()
+            .find(|e| e["id"] == compactions[0]["firstKeptEntryId"])
+            .unwrap();
+        assert!(runtime_store::text(&kept["message"]["content"]).starts_with("a long turn"));
+        assert!(
+            entries
+                .iter()
+                .any(|e| e["type"] == "message" && e["message"]["role"] == "system")
+        );
+        let notices = entries
+            .iter()
+            .filter(|e| e["type"] == "custom_message")
+            .map(|e| (e["customType"].as_str().unwrap(), e["display"].clone()))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            notices,
+            if todo {
+                vec![("hexbot_todo", json!(false))]
+            } else {
+                vec![]
+            }
+        );
+        let native = runtime_store::open(h).unwrap();
+        let internal = |role: &str| {
+            native
+                .query_row(
+                    "SELECT count(*) FROM native_pi_journal WHERE session_id=? AND json_extract(raw_json,'$.role')=?",
+                    [id.as_str(), role],
+                    |r| r.get::<_, i64>(0),
+                )
+                .unwrap()
+        };
+        // The live runtime journals neither record.
+        assert_eq!((internal("system"), internal("custom")), (0, 0));
+        let frozen = || {
+            native
+                .query_row(
+                    "SELECT prompt,options FROM native_sessions WHERE stored_id=?",
+                    [&id],
+                    |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
+                )
+                .unwrap()
+        };
+        let saved = frozen();
+        let usage = runtime_store::usage(h, &id).unwrap();
+        let history = runtime_store::history(h, &id).unwrap();
+        // While Pi still runs the chat, and after its process retires without
+        // recovery, search reads the log without changing it or billing.
+        summarized_turn_only(h, &id).await;
+        runtime.close_stored("alice", &id).await.unwrap();
+        summarized_turn_only(h, &id).await;
+        assert_eq!(fs::read(&raw).unwrap(), original);
+        assert_eq!(frozen(), saved);
+        assert_eq!(runtime_store::usage(h, &id).unwrap(), usage);
+        assert_eq!(runtime_store::history(h, &id).unwrap(), history);
+        assert_eq!((internal("system"), internal("custom")), (0, 0));
+        // Recovery journals both as hidden rows; search answers the same.
+        runtime
+            .call("alice", "hexbot.sections.open", &json!({"id":id}))
+            .await
+            .unwrap()
+            .unwrap();
+        runtime.close_stored("alice", &id).await.unwrap();
+        assert!(internal("system") > 0);
+        assert_eq!(internal("custom"), i64::from(todo));
+        summarized_turn_only(h, &id).await;
+        assert_eq!(frozen(), saved);
+        runtime.shutdown().await;
+        server.abort();
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires HEXBOT_TEST_PI to the pinned Pi executable"]
 async fn actual_pi_delegates_and_returns_child_results() {
     use axum::{Json, Router, extract::State, routing::post};
     use std::sync::{Arc, Mutex};
