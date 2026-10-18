@@ -10,6 +10,14 @@ pub(super) struct InputBoundary {
     _landing: Option<Landing>,
 }
 
+impl InputBoundary {
+    // Recovery releases process guards, but keeps the same lifecycle reader
+    // until enqueue instead of re-entering behind a queued deletion writer.
+    pub(super) fn admission(&self) -> SessionAdmission {
+        self._admission.clone()
+    }
+}
+
 impl Runtime {
     fn check_input_alias(&self, s: &Live) -> Result<()> {
         if s.input_generation != s.input_queue.generation.load(Ordering::Acquire)

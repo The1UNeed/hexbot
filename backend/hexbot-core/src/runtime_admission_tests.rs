@@ -457,6 +457,10 @@ async fn actual_pi_prompt_after_recovery_refreshes_configuration_and_transfers_u
     );
     runtime.shutdown().await;
     server.abort();
+    background_tests::actual_background_recovery(false).await;
+    background_tests::actual_background_recovery(true).await;
+    background_tests::public_delegate_reply_after_recovery().await;
+    background_tests::public_peer_reply_after_refresh().await;
 }
 
 #[tokio::test]
@@ -1586,3 +1590,6 @@ async fn existing_process_input_obeys_bot_and_room_deletion_admission() {
         runtime.shutdown().await;
     }
 }
+
+#[path = "runtime_background_tests.rs"]
+mod background_tests;
