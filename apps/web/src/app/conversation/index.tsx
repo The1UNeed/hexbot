@@ -22,6 +22,7 @@ import { StatusDot } from '../../components/ui/status-dot'
 import {
   approvalRespond,
   attachFile,
+  newInputId,
   promptSubmit,
   sectionsList,
   sessionInterrupt
@@ -694,22 +695,24 @@ async function submitOrReopen(
   sessionId: string,
   sectionId: string | null,
   text: string,
-  retry: { current: () => boolean; files: File[] }
+  retry: { current: () => boolean; files: File[]; pending: TranscriptMessage; uploads: string[] }
 ): Promise<boolean> {
-  const { current, files } = retry
+  const { current, files, uploads } = retry
+  let pending = retry.pending
+  const identified = useConnection.getState().daemon?.transcript_identity === true
 
   if (!current()) {
     return false
   }
 
-  const pending = useTranscripts
-    .getState()
-    .bySession[sessionId]?.messages.findLast(message => message.role === 'user')
-
   let active = sessionId
 
   try {
-    await promptSubmit(sessionId, text)
+    await promptSubmit(
+      sessionId,
+      text,
+      identified ? { input_id: pending.inputId, attachments: uploads } : {}
+    )
 
     return current()
   } catch (error) {
@@ -745,7 +748,7 @@ async function submitOrReopen(
               .getState()
               .bySession[active]?.messages.some(message => message.id === pending.id)
           ) {
-            transcriptActions().appendUserMessage(active, text, pending.attachments)
+            pending = transcriptActions().appendUserMessage(active, text, pending.attachments)
           }
 
           // Closing a process can discard its staged uploads. Send the
@@ -766,7 +769,16 @@ async function submitOrReopen(
             attachments.push(upload.id)
           }
 
-          await promptSubmit(active, text, { attachments })
+          if (identified) {
+            const inputId = newInputId()
+            transcriptActions().setInputId(active, pending.id, inputId)
+            pending = { ...pending, inputId }
+          }
+
+          await promptSubmit(active, text, {
+            attachments,
+            ...(identified && { input_id: pending.inputId })
+          })
 
           return current()
         }
@@ -819,7 +831,7 @@ function Composer({
       ...current,
       ...incoming.map(file => ({
         file,
-        id: `${file.name}-${file.size}-${crypto.randomUUID()}`,
+        id: `${file.name}-${file.size}-${newInputId()}`,
         preview: file.type.startsWith('image/') ? URL.createObjectURL(file) : undefined
       }))
     ])
@@ -842,17 +854,26 @@ function Composer({
       Boolean(source?.isConnected)
 
     try {
+      const identified = useConnection.getState().daemon?.transcript_identity === true
+      const uploads: string[] = []
+
       for (const item of files) {
-        await attachFile(sessionId, item.file)
+        const uploaded = await attachFile(sessionId, item.file)
 
         if (!current()) {
           return
         }
+
+        if (identified && typeof uploaded.id !== 'string') {
+          throw new Error('The daemon did not return an attachment ID. Attach the file again.')
+        }
+
+        uploads.push(typeof uploaded.id === 'string' ? uploaded.id : item.id)
       }
 
-      const attachments: Attachment[] = files.map(item => ({
+      const attachments: Attachment[] = files.map((item, index) => ({
         dataUrl: item.preview,
-        id: item.id,
+        id: uploads[index] ?? item.id,
         kind: item.file.type.startsWith('image/')
           ? 'image'
           : item.file.type === 'application/pdf'
@@ -863,7 +884,7 @@ function Composer({
         size: item.file.size
       }))
 
-      transcriptActions().appendUserMessage(sessionId, text.trim(), attachments)
+      const pending = transcriptActions().appendUserMessage(sessionId, text.trim(), attachments)
 
       if (sectionId) {
         sectionsActions().markTouched(sectionId, text)
@@ -872,7 +893,9 @@ function Composer({
       if (
         !(await submitOrReopen(sessionId, sectionId, text.trim(), {
           current,
-          files: files.map(item => item.file)
+          files: files.map(item => item.file),
+          pending,
+          uploads
         }))
       ) {
         return
@@ -1304,24 +1327,58 @@ function BotConversation() {
   // Restored history carries no times and stays first, each question it
   // asked right under the message that asked it.
   const timeline = useMemo(() => {
-    const items: TimelineItem[] = [
-      ...shown.flatMap((message, index) => {
-        const at = message.createdAt > 0 ? toMillis(message.createdAt) : 0
+    // The store's message order is authoritative after hydration. Cards with
+    // a source fragment follow that fragment, even across queued user inputs.
+    const items: TimelineItem[] = shown.flatMap((message, index) => {
+      const at = message.createdAt > 0 ? toMillis(message.createdAt) : 0
 
-        return [
-          { at, index, kind: 'message' as const, message },
-          ...(message.clarifies ?? []).map(clarify => ({ at, clarify, kind: 'clarify' as const }))
-        ]
-      }),
+      return [
+        { at, index, kind: 'message' as const, message },
+        ...(message.clarifies ?? []).map(clarify => ({ at, clarify, kind: 'clarify' as const }))
+      ]
+    })
+
+    const cards: TimelineItem[] = [
       ...clarifies.map(clarify => ({ at: clarify.receivedAt, clarify, kind: 'clarify' as const })),
       ...approvals.map(approval => ({
-        approval,
         at: approval.receivedAt,
+        approval,
         kind: 'approval' as const
       }))
     ]
 
-    return items.sort((a, b) => a.at - b.at)
+    for (const card of cards.sort((a, b) => a.at - b.at)) {
+      const source =
+        card.kind === 'approval'
+          ? card.approval.messageId
+          : card.kind === 'clarify'
+            ? card.clarify.messageId
+            : undefined
+
+      const anchor = source
+        ? items.findLastIndex(
+            item => item.kind === 'message' && item.message.fragmentIds?.includes(source)
+          )
+        : -1
+
+      let position = anchor < 0 ? items.findIndex(item => item.at > card.at) : anchor + 1
+
+      if (position < 0) {
+        position = items.length
+      }
+
+      while (
+        position < items.length &&
+        items[position]!.kind !== 'message' &&
+        items[position]!.at <= card.at
+      ) {
+        position++
+      }
+
+      items.splice(position, 0, card)
+    }
+
+    return items
   }, [approvals, clarifies, shown])
 
   const canPrompt = () =>
@@ -1340,7 +1397,12 @@ function BotConversation() {
     const last = messages.findLast(message => message.role === 'user')
 
     if (liveId && last) {
-      void promptSubmit(liveId, last.text)
+      const options =
+        useConnection.getState().daemon?.transcript_identity === true
+          ? { input_id: newInputId(), attachments: [] }
+          : {}
+
+      void promptSubmit(liveId, last.text, options)
     }
   }
 
@@ -1356,9 +1418,15 @@ function BotConversation() {
 
   const send = (prompt: string) => {
     if (canPrompt() && liveId && section) {
-      transcriptActions().appendUserMessage(liveId, prompt)
+      const pending = transcriptActions().appendUserMessage(liveId, prompt)
       sectionsActions().markTouched(section.id, prompt)
-      void promptSubmit(liveId, prompt).finally(
+
+      const options =
+        useConnection.getState().daemon?.transcript_identity === true
+          ? { input_id: pending.inputId, attachments: [] }
+          : {}
+
+      void promptSubmit(liveId, prompt, options).finally(
         () => void sectionsActions().settleTitle(section.id)
       )
     }

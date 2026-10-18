@@ -1,6 +1,7 @@
 import type { GatewayEvent } from '@hermes/shared'
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 
+import { promptSubmit } from '../../lib/api'
 import { routeEvent } from '../../lib/events'
 import { setActiveRpc } from '../../lib/rpc'
 import type { Bot, DaemonInfo, Section } from '../../lib/types'
@@ -215,20 +216,34 @@ it.each(['start-delta', 'delta-only', 'already-streaming', 'completed-during-rea
   'renders retained history, report and answer once across %s',
   async mode => {
     const event = (type: string, payload: Record<string, unknown> = {}) =>
-      routeEvent({ type, session_id: 'chat', payload } as GatewayEvent)
+      routeEvent({
+        type,
+        session_id: 'chat',
+        payload: { turn_id: 'render-run', message_id: '4', ...payload }
+      } as GatewayEvent)
+
+    let inputId: string | undefined
 
     const rows = [
       { role: 'assistant', row_id: 1, text: 'Previous conversation' },
-      { role: 'user', row_id: 2, text: 'Current question' },
+      {
+        role: 'user',
+        row_id: 2,
+        text: 'Current question',
+        get input_id() {
+          return inputId
+        },
+        turn_id: 'render-run'
+      },
       { role: 'assistant', row_id: 3, text: 'Dream report', dream: true }
     ]
 
-    const answer = { role: 'assistant', row_id: 4, text: 'Final answer' }
+    const answer = { role: 'assistant', row_id: 4, text: 'Final answer', turn_id: 'render-run' }
     await useSections.getState().open('chat')
     render(<ConversationColumn />)
     expect(await screen.findByText('Previous conversation')).toBeVisible()
     await act(async () => {
-      useTranscripts.getState().appendUserMessage('chat', 'Current question')
+      inputId = useTranscripts.getState().appendUserMessage('chat', 'Current question').inputId
 
       if (mode === 'already-streaming') {
         event('message.start')
@@ -289,7 +304,11 @@ it.each(['start-delta', 'delta-only', 'already-streaming', 'completed-during-rea
 
 it('keeps pagination, equal interims and an HTML tool through hydration and the terminal reread', async () => {
   const event = (type: string, payload: Record<string, unknown> = {}) =>
-    routeEvent({ type, session_id: 'chat', payload } as GatewayEvent)
+    routeEvent({
+      type,
+      session_id: 'chat',
+      payload: { turn_id: 'render-run', message_id: '70', ...payload }
+    } as GatewayEvent)
 
   texts = Array.from({ length: 65 }, (_, index) => `Older message ${index}`)
   const old = history(texts).messages
@@ -299,12 +318,14 @@ it('keeps pagination, equal interims and an HTML tool through hydration and the 
   expect(screen.queryByText('Older message 0')).toBeNull()
   fireEvent.click(screen.getByRole('button', { name: 'Load earlier messages' }))
   expect(screen.getByText('Older message 0')).toBeVisible()
+  let inputId: string | undefined
   await act(async () => {
-    useTranscripts.getState().appendUserMessage('chat', 'Current question')
+    inputId = useTranscripts.getState().appendUserMessage('chat', 'Current question').inputId
     event('message.start')
-    event('message.interim', { text: 'Equal interim' })
-    event('message.interim', { text: 'Equal interim' })
+    event('message.interim', { text: 'Equal interim', message_id: '67' })
+    event('message.interim', { text: 'Equal interim', message_id: '68' })
     event('tool.start', {
+      message_id: '68',
       tool_id: 'visual-1',
       name: 'hexbot_show_html',
       args: { html: '<p>chart</p>', title: 'Costs' }
@@ -313,11 +334,24 @@ it('keeps pagination, equal interims and an HTML tool through hydration and the 
 
   const rows = [
     ...old,
-    { role: 'user', row_id: 65, text: 'Current question' },
+    {
+      role: 'user',
+      row_id: 65,
+      text: 'Current question',
+      input_id: inputId,
+      turn_id: 'render-run'
+    },
     { role: 'assistant', row_id: 66, text: 'Dream report', dream: true },
-    { role: 'assistant', row_id: 67, text: 'Equal interim' },
-    { role: 'assistant', row_id: 68, text: 'Equal interim' },
-    { role: 'tool', row_id: 69, tool_id: 'visual-1', name: 'hexbot_show_html', text: 'Shown' }
+    { role: 'assistant', row_id: 67, turn_id: 'render-run', text: 'Equal interim' },
+    { role: 'assistant', row_id: 68, turn_id: 'render-run', text: 'Equal interim' },
+    {
+      role: 'tool',
+      row_id: 69,
+      turn_id: 'render-run',
+      tool_id: 'visual-1',
+      name: 'hexbot_show_html',
+      text: 'Shown'
+    }
   ]
 
   const held = deferred()
@@ -329,7 +363,10 @@ it('keeps pagination, equal interims and an HTML tool through hydration and the 
         ? held.promise
         : Promise.resolve({
             section,
-            messages: [...rows, { role: 'assistant', row_id: 70, text: 'Final answer' }]
+            messages: [
+              ...rows,
+              { role: 'assistant', row_id: 70, turn_id: 'render-run', text: 'Final answer' }
+            ]
           })
   )
   await act(async () => {
@@ -355,4 +392,277 @@ it('keeps pagination, equal interims and an HTML tool through hydration and the 
   expect(screen.getAllByText('Dream report')).toHaveLength(1)
   expect(screen.getAllByText('Final answer')).toHaveLength(1)
   expect(reads).toBe(2)
+})
+
+it.each([false, true])(
+  'renders an unproven pending input and file separately from durable users, same text=%s',
+  async same => {
+    await useSections.getState().open('chat')
+    render(<ConversationColumn />)
+    expect(await screen.findByText('Previous conversation')).toBeVisible()
+    const text = 'Own pending question'
+
+    const file = {
+      id: 'own-file',
+      name: 'own-private-notes.txt',
+      mime: 'text/plain',
+      size: 9,
+      kind: 'file' as const
+    }
+
+    const submit = deferred()
+    const held = deferred()
+    let localId = ''
+    let entered!: () => void
+
+    const entry = new Promise<void>(yes => {
+      entered = yes
+    })
+
+    call.mockImplementation((method: string) => {
+      if (method === 'prompt.submit') {
+        entered()
+
+        return submit.promise
+      }
+
+      return method === 'hexbot.sections.open' ? held.promise : reply(method)
+    })
+    let submitting!: ReturnType<typeof promptSubmit>
+    await act(async () => {
+      localId = useTranscripts.getState().appendUserMessage('chat', text, [file]).id
+      submitting = promptSubmit('chat', text, { attachments: [file.id] })
+      await entry
+      reload()
+    })
+    const loading = useSections.getState().open('chat')
+
+    const rows = [
+      { role: 'assistant', row_id: 0, text: 'Previous conversation' },
+      { role: 'assistant', row_id: 1, text: 'Dream report', dream: true },
+      { role: 'user', row_id: 2, text: same ? text : 'Remote question' },
+      { role: 'assistant', row_id: 3, text: 'Remote answer' }
+    ]
+
+    await act(async () => {
+      held.resolve({ section, messages: rows })
+      await loading
+    })
+    expect(screen.getAllByText(text)).toHaveLength(same ? 2 : 1)
+    expect(screen.getAllByText(file.name)).toHaveLength(1)
+    expect(screen.getAllByText('Dream report')).toHaveLength(1)
+    expect(screen.getAllByText('Remote answer')).toHaveLength(1)
+    expect(
+      useTranscripts.getState().bySession.chat!.messages.find(m => m.id === '2')?.attachments
+    ).toEqual([])
+    expect(
+      useTranscripts.getState().bySession.chat!.messages.find(m => m.id === localId)?.attachments
+    ).toEqual([file])
+    await act(async () => {
+      submit.resolve({ status: 'submitted' })
+      await submitting
+      call.mockResolvedValue({ section, messages: rows })
+      await useSections.getState().open('chat')
+    })
+    expect(screen.getAllByText(text)).toHaveLength(same ? 2 : 1)
+    expect(screen.getAllByText(file.name)).toHaveLength(1)
+    expect(
+      useTranscripts.getState().bySession.chat!.messages.find(m => m.id === '2')?.attachments
+    ).toEqual([])
+  }
+)
+
+it.each(['loaded', 'unloaded'])(
+  'renders a remote identity-equipped turn after its durable user, %s',
+  async mode => {
+    if (mode === 'loaded') {
+      await useSections.getState().open('chat')
+    }
+
+    const held = deferred()
+
+    const rows = [
+      { role: 'assistant', row_id: 0, text: 'Previous conversation' },
+      { role: 'assistant', row_id: 1, text: 'Dream report', dream: true },
+      {
+        role: 'user',
+        row_id: 2,
+        input_id: 'remote-input',
+        turn_id: 'remote-run',
+        text: 'Remote question'
+      }
+    ]
+
+    const answer = {
+      role: 'assistant',
+      row_id: 'remote-answer',
+      turn_id: 'remote-run',
+      text: 'Remote final answer'
+    }
+
+    let reads = 0
+    call.mockImplementation((method: string) =>
+      method === 'hexbot.sections.open'
+        ? ++reads === 1
+          ? held.promise
+          : Promise.resolve({ section, messages: [...rows, answer] })
+        : reply(method)
+    )
+    render(<ConversationColumn />)
+    await act(async () => {
+      reload()
+    })
+    await waitFor(() => expect(reads).toBe(1))
+    const loading = useSections.getState().open('chat')
+    await act(async () => {
+      routeEvent({
+        type: 'message.start',
+        session_id: 'chat',
+        payload: { turn_id: 'remote-run' }
+      } as GatewayEvent)
+      routeEvent({
+        type: 'message.delta',
+        session_id: 'chat',
+        payload: { turn_id: 'remote-run', message_id: 'remote-answer', text: answer.text }
+      } as GatewayEvent)
+      held.resolve({ section, messages: rows })
+      await loading
+    })
+    expect(screen.getAllByText('Previous conversation')).toHaveLength(1)
+    expect(screen.getAllByText('Dream report')).toHaveLength(1)
+    expect(screen.getAllByText('Remote question')).toHaveLength(1)
+    expect(
+      screen
+        .getByText('Remote question')
+        .compareDocumentPosition(screen.getByRole('status', { name: 'Owl is writing' })) &
+        Node.DOCUMENT_POSITION_FOLLOWING
+    ).toBeTruthy()
+    await act(async () => {
+      routeEvent({
+        type: 'message.complete',
+        session_id: 'chat',
+        payload: { turn_id: 'remote-run', message_id: 'remote-answer', text: answer.text }
+      } as GatewayEvent)
+      await useSections.getState().open('chat')
+      await useSections.getState().open('chat')
+    })
+    expect(screen.getAllByText('Remote final answer')).toHaveLength(1)
+    expect(screen.getAllByText('Dream report')).toHaveLength(1)
+    expect(
+      screen
+        .getByText('Remote question')
+        .compareDocumentPosition(screen.getByText('Remote final answer')) &
+        Node.DOCUMENT_POSITION_FOLLOWING
+    ).toBeTruthy()
+    expect(useTranscripts.getState().bySession.chat!.messages.map(message => message.id)).toEqual([
+      '0',
+      '1',
+      '2',
+      'remote-answer'
+    ])
+  }
+)
+
+it('renders queued users, identified replies and an answered card in their actual order', async () => {
+  await useSections.getState().open('chat')
+  render(<ConversationColumn />)
+
+  const event = (type: string, payload: Record<string, unknown> = {}) =>
+    routeEvent({
+      type,
+      session_id: 'chat',
+      payload: { turn_id: 'queued-run', ...payload }
+    } as GatewayEvent)
+
+  await act(async () => {
+    event('message.start')
+    event('message.interim', { message_id: 'first-fragment', text: 'First queued reply' })
+    event('tool.start', { message_id: 'first-fragment', tool_id: 'queued-tool', name: 'terminal' })
+    event('approval.request', {
+      message_id: 'first-fragment',
+      request_id: 'queued-card',
+      command: 'read first.txt'
+    })
+    useTranscripts.getState().resolveApproval('chat', 'queued-card', 'once')
+    event('tool.complete', {
+      message_id: 'first-fragment',
+      tool_id: 'queued-tool',
+      result_text: 'Read'
+    })
+    event('message.delta', { message_id: 'second-fragment', text: 'Second queued reply' })
+  })
+
+  const rows = [
+    { role: 'assistant', row_id: 0, text: 'Previous conversation' },
+    { role: 'assistant', row_id: 1, text: 'Dream report', dream: true },
+    { role: 'user', row_id: 2, text: 'First queued question', turn_id: 'queued-run' },
+    {
+      role: 'assistant',
+      row_id: 'first-fragment',
+      text: 'First queued reply',
+      turn_id: 'queued-run'
+    },
+    {
+      role: 'tool',
+      row_id: 'tool-row',
+      tool_id: 'queued-tool',
+      name: 'terminal',
+      text: 'Read',
+      turn_id: 'queued-run'
+    },
+    { role: 'user', row_id: 3, text: 'Second queued question', turn_id: 'queued-run' }
+  ]
+
+  call.mockImplementation((method: string) =>
+    method === 'hexbot.sections.open' ? Promise.resolve({ section, messages: rows }) : reply(method)
+  )
+  await act(async () => {
+    reload()
+    await useSections.getState().open('chat')
+  })
+
+  const before = (a: HTMLElement, b: HTMLElement) =>
+    Boolean(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING)
+
+  expect(
+    before(screen.getByText('First queued question'), screen.getByText('First queued reply'))
+  ).toBe(true)
+  expect(before(screen.getByText('First queued reply'), screen.getByText('read first.txt'))).toBe(
+    true
+  )
+  expect(
+    before(screen.getByText('read first.txt'), screen.getByText('Second queued question'))
+  ).toBe(true)
+  expect(
+    before(
+      screen.getByText('Second queued question'),
+      screen.getByRole('status', { name: 'Owl is writing' })
+    )
+  ).toBe(true)
+  call.mockImplementation((method: string) =>
+    method === 'hexbot.sections.open'
+      ? Promise.resolve({
+          section,
+          messages: [
+            ...rows,
+            {
+              role: 'assistant',
+              row_id: 'second-fragment',
+              text: 'Second queued reply',
+              turn_id: 'queued-run'
+            }
+          ]
+        })
+      : reply(method)
+  )
+  await act(async () => {
+    event('message.complete', { message_id: 'second-fragment', text: 'Second queued reply' })
+    await useSections.getState().open('chat')
+    await useSections.getState().open('chat')
+  })
+  expect(screen.getAllByText('First queued reply')).toHaveLength(1)
+  expect(screen.getAllByText('Second queued reply')).toHaveLength(1)
+  expect(
+    before(screen.getByText('read first.txt'), screen.getByText('Second queued question'))
+  ).toBe(true)
 })

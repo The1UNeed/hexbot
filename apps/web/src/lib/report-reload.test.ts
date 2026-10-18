@@ -36,7 +36,16 @@ const attachment: Attachment = {
 const user = { role: 'user', row_id: 3, text: 'Current user question' }
 const report = { role: 'assistant', row_id: 4, text: 'New dream report', dream: true }
 const answer = { role: 'assistant', row_id: 5, text: 'New assistant answer' }
-const snapshot = (rows = [...prior, user, report]) => ({ section, messages: rows })
+let inputId: string | undefined
+
+const snapshot = (rows: Record<string, unknown>[] = [...prior, user, report]) => ({
+  section,
+  messages: rows.map(row => ({
+    ...row,
+    ...(row.role === 'user' && row.row_id !== 1 && row.row_id !== 11 && { input_id: inputId }),
+    ...(Number(row.row_id) >= 3 && row.dream !== true && { turn_id: 'run-one' })
+  }))
+})
 
 const barrier = <T = unknown>() => {
   let resolve!: (value: T) => void
@@ -53,7 +62,14 @@ const barrier = <T = unknown>() => {
 const deps = { refreshBots: () => {}, refreshSections: () => {} }
 
 const event = (type: string, payload: Record<string, unknown> = {}) =>
-  routeEvent({ type, session_id: 'chat', payload } as GatewayEvent, deps)
+  routeEvent(
+    {
+      type,
+      session_id: 'chat',
+      payload: { turn_id: 'run-one', message_id: '5', ...payload }
+    } as GatewayEvent,
+    deps
+  )
 
 const reload = (value = true) =>
   routeEvent(
@@ -80,7 +96,7 @@ beforeEach(async () => {
   useConnection.setState({
     target: { kind: 'local' },
     epoch: 'process-one',
-    daemon: { one_chat: true } as DaemonInfo
+    daemon: { one_chat: true, transcript_identity: true } as DaemonInfo
   })
   useSections.setState({
     byId: { chat: section },
@@ -100,7 +116,7 @@ beforeEach(async () => {
   })
   setActiveRpc({ call } as never)
   await useSections.getState().open('chat')
-  useTranscripts.getState().appendUserMessage('chat', user.text, [attachment])
+  inputId = useTranscripts.getState().appendUserMessage('chat', user.text, [attachment]).inputId
 })
 afterEach(() => {
   setActiveRpc(null)
@@ -288,11 +304,16 @@ it.each(['target', 'epoch'] as const)(
 it('overlaps persisted interims and tool IDs while retaining reasoning and the later live tail', async () => {
   event('message.start')
   event('message.delta', { text: 'First interim' })
-  event('message.interim', { text: 'First interim', already_streamed: true })
-  event('message.delta', { text: 'Second interim' })
-  event('message.interim', { text: 'Second interim', already_streamed: true })
-  event('tool.start', { tool_id: 'read-1', name: 'read', args: { path: 'notes.txt' } })
-  event('reasoning.delta', { text: 'Keep this reasoning' })
+  event('message.interim', { text: 'First interim', already_streamed: true, message_id: '5' })
+  event('message.delta', { text: 'Second interim', message_id: '6' })
+  event('message.interim', { text: 'Second interim', already_streamed: true, message_id: '6' })
+  event('tool.start', {
+    tool_id: 'read-1',
+    name: 'read',
+    args: { path: 'notes.txt' },
+    message_id: '6'
+  })
+  event('reasoning.delta', { text: 'Keep this reasoning', message_id: '6' })
   const held = barrier()
 
   const interimRows = [
@@ -314,8 +335,8 @@ it('overlaps persisted interims and tool IDs while retaining reasoning and the l
   )
   reload()
   const loading = useSections.getState().open('chat')
-  event('tool.complete', { tool_id: 'read-1', result_text: 'File contents' })
-  event('message.delta', { text: 'Later live tail' })
+  event('tool.complete', { tool_id: 'read-1', result_text: 'File contents', message_id: '6' })
+  event('message.delta', { text: 'Later live tail', message_id: '8' })
   held.resolve(snapshot(interimRows))
   await loading
   const live = useTranscripts.getState().bySession.chat!
@@ -335,7 +356,7 @@ it('overlaps persisted interims and tool IDs while retaining reasoning and the l
     'Second interim',
     'Later live tail'
   ])
-  event('message.complete', { text: answer.text })
+  event('message.complete', { text: answer.text, message_id: '8' })
   await useSections.getState().open('chat')
   const final = useTranscripts.getState().bySession.chat!
   expect(reads).toBe(2)
@@ -361,10 +382,10 @@ it('keeps repeated equal text as distinct history rows, interims and turns', asy
   useTranscripts.setState({ bySession: {} })
   call.mockResolvedValue(snapshot(old))
   await useSections.getState().open('chat')
-  useTranscripts.getState().appendUserMessage('chat', 'Same')
+  inputId = useTranscripts.getState().appendUserMessage('chat', 'Same').inputId
   event('message.start')
-  event('message.interim', { text: 'Same' })
-  event('message.interim', { text: 'Same' })
+  event('message.interim', { text: 'Same', message_id: '15' })
+  event('message.interim', { text: 'Same', message_id: '16' })
 
   const rows = [
     ...old,
@@ -385,13 +406,13 @@ it('keeps repeated equal text as distinct history rows, interims and turns', asy
   )
   reload()
   const loading = useSections.getState().open('chat')
-  event('message.delta', { text: 'Same' })
+  event('message.delta', { text: 'Same', message_id: '17' })
   held.resolve(snapshot(rows))
   await loading
   expect(
     useTranscripts.getState().bySession.chat!.messages.flatMap(m => [...(m.parts ?? []), m.text])
   ).toEqual(Array(7).fill('Same'))
-  event('message.complete', { text: 'Same' })
+  event('message.complete', { text: 'Same', message_id: '17' })
   await useSections.getState().open('chat')
   expect(state().texts).toEqual(Array(7).fill('Same'))
   expect(useTranscripts.getState().bySession.chat!.messages.map(m => m.id)).toEqual([
@@ -458,7 +479,7 @@ it('preserves cards splitting a live turn and refreshes a terminal error', async
   )
   reload()
   const loading = useSections.getState().open('chat')
-  event('message.delta', { text: 'After approval' })
+  event('message.delta', { text: 'After approval', message_id: '7' })
   event('clarify.request', { request_id: 'clarify-1', question: 'Proceed?' })
   held.resolve(snapshot(rows))
   await loading
@@ -522,7 +543,7 @@ it('keeps a known history tool completion that arrives during the read', async (
   reload()
   const loading = useSections.getState().open('chat')
   event('tool.complete', { tool_id: 'known-tool', result_text: 'Later result' })
-  event('message.delta', { text: 'Resumed tail' })
+  event('message.delta', { text: 'Resumed tail', message_id: '8' })
   held.resolve(snapshot([...rows, report]))
   await loading
   expect(
@@ -533,7 +554,7 @@ it('keeps a known history tool completion that arrives during the read', async (
   call.mockResolvedValue(
     snapshot([...rows, { role: 'assistant', row_id: 8, text: answer.text }, report])
   )
-  event('message.complete', { text: answer.text })
+  event('message.complete', { text: answer.text, message_id: '8' })
   await useSections.getState().open('chat')
   expect(state().texts.filter(text => text === answer.text)).toHaveLength(1)
   expect(
@@ -547,10 +568,10 @@ it('keeps a known history tool completion that arrives during the read', async (
 it('keeps multiple interim bubbles before a card and the later live bubble once', async () => {
   event('message.start')
   event('message.interim', { text: 'Interim one' })
-  event('message.interim', { text: 'Interim two' })
-  event('message.delta', { text: 'Before card' })
+  event('message.interim', { text: 'Interim two', message_id: '6' })
+  event('message.delta', { text: 'Before card', message_id: '7' })
   event('approval.request', { request_id: 'card', command: 'pwd' })
-  event('message.delta', { text: 'After card' })
+  event('message.delta', { text: 'After card', message_id: '8' })
 
   const rows = [
     ...prior,

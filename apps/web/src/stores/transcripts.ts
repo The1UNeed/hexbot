@@ -15,6 +15,7 @@ import {
   approvalReceived,
   clarifyAnswered,
   clarifyQuestions,
+  newInputId,
   nextMessageId,
   sectionsTouch
 } from '../lib/api'
@@ -51,6 +52,12 @@ const INCIDENT_MERGE_MS = 15_000
 export type TranscriptMessage = Message & { errorDetail?: ErrorDetail }
 
 export interface Transcript {
+  /** Identity supplied on the current event, separate from UI bubble identity. */
+  identity?: { turnId?: string; messageId?: string }
+  /** The current run, independent of a late event from an earlier run. */
+  activeTurnId?: string
+  /** Completed source fragments in the last authoritative snapshot. */
+  durableFragments?: string[]
   approvals: ApprovalRequest[]
   /**
    * "Checking this step" while Auto mode reviews a step. It belongs to the
@@ -66,10 +73,6 @@ export interface Transcript {
   error: null | string
   info: null | SessionInfo
   messages: TranscriptMessage[]
-  /** Durable row IDs before the unacknowledged local tail began. */
-  historyBase?: string[]
-  /** Durable user anchors for live bubbles retained across consecutive reads. */
-  historyUsers?: Record<string, string>
   /** The section this live session belongs to, when known. */
   sectionId?: string
   sessionId: string
@@ -122,6 +125,8 @@ export interface ToolCompletePayload {
 }
 
 export interface ApprovalRequestPayload {
+  message_id?: string
+  turn_id?: string
   choices?: ApprovalChoice[]
   command?: string
   reason?: string
@@ -130,6 +135,8 @@ export interface ApprovalRequestPayload {
 }
 
 export interface TranscriptsState {
+  eventIdentity: (sessionId: string, identity: { turnId?: string; messageId?: string }) => void
+  setInputId: (sessionId: string, messageId: string, inputId: string) => void
   answerClarify: (sessionId: string, requestId: string, questionId: string, answer: string) => void
   approvalRequest: (
     sessionId: string,
@@ -261,7 +268,13 @@ export const clarifyWaiting = (clarify: ClarifyRequest) =>
  */
 function closePart(message: Message): Message {
   return message.text.trim()
-    ? { ...message, parts: [...(message.parts ?? []), message.text], text: '' }
+    ? {
+        ...message,
+        parts: [...(message.parts ?? []), message.text],
+        partIds: [...(message.partIds ?? []), message.textId],
+        text: '',
+        textId: undefined
+      }
     : message
 }
 
@@ -294,8 +307,18 @@ function settle(message: Message, finalText?: string): Message {
   const text = finalText || message.text
   const last = message.parts?.at(-1)
 
-  return last !== undefined && (!text.trim() || text.trim() === last.trim())
-    ? { ...message, parts: message.parts?.slice(0, -1), text: last }
+  const lastId = message.partIds?.at(-1)
+
+  return last !== undefined &&
+    (!message.textId || message.textId === lastId) &&
+    (!text.trim() || text.trim() === last.trim())
+    ? {
+        ...message,
+        parts: message.parts?.slice(0, -1),
+        partIds: message.partIds?.slice(0, -1),
+        textId: lastId,
+        text: last
+      }
     : { ...message, text }
 }
 
@@ -315,17 +338,39 @@ function withCurrentAssistant(
     : undefined
 
   if (current) {
-    return replaceMessage(transcript, current.id, patch)
+    return replaceMessage(transcript, current.id, message =>
+      patch(identifyMessage(message, transcript.identity))
+    )
   }
 
-  const created = patch(newAssistantMessage(transcript.checking))
+  const created = patch(
+    identifyMessage(newAssistantMessage(transcript.checking), transcript.identity)
+  )
 
   return {
     ...transcript,
     messages: [...transcript.messages, created],
     streamingMessageId: created.id,
-    turnActive: true
+    turnActive: true,
+    activeTurnId: transcript.identity?.turnId ?? transcript.activeTurnId
   }
+}
+
+function identifyMessage(message: Message, identity: Transcript['identity']): Message {
+  const id = identity?.messageId
+
+  return {
+    ...message,
+    ...(identity?.turnId && { turnId: identity.turnId }),
+    ...(id && { fragmentIds: [...new Set([...(message.fragmentIds ?? []), id])] })
+  }
+}
+
+function textIdentity(message: Message, id: string | undefined): Message {
+  const next =
+    message.text && message.textId !== id && (message.textId || id) ? closePart(message) : message
+
+  return { ...next, textId: id }
 }
 
 export const useTranscripts = create<TranscriptsState>((set, get) => {
@@ -333,25 +378,25 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
     set(state => {
       const current = state.bySession[sessionId] ?? emptyTranscript(sessionId)
 
-      const next = patch(current)
-
-      if (!next.historyBase && next.messages.some(m => m.createdAt)) {
-        return {
-          bySession: {
-            ...state.bySession,
-            [sessionId]: {
-              ...next,
-              historyBase: current.messages.filter(m => !m.createdAt).map(m => m.id)
-            }
-          }
-        }
-      }
-
-      return { bySession: { ...state.bySession, [sessionId]: next } }
+      return { bySession: { ...state.bySession, [sessionId]: patch(current) } }
     })
   }
 
   return {
+    eventIdentity(sessionId, identity) {
+      const previous = get().bySession[sessionId]?.identity
+
+      if (previous?.turnId === identity.turnId && previous?.messageId === identity.messageId) {
+        return
+      }
+
+      update(sessionId, transcript => ({ ...transcript, identity }))
+    },
+    setInputId(sessionId, messageId, inputId) {
+      update(sessionId, transcript =>
+        replaceMessage(transcript, messageId, message => ({ ...message, inputId }))
+      )
+    },
     warnings: {},
     setWarning(sectionId, message) {
       set(state => {
@@ -373,7 +418,7 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
         const existing = state.bySession[sessionId]
 
         if (existing && hydration) {
-          const restored = hydrateHistory(existing, messages, new Set(hydration.reports))
+          const restored = hydrateHistory(existing, messages)
 
           return {
             bySession: {
@@ -438,6 +483,7 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
         attachments,
         createdAt: Date.now(),
         id: nextMessageId('u'),
+        inputId: newInputId(),
         role: 'user',
         streaming: false,
         text,
@@ -455,14 +501,25 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
 
     messageStart(sessionId) {
       update(sessionId, transcript => {
-        const message = newAssistantMessage(transcript.checking)
+        const message = identifyMessage(
+          newAssistantMessage(transcript.checking),
+          transcript.identity
+        )
 
         return {
           ...transcript,
           error: null,
-          messages: [...transcript.messages, message],
+          messages: [
+            ...transcript.messages.map(previous =>
+              previous.id === transcript.streamingMessageId
+                ? settle({ ...previous, streaming: false })
+                : previous
+            ),
+            message
+          ],
           streamingMessageId: message.id,
           turnActive: true,
+          activeTurnId: transcript.identity?.turnId,
           turnPrefix: undefined
         }
       })
@@ -473,14 +530,20 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
         return
       }
 
-      update(sessionId, transcript =>
-        withCurrentAssistant(transcript, message => ({
-          ...message,
-          activity: undefined,
-          streaming: true,
-          text: message.text + text
-        }))
-      )
+      update(sessionId, transcript => {
+        if (
+          transcript.identity?.messageId &&
+          transcript.durableFragments?.includes(transcript.identity.messageId)
+        ) {
+          return transcript
+        }
+
+        return withCurrentAssistant(transcript, message => {
+          const next = textIdentity(message, transcript.identity?.messageId)
+
+          return { ...next, activity: undefined, streaming: true, text: next.text + text }
+        })
+      })
     },
 
     messageInterim(sessionId, text, alreadyStreamed = false) {
@@ -490,15 +553,24 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
         return
       }
 
-      update(sessionId, transcript =>
-        withCurrentAssistant(transcript, message =>
-          closePart({
-            ...message,
+      update(sessionId, transcript => {
+        if (
+          transcript.identity?.messageId &&
+          transcript.durableFragments?.includes(transcript.identity.messageId)
+        ) {
+          return transcript
+        }
+
+        return withCurrentAssistant(transcript, message => {
+          const next = textIdentity(message, transcript.identity?.messageId)
+
+          return closePart({
+            ...next,
             streaming: true,
-            text: alreadyStreamed ? message.text : message.text + text
+            text: alreadyStreamed ? next.text : next.text + text
           })
-        )
-      )
+        })
+      })
     },
 
     reasoningDelta(sessionId, text) {
@@ -511,6 +583,7 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
           ...message,
           streaming: true,
           thinking: (message.thinking ?? '') + text,
+          thinkingId: transcript.identity?.messageId ?? message.thinkingId,
           workUntil: Date.now()
         }))
       )
@@ -535,6 +608,7 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
 
     toolStart(sessionId, payload) {
       const call: ToolCall = {
+        messageId: get().bySession[sessionId]?.identity?.messageId,
         args: payload.args ?? payload.args_text ?? null,
         durationS: null,
         name: String(payload.name ?? 'tool'),
@@ -650,7 +724,10 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
         }
 
         const finalize = (message: Message): Message => ({
-          ...settle(message, finalText),
+          ...settle(
+            finalText ? textIdentity(message, transcript.identity?.messageId) : message,
+            finalText
+          ),
           activity: undefined,
           checking: undefined,
           error: payload.error ?? message.error,
@@ -689,6 +766,8 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
       const requestId = String(payload.request_id ?? nextMessageId('ap'))
 
       const approval: ApprovalRequest = {
+        messageId: payload.message_id,
+        turnId: payload.turn_id,
         choices: payload.choices ?? ['once', 'deny'],
         command: payload.command,
         reason: payload.reason,
@@ -740,6 +819,8 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
         added = true
 
         const clarify: ClarifyRequest = {
+          messageId: payload.message_id,
+          turnId: payload.turn_id,
           answers: payload.answers ?? {},
           questions,
           receivedAt: Date.now(),

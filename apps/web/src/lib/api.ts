@@ -563,6 +563,7 @@ export function devicesRevoke(id: string): Promise<{ revoked: boolean }> {
 // ---------------------------------------------------------------------------
 
 export interface PromptSubmitOptions {
+  input_id?: string
   attachments?: string[]
   display_kind?: 'hidden'
   queued?: boolean
@@ -573,8 +574,12 @@ export function promptSubmit(
   sessionId: string,
   text: string,
   options: PromptSubmitOptions = {}
-): Promise<{ status: string }> {
-  return rpcCall<{ status: string }>('prompt.submit', { session_id: sessionId, text, ...options })
+): Promise<{ status: string; input_id?: string }> {
+  return rpcCall<{ status: string; input_id?: string }>('prompt.submit', {
+    session_id: sessionId,
+    text,
+    ...options
+  })
 }
 
 export function sessionInterrupt(sessionId: string): Promise<{ status: string }> {
@@ -745,6 +750,20 @@ export async function attachFile(sessionId: string, file: File): Promise<AttachR
 
 let messageCounter = 0
 
+/** UUID correlation also works on paired LAN pages without randomUUID. */
+export function newInputId(): string {
+  if (typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID()
+  }
+
+  const bytes = crypto.getRandomValues(new Uint8Array(16))
+  bytes[6] = (bytes[6]! & 15) | 64
+  bytes[8] = (bytes[8]! & 63) | 128
+  const hex = Array.from(bytes, byte => byte.toString(16).padStart(2, '0')).join('')
+
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`
+}
+
 export function nextMessageId(prefix = 'm'): string {
   messageCounter += 1
 
@@ -863,6 +882,7 @@ export function messagesFromHistory(
   // Tool rows carry no arguments; the assistant row that made the call does,
   // as the JSON the model wrote. Parsed, they match live `tool.start` args.
   const callArgs = new Map<string, unknown>()
+  const callMessages = new Map<string, string>()
   const reports = new Set(rows.filter(row => row.dream === true).map(row => String(row.row_id)))
 
   for (const row of rows) {
@@ -884,6 +904,10 @@ export function messagesFromHistory(
 
       if (typeof id === 'string' && typeof fn?.arguments === 'string') {
         callArgs.set(id, parseArguments(fn.arguments))
+
+        if (row.row_id != null) {
+          callMessages.set(id, String(row.row_id))
+        }
       }
     }
 
@@ -891,6 +915,7 @@ export function messagesFromHistory(
       const target = messages.at(-1)
 
       const call = {
+        messageId: callMessages.get(String(row.tool_call_id ?? row.tool_id)) ?? target?.textId,
         args: row.args ?? callArgs.get(String(row.tool_call_id ?? row.tool_id)) ?? null,
         durationS: null,
         name: String(row.name ?? 'tool'),
@@ -905,9 +930,15 @@ export function messagesFromHistory(
       const clarify =
         call.name === 'clarify' ? clarifyFromHistory(call.toolId, call.args, row) : null
 
+      if (clarify) {
+        clarify.messageId = call.messageId
+        clarify.turnId = typeof row.turn_id === 'string' ? row.turn_id : undefined
+      }
+
       const calls = [
         call,
         ...(row.nested_calls?.calls ?? []).map(nested => ({
+          messageId: call.messageId,
           args: nested.arguments ?? null,
           durationS: nested.durationMs == null ? null : nested.durationMs / 1000,
           name: nested.name,
@@ -956,14 +987,21 @@ export function messagesFromHistory(
       row.dream !== true &&
       previous?.role === 'assistant' &&
       !reports.has(previous.id) &&
+      previous.turnId === (typeof row.turn_id === 'string' ? row.turn_id : undefined) &&
       previous.toolCalls.length &&
       !previous.clarifies?.length
     ) {
       if (previous.text.trim()) {
         previous.parts = [...(previous.parts ?? []), previous.text]
+        previous.partIds = [...(previous.partIds ?? []), previous.textId]
       }
 
       previous.text = text
+      previous.textId = row.row_id == null ? undefined : String(row.row_id)
+      previous.fragmentIds = [
+        ...(previous.fragmentIds ?? []),
+        ...(previous.textId ? [previous.textId] : [])
+      ]
 
       continue
     }
@@ -972,6 +1010,13 @@ export function messagesFromHistory(
       attachments: [],
       createdAt: 0,
       id: String(row.row_id ?? nextMessageId()),
+      ...(typeof row.input_id === 'string' && { inputId: row.input_id }),
+      ...(typeof row.turn_id === 'string' && { turnId: row.turn_id }),
+      ...(role === 'assistant' &&
+        row.row_id != null && {
+          fragmentIds: [String(row.row_id)],
+          textId: String(row.row_id)
+        }),
       role,
       streaming: false,
       text,

@@ -1,243 +1,261 @@
-import type { Message } from '../lib/types'
+import type { Message, ToolCall } from '../lib/types'
 
 import type { Transcript, TranscriptMessage } from './transcripts'
 
-/**
- * History owns durable rows. Keep only the local tail, matching optimistic
- * users by their position after the last known row, never by equal text.
- * A running turn can already have persisted interim replies and tools. Its
- * closed parts overlap in order; tool IDs identify calls across both views.
- * The terminal reread replaces that turn with its durable rows.
- */
+/** History owns durable rows. Only input and fragment IDs prove overlap. */
 export function hydrateHistory(
   existing: Transcript,
-  history: Message[],
-  reports: Set<string>
-): Pick<Transcript, 'messages' | 'historyBase' | 'historyUsers'> {
-  const base = existing.historyBase ?? existing.messages.filter(m => !m.createdAt).map(m => m.id)
-  const known = new Set(base)
-  const previous = new Map(existing.messages.map(m => [m.id, m]))
+  snapshot: Message[]
+): Pick<Transcript, 'messages' | 'durableFragments'> {
+  const cardEnds = new Set(
+    [...existing.approvals, ...existing.clarifies].flatMap(card =>
+      card.messageId ? [card.messageId] : []
+    )
+  )
 
-  const messages = history.map(message => {
-    const live = previous.get(message.id)
+  const history = snapshot.flatMap(message => {
+    const ids = message.fragmentIds ?? []
+    const groups: Message[] = []
+    let start = 0
 
-    return live
-      ? {
-          ...message,
-          attachments: live.attachments.length ? live.attachments : message.attachments,
-          toolCalls: mergeTools(message, live)
-        }
-      : message
+    for (let index = 0; index < ids.length - 1; index++) {
+      if (cardEnds.has(ids[index]!)) {
+        groups.push(...subset(message, new Set(ids.slice(start, index + 1))))
+        start = index + 1
+      }
+    }
+
+    return start ? [...groups, ...subset(message, new Set(ids.slice(start)))] : [message]
   })
 
-  const local = existing.messages.filter(m => m.createdAt)
-  let cursor = messages.findLastIndex(m => known.has(m.id)) + 1
-  const running = Boolean(existing.turnActive)
-  let retained = false
-  let anchor: string | undefined
-  const historyUsers: Record<string, string> = {}
+  const previous = new Map(existing.messages.map(message => [message.id, message]))
 
-  for (let at = 0; at < local.length;) {
-    const first = local[at]!
+  const local = existing.messages.filter(
+    message => message.createdAt && !history.some(row => row.id === message.id)
+  )
 
-    if (first.role === 'user') {
-      const found = messages.findIndex((m, index) => index >= cursor && m.role === 'user')
+  const tools = new Map(
+    existing.messages.flatMap(message =>
+      message.toolCalls.map(tool => [tool.toolId, tool] as const)
+    )
+  )
 
-      if (found >= 0) {
-        const stored = messages[found]!
-        messages[found] = { ...stored, attachments: first.attachments }
-        cursor = found + 1
-        anchor = stored.id
-      } else {
-        messages.push(first)
-        cursor = messages.length
-        retained = true
-        anchor = undefined
-      }
+  const inputs = local.filter(message => message.role === 'user')
+  const adopted = new Set<string>()
+  const attachments = new Map<string, Message['attachments']>()
 
-      at++
+  for (const input of inputs) {
+    const rows = history.filter(
+      row => row.role === 'user' && input.inputId && row.inputId === input.inputId
+    )
+
+    if (rows.length === 1 && inputs.filter(other => other.inputId === input.inputId).length === 1) {
+      adopted.add(input.id)
+      attachments.set(rows[0]!.id, input.attachments)
+    }
+  }
+
+  let messages: TranscriptMessage[] = history.map(message => {
+    const live = previous.get(message.id)
+
+    const reasoning = local.find(
+      candidate => candidate.thinkingId && message.fragmentIds?.includes(candidate.thinkingId)
+    )
+
+    const final = local.find(
+      candidate => candidate.textId && message.fragmentIds?.includes(candidate.textId)
+    )
+
+    return {
+      ...message,
+      attachments:
+        attachments.get(message.id) ?? previous.get(message.id)?.attachments ?? message.attachments,
+      thinking: live?.thinking ?? reasoning?.thinking ?? message.thinking,
+      thinkingId: live?.thinkingId ?? reasoning?.thinkingId ?? message.thinkingId,
+      usage: live?.usage ?? final?.usage ?? message.usage,
+      error: live?.error ?? final?.error ?? message.error,
+      status: live?.status ?? final?.status ?? message.status,
+      toolCalls: message.toolCalls.map(tool =>
+        tools.has(tool.toolId) ? mergeTool(tool, tools.get(tool.toolId)!) : tool
+      )
+    }
+  })
+
+  const storedParts = new Map(
+    history.flatMap(message =>
+      chunks(message)
+        .filter(part => part.id)
+        .map(part => [part.id!, part.text] as const)
+    )
+  )
+
+  const storedTools = new Set(
+    history.flatMap(message => message.toolCalls.map(tool => tool.toolId))
+  )
+
+  for (const live of local) {
+    if (adopted.has(live.id)) {
+      continue
+    }
+
+    if (live.role !== 'assistant') {
+      messages.push(live)
 
       continue
     }
 
-    let end = at + 1
-
-    while (end < local.length && local[end]?.role !== 'user') {
-      end++
-    }
-
-    const tail = local.slice(at, end)
-
-    const previousUser = existing.messages
-      .slice(
-        0,
-        existing.messages.findIndex(m => m.id === first.id)
-      )
-      .findLast(m => m.role === 'user')
-
-    anchor ??=
-      existing.historyUsers?.[first.id] ??
-      (previousUser && !previousUser.createdAt ? previousUser.id : undefined)
-
-    if (anchor) {
-      const found = messages.findIndex(m => m.id === anchor)
-
-      if (found >= 0) {
-        cursor = found + 1
-      }
-    }
-
-    const nextUser = messages.findIndex((m, index) => index >= cursor && m.role === 'user')
-    const boundary = nextUser < 0 ? messages.length : nextUser
-
-    const candidates = messages
-      .slice(cursor, boundary)
-      .filter(
-        m =>
-          m.role === 'assistant' &&
-          (!known.has(m.id) || (m.id === base.at(-1) && m.toolCalls.length > 0)) &&
-          !reports.has(m.id)
-      )
-
-    // A read begun after completion has the durable answer. An older snapshot
-    // with no answer must still leave the just-completed local reply visible.
-    if (running || !candidates.length) {
-      const claimed = new Set<string>()
-      const assistantCount = tail.filter(m => m.role === 'assistant').length
-
-      const merged = tail.map(message => {
-        if (message.role !== 'assistant') {
-          return message
-        }
-
-        const tools = new Set(message.toolCalls.map(tool => tool.toolId))
-
-        const stored =
-          candidates.find(m => !claimed.has(m.id) && m.toolCalls.some(t => tools.has(t.toolId))) ??
-          candidates.find(m => !claimed.has(m.id))
-
-        if (!stored) {
-          return message
-        }
-
-        const available = candidates.filter(m => !claimed.has(m.id))
-        let count = available.length
-
-        if (assistantCount > 1) {
-          const needed = Math.max(
-            1,
-            (message.parts?.length ?? 0) + Number(!message.streaming && Boolean(message.text))
-          )
-
-          const matched = available.indexOf(stored)
-          let closed = 0
-          count = 0
-
-          while (count < available.length && (closed < needed || count <= matched)) {
-            const part = available[count++]!
-            closed += (part.parts?.length ?? 0) + Number(Boolean(part.text))
-          }
-        }
-
-        const overlap = available.slice(0, count)
-
-        for (const part of overlap) {
-          claimed.add(part.id)
-        }
-
-        const closed = overlap.flatMap(m => [...(m.parts ?? []), ...(m.text ? [m.text] : [])])
-
-        return mergeAssistant(
-          {
-            ...stored,
-            parts: closed.slice(0, -1),
-            text: closed.at(-1) ?? '',
-            toolCalls: overlap.flatMap(m => m.toolCalls)
-          },
-          message
-        )
+    if (live.error && !existing.turnActive && !(live.textId && storedParts.has(live.textId))) {
+      // An unpersisted failure is a local error card, not another answer.
+      messages.push({
+        ...live,
+        role: 'system',
+        text: '',
+        parts: undefined,
+        partIds: undefined,
+        textId: undefined,
+        fragmentIds: undefined,
+        toolCalls: []
       })
 
-      // More persisted bubbles than local ones means the client joined mid-turn.
-      // Keep those earlier bubbles; only the identified overlap is replaced.
-      const remove = new Set(candidates.filter(m => claimed.has(m.id)).map(m => m.id))
-      const kept = messages.slice(cursor, boundary).filter(m => !remove.has(m.id))
-      messages.splice(cursor, boundary - cursor, ...kept, ...merged)
-      cursor += kept.length + merged.length
-      retained ||= merged.length > 0
-
-      if (anchor) {
-        for (const message of merged) {
-          historyUsers[message.id] = anchor
-        }
-      }
-    } else {
-      // Match the completed live bubble to the durable turn by tool ID, or
-      // its position within that user's replies. Keep live-only presentation
-      // details such as reasoning and visual arguments on the durable row.
-      const claimed = new Set<string>()
-
-      for (const message of tail.filter(m => m.role === 'assistant')) {
-        const tools = new Set(message.toolCalls.map(tool => tool.toolId))
-
-        const stored =
-          candidates.find(m => !claimed.has(m.id) && m.toolCalls.some(t => tools.has(t.toolId))) ??
-          candidates.findLast(m => !claimed.has(m.id))
-
-        if (!stored) {
-          continue
-        }
-
-        claimed.add(stored.id)
-        const index = messages.findIndex(m => m.id === stored.id)
-        messages[index] = {
-          ...stored,
-          thinking: message.thinking ?? stored.thinking,
-          usage: message.usage ?? stored.usage,
-          toolCalls: mergeTools(stored, message)
-        }
-      }
-
-      // Errors and incident cards have no ordinary history row.
-      const cards = tail.filter(m => m.role !== 'assistant')
-      messages.splice(boundary, 0, ...cards)
-      cursor = boundary + cards.length
-      retained ||= cards.length > 0
+      continue
     }
 
-    // Keep the next user as the anchor for the next local turn.
-    at = end
-  }
+    // A current read after terminal adopts even an unbound legacy answer.
+    if (
+      !existing.turnActive ||
+      (live.turnId && existing.activeTurnId && live.turnId !== existing.activeTurnId)
+    ) {
+      continue
+    }
 
-  return { messages, historyBase: retained ? base : undefined, historyUsers }
-}
-
-function mergeAssistant(stored: Message, live: TranscriptMessage): TranscriptMessage {
-  if (!live.streaming) {
-    return { ...live, toolCalls: mergeTools(stored, live) }
-  }
-
-  const closed = [...(stored.parts ?? []), ...(stored.text ? [stored.text] : [])]
-
-  return {
-    ...live,
-    parts: [...closed, ...(live.parts ?? []).slice(closed.length)],
-    toolCalls: mergeTools(stored, live)
-  }
-}
-
-function mergeTools(stored: Message, live: Message): Message['toolCalls'] {
-  const tools = new Map(stored.toolCalls.map(tool => [tool.toolId, tool]))
-
-  for (const tool of live.toolCalls) {
-    const previous = tools.get(tool.toolId)
-    tools.set(
-      tool.toolId,
-      previous && tool.status === 'running'
-        ? { ...tool, ...previous, args: tool.args ?? previous.args }
-        : tool
+    const positions = messages.flatMap((message, index) =>
+      !message.createdAt && overlaps(live, message) ? [index] : []
     )
+
+    const end = positions.at(-1) ?? messages.length
+    let begin = end
+
+    // This is a rendering boundary, not user ownership. Parts on the other
+    // side of a durable input/report stay at their actual history positions.
+    while (begin > 0) {
+      const before = messages[begin - 1]!
+
+      if (
+        before.role !== 'assistant' ||
+        !before.turnId ||
+        before.turnId !== live.turnId ||
+        before.createdAt
+      ) {
+        break
+      }
+
+      begin--
+    }
+
+    const region = messages.slice(begin, end + 1).filter(message => !message.createdAt)
+    const order = region.flatMap(message => message.fragmentIds ?? [])
+    const first = order.findIndex(id => live.fragmentIds?.includes(id))
+    const last = order.findLastIndex(id => live.fragmentIds?.includes(id))
+    const selected = new Set(first < 0 ? [] : order.slice(first, last + 1))
+
+    const closed = region
+      .flatMap(message => chunks(message))
+      .filter(part => part.id && selected.has(part.id) && part.id !== live.textId)
+
+    closed.push(
+      ...chunks(live)
+        .slice(0, -1)
+        .filter(part => !part.id || !storedParts.has(part.id))
+    )
+
+    const selectedTools = region
+      .flatMap(message => message.toolCalls)
+      .filter(tool => tool.messageId && selected.has(tool.messageId))
+
+    const liveTools = live.toolCalls.filter(
+      tool => !storedTools.has(tool.toolId) || (tool.messageId && selected.has(tool.messageId))
+    )
+
+    const merged: TranscriptMessage = {
+      ...live,
+      ...(live.parts || closed.length ? { parts: closed.map(part => part.text) } : {}),
+      ...(live.partIds || closed.length ? { partIds: closed.map(part => part.id) } : {}),
+      text: live.textId ? (storedParts.get(live.textId) ?? live.text) : live.text,
+      toolCalls: [
+        ...new Map(
+          [...selectedTools, ...liveTools].map(tool => [
+            tool.toolId,
+            tools.has(tool.toolId) ? mergeTool(tool, tools.get(tool.toolId)!) : tool
+          ])
+        ).values()
+      ]
+    }
+
+    if (!selected.size) {
+      messages.push(merged)
+
+      continue
+    }
+
+    let inserted = false
+    messages = messages.flatMap(message => {
+      const ids = message.fragmentIds ?? []
+      const from = ids.findIndex(id => selected.has(id))
+
+      if (message.createdAt || from < 0) {
+        return [message]
+      }
+
+      const to = ids.findLastIndex(id => selected.has(id))
+      const before = subset(message, new Set(ids.slice(0, from)))
+      const after = subset(message, new Set(ids.slice(to + 1)))
+      const replacement = inserted ? [] : [merged]
+      inserted = true
+
+      return [...before, ...replacement, ...after]
+    })
   }
 
-  return [...tools.values()]
+  return { messages, durableFragments: history.flatMap(message => message.fragmentIds ?? []) }
+}
+
+function overlaps(a: Message, b: Message) {
+  return Boolean(a.fragmentIds?.some(id => b.fragmentIds?.includes(id)))
+}
+
+function chunks(message: Message) {
+  return [
+    ...(message.parts ?? []).map((text, index) => ({ text, id: message.partIds?.[index] })),
+    { text: message.text, id: message.textId }
+  ]
+}
+
+/** Split a folded history bubble by its explicit source fragments. */
+function subset(message: Message, ids: Set<string>): Message[] {
+  if (!ids.size) {
+    return []
+  }
+
+  const parts = chunks(message).filter(part => part.id && ids.has(part.id))
+
+  return [
+    {
+      ...message,
+      id: [...ids][0]!,
+      fragmentIds: [...ids],
+      parts: parts.slice(0, -1).map(part => part.text),
+      partIds: parts.slice(0, -1).map(part => part.id),
+      text: parts.at(-1)?.text ?? '',
+      textId: parts.at(-1)?.id,
+      toolCalls: message.toolCalls.filter(tool => tool.messageId && ids.has(tool.messageId))
+    }
+  ]
+}
+
+function mergeTool(stored: ToolCall, live: ToolCall): ToolCall {
+  return {
+    ...(live.status === 'running' ? { ...live, ...stored } : { ...stored, ...live }),
+    messageId: live.messageId ?? stored.messageId,
+    args: live.args ?? stored.args
+  }
 }
