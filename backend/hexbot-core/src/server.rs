@@ -207,7 +207,7 @@ impl App {
                     .await,
             );
         }
-        let _room_post = if method == "hexbot.rooms.send" {
+        let room_post = if method == "hexbot.rooms.send" {
             Some(self.runtime.admission.enter(crate::admission::Scope::Room(
                 common::required(p, "id")?.into(),
             ))?)
@@ -475,7 +475,8 @@ impl App {
                 "hexbot.rooms.event",
                 json!({"room_id":id,"event":result["event"]}),
             );
-            self.rooms.notify(owner, id).await?;
+            self.rooms
+                .notify_admitted(owner, id, room_post.as_ref().unwrap())?;
         }
         if matches!(
             method,

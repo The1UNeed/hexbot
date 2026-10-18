@@ -617,9 +617,20 @@ impl RoomEngine {
     }
     /// Wake the room after its owner posts.
     pub async fn notify(self: &Arc<Self>, caller: &str, room: &str) -> Result<()> {
-        let _admission = self
+        let admission = self
             .admission
             .enter(crate::admission::Scope::Room(room.into()))?;
+        self.notify_admitted(caller, room, &admission)
+    }
+
+    // An RPC post already holds admission through persistence. Reuse it so a
+    // queued member removal cannot turn a saved message into a failed send.
+    pub(crate) fn notify_admitted(
+        self: &Arc<Self>,
+        caller: &str,
+        room: &str,
+        _admission: &tokio::sync::OwnedRwLockReadGuard<()>,
+    ) -> Result<()> {
         let owner = get(&self.home, caller, room)?["owner_id"]
             .as_str()
             .unwrap_or(caller)
