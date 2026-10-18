@@ -264,6 +264,8 @@ jobs:
         run: ./scripts/desktop/sign-windows.ps1 -Path @('backend/hexbot-installer/target/debug/hexbot-install.exe', 'backend/hexbot-installer/target/release/hexbot-install.exe', 'apps/installer/src-tauri/target/release/hexbot-installer-app.exe')
       - name: Windows install, repair, change and uninstall
         run: node scripts/dev/run-bounded.mjs 600000 node scripts/dev/windows-install-smoke.mjs windows-packages
+      - name: Standard-user install, service, repair, change and uninstall
+        run: ./scripts/dev/windows-standard-user-smoke.ps1 -Packages windows-packages
       - uses: actions/upload-artifact@v7
         if: always()
         with:
