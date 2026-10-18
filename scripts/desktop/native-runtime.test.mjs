@@ -44,7 +44,12 @@ test('stage builds locked dependencies, validates Pi and emits artifact checksum
     await writeFile(join(root, `backend/hexbot-core/target/${rustTarget(process.platform, process.arch)}/release/hexbot${process.platform === 'win32' ? '.exe' : ''}`), 'daemon')
     const node = join(root, 'node'); await writeFile(node, 'node')
     const calls = []
-    const result = await stageNativeRuntime({ repository: root, nodeExecutable: node, download: async url => ['rg', 'fd'].map(tool => toolAsset(tool, process.platform, process.arch)).find(asset => asset.url === url).sha256, run: async (command, args, options) => {
+    const result = await stageNativeRuntime({ repository: root, nodeExecutable: node, stageSandboxRuntime: async ({ destination }) => {
+      await mkdir(join(destination, 'licenses'))
+      await writeFile(join(destination, 'wxc-exec.exe'), 'verified sandbox')
+      await writeFile(join(destination, 'licenses/microsoft-mxc.txt'), 'Microsoft MIT License')
+      return ['wxc-exec.exe', 'licenses/microsoft-mxc.txt']
+    }, download: async url => ['rg', 'fd'].map(tool => toolAsset(tool, process.platform, process.arch)).find(asset => asset.url === url).sha256, run: async (command, args, options) => {
       calls.push({ command, args })
       if (command === 'tar') {
         const file = join(args[args.indexOf('-C') + 1], args.at(-1))
@@ -61,6 +66,8 @@ test('stage builds locked dependencies, validates Pi and emits artifact checksum
     assert.equal(manifest.piVersion, '1.0.1'); assert.equal(manifest.version, '1.2.3')
     assert.match(manifest.files[process.platform === 'win32' ? 'hexbot.exe' : 'hexbot-core'], /^[a-f0-9]{64}$/)
     for (const file of [`bin/rg${process.platform === 'win32' ? '.exe' : ''}`, `bin/fd${process.platform === 'win32' ? '.exe' : ''}`, 'pi/search-tools.mjs']) assert.match(manifest.files[file], /^[a-f0-9]{64}$/)
+    if (process.platform === 'win32') for (const file of ['wxc-exec.exe', 'licenses/microsoft-mxc.txt']) assert.match(manifest.files[file], /^[a-f0-9]{64}$/)
+    else assert.equal(manifest.files['wxc-exec.exe'], undefined)
     assert(Number.isSafeInteger(manifest.builtAt) && manifest.builtAt > 0)
     const cargo = calls.find(c => c.command === 'cargo').args
     assert(cargo.includes('--locked'))

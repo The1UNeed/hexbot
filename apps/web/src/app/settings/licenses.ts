@@ -30,6 +30,7 @@ export const OPEN_SOURCE: OpenSourceGroup[] = [
         repository: 'https://github.com/earendil-works/pi'
       },
       { license: 'MIT', name: 'Node.js', repository: 'https://github.com/nodejs/node' },
+      { license: 'MIT', name: 'Microsoft MXC', repository: 'https://github.com/microsoft/mxc' },
       {
         license: 'MIT OR Unlicense',
         name: 'ripgrep',

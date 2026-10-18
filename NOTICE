@@ -32,3 +32,8 @@ Copyright (c) 2026 T3 Tools Inc. No T3 Code source is included.
 Connector icons in apps/web/src/assets/connectors/ are from Simple Icons
 (https://simpleicons.org), released under CC0 1.0 Universal. Brand names and
 logos remain the property of their respective owners.
+
+Windows daemon packages include Microsoft MXC
+(https://github.com/microsoft/mxc), MIT License,
+Copyright (c) Microsoft Corporation. Its full license is included in the native
+runtime at licenses/microsoft-mxc.txt.

@@ -7,6 +7,7 @@ import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
 import { nativeBuildEnvironment } from './native-build.mjs'
+import { stageWindowsSandboxRuntime } from './windows-sandbox-runtime.mjs'
 import { downloadTool, installTool } from '../../apps/desktop/src/main/backend/tools.ts'
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..')
@@ -133,6 +134,7 @@ export async function stageNativeRuntime({
   arch = process.env.HEXBOT_BUILD_ARCH || process.arch,
   nodeExecutable,
   download = downloadTool,
+  stageSandboxRuntime = stageWindowsSandboxRuntime,
   run = (command, args, options) => execute(command, args, { ...options, maxBuffer: 32 * 1024 * 1024,
     ...(process.platform === 'win32' && command === 'npm' ? { shell: true } : {}) })
 } = {}) {
@@ -164,6 +166,7 @@ export async function stageNativeRuntime({
       binDirectory: join(staging, 'bin'), stagingDirectory: staging,
       platform, arch, exists: existsSync, download, run
     })
+    const sandboxFiles = windows ? await stageSandboxRuntime({ destination: staging, platform, arch, run }) : []
     const beforeBytes = await directoryBytes(pi)
     await pruneRuntimeDependencies(join(pi, 'node_modules'), platform, arch)
     const afterBytes = await directoryBytes(pi)
@@ -183,7 +186,7 @@ export async function stageNativeRuntime({
     const executables = windows ? [daemonFile, nodeFile] : ['hexbot', daemonFile, nodeFile, piFile]
     for (const file of executables) await chmod(join(staging, file), 0o755)
     const files = {}
-    for (const file of [...executables, piFile, 'pi/package-lock.json', 'pi/node_modules/@earendil-works/pi-coding-agent/dist/cli.js', 'web/index.html', `bin/rg${windows ? '.exe' : ''}`, `bin/fd${windows ? '.exe' : ''}`, 'pi/search-tools.mjs'])
+    for (const file of [...executables, ...sandboxFiles, piFile, 'pi/package-lock.json', 'pi/node_modules/@earendil-works/pi-coding-agent/dist/cli.js', 'web/index.html', `bin/rg${windows ? '.exe' : ''}`, `bin/fd${windows ? '.exe' : ''}`, 'pi/search-tools.mjs'])
       files[file] = createHash('sha256').update(await readFile(join(staging, file))).digest('hex')
     // The app keeps whichever installed runtime was built from newer source,
     // across Stable and Nightly (apps/desktop/src/main/backend/bootstrap.ts).
