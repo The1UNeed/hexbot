@@ -12,8 +12,28 @@ function Set-Phase([string]$phase, [string]$message) {
     $state | ConvertTo-Json | Set-Content "$root\state.next.json"
     Move-Item "$root\state.next.json" "$root\state.json" -Force
 }
+# Re-assert WinRM reachability: servicing can reset the network profile or the
+# firewall rules the bootstrap configured, and the host needs the state file.
 try {
-    $phase = if (Test-Path "$root\state.json") { (Get-Content "$root\state.json" -Raw | ConvertFrom-Json).phase } else { '' }
+    Get-NetConnectionProfile | Set-NetConnectionProfile -NetworkCategory Private
+    Get-NetFirewallRule -Name 'WINRM-HTTP-In-TCP*' | Set-NetFirewallRule -RemoteAddress 10.0.2.2 -Profile Any
+    Beacon 'guest-winrm-reasserted'
+} catch {
+    Beacon ('guest-winrm-reassert-error-' + ($_.Exception.Message -replace '[^A-Za-z0-9]', '-'))
+}
+try {
+try {
+    $phase = ''
+    if (Test-Path "$root\state.json") {
+        $phase = (Get-Content "$root\state.json" -Raw | ConvertFrom-Json).phase
+        if (-not $phase) { $phase = '' }
+    }
+} catch {
+    # A forced restart can leave the state file short. A guest whose validation
+    # task is running again is definitionally past patching, so resume there.
+    Beacon ('state-parse-error-length-' + (Get-Item "$root\state.json" -ErrorAction SilentlyContinue).Length)
+    $phase = 'rebooting'
+}
     if ($phase -eq 'passed' -or $phase -eq 'failed') { exit }
     # 'rebooting' resumes here after the update restart. 'testing' also
     # resumes in place after an unexpected reboot instead of re-patching.
@@ -44,6 +64,8 @@ try {
         if ($LASTEXITCODE -notin @(0, 3010)) { throw "The Windows update failed with exit code $LASTEXITCODE" }
         Remove-Item -LiteralPath $packages -Recurse -Force
         Set-Phase 'rebooting' 'The pinned update is installed; restarting Windows'
+        # Give the state file a moment before the forced restart.
+        Start-Sleep -Seconds 2
         Restart-Computer -Force
         exit
     }
