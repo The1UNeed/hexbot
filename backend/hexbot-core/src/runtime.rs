@@ -2567,6 +2567,24 @@ impl Runtime {
         if let Some(process) = started {
             let _ = process.shutdown().await;
         }
+        // The job guard waits for the child tree to stop, but Windows can keep
+        // the workdir's handles for a moment after that; retry briefly so the
+        // directory really disappears, as it does on Unix.
+        let workdir = dir.path().to_path_buf();
+        drop(dir);
+        for attempt in 0..40 {
+            if !workdir.exists() || std::fs::remove_dir_all(&workdir).is_ok() {
+                break;
+            }
+            if attempt == 39 {
+                eprintln!(
+                    "One-shot workdir could not be removed: {}",
+                    workdir.display()
+                );
+            } else {
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+        }
         // A failed call reads as a failed result; callers decide what that means.
         match result {
             Ok(Ok(text)) => Ok(text),
