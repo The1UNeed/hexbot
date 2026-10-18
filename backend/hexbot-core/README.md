@@ -126,6 +126,12 @@ it also installs over SSH when nobody is signed in at the screen.
   searches. For a full-text query, a savepoint temporarily deletes the asking
   section's rowid range before MATCH and BM25 ranking, then rolls back and
   releases it even on an invalid expression. Its text cannot affect ranking.
+  A compacted asking chat stays searchable before Pi's first kept entry.
+  Search finds that boundary by matching the log to the native journal,
+  without recovering a running chat. Pi's empty system/tool catalog records
+  and the hidden todo and fallback notices are journaled only on recovery, so
+  they mark no position. Any other log message without its exact journal row
+  fails the search with 5200 instead of guessing the boundary.
   Index refresh and removal of deleted sections use the same rowid ranges.
   The cache retains at most eight indexes within a 256 MiB estimated budget:
   all retained message JSON, including tool-call arguments, plus 512 bytes a

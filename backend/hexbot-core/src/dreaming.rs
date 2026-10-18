@@ -308,17 +308,6 @@ fn consume_proposals(home: &Path, bot: &str, dream: &str, ids: &[&str]) -> Resul
     Ok(())
 }
 
-/// Hidden instructions Hexbot's Pi extension adds to a chat: the todo list
-/// after a compaction and the notice that the fallback model took over.
-/// Neither the user nor the bot said them, so the digest leaves them out, and
-/// the runtime journals them only when it reconciles the log.
-fn hexbot_instruction(kind: &Value, hidden: bool) -> bool {
-    hidden
-        && kind
-            .as_str()
-            .is_some_and(|kind| matches!(kind, "hexbot_todo" | "hexbot_fallback"))
-}
-
 // Pi emits message_end before its durable append. Check the log against the
 // journal without reconciling a possibly live file, rewriting it, or billing.
 // A recovery flag or an import file alone cannot vouch for later projections.
@@ -378,7 +367,10 @@ fn native_log_ready(home: &Path, stored: &str, since: f64) -> Result<bool> {
             Some("message") => entry["message"].clone(),
             // Not input to the digest. Any other custom message must match.
             Some("custom_message")
-                if hexbot_instruction(&entry["customType"], entry["display"] == false) =>
+                if runtime_store::hexbot_instruction(
+                    &entry["customType"],
+                    entry["display"] == false,
+                ) =>
             {
                 continue;
             }
@@ -393,7 +385,7 @@ fn native_log_ready(home: &Path, stored: &str, since: f64) -> Result<bool> {
         };
         // Pi also journals empty system/tool catalog updates. Runtime does not
         // project these internal records; they contain no dialogue to learn.
-        if message["role"] == "system" && runtime_store::text(&message["content"]).is_empty() {
+        if runtime_store::journaled_on_recovery(&message) {
             continue;
         }
         let count = recorded.entry(message.to_string()).or_default();
@@ -678,7 +670,7 @@ pub fn build_digest(
                         || at >= until
                         || message["dream"] == true
                         || message["role"] == "tool" && message["name"] != "message_bot"
-                        || hexbot_instruction(
+                        || runtime_store::hexbot_instruction(
                             &message["custom_type"],
                             message["display_kind"] == "hidden",
                         )

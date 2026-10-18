@@ -244,6 +244,181 @@ fn live_cutoff_requires_complete_event_identity_and_rolls_back_uncertain_binding
     assert_eq!(usage_count(h), 1);
 }
 
+async fn search(home: &Path, args: Value) -> hexbot_core::Result<Value> {
+    hexbot_core::native_product_tools::call(home, "alice", "owl", "chat", "session_search", &args)
+        .await
+        .unwrap()
+}
+/// Conversations matching `query`, at most this one.
+async fn hits(home: &Path, query: &str) -> Value {
+    search(home, json!({"query":query})).await.unwrap()["count"].clone()
+}
+/// How many of the chat's messages came before its latest summary.
+async fn summarized(home: &Path) -> Value {
+    search(home, json!({"session_id":"chat"})).await.unwrap()["message_count"].clone()
+}
+
+/// Pi logs its tool catalog and Hexbot's hidden notices, which the live
+/// runtime journals only on recovery. They mark no position for history
+/// search. Every other message must still match its journal row exactly.
+#[tokio::test]
+async fn live_cutoff_skips_records_journaled_only_on_recovery() {
+    let home = setup();
+    let h = home.path();
+    fs::create_dir_all(h.join("profiles/owl")).unwrap();
+    let custom = |id: &str, parent: &str, kind: &str, display: Value| json!({"type":"custom_message","id":id,"parentId":parent,"timestamp":"2026-09-24T00:00:01.000Z","customType":kind,"content":format!("{kind} instruction"),"display":display});
+    let compaction = |id: &str, parent: &str, kept: &str| json!({"type":"compaction","id":id,"parentId":parent,"timestamp":"2026-09-24T00:00:02.000Z","summary":"Summary","firstKeptEntryId":kept,"tokensBefore":100});
+    let catalog = json!({"role":"system","content":"","sections":{"preamble":"You are owl."},"toolsAdded":[{"name":"read"}],"timestamp":500});
+    let tool_result = |text: &str| json!({"role":"toolResult","toolCallId":"call-1","toolName":"read","content":[{"type":"text","text":text}],"isError":false,"timestamp":5000});
+    let mut call = assistant("bravo tool call", 4000);
+    call["content"].as_array_mut().unwrap().push(
+        json!({"type":"toolCall","id":"call-1","name":"read","arguments":{"path":"notes.txt"}}),
+    );
+    call["stopReason"] = json!("toolUse");
+    // Native projection runs first, as production's message_end listener does.
+    let live = [
+        user("alpha question", 1000),
+        assistant("alpha answer", 2000),
+        user("bravo question", 3000),
+        call,
+        tool_result("bravo tool result"),
+        assistant("charlie answer", 6000),
+    ];
+    for message in &live {
+        store::project_seeded(h, "chat", "alice", "owl", message, None, None).unwrap();
+    }
+    let mut entries = vec![
+        entry("catalog", None, catalog),
+        entry("u1", Some("catalog"), live[0].clone()),
+        entry("a1", Some("u1"), live[1].clone()),
+        entry("u2", Some("a1"), live[2].clone()),
+        entry("a2", Some("u2"), live[3].clone()),
+        entry("t2", Some("a2"), live[4].clone()),
+        compaction("c1", "t2", "u2"),
+        custom("todo", "c1", "hexbot_todo", json!(false)),
+        custom("fallback", "todo", "hexbot_fallback", json!(false)),
+        entry("a3", Some("fallback"), live[5].clone()),
+    ];
+    let path = file(h, &entries);
+    let conn = store::open(h).unwrap();
+    let count = |sql: &str| conn.query_row(sql, [], |r| r.get::<_, i64>(0)).unwrap();
+    let bound = || count("SELECT COUNT(*) FROM native_pi_journal WHERE entry_id IS NOT NULL");
+    let internal = || {
+        count(
+            "SELECT COUNT(*) FROM native_pi_journal WHERE json_extract(raw_json,'$.role') IN ('system','custom')",
+        )
+    };
+    let version = || store::history_version(&conn, "chat").unwrap();
+    let original = store::history(h, "chat").unwrap();
+    let before = version();
+    // Speech without its journal row, a visible or unknown notice, and a
+    // system record with text leave the boundary unknown. Nothing binds.
+    for extra in [
+        entry("x", Some("a3"), user("unprojected question", 7000)),
+        entry("x", Some("a3"), assistant("unprojected answer", 7000)),
+        entry("x", Some("a3"), tool_result("unprojected result")),
+        custom("x", "a3", "hexbot_todo", json!(true)),
+        custom("x", "a3", "hexbot_fallback", Value::Null),
+        custom("x", "a3", "other_notice", json!(false)),
+        entry(
+            "x",
+            Some("a3"),
+            json!({"role":"system","content":"Injected instructions","timestamp":7000}),
+        ),
+    ] {
+        let mut changed = entries.clone();
+        changed.push(extra);
+        file(h, &changed);
+        assert_eq!(store::summarised_before(h, "chat").unwrap_err().code, 5200);
+        assert_eq!(
+            search(h, json!({"query":"alpha"})).await.unwrap_err().code,
+            5200
+        );
+        assert_eq!(bound(), 0);
+        assert_eq!(version(), before);
+    }
+    file(h, &entries);
+    for _ in 0..2 {
+        assert_eq!(store::summarised_before(h, "chat").unwrap(), Some(3));
+        assert_eq!(bound(), 6);
+        assert_eq!(internal(), 0);
+        assert_eq!(version(), before);
+        assert_eq!(store::history(h, "chat").unwrap(), original);
+    }
+    assert_eq!(summarized(h).await, 2);
+    assert_eq!(hits(h, "alpha").await, 1);
+    assert_eq!(hits(h, "bravo").await, 0);
+    assert_eq!(hits(h, "charlie").await, 0);
+    // A later compaction may keep from a hidden notice; the next journaled
+    // message marks the boundary. A notice on an abandoned branch marks none.
+    let delta = [
+        user("delta question", 8000),
+        assistant("delta answer", 9000),
+    ];
+    for message in &delta {
+        store::project_seeded(h, "chat", "alice", "owl", message, None, None).unwrap();
+    }
+    entries.push(custom("abandoned", "a1", "hexbot_fallback", json!(false)));
+    entries.push(entry("u4", Some("a3"), delta[0].clone()));
+    entries.push(entry("a4", Some("u4"), delta[1].clone()));
+    entries.push(compaction("c2", "a4", "todo"));
+    file(h, &entries);
+    assert_eq!(store::summarised_before(h, "chat").unwrap(), Some(6));
+    assert_eq!(summarized(h).await, 5);
+    assert_eq!(hits(h, "bravo").await, 1);
+    assert_eq!(hits(h, "charlie").await, 0);
+    // Pi keeps nothing when it names its own compaction. Only a notice
+    // follows, and the boundary stays finite: a message projected before its
+    // append is current context.
+    entries.push(compaction("c3", "c2", "c3"));
+    entries.push(custom("todo2", "c3", "hexbot_todo", json!(false)));
+    file(h, &entries);
+    assert_eq!(store::summarised_before(h, "chat").unwrap(), Some(9));
+    assert_eq!(summarized(h).await, 8);
+    assert_eq!(hits(h, "charlie").await, 1);
+    assert_eq!(hits(h, "delta").await, 1);
+    let echo = user("echo pending", 10000);
+    store::project_seeded(h, "chat", "alice", "owl", &echo, None, None).unwrap();
+    assert_eq!(store::summarised_before(h, "chat").unwrap(), Some(9));
+    assert_eq!(summarized(h).await, 8);
+    assert_eq!(hits(h, "echo").await, 0);
+    entries.push(entry("u5", Some("todo2"), echo));
+    file(h, &entries);
+    assert_eq!(store::summarised_before(h, "chat").unwrap(), Some(9));
+    assert_eq!(summarized(h).await, 8);
+    assert_eq!(hits(h, "echo").await, 0);
+    assert_eq!(bound(), 9);
+    assert_eq!(internal(), 0);
+    assert_eq!(usage_count(h), 4);
+    // Recovery journals the five internal records as hidden rows in log
+    // order. Matching them afterwards changes nothing, and their stable ids
+    // still bind their exact content.
+    reconcile(h);
+    assert_eq!(internal(), 5);
+    assert_eq!(usage_count(h), 4);
+    let recovered = version();
+    let history = store::history(h, "chat").unwrap();
+    let bytes = fs::read(&path).unwrap();
+    for _ in 0..2 {
+        assert_eq!(store::summarised_before(h, "chat").unwrap(), Some(13));
+        assert_eq!(version(), recovered);
+        assert_eq!(store::history(h, "chat").unwrap(), history);
+    }
+    assert_eq!(history[11]["custom_type"], "hexbot_todo");
+    assert_eq!(history[11]["display_kind"], "hidden");
+    assert_eq!(summarized(h).await, 11);
+    assert_eq!(hits(h, "delta").await, 1);
+    assert_eq!(hits(h, "echo").await, 0);
+    let mut changed = entries.clone();
+    changed[15]["content"] = json!("edited instruction");
+    file(h, &changed);
+    assert_eq!(store::summarised_before(h, "chat").unwrap_err().code, 5200);
+    fs::write(&path, &bytes).unwrap();
+    assert_eq!(store::summarised_before(h, "chat").unwrap(), Some(13));
+    assert_eq!(fs::read(&path).unwrap(), bytes);
+    assert_eq!(usage_count(h), 4);
+}
+
 #[test]
 fn latest_leaf_selects_branch_without_erasing_compacted_history_or_billed_calls() {
     let home = setup();
