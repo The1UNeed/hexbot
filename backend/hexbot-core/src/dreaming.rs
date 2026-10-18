@@ -311,7 +311,19 @@ fn consume_proposals(home: &Path, bot: &str, dream: &str, ids: &[&str]) -> Resul
 // Pi emits message_end before its durable append. Check the log against the
 // journal without reconciling a possibly live file, rewriting it, or billing.
 // A recovery flag or an import file alone cannot vouch for later projections.
-fn native_log_ready(home: &Path, stored: &str, since: f64) -> Result<bool> {
+fn dream_dialogue(message: &Value, since: f64, until: f64) -> bool {
+    let at = message["timestamp"].as_f64().unwrap_or(0.0);
+    at >= since
+        && at < until
+        && message["dream"] != true
+        && (message["role"] != "tool" || message["name"] == "message_bot")
+        && !runtime_store::hexbot_instruction(
+            &message["custom_type"],
+            message["display_kind"] == "hidden",
+        )
+}
+
+fn native_log_ready(home: &Path, stored: &str, since: f64, until: f64) -> Result<bool> {
     common::identifier(stored)?;
     let path = home
         .join("runtime/sessions")
@@ -322,12 +334,36 @@ fn native_log_ready(home: &Path, stored: &str, since: f64) -> Result<bool> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
         Err(error) => return Err(error.into()),
     };
-    // Use the same whole-second margin as compaction_summaries for idle files.
+    // Count all raw occurrences for file-to-journal proof, and separately count
+    // the projected dialogue this dream can learn. Pi emits before appending,
+    // so even an old file can have a recent projection still waiting on disk.
+    let mut recorded = HashMap::<String, (usize, usize)>::new();
+    for row in common::rows(
+        &runtime_store::open(home)?,
+        "SELECT p.raw_json,p.active,m.message_json FROM native_pi_journal p LEFT JOIN native_messages m ON m.session_id=p.session_id AND m.seq=p.projection_seq WHERE p.session_id=? AND (p.projection_seq IS NULL OR m.seq IS NOT NULL)",
+        &[&stored],
+    )? {
+        let message: Value = serde_json::from_str(row["raw_json"].as_str().unwrap_or(""))
+            .map_err(|e| Error::new(5200, e.to_string()))?;
+        let projection: Value =
+            serde_json::from_str(row["message_json"].as_str().unwrap_or("null"))
+                .map_err(|e| Error::new(5200, e.to_string()))?;
+        let relevant = !projection.is_null()
+            && row["active"] == 1
+            && !runtime_store::journaled_on_recovery(&message)
+            && dream_dialogue(&projection, since, until);
+        let counts = recorded.entry(message.to_string()).or_default();
+        counts.0 += 1;
+        counts.1 += usize::from(relevant);
+    }
+    // Use the same whole-second margin as compaction_summaries for idle files,
+    // only after proving no dialogue in this dream's window needs the file.
     if metadata
         .modified()
         .ok()
         .and_then(|at| at.duration_since(std::time::UNIX_EPOCH).ok())
         .is_some_and(|at| at.as_secs_f64() < since - 1.0)
+        && recorded.values().all(|(_, relevant)| *relevant == 0)
     {
         return Ok(true);
     }
@@ -336,16 +372,6 @@ fn native_log_ready(home: &Path, stored: &str, since: f64) -> Result<bool> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
         Err(error) => return Err(error.into()),
     };
-    let mut recorded = HashMap::<String, usize>::new();
-    for row in common::rows(
-        &runtime_store::open(home)?,
-        "SELECT p.raw_json FROM native_pi_journal p LEFT JOIN native_messages m ON m.session_id=p.session_id AND m.seq=p.projection_seq WHERE p.session_id=? AND (p.projection_seq IS NULL OR m.seq IS NOT NULL)",
-        &[&stored],
-    )? {
-        let message: Value = serde_json::from_str(row["raw_json"].as_str().unwrap_or(""))
-            .map_err(|e| Error::new(5200, e.to_string()))?;
-        *recorded.entry(message.to_string()).or_default() += 1;
-    }
     // Before the first reconcile, imported entries carry their exact committed
     // display row in `hexbot`. Classification may only have added a dream flag.
     let mut imported = None;
@@ -388,9 +414,10 @@ fn native_log_ready(home: &Path, stored: &str, since: f64) -> Result<bool> {
         if runtime_store::journaled_on_recovery(&message) {
             continue;
         }
-        let count = recorded.entry(message.to_string()).or_default();
-        if *count > 0 {
-            *count -= 1;
+        let counts = recorded.entry(message.to_string()).or_default();
+        if counts.0 > 0 {
+            counts.0 -= 1;
+            counts.1 = counts.1.saturating_sub(1);
             continue;
         }
         let mut seed = entry["hexbot"].clone();
@@ -435,6 +462,12 @@ fn native_log_ready(home: &Path, stored: &str, since: f64) -> Result<bool> {
             ));
         }
         *count -= 1;
+    }
+    if recorded.values().any(|(_, relevant)| *relevant > 0) {
+        return Err(Error::new(
+            5200,
+            format!("Conversation {stored} must be recovered before dreaming"),
+        ));
     }
     if !header {
         return Err(Error::new(5200, "Conversation header needs recovery"));
@@ -534,7 +567,7 @@ pub fn build_digest(
                 ));
             }
             let fresh = runtime_store::fresh(home, id)?;
-            let log_ready = native_log_ready(home, id, since)?;
+            let log_ready = native_log_ready(home, id, since, until)?;
             // A missing log must not substitute older legacy rows for native
             // dialogue. Fresh display-only input can precede the first Pi open.
             let has_dialogue: bool = native.query_row(
@@ -666,15 +699,7 @@ pub fn build_digest(
                 }
                 for message in runtime_store::history(home, id)? {
                     let at = message["timestamp"].as_f64().unwrap_or(0.0);
-                    if at < since
-                        || at >= until
-                        || message["dream"] == true
-                        || message["role"] == "tool" && message["name"] != "message_bot"
-                        || runtime_store::hexbot_instruction(
-                            &message["custom_type"],
-                            message["display_kind"] == "hidden",
-                        )
-                    {
+                    if !dream_dialogue(&message, since, until) {
                         continue;
                     }
                     latest = latest.max(at);
