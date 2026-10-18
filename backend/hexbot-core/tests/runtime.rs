@@ -8,6 +8,8 @@ use std::{
 #[path = "support/chat_migration.rs"]
 mod chat_migration;
 mod support;
+#[path = "support/transcript_identity.rs"]
+mod transcript_identity;
 
 fn setup() -> support::TestHome {
     let home = support::TestHome::new();

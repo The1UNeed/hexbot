@@ -133,6 +133,7 @@ enum Request {
     Command {
         id: String,
         command: String,
+        input: Option<String>,
         bytes: Vec<u8>,
         reply: Reply,
     },
@@ -161,6 +162,7 @@ struct WriteRecord {
 }
 struct Pending {
     command: String,
+    input: Option<String>,
     reply: Reply,
 }
 
@@ -312,7 +314,7 @@ impl PiProcess {
         mut command: Value,
         deadline: Duration,
     ) -> Result<PiResponse, PiError> {
-        self.request_with_policy(&mut command, Some(deadline), false)
+        self.request_with_policy(&mut command, Some(deadline), false, None)
             .await
     }
 
@@ -322,14 +324,25 @@ impl PiProcess {
         mut command: Value,
         deadline: Duration,
     ) -> Result<PiResponse, PiError> {
-        self.request_with_policy(&mut command, Some(deadline), true)
+        self.request_with_policy(&mut command, Some(deadline), true, None)
             .await
     }
 
     /// Prompt acceptance can include auto-compaction. Terminal events, Stop, or
     /// shutdown bound its lifetime rather than a short acknowledgement timer.
     pub async fn prompt(&self, command: &mut Value) -> Result<PiResponse, PiError> {
-        self.request_with_policy(command, None, false).await
+        self.request_with_policy(command, None, false, None).await
+    }
+
+    /// Retain the intent beside the RPC request, never inside its bytes.
+    /// Its preflight disposition joins the ordered event stream before users.
+    pub(crate) async fn input(
+        &self,
+        command: &mut Value,
+        intent: &str,
+    ) -> Result<PiResponse, PiError> {
+        self.request_with_policy(command, None, false, Some(intent))
+            .await
     }
 
     async fn request_with_policy(
@@ -337,6 +350,7 @@ impl PiProcess {
         command: &mut Value,
         deadline: Option<Duration>,
         kill_on_cancel: bool,
+        input: Option<&str>,
     ) -> Result<PiResponse, PiError> {
         let _admission = self
             .inner
@@ -373,6 +387,7 @@ impl PiProcess {
             Request::Command {
                 id,
                 command: name,
+                input: input.map(str::to_owned),
                 bytes,
                 reply,
             },
@@ -673,11 +688,11 @@ async fn supervise(
                 let Some(request) = request else { break PiError::Shutdown; };
                 if exited { request.reject(PiError::Exited); continue; }
                 match request {
-                    Request::Command { id, command, bytes, reply } => {
+                    Request::Command { id, command, input, bytes, reply } => {
                         if pending.len() >= options.request_capacity { let _ = reply.send(Err(PiError::Capacity)); continue; }
                         match writes.try_send(WriteRecord { bytes, written: None, _extension_admission: None }) {
                             Ok(()) => {
-                                pending.insert(id, Pending { command, reply });
+                                pending.insert(id, Pending { command, input, reply });
                                 #[cfg(test)]
                                 if let Some(queued) = &options.write_queued { let _ = queued.send(()); }
                             }
@@ -773,10 +788,11 @@ fn record(bytes: &[u8], pending: &mut HashMap<String, Pending>) -> Result<Option
         if !response.success && response.error.is_none() {
             return Err(PiError::Protocol("failed response missing error"));
         }
-        if let Some(request) = pending.remove(&response.id) {
-            let _ = request.reply.send(Ok(response));
-        }
-        Ok(None)
+        let request = pending.remove(&response.id).unwrap();
+        // Mechanical observer from PR111. No queue or Stop policy here.
+        let input = request.input.map(|intent| serde_json::json!({"type":"hexbot_input_preflight","intent":intent,"disposition":if response.success { response.data.as_ref().map(|data| &data["disposition"]) } else { None }}));
+        let _ = request.reply.send(Ok(response));
+        Ok(input)
     } else {
         Ok(Some(value))
     }
@@ -849,6 +865,7 @@ mod commit_tests {
             .try_send(Request::Command {
                 id: "hold".into(),
                 command: "hold".into(),
+                input: None,
                 bytes: vec![],
                 reply,
             })

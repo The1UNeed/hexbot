@@ -1419,6 +1419,11 @@ pub(crate) fn fork_dream_chat(
         }
         let next = id();
         let mut copied = entry.clone();
+        // A new conversation must not inherit another conversation's client
+        // correlation key. The actual Pi message and source stay unchanged.
+        if let Some(seed) = copied.get_mut("hexbot").and_then(Value::as_object_mut) {
+            seed.remove("input_id");
+        }
         copied["id"] = json!(next);
         copied["parentId"] = parent;
         if copied["type"] == "message" {
@@ -1431,6 +1436,9 @@ pub(crate) fn fork_dream_chat(
     #[cfg(all(test, unix))]
     let mut first = true;
     for mut shown in original.into_iter().chain(missing_reports) {
+        if let Some(shown) = shown.as_object_mut() {
+            shown.remove("input_id");
+        }
         if dream_report_text(&shown).is_some_and(|text| reports.contains(&text)) {
             shown["dream"] = json!(true);
         }
@@ -1450,13 +1458,50 @@ pub(crate) fn fork_dream_chat(
 /// Commit display metadata before sending a prompt to Pi. Matching by final text
 /// survives a daemon crash between Pi's JSONL append and the message_end handler.
 pub fn stage_prompt(home: &Path, stored: &str, text: &str, display: &str) -> Result<String> {
+    stage_prompt_with_id(home, stored, text, display, None)
+}
+/// Correlation only. The existing intent key reserves the ID before enqueue.
+pub fn stage_prompt_with_id(
+    home: &Path,
+    stored: &str,
+    text: &str,
+    display: &str,
+    input_id: Option<&str>,
+) -> Result<String> {
     common::identifier(stored)?;
     if !matches!(display, "normal" | "hidden") {
         return Err(crate::Error::new(4202, "invalid prompt display kind"));
     }
-    let id = id();
-    open(home)?.execute("INSERT INTO native_prompt_intents(id,session_id,text,display_kind,created_at) VALUES (?,?,?,?,?)",params![id,stored,text,display,common::now()])?;
+    if let Some(input_id) = input_id {
+        validate_input_id(input_id)?;
+    }
+    let id = input_id.map(str::to_owned).unwrap_or_else(id);
+    let conn = open(home)?;
+    let inserted = conn.execute("INSERT OR IGNORE INTO native_prompt_intents(id,session_id,text,display_kind,created_at) VALUES (?,?,?,?,?)",params![id,stored,text,display,common::now()])?;
+    if inserted != 1 {
+        return Err(crate::Error::new(4202, "input_id is already reserved"));
+    }
     Ok(id)
+}
+pub(crate) fn validate_input_id(input_id: &str) -> Result<()> {
+    if !uuid::Uuid::try_parse(input_id).is_ok_and(|id| !id.is_nil() && id.to_string() == input_id) {
+        return Err(crate::Error::new(
+            4202,
+            "input_id must be a canonical nonzero UUID",
+        ));
+    }
+    Ok(())
+}
+pub(crate) fn check_input_id(home: &Path, input_id: &str) -> Result<()> {
+    validate_input_id(input_id)?;
+    if open(home)?.query_row(
+        "SELECT EXISTS(SELECT 1 FROM native_prompt_intents WHERE id=?)",
+        [input_id],
+        |r| r.get::<_, bool>(0),
+    )? {
+        return Err(crate::Error::new(4202, "input_id is already reserved"));
+    }
+    Ok(())
 }
 pub fn reject_prompt(home: &Path, stored: &str, intent: &str) -> Result<()> {
     open(home)?.execute(
@@ -1633,15 +1678,45 @@ fn persist_pi_message(
     let journal = id();
     let raw = message.to_string();
     let mut display = display.map(str::to_owned);
+    let explicit = seed.and_then(|seed| seed.get("_input_intent"));
+    if explicit.is_some() && message["role"] != "user" {
+        return Err(crate::Error::new(
+            4202,
+            "input intent binding requires a user message",
+        ));
+    }
+    let mut bound = None;
     if message["role"] == "user" {
         let body = text(&message["content"]);
-        let intent: Option<(String, String)> = conn
+        let intent: Option<(String, String)> = if let Some(explicit) = explicit {
+            let intent = explicit
+                .as_str()
+                .ok_or_else(|| crate::Error::new(4202, "invalid input intent binding"))?;
+            let found: (String, String) = conn.query_row(
+                "SELECT i.id,i.display_kind FROM native_prompt_intents i JOIN native_sessions s ON s.stored_id=i.session_id WHERE i.id=? AND i.session_id=? AND i.consumed_by IS NULL AND s.owner=? AND s.bot=?",
+                params![intent,stored,owner,bot], |r| Ok((r.get(0)?,r.get(1)?))
+            ).optional()?.ok_or_else(|| crate::Error::new(4202, "input intent does not belong to this conversation"))?;
+            // PR111 also uses an exact intent seed for legacy display policy.
+            // That selection alone is not proof of originating client identity.
+            if let Some(input_id) = seed.and_then(|seed| seed.get("input_id")) {
+                if input_id.as_str() != Some(found.0.as_str()) {
+                    return Err(crate::Error::new(
+                        4202,
+                        "input_id does not match its intent binding",
+                    ));
+                }
+                bound = Some(found.0.clone());
+            }
+            Some(found)
+        } else {
+            conn
             .query_row(
                 "SELECT id,display_kind FROM native_prompt_intents WHERE session_id=? AND text=? AND consumed_by IS NULL ORDER BY created_at,rowid LIMIT 1",
                 params![stored, body],
                 |r| Ok((r.get(0)?, r.get(1)?)),
             )
-            .optional()?;
+            .optional()?
+        };
         if let Some((intent, kind)) = intent {
             display = Some(kind);
             conn.execute(
@@ -1653,8 +1728,13 @@ fn persist_pi_message(
     let mut projected = projection(message, display.as_deref());
     if let (Some(projected), Some(seed)) = (&mut projected, seed.and_then(Value::as_object)) {
         for (key, value) in seed {
-            projected[key] = value.clone();
+            if key != "_input_intent" && key != "input_id" {
+                projected[key] = value.clone();
+            }
         }
+    }
+    if let (Some(projected), Some(bound)) = (&mut projected, bound) {
+        projected["input_id"] = json!(bound);
     }
     if let Some(projected) = &mut projected
         && message["role"] == "assistant"
@@ -2401,4 +2481,71 @@ fn check_deleted(conn: &Connection, stored: &str) -> Result<()> {
         return Err(crate::Error::new(4001, "The section was deleted"));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod identity_tests {
+    use super::*;
+    #[test]
+    fn fork_keeps_source_metadata_but_does_not_transfer_client_correlation() {
+        let home = common::TestHome::new();
+        crate::db::migrate(home.path()).unwrap();
+        let user = json!({"role":"user","content":"same","timestamp":1000});
+        let report = json!({"role":"assistant","content":[{"type":"text","text":"REPORT"}],"timestamp":1001,"stopReason":"stop"});
+        let dir = session_dir(home.path(), "source").unwrap();
+        let path = dir.join("conversation.jsonl");
+        let lines = [
+            json!({"type":"session","version":3,"id":"source","timestamp":"2026-10-18T00:00:00Z","cwd":home.workspace()}),
+            json!({"type":"message","id":"u","parentId":null,"message":user,"hexbot":{"input_id":"client-key"}}),
+            json!({"type":"message","id":"a","parentId":"u","message":report}),
+        ];
+        let bytes = lines
+            .iter()
+            .map(Value::to_string)
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n";
+        fs::write(&path, &bytes).unwrap();
+        append(home.path(),"source",json!({"role":"user","text":"same","content":"same","input_id":"client-key","timestamp":1.0,"row_id":"source-row","display_kind":"normal"})).unwrap();
+        append(
+            home.path(),
+            "source",
+            json!({"role":"assistant","text":"REPORT","timestamp":1.001,"dream":true}),
+        )
+        .unwrap();
+        let before = history(home.path(), "source").unwrap();
+        let lease = conversation_lock(home.path(), "source").unwrap();
+        lease.try_lock().unwrap();
+        assert!(
+            fork_dream_chat(
+                home.path(),
+                "owl",
+                "alice",
+                "source",
+                "target",
+                &HashSet::from(["REPORT".into()])
+            )
+            .unwrap()
+        );
+        let target = history(home.path(), "target").unwrap();
+        assert_eq!(target.iter().filter(|row| row["role"] == "user").count(), 1);
+        assert!(target.iter().all(|row| row.get("input_id").is_none()));
+        assert_eq!(history(home.path(), "source").unwrap(), before);
+        assert_eq!(fs::read_to_string(&path).unwrap(), bytes);
+        let copied = fs::read_to_string(
+            session_dir(home.path(), "target")
+                .unwrap()
+                .join("conversation.jsonl"),
+        )
+        .unwrap();
+        assert!(!copied.contains("input_id"));
+        let messages = copied
+            .lines()
+            .map(|line| serde_json::from_str::<Value>(line).unwrap())
+            .filter(|entry| entry["type"] == "message")
+            .collect::<Vec<_>>();
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0]["message"], user);
+        assert_eq!(usage(home.path(), "target").unwrap()["total_tokens"], 0);
+    }
 }

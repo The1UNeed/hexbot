@@ -232,6 +232,16 @@ it also installs over SSH when nobody is signed in at the screen.
 
 ## Modules
 
+Transcript identity is optional projection metadata. `runtime_identity.rs`
+observes ordered preflight, actual operations and assistant fragments; it owns
+no admission, Stop, replay or upload policy. A sole `started` input can bind
+the initial real user slot. Queued, steered and raw-only recovered users omit
+`input_id` without a proven binding. `turn_id` identifies each actual Pi
+operation; each assistant fragment's `message_id` equals its projected
+`row_id`. Seeds survive SQLite retries. Reconciliation preserves committed
+metadata through the full-raw journal match without changing Pi messages,
+frozen prompts/options or billing. See [the API contract](../../docs/api.md#optional-transcript-identity).
+
 | Module | Responsibility |
 | --- | --- |
 | `server`, `daemon`, `cli`, `auth`, `events` | Transport, process lifecycle, CLI, users, pairing, replay |

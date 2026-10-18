@@ -349,6 +349,7 @@ impl App {
                 p["last_seen"].as_u64().unwrap_or(0),
             )),
             "hexbot.info" => Ok(json!({
+                "transcript_identity": true,
                 "version": crate::version(),
                 "hermes_version": serde_json::from_str::<Value>(include_str!("../../pi-runtime/package.json"))
                     .ok()

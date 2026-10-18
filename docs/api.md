@@ -23,7 +23,8 @@ data model. The native transport and event projection live in
 
 ## Core methods the client calls directly
 
-- Chat: `prompt.submit {session_id, text, attachments?}`, `session.interrupt`, `session.steer`.
+- Chat: `prompt.submit {session_id, text, attachments?, input_id?}`,
+  `session.interrupt`, `session.steer {session_id, text, input_id?}`.
 - History: `session.history {session_id}`, `session.events.since` on reconnect.
 - Attachments: `image.attach_bytes {session_id, content_base64, filename}`,
   `file.attach {session_id, data_url, name}`, `pdf.attach {session_id, content_base64}`.
@@ -86,6 +87,54 @@ the bot's daily token budget without adding reviewer text to the conversation.
 Copilot ACP reports zero token usage and cost, so its reviews add no measured
 usage to these totals or budgets.
 
+### Optional transcript identity
+
+`hexbot.info.transcript_identity: true` advertises authoritative metadata when
+present. A missing or false capability keeps the legacy request shapes.
+Coverage is partial. Historical, recovered, queued and ambiguous rows may omit
+identity fields even when the capability is true.
+
+`prompt.submit` and `session.steer` accept a fresh, lowercase hyphenated,
+nonzero UUID `input_id`. It reserves the existing native prompt-intent key
+before uploads move or Pi receives the command. Invalid or already reserved
+IDs return 4202 without taking another intent or changing staged uploads.
+Successful staged submissions echo a supplied `input_id`; callers that omit
+it retain the original response shape. This is correlation only, with no
+idempotency, retry or automatic resend promise. Manual `/compact` bypasses
+intent staging and may omit the echo and all identity metadata.
+
+A user projection exposes `input_id` only for a proven binding to that actual
+Pi user. The current producer binds the sole identified `started` operation's
+initial user slot through ordered transport preflight, including transformed
+and image input. A queued or steer ACK, equal text, display matching or a late
+RPC reply cannot establish ownership. Same-text queued and steered inputs
+remain unbound, including a follow-up dequeued before a late steer ACK.
+
+`turn_id` names each actual Pi agent operation, independently of room turns,
+visible users and input IDs. One operation may consume several users or no new
+user and produce several assistant fragments. Each actual assistant
+`message_start` allocates `message_id`. Its durable assistant `row_id` is that
+same value, retained through SQLite retries and full-raw reconciliation.
+The existing `message.start` timing remains at `agent_start` and carries only
+`turn_id`. Later deltas, reasoning, interims, tool events and completion carry
+the optional IDs when known. There are no extra legacy starts per fragment.
+Tool-event `message_id` names the assistant that actually owns `toolCallId`.
+Unknown, nested or ambiguous owners omit it. Tool-result history keeps its
+own distinct `row_id` and `tool_call_id`. Cards may omit fragment association.
+
+Terminal metadata is captured at `agent_end`, rather than read from a newer
+operation at settlement. Unmatched settlement cannot finish a known active
+operation. Error, EOF and compact paths do not invent an assistant fragment.
+Independent operations can settle out of order. When their untagged settlements
+cannot be paired, terminal IDs are omitted while durable rows retain their IDs.
+A live fragment ID alone does not prove a durable row. Clients adopt
+authoritative history and keep unresolved local files unconfirmed rather
+than attach them to another user. Committed projection metadata survives
+reconcile/restart. A raw-only recovered occurrence cannot recover a client
+UUID from text, position or an old pending intent and omits `input_id`.
+All identity metadata stays outside the original Pi messages, model context,
+frozen prompts, tools, options and usage records.
+
 ## `hexbot.*` methods
 
 All results are objects. Errors use JSON-RPC error objects with core-style
@@ -99,7 +148,8 @@ mutation methods check ownership.
 
 - `hexbot.info {}` → `{version, hermes_version, daemon_name, install_id,
   auth_required, lan_enabled, addresses: [string], platform, sandbox, home,
-  update_capability, one_chat}`. `one_chat` is true once
+  update_capability, one_chat, transcript_identity?}`. See optional transcript
+  identity above. `one_chat` is true once
   `hexbot.sections.create` returns the bot's one chat; older daemons leave it
   out. `update_capability` is `desktop` when the Hexbot app
   on that machine runs the daemon, `service` when launchd or systemd does,
