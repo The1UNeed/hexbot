@@ -4,6 +4,35 @@ For maintainers. `docs/channels.md` explains Stable, Nightly, and Dev; this
 page is the procedure and the one-time setup. Modelled on T3 Code's
 `docs/operations/release.md`.
 
+## iOS TestFlight
+
+iOS beta releases run in Expo EAS Workflows, separately from the desktop
+release workflow. `apps/mobile/.eas/workflows/testflight.yml` checks the
+mobile app, builds with the production profile, then uploads that exact build
+through the standard EAS Submit job, which works on the free Expo plan.
+Success means Apple accepted the upload; Apple processes the binary afterward.
+Build numbers increment remotely. The app version remains in
+`apps/mobile/app.config.ts`.
+
+Link `The1UNeed/hexbot` in the EAS project's GitHub settings and set its base
+directory to `apps/mobile`. After the configuration is merged, mobile or
+shared app changes and workspace package changes on `main` trigger Expo.
+The existing EAS signing credentials and assigned App Store Connect API key
+are used; the production submit profile targets Apple app `6824190699`.
+Enable automatic distribution on the internal TestFlight group once so its
+testers receive subsequent builds. External Beta App Review is not submitted
+by these workflows.
+
+`pnpm mobile:testflight` starts the full workflow from a checkout and waits
+for its result. If only uploading failed, use
+`pnpm mobile:testflight:upload --input build_id=YOUR_EAS_BUILD_ID` to retry
+that build without incrementing its number or starting another build.
+Both commands return nonzero on workflow failure and print the run link.
+Inspect its failed job logs before retrying. A successful build is not proof
+of a successful upload, and a workflow cannot guarantee Apple approval.
+Do not retry an already accepted build. Full setup is in
+`apps/mobile/README.md`.
+
 ## What `release.yml` does
 
 - Triggers: a `v*` tag push (stable), the 09:00 UTC schedule (nightly), or a

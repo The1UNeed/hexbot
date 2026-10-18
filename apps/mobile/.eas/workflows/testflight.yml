@@ -1,0 +1,37 @@
+name: Hexbot TestFlight
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - apps/mobile/**
+      - apps/shared/**
+      - package.json
+      - pnpm-lock.yaml
+      - pnpm-workspace.yaml
+  workflow_dispatch: {}
+
+defaults:
+  tools:
+    node: 26.5.0
+    pnpm: 10.29.3
+
+jobs:
+  build_ios:
+    name: Check and build iOS
+    type: build
+    params:
+      platform: ios
+      profile: production
+    hooks:
+      after_install_node_modules:
+        - name: Check the mobile app
+          run: pnpm run check
+
+  testflight:
+    name: Upload to App Store Connect
+    needs: [build_ios]
+    type: submit
+    params:
+      build_id: ${{ needs.build_ios.outputs.build_id }}
+      profile: production
