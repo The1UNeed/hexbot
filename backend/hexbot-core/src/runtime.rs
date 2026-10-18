@@ -2321,14 +2321,19 @@ impl Runtime {
     /// Tombstones a section and its delegated tasks and stops them, ready for
     /// the catalog to delete it. Returns what it tombstoned.
     pub async fn retire_stored(&self, owner: &str, stored: &str) -> Result<Vec<String>> {
-        Ok(self.retire_for_delete(owner, stored).await?.targets)
+        // Explicit runtime retirement retains close_stored's owner refusal.
+        // Catalog deletion closes only the tree its bot/owner can claim.
+        Ok(self
+            .retire_for_catalog(owner, stored, None, false)
+            .await?
+            .targets)
     }
     pub(crate) async fn retire_for_delete(
         &self,
         owner: &str,
         stored: &str,
     ) -> Result<store::Retirement> {
-        self.retire_for_catalog(owner, stored, None).await
+        self.retire_for_catalog(owner, stored, None, true).await
     }
     pub(crate) async fn retire_for_room_delete(
         &self,
@@ -2336,7 +2341,7 @@ impl Runtime {
         stored: &str,
         room: &str,
     ) -> Result<store::Retirement> {
-        self.retire_for_catalog(owner, stored, Some(room.to_owned()))
+        self.retire_for_catalog(owner, stored, Some(room.to_owned()), true)
             .await
     }
     async fn retire_for_catalog(
@@ -2344,6 +2349,7 @@ impl Runtime {
         owner: &str,
         stored: &str,
         room: Option<String>,
+        owned_tree: bool,
     ) -> Result<store::Retirement> {
         // Serialize the tombstone with open, then let close acquire the same lock.
         let retirement = {
@@ -2359,7 +2365,7 @@ impl Runtime {
             .map_err(|error| Error::new(5200, format!("section retirement failed: {error}")))??
         };
         // Keep the original set: a partial purge can remove descendant relationships.
-        if let Err(error) = self.close_tree(owner, stored, true).await {
+        if let Err(error) = self.close_tree(owner, stored, owned_tree).await {
             self.rollback_retirements(vec![retirement]).await?;
             return Err(error);
         }
