@@ -2282,6 +2282,16 @@ pub fn finish_bot_deletes(home: &Path) -> Result<()> {
 
 /// Generic tombstone recovery must leave unresolved bot decisions alone.
 pub(crate) fn pending_bot_delete_targets(home: &Path) -> Result<BTreeSet<String>> {
+    bot_delete_targets(home, false)
+}
+
+/// Only a committed bot decision delegates legacy purging to profile removal.
+/// Provisional journals still protect rollback and generic startup recovery.
+pub(crate) fn committed_bot_delete_targets(home: &Path) -> Result<BTreeSet<String>> {
+    bot_delete_targets(home, true)
+}
+
+fn bot_delete_targets(home: &Path, committed_only: bool) -> Result<BTreeSet<String>> {
     let mut targets = BTreeSet::new();
     for row in rows(
         &db::open(home)?,
@@ -2290,6 +2300,9 @@ pub(crate) fn pending_bot_delete_targets(home: &Path) -> Result<BTreeSet<String>
     )? {
         let journal: Value = serde_json::from_str(required(&row, "value")?)
             .map_err(|e| Error::new(5200, e.to_string()))?;
+        if committed_only && journal["committed"] != true {
+            continue;
+        }
         for target in journal["targets"]
             .as_array()
             .ok_or_else(|| Error::new(5200, "Invalid bot deletion journal"))?

@@ -41,6 +41,10 @@
   routes, checks restart leaves no empty tombstones, and retries a failed exact
   reservation removal. Partial-copy and published-adoption faults remain in
   `chat_fork_cleanup` and the catalog fork tests.
+  `bot_journal_section_purge` checks independent public/direct section purges
+  under provisional bot journals, explicit and startup rollback, healthy
+  purges and committed profile removal. Exact legacy data and permanent native
+  deletion metadata are checked across retries.
   The catalog library's
   `section_delete_crash_at_the_real_catalog_commit_recovers_the_decision`
   kills a child process at socket barriers before and after the actual SQLite

@@ -879,7 +879,7 @@ pub(crate) fn purge_locked(home: &Path, stored: &str, retry_completed: bool) -> 
         tx.commit()?;
         Ok(targets)
     })()?;
-    let bot_targets = crate::catalog::pending_bot_delete_targets(home)?;
+    let bot_targets = crate::catalog::committed_bot_delete_targets(home)?;
     // Freeze aliases for the entire owned tree before native parent links go.
     // A failed snapshot leaves native history intact; a later legacy failure
     // cannot prevent the other already-committed native targets from finishing.

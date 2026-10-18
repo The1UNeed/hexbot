@@ -121,6 +121,10 @@ it also installs over SSH when nobody is signed in at the screen.
   including a different bot with the same owner. Unknown ownership authorizes
   only the retirement root, also on restart. Explicit low-level store deletion
   remains a separate destructive operation.
+  Only committed bot cleanup defers a section's legacy purge to profile
+  removal. A provisional bot journal cannot suppress an independent section
+  purge. Unused Dream chat-fork reservations are removed after releasing the
+  catalog writer, without creating permanent tombstones for empty targets.
   Old tombstones without ownership metadata retain their native-only recovery
   behavior.
   The one-shot upgrade backup already copies the entire runtime database,
