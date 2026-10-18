@@ -245,6 +245,31 @@ export function routeEvent(event: GatewayEvent, deps: EventRouterDeps = {}): voi
     transcripts.setSectionId(sessionId, payload.section_id)
   }
 
+  const active = transcripts.bySession[sessionId]
+
+  const otherTurn =
+    typeof payload.turn_id === 'string' &&
+    active?.turnActive &&
+    active.activeTurnId &&
+    payload.turn_id !== active.activeTurnId
+
+  if (/^(message\.|tool\.|reasoning\.|thinking\.|approval\.|clarify\.|error$)/.test(event.type)) {
+    transcripts.eventIdentity(sessionId, {
+      turnId: typeof payload.turn_id === 'string' ? payload.turn_id : undefined,
+      messageId: typeof payload.message_id === 'string' ? payload.message_id : undefined
+    })
+  }
+
+  if (otherTurn && event.type !== 'message.start') {
+    // A delayed completion cannot settle a newer run. A known old tool may
+    // still finish, but it must not create a bubble in the newer run.
+    if (event.type === 'tool.complete') {
+      transcripts.toolComplete(sessionId, payload as ToolCompletePayload)
+    }
+
+    return
+  }
+
   switch (event.type) {
     case 'approval.request':
       transcripts.approvalRequest(sessionId, payload as ApprovalRequestPayload, {
@@ -272,6 +297,7 @@ export function routeEvent(event: GatewayEvent, deps: EventRouterDeps = {}): voi
         sessionId,
         typeof payload.message === 'string' ? payload.message : 'Unknown error'
       )
+      useSections.getState().finished(sessionId)
 
       return
 
@@ -283,6 +309,7 @@ export function routeEvent(event: GatewayEvent, deps: EventRouterDeps = {}): voi
         text: text(payload),
         usage: (payload.usage as undefined | Usage) ?? undefined
       })
+      useSections.getState().finished(sessionId)
 
       return
 
