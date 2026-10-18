@@ -242,6 +242,13 @@ operation; each assistant fragment's `message_id` equals its projected
 metadata through the full-raw journal match without changing Pi messages,
 frozen prompts/options or billing. See [the API contract](../../docs/api.md#optional-transcript-identity).
 
+Explicit attachment lists consume only selected staged uploads. Unselected
+uploads, including another paired client's files, remain available for later
+submission. An empty list retains all staging; omitting the list consumes all
+staging for legacy clients. Rejection restores selected files alongside retained
+and concurrent uploads. Existing staging quotas, restart transfer and explicit
+clear, close and deletion cleanup apply to retained uploads.
+
 | Module | Responsibility |
 | --- | --- |
 | `server`, `daemon`, `cli`, `auth`, `events` | Transport, process lifecycle, CLI, users, pairing, replay |

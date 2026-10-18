@@ -31,11 +31,15 @@ data model. The native transport and event projection live in
   `attachments.clear {session_id}` clears all unsubmitted attachments and removes
   their staged files. It refuses while the bot is working and keeps the session.
   Each attach call answers with an `id`. `prompt.submit` with
-  `attachments: [id, ...]` sends only those uploads and removes every other
-  staged file in the section first, so a file left by an upload that never
-  made it into a message (another client, a lost reply, a closed screen) never
-  rides a later one. An id that is no longer staged answers 4204 and changes
-  nothing. Without `attachments`, every staged upload goes with the prompt.
+  `attachments: [id, ...]` consumes only those staged uploads. Unselected
+  uploads remain staged for a later submission, including uploads from another
+  paired client. An explicit empty list sends no uploads and retains all staging.
+  An id that is no longer staged answers 4204 and changes nothing. Without
+  `attachments`, every staged upload goes with the prompt as before. Rejected
+  prompts restore selected uploads alongside unselected and newly staged ones.
+  Retained uploads still count toward staging limits, prevent idle retirement,
+  and survive a tools or model restart. `attachments.clear`, session close and
+  section deletion remove unused staged files; submitting an exact list does not.
   Images allow 25 MiB decoded; PDFs and generic files allow 45 MiB.
   Larger attachments return 4202 with the size limit. Browser clients check
   before reading or uploading. WebSocket frames and in-flight request bytes
@@ -119,7 +123,9 @@ The existing `message.start` timing remains at `agent_start` and carries only
 `turn_id`. Later deltas, reasoning, interims, tool events and completion carry
 the optional IDs when known. There are no extra legacy starts per fragment.
 Tool-event `message_id` names the assistant that actually owns `toolCallId`.
-Unknown, nested or ambiguous owners omit it. Tool-result history keeps its
+Unknown, nested or ambiguous owners omit it. An explicit `parentToolCallId`
+prevents direct-call attribution even when the nested ID equals an earlier
+top-level tool ID. Tool-result history keeps its
 own distinct `row_id` and `tool_call_id`. Cards may omit fragment association.
 
 Terminal metadata is captured at `agent_end`, rather than read from a newer

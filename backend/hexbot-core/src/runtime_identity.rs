@@ -170,6 +170,9 @@ impl Identity {
         let fields = if matches!(kind, "tool_execution_start" | "tool_execution_end") {
             self.tools
                 .get(event["toolCallId"].as_str().unwrap_or(""))
+                // Nested IDs can collide with an unrelated direct call. Their
+                // explicit provenance does not prove a direct fragment owner.
+                .filter(|_| event.get("parentToolCallId").is_none())
                 .and_then(Clone::clone)
                 .unwrap_or_else(|| self.turn_fields())
         } else if matches!(kind, "message_update" | "message_end") {
@@ -229,6 +232,61 @@ pub(super) fn with_fields(mut payload: Value, fields: &Value) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn nested_provenance_never_borrows_a_colliding_direct_tool_owner() {
+        let mut ids = Identity::default();
+        let turn = start(&mut ids, "input");
+        see(
+            &mut ids,
+            json!({"type":"message_start","message":{"role":"assistant"}}),
+        );
+        let owner = see(&mut ids, json!({"type":"message_end","message":{"role":"assistant","content":[{"type":"toolCall","id":"outer/1"},{"type":"toolCall","id":"outer/1/2"}]}})).fields;
+        see(
+            &mut ids,
+            json!({"type":"message_start","message":{"role":"assistant"}}),
+        );
+        see(
+            &mut ids,
+            json!({"type":"message_end","message":{"role":"assistant","content":[{"type":"toolCall","id":"outer"}]}}),
+        );
+        for kind in ["tool_execution_start", "tool_execution_end"] {
+            for (call, parent) in [
+                ("outer/1", "outer"),
+                ("outer/1/2", "outer/1"),
+                ("unknown", "outer"),
+            ] {
+                let fields = see(
+                    &mut ids,
+                    json!({"type":kind,"toolCallId":call,"parentToolCallId":parent}),
+                )
+                .fields;
+                assert_eq!(fields, turn);
+            }
+            // Slashes alone say nothing about origin; a proven direct call
+            // retains its owner even while another fragment is current.
+            assert_eq!(
+                see(&mut ids, json!({"type":kind,"toolCallId":"outer/1"})).fields,
+                owner
+            );
+        }
+        // Duplicate direct IDs remain ambiguous across fragments.
+        see(
+            &mut ids,
+            json!({"type":"message_start","message":{"role":"assistant"}}),
+        );
+        see(
+            &mut ids,
+            json!({"type":"message_end","message":{"role":"assistant","content":[{"type":"toolCall","id":"outer/1"}]}}),
+        );
+        assert_eq!(
+            see(
+                &mut ids,
+                json!({"type":"tool_execution_start","toolCallId":"outer/1"})
+            )
+            .fields,
+            turn
+        );
+    }
     fn see(ids: &mut Identity, event: Value) -> Observed {
         ids.observe(&event, "captured", None)
     }

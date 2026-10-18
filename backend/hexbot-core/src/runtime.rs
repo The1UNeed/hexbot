@@ -1553,7 +1553,6 @@ impl Runtime {
         }
         let mut command = json!({"type":"prompt","message":text});
         let sent;
-        let dropped;
         let intent;
         {
             let _gate = s.event_gate.lock().unwrap();
@@ -1610,9 +1609,9 @@ impl Runtime {
             state
                 .display
                 .push_back(if hidden { "hidden" } else { "normal" }.into());
-            // A client that names its uploads sends only those; anything else
-            // staged here was abandoned, by this client or another one.
-            (sent, dropped) = std::mem::take(&mut state.staged)
+            // Exact selection consumes only these uploads. Other clients may
+            // still be composing with the remaining staged files.
+            (sent, state.staged) = std::mem::take(&mut state.staged)
                 .into_iter()
                 .partition::<Vec<_>, _>(|u| uploads.is_none_or(|ids| ids.contains(&u.id)));
             command["images"] = json!(
@@ -1624,7 +1623,6 @@ impl Runtime {
                 command["streamingBehavior"] = json!("followUp");
             }
         }
-        remove_staged(dropped);
         let response = s
             .process
             .input(&mut command, &intent)

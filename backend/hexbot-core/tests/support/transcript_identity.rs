@@ -106,7 +106,7 @@ impl PiFixture {
             .unwrap();
         }
         let mut executable = PathBuf::from(std::env::var_os("HEXBOT_TEST_PI").unwrap());
-        if !instrument.is_empty() {
+        if !instrument.is_empty() && instrument != "nested" {
             // Only the owned launcher is instrumented. All dependency files and
             // the private extension remain unchanged. Holds await HTTP barriers.
             let modules = executable
@@ -173,6 +173,22 @@ await import({cli});
                 fs::set_permissions(&wrapper, fs::Permissions::from_mode(0o755)).unwrap();
             }
             executable = wrapper;
+        }
+        if instrument == "nested" {
+            let script =
+                Path::new(env!("CARGO_MANIFEST_DIR")).join("../pi-runtime/fixtures/mcp-server.mjs");
+            fs::write(
+                home.path().join("config.yaml"),
+                format!(
+                    "mcp_servers:\n  fixture:\n    command: node\n    args: [{}]\n",
+                    json!(script.to_string_lossy())
+                ),
+            )
+            .unwrap();
+            db::open(home.path())
+                .unwrap()
+                .execute_batch("UPDATE bots SET approval_mode='off'")
+                .unwrap();
         }
         let hub = EventHub::new();
         let events = hub.subscribe();
@@ -1131,7 +1147,7 @@ async fn transcript_identity_reconcile_preserves_committed_seeds_and_omits_raw_o
 }
 
 #[tokio::test]
-async fn transcript_identity_valid_attachment_selection_keeps_legacy_paired_client_policy() {
+async fn transcript_identity_explicit_attachment_selection_retains_paired_uploads() {
     for capable in [false, true] {
         let home = setup();
         let runtime = Runtime::new(
@@ -1159,9 +1175,9 @@ async fn transcript_identity_valid_attachment_selection_keeps_legacy_paired_clie
             .await
             .unwrap()
             .unwrap();
-        // Existing explicit-list behavior discards the other paired upload in
-        // both paths. This candidate does not change that separate policy.
-        let rejected = runtime
+        // Exact selection leaves the other paired upload available, with or
+        // without the optional input identity.
+        runtime
             .call(
                 "alice",
                 "prompt.submit",
@@ -1169,8 +1185,344 @@ async fn transcript_identity_valid_attachment_selection_keeps_legacy_paired_clie
             )
             .await
             .unwrap()
-            .unwrap_err();
-        assert_eq!(rejected.code, 4204);
+            .unwrap();
+        runtime.shutdown().await;
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires HEXBOT_TEST_PI to the pinned Pi executable"]
+async fn actual_pi_transcript_identity_nested_collision_must_not_use_prior_fragment() {
+    let mut f = PiFixture::new("nested").await;
+    f.submit(INPUT, false, false).await;
+    let first = receive(&mut f.requests).await;
+    let mut bodies = vec![first.body.clone()];
+    first.reply.send((200,sse(json!({"role":"assistant","content":"first","tool_calls":[{"index":0,"id":"outer/1","type":"function","function":{"name":"memory","arguments":"{\"action\":\"read\"}"}}]}),true))).unwrap();
+    let second = receive(&mut f.requests).await;
+    bodies.push(second.body.clone());
+    second.reply.send((200,sse(json!({"role":"assistant","content":"second","tool_calls":[{"index":0,"id":"outer","type":"function","function":{"name":"codemode","arguments":json!({"code":"text(await tools.memory({action:'read'}));"}).to_string()}}]}),true))).unwrap();
+    let third = receive(&mut f.requests).await;
+    bodies.push(third.body.clone());
+    third.answer("done");
+    let events = f.until("message.complete").await;
+    let rows = f.rows();
+    let nested = events
+        .iter()
+        .filter(|e| {
+            matches!(e["type"].as_str(), Some("tool.start" | "tool.complete"))
+                && e["payload"]["parent_tool_call_id"] == "outer"
+        })
+        .collect::<Vec<_>>();
+    let raw = fs::read_to_string(
+        runtime_store::session_dir(f.home.path(), "section-a")
+            .unwrap()
+            .join("conversation.jsonl"),
+    )
+    .unwrap();
+
+    let sufficient = nested.len() == 2;
+    let assistants = rows
+        .iter()
+        .filter(|r| r["role"] == "assistant")
+        .collect::<Vec<_>>();
+    assert_eq!(assistants.len(), 3);
+    assert_ne!(assistants[0]["row_id"], assistants[1]["row_id"]);
+    for (tool, owner) in [("outer/1", assistants[0]), ("outer", assistants[1])] {
+        let direct = events
+            .iter()
+            .filter(|e| {
+                matches!(e["type"].as_str(), Some("tool.start" | "tool.complete"))
+                    && e["payload"]["tool_id"] == tool
+                    && e["payload"]["parent_tool_call_id"].is_null()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(direct.len(), 2);
+        assert!(
+            direct
+                .iter()
+                .all(|e| e["payload"]["message_id"] == owner["row_id"])
+        );
+    }
+    assert_eq!(
+        events
+            .iter()
+            .filter(|e| e["type"] == "message.start")
+            .count(),
+        1
+    );
+    for text in [raw, serde_json::to_string(&bodies).unwrap()] {
+        for key in ["input_id", "turn_id", "message_id"] {
+            assert!(!text.contains(key));
+        }
+    }
+    let correct = nested
+        .iter()
+        .all(|e| e["payload"].get("message_id").is_none());
+    f.close().await;
+    assert!(sufficient, "actual nested start and complete required");
+    assert!(
+        correct,
+        "nested call inherited an unrelated earlier assistant fragment"
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires HEXBOT_TEST_PI to the pinned Pi executable"]
+async fn actual_pi_explicit_upload_selection_retains_the_other_clients_file() {
+    for capable in [false, true] {
+        let mut f = PiFixture::new("").await;
+        let attach = async |name: &str| {
+            f.runtime.call("alice", "file.attach", &json!({"session_id":f.live,"name":name,"data_url":"data:text/plain;base64,cGFpcmVk"})).await.unwrap().unwrap()
+        };
+        let (a, b) = tokio::join!(attach("client-a.txt"), attach("client-b-private.txt"));
+        let mut bodies = vec![];
+        let mut replies = vec![];
+        // The ordinary legacy client omits the list and consumes all staging.
+        // The capable client sends an exact list and leaves B selectable.
+        for (index, text) in ["first client", "second client"].into_iter().enumerate() {
+            let mut p = json!({"session_id":f.live,"text":text});
+            if capable {
+                p["attachments"] = json!([if index == 0 { &a["id"] } else { &b["id"] }]);
+                p["input_id"] = json!(if index == 0 { INPUT } else { SECOND });
+            }
+            let reply = f.runtime.call("alice", "prompt.submit", &p).await.unwrap();
+            if reply.is_err() {
+                f.close().await;
+                panic!("the other client's pending upload must remain selectable: {reply:?}");
+            }
+            replies.push(reply.unwrap());
+            let request = receive(&mut f.requests).await;
+            bodies.push(request.body.clone());
+            request.answer("done");
+            f.until("message.complete").await;
+        }
+        let users = f
+            .rows()
+            .into_iter()
+            .filter(|r| r["role"] == "user")
+            .collect::<Vec<_>>();
+        assert_eq!(users.len(), 2);
+        assert!(
+            users[0]["text"]
+                .as_str()
+                .unwrap()
+                .contains(a["path"].as_str().unwrap())
+        );
+        if capable {
+            assert!(
+                !users[0]["text"]
+                    .as_str()
+                    .unwrap()
+                    .contains(b["path"].as_str().unwrap())
+            );
+            assert!(
+                users[1]["text"]
+                    .as_str()
+                    .unwrap()
+                    .contains(b["path"].as_str().unwrap())
+            );
+            assert!(
+                !users[1]["text"]
+                    .as_str()
+                    .unwrap()
+                    .contains(a["path"].as_str().unwrap())
+            );
+            assert_eq!(users[0]["input_id"], replies[0]["input_id"]);
+            assert_eq!(users[1]["input_id"], replies[1]["input_id"]);
+        } else {
+            assert!(
+                users[0]["text"]
+                    .as_str()
+                    .unwrap()
+                    .contains(b["path"].as_str().unwrap())
+            );
+            assert_eq!(users[1]["text"], "second client");
+        }
+        for (body, row) in bodies.iter().zip(&users) {
+            assert_eq!(
+                body["messages"].as_array().unwrap().last().unwrap()["content"][0]["text"],
+                row["text"]
+            );
+            for key in ["input_id", "turn_id", "message_id"] {
+                assert!(!body.to_string().contains(key));
+            }
+        }
+        f.close().await;
+    }
+}
+
+#[tokio::test]
+async fn explicit_upload_selection_restores_rejected_files_with_concurrent_attaches() {
+    let home = setup();
+    let (entered, mut calls) = tokio::sync::mpsc::unbounded_channel();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let router = axum::Router::new().route(
+        "/reject",
+        axum::routing::get(move || {
+            let entered = entered.clone();
+            async move {
+                let (release, held) = tokio::sync::oneshot::channel::<()>();
+                entered.send(release).unwrap();
+                held.await.unwrap();
+                "rejected"
+            }
+        }),
+    );
+    let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let executable = identity_pi(home.path());
+    let source = fs::read_to_string(&executable).unwrap().replace("const c=JSON.parse(line);", &format!("const c=JSON.parse(line);if(c.type==='prompt'&&c.message.startsWith('reject')){{fetch('http://{address}/reject').then(()=>emit({{type:'response',id:c.id,command:c.type,success:false,error:'Rejected for test'}}));return;}}"));
+    fs::write(&executable, source).unwrap();
+    let hub = EventHub::new();
+    let mut events = hub.subscribe();
+    let runtime = Runtime::new(home.path().into(), hub, executable).unwrap();
+    let live = open(&runtime, "alice").await["section"]["live_session_id"].clone();
+    let attach = async |name: &str| {
+        runtime.call("alice", "file.attach", &json!({"session_id":live,"name":name,"data_url":"data:text/plain;base64,cGFpcmVk"})).await.unwrap().unwrap()
+    };
+    let (a, b) = tokio::join!(attach("selected.txt"), attach("pending.txt"));
+    let params =
+        json!({"session_id":live,"text":"reject","attachments":[a["id"]],"input_id":INPUT});
+    let submit = runtime.call("alice", "prompt.submit", &params);
+    tokio::pin!(submit);
+    let release = tokio::select! {
+        release = receive(&mut calls) => release,
+        result = &mut submit => panic!("rejection must remain held: {result:?}"),
+    };
+    let (c, d) = tokio::join!(attach("later-c.txt"), attach("later-d.txt"));
+    release.send(()).unwrap();
+    assert_eq!(submit.await.unwrap().unwrap_err().code, 5201);
+    assert!(
+        runtime_store::history(home.path(), "section-a")
+            .unwrap()
+            .is_empty()
+    );
+    for file in [&a, &b, &c, &d] {
+        assert!(Path::new(file["path"].as_str().unwrap()).exists());
+    }
+    // Empty is an exact text-only selection, including after restoration.
+    runtime
+        .call(
+            "alice",
+            "prompt.submit",
+            &json!({"session_id":live,"text":"text only","attachments":[]}),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    next_kind(&mut events, "message.complete").await;
+    let row = runtime_store::history(home.path(), "section-a")
+        .unwrap()
+        .remove(0);
+    assert_eq!(row["text"], "text only");
+    runtime.call("alice", "prompt.submit", &json!({"session_id":live,"text":"all selected","attachments":[a["id"],b["id"],c["id"],d["id"]],"input_id":SECOND})).await.unwrap().unwrap();
+    next_kind(&mut events, "message.complete").await;
+    let rows = runtime_store::history(home.path(), "section-a").unwrap();
+    let row = rows.iter().find(|r| r["input_id"] == SECOND).unwrap();
+    for file in [&a, &b, &c, &d] {
+        assert!(
+            row["text"]
+                .as_str()
+                .unwrap()
+                .contains(file["path"].as_str().unwrap())
+        );
+    }
+    runtime.shutdown().await;
+    server.abort();
+}
+
+#[tokio::test]
+async fn retained_uploads_survive_refresh_and_obey_quota_and_explicit_cleanup() {
+    for cleanup in ["attachments.clear", "session.close"] {
+        let home = setup();
+        let hub = EventHub::new();
+        let mut events = hub.subscribe();
+        let executable = identity_pi(home.path());
+        let runtime = Runtime::new(home.path().into(), hub, executable.clone()).unwrap();
+        let live = open(&runtime, "alice").await["section"]["live_session_id"].clone();
+        let attach = async |name: &str| {
+            runtime.call("alice", "file.attach", &json!({"session_id":live,"name":name,"data_url":"data:text/plain;base64,cGFpcmVk"})).await.unwrap().unwrap()
+        };
+        let a = attach("selected.txt").await;
+        let b = attach("pending.txt").await;
+        runtime
+            .call(
+                "alice",
+                "prompt.submit",
+                &json!({"session_id":live,"text":"first","attachments":[a["id"]]}),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        next_kind(&mut events, "message.complete").await;
+        // Retirement also waits for the turn's usage RPCs to finish.
+        next_kind(&mut events, "session.usage").await;
+        // Pending files still count against the existing disk quota.
+        let pad = Path::new(b["path"].as_str().unwrap()).with_file_name("quota-padding");
+        let file = fs::File::create(&pad).unwrap();
+        file.set_len(512 * 1024 * 1024 - 12).unwrap();
+        assert_eq!(runtime.call("alice", "file.attach", &json!({"session_id":live,"name":"over.txt","data_url":"data:text/plain;base64,eA=="})).await.unwrap().unwrap_err().code, 4018);
+        fs::remove_file(pad).unwrap();
+        // Both model and tool refresh transfer retained staging to the new Pi.
+        fs::write(
+            home.path().join("profiles/owl/config.yaml"),
+            "model:\n  provider: openai\n  default: test-model\ntools:\n  enabled_toolsets: [hexbot]\n",
+        )
+        .unwrap();
+        hexbot_core::catalog::call(
+            home.path(),
+            "alice",
+            "hexbot.bots.update",
+            &json!({"name":"owl","provider":"anthropic","model":"claude-fable-5-1"}),
+        )
+        .unwrap()
+        .unwrap();
+        let working = fs::read_to_string(&executable).unwrap();
+        fs::write(&executable, "#!/usr/bin/env node\nprocess.exit(1)\n").unwrap();
+        assert!(runtime.call("alice", "file.attach", &json!({"session_id":live,"name":"failed-refresh.txt","data_url":"data:text/plain;base64,eA=="})).await.unwrap().is_err());
+        assert!(Path::new(b["path"].as_str().unwrap()).exists());
+        fs::write(&executable, working).unwrap();
+        let c = attach("after-refresh.txt").await;
+        let saved: String = runtime_store::open(home.path())
+            .unwrap()
+            .query_row(
+                "SELECT options FROM native_sessions WHERE stored_id='section-a'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let saved: Value = serde_json::from_str(&saved).unwrap();
+        assert_eq!(saved["model"], "claude-fable-5-1");
+        assert_eq!(saved["enabledToolsets"], json!(["hexbot"]));
+        runtime
+            .call(
+                "alice",
+                "prompt.submit",
+                &json!({"session_id":live,"text":"second","attachments":[b["id"]]}),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        next_kind(&mut events, "message.complete").await;
+        let rows = runtime_store::history(home.path(), "section-a").unwrap();
+        assert!(rows.iter().any(|r| {
+            r["role"] == "user"
+                && r["text"]
+                    .as_str()
+                    .unwrap_or("")
+                    .contains(b["path"].as_str().unwrap())
+        }));
+        assert!(Path::new(c["path"].as_str().unwrap()).exists());
+        runtime
+            .call("alice", cleanup, &json!({"session_id":live}))
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(!Path::new(c["path"].as_str().unwrap()).exists());
+        // Submitted files remain available to the conversation.
+        for file in [&a, &b] {
+            assert!(Path::new(file["path"].as_str().unwrap()).exists());
+        }
         runtime.shutdown().await;
     }
 }
