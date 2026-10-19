@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import platform
+import re
 import secrets
 import shutil
 import socket
@@ -32,6 +33,9 @@ class _BeaconHandler(BaseHTTPRequestHandler):
     lock = threading.Lock()
     terminal = None
     terminal_at = 0.0
+    posted_state = None
+    posted_evidence = False
+    max_body = 32 * 1024 * 1024
     def do_GET(self):
         with _BeaconHandler.lock:
             with (_BeaconHandler.evidence / "beacon.log").open("a") as log:
@@ -40,6 +44,32 @@ class _BeaconHandler(BaseHTTPRequestHandler):
                     or self.path.startswith("/beacon/bootstrap-error-"):
                 _BeaconHandler.terminal = self.path
                 _BeaconHandler.terminal_at = time.monotonic()
+        self.send_response(204)
+        self.end_headers()
+    def do_POST(self):
+        # The guest pushes its state and evidence here: inbound WinRM answered
+        # every request with HTTP 500 on the patched build, so the verdict
+        # cannot depend on it.
+        length = int(self.headers.get("Content-Length") or 0)
+        name = self.path.rsplit("/", 1)[-1]
+        if not length or length > _BeaconHandler.max_body or not re.fullmatch(r"[A-Za-z0-9._-]+", name):
+            self.send_response(400)
+            self.end_headers()
+            return
+        body = self.rfile.read(length)
+        received = _BeaconHandler.evidence / "received"
+        received.mkdir(exist_ok=True)
+        (received / name).write_bytes(body)
+        with _BeaconHandler.lock:
+            if name == "state.json":
+                try:
+                    _BeaconHandler.posted_state = json.loads(body.decode("utf-8-sig"))
+                except (UnicodeDecodeError, ValueError):
+                    pass
+            elif name == "guest-evidence.zip":
+                _BeaconHandler.posted_evidence = True
+            with (_BeaconHandler.evidence / "beacon.log").open("a") as log:
+                log.write(f"{time.strftime('%H:%M:%S')} POST {name} {length}\n")
         self.send_response(204)
         self.end_headers()
     def log_message(self, *args):
@@ -229,6 +259,7 @@ def run(manifest, evidence):
                 if vm.poll() is not None:
                     raise RuntimeError(f"The Windows VM exited early with code {vm.returncode}")
                 state = None
+                source = ""
                 try:
                     result = session.run_ps("$ErrorActionPreference='Stop'; Get-Content C:\\HexbotVm\\state.json -Raw")
                     if result.status_code == 0:
@@ -244,6 +275,14 @@ def run(manifest, evidence):
                     probe_failures["parse"] = probe_failures.get("parse", 0) + 1
                 except OSError:
                     probe_failures["refused"] = probe_failures.get("refused", 0) + 1
+                if state is not None:
+                    source = "winrm"
+                else:
+                    with _BeaconHandler.lock:
+                        posted = _BeaconHandler.posted_state
+                    if posted is not None:
+                        state = posted
+                        source = "beacon"
                 if state is not None:
                     if not ready:
                         # Setup and bootstrap have copied everything they need.
@@ -263,17 +302,21 @@ def run(manifest, evidence):
                         # A decided run must report its real result, never loop
                         # to the deadline on a transient collection failure.
                         (evidence / "result.json").write_text(json.dumps(state, indent=2))
+                        with _BeaconHandler.lock:
+                            posted_evidence = _BeaconHandler.posted_evidence
                         for attempt in range(3):
+                            if posted_evidence:
+                                break
                             try:
                                 collect(session, evidence)
                                 break
                             except (ET.ParseError, OSError, ValueError, winrm.exceptions.WinRMError,
                                     winrm.exceptions.WinRMOperationTimeoutError, winrm.exceptions.WinRMTransportError):
-                                if attempt == 2:
+                                if attempt == 2 and source != "beacon":
                                     raise
                                 time.sleep(10)
                         if state["phase"] != "passed":
-                            raise RuntimeError("The Windows 11 x64 guest validation failed; see guest-evidence.zip")
+                            raise RuntimeError("The Windows 11 x64 guest validation failed; see the received evidence")
                         return
                 # A terminal beacon means the guest decided its own outcome;
                 # keep waiting briefly for WinRM to return the full state, then

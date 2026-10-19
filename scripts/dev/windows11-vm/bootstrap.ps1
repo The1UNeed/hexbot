@@ -38,5 +38,6 @@ try {
     Beacon ('bootstrap-error-' + ($_.Exception.Message -replace '[^A-Za-z0-9]', '-'))
     @{ phase = 'failed'; message = $_.Exception.Message } | ConvertTo-Json | Set-Content "$root\state.json"
     Copy-Item "$root\state.json" "$root\evidence\state.json" -Force
+    try { Invoke-WebRequest -UseBasicParsing -Method Post -Uri 'http://10.0.2.2:15986/post/state.json' -Body (Get-Content "$root\state.json" -Raw) -ContentType 'application/json' -TimeoutSec 10 } catch { }
     throw
 }

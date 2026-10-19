@@ -159,4 +159,8 @@ try {
     Set-Phase 'failed' $_.Exception.Message
 } finally {
     if (Test-Path "$root\state.json") { Copy-Item "$root\state.json" "$evidence\state.json" -Force }
+    try {
+        Compress-Archive -Path "$evidence\*" -DestinationPath "$root\guest-evidence.zip" -Force
+        try { Invoke-WebRequest -UseBasicParsing -Method Post -Uri 'http://10.0.2.2:15986/post/guest-evidence.zip' -InFile "$root\guest-evidence.zip" -ContentType 'application/octet-stream' -TimeoutSec 120 } catch { Beacon 'evidence-post-error' }
+    } catch { Beacon ('evidence-zip-error-' + ($_.Exception.Message -replace '[^A-Za-z0-9]', '-')) }
 }
