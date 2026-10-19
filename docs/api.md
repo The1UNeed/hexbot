@@ -104,8 +104,13 @@ before uploads move or Pi receives the command. Invalid or already reserved
 IDs return 4202 without taking another intent or changing staged uploads.
 Successful staged submissions echo a supplied `input_id`; callers that omit
 it retain the original response shape. This is correlation only, with no
-idempotency, retry or automatic resend promise. Manual `/compact` bypasses
-intent staging and may omit the echo and all identity metadata.
+idempotency, retry or automatic resend promise.
+
+Manual `/compact` is a daemon command, not a Pi user or operation. It sends
+no uploads; staged files stay staged. A supplied `input_id` is reserved
+before Pi compacts and freed if Pi does not compact. After a compaction the
+reply echoes it, and the `/compact` user row the daemon stores carries it.
+That row and its summary notice have no `turn_id` or `message_id`.
 
 A user projection exposes `input_id` only for a proven binding to that actual
 Pi user. The current producer binds the sole identified `started` operation's

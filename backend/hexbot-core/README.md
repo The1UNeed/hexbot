@@ -144,8 +144,11 @@ it also installs over SSH when nobody is signed in at the screen.
   answered but not retained, without evicting other indexes. Concurrent searches
   can build separately; the last returned entry replaces the same cache key.
   Every query checks section metadata and history versions; unchanged eligible
-  sections require no transcript reads. A deleted section disappears at the
-  next query, and `delete` drops its version row with the rest of its history.
+  sections require no transcript reads. A legacy `state.db` that cannot be
+  read is left out; the next search after it becomes readable again, or stops
+  being readable, rebuilds the index even if its time and size are unchanged.
+  A deleted section disappears at the next query, and `delete` drops its
+  version row with the rest of its history.
 - Settled Pi processes retire after 15 idle minutes. Session IDs remain valid;
   a later RPC resumes the durable session. Staged files, pending questions,
   and uploads or messages still on their way in prevent retirement; that
@@ -236,11 +239,12 @@ Transcript identity is optional projection metadata. `runtime_identity.rs`
 observes ordered preflight, actual operations and assistant fragments; it owns
 no admission, Stop, replay or upload policy. A sole `started` input can bind
 the initial real user slot. Queued, steered and raw-only recovered users omit
-`input_id` without a proven binding. `turn_id` identifies each actual Pi
-operation; each assistant fragment's `message_id` equals its projected
-`row_id`. Seeds survive SQLite retries. Reconciliation preserves committed
-metadata through the full-raw journal match without changing Pi messages,
-frozen prompts/options or billing. See [the API contract](../../docs/api.md#optional-transcript-identity).
+`input_id` without a proven binding. Manual `/compact` reserves its key before
+Pi compacts and keeps it on the user row the daemon stores afterwards.
+`turn_id` identifies each actual Pi operation; each assistant fragment's
+`message_id` equals its projected `row_id`. Seeds survive SQLite retries.
+Reconciliation preserves committed metadata through the full-raw journal
+match without changing Pi messages, frozen prompts/options or billing. See [the API contract](../../docs/api.md#optional-transcript-identity).
 
 Explicit attachment lists consume only selected staged uploads. Unselected
 uploads, including another paired client's files, remain available for later
