@@ -73,6 +73,19 @@ try {
     Set-Phase 'testing' 'Checking Windows 11 x64, Secure Boot, TPM, and standard-user containment'
     $os = Get-CimInstance Win32_OperatingSystem
     $version = Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion'
+    Beacon ('build-' + $version.CurrentBuildNumber + '-ubr-' + $version.UBR)
+    if ($version.CurrentBuildNumber -ne '26300' -or [int]$version.UBR -lt 9711) {
+        # Servicing can commit the cumulative update on a second restart.
+        $restarts = 0
+        if (Test-Path "$root\update-restarts") { $restarts = [int](Get-Content "$root\update-restarts" -Raw) }
+        if ($restarts -ge 2) { throw "The pinned Windows cumulative update is missing after $restarts extra restarts (build $($version.CurrentBuildNumber) UBR $($version.UBR))" }
+        $restarts++
+        Set-Content "$root\update-restarts" $restarts
+        Set-Phase 'rebooting' 'The update needs another restart to finish committing'
+        Start-Sleep -Seconds 2
+        Restart-Computer -Force
+        exit
+    }
     $secureBoot = Confirm-SecureBootUEFI
     $tpm = Get-Tpm
     $machine = @{
@@ -84,7 +97,6 @@ try {
     if ($os.ProductType -ne 1 -or $os.Caption -notmatch 'Windows 11' -or $env:PROCESSOR_ARCHITECTURE -ne 'AMD64') {
         throw 'This proof requires the native Windows 11 x64 client kernel'
     }
-    if ($version.CurrentBuildNumber -ne '26300' -or $version.UBR -lt 9711) { throw 'The pinned Windows cumulative update is missing' }
     if (!$secureBoot -or !$tpm.TpmPresent -or !$tpm.TpmReady) { throw 'Secure Boot and a ready TPM are required' }
 
     $tools = 'C:\Program Files\HexbotVmTools'

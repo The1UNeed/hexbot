@@ -147,6 +147,7 @@ def run(manifest, evidence):
     processes = []
     logs = []
     beacon = beacon_server(evidence)
+    probe_failures = {}
     with tempfile.TemporaryDirectory(prefix="hexbot-win11-", dir=os.environ.get("RUNNER_TEMP")) as directory:
         private = Path(directory)
         payload = private / "payload"
@@ -232,14 +233,17 @@ def run(manifest, evidence):
                     result = session.run_ps("$ErrorActionPreference='Stop'; Get-Content C:\\HexbotVm\\state.json -Raw")
                     if result.status_code == 0:
                         state = json.loads(result.std_out.decode("utf-8-sig"))
-                # pywinrm 0.5.0 raises transport errors that do not inherit
-                # from WinRMError; tolerate every transient it can produce.
-                except (ET.ParseError, OSError, ValueError, winrm.exceptions.WinRMError,
-                        winrm.exceptions.WinRMOperationTimeoutError, winrm.exceptions.WinRMTransportError):
-                    # Setup and the cumulative update both reboot the guest, and
-                    # the WinRM service can briefly answer 500 or a non-XML body
-                    # while it starts. All of these are transients.
-                    pass
+                        probe_failures["ok"] = probe_failures.get("ok", 0) + 1
+                except winrm.exceptions.WinRMTransportError as error:
+                    text = str(error)
+                    key = "http-500" if "Code 500" in text else "transport"
+                    probe_failures[key] = probe_failures.get(key, 0) + 1
+                except winrm.exceptions.WinRMError:
+                    probe_failures["winrm"] = probe_failures.get("winrm", 0) + 1
+                except (ET.ParseError, ValueError):
+                    probe_failures["parse"] = probe_failures.get("parse", 0) + 1
+                except OSError:
+                    probe_failures["refused"] = probe_failures.get("refused", 0) + 1
                 if state is not None:
                     if not ready:
                         # Setup and bootstrap have copied everything they need.
@@ -279,7 +283,7 @@ def run(manifest, evidence):
                         f"The guest reported {_BeaconHandler.terminal} through its beacon; see beacon.log"
                     )
                 if time.monotonic() >= heartbeat:
-                    print("Waiting for Windows Setup, the pinned update, or the containment test", flush=True)
+                    print(f"Waiting for Windows Setup, the pinned update, or the containment test; WinRM probes: {probe_failures}", flush=True)
                     heartbeat = time.monotonic() + 45
                 # Capture the guest's display every five minutes so the evidence
                 # shows where Setup, OOBE, or the test actually is.
@@ -295,6 +299,7 @@ def run(manifest, evidence):
                 time.sleep(10)
             raise RuntimeError("The Windows VM exceeded its 100-minute deadline")
         finally:
+            (evidence / "probe-status.json").write_text(json.dumps(probe_failures, indent=2))
             try:
                 beacon.shutdown()
             except OSError:
