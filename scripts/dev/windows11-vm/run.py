@@ -220,7 +220,7 @@ def run(manifest, evidence):
                     except (OSError, RuntimeError, ValueError):
                         pass
             session = winrm.Session(f"http://127.0.0.1:{PORT}/wsman", auth=(USERNAME, password), transport="ntlm", message_encryption="always", operation_timeout_sec=15, read_timeout_sec=20)
-            deadline = time.monotonic() + 100 * 60
+            deadline = time.monotonic() + 115 * 60
             last_message = None
             heartbeat = 0
             ready = False
@@ -297,7 +297,7 @@ def run(manifest, evidence):
                     for old in sorted(evidence.glob("screen-*.ppm"))[:-4]:
                         old.unlink(missing_ok=True)
                 time.sleep(10)
-            raise RuntimeError("The Windows VM exceeded its 100-minute deadline")
+            raise RuntimeError("The Windows VM exceeded its 115-minute deadline")
         finally:
             (evidence / "probe-status.json").write_text(json.dumps(probe_failures, indent=2))
             try:

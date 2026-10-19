@@ -18,7 +18,7 @@ anything about Windows containment.
 
 Run the `Windows 11 x64 VM` workflow on `t3/verify-windows-readiness`. It also
 runs when its files or the candidate probe change on that branch. The workflow
-has a 140-minute limit and the running VM has a 100-minute limit. The first
+has a 140-minute limit and the running VM has a 115-minute limit. The first
 run may spend much of that time on installation and servicing. No paid runner,
 cloud account, Microsoft account, or activation key is configured.
 
