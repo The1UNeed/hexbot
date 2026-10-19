@@ -1,0 +1,22 @@
+name: Upload an existing Hexbot build
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_id:
+        type: string
+        required: true
+        description: EAS build ID to upload without rebuilding
+
+defaults:
+  tools:
+    node: 26.5.0
+    pnpm: 10.29.3
+
+jobs:
+  testflight:
+    name: Upload to App Store Connect
+    type: submit
+    params:
+      build_id: ${{ inputs.build_id }}
+      profile: production

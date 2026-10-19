@@ -24,6 +24,9 @@
     "mobile:dev": "pnpm --filter @hexbot/mobile run dev",
     "mobile:ios": "pnpm --filter @hexbot/mobile run ios",
     "mobile:android": "pnpm --filter @hexbot/mobile run android",
+    "mobile:testflight": "pnpm --filter @hexbot/mobile run testflight",
+    "mobile:testflight:upload": "pnpm --filter @hexbot/mobile run testflight:upload",
+    "mobile:testflight:status": "pnpm --filter @hexbot/mobile run testflight:status",
     "mobile:check": "pnpm --filter @hexbot/mobile run check"
   },
   "repository": {
