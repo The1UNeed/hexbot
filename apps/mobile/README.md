@@ -81,12 +81,10 @@ the message. Answer bot questions before sending attached files; the files stay
 ready for the next message. Failed uploads can be retried without
 resending attachments that already reached the daemon. Each upload returns an
 id, and `prompt.submit` names the ids for that message: the daemon sends only
-those and drops any other file staged on the chat, such as one whose upload
-reply was lost or one removed from the draft. Leaving the chat, switching
-daemons or disconnecting also clears unsent uploads, so a message sent from
-another app does not carry them; that clear is best effort.
+those and keeps other files staged. Leaving the chat, switching daemons or
+disconnecting asks the daemon to clear unsent uploads; that clear is best effort.
 This uses the new `attachments.clear` RPC and the `attachments` list on
-`prompt.submit`; daemons without upload ids send every staged file. Scheduled job controls use the new
+`prompt.submit`; requests without this list send every staged file for compatibility. Scheduled job controls use the new
 owner-scoped `hexbot.jobs.*` RPCs; use a daemon built from this checkout for both. The app shows an update notice
 for older daemons and explains when either RPC is unavailable.
 
