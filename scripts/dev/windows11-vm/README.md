@@ -1,5 +1,17 @@
 # Windows 11 x64 VM check
 
+## Result (October 19, 2026): the boundary build does not close the hardlink read
+
+The first dispatch to complete the battery (run 39198014069) confirmed every
+environmental precondition — build 26300 UBR 9711, Secure Boot, a ready TPM,
+MXC tier base-container with deny-path support, the whole battery under a
+standard user — and the `python-manual` and `python-auto` workloads still read
+the protected credential through a hardlink planted in the workspace, exactly
+as on the below-boundary hosted images. MXC 1.0.1's deny paths are name-based
+and do not reject another link to a denied file. Windows stays blocked until
+containment that survives link aliasing exists; keeping this workflow green on
+a future build is the tripwire for that.
+
 This candidate-only workflow runs on the public repository's free
 `ubuntu-24.04` runner. It installs a fresh Windows 11 Enterprise evaluation
 guest with native x64 KVM, two CPUs, 6 GiB RAM, a sparse 64 GiB system disk,
