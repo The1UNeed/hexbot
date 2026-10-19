@@ -802,12 +802,17 @@ fn config_entries(text: &[u8]) -> Result<Vec<(String, String)>> {
             return Ok(entries.clone());
         }
     }
-    let unreadable = || Error::new(5240, "Git hook configuration could not be read.");
+    let unreadable = |reason: String| {
+        Error::new(
+            5240,
+            format!("Git hook configuration could not be read: {reason}"),
+        )
+    };
     // git config only parses; it does not run hooks, aliases or commands. Use
     // system Git, never a workspace executable from PATH, and give it the bytes
     // already read: with --no-includes it opens no file, so includes are
     // followed here. It is killed at the deadline.
-    let git = git_executable().ok_or_else(unreadable)?;
+    let git = git_executable().ok_or_else(|| unreadable("no system Git".into()))?;
     let mut command = std::process::Command::new(&git);
     command
         .args([
@@ -835,17 +840,28 @@ fn config_entries(text: &[u8]) -> Result<Vec<(String, String)>> {
     {
         // Windows loaders also search the process working directory for DLLs.
         // A workspace must not supply code to this trusted parser.
-        command.current_dir(git.parent().ok_or_else(unreadable)?);
+        command.current_dir(git.parent().ok_or_else(|| unreadable("git path".into()))?);
         for name in ["SystemRoot", "WINDIR", "USERPROFILE"] {
             if let Some(value) = std::env::var_os(name) {
                 command.env(name, value);
             }
         }
     }
-    let mut child = command.spawn().map_err(|_| unreadable())?;
-    let mut stdin = child.stdin.take().ok_or_else(unreadable)?;
-    let mut stdout = child.stdout.take().ok_or_else(unreadable)?;
-    let mut stderr = child.stderr.take().ok_or_else(unreadable)?;
+    let mut child = command
+        .spawn()
+        .map_err(|error| unreadable(format!("spawn: {error}")))?;
+    let mut stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| unreadable("stdin".into()))?;
+    let mut stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| unreadable("stdout".into()))?;
+    let mut stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| unreadable("stderr".into()))?;
     let input = text.to_vec();
     let writer = std::thread::spawn(move || {
         use std::io::Write;
@@ -869,7 +885,10 @@ fn config_entries(text: &[u8]) -> Result<Vec<(String, String)>> {
                 // Unix PID, until it has been killed and reaped on either OS.
                 let _ = child.kill();
                 let _ = child.wait();
-                break Err(unreadable());
+                break Err(unreadable(format!(
+                    "deadline after {}ms",
+                    started.elapsed().as_millis()
+                )));
             }
         }
     };
@@ -878,17 +897,21 @@ fn config_entries(text: &[u8]) -> Result<Vec<(String, String)>> {
         status: status?,
         stdout: out
             .join()
-            .map_err(|_| unreadable())?
-            .map_err(|_| unreadable())?,
+            .map_err(|_| unreadable("stdout join".into()))?
+            .map_err(|_| unreadable("stdout read".into()))?,
         stderr: err
             .join()
-            .map_err(|_| unreadable())?
-            .map_err(|_| unreadable())?,
+            .map_err(|_| unreadable("stderr join".into()))?
+            .map_err(|_| unreadable("stderr read".into()))?,
     };
     // Exit 1 without a message is "no matching settings"; a missing Git (the
     // macOS shim without developer tools) also exits 1, but says so.
     if !output.status.success() && !(output.status.code() == Some(1) && output.stderr.is_empty()) {
-        return Err(unreadable());
+        return Err(unreadable(format!(
+            "exit {}: {}",
+            output.status.code().unwrap_or(-1),
+            String::from_utf8_lossy(&output.stderr)
+        )));
     }
     let found: Vec<_> = String::from_utf8_lossy(&output.stdout)
         .split('\0')
