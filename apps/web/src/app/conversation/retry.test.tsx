@@ -65,6 +65,7 @@ let delivered: { text: unknown; files: string[]; input_id?: unknown }[]
 let answers: Error[]
 let gate: ReturnType<typeof deferred> | null
 let uploads: number
+
 let call: ReturnType<
   typeof vi.fn<(method: string, input: Record<string, unknown>) => Promise<unknown>>
 >
@@ -388,16 +389,17 @@ it('offers no Retry when acceptance is unknown, leaving the draft to send again'
   expect(submits()).toHaveLength(1)
 })
 
-it('retries an accepted turn without its consumed uploads or its row key', async () => {
+it('identity-equipped: retries an accepted turn without its consumed uploads or its row key', async () => {
   const view = await mount()
   await send(view)
   await waitFor(() => expect(delivered).toHaveLength(1))
+  await proveAccepted(userRows()[0]!.inputId!, 'accepted-own')
   const row = userRows()[0]!
   await act(async () => {
     routeEvent({
       type: 'error',
       session_id: 'chat',
-      payload: { message: 'Provider overloaded' }
+      payload: { turn_id: 'accepted-own', message: 'Provider overloaded' }
     } as GatewayEvent)
   })
   const card = cards().find(item => item.textContent?.includes('Provider overloaded'))!
@@ -709,16 +711,17 @@ it.each(['epoch', 'target'] as const)('invalidates retry provenance on a new %s'
   expect(submits()).toHaveLength(1)
 })
 
-it('retries an accepted terminal failure as a new text-only input and adopts each row once', async () => {
+it('identity-equipped: retries an accepted terminal failure as a new text-only input and adopts each row once', async () => {
   const view = await mount()
   await send(view)
   await waitFor(() => expect(delivered).toHaveLength(1))
+  await proveAccepted(userRows()[0]!.inputId!, 'terminal-own')
   const original = userRows()[0]!
   act(() =>
     routeEvent({
       type: 'message.complete',
       session_id: 'chat',
-      payload: { error: 'Provider stopped', status: 'error', text: '' }
+      payload: { turn_id: 'terminal-own', error: 'Provider stopped', status: 'error', text: '' }
     } as GatewayEvent)
   )
   const card = await screen.findByTestId('stopped-card')
@@ -796,3 +799,10 @@ it('uses exact durable acceptance over a failed RPC when choosing whether to reu
   expect(userRows().find(row => row.id === accepted.id)?.inputId).toBe(accepted.inputId)
   expect(userRows()).toHaveLength(2)
 })
+
+// Supply only identity fields already produced on a proven durable user row.
+async function proveAccepted(inputId: string, turnId: string) {
+  const row = rows.find(row => row.role === 'user' && row.input_id === inputId)!
+  row.turn_id = turnId
+  await reload()
+}

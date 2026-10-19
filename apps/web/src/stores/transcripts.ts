@@ -65,8 +65,6 @@ export type TranscriptMessage = Message & {
 }
 
 export interface Transcript {
-  /** The row explicitly submitted here, independent of remote input order. */
-  submittedInput?: string
   /** Identity supplied on the current event, separate from UI bubble identity. */
   identity?: { turnId?: string; messageId?: string }
   /** The current run, independent of a late event from an earlier run. */
@@ -174,7 +172,7 @@ export interface TranscriptsState {
     sessionId: string,
     message: string,
     detail?: ErrorDetail,
-    inputRow?: string | null
+    turnId?: string | null
   ) => void
   inputSubmitting: (sessionId: string, messageId: string, uploads: string[]) => void
   inputSettled: (
@@ -281,17 +279,30 @@ function replaceMessage(
   }
 }
 
-/** Bind a card to a recorded local request, never to the last visible user. */
-function withRetryCard(
-  transcript: Transcript,
-  cardId: string,
-  inputRow?: string | null
-): Transcript {
-  const row = inputRow === undefined ? transcript.submittedInput : inputRow
-  const input = transcript.messages.find(message => message.submission?.row === row)
+/** Only an exact durable user binding connects a local input to an operation. */
+function withRetryCard(transcript: Transcript, cardId: string, turnId?: string | null): Transcript {
+  if (!turnId) {
+    return transcript
+  }
+
+  const inputs = transcript.messages.filter(
+    message => message.role === 'user' && !message.createdAt && message.turnId === turnId
+  )
+
+  const input = inputs.length === 1 ? inputs[0] : undefined
   const source = input?.submission
 
-  if (!source || (!inputRow && !['sending', 'accepted'].includes(source.status))) {
+  if (
+    !input?.inputId ||
+    !source ||
+    !['sending', 'accepted'].includes(source.status) ||
+    transcript.messages.filter(
+      message => message.role === 'user' && message.inputId === input?.inputId
+    ).length !== 1 ||
+    transcript.messages.some(
+      message => message.retryRow === source.row && message.turnId === turnId
+    )
+  ) {
     return transcript
   }
 
@@ -301,7 +312,7 @@ function withRetryCard(
       message === input
         ? { ...message, submission: { ...source, card: cardId } }
         : message.id === cardId
-          ? { ...message, retryRow: source.row }
+          ? { ...message, retryRow: source.row, turnId }
           : message
     )
   }
@@ -878,7 +889,6 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
           // The turn ended right after the card: the closed bubble already holds it all.
           return {
             ...transcript,
-            submittedInput: undefined,
             turnActive: false,
             turnPrefix: undefined,
             usage: payload.usage ?? transcript.usage
@@ -907,13 +917,12 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
         let next = withCurrentAssistant(transcript, finalize)
 
         if (payload.error && next.streamingMessageId) {
-          next = withRetryCard(next, next.streamingMessageId)
+          next = withRetryCard(next, next.streamingMessageId, transcript.identity?.turnId)
         }
 
         // The turn is over, so no review is left; the daemon's clear may be lost.
         return {
           ...next,
-          submittedInput: payload.error ? next.submittedInput : undefined,
           checking: undefined,
           turnPrefix: undefined,
           error: payload.error ?? null,
@@ -1104,7 +1113,6 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
 
         return {
           ...transcript,
-          submittedInput: row,
           messages: transcript.messages.map(message => ({
             ...message,
             ...(message.submission && {
@@ -1149,13 +1157,24 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
         uploads = []
       }
 
-      if (error) {
-        get().errorEvent(sessionId, error, undefined, row)
-      }
+      update(sessionId, transcript => {
+        // A prompt refusal or unknown RPC outcome says nothing about the
+        // operation currently streaming. Its card belongs only to this request.
+        const card: TranscriptMessage | undefined = error
+          ? {
+              attachments: [],
+              createdAt: Date.now(),
+              error,
+              id: nextMessageId('e'),
+              role: 'system',
+              streaming: false,
+              text: '',
+              toolCalls: [],
+              retryRow: row
+            }
+          : undefined
 
-      update(sessionId, transcript => ({
-        ...transcript,
-        messages: transcript.messages.map(message =>
+        const messages = transcript.messages.map(message =>
           message.submission?.row === row
             ? {
                 ...message,
@@ -1164,6 +1183,7 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
                   status,
                   uploads,
                   card:
+                    card?.id ??
                     message.submission.card ??
                     (status === 'rejected'
                       ? transcript.messages.findLast(card => card.retryRow === row)?.id
@@ -1172,10 +1192,12 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
               }
             : message
         )
-      }))
+
+        return { ...transcript, messages: card ? [...messages, card] : messages }
+      })
     },
 
-    errorEvent(sessionId, message, detail, inputRow) {
+    errorEvent(sessionId, message, detail, turnId) {
       update(sessionId, transcript => {
         const existing = detail?.incidentId
           ? transcript.messages.findIndex(
@@ -1213,7 +1235,7 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
             turnPrefix: undefined
           },
           messages[existing >= 0 ? existing : messages.length - 1]!.id,
-          inputRow
+          turnId
         )
       })
     },
