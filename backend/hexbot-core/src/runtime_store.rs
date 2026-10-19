@@ -1863,9 +1863,16 @@ fn legacy_projection(
     stored: &str,
     wanted: &Value,
 ) -> Result<Option<(i64, Value)>> {
+    // A control reservation consumes its daemon row_id, rather than a Pi
+    // journal_id. That row belongs to the control, never to a recovered user.
     let rows = common::rows(
         conn,
-        "SELECT m.seq,m.message_json FROM native_messages m WHERE m.session_id=? AND NOT EXISTS(SELECT 1 FROM native_pi_journal p WHERE p.session_id=m.session_id AND p.projection_seq=m.seq) ORDER BY seq",
+        "SELECT m.seq,m.message_json FROM native_messages m WHERE m.session_id=?
+         AND NOT EXISTS(SELECT 1 FROM native_pi_journal p WHERE p.session_id=m.session_id AND p.projection_seq=m.seq)
+         AND NOT EXISTS(SELECT 1 FROM native_prompt_intents i WHERE i.session_id=m.session_id
+             AND i.id=json_extract(m.message_json,'$.input_id')
+             AND i.consumed_by=json_extract(m.message_json,'$.row_id'))
+         ORDER BY seq",
         &[&stored],
     )?;
     for row in rows {
@@ -2519,6 +2526,58 @@ fn check_deleted(conn: &Connection, stored: &str) -> Result<()> {
 #[cfg(test)]
 mod identity_tests {
     use super::*;
+
+    #[test]
+    fn legacy_projection_never_adopts_reserved_control_rows() {
+        let home = common::TestHome::new();
+        let input = "a0117bc9-546e-4279-8829-c52674176836";
+        let row = reserve_control(home.path(), "chat", "/compact", "normal", input).unwrap();
+        let control =
+            json!({"role":"user","text":"/compact","row_id":row,"input_id":input,"timestamp":1.0});
+        append(home.path(), "chat", control.clone()).unwrap();
+        let conn = open(home.path()).unwrap();
+        // Exclusion uses the reservation, regardless of text, time or an old
+        // seed's row_id. None of these can turn a control into a Pi occurrence.
+        for text in ["/compact", "different"] {
+            for timestamp in [json!(1.001), json!(100.0), Value::Null] {
+                for row_id in [json!(row), json!("pi-distinct-user"), Value::Null] {
+                    let wanted =
+                        json!({"role":"user","text":text,"timestamp":timestamp,"row_id":row_id});
+                    assert!(legacy_projection(&conn, "chat", &wanted).unwrap().is_none());
+                }
+            }
+        }
+        assert_eq!(history(home.path(), "chat").unwrap(), vec![control]);
+    }
+
+    #[test]
+    fn legacy_projection_adopts_ordinary_users_around_control_rows() {
+        for control_first in [false, true] {
+            let home = common::TestHome::new();
+            let input = "a0117bc9-546e-4279-8829-c52674176836";
+            let row = reserve_control(home.path(), "chat", "/compact", "normal", input).unwrap();
+            let control = json!({"role":"user","text":"/compact","row_id":row,"input_id":input,"timestamp":1.0});
+            let legacy = json!({"role":"user","text":"/compact","row_id":"legacy-user","timestamp":1.0,"display_kind":"hidden"});
+            let rows = if control_first {
+                [control, legacy.clone()]
+            } else {
+                [legacy.clone(), control]
+            };
+            for row in rows {
+                append(home.path(), "chat", row).unwrap();
+            }
+            let found = legacy_projection(
+                &open(home.path()).unwrap(),
+                "chat",
+                &json!({"role":"user","text":"/compact","timestamp":1.001}),
+            )
+            .unwrap()
+            .unwrap();
+            assert_eq!(found.1, legacy);
+            assert_eq!(found.0, if control_first { 2 } else { 1 });
+        }
+    }
+
     #[test]
     fn fork_keeps_source_metadata_but_does_not_transfer_client_correlation() {
         let home = common::TestHome::new();

@@ -1138,6 +1138,99 @@ async fn transcript_identity_manual_compact_binds_only_its_stored_control_row() 
     runtime.shutdown().await;
 }
 
+#[tokio::test]
+async fn transcript_identity_recovery_keeps_manual_control_and_raw_only_user_separate() {
+    for content in [
+        json!("/compact"),
+        json!([{"type":"text","text":"/compact"}]),
+    ] {
+        let home = setup();
+        let path = identity_pi(home.path());
+        let runtime = Runtime::new(home.path().into(), EventHub::new(), path.clone()).unwrap();
+        let live = open(&runtime, "alice").await["section"]["live_session_id"].clone();
+        assert_eq!(
+            runtime
+                .call(
+                    "alice",
+                    "prompt.submit",
+                    &json!({"session_id":live,"text":"/compact","input_id":INPUT})
+                )
+                .await
+                .unwrap()
+                .unwrap(),
+            json!({"status":"completed","input_id":INPUT})
+        );
+        let before = runtime_store::history(home.path(), "section-a").unwrap();
+        let control = before[0].clone();
+        assert_eq!(control["input_id"], INPUT);
+        runtime.shutdown().await;
+
+        // Model a durable, distinct Pi user whose event never reached the
+        // daemon. Its equal text and nearby time prove no input ownership.
+        let at = control["timestamp"].as_f64().unwrap() + 0.001;
+        let raw = json!({"role":"user","content":content,"timestamp":at*1000.0});
+        let entries = [
+            json!({"type":"session","version":3}),
+            json!({"type":"compaction","id":"compact-entry","parentId":null,"firstKeptEntryId":"compact-entry","summary":"earlier context"}),
+            json!({"type":"message","id":"distinct-user","parentId":"compact-entry","message":raw}),
+        ];
+        let raw_path = runtime_store::session_dir(home.path(), "section-a")
+            .unwrap()
+            .join("conversation.jsonl");
+        let bytes = entries
+            .iter()
+            .map(|entry| entry.to_string() + "\n")
+            .collect::<String>();
+        fs::write(&raw_path, &bytes).unwrap();
+        let mut recovered = None;
+        for _ in 0..2 {
+            runtime_store::reconcile(home.path(), "owl", "section-a", "alice").unwrap();
+            let rows = runtime_store::history(home.path(), "section-a").unwrap();
+            assert_eq!(rows.len(), before.len() + 1);
+            assert!(rows.contains(&control));
+            let user = rows
+                .iter()
+                .find(|row| row["row_id"] == "pi-distinct-user")
+                .unwrap();
+            assert_eq!(user["role"], "user");
+            assert_eq!(user["text"], "/compact");
+            assert!(user.get("input_id").is_none());
+            assert!(user.get("turn_id").is_none());
+            if let Some(first) = &recovered {
+                assert_eq!(&rows, first);
+            }
+            let conn = runtime_store::open(home.path()).unwrap();
+            let bound_row: String = conn.query_row(
+                "SELECT consumed_by FROM native_prompt_intents WHERE id=? AND session_id='section-a'",
+                [INPUT], |r| r.get(0),
+            ).unwrap();
+            assert_eq!(bound_row, control["row_id"].as_str().unwrap());
+            let linked: String = conn.query_row(
+                "SELECT m.message_json FROM native_pi_journal p JOIN native_messages m ON m.session_id=p.session_id AND m.seq=p.projection_seq WHERE p.session_id='section-a' AND p.entry_id='distinct-user'",
+                [], |r| r.get(0),
+            ).unwrap();
+            assert_eq!(serde_json::from_str::<Value>(&linked).unwrap(), *user);
+            assert_eq!(
+                conn.query_row(
+                    "SELECT COUNT(*) FROM native_pi_journal WHERE session_id='section-a'",
+                    [],
+                    |r| r.get::<_, i64>(0)
+                )
+                .unwrap(),
+                1
+            );
+            assert_eq!(fs::read_to_string(&raw_path).unwrap(), bytes);
+            recovered = Some(rows);
+        }
+        let restarted = Runtime::new(home.path().into(), EventHub::new(), path).unwrap();
+        assert_eq!(
+            open(&restarted, "alice").await["messages"],
+            json!(recovered.unwrap())
+        );
+        restarted.shutdown().await;
+    }
+}
+
 /// Actual Pi summarises through the local provider. Only the daemon's control
 /// row carries the key; Pi's log, the provider request, the journal and the
 /// frozen session never see it, and the row survives a restart unchanged.
