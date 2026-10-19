@@ -2732,7 +2732,10 @@ mod tests {
         for target in [PathBuf::from("/"), read_denied()[0].clone(), user.clone()] {
             std::fs::write(
                 work.join(".git/config"),
-                format!("[core]\n\thooksPath = {}\n", target.display()),
+                format!(
+                    "[core]\n\thooksPath = {}\n",
+                    target.display().to_string().replace('\\', r"\\")
+                ),
             )
             .unwrap();
             let layout = layout(&home, &[], Some(std::slice::from_ref(&work))).unwrap();
@@ -2791,7 +2794,10 @@ mod tests {
         let link = work.join("linked-root");
         std::fs::write(
             work.join(".git/config"),
-            format!("[core]\n\thooksPath = {}\n", link.display()),
+            format!(
+                "[core]\n\thooksPath = {}\n",
+                link.display().to_string().replace('\\', r"\\")
+            ),
         )
         .unwrap();
         let linked = layout(&home, &[], Some(std::slice::from_ref(&work))).unwrap();
@@ -2967,7 +2973,12 @@ mod tests {
             xdg.join("git/more"),
             format!(
                 "[core]\n\thooksPath = {}\n",
-                base.join("outside-hooks").display()
+                // Git config values escape backslashes; a raw Windows path is
+                // a parse error, exactly as git itself would refuse to read.
+                base.join("outside-hooks")
+                    .display()
+                    .to_string()
+                    .replace('\\', r"\\")
             ),
         )
         .unwrap();
