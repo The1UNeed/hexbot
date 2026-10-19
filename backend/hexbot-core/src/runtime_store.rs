@@ -1506,6 +1506,36 @@ pub(crate) fn check_input_id(home: &Path, input_id: &str) -> Result<()> {
     }
     Ok(())
 }
+/// Reserve `input_id` for a row the daemon stores itself, such as manual
+/// `/compact`. The reservation names that row from the start, so no Pi user
+/// can take it by text and no later request can reuse the key.
+pub(crate) fn reserve_control(
+    home: &Path,
+    stored: &str,
+    text: &str,
+    display: &str,
+    input_id: &str,
+) -> Result<String> {
+    common::identifier(stored)?;
+    validate_input_id(input_id)?;
+    let row = id();
+    let inserted = open(home)?.execute(
+        "INSERT OR IGNORE INTO native_prompt_intents(id,session_id,text,display_kind,created_at,consumed_by) VALUES (?,?,?,?,?,?)",
+        params![input_id, stored, text, display, common::now(), row],
+    )?;
+    if inserted != 1 {
+        return Err(crate::Error::new(4202, "input_id is already reserved"));
+    }
+    Ok(row)
+}
+/// Frees a control reservation whose row was never stored.
+pub(crate) fn release_control(home: &Path, stored: &str, input_id: &str, row: &str) -> Result<()> {
+    open(home)?.execute(
+        "DELETE FROM native_prompt_intents WHERE id=? AND session_id=? AND consumed_by=?",
+        params![input_id, stored, row],
+    )?;
+    Ok(())
+}
 pub fn reject_prompt(home: &Path, stored: &str, intent: &str) -> Result<()> {
     open(home)?.execute(
         "DELETE FROM native_prompt_intents WHERE id=? AND session_id=? AND consumed_by IS NULL",

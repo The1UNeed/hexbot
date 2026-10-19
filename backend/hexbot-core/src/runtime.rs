@@ -1483,43 +1483,58 @@ impl Runtime {
         common::bot_owner(&self.home, &s.owner, &s.bot)?;
         self.register_worker_bridge(s);
         if text.trim() == "/compact" || text.trim().starts_with("/compact ") {
-            {
+            let display = if hidden { "hidden" } else { "normal" };
+            // No Pi user carries a supplied key here: the daemon reserves it
+            // before Pi compacts and keeps it on the row it stores below.
+            let control = {
                 let mut state = s.state.lock().unwrap();
                 if state.busy {
                     return Err(Error::new(4002, "session is already working"));
                 }
+                let control = input_id
+                    .map(|id| {
+                        store::reserve_control(&self.home, &s.stored, text, display, id)
+                            .map(|row| (id, row))
+                    })
+                    .transpose()?;
                 state.busy = true;
                 state.last_activity = common::now();
-            }
+                control
+            };
             self.emit(s, "message.start", json!({}));
             let response = s
                 .process
                 .request(json!({"type":"compact","customInstructions":text.trim().strip_prefix("/compact").unwrap_or("").trim()}), Duration::from_secs(300))
                 .await
                 .map_err(pi_error);
-            let result = response
-                .and_then(|reply| {
-                    if reply.success {
-                        Ok(())
-                    } else {
-                        Err(Error::new(
-                            5201,
-                            reply.error.unwrap_or_else(|| "Summarising failed".into()),
-                        ))
-                    }
-                })
-                .and_then(|()| {
-                    store::append(
-                        &self.home,
-                        &s.stored,
-                        json!({"role":"user","text":text,"display_kind":if hidden{"hidden"}else{"normal"}}),
-                    )?;
-                    store::append(
-                        &self.home,
-                        &s.stored,
-                        json!({"role":"assistant","text":"Older messages summarised."}),
-                    )
-                });
+            let compacted = response.and_then(|reply| {
+                if reply.success {
+                    Ok(())
+                } else {
+                    Err(Error::new(
+                        5201,
+                        reply.error.unwrap_or_else(|| "Summarising failed".into()),
+                    ))
+                }
+            });
+            if compacted.is_err()
+                && let Some((id, row)) = &control
+            {
+                let _ = store::release_control(&self.home, &s.stored, id, row);
+            }
+            let result = compacted.and_then(|()| {
+                let mut user = json!({"role":"user","text":text,"display_kind":display});
+                if let Some((id, row)) = &control {
+                    user["input_id"] = json!(id);
+                    user["row_id"] = json!(row);
+                }
+                store::append(&self.home, &s.stored, user)?;
+                store::append(
+                    &self.home,
+                    &s.stored,
+                    json!({"role":"assistant","text":"Older messages summarised."}),
+                )
+            });
             // Pi settles no turn for a compaction; it ends here, stored or not.
             if s.state.lock().unwrap().end_turn() {
                 self.reload(s);
@@ -1543,7 +1558,11 @@ impl Runtime {
             }
             self.emit(s, "status.update", json!({"kind":"idle","text":""}));
             s.settled.send_modify(|v| *v += 1);
-            return Ok(json!({"status":"completed"}));
+            let mut done = json!({"status":"completed"});
+            if let Some((id, _)) = control {
+                done["input_id"] = json!(id);
+            }
+            return Ok(done);
         }
         if text.trim().is_empty() {
             return Err(Error::new(4200, "missing parameter: text"));
