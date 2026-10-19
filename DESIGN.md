@@ -53,8 +53,8 @@ more freedom and more capability than a hosted product can offer.
 - A bot has one chat with you; it is never archived or deleted on its own.
   Deleting the bot deletes the chat with its memory and notes; a copy of its
   memory is kept in `runtime/deleted-bots/` in the daemon's data directory.
-  An older app can still delete just the chat: the bot keeps its memory and
-  notes, and its next chat starts empty.
+  An older app's request to delete just the chat is refused; its history
+  stays intact. Only deleting the bot removes its chat.
 - Dreaming: every bot, daily at a configurable time (default 03:00), reads
   conversations from the start of its last successful dream up to, but
   excluding, its own start and folds what matters into its memory using its
