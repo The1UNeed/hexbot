@@ -16,7 +16,7 @@ Each dream reviews activity from the start of the last successful dream up to, b
 
 An unreadable database from an older Hexbot version does not stop a dream when its conversations are available in native history. If a conversation still needs that database, or its log is missing or has messages that have not reached native history, the dream fails and leaves its cutoff and proposals unchanged. Repairing and recovering the conversation makes that history eligible for the next dream. New empty chats can still dream from notes and proposals.
 
-If relevant conversation history changes between its readiness check and transcript selection, the dream fails before calling the model. Run it again to read the updated history; its cutoff and proposals stay unchanged until a dream succeeds.
+If relevant conversation history changes between its readiness check and transcript selection, the dream fails before calling the model. Run it again to read the updated history; its cutoff and proposals stay unchanged until a dream succeeds. A dream also fails, after its memory changes, when a message from before its start arrives while it runs, such as a reply that was still being written; the next dream reads it.
 
 Dreaming must be enabled for the daemon and for the individual bot. You can also run a bot's dream now from its Dreaming controls. The status shows the last run, next run, and any error.
 
