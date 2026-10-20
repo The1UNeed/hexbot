@@ -99,7 +99,8 @@ data model. The native transport and event projection live in
   Idle Stop needs no run-settlement event. A new owner prompt or `/compact`
   arriving while idle recovery finishes waits for the admission handoff; it
   does not return 4002 just because the recovery worker has not run yet. An
-  active Stop, unfinished run, or input reserved ahead of it still returns 4002.
+  active Stop, unfinished run, or input reserved ahead of it or while it waits
+  still returns 4002.
   That run accepts tools, approvals and questions again.
   If abort fails or times out, Pi exits and waiting deliveries report an error.
   Without OS isolation, shell commands require user approval even with

@@ -177,7 +177,7 @@ async fn retained_steer_and_identical_hidden_follow_up_keep_their_own_display_in
     .await;
     // The second recovered input must be accepted before the fixture finishes.
     let mut ended = s.run_ended.subscribe();
-    tokio::time::timeout(Duration::from_secs(5), async {
+    tokio::time::timeout(EVENT_WAIT, async {
         loop {
             if !s.state.lock().unwrap().recovering {
                 break;
@@ -1212,7 +1212,7 @@ async fn unexplained_pi_queue_metadata_and_unconfirmed_omissions_fail_closed() {
             }
         );
         let mut ended = s.run_ended.subscribe();
-        tokio::time::timeout(Duration::from_secs(5), async {
+        tokio::time::timeout(EVENT_WAIT, async {
             loop {
                 if s.state.lock().unwrap().closed {
                     break;

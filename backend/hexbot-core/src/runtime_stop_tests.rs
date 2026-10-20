@@ -75,11 +75,15 @@ if (process.argv.includes('--no-session')) {
     .unwrap();
 }
 
+/// How long a test waits for an event its Node fixture emits. Generous, since
+/// the whole suite runs these fixtures in parallel; tests still wait on events.
+pub(super) const EVENT_WAIT: Duration = Duration::from_secs(30);
+
 pub(super) async fn stop_event(
     events: &mut tokio::sync::broadcast::Receiver<crate::events::Event>,
     matches: impl Fn(&Value) -> bool,
 ) -> Value {
-    tokio::time::timeout(Duration::from_secs(5), async {
+    tokio::time::timeout(EVENT_WAIT, async {
         loop {
             let params = events.recv().await.unwrap().frame["params"].clone();
             if matches(&params) {

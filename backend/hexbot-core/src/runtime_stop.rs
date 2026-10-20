@@ -578,19 +578,20 @@ impl Runtime {
                 let s = s.clone();
                 let echo = input_id.is_some();
                 return tokio::spawn(async move {
-                    let response =
-                        Self::input_preflight(&s, &intent, reply)
-                            .await
-                            .and_then(|reply| {
-                                if reply.success {
-                                    Ok(())
-                                } else {
-                                    Err(Error::new(
-                                        5201,
-                                        reply.error.unwrap_or_else(|| "Steering rejected".into()),
-                                    ))
-                                }
-                            });
+                    let response = Self::input_preflight(&s, &intent, reply)
+                        .await
+                        // Pi may already have taken the steer: not a refusal.
+                        .map_err(|error| Error::new(5200, error.message))
+                        .and_then(|reply| {
+                            if reply.success {
+                                Ok(())
+                            } else {
+                                Err(Error::new(
+                                    5201,
+                                    reply.error.unwrap_or_else(|| "Steering rejected".into()),
+                                ))
+                            }
+                        });
                     let _gate = s.event_gate.lock().unwrap();
                     let mut state = s.state.lock().unwrap();
                     state.submitting -= 1;

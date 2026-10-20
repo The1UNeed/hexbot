@@ -2282,12 +2282,18 @@ impl Runtime {
         let write = async {
             let permit = s.process.extension_permit(DEADLINE).await?;
             let mut state = s.state.lock().unwrap();
-            if !state.tool_dialogs.remove(&id) {
+            if !state.tool_dialogs.contains(&id) {
                 return Ok(None);
             }
-            s.process
-                .respond_extension_with(permit, &id, json!({"cancelled":true}), DEADLINE)
-                .map(Some)
+            // A reply that was never queued leaves the dialog to Stop's drain.
+            let write = s.process.respond_extension_with(
+                permit,
+                &id,
+                json!({"cancelled":true}),
+                DEADLINE,
+            )?;
+            state.tool_dialogs.remove(&id);
+            Ok(Some(write))
         };
         let result = match write.await {
             Ok(Some(write)) => write.wait().await,
