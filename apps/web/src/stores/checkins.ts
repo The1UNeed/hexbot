@@ -54,6 +54,12 @@ export const useCheckins = create<CheckinsState>((set, get) => ({
         useTranscripts.getState().drop(live)
       }
 
+      useSections.setState(state => {
+        const { [id]: _deleted, ...liveSessionId } = state.liveSessionId
+
+        return { liveSessionId }
+      })
+
       await sectionsActions().refresh()
     }
 
