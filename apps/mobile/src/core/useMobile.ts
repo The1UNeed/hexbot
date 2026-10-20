@@ -287,7 +287,12 @@ export function useMobile() {
         loadingEvents.current = null
         liveId.current = restoredLiveId
         setChat(restored)
-        const newRoute: ChatRoute = { ...target, section: result.section }
+        // A daemon from before one chat names no purpose; keep the one the list marked.
+        const section =
+          'purpose' in result.section
+            ? result.section
+            : { ...result.section, purpose: target.section.purpose }
+        const newRoute: ChatRoute = { ...target, section }
         routeRef.current = newRoute
         setRoute(newRoute)
         await rpc('hexbot.sections.mark_read', { id: target.section.id })
