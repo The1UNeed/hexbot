@@ -87,7 +87,8 @@ redaction, and pattern checks do not provide equivalent containment.
   unavailable and produce a user card.
 - Bypass removes prompts and sandboxing and is available only to the admin.
   The primary bot still asks before it deletes a bot, room, or job, changes an
-  approval mode or a working folder, or changes a setting, skill, or connector.
+  approval mode or a working folder, changes a setting, skill, or connector,
+  or cancels a check-in wake-up.
 
 macOS also matches `.git` paths and secret filenames created during a command. It
 blocks renaming protected files and browser stores, and pins the scanned
