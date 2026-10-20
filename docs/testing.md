@@ -23,11 +23,23 @@
   A held accepted turn checks the final busy refusal after admission drains.
   Bot catalog faults and room faults before mutation
   check that admission releases and actual jobs and room posts can run again.
-  This prefix still purges room history before its catalog decision; those
-  later room failures, and membership changes before last-member purge failures,
+  Room deletion purges room history after its catalog statements, so a failed
+  statement keeps the room and its history (`room_incidents`). A purge that
+  fails part way, and membership changes before last-member purge failures,
   are outside the rollback assertions in this suite.
 - Pi runtime: `node --test backend/pi-runtime/*.test.mjs` after
   `npm ci --prefix backend/pi-runtime --ignore-scripts --no-audit --no-fund`.
+- Live Pi suites: ignored unless `HEXBOT_TEST_PI` names a Pi executable. CI runs
+  them with the pinned Pi after the install above, from `backend/hexbot-core`:
+
+  ```sh
+  export HEXBOT_TEST_PI="$PWD/../pi-runtime/node_modules/.bin/pi"
+  cargo test --locked --test pi_live -- --ignored
+  cargo test --locked --test runtime -- --ignored
+  cargo test --locked --test runtime_recovery -- --ignored
+  cargo test --locked --lib runtime::lifecycle_tests::actual_pi_reviewer -- --ignored
+  cargo test --locked --test room_incidents -- --ignored
+  ```
   CI runs the Rust and Pi suites on Linux and macOS. Approval tests use a stub
   sandbox; isolation tests use `sandbox-exec` on macOS and working bubblewrap
   on Linux. CI installs bubblewrap with the AppArmor profile from the install docs.
