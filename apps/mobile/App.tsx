@@ -437,7 +437,7 @@ function MobileApp() {
       preview: chatPreview(b.name, mobile.sections, b.sections_recent),
       activity: b.status_detail?.text,
       status:
-        b.status === 'idle' && b.sections_recent?.some(s => s.done_at)
+        b.status === 'idle' && b.sections_recent?.some(s => s.done_at && !s.archived_at && !s.purpose)
           ? ('done' as const)
           : b.status,
       updatedAt: ms(b.last_activity_at)
