@@ -1168,7 +1168,6 @@ function BotConversation() {
   const ready = resolved?.entry === entry
   const ownerInput = ready && !resolved.peer
   const liveId = ready ? loadedLiveId : null
-  const transcript = useTranscript(liveId ?? (ready ? section?.live_session_id : null) ?? null)
 
   // While the owner chat validated here is checked again (a reconnect, a
   // daemon restart, the same URL), its composer stays, disabled, so staged
@@ -1185,6 +1184,21 @@ function BotConversation() {
           !resolved.entry.installation ||
           resolved.entry.installation === installation)
       )
+
+  // So does what it showed, with the reading position, until the check ends;
+  // and a report reload or turn end, which clear the live ID, keep it too.
+  const kept = !ready && composer
+  const [shownLive, setShownLive] = useState({ section: params.section, live: loadedLiveId })
+
+  if (loadedLiveId && (shownLive.section !== params.section || shownLive.live !== loadedLiveId)) {
+    setShownLive({ section: params.section, live: loadedLiveId })
+  }
+
+  const lastLive = shownLive.section === params.section ? shownLive.live : null
+
+  const transcript = useTranscript(
+    liveId ?? (ready || kept ? lastLive : null) ?? (ready ? section?.live_session_id : null) ?? null
+  )
 
   // Connector tools are named from the bot's catalog ("Connecting to Project tools").
   useEffect(() => {
@@ -1626,7 +1640,7 @@ function BotConversation() {
               Retry
             </Button>
           </div>
-        ) : !ready ? (
+        ) : !ready && !(kept && transcript) ? (
           <div className="grid h-full place-content-center text-muted" role="status">
             Opening conversation
           </div>
@@ -1655,7 +1669,7 @@ function BotConversation() {
             ) : null}
           </div>
         ) : (
-          <div className={cn(transcriptClass, 'hex-fade')} key={liveId ?? params.section}>
+          <div className={cn(transcriptClass, 'hex-fade')} key={params.section}>
             {messages.length > visible ? (
               <button
                 className="hex-focus mx-auto mb-3 block rounded-full px-3 py-1 text-[length:var(--text-secondary)] text-muted transition-colors duration-[var(--hex-motion-fast)] hover:bg-surface-2 hover:text-foreground"

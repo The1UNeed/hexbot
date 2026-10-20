@@ -169,6 +169,33 @@ it.each(['bookmark', 'startup', 'back', 'loaded'] as const)(
     expect(calls('hexbot.sections.create').length).toBeLessThanOrEqual(3)
   }
 )
+it('keeps the open chat on screen through a dropped connection and a report reload', async () => {
+  // A live ID unlike the section's own, as the daemon gives.
+  call.mockImplementation(async (method: string, input: Record<string, unknown>) => {
+    const answer = (await reply(method, input)) as { section?: Section }
+
+    return method === 'hexbot.sections.open'
+      ? {
+          section: { ...answer.section, live_session_id: 'live-1' },
+          messages: [{ role: 'assistant', row_id: 'kept', text: 'canonical history' }]
+        }
+      : answer
+  })
+  await mount('/b/owl/s/canonical')
+  const shown = await screen.findByText('canonical history')
+  await act(async () => useConnection.getState().setDaemon(null))
+  expect(shown).toBeInTheDocument()
+  await act(async () => useConnection.getState().setDaemon({ one_chat: true } as DaemonInfo))
+  await waitFor(() => expect(screen.getByRole('textbox', { name: 'Message' })).toBeEnabled())
+  // A dream report: the chat is read again into the same transcript.
+  const transcript = () => screen.getByText('canonical history').closest('[class*="52rem"]')
+  const before = transcript()
+  await act(async () => {
+    useSections.getState().forgetLive('canonical')
+    await useSections.getState().open('canonical')
+  })
+  expect(transcript()).toBe(before)
+})
 it('leaves an explicit peer thread and its question on that thread', async () => {
   const view = await mount('/b/owl/s/peer')
   expect(await screen.findByText('Which file?')).toBeVisible()
