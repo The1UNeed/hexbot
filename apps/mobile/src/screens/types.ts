@@ -23,6 +23,8 @@ export interface BotSummary extends FaceSource {
   preview?: string | null
   updatedAt?: number | null
   status?: BotStatus
+  /** The primary bot, pinned on top of the list. */
+  primary?: boolean
 }
 
 export interface RoomSummary {

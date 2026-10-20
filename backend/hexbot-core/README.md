@@ -81,6 +81,9 @@ it also installs over SSH when nobody is signed in at the screen.
   accounts into the owner while preserving bot and room approval restrictions.
   Version 14 adds `memory_proposals`, the memory changes scheduled jobs ask
   for until the bot's next dream reviews them (`docs/dreaming.md`).
+  Version 15 adds `bots.is_primary` with a unique index that allows one
+  primary bot per owner. The primary bot's tools live in
+  `src/runtime_primary.rs` and call the App's own methods.
 - Memory stays in `profiles/<bot>/memories/MEMORY.md`, soul in `SOUL.md`, and
   About you in `users/<id>/user.md`. Deleting a section leaves bot memory alone.
   Only sections, rooms, and dreams write it; a scheduled job's memory tool

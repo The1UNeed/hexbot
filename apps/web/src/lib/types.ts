@@ -105,6 +105,8 @@ export interface Bot {
   name: string
   owner_id: string
   persona: string
+  /** The one bot that looks after the others; it can't be deleted. Older daemons leave it out. */
+  primary?: boolean
   provider: null | string
   /** How hard the model thinks; null means Pi's default, medium. */
   reasoning_effort?: null | ReasoningEffort

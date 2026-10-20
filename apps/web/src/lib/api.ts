@@ -162,6 +162,23 @@ export function botsCreate(input: BotCreateInput): Promise<{ bot: Bot; section: 
   return withFace<{ bot: Bot; section: Section }>('hexbot.bots.create', { ...input })
 }
 
+/** Create HexBot, the primary bot, on the default model. */
+export function botsCreatePrimary(
+  input: Partial<
+    Pick<
+      BotCreateInput,
+      'avatar' | 'display_name' | 'face' | 'model' | 'provider' | 'reasoning_effort'
+    >
+  > = {}
+): Promise<{ bot: Bot; section: Section }> {
+  return rpcCall<{ bot: Bot; section: Section }>('hexbot.bots.create_primary', { ...input })
+}
+
+/** Make an existing bot the primary bot. Refused once there is one. */
+export function botsSetPrimary(name: string): Promise<{ bot: Bot }> {
+  return rpcCall<{ bot: Bot }>('hexbot.bots.set_primary', { name })
+}
+
 /** Have the daemon submit a new bot's hidden first prompt into its section. */
 export function botsIntroduce(
   name: string,
