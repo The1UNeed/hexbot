@@ -212,7 +212,7 @@ export const useSections = create<SectionsState>((set, get) => ({
     const scope = activeCacheScope()
     const cached = await cachedHistory<HistoryRow>(scope, id)
 
-    const loaded = useTranscripts.getState().bySession[get().liveSessionId[id] ?? '']
+    const loaded = useTranscripts.getState().bySession[get().liveSessionId[id] ?? '']?.opened
 
     if (cached && !loaded) {
       set(state => ({

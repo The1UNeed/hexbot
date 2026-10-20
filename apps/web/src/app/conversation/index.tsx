@@ -989,9 +989,13 @@ function BotConversation() {
     }
   }
 
+  // Until the history is loaded, what came live goes after what was kept.
   const messages = useMemo(
-    () => transcript?.messages ?? cached ?? [],
-    [cached, transcript?.messages]
+    () =>
+      transcript?.opened
+        ? transcript.messages
+        : [...(cached ?? []), ...(transcript?.messages ?? [])],
+    [cached, transcript?.messages, transcript?.opened]
   )
 
   const approvals = useMemo(() => transcript?.approvals ?? [], [transcript?.approvals])
@@ -1016,7 +1020,7 @@ function BotConversation() {
   // session first. A failure other than a missing section, such as a timeout
   // while connecting, is tried again once the daemon answers.
   const connected = useConnection(state => state.status === 'connected')
-  const loaded = Boolean(transcript)
+  const loaded = Boolean(transcript?.opened)
   const opening = useRef<null | string>(null)
   useEffect(() => {
     const id = params.section

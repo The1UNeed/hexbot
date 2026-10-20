@@ -16,7 +16,7 @@ import type { Section } from '../lib/types'
 
 import { useConnection } from './connection'
 import { useSections } from './sections'
-import { useTranscripts } from './transcripts'
+import { emptyTranscript, useTranscripts } from './transcripts'
 
 vi.mock('../lib/api', async importOriginal => ({
   ...(await importOriginal<typeof api>()),
@@ -135,9 +135,11 @@ describe('opening a section with kept history', () => {
     )
   })
 
-  it('shows what it kept when the section list named a live session first', async () => {
+  it('shows what it kept when the section list or live events came first', async () => {
     await rememberHistory('remote:daemon.test:9119', 's1', { cursor: '0:1', rows: [row('one')] })
     useSections.setState({ liveSessionId: { s1: 'live-1' } })
+    // An event for the working session made a transcript before the section opened.
+    useTranscripts.setState({ bySession: { 'live-1': emptyTranscript('live-1') } })
     vi.mocked(sectionsOpen).mockReturnValueOnce(new Promise(() => undefined))
     void useSections.getState().open('s1')
 

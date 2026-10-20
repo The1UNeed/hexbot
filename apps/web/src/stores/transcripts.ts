@@ -64,6 +64,8 @@ export interface Transcript {
   error: null | string
   info: null | SessionInfo
   messages: TranscriptMessage[]
+  /** The section's history is loaded. Events alone make a transcript without it. */
+  opened?: boolean
   /** The section this live session belongs to, when known. */
   sectionId?: string
   sessionId: string
@@ -374,7 +376,9 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
           existing &&
           (existing.streamingMessageId || existing.messages.length > messages.length)
         ) {
-          return { bySession: { ...state.bySession, [sessionId]: { ...existing, sectionId } } }
+          return {
+            bySession: { ...state.bySession, [sessionId]: { ...existing, opened: true, sectionId } }
+          }
         }
 
         // Cards that arrived while the snapshot was loading (a replayed
@@ -389,6 +393,7 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
               clarifies: (existing?.clarifies ?? []).filter(clarifyWaiting),
               context: existing?.context ?? null,
               messages,
+              opened: true,
               status: existing?.status ?? null
             }
           }
