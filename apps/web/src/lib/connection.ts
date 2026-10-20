@@ -30,7 +30,7 @@ import { useCheckins } from '../stores/checkins'
 import { connectionActions } from '../stores/connection'
 import { useMe } from '../stores/me'
 import { useRooms } from '../stores/rooms'
-import { sectionsActions, useSections } from '../stores/sections'
+import { sectionsActions } from '../stores/sections'
 import { settingsActions } from '../stores/settings'
 import { uiActions } from '../stores/ui'
 
@@ -554,10 +554,8 @@ export class ConnectionSupervisor {
         botsActions().refresh(),
         useRooms.getState().refresh(),
         useMe.getState().refresh(),
-        // Sections kept from the last time, or listed before a disconnect, may have changed.
-        Object.keys(useSections.getState().byId).length
-          ? sectionsActions().refresh()
-          : Promise.resolve()
+        // The whole list, so the roster this device keeps is complete.
+        sectionsActions().refresh()
       ])
 
     try {

@@ -7,7 +7,7 @@
 
 import { selectBotList, useBots } from '../stores/bots'
 import { useMe } from '../stores/me'
-import { useRooms } from '../stores/rooms'
+import { LOG_PAGE, useRooms } from '../stores/rooms'
 import { useSections } from '../stores/sections'
 
 import { clearCache, deleteCache, readCache, writeCache } from './device-cache'
@@ -153,7 +153,8 @@ function writeChanges(scope: string, daemon: string, cachedRooms: string[]): () 
     for (const [id, events] of Object.entries(rooms.eventsByRoom)) {
       if (written.get(id) !== events) {
         written.set(id, events)
-        void writeCache(scope, `room:${id}`, events)
+        // The latest page is enough to draw the room; the rest loads as before.
+        void writeCache(scope, `room:${id}`, events.slice(-LOG_PAGE))
       }
     }
 

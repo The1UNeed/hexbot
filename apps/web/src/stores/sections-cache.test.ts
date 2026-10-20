@@ -1,7 +1,7 @@
 import { IDBFactory, IDBKeyRange } from 'fake-indexeddb'
 
 import type * as api from '../lib/api'
-import { sectionsOpen, sessionHistory } from '../lib/api'
+import { sectionsList, sectionsOpen, sessionHistory } from '../lib/api'
 import {
   CACHED_SECTIONS,
   cachedHistory,
@@ -10,6 +10,7 @@ import {
   readCache,
   rememberHistory,
   resetDeviceCacheForTests,
+  touchHistory,
   writeCache
 } from '../lib/device-cache'
 import type { Section } from '../lib/types'
@@ -20,6 +21,7 @@ import { emptyTranscript, useTranscripts } from './transcripts'
 
 vi.mock('../lib/api', async importOriginal => ({
   ...(await importOriginal<typeof api>()),
+  sectionsList: vi.fn(),
   sectionsOpen: vi.fn(),
   sessionHistory: vi.fn()
 }))
@@ -68,6 +70,18 @@ describe('the device cache', () => {
     await rememberHistory('a', 'new', { cursor: '0:1', rows: [] })
     // The oldest one stays: the forgotten section no longer counts.
     expect(await cachedHistory('a', 's0')).toBeTruthy()
+  })
+
+  it('counts a section visited again as the latest opened', async () => {
+    for (let index = 0; index < CACHED_SECTIONS; index += 1) {
+      await rememberHistory('a', `s${index}`, { cursor: '0:1', rows: [] })
+    }
+
+    await touchHistory('a', 's0')
+    await touchHistory('a', 'never-kept')
+    await rememberHistory('a', 'new', { cursor: '0:1', rows: [] })
+    expect(await cachedHistory('a', 's0')).toBeTruthy()
+    expect(await cachedHistory('a', 's1')).toBeUndefined()
   })
 
   it('does nothing without IndexedDB', async () => {
@@ -142,12 +156,19 @@ describe('opening a section with kept history', () => {
     useSections.setState({ liveSessionId: { s1: 'live-1' } })
     // An event for the working session made a transcript before the section opened.
     useTranscripts.setState({ bySession: { 'live-1': emptyTranscript('live-1') } })
-    vi.mocked(sectionsOpen).mockReturnValueOnce(new Promise(() => undefined))
-    void useSections.getState().open('s1')
+    let answer: (value: Awaited<ReturnType<typeof sectionsOpen>>) => void = () => undefined
+    vi.mocked(sectionsOpen).mockReturnValueOnce(new Promise(resolve => (answer = resolve)))
+    const opening = useSections.getState().open('s1')
 
     await vi.waitFor(() =>
       expect(useSections.getState().cachedMessages.s1?.map(item => item.text)).toEqual(['one'])
     )
+    // The conversation opening it too shares the request.
+    expect(useSections.getState().open('s1')).toBe(opening)
+    answer({ history_cursor: '0:1', history_delta: true, messages: [], section })
+    await opening
+    expect(vi.mocked(sectionsOpen)).toHaveBeenCalledTimes(1)
+    expect(texts()).toEqual(['one'])
   })
 
   it('keeps what it showed when opening times out', async () => {
@@ -180,6 +201,17 @@ describe('opening a section with kept history', () => {
     )
     // Once per settled turn, from the kept cursor.
     expect(vi.mocked(sessionHistory)).toHaveBeenCalledExactlyOnceWith('live-1', '0:1')
+  })
+
+  it('forgets a section deleted on another device', async () => {
+    await rememberHistory('remote:daemon.test:9119', 's1', { cursor: '0:1', rows: [] })
+    useSections.setState({ byId: { s1: section }, idsByBot: { writer: ['s1'] } })
+    vi.mocked(sectionsList).mockResolvedValueOnce({ sections: [] })
+    await useSections.getState().refresh()
+
+    await vi.waitFor(async () =>
+      expect(await cachedHistory('remote:daemon.test:9119', 's1')).toBeUndefined()
+    )
   })
 
   it('keeps nothing from a daemon without cursors', async () => {

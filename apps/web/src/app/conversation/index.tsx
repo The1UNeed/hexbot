@@ -25,6 +25,7 @@ import { approvalRespond, attachFile, promptSubmit, sessionInterrupt } from '../
 import { botFace } from '../../lib/avatar-builder'
 import { getBridge } from '../../lib/bridge'
 import { cn } from '../../lib/cn'
+import { activeCacheScope, touchHistory } from '../../lib/device-cache'
 import { toMillis } from '../../lib/time'
 import type {
   ApprovalChoice,
@@ -1028,6 +1029,11 @@ function BotConversation() {
   const [retries, setRetries] = useState(0)
   useEffect(() => {
     const id = params.section
+
+    // Back at a section already loaded: it still counts as the latest opened.
+    if (id && loaded) {
+      void touchHistory(activeCacheScope(), id)
+    }
 
     if (!id || loaded || unavailable === id || opening.current === id) {
       return

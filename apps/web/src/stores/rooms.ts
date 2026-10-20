@@ -78,7 +78,7 @@ function messageSeq(events: RoomEvent[]): number {
   return events.at(-1)?.seq ?? 0
 }
 
-const LOG_PAGE = 1000
+export const LOG_PAGE = 1000
 
 /**
  * The last seq a log holds without a gap. A room's seqs count up by one and are

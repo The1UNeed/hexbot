@@ -98,6 +98,7 @@ describe('transcript reducer', () => {
   })
   it('puts a reply that streamed before the history came after the history', () => {
     const actions = useTranscripts.getState()
+
     const row = (id: string, role: 'assistant' | 'user', text: string) => ({
       attachments: [],
       createdAt: 1,
@@ -107,6 +108,7 @@ describe('transcript reducer', () => {
       text,
       toolCalls: []
     })
+
     const texts = () => useTranscripts.getState().bySession.s?.messages.map(item => item.text)
     actions.messageDelta('s', 'so far')
     actions.open('s', 'sec', [
@@ -116,10 +118,21 @@ describe('transcript reducer', () => {
     expect(texts()).toEqual(['Plan the trip', 'Where to?', 'so far'])
     expect(useTranscripts.getState().bySession.s?.opened).toBe(true)
 
+    // A message sent while the history loaded, and its reply, are not in it yet.
+    useTranscripts.setState({ bySession: {} })
+    actions.messageComplete('s', { text: 'Where to?' })
+    actions.appendUserMessage('s', 'Lisbon')
+    actions.messageDelta('s', 'Good')
+    actions.open('s', 'sec', [
+      row('r1', 'user', 'Plan the trip'),
+      row('r2', 'assistant', 'Where to?')
+    ])
+    expect(texts()).toEqual(['Plan the trip', 'Where to?', 'Lisbon', 'Good'])
+
     // Opened again mid-reply: the live transcript is ahead and stays.
     actions.messageDelta('s', ', more')
     actions.open('s', 'sec', [row('r1', 'user', 'Plan the trip')])
-    expect(texts()).toEqual(['Plan the trip', 'Where to?', 'so far, more'])
+    expect(texts()).toEqual(['Plan the trip', 'Where to?', 'Lisbon', 'Good, more'])
   })
   it('opens on a delta and does not duplicate streamed interim text', () => {
     const actions = useTranscripts.getState()

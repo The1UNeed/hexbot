@@ -55,8 +55,8 @@ store and by `params.type` for global events (`hexbot.*.changed`).
 ## Device cache
 
 `src/lib/device-cache.ts` keeps, per connection target, what the app needs
-to draw before the daemon answers: the roster (bots, sections, rooms, you),
-room logs, and the raw history rows of the 50 most recently opened sections
+to draw before the daemon answers: the roster (bots, the whole section
+list, rooms, you), the latest page of each room log, and the raw history rows of the 50 most recently opened sections
 with their `history_cursor`. It lives in IndexedDB, so the Electron app and
 browsers both have it; without IndexedDB everything is fetched as before.
 
@@ -66,7 +66,9 @@ browsers both have it; without IndexedDB everything is fetched as before.
   Only then are store changes written back.
 - Opening a section shows its cached history at once, sends the cursor, and
   appends the rows the daemon returns, or replaces them when `history_delta`
-  is false. After each reply settles, a kept section catches up the same
+  is false. Opening a section again counts it as the latest opened; a
+  section the full list no longer has, deleted on any device, is forgotten.
+  After each reply settles, a kept section catches up the same
   way through `session.history`, so a relaunch without the daemon shows it.
 - A room log fetches `after_seq` from the end of its gapless part, so a live
   event that arrived past missed ones does not hide them. With nothing cached,

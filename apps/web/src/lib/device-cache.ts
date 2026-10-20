@@ -149,6 +149,19 @@ export function rememberHistory(
   return writes
 }
 
+/** Count a section this device keeps as just opened, without loading it again. */
+export function touchHistory(scope: null | string, id: string): Promise<void> {
+  writes = writes.then(async () => {
+    const recent = (await readCache<string[]>(scope, RECENT_KEY)) ?? []
+
+    if (recent.includes(id) && recent[0] !== id) {
+      await writeCache(scope, RECENT_KEY, [id, ...recent.filter(item => item !== id)])
+    }
+  })
+
+  return writes
+}
+
 export function cachedHistory<Row>(
   scope: null | string,
   id: string

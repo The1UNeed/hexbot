@@ -58,7 +58,7 @@ export interface SectionsState {
    * title an unnamed one after it the way the daemon will.
    */
   markTouched: (id: string, text?: string) => void
-  open: (id: string) => Promise<{ liveSessionId: null | string; section: Section }>
+  open: (id: string) => Promise<OpenedSection>
   /**
    * Open a thread for the side panel: its history with `peer`'s questions as
    * messages, and its live session registered so events stream in. The
@@ -214,6 +214,76 @@ async function syncKeptHistory(sectionId: string, sessionId: string): Promise<vo
   }
 }
 
+interface OpenedSection {
+  liveSessionId: null | string
+  section: Section
+}
+
+const opening = new Map<string, Promise<OpenedSection>>()
+
+/** Open a section: kept history first, then what the daemon sends. */
+async function openSection(id: string): Promise<OpenedSection> {
+  const set = useSections.setState
+  const get = useSections.getState
+  const scope = activeCacheScope()
+  const cached = await cachedHistory<HistoryRow>(scope, id)
+
+  const loaded = useTranscripts.getState().bySession[get().liveSessionId[id] ?? '']?.opened
+
+  if (cached && !loaded) {
+    set(state => ({
+      cachedMessages: { ...state.cachedMessages, [id]: sectionMessages(cached.rows) }
+    }))
+  }
+
+  let opened: Awaited<ReturnType<typeof sectionsOpen>>
+
+  try {
+    opened = await sectionsOpen(id, cached?.cursor)
+  } catch (error) {
+    // Only a section that is gone loses what was kept; a timeout keeps it on screen.
+    if ((error as { code?: number } | null)?.code === SECTION_NOT_FOUND) {
+      set(state => ({ cachedMessages: withoutKey(state.cachedMessages, id) }))
+      void forgetHistory(scope, id)
+    }
+
+    throw error
+  }
+
+  const { context, history_cursor, history_delta, pending_clarify, section } = opened
+  const rows = [...(history_delta && cached ? cached.rows : []), ...(opened.messages ?? [])]
+  const live = section.live_session_id
+
+  if (history_cursor) {
+    void rememberHistory(scope, id, { cursor: history_cursor, rows })
+  }
+
+  set(state => ({
+    ...mergeSection(state, section),
+    cachedMessages: withoutKey(state.cachedMessages, id),
+    liveSessionId: live ? { ...state.liveSessionId, [id]: live } : state.liveSessionId
+  }))
+
+  if (live) {
+    useTranscripts.getState().open(live, id, sectionMessages(rows))
+
+    // Check-ins that arrived while this loaded; the history may hold them already.
+    for (const row of releaseCheckinMessages(id)) {
+      useTranscripts.getState().checkinMessage(live, row)
+    }
+
+    if (context) {
+      useTranscripts.getState().sessionContext(live, context)
+    }
+
+    if (pending_clarify) {
+      useTranscripts.getState().clarifyRequest(live, pending_clarify, { notify: false })
+    }
+  }
+
+  return { liveSessionId: live, section }
+}
+
 export const useSections = create<SectionsState>((set, get) => ({
   byId: {},
   cachedMessages: {},
@@ -228,6 +298,17 @@ export const useSections = create<SectionsState>((set, get) => ({
 
     try {
       const result = await sectionsList({ include_archived: true, ...options })
+
+      // The whole list: a section deleted elsewhere is no longer kept here either.
+      if (!options.bot) {
+        const listed = new Set((result.sections ?? []).map(section => section.id))
+
+        for (const id of Object.keys(get().byId)) {
+          if (!listed.has(id)) {
+            void forgetHistory(activeCacheScope(), id)
+          }
+        }
+      }
 
       set(state => ({
         ...indexSections(result.sections ?? [], state.sendingTitles),
@@ -250,64 +331,18 @@ export const useSections = create<SectionsState>((set, get) => ({
     set(state => indexSections(sections, state.sendingTitles))
   },
 
-  async open(id) {
-    const scope = activeCacheScope()
-    const cached = await cachedHistory<HistoryRow>(scope, id)
+  open(id) {
+    // The roster opens a section as it navigates and the conversation as it mounts: one request.
+    const running = opening.get(id)
 
-    const loaded = useTranscripts.getState().bySession[get().liveSessionId[id] ?? '']?.opened
-
-    if (cached && !loaded) {
-      set(state => ({
-        cachedMessages: { ...state.cachedMessages, [id]: sectionMessages(cached.rows) }
-      }))
+    if (running) {
+      return running
     }
 
-    let opened: Awaited<ReturnType<typeof sectionsOpen>>
+    const next = openSection(id).finally(() => opening.delete(id))
+    opening.set(id, next)
 
-    try {
-      opened = await sectionsOpen(id, cached?.cursor)
-    } catch (error) {
-      // Only a section that is gone loses what was kept; a timeout keeps it on screen.
-      if ((error as { code?: number } | null)?.code === SECTION_NOT_FOUND) {
-        set(state => ({ cachedMessages: withoutKey(state.cachedMessages, id) }))
-        void forgetHistory(scope, id)
-      }
-
-      throw error
-    }
-
-    const { context, history_cursor, history_delta, pending_clarify, section } = opened
-    const rows = [...(history_delta && cached ? cached.rows : []), ...(opened.messages ?? [])]
-    const live = section.live_session_id
-
-    if (history_cursor) {
-      void rememberHistory(scope, id, { cursor: history_cursor, rows })
-    }
-
-    set(state => ({
-      ...mergeSection(state, section),
-      cachedMessages: withoutKey(state.cachedMessages, id),
-      liveSessionId: live ? { ...state.liveSessionId, [id]: live } : state.liveSessionId
-    }))
-
-    if (live) {
-      useTranscripts.getState().open(live, id, sectionMessages(rows))
-
-      // Check-ins that arrived while this loaded; the history may hold them already.
-      for (const row of releaseCheckinMessages(id)) {
-        useTranscripts.getState().checkinMessage(live, row)
-      }
-
-      if (context) {
-        useTranscripts.getState().sessionContext(live, context)
-      }
-
-      if (pending_clarify) {
-        useTranscripts.getState().clarifyRequest(live, pending_clarify, { notify: false })
-      }
-    }
-
-    return { liveSessionId: live, section }
+    return next
   },
 
   async openThread(id, peer) {

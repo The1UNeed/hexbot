@@ -31,12 +31,22 @@ export async function readDesktopState(file = desktopStateFile()): Promise<Deskt
   }
 }
 
-export async function updateDesktopState(
+// One read-modify-write at a time per file, so concurrent patches (bounds while
+// moving, the tray notice) never drop each other.
+const writes = new Map<string, Promise<void>>()
+
+export function updateDesktopState(
   patch: Partial<DesktopState>,
   file = desktopStateFile()
 ): Promise<void> {
-  await mkdir(dirname(file), { recursive: true })
-  await writeFile(file, `${JSON.stringify({ ...(await readDesktopState(file)), ...patch })}\n`)
+  const next = (writes.get(file) ?? Promise.resolve())
+    .catch(() => undefined)
+    .then(async () => {
+      await mkdir(dirname(file), { recursive: true })
+      await writeFile(file, `${JSON.stringify({ ...(await readDesktopState(file)), ...patch })}\n`)
+    })
+  writes.set(file, next)
+  return next
 }
 
 export async function readUpdateChannel(

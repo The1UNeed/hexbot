@@ -218,6 +218,9 @@ export function resetTranscriptEffects(): void {
   effects = defaultEffects
 }
 
+/** Who said what: a message sent or streamed here has no history row id to match. */
+const messageKey = (message: TranscriptMessage) => `${message.role}\u0000${message.text}`
+
 export function emptyTranscript(sessionId: string, sectionId?: string): Transcript {
   return {
     approvals: [],
@@ -379,20 +382,24 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
           return { bySession: { ...state.bySession, [sessionId]: { ...existing, sectionId } } }
         }
 
-        // Events made this transcript before the history came: the reply in
-        // flight goes after the history, which holds every finished message.
-        const streaming = existing?.streamingMessageId
-          ? existing.messages.findIndex(message => message.id === existing.streamingMessageId)
-          : -1
+        // Events, or a message sent while it loaded, made this transcript
+        // before the history came. What the history does not end with yet
+        // (that message, the reply in flight) goes after it.
+        if (existing && !existing.opened) {
+          const recent = new Set(messages.slice(-existing.messages.length).map(messageKey))
 
-        if (existing && streaming >= 0) {
+          const ahead = existing.messages.filter(
+            message =>
+              message.id === existing.streamingMessageId || !recent.has(messageKey(message))
+          )
+
           return {
             bySession: {
               ...state.bySession,
               [sessionId]: {
                 ...existing,
                 clarifies: existing.clarifies.filter(clarifyWaiting),
-                messages: [...messages, ...existing.messages.slice(streaming)],
+                messages: [...messages, ...ahead],
                 opened: true,
                 sectionId
               }
