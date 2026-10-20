@@ -33,6 +33,8 @@ vi.mock('expo-web-browser', () => ({ maybeCompleteAuthSession() {} }))
 vi.mock('expo-crypto', () => ({ randomUUID: () => 'message' }))
 vi.mock('@react-native-async-storage/async-storage', () => ({ default: {} }))
 vi.mock('./pickFile', () => ({ pickFile: vi.fn() }))
+// Push registration needs the native notifications module.
+vi.mock('./push', () => ({ registerPush: vi.fn(async () => undefined) }))
 vi.mock('./transport', () => ({ pair: vi.fn(), connectGrant: vi.fn(), request: vi.fn(), RevokedError: class extends Error {} }))
 vi.mock('./storage', () => ({
   activeDaemonId: async () => 'first',

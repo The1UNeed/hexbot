@@ -25,6 +25,8 @@ vi.mock('./storage', () => ({
   saveDaemon: async () => {}
 }))
 vi.mock('./transport', () => ({ pair: vi.fn() }))
+// Push registration needs the native notifications module.
+vi.mock('./push', () => ({ registerPush: vi.fn(async () => undefined) }))
 vi.mock('./session', () => ({
   MobileSession: class {
     client = { connectionState: 'open', request: state.request }
