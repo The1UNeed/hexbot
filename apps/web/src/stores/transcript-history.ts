@@ -32,23 +32,27 @@ export function hydrateHistory(
 
   const previous = new Map(existing.messages.map(message => [message.id, message]))
 
-  const tools = existing.messages.flatMap(message => message.toolCalls)
-  const stored = history.flatMap(message => message.toolCalls)
+  // Looked up once per tool, so a long chat reopens in linear time.
+  const findLive = occurrences(existing.messages.flatMap(message => message.toolCalls))
+  const findStored = occurrences(history.flatMap(message => message.toolCalls))
+  const owners = new Map<string, Message[]>()
+
+  for (const row of history) {
+    for (const id of reports.has(row.id) ? [] : (row.fragmentIds ?? [])) {
+      owners.set(id, [...(owners.get(id) ?? []), row])
+    }
+  }
 
   const fragmentOwners = (source: string | undefined) =>
-    history.flatMap(row =>
-      !reports.has(row.id) ? (row.fragmentIds ?? []).filter(id => id === source).map(() => row) : []
-    )
+    (source === undefined ? undefined : owners.get(source)) ?? []
 
   const matchingLive = (tool: ToolCall) => {
-    const live = findToolOccurrence(tool, tools)
-
-    const owners = fragmentOwners(live?.messageId)
+    const live = findLive(tool)
 
     return live &&
       (!tool.messageId || live.messageId === tool.messageId) &&
-      (!live.messageId || owners.length === 1) &&
-      findToolOccurrence(live, stored) === tool
+      (!live.messageId || fragmentOwners(live.messageId).length === 1) &&
+      findStored(live) === tool
       ? live
       : undefined
   }
@@ -188,8 +192,6 @@ export function hydrateHistory(
     )
   )
 
-  const storedTools = history.flatMap(message => message.toolCalls)
-
   for (const live of local.flatMap(message => splitLive(message, history, reports))) {
     if (adopted.has(live.id)) {
       continue
@@ -270,7 +272,7 @@ export function hydrateHistory(
       .filter(tool => tool.messageId && selected.has(tool.messageId))
 
     const liveTools = live.toolCalls.filter(tool => {
-      const stored = findToolOccurrence(tool, storedTools)
+      const stored = findStored(tool)
 
       return (
         !stored ||
@@ -312,6 +314,20 @@ export function hydrateHistory(
   }
 
   return { messages, durableFragments: history.flatMap(message => message.fragmentIds ?? []) }
+}
+
+/** `findToolOccurrence` over `tools`, grouped once by call ID and parent scope. */
+function occurrences(tools: ToolCall[]) {
+  const key = (tool: Pick<ToolCall, 'toolId' | 'parentToolCallId'>) =>
+    `${tool.toolId}\u0000${tool.parentToolCallId ?? ''}`
+
+  const groups = new Map<string, ToolCall[]>()
+
+  for (const tool of tools) {
+    groups.set(key(tool), [...(groups.get(key(tool)) ?? []), tool])
+  }
+
+  return (tool: ToolCall) => findToolOccurrence(tool, groups.get(key(tool)) ?? [])
 }
 
 function overlaps(a: Message, b: Message) {
