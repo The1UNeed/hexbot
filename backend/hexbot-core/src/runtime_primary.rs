@@ -409,7 +409,7 @@ impl Runtime {
                     )
                     .await;
                 match kept {
-                    Err(error) if error.code == 4233 => {
+                    Err(error) if error.code == crate::rooms::LAST_BOT => {
                         let current = crate::rooms::get(&self.home, owner, room)?;
                         let title = current["name"].as_str().unwrap_or(room);
                         self.confirm(

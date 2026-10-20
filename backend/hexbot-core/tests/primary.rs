@@ -299,7 +299,7 @@ async fn primary_bot_manages_other_bots_and_always_asks_before_deleting() {
         .await
         .unwrap_err()
         .code,
-        4233
+        4216
     );
     let (asked, reply) = call_tool(
         &app,

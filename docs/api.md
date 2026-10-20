@@ -379,7 +379,7 @@ and its bots run as the owner.
 - `hexbot.rooms.update {id, name?, main_bot?, limits?, approval_mode?}` → `{room}`
 - `hexbot.rooms.add_member {id, bot}` / `hexbot.rooms.remove_member {id, bot,
   keep_room?}` → `{room}`. Removing the last bot deletes the room; with
-  `keep_room: true` that removal is refused with 4233 instead, checked in the
+  `keep_room: true` that removal is refused with 4216 instead, checked in the
   same statement that removes the bot.
 - `hexbot.rooms.send {id, text, attachments?}` → `{event}`. This queues the
   room engine after writing the user event.

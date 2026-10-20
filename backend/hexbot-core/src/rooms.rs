@@ -1134,7 +1134,7 @@ fn legacy_usage(
 
 /// Remove a bot the owner chose; removing the last bot deletes the room.
 /// Callers check ownership first.
-/// With `keep_room`, refuses (4233) to remove the last bot instead of
+/// With `keep_room`, refuses (4216) to remove the last bot instead of
 /// deleting the room; the check and the removal are one statement.
 pub fn remove_bot(
     home: &Path,
@@ -1181,8 +1181,10 @@ pub fn remove_bot(
     )?;
     Ok(json!({"room":get(home,owner,room)?,"event":event}))
 }
+/// Refusing to remove a room's last bot when asked to keep the room.
+pub const LAST_BOT: i64 = 4216;
 pub fn last_bot() -> Error {
-    Error::new(4233, "Removing the last bot deletes the room.")
+    Error::new(LAST_BOT, "Removing the last bot deletes the room.")
 }
 /// Delete a room and its bots' room transcripts. Callers check ownership first.
 pub fn delete(home: &Path, room: &str) -> Result<Value> {
