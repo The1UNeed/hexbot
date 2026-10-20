@@ -24,7 +24,9 @@ data model. The native transport and event projection live in
 ## Core methods the client calls directly
 
 - Chat: `prompt.submit {session_id, text, attachments?}`, `session.interrupt`, `session.steer`.
-- History: `session.history {session_id}`, `session.events.since` on reconnect.
+- History: `session.history {session_id, history_cursor?}` → `{messages,
+  history_cursor, history_delta}` (the cursor works as in
+  `hexbot.sections.open`), `session.events.since` on reconnect.
 - Attachments: `image.attach_bytes {session_id, content_base64, filename}`,
   `file.attach {session_id, data_url, name}`, `pdf.attach {session_id, content_base64}`.
   `attachments.clear {session_id}` clears all unsubmitted attachments and removes

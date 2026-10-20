@@ -86,6 +86,19 @@ describe('the roster on this device', () => {
     expect(dropForeignRoster('install-2')).toBe(false)
   })
 
+  it('is not drawn by a restore that finished after the roster was dropped', async () => {
+    useBots.setState({ byName: { writer: bot }, loaded: true, order: ['writer'] })
+    await adoptDaemon(SCOPE, 'install-1')
+    await vi.waitFor(async () => expect(await readCache(SCOPE, 'roster')).toBeTruthy())
+    stopRosterWrites()
+    empty()
+
+    const late = restoreRoster(SCOPE)
+    dropForeignRoster('install-3')
+    await late
+    expect(useBots.getState().order).toEqual([])
+  })
+
   it('is cleared when another daemon answers at the same address', async () => {
     useBots.setState({ byName: { writer: bot }, loaded: true, order: ['writer'] })
     await adoptDaemon(SCOPE, 'install-1')

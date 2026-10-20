@@ -449,6 +449,17 @@ export function sectionsOpen(id: string, historyCursor?: string): Promise<Sectio
   )
 }
 
+/** A live session's history; with a cursor, only what came after it (see `SectionOpened`). */
+export function sessionHistory(
+  sessionId: string,
+  historyCursor?: string
+): Promise<Pick<SectionOpened, 'history_cursor' | 'history_delta' | 'messages'>> {
+  return rpcCall('session.history', {
+    session_id: sessionId,
+    ...(historyCursor && { history_cursor: historyCursor })
+  })
+}
+
 export function sectionsRename(id: string, title: string): Promise<{ section: Section }> {
   return rpcCall<{ section: Section }>('hexbot.sections.rename', { id, title })
 }

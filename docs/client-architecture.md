@@ -66,7 +66,8 @@ browsers both have it; without IndexedDB everything is fetched as before.
   Only then are store changes written back.
 - Opening a section shows its cached history at once, sends the cursor, and
   appends the rows the daemon returns, or replaces them when `history_delta`
-  is false.
+  is false. After each reply settles, a kept section catches up the same
+  way through `session.history`, so a relaunch without the daemon shows it.
 - A room log fetches `after_seq` from the end of its gapless part, so a live
   event that arrived past missed ones does not hide them. With nothing cached,
   or more than a page missing, it loads the latest page (`before_seq`).
@@ -102,7 +103,7 @@ Only the transcript store is hot; everything else is small.
 | `message.start` | begin assistant message (streaming) |
 | `message.delta` | append text |
 | `message.interim` | append commentary text if `already_streamed` is false |
-| `message.complete` | finalize, attach usage, call `hexbot.sections.touch` |
+| `message.complete` | finalize, attach usage, call `hexbot.sections.touch`; a section kept on the device catches up its history (`session.history` with its cursor) once the turn settles |
 | `reasoning.delta` | append to the message's reasoning trace, shown in the work panel |
 | `thinking.delta` | replace the daemon's status line (a wait notice); spinner copy is dropped |
 | `tool.start` / `tool.complete` | add or resolve a tool call in the current assistant message |

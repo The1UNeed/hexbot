@@ -1,7 +1,7 @@
 import { IDBFactory, IDBKeyRange } from 'fake-indexeddb'
 
 import type * as api from '../lib/api'
-import { sectionsOpen } from '../lib/api'
+import { sectionsOpen, sessionHistory } from '../lib/api'
 import {
   CACHED_SECTIONS,
   cachedHistory,
@@ -15,12 +15,13 @@ import {
 import type { Section } from '../lib/types'
 
 import { useConnection } from './connection'
-import { useSections } from './sections'
+import { keepHistory, useSections } from './sections'
 import { emptyTranscript, useTranscripts } from './transcripts'
 
 vi.mock('../lib/api', async importOriginal => ({
   ...(await importOriginal<typeof api>()),
-  sectionsOpen: vi.fn()
+  sectionsOpen: vi.fn(),
+  sessionHistory: vi.fn()
 }))
 
 const section = { bot: 'writer', id: 's1', live_session_id: 'live-1', title: 'Plans' } as Section
@@ -37,6 +38,7 @@ beforeEach(async () => {
   useSections.setState({ byId: {}, cachedMessages: {}, idsByBot: {}, liveSessionId: {} })
   useTranscripts.setState({ bySession: {} })
   vi.mocked(sectionsOpen).mockReset()
+  vi.mocked(sessionHistory).mockReset()
 })
 
 afterEach(() => vi.unstubAllGlobals())
@@ -155,6 +157,29 @@ describe('opening a section with kept history', () => {
 
     expect(useSections.getState().cachedMessages.s1?.map(item => item.text)).toEqual(['one'])
     expect(await cachedHistory('remote:daemon.test:9119', 's1')).toBeTruthy()
+  })
+
+  it('catches up the kept history after a reply', async () => {
+    await rememberHistory('remote:daemon.test:9119', 's1', { cursor: '0:1', rows: [row('one')] })
+    vi.mocked(sessionHistory).mockResolvedValueOnce({
+      history_cursor: '0:2',
+      history_delta: true,
+      messages: [row('two')]
+    })
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    keepHistory('s1', 'live-1')
+    keepHistory('s1', 'live-1')
+    vi.runAllTimers()
+    vi.useRealTimers()
+
+    await vi.waitFor(async () =>
+      expect(await cachedHistory('remote:daemon.test:9119', 's1')).toEqual({
+        cursor: '0:2',
+        rows: [row('one'), row('two')]
+      })
+    )
+    // Once per settled turn, from the kept cursor.
+    expect(vi.mocked(sessionHistory)).toHaveBeenCalledExactlyOnceWith('live-1', '0:1')
   })
 
   it('keeps nothing from a daemon without cursors', async () => {

@@ -18,7 +18,8 @@ import {
   sectionsList,
   sectionsOpen,
   sectionsRename,
-  sectionsUnarchive
+  sectionsUnarchive,
+  sessionHistory
 } from '../lib/api'
 import type { HistoryRow } from '../lib/api'
 import { KICKOFF_MARKER } from '../lib/bot-kickoff'
@@ -169,6 +170,47 @@ function mergeSection(state: SectionsState, section: Section): Partial<SectionsS
       ...state.idsByBot,
       [section.bot]: existing.includes(section.id) ? existing : [section.id, ...existing]
     }
+  }
+}
+
+const KEEP_DELAY_MS = 2000
+const keeping = new Map<string, ReturnType<typeof setTimeout>>()
+
+/**
+ * A reply finished in a section this device keeps: once the turn settles,
+ * bring the kept history up to date, so a relaunch without the daemon shows it.
+ */
+export function keepHistory(sectionId: string, sessionId: string): void {
+  clearTimeout(keeping.get(sectionId))
+  keeping.set(
+    sectionId,
+    setTimeout(() => {
+      keeping.delete(sectionId)
+      void syncKeptHistory(sectionId, sessionId)
+    }, KEEP_DELAY_MS)
+  )
+}
+
+async function syncKeptHistory(sectionId: string, sessionId: string): Promise<void> {
+  const scope = activeCacheScope()
+  const cached = await cachedHistory<HistoryRow>(scope, sectionId)
+
+  if (!cached) {
+    return
+  }
+
+  try {
+    const { history_cursor, history_delta, messages } = await sessionHistory(
+      sessionId,
+      cached.cursor
+    )
+
+    if (history_cursor) {
+      const rows = [...(history_delta ? cached.rows : []), ...(messages ?? [])]
+      await rememberHistory(scope, sectionId, { cursor: history_cursor, rows })
+    }
+  } catch {
+    // The next open catches up.
   }
 }
 

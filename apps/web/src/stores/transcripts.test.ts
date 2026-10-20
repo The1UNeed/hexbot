@@ -96,6 +96,31 @@ describe('transcript reducer', () => {
       useTranscripts.getState().bySession.s?.clarifies.map(clarify => clarify.requestId)
     ).toEqual(['c'])
   })
+  it('puts a reply that streamed before the history came after the history', () => {
+    const actions = useTranscripts.getState()
+    const row = (id: string, role: 'assistant' | 'user', text: string) => ({
+      attachments: [],
+      createdAt: 1,
+      id,
+      role,
+      streaming: false,
+      text,
+      toolCalls: []
+    })
+    const texts = () => useTranscripts.getState().bySession.s?.messages.map(item => item.text)
+    actions.messageDelta('s', 'so far')
+    actions.open('s', 'sec', [
+      row('r1', 'user', 'Plan the trip'),
+      row('r2', 'assistant', 'Where to?')
+    ])
+    expect(texts()).toEqual(['Plan the trip', 'Where to?', 'so far'])
+    expect(useTranscripts.getState().bySession.s?.opened).toBe(true)
+
+    // Opened again mid-reply: the live transcript is ahead and stays.
+    actions.messageDelta('s', ', more')
+    actions.open('s', 'sec', [row('r1', 'user', 'Plan the trip')])
+    expect(texts()).toEqual(['Plan the trip', 'Where to?', 'so far, more'])
+  })
   it('opens on a delta and does not duplicate streamed interim text', () => {
     const actions = useTranscripts.getState()
     actions.messageDelta('s', 'hello')

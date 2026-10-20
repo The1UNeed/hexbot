@@ -31,11 +31,15 @@ const resting = (bot: Bot): Bot => ({ ...bot, status: undefined, status_detail: 
 /** The daemon whose roster is in the stores, drawn from the cache or sent by it. */
 let shown: null | string = null
 
+/** Bumped by each restore and drop; a restore that is no longer the latest draws nothing. */
+let generation = 0
+
 /** Fill the stores from the cache, where the daemon has not already. */
 export async function restoreRoster(scope: null | string): Promise<void> {
+  const mine = ++generation
   const snapshot = await readCache<RosterSnapshot>(scope, SNAPSHOT_KEY)
 
-  if (!snapshot) {
+  if (!snapshot || mine !== generation) {
     return
   }
 
@@ -63,7 +67,7 @@ export async function restoreRoster(scope: null | string): Promise<void> {
       snapshot.rooms.map(room => readCache<RoomEvent[]>(scope, `room:${room.id}`))
     )
 
-    if (!useRooms.getState().order.length) {
+    if (mine === generation && !useRooms.getState().order.length) {
       useRooms
         .getState()
         .restore(
@@ -82,6 +86,7 @@ export async function restoreRoster(scope: null | string): Promise<void> {
 export function dropForeignRoster(daemon: null | string | undefined): boolean {
   const foreign = Boolean(shown && daemon && shown !== daemon)
   shown = daemon ?? shown
+  generation += 1
 
   if (foreign) {
     useBots.setState({ byName: {}, loaded: false, order: [] })

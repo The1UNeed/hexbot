@@ -373,11 +373,30 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
         // A live transcript that is ahead of the stored history (a message
         // just sent, a reply streaming) wins over the snapshot.
         if (
-          existing &&
+          existing?.opened &&
           (existing.streamingMessageId || existing.messages.length > messages.length)
         ) {
+          return { bySession: { ...state.bySession, [sessionId]: { ...existing, sectionId } } }
+        }
+
+        // Events made this transcript before the history came: the reply in
+        // flight goes after the history, which holds every finished message.
+        const streaming = existing?.streamingMessageId
+          ? existing.messages.findIndex(message => message.id === existing.streamingMessageId)
+          : -1
+
+        if (existing && streaming >= 0) {
           return {
-            bySession: { ...state.bySession, [sessionId]: { ...existing, opened: true, sectionId } }
+            bySession: {
+              ...state.bySession,
+              [sessionId]: {
+                ...existing,
+                clarifies: existing.clarifies.filter(clarifyWaiting),
+                messages: [...messages, ...existing.messages.slice(streaming)],
+                opened: true,
+                sectionId
+              }
+            }
           }
         }
 

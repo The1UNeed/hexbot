@@ -1886,7 +1886,12 @@ impl Runtime {
                 }
                 Ok(result)
             }
-            "session.history" => Ok(json!({"messages":store::history(&self.home,&s.stored)?})),
+            "session.history" => {
+                // A client keeping the section's history asks with its cursor after each reply.
+                let (messages, cursor, delta) =
+                    store::history_since(&self.home, &s.stored, p["history_cursor"].as_str())?;
+                Ok(json!({"messages":messages,"history_cursor":cursor,"history_delta":delta}))
+            }
             "session.usage" => Ok(json!({"usage":store::usage(&self.home,&s.stored)?})),
             "session.status" => {
                 Ok(json!({"status":if s.state.lock().unwrap().busy{"working"}else{"idle"}}))

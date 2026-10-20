@@ -942,6 +942,9 @@ function useHeight<T extends HTMLElement>(): [React.RefObject<T | null>, number]
   return [ref, height]
 }
 
+/** How long a section that failed to open waits before trying again. */
+const OPEN_RETRY_MS = 5000
+
 function BotConversation() {
   const params = useParams({ strict: false }) as { bot?: string; section?: string }
   const navigate = useNavigate()
@@ -1016,12 +1019,13 @@ function BotConversation() {
       ? (bot?.status_detail?.text ?? messages.findLast(message => message.error)?.error)
       : null
 
-  // Opened until its transcript is here: the section list may name a live
-  // session first. A failure other than a missing section, such as a timeout
-  // while connecting, is tried again once the daemon answers.
+  // Opened until its history is here: live events or the section list may
+  // name a live session first. A failure other than a missing section, such
+  // as a timeout, is tried again shortly and when the daemon answers again.
   const connected = useConnection(state => state.status === 'connected')
   const loaded = Boolean(transcript?.opened)
   const opening = useRef<null | string>(null)
+  const [retries, setRetries] = useState(0)
   useEffect(() => {
     const id = params.section
 
@@ -1038,6 +1042,8 @@ function BotConversation() {
         if ((error as { code?: number } | null)?.code === SECTION_NOT_FOUND) {
           setUnavailable(id)
           uiActions().setLastSection(null)
+        } else {
+          setTimeout(() => setRetries(count => count + 1), OPEN_RETRY_MS)
         }
       })
       .finally(() => {
@@ -1045,7 +1051,7 @@ function BotConversation() {
           opening.current = null
         }
       })
-  }, [connected, loaded, params.section, unavailable])
+  }, [connected, loaded, params.section, retries, unavailable])
   useEffect(() => setTitle(section?.title ?? ''), [section?.title])
   useEffect(() => {
     if (atBottom) {

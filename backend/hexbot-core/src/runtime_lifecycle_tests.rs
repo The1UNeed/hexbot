@@ -5453,4 +5453,31 @@ async fn sections_open_sends_only_new_history_after_a_cursor() {
         assert_eq!(full["history_delta"], false, "{stale}");
         assert_eq!(texts(&full), ["uno", "three"]);
     }
+
+    // After a reply, the open section asks its live session for what is new.
+    let cursor = switched["history_cursor"].as_str().unwrap().to_owned();
+    store::append(
+        home.path(),
+        "first",
+        json!({"role":"assistant","text":"four"}),
+    )
+    .unwrap();
+    let live = switched["section"]["live_session_id"].clone();
+    let history = runtime
+        .call(
+            "alice",
+            "session.history",
+            &json!({"session_id":live,"history_cursor":cursor}),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(history["history_delta"], true);
+    assert_eq!(texts(&history), ["four"]);
+    let all = runtime
+        .call("alice", "session.history", &json!({"session_id":live}))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(texts(&all), ["uno", "three", "four"]);
 }

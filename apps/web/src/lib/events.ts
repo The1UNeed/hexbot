@@ -5,7 +5,7 @@
  *   message.start          begin assistant message (streaming)
  *   message.delta          append text
  *   message.interim        append commentary when `already_streamed` is false
- *   message.complete       finalize, attach usage, `hexbot.sections.touch`
+ *   message.complete       finalize, attach usage, `hexbot.sections.touch`, keep history
  *   reasoning.delta        append to the message's reasoning trace
  *   thinking.delta         replace the daemon's status line (a wait notice)
  *   tool.start/complete    add or resolve a tool call in the current message
@@ -28,7 +28,7 @@ import { useCheckins } from '../stores/checkins'
 import { useConnectors } from '../stores/connectors'
 import { useMe } from '../stores/me'
 import { useRooms } from '../stores/rooms'
-import { useSections } from '../stores/sections'
+import { keepHistory, useSections } from '../stores/sections'
 import { useSettings } from '../stores/settings'
 import type {
   ApprovalRequestPayload,
@@ -335,8 +335,13 @@ export function routeEvent(event: GatewayEvent, deps: EventRouterDeps = {}): voi
       )
 
       return
+    case 'message.complete': {
+      const sectionId = transcripts.bySession[sessionId]?.sectionId
 
-    case 'message.complete':
+      if (sectionId && !sectionId.startsWith('room:')) {
+        keepHistory(sectionId, sessionId)
+      }
+
       transcripts.messageComplete(sessionId, {
         error: typeof payload.error === 'string' ? payload.error : undefined,
         partial: payload.partial === true,
@@ -346,6 +351,7 @@ export function routeEvent(event: GatewayEvent, deps: EventRouterDeps = {}): voi
       })
 
       return
+    }
 
     case 'message.delta':
       transcripts.messageDelta(sessionId, text(payload))
