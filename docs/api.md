@@ -333,6 +333,26 @@ context of its own; the meter belongs to bot sections.
   `memory_before` is the memory it replaced, so it can be undone in turn.
   Broadcasts `hexbot.dreaming.changed`.
 
+### Check-ins
+
+The primary bot's own looks at what is going on (`DESIGN.md`, "Check-ins").
+Settings `checkin_enabled`, `checkin_every_minutes` (15 to 1440) and
+`checkin_hours` (`HH:MM-HH:MM`) go through `hexbot.settings.set`.
+
+- `hexbot.checkins.status {}` → `{enabled, every_minutes, hours, bot,
+  section_id, running, next_run_at, wakeups: [{id, at, local, note}], recent:
+  [{id, bot, kind, started_at, finished_at, status, summary, messaged}]}`.
+  `bot` is the primary bot or null; `kind` is `heartbeat`, `wakeup`, or
+  `manual`; `section_id` is its Check-ins section once it has one.
+- `hexbot.checkins.run_now {}` → `{id, kind, status}`. Error 4246 without a
+  primary bot, 4243 while one runs.
+- `hexbot.checkins.cancel_wakeup {id}` → `{cancelled: true}`; 4244 if it ran
+  or is unknown.
+- Changes broadcast `hexbot.checkins.changed {bot?}`. A message from a
+  check-in broadcasts `hexbot.sections.changed {id, bot}` and then
+  `hexbot.checkins.message {bot, section_id, id, row_id, timestamp, text}`
+  with the whole text; `row_id` is the message's id in the section history.
+
 ### Scheduled jobs
 
 Paired apps manage the scheduler through the same owner checks and job storage
@@ -688,6 +708,10 @@ and [provider setup guide](https://hexbot.app/docs/providers/).
 - `hexbot.devices.list {}` → `{devices: [{id, name, platform, created_at,
   last_seen_at, current: bool}]}`
 - `hexbot.devices.revoke {id}` → `{revoked: true}`
+- `hexbot.devices.set_push {token, platform}` → `{ok: true}` stores the
+  calling device's Expo push token (`ExponentPushToken[...]`) and platform
+  (`ios` or `android`) for check-in pushes; `{token: null}` stops them. Only
+  the calling connection's own paired device changes.
 
 ### Local daemon identity
 
@@ -878,6 +902,9 @@ on the pairing code or grant's single-use protection instead. CORS exposes
 - `hexbot status [--json]`, `hexbot service install|uninstall|start|stop|restart|status|logs`,
   and `hexbot setup [--activate]`: the Headless commands, described in
   `backend/hexbot-core/README.md`.
+- `hexbot checkins [now | on | off | every MINUTES | hours HH:MM-HH:MM |
+  cancel ID]`: shows check-ins and wake-ups, runs one, or changes their
+  settings. Status, now, and cancel need the daemon running.
 - `hexbot devices list|revoke`, `hexbot bots list|create|delete`,
   `hexbot rooms list`, and `hexbot send <bot> <text>`.
 - Native commands use the running daemon when available, preserving event

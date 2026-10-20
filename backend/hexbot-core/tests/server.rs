@@ -611,6 +611,81 @@ async fn websocket_mutation_events_owner_isolation_and_flat_replay() {
 }
 
 #[tokio::test]
+async fn a_paired_phone_sets_and_clears_only_its_own_push_token() {
+    let fixture = Fixture::new(false).await;
+    let phone = support::mint_device(&fixture.home, "Phone", "ios", "local").unwrap();
+    let other = support::mint_device(&fixture.home, "Tablet", "ios", "local").unwrap();
+    let mut socket = fixture
+        .socket(phone["device_token"].as_str().unwrap())
+        .await;
+    let token = |id: &Value| -> Option<String> {
+        db::open(&fixture.home)
+            .unwrap()
+            .query_row(
+                "SELECT push_token FROM devices WHERE id=?",
+                [id.as_str().unwrap()],
+                |r| r.get(0),
+            )
+            .unwrap()
+    };
+    let set = request(
+        &mut socket,
+        "set",
+        "hexbot.devices.set_push",
+        json!({"token":"ExponentPushToken[abc-123_X]","platform":"ios"}),
+    )
+    .await;
+    assert_eq!(set["result"]["ok"], true, "{set}");
+    assert_eq!(
+        token(&phone["device_id"]).as_deref(),
+        Some("ExponentPushToken[abc-123_X]")
+    );
+    assert_eq!(token(&other["device_id"]), None);
+    // The same phone paired again: its token moves to the new pairing.
+    let mut again = fixture
+        .socket(other["device_token"].as_str().unwrap())
+        .await;
+    request(
+        &mut again,
+        "move",
+        "hexbot.devices.set_push",
+        json!({"token":"ExponentPushToken[abc-123_X]","platform":"ios"}),
+    )
+    .await;
+    assert_eq!(token(&phone["device_id"]), None);
+    assert_eq!(
+        token(&other["device_id"]).as_deref(),
+        Some("ExponentPushToken[abc-123_X]")
+    );
+    request(
+        &mut socket,
+        "back",
+        "hexbot.devices.set_push",
+        json!({"token":"ExponentPushToken[abc-123_X]","platform":"ios"}),
+    )
+    .await;
+    for bad in [
+        json!({"token":"https://evil.example/hook","platform":"ios"}),
+        json!({"token":"ExponentPushToken[]","platform":"ios"}),
+        json!({"token":"ExponentPushToken[abc]","platform":"web"}),
+        json!({"token":123,"platform":"ios"}),
+    ] {
+        let refused = request(&mut socket, "bad", "hexbot.devices.set_push", bad).await;
+        assert_eq!(refused["error"]["code"], 4202, "{refused}");
+    }
+    let cleared = request(
+        &mut socket,
+        "clear",
+        "hexbot.devices.set_push",
+        json!({"token":null}),
+    )
+    .await;
+    assert_eq!(cleared["result"]["ok"], true);
+    assert_eq!(token(&phone["device_id"]), None);
+    fixture.shutdown().await;
+}
+
+#[tokio::test]
 async fn revocation_closes_existing_socket_and_invalidates_unused_ticket() {
     let fixture = Fixture::new(false).await;
     let client = reqwest::Client::new();

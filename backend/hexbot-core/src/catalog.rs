@@ -1096,6 +1096,7 @@ fn delete_section(home: &Path, caller: &str, id: &str, purge: bool) -> Result<()
         let mut conn = db::open(home)?;
         let tx = conn.transaction()?;
         tx.execute("DELETE FROM sections WHERE id=?", [id])?;
+        crate::dreaming::checkins::forget_section(&tx, id)?;
         tx.execute(
             "UPDATE bots SET last_activity_at=? WHERE name=?",
             params![now(), row["bot"].as_str()],

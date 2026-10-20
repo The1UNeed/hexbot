@@ -134,12 +134,11 @@ async function createWindow(): Promise<BrowserWindow> {
       pendingLink = undefined
     }
   })
+  // On macOS the app outlives its window, so keep the page: it holds the
+  // connection that brings notifications, such as the primary bot's
+  // check-ins, from a daemon here or elsewhere.
   window.on('close', event => {
-    if (
-      !quitting &&
-      process.platform === 'darwin' &&
-      ['running', 'external'].includes(daemon.status().state)
-    ) {
+    if (!quitting && process.platform === 'darwin') {
       event.preventDefault()
       window.hide()
     }
@@ -305,7 +304,8 @@ else {
   app.on('second-instance', (_event, argv) => {
     const link = argv.find(arg => arg.startsWith('hexbot://'))
     if (link) navigate(link)
-    else void createWindow()
+    // Closing keeps the window on macOS; launching again brings it back.
+    else void showWindow()
   })
   app.on('open-url', (event, url) => {
     event.preventDefault()

@@ -68,6 +68,7 @@ Production needs these environment variables, all from `.env.example`:
 | `CF_ACCOUNT_ID`, `CF_ZONE_ID` | Cloudflare dashboard, the tunnel zone |
 | `CONNECT_SIGNING_KEY_JWK` | one line from `node scripts/make-signing-key.mjs` |
 | `CONNECT_JWKS_EXTRA` | optional JSON array of public JWKs to publish beside the signing key, for rotation (`docs/connect.md`) |
+| `EXPO_ACCESS_TOKEN` | optional; the Expo access token for check-in pushes when the Expo project requires one |
 
 Do not set `DEV_USER_ID` in production. Run the migration against the production database, then redeploy from the Vercel dashboard, then confirm `https://connect.hexbot.app/api/health` returns `ready: true`. If it reports `schema: "behind"`, the migration has not reached that database; `missing` names what it lacks.
 

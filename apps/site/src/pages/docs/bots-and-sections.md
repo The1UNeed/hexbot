@@ -29,9 +29,17 @@ In Profile, pick a shape and a colour for the bot's face, or use a photo. A pick
 
 ## The primary bot
 
-HexBot is your primary bot. Setup creates it, and it looks after the rest: in its own sections it can list, create, change, and delete your bots, create rooms and change who is in them, schedule jobs for any bot, and change settings, skills, and connectors. It always asks before it deletes a bot, room, or job, removes a room's last bot (which deletes the room), changes a bot's or room's approval mode or a bot's or job's working folder, changes a setting, or turns a skill or connector on or off, even in Bypass. It never sees API keys or connector credentials, and it can't change network or service settings.
+HexBot is your primary bot. Setup creates it, and it looks after the rest: in its own sections it can list, create, change, and delete your bots, create rooms and change who is in them, schedule jobs for any bot, and change settings, skills, and connectors. It always asks before it deletes a bot, room, or job, removes a room's last bot (which deletes the room), changes a bot's or room's approval mode or a bot's or job's working folder, changes a setting, turns a skill or connector on or off, or cancels a [check-in](#check-ins) wake-up, even in Bypass. It never sees API keys or connector credentials, and it can't change network or service settings.
 
 There is one primary bot, pinned at the top of the roster, and it can't be deleted. You can rename it and change its soul, model, and tools like any other bot. If you used Hexbot before the primary bot existed, the bot list asks you to add HexBot or to make one of your bots primary; on the phone app, choose Make primary in a bot's profile. A bot made primary gets the extra tools in its next new section. Its tools don't work in rooms or scheduled jobs.
+
+## Check-ins
+
+Your primary bot also checks in on its own. Every hour between 08:00 and 22:00 it looks at what is going on: its memory and notes, and what its connectors show, like your calendar, email, or Notion. When it learns about something with a time to it, like a deadline tonight, it sets a wake-up to look again at the right moment. Most check-ins end quietly. When something needs you, it sends one short message with what you need to act on it.
+
+Messages land in its **Check-ins** section and show as a notification in the app, in a browser tab you allowed (browsers notify only over HTTPS, such as through Hex Connect), and on your phone. Reply there and it knows what it told you, and its next check-ins see your reply. It sends at most one message per check-in and eight a day. Its Notify me switch silences the notifications; the messages still arrive in the section. Deleting the section deletes what it said there.
+
+Turn check-ins off, change how often they run, or change your hours in the primary bot's settings, under Check-ins. The same page shows the wake-ups waiting, lets you cancel one, and lists recent check-ins and what came of them. A check-in runs unattended, like a scheduled job, with your keys. It only looks: it can read files and its connectors, including Notion and Airtable, but it can't run commands, browse, use the computer, change anything through a connector, or ask you anything, and it suggests memory changes for its next dream instead of writing them. If a check-in fails, its wake-ups wait for the next one.
 
 ## Keep a conversation going
 
