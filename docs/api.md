@@ -289,7 +289,8 @@ others (`DESIGN.md`, "The primary bot"). There is at most one per owner.
 ### Sections
 
 A bot has one chat with its owner: the one section of that bot with no
-`peer_bot`. The other sections are threads (`peer_bot` set). Rooms keep their
+`peer_bot` and no `purpose`. The other sections are threads (`peer_bot`
+set) and, for the primary bot, its Check-ins (`purpose` `checkins`). Rooms keep their
 conversations in `room_sessions`, not here. On its first start after the
 upgrade the daemon keeps one chat per bot (`catalog::one_chat_per_bot`, once,
 recorded as the `one_chat_per_bot` setting): for a bot with several, the one
@@ -377,10 +378,13 @@ manual recovery. This does not reconstruct data already purged by an older build
 
 Section shape: `{id, bot, title, title_by: "bot" | null, created_at,
 updated_at, archived_at | null, done_at | null, preview, message_count,
-live_session_id | null, peer_bot | null}`
+live_session_id | null, peer_bot | null, purpose | null}`
 
 `peer_bot` is set on a thread: the private conversation in which `peer_bot`
-asked `bot` for help through `message_bot`.
+asked `bot` for help through `message_bot`. `purpose` is set on a section
+with its own job, so far only `checkins`, the primary bot's Check-ins; it
+is never the bot's chat. Daemons from before one chat per bot leave it out;
+there, `hexbot.checkins.status` names the Check-ins section.
 
 `title_by` is `"bot"` when the daemon named the section from the first
 prompt; a user rename clears it. Clients do not show chat titles. `preview`
@@ -460,9 +464,11 @@ context of its own; the meter belongs to bot sections.
   Current clients offer neither action for a chat; both remain available to
   older clients.
 - `hexbot.sections.delete {id, purge_memory?: true}` → `{deleted: true, history_pending?: true}`
-  Deletes only a peer thread (`peer_bot` set). An owned section without
-  `peer_bot` is a bot chat, including archived sections and legacy sections
-  kept for repair. Deleting it returns error `4202`,
+  Deletes only a peer thread (`peer_bot` set) or a section with its own
+  `purpose`, such as the primary bot's Check-ins, which also forgets what
+  check-ins said there. Any other owned section is a bot chat, including
+  archived sections and legacy sections kept for repair. Deleting it returns
+  error `4202`,
   `A bot chat cannot be deleted; delete the bot to remove it`.
   Ownership and missing-section errors take precedence. Rejection leaves
   the live session, pending work, staged uploads and stored history untouched,

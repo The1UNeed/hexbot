@@ -28,9 +28,9 @@ Three facts shape most decisions:
   resumes first, keep its prompt until another compaction. And because a
   bot's chat never ends, when the bot's tools or connected servers change,
   including when it becomes the primary bot, or an update changes Hexbot's
-  own tools, the chat is rebuilt with them at
-  its next message (`tools_stale` in `runtime.rs`); that one request misses
-  the cache. Rooms, threads between bots, jobs and delegates keep what
+  own tools, the chat, and the primary bot's Check-ins too, is rebuilt with
+  them at its next message (`tools_stale` in `runtime.rs`); that one request
+  misses the cache. Rooms, threads between bots, jobs and delegates keep what
   they started with.
 - **One product, two packages, three channels.** Full package (app plus
   daemon) and client-only package (app alone) are build-time editions

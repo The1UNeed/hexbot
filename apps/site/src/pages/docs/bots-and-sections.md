@@ -57,25 +57,6 @@ The context meter at the top right of the chat shows how much of the model's con
 
 A summary keeps the thread of the work but not every detail. What lasts goes into the bot's memory and notes, and the bot can search the chat's history from before its latest summary when it needs an exact detail.
 
-### Client compatibility
-
-The daemon can advertise optional transcript identity through
-`hexbot.info.transcript_identity`. Clients use a proven input binding to keep
-local uploads with the right user message, and fragment IDs to adopt streamed
-replies from durable history. These fields can be absent, including on queued,
-historical or recovered messages. An acknowledgment or matching text does not
-prove ownership. Clients keep unconfirmed local files separate until the
-daemon supplies a binding. The metadata does not enter the bot's context or
-change usage. The [daemon API source](https://github.com/The1UNeed/hexbot/blob/main/docs/api.md#optional-transcript-identity)
-documents the exact fields and limits.
-
-Clients that submit an explicit attachment list send only those uploads.
-Other staged files remain available for a later message from either paired
-client. An empty list sends text alone and retains pending uploads. Older
-clients that omit the list send every staged upload with their next message.
-Clearing attachments, closing the conversation or deleting the bot removes
-unused staged files. Pending uploads still count toward attachment limits.
-
 ## Dream reports
 
 Each night's [dream](/docs/dreaming/) report appears in the chat as a message from the bot. It is there for you to read; the bot does not see it as something it said, and later dreams skip it.
@@ -84,25 +65,15 @@ Each night's [dream](/docs/dreaming/) report appears in the chat as a message fr
 
 Use **Stop** to interrupt a running answer. The chat stays, and you can send another message.
 
-Deleting the bot removes its profile, chat, memory, and scheduled jobs. Stop its active work first. Back up the daemon's data directory before removing a bot you may need again.
-
-The daemon also protects the chat from an older client's Delete action. It returns `4202`, "A bot chat cannot be deleted; delete the bot to remove it", and keeps the conversation running with its history and pending uploads. This also protects archived chats and older conversations kept for repair. Opening the bot again returns its existing chat. Private conversations between bots can still be deleted, and the one-time upgrade can still remove superseded chats after making its backup.
-
-While deletion runs, new bot starts are refused, including jobs and CLI runs. Closing the app lets the daemon finish deletion. If deletion fails, the bot can work again.
-
-If deletion leaves cleanup pending, its name stays reserved until a daemon restart finishes cleanup. An interrupted deletion from an older build can conflict with a recreated bot or leave a profile whose owner is uncertain. Hexbot preserves that data and reports the conflict in the daemon log for manual recovery.
+A chat can't be deleted on its own, even from an older app; deleting the bot removes its profile, chat, memory, and scheduled jobs. Stop its active work first, and back up the daemon's data directory before removing a bot you may need again. Private conversations between bots can still be deleted. While a bot is being deleted it can't start new work; if deletion fails, it can work again.
 
 ## Updating from earlier versions
 
-Earlier versions let you keep many sections per bot. The first time the updated daemon starts, it keeps one section of each bot as its chat and deletes the others with their history. It prefers a section with real conversation, then one you had not archived, then the newest. Old Dreams logs containing human conversation compete the same way; a log containing only dream reports gives way to a conversation. Dream reports never make a mixed log's conversation newer. If a report followed its last conversation, or its message times are missing or invalid, the update keeps all of that bot's sections and opens the chat with the newest known conversation. A bot left with no section gets a new chat when you first open it. The bot's memory and notes stay.
+Earlier versions let you keep many conversations per bot. The first time the updated daemon starts, before any app can connect, it keeps one of each bot's conversations as its chat: the one with the latest real conversation, not a log of dream reports. It deletes the others with their history, after copying the daemon's databases and conversation files to `backups/one-chat-per-bot-<date>-<time>/` in its data directory (`~/.hexbot` by default), so the disk needs about that much free space. The bot's memory and notes stay. It happens once; if the copy or anything else fails, it deletes nothing more. A bot whose conversations can't be read, or whose choice the update can't be sure of, keeps all of them, and the app opens the one most likely to be its chat.
 
-This happens once, at the first start of the updated daemon, before any app or browser can connect. Before it deletes anything, the daemon makes a full copy of its databases and its conversation files in `backups/one-chat-per-bot-<date>-<time>/` in its data directory (`~/.hexbot` by default). The copy is about as large as those files, so the disk needs that much free space.
+An updated app connected to a daemon that hasn't been updated yet asks which conversation to keep as the chat when a bot has several, once per bot while the app runs. Your choice is saved on the daemon and kept when it updates. Cancelling opens nothing.
 
-If anything goes wrong, such as the copy or a history cleanup failing, the daemon deletes nothing more and starts as usual. Sections already removed stay deleted. After a committed removal, a later start retries that request's leftover native history and identifiable history in an older bot database. If that older history belongs to another owner or links to a conversation Hexbot must keep, cleanup stays pending and the daemon logs the reason. Restarting alone cannot resolve that conflict. It never resumes deleting the untouched remaining sections. Older untagged tombstones have no legacy ownership to recover. A section that was not removed keeps its history, even if the daemon stops part way.
-
-If a bot's conversations couldn't be read, or the daemon found one of them damaged, the update deletes none of that bot's sections, so their history stays on the daemon. Its chat is then chosen the same way among the sections that open, so a report-only log never outranks a conversation, and the daemon makes a new chat only when none of them can be the chat. Unreadable conversations stay for repair; a later daemon start checks them again. The app shows only that chat and doesn't open the others. Sections an older version makes later are kept too, and the chat is chosen among them the same way. Recreated Dream logs are checked again at chat lookup and before dreaming, so their reports stay out of future dreams.
-
-An updated app connected to a daemon that hasn't been updated yet goes back to the section you were last in. When you select a bot, the app opens a section by itself only if at most one has something said; otherwise it asks which one to continue, once per bot while the app runs. To choose again, restart the app or reload the page, then select the bot. The app saves your choice on the daemon and brings it out of the archive if needed. That conversation stays when the daemon updates, even if you haven't sent another message. Old reports and saved choices used the same update time. If the last message in a mixed log is a report, the daemon cannot reliably recover which chat you chose, including when another report arrived after your choice. It keeps both histories and opens the chat with the newest known conversation instead. When the log's last conversation came after its reports, your saved choice still decides the chat. A log containing only dream reports still gives way to a real conversation. Cancelling saves nothing. If saving fails, retry your choice.
+The daemon API reference, `docs/api.md` in the source, describes the update and what clients can rely on in detail.
 
 ## Work with other bots
 
