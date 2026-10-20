@@ -457,6 +457,19 @@ fn a_picked_face_is_kept_with_its_picture_until_the_picture_changes() {
     fs::write(h.join("profiles/owl/assets/face.json"), "not json").unwrap();
     assert!(catalog::bot(h, "alice", "owl").unwrap()["face"].is_null());
 }
+#[test]
+fn hexbot_keeps_the_face_it_is_created_with() {
+    let home = setup();
+    let h = home.path();
+    let face = json!({"shape":"pill","color":"orange"});
+    let created = call(
+        h,
+        "alice",
+        "hexbot.bots.create_primary",
+        json!({"avatar":"data:image/png;base64,iVBORw0KGgo=","face":face}),
+    );
+    assert_eq!(created["bot"]["face"], face);
+}
 #[cfg(unix)]
 #[test]
 fn refuses_symlink_profile_reads_and_mutations() {

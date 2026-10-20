@@ -42,8 +42,9 @@ export function PrimaryChoice({
 
     try {
       if (kind === 'add') {
-        const avatar = await avatarPng(styleForName(PRIMARY_HANDLE))
-        const { bot, section } = await botsCreatePrimary(avatar ? { avatar } : {})
+        const face = styleForName(PRIMARY_HANDLE)
+        const avatar = await avatarPng(face)
+        const { bot, section } = await botsCreatePrimary(avatar ? { avatar, face } : {})
         await botsActions().refresh()
         onCreated(bot, section, true)
       } else {

@@ -188,7 +188,7 @@ others (`DESIGN.md`, "The primary bot"). There is at most one per owner.
   `display_name` defaults to the bot name in title case — never to `title`,
   which is free-form caller text stored verbatim.
 - `hexbot.bots.create_primary {display_name?, provider?, model?,
-  reasoning_effort?, avatar?}` → `{bot: Bot, section: Section}`. Creates
+  reasoning_effort?, avatar?, face?}` → `{bot: Bot, section: Section}`. Creates
   HexBot: handle `hexbot`, display name "HexBot" unless given, title
   "Primary bot", a soul for looking after the user's bots, and every
   available tool. Refused with 4214 when there is already a primary bot and

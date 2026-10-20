@@ -290,6 +290,15 @@ describe('onboarding', () => {
       provider: 'openai'
     })
 
+    const face = { color: 'orange', shape: 'pill' }
+    const picked = vi.fn(() => Promise.resolve(created))
+    setActiveRpc({ call: picked } as never)
+    await createHexBot(null, 'data:image/png;base64,iVBORw0KGgo=', face)
+    expect(picked).toHaveBeenCalledWith('hexbot.bots.create_primary', {
+      avatar: 'data:image/png;base64,iVBORw0KGgo=',
+      face
+    })
+
     const failing = vi.fn(() => Promise.reject(new Error('There is already a primary bot.')))
     setActiveRpc({ call: failing } as never)
     await expect(createHexBot(null, null)).rejects.toThrow('already a primary bot')

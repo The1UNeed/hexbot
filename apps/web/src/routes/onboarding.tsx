@@ -31,7 +31,15 @@ import { avatarPng, type AvatarStyle, styleForName } from '../lib/avatar-builder
 import { type DaemonProgress, getBridge, hasLocalRuntime, isElectron } from '../lib/bridge'
 import { cn } from '../lib/cn'
 import { connectTo, setLocalDaemonPort } from '../lib/connection'
-import type { Bot, BotCreateInput, Connector, ModelOption, Provider, Section } from '../lib/types'
+import type {
+  Bot,
+  BotCreateInput,
+  BotFace,
+  Connector,
+  ModelOption,
+  Provider,
+  Section
+} from '../lib/types'
 import { useBots } from '../stores/bots'
 import { useConnection } from '../stores/connection'
 import { unknownMethod, useMe } from '../stores/me'
@@ -102,11 +110,13 @@ export async function landingSection(bots: Bot[]): Promise<LastSection | null> {
  */
 export async function createHexBot(
   defaultModel: null | string,
-  avatar: null | string
+  avatar: null | string,
+  face?: BotFace
 ): Promise<{ bot: Bot; section: Section }> {
   const [provider, ...rest] = defaultModel?.split('/') ?? []
   const model = provider && rest.length ? { model: rest.join('/'), provider } : {}
-  const input = { ...(avatar ? { avatar } : {}), ...model }
+  // A face describes its picture, so it goes only with one.
+  const input = { ...(avatar ? { avatar, face } : {}), ...model }
 
   try {
     return await botsCreatePrimary(input)
@@ -1017,8 +1027,9 @@ function OnboardingPage() {
     setCreating(true)
 
     try {
-      const avatar = await avatarPng(styleForName('hexbot'))
-      const { bot, section } = await createHexBot(defaultModel, avatar)
+      const face = styleForName('hexbot')
+      const avatar = await avatarPng(face)
+      const { bot, section } = await createHexBot(defaultModel, avatar, face)
       const last = { bot: bot.name, section: section.id }
       uiActions().setLastSection(last)
       void navigate({ to: '/b/$bot/s/$section', params: last })

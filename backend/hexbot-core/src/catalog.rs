@@ -834,7 +834,7 @@ pub fn check_deletable(home: &Path, caller: &str, name: &str) -> Result<()> {
     Ok(())
 }
 /// Creates HexBot: every tool it can use, a soul for running the place, and
-/// the primary mark. The caller may choose its display name, model and avatar.
+/// the primary mark. The caller may choose its display name, model, avatar and face.
 fn create_primary(home: &Path, caller: &str, p: &Value) -> Result<Value> {
     user(home, caller)?;
     let object = p
@@ -847,6 +847,7 @@ fn create_primary(home: &Path, caller: &str, p: &Value) -> Result<Value> {
             "model",
             "reasoning_effort",
             "avatar",
+            "face",
         ]
         .contains(&key.as_str())
     }) {

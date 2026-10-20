@@ -165,7 +165,10 @@ export function botsCreate(input: BotCreateInput): Promise<{ bot: Bot; section: 
 /** Create HexBot, the primary bot, on the default model. */
 export function botsCreatePrimary(
   input: Partial<
-    Pick<BotCreateInput, 'avatar' | 'display_name' | 'model' | 'provider' | 'reasoning_effort'>
+    Pick<
+      BotCreateInput,
+      'avatar' | 'display_name' | 'face' | 'model' | 'provider' | 'reasoning_effort'
+    >
   > = {}
 ): Promise<{ bot: Bot; section: Section }> {
   return rpcCall<{ bot: Bot; section: Section }>('hexbot.bots.create_primary', { ...input })
