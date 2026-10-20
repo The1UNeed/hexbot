@@ -724,7 +724,10 @@ impl App {
             return;
         };
         self.events.emit(owner, None, &event, payload.clone());
-        if group == "rooms" && payload["deleted"] == true {
+        // Room failures count only for the room's current bots.
+        if group == "rooms"
+            && (payload["deleted"] == true || matches!(action, "add_member" | "remove_member"))
+        {
             self.events
                 .emit(owner, None, "hexbot.bots.changed", json!({}));
         }

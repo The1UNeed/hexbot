@@ -817,12 +817,7 @@ fn room_deletion_does_not_claim_ambiguous_foreign_or_other_bot_legacy_mappings()
 
 #[tokio::test]
 async fn surviving_archived_or_failed_room_deletion_keeps_retry_without_deletion_refresh() {
-    for action in [
-        "archive",
-        "remove-one",
-        "failed-delete",
-        "failed-last-remove",
-    ] {
+    for action in ["archive", "failed-delete", "failed-last-remove"] {
         let (home, app) = fixture().await;
         let (room, failure) = failed_room(&app).await;
         let conn = db::open(home.path()).unwrap();
@@ -832,24 +827,6 @@ async fn surviving_archived_or_failed_room_deletion_keeps_retry_without_deletion
                 app.call("local", "hexbot.rooms.archive", &json!({"id":room}))
                     .await
                     .unwrap();
-            }
-            "remove-one" => {
-                app.call(
-                    "local",
-                    "hexbot.rooms.add_member",
-                    &json!({"id":room,"bot":"fox"}),
-                )
-                .await
-                .unwrap();
-                let result = app
-                    .call(
-                        "local",
-                        "hexbot.rooms.remove_member",
-                        &json!({"id":room,"bot":"owl","deleted":true}),
-                    )
-                    .await
-                    .unwrap();
-                assert_ne!(result["room"]["deleted"], true);
             }
             _ => {
                 conn.execute_batch("CREATE TRIGGER refuse_room_delete BEFORE DELETE ON rooms BEGIN SELECT RAISE(FAIL,'fixture'); END;").unwrap();
@@ -887,6 +864,63 @@ async fn surviving_archived_or_failed_room_deletion_keeps_retry_without_deletion
                     .iter()
                     .all(|e| e.frame["params"]["type"] != "hexbot.rooms.changed")
             );
+            // The catalog rolled back, so the surviving room keeps its history.
+            let stored = failure["section_id"].as_str().unwrap();
+            assert!(
+                !hexbot_core::runtime_store::history(home.path(), stored)
+                    .unwrap()
+                    .is_empty(),
+                "{action}"
+            );
+        }
+        app.shutdown().await;
+    }
+}
+
+#[tokio::test]
+async fn a_bot_removed_from_a_surviving_room_shows_its_room_failure_only_while_a_member() {
+    for legacy in [false, true] {
+        let (home, app) = fixture().await;
+        let (room, failure) = failed_room(&app).await;
+        let id = failure["incident"]["id"].as_str().unwrap();
+        let conn = db::open(home.path()).unwrap();
+        if legacy {
+            // Older failures find their room through the stored transcript.
+            conn.execute("UPDATE bot_incidents SET room_id=NULL WHERE id=?", [id])
+                .unwrap();
+        }
+        let member = |action: &'static str, bot: &'static str| {
+            let (app, room) = (app.clone(), room.clone());
+            async move {
+                let mut events = app.events.subscribe();
+                let result = app
+                    .call(
+                        "local",
+                        &format!("hexbot.rooms.{action}"),
+                        &json!({"id":room,"bot":bot}),
+                    )
+                    .await
+                    .unwrap();
+                assert_ne!(result["room"]["deleted"], true);
+                assert!(
+                    notifications(&mut events)
+                        .iter()
+                        .any(|e| e.frame["params"]["type"] == "hexbot.bots.changed"),
+                    "{action} {bot}"
+                );
+            }
+        };
+        member("add_member", "fox").await;
+        member("remove_member", "owl").await;
+        for bot in bots(&app, "owl").await {
+            assert_eq!(bot["status"], "idle", "legacy={legacy}");
+        }
+        assert!(incident(&conn, id).1.is_none());
+        member("add_member", "owl").await;
+        for bot in bots(&app, "owl").await {
+            assert_eq!(bot["status"], "stopped", "legacy={legacy}");
+            assert_eq!(bot["status_detail"]["room_id"], room);
+            assert_eq!(bot["status_detail"]["action"]["kind"], "retry");
         }
         app.shutdown().await;
     }

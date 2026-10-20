@@ -776,8 +776,8 @@ async fn deletion_blocks_late_hidden_cli_job_and_room_workers_before_purge() {
 #[tokio::test]
 async fn failed_decisions_release_admission_and_allow_actual_next_jobs_and_room_posts() {
     for mode in ["bot", "room", "last"] {
-        // This prefix purges room history before its catalog decision. Its
-        // later catalog faults cannot promise history rollback. Last-member
+        // Room deletion purges history before its catalog commit, so a commit
+        // fault cannot promise history rollback. Last-member
         // removal also changes membership before purging. Exercise those room
         // failures before mutation, and bot rollback at each existing boundary.
         let faults: &[&str] = if mode == "bot" {

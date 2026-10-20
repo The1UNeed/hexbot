@@ -207,7 +207,9 @@ when it overrides the default.
 reverse order), folded by the daemon from live session state, room turns,
 room `waiting.human` events, and open incidents. `status_detail` is
 `{text, section_id, room_id, session_id, since, action}` where `action` is
-null, `{kind: "fix_connector", connector}`, or `{kind: "retry"}`.
+null, `{kind: "fix_connector", connector}`, or `{kind: "retry"}`. A room's
+failed turns count only while the bot is still in that room; adding it back
+restores them.
 `approval_mode` is `inherit` (the deployment setting), `manual`, `smart`
 (Auto), or `off` (Bypass); `workdir` overrides the deployment workspace for
 that bot's terminal.
@@ -1006,8 +1008,9 @@ process exits.
 Connect registration and disconnection emit `hexbot.connect.changed {}`.
 Room mutations emit `hexbot.rooms.changed {id, deleted?}`; `add_member` and
 `remove_member` also name the bot in `bot` and `name`. Room deletion,
-including last-member removal, sets `deleted: true` and then emits an
-owner-scoped, session-less `hexbot.bots.changed {}`. Every persisted room event
+including last-member removal, sets `deleted: true`. Deletion, `add_member` and
+`remove_member` then emit an owner-scoped, session-less `hexbot.bots.changed
+{}`. Every persisted room event
 emits `hexbot.rooms.event {room_id, event}`. Turn state changes emit
 `hexbot.rooms.turn {room_id, bot, live_session_id, status}`. Room events go
 to the owner.

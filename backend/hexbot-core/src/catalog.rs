@@ -1316,17 +1316,23 @@ fn display_name(name: &str) -> String {
         .collect::<Vec<_>>()
         .join(" ")
 }
-/// The bot's newest failure that still has a visible cause. Hidden native runs
-/// have no catalog section: require their bot and owner, and exclude deleted
-/// sessions and catalog entries hidden by other filters. Connector and global
-/// failures outlive their original chat. Needs `runtime` attached.
+/// The bot's newest failure that still has a visible cause. Room failures
+/// count while the bot is a member, so they return if it is added back.
+/// Hidden native runs have no catalog section: require their bot and owner,
+/// and exclude deleted sessions and catalog entries hidden by other filters.
+/// Connector and global failures outlive their original chat. Needs
+/// `runtime` attached.
 const OPEN_INCIDENT: &str = "SELECT i.* FROM bot_incidents i JOIN bots b ON b.name=i.bot
  WHERE i.bot=? AND i.resolved_at IS NULL AND (
     i.kind<>'turn_failed' OR CASE WHEN i.room_id IS NOT NULL
-        THEN EXISTS(SELECT 1 FROM rooms r WHERE r.id=i.room_id AND r.owner_id=b.owner_id)
+        THEN EXISTS(SELECT 1 FROM rooms r JOIN room_members m ON m.room_id=r.id
+            WHERE r.id=i.room_id AND r.owner_id=b.owner_id
+            AND m.member_kind='bot' AND m.member_id=i.bot AND m.left_at IS NULL)
         ELSE i.section_id IS NULL
             OR EXISTS(SELECT 1 FROM room_sessions s JOIN rooms r ON r.id=s.room_id
-                WHERE s.stored_session_id=i.section_id AND s.bot=i.bot AND r.owner_id=b.owner_id)
+                JOIN room_members m ON m.room_id=r.id
+                WHERE s.stored_session_id=i.section_id AND s.bot=i.bot AND r.owner_id=b.owner_id
+                AND m.member_kind='bot' AND m.member_id=i.bot AND m.left_at IS NULL)
             OR EXISTS(SELECT 1 FROM sections s WHERE s.id=i.section_id
                 AND s.bot=i.bot AND s.owner_id=b.owner_id AND s.archived_at IS NULL)
             OR (NOT EXISTS(SELECT 1 FROM sections s WHERE s.id=i.section_id)
@@ -1336,7 +1342,34 @@ const OPEN_INCIDENT: &str = "SELECT i.* FROM bot_incidents i JOIN bots b ON b.na
                 AND NOT EXISTS(SELECT 1 FROM runtime.native_deleted d WHERE d.session_id=i.section_id))
         END
  ) ORDER BY i.created_at DESC LIMIT 1";
-fn shape_bot(home: &Path, caller: &str, row: Value) -> Result<Value> {
+/// Without the runtime store, status shows the newest open failure.
+const ANY_OPEN_INCIDENT: &str = "SELECT * FROM bot_incidents WHERE bot=? AND resolved_at IS NULL ORDER BY created_at DESC LIMIT 1";
+/// The catalog connection and failure query for bot reads. A list opens it once.
+struct StatusReader {
+    conn: Connection,
+    query: &'static str,
+}
+fn status_reader(home: &Path) -> Result<StatusReader> {
+    let conn = db::open(home)?;
+    let attached = runtime_store::open(home).and_then(|_| {
+        conn.execute(
+            "ATTACH DATABASE ? AS runtime",
+            [home.join("hexbot-runtime.db").to_string_lossy().as_ref()],
+        )?;
+        Ok(())
+    });
+    let query = match attached {
+        Ok(()) => OPEN_INCIDENT,
+        Err(error) => {
+            eprintln!(
+                "Bot status shows every open failure; the runtime store is unavailable: {error}"
+            );
+            ANY_OPEN_INCIDENT
+        }
+    };
+    Ok(StatusReader { conn, query })
+}
+fn shape_bot(home: &Path, caller: &str, status: &StatusReader, row: Value) -> Result<Value> {
     let name = row["name"].as_str().unwrap_or("");
     let cfg = config(home, name)?;
     let sections = list_sections(home, caller, &json!({"bot":name,"include_archived":true}))?;
@@ -1346,16 +1379,11 @@ fn shape_bot(home: &Path, caller: &str, row: Value) -> Result<Value> {
         .take(2)
         .cloned()
         .collect::<Vec<_>>();
-    let conn = db::open(home)?;
-    runtime_store::open(home)?;
-    conn.execute(
-        "ATTACH DATABASE ? AS runtime",
-        [home.join("hexbot-runtime.db").to_string_lossy().as_ref()],
-    )?;
-    let incident = rows(&conn, OPEN_INCIDENT, &[&name])?.into_iter().next();
+    let conn = &status.conn;
+    let incident = rows(conn, status.query, &[&name])?.into_iter().next();
     let (mut status, mut detail) = ("idle", Value::Null);
     if let Some(mut i) = incident {
-        crate::settings::normalize_incident_room(&conn, &mut i)?;
+        crate::settings::normalize_incident_room(conn, &mut i)?;
         status = "stopped";
         let action = if i["kind"] == "turn_failed" {
             json!({"kind":"retry"})
@@ -1450,7 +1478,8 @@ fn shape_bot(home: &Path, caller: &str, row: Value) -> Result<Value> {
     }))
 }
 pub fn bot(home: &Path, caller: &str, name: &str) -> Result<Value> {
-    shape_bot(home, caller, bot_row(home, caller, name)?)
+    let row = bot_row(home, caller, name)?;
+    shape_bot(home, caller, &status_reader(home)?, row)
 }
 fn validate_patch(home: &Path, p: &Value) -> Result<()> {
     let object = p
@@ -2464,18 +2493,17 @@ pub fn call(home: &Path, caller: &str, method: &str, p: &Value) -> Option<Result
         "hexbot.bots.create_primary" => create_primary(home, caller, p),
         "hexbot.bots.set_primary" => set_primary(home, caller, required(p, "name")?),
         "hexbot.bots.update" => update_bot(home, caller, p),
-        "hexbot.bots.get" => {
-            Ok(json!({"bot":shape_bot(home,caller,bot_row(home,caller,required(p,"name")?)?)?}))
-        }
+        "hexbot.bots.get" => Ok(json!({"bot":bot(home,caller,required(p,"name")?)?})),
         "hexbot.bots.list" => {
             user(home, caller)?;
+            let status = status_reader(home)?;
             let bots = rows(
-                &db::open(home)?,
+                &status.conn,
                 "SELECT * FROM bots WHERE owner_id=? ORDER BY is_primary DESC,last_activity_at DESC,name ASC",
                 &[&caller],
             )?
             .into_iter()
-            .map(|r| shape_bot(home, caller, r))
+            .map(|r| shape_bot(home, caller, &status, r))
             .collect::<Result<Vec<_>>>()?;
             Ok(json!({"bots":bots}))
         }
@@ -2761,6 +2789,29 @@ mod parity_tests {
         let id: String = query.query_row(["owl"], |row| row.get("id")).unwrap();
         assert_eq!(id, "failure-999");
         assert_eq!(query.get_status(rusqlite::StatementStatus::FullscanStep), 0);
+    }
+    #[test]
+    fn status_without_the_runtime_store_shows_the_newest_open_failure() {
+        let home = home();
+        // A failure the filtered status hides: its room no longer has the bot.
+        db::open(home.path()).unwrap().execute_batch(
+            "INSERT INTO rooms(id,name,owner_id) VALUES('room','Room','alice');
+             INSERT INTO room_members(room_id,member_kind,member_id,left_at) VALUES('room','bot','owl',1);
+             INSERT INTO bot_incidents(id,bot,room_id,kind,created_at) VALUES('left','owl','room','turn_failed',1);",
+        ).unwrap();
+        let attached = status_reader(home.path()).unwrap();
+        assert!(
+            rows(&attached.conn, attached.query, &[&"owl"])
+                .unwrap()
+                .is_empty()
+        );
+        drop(attached);
+        fs::remove_file(home.path().join("hexbot-runtime.db")).unwrap();
+        fs::create_dir(home.path().join("hexbot-runtime.db")).unwrap();
+        let fallback = status_reader(home.path()).unwrap();
+        assert_eq!(fallback.query, ANY_OPEN_INCIDENT);
+        let open = rows(&fallback.conn, fallback.query, &[&"owl"]).unwrap();
+        assert_eq!(open[0]["id"], "left");
     }
 
     #[test]
