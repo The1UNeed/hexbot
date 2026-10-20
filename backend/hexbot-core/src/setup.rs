@@ -288,7 +288,12 @@ fn remove_file(path: &Path) -> Result<()> {
     }
 }
 fn voice_current(home: &Path) -> bool {
-    home.join(if cfg!(windows) { "bin/edge-tts.exe" } else { "bin/edge-tts" }).exists()
+    home.join(if cfg!(windows) {
+        "bin/edge-tts.exe"
+    } else {
+        "bin/edge-tts"
+    })
+    .exists()
         && fs::read_to_string(home.join("runtime/tools/edge-tts.requirements.txt"))
             .is_ok_and(|text| text == VOICE_REQUIREMENTS)
 }
@@ -373,7 +378,11 @@ async fn install_code_runtime(home: &Path, emit: &impl Fn(&str, &str)) -> Result
             ],
         )
         .await?;
-        let voice = home.join(if cfg!(windows) { "bin/edge-tts.exe" } else { "bin/edge-tts" });
+        let voice = home.join(if cfg!(windows) {
+            "bin/edge-tts.exe"
+        } else {
+            "bin/edge-tts"
+        });
         remove_file(&voice)?;
         point_at(&venv_tool(&environment, "edge-tts"), &voice)?;
         common::atomic_write(&receipt, VOICE_REQUIREMENTS.as_bytes())?;
@@ -391,7 +400,11 @@ fn link_cli(home: &Path, user_home: &Path, emit: &impl Fn(&str, &str)) -> Result
     let bin = user_home.join(".local/bin");
     fs::create_dir_all(&bin)?;
     // Replace only a wrapper this command wrote; another `hexbot` stays put.
-    let wrapper_name = if cfg!(windows) { "hexbot.cmd" } else { "hexbot" };
+    let wrapper_name = if cfg!(windows) {
+        "hexbot.cmd"
+    } else {
+        "hexbot"
+    };
     let wrapper_path = bin.join(wrapper_name);
     if !matches!(fs::symlink_metadata(&wrapper_path), Err(e) if e.kind() == std::io::ErrorKind::NotFound)
         && !crate::install_ownership::wrapper_owned(&wrapper_path, home)
@@ -466,7 +479,8 @@ pub async fn run(home: &Path, args: &[String]) -> Result<()> {
             println!("{message}");
         }
     };
-    let user_home = crate::osutil::user_home().ok_or_else(|| Error::new(4200, "HOME is required"))?;
+    let user_home =
+        crate::osutil::user_home().ok_or_else(|| Error::new(4200, "HOME is required"))?;
     fs::create_dir_all(home)?;
     let home = home.canonicalize()?;
     if args.iter().any(|a| a == "--activate") {

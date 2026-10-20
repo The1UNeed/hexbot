@@ -7,9 +7,9 @@ mod safety;
 mod types;
 #[path = "../../hexbot-core/src/update_path.rs"]
 mod update_path;
-mod windows_service;
 #[path = "../../hexbot-core/src/update_signature.rs"]
 pub mod update_signature;
+mod windows_service;
 
 pub use archive::{extract_native, extract_zip, verify_file};
 pub use detect::{Paths, app_option, detect, detect_at, read_receipt, sanitize_appimage_env};
@@ -310,12 +310,7 @@ impl Installer {
         // The runtimes are not user data; bots, memory and settings stay.
         self.remove_owned_path(&self.paths.executable())?;
         if self.target.is_windows() {
-            self.remove_owned_path(
-                &self
-                    .paths
-                    .hexbot_home
-                    .join("runtime/native-executable.exe"),
-            )?;
+            self.remove_owned_path(&self.paths.hexbot_home.join("runtime/native-executable.exe"))?;
         }
         self.remove_owned_path(&self.paths.hexbot_home.join("runtime/native-current.json"))?;
         self.remove_owned_path(&self.paths.hexbot_home.join("runtime/native"))?;
@@ -770,9 +765,7 @@ impl Installer {
 
     fn service_executable(&self) -> PathBuf {
         if self.target.is_windows() {
-            self.paths
-                .hexbot_home
-                .join("runtime/native-executable.exe")
+            self.paths.hexbot_home.join("runtime/native-executable.exe")
         } else {
             self.paths.executable()
         }
@@ -880,15 +873,13 @@ impl Installer {
                 ) -> i32;
             }
             let raw = lock.as_raw_handle();
-            if unsafe { SetHandleInformation(raw, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT) } == 0
-            {
+            if unsafe { SetHandleInformation(raw, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT) } == 0 {
                 return Err(std::io::Error::last_os_error().into());
             }
             let mut command = self.paths.command(executable);
-            command.args(args).env(
-                "HEXBOT_ACTIVATION_LOCK_FD",
-                (raw as usize).to_string(),
-            );
+            command
+                .args(args)
+                .env("HEXBOT_ACTIVATION_LOCK_FD", (raw as usize).to_string());
             self.run_command(command, args, true, progress)
         }
     }

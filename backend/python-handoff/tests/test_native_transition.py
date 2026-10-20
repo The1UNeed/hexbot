@@ -70,7 +70,7 @@ class NativeTransitionTests(unittest.TestCase):
             self.assertEqual(limit, 1024)
             destination.write_text(update_signature.sign(SEED, json.dumps(self.manifest).encode())[1])
         else:
-            self.assertEqual(url, "https://updates.example/bundle.tar.gz")
+            self.assertEqual(url, self.manifest["url"])
             shutil.copyfile(self.archive, destination)
 
     def install(self):
@@ -543,24 +543,47 @@ class NativeTransitionTests(unittest.TestCase):
         execv.assert_called_once_with(str(executable), [str(executable), "serve"])
 
     def test_windows_x64_writes_a_cmd_launcher_and_rejects_arm64(self):
-        self.manifest["target"] = "windows-x86_64"
-        self.manifest["sha256"] = hashlib.sha256(self.archive.read_bytes()).hexdigest()
+        # Windows accepts only a zip of hexbot.exe. The fixture is a script with
+        # that name so this Mac can still run the version check.
+        script = b'#!/bin/sh\nif [ "$1" = version ]; then echo 1.2.3; else printf "%s\\n" "$@"; fi\n'
+        archive = self.root / "bundle.zip"
+        with zipfile.ZipFile(archive, "w") as output:
+            info = zipfile.ZipInfo("hexbot.exe")
+            info.external_attr = 0o755 << 16
+            output.writestr(info, script)
+        saved = (dict(self.manifest), self.archive)
+        self.archive = archive
+        self.manifest.update({
+            "target": "windows-x86_64",
+            "format": "zip",
+            "entrypoint": "hexbot.exe",
+            "url": "https://updates.example/bundle.zip",
+            "sha256": hashlib.sha256(archive.read_bytes()).hexdigest(),
+        })
         launcher = self.home / "runtime/venv/Scripts/hexbot.cmd"
         launcher.parent.mkdir(parents=True)
         launcher.write_text("@echo off\r\necho old\r\n")
-        with patch.object(transition.platform, "system", return_value="Windows"), \
-                patch.object(transition.platform, "machine", return_value="AMD64"):
-            executable = self.install()
-            text = launcher.read_text()
-            self.assertEqual(executable.name, "hexbot")
-            self.assertIn("native-executable.exe", text)
-            self.assertIn(f'set "HEXBOT_HOME={self.home}"', text)
-            self.assertTrue((self.home / "runtime/native-executable.exe").is_symlink())
-            self.assertEqual((self.home / "runtime/native-executable.exe").resolve(), executable)
-            with patch.object(transition.platform, "machine", return_value="ARM64"):
-                with self.assertRaisesRegex(ValueError, "Unsupported"):
+        try:
+            with patch.object(transition.platform, "system", return_value="Windows"), \
+                    patch.object(transition.platform, "machine", return_value="AMD64"):
+                executable = self.install()
+                text = launcher.read_text()
+                self.assertEqual(executable.name, "hexbot.exe")
+                self.assertIn("native-executable.exe", text)
+                self.assertIn(f'set "HEXBOT_HOME={self.home}"', text)
+                self.assertTrue((self.home / "runtime/native-executable.exe").is_symlink())
+                self.assertEqual((self.home / "runtime/native-executable.exe").resolve(), executable)
+                with patch.object(transition.platform, "machine", return_value="ARM64"):
+                    with self.assertRaisesRegex(ValueError, "Unsupported"):
+                        self.install()
+                self.manifest["format"] = "tar.gz"
+                self.manifest["entrypoint"] = "hexbot"
+                with self.assertRaisesRegex(ValueError, "does not match"):
                     self.install()
-        self.manifest["target"] = "linux-x86_64"
+        finally:
+            self.manifest.clear()
+            self.manifest.update(saved[0])
+            self.archive = saved[1]
         self.assertTrue(str(self.install()).endswith("hexbot"))
         self.assertTrue((self.home / "runtime/native-executable").is_symlink())
 

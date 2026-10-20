@@ -59,7 +59,7 @@ fn lock_file(file: &File, immediate: bool) -> io::Result<()> {
     use std::os::windows::io::AsRawHandle;
     use windows_sys::Win32::Foundation::ERROR_LOCK_VIOLATION;
     use windows_sys::Win32::Storage::FileSystem::{
-        LockFileEx, LOCKFILE_EXCLUSIVE_LOCK, LOCKFILE_FAIL_IMMEDIATELY,
+        LOCKFILE_EXCLUSIVE_LOCK, LOCKFILE_FAIL_IMMEDIATELY, LockFileEx,
     };
     use windows_sys::Win32::System::IO::OVERLAPPED;
     let mut overlapped: OVERLAPPED = unsafe { std::mem::zeroed() };
@@ -104,11 +104,14 @@ pub fn process_alive(pid: u32) -> bool {
     #[cfg(windows)]
     {
         use windows_sys::Win32::Foundation::{CloseHandle, ERROR_INVALID_PARAMETER};
-        use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
+        use windows_sys::Win32::System::Threading::{
+            OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+        };
         let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
         if handle.is_null() {
             // ERROR_INVALID_PARAMETER is a dead pid. Access denied still means it exists.
-            return io::Error::last_os_error().raw_os_error() != Some(ERROR_INVALID_PARAMETER as i32);
+            return io::Error::last_os_error().raw_os_error()
+                != Some(ERROR_INVALID_PARAMETER as i32);
         }
         unsafe { CloseHandle(handle) };
         true
@@ -126,7 +129,9 @@ pub fn terminate(pid: u32) -> bool {
     #[cfg(windows)]
     {
         use windows_sys::Win32::Foundation::CloseHandle;
-        use windows_sys::Win32::System::Threading::{OpenProcess, TerminateProcess, PROCESS_TERMINATE};
+        use windows_sys::Win32::System::Threading::{
+            OpenProcess, PROCESS_TERMINATE, TerminateProcess,
+        };
         let handle = unsafe { OpenProcess(PROCESS_TERMINATE, 0, pid) };
         if handle.is_null() {
             return false;
@@ -135,6 +140,16 @@ pub fn terminate(pid: u32) -> bool {
         unsafe { CloseHandle(handle) };
         ok != 0
     }
+}
+
+/// `gethostname` fills a fixed buffer and stops at the first NUL.
+#[cfg(any(unix, test))]
+pub(crate) fn hostname_from_bytes(bytes: &[u8]) -> Option<String> {
+    let length = bytes
+        .iter()
+        .position(|byte| *byte == 0)
+        .unwrap_or(bytes.len());
+    (length > 0).then(|| String::from_utf8_lossy(&bytes[..length]).into_owned())
 }
 
 pub fn hostname() -> Option<String> {
@@ -150,11 +165,10 @@ pub fn hostname() -> Option<String> {
     #[cfg(unix)]
     {
         let mut bytes = [0u8; 256];
-        if unsafe { libc::gethostname(bytes.as_mut_ptr().cast(), bytes.len()) } == 0 {
-            let length = bytes.iter().position(|byte| *byte == 0).unwrap_or(bytes.len());
-            if length > 0 {
-                return Some(String::from_utf8_lossy(&bytes[..length]).into_owned());
-            }
+        if unsafe { libc::gethostname(bytes.as_mut_ptr().cast(), bytes.len()) } == 0
+            && let Some(name) = hostname_from_bytes(&bytes)
+        {
+            return Some(name);
         }
     }
     std::env::var("HOSTNAME")
@@ -185,7 +199,7 @@ pub fn absent_path(error: &io::Error) -> bool {
 pub fn windows_process_count() -> Option<usize> {
     use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
     use windows_sys::Win32::System::Diagnostics::ToolHelp::{
-        CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
+        CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW,
         TH32CS_SNAPPROCESS,
     };
     let snap = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
@@ -215,5 +229,17 @@ pub fn name_too_long(error: &io::Error) -> bool {
     {
         // ERROR_FILENAME_EXCED_RANGE
         error.raw_os_error() == Some(206)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hostname_ignores_empty_results_and_stops_at_nul() {
+        assert_eq!(hostname_from_bytes(&[0; 256]), None);
+        assert_eq!(hostname_from_bytes(b"owl\0ignored"), Some("owl".into()));
+        assert_eq!(hostname_from_bytes(b"fox"), Some("fox".into()));
     }
 }

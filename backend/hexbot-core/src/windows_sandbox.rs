@@ -60,7 +60,7 @@ pub fn prepare(
             return Err(Error::new(
                 5240,
                 "Hexbot could not cap processes for the sandbox.",
-            ))
+            ));
         }
     };
     if must_cap && process_limit > 100_000 {
@@ -155,10 +155,10 @@ pub fn run_cli(args: &[String]) -> Result<()> {
     #[cfg(not(windows))]
     {
         let _ = args;
-        return Err(Error::new(
+        Err(Error::new(
             5240,
             "The Windows sandbox is only available on Windows.",
-        ));
+        ))
     }
     #[cfg(windows)]
     match apply_cli(args) {
@@ -232,7 +232,7 @@ fn apply_cli(args: &[String]) -> Result<i32> {
                 return Err(Error::new(
                     5240,
                     "The sandbox builds its own plan and does not accept a plan file.",
-                ))
+                ));
             }
             _ => return Err(Error::new(5240, "The sandbox command is not usable.")),
         }
@@ -289,10 +289,7 @@ fn launch(plan: &Plan, cwd: &Path, program: &Path, args: &[String]) -> Result<i3
         let job = job_object(plan.process_limit)?;
         let process = create_confined(program, args, cwd, &container, plan.network)?;
         let assigned = unsafe {
-            windows_sys::Win32::System::JobObjects::AssignProcessToJobObject(
-                job,
-                process.process,
-            )
+            windows_sys::Win32::System::JobObjects::AssignProcessToJobObject(job, process.process)
         };
         if assigned == 0 {
             unsafe {
@@ -519,7 +516,7 @@ fn write_container_ace(
     ignore_missing: bool,
 ) -> Result<()> {
     use windows_sys::Win32::Security::Authorization::{
-        GetNamedSecurityInfoW, SetEntriesInAclW, SetNamedSecurityInfoW, SE_FILE_OBJECT,
+        GetNamedSecurityInfoW, SE_FILE_OBJECT, SetEntriesInAclW, SetNamedSecurityInfoW,
     };
     use windows_sys::Win32::Security::{ACL, DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR};
     let wide_path = wide(path.as_os_str());
@@ -606,10 +603,10 @@ fn write_container_ace(
 #[cfg(windows)]
 fn job_object(limit: u32) -> Result<windows_sys::Win32::Foundation::HANDLE> {
     use windows_sys::Win32::System::JobObjects::{
-        CreateJobObjectW, JobObjectExtendedLimitInformation,
-        SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
-        JOB_OBJECT_LIMIT_ACTIVE_PROCESS, JOB_OBJECT_LIMIT_DIE_ON_UNHANDLED_EXCEPTION,
-        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+        CreateJobObjectW, JOB_OBJECT_LIMIT_ACTIVE_PROCESS,
+        JOB_OBJECT_LIMIT_DIE_ON_UNHANDLED_EXCEPTION, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+        JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation,
+        SetInformationJobObject,
     };
     let job = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
     if job.is_null() {
@@ -666,11 +663,11 @@ fn create_confined(
         GetStdHandle, STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE,
     };
     use windows_sys::Win32::System::Threading::{
-        CreateProcessW, DeleteProcThreadAttributeList, InitializeProcThreadAttributeList,
-        UpdateProcThreadAttribute, CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT,
-        EXTENDED_STARTUPINFO_PRESENT, PROCESS_INFORMATION,
-        PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES, STARTF_USESTDHANDLES, STARTUPINFOEXW,
-        STARTUPINFOW,
+        CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT, CreateProcessW,
+        DeleteProcThreadAttributeList, EXTENDED_STARTUPINFO_PRESENT,
+        InitializeProcThreadAttributeList, PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES,
+        PROCESS_INFORMATION, STARTF_USESTDHANDLES, STARTUPINFOEXW, STARTUPINFOW,
+        UpdateProcThreadAttribute,
     };
     let mut size = 0usize;
     unsafe { InitializeProcThreadAttributeList(std::ptr::null_mut(), 1, 0, &mut size) };
@@ -804,7 +801,7 @@ mod tests {
             false,
             Some(600),
             true,
-            &[workspace.clone()],
+            std::slice::from_ref(&workspace),
             &[workspace.clone(), PathBuf::from("/usr/bin")],
             &[secret.clone(), PathBuf::from("/home/me/.aws")],
             false,
@@ -812,13 +809,25 @@ mod tests {
         .unwrap();
         assert!(!plan.network);
         assert_eq!(plan.process_limit, 600);
-        assert!(plan
-            .allow
-            .iter()
-            .any(|grant| grant.path == workspace && grant.write));
+        assert!(
+            plan.allow
+                .iter()
+                .any(|grant| grant.path == workspace && grant.write)
+        );
         assert!(!plan.allow.iter().any(|grant| grant.path == secret));
         assert!(plan.deny.iter().any(|path| path == &secret));
-        assert!(prepare(false, None, true, &[workspace.clone()], &[], &[], false).is_err());
+        assert!(
+            prepare(
+                false,
+                None,
+                true,
+                std::slice::from_ref(&workspace),
+                &[],
+                &[],
+                false
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -829,9 +838,9 @@ mod tests {
             false,
             Some(10),
             true,
-            &[workspace.clone()],
+            std::slice::from_ref(&workspace),
             &[],
-            &[env.clone()],
+            std::slice::from_ref(&env),
             true,
         )
         .unwrap();
@@ -848,20 +857,31 @@ mod tests {
     #[test]
     fn full_access_may_skip_the_process_cap_and_still_needs_a_directory() {
         let home = PathBuf::from("/Users/me");
-        let plan = prepare(true, None, false, &[home.clone()], &[], &[], false).unwrap();
+        let plan = prepare(
+            true,
+            None,
+            false,
+            std::slice::from_ref(&home),
+            &[],
+            &[],
+            false,
+        )
+        .unwrap();
         assert!(plan.network);
         assert_eq!(plan.process_limit, 0);
         assert!(prepare(true, None, false, &[], &[], &[], false).is_err());
-        assert!(prepare(
-            false,
-            Some(1),
-            true,
-            &[PathBuf::from("relative")],
-            &[],
-            &[],
-            false
-        )
-        .is_err());
+        assert!(
+            prepare(
+                false,
+                Some(1),
+                true,
+                &[PathBuf::from("relative")],
+                &[],
+                &[],
+                false
+            )
+            .is_err()
+        );
     }
 
     #[test]

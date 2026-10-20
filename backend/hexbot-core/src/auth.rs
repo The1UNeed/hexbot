@@ -113,10 +113,6 @@ fn mint(
         json!({"device_token": token, "device_id": id, "owner_id":owner, "daemon_name":daemon_name()}),
     )
 }
-fn hostname(bytes: &[u8]) -> Option<String> {
-    let length = bytes.iter().position(|b| *b == 0).unwrap_or(bytes.len());
-    (length > 0).then(|| String::from_utf8_lossy(&bytes[..length]).into_owned())
-}
 pub fn daemon_name() -> String {
     crate::osutil::hostname().unwrap_or_else(|| "Hexbot".into())
 }
@@ -363,10 +359,7 @@ pub fn call(home: &Path, caller: &str, method: &str, p: &Value) -> Option<Result
 mod hostname_tests {
     use super::*;
     #[test]
-    fn hostname_ignores_empty_results_and_stops_at_nul() {
-        assert_eq!(hostname(&[0; 256]), None);
-        assert_eq!(hostname(b"owl\0ignored"), Some("owl".into()));
-        assert_eq!(hostname(b"fox"), Some("fox".into()));
+    fn daemon_name_is_never_empty() {
         assert!(!daemon_name().is_empty());
     }
 }

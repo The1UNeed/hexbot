@@ -1623,27 +1623,27 @@ fn process_limit() -> Option<usize> {
     }
     #[cfg(unix)]
     {
-    // SAFETY: getuid has no preconditions and cannot fail.
-    let uid = unsafe { libc::getuid() };
-    // Linux charges the limit per thread, macOS per process.
-    let threads: &[&str] = if cfg!(target_os = "linux") {
-        &["-L"]
-    } else {
-        &[]
-    };
-    let listed = std::process::Command::new("ps")
-        .args(threads)
-        .args(["-U", &uid.to_string(), "-o", "pid="])
-        .output()
-        .ok()
-        .filter(|o| o.status.success())?;
-    Some(
-        String::from_utf8_lossy(&listed.stdout)
-            .lines()
-            .filter(|l| !l.trim().is_empty())
-            .count()
-            + PROCESS_HEADROOM,
-    )
+        // SAFETY: getuid has no preconditions and cannot fail.
+        let uid = unsafe { libc::getuid() };
+        // Linux charges the limit per thread, macOS per process.
+        let threads: &[&str] = if cfg!(target_os = "linux") {
+            &["-L"]
+        } else {
+            &[]
+        };
+        let listed = std::process::Command::new("ps")
+            .args(threads)
+            .args(["-U", &uid.to_string(), "-o", "pid="])
+            .output()
+            .ok()
+            .filter(|o| o.status.success())?;
+        Some(
+            String::from_utf8_lossy(&listed.stdout)
+                .lines()
+                .filter(|l| !l.trim().is_empty())
+                .count()
+                + PROCESS_HEADROOM,
+        )
     }
 }
 /// Which sandbox a program gets on top of the base layer.
@@ -1740,15 +1740,13 @@ pub(crate) fn isolated_command_with_outputs(
     #[cfg(not(any(unix, windows)))]
     {
         let _ = (home, program, confine, layout);
-        Err(Error::new(
-            5240,
-            "Hexbot could not create the sandbox.",
-        ))
+        Err(Error::new(5240, "Hexbot could not create the sandbox."))
     }
 }
 
 /// The plan the Windows helper applies. The helper rebuilds it from the home
 /// and the writable roots, so a plan file on disk cannot widen the sandbox.
+#[cfg(any(windows, test))]
 pub(crate) fn confinement_plan(
     home: &Path,
     confine: Confine,
@@ -1810,8 +1808,14 @@ pub(crate) fn confinement_plan(
 }
 
 #[cfg(windows)]
-fn windows_launch(home: &Path, program: &str, confine: Confine, layout: &Layout) -> Result<tokio::process::Command> {
-    let executable = std::env::current_exe().map_err(|error| Error::new(5240, error.to_string()))?;
+fn windows_launch(
+    home: &Path,
+    program: &str,
+    confine: Confine,
+    layout: &Layout,
+) -> Result<tokio::process::Command> {
+    let executable =
+        std::env::current_exe().map_err(|error| Error::new(5240, error.to_string()))?;
     let mode = match confine {
         Confine::No => "base",
         Confine::Workspace => "workspace",
@@ -2008,10 +2012,15 @@ mod tests {
         std::fs::create_dir_all(&work).unwrap();
         let secret = home.join("connect.json");
         std::fs::write(&secret, "secret").unwrap();
-        let plan = confinement_plan(&home, Confine::Workspace, &[work.clone()]).unwrap();
+        let plan =
+            confinement_plan(&home, Confine::Workspace, std::slice::from_ref(&work)).unwrap();
         assert!(!plan.network);
         assert!(plan.process_limit > 0);
-        assert!(plan.allow.iter().any(|grant| grant.write && grant.path == work.canonicalize().unwrap()));
+        assert!(
+            plan.allow
+                .iter()
+                .any(|grant| grant.write && grant.path == work.canonicalize().unwrap())
+        );
         assert!(plan.deny.iter().any(|path| path == &secret));
         assert!(!plan.allow.iter().any(|grant| grant.path == secret));
         let open = confinement_plan(&home, Confine::No, &[]).unwrap();

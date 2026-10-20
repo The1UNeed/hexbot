@@ -2,16 +2,16 @@ use crate::{
     Installer, Progress, ProgressCallback, Result, check_output, fail, install_ownership,
     remove_path,
 };
+#[cfg(unix)]
+use std::os::fd::AsRawFd;
+#[cfg(unix)]
+use std::os::unix::fs::MetadataExt;
 use std::{
     fs,
     io::ErrorKind,
     path::{Path, PathBuf},
     time::{Duration, Instant},
 };
-#[cfg(unix)]
-use std::os::fd::AsRawFd;
-#[cfg(unix)]
-use std::os::unix::fs::MetadataExt;
 
 const STOP: &str = "Stop the Hexbot daemon, then run the installer again.";
 
@@ -61,42 +61,42 @@ pub(crate) fn appimage_running(proc: &Path, app: &Path) -> Result<bool> {
     }
     #[cfg(unix)]
     {
-    let entries = match fs::read_dir(proc) {
-        Ok(entries) => entries,
-        Err(e) if e.kind() == ErrorKind::NotFound => return Ok(false),
-        Err(e) => return Err(e.into()),
-    };
-    let app = app.canonicalize().unwrap_or_else(|_| app.to_owned());
-    for entry in entries {
-        let entry = entry?;
-        if entry.file_name().to_string_lossy().parse::<u32>().is_err() {
-            continue;
-        }
-        let Ok(meta) = entry.metadata() else {
-            continue;
+        let entries = match fs::read_dir(proc) {
+            Ok(entries) => entries,
+            Err(e) if e.kind() == ErrorKind::NotFound => return Ok(false),
+            Err(e) => return Err(e.into()),
         };
-        if meta.uid() != unsafe { libc::getuid() } {
-            continue;
-        }
-        let bytes = match fs::read(entry.path().join("environ")) {
-            Ok(bytes) => bytes,
-            // Linux hides the environment of non-dumpable processes (keyrings,
-            // setuid helpers, other namespaces) and of processes that just
-            // exited. A running AppImage is an ordinary, readable process.
-            Err(_) => continue,
-        };
-        for value in bytes
-            .split(|b| *b == 0)
-            .filter_map(|v| v.strip_prefix(b"APPIMAGE="))
-        {
-            use std::os::unix::ffi::OsStrExt;
-            let path = Path::new(std::ffi::OsStr::from_bytes(value));
-            if path.canonicalize().unwrap_or_else(|_| path.to_owned()) == app {
-                return Ok(true);
+        let app = app.canonicalize().unwrap_or_else(|_| app.to_owned());
+        for entry in entries {
+            let entry = entry?;
+            if entry.file_name().to_string_lossy().parse::<u32>().is_err() {
+                continue;
+            }
+            let Ok(meta) = entry.metadata() else {
+                continue;
+            };
+            if meta.uid() != unsafe { libc::getuid() } {
+                continue;
+            }
+            let bytes = match fs::read(entry.path().join("environ")) {
+                Ok(bytes) => bytes,
+                // Linux hides the environment of non-dumpable processes (keyrings,
+                // setuid helpers, other namespaces) and of processes that just
+                // exited. A running AppImage is an ordinary, readable process.
+                Err(_) => continue,
+            };
+            for value in bytes
+                .split(|b| *b == 0)
+                .filter_map(|v| v.strip_prefix(b"APPIMAGE="))
+            {
+                use std::os::unix::ffi::OsStrExt;
+                let path = Path::new(std::ffi::OsStr::from_bytes(value));
+                if path.canonicalize().unwrap_or_else(|_| path.to_owned()) == app {
+                    return Ok(true);
+                }
             }
         }
-    }
-    Ok(false)
+        Ok(false)
     }
 }
 
@@ -372,7 +372,10 @@ impl Installer {
             Err(e) if e.kind() == ErrorKind::NotFound => None,
             Err(e) => return Err(e.into()),
         };
-        let try_lock = || lock.as_ref().is_none_or(|file| try_lock(file, false).is_ok());
+        let try_lock = || {
+            lock.as_ref()
+                .is_none_or(|file| try_lock(file, false).is_ok())
+        };
         // A free lock means any running record is stale, even if its PID was reused.
         if try_lock() {
             return Ok(lock);

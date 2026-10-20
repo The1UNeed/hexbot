@@ -1651,22 +1651,23 @@ fn inherited_activation_lock(file: &fs::File, fd: Option<i32>) -> Option<fs::Fil
     }
     #[cfg(unix)]
     {
-    use std::os::fd::{AsRawFd, FromRawFd};
-    use std::os::unix::fs::MetadataExt;
-    let fd = fd.filter(|fd| *fd > 2)?;
-    // A private copy that processes setup starts do not inherit.
-    let copy = unsafe { libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, 3) };
-    if copy < 0 {
-        return None;
-    }
-    let copy = unsafe { fs::File::from_raw_fd(copy) };
-    let (inherited, ours) = (copy.metadata().ok()?, file.metadata().ok()?);
-    if (inherited.dev(), inherited.ino()) != (ours.dev(), ours.ino()) {
-        return None;
-    }
-    unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) };
-    // Immediate when the inherited file holds the lock; refused while anyone else does.
-    (unsafe { libc::flock(copy.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0).then_some(copy)
+        use std::os::fd::{AsRawFd, FromRawFd};
+        use std::os::unix::fs::MetadataExt;
+        let fd = fd.filter(|fd| *fd > 2)?;
+        // A private copy that processes setup starts do not inherit.
+        let copy = unsafe { libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, 3) };
+        if copy < 0 {
+            return None;
+        }
+        let copy = unsafe { fs::File::from_raw_fd(copy) };
+        let (inherited, ours) = (copy.metadata().ok()?, file.metadata().ok()?);
+        if (inherited.dev(), inherited.ino()) != (ours.dev(), ours.ino()) {
+            return None;
+        }
+        unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) };
+        // Immediate when the inherited file holds the lock; refused while anyone else does.
+        (unsafe { libc::flock(copy.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0)
+            .then_some(copy)
     }
 }
 

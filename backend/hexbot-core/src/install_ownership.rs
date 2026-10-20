@@ -32,7 +32,10 @@ pub fn resolved(path: &Path) -> io::Result<PathBuf> {
 }
 
 pub fn wrapper_home(text: &str) -> Option<PathBuf> {
-    if text.lines().any(|line| line.trim_end_matches('\r') == "rem HEXBOT_CLI") {
+    if text
+        .lines()
+        .any(|line| line.trim_end_matches('\r') == "rem HEXBOT_CLI")
+    {
         let mut homes = text.lines().filter_map(|line| {
             line.trim_end_matches('\r')
                 .strip_prefix("set \"HEXBOT_HOME=")?
@@ -169,7 +172,10 @@ pub fn check_service(path: &Path, home: &Path, macos: bool) -> io::Result<()> {
 }
 
 fn windows_service_command(text: &str) -> Option<(String, String)> {
-    let lines: Vec<&str> = text.split('\n').map(|line| line.trim_end_matches('\r')).collect();
+    let lines: Vec<&str> = text
+        .split('\n')
+        .map(|line| line.trim_end_matches('\r'))
+        .collect();
     if lines.len() != 7 || !lines[6].is_empty() {
         return None;
     }

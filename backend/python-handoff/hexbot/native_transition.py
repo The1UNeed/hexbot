@@ -66,8 +66,10 @@ def _runtime_target() -> str:
 
 
 def _expected_archive(system: str) -> set[tuple[str, str]]:
+    # A Windows runtime is a zip whose entrypoint is the PE image. A tar archive
+    # named hexbot is the Unix layout and must not activate on Windows.
     if system == "Windows":
-        return {("zip", "hexbot.exe"), ("tar.gz", "hexbot")}
+        return {("zip", "hexbot.exe")}
     return {("tar.gz", "hexbot")}
 
 
@@ -123,6 +125,9 @@ def _extract_zip(archive: Path, destination: Path) -> None:
             target.parent.mkdir(parents=True, exist_ok=True)
             with bundle.open(info) as source, target.open("xb") as output:
                 shutil.copyfileobj(source, output)
+            # Match the tar extractor: keep the unix mode, and never the setuid bit.
+            # A zip written on Windows often has no unix mode; leave it non-executable.
+            target.chmod((mode & 0o777) or 0o644)
 
 
 def _atomic(path: Path, content: str, mode: int = 0o600) -> None:

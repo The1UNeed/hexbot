@@ -467,20 +467,20 @@ fn shutdown_signal() -> impl std::future::Future<Output = ()> {
     }
     #[cfg(unix)]
     {
-    use tokio::signal::unix::{SignalKind, signal};
-    let term = signal(SignalKind::terminate()).ok();
-    let interrupt = signal(SignalKind::interrupt()).ok();
-    async move {
-        let wait = |signal: Option<tokio::signal::unix::Signal>| async move {
-            match signal {
-                Some(mut signal) => {
-                    signal.recv().await;
+        use tokio::signal::unix::{SignalKind, signal};
+        let term = signal(SignalKind::terminate()).ok();
+        let interrupt = signal(SignalKind::interrupt()).ok();
+        async move {
+            let wait = |signal: Option<tokio::signal::unix::Signal>| async move {
+                match signal {
+                    Some(mut signal) => {
+                        signal.recv().await;
+                    }
+                    None => std::future::pending().await,
                 }
-                None => std::future::pending().await,
-            }
-        };
-        tokio::select! {_=wait(term)=>{},_=wait(interrupt)=>{}}
-    }
+            };
+            tokio::select! {_=wait(term)=>{},_=wait(interrupt)=>{}}
+        }
     }
 }
 #[tokio::main]

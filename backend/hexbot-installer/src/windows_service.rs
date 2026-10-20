@@ -147,18 +147,16 @@ pub fn check_service(path: &Path, home: &Path) -> Result<()> {
     {
         return fail("Cannot identify the owner of the Hexbot service; left it alone");
     }
-    let owner = single_set(&text, "HEXBOT_HOME").ok_or(
-        "Cannot identify the home of the existing Hexbot service; left it alone",
-    )?;
+    let owner = single_set(&text, "HEXBOT_HOME")
+        .ok_or("Cannot identify the home of the existing Hexbot service; left it alone")?;
     let expected = install_ownership::resolved(home)?;
     if install_ownership::resolved(Path::new(&owner))? != expected {
         return fail(format!(
             "The Hexbot service on this computer belongs to {owner}. Uninstall it from there first."
         ));
     }
-    let executable = service_executable(&text).ok_or(
-        "Cannot identify the executable of the existing Hexbot service",
-    )?;
+    let executable = service_executable(&text)
+        .ok_or("Cannot identify the executable of the existing Hexbot service")?;
     if !executable_belongs(Path::new(&executable), &expected)? {
         return fail("The Hexbot service executable does not belong to this home; left it alone");
     }
@@ -218,7 +216,8 @@ fn service_executable(text: &str) -> Option<String> {
     let mut values = text.lines().filter_map(|line| {
         let rest = line.strip_prefix('"')?;
         let (executable, tail) = rest.split_once('"')?;
-        (tail == " serve" && !executable.contains(['"', '\r', '\n'])).then(|| executable.to_string())
+        (tail == " serve" && !executable.contains(['"', '\r', '\n']))
+            .then(|| executable.to_string())
     });
     let value = values.next()?;
     values.next().is_none().then_some(value)
@@ -234,7 +233,7 @@ fn executable_belongs(executable: &Path, home: &Path) -> Result<bool> {
         .and_then(|parent| install_ownership::resolved(parent).ok())
         == Some(install_ownership::resolved(&runtime)?);
     if name_ok && parent_ok {
-        return Ok(stable_pointer(executable, home)?);
+        return stable_pointer(executable, home);
     }
     Ok(install_ownership::resolved(executable)
         .is_ok_and(|path| path.starts_with(home.join("runtime/native"))))

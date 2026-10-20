@@ -346,6 +346,12 @@ export const OPEN_SOURCE: OpenSourceGroup[] = [
         name: 'libc',
         packages: ['libc'],
         repository: 'https://github.com/rust-lang/libc'
+      },
+      {
+        license: 'MIT OR Apache-2.0',
+        name: 'windows-rs',
+        packages: ['windows-sys'],
+        repository: 'https://github.com/microsoft/windows-rs'
       }
     ]
   }

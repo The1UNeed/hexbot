@@ -356,12 +356,16 @@ impl Service {
             if let Err(error) = self
                 .command("schtasks", &["/Delete", "/TN", "Hexbot", "/F"])
                 .await
+                && !error
+                    .message
+                    .to_ascii_lowercase()
+                    .contains("cannot find the file")
+                && !error
+                    .message
+                    .to_ascii_lowercase()
+                    .contains("cannot find the task")
             {
-                if !error.message.to_ascii_lowercase().contains("cannot find the file")
-                    && !error.message.to_ascii_lowercase().contains("cannot find the task")
-                {
-                    return Err(error);
-                }
+                return Err(error);
             }
         } else if cfg!(target_os = "macos") {
             let _ = self.stop().await;
@@ -386,14 +390,17 @@ impl Service {
         let running = if self.no_load || !installed {
             false
         } else if cfg!(windows) {
-            self.command("schtasks", &["/Query", "/TN", "Hexbot", "/FO", "LIST", "/V"])
-                .await
-                .is_ok_and(|output| {
-                    output.lines().any(|line| {
-                        let line = line.trim();
-                        line.starts_with("Status:") && line.contains("Running")
-                    })
+            self.command(
+                "schtasks",
+                &["/Query", "/TN", "Hexbot", "/FO", "LIST", "/V"],
+            )
+            .await
+            .is_ok_and(|output| {
+                output.lines().any(|line| {
+                    let line = line.trim();
+                    line.starts_with("Status:") && line.contains("Running")
                 })
+            })
         } else if cfg!(target_os = "macos") {
             let mut running = false;
             for domain in launchd_domains() {
@@ -588,7 +595,10 @@ mod tests {
         let path = root.path().join("hexbot-service.cmd");
         fs::write(&path, script).unwrap();
         crate::install_ownership::check_service(&path, &home, false).unwrap();
-        let xml = task_xml(Path::new(r"C:\Users\me\AppData\Local\Hexbot\hexbot-service.cmd")).unwrap();
+        let xml = task_xml(Path::new(
+            r"C:\Users\me\AppData\Local\Hexbot\hexbot-service.cmd",
+        ))
+        .unwrap();
         assert!(xml.contains("LeastPrivilege"));
         assert!(xml.contains("<LogonTrigger>"));
         let bytes = utf16_le(&xml);
