@@ -38,6 +38,8 @@ export interface RoomsState {
   /** Resolves true once the daemon answered: the room loaded, or it is gone and was dropped. */
   refreshOne: (id: string) => Promise<boolean>
   remove: (id: string) => Promise<void>
+  /** Rooms and logs this device kept from the last time, drawn before the daemon answers. */
+  restore: (rooms: Room[], eventsByRoom: Record<string, RoomEvent[]>) => void
   /** Resolves true when the room was deleted because its last bot left. */
   removeMember: (id: string, bot: string) => Promise<boolean>
   update: (id: string, patch: Parameters<typeof roomsUpdate>[1]) => Promise<void>
@@ -74,6 +76,66 @@ function runningTurns(rooms: Room[]): RoomsState['liveTurnsByRoom'] {
 
 function messageSeq(events: RoomEvent[]): number {
   return events.at(-1)?.seq ?? 0
+}
+
+const LOG_PAGE = 1000
+
+/**
+ * The last seq a log holds without a gap. A room's seqs count up by one and are
+ * never removed, so a gap is events this client missed: a live event can land
+ * past those missed while it was away.
+ */
+export function syncedSeq(events: RoomEvent[]): number {
+  let seq = events[0]?.seq ?? 0
+
+  for (const event of events.slice(1)) {
+    if (event.seq !== seq + 1) {
+      break
+    }
+
+    seq = event.seq
+  }
+
+  return seq
+}
+
+/** Events the daemon sent for a log, and whether they replace what the client holds. */
+interface LogUpdate {
+  events: RoomEvent[]
+  latest: boolean
+}
+
+/**
+ * What a log is missing: the events after its synced part, or the room's latest
+ * page when it holds none or has fallen more than a page behind.
+ */
+async function fetchLog(id: string, current: RoomEvent[]): Promise<LogUpdate> {
+  const after = syncedSeq(current)
+
+  if (after) {
+    const { events } = await roomsLog(id, { after_seq: after, limit: LOG_PAGE })
+
+    if (events.length < LOG_PAGE) {
+      return { events, latest: false }
+    }
+  }
+
+  const { events } = await roomsLog(id, { before_seq: Number.MAX_SAFE_INTEGER, limit: LOG_PAGE })
+
+  return { events, latest: true }
+}
+
+/** `current` with `update` applied, in seq order; live events that came in meanwhile stay. */
+export function applyLog(current: RoomEvent[], update: LogUpdate): RoomEvent[] {
+  const first = update.events[0]?.seq ?? Number.POSITIVE_INFINITY
+  const kept = update.latest ? current.filter(event => event.seq >= first) : current
+  const bySeq = new Map(kept.map(event => [event.seq, event]))
+
+  for (const event of update.events) {
+    bySeq.set(event.seq, event)
+  }
+
+  return [...bySeq.values()].sort((a, b) => a.seq - b.seq)
 }
 
 function indexRooms(rooms: Room[]): Pick<RoomsState, 'byId' | 'order'> {
@@ -117,7 +179,11 @@ export const useRooms = create<RoomsState>((set, get) => ({
       const { rooms } = await roomsList(true)
       const listed = rooms ?? []
       const active = listed.filter(room => !room.archived_at)
-      const logs = await Promise.all(active.map(room => roomsLog(room.id, { limit: 1000 })))
+
+      const logs = await Promise.all(
+        active.map(room => fetchLog(room.id, get().eventsByRoom[room.id] ?? []))
+      )
+
       // Turn events are not replayed, so whatever ended while this client was
       // away would stay "working"; the daemon's running turns replace them,
       // except in rooms whose turns changed after the list was read.
@@ -153,14 +219,17 @@ export const useRooms = create<RoomsState>((set, get) => ({
         }
       }
 
-      set({
+      set(state => ({
         ...indexRooms(listed),
         eventsByRoom: Object.fromEntries(
-          active.map((room, index) => [room.id, logs[index]?.events ?? []])
+          active.map((room, index) => [
+            room.id,
+            applyLog(state.eventsByRoom[room.id] ?? [], logs[index]!)
+          ])
         ),
         liveTurnsByRoom,
         loading: false
-      })
+      }))
     } catch (error) {
       set({ error: error instanceof Error ? error.message : String(error), loading: false })
     }
@@ -186,10 +255,10 @@ export const useRooms = create<RoomsState>((set, get) => ({
   },
 
   async open(id) {
-    let loaded: [{ room: Room }, { events: RoomEvent[] }]
+    let loaded: [{ room: Room }, LogUpdate]
 
     try {
-      loaded = await Promise.all([roomsGet(id), roomsLog(id, { limit: 1000 })])
+      loaded = await Promise.all([roomsGet(id), fetchLog(id, get().eventsByRoom[id] ?? [])])
     } catch (error) {
       if (!roomGone(error)) {
         throw error
@@ -200,13 +269,12 @@ export const useRooms = create<RoomsState>((set, get) => ({
       return
     }
 
-    const [{ room }, { events }] = loaded
-    const ordered = [...events].sort((a, b) => a.seq - b.seq)
+    const [{ room }, update] = loaded
     set(state => ({
       ...mergeRoom(state, room),
-      eventsByRoom: { ...state.eventsByRoom, [id]: ordered }
+      eventsByRoom: { ...state.eventsByRoom, [id]: applyLog(state.eventsByRoom[id] ?? [], update) }
     }))
-    const seq = messageSeq(ordered)
+    const seq = messageSeq(get().eventsByRoom[id] ?? [])
 
     if (seq) {
       await get().markRead(id, seq)
@@ -253,6 +321,10 @@ export const useRooms = create<RoomsState>((set, get) => ({
 
   drop(id) {
     set(state => dropRoom(state, id))
+  },
+
+  restore(rooms, eventsByRoom) {
+    set({ ...indexRooms(rooms), eventsByRoom })
   },
 
   async update(id, patch) {

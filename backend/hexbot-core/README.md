@@ -116,7 +116,11 @@ it also installs over SSH when nobody is signed in at the screen.
   replaying an already recorded message does not duplicate it or its cost.
   `native_history_versions` counts, by trigger, every change to a session's
   displayed history: a message row, or the journal link that orders it or
-  hides it on another branch. History search (`session_search`) keeps an
+  hides it on another branch. `native_history_rewrites` counts, the same
+  way, only the changes that are not appends: an edited, deleted, or
+  reordered row, or a link that hides or reveals one. `hexbot.sections.open`
+  puts it in its `history_cursor`, so a client gets only the rows after its
+  cursor until the count moves. History search (`session_search`) keeps an
   in-memory FTS5 index per bot, owner, and role filter, shared by every
   section of the bot. Refresh skips the asking section until another section
   searches. For a full-text query, a savepoint temporarily deletes the asking

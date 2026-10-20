@@ -8,6 +8,8 @@ export type UpdateChannel = 'stable' | 'nightly'
 export interface DesktopState {
   crashReports?: boolean
   height?: number
+  /** The first close on Windows or Linux said the app keeps running in the tray. */
+  trayExplained?: boolean
   updateChannel?: UpdateChannel
   width?: number
   x?: number

@@ -164,9 +164,9 @@ more freedom and more capability than a hosted product can offer.
   in, gives its wake-ups back, and the next check-in waits 15 minutes from
   when it ended. One schedule decides both when the tick runs a check-in and
   what the Check-ins tab shows as the next one.
-- On macOS the app keeps its page when its window closes, whether the daemon
-  runs there or elsewhere, so its notifications keep coming. On Linux closing
-  the window quits the app; phone pushes still arrive.
+- The app keeps its page when its window closes, on every platform and
+  whether the daemon runs there or elsewhere, so its notifications keep
+  coming. It stays in the tray or menu bar until you quit it there.
   Settings, the bot's Check-ins tab, and `hexbot checkins` manage it.
 
 ### Approvals and tools

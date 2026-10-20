@@ -42,6 +42,7 @@ import {
   liveSectionsOf,
   sectionsActions,
   sectionStatusOf,
+  useCachedMessages,
   useLiveSessionId,
   useSection,
   useSections
@@ -947,6 +948,8 @@ function BotConversation() {
   const section = useSection(params.section ?? null)
   const liveId = useLiveSessionId(params.section ?? null)
   const transcript = useTranscript(liveId)
+  // What this device kept of the section, until the daemon opens it.
+  const cached = useCachedMessages(params.section ?? null)
   const [editing, setEditing] = useState(false)
 
   // Connector tools are named from the bot's catalog ("Connecting to Project tools").
@@ -984,7 +987,11 @@ function BotConversation() {
     }
   }
 
-  const messages = useMemo(() => transcript?.messages ?? [], [transcript?.messages])
+  const messages = useMemo(
+    () => transcript?.messages ?? cached ?? [],
+    [cached, transcript?.messages]
+  )
+
   const approvals = useMemo(() => transcript?.approvals ?? [], [transcript?.approvals])
   const clarifies = useMemo(() => transcript?.clarifies ?? [], [transcript?.clarifies])
   const streaming = Boolean(transcript?.streamingMessageId)
@@ -1239,7 +1246,7 @@ function BotConversation() {
             </div>
           </div>
         ) : (
-          <div className={cn(transcriptClass, 'hex-fade')} key={liveId ?? params.section}>
+          <div className={cn(transcriptClass, 'hex-fade')} key={params.section}>
             {messages.length > visible ? (
               <button
                 className="hex-focus mx-auto mb-3 block rounded-full px-3 py-1 text-[length:var(--text-secondary)] text-muted transition-colors duration-[var(--hex-motion-fast)] hover:bg-surface-2 hover:text-foreground"

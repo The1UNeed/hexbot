@@ -8,6 +8,10 @@
  *   3. Wait for `gateway.ready`; keep its `replay_epoch`.
  *   4. Call `hexbot.info`, `hexbot.settings.get`, `hexbot.bots.list`.
  *
+ * Before step 1 the stores are filled from what this device kept of the
+ * target (`roster-cache.ts`), so the app draws at once; step 4 then checks it
+ * belongs to this daemon and brings it up to date.
+ *
  * Reconnect backs off 1 s → 16 s forever and resets after 30 s of stable
  * connection. A 401 on the ws-ticket means the device was revoked: the target
  * is cleared and the connect screen takes over.
@@ -26,15 +30,17 @@ import { useCheckins } from '../stores/checkins'
 import { connectionActions } from '../stores/connection'
 import { useMe } from '../stores/me'
 import { useRooms } from '../stores/rooms'
-import { sectionsActions } from '../stores/sections'
+import { sectionsActions, useSections } from '../stores/sections'
 import { settingsActions } from '../stores/settings'
 import { uiActions } from '../stores/ui'
 
 import { getBridge, type HexbotBridge } from './bridge'
 import { DaemonIdentityError, DaemonUnreachableError } from './daemon-identity'
+import { cacheScope } from './device-cache'
 import { proofHeaders } from './dpop'
 import { attachEventRouting } from './events'
 import { DEFAULT_DAEMON_PORT } from './pair-link'
+import { adoptDaemon, restoreRoster, stopRosterWrites } from './roster-cache'
 import { HexbotRpcClient, setActiveRpc } from './rpc'
 import type { ConnectionTarget, DaemonInfo } from './types'
 
@@ -353,6 +359,8 @@ export class ConnectionSupervisor {
   private stopped = true
   private target: ConnectionTarget | null = null
   private starting: Promise<void> | null = null
+  /** The cached roster drawn for this target; hydrating reconciles it, so waits for it. */
+  private restored: Promise<void> = Promise.resolve()
 
   constructor(private readonly deps: ConnectionDeps = {}) {}
 
@@ -375,6 +383,8 @@ export class ConnectionSupervisor {
     this.connectedAt = 0
     this.target = target
 
+    stopRosterWrites()
+    this.restored = restoreRoster(cacheScope(target)).catch(() => undefined)
     this.starting = this.attemptConnect()
 
     return this.starting
@@ -537,6 +547,7 @@ export class ConnectionSupervisor {
 
   private async hydrate(): Promise<void> {
     const store = connectionActions()
+    await this.restored
 
     try {
       const [info] = await Promise.all([
@@ -545,11 +556,16 @@ export class ConnectionSupervisor {
         botsActions().refresh(),
         useRooms.getState().refresh(),
         useMe.getState().refresh(),
+        // Sections kept from the last time, or listed before a disconnect, may have changed.
+        Object.keys(useSections.getState().byId).length
+          ? sectionsActions().refresh()
+          : Promise.resolve(),
         // An open Check-ins tab missed the events while disconnected.
         useCheckins.getState().loaded ? useCheckins.getState().refresh() : Promise.resolve()
       ])
 
       store.setDaemon(info)
+      await adoptDaemon(cacheScope(this.target), info?.install_id)
 
       // A section remembered from another daemon must not be reopened here.
       const last = uiActions().lastSection

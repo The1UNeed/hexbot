@@ -249,11 +249,17 @@ roster shows only the title.
   row shows `New section` until then.
 - `hexbot.sections.thread {bot, peer}` → `{section: Section | null}`: the
   caller's thread on `bot` whose sender is `peer`. It never creates one.
-- `hexbot.sections.open {id}` → `{section: Section, messages: [Message],
-  context: Context, pending_clarify?}` (resumes the stored session on the
-  bot's profile; idempotent if live). If the bot is waiting on an approval,
-  the daemon sends its `approval.request` event again so a reloaded client
-  gets the card back; clients dedupe on `request_id`.
+- `hexbot.sections.open {id, history_cursor?}` → `{section: Section,
+  messages: [Message], history_cursor, history_delta, context: Context,
+  pending_clarify?}` (resumes the stored session on the bot's profile;
+  idempotent if live). If the bot is waiting on an approval, the daemon sends
+  its `approval.request` event again so a reloaded client gets the card back;
+  clients dedupe on `request_id`. A client that keeps history sends back the
+  opaque `history_cursor` of its last open. While no row up to that cursor has
+  changed since, `history_delta` is true and `messages` holds only the rows
+  after it, possibly none. After a rewrite (an edited, deleted or reordered
+  row, or a switch to another branch), or with a cursor the daemon cannot use,
+  `history_delta` is false and `messages` is the whole history.
 
 `Context = {tokens, window, compact_at, compacting, recounting, seq}` is how
 full the section's context is: Pi's own estimate of the tokens the next

@@ -1762,7 +1762,13 @@ impl Runtime {
             } else {
                 self.open_session(caller, &bot, stored).await?
             };
-            let messages = store::history(&self.home, stored)?;
+            // A client that kept this section's history sends its cursor and gets only what is new.
+            let cursor = if method == "hexbot.sections.open" {
+                p["history_cursor"].as_str()
+            } else {
+                None
+            };
+            let (messages, cursor, delta) = store::history_since(&self.home, stored, cursor)?;
             let summary = store::summary(&self.home, stored)?;
             section["live_session_id"] = json!(s.id);
             section["preview"] =
@@ -1787,7 +1793,7 @@ impl Runtime {
                 .await?;
                 return Ok(json!({"section":section,"submitted":true}));
             }
-            let mut result = json!({"section":section,"messages":messages});
+            let mut result = json!({"section":section,"messages":messages,"history_cursor":cursor,"history_delta":delta});
             let seq = self.next_usage_seq();
             result["context"] = Self::context_usage(&s, false, seq).await;
             s.usage_sent.fetch_max(seq, Ordering::AcqRel);

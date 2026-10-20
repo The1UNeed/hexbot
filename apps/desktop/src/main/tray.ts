@@ -57,5 +57,7 @@ export function createTray(manager: DaemonManager, openWindow: () => void): Tray
   rebuild(manager.status())
   manager.on('status', rebuild)
   tray.on('double-click', openWindow)
+  // On Windows and Linux a click opens the app; on macOS it opens the menu.
+  if (process.platform !== 'darwin') tray.on('click', openWindow)
   return tray
 }

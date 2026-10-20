@@ -52,6 +52,30 @@ The RPC client is `@hermes/shared`'s `JsonRpcGatewayClient` wrapped in
 `src/lib/events.ts` routes them by `params.session_id` to the transcript
 store and by `params.type` for global events (`hexbot.*.changed`).
 
+## Device cache
+
+`src/lib/device-cache.ts` keeps, per connection target, what the app needs
+to draw before the daemon answers: the roster (bots, sections, rooms, you),
+room logs, and the raw history rows of the 50 most recently opened sections
+with their `history_cursor`. It lives in IndexedDB, so the Electron app and
+browsers both have it; without IndexedDB everything is fetched as before.
+
+- On `start(target)` the supervisor draws the cached roster into empty
+  stores (`roster-cache.ts`) while it connects. After `hexbot.info` it checks
+  the cache's `install_id`; another daemon at the same address clears it.
+  Only then are store changes written back.
+- Opening a section shows its cached history at once, sends the cursor, and
+  appends the rows the daemon returns, or replaces them when `history_delta`
+  is false.
+- A room log fetches `after_seq` from the end of its gapless part, so a live
+  event that arrived past missed ones does not hide them. With nothing cached,
+  or more than a page missing, it loads the latest page (`before_seq`).
+- Bot statuses are not cached: what a bot is doing is the daemon's to say.
+
+The app keeps its page when the window closes, on every platform, with
+background throttling off, so a hidden window stays connected and keeps the
+cache current. Quit from the tray or menu ends it.
+
 ## Stores (zustand)
 
 - `connection`: target, status (`idle | connecting | connected |

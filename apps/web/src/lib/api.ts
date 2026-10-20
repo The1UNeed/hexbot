@@ -322,7 +322,7 @@ export function roomsSend(
 
 export function roomsLog(
   id: string,
-  options: { after_seq?: number; limit?: number } = {}
+  options: { after_seq?: number; before_seq?: number; limit?: number } = {}
 ): Promise<{ events: RoomEvent[] }> {
   return rpcCall<{ events: RoomEvent[] }>('hexbot.rooms.log', { id, ...options })
 }
@@ -432,14 +432,21 @@ export function sectionsCreate(bot: string, title?: string): Promise<{ section: 
 export interface SectionOpened {
   /** How full the section's context is; see `ContextUsage`. */
   context?: ContextUsage
+  /** Send it back as `historyCursor` to get only what comes after. Absent on older daemons. */
+  history_cursor?: string
+  /** True when `messages` are only the rows after the cursor sent; else they are the whole history. */
+  history_delta?: boolean
   messages: HistoryRow[]
   /** A clarify question the bot is still waiting on (same shape as the event, plus locked answers). */
   pending_clarify?: ClarifyRequestPayload & { answers?: Record<string, string> }
   section: Section
 }
 
-export function sectionsOpen(id: string): Promise<SectionOpened> {
-  return rpcCall<SectionOpened>('hexbot.sections.open', { id })
+export function sectionsOpen(id: string, historyCursor?: string): Promise<SectionOpened> {
+  return rpcCall<SectionOpened>(
+    'hexbot.sections.open',
+    historyCursor ? { history_cursor: historyCursor, id } : { id }
+  )
 }
 
 export function sectionsRename(id: string, title: string): Promise<{ section: Section }> {

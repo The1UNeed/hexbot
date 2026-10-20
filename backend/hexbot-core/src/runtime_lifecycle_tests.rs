@@ -5370,3 +5370,87 @@ async fn notes_are_written_by_sections_and_proposed_by_jobs() {
     );
     runtime.shutdown().await;
 }
+
+/// A client that kept a section's history sends `history_cursor` and gets only the
+/// rows appended since; after any rewrite, or with a cursor it cannot use, it gets
+/// the whole history again.
+#[tokio::test]
+async fn sections_open_sends_only_new_history_after_a_cursor() {
+    let (home, runtime, _) = setup();
+    let open = |cursor: Option<&str>| {
+        let mut params = json!({"id":"first"});
+        if let Some(cursor) = cursor {
+            params["history_cursor"] = json!(cursor);
+        }
+        let runtime = runtime.clone();
+        async move {
+            runtime
+                .call("alice", "hexbot.sections.open", &params)
+                .await
+                .unwrap()
+                .unwrap()
+        }
+    };
+    let texts = |opened: &Value| {
+        opened["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|m| m["text"].as_str().unwrap().to_owned())
+            .collect::<Vec<_>>()
+    };
+    for text in ["one", "two"] {
+        store::append(home.path(), "first", json!({"role":"user","text":text})).unwrap();
+    }
+    let first = open(None).await;
+    assert_eq!(first["history_delta"], false);
+    assert_eq!(texts(&first), ["one", "two"]);
+    let cursor = first["history_cursor"].as_str().unwrap().to_owned();
+
+    let same = open(Some(&cursor)).await;
+    assert_eq!(same["history_delta"], true);
+    assert!(texts(&same).is_empty());
+    assert_eq!(same["history_cursor"], cursor.as_str());
+
+    store::append(home.path(), "first", json!({"role":"user","text":"three"})).unwrap();
+    let appended = open(Some(&cursor)).await;
+    assert_eq!(appended["history_delta"], true);
+    assert_eq!(texts(&appended), ["three"]);
+    let cursor = appended["history_cursor"].as_str().unwrap().to_owned();
+
+    // An edited row the client already holds: everything again.
+    store::open(home.path())
+        .unwrap()
+        .execute(
+            "UPDATE native_messages SET message_json=json_set(message_json,'$.text','uno') WHERE session_id='first' AND seq=1",
+            [],
+        )
+        .unwrap();
+    let rewritten = open(Some(&cursor)).await;
+    assert_eq!(rewritten["history_delta"], false);
+    assert_eq!(texts(&rewritten), ["uno", "two", "three"]);
+    let cursor = rewritten["history_cursor"].as_str().unwrap().to_owned();
+
+    // A branch switch hides a row the client holds.
+    let conn = store::open(home.path()).unwrap();
+    conn.execute(
+        "INSERT INTO native_pi_journal(journal_id,session_id,raw_json,entry_id,projection_seq) VALUES('j2','first','{}','e2',2)",
+        [],
+    )
+    .unwrap();
+    assert_eq!(open(Some(&cursor)).await["history_delta"], true);
+    conn.execute(
+        "UPDATE native_pi_journal SET active=0 WHERE journal_id='j2'",
+        [],
+    )
+    .unwrap();
+    let switched = open(Some(&cursor)).await;
+    assert_eq!(switched["history_delta"], false);
+    assert_eq!(texts(&switched), ["uno", "three"]);
+
+    for stale in ["garbage", "0:99", "-1:1"] {
+        let full = open(Some(stale)).await;
+        assert_eq!(full["history_delta"], false, "{stale}");
+        assert_eq!(texts(&full), ["uno", "three"]);
+    }
+}

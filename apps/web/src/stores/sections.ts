@@ -1,7 +1,9 @@
 /**
  * Sections (= conversations = threads), keyed by id and grouped per bot.
  * Refreshed on `hexbot.sections.changed`. `liveSessionId` maps an open
- * section to the Hexbot live session its events arrive on.
+ * section to the Hexbot live session its events arrive on. Opening a section
+ * shows the history this device kept of it at once, and asks the daemon only
+ * for what came after (`lib/device-cache.ts`).
  */
 
 import { create } from 'zustand'
@@ -18,7 +20,14 @@ import {
   sectionsRename,
   sectionsUnarchive
 } from '../lib/api'
+import type { HistoryRow } from '../lib/api'
 import { KICKOFF_MARKER } from '../lib/bot-kickoff'
+import {
+  activeCacheScope,
+  cachedHistory,
+  forgetHistory,
+  rememberHistory
+} from '../lib/device-cache'
 import type { Bot, BotStatus, Message, Section } from '../lib/types'
 
 import { draftsActions } from './drafts'
@@ -34,6 +43,8 @@ export const isThread = (section: Pick<Section, 'peer_bot'>) => Boolean(section.
 export interface SectionsState {
   archive: (id: string) => Promise<void>
   byId: Record<string, Section>
+  /** History this device kept, shown while a section opens; the live transcript replaces it. */
+  cachedMessages: Record<string, Message[]>
   /** Live ids are process-scoped; a new daemon epoch invalidates them all. */
   clearLive: () => void
   create: (bot: string, title?: string) => Promise<Section>
@@ -59,6 +70,8 @@ export interface SectionsState {
   refresh: (options?: { bot?: string; include_archived?: boolean }) => Promise<void>
   remove: (id: string, purgeMemory?: boolean) => Promise<void>
   rename: (id: string, title: string) => Promise<void>
+  /** Sections this device kept from the last time, drawn before the daemon answers. */
+  restore: (sections: Section[]) => void
   /** Titles from first messages still on their way to the daemon, by section id. */
   sendingTitles: Record<string, string>
   /** The first message reached the daemon, or failed: take the daemon's title again. */
@@ -117,6 +130,25 @@ function indexSections(
   return { byId, idsByBot }
 }
 
+/** The transcript a section's history rows draw. */
+function sectionMessages(rows: HistoryRow[]): Message[] {
+  return messagesFromHistory(rows).filter(
+    // Hexbot replays an interrupted hidden kickoff as a plain user turn.
+    message => !(message.role === 'user' && message.text.includes(KICKOFF_MARKER))
+  )
+}
+
+function withoutKey<T>(record: Record<string, T>, key: string): Record<string, T> {
+  if (!(key in record)) {
+    return record
+  }
+
+  const next = { ...record }
+  delete next[key]
+
+  return next
+}
+
 function mergeSection(state: SectionsState, section: Section): Partial<SectionsState> {
   if (isThread(section)) {
     return {}
@@ -140,6 +172,7 @@ function mergeSection(state: SectionsState, section: Section): Partial<SectionsS
 
 export const useSections = create<SectionsState>((set, get) => ({
   byId: {},
+  cachedMessages: {},
   error: null,
   idsByBot: {},
   liveSessionId: {},
@@ -169,24 +202,50 @@ export const useSections = create<SectionsState>((set, get) => ({
     }
   },
 
+  restore(sections) {
+    set(state => indexSections(sections, state.sendingTitles))
+  },
+
   async open(id) {
-    const { context, messages, pending_clarify, section } = await sectionsOpen(id)
+    const scope = activeCacheScope()
+    const cached = await cachedHistory<HistoryRow>(scope, id)
+
+    if (cached && !get().liveSessionId[id]) {
+      set(state => ({
+        cachedMessages: { ...state.cachedMessages, [id]: sectionMessages(cached.rows) }
+      }))
+    }
+
+    let opened: Awaited<ReturnType<typeof sectionsOpen>>
+
+    try {
+      opened = await sectionsOpen(id, cached?.cursor)
+    } catch (error) {
+      set(state => ({ cachedMessages: withoutKey(state.cachedMessages, id) }))
+
+      if ((error as { code?: number } | null)?.code === 4204) {
+        void forgetHistory(scope, id)
+      }
+
+      throw error
+    }
+
+    const { context, history_cursor, history_delta, pending_clarify, section } = opened
+    const rows = [...(history_delta && cached ? cached.rows : []), ...(opened.messages ?? [])]
     const live = section.live_session_id
+
+    if (history_cursor) {
+      void rememberHistory(scope, id, { cursor: history_cursor, rows })
+    }
 
     set(state => ({
       ...mergeSection(state, section),
+      cachedMessages: withoutKey(state.cachedMessages, id),
       liveSessionId: live ? { ...state.liveSessionId, [id]: live } : state.liveSessionId
     }))
 
     if (live) {
-      useTranscripts.getState().open(
-        live,
-        id,
-        messagesFromHistory(messages ?? []).filter(
-          // Hexbot replays an interrupted hidden kickoff as a plain user turn.
-          message => !(message.role === 'user' && message.text.includes(KICKOFF_MARKER))
-        )
-      )
+      useTranscripts.getState().open(live, id, sectionMessages(rows))
 
       // Check-ins that arrived while this loaded; the history may hold them already.
       for (const row of releaseCheckinMessages(id)) {
@@ -302,6 +361,7 @@ export const useSections = create<SectionsState>((set, get) => ({
   async remove(id, purgeMemory = true) {
     await sectionsDelete(id, purgeMemory)
     draftsActions().clear(id)
+    void forgetHistory(activeCacheScope(), id)
 
     const live = get().liveSessionId[id]
 
@@ -355,6 +415,10 @@ export function useSectionsForBot(bot: null | string): Section[] {
 
 export function useSection(id: null | string): Section | undefined {
   return useSections(state => (id ? state.byId[id] : undefined))
+}
+
+export function useCachedMessages(sectionId: null | string): Message[] | undefined {
+  return useSections(state => (sectionId ? state.cachedMessages[sectionId] : undefined))
 }
 
 export function useLiveSessionId(sectionId: null | string): null | string {

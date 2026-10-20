@@ -5,10 +5,12 @@ import { fileURLToPath } from 'node:url'
 import {
   BrowserWindow,
   Menu,
+  Notification,
   app,
   dialog,
   ipcMain,
   nativeTheme,
+  powerMonitor,
   shell,
   type Rectangle
 } from 'electron'
@@ -115,6 +117,8 @@ async function createWindow(): Promise<BrowserWindow> {
     backgroundColor: nativeTheme.shouldUseDarkColors ? '#0e0e0e' : '#ffffff',
     show: false,
     webPreferences: {
+      // The hidden window keeps syncing; Chromium would slow its timers and reconnects.
+      backgroundThrottling: false,
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
@@ -134,14 +138,20 @@ async function createWindow(): Promise<BrowserWindow> {
       pendingLink = undefined
     }
   })
-  // On macOS the app outlives its window, so keep the page: it holds the
-  // connection that brings notifications, such as the primary bot's
-  // check-ins, from a daemon here or elsewhere.
+  // The app outlives its window on every platform, so keep the page: it holds
+  // the connection that brings notifications, such as the primary bot's
+  // check-ins, and keeps this device's copy of sections in sync. The full
+  // package's daemon keeps running the bots. Quit in the tray or menu ends it.
   window.on('close', event => {
-    if (!quitting && process.platform === 'darwin') {
+    if (!quitting) {
       event.preventDefault()
       window.hide()
+      void explainTray()
     }
+  })
+  // Windows ends the session without `before-quit`.
+  window.on('session-end', () => {
+    quitting = true
   })
   window.on('closed', () => {
     mainWindow = null
@@ -166,7 +176,20 @@ async function createWindow(): Promise<BrowserWindow> {
   }
   return window
 }
-/** Brings the window back after the macOS close handler hid it (dock click, tray, deep link). */
+/** The first close on Windows and Linux says where the app went; macOS users expect it. */
+async function explainTray(): Promise<void> {
+  if (process.platform === 'darwin' || !Notification.isSupported()) return
+  if ((await readDesktopState()).trayExplained) return
+  await updateDesktopState({ trayExplained: true })
+  new Notification({
+    title: `${app.name} is still running`,
+    body: hasRuntime
+      ? 'Your bots keep working. Open or quit it from the tray icon.'
+      : 'It stays in sync and brings you notifications. Open or quit it from the tray icon.',
+    icon: devIcon
+  }).show()
+}
+/** Brings the window back after the close handler hid it (dock click, tray, deep link). */
 async function showWindow(): Promise<BrowserWindow> {
   const window = await createWindow()
   if (window.isMinimized()) window.restore()
@@ -343,6 +366,10 @@ else {
     daemon.on('update-requested', (version: string) => void handleDaemonUpdateRequest(version))
     await createWindow()
     createTray(daemon, () => void showWindow())
+    // Linux and macOS shut down without `before-quit`; the hidden window must not hold them up.
+    powerMonitor.on('shutdown', () => {
+      quitting = true
+    })
     // Starts the startup check and the poller (updater.ts); dev builds stay off.
     void getUpdateState()
     app.on('activate', () => void showWindow())
