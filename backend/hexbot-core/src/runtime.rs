@@ -1777,18 +1777,22 @@ impl Runtime {
                     ))
                 }
             });
-            if compacted.is_err()
-                && let Some((id, row)) = &control
-            {
-                let _ = store::release_control(&self.home, &s.stored, id, row);
-            }
-            let result = compacted.and_then(|()| {
+            let stored_user = compacted.and_then(|()| {
                 let mut user = json!({"role":"user","text":text,"display_kind":display});
                 if let Some((id, row)) = &control {
                     user["input_id"] = json!(id);
                     user["row_id"] = json!(row);
                 }
-                store::append(&self.home, &s.stored, user)?;
+                store::append(&self.home, &s.stored, user)
+            });
+            // A reservation whose row was never stored, including one refused
+            // by a deletion that landed during compaction, frees its key.
+            if stored_user.is_err()
+                && let Some((id, row)) = &control
+            {
+                let _ = store::release_control(&self.home, &s.stored, id, row);
+            }
+            let result = stored_user.and_then(|()| {
                 store::append(
                     &self.home,
                     &s.stored,

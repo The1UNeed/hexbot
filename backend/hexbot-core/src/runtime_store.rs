@@ -2031,13 +2031,17 @@ pub(crate) fn reserve_control(
     common::identifier(stored)?;
     validate_input_id(input_id)?;
     let row = id();
-    let inserted = open(home)?.execute(
+    let mut conn = open(home)?;
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    check_deleted(&tx, stored)?;
+    let inserted = tx.execute(
         "INSERT OR IGNORE INTO native_prompt_intents(id,session_id,text,display_kind,created_at,consumed_by) VALUES (?,?,?,?,?,?)",
         params![input_id, stored, text, display, common::now(), row],
     )?;
     if inserted != 1 {
         return Err(crate::Error::new(4202, "input_id is already reserved"));
     }
+    tx.commit()?;
     Ok(row)
 }
 /// Frees a control reservation whose row was never stored.
@@ -3538,6 +3542,23 @@ mod identity_tests {
             }
         }
         assert_eq!(history(home.path(), "chat").unwrap(), vec![control]);
+    }
+
+    #[test]
+    fn deleted_sections_reserve_no_control_rows() {
+        let home = common::TestHome::new();
+        let input = "a0117bc9-546e-4279-8829-c52674176836";
+        let conn = open(home.path()).unwrap();
+        conn.execute("INSERT INTO native_deleted VALUES('chat')", [])
+            .unwrap();
+        let error = reserve_control(home.path(), "chat", "/compact", "normal", input).unwrap_err();
+        assert_eq!(error.code, 4001);
+        let rows: i64 = conn
+            .query_row("SELECT count(*) FROM native_prompt_intents", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(rows, 0);
     }
 
     #[test]
