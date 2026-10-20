@@ -35,3 +35,23 @@ it('never takes the Check-ins section of a daemon from before one chat as the ch
   expect((await useSections.getState().chat('hexbot'))?.id).toBe('chat')
   expect(call).toHaveBeenCalledWith('hexbot.sections.unarchive', { id: 'chat' })
 })
+
+it('keeps Check-ins marked after it is opened on a daemon from before one chat', async () => {
+  const call = vi.fn((method: string, params?: { id?: string }) =>
+    Promise.resolve(
+      method === 'hexbot.sections.list'
+        ? { sections: [section('checkins', 9), section('chat', 2)] }
+        : method === 'hexbot.checkins.status'
+          ? { section_id: 'checkins' }
+          : method === 'hexbot.sections.open'
+            ? { section: section(String(params?.id), 9), messages: [] }
+            : { section: section(String(params?.id), 2) }
+    )
+  )
+
+  setActiveRpc({ call } as never)
+  await useSections.getState().refresh({ bot: 'hexbot' })
+  await useSections.getState().open('checkins')
+  expect(useSections.getState().byId.checkins?.purpose).toBe('checkins')
+  expect((await useSections.getState().chat('hexbot'))?.id).toBe('chat')
+})

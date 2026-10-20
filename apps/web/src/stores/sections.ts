@@ -171,11 +171,17 @@ function mergeSection(state: SectionsState, section: Section): Partial<SectionsS
   const existing = state.idsByBot[section.bot] ?? []
   // Only the list carries the preview; a rename or archive reply must not blank it.
   const preview = section.preview || state.byId[section.id]?.preview || ''
+  // A daemon from before one chat names no purpose; the list marked Check-ins.
+  const purpose = 'purpose' in section ? section.purpose : state.byId[section.id]?.purpose
 
   return {
     byId: {
       ...state.byId,
-      [section.id]: { ...withSendingTitle(section, state.sendingTitles), preview }
+      [section.id]: {
+        ...withSendingTitle(section, state.sendingTitles),
+        preview,
+        ...(purpose !== undefined && { purpose })
+      }
     },
     idsByBot: {
       ...state.idsByBot,
