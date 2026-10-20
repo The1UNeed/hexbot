@@ -28,6 +28,9 @@ const WRITE_DELAY_MS = 500
 /** What a bot is doing now is the daemon's to say; a cached spinner would be a stale label. */
 const resting = (bot: Bot): Bot => ({ ...bot, status: undefined, status_detail: undefined })
 
+/** The daemon whose roster is in the stores, drawn from the cache or sent by it. */
+let shown: null | string = null
+
 /** Fill the stores from the cache, where the daemon has not already. */
 export async function restoreRoster(scope: null | string): Promise<void> {
   const snapshot = await readCache<RosterSnapshot>(scope, SNAPSHOT_KEY)
@@ -35,6 +38,9 @@ export async function restoreRoster(scope: null | string): Promise<void> {
   if (!snapshot) {
     return
   }
+
+  // A roster already in the stores belongs to the daemon it came from.
+  shown ??= snapshot.daemon
 
   if (!useBots.getState().loaded) {
     useBots.setState({
@@ -66,6 +72,25 @@ export async function restoreRoster(scope: null | string): Promise<void> {
         )
     }
   }
+}
+
+/**
+ * The daemon answering is `daemon`. If the roster on screen came from another
+ * one, empty the stores, so what a failed refresh left of it is never shown
+ * or written as this daemon's. Returns whether it did.
+ */
+export function dropForeignRoster(daemon: null | string | undefined): boolean {
+  const foreign = Boolean(shown && daemon && shown !== daemon)
+  shown = daemon ?? shown
+
+  if (foreign) {
+    useBots.setState({ byName: {}, loaded: false, order: [] })
+    useSections.setState({ byId: {}, cachedMessages: {}, idsByBot: {}, liveSessionId: {} })
+    useRooms.getState().restore([], {})
+    useMe.setState({ me: null })
+  }
+
+  return foreign
 }
 
 let stopWriting: (() => void) | null = null

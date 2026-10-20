@@ -40,7 +40,7 @@ import { cacheScope } from './device-cache'
 import { proofHeaders } from './dpop'
 import { attachEventRouting } from './events'
 import { DEFAULT_DAEMON_PORT } from './pair-link'
-import { adoptDaemon, restoreRoster, stopRosterWrites } from './roster-cache'
+import { adoptDaemon, dropForeignRoster, restoreRoster, stopRosterWrites } from './roster-cache'
 import { HexbotRpcClient, setActiveRpc } from './rpc'
 import type { ConnectionTarget, DaemonInfo } from './types'
 
@@ -549,20 +549,30 @@ export class ConnectionSupervisor {
     const store = connectionActions()
     await this.restored
 
-    try {
-      const [info] = await Promise.all([
-        this.client?.call<DaemonInfo>('hexbot.info') ?? Promise.resolve(null),
-        settingsActions().refresh(),
+    const roster = () =>
+      Promise.all([
         botsActions().refresh(),
         useRooms.getState().refresh(),
         useMe.getState().refresh(),
         // Sections kept from the last time, or listed before a disconnect, may have changed.
         Object.keys(useSections.getState().byId).length
           ? sectionsActions().refresh()
-          : Promise.resolve(),
+          : Promise.resolve()
+      ])
+
+    try {
+      const [info] = await Promise.all([
+        this.client?.call<DaemonInfo>('hexbot.info') ?? Promise.resolve(null),
+        settingsActions().refresh(),
+        roster(),
         // An open Check-ins tab missed the events while disconnected.
         useCheckins.getState().loaded ? useCheckins.getState().refresh() : Promise.resolve()
       ])
+
+      // Another daemon now answers at this address: start its roster from nothing.
+      if (dropForeignRoster(info?.install_id)) {
+        await roster()
+      }
 
       store.setDaemon(info)
       await adoptDaemon(cacheScope(this.target), info?.install_id)

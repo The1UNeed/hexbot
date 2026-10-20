@@ -6,7 +6,7 @@ import { useRooms } from '../stores/rooms'
 import { useSections } from '../stores/sections'
 
 import { cachedHistory, readCache, rememberHistory, resetDeviceCacheForTests } from './device-cache'
-import { adoptDaemon, restoreRoster, stopRosterWrites } from './roster-cache'
+import { adoptDaemon, dropForeignRoster, restoreRoster, stopRosterWrites } from './roster-cache'
 import type { Bot, Room, Section } from './types'
 
 const SCOPE = 'remote:daemon.test:9119'
@@ -66,6 +66,24 @@ describe('the roster on this device', () => {
     useBots.setState({ byName: {}, loaded: true, order: [] })
     await restoreRoster(SCOPE)
     expect(useBots.getState().order).toEqual([])
+  })
+
+  it('is taken off screen when another daemon answers, even if a refresh failed', async () => {
+    useBots.setState({ byName: { writer: bot }, loaded: true, order: ['writer'] })
+    useSections.setState({ byId: { s1: section }, idsByBot: { writer: ['s1'] } })
+    await adoptDaemon(SCOPE, 'install-1')
+    await vi.waitFor(async () => expect(await readCache(SCOPE, 'roster')).toBeTruthy())
+    stopRosterWrites()
+    empty()
+    await restoreRoster(SCOPE)
+
+    expect(dropForeignRoster('install-1')).toBe(false)
+    expect(useBots.getState().order).toEqual(['writer'])
+    expect(dropForeignRoster('install-2')).toBe(true)
+    expect(useBots.getState()).toMatchObject({ loaded: false, order: [] })
+    expect(useSections.getState().byId).toEqual({})
+    // What the new daemon sends is its own.
+    expect(dropForeignRoster('install-2')).toBe(false)
   })
 
   it('is cleared when another daemon answers at the same address', async () => {

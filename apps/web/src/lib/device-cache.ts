@@ -157,7 +157,19 @@ export function cachedHistory<Row>(
 }
 
 export function forgetHistory(scope: null | string, id: string): Promise<void> {
-  writes = writes.then(() => deleteCache(scope, `section:${id}`))
+  writes = writes.then(async () => {
+    const recent = (await readCache<string[]>(scope, RECENT_KEY)) ?? []
+
+    await deleteCache(scope, `section:${id}`)
+
+    if (recent.includes(id)) {
+      await writeCache(
+        scope,
+        RECENT_KEY,
+        recent.filter(item => item !== id)
+      )
+    }
+  })
 
   return writes
 }

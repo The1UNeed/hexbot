@@ -6,6 +6,7 @@ import {
   CACHED_SECTIONS,
   cachedHistory,
   clearCache,
+  forgetHistory,
   readCache,
   rememberHistory,
   resetDeviceCacheForTests,
@@ -54,6 +55,17 @@ describe('the device cache', () => {
     await clearCache('a')
     expect(await cachedHistory('a', 's1')).toBeUndefined()
     expect(await readCache('b', 'roster')).toBe('kept')
+  })
+
+  it('frees the place of a forgotten section', async () => {
+    for (let index = 0; index < CACHED_SECTIONS; index += 1) {
+      await rememberHistory('a', `s${index}`, { cursor: '0:1', rows: [] })
+    }
+
+    await forgetHistory('a', 's5')
+    await rememberHistory('a', 'new', { cursor: '0:1', rows: [] })
+    // The oldest one stays: the forgotten section no longer counts.
+    expect(await cachedHistory('a', 's0')).toBeTruthy()
   })
 
   it('does nothing without IndexedDB', async () => {
