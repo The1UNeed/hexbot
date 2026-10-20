@@ -403,7 +403,11 @@ returned by `open`.
   retires, a later lookup can move it to a chat without the old reports in
   model context. Opening its old ID then returns `4002` with the replacement
   ID; the client must resolve the bot's chat again before sending input, and
-  `hexbot.sections.list` no longer lists it.
+  `hexbot.sections.list` no longer lists it. The new chat replays the log's
+  original messages, not its old summaries, which were written with the
+  reports in context. Its first reply therefore reads the whole history
+  without the prompt cache, once; a history past the model's window is
+  summarised the way any chat that outgrew it is.
   A daemon without `one_chat` in `hexbot.info` makes a new section on
   every call, so clients there list the bot's sections and call `create`
   only when it has none. Its upgrade keeps the latest conversation, giving
