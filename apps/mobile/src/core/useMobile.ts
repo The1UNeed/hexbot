@@ -18,7 +18,15 @@ import { checkinMessage, emptyChat, historyMessages, reduceChat, replayChat } fr
 import { reduceRoom, restoreRoom, roomChat, roomMessage } from './room-chat'
 import { attachmentPrompt } from './chat-send'
 import { modelLists, providerModels } from './models'
-import { ROOMS_QUERY, SECTIONS_QUERY, botChat, ownerChat, rebind, type ChatRoute } from './routes'
+import {
+  ROOMS_QUERY,
+  SECTIONS_QUERY,
+  botChat,
+  listSections,
+  ownerChat,
+  rebind,
+  type ChatRoute
+} from './routes'
 import type {
   Bot,
   Section,
@@ -137,7 +145,7 @@ export function useMobile() {
     const [b, r, s, i, config, me] = await Promise.all([
       rpc<{ bots: Bot[] }>('hexbot.bots.list'),
       rpc<{ rooms: Room[] }>('hexbot.rooms.list', ROOMS_QUERY),
-      rpc<{ sections: Section[] }>('hexbot.sections.list', SECTIONS_QUERY),
+      listSections(rpc, SECTIONS_QUERY).then(sections => ({ sections })),
       rpc<DaemonInfo>('hexbot.info'),
       rpc<Settings>('hexbot.settings.get'),
       rpc<CurrentUser>('hexbot.users.me')

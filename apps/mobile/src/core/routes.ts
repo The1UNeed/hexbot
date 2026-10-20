@@ -3,6 +3,22 @@ export type ChatRoute =
   { kind: 'section'; section: Section; bot: Bot } | { kind: 'room'; room: Room }
 /** The bot's chat with its owner: not a teammate thread or a section with its own purpose. */
 export const ownerChat = (s: Section) => !s.peer_bot && !s.purpose
+/**
+ * Sections as `hexbot.sections.list` returns them, with the Check-ins section
+ * marked on a daemon with check-ins from before one chat per bot, which names
+ * no purpose: its check-ins status names that section.
+ */
+export async function listSections(
+  rpc: Rpc,
+  params: Record<string, unknown>
+): Promise<Section[]> {
+  const { sections } = await rpc<{ sections: Section[] }>('hexbot.sections.list', params)
+  if (!sections.length || sections.some(s => 'purpose' in s)) return sections
+  const checkins = await rpc<{ section_id?: string | null }>('hexbot.checkins.status', {})
+    .then(status => status.section_id ?? null)
+    .catch(() => null)
+  return sections.map(s => (s.id === checkins ? { ...s, purpose: 'checkins' } : s))
+}
 /** Every section the open conversation can be, teammate threads included. */
 export const SECTIONS_QUERY = { include_archived: true, include_threads: true }
 /** Every room, archived ones included, so Rooms can count them and restore one. */
@@ -55,10 +71,7 @@ export async function botChat(
   if (oneChat) return { section: await create() }
   let section = chosen
   if (!section) {
-    const { sections } = await rpc<{ sections: Section[] }>('hexbot.sections.list', {
-      ...SECTIONS_QUERY,
-      bot
-    })
+    const sections = await listSections(rpc, { ...SECTIONS_QUERY, bot })
     const found = legacyChat(sections, bot)
     if (!found) return { section: await create() }
     section = 'section' in found ? found.section : found.choices.find(s => s.id === picked.get(bot))

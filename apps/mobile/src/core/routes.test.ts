@@ -69,6 +69,16 @@ describe("a bot's chat", () => {
       section: { ...said('chat'), archived_at: null }
     })
   })
+  it('is never the Check-ins section of a daemon with check-ins from before one chat', async () => {
+    // That daemon names no purpose; its check-ins status names the section.
+    const sections = [said('checkins', { updated_at: 9 }), said('chat', { updated_at: 2 })]
+    const { rpc } = daemon(sections)
+    const status = (async (method: string, params?: Record<string, unknown>) =>
+      method === 'hexbot.checkins.status' ? { section_id: 'checkins' } : rpc(method, params)) as Rpc
+    expect(await botChat(status, 'ada', false, new Map())).toEqual({
+      section: { ...said('chat', { updated_at: 2 }), archived_at: null }
+    })
+  })
   it('is asked for on an older daemon rather than guess which section is its Dreams log', async () => {
     // A real conversation, and a newer log the user renamed: the list cannot tell them apart.
     const sections = [
@@ -99,7 +109,11 @@ describe("a bot's chat", () => {
     expect(await open([empty])).toEqual({ section: empty })
     const none = daemon([said('other', { bot: 'grace' })])
     expect(await botChat(none.rpc, 'ada', false, new Map())).toEqual({ section: section('made') })
-    expect(none.methods()).toEqual(['hexbot.sections.list', 'hexbot.sections.create'])
+    expect(none.methods()).toEqual([
+      'hexbot.sections.list',
+      'hexbot.checkins.status',
+      'hexbot.sections.create'
+    ])
   })
   it('comes out of the archive to take messages, or fails without a new section', async () => {
     const archived = said('trip', { archived_at: 5 })
