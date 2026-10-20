@@ -112,10 +112,9 @@ eas build --platform android --profile preview
 Use a separately installed EAS CLI for those commands. Local native builds use
 `pnpm mobile:ios` and `pnpm mobile:android` and need no EAS account.
 
-Check-in notifications use push through the app's EAS project, with APNs
-and FCM credentials on that project. A build without a project ID skips push
-and shows check-ins when the app opens. On a daemon reached through Hex
-Connect, the daemon asks Connect to wake the phone; the push says only that
+Check-in notifications use push through the EAS project above
+(`extra.eas.projectId` in `app.config.ts`), with APNs and FCM credentials on
+it. On a daemon reached through Hex Connect, the daemon asks Connect to wake the phone; the push says only that
 the primary bot has a message, never what it is.
 
 ## TestFlight automation
