@@ -713,3 +713,22 @@ fn a_bot_deleted_while_its_chat_is_looked_up_gets_no_new_chat() {
         .unwrap();
     assert_eq!(sections, 0);
 }
+
+#[test]
+fn no_chat_is_looked_up_or_forked_while_its_bot_is_being_deleted() {
+    let home = fixture();
+    let h = home.path();
+    // Deletion has recorded what it retires and is closing processes.
+    prepare_bot_delete(h, "alice", "owl").unwrap();
+    assert_eq!(chat_section(h, "alice", "owl").unwrap_err().code, 4211);
+    let forks: i64 = store::open(h)
+        .unwrap()
+        .query_row("SELECT count(*) FROM native_pending_chat_forks", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(forks, 0);
+    // A failed deletion gives the bot back its chat.
+    rollback_bot_delete(h, "owl").unwrap();
+    chat_section(h, "alice", "owl").unwrap();
+}

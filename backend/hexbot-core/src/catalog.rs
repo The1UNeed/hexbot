@@ -575,6 +575,13 @@ pub fn chat_section(home: &Path, caller: &str, name: &str) -> Result<Value> {
     if !owned {
         return Err(Error::new(4205, format!("bot not found: {name}")));
     }
+    // Nor while its deletion runs: a Dreams log forked now would outlive it.
+    if bot_delete_journal(&tx, name)?.is_some() {
+        return Err(Error::new(
+            4211,
+            "Deletion is in progress. Try again after it finishes.",
+        ));
+    }
     let candidates = rows(
         &tx,
         "SELECT * FROM sections WHERE bot=? AND owner_id=? AND peer_bot IS NULL AND purpose IS NULL ORDER BY updated_at DESC,id",
