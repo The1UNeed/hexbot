@@ -35,11 +35,13 @@ import type {
   ClarifyRequest
 } from '../../lib/types'
 import { useBot, useBots } from '../../stores/bots'
+import { useConnection } from '../../stores/connection'
 import { connectorsActions } from '../../stores/connectors'
 import { draftsActions } from '../../stores/drafts'
 import {
   isThread,
   liveSectionsOf,
+  SECTION_NOT_FOUND,
   sectionsActions,
   sectionStatusOf,
   useCachedMessages,
@@ -1010,18 +1012,36 @@ function BotConversation() {
       ? (bot?.status_detail?.text ?? messages.findLast(message => message.error)?.error)
       : null
 
+  // Opened until its transcript is here: the section list may name a live
+  // session first. A failure other than a missing section, such as a timeout
+  // while connecting, is tried again once the daemon answers.
+  const connected = useConnection(state => state.status === 'connected')
+  const loaded = Boolean(transcript)
+  const opening = useRef<null | string>(null)
   useEffect(() => {
-    if (params.section && !liveId && unavailable !== params.section) {
-      sectionsActions()
-        .open(params.section)
-        .catch(() => {
-          // The section does not exist on this daemon: show that instead of
-          // bouncing through `/`, which would remember it and come back here.
-          setUnavailable(params.section ?? null)
-          uiActions().setLastSection(null)
-        })
+    const id = params.section
+
+    if (!id || loaded || unavailable === id || opening.current === id) {
+      return
     }
-  }, [liveId, params.section, unavailable])
+
+    opening.current = id
+    sectionsActions()
+      .open(id)
+      .catch((error: unknown) => {
+        // The section does not exist on this daemon: show that instead of
+        // bouncing through `/`, which would remember it and come back here.
+        if ((error as { code?: number } | null)?.code === SECTION_NOT_FOUND) {
+          setUnavailable(id)
+          uiActions().setLastSection(null)
+        }
+      })
+      .finally(() => {
+        if (opening.current === id) {
+          opening.current = null
+        }
+      })
+  }, [connected, loaded, params.section, unavailable])
   useEffect(() => setTitle(section?.title ?? ''), [section?.title])
   useEffect(() => {
     if (atBottom) {

@@ -123,6 +123,26 @@ describe('opening a section with kept history', () => {
     )
   })
 
+  it('shows what it kept when the section list named a live session first', async () => {
+    await rememberHistory('remote:daemon.test:9119', 's1', { cursor: '0:1', rows: [row('one')] })
+    useSections.setState({ liveSessionId: { s1: 'live-1' } })
+    vi.mocked(sectionsOpen).mockReturnValueOnce(new Promise(() => undefined))
+    void useSections.getState().open('s1')
+
+    await vi.waitFor(() =>
+      expect(useSections.getState().cachedMessages.s1?.map(item => item.text)).toEqual(['one'])
+    )
+  })
+
+  it('keeps what it showed when opening times out', async () => {
+    await rememberHistory('remote:daemon.test:9119', 's1', { cursor: '0:1', rows: [row('one')] })
+    vi.mocked(sectionsOpen).mockRejectedValueOnce(new Error('timed out after 15s'))
+    await expect(useSections.getState().open('s1')).rejects.toThrow('timed out')
+
+    expect(useSections.getState().cachedMessages.s1?.map(item => item.text)).toEqual(['one'])
+    expect(await cachedHistory('remote:daemon.test:9119', 's1')).toBeTruthy()
+  })
+
   it('keeps nothing from a daemon without cursors', async () => {
     vi.mocked(sectionsOpen).mockResolvedValueOnce({ messages: [row('one')], section })
     await useSections.getState().open('s1')

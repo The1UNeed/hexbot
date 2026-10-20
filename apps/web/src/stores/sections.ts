@@ -81,6 +81,8 @@ export interface SectionsState {
 
 /** What the daemon calls a section nobody has named yet. */
 const DEFAULT_TITLE = 'New section'
+/** The daemon's error code for a section it does not have. */
+export const SECTION_NOT_FOUND = 4204
 
 const QUOTES = /^["'“”]+|["'“”]+$/g
 
@@ -210,7 +212,9 @@ export const useSections = create<SectionsState>((set, get) => ({
     const scope = activeCacheScope()
     const cached = await cachedHistory<HistoryRow>(scope, id)
 
-    if (cached && !get().liveSessionId[id]) {
+    const loaded = useTranscripts.getState().bySession[get().liveSessionId[id] ?? '']
+
+    if (cached && !loaded) {
       set(state => ({
         cachedMessages: { ...state.cachedMessages, [id]: sectionMessages(cached.rows) }
       }))
@@ -221,9 +225,9 @@ export const useSections = create<SectionsState>((set, get) => ({
     try {
       opened = await sectionsOpen(id, cached?.cursor)
     } catch (error) {
-      set(state => ({ cachedMessages: withoutKey(state.cachedMessages, id) }))
-
-      if ((error as { code?: number } | null)?.code === 4204) {
+      // Only a section that is gone loses what was kept; a timeout keeps it on screen.
+      if ((error as { code?: number } | null)?.code === SECTION_NOT_FOUND) {
+        set(state => ({ cachedMessages: withoutKey(state.cachedMessages, id) }))
         void forgetHistory(scope, id)
       }
 
