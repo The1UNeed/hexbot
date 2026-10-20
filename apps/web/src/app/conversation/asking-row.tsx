@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from 'react'
 import { Avatar } from '../../components/ui/avatar'
 import { sectionsThread } from '../../lib/api'
 import type { AvatarStyle } from '../../lib/avatar-builder'
-import { avatarSrc } from '../../lib/avatar-builder'
+import { botFace } from '../../lib/avatar-builder'
 import { cn } from '../../lib/cn'
 import type { Message } from '../../lib/types'
 import { useBot } from '../../stores/bots'
@@ -119,7 +119,7 @@ function AskRow({ ask, sender }: { ask: Ask; sender: null | string }) {
       <span className={cn(size === 'md' && 'hex-lean-right')}>
         <Avatar
           className="hex-look-right"
-          image={avatarSrc(from?.avatar)}
+          {...botFace(from)}
           mood={running ? 'listening' : undefined}
           name={senderName ?? 'Bot'}
           size={size}
@@ -128,7 +128,7 @@ function AskRow({ ask, sender }: { ask: Ask; sender: null | string }) {
       <span className={cn(size === 'md' ? 'hex-lean-left' : '-ml-0.5')}>
         <Avatar
           className={cn('hex-look-left', running && reply.streaming && 'hex-think')}
-          image={avatarSrc(target?.avatar)}
+          {...botFace(target)}
           mood={running ? (reply.streaming ? 'working' : 'listening') : undefined}
           name={targetName ?? 'Teammate'}
           size={size}

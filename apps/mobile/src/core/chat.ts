@@ -5,6 +5,7 @@ export const emptyTurn = (): TurnState => ({
   interim: [],
   busy: false,
   activity: '',
+  checking: '',
   tools: [],
   approvals: [],
   questions: [],
@@ -96,6 +97,8 @@ export function reduceChat(state: ChatState, event: GatewayEvent): ChatState {
         streaming: '',
         interim: [],
         activity: '',
+        // The turn is over, so no review is left; the daemon's clear may be lost.
+        checking: '',
         tools: [],
         approvals: [],
         questions: [],
@@ -103,16 +106,19 @@ export function reduceChat(state: ChatState, event: GatewayEvent): ChatState {
       }
     }
     case 'status.update':
+      // Only the daemon's empty `checking` line ends the label; other status
+      // lines leave it, since another review may still be running.
+      if (p.kind === 'checking') return { ...state, checking: text, activity: text }
       return {
         ...state,
-        activity: text,
+        activity: state.checking || text,
         busy:
           p.kind === 'idle' || p.kind === 'done' || p.kind === 'error' || p.kind === 'interrupted'
             ? false
             : state.busy || p.kind === 'working' || p.kind === 'waiting'
       }
     case 'thinking.delta':
-      return { ...state, activity: text }
+      return { ...state, activity: state.checking || text }
     case 'tool.start':
       return {
         ...state,
@@ -127,11 +133,12 @@ export function reduceChat(state: ChatState, event: GatewayEvent): ChatState {
           }
         ],
         activity:
-          typeof p.tool_name === 'string'
+          state.checking ||
+          (typeof p.tool_name === 'string'
             ? `Using ${p.tool_name}`
             : typeof p.name === 'string'
               ? `Using ${p.name}`
-              : 'Working',
+              : 'Working'),
         busy: true
       }
     case 'tool.complete':
@@ -146,7 +153,7 @@ export function reduceChat(state: ChatState, event: GatewayEvent): ChatState {
               }
             : t
         ),
-        activity: ''
+        activity: state.checking
       }
     case 'error':
       return {

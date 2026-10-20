@@ -134,7 +134,7 @@ export default function hexbot(pi: any) {
   // no network that writes only to the workspace, and the file tools write freely
   // inside it. Manual: the sandbox is read-only and every file change asks. Off
   // (Bypass): no approval prompts or sandbox. Revocation still applies. A command
-  // that needs more sets full_access, and the user decides.
+  // that needs more sets full_access; Auto reviews it before asking the user.
   const workspaceRoots = () => [live.cwd ?? config.cwd, ...live.outputDirs ?? [], tmpdir(), '/tmp'];
   const workspace = () => live.approvalMode === 'manual' ? [] : workspaceRoots();
   const inWorkspace = (path: string) => {
@@ -142,20 +142,21 @@ export default function hexbot(pi: any) {
     return workspaceRoots().some(root => under(target, canonicalPath(root, process.cwd())));
   };
   type Level = 'none' | 'base' | 'confined';
-  const levelFor = (input: any): Level => live.approvalMode === 'off' ? 'none' : input.full_access === true ? 'base' : 'confined';
+  type AllowedCall = {mode: string, cwd: string, level: Level, target?: string, overwrites?: boolean};
+  const levelFor = (input: any): Level => live.approvalMode === 'off' ? 'none' : input?.full_access === true ? 'base' : 'confined';
   // What the gate allowed for each call: the mode it decided under, how bash
   // runs, and the file it checked. Pi may gate several calls before running
   // them, so execution refuses a call whose mode or target has changed since.
-  const allowedCalls = new Map<string, {mode: string, cwd: string, level: Level, target?: string}>();
+  const allowedCalls = new Map<string, AllowedCall>();
   const wrapped = new Set<string>();
   const sessionAllowed = new Set<string>();
   const gate = async (event: any, ctx: any) => {
-    let target: string | undefined;
-    const denial = await check(event, ctx, path => { target = path; });
-    if (!denial && event.toolCallId && wrapped.has(event.toolName)) allowedCalls.set(event.toolCallId, {mode: live.approvalMode, cwd: live.cwd ?? config.cwd, level: levelFor(event.input), target});
+    const allowed: AllowedCall = {mode: live.approvalMode, cwd: live.cwd ?? config.cwd, level: levelFor(event.input)};
+    const denial = await check(event, ctx, call => Object.assign(allowed, call));
+    if (!denial && event.toolCallId && wrapped.has(event.toolName)) allowedCalls.set(event.toolCallId, allowed);
     return denial;
   };
-  const check = async (event: any, ctx: any, checked: (path: string) => void = () => {}) => {
+  const check = async (event: any, ctx: any, checked: (call: Partial<AllowedCall>) => void = () => {}) => {
     const browser = event.toolName === 'browser_console' && typeof event.input.expression === 'string';
     const mcp = event.toolName.startsWith('mcp__');
     const resource = ['list_mcp_resources', 'list_mcp_resource_templates', 'read_mcp_resource'].includes(event.toolName);
@@ -163,6 +164,8 @@ export default function hexbot(pi: any) {
     if (!['bash', 'read', 'grep', 'find', 'ls', 'write', 'edit'].includes(event.toolName) && !browser && !mcp && !resource && !script) return;
     try {
       await refresh(ctx);
+      // Retain what this check saw, even if another gate refreshes live settings.
+      checked({mode: live.approvalMode, cwd: live.cwd ?? config.cwd, level: levelFor(event.input)});
       if (script) {
         // A revoked server's tools are gone once the next prompt unregisters it,
         // so a script naming them would fail inside the VM with a bare TypeError.
@@ -199,7 +202,7 @@ export default function hexbot(pi: any) {
       if (['read', 'grep', 'find', 'ls', 'write', 'edit'].includes(event.toolName)) {
         const input = event.input.path ?? '.';
         const path = canonicalPath(input, cwd);
-        checked(path);
+        checked({target: path});
         if (credentialPath(resolve(cwd, input), live.home) || credentialPath(path, live.home)) return {block: true, reason: 'Credential files are private.'};
         if (['write', 'edit'].includes(event.toolName)) {
           const scan = workspaceProtected([cwd, ...live.outputDirs ?? []]);
@@ -215,12 +218,12 @@ export default function hexbot(pi: any) {
         }
       }
       if (event.toolName === 'bash') {
-        if (event.input.full_access === true) {
+        if (!isolationAvailable()) {
+          // Requesting full access cannot bypass the missing-sandbox user card.
+          ask = {key: 'shell:unsandboxed', command: event.input.command, reason: 'Hexbot has no OS sandbox on this system, so this command can read and change any file you can. Install bubblewrap and restart the daemon to restore isolation.'};
+        } else if (event.input.full_access === true) {
           const why = typeof event.input.reason === 'string' && event.input.reason.trim() ? event.input.reason.trim() : 'No reason given.';
           ask = {key: 'shell:full-access', command: event.input.command, reason: 'Run outside the sandbox, with internet access and writes outside the workspace. ' + why};
-        } else if (!isolationAvailable()) {
-          // Without an OS sandbox nothing confines a command, so each one asks.
-          ask = {key: 'shell:unsandboxed', command: event.input.command, reason: 'Hexbot has no OS sandbox on this system, so this command can read and change any file you can. Install bubblewrap and restart the daemon to restore isolation.'};
         }
       }
       if (process.platform === 'linux' && event.toolName === 'bash' && levelFor(event.input) === 'confined' && isolationAvailable()) {
@@ -236,18 +239,31 @@ export default function hexbot(pi: any) {
       if (browser) ask = {key: 'browser_console', command: event.input.expression, reason: 'This runs code in a web page.'};
       if (!ask) return;
       if (live.canAsk === false) return {block: true, reason: 'This action needs approval. Run it in a visible section.'};
-      if (sessionAllowed.has(ask.key) && !ask.once) return;
       const mode = live.approvalMode;
-      const choice = await ctx.ui.select('__HEXBOT_APPROVAL__' + JSON.stringify({tool: event.toolName, command: ask.command, reason: ask.reason}), ask.once ? ['once', 'deny'] : ['once', 'session', 'deny']);
-      if (mcp) {
+      // In Auto the daemon's reviewer answers routine steps outside the sandbox
+      // one at a time, so a grant remembered in another mode does not cover them.
+      // Host configuration uses user approvals; incomplete scans ask every time.
+      const review = mode === 'smart' && !ask.once && (REVIEWED.includes(ask.key) || ask.key.startsWith('mcp:'));
+      if (sessionAllowed.has(ask.key) && !ask.once && !review) return;
+      // The reviewer reads the whole input the tool will run with, not the card's preview,
+      // and uses the model Pi runs now, which is the fallback after the primary failed.
+      const overwrites = review && event.toolName === 'write' ? existsSync(ask.command) : undefined;
+      if (overwrites !== undefined) checked({overwrites});
+      const model = ctx.model ? {model: {provider: ctx.model.provider, model: ctx.model.id}} : {};
+      const reviewed = review ? {review: true, input: event.input, cwd, ...model, ...overwrites !== undefined ? {overwrites} : {}} : {};
+      const choice = await ctx.ui.select('__HEXBOT_APPROVAL__' + JSON.stringify({tool: event.toolName, command: ask.command, reason: ask.reason, ...reviewed}),
+        ask.once ? ['once', 'deny'] : ['once', 'session', 'deny']);
+      if (mcp || review) {
         // Pi emits execution_start before tool_call. Its public API has no MCP
-        // execute wrapper; the last blocking hook is this gate. Recheck after UI.
+        // execute wrapper; the last blocking hook is this gate. Recheck after UI,
+        // and after a review: the user may change the mode or working directory.
         await refresh(ctx);
         if (mode !== live.approvalMode) return {block: true, reason: 'The approval mode changed before this ran. Try again.'};
-        const reason = mcpDenial(event.toolName);
+        if (cwd !== (live.cwd ?? config.cwd)) return {block: true, reason: 'The working directory changed before this ran. Try again.'};
+        const reason = mcp && mcpDenial(event.toolName);
         if (reason) return {block: true, reason};
       }
-      if (choice === 'session' && !ask.once) sessionAllowed.add(ask.key);
+      if (choice === 'session' && !ask.once && !review) sessionAllowed.add(ask.key);
       else if (choice !== 'once' && choice !== 'session') return {block: true, reason: 'The user denied this action.'};
     } catch {
       return {block: true, reason: 'The approval settings could not be checked. Try again.'};
@@ -309,6 +325,7 @@ export default function hexbot(pi: any) {
       if (['write', 'edit'].includes(name)) {
         // The approval covered the file the gate resolved, not a link swapped in since.
         if (path !== allowed.target) throw new Error('The file changed after it was checked. Try again.');
+        if (allowed.overwrites !== undefined && existsSync(path) !== allowed.overwrites) throw new Error('The file changed after it was reviewed. Try again.');
         const denial = writeDenial(args.path ?? '.', cwd, live.home, live.outputDirs);
         if (denial) throw new Error(denial);
       }
@@ -506,6 +523,8 @@ function credentialName(path: string, home: string, denied: string[]): boolean {
   const local = relative(fold(root), fold(path)).split(sep).join('/');
   return !local.startsWith('../') && (policyRegex(credentialPolicy.basename).test(name) || policyRegex(credentialPolicy.home).test(local));
 }
+// Steps outside the sandbox that Auto's reviewer may let through; connected tools too.
+const REVIEWED = ['shell:full-access', 'file:outside', 'browser_console'];
 const NEVER_WRITTEN = 'Credential and system configuration files are never written by tools.';
 // credential-policy.json "write": deny entries are credential stores that tools
 // never write; ask entries (shell profiles, login items) prompt in Manual and

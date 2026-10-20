@@ -20,7 +20,7 @@ use serde_json::Value;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     process::Command,
-    sync::{Semaphore, mpsc, oneshot, watch},
+    sync::{OwnedSemaphorePermit, Semaphore, mpsc, oneshot, watch},
 };
 
 /// The levels Pi's `--thinking` accepts; Pi clamps each to what the model supports.
@@ -52,6 +52,10 @@ pub enum PiError {
 
 #[derive(Clone, Debug)]
 pub struct PiOptions {
+    #[cfg(test)]
+    write_gate: Option<Arc<Semaphore>>,
+    #[cfg(test)]
+    write_queued: Option<mpsc::UnboundedSender<()>>,
     pub executable: PathBuf,
     pub args: Vec<String>,
     /// Per-profile credentials and per-session extension configuration.
@@ -74,6 +78,10 @@ impl PiOptions {
         agent_dir: impl Into<PathBuf>,
     ) -> Self {
         Self {
+            #[cfg(test)]
+            write_gate: None,
+            #[cfg(test)]
+            write_queued: None,
             executable: executable.into(),
             args: vec![],
             env: std::collections::BTreeMap::new(),
@@ -99,6 +107,28 @@ pub struct PiResponse {
 
 type Reply = oneshot::Sender<Result<PiResponse, PiError>>;
 type Written = oneshot::Sender<Result<(), PiError>>;
+
+/// An extension response already committed to the transport queue. A failed
+/// write can be reported, but must not cause the response to be sent again.
+pub(crate) struct ExtensionWrite {
+    response: oneshot::Receiver<Result<(), PiError>>,
+    done: watch::Receiver<Option<PiError>>,
+    deadline: Duration,
+}
+
+impl ExtensionWrite {
+    pub(crate) async fn wait(mut self) -> Result<(), PiError> {
+        tokio::time::timeout(self.deadline, async {
+            tokio::select! {
+                biased;
+                result = &mut self.response => result.map_err(|_| PiError::Exited)?,
+                error = terminal(&mut self.done) => Err(error),
+            }
+        })
+        .await
+        .map_err(|_| PiError::Timeout)?
+    }
+}
 enum Request {
     Command {
         id: String,
@@ -109,6 +139,7 @@ enum Request {
     Extension {
         bytes: Vec<u8>,
         reply: Written,
+        admission: OwnedSemaphorePermit,
     },
 }
 impl Request {
@@ -126,6 +157,7 @@ impl Request {
 struct WriteRecord {
     bytes: Vec<u8>,
     written: Option<Written>,
+    _extension_admission: Option<OwnedSemaphorePermit>,
 }
 struct Pending {
     command: String,
@@ -159,7 +191,7 @@ struct Inner {
     done: watch::Receiver<Option<PiError>>,
     next_id: AtomicU64,
     admission: Semaphore,
-    extension_admission: Semaphore,
+    extension_admission: Arc<Semaphore>,
     max_record_bytes: usize,
 }
 
@@ -264,7 +296,7 @@ impl PiProcess {
                     done: done.clone(),
                     next_id: AtomicU64::new(1),
                     admission,
-                    extension_admission: Semaphore::new(1),
+                    extension_admission: Arc::new(Semaphore::new(1)),
                     max_record_bytes,
                 }),
             },
@@ -358,15 +390,85 @@ impl PiProcess {
     pub async fn respond_extension(
         &self,
         id: &str,
-        mut fields: Value,
+        fields: Value,
         deadline: Duration,
     ) -> Result<(), PiError> {
-        let _admission = self
+        // Admission is part of the deadline too: a previous committed response
+        // can still own its slot after its caller times out or is cancelled.
+        tokio::time::timeout(deadline, async {
+            let mut stop = self.inner.stop.subscribe();
+            let mut done = self.inner.done.clone();
+            if let Some(error) = stop.borrow().clone() { return Err(error); }
+            if let Some(error) = done.borrow().clone() { return Err(error); }
+            let admission = tokio::select! {
+                biased;
+                error = terminal(&mut stop) => return Err(error),
+                error = terminal(&mut done) => return Err(error),
+                permit = self.inner.extension_admission.clone().acquire_owned() => permit.map_err(|_| PiError::Capacity)?,
+            };
+            let bytes = self.extension_record(id, fields)?;
+            let (reply, response) = oneshot::channel();
+            self.send(Request::Extension { bytes, reply, admission }, response, None, false).await
+        }).await.map_err(|_| PiError::Timeout)?
+    }
+
+    /// Commit an approval without waiting for capacity. Callers can keep their
+    /// evidence lock through this enqueue, then await only the write receipt.
+    /// A full or stopped transport leaves the approval uncommitted.
+    pub(crate) fn try_respond_extension(
+        &self,
+        id: &str,
+        fields: Value,
+        deadline: Duration,
+    ) -> Result<ExtensionWrite, PiError> {
+        let admission = self
             .inner
             .extension_admission
-            .acquire()
-            .await
+            .clone()
+            .try_acquire_owned()
             .map_err(|_| PiError::Capacity)?;
+        let bytes = self.extension_record(id, fields)?;
+        let stop = self.inner.stop.borrow();
+        if let Some(error) = stop.as_ref().or(self.inner.done.borrow().as_ref()) {
+            return Err(error.clone());
+        }
+        let (reply, response) = oneshot::channel();
+        self.inner
+            .requests
+            .try_send(Request::Extension {
+                bytes,
+                reply,
+                admission,
+            })
+            .map_err(|error| match error {
+                mpsc::error::TrySendError::Full(_) => PiError::Capacity,
+                mpsc::error::TrySendError::Closed(_) => PiError::Exited,
+            })?;
+        drop(stop);
+        Ok(ExtensionWrite {
+            response,
+            done: self.inner.done.clone(),
+            deadline,
+        })
+    }
+
+    /// Wait until the extension reply slot is free, so a caller whose
+    /// `try_respond_extension` found it busy can try once more. Gives up at
+    /// the deadline or when the process stops; the retry then reports why.
+    pub(crate) async fn extension_slot(&self, deadline: Duration) {
+        let mut stop = self.inner.stop.subscribe();
+        let mut done = self.inner.done.clone();
+        let _ = tokio::time::timeout(deadline, async {
+            tokio::select! {
+                _ = terminal(&mut stop) => {}
+                _ = terminal(&mut done) => {}
+                _ = self.inner.extension_admission.acquire() => {}
+            }
+        })
+        .await;
+    }
+
+    fn extension_record(&self, id: &str, mut fields: Value) -> Result<Vec<u8>, PiError> {
         if id.is_empty() {
             return Err(PiError::InvalidCommand("extension request id is empty"));
         }
@@ -380,15 +482,7 @@ impl PiProcess {
         }
         object.insert("type".into(), Value::String("extension_ui_response".into()));
         object.insert("id".into(), Value::String(id.to_owned()));
-        let bytes = self.serialize(&fields)?;
-        let (reply, response) = oneshot::channel();
-        self.send(
-            Request::Extension { bytes, reply },
-            response,
-            Some(deadline),
-            false,
-        )
-        .await
+        self.serialize(&fields)
     }
 
     fn serialize(&self, value: &Value) -> Result<Vec<u8>, PiError> {
@@ -450,6 +544,14 @@ impl PiProcess {
     pub(crate) fn fail_cleanup(&self) {
         self.inner.cleanup_failure.store(true, Ordering::Release);
     }
+    #[cfg(test)]
+    pub(crate) fn hold_extension_admission(&self) -> OwnedSemaphorePermit {
+        self.inner
+            .extension_admission
+            .clone()
+            .try_acquire_owned()
+            .unwrap()
+    }
     /// Request SIGTERM cleanup on Unix, then force termination after one second.
     /// Success means the owned child was reaped. Forced reaping also has a one
     /// second deadline; OS cleanup failures are reported, never awaited forever.
@@ -491,8 +593,17 @@ async fn supervise(
     done: watch::Sender<Option<PiError>>,
     options: PiOptions,
 ) {
-    let (writes, mut write_rx) = mpsc::channel::<WriteRecord>(options.request_capacity);
+    // At most request_capacity commands remain pending until Pi reads them,
+    // and extension admission permits one response until its write completes.
+    // Keep its slot in the actual writer queue too, not only in admission.
+    let (writes, mut write_rx) = mpsc::channel::<WriteRecord>(options.request_capacity + 1);
+    #[cfg(test)]
+    let write_gate = options.write_gate.clone();
     let mut writer = tokio::spawn(async move {
+        #[cfg(test)]
+        if let Some(gate) = write_gate {
+            let _permit = gate.acquire().await;
+        }
         while let Some(record) = write_rx.recv().await {
             stdin
                 .write_all(&record.bytes)
@@ -564,18 +675,25 @@ async fn supervise(
                 match request {
                     Request::Command { id, command, bytes, reply } => {
                         if pending.len() >= options.request_capacity { let _ = reply.send(Err(PiError::Capacity)); continue; }
-                        match writes.try_send(WriteRecord { bytes, written: None }) {
-                            Ok(()) => { pending.insert(id, Pending { command, reply }); }
+                        match writes.try_send(WriteRecord { bytes, written: None, _extension_admission: None }) {
+                            Ok(()) => {
+                                pending.insert(id, Pending { command, reply });
+                                #[cfg(test)]
+                                if let Some(queued) = &options.write_queued { let _ = queued.send(()); }
+                            }
                             Err(mpsc::error::TrySendError::Full(_)) => { let _ = reply.send(Err(PiError::Capacity)); }
                             Err(mpsc::error::TrySendError::Closed(_)) => break PiError::Io("writer closed"),
                         }
                     }
-                    Request::Extension { bytes, reply } => {
-                        if let Err(error) = writes.try_send(WriteRecord { bytes, written: Some(reply) }) {
+                    Request::Extension { bytes, reply, admission } => {
+                        if let Err(error) = writes.try_send(WriteRecord { bytes, written: Some(reply), _extension_admission: Some(admission) }) {
                             let full = matches!(error, mpsc::error::TrySendError::Full(_));
                             let record = error.into_inner();
                             if let Some(reply) = record.written { let _ = reply.send(Err(if full { PiError::Capacity } else { PiError::Io("writer closed") })); }
                             if !full { break PiError::Io("writer closed"); }
+                        } else {
+                            #[cfg(test)]
+                            if let Some(queued) = &options.write_queued { let _ = queued.send(()); }
                         }
                     }
                 }
@@ -692,5 +810,160 @@ mod environment_policy_tests {
             assert!(!provider_environment(name, "amazon-bedrock"));
             assert!(!inherited_environment(name));
         }
+    }
+}
+
+#[cfg(test)]
+mod commit_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn transport() -> (PiProcess, mpsc::Receiver<Request>) {
+        let (requests, receiver) = mpsc::channel(1);
+        let (stop, _) = watch::channel(None);
+        let (_, done) = watch::channel(None);
+        (
+            PiProcess {
+                inner: Arc::new(Inner {
+                    cleanup_failure: std::sync::atomic::AtomicBool::new(false),
+                    requests,
+                    stop,
+                    done,
+                    next_id: AtomicU64::new(1),
+                    admission: Semaphore::new(1),
+                    extension_admission: Arc::new(Semaphore::new(1)),
+                    max_record_bytes: 1024,
+                }),
+            },
+            receiver,
+        )
+    }
+
+    #[tokio::test]
+    async fn approval_commit_rejects_full_closed_and_stopped_queues() {
+        let (process, mut requests) = transport();
+        let (reply, _) = oneshot::channel();
+        process
+            .inner
+            .requests
+            .try_send(Request::Command {
+                id: "hold".into(),
+                command: "hold".into(),
+                bytes: vec![],
+                reply,
+            })
+            .unwrap();
+        assert!(matches!(
+            process.try_respond_extension(
+                "dialog",
+                json!({"value":"once"}),
+                Duration::from_secs(5)
+            ),
+            Err(PiError::Capacity)
+        ));
+        requests.recv().await.unwrap();
+        process.inner.stop.send_replace(Some(PiError::Shutdown));
+        assert!(matches!(
+            process.try_respond_extension(
+                "dialog",
+                json!({"value":"once"}),
+                Duration::from_secs(5)
+            ),
+            Err(PiError::Shutdown)
+        ));
+        process.inner.stop.send_replace(None);
+        requests.close();
+        assert!(matches!(
+            process.try_respond_extension(
+                "dialog",
+                json!({"value":"once"}),
+                Duration::from_secs(5)
+            ),
+            Err(PiError::Exited)
+        ));
+        assert_eq!(process.inner.extension_admission.available_permits(), 1);
+    }
+
+    #[tokio::test]
+    async fn writer_reserves_approval_capacity_until_actual_write_even_after_receipt_drop() {
+        let home = tempfile::tempdir().unwrap();
+        let script = home.path().join("pi.cjs");
+        std::fs::write(
+            &script,
+            r#"require('node:readline').createInterface({input:process.stdin}).on('line', line => {
+            const c = JSON.parse(line);
+            process.stdout.write(JSON.stringify(c.type === 'extension_ui_response'
+                ? {type:'written',id:c.id}
+                : {type:'response',id:c.id,command:c.type,success:true})+'\n');
+        });"#,
+        )
+        .unwrap();
+        let gate = Arc::new(Semaphore::new(0));
+        let (queued, mut records) = mpsc::unbounded_channel();
+        let mut options = PiOptions::new("node", home.path(), home.path());
+        options.args = vec![script.to_string_lossy().into_owned()];
+        options.request_capacity = 2;
+        options.write_gate = Some(gate.clone());
+        options.write_queued = Some(queued);
+        let (process, mut events) = PiProcess::spawn(options).unwrap();
+        let mut commands = vec![];
+        for _ in 0..2 {
+            let caller = process.clone();
+            commands.push(tokio::spawn(async move {
+                caller
+                    .request(json!({"type":"hold"}), Duration::from_secs(5))
+                    .await
+            }));
+            tokio::time::timeout(Duration::from_secs(5), records.recv())
+                .await
+                .unwrap()
+                .unwrap();
+        }
+        // Both command slots occupy the actual writer queue, not merely RPC admission.
+        let write = process
+            .try_respond_extension("first", json!({"value":"once"}), Duration::from_secs(5))
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(5), records.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        drop(write);
+        assert!(matches!(
+            process.try_respond_extension(
+                "second",
+                json!({"value":"once"}),
+                Duration::from_secs(5)
+            ),
+            Err(PiError::Capacity)
+        ));
+        assert_eq!(
+            process
+                .respond_extension(
+                    "waiting",
+                    json!({"cancelled":true}),
+                    Duration::from_millis(10)
+                )
+                .await
+                .unwrap_err(),
+            PiError::Timeout
+        );
+        gate.add_permits(1);
+        for command in commands {
+            assert!(command.await.unwrap().unwrap().success);
+        }
+        assert_eq!(events.recv().await.unwrap()["id"], "first");
+        process
+            .respond_extension("second", json!({"cancelled":true}), Duration::from_secs(5))
+            .await
+            .unwrap();
+        assert_eq!(events.recv().await.unwrap()["id"], "second");
+        process.shutdown().await.unwrap();
+        assert_eq!(
+            process
+                .respond_extension("stopped", json!({"cancelled":true}), Duration::from_secs(5))
+                .await
+                .unwrap_err(),
+            PiError::Shutdown
+        );
     }
 }

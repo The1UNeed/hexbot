@@ -101,7 +101,7 @@ system browser. Visual links require confirmation on native platforms.
 profiles. Preview produces an Android APK and an iOS internal distribution build.
 iPhone distribution requires Apple signing and registered devices. App Store
 and Play Store releases require their respective accounts and credentials.
-There is no published mobile release yet.
+iOS beta builds are distributed through TestFlight.
 
 ```sh
 cd apps/mobile
@@ -111,6 +111,82 @@ eas build --platform android --profile preview
 
 Use a separately installed EAS CLI for those commands. Local native builds use
 `pnpm mobile:ios` and `pnpm mobile:android` and need no EAS account.
+
+## TestFlight automation
+
+The EAS project is `@the1uneed/hexbot-mobile`; the installed app is Hexbot,
+with bundle identifier `app.hexbot.mobile`. `eas.json` maps production
+submissions to App Store Connect app `6824190699`. EAS stores the signing
+certificate, provisioning profile and assigned App Store Connect API key.
+Production build numbers are stored remotely and increment automatically.
+
+The GitHub Release action starts `.eas/workflows/testflight.yml` in Expo
+when its resolved channel is nightly and release checks pass. This includes
+manual nightlies and scheduled nightlies with new commits. Stable releases
+skip iOS. Ordinary pushes to `main` do not start a mobile release.
+The workflow builds the exact release commit. It checks the mobile
+app, builds iOS, then uploads that exact build through the standard EAS
+Submit job. This works on the free Expo plan; the advanced `testflight` job
+for uploading EAS builds requires a paid plan. A failed upload fails the
+workflow; a successful build alone does not count as a successful upload.
+Each stage and its logs appear in the project's Workflows page. Workflow
+success means Apple accepted the upload. Apple processes the binary afterward.
+
+One-time setup in the [Expo GitHub settings](https://expo.dev/accounts/the1uneed/projects/hexbot-mobile/github):
+
+1. Install or authorize the Expo GitHub app for `The1UNeed/hexbot` and link
+   that repository to this EAS project.
+2. Set the app's base directory to `apps/mobile`. Commit and merge the
+   workflow files and app configuration into `main` so Expo can read them.
+   Add an Expo access token as the GitHub repository secret `EXPO_TOKEN` so
+   the Release action can start and monitor the workflow. Nightly preflight
+   fails clearly when this secret is missing; stable does not require it.
+3. In App Store Connect, enable automatic distribution on the internal
+   TestFlight group that should receive new builds and add the testers once.
+   The workflow does not automatically submit external Beta App Reviews.
+
+Subscribe to EAS Build and EAS Submit result emails in the Expo project's
+Notifications settings to receive success and failure notices.
+
+The stored Apple credentials must be valid and the assigned API key must
+have upload access to this app. Apple credentials stay in Expo; GitHub uses
+only the Expo access token. Apple processing and any required
+review still happen on Apple's schedule. A workflow does not fix an Apple or
+Expo service failure; inspect the failed job before retrying.
+
+To start the same workflow directly from the repository root, use:
+
+```sh
+pnpm mobile:testflight
+```
+
+The command prints the workflow link and waits for the complete result,
+returning a nonzero exit code if the workflow fails, is canceled, or waiting
+is interrupted. The EAS CLI version is pinned in the package scripts.
+`pnpm mobile:testflight:status` reads Apple processing and TestFlight status
+using the assigned API key, so you can verify which build reached Apple.
+An accepted upload can take several minutes to appear in Apple's build list.
+
+If the build succeeded but uploading failed, copy its EAS build ID from the
+workflow and upload it without rebuilding:
+
+```sh
+pnpm mobile:testflight:upload --input build_id=YOUR_EAS_BUILD_ID
+```
+
+This starts `.eas/workflows/testflight-upload.yml`, which can also be run
+from the Expo dashboard. Use the EAS build ID, not the App Store Connect
+build ID. Do not upload a build Apple has already accepted; for a new binary,
+start the full workflow to get a new build number.
+
+If a submission fails with no logs in its submission record, open its backing
+`EAS Submit` run under Workflows and inspect the failed upload job. Apple
+`401 NOT_AUTHORIZED` means the stored submission API key is invalid; an Apple
+ID session used to configure signing does not authenticate the remote upload.
+Run `EXPO_NO_KEYCHAIN=1 pnpm dlx eas-cli@25.2.0 credentials --platform ios`,
+choose production, then App Store Connect to assign a valid API key. Retry
+the existing build after fixing credentials. Do not revoke a shared key
+without checking its other uses.
 
 ## Verify
 

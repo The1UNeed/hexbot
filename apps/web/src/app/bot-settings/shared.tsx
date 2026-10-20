@@ -1,12 +1,12 @@
 import { Check } from 'lucide-react'
 import { type ChangeEvent, useEffect, useRef, useState } from 'react'
 
-import { Avatar } from '../../components/ui/avatar'
+import { Avatar, useFaceRead } from '../../components/ui/avatar'
 import { AvatarBuilder } from '../../components/ui/avatar-builder'
 import { Button } from '../../components/ui/button'
 import { Input } from '../../components/ui/input'
 import { Textarea } from '../../components/ui/textarea'
-import { avatarPng, avatarSrc, type AvatarStyle, styleForName } from '../../lib/avatar-builder'
+import { avatarPng, type AvatarStyle, botFace, styleForName } from '../../lib/avatar-builder'
 import { cn } from '../../lib/cn'
 import type { Bot, BotUpdatePatch } from '../../lib/types'
 
@@ -254,7 +254,9 @@ export function AvatarPicker({
   const [style, setStyle] = useState<AvatarStyle | null>(null)
   const [error, setError] = useState<string | null>(null)
   const fileRef = useRef<HTMLInputElement>(null)
-  const currentStyle = style ?? styleForName(bot.display_name)
+  const shown = botFace(bot)
+  const saved = useFaceRead(shown.image)
+  const currentStyle = style ?? shown.style ?? saved ?? styleForName(bot.display_name)
 
   const upload = (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0]
@@ -282,7 +284,7 @@ export function AvatarPicker({
     setStyle(next)
     void avatarPng(next).then(png => {
       if (png) {
-        void onSave({ avatar: png })
+        void onSave({ avatar: png, face: next })
       }
     })
   }
@@ -297,12 +299,7 @@ export function AvatarPicker({
           onClick={() => setPicking(value => !value)}
           type="button"
         >
-          <Avatar
-            image={avatarSrc(bot.avatar)}
-            name={bot.display_name}
-            size="xl"
-            style={currentStyle}
-          />
+          <Avatar image={shown.image} name={bot.display_name} size="xl" style={currentStyle} />
         </button>
         {hint ? (
           <span className="text-[length:var(--text-meta)] text-muted">

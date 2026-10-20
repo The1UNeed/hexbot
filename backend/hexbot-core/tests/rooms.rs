@@ -473,42 +473,44 @@ async fn concurrent_fanout_reserves_turn_budget_before_models_run() {
 }
 
 #[tokio::test]
-async fn bot_daily_budget_counts_cached_native_tokens() {
-    let h = setup();
-    let room = create(&h);
-    let runner = Arc::new(Fake::default());
-    db::open(h.path())
-        .unwrap()
-        .execute(
-            "INSERT INTO settings(key,value) VALUES ('bot_daily_token_budget','10')",
-            [],
+async fn bot_daily_budget_counts_cached_native_and_reviewer_tokens() {
+    for role in ["assistant", "usage"] {
+        let h = setup();
+        let room = create(&h);
+        let runner = Arc::new(Fake::default());
+        db::open(h.path())
+            .unwrap()
+            .execute(
+                "INSERT INTO settings(key,value) VALUES ('bot_daily_token_budget','10')",
+                [],
+            )
+            .unwrap();
+        hexbot_core::runtime_store::project_seeded(
+            h.path(),
+            "other",
+            "alice",
+            "owl",
+            &json!({"role":role,"content":[],"usage":{"input":1,"output":1,"cacheRead":8}}),
+            None,
+            None,
         )
         .unwrap();
-    hexbot_core::runtime_store::project_seeded(
-        h.path(),
-        "other",
-        "alice",
-        "owl",
-        &json!({"role":"assistant","content":[],"usage":{"input":1,"output":1,"cacheRead":8}}),
-        None,
-        None,
-    )
-    .unwrap();
-    call(&h, "send", json!({"id":room,"text":"hello"}));
-    RoomEngine::with_runner(h.path().into(), runner.clone(), EventHub::new())
-        .drain("alice", &room)
-        .await
-        .unwrap();
-    assert!(runner.calls.lock().unwrap().is_empty());
-    let events = call(&h, "log", json!({"id":room}));
-    assert!(
-        events["events"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|e| e["kind"] == "limit.tripped"
-                && e["payload"]["limit"] == "bot_daily_token_budget")
-    );
+        call(&h, "send", json!({"id":room,"text":"hello"}));
+        RoomEngine::with_runner(h.path().into(), runner.clone(), EventHub::new())
+            .drain("alice", &room)
+            .await
+            .unwrap();
+        assert!(runner.calls.lock().unwrap().is_empty());
+        let events = call(&h, "log", json!({"id":room}));
+        assert!(
+            events["events"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|e| e["kind"] == "limit.tripped"
+                    && e["payload"]["limit"] == "bot_daily_token_budget")
+        );
+    }
 }
 
 struct Blocking {

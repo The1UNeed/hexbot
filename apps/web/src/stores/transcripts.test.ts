@@ -20,6 +20,61 @@ describe('transcript reducer', () => {
     actions.messageComplete('s')
     expect(useTranscripts.getState().bySession.s?.status).toBeNull()
   })
+  it('marks the live message while Auto mode checks a step and clears it after', () => {
+    const actions = useTranscripts.getState()
+    const live = () => useTranscripts.getState().bySession.s?.messages.at(-1)
+    actions.messageStart('s')
+    actions.toolStart('s', { name: 'terminal', tool_id: 't' })
+    actions.statusUpdate('s', { kind: 'checking', text: 'Checking this step' })
+    expect(live()?.checking).toBe('Checking this step')
+    // An unrelated status line leaves the label; another review may still run.
+    actions.statusUpdate('s', { kind: 'status', text: '' })
+    actions.statusUpdate('s', { kind: 'waiting', text: 'Retrying the model request' })
+    expect(live()?.checking).toBe('Checking this step')
+    actions.statusUpdate('s', { kind: 'checking', text: '' })
+    expect(live()?.checking).toBeUndefined()
+    // The clear does not blank a later, unrelated status line.
+    expect(useTranscripts.getState().bySession.s?.status).toEqual({
+      kind: 'waiting',
+      text: 'Retrying the model request'
+    })
+  })
+  it('keeps checking a step across an approval card until the last review ends', () => {
+    const actions = useTranscripts.getState()
+    const transcript = () => useTranscripts.getState().bySession.s
+    actions.messageStart('s')
+    actions.toolStart('s', { name: 'terminal', tool_id: 'a' })
+    actions.toolStart('s', { name: 'terminal', tool_id: 'b' })
+    actions.statusUpdate('s', { kind: 'checking', text: 'Checking this step' })
+    // Review A asks; its card ends the bubble while review B still runs.
+    actions.approvalRequest('s', { request_id: 'a' })
+    expect(transcript()?.streamingMessageId).toBeNull()
+    expect(transcript()?.checking).toBe('Checking this step')
+    // The label lives on the transcript; no empty bubble opens to carry it.
+    const count = transcript()?.messages.length
+    actions.statusUpdate('s', { kind: 'checking', text: 'Checking this step' })
+    expect(transcript()?.messages).toHaveLength(count ?? 0)
+    expect(transcript()?.streamingMessageId).toBeNull()
+    actions.toolComplete('s', { tool_id: 'b' })
+    actions.toolStart('s', { name: 'terminal', tool_id: 'c' })
+    const live = transcript()?.messages.at(-1)
+    expect(live?.streaming).toBe(true)
+    expect(live?.checking).toBe('Checking this step')
+    actions.statusUpdate('s', { kind: 'checking', text: '' })
+    expect(transcript()?.checking).toBeUndefined()
+    expect(transcript()?.messages.some(message => message.checking)).toBe(false)
+  })
+  it('drops checking a step when the turn ends without the clear', () => {
+    const actions = useTranscripts.getState()
+    const transcript = () => useTranscripts.getState().bySession.s
+    actions.messageStart('s')
+    actions.statusUpdate('s', { kind: 'checking', text: 'Checking this step' })
+    actions.messageComplete('s', { text: 'Done' })
+    expect(transcript()?.checking).toBeUndefined()
+    expect(transcript()?.messages.at(-1)?.checking).toBeUndefined()
+    actions.messageStart('s')
+    expect(transcript()?.messages.at(-1)?.checking).toBeUndefined()
+  })
   it('leaves settled questions to the history it opens and keeps one still waiting', () => {
     const actions = useTranscripts.getState()
     actions.clarifyRequest('s', { question: 'Answered?', request_id: 'a' })

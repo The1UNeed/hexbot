@@ -64,10 +64,11 @@ import type { Bot, ChatTool, ConnectDaemon, Section } from './src/core/types'
 WebBrowser.maybeCompleteAuthSession()
 const messageOf = (e: unknown) => (e instanceof Error ? e.message : String(e))
 const ms = (seconds: number | null | undefined) => (seconds == null ? undefined : seconds * 1000)
-const faceOf = (b: Bot): FaceSource => ({
-  name: b.display_name,
-  imageUri: avatarSrc(b.avatar)
-})
+// A face picked in an app is drawn live, with its colour; otherwise the picture.
+const faceOf = (b: Bot): FaceSource =>
+  b.face
+    ? { name: b.display_name, face: b.face }
+    : { name: b.display_name, imageUri: avatarSrc(b.avatar) }
 // The daemon's placeholder name for an untitled section; the app calls it a thread.
 const threadTitle = (s: Section) =>
   s.title === 'New section' || !s.title ? 'New conversation' : s.title

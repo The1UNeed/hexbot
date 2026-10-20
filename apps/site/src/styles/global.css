@@ -77,7 +77,7 @@ div.rise { display: flex; }
 
 /* Bot faces. Eyes blink at rest; a small script points them at the cursor. */
 .face { display: inline-block; }
-.face .eyes { transform-origin: 50px 48px; animation: blink 5.4s infinite; }
+.face .eyes { transform-box: fill-box; transform-origin: center; animation: blink 5.4s infinite; }
 .face .pupils { transition: transform 160ms ease-out; }
 @keyframes blink { 0%, 93%, 100% { transform: scaleY(1); } 96.5% { transform: scaleY(.08); } }
 @media (prefers-reduced-motion: reduce) {

@@ -1,27 +1,36 @@
 ---
 /**
- * A bot face as the app draws it: a shape, a colour, two eyes.
+ * A bot face as the app draws it: a shape, a colour, two capsule eyes painted
+ * on a ball (apps/web/src/lib/avatar-builder.ts has the same geometry). The
+ * eyes sit in the ball frame, so the script that turns them toward the
+ * pointer moves a small triangle and a big round face by the same angle.
  * Give `size` for a fixed face, or omit it and size the parent: the SVG then fills its container.
  */
 interface Props { shape: keyof typeof shapes; color: string; size?: number; class?: string; delay?: number }
 const shapes = {
-  round: 'M50 5a45 45 0 1 1 0 90a45 45 0 1 1 0-90Z',
-  squircle: 'M50 5c34 0 45 11 45 45S84 95 50 95 5 84 5 50 16 5 50 5Z',
-  square: 'M24 7h52a17 17 0 0 1 17 17v52a17 17 0 0 1-17 17H24A17 17 0 0 1 7 76V24A17 17 0 0 1 24 7Z',
-  wide: 'M50 20c31 0 47 13 47 30S81 80 50 80 3 67 3 50s16-30 47-30Z',
-  tri: 'M43 12a8 8 0 0 1 14 0l38 66a8 8 0 0 1-7 12H12a8 8 0 0 1-7-12Z',
-  hex: 'M44 6a12 12 0 0 1 12 0l30 17a12 12 0 0 1 6 10v34a12 12 0 0 1-6 10L56 94a12 12 0 0 1-12 0L14 77a12 12 0 0 1-6-10V33a12 12 0 0 1 6-10Z',
-  cloud: 'M26 85a19 19 0 0 1-5.9-37 28 28 0 0 1 55.8-4.6 21 21 0 0 1-3.9 41.6Z',
-  drop: 'M50 5c12.7 19.8 38 36.3 38 52a38 38 0 0 1-76 0C12 41.3 37.3 24.8 50 5Z',
+  round: { path: 'M50 5a45 45 0 1 1 0 90a45 45 0 1 1 0-90Z', cy: 54, r: 45 },
+  squircle: { path: 'M50 5c34 0 45 11 45 45S84 95 50 95 5 84 5 50 16 5 50 5Z', cy: 54, r: 45 },
+  square: { path: 'M24 7h52a17 17 0 0 1 17 17v52a17 17 0 0 1-17 17H24A17 17 0 0 1 7 76V24A17 17 0 0 1 24 7Z', cy: 53, r: 43 },
+  wide: { path: 'M50 20c31 0 47 13 47 30S81 80 50 80 3 67 3 50s16-30 47-30Z', cy: 51, r: 32 },
+  tri: { path: 'M43 12a8 8 0 0 1 14 0l38 66a8 8 0 0 1-7 12H12a8 8 0 0 1-7-12Z', cy: 67, r: 24 },
+  hex: { path: 'M44 6a12 12 0 0 1 12 0l30 17a12 12 0 0 1 6 10v34a12 12 0 0 1-6 10L56 94a12 12 0 0 1-12 0L14 77a12 12 0 0 1-6-10V33a12 12 0 0 1 6-10Z', cy: 52, r: 44 },
+  cloud: { path: 'M26 85a19 19 0 0 1-5.9-37 28 28 0 0 1 55.8-4.6 21 21 0 0 1-3.9 41.6Z', cy: 57, r: 30 },
+  drop: { path: 'M50 5c12.7 19.8 38 36.3 38 52a38 38 0 0 1-76 0C12 41.3 37.3 24.8 50 5Z', cy: 59, r: 37 },
 }
+/** Chalk is the one colour too light for white eyes. */
+const LIGHT = ['#ececf0']
 const { shape, color, size, class: className = '', delay = 0 } = Astro.props
+const { path, cy, r } = shapes[shape]
+const eyes = LIGHT.includes(color.toLowerCase()) ? '#151517' : '#ffffff'
 ---
 <svg aria-hidden="true" class:list={['face', size === undefined && 'h-auto w-full', className]} viewBox="0 0 100 100" width={size ?? 100} height={size ?? 100} data-face>
-  <path d={shapes[shape]} fill={color}></path>
-  <g class:list={['eyes', `[animation-delay:${delay}s]`]}>
+  <path d={path} fill={color}></path>
+  <g transform={`translate(50 ${cy}) scale(${r / 45})`}>
     <g class="pupils">
-      <ellipse cx="41" cy="48" rx="3.6" ry="6.2" fill="#151517"></ellipse>
-      <ellipse cx="59" cy="48" rx="3.6" ry="6.2" fill="#151517"></ellipse>
+      <g class:list={['eyes', `[animation-delay:${delay}s]`]}>
+        <rect x="-20.35" y="-13.5" width="11.7" height="27" rx="5.85" fill={eyes}></rect>
+        <rect x="8.65" y="-13.5" width="11.7" height="27" rx="5.85" fill={eyes}></rect>
+      </g>
     </g>
   </g>
 </svg>

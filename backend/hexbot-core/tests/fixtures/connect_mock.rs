@@ -22,6 +22,8 @@ pub(super) struct StateData {
     pub(super) identity_gate: Mutex<Option<Arc<tokio::sync::Notify>>>,
     pub(super) binary: Mutex<Vec<u8>>,
     pub(super) manifest: Mutex<Value>,
+    /// Sign native manifests with a key the daemon does not trust.
+    pub(super) unsigned: Mutex<bool>,
     /// Per-path replies `(status, body)`, for routes the daemon must handle by status.
     pub(super) overrides: Mutex<std::collections::HashMap<String, (u16, Value)>>,
 }
@@ -82,6 +84,21 @@ async fn handler(
         "/.well-known/jwks.json" => state.keys.lock().await.clone(),
         "/binary" => return state.binary.lock().await.clone().into_response(),
         path if path.ends_with("/manifest.json") => state.manifest.lock().await.clone(),
+        path if path.ends_with("/manifest.json.sig") => {
+            use base64::Engine;
+            use sha2::Digest;
+            // Debug builds trust the key from this public seed (update_signature.rs).
+            let seed = if *state.unsigned.lock().await {
+                [7; 32].into()
+            } else {
+                sha2::Sha256::digest(b"hexbot update signing test key")
+            };
+            let manifest = serde_json::to_vec(&*state.manifest.lock().await).unwrap();
+            let key = ring::signature::Ed25519KeyPair::from_seed_unchecked(&seed).unwrap();
+            return base64::engine::general_purpose::STANDARD
+                .encode(key.sign(&manifest))
+                .into_response();
+        }
         _ => json!({"ok":true}),
     };
     Json(value).into_response()
@@ -98,6 +115,7 @@ impl Mock {
             identity_gate: Mutex::default(),
             binary: Mutex::new(vec![]),
             manifest: Mutex::new(Value::Null),
+            unsigned: Mutex::default(),
             overrides: Mutex::default(),
         });
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

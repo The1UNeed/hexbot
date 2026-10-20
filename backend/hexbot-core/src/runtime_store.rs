@@ -24,6 +24,7 @@ pub fn open(home: &Path) -> Result<Connection> {
       CREATE TABLE IF NOT EXISTS native_usage(id INTEGER PRIMARY KEY,session_id TEXT NOT NULL,owner_id TEXT NOT NULL,bot TEXT NOT NULL,model TEXT NOT NULL,provider TEXT NOT NULL,input_tokens INTEGER NOT NULL,output_tokens INTEGER NOT NULL,cache_read_tokens INTEGER NOT NULL,cache_write_tokens INTEGER NOT NULL,cost REAL NOT NULL,timestamp REAL NOT NULL);
       CREATE TABLE IF NOT EXISTS native_pi_journal(journal_id TEXT PRIMARY KEY,session_id TEXT NOT NULL,raw_json TEXT NOT NULL,entry_id TEXT,projection_seq INTEGER,usage_id INTEGER UNIQUE,active INTEGER NOT NULL DEFAULT 1,UNIQUE(session_id,entry_id));
       CREATE INDEX IF NOT EXISTS idx_native_pi_journal_session ON native_pi_journal(session_id);
+      CREATE INDEX IF NOT EXISTS idx_native_pi_journal_projection ON native_pi_journal(session_id,projection_seq);
       CREATE TABLE IF NOT EXISTS native_prompt_intents(id TEXT PRIMARY KEY,session_id TEXT NOT NULL,text TEXT NOT NULL,display_kind TEXT NOT NULL,created_at REAL NOT NULL,consumed_by TEXT);
       CREATE INDEX IF NOT EXISTS idx_native_prompt_intents_session ON native_prompt_intents(session_id,consumed_by);
       CREATE TABLE IF NOT EXISTS native_summaries(session_id TEXT PRIMARY KEY, message_count INTEGER NOT NULL, preview TEXT NOT NULL);
@@ -57,6 +58,40 @@ pub fn history(home: &Path, stored: &str) -> Result<Vec<Value>> {
         serde_json::from_str(&s).map_err(|e| crate::Error::new(5200, e.to_string()))
     })
     .collect()
+}
+/// Stream visible owner evidence, newest first. Stops before allocating an
+/// oversized row, or when the caller's serialized request is full; either way
+/// the result is false and the older messages are left out.
+pub(crate) fn user_history(
+    home: &Path,
+    stored: &str,
+    row_bytes: usize,
+    mut visit: impl FnMut(Value) -> Result<bool>,
+) -> Result<bool> {
+    let conn = open(home)?;
+    let mut stmt = conn.prepare(
+        "SELECT CASE WHEN octet_length(m.message_json)<=?2 THEN m.message_json END
+         FROM native_messages m LEFT JOIN native_pi_journal p ON p.session_id=m.session_id AND p.projection_seq=m.seq
+         WHERE m.session_id=?1 AND (p.active IS NULL OR p.active=1)
+         AND CASE WHEN octet_length(m.message_json)>?2 THEN 1 ELSE
+             json_extract(m.message_json,'$.role')='user'
+             AND json_extract(m.message_json,'$.display_kind') IS NOT 'hidden'
+             AND json_extract(m.message_json,'$.custom_type') IS NULL END ORDER BY m.seq DESC",
+    )?;
+    let mut rows = stmt.query(params![stored, row_bytes])?;
+    while let Some(row) = rows.next()? {
+        // Size is checked before JSON parsing, including for non-owner rows:
+        // an oversized row and everything older count as left out.
+        let Some(raw) = row.get::<_, Option<String>>(0)? else {
+            return Ok(false);
+        };
+        let message =
+            serde_json::from_str(&raw).map_err(|e| crate::Error::new(5200, e.to_string()))?;
+        if !visit(message)? {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }
 /// A counter the triggers bump whenever a session's displayed history can change:
 /// a message row, or the journal link that orders it or hides it on another branch.

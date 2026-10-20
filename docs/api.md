@@ -16,7 +16,7 @@ data model. The native transport and event projection live in
 | open section | live session (`session.resume {session_id: stored, profile}`) |
 | persona | profile `soul` (SOUL.md) |
 | bot model | profile `model` + `provider` |
-| avatar | profile asset `avatar` |
+| avatar | profile asset `avatar`; a face picked in an app also in `assets/face.json` |
 | bot memory | profile `memories/MEMORY.md` (the core `USER.md` target is off) |
 | history search | in-memory FTS5 index over the bot's sections, refreshed as history changes (`native_history_versions` in `hexbot-runtime.db`); the asking section is excluded from results and BM25 statistics; cache budget counts retained JSON and allocated SQLite pages |
 | About you | `~/.hexbot/users/<owner_id>/user.md`, injected every turn by the hexbot plugin |
@@ -41,11 +41,37 @@ data model. The native transport and event projection live in
   are capped at 64 MiB per connection.
 - Approvals: `approval.respond {session_id, request_id, choice}`
   with `choice` in `once | session | deny`. `session` quiets the same kind
-  of request for the rest of the section; nothing persists across sections.
-  Requests raised by the daemon offer `once | deny` only. Delegates and
+  of Manual or unreviewed request for the running agent process; nothing
+  persists across sections. Reviewed Auto cards, incomplete file scans and
+  requests raised by the daemon offer `once | deny` only. Clients must use the
+  card's `choices`; `session` is rejected when not offered. Delegates and
   background sections cannot wait for approval; actions that need it are
   refused. Opening a section re-emits its pending approval. Questions arrive as `clarify.request` and
   `pending_clarify` on section open; use `clarify.respond` to answer.
+  In Auto, full-access shell commands, outside-workspace file changes,
+  changing connected-tool calls and browser page scripts are reviewed against
+  the owner's most recent messages before a card is needed. Review failures,
+  unreadable evidence and steps over 20,000 characters produce a one-step
+  card. Owner messages are read newest first, whole, until the 80,000-character
+  request is full; an oversized stored row ends the read before parsing. When
+  older messages are left out, only a low-risk `allow` runs. At most two
+  reviews run per section at once. When a review starts or waits its turn
+  and none was running, the section emits
+  `status.update {kind: "checking", text: "Checking this step"}`; when the
+  last running or waiting review ends, on any path, it emits
+  `{kind: "checking", text: ""}`. Other status lines do not end the label.
+  One 60-second review budget includes credential preparation, process startup
+  and provider requests. On a timeout, a started process has bounded shutdown/reaping
+  cleanup before the fallback card; temporary state is kept until cleanup finishes.
+  The final evidence check and approval enqueue are ordered with owner prompt,
+  steer and room-message writes. Changed or pending owner messages invalidate
+  automatic approval. ACP review isolates the CLI home/configuration and
+  retains explicit GitHub-token authentication; unavailable stored login,
+  configured arguments beyond `--acp`/`--stdio`, or incompatible isolation
+  flags also produce a one-step card.
+  Without OS isolation, shell commands require user approval even with
+  `full_access`; review cannot replace
+  it. Explicit section grants can cover unreviewed requests when offered.
 - Per-section model override: `config.set {key: "model", value, session_id}`.
 - Model picker source: `model.options`.
 - Keys: `model.save_key`, `model.disconnect`.
@@ -55,6 +81,10 @@ Events the client renders: `message.start`, `message.delta`, `message.interim`,
 `message.complete` (turn end), `reasoning.delta`, `thinking.delta`, `tool.start`, `tool.complete`,
 `approval.request`, `status.update`, `session.info`, `session.usage {usage,
 context}` (the section's totals and its context meter, see Sections), `error`.
+Reported reviewer usage contributes to section totals, room turn budgets and
+the bot's daily token budget without adding reviewer text to the conversation.
+Copilot ACP reports zero token usage and cost, so its reviews add no measured
+usage to these totals or budgets.
 
 ## `hexbot.*` methods
 
@@ -92,7 +122,8 @@ mutation methods check ownership.
 ### Bots
 
 Bot shape: `{name, display_name, title, description, primary, persona, tools: [string], available_tools: [string], skills: [string],
-provider, model, reasoning_effort | null, avatar: {mime, data} | null, created_at, updated_at, last_activity_at,
+provider, model, reasoning_effort | null, avatar: {mime, data} | null, face: {shape, color} | null,
+created_at, updated_at, last_activity_at,
 owner_id, dream_enabled, notify, approval_mode, workdir | null,
 status, status_detail | null, sections_total, sections_recent: [Section]}`
 
@@ -126,6 +157,18 @@ already running, a message queued behind it, and files already attached
 finish on the model they started with. Switching models costs the cached
 prefix once. A section on something else, like a scheduled job with
 its own model or `reasoning_effort`, keeps it.
+`face` is the shape and colour of a face picked in an app (ids from
+`apps/web/src/lib/avatar-builder.ts`, such as `{shape: "pill", color:
+"orange"}`), stored in the profile's `assets/face.json`. The app saves the
+face as the `avatar` PNG too, for clients that only show pictures; clients
+that know `face` draw it live and wash the bot's bubbles with its colour.
+It is null when no face was picked, and it is cleared whenever the avatar
+changes without one (a photo, `avatar: null`, or `profiles.set_asset`), so it
+never describes a picture it did not come with. `hexbot.bots.update` refuses
+a non-null `face` without an `avatar` in the same call (4202), so a face never
+lands on a photo. Older daemons leave it out and refuse `face` in writes
+(4201 `unknown bot field: face`); the web app then sends the write again
+without it, and the face is kept as the picture alone.
 `workdir` and the `workspace_dir` setting are refused (4202) when they resolve
 inside the Hexbot home, symlinks included.
 
@@ -136,7 +179,7 @@ others (`DESIGN.md`, "The primary bot"). There is at most one per owner.
   `last_activity_at` desc.
 - `hexbot.bots.get {name}` → `{bot: Bot}`
 - `hexbot.bots.create {name, display_name?, title?, description?, persona?,
-  provider, model, avatar?}` → `{bot: Bot, section: Section}` (creates the
+  provider, model, avatar?, face?}` → `{bot: Bot, section: Section}` (creates the
   profile with `mirror_credentials: true`, applies persona and model, stores
   the avatar, mirrors the deployment settings into the new profile's
   `config.yaml`, creates the first section titled "General").
@@ -162,7 +205,7 @@ others (`DESIGN.md`, "The primary bot"). There is at most one per owner.
   once they have navigated to the section. Refused (4243) once the section
   has messages.
 - `hexbot.bots.update {name, display_name?, title?, description?, persona?,
-  provider?, model?, reasoning_effort?, avatar?, dream_enabled?,
+  provider?, model?, reasoning_effort?, avatar?, face?, dream_enabled?,
   tools?, skills?, notify?, approval_mode?, workdir?}` →
   `{bot: Bot}`. `tools` accepts `terminal`, `files`, `code_execution`, `browser`,
   `computer_use`, `vision`, `voice`, `message_bots`, `delegate`, and
@@ -369,8 +412,14 @@ thread with the sender: a section with `peer_bot` set to the sender. With
 `wait: true` the result is `{reply, section_id}`; with `wait: false` it is
 `{status: "sent", message_id, section_id}`, and a background watcher submits
 the eventual reply to the sender section as hidden input prefixed
-`[reply from <bot>]`. `to` naming the sender itself answers 4202; a bot the
+`[reply from <bot>]`. `to` naming the sender itself, or a bot waiting on the sender's reply
+further up the chain, answers 4202; a bot the
 section owner does not own answers 4205 with the names of their other bots.
+Queued input and background replies keep the active turn's requester chain and
+shared hop count. Delegated work, including nested children, inherits both.
+An idle section starts a fresh chain for a new originating turn. A background
+result that finds the section idle keeps its originating hop count but no
+requesters, since nobody waits on that turn, so the bot can pass the answer on.
 
 The `hexbot_soul {action: read | write, text?}` tool lets a bot read or
 replace its own `SOUL.md` (capped at 4000 characters). It sits in its own
@@ -546,8 +595,10 @@ the bot. Pi warning/error notifications use the same event. Clients
 show a dismissible notice under the conversation header.
 
 Manual asks for every connected-tool call, including tools marked read-only.
-Auto runs tools with `readOnlyHint: true` freely and asks for all others. Resource
-tools are read-only. Allow in this section covers one server for the running Pi session. Bypass never asks. Each nested
+Auto runs tools with `readOnlyHint: true` freely and reviews other calls one at
+a time, asking about risky or unreviewable calls with `once | deny` only.
+Resource tools are read-only. In Manual, Allow in this section covers one server
+for the running Pi session. Bypass never asks. Each nested
 codemode call uses the approval gate, including shell and file tools.
 
 Stdio servers run as Pi children in a daemon-owned directory,
@@ -687,9 +738,10 @@ A client newer than the daemon asks the daemon to update itself
   version. Service updates require a newer source build, using manifest
   `builtAt` across Stable and Nightly. An older or equally old build reports
   failure before downloading its archive.
-  Native manifests are not signed yet. SHA-256 checks detect corruption;
-  authenticity depends on HTTPS and update-origin write access. Release-key
-  provisioning and manifest signing remain a known gap.
+  The manifest must carry a release signature at `manifest.json.sig`
+  (docs/release.md, "Update signing"); without a valid one the update fails
+  before anything downloads, and the SHA-256 in the signed manifest then pins
+  the archive.
 - `hexbot.update.status {}` → `{capability, status, requested, version,
   percent, message, at}`. `status` is `idle`, `requested`, `checking`,
   `downloading`, `installing`, `restarting`, `up-to-date`, or `failed`.

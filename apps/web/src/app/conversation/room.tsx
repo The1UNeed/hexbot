@@ -2,13 +2,13 @@ import { useNavigate, useParams } from '@tanstack/react-router'
 import { Info } from 'lucide-react'
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
 
-import { Avatar } from '../../components/ui/avatar'
+import { Avatar, useFaceColor } from '../../components/ui/avatar'
 import { RoomCluster } from '../../components/ui/room-cluster'
 import { SkeletonLines } from '../../components/ui/skeleton'
 import { StatusDot } from '../../components/ui/status-dot'
 import { Thinking } from '../../components/ui/thinking'
 import { roomsSend, roomsStop } from '../../lib/api'
-import { avatarSrc } from '../../lib/avatar-builder'
+import { botFace } from '../../lib/avatar-builder'
 import { cn } from '../../lib/cn'
 import { useRoomOrLeave } from '../../lib/room-or-leave'
 import { toMillis } from '../../lib/time'
@@ -29,6 +29,7 @@ import { WorkStatus } from './work-status'
 
 import {
   ApprovalCard,
+  botBubbleStyle,
   bubbleClass,
   CardRow,
   ConnectedToolsNotice,
@@ -41,8 +42,6 @@ import {
 // Stable empty values: a fresh [] or {} per render re-renders forever.
 const NO_EVENTS: RoomEvent[] = []
 const NO_TURNS: Record<string, RoomTurn> = {}
-
-const avatarData = (bot?: Bot) => avatarSrc(bot?.avatar)
 
 export function RoomEventRow({ event, fresh = false }: { event: RoomEvent; fresh?: boolean }) {
   const bot = useBots(state => (event.actor_id ? state.byName[event.actor_id] : undefined))
@@ -74,6 +73,9 @@ export function RoomEventRow({ event, fresh = false }: { event: RoomEvent; fresh
     memberId
 
   const system = ['member.added', 'member.left', 'note'].includes(event.kind)
+
+  const said = event.kind === 'message.bot'
+  const color = useFaceColor(said ? bot : undefined, said ? (member ?? 'Bot') : null)
 
   if (event.kind === 'turn.started') {
     return null
@@ -144,9 +146,7 @@ export function RoomEventRow({ event, fresh = false }: { event: RoomEvent; fresh
         className={`flex gap-2 py-1 ${mine ? 'flex-row-reverse' : ''}`}
         data-testid="room-event"
       >
-        {mine ? null : (
-          <Avatar className="mt-1" image={avatarData(bot)} name={name ?? 'Bot'} size="sm" />
-        )}
+        {mine ? null : <Avatar className="mt-1" {...botFace(bot)} name={name ?? 'Bot'} size="sm" />}
         <div className="flex min-w-0 max-w-[80%] flex-col items-start">
           <div
             className={cn(
@@ -155,6 +155,7 @@ export function RoomEventRow({ event, fresh = false }: { event: RoomEvent; fresh
               fresh && 'hex-message',
               fresh && mine && 'hex-message-mine'
             )}
+            style={mine ? undefined : botBubbleStyle(color)}
           >
             {!mine ? (
               <div className="mb-0.5 text-[length:var(--text-meta)] font-semibold text-muted">
@@ -392,7 +393,7 @@ export function RoomConversation() {
                   <span className="relative mt-1 shrink-0">
                     <Avatar
                       className="hex-think"
-                      image={avatarData(bot)}
+                      {...botFace(bot)}
                       mood="working"
                       name={name}
                       size="sm"
@@ -412,7 +413,7 @@ export function RoomConversation() {
                     {message ? <MemoryMarks message={message} /> : null}
                     {/* The live status sits at the foot of the turn until it is done. */}
                     {message ? (
-                      <WorkStatus message={message} name={name} />
+                      <WorkStatus checking={transcript?.checking} message={message} name={name} />
                     ) : (
                       <Thinking name={name} />
                     )}
