@@ -177,6 +177,24 @@ async fn stopping_cancels_late_approvals_and_questions_before_abort_finishes() {
         .unwrap()
         .unwrap()
     );
+    // The primary bot's always-ask approvals are cancelled too, even in Bypass.
+    let mode = |mode: &str| {
+        db::open(home.path())
+            .unwrap()
+            .execute("UPDATE bots SET approval_mode=?", [mode])
+            .unwrap()
+    };
+    mode("off");
+    assert!(
+        !tokio::time::timeout(
+            Duration::from_secs(5),
+            runtime.ask_approval(&s, json!({"tool":"hexbot_jobs"}), true)
+        )
+        .await
+        .unwrap()
+        .unwrap()
+    );
+    mode("manual");
     Runtime::command(&s, json!({"type":"release_abort"}))
         .await
         .unwrap();
@@ -684,6 +702,28 @@ async fn cancellation_does_not_take_a_late_dialog_from_its_response_task() {
     let reply: Value = serde_json::from_str(replies.trim()).unwrap();
     assert_eq!(reply["id"], "arrived-during-cancel");
     assert_eq!(reply["cancelled"], true);
+    runtime.shutdown().await;
+}
+
+#[tokio::test]
+async fn stop_never_cancels_again_a_late_dialog_its_task_already_answered() {
+    let (home, runtime, _) = setup();
+    install_stop_pi(home.path());
+    open(&runtime).await;
+    let s = runtime.sessions.lock().unwrap()["first"].clone();
+    s.state.lock().unwrap().tool_dialogs.insert("late".into());
+    // Stop's drain aborts the late task after it has committed its reply,
+    // while it waits for the write receipt.
+    let mut late = Box::pin(Runtime::cancel_late(s.clone(), "late".into()));
+    assert!(futures_util::poll!(late.as_mut()).is_pending());
+    drop(late);
+    Runtime::cancel_dialogs(&s).await;
+    Runtime::command(&s, json!({"type":"get_state"}))
+        .await
+        .unwrap();
+    let replies = fs::read_to_string(home.path().join("dialogs.jsonl")).unwrap();
+    assert_eq!(replies.lines().count(), 1, "{replies}");
+    assert!(s.state.lock().unwrap().tool_dialogs.is_empty());
     runtime.shutdown().await;
 }
 

@@ -251,18 +251,11 @@ impl Runtime {
             state.tool_dialogs.insert(id.clone());
             state.dialogs_cancelled()
         };
+        if interrupted {
+            tasks.spawn(Self::cancel_late(source, id));
+            return Ok(());
+        }
         tasks.spawn(async move {
-            if interrupted {
-                if let Err(error) = source
-                    .process
-                    .respond_extension(&id, json!({"cancelled":true}), DEADLINE)
-                    .await
-                {
-                    eprintln!("Approval reply failed for {}: {error}", source.stored);
-                }
-                source.state.lock().unwrap().tool_dialogs.remove(&id);
-                return;
-            }
             let checking = Checking::start(&runtime, &source);
             let Ok(_turn) = source.reviews.acquire().await else {
                 return;

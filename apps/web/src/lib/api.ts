@@ -162,6 +162,23 @@ export function botsCreate(input: BotCreateInput): Promise<{ bot: Bot; section: 
   return withFace<{ bot: Bot; section: Section }>('hexbot.bots.create', { ...input })
 }
 
+/** Create HexBot, the primary bot, on the default model. */
+export function botsCreatePrimary(
+  input: Partial<
+    Pick<
+      BotCreateInput,
+      'avatar' | 'display_name' | 'face' | 'model' | 'provider' | 'reasoning_effort'
+    >
+  > = {}
+): Promise<{ bot: Bot; section: Section }> {
+  return rpcCall<{ bot: Bot; section: Section }>('hexbot.bots.create_primary', { ...input })
+}
+
+/** Make an existing bot the primary bot. Refused once there is one. */
+export function botsSetPrimary(name: string): Promise<{ bot: Bot }> {
+  return rpcCall<{ bot: Bot }>('hexbot.bots.set_primary', { name })
+}
+
 /** Have the daemon submit a new bot's hidden first prompt into its section. */
 export function botsIntroduce(
   name: string,
@@ -563,6 +580,7 @@ export function devicesRevoke(id: string): Promise<{ revoked: boolean }> {
 // ---------------------------------------------------------------------------
 
 export interface PromptSubmitOptions {
+  input_id?: string
   attachments?: string[]
   display_kind?: 'hidden'
   queued?: boolean
@@ -573,8 +591,12 @@ export function promptSubmit(
   sessionId: string,
   text: string,
   options: PromptSubmitOptions = {}
-): Promise<{ status: string }> {
-  return rpcCall<{ status: string }>('prompt.submit', { session_id: sessionId, text, ...options })
+): Promise<{ status: string; input_id?: string }> {
+  return rpcCall<{ status: string; input_id?: string }>('prompt.submit', {
+    session_id: sessionId,
+    text,
+    ...options
+  })
 }
 
 export function sessionInterrupt(sessionId: string): Promise<{ status: string }> {
@@ -745,6 +767,20 @@ export async function attachFile(sessionId: string, file: File): Promise<AttachR
 
 let messageCounter = 0
 
+/** UUID correlation also works on paired LAN pages without randomUUID. */
+export function newInputId(): string {
+  if (typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID()
+  }
+
+  const bytes = crypto.getRandomValues(new Uint8Array(16))
+  bytes[6] = (bytes[6]! & 15) | 64
+  bytes[8] = (bytes[8]! & 63) | 128
+  const hex = Array.from(bytes, byte => byte.toString(16).padStart(2, '0')).join('')
+
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`
+}
+
 export function nextMessageId(prefix = 'm'): string {
   messageCounter += 1
 
@@ -843,7 +879,7 @@ export const clarifyAnswered = (clarify: ClarifyRequest) =>
 
 /**
  * Turn the Hexbot `session.history` projection into transcript messages.
- * Tool rows fold into the assistant message that precedes them, matching how
+ * Tool rows fold into the assistant message that issued their call, matching how
  * live `tool.start` / `tool.complete` events are rendered.
  */
 /**
@@ -862,7 +898,30 @@ export function messagesFromHistory(
   const prefix = options.sender ? `@${options.sender}: ` : null
   // Tool rows carry no arguments; the assistant row that made the call does,
   // as the JSON the model wrote. Parsed, they match live `tool.start` args.
-  const callArgs = new Map<string, unknown>()
+  const callOwners = new Map<string, HistoryRow[]>()
+  const formatted = new Map<HistoryRow, Message>()
+  const dreams = new Set<Message>()
+  const rowCounts = new Map<string, number>()
+  const reports = new Set(rows.filter(row => row.dream === true).map(row => String(row.row_id)))
+
+  for (const row of rows) {
+    if (row.row_id != null) {
+      const id = String(row.row_id)
+      rowCounts.set(id, (rowCounts.get(id) ?? 0) + 1)
+    }
+
+    if (row.role !== 'assistant' || row.dream === true) {
+      continue
+    }
+
+    for (const call of Array.isArray(row.tool_calls) ? row.tool_calls : []) {
+      const { id } = (call ?? {}) as { id?: unknown }
+
+      if (typeof id === 'string') {
+        callOwners.set(id, [...(callOwners.get(id) ?? []), row])
+      }
+    }
+  }
 
   for (const row of rows) {
     let text = typeof row.text === 'string' ? row.text : ''
@@ -875,22 +934,54 @@ export function messagesFromHistory(
       text = text.slice(prefix.length)
     }
 
-    for (const call of Array.isArray(row.tool_calls) ? row.tool_calls : []) {
-      const { function: fn, id } = (call ?? {}) as {
-        function?: { arguments?: unknown }
-        id?: unknown
-      }
-
-      if (typeof id === 'string' && typeof fn?.arguments === 'string') {
-        callArgs.set(id, parseArguments(fn.arguments))
-      }
-    }
-
     if (row.role === 'tool') {
-      const target = messages.at(-1)
+      const toolId = String(row.tool_call_id ?? row.tool_id)
+
+      const parentId =
+        typeof row.parent_tool_call_id === 'string' ? row.parent_tool_call_id : undefined
+
+      const declarations = callOwners.get(parentId ?? toolId) ?? []
+
+      const candidates = declarations.filter(
+        owner => !row.turn_id || !owner.turn_id || row.turn_id === owner.turn_id
+      )
+
+      const owner = candidates.length === 1 ? candidates[0] : undefined
+
+      const declaration =
+        !parentId && owner?.tool_calls && Array.isArray(owner.tool_calls)
+          ? owner.tool_calls.find(call => call?.id === toolId)
+          : undefined
+
+      const args = declaration?.function?.arguments
+      const previous = messages.at(-1)
+
+      const messageId =
+        owner?.row_id != null && rowCounts.get(String(owner.row_id)) === 1
+          ? String(owner.row_id)
+          : undefined
+
+      // Preserve the old presentation for projections with no row identities.
+      // Identified or ambiguous calls stay unbound until ownership is proven.
+      const target = owner
+        ? owner.row_id == null || messageId
+          ? formatted.get(owner)
+          : undefined
+        : !callOwners.has(toolId) &&
+            !previous?.fragmentIds &&
+            previous?.role === 'assistant' &&
+            !dreams.has(previous)
+          ? previous
+          : undefined
 
       const call = {
-        args: row.args ?? callArgs.get(String(row.tool_call_id ?? row.tool_id)) ?? null,
+        messageId,
+        ...(parentId && { parentToolCallId: parentId }),
+        args:
+          row.args ??
+          ((owner?.row_id == null || messageId) && typeof args === 'string'
+            ? parseArguments(args)
+            : null),
         durationS: null,
         name: String(row.name ?? 'tool'),
         result: row.text ?? null,
@@ -898,19 +989,25 @@ export function messagesFromHistory(
         startedAt: 0,
         status: row.is_error === true ? ('error' as const) : ('ok' as const),
         summary: typeof row.context === 'string' ? row.context : undefined,
-        toolId: String(row.tool_id ?? row.row_id ?? nextMessageId('t'))
+        toolId: String(row.tool_id ?? row.tool_call_id ?? row.row_id ?? nextMessageId('t'))
       }
 
       const clarify =
         call.name === 'clarify' ? clarifyFromHistory(call.toolId, call.args, row) : null
 
+      if (clarify) {
+        clarify.messageId = call.messageId
+        clarify.turnId = typeof row.turn_id === 'string' ? row.turn_id : undefined
+      }
+
       const calls = [
         call,
         ...(row.nested_calls?.calls ?? []).map(nested => ({
+          messageId: call.messageId,
           args: nested.arguments ?? null,
           durationS: nested.durationMs == null ? null : nested.durationMs / 1000,
           name: nested.name,
-          parentToolCallId: nested.id.slice(0, nested.id.lastIndexOf('/')) || call.toolId,
+          parentToolCallId: call.toolId,
           result: nested.error ?? null,
           startedAt: 0,
           status: nested.status === 'error' ? ('error' as const) : ('ok' as const),
@@ -929,7 +1026,7 @@ export function messagesFromHistory(
           attachments: [],
           clarifies: clarify ? [clarify] : undefined,
           createdAt: 0,
-          id: nextMessageId(),
+          id: String(row.row_id ?? nextMessageId()),
           role: 'assistant',
           streaming: false,
           text: '',
@@ -952,28 +1049,53 @@ export function messagesFromHistory(
     // A question ends the message, as it does live, so its card sits between.
     if (
       role === 'assistant' &&
+      row.dream !== true &&
       previous?.role === 'assistant' &&
+      !dreams.has(previous) &&
+      !reports.has(previous.id) &&
+      previous.turnId === (typeof row.turn_id === 'string' ? row.turn_id : undefined) &&
       previous.toolCalls.length &&
       !previous.clarifies?.length
     ) {
       if (previous.text.trim()) {
         previous.parts = [...(previous.parts ?? []), previous.text]
+        previous.partIds = [...(previous.partIds ?? []), previous.textId]
       }
 
       previous.text = text
+      previous.textId = row.row_id == null ? undefined : String(row.row_id)
+      previous.fragmentIds = [
+        ...(previous.fragmentIds ?? []),
+        ...(previous.textId ? [previous.textId] : [])
+      ]
+      formatted.set(row, previous)
 
       continue
     }
 
-    messages.push({
+    const message: Message = {
       attachments: [],
       createdAt: 0,
       id: String(row.row_id ?? nextMessageId()),
+      ...(typeof row.input_id === 'string' && { inputId: row.input_id }),
+      ...(typeof row.turn_id === 'string' && { turnId: row.turn_id }),
+      ...(role === 'assistant' &&
+        row.row_id != null && {
+          fragmentIds: [String(row.row_id)],
+          textId: String(row.row_id)
+        }),
       role,
       streaming: false,
       text,
       toolCalls: []
-    })
+    }
+
+    messages.push(message)
+    formatted.set(row, message)
+
+    if (row.dream === true) {
+      dreams.add(message)
+    }
   }
 
   return messages

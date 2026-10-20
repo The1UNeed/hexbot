@@ -785,7 +785,7 @@ async fn recovery_waiters_keep_fifo_uploads_and_chain_across_configuration_resta
         Some(chain.clone()),
         Some(&uploads),
     );
-    let second = runtime.steer(&old, "second steer");
+    let second = runtime.steer(&old, "second steer", None);
     tokio::pin!(first, second);
     assert!(futures_util::poll!(first.as_mut()).is_pending());
     assert!(futures_util::poll!(second.as_mut()).is_pending());
@@ -852,7 +852,7 @@ async fn a_closed_alias_cannot_redirect_a_waiter_into_a_reopened_session() {
     let id = open(&runtime).await;
     let old = runtime.sessions.lock().unwrap()["first"].clone();
     let slot = old.input_gate.lock().await;
-    let waiting = runtime.steer(&old, "obsolete request");
+    let waiting = runtime.steer(&old, "obsolete request", None);
     tokio::pin!(waiting);
     assert!(futures_util::poll!(waiting.as_mut()).is_pending());
     runtime.close_stored("alice", "first").await.unwrap();
@@ -880,7 +880,7 @@ async fn failed_configuration_restart_preserves_uploads_and_the_waiting_fifo() {
         .unwrap();
     let ids = [file["id"].as_str().unwrap().to_owned()];
     let first = runtime.submit(&old, "failed attempt", true, true, None, Some(&ids));
-    let second = runtime.steer(&old, "waiting steer");
+    let second = runtime.steer(&old, "waiting steer", None);
     tokio::pin!(first, second);
     assert!(futures_util::poll!(first.as_mut()).is_pending());
     assert!(futures_util::poll!(second.as_mut()).is_pending());
@@ -1141,7 +1141,7 @@ async fn a_waiter_on_the_previous_live_wakes_when_its_replacement_closes_before_
     .await;
     let current = runtime.sessions.lock().unwrap()["first"].clone();
     assert!(!Arc::ptr_eq(&previous, &current));
-    let waiting = runtime.steer(&previous, "waiting on the previous live");
+    let waiting = runtime.steer(&previous, "waiting on the previous live", None);
     tokio::pin!(waiting);
     assert!(futures_util::poll!(waiting.as_mut()).is_pending());
     let attachment = current.attachment_gate.lock().await;
@@ -1489,7 +1489,7 @@ async fn reserved_input_is_busy_before_it_starts_a_run() {
     let id = open(&runtime).await;
     let s = runtime.sessions.lock().unwrap()["first"].clone();
     let gate = s.input_gate.lock().await;
-    let waiting = runtime.steer(&s, "reserved steer");
+    let waiting = runtime.steer(&s, "reserved steer", None);
     tokio::pin!(waiting);
     assert!(futures_util::poll!(waiting.as_mut()).is_pending());
     assert!(!s.state.lock().unwrap().busy);
@@ -1554,7 +1554,11 @@ async fn existing_process_input_obeys_bot_and_room_deletion_admission() {
             );
         }
         assert_eq!(
-            runtime.steer(&s, "late steer").await.unwrap_err().code,
+            runtime
+                .steer(&s, "late steer", None)
+                .await
+                .unwrap_err()
+                .code,
             4211
         );
         assert!(runtime.busy_sections("owl").is_empty());

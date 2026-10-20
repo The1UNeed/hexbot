@@ -27,6 +27,26 @@ The iOS command needs Xcode and a simulator or signed device. Android needs
 Android Studio, its SDK and a device or emulator. `apps/mobile/eas.json` also
 provides development, internal preview and production build profiles.
 
+## TestFlight builds
+
+The iOS beta is distributed through TestFlight. Maintainers use Expo EAS
+Workflows to check the app, create a production build and upload it. Apple
+processes the binary afterward. The GitHub Release action starts Expo for
+nightly releases after checks pass, using the exact release commit. Stable
+releases currently skip iOS. Ordinary pushes to `main` do not release iOS.
+The Expo project must be linked to the repository with `apps/mobile` as its
+base directory, and GitHub needs the `EXPO_TOKEN` repository secret.
+Enable automatic
+distribution on an internal TestFlight group to deliver new builds to its
+testers.
+
+From the repository root, `pnpm mobile:testflight` starts the same workflow
+and waits for its result. If uploading fails after a successful build,
+`pnpm mobile:testflight:upload --input build_id=YOUR_EAS_BUILD_ID` retries
+the upload without rebuilding. Both workflows show their stages and logs in
+Expo. Apple review remains separate. Maintainer setup is in
+`apps/mobile/README.md` and `docs/release.md`.
+
 ## Connect locally
 
 Enable local connections on your daemon. Open Settings, Devices on an

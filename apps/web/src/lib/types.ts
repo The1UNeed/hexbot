@@ -25,6 +25,8 @@ export interface ClarifyQuestion {
 
 /** Wire shape of `clarify.request`: one question, or a batch under `questions`. */
 export interface ClarifyRequestPayload {
+  message_id?: string
+  turn_id?: string
   choices?: null | string[]
   multi_select?: boolean
   question?: string
@@ -33,6 +35,8 @@ export interface ClarifyRequestPayload {
 }
 
 export interface ClarifyRequest {
+  messageId?: string
+  turnId?: string
   /** Per question id (single questions use the request id) once answered. */
   answers: Record<string, string>
   /** The gateway stopped waiting; the card stays but no longer takes input. */
@@ -44,6 +48,8 @@ export interface ClarifyRequest {
 }
 
 export interface ApprovalRequest {
+  messageId?: string
+  turnId?: string
   choices: ApprovalChoice[]
   /** Present once the user answered; the card stays in the transcript. */
   decision?: ApprovalChoice
@@ -105,6 +111,8 @@ export interface Bot {
   name: string
   owner_id: string
   persona: string
+  /** The one bot that looks after the others; it can't be deleted. Older daemons leave it out. */
+  primary?: boolean
   provider: null | string
   /** How hard the model thinks; null means Pi's default, medium. */
   reasoning_effort?: null | ReasoningEffort
@@ -256,6 +264,8 @@ export interface DaemonInfo {
    * daemon makes a new section every time.
    */
   one_chat?: true
+  /** Input, run and assistant fragment correlation metadata; absent on older daemons. */
+  transcript_identity?: boolean
   /** How the daemon can update itself when asked; absent on older daemons. */
   update_capability?: 'desktop' | 'service' | null
   version: string
@@ -290,6 +300,15 @@ export interface Device {
 }
 
 export interface Message {
+  /** Exact accepted input correlation, never inferred from text or position. */
+  inputId?: string
+  /** One actual daemon run, including hidden or queued inputs. */
+  turnId?: string
+  /** Durable assistant fragment IDs represented by this bubble. */
+  fragmentIds?: string[]
+  /** Source identity of each closed text part and the current text. */
+  partIds?: (string | undefined)[]
+  textId?: string
   /**
    * The daemon's live status line (`thinking.delta`): a wait notice on a slow
    * provider. Replaced on every event, cleared by an empty one.
@@ -323,6 +342,10 @@ export interface Message {
   text: string
   /** The reasoning trace, appended by `reasoning.delta`. */
   thinking?: string
+  /** Fragment that produced this reasoning trace, when known. */
+  thinkingId?: string
+  /** Reasoning retained separately when one bubble folds several source fragments. */
+  thinkingByFragment?: Record<string, string>
   toolCalls: ToolCall[]
   usage?: Usage | null
   /** When the last reasoning or tool event landed; with `createdAt` it times the work. */
@@ -519,6 +542,8 @@ export interface StatusLine {
 }
 
 export interface ToolCall {
+  /** Assistant fragment that issued this call, when the daemon proves it. */
+  messageId?: string
   parentToolCallId?: string
   args: unknown
   durationS: number | null

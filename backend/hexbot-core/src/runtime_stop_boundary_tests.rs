@@ -164,7 +164,7 @@ async fn retained_steer_and_identical_hidden_follow_up_keep_their_own_display_in
         .submit(&s, "same text", true, true, None, None)
         .await
         .unwrap();
-    runtime.steer(&s, "same text").await.unwrap();
+    runtime.steer(&s, "same text", None).await.unwrap();
     let stop = start_stop(&runtime, &s.id);
     stop_event(&mut events, |e| e["payload"]["text"] == "abort waiting").await;
     Runtime::command(&s, json!({"type":"release_abort"}))
@@ -227,7 +227,7 @@ async fn pre_stop_input_precedes_waiting_results_and_healthy_steering_keeps_pi_p
     let stop = start_stop(&runtime, &s.id);
     stop_event(&mut events, |e| e["payload"]["text"] == "abort waiting").await;
     let result = runtime.submit(&s, "during Stop", true, true, None, None);
-    let steer = runtime.steer(&s, "owner steer");
+    let steer = runtime.steer(&s, "owner steer", None);
     tokio::pin!(result, steer);
     assert!(futures_util::poll!(result.as_mut()).is_pending());
     assert!(futures_util::poll!(steer.as_mut()).is_pending());
@@ -285,7 +285,7 @@ async fn rejected_busy_steer_removes_only_its_own_staging_and_keeps_the_run_work
         .await
         .unwrap();
     stop_event(&mut events, |e| e["payload"]["text"] == "projected wait").await;
-    assert!(runtime.steer(&s, "rejected steer").await.is_err());
+    assert!(runtime.steer(&s, "rejected steer", None).await.is_err());
     assert!(s.state.lock().unwrap().busy);
     assert!(s.state.lock().unwrap().display.is_empty());
     assert!(s.state.lock().unwrap().inputs.is_empty());
@@ -696,7 +696,7 @@ async fn steering_waits_for_compaction_and_close_wakes_it_without_staging() {
             })
         };
         stop_event(&mut events, |e| e["payload"]["text"] == "compact waiting").await;
-        let steer = runtime.steer(&s, "after compact");
+        let steer = runtime.steer(&s, "after compact", None);
         tokio::pin!(steer);
         assert!(futures_util::poll!(steer.as_mut()).is_pending());
         assert!(s.state.lock().unwrap().display.is_empty());
@@ -729,7 +729,7 @@ async fn close_rejects_input_waiting_for_admission_before_cleanup_or_a_prior_inp
         let attachments = s.attachment_gate.lock().await;
         let pending = async {
             if steer {
-                runtime.steer(&s, "waiting owner input").await
+                runtime.steer(&s, "waiting owner input", None).await
             } else {
                 runtime
                     .submit(&s, "waiting result", true, true, None, None)
@@ -1083,7 +1083,7 @@ async fn omitted_queue_metadata_replays_ordered_original_envelopes() {
             .await
             .unwrap();
     }
-    runtime.steer(&s, "same text").await.unwrap();
+    runtime.steer(&s, "same text", None).await.unwrap();
     let originals = s
         .state
         .lock()
@@ -1266,7 +1266,7 @@ fn original_and_steer_acknowledgements_wait_for_private_preflight_dispatch() {
                     let (runtime, s) = (runtime.clone(), s.clone());
                     tokio::spawn(async move {
                         if steer {
-                            runtime.steer(&s, "owner steer").await
+                            runtime.steer(&s, "owner steer", None).await
                         } else {
                             runtime
                                 .submit(&s, "hidden followup", true, true, None, None)

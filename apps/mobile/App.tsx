@@ -57,7 +57,7 @@ import { chatPreview, shownRoom } from './src/core/routes'
 import { CONNECT_ORIGIN, parseConnectCallback } from './src/core/links'
 import { clearConnectSession, loadConnectSession, saveConnectSession } from './src/core/storage'
 import { connectGrant, request, RevokedError } from './src/core/transport'
-import type { Bot, ChatTool, ConnectDaemon } from './src/core/types'
+import type { Bot, ChatTool, ConnectDaemon, Section } from './src/core/types'
 WebBrowser.maybeCompleteAuthSession()
 const messageOf = (e: unknown) => (e instanceof Error ? e.message : String(e))
 const ms = (seconds: number | null | undefined) => (seconds == null ? undefined : seconds * 1000)
@@ -430,6 +430,7 @@ function MobileApp() {
     return {
       ...faceOf(b),
       id: b.name,
+      primary: b.primary === true,
       title: b.title,
       description: b.description,
       preview: chatPreview(b.name, mobile.sections, b.sections_recent),
@@ -865,6 +866,37 @@ function MobileApp() {
               }
         }
         onNewBot={demo ? undefined : () => setPanels([{ kind: 'bot-create' }])}
+        primaryChoice={
+          // A daemon from before the primary bot leaves `primary` out; an
+          // empty one is offered HexBot too, falling back on older daemons.
+          !demo && mobile.bots.every(b => b.primary === false)
+            ? {
+                onAdd: mobile.bots.some(b => b.name === 'hexbot')
+                  ? undefined
+                  : () =>
+                      act(async () => {
+                        const result = await mobile
+                          .rpc<{ bot: Bot; section: Section }>('hexbot.bots.create_primary', {})
+                          .catch(error => {
+                            if (!/unknown method|method not found/i.test(String(error))) throw error
+                            return mobile.rpc<{ bot: Bot; section: Section }>(
+                              'hexbot.bots.create',
+                              { name: 'hexbot', display_name: 'HexBot' }
+                            )
+                          })
+                        await mobile.refresh()
+                        await mobile.openSection(result.bot, result.section)
+                        // HexBot greets the user and says what it does, as it does on the web.
+                        await mobile
+                          .rpc('hexbot.bots.introduce', {
+                            name: result.bot.name,
+                            section: result.section.id
+                          })
+                          .catch(() => undefined)
+                      })
+              }
+            : null
+        }
         rooms={demo ? [] : rooms}
         roomId={roomId}
         onSelectRoom={id => setRoomId(id)}

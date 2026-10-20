@@ -54,8 +54,36 @@ pub fn open(home: &Path) -> Result<Connection> {
     crate::db::migrate_runtime(&conn)?;
     Ok(conn)
 }
+/// Separate from session directories so cleanup cannot replace a locked inode.
+/// Openers hold a shared lease through recovery and the process's lifetime.
+/// Adoption takes the exclusive lease without waiting, through catalog commit.
+pub(crate) fn conversation_lock(home: &Path, stored: &str) -> Result<fs::File> {
+    common::identifier(stored)?;
+    let dir = home.join("runtime/conversation-locks");
+    fs::create_dir_all(&dir)?;
+    Ok(fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(dir.join(stored))?)
+}
+pub(crate) fn conversation_lease(home: &Path, stored: &str) -> Result<fs::File> {
+    let file = conversation_lock(home, stored)?;
+    match file.try_lock_shared() {
+        Ok(()) => Ok(file),
+        Err(fs::TryLockError::WouldBlock) => Err(crate::Error::new(
+            4002,
+            "This conversation is moving to the bot's chat. Open the chat to continue.",
+        )),
+        Err(fs::TryLockError::Error(error)) => Err(error.into()),
+    }
+}
 pub fn history(home: &Path, stored: &str) -> Result<Vec<Value>> {
-    let conn = open(home)?;
+    history_with_conn(&open(home)?, stored)
+}
+/// Read the caller's native snapshot without opening or migrating a connection.
+pub(crate) fn history_with_conn(conn: &Connection, stored: &str) -> Result<Vec<Value>> {
     let mut stmt = conn.prepare(
         "SELECT m.message_json FROM native_messages m LEFT JOIN native_pi_journal p ON p.session_id=m.session_id AND p.projection_seq=m.seq WHERE m.session_id=? AND (p.active IS NULL OR p.active=1) ORDER BY m.seq",
     )?;
@@ -116,6 +144,7 @@ pub fn history_version(conn: &Connection, stored: &str) -> Result<i64> {
         .unwrap_or(0))
 }
 pub fn append(home: &Path, stored: &str, mut message: Value) -> Result<()> {
+    let _lease = conversation_lease(home, stored)?;
     let conn = open(home)?;
     check_deleted(&conn, stored)?;
     if message.get("timestamp").is_none() {
@@ -887,6 +916,7 @@ pub(crate) fn classify_dream_reports(
     stored: &str,
     reports: &BTreeSet<String>,
 ) -> Result<()> {
+    let _lease = conversation_lease(home, stored)?;
     let mut conn = open(home)?;
     let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
     for row in common::rows(
@@ -1292,7 +1322,8 @@ pub fn import_hermes(home: &Path, bot: &str, stored: &str, cwd: &Path) -> Result
 /// on the selected branch rather than transferring those generated summaries.
 /// Display history still includes reports, marked as output; usage stays on the
 /// original conversation and is never billed again for this copy.
-/// The caller reserves the target and owns cleanup, including internal errors.
+/// The caller holds the source's exclusive conversation lease through catalog
+/// publication, reserves the target and owns cleanup, including internal errors.
 pub(crate) fn fork_dream_chat(
     home: &Path,
     bot: &str,
@@ -1391,6 +1422,11 @@ pub(crate) fn fork_dream_chat(
         }
         let next = id();
         let mut copied = entry.clone();
+        // A new conversation must not inherit another conversation's client
+        // correlation key. The actual Pi message and source stay unchanged.
+        if let Some(seed) = copied.get_mut("hexbot").and_then(Value::as_object_mut) {
+            seed.remove("input_id");
+        }
         copied["id"] = json!(next);
         copied["parentId"] = parent;
         if copied["type"] == "message" {
@@ -1403,6 +1439,9 @@ pub(crate) fn fork_dream_chat(
     #[cfg(all(test, unix))]
     let mut first = true;
     for mut shown in original.into_iter().chain(missing_reports) {
+        if let Some(shown) = shown.as_object_mut() {
+            shown.remove("input_id");
+        }
         if dream_report_text(&shown).is_some_and(|text| reports.contains(&text)) {
             shown["dream"] = json!(true);
         }
@@ -1422,13 +1461,80 @@ pub(crate) fn fork_dream_chat(
 /// Commit display metadata before sending a prompt to Pi. Matching by final text
 /// survives a daemon crash between Pi's JSONL append and the message_end handler.
 pub fn stage_prompt(home: &Path, stored: &str, text: &str, display: &str) -> Result<String> {
+    stage_prompt_with_id(home, stored, text, display, None)
+}
+/// Correlation only. The existing intent key reserves the ID before enqueue.
+pub fn stage_prompt_with_id(
+    home: &Path,
+    stored: &str,
+    text: &str,
+    display: &str,
+    input_id: Option<&str>,
+) -> Result<String> {
     common::identifier(stored)?;
     if !matches!(display, "normal" | "hidden") {
         return Err(crate::Error::new(4202, "invalid prompt display kind"));
     }
-    let id = id();
-    open(home)?.execute("INSERT INTO native_prompt_intents(id,session_id,text,display_kind,created_at) VALUES (?,?,?,?,?)",params![id,stored,text,display,common::now()])?;
+    if let Some(input_id) = input_id {
+        validate_input_id(input_id)?;
+    }
+    let id = input_id.map(str::to_owned).unwrap_or_else(id);
+    let conn = open(home)?;
+    let inserted = conn.execute("INSERT OR IGNORE INTO native_prompt_intents(id,session_id,text,display_kind,created_at) VALUES (?,?,?,?,?)",params![id,stored,text,display,common::now()])?;
+    if inserted != 1 {
+        return Err(crate::Error::new(4202, "input_id is already reserved"));
+    }
     Ok(id)
+}
+pub(crate) fn validate_input_id(input_id: &str) -> Result<()> {
+    if !uuid::Uuid::try_parse(input_id).is_ok_and(|id| !id.is_nil() && id.to_string() == input_id) {
+        return Err(crate::Error::new(
+            4202,
+            "input_id must be a canonical nonzero UUID",
+        ));
+    }
+    Ok(())
+}
+pub(crate) fn check_input_id(home: &Path, input_id: &str) -> Result<()> {
+    validate_input_id(input_id)?;
+    if open(home)?.query_row(
+        "SELECT EXISTS(SELECT 1 FROM native_prompt_intents WHERE id=?)",
+        [input_id],
+        |r| r.get::<_, bool>(0),
+    )? {
+        return Err(crate::Error::new(4202, "input_id is already reserved"));
+    }
+    Ok(())
+}
+/// Reserve `input_id` for a row the daemon stores itself, such as manual
+/// `/compact`. The reservation names that row from the start, so no Pi user
+/// can take it by text and no later request can reuse the key.
+pub(crate) fn reserve_control(
+    home: &Path,
+    stored: &str,
+    text: &str,
+    display: &str,
+    input_id: &str,
+) -> Result<String> {
+    common::identifier(stored)?;
+    validate_input_id(input_id)?;
+    let row = id();
+    let inserted = open(home)?.execute(
+        "INSERT OR IGNORE INTO native_prompt_intents(id,session_id,text,display_kind,created_at,consumed_by) VALUES (?,?,?,?,?,?)",
+        params![input_id, stored, text, display, common::now(), row],
+    )?;
+    if inserted != 1 {
+        return Err(crate::Error::new(4202, "input_id is already reserved"));
+    }
+    Ok(row)
+}
+/// Frees a control reservation whose row was never stored.
+pub(crate) fn release_control(home: &Path, stored: &str, input_id: &str, row: &str) -> Result<()> {
+    open(home)?.execute(
+        "DELETE FROM native_prompt_intents WHERE id=? AND session_id=? AND consumed_by=?",
+        params![input_id, stored, row],
+    )?;
+    Ok(())
 }
 pub fn reject_prompt(home: &Path, stored: &str, intent: &str) -> Result<()> {
     open(home)?.execute(
@@ -1451,6 +1557,7 @@ pub fn project_seeded(
     display: Option<&str>,
     seed: Option<&Value>,
 ) -> Result<()> {
+    let _lease = conversation_lease(home, stored)?;
     common::identifier(stored)?;
     common::identifier(bot)?;
     let mut conn = open(home)?;
@@ -1604,15 +1711,49 @@ fn persist_pi_message(
     let journal = id();
     let raw = message.to_string();
     let mut display = display.map(str::to_owned);
+    let explicit = seed.and_then(|seed| seed.get("_input_intent"));
+    if explicit.is_some() && message["role"] != "user" {
+        return Err(crate::Error::new(
+            4202,
+            "input intent binding requires a user message",
+        ));
+    }
+    let mut bound = None;
     if message["role"] == "user" {
         let body = text(&message["content"]);
-        let intent: Option<(String, String)> = conn
+        let intent: Option<(String, String)> = if let Some(explicit) = explicit {
+            let intent = explicit
+                .as_str()
+                .ok_or_else(|| crate::Error::new(4202, "invalid input intent binding"))?;
+            let found: Option<(String, String)> = conn.query_row(
+                "SELECT i.id,i.display_kind FROM native_prompt_intents i JOIN native_sessions s ON s.stored_id=i.session_id WHERE i.id=? AND i.session_id=? AND i.consumed_by IS NULL AND s.owner=? AND s.bot=?",
+                params![intent,stored,owner,bot], |r| Ok((r.get(0)?,r.get(1)?))
+            ).optional()?;
+            // PR111 also uses an exact intent seed for legacy display policy.
+            // That selection alone is not proof of originating client identity,
+            // so an intent that is gone only loses its display kind.
+            if let Some(input_id) = seed.and_then(|seed| seed.get("input_id")) {
+                let found = found.as_ref().ok_or_else(|| {
+                    crate::Error::new(4202, "input intent does not belong to this conversation")
+                })?;
+                if input_id.as_str() != Some(found.0.as_str()) {
+                    return Err(crate::Error::new(
+                        4202,
+                        "input_id does not match its intent binding",
+                    ));
+                }
+                bound = Some(found.0.clone());
+            }
+            found
+        } else {
+            conn
             .query_row(
-                "SELECT id,display_kind FROM native_prompt_intents WHERE session_id=? AND consumed_by IS NULL AND (id=? OR (? IS NULL AND text=?)) ORDER BY created_at,rowid LIMIT 1",
-                params![stored, seed.and_then(|s| s["_input_intent"].as_str()), seed.and_then(|s| s["_input_intent"].as_str()), body],
+                "SELECT id,display_kind FROM native_prompt_intents WHERE session_id=? AND text=? AND consumed_by IS NULL ORDER BY created_at,rowid LIMIT 1",
+                params![stored, body],
                 |r| Ok((r.get(0)?, r.get(1)?)),
             )
-            .optional()?;
+            .optional()?
+        };
         if let Some((intent, kind)) = intent {
             display = Some(kind);
             conn.execute(
@@ -1624,11 +1765,13 @@ fn persist_pi_message(
     let mut projected = projection(message, display.as_deref());
     if let (Some(projected), Some(seed)) = (&mut projected, seed.and_then(Value::as_object)) {
         for (key, value) in seed {
-            if key == "_input_intent" {
-                continue;
+            if key != "_input_intent" && key != "input_id" {
+                projected[key] = value.clone();
             }
-            projected[key] = value.clone();
         }
+    }
+    if let (Some(projected), Some(bound)) = (&mut projected, bound) {
+        projected["input_id"] = json!(bound);
     }
     if let Some(projected) = &mut projected
         && message["role"] == "assistant"
@@ -1724,9 +1867,16 @@ fn legacy_projection(
     stored: &str,
     wanted: &Value,
 ) -> Result<Option<(i64, Value)>> {
+    // A control reservation consumes its daemon row_id, rather than a Pi
+    // journal_id. That row belongs to the control, never to a recovered user.
     let rows = common::rows(
         conn,
-        "SELECT m.seq,m.message_json FROM native_messages m WHERE m.session_id=? AND NOT EXISTS(SELECT 1 FROM native_pi_journal p WHERE p.session_id=m.session_id AND p.projection_seq=m.seq) ORDER BY seq",
+        "SELECT m.seq,m.message_json FROM native_messages m WHERE m.session_id=?
+         AND NOT EXISTS(SELECT 1 FROM native_pi_journal p WHERE p.session_id=m.session_id AND p.projection_seq=m.seq)
+         AND NOT EXISTS(SELECT 1 FROM native_prompt_intents i WHERE i.session_id=m.session_id
+             AND i.id=json_extract(m.message_json,'$.input_id')
+             AND i.consumed_by=json_extract(m.message_json,'$.row_id'))
+         ORDER BY seq",
         &[&stored],
     )?;
     for row in rows {
@@ -1760,6 +1910,7 @@ fn legacy_projection(
 /// context edits and compaction summaries never rewrite a user's displayed past.
 /// Billing includes all branches because those model calls already happened.
 pub fn reconcile(home: &Path, bot: &str, stored: &str, owner: &str) -> Result<()> {
+    let _lease = conversation_lease(home, stored)?;
     common::identifier(bot)?;
     common::identifier(stored)?;
     check_quarantine(home, stored)?;
@@ -2374,4 +2525,123 @@ fn check_deleted(conn: &Connection, stored: &str) -> Result<()> {
         return Err(crate::Error::new(4001, "The section was deleted"));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod identity_tests {
+    use super::*;
+
+    #[test]
+    fn legacy_projection_never_adopts_reserved_control_rows() {
+        let home = common::TestHome::new();
+        let input = "a0117bc9-546e-4279-8829-c52674176836";
+        let row = reserve_control(home.path(), "chat", "/compact", "normal", input).unwrap();
+        let control =
+            json!({"role":"user","text":"/compact","row_id":row,"input_id":input,"timestamp":1.0});
+        append(home.path(), "chat", control.clone()).unwrap();
+        let conn = open(home.path()).unwrap();
+        // Exclusion uses the reservation, regardless of text, time or an old
+        // seed's row_id. None of these can turn a control into a Pi occurrence.
+        for text in ["/compact", "different"] {
+            for timestamp in [json!(1.001), json!(100.0), Value::Null] {
+                for row_id in [json!(row), json!("pi-distinct-user"), Value::Null] {
+                    let wanted =
+                        json!({"role":"user","text":text,"timestamp":timestamp,"row_id":row_id});
+                    assert!(legacy_projection(&conn, "chat", &wanted).unwrap().is_none());
+                }
+            }
+        }
+        assert_eq!(history(home.path(), "chat").unwrap(), vec![control]);
+    }
+
+    #[test]
+    fn legacy_projection_adopts_ordinary_users_around_control_rows() {
+        for control_first in [false, true] {
+            let home = common::TestHome::new();
+            let input = "a0117bc9-546e-4279-8829-c52674176836";
+            let row = reserve_control(home.path(), "chat", "/compact", "normal", input).unwrap();
+            let control = json!({"role":"user","text":"/compact","row_id":row,"input_id":input,"timestamp":1.0});
+            let legacy = json!({"role":"user","text":"/compact","row_id":"legacy-user","timestamp":1.0,"display_kind":"hidden"});
+            let rows = if control_first {
+                [control, legacy.clone()]
+            } else {
+                [legacy.clone(), control]
+            };
+            for row in rows {
+                append(home.path(), "chat", row).unwrap();
+            }
+            let found = legacy_projection(
+                &open(home.path()).unwrap(),
+                "chat",
+                &json!({"role":"user","text":"/compact","timestamp":1.001}),
+            )
+            .unwrap()
+            .unwrap();
+            assert_eq!(found.1, legacy);
+            assert_eq!(found.0, if control_first { 2 } else { 1 });
+        }
+    }
+
+    #[test]
+    fn fork_keeps_source_metadata_but_does_not_transfer_client_correlation() {
+        let home = common::TestHome::new();
+        crate::db::migrate(home.path()).unwrap();
+        let user = json!({"role":"user","content":"same","timestamp":1000});
+        let report = json!({"role":"assistant","content":[{"type":"text","text":"REPORT"}],"timestamp":1001,"stopReason":"stop"});
+        let dir = session_dir(home.path(), "source").unwrap();
+        let path = dir.join("conversation.jsonl");
+        let lines = [
+            json!({"type":"session","version":3,"id":"source","timestamp":"2026-10-18T00:00:00Z","cwd":home.workspace()}),
+            json!({"type":"message","id":"u","parentId":null,"message":user,"hexbot":{"input_id":"client-key"}}),
+            json!({"type":"message","id":"a","parentId":"u","message":report}),
+        ];
+        let bytes = lines
+            .iter()
+            .map(Value::to_string)
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n";
+        fs::write(&path, &bytes).unwrap();
+        append(home.path(),"source",json!({"role":"user","text":"same","content":"same","input_id":"client-key","timestamp":1.0,"row_id":"source-row","display_kind":"normal"})).unwrap();
+        append(
+            home.path(),
+            "source",
+            json!({"role":"assistant","text":"REPORT","timestamp":1.001,"dream":true}),
+        )
+        .unwrap();
+        let before = history(home.path(), "source").unwrap();
+        let lease = conversation_lock(home.path(), "source").unwrap();
+        lease.try_lock().unwrap();
+        assert!(
+            fork_dream_chat(
+                home.path(),
+                "owl",
+                "alice",
+                "source",
+                "target",
+                &HashSet::from(["REPORT".into()])
+            )
+            .unwrap()
+        );
+        let target = history(home.path(), "target").unwrap();
+        assert_eq!(target.iter().filter(|row| row["role"] == "user").count(), 1);
+        assert!(target.iter().all(|row| row.get("input_id").is_none()));
+        assert_eq!(history(home.path(), "source").unwrap(), before);
+        assert_eq!(fs::read_to_string(&path).unwrap(), bytes);
+        let copied = fs::read_to_string(
+            session_dir(home.path(), "target")
+                .unwrap()
+                .join("conversation.jsonl"),
+        )
+        .unwrap();
+        assert!(!copied.contains("input_id"));
+        let messages = copied
+            .lines()
+            .map(|line| serde_json::from_str::<Value>(line).unwrap())
+            .filter(|entry| entry["type"] == "message")
+            .collect::<Vec<_>>();
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0]["message"], user);
+        assert_eq!(usage(home.path(), "target").unwrap()["total_tokens"], 0);
+    }
 }

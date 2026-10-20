@@ -486,7 +486,12 @@ impl Runtime {
         Ok(())
     }
 
-    pub(super) async fn steer(&self, s: &Arc<Live>, text: &str) -> Result<Value> {
+    pub(super) async fn steer(
+        &self,
+        s: &Arc<Live>,
+        text: &str,
+        input_id: Option<&str>,
+    ) -> Result<Value> {
         if text.trim().is_empty() {
             return Err(Error::new(4200, "missing parameter: text"));
         }
@@ -523,7 +528,9 @@ impl Runtime {
                     // must start a run so it cannot strand display metadata.
                     let fresh = !state.busy;
                     let command = json!({"type":if fresh {"prompt"} else {"steer"},"message":text});
-                    let intent = store::stage_prompt(&self.home, &s.stored, text, "normal")?;
+                    let intent = store::stage_prompt_with_id(
+                        &self.home, &s.stored, text, "normal", input_id,
+                    )?;
                     let reply = match s.process.try_input(&command, &intent) {
                         Ok(reply) => reply,
                         Err(error) => {
@@ -569,6 +576,7 @@ impl Runtime {
                     .upgrade()
                     .ok_or_else(|| Error::new(5201, "daemon is stopping"))?;
                 let s = s.clone();
+                let echo = input_id.is_some();
                 return tokio::spawn(async move {
                     let response =
                         Self::input_preflight(&s, &intent, reply)
@@ -605,7 +613,13 @@ impl Runtime {
                     };
                     s.run_ended.send_modify(|v| *v += 1);
                     rejected?;
-                    response.map(|()| json!({"status":"queued"}))
+                    response.map(|()| {
+                        let mut result = json!({"status":"queued"});
+                        if echo {
+                            result["input_id"] = json!(intent);
+                        }
+                        result
+                    })
                 })
                 .await
                 .map_err(|error| Error::new(5201, error.to_string()))?;

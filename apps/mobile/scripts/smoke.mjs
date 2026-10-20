@@ -23,6 +23,7 @@ const workspace = await mkdtemp(path.join(tmpdir(), 'hexbot-mobile-workspace-'))
 await mkdir(artifacts, { recursive: true })
 const errors = []
 const modelRequests = []
+let retainedUploadPath
 let daemon,
   browser,
   page,
@@ -86,7 +87,9 @@ const model = createServer(async (req, res) => {
             }
           : !toolAnswered && prompt.includes('Ask for approval')
             ? { name: 'write', args: { path: 'mobile-approval.txt', content: 'approved' } }
-            : null
+            : !toolAnswered && prompt.startsWith('Read the other app attachment')
+              ? { name: 'read', args: { path: retainedUploadPath } }
+              : null
     const answer = prompt.startsWith('Room: ')
       ? 'The mobile room is working. @user your team is ready.'
       : /native|Hello from/i.test(prompt)
@@ -95,12 +98,14 @@ const model = createServer(async (req, res) => {
           ? 'Questions answered on mobile.'
           : prompt.includes('Show a visual')
             ? 'The mobile visual is ready.'
-            : prompt.includes('Read the attachment') ||
-                prompt.includes('Please review the attached files.')
-              ? 'The mobile attachment reached Pi.'
-              : prompt.includes('Ask for approval')
-                ? 'The mobile approval reached Pi.'
-                : 'Your daemon received this from mobile. The connection is working.'
+            : prompt.startsWith('Read the other app attachment')
+              ? 'The other app attachment reached Pi.'
+              : prompt.includes('Read the attachment') ||
+                  prompt.includes('Please review the attached files.')
+                ? 'The mobile attachment reached Pi.'
+                : prompt.includes('Ask for approval')
+                  ? 'The mobile approval reached Pi.'
+                  : 'Your daemon received this from mobile. The connection is working.'
     res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' })
     const frame = (delta, finish_reason = null) =>
       JSON.stringify({
@@ -441,6 +446,7 @@ try {
     name: 'left-behind.txt',
     data_url: 'data:text/plain;base64,' + Buffer.from('Not for this message.').toString('base64')
   })
+  retainedUploadPath = left.path
   await page.getByTestId('chat-send').click()
   await expect(page.getByText('The mobile attachment reached Pi.', { exact: true })).toBeVisible({
     timeout: 30000
@@ -448,11 +454,56 @@ try {
   assert.match(JSON.stringify(modelRequests.at(-1).messages), /brief\.txt/)
   assert.match(JSON.stringify(modelRequests.at(-1).messages), /Please review the attached files\./)
   assert.doesNotMatch(JSON.stringify(modelRequests.at(-1).messages), /left-behind\.txt/)
-  await access(left.path).then(
-    () => assert.fail('The daemon must drop a staged file the message did not name'),
-    () => {}
-  )
+  // Exact selection keeps the other app's upload available, with its bytes intact.
+  const retainedText = await readFile(left.path, 'utf8')
+  assert.equal(retainedText, 'Not for this message.')
   await expect(page.getByText('brief.txt', { exact: true })).not.toBeVisible()
+  await expect
+    .poll(async () => (await rpc('session.status', { session_id: live })).status)
+    .toBe('idle')
+  const otherSubmit = {
+    session_id: live,
+    text: 'Read the other app attachment',
+    attachments: [left.id]
+  }
+  // The same paired app that staged it submits the returned ID through real RPC.
+  const otherAck = await rpc('prompt.submit', otherSubmit)
+  await expect(page.getByText('The other app attachment reached Pi.', { exact: true })).toBeVisible(
+    {
+      timeout: 30000
+    }
+  )
+  const otherRequest = modelRequests.at(-1)
+  const otherUserIndex = otherRequest.messages.findLastIndex(m => m.role === 'user')
+  const otherUser = textOf(otherRequest.messages[otherUserIndex].content)
+  // Check only the new user. The previous mobile file remains in cached context.
+  assert.match(otherUser, /^Read the other app attachment/)
+  assert.match(otherUser, /left-behind\.txt/)
+  assert.doesNotMatch(otherUser, /brief\.txt|Please review the attached files\./)
+  const otherTools = otherRequest.messages.slice(otherUserIndex + 1).filter(m => m.role === 'tool')
+  assert.equal(otherTools.length, 1)
+  assert.match(textOf(otherTools[0].content), /Not for this message\./)
+  await expect
+    .poll(async () => (await rpc('session.status', { session_id: live })).status)
+    .toBe('idle')
+  let repeatedError
+  await assert.rejects(rpc('prompt.submit', otherSubmit), error => {
+    repeatedError = error.message
+    return /"code":4204/.test(error.message)
+  })
+  const otherUsers = (await rpc('session.history', { session_id: live })).messages.filter(
+    m => m.role === 'user' && m.text.startsWith(otherSubmit.text)
+  )
+  assert.equal(otherUsers.length, 1)
+  await shot('paired-upload')
+  await writeFile(
+    path.join(artifacts, 'paired-upload.json'),
+    JSON.stringify(
+      { left, retainedText, otherSubmit, otherAck, otherRequest, repeatedError, otherUsers },
+      null,
+      2
+    ) + '\n'
+  )
   await page.getByTestId('chat-input').fill('Ask for approval')
   await page.getByTestId('chat-send').click()
   const allowOnce = page.locator('[data-testid^="approval-"][data-testid$="-once"]')
@@ -699,6 +750,7 @@ try {
       'batched questions, multiple choices and explicit retention of attached files',
       'sandboxed bot visual',
       'attachment-only send delivered to Pi, clears chips after acceptance, and leaves out a file staged by another app',
+      'retained paired-app upload keeps its bytes and submits exactly once without the mobile file',
       'approval gates a real file write',
       'bot feed, and one chat per bot opened from its row',
       'model menu lists connected providers from their live lists and shows the level the model runs at',
@@ -738,6 +790,11 @@ try {
   )
   throw e
 } finally {
+  await writeFile(
+    path.join(artifacts, 'model-requests.json'),
+    JSON.stringify(modelRequests, null, 2) + '\n'
+  )
+  await writeFile(path.join(artifacts, 'daemon.log'), daemonLog)
   socket?.close()
   await browser?.close()
   if (daemon && daemon.exitCode === null) {
