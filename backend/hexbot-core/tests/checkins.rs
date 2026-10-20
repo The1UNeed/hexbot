@@ -6,6 +6,10 @@ use serde_json::{Value, json};
 use std::{fs, sync::Arc, time::Duration};
 mod support;
 
+/// How long a test waits for an event before it fails. Each check-in starts a
+/// Pi process, and test runs side by side can make that take many seconds.
+const WAIT: Duration = Duration::from_secs(60);
+
 /// A prompt that is a JSON `{tool, args}` calls that daemon tool. A check-in
 /// whose prompt carries `send: TEXT` messages the user with TEXT, one carrying
 /// `crash:` fails like a model outage, and any other stays quiet.
@@ -82,7 +86,7 @@ async fn call_tool(app: &Arc<App>, live: &str, tool: &str, args: Value) -> Strin
     )
     .await
     .unwrap();
-    tokio::time::timeout(Duration::from_secs(10), async {
+    tokio::time::timeout(WAIT, async {
         loop {
             let event = events.recv().await.unwrap();
             let params = &event.frame["params"];
@@ -99,7 +103,7 @@ async fn call_tool(app: &Arc<App>, live: &str, tool: &str, args: Value) -> Strin
 async fn tick(app: &Arc<App>, at: f64) -> Value {
     let mut events = app.events.subscribe();
     app.dreaming.tick_at(at).await.unwrap();
-    tokio::time::timeout(Duration::from_secs(10), async {
+    tokio::time::timeout(WAIT, async {
         loop {
             let status = app
                 .call("local", "hexbot.checkins.status", &json!({}))
@@ -407,7 +411,7 @@ async fn only_the_primary_bot_checks_in_and_only_a_check_in_messages_the_user() 
             .code,
         4243
     );
-    tokio::time::timeout(Duration::from_secs(10), async {
+    tokio::time::timeout(WAIT, async {
         loop {
             let status = app
                 .call("local", "hexbot.checkins.status", &json!({}))
@@ -439,14 +443,20 @@ async fn a_wake_up_waits_a_few_minutes_after_the_last_check_in() {
     app.call("local", "hexbot.checkins.run_now", &json!({}))
         .await
         .unwrap();
-    while app
-        .call("local", "hexbot.checkins.status", &json!({}))
-        .await
-        .unwrap()["running"]
-        == true
-    {
-        while events.recv().await.unwrap().frame["params"]["type"] != "hexbot.checkins.changed" {}
-    }
+    tokio::time::timeout(WAIT, async {
+        while app
+            .call("local", "hexbot.checkins.status", &json!({}))
+            .await
+            .unwrap()["running"]
+            == true
+        {
+            while events.recv().await.unwrap().frame["params"]["type"] != "hexbot.checkins.changed"
+            {
+            }
+        }
+    })
+    .await
+    .unwrap();
     let live = open(&app, created["section"]["id"].as_str().unwrap()).await;
     call_tool(
         &app,
@@ -479,13 +489,15 @@ async fn check_in_now_takes_the_wake_ups_already_due() {
     set(&app, json!({"checkin_enabled": false})).await;
     let live = open(&app, created["section"]["id"].as_str().unwrap()).await;
     let now = common::now();
-    call_tool(
+    // Well over the minute the tool asks for: a slow turn must not push it under.
+    let reply = call_tool(
         &app,
         &live,
         "hexbot_wakeups",
-        json!({"action":"add","at":rfc3339(now + 61.0),"note":"send: The essay is due at 9 AM."}),
+        json!({"action":"add","at":rfc3339(now + 600.0),"note":"send: The essay is due at 9 AM."}),
     )
     .await;
+    assert!(reply.contains("\"wakeup\""), "{reply}");
     // Check-ins are off, so only Check in now runs it, once it is due.
     db::open(h.path())
         .unwrap()
@@ -495,12 +507,16 @@ async fn check_in_now_takes_the_wake_ups_already_due() {
     app.call("local", "hexbot.checkins.run_now", &json!({}))
         .await
         .unwrap();
-    let message = loop {
-        let event = events.recv().await.unwrap();
-        if event.frame["params"]["type"] == "hexbot.checkins.message" {
-            break event.frame["params"]["payload"]["text"].clone();
+    let message = tokio::time::timeout(WAIT, async {
+        loop {
+            let event = events.recv().await.unwrap();
+            if event.frame["params"]["type"] == "hexbot.checkins.message" {
+                return event.frame["params"]["payload"]["text"].clone();
+            }
         }
-    };
+    })
+    .await
+    .unwrap();
     assert_eq!(message, "The essay is due at 9 AM.");
     let waiting: i64 = db::open(h.path())
         .unwrap()
@@ -536,7 +552,7 @@ async fn a_wake_up_too_late_to_run_leaves_the_open_tab() {
         .tick_at(now + 600.0 + 7.0 * 3600.0)
         .await
         .unwrap();
-    tokio::time::timeout(Duration::from_secs(5), async {
+    tokio::time::timeout(WAIT, async {
         while events.recv().await.unwrap().frame["params"]["type"] != "hexbot.checkins.changed" {}
     })
     .await
@@ -585,7 +601,7 @@ async fn the_primary_bot_asks_before_it_cancels_a_wake_up() {
     )
     .await
     .unwrap();
-    let text = tokio::time::timeout(Duration::from_secs(10), async {
+    let text = tokio::time::timeout(WAIT, async {
         loop {
             let event = events.recv().await.unwrap();
             let params = &event.frame["params"];
