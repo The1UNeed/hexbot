@@ -104,7 +104,9 @@ before uploads move or Pi receives the command. Invalid or already reserved
 IDs return 4202 without taking another intent or changing staged uploads.
 Successful staged submissions echo a supplied `input_id`; callers that omit
 it retain the original response shape. This is correlation only, with no
-idempotency, retry or automatic resend promise.
+idempotency, retry or automatic resend promise. A refusal from Pi returns
+5201. When the bot's process fails before Pi answers, the reply is 5200:
+Pi may already have taken the message.
 
 Manual `/compact` is a daemon command, not a Pi user or operation. It sends
 no uploads; staged files stay staged. A supplied `input_id` is reserved

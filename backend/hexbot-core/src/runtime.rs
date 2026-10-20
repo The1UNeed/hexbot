@@ -1666,7 +1666,15 @@ impl Runtime {
             .process
             .input(&mut command, &intent)
             .await
-            .map_err(pi_error)
+            .map_err(|error| match error {
+                // Pi never received these, so it took nothing.
+                crate::pi::PiError::Capacity
+                | crate::pi::PiError::InvalidCommand(_)
+                | crate::pi::PiError::Configuration(_) => pi_error(error),
+                // The command may have reached Pi before the connection failed,
+                // so whether it took the message is unknown: not a refusal.
+                error => Error::new(5200, error.to_string()),
+            })
             .and_then(|reply| {
                 if reply.success {
                     Ok(())

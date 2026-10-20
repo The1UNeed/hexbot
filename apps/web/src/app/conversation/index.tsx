@@ -830,8 +830,9 @@ async function submitOrReopen(
       const message = failure instanceof Error ? failure.message : String(failure)
 
       if (identified) {
-        // 5200 can be a title-save error after acceptance. Transport failures and
-        // arbitrary error objects also prove nothing about whether Pi took input.
+        // 5201 is Pi's refusal. 5200 can be a bot lost before it answered or a
+        // title-save error after acceptance. Transport failures and arbitrary
+        // error objects also prove nothing about whether Pi took input.
         const rejected =
           failure instanceof JsonRpcGatewayError &&
           [4002, 4200, 4202, 5201].includes(failure.code ?? 0)

@@ -1999,3 +1999,28 @@ async fn retained_uploads_survive_refresh_and_obey_quota_and_explicit_cleanup() 
         runtime.shutdown().await;
     }
 }
+
+#[tokio::test]
+async fn a_bot_lost_before_acknowledging_input_leaves_its_acceptance_unknown() {
+    let home = setup();
+    let executable = identity_pi(home.path());
+    let source = fs::read_to_string(&executable).unwrap().replace(
+        "const c=JSON.parse(line);",
+        "const c=JSON.parse(line);if(c.type==='prompt'&&c.message==='vanish'){process.exit(1);}",
+    );
+    fs::write(&executable, source).unwrap();
+    let runtime = Runtime::new(home.path().into(), EventHub::new(), executable).unwrap();
+    let live = open(&runtime, "alice").await["section"]["live_session_id"].clone();
+    let error = runtime
+        .call(
+            "alice",
+            "prompt.submit",
+            &json!({"session_id":live,"text":"vanish","input_id":INPUT}),
+        )
+        .await
+        .unwrap()
+        .unwrap_err();
+    // Pi may have taken the message before it stopped: 5201 would say it refused.
+    assert_eq!(error.code, 5200, "{}", error.message);
+    runtime.shutdown().await;
+}
