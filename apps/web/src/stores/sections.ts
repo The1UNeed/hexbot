@@ -44,6 +44,7 @@ function clarifySettled(transcript: Transcript | undefined, requestId: string | 
 
 async function openSnapshot(id: string) {
   const revision = transcriptRevision()
+  const previous = useTranscripts.getState().bySession
   let snapshot = await sectionsOpen(id)
   let pendingClarifies = snapshot.pending_clarify ? [snapshot.pending_clarify] : []
   const live = snapshot.section.live_session_id
@@ -94,6 +95,28 @@ async function openSnapshot(id: string) {
   pendingClarifies = pendingClarifies.filter(
     pending => !clarifySettled(current, pending.request_id)
   )
+
+  // No pending question is authoritative, even if this client missed its answer.
+  // A single pending question is not an inventory: siblings can still be waiting.
+  const before = currentLive ? previous[currentLive] : undefined
+
+  if (!snapshot.pending_clarify && before?.sectionId === id && current?.epoch === before.epoch) {
+    for (const card of before.clarifies.filter(clarifyWaiting)) {
+      if (
+        current.clarifies.includes(card) &&
+        !current.waitingRequests?.some(
+          request =>
+            request.kind === 'clarify' &&
+            request.requestId === card.requestId &&
+            request.revision > revision
+        )
+      ) {
+        useTranscripts.getState().clarifyExpire(current.sessionId, card.requestId, {
+          preserveEvidence: true
+        })
+      }
+    }
+  }
 
   return { pendingClarifies, revision, snapshot }
 }

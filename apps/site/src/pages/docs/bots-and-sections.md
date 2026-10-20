@@ -31,6 +31,8 @@ Waiting means a bot needs your answer. If another question or approval still nee
 
 Reopening restores pending approvals and questions. Answering in another connected app or browser updates the matching card here too. If more than one answer is needed, each card stays available until it is answered or expires. The bot also shows Waiting when a room or teammate conversation needs your answer.
 
+If an answer update was missed, reopening the section clears old question cards once the daemon confirms no questions are pending. Answers stay in the conversation history.
+
 Soul, selected skills, tool definitions, and the teammate list stay fixed for an existing conversation. Start a new section after changing them so the bot receives the new setup. Credentials and runtime settings can update separately; a temporary section model override does not change the bot's default model.
 
 The context meter at the top right of a section shows how much of the model's context window the conversation fills, as a percentage, with the plain numbers on hover. A tick on its bar marks the summary point: when the conversation exceeds it, Hexbot summarises the older messages so the section can go on, and the pill reads "Summarising" while that happens. If the model's window is too small to keep any messages before that point, the tooltip says older messages are summarised after every reply. After a summary, the meter reads "Context" until the next reply is measured, even after the daemon restarts. The summary keeps the thread of the work but not every detail, and a long section makes the bot slower and less accurate, so when the meter is high, start a new section for the next task. The bot can still search earlier sections when it needs them.

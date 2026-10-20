@@ -309,6 +309,10 @@ roster shows only the title.
   waiting while another card still needs an answer. `pending_clarify`
   names one pending question; a different ID does not prove that an earlier
   question settled. Match answers and expiry to their own `request_id`.
+  When `pending_clarify` is absent, no questions were pending at the snapshot.
+  Clients retire unanswered cards retained from before that read, including
+  after a missed answer event, while preserving requests received or replayed
+  during the read and cards from a replacement session.
   Opening can overlap a rename, archive or restore. Clients keep completed
   edits while accepting the live session and history; a successful delete,
   including one reported by another connected client, fences earlier opens
