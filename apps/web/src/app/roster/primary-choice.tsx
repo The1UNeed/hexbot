@@ -49,6 +49,8 @@ export function PrimaryChoice({
         onCreated(bot, section, true)
       } else {
         const { bot } = await botsSetPrimary(chosen)
+        // The bot's chat takes the new tools with its next message. An older
+        // daemon makes a new section, as its older ones keep their tools.
         const { section } = await sectionsCreate(bot.name)
         await botsActions().refresh()
         onCreated(bot, section, false)
