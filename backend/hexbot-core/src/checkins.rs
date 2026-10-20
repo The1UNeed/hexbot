@@ -601,64 +601,27 @@ pub(crate) fn notify(
         // section shows it under its history row id.
         json!({"bot":bot,"section_id":section,"id":id,"row_id":row,"timestamp":now,"text":message}),
     );
-    push_later(home, owner, bot, &section);
+    push_later(home, &id);
     Ok(json!({"sent":true,"section":section}))
 }
 
 /// Phones get a push with no message text: Connect relays it, and chat never
 /// passes through Connect. The bot's Notify me switch silences it, as it does
 /// the app's notifications; the message still lands in the section.
-fn push_later(home: &Path, owner: &str, bot: &str, section: &str) {
+pub(super) fn push_later(home: &Path, message: &str) {
     let Ok(handle) = tokio::runtime::Handle::try_current() else {
         return;
     };
-    let (home, owner, bot, section) = (
-        home.to_owned(),
-        owner.to_owned(),
-        bot.to_owned(),
-        section.to_owned(),
-    );
+    let (home, message) = (home.to_owned(), message.to_owned());
     handle.spawn(async move {
-        if let Err(error) = push(&home, &owner, &bot, &section).await {
+        if let Err(error) = push(&home, &message).await {
             eprintln!("Check-in push: {}", error.message);
         }
     });
 }
 
-async fn push(home: &Path, owner: &str, bot: &str, section: &str) -> Result<()> {
-    let targets = {
-        let conn = db::open(home)?;
-        let notify: bool = conn
-            .query_row("SELECT notify=1 FROM bots WHERE name=?", [bot], |r| {
-                r.get(0)
-            })
-            .optional()?
-            .unwrap_or(false);
-        if !notify {
-            return Ok(());
-        }
-        // Each phone learns which of its saved daemons to open from its own device id.
-        common::rows(
-            &conn,
-            "SELECT id,push_token FROM devices WHERE owner_id=? AND revoked_at IS NULL AND push_token IS NOT NULL",
-            &[&owner],
-        )?
-        .into_iter()
-        .filter_map(|r| Some(json!({"token":r["push_token"].as_str()?,"device":r["id"].as_str()?})))
-        .collect::<Vec<_>>()
-    };
-    if targets.is_empty() {
-        return Ok(());
-    }
-    // Connect takes 20 targets a request.
-    let mut gone = vec![];
-    let mut tickets = vec![];
-    for batch in targets.chunks(20) {
-        let (lost, sent) = crate::services::push(home, batch, section).await?;
-        gone.extend(lost);
-        tickets.extend(sent);
-    }
-    forget_tokens(home, &gone)?;
+async fn push(home: &Path, message: &str) -> Result<()> {
+    let tickets = send_push(home, message).await?;
     // An app removed from a phone shows only in the receipt, once Apple or
     // Google answer Expo; ask then, and forget those tokens too.
     if !tickets.is_empty() {
@@ -685,6 +648,60 @@ async fn push(home: &Path, owner: &str, bot: &str, section: &str) -> Result<()> 
         }
     }
     Ok(())
+}
+
+/// Sends a message's push once and records that it went, whether or not
+/// Connect took it; a message the daemon stopped before sending is sent at
+/// start (`recover`). Returns Expo's tickets.
+async fn send_push(home: &Path, message: &str) -> Result<Vec<Value>> {
+    let (row, targets) = {
+        let conn = db::open(home)?;
+        let Some(row) = common::rows(
+            &conn,
+            "SELECT m.owner_id,m.section_id,COALESCE(b.notify=1,0) AS notify FROM checkin_messages m LEFT JOIN bots b ON b.name=m.bot WHERE m.id=? AND m.pushed_at IS NULL",
+            &[&message],
+        )?
+        .pop() else {
+            return Ok(vec![]);
+        };
+        // Each phone learns which of its saved daemons to open from its own device id.
+        let targets = if row["notify"] == 1 {
+            common::rows(
+                &conn,
+                "SELECT id,push_token FROM devices WHERE owner_id=? AND revoked_at IS NULL AND push_token IS NOT NULL",
+                &[&row["owner_id"].as_str().unwrap_or("")],
+            )?
+            .into_iter()
+            .filter_map(|r| Some(json!({"token":r["push_token"].as_str()?,"device":r["id"].as_str()?})))
+            .collect::<Vec<_>>()
+        } else {
+            vec![]
+        };
+        (row, targets)
+    };
+    let section = row["section_id"].as_str().unwrap_or("");
+    // Connect takes 20 targets a request.
+    let mut gone = vec![];
+    let mut tickets = vec![];
+    let mut sent = Ok(());
+    for batch in targets.chunks(20) {
+        match crate::services::push(home, batch, section).await {
+            Ok((lost, ticket)) => {
+                gone.extend(lost);
+                tickets.extend(ticket);
+            }
+            Err(error) => {
+                sent = Err(error);
+                break;
+            }
+        }
+    }
+    db::open(home)?.execute(
+        "UPDATE checkin_messages SET pushed_at=? WHERE id=?",
+        params![common::now(), message],
+    )?;
+    forget_tokens(home, &gone)?;
+    sent.map(|()| tickets)
 }
 
 fn forget_tokens(home: &Path, tokens: &[String]) -> Result<()> {
@@ -885,8 +902,10 @@ fn finish(home: &Path, id: &str, status: &str, summary: &str) -> Result<()> {
 
 /// At start: a check-in the daemon stopped in the middle of failed, and its
 /// wake-ups wait for the next one. A message recorded just before the daemon
-/// stopped, but not yet shown, is shown now.
-pub(super) fn recover(home: &Path) -> Result<()> {
+/// stopped, but not yet shown, is shown now. Returns the messages whose push
+/// never went, for the caller to send; no app is connected yet to hear the
+/// message event, and each finds the Check-ins section unread instead.
+pub(super) fn recover(home: &Path) -> Result<Vec<String>> {
     let store = runtime_store::open(home)?;
     // Every message kept (30 days at most), however long the daemon was off.
     for row in common::rows(
@@ -929,7 +948,14 @@ pub(super) fn recover(home: &Path) -> Result<()> {
             "Daemon stopped before the check-in finished",
         )?;
     }
-    Ok(())
+    Ok(common::rows(
+        &db::open(home)?,
+        "SELECT id FROM checkin_messages WHERE text<>'' AND pushed_at IS NULL ORDER BY created_at",
+        &[],
+    )?
+    .into_iter()
+    .filter_map(|r| r["id"].as_str().map(str::to_owned))
+    .collect())
 }
 
 impl Dreaming {
@@ -1457,6 +1483,41 @@ mod tests {
         assert_eq!(shown.len(), 1, "{shown:?}");
         assert_eq!(shown[0]["row_id"], "checkin-m");
         assert_eq!(shown[0]["text"], "Due tonight.");
+    }
+
+    #[test]
+    fn a_message_the_daemon_stopped_before_pushing_is_pushed_at_start() {
+        let home = tempfile::tempdir().unwrap();
+        db::migrate(home.path()).unwrap();
+        db::open(home.path())
+            .unwrap()
+            .execute_batch(
+                "INSERT INTO bots(name,owner_id) VALUES ('hexbot','local');
+                 INSERT INTO checkins(id,owner_id,bot,kind,started_at,status) VALUES ('c','local','hexbot','heartbeat',1,'running');",
+            )
+            .unwrap();
+        // No async runtime here, so the push never starts: as if the daemon
+        // stopped right after saving the message.
+        let sent = notify(
+            home.path(),
+            &EventHub::new(),
+            "local",
+            "hexbot",
+            "c",
+            "Due tonight.",
+        )
+        .unwrap();
+        assert_eq!(sent["sent"], true);
+        let unpushed = recover(home.path()).unwrap();
+        assert_eq!(unpushed.len(), 1);
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(send_push(home.path(), &unpushed[0]))
+            .unwrap();
+        // Sent once: the next start has nothing to send.
+        assert!(recover(home.path()).unwrap().is_empty());
     }
 
     #[test]

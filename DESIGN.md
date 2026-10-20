@@ -146,7 +146,9 @@ more freedom and more capability than a hosted product can offer.
   Check-ins section shows it at once, and the app and browsers notify. Phones
   get a push through Hex Connect in Connect's own words, with the section and
   the phone's device id to open it on, never the message. The bot's Notify me
-  switch silences both; the message still lands in the section.
+  switch silences both; the message still lands in the section. If the
+  daemon stops after saving a message but before showing it or sending its
+  push (`checkin_messages.pushed_at`), it does both at its next start.
 - The message reaches the section's context with the user's next message
   there: the extension adds it after that message (`before_agent_start`), so
   the cached prefix and the frozen prompt stay intact. Each message is fenced
