@@ -711,8 +711,13 @@ export function Management({
                       const result = await rpc<{ bot: Bot }>('hexbot.bots.set_primary', {
                         name: bot.name
                       })
-                      // Its chat takes the new tools with the next message.
-                      await mobile.openSection(result.bot)
+                      // The bot's chat takes the new tools with its next message. An
+                      // older daemon makes a new section, as its older ones keep theirs.
+                      const { section } = await rpc<{ section: Section }>(
+                        'hexbot.sections.create',
+                        { bot: bot.name }
+                      )
+                      await mobile.openSection(result.bot, section)
                     })
                   : null}
                 {/* The primary bot stays; the daemon refuses to delete it too. */}

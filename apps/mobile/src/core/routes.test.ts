@@ -47,6 +47,28 @@ describe("a bot's chat", () => {
     expect(await botChat(rpc, 'ada', true, new Map())).toEqual({ section: section('made') })
     expect(methods()).toEqual(['hexbot.sections.create'])
   })
+  it('opens a section made for the primary bot on either daemon, and Check-ins as itself', async () => {
+    // Make primary opens the section create returned: the chat now, a new one before.
+    const made = said('made')
+    const modern = daemon([said('older')])
+    expect(await botChat(modern.rpc, 'ada', true, new Map(), made)).toEqual({
+      section: section('made')
+    })
+    expect(modern.methods()).toEqual(['hexbot.sections.create'])
+    const older = daemon([said('older'), made])
+    expect(await botChat(older.rpc, 'ada', false, new Map(), made)).toEqual({ section: made })
+    expect(older.calls.at(-1)).toEqual(['hexbot.sections.unarchive', { id: 'made' }])
+    // A tapped check-in opens Check-ins, never the chat, and it is never picked as the chat.
+    const checkins = said('checkins', { purpose: 'checkins', updated_at: 9 } as Partial<Section>)
+    const tapped = daemon([checkins, said('chat')])
+    expect(await botChat(tapped.rpc, 'ada', true, new Map(), checkins)).toEqual({
+      section: checkins
+    })
+    expect(tapped.methods()).toEqual([])
+    expect(await botChat(tapped.rpc, 'ada', false, new Map())).toEqual({
+      section: { ...said('chat'), archived_at: null }
+    })
+  })
   it('is asked for on an older daemon rather than guess which section is its Dreams log', async () => {
     // A real conversation, and a newer log the user renamed: the list cannot tell them apart.
     const sections = [
