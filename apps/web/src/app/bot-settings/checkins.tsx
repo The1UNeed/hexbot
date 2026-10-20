@@ -59,6 +59,7 @@ export function CheckinsTab({ bot }: { bot: Bot }) {
   const cancel = useCheckins(state => state.cancel)
   const deleteSection = useCheckins(state => state.deleteSection)
   const [deleting, setDeleting] = useState(false)
+  const [removing, setRemoving] = useState(false)
   const [error, setError] = useState<null | string>(null)
 
   const [permission, setPermission] = useState(() =>
@@ -285,7 +286,15 @@ export function CheckinsTab({ bot }: { bot: Bot }) {
                 deleting ? (
                   <div className="flex gap-2">
                     <Button
-                      onClick={() => void attempt(deleteSection).then(() => setDeleting(false))}
+                      busy={removing}
+                      disabled={removing}
+                      onClick={() => {
+                        setRemoving(true)
+                        void attempt(deleteSection).finally(() => {
+                          setRemoving(false)
+                          setDeleting(false)
+                        })
+                      }}
                       size="sm"
                       variant="danger"
                     >
@@ -301,7 +310,7 @@ export function CheckinsTab({ bot }: { bot: Bot }) {
                   </Button>
                 )
               }
-              description="Deletes what check-ins told you. The next message starts it again."
+              description="Deletes what check-ins told you. The next check-in message starts it again."
               title="Delete Check-ins"
             />
           </Group>

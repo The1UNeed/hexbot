@@ -95,11 +95,18 @@ describe('check-ins', () => {
     render(<CheckinsTab bot={hexbot} />)
     fireEvent.click(await screen.findByRole('button', { name: 'Delete' }))
     expect(call).not.toHaveBeenCalledWith('hexbot.sections.delete', expect.anything())
-    fireEvent.click(screen.getByRole('button', { name: 'Delete' }))
+    const confirm = screen.getByRole('button', { name: 'Delete' })
+    fireEvent.click(confirm)
+    fireEvent.click(confirm)
     await waitFor(() =>
       expect(call).toHaveBeenCalledWith('hexbot.sections.delete', { id: 'checkins-1' })
     )
     await waitFor(() => expect(screen.queryByText('Delete Check-ins')).toBeNull())
+    expect(call.mock.calls.filter(([method]) => method === 'hexbot.sections.delete')).toHaveLength(
+      1
+    )
+    // The listing goes with it.
+    expect(call).toHaveBeenCalledWith('hexbot.sections.list', expect.anything())
   })
 
   it('turns check-ins off and changes their hours', async () => {

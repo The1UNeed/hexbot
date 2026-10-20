@@ -730,7 +730,7 @@ export function Management({
                         await mobile.refresh()
                       },
                       true,
-                      'This deletes what check-ins told you. The next message starts it again.'
+                      'This deletes what check-ins told you. The next check-in message starts it again.'
                     )
                   : null}
                 {/* The primary bot stays; the daemon refuses to delete it too. */}
