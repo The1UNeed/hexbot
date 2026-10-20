@@ -46,6 +46,21 @@ it.each([false, true])(
   }
 )
 
+it('never hides a message the same as one already shown', async () => {
+  useConnection.setState({
+    target: { kind: 'local' },
+    epoch: 'process',
+    daemon: { one_chat: true, transcript_identity: true } as DaemonInfo
+  })
+  // Saved before the upgrade, so without an input ID.
+  rows = [...prior, { role: 'user', row_id: 'old-hi', text: 'hi' }]
+  await useSections.getState().open('chat')
+  // Sent again while a turn runs: accepted, not saved yet.
+  useTranscripts.getState().appendUserMessage('chat', 'hi')
+  await useSections.getState().open('chat')
+  expect(texts()).toEqual(['Earlier question', 'hi', 'hi'])
+})
+
 it('reopens a long chat with every row and tool once, with a message still unsaved', async () => {
   useConnection.setState({
     target: { kind: 'local' },

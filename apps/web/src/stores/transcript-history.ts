@@ -39,7 +39,13 @@ export function hydrateHistory(
 
   for (const row of history) {
     for (const id of reports.has(row.id) ? [] : (row.fragmentIds ?? [])) {
-      owners.set(id, [...(owners.get(id) ?? []), row])
+      const group = owners.get(id)
+
+      if (group) {
+        group.push(row)
+      } else {
+        owners.set(id, [row])
+      }
     }
   }
 
@@ -122,9 +128,13 @@ export function hydrateHistory(
   }
 
   // A queued or steered input can be saved without its ID. A saved user row
-  // without one that says the same is that input, newest first; one with
-  // uploads or a failed or unconfirmed send stays, so it is never hidden.
-  const unbound = history.filter(row => row.role === 'user' && !row.inputId)
+  // without one, new in this snapshot, that says the same is that input,
+  // newest first. A row already shown, such as one from before the upgrade,
+  // never covers it, and nor does one with uploads or a failed or unconfirmed
+  // send: a rare miss shows twice, a sent message is never hidden.
+  const unbound = history.filter(
+    row => row.role === 'user' && !row.inputId && !previous.has(row.id)
+  )
 
   for (const input of [...inputs].reverse()) {
     if (
@@ -324,7 +334,13 @@ function occurrences(tools: ToolCall[]) {
   const groups = new Map<string, ToolCall[]>()
 
   for (const tool of tools) {
-    groups.set(key(tool), [...(groups.get(key(tool)) ?? []), tool])
+    const group = groups.get(key(tool))
+
+    if (group) {
+      group.push(tool)
+    } else {
+      groups.set(key(tool), [tool])
+    }
   }
 
   return (tool: ToolCall) => findToolOccurrence(tool, groups.get(key(tool)) ?? [])
