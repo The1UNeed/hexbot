@@ -880,11 +880,12 @@ function MobileApp() {
             changeTab('rooms')
             return
           }
-          // Pulse follows the reported conversation, including work between bots.
-          // A normal bot tap still resolves its owner chat through the daemon.
+          // Pulse follows the reported conversation, including work between bots
+          // and Check-ins. A normal bot tap still resolves its owner chat.
           const thread = b
             ? mobile.sections.find(s =>
-                s.id === detail?.section_id && s.bot === b.name && s.peer_bot &&
+                s.id === detail?.section_id && s.bot === b.name &&
+                (s.peer_bot || purposeOf(s, mobile.sections)) &&
                 (!detail.session_id || !s.live_session_id || detail.session_id === s.live_session_id)
               )
             : undefined
