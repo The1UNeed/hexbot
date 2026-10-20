@@ -460,7 +460,7 @@ fn current_python_database_preserves_title_attribution_and_spent_grants() {
 }
 
 #[test]
-fn bot_thread_backfill_uses_first_sender_keeps_renamed_sections_and_is_idempotent() {
+fn bot_thread_backfill_uses_first_sender_tags_renamed_threads_and_is_idempotent() {
     let home = legacy_home(11);
     let conn = db::open(home.path()).unwrap();
     conn.execute_batch("INSERT INTO sections(id,bot,title) VALUES('thread','receiver','From sender'),('normal','receiver','Normal'),('renamed','receiver','Plans');
@@ -481,8 +481,8 @@ fn bot_thread_backfill_uses_first_sender_keeps_renamed_sections_and_is_idempoten
         before,
         vec![
             ("normal".into(), None),
-            // The user renamed it; it is their conversation and stays in their lists.
-            ("renamed".into(), None),
+            // Renamed, it is still a thread: a bot's chat never holds bot messages.
+            ("renamed".into(), Some("sender".into())),
             ("thread".into(), Some("sender".into()))
         ]
     );
@@ -496,7 +496,7 @@ fn bot_thread_backfill_uses_first_sender_keeps_renamed_sections_and_is_idempoten
         snapshot(),
         vec![
             ("normal".into(), Some("preserved".into())),
-            ("renamed".into(), None),
+            ("renamed".into(), Some("sender".into())),
             ("thread".into(), Some("sender".into()))
         ]
     );

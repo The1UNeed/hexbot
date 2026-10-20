@@ -3710,6 +3710,40 @@ mod parity_tests {
         }
     }
     #[test]
+    fn a_renamed_thread_from_before_peer_bot_is_never_the_chat() {
+        let home = tempfile::tempdir().unwrap();
+        db::migrate(home.path()).unwrap();
+        db::open(home.path()).unwrap().execute_batch(
+            "INSERT INTO users(id,display_name,role,created_at) VALUES('alice','Alice','admin',0);
+             INSERT INTO bots(name,owner_id) VALUES('owl','alice'),('fox','alice');
+             INSERT INTO sections(id,bot,owner_id,title,updated_at) VALUES('trip','owl','alice','Trip',2),('asked','owl','alice','Research',9);
+             INSERT INTO bot_messages(id,from_bot,to_bot,section_id,created_at,text) VALUES('m','fox','owl','asked',8,'Can you look this up?');",
+        ).unwrap();
+        // Once 'From fox'; the bot renamed it. Its dialogue is the newest.
+        said(
+            home.path(),
+            "trip",
+            json!({"role":"user","text":"Plan the trip","timestamp":2}),
+        );
+        said(
+            home.path(),
+            "asked",
+            json!({"role":"user","text":"Can you look this up?","timestamp":9}),
+        );
+        db::migrate(home.path()).unwrap();
+        one_chat_per_bot(home.path()).unwrap();
+        // The thread stays a thread, and the user's conversation stays their chat.
+        assert_eq!(ids_of(home.path(), "owl"), ["asked", "trip"]);
+        assert_eq!(
+            section(home.path(), "alice", "asked").unwrap()["peer_bot"],
+            "fox"
+        );
+        assert_eq!(
+            chat_section(home.path(), "alice", "owl").unwrap()["id"],
+            "trip"
+        );
+    }
+    #[test]
     fn check_ins_are_not_the_chat_and_survive_the_upgrade() {
         let home = tempfile::tempdir().unwrap();
         db::migrate(home.path()).unwrap();
