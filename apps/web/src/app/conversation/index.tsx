@@ -1334,8 +1334,15 @@ function BotConversation() {
 
         setResolved({ entry, peer: Boolean(chat.peer_bot) })
       })().catch(error => {
-        // No daemon to ask: the chat is checked again when one answers.
-        if (error instanceof NotConnectedError && !useConnection.getState().daemon) {
+        // Not connected: the chat is checked again when a daemon answers.
+        // Connected without daemon info, Retry is the way forward.
+        const connection = useConnection.getState()
+
+        if (
+          error instanceof NotConnectedError &&
+          !connection.daemon &&
+          connection.status !== 'connected'
+        ) {
           return
         }
 
