@@ -408,6 +408,7 @@ fn list_sections(home: &Path, caller: &str, p: &Value) -> Result<Vec<Value>> {
     let archived = p["include_archived"].as_bool().unwrap_or(false);
     let threads = p["include_threads"] == true;
     let conn = db::open(home)?;
+    let adoptions = setting(&conn, "dream_chat_adoptions")?;
     let mut sections = vec![];
     for row in rows(
         &conn,
@@ -415,7 +416,7 @@ fn list_sections(home: &Path, caller: &str, p: &Value) -> Result<Vec<Value>> {
         &[&caller, &bot, &bot, &archived, &threads],
     )? {
         // A Dreams log its chat replaced opens only as that chat (4002).
-        if superseded_by(&conn, row["id"].as_str().unwrap_or(""))?.is_none() {
+        if superseded_by(&conn, &adoptions, row["id"].as_str().unwrap_or(""))?.is_none() {
             sections.push(shape_section(home, row)?);
         }
     }
@@ -528,7 +529,8 @@ mod fork_tests;
 /// Checked under the opener's shared conversation lease. Adoption holds the
 /// exclusive lease through commit, so an old ID cannot admit input in between.
 pub(crate) fn check_chat_source(home: &Path, source: &str) -> Result<()> {
-    if let Some(target) = superseded_by(&db::open(home)?, source)? {
+    let conn = db::open(home)?;
+    if let Some(target) = superseded_by(&conn, &setting(&conn, "dream_chat_adoptions")?, source)? {
         return Err(Error::new(
             4002,
             format!(
@@ -538,12 +540,10 @@ pub(crate) fn check_chat_source(home: &Path, source: &str) -> Result<()> {
     }
     Ok(())
 }
-/// The chat that replaced an old Dreams log, while both exist.
-fn superseded_by(conn: &Connection, source: &str) -> Result<Option<String>> {
-    let Some(target) = setting(conn, "dream_chat_adoptions")?[source]["target"]
-        .as_str()
-        .map(str::to_owned)
-    else {
+/// The chat that replaced an old Dreams log, while both exist. `adoptions`
+/// is the `dream_chat_adoptions` setting, read once by the caller.
+fn superseded_by(conn: &Connection, adoptions: &Value, source: &str) -> Result<Option<String>> {
+    let Some(target) = adoptions[source]["target"].as_str().map(str::to_owned) else {
         return Ok(None);
     };
     let present: bool = conn.query_row(
