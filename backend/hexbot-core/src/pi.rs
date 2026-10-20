@@ -495,6 +495,36 @@ impl PiProcess {
             .clone()
             .try_acquire_owned()
             .map_err(|_| PiError::Capacity)?;
+        self.respond_extension_with(admission, id, fields, deadline)
+    }
+
+    /// Wait for the extension reply slot, so a caller can then commit its
+    /// reply synchronously with `respond_extension_with`.
+    pub(crate) async fn extension_permit(
+        &self,
+        deadline: Duration,
+    ) -> Result<OwnedSemaphorePermit, PiError> {
+        let mut stop = self.inner.stop.subscribe();
+        let mut done = self.inner.done.clone();
+        tokio::time::timeout(deadline, async {
+            tokio::select! {
+                biased;
+                error = terminal(&mut stop) => Err(error),
+                error = terminal(&mut done) => Err(error),
+                permit = self.inner.extension_admission.clone().acquire_owned() => permit.map_err(|_| PiError::Capacity),
+            }
+        })
+        .await
+        .map_err(|_| PiError::Timeout)?
+    }
+
+    pub(crate) fn respond_extension_with(
+        &self,
+        admission: OwnedSemaphorePermit,
+        id: &str,
+        fields: Value,
+        deadline: Duration,
+    ) -> Result<ExtensionWrite, PiError> {
         let bytes = self.extension_record(id, fields)?;
         let stop = self.inner.stop.borrow();
         if let Some(error) = stop.as_ref().or(self.inner.done.borrow().as_ref()) {
@@ -844,7 +874,7 @@ fn record(bytes: &[u8], pending: &mut HashMap<String, Pending>) -> Result<Option
         let request = pending.remove(&response.id).unwrap();
         // Put preflight disposition in the same ordered stream as user events.
         // Daemon scheduling must not attribute identical text to a later steer.
-        let input = request.input.map(|intent| serde_json::json!({"type":"hexbot_input_preflight","intent":intent,"disposition":response.data.as_ref().map(|data| &data["disposition"])}));
+        let input = request.input.map(|intent| serde_json::json!({"type":"hexbot_input_preflight","intent":intent,"disposition":if response.success { response.data.as_ref().map(|data| &data["disposition"]) } else { None }}));
         let _ = request.reply.send(Ok(response));
         Ok(input)
     } else {

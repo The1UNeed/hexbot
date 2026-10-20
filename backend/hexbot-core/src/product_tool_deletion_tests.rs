@@ -117,6 +117,7 @@ fn setup() -> (common::TestHome, Arc<App>, String) {
     .unwrap()
     .unwrap();
     let root = created["section"]["id"].as_str().unwrap().to_owned();
+    home.peer_thread("local", &root);
     fs::write(
         h.join("profiles/owl/config.yaml"),
         "tools:\n  enabled_toolsets: [todo, skills]\n",
@@ -282,7 +283,9 @@ fn check_deletion(
             .unwrap(),
             "store" => runtime_store::delete(&h, &id).map(|()| json!({"deleted":true})),
             "room" => crate::rooms::delete(&h, room.as_deref().unwrap()),
-            "last-member" => crate::rooms::remove_bot(&h, "local", room.as_deref().unwrap(), "owl"),
+            "last-member" => {
+                crate::rooms::remove_bot(&h, "local", room.as_deref().unwrap(), "owl", false)
+            }
             _ => unreachable!(),
         });
         let early = tokio::time::timeout(Duration::from_secs(10), async {

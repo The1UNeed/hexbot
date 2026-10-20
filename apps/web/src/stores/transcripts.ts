@@ -15,6 +15,7 @@ import {
   approvalReceived,
   clarifyAnswered,
   clarifyQuestions,
+  newInputId,
   nextMessageId,
   sectionsTouch
 } from '../lib/api'
@@ -34,6 +35,10 @@ import type {
   Usage
 } from '../lib/types'
 
+import { useConnection } from './connection'
+import type { ConnectionState } from './connection'
+import { hydrateHistory } from './transcript-history'
+
 /** Why an error row exists, when the daemon knows more than the text. */
 export interface ErrorDetail {
   /** Connector catalog id, when the failure came from one (drives "Fix <name>"). */
@@ -46,9 +51,26 @@ export interface ErrorDetail {
 const INCIDENT_MERGE_MS = 15_000
 
 /** A transcript message; error rows may carry a detail the daemon reported. */
-export type TranscriptMessage = Message & { errorDetail?: ErrorDetail }
+export type TranscriptMessage = Message & {
+  errorDetail?: ErrorDetail
+  /** Local request provenance. Attachment display IDs alone never authorize a resend. */
+  submission?: Pick<ConnectionState, 'target' | 'epoch'> & {
+    installation?: string | null
+    row: string
+    status: 'sending' | 'accepted' | 'rejected' | 'unknown' | 'unavailable'
+    uploads: string[] | null
+    card?: string
+  }
+  retryRow?: string
+}
 
 export interface Transcript {
+  /** Identity supplied on the current event, separate from UI bubble identity. */
+  identity?: { turnId?: string; messageId?: string }
+  /** The current run, independent of a late event from an earlier run. */
+  activeTurnId?: string
+  /** Completed source fragments in the last authoritative snapshot. */
+  durableFragments?: string[]
   approvals: ApprovalRequest[]
   /**
    * "Checking this step" while Auto mode reviews a step. It belongs to the
@@ -70,6 +92,8 @@ export interface Transcript {
   status: null | StatusLine
   /** Id of the assistant message currently receiving deltas. */
   streamingMessageId: null | string
+  /** Remains active when a card closes the current bubble. */
+  turnActive?: boolean
   /**
    * Text of the bubbles a question or approval card closed during this
    * turn. `message.complete` carries the whole turn, so this much is cut
@@ -114,6 +138,8 @@ export interface ToolCompletePayload {
 }
 
 export interface ApprovalRequestPayload {
+  message_id?: string
+  turn_id?: string
   choices?: ApprovalChoice[]
   command?: string
   reason?: string
@@ -122,6 +148,8 @@ export interface ApprovalRequestPayload {
 }
 
 export interface TranscriptsState {
+  eventIdentity: (sessionId: string, identity: { turnId?: string; messageId?: string }) => void
+  setInputId: (sessionId: string, messageId: string, inputId: string) => void
   answerClarify: (sessionId: string, requestId: string, questionId: string, answer: string) => void
   approvalRequest: (
     sessionId: string,
@@ -140,7 +168,21 @@ export interface TranscriptsState {
   bySession: Record<string, Transcript>
   drop: (sessionId: string) => void
   dropAll: () => void
-  errorEvent: (sessionId: string, message: string, detail?: ErrorDetail) => void
+  errorEvent: (
+    sessionId: string,
+    message: string,
+    detail?: ErrorDetail,
+    turnId?: string | null
+  ) => void
+  inputSubmitting: (sessionId: string, messageId: string, uploads: string[]) => void
+  inputSettled: (
+    sessionId: string,
+    row: string,
+    inputId: string | undefined,
+    status: 'accepted' | 'rejected' | 'unknown' | 'unavailable',
+    uploads: string[] | null,
+    error?: string
+  ) => void
   /**
    * A Stopped card from a daemon incident. Unlike `errorEvent` it leaves the
    * streaming message alone: the incident fires mid-turn (a tool refused) and
@@ -151,7 +193,12 @@ export interface TranscriptsState {
   messageDelta: (sessionId: string, text: string) => void
   messageInterim: (sessionId: string, text: string, alreadyStreamed?: boolean) => void
   messageStart: (sessionId: string) => void
-  open: (sessionId: string, sectionId: string, messages: Message[]) => void
+  open: (
+    sessionId: string,
+    sectionId: string,
+    messages: Message[],
+    hydration?: { reports: string[] }
+  ) => void
   reasoningDelta: (sessionId: string, text: string) => void
   resolveApproval: (sessionId: string, requestId: string, choice: ApprovalChoice) => void
   sessionContext: (sessionId: string, context: ContextUsage) => void
@@ -232,6 +279,45 @@ function replaceMessage(
   }
 }
 
+/** Only an exact durable user binding connects a local input to an operation. */
+function withRetryCard(transcript: Transcript, cardId: string, turnId?: string | null): Transcript {
+  if (!turnId) {
+    return transcript
+  }
+
+  const inputs = transcript.messages.filter(
+    message => message.role === 'user' && !message.createdAt && message.turnId === turnId
+  )
+
+  const input = inputs.length === 1 ? inputs[0] : undefined
+  const source = input?.submission
+
+  if (
+    !input?.inputId ||
+    !source ||
+    !['sending', 'accepted'].includes(source.status) ||
+    transcript.messages.filter(
+      message => message.role === 'user' && message.inputId === input?.inputId
+    ).length !== 1 ||
+    transcript.messages.some(
+      message => message.retryRow === source.row && message.turnId === turnId
+    )
+  ) {
+    return transcript
+  }
+
+  return {
+    ...transcript,
+    messages: transcript.messages.map(message =>
+      message === input
+        ? { ...message, submission: { ...source, card: cardId } }
+        : message.id === cardId
+          ? { ...message, retryRow: source.row, turnId }
+          : message
+    )
+  }
+}
+
 /**
  * Hexbot's spinner copy, "(◔_◔) pondering...": a face without letters and one
  * verb. Wait notices ("⏳ waiting on the provider — 30s ...") are kept.
@@ -248,7 +334,13 @@ export const clarifyWaiting = (clarify: ClarifyRequest) =>
  */
 function closePart(message: Message): Message {
   return message.text.trim()
-    ? { ...message, parts: [...(message.parts ?? []), message.text], text: '' }
+    ? {
+        ...message,
+        parts: [...(message.parts ?? []), message.text],
+        partIds: [...(message.partIds ?? []), message.textId],
+        text: '',
+        textId: undefined
+      }
     : message
 }
 
@@ -281,8 +373,18 @@ function settle(message: Message, finalText?: string): Message {
   const text = finalText || message.text
   const last = message.parts?.at(-1)
 
-  return last !== undefined && (!text.trim() || text.trim() === last.trim())
-    ? { ...message, parts: message.parts?.slice(0, -1), text: last }
+  const lastId = message.partIds?.at(-1)
+
+  return last !== undefined &&
+    (!message.textId || message.textId === lastId) &&
+    (!text.trim() || text.trim() === last.trim())
+    ? {
+        ...message,
+        parts: message.parts?.slice(0, -1),
+        partIds: message.partIds?.slice(0, -1),
+        textId: lastId,
+        text: last
+      }
     : { ...message, text }
 }
 
@@ -301,17 +403,68 @@ function withCurrentAssistant(
     ? transcript.messages.find(message => message.id === currentId)
     : undefined
 
-  if (current) {
-    return replaceMessage(transcript, current.id, patch)
+  const source = transcript.identity?.messageId
+
+  const owners = source
+    ? transcript.messages.filter(message => message.fragmentIds?.includes(source))
+    : []
+
+  if (owners.length === 1 && owners[0] !== current) {
+    return replaceMessage(transcript, owners[0]!.id, message => ({
+      ...patch(identifyMessage(message, transcript.identity)),
+      streaming: message.streaming
+    }))
   }
 
-  const created = patch(newAssistantMessage(transcript.checking))
+  if (current) {
+    const crossed =
+      source &&
+      !current.fragmentIds?.includes(source) &&
+      transcript.messages
+        .slice(transcript.messages.indexOf(current) + 1)
+        .some(message => !message.createdAt)
+
+    if (!crossed) {
+      return replaceMessage(transcript, current.id, message =>
+        patch(identifyMessage(message, transcript.identity))
+      )
+    }
+
+    // A newly identified fragment cannot inherit an earlier fragment's position
+    // across history installed since the previous event. Its row is not here yet.
+    transcript = replaceMessage(transcript, current.id, message =>
+      settle({ ...message, streaming: false })
+    )
+  }
+
+  const created = patch(
+    identifyMessage(newAssistantMessage(transcript.checking), transcript.identity)
+  )
 
   return {
     ...transcript,
     messages: [...transcript.messages, created],
-    streamingMessageId: created.id
+    streamingMessageId: created.id,
+    turnActive: true,
+    activeTurnId: transcript.identity?.turnId ?? transcript.activeTurnId
   }
+}
+
+function identifyMessage(message: Message, identity: Transcript['identity']): Message {
+  const id = identity?.messageId
+
+  return {
+    ...message,
+    ...(identity?.turnId && { turnId: identity.turnId }),
+    ...(id && { fragmentIds: [...new Set([...(message.fragmentIds ?? []), id])] })
+  }
+}
+
+function textIdentity(message: Message, id: string | undefined): Message {
+  const next =
+    message.text && message.textId !== id && (message.textId || id) ? closePart(message) : message
+
+  return { ...next, textId: id }
 }
 
 export const useTranscripts = create<TranscriptsState>((set, get) => {
@@ -324,6 +477,20 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
   }
 
   return {
+    eventIdentity(sessionId, identity) {
+      const previous = get().bySession[sessionId]?.identity
+
+      if (previous?.turnId === identity.turnId && previous?.messageId === identity.messageId) {
+        return
+      }
+
+      update(sessionId, transcript => ({ ...transcript, identity }))
+    },
+    setInputId(sessionId, messageId, inputId) {
+      update(sessionId, transcript =>
+        replaceMessage(transcript, messageId, message => ({ ...message, inputId }))
+      )
+    },
     warnings: {},
     setWarning(sectionId, message) {
       set(state => {
@@ -340,9 +507,25 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
     },
     bySession: {},
 
-    open(sessionId, sectionId, messages) {
+    open(sessionId, sectionId, messages, hydration) {
       set(state => {
         const existing = state.bySession[sessionId]
+
+        if (existing && hydration) {
+          const restored = hydrateHistory(existing, messages, new Set(hydration.reports))
+
+          return {
+            bySession: {
+              ...state.bySession,
+              [sessionId]: {
+                ...existing,
+                ...restored,
+                sectionId,
+                clarifies: existing.clarifies.filter(clarifyWaiting)
+              }
+            }
+          }
+        }
 
         // A live transcript that is ahead of the stored history (a message
         // just sent, a reply streaming) wins over the snapshot.
@@ -394,6 +577,7 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
         attachments,
         createdAt: Date.now(),
         id: nextMessageId('u'),
+        inputId: newInputId(),
         role: 'user',
         streaming: false,
         text,
@@ -411,13 +595,25 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
 
     messageStart(sessionId) {
       update(sessionId, transcript => {
-        const message = newAssistantMessage(transcript.checking)
+        const message = identifyMessage(
+          newAssistantMessage(transcript.checking),
+          transcript.identity
+        )
 
         return {
           ...transcript,
           error: null,
-          messages: [...transcript.messages, message],
+          messages: [
+            ...transcript.messages.map(previous =>
+              previous.id === transcript.streamingMessageId
+                ? settle({ ...previous, streaming: false })
+                : previous
+            ),
+            message
+          ],
           streamingMessageId: message.id,
+          turnActive: true,
+          activeTurnId: transcript.identity?.turnId,
           turnPrefix: undefined
         }
       })
@@ -428,14 +624,20 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
         return
       }
 
-      update(sessionId, transcript =>
-        withCurrentAssistant(transcript, message => ({
-          ...message,
-          activity: undefined,
-          streaming: true,
-          text: message.text + text
-        }))
-      )
+      update(sessionId, transcript => {
+        if (
+          transcript.identity?.messageId &&
+          transcript.durableFragments?.includes(transcript.identity.messageId)
+        ) {
+          return transcript
+        }
+
+        return withCurrentAssistant(transcript, message => {
+          const next = textIdentity(message, transcript.identity?.messageId)
+
+          return { ...next, activity: undefined, streaming: true, text: next.text + text }
+        })
+      })
     },
 
     messageInterim(sessionId, text, alreadyStreamed = false) {
@@ -445,15 +647,24 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
         return
       }
 
-      update(sessionId, transcript =>
-        withCurrentAssistant(transcript, message =>
-          closePart({
-            ...message,
+      update(sessionId, transcript => {
+        if (
+          transcript.identity?.messageId &&
+          transcript.durableFragments?.includes(transcript.identity.messageId)
+        ) {
+          return transcript
+        }
+
+        return withCurrentAssistant(transcript, message => {
+          const next = textIdentity(message, transcript.identity?.messageId)
+
+          return closePart({
+            ...next,
             streaming: true,
-            text: alreadyStreamed ? message.text : message.text + text
+            text: alreadyStreamed ? next.text : next.text + text
           })
-        )
-      )
+        })
+      })
     },
 
     reasoningDelta(sessionId, text) {
@@ -466,6 +677,14 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
           ...message,
           streaming: true,
           thinking: (message.thinking ?? '') + text,
+          thinkingId: transcript.identity?.messageId ?? message.thinkingId,
+          thinkingByFragment: transcript.identity?.messageId
+            ? {
+                ...message.thinkingByFragment,
+                [transcript.identity.messageId]:
+                  (message.thinkingByFragment?.[transcript.identity.messageId] ?? '') + text
+              }
+            : message.thinkingByFragment,
           workUntil: Date.now()
         }))
       )
@@ -489,24 +708,44 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
     },
 
     toolStart(sessionId, payload) {
-      const call: ToolCall = {
-        args: payload.args ?? payload.args_text ?? null,
-        durationS: null,
-        name: String(payload.name ?? 'tool'),
-        result: null,
-        startedAt: Date.now(),
-        status: 'running',
-        ...(payload.parent_tool_call_id && { parentToolCallId: payload.parent_tool_call_id }),
-        summary: payload.context,
-        toolId: String(payload.tool_id ?? nextMessageId('t'))
-      }
-
       update(sessionId, transcript => {
-        const parent =
-          payload.parent_tool_call_id &&
-          transcript.messages.find(message =>
-            message.toolCalls.some(tool => tool.toolId === payload.parent_tool_call_id)
-          )
+        if (
+          transcript.identity?.messageId &&
+          transcript.messages.flatMap(message =>
+            (message.fragmentIds ?? []).filter(id => id === transcript.identity?.messageId)
+          ).length > 1
+        ) {
+          return transcript
+        }
+
+        const parents = transcript.messages.flatMap(message =>
+          message.toolCalls
+            .filter(
+              tool =>
+                tool.toolId === payload.parent_tool_call_id &&
+                (!transcript.identity?.messageId ||
+                  tool.messageId === transcript.identity.messageId) &&
+                (!transcript.identity?.turnId ||
+                  !message.turnId ||
+                  message.turnId === transcript.identity.turnId)
+            )
+            .map(tool => ({ message, tool }))
+        )
+
+        const parent = payload.parent_tool_call_id && parents.length === 1 ? parents[0] : undefined
+
+        const call: ToolCall = {
+          messageId: transcript.identity?.messageId ?? parent?.tool.messageId,
+          args: payload.args ?? payload.args_text ?? null,
+          durationS: null,
+          name: String(payload.name ?? 'tool'),
+          result: null,
+          startedAt: Date.now(),
+          status: 'running',
+          ...(payload.parent_tool_call_id && { parentToolCallId: payload.parent_tool_call_id }),
+          summary: payload.context,
+          toolId: String(payload.tool_id ?? nextMessageId('t'))
+        }
 
         const append = (message: TranscriptMessage) => ({
           ...closePart(message),
@@ -514,7 +753,7 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
         })
 
         return parent
-          ? replaceMessage(transcript, parent.id, append)
+          ? replaceMessage(transcript, parent.message.id, append)
           : withCurrentAssistant(transcript, append)
       })
     },
@@ -522,32 +761,57 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
     toolComplete(sessionId, payload) {
       const toolId = payload.tool_id === undefined ? null : String(payload.tool_id)
       const result = payload.result ?? payload.result_text ?? null
-
-      const failed =
-        typeof result === 'object' &&
-        result !== null &&
-        'error' in (result as Record<string, unknown>)
+      const failed = typeof result === 'object' && result !== null && 'error' in result
 
       update(sessionId, transcript => {
-        const index = toolId
-          ? transcript.messages.findLastIndex(message =>
-              message.toolCalls.some(call => call.toolId === toolId)
+        const source = transcript.identity?.messageId
+        const turn = transcript.identity?.turnId
+
+        const otherTurn =
+          turn &&
+          transcript.turnActive &&
+          transcript.activeTurnId &&
+          turn !== transcript.activeTurnId
+
+        if (
+          source &&
+          transcript.messages.flatMap(message =>
+            (message.fragmentIds ?? []).filter(id => id === source)
+          ).length > 1
+        ) {
+          return transcript
+        }
+
+        const candidates = transcript.messages.flatMap(message =>
+          message.toolCalls
+            .filter(
+              call =>
+                call.toolId === toolId &&
+                (!payload.parent_tool_call_id ||
+                  call.parentToolCallId === payload.parent_tool_call_id) &&
+                (!turn ||
+                  message.turnId === turn ||
+                  (!message.turnId && (!otherTurn || (source && call.messageId === source))))
             )
-          : -1
+            .map(call => ({ message, call }))
+        )
 
-        if (index >= 0) {
-          const target = transcript.messages[index]
+        const exact = source ? candidates.filter(({ call }) => call.messageId === source) : []
 
-          if (!target) {
-            return transcript
-          }
+        const matches = exact.length
+          ? exact
+          : candidates.filter(({ call }) => !source || !call.messageId)
 
-          return replaceMessage(transcript, target.id, message => ({
+        const target = matches.length === 1 ? matches[0] : undefined
+
+        if (target) {
+          return replaceMessage(transcript, target.message.id, message => ({
             ...message,
             toolCalls: message.toolCalls.map(call =>
-              call.toolId === toolId
+              call === target.call
                 ? {
                     ...call,
+                    messageId: call.messageId ?? source,
                     args: payload.args ?? call.args,
                     durationS: payload.duration_s ?? call.durationS,
                     result,
@@ -560,13 +824,36 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
           }))
         }
 
-        // A completion without a matching start (reconnect mid-tool): render
-        // it as a finished call rather than dropping it.
-        return withCurrentAssistant(transcript, message => ({
+        // An ambiguous completion cannot pick a call or create a duplicate.
+        // A delayed old completion also cannot open a bubble in the current run.
+        if (matches.length || otherTurn) {
+          return transcript
+        }
+
+        const parents = payload.parent_tool_call_id
+          ? transcript.messages.flatMap(message =>
+              message.toolCalls
+                .filter(
+                  call =>
+                    call.toolId === payload.parent_tool_call_id &&
+                    (!source || call.messageId === source) &&
+                    (!turn || !message.turnId || message.turnId === turn)
+                )
+                .map(call => ({ message, call }))
+            )
+          : []
+
+        const parent = parents.length === 1 ? parents[0] : undefined
+
+        // A completion without a matching start (reconnect mid-tool) remains
+        // a separate occurrence, keeping its explicit parent when supplied.
+        const append = (message: Message): Message => ({
           ...message,
           toolCalls: [
             ...message.toolCalls,
             {
+              messageId: source ?? parent?.call.messageId,
+              ...(payload.parent_tool_call_id && { parentToolCallId: payload.parent_tool_call_id }),
               args: payload.args ?? null,
               durationS: payload.duration_s ?? null,
               name: String(payload.name ?? 'tool'),
@@ -578,7 +865,11 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
             }
           ],
           workUntil: Date.now()
-        }))
+        })
+
+        return parent
+          ? replaceMessage(transcript, parent.message.id, append)
+          : withCurrentAssistant(transcript, append)
       })
     },
 
@@ -596,11 +887,19 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
 
         if (!transcript.streamingMessageId && prefix && !finalText && !payload.error) {
           // The turn ended right after the card: the closed bubble already holds it all.
-          return { ...transcript, turnPrefix: undefined, usage: payload.usage ?? transcript.usage }
+          return {
+            ...transcript,
+            turnActive: false,
+            turnPrefix: undefined,
+            usage: payload.usage ?? transcript.usage
+          }
         }
 
         const finalize = (message: Message): Message => ({
-          ...settle(message, finalText),
+          ...settle(
+            finalText ? textIdentity(message, transcript.identity?.messageId) : message,
+            finalText
+          ),
           activity: undefined,
           checking: undefined,
           error: payload.error ?? message.error,
@@ -615,7 +914,11 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
             : message.workUntil
         })
 
-        const next = withCurrentAssistant(transcript, finalize)
+        let next = withCurrentAssistant(transcript, finalize)
+
+        if (payload.error && next.streamingMessageId) {
+          next = withRetryCard(next, next.streamingMessageId, transcript.identity?.turnId)
+        }
 
         // The turn is over, so no review is left; the daemon's clear may be lost.
         return {
@@ -625,6 +928,7 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
           error: payload.error ?? null,
           status: null,
           streamingMessageId: null,
+          turnActive: false,
           usage: payload.usage ?? next.usage
         }
       })
@@ -638,6 +942,8 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
       const requestId = String(payload.request_id ?? nextMessageId('ap'))
 
       const approval: ApprovalRequest = {
+        messageId: payload.message_id,
+        turnId: payload.turn_id,
         choices: payload.choices ?? ['once', 'deny'],
         command: payload.command,
         reason: payload.reason,
@@ -689,6 +995,8 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
         added = true
 
         const clarify: ClarifyRequest = {
+          messageId: payload.message_id,
+          turnId: payload.turn_id,
           answers: payload.answers ?? {},
           questions,
           receivedAt: Date.now(),
@@ -792,7 +1100,104 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
       })
     },
 
-    errorEvent(sessionId, message, detail) {
+    inputSubmitting(sessionId, messageId, uploads) {
+      const { target, epoch, daemon } = useConnection.getState()
+      update(sessionId, transcript => {
+        const input = transcript.messages.find(message => message.id === messageId)
+
+        if (!input) {
+          return transcript
+        }
+
+        const row = input.submission?.row ?? input.id
+
+        return {
+          ...transcript,
+          messages: transcript.messages.map(message => ({
+            ...message,
+            ...(message.submission && {
+              submission: { ...message.submission, card: undefined }
+            }),
+            ...(message === input && {
+              submission: {
+                row,
+                target,
+                epoch,
+                installation: daemon?.install_id,
+                status: 'sending' as const,
+                uploads
+              }
+            })
+          }))
+        }
+      })
+    },
+
+    inputSettled(sessionId, row, inputId, status, uploads, error) {
+      const input = get().bySession[sessionId]?.messages.find(
+        message => (message.submission?.row ?? message.id) === row && message.inputId === inputId
+      )
+
+      const source = input?.submission
+      const { target, epoch, daemon } = useConnection.getState()
+
+      if (
+        !input ||
+        !source ||
+        source.target !== target ||
+        source.epoch !== epoch ||
+        source.installation !== daemon?.install_id ||
+        daemon?.transcript_identity !== true
+      ) {
+        return
+      }
+
+      if (!input.createdAt && status === 'rejected') {
+        status = 'accepted'
+        uploads = []
+      }
+
+      update(sessionId, transcript => {
+        // A prompt refusal or unknown RPC outcome says nothing about the
+        // operation currently streaming. Its card belongs only to this request.
+        const card: TranscriptMessage | undefined = error
+          ? {
+              attachments: [],
+              createdAt: Date.now(),
+              error,
+              id: nextMessageId('e'),
+              role: 'system',
+              streaming: false,
+              text: '',
+              toolCalls: [],
+              retryRow: row
+            }
+          : undefined
+
+        const messages = transcript.messages.map(message =>
+          message.submission?.row === row
+            ? {
+                ...message,
+                submission: {
+                  ...message.submission,
+                  status,
+                  uploads,
+                  card:
+                    card?.id ??
+                    message.submission.card ??
+                    (status === 'rejected'
+                      ? transcript.messages.findLast(card => card.retryRow === row)?.id
+                      : undefined)
+                }
+              }
+            : message
+        )
+
+        return { ...transcript, messages: card ? [...messages, card] : messages }
+      })
+    },
+
+    errorEvent(sessionId, message, detail, turnId) {
       update(sessionId, transcript => {
         const existing = detail?.incidentId
           ? transcript.messages.findIndex(
@@ -820,7 +1225,18 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
           })
         }
 
-        return { ...transcript, error: message, messages, streamingMessageId: null }
+        return withRetryCard(
+          {
+            ...transcript,
+            error: message,
+            messages,
+            streamingMessageId: null,
+            turnActive: false,
+            turnPrefix: undefined
+          },
+          messages[existing >= 0 ? existing : messages.length - 1]!.id,
+          turnId
+        )
       })
     },
 

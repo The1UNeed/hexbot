@@ -401,8 +401,9 @@ async fn direct_nonlast_removal_serializes_join_and_keeps_other_members() {
     let busy = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let trace = Trace::arm(f.home.path(), &listener, false);
     let home = f.home.path().to_owned();
-    let removing =
-        tokio::task::spawn_blocking(move || rooms::remove_bot(&home, "local", "room", "owl"));
+    let removing = tokio::task::spawn_blocking(move || {
+        rooms::remove_bot(&home, "local", "room", "owl", false)
+    });
     let mut held = barrier(&listener, b"removal\n").await;
     let (mut joining, thread) = f.join("lynx", busy.local_addr().unwrap());
     let mut blocked = None;
@@ -463,14 +464,14 @@ async fn member_event_failure_and_owner_checks_leave_membership_unchanged() {
         let conn = db::open(f.home.path()).unwrap();
         conn.execute_batch("INSERT INTO users(id,display_name,role,created_at) VALUES('other','Other','member',0);").unwrap();
         assert_eq!(
-            rooms::remove_bot(f.home.path(), "other", "room", "owl")
+            rooms::remove_bot(f.home.path(), "other", "room", "owl", false)
                 .unwrap_err()
                 .code,
             4302
         );
         assert_eq!(f.active(), ["owl"]);
         assert_eq!(
-            rooms::remove_bot(f.home.path(), "local", "room", "missing")
+            rooms::remove_bot(f.home.path(), "local", "room", "missing", false)
                 .unwrap_err()
                 .code,
             4232
@@ -561,7 +562,7 @@ async fn catalog_failure_rolls_back_member_event_and_incident_in_public_and_dire
         let conn = db::open(f.home.path()).unwrap();
         conn.execute_batch("CREATE TRIGGER refuse_room_delete BEFORE DELETE ON rooms BEGIN SELECT RAISE(ABORT,'controlled room delete fault'); END;").unwrap();
         let result = if direct {
-            rooms::remove_bot(f.home.path(), "local", "room", "owl")
+            rooms::remove_bot(f.home.path(), "local", "room", "owl", false)
         } else {
             f.remove("owl").await.unwrap()
         };
@@ -608,7 +609,7 @@ async fn catalog_failure_rolls_back_member_event_and_incident_in_public_and_dire
         );
         conn.execute_batch("DROP TRIGGER refuse_room_delete;")
             .unwrap();
-        let removed = rooms::remove_bot(f.home.path(), "local", "room", "owl").unwrap();
+        let removed = rooms::remove_bot(f.home.path(), "local", "room", "owl", false).unwrap();
         assert_eq!(removed["room"]["deleted"], true);
         assert_eq!(removed["event"]["seq"], 2);
         assert!(f.resolved());

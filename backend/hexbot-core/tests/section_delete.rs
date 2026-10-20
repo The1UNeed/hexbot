@@ -4,6 +4,8 @@ use hexbot_core::{
 use serde_json::{Value, json};
 use std::{fs, future::Future, path::PathBuf, sync::Arc};
 
+mod support;
+
 fn run<T>(future: impl Future<Output = T>) -> T {
     tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -59,6 +61,7 @@ impl Fixture {
                 .unwrap();
             id = root.to_owned();
         }
+        support::peer_thread(h, "local", &id);
         let child = format!("child-{id}");
         let conn = runtime_store::open(h).unwrap();
         for (stored, live, options) in [
@@ -1045,7 +1048,7 @@ fn retain_child(fixture: &Fixture) {
     db::open(h)
         .unwrap()
         .execute(
-            "INSERT INTO sections(id,bot,owner_id) VALUES(?,'owl','local')",
+            "INSERT INTO sections(id,bot,owner_id,peer_bot) VALUES(?,'owl','local','teammate')",
             [&fixture.child],
         )
         .unwrap();
@@ -1505,6 +1508,14 @@ fn migration_failures_preserve_retention_and_skip_unreadable_canonical_chats() {
         for purge_unreadable in [false, true] {
             let mut fixture = Fixture::new();
             let h = fixture.home.path();
+            // The migration retires superseded owner chats, never peer threads.
+            db::open(h)
+                .unwrap()
+                .execute(
+                    "UPDATE sections SET peer_bot=NULL WHERE id=?",
+                    [&fixture.id],
+                )
+                .unwrap();
             let native = runtime_store::open(h).unwrap();
             // An independent retained section must never be ranked, rewritten
             // by recovery, or swept up by the one-chat migration.
@@ -1588,6 +1599,7 @@ fn migration_failures_preserve_retention_and_skip_unreadable_canonical_chats() {
                     .unwrap(),
                 &retained_policy[0]
             );
+            support::peer_thread(h, "local", "unreadable");
             catalog::call(
                 h,
                 "local",
@@ -1661,6 +1673,7 @@ process.on('SIGTERM', () => {{
         .unwrap()
         .unwrap();
         let root = made["section"]["id"].as_str().unwrap().to_owned();
+        support::peer_thread(h, "local", &root);
         fs::write(h.join("profiles/owl/config.yaml"), "model:\n  provider: openai\n  default: fixture\ntools:\n  enabled_toolsets: [todo, skills]\n").unwrap();
         db::open(h)
             .unwrap()
@@ -1677,7 +1690,7 @@ process.on('SIGTERM', () => {{
             let catalog_db = db::open(h).unwrap();
             catalog_db
                 .execute(
-                    "INSERT INTO sections(id,bot,owner_id) VALUES('child','owl','local')",
+                    "INSERT INTO sections(id,bot,owner_id,peer_bot) VALUES('child','owl','local','teammate')",
                     [],
                 )
                 .unwrap();
@@ -1839,7 +1852,7 @@ fn failed_nested_catalog_commit_restores_provisional_provenance() {
     let catalog_db = db::open(h).unwrap();
     catalog_db
         .execute(
-            "INSERT INTO sections(id,bot,owner_id) VALUES(?,'owl','local')",
+            "INSERT INTO sections(id,bot,owner_id,peer_bot) VALUES(?,'owl','local','teammate')",
             [&fixture.child],
         )
         .unwrap();

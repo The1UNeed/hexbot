@@ -9,8 +9,8 @@ fn fixture(h: &Path) {
     db::open(h)
         .unwrap()
         .execute_batch(
-            "INSERT INTO bots(name,owner_id) VALUES('owl','local');
-         INSERT INTO sections(id,bot,owner_id,title) VALUES('chat','owl','local','General');
+            "INSERT INTO bots(name,owner_id) VALUES('owl','local'),('teammate','local');
+         INSERT INTO sections(id,bot,owner_id,title,peer_bot) VALUES('chat','owl','local','General','teammate');
          INSERT OR REPLACE INTO settings VALUES('one_chat_per_bot','true');",
         )
         .unwrap();

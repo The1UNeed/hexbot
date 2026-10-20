@@ -1,4 +1,4 @@
-//! Public deletion effects across the two SQLite commits and restart.
+//! Public peer-thread deletion effects across the two SQLite commits and restart.
 use hexbot_core::{catalog, db, runtime_store as store, server::App};
 use rusqlite::{Connection, params};
 use serde_json::{Value, json};
@@ -12,7 +12,7 @@ fn setup() -> support::TestHome {
     db::open(home.path()).unwrap().execute_batch(
         "INSERT INTO users(id,display_name,role,created_at) VALUES('alice','Alice','admin',0),('bob','Bob','member',0);
          INSERT INTO bots(name,owner_id) VALUES('owl','alice'),('cat','alice'),('fox','bob');
-         INSERT INTO sections(id,bot,owner_id,title) VALUES('chat','owl','alice','General'),('other','owl','alice','Other'),('cat-chat','cat','alice','General'),('bob-chat','fox','bob','General');
+         INSERT INTO sections(id,bot,owner_id,title,peer_bot) VALUES('chat','owl','alice','General','cat'),('other','owl','alice','Other',NULL),('cat-chat','cat','alice','General','owl'),('bob-chat','fox','bob','General',NULL);
          INSERT INTO settings VALUES('one_chat_per_bot','true');"
     ).unwrap();
     home
@@ -138,7 +138,7 @@ fn erased(home: &Path) {
 }
 
 #[tokio::test]
-async fn public_purge_retries_native_legacy_and_final_metadata_failures_after_restart() {
+async fn non_chat_public_purge_retries_native_legacy_and_final_metadata_failures_after_restart() {
     for (table, event, condition, expect_native) in [
         (
             "native_messages",
@@ -263,7 +263,7 @@ async fn public_purge_retries_native_legacy_and_final_metadata_failures_after_re
 }
 
 #[test]
-fn legacy_only_aliases_and_saved_descendants_survive_missing_parent_metadata() {
+fn non_chat_legacy_only_aliases_and_saved_descendants_survive_missing_parent_metadata() {
     for native_present in [false, true] {
         let home = setup();
         let h = home.path();
@@ -292,7 +292,7 @@ fn legacy_only_aliases_and_saved_descendants_survive_missing_parent_metadata() {
 }
 
 #[test]
-fn failed_catalog_delete_and_commit_preserve_every_original_and_never_retry_purge() {
+fn non_chat_failed_catalog_delete_and_commit_preserve_every_original_and_never_retry_purge() {
     for commit in [false, true] {
         let home = setup();
         let h = home.path();
@@ -353,7 +353,7 @@ fn failed_catalog_delete_and_commit_preserve_every_original_and_never_retry_purg
 }
 
 #[test]
-fn healthy_and_false_purge_controls_keep_the_existing_disposition() {
+fn non_chat_healthy_and_false_purge_controls_keep_the_existing_disposition() {
     for purge in [false, true] {
         let home = setup();
         let h = home.path();
@@ -410,7 +410,7 @@ fn healthy_and_false_purge_controls_keep_the_existing_disposition() {
 }
 
 #[test]
-fn unavailable_legacy_database_keeps_request_without_blocking_independent_cleanup() {
+fn non_chat_unavailable_legacy_database_keeps_request_without_blocking_independent_cleanup() {
     let home = setup();
     let h = home.path();
     fixture(h);
@@ -444,7 +444,7 @@ fn unavailable_legacy_database_keeps_request_without_blocking_independent_cleanu
 }
 
 #[tokio::test]
-async fn preparation_failure_reopens_the_actual_app_retirement_without_changing_options() {
+async fn non_chat_preparation_failure_reopens_the_actual_app_retirement_without_changing_options() {
     let home = setup();
     let h = home.path();
     let running = app(h);
@@ -468,11 +468,11 @@ async fn preparation_failure_reopens_the_actual_app_retirement_without_changing_
 }
 
 #[test]
-fn committed_descendant_request_survives_a_parent_rollback_and_missing_links() {
+fn non_chat_committed_descendant_request_survives_a_parent_rollback_and_missing_links() {
     let home = setup();
     let h = home.path();
     fixture(h);
-    db::open(h).unwrap().execute_batch("INSERT INTO sections(id,bot,owner_id,title) VALUES('delegate','owl','alice','independent child');").unwrap();
+    db::open(h).unwrap().execute_batch("INSERT INTO sections(id,bot,owner_id,title,peer_bot) VALUES('delegate','owl','alice','independent child','cat');").unwrap();
     legacy(h).execute_batch("CREATE TRIGGER stop_legacy BEFORE DELETE ON messages BEGIN SELECT RAISE(ABORT,'legacy failure'); END;").unwrap();
     assert_eq!(
         delete(h, "delegate", true).unwrap()["history_pending"],
@@ -492,7 +492,7 @@ fn committed_descendant_request_survives_a_parent_rollback_and_missing_links() {
 }
 
 #[tokio::test]
-async fn bot_cleanup_absorbs_pending_catalogless_requests_before_releasing_its_name() {
+async fn non_chat_bot_cleanup_absorbs_pending_catalogless_requests_before_releasing_its_name() {
     let home = setup();
     let h = home.path();
     let running = app(h);
@@ -536,7 +536,7 @@ async fn bot_cleanup_absorbs_pending_catalogless_requests_before_releasing_its_n
 
 #[cfg(unix)]
 #[test]
-fn denied_and_symlinked_legacy_paths_keep_requests_and_foreign_data() {
+fn non_chat_denied_and_symlinked_legacy_paths_keep_requests_and_foreign_data() {
     use std::os::unix::fs::{PermissionsExt, symlink};
     for link in [false, true] {
         let home = setup();
@@ -568,7 +568,7 @@ fn denied_and_symlinked_legacy_paths_keep_requests_and_foreign_data() {
 
 #[cfg(unix)]
 #[test]
-fn failed_file_cleanup_keeps_the_request_after_native_rows_disappear() {
+fn non_chat_failed_file_cleanup_keeps_the_request_after_native_rows_disappear() {
     use std::os::unix::fs::symlink;
     let home = setup();
     let h = home.path();
@@ -589,7 +589,7 @@ fn failed_file_cleanup_keeps_the_request_after_native_rows_disappear() {
 }
 
 #[test]
-fn foreign_native_descendants_and_untagged_old_tombstones_keep_their_boundaries() {
+fn non_chat_foreign_native_descendants_and_untagged_old_tombstones_keep_their_boundaries() {
     let home = setup();
     let h = home.path();
     fixture(h);
@@ -629,7 +629,7 @@ fn foreign_native_descendants_and_untagged_old_tombstones_keep_their_boundaries(
 }
 
 #[test]
-fn failed_section_attempt_preserves_the_preexisting_bot_journal_retirement() {
+fn non_chat_failed_section_attempt_preserves_the_preexisting_bot_journal_retirement() {
     let home = setup();
     let h = home.path();
     fixture(h);
@@ -650,11 +650,11 @@ fn failed_section_attempt_preserves_the_preexisting_bot_journal_retirement() {
 }
 
 #[test]
-fn completed_owned_descendants_stay_terminal_even_with_a_catalog_row() {
+fn non_chat_completed_owned_descendants_stay_terminal_even_with_a_catalog_row() {
     let home = setup();
     let h = home.path();
     fixture(h);
-    db::open(h).unwrap().execute_batch("INSERT INTO sections(id,bot,owner_id,title) VALUES('delegate','owl','alice','delegated row');").unwrap();
+    db::open(h).unwrap().execute_batch("INSERT INTO sections(id,bot,owner_id,title,peer_bot) VALUES('delegate','owl','alice','delegated row','cat');").unwrap();
     assert_eq!(delete(h, "chat", true).unwrap(), json!({"deleted":true}));
     store::finish_deletes(h).unwrap();
     store::finish_deletes(h).unwrap();
@@ -663,7 +663,7 @@ fn completed_owned_descendants_stay_terminal_even_with_a_catalog_row() {
 }
 
 #[test]
-fn a_failed_decision_does_not_unmark_a_foreign_descendants_existing_retirement() {
+fn non_chat_a_failed_decision_does_not_unmark_a_foreign_descendants_existing_retirement() {
     let home = setup();
     let h = home.path();
     fixture(h);
@@ -680,7 +680,7 @@ fn a_failed_decision_does_not_unmark_a_foreign_descendants_existing_retirement()
 }
 
 #[test]
-fn failed_rollback_metadata_never_turns_an_uncommitted_request_into_a_purge() {
+fn non_chat_failed_rollback_metadata_never_turns_an_uncommitted_request_into_a_purge() {
     let home = setup();
     let h = home.path();
     fixture(h);
@@ -713,13 +713,13 @@ fn failed_rollback_metadata_never_turns_an_uncommitted_request_into_a_purge() {
 }
 
 #[test]
-fn independent_child_commit_outlives_a_parents_failed_rollback_metadata() {
+fn non_chat_independent_child_commit_outlives_a_parents_failed_rollback_metadata() {
     let home = setup();
     let h = home.path();
     fixture(h);
     let catalog = db::open(h).unwrap();
     let native = store::open(h).unwrap();
-    catalog.execute_batch("INSERT INTO sections(id,bot,owner_id,title) VALUES('delegate','owl','alice','child'); CREATE TRIGGER stop_parent BEFORE DELETE ON sections WHEN OLD.id='chat' BEGIN SELECT RAISE(ABORT,'parent failed'); END;").unwrap();
+    catalog.execute_batch("INSERT INTO sections(id,bot,owner_id,title,peer_bot) VALUES('delegate','owl','alice','child','cat'); CREATE TRIGGER stop_parent BEFORE DELETE ON sections WHEN OLD.id='chat' BEGIN SELECT RAISE(ABORT,'parent failed'); END;").unwrap();
     native.execute_batch("CREATE TRIGGER stop_rollback BEFORE DELETE ON native_delete_options WHEN OLD.session_id='chat' BEGIN SELECT RAISE(ABORT,'rollback metadata failed'); END;").unwrap();
     assert!(delete(h, "chat", true).is_err());
     catalog.execute_batch("CREATE TRIGGER stop_child BEFORE DELETE ON sections WHEN OLD.id='delegate' BEGIN SELECT RAISE(ABORT,'child failed'); END;").unwrap();

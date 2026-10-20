@@ -5,11 +5,15 @@ use std::{
     path::{Path, PathBuf},
     time::Duration,
 };
+#[path = "support/chat_migration.rs"]
+mod chat_migration;
 #[path = "support/preflight_pi.rs"]
 mod preflight_pi;
 #[path = "support/stop_pi.rs"]
 mod stop_pi;
 mod support;
+#[path = "support/transcript_identity.rs"]
+mod transcript_identity;
 
 fn setup() -> support::TestHome {
     let home = support::TestHome::new();
@@ -1353,7 +1357,7 @@ async fn rejected_prompt_retains_staged_images_and_file_references() {
 }
 
 #[tokio::test]
-async fn named_attachments_send_only_those_and_drop_abandoned_uploads() {
+async fn named_attachments_send_only_those_and_retain_unselected_uploads() {
     let home = setup();
     let executable = fake_pi(home.path());
     let source = fs::read_to_string(&executable).unwrap().replace("const c=JSON.parse(line);", "const c=JSON.parse(line);if(c.type==='prompt')require('node:fs').appendFileSync(__dirname+'/prompts.jsonl',JSON.stringify(c)+'\\n');");
@@ -1396,7 +1400,7 @@ async fn named_attachments_send_only_those_and_drop_abandoned_uploads() {
         .await
         .unwrap();
     next_kind(&mut events, "message.complete").await;
-    assert!(!Path::new(stale["path"].as_str().unwrap()).exists());
+    assert!(Path::new(stale["path"].as_str().unwrap()).exists());
     assert!(Path::new(kept["path"].as_str().unwrap()).exists());
     // Without a list, every staged upload rides the next prompt as before.
     let later = attach("later.txt").await;
@@ -1413,6 +1417,18 @@ async fn named_attachments_send_only_those_and_drop_abandoned_uploads() {
     let named = prompts[0]["message"].as_str().unwrap();
     assert!(named.contains(kept["path"].as_str().unwrap()));
     assert!(!named.contains(stale["path"].as_str().unwrap()));
+    assert!(
+        prompts[1]["message"]
+            .as_str()
+            .unwrap()
+            .contains(stale["path"].as_str().unwrap())
+    );
+    assert!(
+        !prompts[1]["message"]
+            .as_str()
+            .unwrap()
+            .contains(kept["path"].as_str().unwrap())
+    );
     assert!(
         prompts[1]["message"]
             .as_str()
@@ -1926,8 +1942,9 @@ async fn unreadable_native_history_falls_back_to_a_chat_that_actually_opens() {
 }
 
 #[tokio::test]
-async fn deleting_section_removes_delegated_transcripts() {
+async fn deleting_peer_thread_removes_delegated_transcripts() {
     let home = setup();
+    db::open(home.path()).unwrap().execute_batch("INSERT INTO bots(name,owner_id) VALUES('teammate','alice'); UPDATE sections SET peer_bot='teammate' WHERE id='section-a';").unwrap();
     let app = hexbot_core::server::App::new(
         home.path().into(),
         "127.0.0.1:0".parse().unwrap(),

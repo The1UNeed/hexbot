@@ -45,7 +45,7 @@ Manual is for work you want to watch closely. Reads are free; every change asks.
 
 ## Bypass
 
-Bypass is plain Pi, the agent runtime: no prompts, no sandbox, no credential checks. Bots can read and change anything the daemon's user account can, including Hexbot's own credential files and provider keys. Scheduled jobs and their delegates run in Auto instead, including scheduled scripts. Reserve it for a machine you can rebuild.
+Bypass is plain Pi, the agent runtime: no prompts, no sandbox, no credential checks. Bots can read and change anything the daemon's user account can, including Hexbot's own credential files and provider keys. Scheduled jobs and their delegates run in Auto instead, including scheduled scripts. HexBot, your primary bot, still asks before it deletes a bot, room, or job, changes an approval mode or a working folder, or changes a setting, skill, or connector. Reserve it for a machine you can rebuild.
 
 ## Connected tools
 
@@ -82,8 +82,9 @@ helpers can call provider APIs with the bot's credentials and incur costs.
 
 Each card shows the command or action and why it asks. Approve runs it once. Deny stops it, and the bot sees that you declined. Reviewed Auto cards offer only those two choices.
 
-Stop cancels pending approvals, questions and Auto reviews. Requests that arrive
-while the turn is stopping are cancelled too. An answer accepted before Stop can
+Stop cancels pending approvals, questions and Auto reviews, including the cards
+HexBot shows in Bypass. Requests that arrive while the turn is stopping are
+cancelled too. An answer accepted before Stop can
 finish; a card Stop has already cancelled cannot approve a step. Background
 results, including ones already queued before Stop, wait until Stop and the
 current turn or compaction finish, then run before newer messages. Steering

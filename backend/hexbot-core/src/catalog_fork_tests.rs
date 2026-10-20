@@ -596,3 +596,81 @@ async fn unpublished_cleanup_never_touches_a_reused_bot_name_or_new_chat() {
         assert_eq!(store::usage(h, "log").unwrap(), original_usage);
     }
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn publication_keeps_source_closed_to_writes_until_commit() {
+    let home = fixture();
+    let h = home.path();
+    let before = source(h);
+    let runtime = crate::runtime::Runtime::new(
+        h.into(),
+        crate::events::EventHub::new(),
+        h.join("unused-pi"),
+    )
+    .unwrap();
+    let socket = h.join("fork-barrier.sock");
+    let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+    let path = h.to_path_buf();
+    let mut publisher = tokio::task::spawn_blocking(move || chat_section(&path, "alice", "owl"));
+    let mut barrier = loop {
+        let (mut stream, _) =
+            tokio::time::timeout(std::time::Duration::from_secs(10), listener.accept())
+                .await
+                .unwrap()
+                .unwrap();
+        let mut phase = [0; 32];
+        let n = stream.read(&mut phase).await.unwrap();
+        if &phase[..n] == b"after_copy" {
+            break stream;
+        }
+        stream.write_all(&[1]).await.unwrap();
+    };
+    let append = store::append(
+        h,
+        "log",
+        json!({"role":"user","text":"Must not slip into the source"}),
+    );
+    let projection = store::project_seeded(
+        h,
+        "log",
+        "alice",
+        "owl",
+        &json!({"role":"assistant","content":"Must not be billed","usage":{"input":9}}),
+        None,
+        None,
+    );
+    let recovery = store::reconcile(h, "owl", "log", "alice");
+    let opener = runtime
+        .call("alice", "hexbot.sections.open", &json!({"id":"log"}))
+        .await
+        .unwrap();
+    barrier.write_all(&[1]).await.unwrap();
+    let target = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            tokio::select! {
+                result = listener.accept() => {
+                    let (mut stream, _) = result.unwrap();
+                    let mut phase=[0;32]; let n=stream.read(&mut phase).await.unwrap(); assert!(n>0);
+                    stream.write_all(&[1]).await.unwrap();
+                }
+                result = &mut publisher => break result.unwrap().unwrap()["id"].as_str().unwrap().to_owned(),
+            }
+        }
+    }).await.unwrap();
+    fs::remove_file(socket).unwrap();
+    for result in [append, projection, recovery] {
+        assert_eq!(result.unwrap_err().code, 4002);
+    }
+    assert_eq!(opener.unwrap_err().code, 4002);
+    assert_eq!(source(h), before);
+    assert_ne!(target, "log");
+    assert_eq!(chat_section(h, "alice", "owl").unwrap()["id"], target);
+    let rejected = runtime
+        .call("alice", "hexbot.sections.open", &json!({"id":"log"}))
+        .await
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(rejected.code, 4002);
+    assert!(rejected.message.contains(&target));
+    runtime.shutdown().await;
+}

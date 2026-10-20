@@ -114,6 +114,15 @@ fn team_shape(connection: &Connection) -> Vec<(String, Vec<Column>)> {
         for name in names {
             columns.push(((*name).into(), "TEXT".into(), false, None, 0));
         }
+        if table == "bots" {
+            columns.push((
+                "is_primary".into(),
+                "INTEGER".into(),
+                true,
+                Some("0".into()),
+                0,
+            ));
+        }
     }
     // Native-only tables, in sqlite_master name order with the rest.
     let text = |name: &str, required: bool| (name.into(), "TEXT".into(), required, None, 0);
@@ -797,22 +806,22 @@ fn empty_schema_version_still_folds_legacy_accounts() {
 }
 
 #[test]
-fn version_13_upgrades_to_14_and_preserves_proposals_on_repeat() {
+fn version_13_upgrades_and_preserves_proposals_on_repeat() {
     let home = legacy_home(11);
     let conn = db::open(home.path()).unwrap();
     // Version 13 belongs to the preceding one-person migration. Its gate is
-    // independent; this migration must accept 13 and advance to 14.
+    // independent; this migration must accept 13 and advance to the current version.
     conn.execute("UPDATE schema_version SET version=13", [])
         .unwrap();
     db::migrate(home.path()).unwrap();
-    assert_eq!(db::SCHEMA_VERSION, 14);
+    assert_eq!(db::SCHEMA_VERSION, 15);
     conn.execute("INSERT INTO memory_proposals(id,bot,owner_id,job_id,action,created_at) VALUES ('p','scout','local','job','add',1)", []).unwrap();
     db::migrate(home.path()).unwrap();
     assert_eq!(
         conn.query_row("SELECT version FROM schema_version", [], |r| r
             .get::<_, i64>(0))
             .unwrap(),
-        14
+        15
     );
     assert_eq!(
         conn.query_row("SELECT id FROM memory_proposals", [], |r| r
@@ -820,7 +829,7 @@ fn version_13_upgrades_to_14_and_preserves_proposals_on_repeat() {
             .unwrap(),
         "p"
     );
-    conn.execute("UPDATE schema_version SET version=15", [])
+    conn.execute("UPDATE schema_version SET version=16", [])
         .unwrap();
     assert!(db::migrate(home.path()).is_err());
 }
@@ -842,7 +851,7 @@ fn room_transcript_index_reaches_new_existing_and_legacy_homes() {
     db::migrate(home.path()).unwrap();
     let connection = db::open(home.path()).unwrap();
     assert_eq!(columns(&connection), ["stored_session_id", "bot"]);
-    // A version 14 home written before the index gains it without a version bump.
+    // A current home written before the index gains it without a version bump.
     connection
         .execute_batch(
             "DROP INDEX idx_room_sessions_stored;
@@ -869,5 +878,32 @@ fn room_transcript_index_reaches_new_existing_and_legacy_homes() {
     assert_eq!(
         columns(&db::open(legacy.path()).unwrap()),
         ["stored_session_id", "bot"]
+    );
+}
+
+#[test]
+fn version_14_upgrades_to_15_with_at_most_one_primary_bot() {
+    let home = legacy_home(11);
+    db::migrate(home.path()).unwrap();
+    let conn = db::open(home.path()).unwrap();
+    conn.execute("UPDATE schema_version SET version=14", [])
+        .unwrap();
+    db::migrate(home.path()).unwrap();
+    db::migrate(home.path()).unwrap();
+    conn.execute_batch(
+        "INSERT INTO bots(name,owner_id) VALUES('first','local'),('second','local');",
+    )
+    .unwrap();
+    assert_eq!(
+        conn.query_row("SELECT COUNT(*) FROM bots WHERE is_primary=1", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+    conn.execute("UPDATE bots SET is_primary=1 WHERE name='first'", [])
+        .unwrap();
+    assert!(
+        conn.execute("UPDATE bots SET is_primary=1 WHERE name='second'", [])
+            .is_err()
     );
 }

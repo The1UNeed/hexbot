@@ -43,6 +43,9 @@ impl Fixture {
         let other: String = section("fox");
         cat.execute("UPDATE sections SET title='Dreams' WHERE id=?", [&source])
             .unwrap();
+        // Public deletion is only for peer threads; the deleted section is one.
+        cat.execute("UPDATE sections SET peer_bot='owl' WHERE id=?", [&other])
+            .unwrap();
         cat.execute_batch("INSERT INTO dreams(id,bot,started_at,status,summary) VALUES('dream','owl',1,'completed','REPORT')").unwrap();
         let native = store::open(h).unwrap();
         for (id, bot) in [(&source, "owl"), (&other, "fox")] {

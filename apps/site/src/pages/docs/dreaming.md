@@ -16,6 +16,8 @@ Each dream reviews activity from the start of the last successful dream up to, b
 
 An unreadable database from an older Hexbot version does not stop a dream when its conversations are available in native history. If a conversation still needs that database, or its log is missing or has messages that have not reached native history, the dream fails and leaves its cutoff and proposals unchanged. Repairing and recovering the conversation makes that history eligible for the next dream. New empty chats can still dream from notes and proposals.
 
+If relevant conversation history changes between its readiness check and transcript selection, the dream fails before calling the model. Run it again to read the updated history; its cutoff and proposals stay unchanged until a dream succeeds. A dream also fails, after its memory changes, when a message from before its start arrives while it runs, such as a reply that was still being written; the next dream reads it.
+
 Dreaming must be enabled for the daemon and for the individual bot. You can also run a bot's dream now from its Dreaming controls. The status shows the last run, next run, and any error.
 
 ## Read the result
@@ -27,6 +29,8 @@ A dream reads the bot's own [notes](/docs/memory/#notes) first: the days from th
 ## What a dream may change
 
 A dream writes only to the bot's own memory. It never edits the bot's soul or your About you text, so who the bot is and what it knows about you stay in your hands. Notes are not memory: the dream keeps what lasts from them and leaves the notes where they are, and Hexbot removes days older than 30 days before the dream starts and when notes are read, listed, or added.
+
+If an older client still has a conversation containing old dream reports open, Hexbot waits for it to close or retire before moving it to a chat without those reports in the bot's context. Accepted messages and replies finish in that conversation. After the move, open the bot's chat again to continue; the old conversation refuses new input.
 
 ## Proposals from scheduled jobs
 

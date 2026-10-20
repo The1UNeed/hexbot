@@ -21,8 +21,8 @@ fn fixture(h: &Path, root_native: bool, foreign_bot: &str, foreign_owner: &str) 
     .unwrap();
     db::open(h).unwrap().execute_batch(
         "INSERT INTO users(id,display_name,role,created_at) VALUES('alice','Alice','admin',0),('bob','Bob','member',0);
-         INSERT INTO bots(name,owner_id) VALUES('owl','alice'),('cat','alice'),('fox','bob');
-         INSERT INTO sections(id,bot,owner_id,title) VALUES('chat','owl','alice','General');
+         INSERT INTO bots(name,owner_id) VALUES('owl','alice'),('cat','alice'),('fox','bob'),('teammate','alice');
+         INSERT INTO sections(id,bot,owner_id,title,peer_bot) VALUES('chat','owl','alice','General','teammate');
          INSERT INTO settings(key,value) VALUES('one_chat_per_bot','true') ON CONFLICT(key) DO UPDATE SET value='true';"
     ).unwrap();
     fs::create_dir_all(h.join("profiles/owl")).unwrap();
@@ -207,7 +207,7 @@ async fn retained_and_completed_descendants_keep_their_independent_decisions() {
             let home = support::TestHome::new();
             let h = home.path();
             let app = fixture(h, root_native, "cat", "alice");
-            db::open(h).unwrap().execute_batch("INSERT INTO sections(id,bot,owner_id,title) VALUES('owned','owl','alice','child');").unwrap();
+            db::open(h).unwrap().execute_batch("INSERT INTO sections(id,bot,owner_id,title,peer_bot) VALUES('owned','owl','alice','child','teammate');").unwrap();
             catalog::call(
                 h,
                 "alice",

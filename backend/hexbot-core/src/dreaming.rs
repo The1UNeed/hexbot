@@ -311,7 +311,25 @@ fn consume_proposals(home: &Path, bot: &str, dream: &str, ids: &[&str]) -> Resul
 // Pi emits message_end before its durable append. Check the log against the
 // journal without reconciling a possibly live file, rewriting it, or billing.
 // A recovery flag or an import file alone cannot vouch for later projections.
-fn native_log_ready(home: &Path, stored: &str, since: f64) -> Result<bool> {
+fn dream_dialogue(message: &Value, since: f64, until: f64) -> bool {
+    let at = message["timestamp"].as_f64().unwrap_or(0.0);
+    at >= since
+        && at < until
+        && message["dream"] != true
+        && (message["role"] != "tool" || message["name"] == "message_bot")
+        && !runtime_store::hexbot_instruction(
+            &message["custom_type"],
+            message["display_kind"] == "hidden",
+        )
+}
+
+fn native_log_ready(
+    home: &Path,
+    native: &rusqlite::Connection,
+    stored: &str,
+    since: f64,
+    until: f64,
+) -> Result<bool> {
     common::identifier(stored)?;
     let path = home
         .join("runtime/sessions")
@@ -322,12 +340,36 @@ fn native_log_ready(home: &Path, stored: &str, since: f64) -> Result<bool> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
         Err(error) => return Err(error.into()),
     };
-    // Use the same whole-second margin as compaction_summaries for idle files.
+    // Count all raw occurrences for file-to-journal proof, and separately count
+    // the projected dialogue this dream can learn. Pi emits before appending,
+    // so even an old file can have a recent projection still waiting on disk.
+    let mut recorded = HashMap::<String, (usize, usize)>::new();
+    for row in common::rows(
+        native,
+        "SELECT p.raw_json,p.active,m.message_json FROM native_pi_journal p LEFT JOIN native_messages m ON m.session_id=p.session_id AND m.seq=p.projection_seq WHERE p.session_id=? AND (p.projection_seq IS NULL OR m.seq IS NOT NULL)",
+        &[&stored],
+    )? {
+        let message: Value = serde_json::from_str(row["raw_json"].as_str().unwrap_or(""))
+            .map_err(|e| Error::new(5200, e.to_string()))?;
+        let projection: Value =
+            serde_json::from_str(row["message_json"].as_str().unwrap_or("null"))
+                .map_err(|e| Error::new(5200, e.to_string()))?;
+        let relevant = !projection.is_null()
+            && row["active"] == 1
+            && !runtime_store::journaled_on_recovery(&message)
+            && dream_dialogue(&projection, since, until);
+        let counts = recorded.entry(message.to_string()).or_default();
+        counts.0 += 1;
+        counts.1 += usize::from(relevant);
+    }
+    // Use the same whole-second margin as compaction_summaries for idle files,
+    // only after proving no dialogue in this dream's window needs the file.
     if metadata
         .modified()
         .ok()
         .and_then(|at| at.duration_since(std::time::UNIX_EPOCH).ok())
         .is_some_and(|at| at.as_secs_f64() < since - 1.0)
+        && recorded.values().all(|(_, relevant)| *relevant == 0)
     {
         return Ok(true);
     }
@@ -336,16 +378,6 @@ fn native_log_ready(home: &Path, stored: &str, since: f64) -> Result<bool> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
         Err(error) => return Err(error.into()),
     };
-    let mut recorded = HashMap::<String, usize>::new();
-    for row in common::rows(
-        &runtime_store::open(home)?,
-        "SELECT p.raw_json FROM native_pi_journal p LEFT JOIN native_messages m ON m.session_id=p.session_id AND m.seq=p.projection_seq WHERE p.session_id=? AND (p.projection_seq IS NULL OR m.seq IS NOT NULL)",
-        &[&stored],
-    )? {
-        let message: Value = serde_json::from_str(row["raw_json"].as_str().unwrap_or(""))
-            .map_err(|e| Error::new(5200, e.to_string()))?;
-        *recorded.entry(message.to_string()).or_default() += 1;
-    }
     // Before the first reconcile, imported entries carry their exact committed
     // display row in `hexbot`. Classification may only have added a dream flag.
     let mut imported = None;
@@ -388,9 +420,10 @@ fn native_log_ready(home: &Path, stored: &str, since: f64) -> Result<bool> {
         if runtime_store::journaled_on_recovery(&message) {
             continue;
         }
-        let count = recorded.entry(message.to_string()).or_default();
-        if *count > 0 {
-            *count -= 1;
+        let counts = recorded.entry(message.to_string()).or_default();
+        if counts.0 > 0 {
+            counts.0 -= 1;
+            counts.1 = counts.1.saturating_sub(1);
             continue;
         }
         let mut seed = entry["hexbot"].clone();
@@ -409,7 +442,7 @@ fn native_log_ready(home: &Path, stored: &str, since: f64) -> Result<bool> {
         if imported.is_none() {
             let mut projections = HashMap::<String, usize>::new();
             for row in common::rows(
-                &runtime_store::open(home)?,
+                native,
                 "SELECT message_json FROM native_messages WHERE session_id=?",
                 &[&stored],
             )? {
@@ -436,10 +469,62 @@ fn native_log_ready(home: &Path, stored: &str, since: f64) -> Result<bool> {
         }
         *count -= 1;
     }
+    if recorded.values().any(|(_, relevant)| *relevant > 0) {
+        return Err(Error::new(
+            5200,
+            format!("Conversation {stored} must be recovered before dreaming"),
+        ));
+    }
     if !header {
         return Err(Error::new(5200, "Conversation header needs recovery"));
     }
     Ok(true)
+}
+
+/// Keep the earlier readiness snapshot only if it still represents the input
+/// at history selection. Never substitute unchecked newer rows into the digest.
+fn validate_native_snapshot(
+    home: &Path,
+    snapshot: &rusqlite::Connection,
+    stored: &str,
+    since: f64,
+    until: f64,
+    adopted: bool,
+) -> Result<()> {
+    let mut current = runtime_store::open(home)?;
+    let current = current.transaction()?;
+    // These flags also govern legacy selection and the no-history paths. Check
+    // them even when no displayed history version changed, including quarantine.
+    let state = |conn: &rusqlite::Connection| -> Result<[bool; 5]> {
+        Ok(conn.query_row(
+            "SELECT
+             EXISTS(SELECT 1 FROM native_unrecovered WHERE session_id=?1) OR EXISTS(SELECT 1 FROM native_quarantine WHERE session_id=?1),
+             EXISTS(SELECT 1 FROM native_fresh WHERE session_id=?1),
+             EXISTS(SELECT 1 FROM native_sessions WHERE stored_id=?1) OR EXISTS(SELECT 1 FROM native_messages WHERE session_id=?1),
+             EXISTS(SELECT 1 FROM native_pi_journal WHERE session_id=?1),
+             EXISTS(SELECT 1 FROM native_messages WHERE session_id=?1 AND COALESCE(json_extract(message_json,'$.dream'),0)<>1)",
+            [stored],
+            |r| Ok([r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?]),
+        )?)
+    };
+    let changed = state(snapshot)? != state(&current)?;
+    let version_changed = runtime_store::history_version(snapshot, stored)?
+        != runtime_store::history_version(&current, stored)?;
+    let dialogue = |conn: &rusqlite::Connection| -> Result<Vec<Value>> {
+        Ok(runtime_store::history_with_conn(conn, stored)?
+            .into_iter()
+            .filter(|message| dream_dialogue(message, since, until))
+            .collect())
+    };
+    // An adopted source is skipped only at its exact copied version. Otherwise
+    // unrelated, out-of-window and hidden writes need not defer a stable input.
+    if changed || version_changed && (adopted || dialogue(snapshot)? != dialogue(&current)?) {
+        return Err(Error::new(
+            5200,
+            format!("Conversation {stored} changed while preparing the dream; retry it"),
+        ));
+    }
+    Ok(())
 }
 
 /// Return bounded transcripts, newest conversations first when a busy day exceeds one prompt.
@@ -519,7 +604,71 @@ pub fn build_digest(
             &[&bot],
         )? {
             let id = section["id"].as_str().unwrap_or("");
-            let native = runtime_store::open(home)?;
+            // Classification can write projection metadata. Finish it before
+            // opening the read snapshot used by readiness and transcript selection.
+            if let Some(reports) = &native_reports {
+                // Use the same structural evidence as the catalog classifier.
+                // Raw tool/reasoning blocks can disprove an old display marker.
+                let first = runtime_store::open(home)?.query_row(
+                    "SELECT m.message_json,p.raw_json FROM native_messages m LEFT JOIN native_pi_journal p ON p.session_id=m.session_id AND p.projection_seq=m.seq WHERE m.session_id=? ORDER BY m.seq LIMIT 1",
+                    [id],
+                    |r| Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?)),
+                ).optional()?;
+                let first = first
+                    .map(|(shown, raw)| -> Result<Value> {
+                        let shown = serde_json::from_str(&shown)
+                            .map_err(|e| Error::new(5200, e.to_string()))?;
+                        let raw = raw
+                            .map(|s| serde_json::from_str::<Value>(&s))
+                            .transpose()
+                            .map_err(|e| Error::new(5200, e.to_string()))?;
+                        Ok(raw
+                            .filter(|m| runtime_store::dream_report_text(m).is_none())
+                            .unwrap_or(shown))
+                    })
+                    .transpose()?
+                    .unwrap_or(Value::Null);
+                let titled = section["title"] == "Dreams"
+                    && section["title_by"].is_null()
+                    && section["title_dirty"].as_i64().unwrap_or(0) == 0;
+                if dream_logs.contains(id)
+                    || section["peer_bot"].is_null()
+                        && runtime_store::dream_report_text(&first).is_some_and(|text| {
+                            titled || first["dream"] != true && reports.contains(&text)
+                        })
+                {
+                    // Remember native evidence before marking the first
+                    // report, just as the catalog does. A renamed log must
+                    // remain recognizable on the next failed legacy scan.
+                    if !dream_logs.contains(id) {
+                        let mut catalog = db::open(home)?;
+                        let tx = catalog
+                            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+                        let value: Option<String> = tx
+                            .query_row(
+                                "SELECT value FROM settings WHERE key='dream_logs'",
+                                [],
+                                |r| r.get(0),
+                            )
+                            .optional()?;
+                        let mut known: BTreeSet<String> = value
+                            .and_then(|s| serde_json::from_str(&s).ok())
+                            .unwrap_or_default();
+                        known.insert(id.to_owned());
+                        tx.execute(
+                            "INSERT OR REPLACE INTO settings VALUES('dream_logs',?)",
+                            [json!(known).to_string()],
+                        )?;
+                        tx.commit()?;
+                    }
+                    runtime_store::classify_dream_reports(home, id, reports)?;
+                    dream_logs.insert(id.to_owned());
+                }
+            }
+            // WAL readers keep one per-conversation snapshot without blocking
+            // live projection commits or upgrading this transaction to a writer.
+            let mut native = runtime_store::open(home)?;
+            let native = native.transaction()?;
             let unavailable: bool = native.query_row(
                 "SELECT EXISTS(SELECT 1 FROM native_unrecovered WHERE session_id=?1) OR EXISTS(SELECT 1 FROM native_quarantine WHERE session_id=?1)",
                 [id],
@@ -533,8 +682,14 @@ pub fn build_digest(
                     format!("Conversation {id} must be recovered before dreaming"),
                 ));
             }
-            let fresh = runtime_store::fresh(home, id)?;
-            let log_ready = native_log_ready(home, id, since)?;
+            let fresh = native.query_row(
+                "SELECT EXISTS(SELECT 1 FROM native_fresh WHERE session_id=?)",
+                [id],
+                |r| r.get::<_, bool>(0),
+            )?;
+            let log_ready = native_log_ready(home, &native, id, since, until)?;
+            #[cfg(test)]
+            snapshot_tests::after_readiness(home, id);
             // A missing log must not substitute older legacy rows for native
             // dialogue. Fresh display-only input can precede the first Pi open.
             let has_dialogue: bool = native.query_row(
@@ -576,10 +731,11 @@ pub fn build_digest(
                     [replacement],
                     |r| r.get(0),
                 )?;
-                let version: i64 = runtime_store::open(home)?.query_row("SELECT COALESCE((SELECT version FROM native_history_versions WHERE session_id=?),0)", [id], |r| r.get(0))?;
+                let version: i64 = native.query_row("SELECT COALESCE((SELECT version FROM native_history_versions WHERE session_id=?),0)", [id], |r| r.get(0))?;
                 // A client from before one-chat may still write to the old ID.
                 // Only omit the exact snapshot already copied to the owner chat.
                 if exists && adopted[id]["version"] == version {
+                    validate_native_snapshot(home, &native, id, since, until, true)?;
                     continue;
                 }
             }
@@ -594,66 +750,6 @@ pub fn build_digest(
             // Saved options alone do not prove that legacy import completed.
             let mut compactions = vec![];
             if native_exists && native_complete {
-                if let Some(reports) = &native_reports {
-                    // Use the same structural evidence as the catalog classifier.
-                    // Raw tool/reasoning blocks can disprove an old display marker.
-                    let first = runtime_store::open(home)?.query_row(
-                        "SELECT m.message_json,p.raw_json FROM native_messages m LEFT JOIN native_pi_journal p ON p.session_id=m.session_id AND p.projection_seq=m.seq WHERE m.session_id=? ORDER BY m.seq LIMIT 1",
-                        [id],
-                        |r| Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?)),
-                    ).optional()?;
-                    let first = first
-                        .map(|(shown, raw)| -> Result<Value> {
-                            let shown = serde_json::from_str(&shown)
-                                .map_err(|e| Error::new(5200, e.to_string()))?;
-                            let raw = raw
-                                .map(|s| serde_json::from_str::<Value>(&s))
-                                .transpose()
-                                .map_err(|e| Error::new(5200, e.to_string()))?;
-                            Ok(raw
-                                .filter(|m| runtime_store::dream_report_text(m).is_none())
-                                .unwrap_or(shown))
-                        })
-                        .transpose()?
-                        .unwrap_or(Value::Null);
-                    let titled = section["title"] == "Dreams"
-                        && section["title_by"].is_null()
-                        && section["title_dirty"].as_i64().unwrap_or(0) == 0;
-                    if dream_logs.contains(id)
-                        || section["peer_bot"].is_null()
-                            && runtime_store::dream_report_text(&first).is_some_and(|text| {
-                                titled || first["dream"] != true && reports.contains(&text)
-                            })
-                    {
-                        // Remember native evidence before marking the first
-                        // report, just as the catalog does. A renamed log must
-                        // remain recognizable on the next failed legacy scan.
-                        if !dream_logs.contains(id) {
-                            let mut catalog = db::open(home)?;
-                            let tx = catalog.transaction_with_behavior(
-                                rusqlite::TransactionBehavior::Immediate,
-                            )?;
-                            let value: Option<String> = tx
-                                .query_row(
-                                    "SELECT value FROM settings WHERE key='dream_logs'",
-                                    [],
-                                    |r| r.get(0),
-                                )
-                                .optional()?;
-                            let mut known: BTreeSet<String> = value
-                                .and_then(|s| serde_json::from_str(&s).ok())
-                                .unwrap_or_default();
-                            known.insert(id.to_owned());
-                            tx.execute(
-                                "INSERT OR REPLACE INTO settings VALUES('dream_logs',?)",
-                                [json!(known).to_string()],
-                            )?;
-                            tx.commit()?;
-                        }
-                        runtime_store::classify_dream_reports(home, id, reports)?;
-                        dream_logs.insert(id.to_owned());
-                    }
-                }
                 // Summaries are a bonus; one unreadable file must not stop the dream.
                 // Old log summaries were generated with reports in context.
                 // Read its original human dialogue instead of recycling those summaries.
@@ -664,17 +760,11 @@ pub fn build_digest(
                 for (at, _) in &compactions {
                     latest = latest.max(*at);
                 }
-                for message in runtime_store::history(home, id)? {
+                let history = runtime_store::history_with_conn(&native, id)?;
+                validate_native_snapshot(home, &native, id, since, until, false)?;
+                for message in history {
                     let at = message["timestamp"].as_f64().unwrap_or(0.0);
-                    if at < since
-                        || at >= until
-                        || message["dream"] == true
-                        || message["role"] == "tool" && message["name"] != "message_bot"
-                        || runtime_store::hexbot_instruction(
-                            &message["custom_type"],
-                            message["display_kind"] == "hidden",
-                        )
-                    {
+                    if !dream_dialogue(&message, since, until) {
                         continue;
                     }
                     latest = latest.max(at);
@@ -693,7 +783,10 @@ pub fn build_digest(
                         rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
                     )?);
                 }
-                let Some(store) = &legacy else { continue };
+                let Some(store) = &legacy else {
+                    validate_native_snapshot(home, &native, id, since, until, false)?;
+                    continue;
+                };
                 let session: Option<String> = store
                     .query_row(
                         "SELECT id FROM sessions WHERE session_key=?1 OR id=?1 ORDER BY CASE WHEN session_key=?1 THEN 0 ELSE 1 END LIMIT 1",
@@ -730,6 +823,7 @@ pub fn build_digest(
                         ));
                     }
                 }
+                validate_native_snapshot(home, &native, id, since, until, false)?;
             }
             if !transcript.is_empty() || !compactions.is_empty() {
                 let (compactions, transcript) =
@@ -1281,15 +1375,10 @@ impl Dreaming {
             let digest_bot = bot.to_owned();
             let digest_room = room.map(str::to_owned);
             let until = context["started_at"].as_f64().unwrap();
-            let digest = tokio::task::spawn_blocking(move || {
+            let (since, digest) = tokio::task::spawn_blocking(move || {
                 let room = digest_room.as_deref();
-                build_digest(
-                    &home,
-                    &digest_bot,
-                    last_successful_start(&home, &digest_bot, room)?,
-                    until,
-                    room,
-                )
+                let since = last_successful_start(&home, &digest_bot, room)?;
+                Ok::<_, Error>((since, build_digest(&home, &digest_bot, since, until, room)?))
             })
             .await
             .map_err(|error| Error::new(5240, format!("dream digest task failed: {error}")))??;
@@ -1339,9 +1428,31 @@ impl Dreaming {
             // This ID was just generated for this dream. It has no legacy
             // conversation to import, even when the bot has an older store.
             runtime_store::mark_fresh(&self.home, stored)?;
-            self.runtime
+            let text = self
+                .runtime
                 .run_hidden_restricted(owner, bot, stored, &prompt, &["memory"])
-                .await
+                .await?;
+            #[cfg(test)]
+            snapshot_tests::before_cutoff(&self.home);
+            // Completing moves the cutoff to this dream's start. Input that
+            // reached its window meanwhile, such as a reply still being written
+            // when it started, would never be read, so then the cutoff stays.
+            let (home, digest_bot, digest_room) =
+                (self.home.clone(), bot.to_owned(), room.map(str::to_owned));
+            let again = tokio::task::spawn_blocking(move || {
+                build_digest(&home, &digest_bot, since, until, digest_room.as_deref())
+            })
+            .await
+            .map_err(|error| Error::new(5240, format!("dream digest task failed: {error}")))?;
+            if !again.is_ok_and(|again| {
+                again["sections"] == digest["sections"] && again["rooms"] == digest["rooms"]
+            }) {
+                return Err(Error::new(
+                    5200,
+                    "A conversation changed while dreaming; the next dream reads it again",
+                ));
+            }
+            Ok(text)
         };
         let result = tokio::select! {
             result = result => result,
@@ -2582,3 +2693,7 @@ mod interpreter_tests {
         assert!(!output.contains("private-test-key"));
     }
 }
+
+#[cfg(test)]
+#[path = "../tests/dreaming/snapshot.rs"]
+mod snapshot_tests;

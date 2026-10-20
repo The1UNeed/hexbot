@@ -2020,6 +2020,15 @@ fn native_fallback_classifies_known_and_recreated_logs_without_losing_structured
         report["message"]["timestamp"] = json!(100000);
         let path = conversation(h, &[report, compacted("c", "a", "REPORT_SUMMARY", 2)]);
         runtime_store::reconcile(h, "owl", "chat", "alice").unwrap();
+        // The manually seeded raw structure is durable dialogue too. Keep its
+        // exact file occurrence so this is a healthy classification fixture.
+        use std::io::Write;
+        writeln!(
+            fs::OpenOptions::new().append(true).open(&path).unwrap(),
+            "{}",
+            json!({"type":"message","id":"raw-reply","parentId":"c","message":raw})
+        )
+        .unwrap();
         let original = fs::read(&path).unwrap();
         native
             .execute(
@@ -2109,6 +2118,11 @@ fn native_fallback_classifies_known_and_recreated_logs_without_losing_structured
     let native = runtime_store::open(h).unwrap();
     native.execute("UPDATE native_messages SET message_json=json_remove(message_json,'$.tool_calls') WHERE session_id='chat' AND seq=1",[]).unwrap();
     native.execute("INSERT INTO native_pi_journal(journal_id,session_id,raw_json,projection_seq) VALUES('first-raw','chat',?,1)",[json!({"role":"assistant","content":[{"type":"text","text":"REPORT"},{"type":"toolCall","id":"call-1","name":"read","arguments":{}}]}).to_string()]).unwrap();
+    let path = runtime_store::session_dir(h, "chat")
+        .unwrap()
+        .join("conversation.jsonl");
+    use std::io::Write;
+    writeln!(fs::OpenOptions::new().append(true).open(path).unwrap(), "{}", json!({"type":"message","id":"first-raw","parentId":null,"message":{"role":"assistant","content":[{"type":"text","text":"REPORT"},{"type":"toolCall","id":"call-1","name":"read","arguments":{}}]}})).unwrap();
     obsolete_legacy_store(h, "corrupt");
     let digest = dreaming::build_digest(h, "owl", 0., 200., None).unwrap();
     assert_eq!(
@@ -2824,6 +2838,469 @@ async fn missing_native_log_cannot_replace_newer_dialogue_with_legacy_input() {
 #[tokio::test]
 async fn failed_live_projection_cannot_advance_dreams_past_durable_dialogue() {
     assert_native_dream_input_fault(true).await;
+}
+
+// Emit the normal message_end and let the runtime commit its projection, but
+// hold the assistant's file append until the test releases this local socket.
+// Dream sessions use the original durable fixture without the barrier.
+fn deferred_dream_pi(home: &Path, port: u16) -> PathBuf {
+    let executable = durable_dream_pi(home);
+    let script = fs::read_to_string(&executable).unwrap();
+    let append = "fs.appendFileSync(file,JSON.stringify({type:'message',id:require('node:crypto').randomUUID(),parentId:last.type==='session'?null:last.id,timestamp:new Date().toISOString(),message:v.message})+'\\n');";
+    assert!(script.contains(append));
+    let replacement = format!(
+        r#"const entry=JSON.stringify({{type:'message',id:require('node:crypto').randomUUID(),parentId:last.type==='session'?null:last.id,timestamp:new Date().toISOString(),message:v.message}})+'\n';if(file.endsWith('/chat/conversation.jsonl')&&v.message.role==='assistant'){{fs.writeFileSync({pending},entry);const socket=require('node:net').createConnection({{host:'127.0.0.1',port:{port}}});socket.once('data',()=>{{try{{fs.appendFileSync(file,entry);socket.end('appended');}}catch(error){{socket.end(error.code);}}}});}}else{{fs.appendFileSync(file,entry);}}"#,
+        pending = json!(home.join("pending-append.jsonl")),
+    );
+    fs::write(&executable, script.replace(append, &replacement)).unwrap();
+    executable
+}
+
+async fn assert_deferred_dream_append(healthy: bool, failed_append: bool, old_mtime: bool) {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    for scheduled in [false, true] {
+        let home = setup();
+        let h = home.path();
+        enable_dream_now(h);
+        repair_dream_legacy_store(h);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let hub = EventHub::new();
+        let mut receiver = hub.subscribe();
+        let runtime = Runtime::new(
+            h.into(),
+            hub.clone(),
+            deferred_dream_pi(h, listener.local_addr().unwrap().port()),
+        )
+        .unwrap();
+        let dreams = Dreaming::new(h.into(), runtime.clone(), hub);
+        let initial = run_digest_dream(&dreams, false, &mut receiver).await;
+        assert_eq!(initial["dream"]["status"], "complete", "{initial}");
+        // Keep the initial successful cutoff so the old-mtime fast path is
+        // exercised against a real subsequent dream, rather than since=0.
+        let cutoff = initial["dream"]["started_at"].as_f64().unwrap();
+        // Scheduled fires normally run once per day. Retain the cutoff but
+        // move this completed attempt to yesterday for this scheduled control.
+        if scheduled {
+            db::open(h)
+                .unwrap()
+                .execute(
+                    "UPDATE dreams SET started_at=started_at-86400,finished_at=finished_at-86400",
+                    [],
+                )
+                .unwrap();
+        }
+        let previous_cutoff = if scheduled { cutoff - 86400. } else { cutoff };
+        dreaming::propose_memory(
+            h,
+            "alice",
+            "owl",
+            "job",
+            "add",
+            &json!({"text":"pending proposal"}),
+        )
+        .unwrap();
+        let opened = runtime
+            .call("alice", "hexbot.sections.open", &json!({"id":"chat"}))
+            .await
+            .unwrap()
+            .unwrap();
+        runtime.call("alice", "prompt.submit", &json!({"session_id":opened["section"]["live_session_id"],"text":"I prefer cerulean samples"})).await.unwrap().unwrap();
+        event(&mut receiver, "message.complete").await;
+        let (mut barrier, _) = tokio::time::timeout(Duration::from_secs(10), listener.accept())
+            .await
+            .unwrap()
+            .unwrap();
+        loop {
+            if event(&mut receiver, "status.update").await["kind"] == "idle" {
+                break;
+            }
+        }
+        let raw = runtime_store::session_dir(h, "chat")
+            .unwrap()
+            .join("conversation.jsonl");
+        let pending = fs::read_to_string(h.join("pending-append.jsonl")).unwrap();
+        let entry: Value = serde_json::from_str(pending.trim()).unwrap();
+        let contains_entry = || {
+            fs::read_to_string(&raw)
+                .unwrap()
+                .lines()
+                .any(|line| serde_json::from_str::<Value>(line).unwrap()["id"] == entry["id"])
+        };
+        assert!(!contains_entry());
+        let native = runtime_store::open(h).unwrap();
+        assert_eq!(native.query_row("SELECT count(*) FROM native_pi_journal WHERE session_id='chat' AND raw_json=? AND projection_seq IS NOT NULL", [entry["message"].to_string()], |r|r.get::<_,i64>(0)).unwrap(), 1);
+        if healthy {
+            barrier.write_all(b"append").await.unwrap();
+            let mut response = String::new();
+            tokio::time::timeout(
+                Duration::from_secs(10),
+                barrier.read_to_string(&mut response),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+            assert_eq!(response, "appended");
+        } else if failed_append {
+            let mut permissions = fs::metadata(&raw).unwrap().permissions();
+            permissions.set_readonly(true);
+            fs::set_permissions(&raw, permissions).unwrap();
+            barrier.write_all(b"append").await.unwrap();
+            let mut response = String::new();
+            tokio::time::timeout(
+                Duration::from_secs(10),
+                barrier.read_to_string(&mut response),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+            assert_eq!(response, "EACCES");
+        }
+        if old_mtime {
+            fs::File::options()
+                .read(true)
+                .open(&raw)
+                .unwrap()
+                .set_times(
+                    fs::FileTimes::new()
+                        .set_modified(std::time::UNIX_EPOCH + Duration::from_secs(1000)),
+                )
+                .unwrap();
+        }
+        let original = fs::read(&raw).unwrap();
+        let frozen = native
+            .query_row(
+                "SELECT prompt,options FROM native_sessions WHERE stored_id='chat'",
+                [],
+                |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
+            )
+            .unwrap();
+        let usage = runtime_store::usage(h, "chat").unwrap();
+        let prompts = fs::read_to_string(h.join("prompts.log")).unwrap();
+        let changed = run_digest_dream(&dreams, scheduled, &mut receiver).await;
+        // Record the actual effects before the first product assertion, so a
+        // failing original-code control preserves provider/proposal/cutoff proof.
+        let pending_count = || {
+            db::open(h)
+                .unwrap()
+                .query_row(
+                    "SELECT count(*) FROM memory_proposals WHERE consumed_at IS NULL",
+                    [],
+                    |r| r.get::<_, i64>(0),
+                )
+                .unwrap()
+        };
+        let current_cutoff = || {
+            db::open(h)
+                .unwrap()
+                .query_row(
+                    "SELECT MAX(started_at) FROM dreams WHERE status='complete'",
+                    [],
+                    |r| r.get::<_, f64>(0),
+                )
+                .unwrap()
+        };
+        let new_prompts = fs::read_to_string(h.join("prompts.log")).unwrap();
+        eprintln!(
+            "append-effects {}",
+            json!({"healthy":healthy,"failed_append":failed_append,"old_mtime":old_mtime,"scheduled":scheduled,"status":changed["dream"]["status"],"pending":pending_count(),"cutoff":current_cutoff(),"previous_cutoff":previous_cutoff,"provider_called":new_prompts!=prompts,"provider_learned_assistant":new_prompts[prompts.len()..].contains("assistant: Dream summary"),"file_has_assistant":contains_entry()})
+        );
+        assert_eq!(
+            changed["dream"]["status"],
+            if healthy { "complete" } else { "failed" },
+            "{changed}"
+        );
+        assert_eq!(fs::read(&raw).unwrap(), original);
+        assert_eq!(runtime_store::usage(h, "chat").unwrap(), usage);
+        if !healthy {
+            assert_eq!(new_prompts, prompts);
+            assert_eq!(pending_count(), 1);
+            assert_eq!(current_cutoff(), previous_cutoff);
+            // Repeated attempts with a failed append must remain incomplete.
+            if failed_append {
+                let changed = run_digest_dream(&dreams, false, &mut receiver).await;
+                assert_eq!(changed["dream"]["status"], "failed", "{changed}");
+                assert_eq!(fs::read_to_string(h.join("prompts.log")).unwrap(), prompts);
+                assert_eq!(current_cutoff(), previous_cutoff);
+                assert_eq!(pending_count(), 1);
+                runtime.close_stored("alice", "chat").await.unwrap();
+                // Restore the exact captured append only after its writer is
+                // closed. Production Dream never repairs or reconciles a file.
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    fs::set_permissions(&raw, fs::Permissions::from_mode(0o600)).unwrap();
+                }
+                use std::io::Write;
+                fs::OpenOptions::new()
+                    .append(true)
+                    .open(&raw)
+                    .unwrap()
+                    .write_all(pending.as_bytes())
+                    .unwrap();
+                assert!(runtime_store::reconcile_all(h).unwrap().is_empty());
+            } else {
+                barrier.write_all(b"append").await.unwrap();
+                let mut response = String::new();
+                tokio::time::timeout(
+                    Duration::from_secs(10),
+                    barrier.read_to_string(&mut response),
+                )
+                .await
+                .unwrap()
+                .unwrap();
+                assert_eq!(response, "appended");
+            }
+            assert!(contains_entry());
+            let repaired_bytes = fs::read(&raw).unwrap();
+            let changed = run_digest_dream(&dreams, false, &mut receiver).await;
+            assert_eq!(changed["dream"]["status"], "complete", "{changed}");
+            assert_eq!(fs::read(&raw).unwrap(), repaired_bytes);
+        }
+        assert_eq!(pending_count(), 0);
+        let learned = fs::read_to_string(h.join("prompts.log")).unwrap();
+        assert_eq!(
+            learned[prompts.len()..]
+                .matches("assistant: Dream summary")
+                .count(),
+            1
+        );
+        let changed = run_digest_dream(&dreams, false, &mut receiver).await;
+        assert_eq!(changed["dream"]["status"], "complete", "{changed}");
+        let after = fs::read_to_string(h.join("prompts.log")).unwrap();
+        assert!(!after[learned.len()..].contains("assistant: Dream summary"));
+        assert_eq!(
+            native
+                .query_row(
+                    "SELECT prompt,options FROM native_sessions WHERE stored_id='chat'",
+                    [],
+                    |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+                )
+                .unwrap(),
+            frozen
+        );
+        assert_eq!(runtime_store::usage(h, "chat").unwrap(), usage);
+        dreams.shutdown().await;
+        runtime.shutdown().await;
+    }
+}
+
+#[tokio::test]
+async fn deferred_dream_append_healthy_control() {
+    assert_deferred_dream_append(true, false, false).await;
+}
+
+#[tokio::test]
+async fn deferred_dream_append_waits_for_file_then_learns_once() {
+    assert_deferred_dream_append(false, false, false).await;
+}
+
+#[tokio::test]
+async fn deferred_dream_append_failure_keeps_cutoff_and_proposal_until_repair() {
+    assert_deferred_dream_append(false, true, false).await;
+}
+
+#[tokio::test]
+async fn deferred_dream_append_old_mtime_cannot_hide_recent_projection() {
+    assert_deferred_dream_append(false, false, true).await;
+}
+
+#[test]
+fn dream_file_completeness_requires_only_dialogue_in_its_window() {
+    for (name, message, relevant) in [
+        (
+            "before",
+            json!({"role":"user","content":"old","timestamp":9999}),
+            false,
+        ),
+        (
+            "start",
+            json!({"role":"user","content":"start","timestamp":10000}),
+            true,
+        ),
+        (
+            "end",
+            json!({"role":"user","content":"end","timestamp":20000}),
+            false,
+        ),
+        (
+            "assistant",
+            json!({"role":"assistant","content":"speech","timestamp":19999}),
+            true,
+        ),
+        (
+            "tool",
+            json!({"role":"toolResult","toolName":"read","content":"fetched","timestamp":15000}),
+            false,
+        ),
+        (
+            "teammate",
+            json!({"role":"toolResult","toolName":"message_bot","content":"speech","timestamp":15000}),
+            true,
+        ),
+        (
+            "error",
+            json!({"role":"assistant","content":"error","stopReason":"error","timestamp":15000}),
+            false,
+        ),
+        (
+            "todo",
+            json!({"role":"custom","customType":"hexbot_todo","display":false,"content":"notice","timestamp":15000}),
+            false,
+        ),
+        (
+            "fallback",
+            json!({"role":"custom","customType":"hexbot_fallback","display":false,"content":"notice","timestamp":15000}),
+            false,
+        ),
+        (
+            "visible",
+            json!({"role":"custom","customType":"hexbot_todo","display":true,"content":"speech","timestamp":15000}),
+            true,
+        ),
+        (
+            "unknown",
+            json!({"role":"custom","customType":"unknown","display":false,"content":"speech","timestamp":15000}),
+            true,
+        ),
+        (
+            "empty-system",
+            json!({"role":"system","content":"","timestamp":15000}),
+            false,
+        ),
+        (
+            "system",
+            json!({"role":"system","content":"speech","timestamp":15000}),
+            true,
+        ),
+        (
+            "report",
+            json!({"role":"assistant","content":"report","timestamp":15000}),
+            false,
+        ),
+        (
+            "inactive",
+            json!({"role":"user","content":"branch","timestamp":15000}),
+            false,
+        ),
+        (
+            "deleted-projection",
+            json!({"role":"user","content":"deleted","timestamp":15000}),
+            false,
+        ),
+    ] {
+        for old_mtime in [false, true] {
+            let home = setup();
+            let h = home.path();
+            let raw = runtime_store::session_dir(h, "chat")
+                .unwrap()
+                .join("conversation.jsonl");
+            fs::create_dir_all(raw.parent().unwrap()).unwrap();
+            let header = format!(
+                "{}\n",
+                json!({"type":"session","version":3,"id":"chat","timestamp":"1970-01-01T00:00:00.000Z","cwd":"/tmp"})
+            );
+            fs::write(&raw, &header).unwrap();
+            runtime_store::project_seeded(
+                h,
+                "chat",
+                "alice",
+                "owl",
+                &message,
+                None,
+                (name == "report").then(|| json!({"dream":true})).as_ref(),
+            )
+            .unwrap();
+            let native = runtime_store::open(h).unwrap();
+            if name == "inactive" {
+                native
+                    .execute(
+                        "UPDATE native_pi_journal SET active=0 WHERE session_id='chat'",
+                        [],
+                    )
+                    .unwrap();
+            }
+            if name == "deleted-projection" {
+                native
+                    .execute("DELETE FROM native_messages WHERE session_id='chat'", [])
+                    .unwrap();
+            }
+            if old_mtime {
+                fs::File::open(&raw)
+                    .unwrap()
+                    .set_times(fs::FileTimes::new().set_modified(std::time::UNIX_EPOCH))
+                    .unwrap();
+            }
+            let history = runtime_store::history(h, "chat").unwrap();
+            let usage = runtime_store::usage(h, "chat").unwrap();
+            let result = dreaming::build_digest(h, "owl", 10., 20., None);
+            assert_eq!(
+                result.is_err(),
+                relevant,
+                "{name}, old_mtime={old_mtime}: {result:?}"
+            );
+            if let Err(error) = result {
+                assert_eq!(error.code, 5200);
+            }
+            assert_eq!(fs::read_to_string(&raw).unwrap(), header);
+            assert_eq!(runtime_store::history(h, "chat").unwrap(), history);
+            assert_eq!(runtime_store::usage(h, "chat").unwrap(), usage);
+            if relevant {
+                let entry = json!({"type":"message","id":"entry","parentId":null,"timestamp":"1970-01-01T00:00:15.000Z","message":message});
+                fs::write(&raw, format!("{header}{entry}\n")).unwrap();
+                assert!(
+                    dreaming::build_digest(h, "owl", 10., 20., None).is_ok(),
+                    "{name}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn dream_file_completeness_counts_identical_active_occurrences() {
+    let home = setup();
+    let h = home.path();
+    let raw = runtime_store::session_dir(h, "chat")
+        .unwrap()
+        .join("conversation.jsonl");
+    fs::create_dir_all(raw.parent().unwrap()).unwrap();
+    let message = json!({"role":"user","content":"same speech","timestamp":15000});
+    for _ in 0..2 {
+        runtime_store::project_seeded(h, "chat", "alice", "owl", &message, None, None).unwrap();
+    }
+    let header = format!("{}\n", json!({"type":"session","version":3,"id":"chat"}));
+    let entry = json!({"type":"message","id":"one","parentId":null,"message":message});
+    let one = format!("{header}{entry}\n");
+    fs::write(&raw, &one).unwrap();
+    assert_eq!(
+        dreaming::build_digest(h, "owl", 10., 20., None)
+            .unwrap_err()
+            .code,
+        5200
+    );
+    let native = runtime_store::open(h).unwrap();
+    native
+        .execute(
+            "UPDATE native_pi_journal SET active=0 WHERE projection_seq=1",
+            [],
+        )
+        .unwrap();
+    assert_eq!(
+        dreaming::build_digest(h, "owl", 10., 20., None).unwrap()["sections"][0]["transcript"],
+        "user: same speech"
+    );
+    native
+        .execute(
+            "UPDATE native_pi_journal SET active=1 WHERE projection_seq=1",
+            [],
+        )
+        .unwrap();
+    let second = json!({"type":"message","id":"two","parentId":"one","message":message});
+    fs::write(&raw, format!("{one}{second}\n")).unwrap();
+    assert_eq!(
+        dreaming::build_digest(h, "owl", 10., 20., None).unwrap()["sections"][0]["transcript"],
+        "user: same speech\nuser: same speech"
+    );
 }
 
 #[tokio::test]

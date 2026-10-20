@@ -4,6 +4,8 @@ use serde_json::{Value, json};
 use std::{fs, path::Path, time::Duration};
 use tokio::io::AsyncWriteExt;
 
+mod support;
+
 #[derive(Clone, Copy, PartialEq)]
 enum AfterResponse {
     Retain,
@@ -69,6 +71,7 @@ rl.on('line',line=>{{
     .unwrap()
     .unwrap();
     let id = made["section"]["id"].as_str().unwrap();
+    support::peer_thread(h, "local", id);
     fs::write(
         h.join("profiles/owl/config.yaml"),
         "model:\n  provider: openai\n  default: original\ntools:\n  enabled_toolsets: []\n",

@@ -3,7 +3,7 @@ export const docGroups = [
     title: 'Get started',
     pages: [
       { title: 'Install', summary: 'Install Full, Client, or Headless, from the installer or a terminal.', href: '/docs/install/' },
-      { title: 'Quick start', summary: 'Connect a provider, create your first bot, and send a message.', href: '/docs/quick-start/' },
+      { title: 'Quick start', summary: 'Connect a provider, meet HexBot, and send a message.', href: '/docs/quick-start/' },
       { title: 'Providers and billing', summary: 'Add credentials, choose models, and understand usage charges.', href: '/docs/providers/' },
       { title: 'Bots and chats', summary: 'Give bots a role and keep one ongoing chat with each.', href: '/docs/bots-and-sections/' },
     ],

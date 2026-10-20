@@ -54,6 +54,7 @@ require('node:readline').createInterface({input:process.stdin}).on('line', line 
     .unwrap()
     .unwrap();
     let stored = made["section"]["id"].as_str().unwrap().to_owned();
+    home.peer_thread("local", &stored);
     fs::write(h.join("profiles/owl/config.yaml"), "tools:\n  enabled_toolsets: [tts]\ntts:\n  provider: fixture\n  providers:\n    fixture:\n      type: command\n      command: /bin/sh\n      args: ['-c', 'cat >/dev/null; printf audio > \"$HEXBOT_TTS_OUTPUT\"']\n").unwrap();
     runtime_store::open(h)
         .unwrap()

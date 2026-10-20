@@ -27,10 +27,15 @@ use tokio::sync::{Mutex as AsyncMutex, watch};
 mod attachments;
 #[path = "runtime_delegation.rs"]
 mod delegation;
+#[path = "runtime_identity.rs"]
+mod identity;
+#[path = "runtime_primary.rs"]
+mod primary;
 #[path = "runtime_review.rs"]
 mod review;
 #[path = "runtime_stop.rs"]
 mod stop;
+use identity::with_fields;
 
 #[cfg(test)]
 #[path = "runtime_lifecycle_tests.rs"]
@@ -42,6 +47,7 @@ const HIDDEN_TURN_DEADLINE: Duration = Duration::from_secs(1800);
 /// Under launchd's and systemd's default stop budgets, with room for the server.
 const SHUTDOWN_DEADLINE: Duration = Duration::from_secs(8);
 struct State {
+    identity: identity::Identity,
     busy: bool,
     compacting: bool,
     closed: bool,
@@ -204,10 +210,15 @@ impl Drop for Landing {
 }
 /// Uploads moving to a section's new process. If it never starts they wait
 /// for the next open of the section instead of being lost.
+struct Parked {
+    uploads: Vec<Staged>,
+    _lease: Arc<fs::File>,
+}
 struct Moving<'a> {
-    parked: &'a Mutex<HashMap<String, Vec<Staged>>>,
+    parked: &'a Mutex<HashMap<String, Parked>>,
     stored: &'a str,
     uploads: Vec<Staged>,
+    lease: Arc<fs::File>,
 }
 impl Drop for Moving<'_> {
     fn drop(&mut self) {
@@ -216,7 +227,11 @@ impl Drop for Moving<'_> {
                 .lock()
                 .unwrap()
                 .entry(self.stored.to_owned())
-                .or_default()
+                .or_insert_with(|| Parked {
+                    uploads: vec![],
+                    _lease: self.lease.clone(),
+                })
+                .uploads
                 .append(&mut self.uploads);
         }
     }
@@ -260,6 +275,9 @@ struct Live {
     ready: AtomicBool,
     input_queue: Arc<InputQueue>,
     input_generation: u64,
+    // Also held by the event pump, input landings and background callers.
+    // A retained Dream source cannot be adopted while any of them can write.
+    _conversation_lease: Arc<fs::File>,
     state: Mutex<State>,
     settled: watch::Sender<u64>,
     /// Run, command and Stop completions that can admit queued input, or close.
@@ -321,11 +339,13 @@ pub struct Runtime {
     description_refreshes: Mutex<HashMap<String, bool>>,
     warned_servers: Mutex<std::collections::HashSet<String>>,
     /// Uploads of sections whose new process failed to start, by section.
-    parked: Mutex<HashMap<String, Vec<Staged>>>,
+    parked: Mutex<HashMap<String, Parked>>,
     /// Orders context reports across sessions and idle restarts. Seeded from
     /// the clock so a report after a daemon restart still outranks the last
     /// one a client kept.
     usage_seq: AtomicU64,
+    /// The App whose methods the primary bot's tools call (`runtime_primary.rs`).
+    dispatcher: Mutex<Option<Weak<crate::server::App>>>,
 }
 impl Runtime {
     pub fn new(home: PathBuf, events: EventHub, pi_executable: PathBuf) -> Result<Arc<Self>> {
@@ -349,6 +369,7 @@ impl Runtime {
             warned_servers: Mutex::new(std::collections::HashSet::new()),
             parked: Mutex::new(HashMap::new()),
             usage_seq: AtomicU64::new((common::now() * 1000.0) as u64),
+            dispatcher: Mutex::new(None),
         });
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
             let weak = Arc::downgrade(&runtime);
@@ -801,6 +822,8 @@ impl Runtime {
         admitting: bool,
         admission: SessionAdmission,
     ) -> Result<Arc<Live>> {
+        let conversation_lease = Arc::new(store::conversation_lease(&self.home, stored)?);
+        crate::catalog::check_chat_source(&self.home, stored)?;
         if self.stopping.load(Ordering::Acquire) {
             return Err(Error::new(5201, "daemon is shutting down"));
         }
@@ -824,6 +847,7 @@ impl Runtime {
             parked: &self.parked,
             stored,
             uploads: vec![],
+            lease: conversation_lease.clone(),
         };
         if let Some(s) = running {
             if s.owner != owner {
@@ -848,6 +872,7 @@ impl Runtime {
                 .lock()
                 .unwrap()
                 .remove(stored)
+                .map(|parked| parked.uploads)
                 .unwrap_or_default();
         }
         let permit = match self.capacity.clone().try_acquire_owned() {
@@ -971,10 +996,12 @@ impl Runtime {
                 cwd.clone(),
             );
             let work_admission = admission.clone();
+            let work_lease = conversation_lease.clone();
             tokio::task::spawn_blocking(move || {
                 // Cancellation of the opener must still wait for its actual
                 // import/recovery work before deletion takes its snapshot.
                 let _admission = work_admission;
+                let _lease = work_lease;
                 store::import_hermes(&home, &bot, &stored, &cwd)?;
                 store::reconcile(&home, &bot, &stored, &owner)
             })
@@ -1129,7 +1156,9 @@ impl Runtime {
             ready: AtomicBool::new(false),
             input_generation: input_queue.generation.load(Ordering::Acquire),
             input_queue: input_queue.clone(),
+            _conversation_lease: conversation_lease,
             state: Mutex::new(State {
+                identity: identity::Identity::default(),
                 busy: false,
                 compacting: false,
                 closed: false,
@@ -1257,11 +1286,13 @@ impl Runtime {
         bot: &str,
         stored: &str,
         restricted: Option<&[&str]>,
+        overrides: Option<&Value>,
     ) -> Result<(Vec<Value>, Vec<Value>)> {
         let enabled = crate::connectors::toolsets(&self.home, bot)?;
         let mut tools = base_tools();
         tools.retain(|t| t["name"] != "message_bot" || enabled.iter().any(|v| v == "hexbot"));
-        if !shows_visuals(&self.home, stored)? {
+        let own = shows_visuals(&self.home, stored)?;
+        if !own {
             tools.retain(|t| t["name"] != "hexbot_show_html");
         }
         if crate::connectors::toolsets(&self.home, bot)?
@@ -1274,6 +1305,14 @@ impl Runtime {
             tools.push(crate::dreaming::tool_descriptor());
         }
         tools.extend(crate::native_tools::descriptors(&self.home, bot)?);
+        // The primary bot looks after the others from its own chat only.
+        if own
+            && restricted.is_none()
+            && overrides.is_none()
+            && crate::catalog::primary_bot(&self.home, owner)?.as_deref() == Some(bot)
+        {
+            tools.extend(primary::descriptors());
+        }
         if let Some(allowed) = restricted {
             tools.retain(|t| {
                 t["name"]
@@ -1317,7 +1356,7 @@ impl Runtime {
         restricted: Option<&[&str]>,
         overrides: Option<&Value>,
     ) -> Result<(String, Value)> {
-        let (tools, mcp_names) = self.fresh_tools(owner, bot, stored, restricted)?;
+        let (tools, mcp_names) = self.fresh_tools(owner, bot, stored, restricted, overrides)?;
         // The prompt describes the tools frozen with the section, so it is
         // built from them and tagged with their layout (`prompt_layout`).
         let (mut prompt, skills) = self.session_prompt(botrow, owner, bot, cwd, &tools)?;
@@ -1442,7 +1481,7 @@ impl Runtime {
         {
             return Ok(false);
         }
-        let (tools, mcp_names) = self.fresh_tools(owner, bot, stored, None)?;
+        let (tools, mcp_names) = self.fresh_tools(owner, bot, stored, None, None)?;
         let toolsets = crate::connectors::toolsets(&self.home, bot)?;
         Ok(json!([prompt_layout(&tools), tools, mcp_names, toolsets])
             != json!([
@@ -1482,11 +1521,16 @@ impl Runtime {
             about
         );
         let prompt = format!(
-            "{}{}\n\n{}\n\n{}{}",
+            "{}{}\n\n{}\n\n{}{}{}",
             prompt,
             PROMPT_RULES,
             crate::settings::PLATFORM_HINT,
             HEXBOT_GUIDANCE,
+            if is_primary_layout(tools) {
+                primary::GUIDANCE
+            } else {
+                ""
+            },
             PROMPT_FILES
                 .replace("{profile}", &profile.display().to_string())
                 .replace("{cwd}", &cwd.display().to_string())
@@ -1634,7 +1678,7 @@ impl Runtime {
         chain: Option<Chain>,
         uploads: Option<&[String]>,
     ) -> Result<Value> {
-        self.submit_admitted(s, text, hidden, queued, chain, uploads, None)
+        self.submit_admitted(s, text, hidden, queued, chain, uploads, None, None)
             .await
     }
     #[allow(clippy::too_many_arguments)]
@@ -1647,6 +1691,7 @@ impl Runtime {
         chain: Option<Chain>,
         uploads: Option<&[String]>,
         mut admission: Option<SessionAdmission>,
+        input_id: Option<&str>,
     ) -> Result<Value> {
         if self.stopping.load(Ordering::Acquire) {
             return Err(Error::new(5201, "daemon is shutting down"));
@@ -1661,6 +1706,7 @@ impl Runtime {
                 return Err(Error::new(4202, "prompt exceeds 1 MiB"));
             }
         }
+        let display = if hidden { "hidden" } else { "normal" };
         let mut s = s.clone();
         let _reservation = queued.then(|| InputAdmission::start(&s));
         let _input = if queued {
@@ -1673,7 +1719,9 @@ impl Runtime {
         };
         if compact {
             let mut ended = s.run_ended.subscribe();
-            loop {
+            // No Pi user carries a supplied key here: the daemon reserves it
+            // before Pi compacts and keeps it on the row it stores below.
+            let control = loop {
                 let (current, _open) = self.input_session(&s, false, admission.take()).await?;
                 admission = Some(_open.admission());
                 s = current;
@@ -1690,12 +1738,18 @@ impl Runtime {
                         return Err(Error::new(4002, "session is already working"));
                     }
                     if !state.recovering {
+                        let control = input_id
+                            .map(|id| {
+                                store::reserve_control(&self.home, &s.stored, text, display, id)
+                                    .map(|row| (id, row))
+                            })
+                            .transpose()?;
                         state.busy = true;
                         state.compacting = true;
                         state.input_run = None;
                         state.interrupted = false;
                         state.last_activity = common::now();
-                        break;
+                        break control;
                     }
                 }
                 drop(_open);
@@ -1703,7 +1757,7 @@ impl Runtime {
                     .changed()
                     .await
                     .map_err(|_| Error::new(5201, "session closed"))?;
-            }
+            };
             drop(admission);
             self.emit(&s, "message.start", json!({}));
             let response = s
@@ -1713,29 +1767,34 @@ impl Runtime {
                 .map_err(pi_error);
             // Keep compact completion, report reload and admission in one boundary.
             let _gate = s.event_gate.lock().unwrap();
-            let result = response
-                .and_then(|reply| {
-                    if reply.success {
-                        Ok(())
-                    } else {
-                        Err(Error::new(
-                            5201,
-                            reply.error.unwrap_or_else(|| "Summarising failed".into()),
-                        ))
-                    }
-                })
-                .and_then(|()| {
-                    store::append(
-                        &self.home,
-                        &s.stored,
-                        json!({"role":"user","text":text,"display_kind":if hidden{"hidden"}else{"normal"}}),
-                    )?;
-                    store::append(
-                        &self.home,
-                        &s.stored,
-                        json!({"role":"assistant","text":"Older messages summarised."}),
-                    )
-                });
+            let compacted = response.and_then(|reply| {
+                if reply.success {
+                    Ok(())
+                } else {
+                    Err(Error::new(
+                        5201,
+                        reply.error.unwrap_or_else(|| "Summarising failed".into()),
+                    ))
+                }
+            });
+            if compacted.is_err()
+                && let Some((id, row)) = &control
+            {
+                let _ = store::release_control(&self.home, &s.stored, id, row);
+            }
+            let result = compacted.and_then(|()| {
+                let mut user = json!({"role":"user","text":text,"display_kind":display});
+                if let Some((id, row)) = &control {
+                    user["input_id"] = json!(id);
+                    user["row_id"] = json!(row);
+                }
+                store::append(&self.home, &s.stored, user)?;
+                store::append(
+                    &self.home,
+                    &s.stored,
+                    json!({"role":"assistant","text":"Older messages summarised."}),
+                )
+            });
             // Pi settles no turn for a compaction; it ends here, stored or not.
             let reread = {
                 let mut state = s.state.lock().unwrap();
@@ -1765,11 +1824,15 @@ impl Runtime {
             }
             self.emit(&s, "status.update", json!({"kind":"idle","text":""}));
             s.settled.send_modify(|v| *v += 1);
-            return Ok(json!({"status":"completed"}));
+            let mut done = json!({"status":"completed"});
+            if let Some((id, _)) = control {
+                done["input_id"] = json!(id);
+            }
+            return Ok(done);
         }
         let mut command = json!({"type":"prompt","message":text});
         let mut chain = chain;
-        let (sent, dropped, intent, reply, fresh) = loop {
+        let (sent, intent, reply, fresh) = loop {
             let (current, _open) = self.input_session(&s, true, admission.take()).await?;
             admission = Some(_open.admission());
             s = current;
@@ -1814,6 +1877,24 @@ impl Runtime {
                     {
                         continue;
                     }
+                    let refs = state
+                        .staged
+                        .iter()
+                        .filter(|u| uploads.is_none_or(|ids| ids.contains(&u.id)))
+                        .flat_map(|u| u.refs.clone())
+                        .collect::<Vec<_>>();
+                    if !refs.is_empty() {
+                        command["message"] =
+                            json!(format!("{}\n\nAttached files:\n{}", text, refs.join("\n")));
+                    }
+                    // A refused input_id leaves the turn and staged uploads untouched.
+                    let intent = store::stage_prompt_with_id(
+                        &self.home,
+                        &s.stored,
+                        command["message"].as_str().unwrap_or(text),
+                        display,
+                        input_id,
+                    )?;
                     let input_chain = chain.clone();
                     let fresh = !state.busy;
                     if fresh {
@@ -1833,12 +1914,11 @@ impl Runtime {
                     // It must also keep Stop's cancellation until this turn settles.
                     state.busy = true;
                     state.last_activity = common::now();
-                    state
-                        .display
-                        .push_back(if hidden { "hidden" } else { "normal" }.into());
-                    // A client that names its uploads sends only those; anything else
-                    // staged here was abandoned, by this client or another one.
-                    let (sent, dropped) = std::mem::take(&mut state.staged)
+                    state.display.push_back(display.into());
+                    // Exact selection consumes only these uploads. Other clients may
+                    // still be composing with the remaining staged files.
+                    let sent;
+                    (sent, state.staged) = std::mem::take(&mut state.staged)
                         .into_iter()
                         .partition::<Vec<_>, _>(|u| uploads.is_none_or(|ids| ids.contains(&u.id)));
                     command["images"] = json!(
@@ -1846,44 +1926,29 @@ impl Runtime {
                             .flat_map(|u| u.images.clone())
                             .collect::<Vec<_>>()
                     );
-                    let refs = sent.iter().flat_map(|u| u.refs.clone()).collect::<Vec<_>>();
-                    if !refs.is_empty() {
-                        command["message"] =
-                            json!(format!("{}\n\nAttached files:\n{}", text, refs.join("\n")));
-                    }
                     if queued {
                         command["streamingBehavior"] = json!("followUp");
                     }
-                    let intent = store::stage_prompt(
-                        &self.home,
-                        &s.stored,
-                        command["message"].as_str().unwrap_or(text),
-                        if hidden { "hidden" } else { "normal" },
-                    );
-                    let reply = intent
-                        .as_ref()
-                        .map_err(|e| Error::new(e.code, &e.message))
-                        .and_then(|intent| {
-                            let input = PendingInput {
-                                intent: intent.clone(),
-                                in_pi: true,
-                                queued: false,
-                                stop_epoch: state.stop_epoch,
-                                preflight: false,
-                                replaying: false,
-                                command: command.clone(),
-                                display: if hidden { "hidden" } else { "normal" }.into(),
-                                chain: input_chain.unwrap_or_else(|| state.chain.clone()),
-                            };
-                            let reply = s.process.try_input(&command, intent).map_err(pi_error)?;
-                            state.inputs.push_back(input);
-                            if fresh {
-                                state.input_run = Some(intent.clone());
-                            }
-                            state.submitting += 1;
-                            Ok(reply)
-                        });
-                    Some((sent, dropped, intent, reply, fresh))
+                    let input = PendingInput {
+                        intent: intent.clone(),
+                        in_pi: true,
+                        queued: false,
+                        stop_epoch: state.stop_epoch,
+                        preflight: false,
+                        replaying: false,
+                        command: command.clone(),
+                        display: display.into(),
+                        chain: input_chain.unwrap_or_else(|| state.chain.clone()),
+                    };
+                    let reply = s.process.try_input(&command, &intent).map_err(pi_error);
+                    if reply.is_ok() {
+                        state.inputs.push_back(input);
+                        if fresh {
+                            state.input_run = Some(intent.clone());
+                        }
+                        state.submitting += 1;
+                    }
+                    Some((sent, intent, reply, fresh))
                 }
             };
             if let Some(staged) = staged {
@@ -1898,7 +1963,6 @@ impl Runtime {
                 .map_err(|_| Error::new(5201, "session closed"))?;
         };
         drop(admission);
-        remove_staged(dropped);
         // The acknowledgement/rollback belongs to the input, not its RPC
         // waiter. A disconnected client cannot strand Stop's preflight barrier.
         let runtime = self
@@ -1906,11 +1970,15 @@ impl Runtime {
             .upgrade()
             .ok_or_else(|| Error::new(5201, "daemon is stopping"))?;
         let s = s.clone();
+        let echo = input_id.is_some();
         tokio::spawn(async move {
             let committed = reply.is_ok();
             let response = match reply {
-                Ok(reply) => Self::input_preflight(&s, intent.as_ref().unwrap(), reply)
+                Ok(reply) => Self::input_preflight(&s, &intent, reply)
                     .await
+                    // The command may have reached Pi before the connection failed,
+                    // so whether it took the message is unknown: not a refusal.
+                    .map_err(|error| Error::new(5200, error.message))
                     .and_then(|reply| {
                         if reply.success {
                             Ok(())
@@ -1930,17 +1998,21 @@ impl Runtime {
             }
             s.run_ended.send_modify(|v| *v += 1);
             match response {
-                Ok(()) => Ok(json!({"status":"submitted"})),
+                Ok(()) => {
+                    let mut result = json!({"status":"submitted"});
+                    if echo {
+                        result["input_id"] = json!(intent);
+                    }
+                    Ok(result)
+                }
                 Err(error) => {
-                    if let Ok(id) = intent {
-                        let _ = store::reject_prompt(&runtime.home, &s.stored, &id);
-                        if let Some(index) =
-                            state.inputs.iter().position(|input| input.intent == id)
-                        {
-                            state.inputs.remove(index);
-                            if !state.interrupted {
-                                state.display.remove(index);
-                            }
+                    let _ = store::reject_prompt(&runtime.home, &s.stored, &intent);
+                    if let Some(index) =
+                        state.inputs.iter().position(|input| input.intent == intent)
+                    {
+                        state.inputs.remove(index);
+                        if !state.interrupted {
+                            state.display.remove(index);
                         }
                     }
                     if state.closed {
@@ -1956,7 +2028,7 @@ impl Runtime {
                             runtime.reload(&s);
                         }
                     }
-                    // No committed record was added when staging/enqueue failed.
+                    // No committed record was added when enqueue failed.
                     if !committed && !state.interrupted {
                         state.display.pop_back();
                     }
@@ -2075,8 +2147,17 @@ impl Runtime {
         let mut settled = s.settled.subscribe();
         let before = *settled.borrow();
         let finished = tokio::time::timeout(deadline, async {
-            self.submit_admitted(&s, text, true, false, chain, None, landing.into_admission())
-                .await?;
+            self.submit_admitted(
+                &s,
+                text,
+                true,
+                false,
+                chain,
+                None,
+                landing.into_admission(),
+                None,
+            )
+            .await?;
             loop {
                 if *settled.borrow() != before {
                     break;
@@ -2205,6 +2286,33 @@ impl Runtime {
             },
             write,
         ))
+    }
+    /// Stop's drain and a late dialog's own task can both cancel it. Whoever
+    /// removes it from tool_dialogs commits the one reply in that same step.
+    async fn cancel_late(s: Arc<Live>, id: String) {
+        let write = async {
+            let permit = s.process.extension_permit(DEADLINE).await?;
+            let mut state = s.state.lock().unwrap();
+            if !state.tool_dialogs.contains(&id) {
+                return Ok(None);
+            }
+            // A reply that was never queued leaves the dialog to Stop's drain.
+            let write = s.process.respond_extension_with(
+                permit,
+                &id,
+                json!({"cancelled":true}),
+                DEADLINE,
+            )?;
+            state.tool_dialogs.remove(&id);
+            Ok(Some(write))
+        };
+        let result = match write.await {
+            Ok(Some(write)) => write.wait().await,
+            result => result.map(|_| ()),
+        };
+        if let Err(error) = result {
+            eprintln!("Could not cancel late bot dialog {id}: {error}");
+        }
     }
     async fn cancel_dialogs(s: &Live) {
         let (mut tasks, owned) = {
@@ -2459,6 +2567,7 @@ impl Runtime {
                 .lock()
                 .unwrap()
                 .remove(stored)
+                .map(|parked| parked.uploads)
                 .unwrap_or_default(),
         );
         if let Some(s) = s {
@@ -2644,6 +2753,7 @@ impl Runtime {
                     None,
                     None,
                     _landing.and_then(Landing::into_admission),
+                    None,
                 )
                 .await?;
                 return Ok(json!({"section":section,"submitted":true}));
@@ -2692,6 +2802,19 @@ impl Runtime {
             method,
             "prompt.submit" | "image.attach_bytes" | "pdf.attach" | "file.attach"
         );
+        let input_id = if matches!(method, "prompt.submit" | "session.steer") {
+            p.get("input_id")
+                .map(|id| {
+                    id.as_str()
+                        .ok_or_else(|| Error::new(4202, "input_id must be a UUID"))
+                })
+                .transpose()?
+        } else {
+            None
+        };
+        if let Some(id) = input_id {
+            store::check_input_id(&self.home, id)?;
+        }
         let (s, _landing) = self.live(caller, required(p, "session_id")?, input).await?;
         match method {
             "prompt.submit" => {
@@ -2724,6 +2847,7 @@ impl Runtime {
                         None,
                         uploads.as_deref(),
                         admission,
+                        input_id,
                     )
                     .await?;
                 if p["display_kind"] != "hidden"
@@ -2751,7 +2875,7 @@ impl Runtime {
                 self.interrupt(&s, DEADLINE).await?;
                 Ok(json!({"status":"interrupted"}))
             }
-            "session.steer" => self.steer(&s, required(p, "text")?).await,
+            "session.steer" => self.steer(&s, required(p, "text")?, input_id).await,
             "session.close" => Ok(json!({"closed":self.close_stored(caller,&s.stored).await?})),
             "session.save" => Ok(json!({"saved":true,"stored_session_id":s.stored})),
             "session.title" => {
@@ -2980,6 +3104,7 @@ impl Runtime {
                 chain,
                 None,
                 landing.into_admission(),
+                None,
             )
             .await
         }
@@ -3187,8 +3312,12 @@ impl Runtime {
 
     /// Ask the section owner about a daemon tool action, unless the mode is Bypass.
     async fn native_approval(&self, s: &Live, params: Value) -> Result<bool> {
+        self.ask_approval(s, params, false).await
+    }
+    /// With `always`, asks even in Bypass.
+    async fn ask_approval(&self, s: &Live, params: Value, always: bool) -> Result<bool> {
         let settings = self.session_settings(s)?;
-        if settings["approvalMode"] == "off" {
+        if settings["approvalMode"] == "off" && !always {
             return Ok(true);
         }
         if settings["canAsk"] == false {
@@ -3797,6 +3926,26 @@ impl Runtime {
                 {
                     return Err(Error::new(4302, "The user denied this action."));
                 }
+                // The primary bot's job removals and job folders ask, whichever of
+                // its jobs tools it uses.
+                // By role, not tools: a promoted bot's older sections lack hexbot_jobs.
+                if crate::catalog::primary_bot(&self.home, &s.owner)?.as_deref()
+                    == Some(s.bot.as_str())
+                {
+                    let job = args["job_id"].as_str().unwrap_or("");
+                    if args["action"] == "remove" {
+                        self.confirm(s, name, format!("Remove the scheduled job {job}"), args)
+                            .await?;
+                    }
+                    // Creating without a folder uses this section's; anything named asks.
+                    if matches!(args["action"].as_str(), Some("create" | "update"))
+                        && !(args["action"] == "create" && args["workdir"].is_null())
+                        && let Some(folder) = primary::job_folder(args)
+                    {
+                        self.confirm(s, name, format!("Run a scheduled job in {folder}"), args)
+                            .await?;
+                    }
+                }
                 let mut args = args.clone();
                 if args["action"] == "create" && args["workdir"].is_null() {
                     args["workdir"] = self.session_settings(s)?["cwd"].clone();
@@ -3997,6 +4146,9 @@ impl Runtime {
             // titles are no longer shown, so there is nothing to rename.
             "hexbot_rename_section" => Ok(json!({"ok":true})),
             "hexbot_show_html" => show_html(&self.home, &s.stored, args),
+            "hexbot_bots" | "hexbot_rooms" | "hexbot_jobs" | "hexbot_settings" => {
+                self.primary_tool(s, name, args).await
+            }
             "self_soul" | "hexbot_soul" => {
                 let path = self.home.join("profiles").join(&s.bot).join("SOUL.md");
                 if let Some(text) = args["text"].as_str() {
@@ -4118,12 +4270,18 @@ impl Runtime {
         if s.state.lock().unwrap().closed {
             return Ok(());
         }
+        let observed = {
+            let mut state = s.state.lock().unwrap();
+            let text = state.output.clone();
+            let error = state.error.clone();
+            state.identity.observe(&event, &text, error)
+        };
         match event["type"].as_str().unwrap_or("") {
             "hexbot_input_preflight" => {
                 self.accept_input(s, &event)?;
             }
             "agent_start" => {
-                self.emit(s, "message.start", json!({}));
+                self.emit(s, "message.start", observed.fields.clone());
                 self.emit(
                     s,
                     "status.update",
@@ -4133,10 +4291,16 @@ impl Runtime {
             "message_update" => {
                 let update = &event["assistantMessageEvent"];
                 match update["type"].as_str().unwrap_or("") {
-                    "text_delta" => self.emit(s, "message.delta", json!({"text":update["delta"]})),
-                    "thinking_delta" => {
-                        self.emit(s, "reasoning.delta", json!({"text":update["delta"]}))
-                    }
+                    "text_delta" => self.emit(
+                        s,
+                        "message.delta",
+                        with_fields(json!({"text":update["delta"]}), &observed.fields),
+                    ),
+                    "thinking_delta" => self.emit(
+                        s,
+                        "reasoning.delta",
+                        with_fields(json!({"text":update["delta"]}), &observed.fields),
+                    ),
                     _ => {}
                 }
             }
@@ -4145,18 +4309,29 @@ impl Runtime {
                 let body = store::text(&message["content"]);
                 match message["role"].as_str().unwrap_or("") {
                     "user" => {
+                        let mut seed = observed.seed.clone().unwrap_or_else(|| json!({}));
                         let (display, intent) = {
                             let mut state = s.state.lock().unwrap();
-                            if let Some(index) = state.inputs.iter().position(|input| {
-                                input.in_pi
-                                    && (input.command["message"] == body
-                                        || (!input.command["images"]
-                                            .as_array()
-                                            .is_none_or(Vec::is_empty)
-                                            && input.command["message"].as_str().is_some_and(
-                                                |text| body.starts_with(&format!("{text}\n\n")),
-                                            )))
-                            }) {
+                            // A started preflight proves its input; otherwise the
+                            // ledger's oldest matching input owns this projection.
+                            let proven = seed["_input_intent"].as_str();
+                            let index = proven
+                                .and_then(|id| state.inputs.iter().position(|i| i.intent == id))
+                                .or_else(|| {
+                                    state.inputs.iter().position(|input| {
+                                        input.in_pi
+                                            && (input.command["message"] == body
+                                                || (!input.command["images"]
+                                                    .as_array()
+                                                    .is_none_or(Vec::is_empty)
+                                                    && input.command["message"]
+                                                        .as_str()
+                                                        .is_some_and(|text| {
+                                                            body.starts_with(&format!("{text}\n\n"))
+                                                        })))
+                                    })
+                                });
+                            if let Some(index) = index {
                                 let input = state.inputs.remove(index).unwrap();
                                 state.display.remove(index);
                                 (input.display, Some(input.intent))
@@ -4167,15 +4342,15 @@ impl Runtime {
                                 )
                             }
                         };
-                        self.persist_message(
-                            s,
-                            message,
-                            Some(&display),
-                            intent.map(|id| json!({"_input_intent":id})),
-                        );
+                        if let Some(intent) = intent
+                            && seed.get("_input_intent").is_none()
+                        {
+                            seed["_input_intent"] = json!(intent);
+                        }
+                        self.persist_message(s, message, Some(&display), Some(seed));
                     }
                     "assistant" => {
-                        self.persist_message(s, message, None, None);
+                        self.persist_message(s, message, None, observed.seed.clone());
                         {
                             let mut state = s.state.lock().unwrap();
                             state.output = body.clone();
@@ -4209,7 +4384,10 @@ impl Runtime {
                             self.emit(
                                 s,
                                 "message.interim",
-                                json!({"text":body,"already_streamed":true}),
+                                with_fields(
+                                    json!({"text":body,"already_streamed":true}),
+                                    &observed.fields,
+                                ),
                             );
                         }
                     }
@@ -4220,8 +4398,11 @@ impl Runtime {
                             .unwrap()
                             .tool_context
                             .remove(message["toolCallId"].as_str().unwrap_or(""));
-                        let seed = context.map(|context| json!({"context":context}));
-                        self.persist_message(s, message, None, seed);
+                        let mut seed = observed.seed.clone().unwrap_or_else(|| json!({}));
+                        if let Some(context) = context {
+                            seed["context"] = json!(context);
+                        }
+                        self.persist_message(s, message, None, Some(seed));
                     }
                     _ => {}
                 }
@@ -4237,7 +4418,7 @@ impl Runtime {
                         .insert(id.into(), std::time::Instant::now());
                     state.tool_context.insert(id.into(), context.clone());
                 }
-                self.emit(s, "tool.start", json!({"tool_id":event["toolCallId"],"name":name,"context":context,"args":event["args"],"parent_tool_call_id":event["parentToolCallId"]}));
+                self.emit(s, "tool.start", with_fields(json!({"tool_id":event["toolCallId"],"name":name,"context":context,"args":event["args"],"parent_tool_call_id":event["parentToolCallId"]}), &observed.fields));
             }
             "tool_execution_end" => {
                 let text = store::text(&event["result"]["content"]);
@@ -4263,24 +4444,43 @@ impl Runtime {
                 self.emit(
                     s,
                     "tool.complete",
-                    json!({
+                    with_fields(json!({
                         "duration_s": duration,
                         "parent_tool_call_id": event["parentToolCallId"],
                         "tool_id": event["toolCallId"],
                         "name": store::client_tool_name(event["toolName"].as_str().unwrap_or("")),
                         "result": result,
                         "result_text": text
-                    }),
+                    }), &observed.fields),
                 );
             }
             "agent_settled" => {
                 self.retry_messages(s);
-                let (text, error, pending) = {
+                let (ending, latest) = {
                     let mut state = s.state.lock().unwrap();
                     // This boundary belongs to the stopped run even if a new
                     // prompt reached idle Pi before we handled its last event.
                     state.interrupted = false;
                     s.run_ended.send_modify(|v| *v += 1);
+                    let ending = state.identity.settle();
+                    let latest = match &ending {
+                        Some(end) => state.identity.is_latest(end),
+                        None => !state.identity.unmatched_settlement(),
+                    };
+                    (ending, latest)
+                };
+                if !latest {
+                    if let Some(end) = ending {
+                        self.emit(s, "message.complete", with_fields(json!({"text":end.text,"error":end.error,"status":if end.error.is_some(){"error"}else{"complete"},"usage":store::usage(&self.home,&s.stored).unwrap_or_else(|_| json!({}))}), &end.fields));
+                    }
+                    return Ok(());
+                }
+                let fields = ending
+                    .as_ref()
+                    .map(|end| end.fields.clone())
+                    .unwrap_or_else(|| json!({}));
+                let (text, error, pending) = {
+                    let mut state = s.state.lock().unwrap();
                     if !state.display.is_empty() {
                         return Ok(());
                     }
@@ -4292,8 +4492,12 @@ impl Runtime {
                     state.tool_started.clear();
                     state.tool_context.clear();
                     (
-                        state.output.clone(),
-                        state.error.clone(),
+                        ending
+                            .as_ref()
+                            .map_or_else(|| state.output.clone(), |end| end.text.clone()),
+                        ending
+                            .as_ref()
+                            .map_or_else(|| state.error.clone(), |end| end.error.clone()),
                         std::mem::take(&mut state.pending),
                     )
                 };
@@ -4316,7 +4520,7 @@ impl Runtime {
                     eprintln!("Usage unavailable for {}: {}", s.stored, error.message);
                     json!({})
                 });
-                self.emit(s, "message.complete", json!({"text":text,"error":error,"status":if error.is_some(){"error"}else{"complete"},"usage":usage}));
+                self.emit(s, "message.complete", with_fields(json!({"text":text,"error":error,"status":if error.is_some(){"error"}else{"complete"},"usage":usage}), &fields));
                 self.emit_usage(s, false);
                 self.emit(s, "status.update", json!({"kind":"idle","text":""}));
                 s.settled.send_modify(|v| *v += 1);
@@ -4350,21 +4554,10 @@ impl Runtime {
                 {
                     // Pi can prepare another dialog while Stop cancels the first.
                     // Answer it so abort can finish, without publishing another card.
-                    let source = s.clone();
-                    let id = id.to_owned();
                     let mut tasks = s.requests.lock().unwrap();
                     while tasks.try_join_next().is_some() {}
-                    s.state.lock().unwrap().tool_dialogs.insert(id.clone());
-                    tasks.spawn(async move {
-                        if let Err(error) = source
-                            .process
-                            .respond_extension(&id, json!({"cancelled":true}), DEADLINE)
-                            .await
-                        {
-                            eprintln!("Could not cancel late bot dialog {id}: {error}");
-                        }
-                        source.state.lock().unwrap().tool_dialogs.remove(&id);
-                    });
+                    s.state.lock().unwrap().tool_dialogs.insert(id.to_owned());
+                    tasks.spawn(Self::cancel_late(s.clone(), id.to_owned()));
                     return Ok(());
                 }
                 if let Some(request) = title.strip_prefix("__HEXBOT_TOOL__") {
@@ -4390,18 +4583,11 @@ impl Runtime {
                         state.tool_dialogs.insert(id.clone());
                         state.dialogs_cancelled()
                     };
+                    if interrupted {
+                        tasks.spawn(Self::cancel_late(source, id));
+                        return Ok(());
+                    }
                     tasks.spawn(async move {
-                        if interrupted {
-                            if let Err(error) = source
-                                .process
-                                .respond_extension(&id, json!({"cancelled":true}), DEADLINE)
-                                .await
-                            {
-                                eprintln!("Could not cancel late tool request: {error}");
-                            }
-                            source.state.lock().unwrap().tool_dialogs.remove(&id);
-                            return;
-                        }
                         let response = match runtime
                             .tool(
                                 &source,
@@ -4425,6 +4611,7 @@ impl Runtime {
                 } else if let Some(payload) = title.strip_prefix("__HEXBOT_CLARIFY__") {
                     let mut payload: Value = serde_json::from_str(payload)
                         .map_err(|e| Error::new(5201, e.to_string()))?;
+                    payload = with_fields(payload, &observed.fields);
                     payload["request_id"] = json!(id);
                     if let Some(questions) = payload["questions"].as_array_mut() {
                         for (index, question) in questions.iter_mut().enumerate() {
@@ -4459,6 +4646,7 @@ impl Runtime {
                             .unwrap_or_else(
                                 || json!({"tool":"tool","command":title,"reason":event["message"]}),
                             );
+                        payload = with_fields(payload, &observed.fields);
                         payload["request_id"] = json!(id);
                         // The extension offers once, session and deny; a confirm is yes or no.
                         payload["choices"] = match event["options"].as_array() {
@@ -4489,7 +4677,7 @@ impl Runtime {
                         self.emit(
                             s,
                             "clarify.request",
-                            json!({"request_id":id,"question":title,"choices":event["options"]}),
+                            with_fields(json!({"request_id":id,"question":title,"choices":event["options"]}), &observed.fields),
                         );
                     }
                 } else if event["method"] == "notify" || event["method"] == "setStatus" {
@@ -4509,7 +4697,10 @@ impl Runtime {
                 self.emit(
                     s,
                     "thinking.delta",
-                    json!({"text":"Retrying the model request"}),
+                    with_fields(
+                        json!({"text":"Retrying the model request"}),
+                        &observed.fields,
+                    ),
                 );
                 self.emit(
                     s,
@@ -4569,7 +4760,7 @@ fn pump(
                 Err(error) => Some(pi_error(error)),
             };
             if let Some(error) = error {
-                let (busy, was_closed, reread) = {
+                let (busy, was_closed, reread, fields) = {
                     let _gate = s.event_gate.lock().unwrap();
                     let mut state = s.state.lock().unwrap();
                     let was_closed = state.closed;
@@ -4582,15 +4773,22 @@ fn pump(
                     state.error = Some(error.message.clone());
                     state.pending.clear();
                     s.run_ended.send_modify(|v| *v += 1);
-                    (busy, was_closed, reread)
+                    (busy, was_closed, reread, state.identity.turn_fields())
                 };
                 if busy {
                     runtime.incident(&s, &error.message);
-                    runtime.emit(&s, "error", json!({"message":error.message}));
+                    runtime.emit(
+                        &s,
+                        "error",
+                        with_fields(json!({"message":error.message}), &fields),
+                    );
                     runtime.emit(
                         &s,
                         "message.complete",
-                        json!({"text":"","error":error.message,"status":"error"}),
+                        with_fields(
+                            json!({"text":"","error":error.message,"status":"error"}),
+                            &fields,
+                        ),
                     );
                 }
                 if !was_closed {
@@ -4763,6 +4961,11 @@ fn prompt_layout(tools: &[Value]) -> String {
         hash.update(part);
         hash.update([0]);
     }
+    // Hashed only for the primary bot, so other sections keep their layout.
+    if is_primary_layout(tools) {
+        hash.update(primary::GUIDANCE);
+        hash.update([0]);
+    }
     let mut names: Vec<&str> = tools.iter().filter_map(|t| t["name"].as_str()).collect();
     names.sort_unstable();
     for name in names {
@@ -4770,6 +4973,14 @@ fn prompt_layout(tools: &[Value]) -> String {
         hash.update([0]);
     }
     format!("{:x}", hash.finalize())
+}
+/// A section frozen with the primary bot's tools also carries its guidance.
+fn is_primary_layout(tools: &[Value]) -> bool {
+    tools.iter().any(|t| {
+        t["name"]
+            .as_str()
+            .is_some_and(|n| primary::TOOL_NAMES.contains(&n))
+    })
 }
 /// The prompt's closing block naming the section's connected servers. Built
 /// from the names frozen in `options.mcpServers`, so a rebuilt prompt lists
@@ -5031,6 +5242,7 @@ fn tool_context(name: &str, args: &Value) -> String {
         "delegate_task" => "goal",
         "message_bot" => "to",
         "hexbot_show_html" => "title",
+        "hexbot_bots" | "hexbot_rooms" | "hexbot_jobs" | "hexbot_settings" => "action",
         name if name.starts_with("mcp__") => args
             .as_object()
             .and_then(|args| {
@@ -5134,6 +5346,89 @@ rl.on('line',line=>{{const c=JSON.parse(line);emit({{type:'response',id:c.id,com
         let hub = EventHub::new();
         let runtime = Runtime::new(home.path().into(), hub.clone(), script).unwrap();
         (home, runtime, hub)
+    }
+    #[tokio::test]
+    async fn transcript_identity_fragment_seed_survives_sqlite_retry_without_billing_twice() {
+        let (home, runtime, hub) = setup();
+        let mut events = hub.subscribe();
+        let live = runtime.open_session("alice", "owl", "first").await.unwrap();
+        let s = runtime
+            .sessions
+            .lock()
+            .unwrap()
+            .get("first")
+            .unwrap()
+            .clone();
+        assert_eq!(s.id, live.id);
+        let conn = store::open(home.path()).unwrap();
+        conn.execute_batch("CREATE TRIGGER identity_fault BEFORE INSERT ON native_messages BEGIN SELECT RAISE(ABORT,'identity retry fault'); END;").unwrap();
+        runtime.event(&s, json!({"type":"agent_start"})).unwrap();
+        runtime
+            .event(
+                &s,
+                json!({"type":"message_start","message":{"role":"assistant","content":[]}}),
+            )
+            .unwrap();
+        runtime.event(&s,json!({"type":"message_update","assistantMessageEvent":{"type":"text_delta","delta":"partial"}})).unwrap();
+        let raw = json!({"role":"assistant","content":[{"type":"text","text":"partial"}],"timestamp":1234,"model":"fixture","provider":"test","stopReason":"aborted","usage":{"input":2,"output":1,"cost":{"total":0.1}}});
+        runtime
+            .event(&s, json!({"type":"message_end","message":raw}))
+            .unwrap();
+        let seed = {
+            let state = s.state.lock().unwrap();
+            assert_eq!(state.unsaved.len(), 1);
+            state.unsaved[0].2.clone().unwrap()
+        };
+        assert!(seed["row_id"].is_string());
+        assert!(store::history(home.path(), "first").unwrap().is_empty());
+        runtime.retry_messages(&s);
+        assert_eq!(
+            s.state.lock().unwrap().unsaved[0].2.as_ref().unwrap(),
+            &seed
+        );
+        conn.execute_batch("DROP TRIGGER identity_fault").unwrap();
+        runtime
+            .event(&s, json!({"type":"agent_end","willRetry":false}))
+            .unwrap();
+        runtime.event(&s, json!({"type":"agent_settled"})).unwrap();
+        runtime.retry_messages(&s);
+        let rows = store::history(home.path(), "first").unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["row_id"], seed["row_id"]);
+        assert_eq!(rows[0]["turn_id"], seed["turn_id"]);
+        assert!(s.state.lock().unwrap().unsaved.is_empty());
+        assert_eq!(
+            conn.query_row(
+                "SELECT COUNT(*) FROM native_usage WHERE session_id='first'",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+            1
+        );
+        assert_eq!(
+            conn.query_row(
+                "SELECT raw_json FROM native_pi_journal WHERE session_id='first'",
+                [],
+                |r| r.get::<_, String>(0)
+            )
+            .unwrap(),
+            raw.to_string()
+        );
+        let mut seen = vec![];
+        while let Ok(event) = events.try_recv() {
+            seen.push(event.frame["params"].clone());
+        }
+        for event in seen.iter().filter(|e| {
+            matches!(
+                e["type"].as_str(),
+                Some("message.delta" | "message.complete")
+            )
+        }) {
+            assert_eq!(event["payload"]["message_id"], rows[0]["row_id"]);
+            assert_eq!(event["payload"]["turn_id"], rows[0]["turn_id"]);
+        }
+        runtime.shutdown().await;
     }
     #[tokio::test]
     async fn skills_prompt_is_lean_and_existing_options_are_never_refreshed() {

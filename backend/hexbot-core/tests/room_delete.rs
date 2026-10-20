@@ -165,7 +165,7 @@ impl Fixture {
                 &json!({"id":self.room,"bot":"owl"}),
             ))
         } else if last {
-            rooms::remove_bot(self.home.path(), "local", &self.room, "owl")
+            rooms::remove_bot(self.home.path(), "local", &self.room, "owl", false)
         } else {
             rooms::delete(self.home.path(), &self.room)
         }
@@ -383,7 +383,7 @@ fn room_delete_rejects_foreign_callers_and_foreign_descendant_ownership() {
         );
     }
     assert_eq!(
-        rooms::remove_bot(h, "bob", &f.room, "owl")
+        rooms::remove_bot(h, "bob", &f.room, "owl", false)
             .unwrap_err()
             .code,
         4302
@@ -478,7 +478,7 @@ fn check_catalog_decision(public: bool, last: bool, fault: bool) {
             &json!({"id":room,"bot":"owl"}),
         ))
     } else if last {
-        rooms::remove_bot(h, "local", &room, "owl")
+        rooms::remove_bot(h, "local", &room, "owl", false)
     } else {
         rooms::delete(h, &room)
     };

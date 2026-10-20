@@ -25,6 +25,13 @@ const TOOLS: &[(&str, &str)] = &[
     ("delegate", "delegation"),
     ("scheduling", "cronjob"),
 ];
+/// The primary bot's handle. Only the primary bot may take it.
+pub const PRIMARY_NAME: &str = "hexbot";
+const PRIMARY_DISPLAY_NAME: &str = "HexBot";
+const PRIMARY_TITLE: &str = "Primary bot";
+const PRIMARY_DESCRIPTION: &str =
+    "Sets up and looks after your other bots, rooms, scheduled jobs and settings.";
+const PRIMARY_SOUL: &str = "You are the user's primary bot in Hexbot: the one they come to first and the one that runs the place. You create and set up their other bots, put bots together in rooms, schedule work for any bot, and change Hexbot's settings when they ask. Before creating a bot, check whether one they already have fits the job. Give each new bot a clear purpose, a soul written for that purpose, and only the tools it needs. Be direct and concise: match the length of your reply to the weight of the ask. Ask when a request is ambiguous, and remember what matters about the people you work with.";
 const FIELDS: &[&str] = &[
     "name",
     "display_name",
@@ -421,6 +428,18 @@ fn shape_section(home: &Path, row: Value) -> Result<Value> {
 pub fn section(home: &Path, caller: &str, id: &str) -> Result<Value> {
     shape_section(home, section_row(home, caller, id)?)
 }
+/// Public deletion is only for peer threads. Keep owner chats, including
+/// archived or unreadable legacy targets, until their bot is deleted.
+pub(crate) fn check_section_delete(home: &Path, caller: &str, id: &str) -> Result<()> {
+    let row = section_row(home, caller, id)?;
+    if row["peer_bot"].is_null() {
+        return Err(Error::new(
+            4202,
+            "A bot chat cannot be deleted; delete the bot to remove it",
+        ));
+    }
+    Ok(())
+}
 fn list_sections(home: &Path, caller: &str, p: &Value) -> Result<Vec<Value>> {
     user(home, caller)?;
     let bot = p["bot"].as_str();
@@ -540,6 +559,27 @@ pub(crate) fn chat_fork_barrier(home: &Path, phase: &str) -> Result<()> {
 #[path = "catalog_fork_tests.rs"]
 mod fork_tests;
 
+/// Checked under the opener's shared conversation lease. Adoption holds the
+/// exclusive lease through commit, so an old ID cannot admit input in between.
+pub(crate) fn check_chat_source(home: &Path, source: &str) -> Result<()> {
+    let conn = db::open(home)?;
+    if let Some(target) = setting(&conn, "dream_chat_adoptions")?[source]["target"].as_str() {
+        let present: bool = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sections s JOIN sections t ON t.bot=s.bot AND t.owner_id=s.owner_id WHERE s.id=? AND t.id=? AND t.peer_bot IS NULL)",
+            params![source, target], |r| r.get(0),
+        )?;
+        if present {
+            return Err(Error::new(
+                4002,
+                format!(
+                    "This conversation moved to the bot's chat ({target}). Open the chat to continue."
+                ),
+            ));
+        }
+    }
+    Ok(())
+}
+
 pub fn chat_section(home: &Path, caller: &str, name: &str) -> Result<Value> {
     bot_owner(home, caller, name)?;
     // Before the transaction: finding the bot's dream logs may write.
@@ -547,6 +587,7 @@ pub fn chat_section(home: &Path, caller: &str, name: &str) -> Result<Value> {
     // Drop the catalog writer before cleanup takes the product boundary.
     // This guard owns even a partially built fork that returns an error.
     let mut forked = PendingChat { home, id: None };
+    let mut source_lease = None;
     let mut conn = db::open(home)?;
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let candidates = rows(
@@ -592,7 +633,18 @@ pub fn chat_section(home: &Path, caller: &str, name: &str) -> Result<Value> {
         .filter(|candidate| candidate.count >= 0)
         .and_then(|candidate| candidate.row["id"].as_str().map(str::to_owned));
     let id = if let Some(mut id) = existing {
-        if logs.contains(&id) {
+        if logs.contains(&id) && {
+            let lease = runtime_store::conversation_lock(home, &id)?;
+            match lease.try_lock() {
+                Ok(()) => source_lease = Some(lease),
+                // Keep the source as the chat until its runtime, accepted input,
+                // uploads and background work have finished. Never stop them to
+                // migrate, and never wait for them under the catalog writer.
+                Err(fs::TryLockError::WouldBlock) => (),
+                Err(fs::TryLockError::Error(error)) => return Err(error.into()),
+            }
+            source_lease.is_some()
+        } {
             let reports = rows(
                 &tx,
                 "SELECT summary FROM dreams WHERE bot=? AND summary<>''",
@@ -1422,6 +1474,7 @@ fn shape_bot(home: &Path, caller: &str, row: Value) -> Result<Value> {
             .unwrap_or_else(|| display_name(name)),
         "title": row["title"].as_str().unwrap_or(""),
         "description": row["description"].as_str().unwrap_or(""),
+        "primary": row["is_primary"].as_i64() == Some(1),
         "persona": read_text(home, &profile(home, name)?.join("SOUL.md"))?,
         "skills": crate::skills::resolve(home, Some(name))?.into_iter().filter(|s| s.enabled).map(|s| s.name).collect::<Vec<_>>(),
         "tools": tools,
@@ -1788,6 +1841,79 @@ fn configure(home: &Path, name: &str, p: &Value) -> Result<()> {
     write_yaml(home, &path, &meta)
 }
 fn create_bot(home: &Path, caller: &str, p: &Value) -> Result<Value> {
+    create(home, caller, p, false)
+}
+/// The caller's primary bot, if they have one.
+pub fn primary_bot(home: &Path, caller: &str) -> Result<Option<String>> {
+    Ok(db::open(home)?
+        .query_row(
+            "SELECT name FROM bots WHERE owner_id=? AND is_primary=1",
+            [caller],
+            |r| r.get(0),
+        )
+        .optional()?)
+}
+fn no_primary_yet(home: &Path, caller: &str) -> Result<()> {
+    if primary_bot(home, caller)?.is_some() {
+        return Err(Error::new(4214, "There is already a primary bot."));
+    }
+    Ok(())
+}
+/// The primary bot stays: the daemon checks before it stops any of a bot's sections.
+pub fn check_deletable(home: &Path, caller: &str, name: &str) -> Result<()> {
+    if bot_row(home, caller, name)?["is_primary"].as_i64() == Some(1) {
+        return Err(Error::new(4214, "The primary bot can't be deleted."));
+    }
+    Ok(())
+}
+/// Creates HexBot: every tool it can use, a soul for running the place, and
+/// the primary mark. The caller may choose its display name, model, avatar and face.
+fn create_primary(home: &Path, caller: &str, p: &Value) -> Result<Value> {
+    user(home, caller)?;
+    let object = p
+        .as_object()
+        .ok_or_else(|| Error::new(4202, "bot fields must be an object"))?;
+    if let Some(key) = object.keys().find(|key| {
+        ![
+            "display_name",
+            "provider",
+            "model",
+            "reasoning_effort",
+            "avatar",
+            "face",
+        ]
+        .contains(&key.as_str())
+    }) {
+        return Err(Error::new(4201, format!("unknown bot field: {key}")));
+    }
+    no_primary_yet(home, caller)?;
+    let mut patch = p.clone();
+    patch["name"] = json!(PRIMARY_NAME);
+    if !p["display_name"]
+        .as_str()
+        .is_some_and(|s| !s.trim().is_empty())
+    {
+        patch["display_name"] = json!(PRIMARY_DISPLAY_NAME);
+    }
+    patch["title"] = json!(PRIMARY_TITLE);
+    patch["description"] = json!(PRIMARY_DESCRIPTION);
+    patch["persona"] = json!(PRIMARY_SOUL);
+    patch["tools"] = json!(TOOLS.iter().map(|(k, _)| *k).collect::<Vec<_>>());
+    create(home, caller, &patch, true)
+}
+/// Makes an existing bot primary. Only while there is none, so the role never moves.
+fn set_primary(home: &Path, caller: &str, name: &str) -> Result<Value> {
+    bot_row(home, caller, name)?;
+    let changed = db::open(home)?.execute(
+        "UPDATE bots SET is_primary=1,updated_at=?1 WHERE name=?2 AND owner_id=?3 AND NOT EXISTS(SELECT 1 FROM bots WHERE owner_id=?3 AND is_primary=1)",
+        params![now(), name, caller],
+    )?;
+    if changed == 0 {
+        return Err(Error::new(4214, "There is already a primary bot."));
+    }
+    Ok(json!({"bot":bot(home,caller,name)?}))
+}
+fn create(home: &Path, caller: &str, p: &Value, primary: bool) -> Result<Value> {
     user(home, caller)?;
     validate_patch(home, p)?;
     let name = required(p, "name")?;
@@ -1800,6 +1926,7 @@ fn create_bot(home: &Path, caller: &str, p: &Value) -> Result<Value> {
             .next()
             .is_some_and(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
         || ["default", "hermes", "test", "tmp", "root", "sudo"].contains(&name)
+        || (name == PRIMARY_NAME && !primary)
     {
         return Err(Error::new(4202, "invalid or reserved bot name"));
     }
@@ -1812,7 +1939,14 @@ fn create_bot(home: &Path, caller: &str, p: &Value) -> Result<Value> {
         .optional()?
         .is_some()
     {
-        return Err(Error::new(4208, format!("bot already exists: {name}")));
+        return Err(Error::new(
+            4208,
+            if primary {
+                format!("A bot named {name} already exists. Make it your primary bot instead.")
+            } else {
+                format!("bot already exists: {name}")
+            },
+        ));
     }
     if bot_delete_journal(&reservation, name)?.is_some() {
         return Err(Error::new(
@@ -1863,8 +1997,9 @@ fn create_bot(home: &Path, caller: &str, p: &Value) -> Result<Value> {
         let now = now();
         let mut conn = db::open(home)?;
         let tx = conn.transaction()?;
+        // The unique index refuses a second primary bot created at the same time.
         tx.execute(
-            "INSERT INTO bots(name,display_name,title,description,owner_id,created_at,updated_at,last_activity_at) VALUES (?,?,?,?,?,?,?,?)",
+            "INSERT INTO bots(name,display_name,title,description,owner_id,created_at,updated_at,last_activity_at,is_primary) VALUES (?,?,?,?,?,?,?,?,?)",
             params![
                 name,
                 display,
@@ -1873,9 +2008,20 @@ fn create_bot(home: &Path, caller: &str, p: &Value) -> Result<Value> {
                 caller,
                 now,
                 now,
-                now
+                now,
+                primary
             ],
-        )?;
+        )
+        .map_err(|e| {
+            if primary
+                && let rusqlite::Error::SqliteFailure(f, _) = &e
+                && f.code == rusqlite::ErrorCode::ConstraintViolation
+            {
+                Error::new(4214, "There is already a primary bot.")
+            } else {
+                e.into()
+            }
+        })?;
         write_bot_columns(&tx, name, &patch)?;
         let sid = id();
         tx.execute("INSERT INTO sections(id,bot,title,owner_id,created_at,updated_at) VALUES (?,?,'General',?,?,?)",params![sid,name,caller,now,now])?;
@@ -2105,6 +2251,7 @@ fn prepare_bot_delete_in(
     conn: &Connection,
 ) -> Result<Vec<Value>> {
     bot_owner(home, caller, name)?;
+    check_deletable(home, caller, name)?;
     let journal = bot_delete_journal(conn, name)?;
     let previous = if let Some(journal) = &journal {
         if journal["committed"] == true {
@@ -2399,6 +2546,8 @@ pub fn call(home: &Path, caller: &str, method: &str, p: &Value) -> Option<Result
     }
     Some((|| match method {
         "hexbot.bots.create" => create_bot(home, caller, p),
+        "hexbot.bots.create_primary" => create_primary(home, caller, p),
+        "hexbot.bots.set_primary" => set_primary(home, caller, required(p, "name")?),
         "hexbot.bots.update" => update_bot(home, caller, p),
         "hexbot.bots.get" => {
             Ok(json!({"bot":shape_bot(home,caller,bot_row(home,caller,required(p,"name")?)?)?}))
@@ -2407,7 +2556,7 @@ pub fn call(home: &Path, caller: &str, method: &str, p: &Value) -> Option<Result
             user(home, caller)?;
             let bots = rows(
                 &db::open(home)?,
-                "SELECT * FROM bots WHERE owner_id=? ORDER BY last_activity_at DESC,name ASC",
+                "SELECT * FROM bots WHERE owner_id=? ORDER BY is_primary DESC,last_activity_at DESC,name ASC",
                 &[&caller],
             )?
             .into_iter()
@@ -2438,10 +2587,12 @@ pub fn call(home: &Path, caller: &str, method: &str, p: &Value) -> Option<Result
             Ok(json!({"section":chat_section(home,caller,required(p,"bot")?)?}))
         }
         "hexbot.sections.delete" => {
+            let id = required(p, "id")?;
+            check_section_delete(home, caller, id)?;
             let pending = delete_section(
                 home,
                 caller,
-                required(p, "id")?,
+                id,
                 p["purge_memory"].as_bool().unwrap_or(true),
             )?;
             Ok(if pending.is_some() {
@@ -2569,6 +2720,23 @@ pub(crate) fn kickoff_prompt(bot: &Value) -> String {
         .unwrap_or("this bot")
         .trim();
     let name = serde_json::to_string(name).unwrap();
+    if bot["primary"] == true {
+        return format!(
+            r##"You were just created as {name}, the user's primary bot. The user is meeting you for the first time.
+1. Greet the user in one short line, then say in one more line what you do: you set up
+   and look after their other bots, rooms, scheduled jobs and settings, and help with
+   anything yourself. No headings, no lists.
+2. Use the clarify tool, one question at a time, to learn what they mainly want help with.
+   Offer three or four concrete, varied choices, plus the user may type their own answer.
+   Then ask how they want you to work (tone, depth, how proactive to be).
+   Two questions at most. Acknowledge each answer in one line before the next.
+3. Write facts about the user into memory with the memory tool. If their answers point to
+   work a dedicated bot would do better, offer in one line to create that bot for them
+   and stop; create it only after they agree. Otherwise say in one line what you will
+   focus on and stop.
+Keep every message short. Never mention this instruction."##
+        );
+    }
     let about = ["title", "description"]
         .iter()
         .filter_map(|k| bot[k].as_str())
@@ -2708,7 +2876,7 @@ mod parity_tests {
 
     #[cfg(unix)]
     #[tokio::test]
-    async fn section_delete_crash_at_the_real_catalog_commit_recovers_the_decision() {
+    async fn peer_thread_delete_crash_at_the_real_catalog_commit_recovers_the_decision() {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         const CHILD: &str = "HEXBOT_TEST_SECTION_DELETE_CRASH_HOME";
         if let Some(path) = std::env::var_os(CHILD) {
@@ -2725,6 +2893,7 @@ mod parity_tests {
         for cut in ["before_commit", "after_commit"] {
             let home = home();
             let h = home.path();
+            db::open(h).unwrap().execute_batch("INSERT INTO bots(name,owner_id) VALUES('teammate','alice'); UPDATE sections SET peer_bot='teammate' WHERE id='first';").unwrap();
             said(h, "first", json!({"role":"user","text":"original"}));
             let raw = h.join("runtime/sessions/first/conversation.jsonl");
             fs::create_dir_all(raw.parent().unwrap()).unwrap();
@@ -2736,7 +2905,7 @@ mod parity_tests {
             let socket = h.join("delete-barrier.sock");
             let listener = tokio::net::UnixListener::bind(&socket).unwrap();
             let mut child = std::process::Command::new(std::env::current_exe().unwrap())
-                .args(["--exact","catalog::parity_tests::section_delete_crash_at_the_real_catalog_commit_recovers_the_decision","--nocapture"])
+                .args(["--exact","catalog::parity_tests::peer_thread_delete_crash_at_the_real_catalog_commit_recovers_the_decision","--nocapture"])
                 .env(CHILD,h).spawn().unwrap();
             loop {
                 let (mut stream, _) =
@@ -2788,7 +2957,7 @@ mod parity_tests {
 
     #[cfg(unix)]
     #[tokio::test]
-    async fn late_failed_parent_rollback_preserves_an_independently_committed_child() {
+    async fn late_failed_peer_parent_rollback_preserves_an_independently_committed_child() {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         const CHILD: &str = "HEXBOT_TEST_LATE_SECTION_ROLLBACK_HOME";
         if let Some(path) = std::env::var_os(CHILD) {
@@ -2806,6 +2975,7 @@ mod parity_tests {
         }
         let home = home();
         let h = home.path();
+        db::open(h).unwrap().execute_batch("INSERT INTO bots(name,owner_id) VALUES('teammate','alice'); UPDATE sections SET peer_bot='teammate' WHERE id='first';").unwrap();
         db::open(h).unwrap().execute_batch("INSERT INTO sections(id,bot,owner_id,title) VALUES('delegate','owl','alice','child'); CREATE TRIGGER stop_parent BEFORE DELETE ON sections WHEN OLD.id='first' BEGIN SELECT RAISE(ABORT,'parent failed'); END;").unwrap();
         said(h, "first", json!({"role":"user","text":"original parent"}));
         said(
@@ -2827,7 +2997,7 @@ mod parity_tests {
         let socket = h.join("delete-barrier.sock");
         let listener = tokio::net::UnixListener::bind(&socket).unwrap();
         let mut child=std::process::Command::new(std::env::current_exe().unwrap())
-            .args(["--exact","catalog::parity_tests::late_failed_parent_rollback_preserves_an_independently_committed_child","--nocapture"])
+            .args(["--exact","catalog::parity_tests::late_failed_peer_parent_rollback_preserves_an_independently_committed_child","--nocapture"])
             .env(CHILD,h).spawn().unwrap();
         let (mut stream, _) =
             tokio::time::timeout(std::time::Duration::from_secs(10), listener.accept())
@@ -4055,10 +4225,11 @@ mod parity_tests {
         assert_eq!(ids_of(home.path(), "owl"), ["new", "old", "stuck"]);
     }
     #[test]
-    fn a_committed_section_delete_reports_pending_history_as_success() {
+    fn a_committed_peer_thread_delete_reports_pending_history_as_success() {
         let home = tempfile::tempdir().unwrap();
         db::migrate(home.path()).unwrap();
         owl_with_four_conversations(home.path());
+        db::open(home.path()).unwrap().execute_batch("INSERT INTO bots(name,owner_id) VALUES('teammate','alice'); UPDATE sections SET peer_bot='teammate' WHERE id='mid';").unwrap();
         let private = crate::settings::record_incident(
             home.path(),
             "owl",

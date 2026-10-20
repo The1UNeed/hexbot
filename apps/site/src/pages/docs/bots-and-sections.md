@@ -27,6 +27,12 @@ The teammate description tells other bots when to ask this one for help. For exa
 
 In Profile, pick a shape and a colour for the bot's face, or use a photo. A picked face is kept with the bot on the daemon, so the web app, the desktop app, and the mobile app all draw it. The bot's message bubbles take a light wash of its face colour in chats and rooms, so you can tell bots apart at a glance. A bot with a photo keeps grey bubbles. The mobile app shows faces and can switch a bot to a photo, but faces are picked in the web or desktop app. On an older daemon a picked face is saved only as a picture: the web and desktop apps still draw it live, and the mobile app shows the picture.
 
+## The primary bot
+
+HexBot is your primary bot. Setup creates it, and it looks after the rest: in its chat it can list, create, change, and delete your bots, create rooms and change who is in them, schedule jobs for any bot, and change settings, skills, and connectors. It always asks before it deletes a bot, room, or job, removes a room's last bot (which deletes the room), changes a bot's or room's approval mode or a bot's or job's working folder, changes a setting, or turns a skill or connector on or off, even in Bypass. It never sees API keys or connector credentials, and it can't change network or service settings.
+
+There is one primary bot, pinned at the top of the roster, and it can't be deleted. You can rename it and change its soul, model, and tools like any other bot. If you used Hexbot before the primary bot existed, the bot list asks you to add HexBot or to make one of your bots primary; on the phone app, choose Make primary in a bot's profile. A bot made primary gets the extra tools in its chat from your next message. Its tools don't work in rooms or scheduled jobs.
+
 ## Keep the chat going
 
 Select a bot in the sidebar to open its chat and carry on where you left off. Closing the app or restarting the daemon does not end it. Behind the chat is one persistent Pi conversation.
@@ -43,6 +49,25 @@ The context meter at the top right of the chat shows how much of the model's con
 
 A summary keeps the thread of the work but not every detail. What lasts goes into the bot's memory and notes, and the bot can search the chat's history from before its latest summary when it needs an exact detail.
 
+### Client compatibility
+
+The daemon can advertise optional transcript identity through
+`hexbot.info.transcript_identity`. Clients use a proven input binding to keep
+local uploads with the right user message, and fragment IDs to adopt streamed
+replies from durable history. These fields can be absent, including on queued,
+historical or recovered messages. An acknowledgment or matching text does not
+prove ownership. Clients keep unconfirmed local files separate until the
+daemon supplies a binding. The metadata does not enter the bot's context or
+change usage. The [daemon API source](https://github.com/The1UNeed/hexbot/blob/main/docs/api.md#optional-transcript-identity)
+documents the exact fields and limits.
+
+Clients that submit an explicit attachment list send only those uploads.
+Other staged files remain available for a later message from either paired
+client. An empty list sends text alone and retains pending uploads. Older
+clients that omit the list send every staged upload with their next message.
+Clearing attachments, closing the conversation or deleting the bot removes
+unused staged files. Pending uploads still count toward attachment limits.
+
 ## Dream reports
 
 Each night's [dream](/docs/dreaming/) report appears in the chat as a message from the bot. It is there for you to read; the bot does not see it as something it said, and later dreams skip it.
@@ -53,13 +78,13 @@ Use **Stop** to interrupt a running answer. The chat stays available, and you ca
 
 Deleting the bot removes its profile, chat, memory, and scheduled jobs. Stop its active work first, then wait for Stop cleanup and any queued results to finish. Deletion is refused while that work remains. Back up the daemon's data directory before removing a bot you may need again.
 
-While deletion runs, new bot starts are refused, including jobs and CLI runs. Closing the app lets the daemon finish deletion. If deletion fails, the bot can work again.
+The daemon also protects the chat from an older client's Delete action. It returns `4202`, "A bot chat cannot be deleted; delete the bot to remove it", and keeps the conversation running with its history and pending uploads. This also protects archived chats and older conversations kept for repair. Opening the bot again returns its existing chat. Private conversations between bots can still be deleted, and the one-time upgrade can still remove superseded chats after making its backup.
 
 While deletion runs, new bot starts are refused, including jobs and CLI runs. Closing the app lets the daemon finish deletion. If deletion fails, the bot can work again.
 
 If deletion leaves cleanup pending, its name stays reserved until a daemon restart finishes cleanup. An interrupted deletion from an older build can conflict with a recreated bot or leave a profile whose owner is uncertain. Hexbot preserves that data and reports the conflict in the daemon log for manual recovery.
 
-An older app or API client can still delete a section and ask to keep its history. That conversation stays closed after a restart, and deleting the bot removes its retained history too. Deletion waits for task list and skill writes already in progress, even when their waiting calls were cancelled. Changing the bot's model leaves retained conversation settings alone. If deletion fails, any conversations deleted earlier stay closed with their saved retention choices. Restarting the daemon or deleting the bot skips history cleanup that already succeeded.
+An older app or API client can still delete a private conversation between bots and ask to keep its history. That conversation stays closed after a restart, and deleting the bot removes its retained history too. Deletion waits for task list and skill writes already in progress, even when their waiting calls were cancelled. Changing the bot's model leaves retained conversation settings alone. If deletion fails, any conversations deleted earlier stay closed with their saved retention choices. Restarting the daemon or deleting the bot skips history cleanup that already succeeded.
 
 If the bot's deletion cannot be saved, its profile and history stay, including conversations you had already deleted with their history kept. Once the deletion is saved, an interrupted cleanup keeps the name reserved until a restart finishes it.
 
@@ -77,7 +102,7 @@ If a bot's conversations couldn't be read, or the daemon found one of them damag
 
 An updated app connected to a daemon that hasn't been updated yet goes back to the section you were last in. When you select a bot, the app opens a section by itself only if at most one has something said; otherwise it asks which one to continue, once per bot while the app runs. To choose again, restart the app or reload the page, then select the bot. The app saves your choice on the daemon and brings it out of the archive if needed. That conversation stays when the daemon updates, even if you haven't sent another message. Old reports and saved choices used the same update time. If the last message in a mixed log is a report, the daemon cannot reliably recover which chat you chose, including when another report arrived after your choice. It keeps both histories and opens the chat with the newest known conversation instead. When the log's last conversation came after its reports, your saved choice still decides the chat. A log containing only dream reports still gives way to a real conversation. Cancelling saves nothing. If saving fails, retry your choice.
 
-For sections kept from an earlier version, archiving hides the section's own failed-turn status; restoring it brings that status back. Archiving leaves failures from its subagents visible. Deleting a section clears its own turn failures and removes its delegated conversations. Connector problems and failures in other surviving rooms, sections, or background runs remain.
+For sections kept from an earlier version, archiving hides the section's own failed-turn status; restoring it brings that status back. Archiving leaves failures from its subagents visible. Deleting a private conversation between bots clears its own turn failures and removes its delegated conversations. Connector problems and failures in other surviving rooms, sections, or background runs remain.
 
 ## Work with other bots
 
