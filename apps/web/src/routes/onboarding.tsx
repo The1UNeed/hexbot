@@ -31,7 +31,15 @@ import { avatarPng, type AvatarStyle, styleForName } from '../lib/avatar-builder
 import { type DaemonProgress, getBridge, hasLocalRuntime, isElectron } from '../lib/bridge'
 import { cn } from '../lib/cn'
 import { connectTo, setLocalDaemonPort } from '../lib/connection'
-import type { Bot, BotCreateInput, Connector, ModelOption, Provider, Section } from '../lib/types'
+import type {
+  Bot,
+  BotCreateInput,
+  BotFace,
+  Connector,
+  ModelOption,
+  Provider,
+  Section
+} from '../lib/types'
 import { useBots } from '../stores/bots'
 import { useConnection } from '../stores/connection'
 import { unknownMethod, useMe } from '../stores/me'
@@ -96,27 +104,50 @@ export async function landingSection(bots: Bot[]): Promise<LastSection | null> {
   return { bot: bots[0]!.name, section: section.id }
 }
 
+/** The primary bot, else a bot called hexbot, with its latest section. */
+async function existingHexBot(): Promise<{ bot: Bot; section: Section } | null> {
+  const { bots } = await botsList()
+  const bot = bots.find(item => item.primary) ?? bots.find(item => item.name === 'hexbot')
+  const section = bot?.sections_recent[0]
+
+  return bot && section ? { bot, section } : null
+}
+
 /**
  * Creates HexBot, the primary bot. A daemon from before the primary bot
  * gets an ordinary bot with the same name, which it can promote once updated.
+ * When HexBot is already there, as after a create whose reply was lost, it
+ * returns HexBot and its latest section instead.
  */
-export async function createHexBot(
+export function createHexBot(
   defaultModel: null | string,
-  avatar: null | string
+  avatar: null | string,
+  face?: BotFace
 ): Promise<{ bot: Bot; section: Section }> {
   const [provider, ...rest] = defaultModel?.split('/') ?? []
   const model = provider && rest.length ? { model: rest.join('/'), provider } : {}
-  const input = { ...(avatar ? { avatar } : {}), ...model }
+  // A face describes its picture, so it goes only with one.
+  const input = { ...(avatar ? { avatar, face } : {}), ...model }
 
-  try {
-    return await botsCreatePrimary(input)
-  } catch (reason) {
-    if (!unknownMethod(reason)) {
-      throw reason
-    }
+  return botsCreatePrimary(input)
+    .catch(reason => {
+      if (!unknownMethod(reason)) {
+        throw reason
+      }
 
-    return botsCreate({ ...input, display_name: 'HexBot', name: 'hexbot' } as BotCreateInput)
-  }
+      return botsCreate({ ...input, display_name: 'HexBot', name: 'hexbot' } as BotCreateInput)
+    })
+    .catch(async reason => {
+      // 4214: there is already a primary bot. 4208: a bot called hexbot exists.
+      const code = (reason as { code?: number } | null)?.code
+      const found = code === 4214 || code === 4208 ? await existingHexBot() : null
+
+      if (!found) {
+        throw reason
+      }
+
+      return found
+    })
 }
 
 /**
@@ -1017,8 +1048,9 @@ function OnboardingPage() {
     setCreating(true)
 
     try {
-      const avatar = await avatarPng(styleForName('hexbot'))
-      const { bot, section } = await createHexBot(defaultModel, avatar)
+      const face = styleForName('hexbot')
+      const avatar = await avatarPng(face)
+      const { bot, section } = await createHexBot(defaultModel, avatar, face)
       const last = { bot: bot.name, section: section.id }
       uiActions().setLastSection(last)
       void navigate({ to: '/b/$bot/s/$section', params: last })

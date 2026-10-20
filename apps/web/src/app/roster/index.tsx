@@ -25,8 +25,8 @@ import { providerModels, sectionsMarkRead } from '../../lib/api'
 import { approvalModes } from '../../lib/approval-modes'
 import {
   avatarPng,
-  avatarSrc,
   type AvatarStyle,
+  botFace,
   DEFAULT_AVATAR_STYLE,
   styleForName
 } from '../../lib/avatar-builder'
@@ -67,8 +67,6 @@ const rowFocus = 'ring-1 ring-foreground/40'
 
 // Stable empty array: a fresh [] per render would re-render forever.
 const NO_EVENTS: RoomEvent[] = []
-
-const avatarData = (bot?: Bot) => avatarSrc(bot?.avatar)
 
 const sectionTime = (section: Section) => toMillis(section.updated_at ?? section.created_at)
 
@@ -333,7 +331,7 @@ function BotRows({
           type="button"
         >
           <span className="relative shrink-0">
-            <Avatar image={avatarData(bot)} name={bot.display_name} size="lg" />
+            <Avatar {...botFace(bot)} name={bot.display_name} size="lg" />
             <StatusDot status={dot} />
           </span>
           <span className="min-w-0 flex-1">
@@ -888,7 +886,8 @@ export function RosterColumn() {
                   ...(newBot.reasoning
                     ? { reasoning_effort: runningLevel(newBot.reasoning, newModel) }
                     : {}),
-                  ...(avatar ? { avatar } : {})
+                  ...(avatar ? { avatar } : {}),
+                  face: newStyle
                 })
               )
               .then(async ({ bot, section }) => {
@@ -1072,7 +1071,7 @@ function NewRoomDialog({
                   }
                   type="checkbox"
                 />
-                <Avatar image={avatarData(bot)} name={bot.display_name} size="sm" />
+                <Avatar {...botFace(bot)} name={bot.display_name} size="sm" />
                 <span>{bot.display_name}</span>
               </label>
             ))}

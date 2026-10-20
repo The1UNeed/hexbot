@@ -194,6 +194,25 @@ describe('approvals and questions in a room', () => {
     }
   )
 
+  it('keeps checking a step live after a card while another review still runs', async () => {
+    const event = (type: string, payload: Record<string, unknown>) =>
+      ({ payload, session_id: 'live-1', type }) as GatewayEvent
+
+    render(<RoomConversation />)
+    act(() => {
+      routeEvent(event('message.start', {}))
+      routeEvent(event('tool.start', { name: 'terminal', tool_id: 'a' }))
+      routeEvent(event('tool.start', { name: 'terminal', tool_id: 'b' }))
+      routeEvent(event('status.update', { kind: 'checking', text: 'Checking this step' }))
+      routeEvent(approval('a'))
+    })
+    expect(await screen.findByText('Approval needed')).toBeVisible()
+    expect(useTranscripts.getState().bySession['live-1']?.streamingMessageId).toBeNull()
+    expect(screen.getByRole('status', { name: 'Checking this step' })).toBeVisible()
+    act(() => routeEvent(event('status.update', { kind: 'checking', text: '' })))
+    expect(screen.queryByRole('status', { name: 'Checking this step' })).toBeNull()
+  })
+
   it('drops an open card when the turn ends, so the next turn starts clean', async () => {
     render(<RoomConversation />)
     act(() => routeEvent(approval('ap-2')))

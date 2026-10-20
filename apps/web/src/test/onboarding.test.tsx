@@ -290,10 +290,57 @@ describe('onboarding', () => {
       provider: 'openai'
     })
 
-    const failing = vi.fn(() => Promise.reject(new Error('There is already a primary bot.')))
+    const face = { color: 'orange', shape: 'pill' }
+    const picked = vi.fn(() => Promise.resolve(created))
+    setActiveRpc({ call: picked } as never)
+    await createHexBot(null, 'data:image/png;base64,iVBORw0KGgo=', face)
+    expect(picked).toHaveBeenCalledWith('hexbot.bots.create_primary', {
+      avatar: 'data:image/png;base64,iVBORw0KGgo=',
+      face
+    })
+
+    const failing = vi.fn(() => Promise.reject(new Error('The daemon is stopping.')))
     setActiveRpc({ call: failing } as never)
-    await expect(createHexBot(null, null)).rejects.toThrow('already a primary bot')
+    await expect(createHexBot(null, null)).rejects.toThrow('The daemon is stopping.')
     expect(failing).toHaveBeenCalledOnce()
+  })
+
+  it('opens HexBot when an earlier create went through, and says why when it cannot', async () => {
+    const general = { id: 'general' }
+    const hexbot = { name: 'helper', primary: true, sections_recent: [general] }
+    const taken = Object.assign(new Error('There is already a primary bot.'), { code: 4214 })
+
+    const answer = (bots: object[]) =>
+      vi.fn((method: string) =>
+        method === 'hexbot.bots.list' ? Promise.resolve({ bots }) : Promise.reject(taken)
+      )
+
+    setActiveRpc({ call: answer([{ name: 'owl', sections_recent: [] }, hexbot]) } as never)
+    expect(await createHexBot(null, null)).toEqual({ bot: hexbot, section: general })
+
+    setActiveRpc({ call: answer([]) } as never)
+    await expect(createHexBot(null, null)).rejects.toBe(taken)
+
+    // An older daemon has no create_primary and refuses a second bot called hexbot.
+    const exists = Object.assign(new Error('bot already exists: hexbot'), { code: 4208 })
+
+    const older = (bots: object[]) =>
+      vi.fn((method: string) =>
+        method === 'hexbot.bots.list'
+          ? Promise.resolve({ bots })
+          : Promise.reject(
+              method === 'hexbot.bots.create_primary'
+                ? Object.assign(new Error('unknown method'), { code: -32601 })
+                : exists
+            )
+      )
+
+    const plain = { name: 'hexbot', sections_recent: [general] }
+    setActiveRpc({ call: older([plain]) } as never)
+    expect(await createHexBot(null, null)).toEqual({ bot: plain, section: general })
+
+    setActiveRpc({ call: older([{ name: 'hexbot', sections_recent: [] }]) } as never)
+    await expect(createHexBot(null, null)).rejects.toBe(exists)
   })
 
   it('sets up web search before the first bot, and lets you skip', async () => {

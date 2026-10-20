@@ -28,7 +28,7 @@ import {
   type SettingsTabGroup,
   type SettingsTabItem
 } from '../components/ui/settings-shell'
-import { avatarSrc } from '../lib/avatar-builder'
+import { botFace } from '../lib/avatar-builder'
 import { useBots } from '../stores/bots'
 import { useSettings } from '../stores/settings'
 import { useUi } from '../stores/ui'
@@ -111,7 +111,7 @@ function BotSettingsDialog() {
         current={current}
         header={
           <div className="mr-2 flex shrink-0 items-center gap-2.5 sm:mr-0 sm:mb-4 sm:px-3 sm:pt-2">
-            {bot ? <Avatar image={avatarSrc(bot.avatar)} name={name} size="md" /> : null}
+            {bot ? <Avatar {...botFace(bot)} name={name} size="md" /> : null}
             <span className="min-w-0">
               <span className="block truncate text-[length:var(--text-body)] font-semibold">
                 {name}

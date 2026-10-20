@@ -133,7 +133,7 @@ fn activate(home: &Path, source: &Path, emit: &impl Fn(&str, &str)) -> Result<()
     copy_runtime(&source, staging.path(), &source, &mut Vec::new())?;
     verify_runtime(staging.path())?;
     emit("activate", "Activating the native runtime");
-    services::publish_native(&native, &manifest.version, staging.path(), "hexbot")?;
+    services::publish_native(&native, &manifest.version, staging.path(), "hexbot", None)?;
     Ok(())
 }
 

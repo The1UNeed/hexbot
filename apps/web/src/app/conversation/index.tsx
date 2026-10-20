@@ -9,11 +9,11 @@ import {
   Trash2,
   X
 } from 'lucide-react'
-import { isValidElement, useEffect, useMemo, useRef, useState } from 'react'
+import { type CSSProperties, isValidElement, useEffect, useMemo, useRef, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 
-import { Avatar } from '../../components/ui/avatar'
+import { Avatar, useFaceColor } from '../../components/ui/avatar'
 import { Button } from '../../components/ui/button'
 import { Chip } from '../../components/ui/chip'
 import { Dialog } from '../../components/ui/dialog'
@@ -22,7 +22,7 @@ import { Menu } from '../../components/ui/menu'
 import { StatusDot } from '../../components/ui/status-dot'
 import { Title } from '../../components/ui/title'
 import { approvalRespond, attachFile, promptSubmit, sessionInterrupt } from '../../lib/api'
-import { avatarSrc } from '../../lib/avatar-builder'
+import { botFace } from '../../lib/avatar-builder'
 import { getBridge } from '../../lib/bridge'
 import { cn } from '../../lib/cn'
 import { toMillis } from '../../lib/time'
@@ -47,6 +47,7 @@ import {
   useSections
 } from '../../stores/sections'
 import {
+  type Transcript,
   transcriptActions,
   type TranscriptMessage,
   useTranscript,
@@ -98,8 +99,6 @@ export function ConnectedToolsNotice({ sectionId }: { sectionId: string }) {
     </div>
   )
 }
-
-const avatarData = (bot?: Bot) => avatarSrc(bot?.avatar)
 
 const dayKey = (time: number) => new Date(toMillis(time)).toDateString()
 
@@ -160,13 +159,28 @@ export function BubbleActions({
 }
 
 /**
- * Soft grey for bots. Humans get the inverse (`userBubbleClass`), like Grok
- * Bot. A message that arrives while the chat is open springs in whole from
- * its corner (`hex-message`), like a text; history is drawn where it is.
+ * Soft grey for bots, washed with the bot's face colour (`botBubbleStyle`).
+ * Humans get the inverse (`userBubbleClass`), like Grok Bot. A message that
+ * arrives while the chat is open springs in whole from its corner
+ * (`hex-message`), like a text; history is drawn where it is.
  */
 export const bubbleClass =
   'min-w-0 max-w-full rounded-[20px] bg-bubble px-3.5 py-2 leading-[1.5] break-words'
 export const userBubbleClass = cn(bubbleClass, 'bg-foreground text-background')
+
+/**
+ * A bot bubble washed with its face colour, plain grey for a photo. Secondary
+ * text inside (names, quotes, code labels) takes `--hex-bot-muted`, which
+ * stays readable on every wash.
+ */
+export function botBubbleStyle(color: null | string): CSSProperties {
+  return {
+    '--hex-muted-text': 'var(--hex-bot-muted)',
+    ...(color
+      ? { backgroundColor: `color-mix(in srgb, ${color} var(--hex-bot-wash), var(--hex-bubble))` }
+      : {})
+  } as CSSProperties
+}
 
 /** The transcript column: centred and capped so lines stay readable on wide windows. */
 export const transcriptClass = 'mx-auto max-w-[52rem] px-5 py-2'
@@ -409,6 +423,7 @@ export function MessageRow({
 }) {
   const assistant = message.role === 'assistant'
   const settled = useRef<number>(undefined)
+  const color = useFaceColor(bot, bot ? bot.display_name : null)
 
   if (message.error) {
     return (
@@ -473,6 +488,7 @@ export function MessageRow({
           index >= still && 'hex-message',
           index >= still && !assistant && 'hex-message-mine'
         )}
+        style={assistant ? botBubbleStyle(color) : undefined}
       >
         {text ? (
           <div className="hex-prose">
@@ -516,7 +532,7 @@ export function MessageRow({
         (bubbles.length > 0 || visuals.length > 0 || message.streaming) ? (
           <Avatar
             className={cn('mt-1', message.streaming && 'hex-think')}
-            image={avatarData(bot)}
+            {...botFace(bot)}
             mood={message.streaming ? 'working' : undefined}
             name={name}
             size="sm"
@@ -541,7 +557,7 @@ export function MessageRow({
                 showFace ? undefined : (
                   <Avatar
                     className="hex-think"
-                    image={avatarData(bot)}
+                    {...botFace(bot)}
                     mood="working"
                     name={name}
                     size="sm"
@@ -560,15 +576,49 @@ export function MessageRow({
 }
 
 /**
+ * "Checking this step" at the foot of a bot's chat while Auto mode still
+ * reviews a step and no message streams: an approval card from an
+ * overlapping review ended the message that showed it. The line opens into
+ * that message's steps.
+ */
+export function CheckingRow({ bot, transcript }: { bot?: Bot; transcript?: Transcript }) {
+  const checking = transcript?.streamingMessageId ? undefined : transcript?.checking
+  const message = checking && transcript?.messages.findLast(item => item.role === 'assistant')
+
+  if (!checking || !message) {
+    return null
+  }
+
+  const name = bot?.display_name ?? 'Bot'
+
+  return (
+    <div className="flex pt-1">
+      <LiveStatus
+        computer
+        face={
+          <Avatar
+            className="hex-think"
+            {...botFace(bot)}
+            mood="working"
+            name={name}
+            size="sm"
+          />
+        }
+        message={{ ...message, checking }}
+        name={name}
+      />
+    </div>
+  )
+}
+
+/**
  * A card the bot is waiting on, in the same row as its bubbles. Rooms pass the
  * bot so its face leads the card; a bot's own chat has no faces in the column.
  */
 export function CardRow({ bot, children }: { bot?: Bot; children: React.ReactNode }) {
   return (
     <div className="flex gap-2 pt-1">
-      {bot ? (
-        <Avatar className="mt-1" image={avatarData(bot)} name={bot.display_name} size="sm" />
-      ) : null}
+      {bot ? <Avatar className="mt-1" {...botFace(bot)} name={bot.display_name} size="sm" /> : null}
       {children}
     </div>
   )
@@ -1139,7 +1189,7 @@ function BotConversation() {
       >
         {unavailable === params.section && !liveId ? (
           <div className="hex-rise grid h-full place-content-center justify-items-center gap-4 p-8 text-center">
-            <Avatar image={avatarData(bot)} name={name} size="xl" />
+            <Avatar {...botFace(bot)} name={name} size="xl" />
             <div>
               <h2 className="text-[length:var(--text-title)] font-semibold">
                 This conversation is no longer available
@@ -1168,7 +1218,7 @@ function BotConversation() {
           </div>
         ) : messages.length === 0 && clarifies.length === 0 ? (
           <div className="hex-rise grid h-full place-content-center justify-items-center gap-6 p-8 text-center">
-            <Avatar image={avatarData(bot)} name={name} size="xl" />
+            <Avatar {...botFace(bot)} name={name} size="xl" />
             <div>
               <h2 className="text-[22px] font-semibold tracking-[-0.01em]">{bot?.display_name}</h2>
               {bot?.title || bot?.description ? (
@@ -1239,6 +1289,7 @@ function BotConversation() {
                 </div>
               )
             })}
+            <CheckingRow bot={bot} transcript={transcript} />
             {stoppedHere ? (
               <StoppedCard
                 message={stoppedHere}
@@ -1258,7 +1309,7 @@ function BotConversation() {
         />
         {editing ? (
           <div className="hex-glass hex-no-drag pointer-events-auto flex h-9 max-w-full min-w-0 items-center gap-2 rounded-full pr-1.5 pl-1.5">
-            <Avatar image={avatarData(bot)} name={name} size="sm" />
+            <Avatar {...botFace(bot)} name={name} size="sm" />
             <Input
               aria-label="Section title"
               autoFocus
@@ -1294,7 +1345,7 @@ function BotConversation() {
             <span className="relative shrink-0">
               <Avatar
                 className={cn(status === 'working' && 'hex-think')}
-                image={avatarData(bot)}
+                {...botFace(bot)}
                 mood={status === 'working' ? 'working' : undefined}
                 name={name}
                 size="sm"

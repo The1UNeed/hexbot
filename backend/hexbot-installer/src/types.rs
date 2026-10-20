@@ -80,6 +80,8 @@ impl fmt::Display for Target {
 #[serde(rename_all = "camelCase")]
 pub struct Artifact {
     pub url: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
     #[serde(default)]
     pub sha256: Option<String>,
     #[serde(default)]

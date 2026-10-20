@@ -32,7 +32,7 @@ Give it a small first task, such as "Make me a bot that reviews my writing." In 
 
 ## 5. Give it a workspace
 
-For file work, set **Working directory** in Bot settings, Tools to the project folder on the daemon computer. Enable the tools the task needs. Auto is the default [approval mode](/docs/approvals/): commands run in a sandbox, and requests for more access wait for your approval.
+For file work, set **Working directory** in Bot settings, Tools to the project folder on the daemon computer. Enable the tools the task needs. Auto is the default [approval mode](/docs/approvals/). Commands run in a sandbox; requests for more access are checked by the bot's model, a judgment rather than a sandbox, and risky or unreviewable steps wait for your approval.
 
 If you connect remotely, files and commands still belong to the daemon computer. Attach a file from your device when the bot needs to read it. Images can be up to 25 MiB; PDFs and other files can be up to 45 MiB each.
 

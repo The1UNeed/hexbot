@@ -18,6 +18,32 @@ describe('chat event projection', () => {
     expect(s.busy).toBe(false)
     expect(s.streaming).toBe('')
   })
+  it('shows Auto mode checking a step and keeps the turn busy after', () => {
+    let s = reduceChat(emptyChat(), event('status.update', { kind: 'working', text: 'Working' }))
+    s = reduceChat(s, event('tool.start', { tool_id: 't', name: 'terminal' }))
+    s = reduceChat(s, event('status.update', { kind: 'checking', text: 'Checking this step' }))
+    expect(s.activity).toBe('Checking this step')
+    // An unrelated status line keeps the label; another review may still run.
+    s = reduceChat(s, event('status.update', { kind: 'status', text: '' }))
+    s = reduceChat(s, event('status.update', { kind: 'waiting', text: 'Retrying' }))
+    expect(s.activity).toBe('Checking this step')
+    s = reduceChat(s, event('status.update', { kind: 'checking', text: '' }))
+    expect(s.activity).toBe('')
+    expect(s.busy).toBe(true)
+  })
+  it('keeps checking a step through an approval card and drops it when the turn ends', () => {
+    let s = reduceChat(
+      emptyChat(),
+      event('status.update', { kind: 'checking', text: 'Checking this step' })
+    )
+    s = reduceChat(s, event('approval.request', { request_id: 'a' }))
+    s = reduceChat(s, event('tool.complete', { tool_id: 'b' }))
+    expect(s.activity).toBe('Checking this step')
+    s = reduceChat(s, event('message.complete', { text: 'Done' }))
+    expect(s.checking).toBe('')
+    s = reduceChat(s, event('tool.start', { tool_id: 'c', name: 'terminal' }))
+    expect(s.activity).toBe('Using terminal')
+  })
   it('deduplicates re-sent approval cards and keeps the originating session', () => {
     let s = reduceChat(
       emptyChat(),

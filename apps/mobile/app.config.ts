@@ -5,6 +5,10 @@ const config: ExpoConfig = {
   backgroundColor: '#ffffff',
   name: 'Hexbot',
   slug: 'hexbot-mobile',
+  owner: 'the1uneed',
+  extra: {
+    eas: { projectId: '3d292b3c-aaff-4a09-927a-9d143e90c7c7' }
+  },
   version: '0.1.0',
   scheme: 'hexbot',
   orientation: 'portrait',
@@ -30,8 +34,6 @@ const config: ExpoConfig = {
     'expo-notifications',
     ['./plugins/local-network.cjs']
   ],
-  // Push for check-ins needs the app's EAS project; without one the app skips it.
-  extra: process.env.EAS_PROJECT_ID ? { eas: { projectId: process.env.EAS_PROJECT_ID } } : {},
   web: { bundler: 'metro' }
 }
 export default config

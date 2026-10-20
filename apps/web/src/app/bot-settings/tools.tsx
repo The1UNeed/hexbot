@@ -18,7 +18,7 @@ export const TOOL_GROUPS: { rows: ToolRow[]; title: string }[] = [
   {
     rows: [
       {
-        description: 'Run commands in a sandbox. Leaving it asks first, except in Bypass.',
+        description: 'Run commands in a sandbox. Leaving it is checked first, except in Bypass.',
         key: 'terminal',
         label: 'Terminal',
         note: 'Sandboxed'

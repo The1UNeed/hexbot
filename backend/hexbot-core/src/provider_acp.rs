@@ -53,9 +53,32 @@ pub async fn cancel(home: &Path, stored: &str) {
 /// the child never receives daemon or provider secrets.
 /// Dropping this future also kills the child; cancellation explicitly sends ACP session/cancel.
 pub async fn complete(home: &Path, bot: &str, stored: &str, args: &Value) -> Result<Value> {
+    let cwd = crate::native_tools::section_workdir(home, bot, stored)?;
+    complete_in_dir(home, bot, stored, args, &cwd, false).await
+}
+
+/// One-shot reviewers use an empty directory and a separate lease, never the
+/// section's workspace or its active ACP request. Native tools remain denied.
+pub(crate) async fn complete_reviewer(
+    home: &Path,
+    bot: &str,
+    stored: &str,
+    args: &Value,
+    cwd: &Path,
+) -> Result<Value> {
+    complete_in_dir(home, bot, stored, args, cwd, true).await
+}
+
+async fn complete_in_dir(
+    home: &Path,
+    bot: &str,
+    stored: &str,
+    args: &Value,
+    cwd: &Path,
+    reviewer: bool,
+) -> Result<Value> {
     common::identifier(bot)?;
     common::identifier(stored)?;
-    let cwd = crate::native_tools::section_workdir(home, bot, stored)?;
     let mut env = common::env_values(home)?;
     env.extend(common::env_values(&home.join("profiles").join(bot))?);
     let value = |name: &str| {
@@ -68,11 +91,35 @@ pub async fn complete(home: &Path, bot: &str, stored: &str, args: &Value) -> Res
         .or_else(|| value("HERMES_COPILOT_ACP_COMMAND"))
         .or_else(|| value("COPILOT_CLI_PATH"))
         .unwrap_or_else(|| "copilot".into());
-    let command_args = value("HEXBOT_COPILOT_ACP_ARGS")
+    let mut command_args = value("HEXBOT_COPILOT_ACP_ARGS")
         .or_else(|| value("HERMES_COPILOT_ACP_ARGS"))
         .map(|v| split_args(&v))
         .transpose()?
         .unwrap_or_else(|| vec!["--acp".into(), "--stdio".into()]);
+    if reviewer {
+        // Extra owner-configured arguments can load agents, plugins, MCP
+        // servers, or config from outside the isolated home. Keep only ACP's
+        // transport switches; unsupported wrappers fall back to an approval.
+        if command_args
+            .iter()
+            .any(|arg| !matches!(arg.as_str(), "--acp" | "--stdio"))
+        {
+            return Err(failure(
+                "Copilot ACP review supports only --acp and --stdio arguments",
+            ));
+        }
+        // Copilot has its own instruction and tool discovery, independent of
+        // Pi's flags. An older CLI that rejects these must fail closed.
+        command_args.extend(
+            [
+                "--no-custom-instructions",
+                "--available-tools=",
+                "--disable-builtin-mcps",
+                "--no-auto-update",
+            ]
+            .map(str::to_owned),
+        );
+    }
     // sandbox-exec and bubblewrap start even when the CLI is missing, so look first.
     // A relative command lives in the workspace, where the child starts.
     let not_started = || {
@@ -80,7 +127,7 @@ pub async fn complete(home: &Path, bot: &str, stored: &str, args: &Value) -> Res
             "Could not start Copilot ACP command '{executable}'. Install GitHub Copilot CLI or configure HEXBOT_COPILOT_ACP_COMMAND."
         ))
     };
-    let Some(program) = common::command_path(&executable, &cwd) else {
+    let Some(program) = common::command_path(&executable, cwd) else {
         return Err(not_started());
     };
     // Copilot's own reads must not reach the daemon's .env, connect.json or auth files,
@@ -88,12 +135,12 @@ pub async fn complete(home: &Path, bot: &str, stored: &str, args: &Value) -> Res
     let mut command = crate::credentials::isolated_command(
         home,
         &program.to_string_lossy(),
-        std::slice::from_ref(&cwd),
+        &[cwd.to_path_buf()],
         crate::credentials::Confine::No,
     )?;
     command
         .args(command_args)
-        .current_dir(&cwd)
+        .current_dir(cwd)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -105,6 +152,25 @@ pub async fn complete(home: &Path, bot: &str, stored: &str, args: &Value) -> Res
             .filter(|(key, _)| crate::credentials::inherited_environment(key) || copilot_auth(key))
             .chain(env.into_iter().filter(|(key, _)| copilot_auth(key))),
     );
+    // Reviews retain explicit GitHub tokens but never import the CLI's user
+    // instructions, settings, skills, plugins, MCP servers, or stored login.
+    let reviewer_home = reviewer.then(tempfile::tempdir).transpose()?;
+    if let Some(dir) = &reviewer_home {
+        command
+            .env("HOME", dir.path())
+            .env("USERPROFILE", dir.path());
+        for (name, child) in [
+            ("COPILOT_HOME", "copilot"),
+            ("XDG_CONFIG_HOME", "config"),
+            ("XDG_CACHE_HOME", "cache"),
+            ("XDG_STATE_HOME", "state"),
+            ("XDG_DATA_HOME", "data"),
+        ] {
+            let path = dir.path().join(child);
+            std::fs::create_dir_all(&path)?;
+            command.env(name, path);
+        }
+    }
     let key = session_key(home, stored);
     let id = common::id();
     let (sender, mut cancellation) = watch::channel(false);

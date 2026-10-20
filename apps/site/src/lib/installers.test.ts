@@ -44,3 +44,9 @@ describe('installers', () => {
     expect(await installers(async () => { throw new Error('503') })).toBeNull()
   })
 })
+
+it('resolves relative installer paths against the update server', () => {
+  const result = readManifest(manifest('stable', { 'linux-x86_64': { installerApp: { url: 'install/1.2.3/installer.AppImage' } } }), 'stable')
+  expect(result?.builds[0].url).toBe('https://updates.hexbot.app/install/1.2.3/installer.AppImage')
+  expect(readManifest(manifest('stable', { 'linux-x86_64': { installerApp: { url: '//attacker.example/installer.AppImage' } } }), 'stable')).toBeNull()
+})

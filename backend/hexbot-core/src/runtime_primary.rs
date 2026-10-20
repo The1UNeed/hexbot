@@ -458,7 +458,7 @@ impl Runtime {
                     )
                     .await;
                 match kept {
-                    Err(error) if error.code == 4233 => {
+                    Err(error) if error.code == crate::rooms::LAST_BOT => {
                         let current = crate::rooms::get(&self.home, owner, room)?;
                         let title = current["name"].as_str().unwrap_or(room);
                         self.confirm(
@@ -548,20 +548,7 @@ impl Runtime {
                         format!("{key} can only be changed by the user in Settings"),
                     ));
                 }
-                let summary = patch
-                    .iter()
-                    .map(|(k, v)| {
-                        format!(
-                            "{k} to {}",
-                            if v.is_string() {
-                                v.as_str().unwrap().to_owned()
-                            } else {
-                                v.to_string()
-                            }
-                        )
-                    })
-                    .collect::<Vec<_>>()
-                    .join(", ");
+                let summary = settings_summary(patch);
                 self.confirm(s, name, format!("Change settings: {summary}"), args)
                     .await?;
                 self.dispatch(owner, "hexbot.settings.set", json!({"patch":patch}))
@@ -630,6 +617,40 @@ pub(super) fn job_folder(args: &Value) -> Option<String> {
     )
 }
 
+/// What the approval card says a settings change does, in the words Settings uses.
+fn settings_summary(patch: &serde_json::Map<String, Value>) -> String {
+    patch
+        .iter()
+        .map(|(k, v)| {
+            let value = match v {
+                Value::String(mode) if k == "approval_mode" => approval_label(mode).to_owned(),
+                Value::String(v) => v.clone(),
+                Value::Bool(on) => if *on { "on" } else { "off" }.to_owned(),
+                Value::Null => "none".to_owned(),
+                v => v.to_string(),
+            };
+            format!("{} to {value}", setting_label(k))
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// A name from `SETTINGS` as the user reads it.
+fn setting_label(key: &str) -> &str {
+    match key {
+        "approval_mode" => "approval mode",
+        "default_model" => "default model",
+        "fallback_model" => "fallback model",
+        "workspace_dir" => "workspace folder",
+        "dream_enabled" => "dreaming",
+        "dream_time" => "dream time",
+        "room_bot_turns_per_human_turn" => "bot turns per message in rooms",
+        "room_budget_tokens_per_human_turn" => "token budget per message in rooms",
+        "bot_daily_token_budget" => "daily token budget for each bot",
+        other => other,
+    }
+}
+
 fn approval_label(mode: &str) -> &str {
     match mode {
         "smart" => "Auto",
@@ -637,5 +658,27 @@ fn approval_label(mode: &str) -> &str {
         "off" => "Bypass",
         "inherit" => "the Settings default",
         other => other,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn settings_changes_read_in_plain_words() {
+        let patch = json!({"approval_mode":"off","dream_time":"04:30"});
+        assert_eq!(
+            settings_summary(patch.as_object().unwrap()),
+            "approval mode to Bypass, dream time to 04:30"
+        );
+        let patch = json!({"dream_enabled":false,"fallback_model":null});
+        assert_eq!(
+            settings_summary(patch.as_object().unwrap()),
+            "dreaming to off, fallback model to none"
+        );
+        for key in SETTINGS {
+            assert_ne!(setting_label(key), *key);
+        }
     }
 }

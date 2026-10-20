@@ -2,6 +2,7 @@ mod common;
 use common::*;
 use hexbot_installer::{
     Artifacts, InstallOption, Installer, Manifest, Receipt, Target, Track, fetch_manifest,
+    read_receipt,
 };
 use std::{
     fs,
@@ -185,8 +186,12 @@ fn linux_detection_does_not_authorize_deleting_prefix_matches_or_directories() {
     assert!(apps.join("app.hexbot.desktop.AppImage").is_dir());
 }
 
+/// A signed manifest names each artifact's path; the installer downloads that
+/// path from its own update server, so a mirror (`HEXBOT_UPDATE_URL`) serves
+/// the same release and a manifest cannot send a download to another origin.
+/// Redirects must stay on that origin too.
 #[test]
-fn manifests_and_redirects_cannot_leave_the_configured_origin() {
+fn artifacts_come_from_the_configured_server_and_redirects_cannot_leave_it() {
     let temp = tempfile::tempdir().unwrap();
     fs::create_dir(temp.path().join("install")).unwrap();
     let server = Server::new(temp.path());
@@ -211,21 +216,109 @@ fn manifests_and_redirects_cannot_leave_the_configured_origin() {
             },
         )]),
     };
-    let publish = |m: &Manifest| {
-        fs::write(
-            temp.path().join("install/stable.json"),
-            serde_json::to_vec(m).unwrap(),
-        )
-        .unwrap()
-    };
-    publish(&manifest);
-    assert!(
-        fetch_manifest(&server.base, Track::Stable)
-            .unwrap_err()
-            .to_string()
-            .contains("same origin")
-    );
+    let publish = |m: &Manifest| publish(temp.path(), "stable", m);
     let mut engine = engine(temp.path());
+    engine.base_url = server.base.clone();
+    // Old manifests omit path; new manifests retain a canonical URL for old clients.
+    for path in [None, Some("client.AppImage".to_string())] {
+        let artifact = manifest
+            .targets
+            .get_mut("linux-x86_64")
+            .unwrap()
+            .client
+            .as_mut()
+            .unwrap();
+        artifact.url = if path.is_some() {
+            "https://updates.hexbot.app/client.AppImage".into()
+        } else {
+            format!("{}/client.AppImage", server.base)
+        };
+        artifact.path = path;
+        publish(&manifest);
+        engine
+            .apply(InstallOption::Client, Track::Stable, &mut |_| {})
+            .unwrap();
+        assert!(foreign.requests.lock().unwrap().is_empty());
+        assert!(
+            server
+                .requests
+                .lock()
+                .unwrap()
+                .contains(&"/client.AppImage".to_string())
+        );
+        fs::remove_file(engine.paths.receipt()).unwrap();
+    }
+    for location in [
+        "",
+        "../client.AppImage",
+        "a/../client.AppImage",
+        "./client.AppImage",
+        "/client.AppImage",
+        "%2e%2e/client.AppImage",
+        "a/%2Fclient.AppImage",
+        "a\\..\\client.AppImage",
+        "//attacker.example/client.AppImage",
+        "https://updates.hexbot.app/client.AppImage",
+        "ftp://updates.hexbot.app/client.AppImage",
+        "client.AppImage?query",
+        "client.AppImage#fragment",
+        " client.AppImage",
+        "a//client.AppImage",
+    ] {
+        let artifact = manifest
+            .targets
+            .get_mut("linux-x86_64")
+            .unwrap()
+            .client
+            .as_mut()
+            .unwrap();
+        // A valid legacy URL must not rescue an invalid signed path.
+        artifact.url = format!("{}/client.AppImage", server.base);
+        artifact.path = Some(location.into());
+        publish(&manifest);
+        assert!(
+            fetch_manifest(&server.base, Track::Stable).is_err(),
+            "{location}"
+        );
+    }
+    for location in [
+        "client.AppImage",
+        "//attacker.example/client.AppImage",
+        "https://attacker.example/client.AppImage",
+    ] {
+        let artifact = manifest
+            .targets
+            .get_mut("linux-x86_64")
+            .unwrap()
+            .client
+            .as_mut()
+            .unwrap();
+        artifact.url = location.into();
+        artifact.path = None;
+        publish(&manifest);
+        assert!(fetch_manifest(&server.base, Track::Stable).is_err());
+    }
+    let mirror = temp.path().join("mirror");
+    fs::create_dir_all(mirror.join("install")).unwrap();
+    fs::copy(
+        temp.path().join("client.AppImage"),
+        mirror.join("client.AppImage"),
+    )
+    .unwrap();
+    let artifact = manifest
+        .targets
+        .get_mut("linux-x86_64")
+        .unwrap()
+        .client
+        .as_mut()
+        .unwrap();
+    artifact.url = "https://updates.hexbot.app/client.AppImage".into();
+    artifact.path = Some("client.AppImage".into());
+    common::publish(&mirror, "stable", &manifest);
+    engine.base_url = format!("{}/mirror/", server.base);
+    engine
+        .apply(InstallOption::Client, Track::Stable, &mut |_| {})
+        .unwrap();
     engine.base_url = server.base.clone();
     manifest
         .targets
@@ -302,11 +395,7 @@ fn running_legacy_appimage_blocks_replace_change_and_uninstall() {
             },
         )]),
     };
-    fs::write(
-        temp.path().join("install/stable.json"),
-        serde_json::to_vec(&manifest).unwrap(),
-    )
-    .unwrap();
+    publish(temp.path(), "stable", &manifest);
     let mut child = Command::new("sh")
         .args(["-c", "printf 'ready\\n'; read line"])
         .env("APPIMAGE", &legacy)
@@ -367,11 +456,7 @@ fn publish_options(root: &Path, engine: &Installer) {
             },
         )]),
     };
-    fs::write(
-        root.join("install/stable.json"),
-        serde_json::to_vec(&manifest).unwrap(),
-    )
-    .unwrap();
+    publish(root, "stable", &manifest);
 }
 
 #[test]
@@ -611,11 +696,7 @@ fn app_ids_must_match_the_manifest_track_before_installing() {
                     },
                     suffix
                 ));
-                fs::write(
-                    root.path().join(format!("install/{track}.json")),
-                    serde_json::to_vec(&manifest).unwrap(),
-                )
-                .unwrap();
+                publish(root.path(), track, &manifest);
                 let error = engine.apply(option, track, &mut |_| {}).unwrap_err();
                 assert!(error.to_string().contains("selected track"), "{error}");
                 assert!(!engine.paths.receipt().exists());
@@ -758,5 +839,1090 @@ exit 1
     assert_eq!(
         fs::read_to_string(root.path().join("home/systemctl-calls")).unwrap(),
         "--user disable --now hexbot\n--user daemon-reload\n--user disable --now hexbot\n--user daemon-reload\n"
+    );
+}
+
+/// Whoever controls the update origin, its TLS, or HEXBOT_UPDATE_URL cannot
+/// ship a build: the manifest needs the release key's signature, and its
+/// checksums then pin every package.
+#[test]
+fn unsigned_or_altered_manifests_and_plain_http_are_refused() {
+    let temp = tempfile::tempdir().unwrap();
+    fs::create_dir(temp.path().join("install")).unwrap();
+    let server = Server::new(temp.path());
+    let artifact = app_artifact(
+        temp.path(),
+        &server.base,
+        InstallOption::Client,
+        Target::LinuxX86_64,
+    );
+    let manifest = Manifest {
+        schema: 1,
+        channel: Track::Stable,
+        version: "0.0.1".into(),
+        min_installer: "0.0.1".into(),
+        targets: std::collections::BTreeMap::from([(
+            "linux-x86_64".into(),
+            Artifacts {
+                client: Some(artifact),
+                ..Default::default()
+            },
+        )]),
+    };
+    let signature = temp.path().join("install/0.0.1/stable.json.sig");
+    fs::write(
+        temp.path().join("install/stable.json"),
+        serde_json::to_vec(&manifest).unwrap(),
+    )
+    .unwrap();
+    assert!(fetch_manifest(&server.base, Track::Stable).is_err());
+    publish(temp.path(), "stable", &manifest);
+    let trusted = fs::read_to_string(&signature).unwrap();
+    let foreign = hexbot_installer::update_signature::test_signature(b"other manifest");
+    fs::write(&signature, format!("{foreign}\n{trusted}\n")).unwrap();
+    fetch_manifest(&server.base, Track::Stable).unwrap();
+    let mut altered = manifest.clone();
+    altered.min_installer = "0.0.0".into();
+    let signed = fs::read(&signature).unwrap();
+    fs::write(
+        temp.path().join("install/stable.json"),
+        serde_json::to_vec(&altered).unwrap(),
+    )
+    .unwrap();
+    fs::write(&signature, &signed).unwrap();
+    let error = fetch_manifest(&server.base, Track::Stable).unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        hexbot_installer::update_signature::INVALID
+    );
+    let mut engine = engine(temp.path());
+    engine.base_url = server.base.clone();
+    assert!(
+        engine
+            .apply(InstallOption::Client, Track::Stable, &mut |_| {})
+            .is_err()
+    );
+    assert!(!engine.paths.receipt().exists());
+    for base in ["http://updates.example", "https://user@updates.example"] {
+        assert_eq!(
+            fetch_manifest(base, Track::Stable).unwrap_err().to_string(),
+            "The update URL must use HTTPS."
+        );
+        assert_eq!(
+            hexbot_installer::default_track(base)
+                .unwrap_err()
+                .to_string(),
+            "The update URL must use HTTPS."
+        );
+    }
+}
+
+/// A signed manifest stays valid after the next release replaces it, so a
+/// replayed older one must not move an install back on its own track. Apply
+/// and repair refuse it; a fresh install or a track change may install it.
+#[test]
+fn a_replayed_older_signed_manifest_cannot_move_an_install_back() {
+    let temp = tempfile::tempdir().unwrap();
+    fs::create_dir(temp.path().join("install")).unwrap();
+    let server = Server::new(temp.path());
+    let mut engine = engine(temp.path());
+    engine.base_url = server.base.clone();
+    let manifest = |version: &str, track: Track| Manifest {
+        schema: 1,
+        channel: track,
+        version: version.into(),
+        min_installer: "0.0.1".into(),
+        targets: std::collections::BTreeMap::from([(
+            "linux-x86_64".into(),
+            Artifacts {
+                client: Some(app_artifact_for_track(
+                    temp.path(),
+                    &server.base,
+                    InstallOption::Client,
+                    Target::LinuxX86_64,
+                    track == Track::Nightly,
+                )),
+                ..Default::default()
+            },
+        )]),
+    };
+    let older = manifest("0.0.1", Track::Stable);
+    publish(temp.path(), "stable", &older);
+    let signed_older = fs::read(temp.path().join("install/0.0.1/stable.json.sig")).unwrap();
+    let older_bytes = fs::read(temp.path().join("install/stable.json")).unwrap();
+    publish(temp.path(), "stable", &manifest("0.0.2", Track::Stable));
+    engine
+        .apply(InstallOption::Client, Track::Stable, &mut |_| {})
+        .unwrap();
+    assert_eq!(
+        read_receipt(&engine.paths.receipt())
+            .unwrap()
+            .unwrap()
+            .version,
+        "0.0.2"
+    );
+    // Replay the older manifest with its still-valid immutable signature.
+    fs::write(temp.path().join("install/stable.json"), &older_bytes).unwrap();
+    fs::write(
+        temp.path().join("install/0.0.1/stable.json.sig"),
+        &signed_older,
+    )
+    .unwrap();
+    fetch_manifest(&server.base, Track::Stable).unwrap();
+    let requests = server.requests.lock().unwrap().len();
+    for attempt in [
+        engine.apply(InstallOption::Client, Track::Stable, &mut |_| {}),
+        engine.repair(&mut |_| {}),
+        engine.change(
+            InstallOption::Client,
+            InstallOption::Full,
+            Track::Stable,
+            &mut |_| true,
+            &mut |_| {},
+        ),
+    ] {
+        assert_eq!(
+            attempt.unwrap_err().to_string(),
+            "The update server offers Hexbot 0.0.1, older than the installed 0.0.2. Nothing was installed."
+        );
+    }
+    let receipt = read_receipt(&engine.paths.receipt()).unwrap().unwrap();
+    assert_eq!(receipt.version, "0.0.2");
+    assert_eq!(receipt.channel, Track::Stable);
+    // Nothing was downloaded: only the manifest and its signature were read.
+    assert!(
+        server
+            .requests
+            .lock()
+            .unwrap()
+            .iter()
+            .skip(requests)
+            .all(|path| path.starts_with("/install/"))
+    );
+    // An explicit track change may install an older version.
+    publish(temp.path(), "nightly", &manifest("0.0.1", Track::Nightly));
+    engine
+        .apply(InstallOption::Client, Track::Nightly, &mut |_| {})
+        .unwrap();
+    let receipt = read_receipt(&engine.paths.receipt()).unwrap().unwrap();
+    assert_eq!(
+        (receipt.version.as_str(), receipt.channel),
+        ("0.0.1", Track::Nightly)
+    );
+    // And so may a fresh install.
+    fs::remove_file(engine.paths.receipt()).unwrap();
+    engine
+        .apply(InstallOption::Client, Track::Stable, &mut |_| {})
+        .unwrap();
+    assert_eq!(
+        read_receipt(&engine.paths.receipt())
+            .unwrap()
+            .unwrap()
+            .version,
+        "0.0.1"
+    );
+}
+
+fn version_manifest(root: &Path, base: &str, target: Target, version: &str) -> Manifest {
+    Manifest {
+        schema: 1,
+        channel: Track::Stable,
+        version: version.into(),
+        min_installer: "0.0.1".into(),
+        targets: std::collections::BTreeMap::from([(
+            target.to_string(),
+            Artifacts {
+                client: Some(versioned_app_artifact(
+                    root,
+                    base,
+                    InstallOption::Client,
+                    target,
+                    version,
+                )),
+                full: Some(versioned_app_artifact(
+                    root,
+                    base,
+                    InstallOption::Full,
+                    target,
+                    version,
+                )),
+                headless: Some(native_artifact(root, base)),
+                ..Default::default()
+            },
+        )]),
+    }
+}
+
+#[test]
+fn automatic_updates_and_receiptless_installs_set_the_same_track_floor() {
+    // Installed app versions are read with the host's own tools.
+    let targets = [if cfg!(target_os = "macos") {
+        Target::MacosAarch64
+    } else {
+        Target::LinuxX86_64
+    }];
+    for target in targets {
+        for option in [
+            InstallOption::Full,
+            InstallOption::Client,
+            InstallOption::Headless,
+        ] {
+            for with_receipt in [false, true] {
+                let temp = tempfile::tempdir().unwrap();
+                fs::create_dir(temp.path().join("install")).unwrap();
+                let server = Server::new(temp.path());
+                let mut engine = engine(temp.path());
+                engine.target = target;
+                engine.base_url = server.base.clone();
+                let older = version_manifest(temp.path(), &server.base, target, "0.0.2");
+                publish(temp.path(), "stable", &older);
+                fs::create_dir_all(&engine.paths.hexbot_home).unwrap();
+                if with_receipt {
+                    fs::write(
+                        engine.paths.receipt(),
+                        serde_json::to_vec(&Receipt {
+                            option,
+                            channel: Track::Stable,
+                            version: "0.0.1".into(),
+                            paths: vec![],
+                            installed_at: String::new(),
+                        })
+                        .unwrap(),
+                    )
+                    .unwrap();
+                }
+                if option == InstallOption::Headless {
+                    let binary = engine
+                        .paths
+                        .hexbot_home
+                        .join("runtime/native/updated/hexbot");
+                    fs::create_dir_all(binary.parent().unwrap()).unwrap();
+                    fs::write(&binary, "current runtime").unwrap();
+                    symlink(&binary, engine.paths.executable()).unwrap();
+                    fs::write(engine.paths.hexbot_home.join("runtime/native-current.json"),
+                        serde_json::json!({"version":"0.0.3", "executable":binary.canonicalize().unwrap()}).to_string()).unwrap();
+                } else {
+                    let updated = temp.path().join("updated");
+                    fs::create_dir(&updated).unwrap();
+                    let package =
+                        versioned_app_artifact(&updated, &server.base, option, target, "0.0.3");
+                    let apps = engine.paths.install_apps_dir(target).unwrap();
+                    if target.is_macos() {
+                        fs::rename(
+                            updated
+                                .join(format!("{}.app", package.product_name.as_deref().unwrap())),
+                            apps.join(format!("{}.app", package.product_name.as_deref().unwrap())),
+                        )
+                        .unwrap();
+                    } else {
+                        fs::copy(
+                            updated.join(if option == InstallOption::Full {
+                                "full.AppImage"
+                            } else {
+                                "client.AppImage"
+                            }),
+                            apps.join(format!("{}.AppImage", package.app_id.as_deref().unwrap())),
+                        )
+                        .unwrap();
+                    }
+                }
+                let expected = "The update server offers Hexbot 0.0.2, older than the installed 0.0.3. Nothing was installed.";
+                assert_eq!(
+                    engine
+                        .apply(option, Track::Stable, &mut |_| {})
+                        .unwrap_err()
+                        .to_string(),
+                    expected
+                );
+                if with_receipt {
+                    assert_eq!(
+                        engine.repair(&mut |_| {}).unwrap_err().to_string(),
+                        expected
+                    );
+                }
+                assert!(
+                    server
+                        .requests
+                        .lock()
+                        .unwrap()
+                        .iter()
+                        .all(|p| p.starts_with("/install/"))
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn a_delayed_install_rechecks_the_floor_before_replacement_and_receipt_commit() {
+    use std::sync::mpsc;
+    for operation in ["apply", "repair", "change"] {
+        let temp = tempfile::tempdir().unwrap();
+        fs::create_dir(temp.path().join("install")).unwrap();
+        let server = Server::new(temp.path());
+        let mut newer_engine = engine(temp.path());
+        newer_engine.base_url = server.base.clone();
+        let old = version_manifest(temp.path(), &server.base, Target::LinuxX86_64, "0.0.1");
+        publish(temp.path(), "stable", &old);
+        newer_engine
+            .apply(InstallOption::Client, Track::Stable, &mut |_| {})
+            .unwrap();
+        let delayed = Installer {
+            paths: newer_engine.paths.clone(),
+            target: newer_engine.target,
+            base_url: server.base.clone(),
+        };
+        let (ready_tx, ready_rx) = mpsc::channel();
+        let (resume_tx, resume_rx) = mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let mut paused = false;
+            let mut progress = |event: hexbot_installer::Progress| {
+                if event.stage == "download" && !paused {
+                    paused = true;
+                    ready_tx.send(()).unwrap();
+                    resume_rx.recv().unwrap();
+                }
+            };
+            match operation {
+                "repair" => delayed.repair(&mut progress),
+                "change" => delayed.change(
+                    InstallOption::Client,
+                    InstallOption::Full,
+                    Track::Stable,
+                    &mut |_| true,
+                    &mut progress,
+                ),
+                _ => delayed.apply(InstallOption::Client, Track::Stable, &mut progress),
+            }
+        });
+        ready_rx.recv().unwrap();
+        let next = temp.path().join("next");
+        fs::create_dir(&next).unwrap();
+        let newer = version_manifest(&next, &server.base, Target::LinuxX86_64, "0.0.2");
+        // Keep the old worker's URL and bytes intact while the newer package downloads.
+        let mut newer = newer;
+        let artifacts = newer.targets.get_mut("linux-x86_64").unwrap();
+        for artifact in [&mut artifacts.client, &mut artifacts.full]
+            .into_iter()
+            .flatten()
+        {
+            artifact.url = artifact.url.replace(".AppImage", "-new.AppImage");
+        }
+        fs::copy(
+            next.join("client.AppImage"),
+            temp.path().join("client-new.AppImage"),
+        )
+        .unwrap();
+        fs::copy(
+            next.join("full.AppImage"),
+            temp.path().join("full-new.AppImage"),
+        )
+        .unwrap();
+        publish(temp.path(), "stable", &newer);
+        let lock_path = newer_engine.paths.installer_lock(newer_engine.target);
+        let mut observed_lock = false;
+        newer_engine
+            .apply(InstallOption::Client, Track::Stable, &mut |event| {
+                if event.stage == "install" || event.stage == "done" {
+                    let contender = fs::OpenOptions::new()
+                        .read(true)
+                        .write(true)
+                        .open(&lock_path)
+                        .unwrap();
+                    assert_eq!(
+                        unsafe {
+                            libc::flock(contender.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB)
+                        },
+                        -1
+                    );
+                    observed_lock = true;
+                }
+            })
+            .unwrap();
+        assert!(observed_lock);
+        resume_tx.send(()).unwrap();
+        assert_eq!(
+            worker.join().unwrap().unwrap_err().to_string(),
+            "The update server offers Hexbot 0.0.1, older than the installed 0.0.2. Nothing was installed."
+        );
+        let receipt = read_receipt(&newer_engine.paths.receipt())
+            .unwrap()
+            .unwrap();
+        assert_eq!(receipt.version, "0.0.2");
+        assert_eq!(receipt.option, InstallOption::Client);
+        assert_eq!(
+            fs::read(&receipt.paths[0]).unwrap(),
+            fs::read(temp.path().join("client-new.AppImage")).unwrap()
+        );
+        assert!(
+            !newer_engine
+                .paths
+                .apps_override
+                .unwrap()
+                .join("app.hexbot.desktop.AppImage")
+                .exists()
+        );
+    }
+}
+
+#[test]
+fn a_missing_signature_is_distinct_from_an_unpublished_release() {
+    let temp = tempfile::tempdir().unwrap();
+    fs::create_dir(temp.path().join("install")).unwrap();
+    let server = Server::new(temp.path());
+    assert!(
+        fetch_manifest(&server.base, Track::Stable)
+            .unwrap_err()
+            .to_string()
+            .contains("(404 Not Found)")
+    );
+    let manifest = version_manifest(temp.path(), &server.base, Target::LinuxX86_64, "0.0.1");
+    publish(temp.path(), "stable", &manifest);
+    fs::remove_file(temp.path().join("install/0.0.1/stable.json.sig")).unwrap();
+    let error = fetch_manifest(&server.base, Track::Stable)
+        .unwrap_err()
+        .to_string();
+    assert_eq!(
+        error,
+        "The install manifest signature is missing. Nothing was installed."
+    );
+    assert!(!error.contains("(404 Not Found)"));
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn the_highest_valid_same_track_source_wins_without_executing_installed_apps() {
+    let temp = tempfile::tempdir().unwrap();
+    fs::create_dir(temp.path().join("install")).unwrap();
+    let server = Server::new(temp.path());
+    let mut engine = engine(temp.path());
+    engine.base_url = server.base.clone();
+    let offered = version_manifest(temp.path(), &server.base, Target::LinuxX86_64, "0.0.1");
+    publish(temp.path(), "stable", &offered);
+    engine
+        .apply(InstallOption::Client, Track::Stable, &mut |_| {})
+        .unwrap();
+    let mut receipt = read_receipt(&engine.paths.receipt()).unwrap().unwrap();
+    receipt.version = "0.0.4".into();
+    fs::write(
+        engine.paths.receipt(),
+        serde_json::to_vec(&receipt).unwrap(),
+    )
+    .unwrap();
+    let updated = temp.path().join("updated");
+    fs::create_dir(&updated).unwrap();
+    versioned_app_artifact(
+        &updated,
+        &server.base,
+        InstallOption::Full,
+        Target::LinuxX86_64,
+        "0.0.3",
+    );
+    fs::copy(
+        updated.join("full.AppImage"),
+        engine
+            .paths
+            .apps_override
+            .as_ref()
+            .unwrap()
+            .join("app.hexbot.desktop.AppImage"),
+    )
+    .unwrap();
+    let binary = engine
+        .paths
+        .hexbot_home
+        .join("runtime/native/updated/hexbot");
+    fs::create_dir_all(binary.parent().unwrap()).unwrap();
+    fs::write(&binary, "current runtime").unwrap();
+    symlink(&binary, engine.paths.executable()).unwrap();
+    let metadata = engine.paths.hexbot_home.join("runtime/native-current.json");
+    let select = |version: &str| {
+        fs::write(
+            &metadata,
+            serde_json::json!({"version":version,"executable":binary.canonicalize().unwrap()})
+                .to_string(),
+        )
+        .unwrap()
+    };
+    let rejected_floor = |expected: &str| {
+        assert!(
+            engine
+                .apply(InstallOption::Client, Track::Stable, &mut |_| {})
+                .unwrap_err()
+                .to_string()
+                .contains(&format!("older than the installed {expected}"))
+        );
+    };
+    select("0.0.5");
+    rejected_floor("0.0.5");
+    // Stable accepts arbitrary prereleases except the reserved nightly prefix.
+    for version in ["0.0.6-dev.1", "0.0.7-devops.1"] {
+        select(version);
+        rejected_floor(version);
+    }
+    // A newer native runtime on the other track must not constrain Stable.
+    select("0.0.9-nightly.20261011.7");
+    rejected_floor("0.0.4");
+    fs::remove_file(engine.paths.receipt()).unwrap();
+    rejected_floor("0.0.3");
+    for version in ["0.0.6-dev.1", "0.0.7-devops.1"] {
+        select(version);
+        rejected_floor(version);
+    }
+    // Invalid versions are not valid floors.
+    select("invalid");
+    rejected_floor("0.0.3");
+    // Linux discovery must never execute files to discover a version.
+    let marker = engine.paths.home.join("must-not-run");
+    let app = engine
+        .paths
+        .apps_override
+        .as_ref()
+        .unwrap()
+        .join("app.hexbot.client.AppImage");
+    executable(
+        &app,
+        format!("#!/bin/sh\ntouch '{}'\n", marker.display()).as_bytes(),
+    );
+    rejected_floor("0.0.3");
+    assert!(!marker.exists());
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn unreadable_appimage_metadata_cannot_disable_the_version_floor() {
+    let temp = tempfile::tempdir().unwrap();
+    fs::create_dir(temp.path().join("install")).unwrap();
+    let server = Server::new(temp.path());
+    let mut engine = engine(temp.path());
+    engine.base_url = server.base.clone();
+    let offered = version_manifest(temp.path(), &server.base, Target::LinuxX86_64, "0.0.1");
+    publish(temp.path(), "stable", &offered);
+    let invalid = temp.path().join("invalid");
+    fs::create_dir(&invalid).unwrap();
+    versioned_app_artifact(
+        &invalid,
+        &server.base,
+        InstallOption::Client,
+        Target::LinuxX86_64,
+        "invalid",
+    );
+    let apps = engine.paths.install_apps_dir(engine.target).unwrap();
+    fs::copy(
+        invalid.join("client.AppImage"),
+        apps.join("app.hexbot.client.AppImage"),
+    )
+    .unwrap();
+    assert_eq!(
+        engine
+            .apply(InstallOption::Client, Track::Stable, &mut |_| {})
+            .unwrap_err()
+            .to_string(),
+        format!(
+            "Could not read the app version from {}. Delete that file, then run the installer again. Your Hexbot data will be kept. Nothing was installed.",
+            apps.join("app.hexbot.client.AppImage").display()
+        )
+    );
+    assert!(!engine.paths.receipt().exists());
+    assert!(
+        server
+            .requests
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|p| p.starts_with("/install/"))
+    );
+}
+
+#[test]
+fn uninstalling_a_custom_data_directory_keeps_the_shared_lock_inode() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut engine = engine(temp.path());
+    let lock = engine.paths.installer_lock(engine.target);
+    // A data directory that contains the lock is never deleted.
+    engine.paths.hexbot_home = engine.paths.home.join(".local");
+    fs::create_dir_all(&engine.paths.hexbot_home).unwrap();
+    assert_eq!(
+        engine.uninstall(true, &mut |_| {}).unwrap_err().to_string(),
+        format!(
+            "{} also holds the installer lock. Delete the Hexbot data in it yourself.",
+            engine.paths.hexbot_home.display()
+        )
+    );
+    assert!(lock.exists());
+    // A sibling data directory is removed while the lock stays held.
+    engine.paths.hexbot_home = engine.paths.home.join(".local/share");
+    fs::create_dir_all(&engine.paths.hexbot_home).unwrap();
+    engine
+        .uninstall(true, &mut |event| {
+            if event.stage == "done" {
+                assert!(!engine.paths.hexbot_home.exists());
+                let contender = fs::OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .open(&lock)
+                    .unwrap();
+                assert_eq!(
+                    unsafe { libc::flock(contender.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) },
+                    -1
+                );
+            }
+        })
+        .unwrap();
+    let contender = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(lock)
+        .unwrap();
+    // Blocks, not polls: a child another test forks may hold a copy until it execs.
+    assert_eq!(
+        unsafe { libc::flock(contender.as_raw_fd(), libc::LOCK_EX) },
+        0
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn stranded_newer_macos_apps_protect_every_install_option() {
+    for original in [InstallOption::Full, InstallOption::Client] {
+        for with_receipt in [false, true] {
+            for requested in [
+                InstallOption::Full,
+                InstallOption::Client,
+                InstallOption::Headless,
+            ] {
+                let temp = tempfile::tempdir().unwrap();
+                fs::create_dir(temp.path().join("install")).unwrap();
+                let server = Server::new(temp.path());
+                let mut engine = engine(temp.path());
+                engine.target = Target::MacosAarch64;
+                engine.base_url = server.base.clone();
+                let offered = version_manifest(temp.path(), &server.base, engine.target, "0.0.2");
+                publish(temp.path(), "stable", &offered);
+                let apps = engine.paths.install_apps_dir(engine.target).unwrap();
+                let backup = apps.join(".tmpInterrupted/previous.app");
+                let id = if original == InstallOption::Full {
+                    "app.hexbot.desktop"
+                } else {
+                    "app.hexbot.client"
+                };
+                bundle(&backup, id);
+                let plist = backup.join("Contents/Info.plist");
+                fs::write(
+                    &plist,
+                    fs::read_to_string(&plist)
+                        .unwrap()
+                        .replace("0.0.1", "0.0.3"),
+                )
+                .unwrap();
+                if with_receipt {
+                    fs::create_dir_all(&engine.paths.hexbot_home).unwrap();
+                    fs::write(
+                        engine.paths.receipt(),
+                        serde_json::to_vec(&Receipt {
+                            option: original,
+                            channel: Track::Stable,
+                            version: "0.0.1".into(),
+                            paths: vec![],
+                            installed_at: String::new(),
+                        })
+                        .unwrap(),
+                    )
+                    .unwrap();
+                }
+                let result = if with_receipt && requested == original {
+                    engine.repair(&mut |_| {})
+                } else if requested != original {
+                    engine.change(
+                        original,
+                        requested,
+                        Track::Stable,
+                        &mut |_| true,
+                        &mut |_| {},
+                    )
+                } else {
+                    engine.apply(requested, Track::Stable, &mut |_| {})
+                };
+                assert_eq!(
+                    result.unwrap_err().to_string(),
+                    "The update server offers Hexbot 0.0.2, older than the installed 0.0.3. Nothing was installed."
+                );
+                assert!(fs::read_to_string(plist).unwrap().contains("0.0.3"));
+                assert!(engine.detect().unwrap().apps.is_empty());
+                let receipt = read_receipt(&engine.paths.receipt()).unwrap();
+                assert_eq!(
+                    receipt.as_ref().map(|r| r.version.as_str()),
+                    with_receipt.then_some("0.0.1")
+                );
+                assert!(
+                    server
+                        .requests
+                        .lock()
+                        .unwrap()
+                        .iter()
+                        .all(|path| path.starts_with("/install/"))
+                );
+            }
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn a_backup_stranded_during_download_is_rechecked_under_the_lock() {
+    let temp = tempfile::tempdir().unwrap();
+    fs::create_dir(temp.path().join("install")).unwrap();
+    let server = Server::new(temp.path());
+    let mut engine = engine(temp.path());
+    engine.target = Target::MacosAarch64;
+    engine.base_url = server.base.clone();
+    let offered = version_manifest(temp.path(), &server.base, engine.target, "0.0.2");
+    publish(temp.path(), "stable", &offered);
+    let apps = engine.paths.install_apps_dir(engine.target).unwrap();
+    let backup = apps.join(".tmpInterrupted/previous.app");
+    let mut stranded = false;
+    let result = engine.apply(InstallOption::Client, Track::Stable, &mut |event| {
+        if event.stage == "download" && !stranded {
+            stranded = true;
+            bundle(&backup, "app.hexbot.client");
+            let plist = backup.join("Contents/Info.plist");
+            fs::write(
+                &plist,
+                fs::read_to_string(&plist)
+                    .unwrap()
+                    .replace("0.0.1", "0.0.3"),
+            )
+            .unwrap();
+        }
+    });
+    assert!(stranded);
+    assert_eq!(
+        result.unwrap_err().to_string(),
+        "The update server offers Hexbot 0.0.2, older than the installed 0.0.3. Nothing was installed."
+    );
+    assert!(!engine.paths.receipt().exists());
+    assert_eq!(
+        engine.detect().unwrap().apps[0].version.as_deref(),
+        Some("0.0.3")
+    );
+}
+
+fn host_target() -> Target {
+    if cfg!(target_os = "macos") {
+        Target::MacosAarch64
+    } else {
+        Target::LinuxX86_64
+    }
+}
+
+fn stable_receipt(engine: &Installer, option: InstallOption, version: &str) {
+    fs::create_dir_all(&engine.paths.hexbot_home).unwrap();
+    fs::write(
+        engine.paths.receipt(),
+        serde_json::to_vec(&Receipt {
+            option,
+            channel: Track::Stable,
+            version: version.into(),
+            paths: vec![],
+            installed_at: String::new(),
+        })
+        .unwrap(),
+    )
+    .unwrap();
+}
+
+/// A native runtime package as `hexbot setup` and the updater leave it.
+fn native_package(engine: &Installer, name: &str, version: &str) -> std::path::PathBuf {
+    let directory = engine.paths.hexbot_home.join("runtime/native").join(name);
+    fs::create_dir_all(&directory).unwrap();
+    executable(&directory.join("hexbot"), b"#!/bin/sh\nexit 0\n");
+    fs::write(
+        directory.join("manifest.json"),
+        serde_json::json!({ "version": version }).to_string(),
+    )
+    .unwrap();
+    directory.join("hexbot").canonicalize().unwrap()
+}
+
+fn select_native(engine: &Installer, pointer: &Path, recorded: &Path, version: &str) {
+    let link = engine.paths.executable();
+    let _ = fs::remove_file(&link);
+    symlink(pointer, &link).unwrap();
+    fs::write(
+        engine.paths.hexbot_home.join("runtime/native-current.json"),
+        serde_json::json!({ "version": version, "executable": recorded }).to_string(),
+    )
+    .unwrap();
+}
+
+/// Activation writes the metadata and swaps the pointer in two steps, in
+/// either order depending on who activates. A crash in between keeps the floor.
+#[test]
+fn an_interrupted_native_activation_keeps_the_runtime_floor() {
+    for metadata_first in [true, false] {
+        let temp = tempfile::tempdir().unwrap();
+        fs::create_dir(temp.path().join("install")).unwrap();
+        let server = Server::new(temp.path());
+        let mut engine = engine(temp.path());
+        engine.base_url = server.base.clone();
+        let offered = version_manifest(temp.path(), &server.base, engine.target, "0.0.2");
+        publish(temp.path(), "stable", &offered);
+        stable_receipt(&engine, InstallOption::Headless, "0.0.1");
+        let selected = native_package(&engine, "0.0.3-a", "0.0.3");
+        let updated = native_package(&engine, "0.0.5-b", "0.0.5");
+        if metadata_first {
+            // The daemon and `hexbot setup`: metadata first, then the pointer.
+            select_native(&engine, &selected, &updated, "0.0.5");
+        } else {
+            // The desktop bootstrap: pointer first, then the metadata.
+            select_native(&engine, &updated, &selected, "0.0.3");
+        }
+        let refused = |installed: &str| {
+            assert_eq!(
+                engine
+                    .apply(InstallOption::Headless, Track::Stable, &mut |_| {})
+                    .unwrap_err()
+                    .to_string(),
+                format!(
+                    "The update server offers Hexbot 0.0.2, older than the installed {installed}. Nothing was installed."
+                )
+            );
+        };
+        refused("0.0.5");
+        if metadata_first {
+            // Metadata naming a package that is gone leaves the selected one.
+            fs::remove_dir_all(updated.parent().unwrap()).unwrap();
+            refused("0.0.3");
+        }
+        assert!(!engine.paths.home.join("staged-binary").exists());
+    }
+}
+
+/// The daemon's native updater selects runtimes under runtime/activate.lock.
+/// The installer rechecks under that lock and keeps it through `hexbot setup`.
+#[test]
+fn a_native_update_during_a_headless_install_is_rechecked_under_the_activation_lock() {
+    let temp = tempfile::tempdir().unwrap();
+    fs::create_dir(temp.path().join("install")).unwrap();
+    let server = Server::new(temp.path());
+    let mut engine = engine(temp.path());
+    // The fake daemon writes the host's service file.
+    engine.target = Target::detect().unwrap();
+    engine.base_url = server.base.clone();
+    publish(
+        temp.path(),
+        "stable",
+        &version_manifest(temp.path(), &server.base, engine.target, "0.0.2"),
+    );
+    stable_receipt(&engine, InstallOption::Headless, "0.0.1");
+    let runtime = engine.paths.hexbot_home.join("runtime");
+    fs::create_dir_all(&runtime).unwrap();
+    let lock = runtime.join("activate.lock");
+    let daemon = fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(&lock)
+        .unwrap();
+    assert_eq!(unsafe { libc::flock(daemon.as_raw_fd(), libc::LOCK_EX) }, 0);
+    let mut waited = false;
+    let result = engine.apply(InstallOption::Headless, Track::Stable, &mut |event| {
+        if event.stage == "wait" {
+            assert_eq!(
+                event.message,
+                "Waiting for another Hexbot setup or update to finish."
+            );
+            waited = true;
+            // The daemon selects 0.0.3, then releases the lock.
+            let updated = native_package(&engine, "0.0.3-a", "0.0.3");
+            select_native(&engine, &updated, &updated, "0.0.3");
+            assert_eq!(unsafe { libc::flock(daemon.as_raw_fd(), libc::LOCK_UN) }, 0);
+        }
+    });
+    assert!(waited);
+    assert_eq!(
+        result.unwrap_err().to_string(),
+        "The update server offers Hexbot 0.0.2, older than the installed 0.0.3. Nothing was installed."
+    );
+    assert!(!engine.paths.home.join("staged-binary").exists());
+    // A newer release activates while the installer holds the lock.
+    publish(
+        temp.path(),
+        "stable",
+        &version_manifest(temp.path(), &server.base, engine.target, "0.0.4"),
+    );
+    let mut observed = false;
+    engine
+        .apply(InstallOption::Headless, Track::Stable, &mut |event| {
+            if event.stage == "activate" {
+                let contender = fs::File::open(&lock).unwrap();
+                assert_eq!(
+                    unsafe { libc::flock(contender.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) },
+                    -1
+                );
+                observed = true;
+            }
+        })
+        .unwrap();
+    assert!(observed);
+    let free = fs::File::open(&lock).unwrap();
+    // Blocks, not polls: a child another test forks may hold a copy until it execs.
+    assert_eq!(unsafe { libc::flock(free.as_raw_fd(), libc::LOCK_EX) }, 0);
+}
+
+/// The app updater can move a Stable app to Nightly in Settings. Its version,
+/// not its app id, decides which track's floor it sets.
+#[test]
+fn an_app_moved_to_the_other_track_sets_only_that_track_floor() {
+    let temp = tempfile::tempdir().unwrap();
+    fs::create_dir(temp.path().join("install")).unwrap();
+    let server = Server::new(temp.path());
+    let mut engine = engine(temp.path());
+    engine.target = host_target();
+    engine.base_url = server.base.clone();
+    let stable =
+        |version: &str| version_manifest(temp.path(), &server.base, engine.target, version);
+    publish(temp.path(), "stable", &stable("0.0.1"));
+    engine
+        .apply(InstallOption::Client, Track::Stable, &mut |_| {})
+        .unwrap();
+    let nightly_version = "0.0.9-nightly.20261011.1";
+    let updated = temp.path().join("updated");
+    fs::create_dir(&updated).unwrap();
+    let package = versioned_app_artifact(
+        &updated,
+        &server.base,
+        InstallOption::Client,
+        engine.target,
+        nightly_version,
+    );
+    let installed = read_receipt(&engine.paths.receipt())
+        .unwrap()
+        .unwrap()
+        .paths[0]
+        .clone();
+    if engine.target.is_macos() {
+        fs::remove_dir_all(&installed).unwrap();
+        fs::rename(
+            updated.join(format!("{}.app", package.product_name.as_deref().unwrap())),
+            &installed,
+        )
+        .unwrap();
+    } else {
+        fs::copy(updated.join("client.AppImage"), &installed).unwrap();
+    }
+    // It sets the Nightly floor.
+    let nightly = Manifest {
+        schema: 1,
+        channel: Track::Nightly,
+        version: "0.0.8-nightly.20261010.1".into(),
+        min_installer: "0.0.1".into(),
+        targets: std::collections::BTreeMap::from([(
+            engine.target.to_string(),
+            Artifacts {
+                client: Some(app_artifact_for_track(
+                    temp.path(),
+                    &server.base,
+                    InstallOption::Client,
+                    engine.target,
+                    true,
+                )),
+                ..Default::default()
+            },
+        )]),
+    };
+    publish(temp.path(), "nightly", &nightly);
+    assert_eq!(
+        engine
+            .apply(InstallOption::Client, Track::Nightly, &mut |_| {})
+            .unwrap_err()
+            .to_string(),
+        format!(
+            "The update server offers Hexbot 0.0.8-nightly.20261010.1, older than the installed {nightly_version}. Nothing was installed."
+        )
+    );
+    // And does not block Update or repair on Stable.
+    publish(temp.path(), "stable", &stable("0.0.2"));
+    engine.repair(&mut |_| {}).unwrap();
+    assert_eq!(
+        read_receipt(&engine.paths.receipt())
+            .unwrap()
+            .unwrap()
+            .version,
+        "0.0.2"
+    );
+}
+
+#[test]
+fn a_second_installer_says_it_is_waiting_for_the_first() {
+    use std::sync::mpsc;
+    let temp = tempfile::tempdir().unwrap();
+    let engine = engine(temp.path());
+    let path = engine.paths.installer_lock(engine.target);
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let first = fs::File::create(&path).unwrap();
+    assert_eq!(unsafe { libc::flock(first.as_raw_fd(), libc::LOCK_EX) }, 0);
+    let (events, received) = mpsc::channel();
+    let second = std::thread::spawn(move || {
+        engine.uninstall(false, &mut |event| events.send(event).unwrap())
+    });
+    let event = received.recv().unwrap();
+    assert_eq!(
+        (event.stage.as_str(), event.message.as_str()),
+        ("wait", "Waiting for another Hexbot installer to finish.")
+    );
+    drop(first);
+    second.join().unwrap().unwrap();
+    assert_eq!(received.iter().last().unwrap().stage, "done");
+}
+
+/// A killed macOS install can strand the previous app in staging. Uninstall
+/// removes it, so it no longer sets the floor for a fresh install.
+#[cfg(target_os = "macos")]
+#[test]
+fn uninstall_removes_stranded_apps_so_a_fresh_install_proceeds() {
+    let temp = tempfile::tempdir().unwrap();
+    fs::create_dir(temp.path().join("install")).unwrap();
+    let server = Server::new(temp.path());
+    let mut engine = engine(temp.path());
+    engine.target = Target::MacosAarch64;
+    engine.base_url = server.base.clone();
+    publish(
+        temp.path(),
+        "stable",
+        &version_manifest(temp.path(), &server.base, engine.target, "0.0.2"),
+    );
+    let apps = engine.paths.install_apps_dir(engine.target).unwrap();
+    let backup = apps.join(".tmpInterrupted/previous.app");
+    bundle(&backup, "app.hexbot.client");
+    let plist = backup.join("Contents/Info.plist");
+    fs::write(
+        &plist,
+        fs::read_to_string(&plist)
+            .unwrap()
+            .replace("0.0.1", "0.0.3"),
+    )
+    .unwrap();
+    let unrelated = apps.join(".tmpOther/previous.app");
+    bundle(&unrelated, "com.example.other");
+    assert!(
+        engine
+            .apply(InstallOption::Client, Track::Stable, &mut |_| {})
+            .unwrap_err()
+            .to_string()
+            .contains("older than the installed 0.0.3")
+    );
+    engine.uninstall(false, &mut |_| {}).unwrap();
+    assert!(!apps.join(".tmpInterrupted").exists());
+    assert!(unrelated.exists());
+    engine
+        .apply(InstallOption::Client, Track::Stable, &mut |_| {})
+        .unwrap();
+    assert_eq!(
+        read_receipt(&engine.paths.receipt())
+            .unwrap()
+            .unwrap()
+            .version,
+        "0.0.2"
     );
 }

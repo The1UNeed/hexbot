@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { attachmentPrompt, encodeAnswer, imageMime } from './chat-send'
-import { avatarSrc } from './avatar'
+import { avatarSrc, botPhoto } from './avatar'
 
 describe('attachments and avatars', () => {
   it('gives attachment-only submissions a nonempty prompt', () => {
@@ -20,6 +20,13 @@ describe('attachments and avatars', () => {
     )
     expect(avatarSrc({ data: 'abc', mime: 'image/png' })).toBe('data:image/png;base64,abc')
     expect(avatarSrc(null)).toBeNull()
+  })
+  it('treats a picked face as no photo, so Use its face never deletes it', () => {
+    const png = { data: 'abc', mime: 'image/png' }
+    expect(botPhoto({ avatar: png, face: { color: 'mint', shape: 'blob' } })).toBeNull()
+    expect(botPhoto({ avatar: png, face: null })).toBe('data:image/png;base64,abc')
+    expect(botPhoto({ avatar: null })).toBeNull()
+    expect(botPhoto(undefined)).toBeNull()
   })
 })
 

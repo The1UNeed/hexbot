@@ -187,6 +187,7 @@ impl Runtime {
             .iter()
             .map(|(id, _, _, _)| id.clone())
             .collect::<Vec<_>>();
+        let chain = s.state.lock().unwrap().chain.clone();
         let source = s.clone();
         let workers = children
             .into_iter()
@@ -194,6 +195,7 @@ impl Runtime {
                 let runtime = runtime.clone();
                 let source = source.clone();
                 let options = options.clone();
+                let chain = chain.clone();
                 tokio::spawn(async move {
                     let schema = if task["output_schema"].is_object() {
                         format!(
@@ -210,8 +212,8 @@ impl Runtime {
                         schema
                     );
                     let mut result = tokio::select! {
-                        result = runtime.run_hidden_job(
-                            &source.owner, &source.bot, &id, &prompt, &options
+                        result = runtime.run_hidden_job_in_chain(
+                            &source.owner, &source.bot, &id, &prompt, &options, Some(chain.clone())
                         ) => result,
                         _ = async {
                             loop {
@@ -238,8 +240,8 @@ impl Runtime {
                                 errors.join("; ")
                             );
                             result = tokio::select! {
-                                result = runtime.run_hidden_job(
-                                    &source.owner, &source.bot, &id, &correction, &options
+                                result = runtime.run_hidden_job_in_chain(
+                                    &source.owner, &source.bot, &id, &correction, &options, Some(chain.clone())
                                 ) => result,
                                 _ = stop.changed() => Err(Error::new(5201, "subagent stopped")),
                             };
@@ -297,7 +299,13 @@ impl Runtime {
                 json!({"results":results})
             );
             runtime
-                .return_result(&source.owner, &source.bot, &source.stored, &text)
+                .return_result(
+                    &source.owner,
+                    &source.bot,
+                    &source.stored,
+                    &text,
+                    Some(chain),
+                )
                 .await;
         });
         Ok(json!({
