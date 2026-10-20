@@ -54,7 +54,7 @@ import { activityLabel, readableResult, resultLine, toolLabel } from './src/core
 import { Management, type Panel } from './src/Management'
 import { useMobile } from './src/core/useMobile'
 import { clearTapped, useTappedSection } from './src/core/tapped'
-import { chatPreview, shownRoom } from './src/core/routes'
+import { chatPreview, purposeOf, shownRoom } from './src/core/routes'
 import { CONNECT_ORIGIN, parseConnectCallback } from './src/core/links'
 import { clearConnectSession, loadConnectSession, saveConnectSession } from './src/core/storage'
 import { connectGrant, request, RevokedError } from './src/core/transport'
@@ -437,7 +437,9 @@ function MobileApp() {
       preview: chatPreview(b.name, mobile.sections, b.sections_recent),
       activity: b.status_detail?.text,
       status:
-        b.status === 'idle' && b.sections_recent?.some(s => s.done_at && !s.archived_at && !s.purpose)
+        b.status === 'idle' && b.sections_recent?.some(
+          s => s.done_at && !s.archived_at && !purposeOf(s, mobile.sections)
+        )
           ? ('done' as const)
           : b.status,
       updatedAt: ms(b.last_activity_at)

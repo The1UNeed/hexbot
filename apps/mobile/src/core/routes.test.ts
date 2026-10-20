@@ -5,6 +5,7 @@ import {
   botChat,
   chatPreview,
   isOpenRoom,
+  purposeOf,
   rebind,
   shownRoom,
   type ChatRoute
@@ -78,6 +79,13 @@ describe("a bot's chat", () => {
     expect(await botChat(status, 'ada', false, new Map())).toEqual({
       section: { ...said('chat', { updated_at: 2 }), archived_at: null }
     })
+  })
+  it('previews the chat, not Check-ins, when only the list names its purpose', () => {
+    const chat = said('chat', { preview: 'Chat news' })
+    const checkins = said('checkins', { preview: 'Due tonight' })
+    const listed = [chat, { ...checkins, purpose: 'checkins' } as Section]
+    expect(chatPreview('ada', listed, [checkins, chat])).toBe('Chat news')
+    expect(purposeOf(checkins, listed)).toBe('checkins')
   })
   it('is asked for on an older daemon rather than guess which section is its Dreams log', async () => {
     // A real conversation, and a newer log the user renamed: the list cannot tell them apart.

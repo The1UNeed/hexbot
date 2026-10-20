@@ -1,6 +1,12 @@
 import type { Bot, Room, Rpc, Section } from './types'
 export type ChatRoute =
   { kind: 'section'; section: Section; bot: Bot } | { kind: 'room'; room: Room }
+/**
+ * A section's purpose. A bot's recent sections never carry one from a daemon
+ * from before one chat; the listed copy, marked by `listSections`, does.
+ */
+export const purposeOf = (s: Section, sections: Section[]) =>
+  s.purpose ?? sections.find(listed => listed.id === s.id)?.purpose
 /** The bot's chat with its owner: not a teammate thread or a section with its own purpose. */
 export const ownerChat = (s: Section) => !s.peer_bot && !s.purpose
 /**
@@ -118,7 +124,7 @@ export function rebind(
 export function chatPreview(bot: string, sections: Section[], recent: Section[] = []): string | null {
   const chats = new Map(
     [...recent, ...sections]
-      .filter(s => s.bot === bot && !s.peer_bot && !s.purpose)
+      .filter(s => s.bot === bot && !s.peer_bot && !purposeOf(s, sections))
       .map(s => [s.id, s])
   )
   return chats.size === 1 ? [...chats.values()][0]!.preview || null : null
