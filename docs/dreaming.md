@@ -41,9 +41,12 @@ The native scheduler and digest builder live in
   retry. An adopted source must still have its exact copied history version.
   This check does not lock live chats or refresh the digest with unchecked rows.
   It covers changes since readiness, including healthy late appends with an
-  earlier streamed timestamp. It does not close the inherited interval after
-  a conversation's final check through successful completion. An in-window
-  append in that later interval can still be passed by the cutoff. Compaction
+  earlier streamed timestamp. After the model answers, the dream builds its
+  digest again for the same window. If that differs, or can no longer be
+  built, the dream fails instead of completing, so input that reached the
+  window while it ran, such as a reply still streaming when it started, is
+  read by the next dream rather than passed by the cutoff. Memory changes
+  the model already made stay. Compaction
   files and the catalog are separate reads, not a shared database/file snapshot.
   It retains the newest 12,000 characters per conversation,
   caps the complete serialized digest at 60,000 bytes, and reports how many

@@ -53,8 +53,8 @@ more freedom and more capability than a hosted product can offer.
 - A bot has one chat with you; it is never archived or deleted on its own.
   Deleting the bot deletes the chat with its memory and notes; a copy of its
   memory is kept in `runtime/deleted-bots/` in the daemon's data directory.
-  An older app can still delete just the chat: the bot keeps its memory and
-  notes, and its next chat starts empty.
+  An older app's request to delete just the chat is refused; its history
+  stays intact. Only deleting the bot removes its chat.
 - Dreaming: every bot, daily at a configurable time (default 03:00), reads
   conversations from the start of its last successful dream up to, but
   excluding, its own start and folds what matters into its memory using its
@@ -97,6 +97,26 @@ more freedom and more capability than a hosted product can offer.
   demand. Both bots dream over these conversations like any other.
 - The activity view shows bot pairs with message counts, later a network
   graph, with click-through to the conversation.
+
+### The primary bot
+
+- Every daemon has at most one primary bot. Onboarding creates it as
+  HexBot (handle `hexbot`) on the default model with every tool on, and
+  opens its chat, where it introduces itself. An install from
+  before it adds HexBot or makes one existing bot primary, once; the role
+  never moves after that, and the primary bot cannot be deleted.
+- In its own chat, and nowhere else (not rooms, threads between bots,
+  scheduled jobs, or delegates), it gets four more tools: `hexbot_bots`,
+  `hexbot_rooms`, `hexbot_jobs`, and `hexbot_settings`. Each calls the daemon
+  method the app uses, as the owner, so the same checks and change events
+  apply. Deleting a bot, room, or job, setting a bot's or room's approval
+  mode or a bot's or job's working folder, and every settings change ask the user,
+  even in Bypass.
+  Network, service, and billing settings and every credential stay with
+  the user.
+- Its tools and guidance are frozen with its chat like any other change of
+  tools, so a bot made primary takes them with its next message, which
+  misses the prompt cache once.
 
 ### Approvals and tools
 

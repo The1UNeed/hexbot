@@ -50,6 +50,96 @@ impl ProviderRequest {
             .unwrap();
     }
 }
+// Only the two launchers used by the real-Pi suites are supported. Resolve the
+// lexical launcher before following npm's .bin symlink, and never borrow modules
+// from another installation when the selected runtime is incomplete.
+fn instrumented_pi_modules(executable: &Path) -> Result<(PathBuf, bool), String> {
+    let parent = executable.parent().ok_or("Pi launcher has no parent")?;
+    let staged = executable.ends_with("pi/hexbot-pi");
+    let modules = if staged {
+        parent.join("node_modules/@earendil-works")
+    } else if executable.ends_with("node_modules/.bin/pi") {
+        parent.parent().unwrap().join("@earendil-works")
+    } else {
+        return Err(format!("unsupported Pi launcher: {}", executable.display()));
+    };
+    let mut required = vec![
+        executable.to_path_buf(),
+        modules.join("pi-coding-agent/dist/core/agent-session.js"),
+        modules.join("pi-agent-core/dist/agent.js"),
+        modules.join("pi-coding-agent/dist/cli.js"),
+    ];
+    if staged {
+        required.push(parent.parent().unwrap().join("node"));
+        required.push(parent.join("search-tools.mjs"));
+    }
+    for file in required {
+        if !file.is_file() {
+            return Err(format!(
+                "selected Pi installation is missing {}",
+                file.display()
+            ));
+        }
+    }
+    Ok((
+        fs::canonicalize(modules).map_err(|error| error.to_string())?,
+        staged,
+    ))
+}
+
+#[test]
+fn instrumented_pi_layout_selection_stays_with_the_selected_runtime() {
+    let root = tempfile::tempdir().unwrap();
+    let repo = root.path().join("repository/node_modules");
+    let bundle = root.path().join("bundle");
+    for (launcher, modules, staged) in [
+        (repo.join(".bin/pi"), repo.join("@earendil-works"), false),
+        (
+            bundle.join("pi/hexbot-pi"),
+            bundle.join("pi/node_modules/@earendil-works"),
+            true,
+        ),
+    ] {
+        let cli = modules.join("pi-coding-agent/dist/cli.js");
+        let mut files = vec![
+            launcher.clone(),
+            cli.clone(),
+            modules.join("pi-coding-agent/dist/core/agent-session.js"),
+            modules.join("pi-agent-core/dist/agent.js"),
+        ];
+        if staged {
+            files.extend([bundle.join("node"), bundle.join("pi/search-tools.mjs")]);
+        }
+        for file in files {
+            fs::create_dir_all(file.parent().unwrap()).unwrap();
+            fs::write(file, "fixture").unwrap();
+        }
+        assert_eq!(
+            instrumented_pi_modules(&launcher).unwrap(),
+            (fs::canonicalize(&modules).unwrap(), staged)
+        );
+        if staged {
+            // A complete installation at the old, wrong location is no fallback.
+            fs::create_dir_all(bundle.join("@earendil-works")).unwrap();
+            for package in ["pi-coding-agent", "pi-agent-core"] {
+                fs::rename(
+                    modules.join(package),
+                    bundle.join("@earendil-works").join(package),
+                )
+                .unwrap();
+            }
+        } else {
+            fs::remove_file(&cli).unwrap();
+        }
+        assert!(
+            instrumented_pi_modules(&launcher)
+                .unwrap_err()
+                .contains(&modules.display().to_string())
+        );
+    }
+    assert!(instrumented_pi_modules(&bundle.join("other-pi")).is_err());
+}
+
 impl PiFixture {
     async fn new(instrument: &str) -> Self {
         let home = setup();
@@ -109,18 +199,16 @@ impl PiFixture {
         if !instrument.is_empty() && instrument != "nested" {
             // Only the owned launcher is instrumented. All dependency files and
             // the private extension remain unchanged. Holds await HTTP barriers.
-            let modules = executable
-                .parent()
-                .unwrap()
-                .parent()
-                .unwrap()
-                .join("@earendil-works");
+            let (modules, staged) = instrumented_pi_modules(&executable).unwrap();
             let session = modules.join("pi-coding-agent/dist/core/agent-session.js");
             let agent = modules.join("pi-agent-core/dist/agent.js");
             let cli = modules.join("pi-coding-agent/dist/cli.js");
             let wrapper = home.path().join("identity-pi.mjs");
             let source = format!(
                 r#"#!/usr/bin/env node
+import {{realpathSync}} from 'node:fs';
+// The staged launcher also runs search-tools.mjs. Instrument only its Pi CLI.
+if (!{staged} || realpathSync(process.argv[1]) === {cli}) {{
 const {{AgentSession}} = await import({session});
 const {{Agent}} = await import({agent});
 const mode = {mode};
@@ -159,20 +247,35 @@ if (mode === 'transform') {{
   const prompt = AgentSession.prototype.prompt;
   AgentSession.prototype.prompt = async function(text,...args) {{ const result = await prompt.call(this,text,...args); if(text === '/handled-fixture') this._emit({{type:'extension_ui_request',method:'notify',message:'identity handled boundary'}}); return result; }};
 }}
-await import({cli});
+if (!{staged}) await import({cli});
+}}
 "#,
                 session = json!(session.to_string_lossy()),
                 agent = json!(agent.to_string_lossy()),
                 cli = json!(cli.to_string_lossy()),
-                mode = json!(instrument)
+                mode = json!(instrument),
+                staged = staged,
             );
             fs::write(&wrapper, source).unwrap();
+            executable = if staged {
+                // Keep the packaged Node and search-tool setup in the selected
+                // launcher. The preload changes only this owned test process.
+                let launcher = home.path().join("identity-pi");
+                let quote = |text: &str| format!("'{}'", text.replace('\'', "'\"'\"'"));
+                let preload = format!("--import={}", json!(wrapper.to_string_lossy()));
+                fs::write(&launcher, format!(
+                    "#!/bin/sh\nset -eu\nexport NODE_OPTIONS=\"${{NODE_OPTIONS:+$NODE_OPTIONS }}\"{}\nexec {} \"$@\"\n",
+                    quote(&preload), quote(&executable.to_string_lossy())
+                )).unwrap();
+                launcher
+            } else {
+                wrapper
+            };
             #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt;
-                fs::set_permissions(&wrapper, fs::Permissions::from_mode(0o755)).unwrap();
+                fs::set_permissions(&executable, fs::Permissions::from_mode(0o755)).unwrap();
             }
-            executable = wrapper;
         }
         if instrument == "nested" {
             let script =
@@ -864,15 +967,385 @@ async fn transcript_identity_compact_and_eof_do_not_invent_durable_fragments() {
             );
         } else {
             assert!(end["payload"].get("turn_id").is_none());
-            assert!(
-                runtime_store::history(home.path(), "section-a")
-                    .unwrap()
-                    .iter()
-                    .all(|row| row.get("input_id").is_none())
+            // Only the control row the daemon stored for this request carries
+            // its key. The summary notice is no assistant fragment.
+            let rows = runtime_store::history(home.path(), "section-a").unwrap();
+            assert_eq!(
+                rows.iter()
+                    .map(|row| (row["role"].clone(), row.get("input_id").cloned()))
+                    .collect::<Vec<_>>(),
+                [
+                    (json!("user"), Some(json!(INPUT))),
+                    (json!("assistant"), None)
+                ]
             );
+            assert!(rows.iter().all(|row| row.get("turn_id").is_none()));
         }
         runtime.shutdown().await;
     }
+}
+
+async fn submit_compact(
+    runtime: &Runtime,
+    live: &Value,
+    text: &str,
+    input_id: Option<Value>,
+    upload: &Value,
+) -> hexbot_core::Result<Value> {
+    let mut params = json!({"session_id":live,"text":text,"attachments":[upload]});
+    if let Some(id) = input_id {
+        params["input_id"] = id;
+    }
+    runtime
+        .call("alice", "prompt.submit", &params)
+        .await
+        .unwrap()
+}
+
+/// Manual `/compact` is the daemon's own command, not a Pi user. The caller's
+/// key is reserved before Pi compacts and kept on the one control row stored
+/// for that request, so a client can adopt it without guessing.
+#[tokio::test]
+async fn transcript_identity_manual_compact_binds_only_its_stored_control_row() {
+    let home = setup();
+    let path = identity_pi(home.path());
+    let log = home.path().join("pi-commands.log");
+    let source = fs::read_to_string(&path).unwrap();
+    let script = source.replace(
+        "rl.on('line',line=>{const c=JSON.parse(line);",
+        &format!(
+            "rl.on('line',line=>{{const c=JSON.parse(line);require('node:fs').appendFileSync({},c.type+'\\n');if(c.type==='compact'&&c.customInstructions==='fail'){{emit({{type:'response',id:c.id,command:c.type,success:false,error:'Summarising failed'}});return;}}",
+            json!(log.to_string_lossy())
+        ),
+    );
+    assert_ne!(script, source);
+    fs::write(&path, script).unwrap();
+    let compactions = || {
+        fs::read_to_string(&log)
+            .unwrap_or_default()
+            .lines()
+            .filter(|line| *line == "compact")
+            .count()
+    };
+    let reserved = |id: &str| {
+        use rusqlite::OptionalExtension;
+        runtime_store::open(home.path())
+            .unwrap()
+            .query_row(
+                "SELECT session_id,consumed_by FROM native_prompt_intents WHERE id=?",
+                [id],
+                |r| Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?)),
+            )
+            .optional()
+            .unwrap()
+    };
+    let runtime = Runtime::new(home.path().into(), EventHub::new(), path).unwrap();
+    let live = open(&runtime, "alice").await["section"]["live_session_id"].clone();
+    let upload = runtime.call("alice","file.attach",&json!({"session_id":live,"name":"kept.txt","data_url":"data:text/plain;base64,a2VwdA=="})).await.unwrap().unwrap()["id"].clone();
+    // A key another conversation already reserved cannot be taken over.
+    runtime_store::open(home.path()).unwrap().execute("INSERT INTO native_prompt_intents(id,session_id,text,display_kind,created_at) VALUES (?,'other-session','/compact','normal',0)",[THIRD]).unwrap();
+    for id in [
+        json!("invalid"),
+        json!(17),
+        json!("00000000-0000-0000-0000-000000000000"),
+        json!(INPUT.to_uppercase()),
+        json!(format!("{{{INPUT}}}")),
+        json!(INPUT.replace('-', "")),
+        json!(THIRD),
+    ] {
+        let error = submit_compact(&runtime, &live, "/compact", Some(id), &upload)
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, 4202);
+    }
+    assert_eq!(compactions(), 0);
+    assert!(
+        runtime_store::history(home.path(), "section-a")
+            .unwrap()
+            .is_empty()
+    );
+
+    // A failed compaction stores nothing and leaves the key free.
+    let failed = submit_compact(
+        &runtime,
+        &live,
+        "/compact fail",
+        Some(json!(SECOND)),
+        &upload,
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(failed.code, 5201);
+    assert_eq!(compactions(), 1);
+    assert!(
+        runtime_store::history(home.path(), "section-a")
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(reserved(SECOND), None);
+
+    let accepted = submit_compact(&runtime, &live, "/compact", Some(json!(INPUT)), &upload)
+        .await
+        .unwrap();
+    assert_eq!(accepted, json!({"status":"completed","input_id":INPUT}));
+    assert_eq!(compactions(), 2);
+    let rows = runtime_store::history(home.path(), "section-a").unwrap();
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0]["role"], "user");
+    assert_eq!(rows[0]["text"], "/compact");
+    assert_eq!(rows[0]["input_id"], INPUT);
+    assert_eq!(rows[1]["text"], "Older messages summarised.");
+    assert!(rows[1].get("input_id").is_none());
+    assert!(rows.iter().all(|row| row.get("turn_id").is_none()));
+    // The reservation names the row it was kept on, and nothing else can take it.
+    assert_eq!(
+        reserved(INPUT),
+        Some((
+            "section-a".into(),
+            rows[0]["row_id"].as_str().map(str::to_owned)
+        ))
+    );
+    for text in ["/compact", "same"] {
+        let error = submit_compact(&runtime, &live, text, Some(json!(INPUT)), &upload)
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, 4202);
+    }
+    assert_eq!(compactions(), 2);
+    assert_eq!(
+        runtime_store::history(home.path(), "section-a").unwrap(),
+        rows
+    );
+
+    // Callers that omit the key keep the original response and row shape.
+    let legacy = submit_compact(&runtime, &live, "/compact", None, &upload)
+        .await
+        .unwrap();
+    assert_eq!(legacy, json!({"status":"completed"}));
+    let rows = runtime_store::history(home.path(), "section-a").unwrap();
+    assert_eq!(rows.len(), 4);
+    assert!(rows[2].get("input_id").is_none());
+    // Compaction never sent or consumed the selected upload.
+    runtime
+        .call(
+            "alice",
+            "prompt.submit",
+            &json!({"session_id":live,"text":"healthy","attachments":[upload]}),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    runtime.shutdown().await;
+}
+
+#[tokio::test]
+async fn transcript_identity_recovery_keeps_manual_control_and_raw_only_user_separate() {
+    for content in [
+        json!("/compact"),
+        json!([{"type":"text","text":"/compact"}]),
+    ] {
+        let home = setup();
+        let path = identity_pi(home.path());
+        let runtime = Runtime::new(home.path().into(), EventHub::new(), path.clone()).unwrap();
+        let live = open(&runtime, "alice").await["section"]["live_session_id"].clone();
+        assert_eq!(
+            runtime
+                .call(
+                    "alice",
+                    "prompt.submit",
+                    &json!({"session_id":live,"text":"/compact","input_id":INPUT})
+                )
+                .await
+                .unwrap()
+                .unwrap(),
+            json!({"status":"completed","input_id":INPUT})
+        );
+        let before = runtime_store::history(home.path(), "section-a").unwrap();
+        let control = before[0].clone();
+        assert_eq!(control["input_id"], INPUT);
+        runtime.shutdown().await;
+
+        // Model a durable, distinct Pi user whose event never reached the
+        // daemon. Its equal text and nearby time prove no input ownership.
+        let at = control["timestamp"].as_f64().unwrap() + 0.001;
+        let raw = json!({"role":"user","content":content,"timestamp":at*1000.0});
+        let entries = [
+            json!({"type":"session","version":3}),
+            json!({"type":"compaction","id":"compact-entry","parentId":null,"firstKeptEntryId":"compact-entry","summary":"earlier context"}),
+            json!({"type":"message","id":"distinct-user","parentId":"compact-entry","message":raw}),
+        ];
+        let raw_path = runtime_store::session_dir(home.path(), "section-a")
+            .unwrap()
+            .join("conversation.jsonl");
+        let bytes = entries
+            .iter()
+            .map(|entry| entry.to_string() + "\n")
+            .collect::<String>();
+        fs::write(&raw_path, &bytes).unwrap();
+        let mut recovered = None;
+        for _ in 0..2 {
+            runtime_store::reconcile(home.path(), "owl", "section-a", "alice").unwrap();
+            let rows = runtime_store::history(home.path(), "section-a").unwrap();
+            assert_eq!(rows.len(), before.len() + 1);
+            assert!(rows.contains(&control));
+            let user = rows
+                .iter()
+                .find(|row| row["row_id"] == "pi-distinct-user")
+                .unwrap();
+            assert_eq!(user["role"], "user");
+            assert_eq!(user["text"], "/compact");
+            assert!(user.get("input_id").is_none());
+            assert!(user.get("turn_id").is_none());
+            if let Some(first) = &recovered {
+                assert_eq!(&rows, first);
+            }
+            let conn = runtime_store::open(home.path()).unwrap();
+            let bound_row: String = conn.query_row(
+                "SELECT consumed_by FROM native_prompt_intents WHERE id=? AND session_id='section-a'",
+                [INPUT], |r| r.get(0),
+            ).unwrap();
+            assert_eq!(bound_row, control["row_id"].as_str().unwrap());
+            let linked: String = conn.query_row(
+                "SELECT m.message_json FROM native_pi_journal p JOIN native_messages m ON m.session_id=p.session_id AND m.seq=p.projection_seq WHERE p.session_id='section-a' AND p.entry_id='distinct-user'",
+                [], |r| r.get(0),
+            ).unwrap();
+            assert_eq!(serde_json::from_str::<Value>(&linked).unwrap(), *user);
+            assert_eq!(
+                conn.query_row(
+                    "SELECT COUNT(*) FROM native_pi_journal WHERE session_id='section-a'",
+                    [],
+                    |r| r.get::<_, i64>(0)
+                )
+                .unwrap(),
+                1
+            );
+            assert_eq!(fs::read_to_string(&raw_path).unwrap(), bytes);
+            recovered = Some(rows);
+        }
+        let restarted = Runtime::new(home.path().into(), EventHub::new(), path).unwrap();
+        assert_eq!(
+            open(&restarted, "alice").await["messages"],
+            json!(recovered.unwrap())
+        );
+        restarted.shutdown().await;
+    }
+}
+
+/// Actual Pi summarises through the local provider. Only the daemon's control
+/// row carries the key; Pi's log, the provider request, the journal and the
+/// frozen session never see it, and the row survives a restart unchanged.
+#[tokio::test]
+#[ignore = "requires HEXBOT_TEST_PI to the pinned Pi executable"]
+async fn actual_pi_manual_compact_keeps_its_input_id_on_the_control_row_only() {
+    let mut f = PiFixture::new("").await;
+    let earlier = "an earlier turn for Pi to summarize".to_owned();
+    let long = format!("a long turn Pi keeps {}", "long context ".repeat(12000));
+    for (id, text) in [(SECOND, earlier), (THIRD, long)] {
+        let ack = tokio::time::timeout(
+            LIMIT,
+            f.runtime.call(
+                "alice",
+                "prompt.submit",
+                &json!({"session_id":f.live,"text":text,"input_id":id}),
+            ),
+        )
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+        assert_eq!(ack["input_id"], id);
+        receive(&mut f.requests).await.answer("noted");
+        f.until_event(|event| {
+            event["type"] == "status.update" && event["payload"]["kind"] == "idle"
+        })
+        .await;
+    }
+    let compact = {
+        let (runtime, live) = (f.runtime.clone(), f.live.clone());
+        tokio::spawn(async move {
+            runtime
+                .call(
+                    "alice",
+                    "prompt.submit",
+                    &json!({"session_id":live,"text":"/compact","input_id":INPUT}),
+                )
+                .await
+                .unwrap()
+        })
+    };
+    let summary = receive(&mut f.requests).await;
+    assert!(
+        summary
+            .body
+            .to_string()
+            .contains("an earlier turn for Pi to summarize")
+    );
+    assert!(!summary.body.to_string().contains(INPUT));
+    summary.answer("Summary of the earlier turn");
+    let result = tokio::time::timeout(LIMIT, compact)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert_eq!(result, json!({"status":"completed","input_id":INPUT}));
+    let rows = f.rows();
+    let users = rows
+        .iter()
+        .filter(|row| row["role"] == "user")
+        .collect::<Vec<_>>();
+    assert_eq!(users.len(), 3);
+    assert_eq!(users[0]["input_id"], SECOND);
+    assert_eq!(users[1]["input_id"], THIRD);
+    assert_eq!(users[2]["text"], "/compact");
+    assert_eq!(users[2]["input_id"], INPUT);
+    let control = users[2].clone();
+    let notice = rows.last().unwrap();
+    assert_eq!(notice["text"], "Older messages summarised.");
+    assert!(notice.get("input_id").is_none() && notice.get("turn_id").is_none());
+    let dir = runtime_store::session_dir(f.home.path(), "section-a").unwrap();
+    let raw = fs::read_to_string(dir.join("conversation.jsonl")).unwrap();
+    assert!(raw.contains("\"type\":\"compaction\""));
+    assert!(!raw.contains(INPUT));
+    let native = runtime_store::open(f.home.path()).unwrap();
+    let leaked: i64 = native
+        .query_row(
+            "SELECT (SELECT count(*) FROM native_pi_journal WHERE session_id='section-a' AND instr(raw_json,?1)>0)
+                  + (SELECT count(*) FROM native_sessions WHERE stored_id='section-a' AND (instr(prompt,?1)>0 OR instr(options,?1)>0))",
+            [INPUT],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(leaked, 0);
+    let usage = runtime_store::usage(f.home.path(), "section-a").unwrap();
+    assert!(!usage.to_string().contains(INPUT));
+    // A restart reconciles Pi's log and keeps the control row as stored.
+    let home = f.home.path().to_path_buf();
+    f.runtime.shutdown().await;
+    let runtime = Runtime::new(
+        home.clone(),
+        EventHub::new(),
+        PathBuf::from(std::env::var_os("HEXBOT_TEST_PI").unwrap()),
+    )
+    .unwrap();
+    let reopened = open(&runtime, "alice").await;
+    let live = reopened["section"]["live_session_id"].clone();
+    let history = runtime
+        .call("alice", "session.history", &json!({"session_id":live}))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        history["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|row| row["input_id"] == INPUT)
+            .cloned()
+            .collect::<Vec<_>>(),
+        [control]
+    );
+    runtime.shutdown().await;
+    f.server.abort();
 }
 
 #[tokio::test]
@@ -1525,4 +1998,29 @@ async fn retained_uploads_survive_refresh_and_obey_quota_and_explicit_cleanup() 
         }
         runtime.shutdown().await;
     }
+}
+
+#[tokio::test]
+async fn a_bot_lost_before_acknowledging_input_leaves_its_acceptance_unknown() {
+    let home = setup();
+    let executable = identity_pi(home.path());
+    let source = fs::read_to_string(&executable).unwrap().replace(
+        "const c=JSON.parse(line);",
+        "const c=JSON.parse(line);if(c.type==='prompt'&&c.message==='vanish'){process.exit(1);}",
+    );
+    fs::write(&executable, source).unwrap();
+    let runtime = Runtime::new(home.path().into(), EventHub::new(), executable).unwrap();
+    let live = open(&runtime, "alice").await["section"]["live_session_id"].clone();
+    let error = runtime
+        .call(
+            "alice",
+            "prompt.submit",
+            &json!({"session_id":live,"text":"vanish","input_id":INPUT}),
+        )
+        .await
+        .unwrap()
+        .unwrap_err();
+    // Pi may have taken the message before it stopped: 5201 would say it refused.
+    assert_eq!(error.code, 5200, "{}", error.message);
+    runtime.shutdown().await;
 }

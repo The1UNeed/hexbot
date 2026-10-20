@@ -5,6 +5,10 @@ const config: ExpoConfig = {
   backgroundColor: '#ffffff',
   name: 'Hexbot',
   slug: 'hexbot-mobile',
+  owner: 'the1uneed',
+  extra: {
+    eas: { projectId: '3d292b3c-aaff-4a09-927a-9d143e90c7c7' }
+  },
   version: '0.1.0',
   scheme: 'hexbot',
   orientation: 'portrait',

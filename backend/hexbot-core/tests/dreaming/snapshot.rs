@@ -19,6 +19,17 @@ pub(super) fn after_readiness(home: &Path, stored: &str) {
         }
     }
 }
+/// Runs after the dream's model has answered, before it may move the cutoff.
+fn cutoff_hooks() -> &'static Mutex<HashMap<PathBuf, Hook>> {
+    static HOOKS: OnceLock<Mutex<HashMap<PathBuf, Hook>>> = OnceLock::new();
+    HOOKS.get_or_init(Mutex::default)
+}
+pub(super) fn before_cutoff(home: &Path) {
+    let hook = cutoff_hooks().lock().unwrap().remove(home);
+    if let Some(hook) = hook {
+        hook();
+    }
+}
 fn setup() -> common::TestHome {
     let home = common::TestHome::new();
     db::migrate(home.path()).unwrap();
@@ -270,6 +281,62 @@ fn snapshot_defers_legacy_selection_when_native_input_commits_after_readiness() 
     assert!(runtime_store::fresh(h, "chat").unwrap());
     assert_eq!(runtime_store::history(h, "chat").unwrap().len(), 1);
     assert!(!log_path(h).exists());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn input_reaching_the_window_while_dreaming_keeps_the_cutoff() {
+    let home = setup();
+    let h = home.path();
+    runtime_store::mark_fresh(h, "chat").unwrap();
+    fs::create_dir_all(log_path(h).parent().unwrap()).unwrap();
+    fs::write(
+        log_path(h),
+        format!("{}\n", json!({"type":"session","version":3,"id":"chat"})),
+    )
+    .unwrap();
+    let user = json!({"role":"user","content":"durable speech","timestamp":100000});
+    runtime_store::project_seeded(h, "chat", "alice", "owl", &user, None, None).unwrap();
+    append_raw(h, &user);
+    db::open(h).unwrap().execute_batch("INSERT INTO dreams(id,bot,started_at,status,summary) VALUES('previous','owl',1,'complete','previous report');").unwrap();
+    // A reply dated before the dream started lands only after its digest.
+    let owned = h.to_path_buf();
+    cutoff_hooks().lock().unwrap().insert(
+        owned.clone(),
+        Box::new(move || {
+            let message = raw_message(200.);
+            runtime_store::project_seeded(&owned, "chat", "alice", "owl", &message, None, None)
+                .unwrap();
+            append_raw(&owned, &message);
+        }),
+    );
+    let hub = EventHub::new();
+    let mut receiver = hub.subscribe();
+    let runtime = Runtime::new(h.into(), hub.clone(), fake_pi(h, false)).unwrap();
+    let dreams = Dreaming::new(h.into(), runtime.clone(), hub);
+    let run = async |receiver: &mut tokio::sync::broadcast::Receiver<Event>| {
+        dreams
+            .call("alice", "hexbot.dreaming.run_now", &json!({"bot":"owl"}))
+            .await
+            .unwrap()
+            .unwrap();
+        event(receiver, "hexbot.dreaming.changed").await["dream"].clone()
+    };
+    let first = run(&mut receiver).await;
+    assert_eq!(first["status"], "failed", "{first}");
+    assert_eq!(last_successful_start(h, "owl", None).unwrap(), 1.);
+    let prompts = fs::read_to_string(h.join("prompts.log")).unwrap();
+    assert!(!prompts.contains("assistant: snapshot speech"));
+    // The next dream reads the same window again, with that reply.
+    let second = run(&mut receiver).await;
+    assert_eq!(second["status"], "complete", "{second}");
+    assert_eq!(
+        last_successful_start(h, "owl", None).unwrap(),
+        second["started_at"].as_f64().unwrap()
+    );
+    let prompts = fs::read_to_string(h.join("prompts.log")).unwrap();
+    assert!(prompts.contains("assistant: snapshot speech"));
+    dreams.shutdown().await;
+    runtime.shutdown().await;
 }
 
 #[path = "snapshot_retry.rs"]

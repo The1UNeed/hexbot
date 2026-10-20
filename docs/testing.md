@@ -114,6 +114,18 @@ Room regressions cover simultaneous turns, reconnect cleanup, failure and limit
 notices, and former members' names. File tests cover size checks before reads.
 `pnpm --filter @hexbot/mobile run export` bundles iOS, Android and web.
 
+With an Expo CLI login, validate the TestFlight workflow files from
+`apps/mobile` without starting a build or uploading to Apple:
+
+```sh
+pnpm dlx eas-cli@25.2.0 workflow:validate .eas/workflows/testflight.yml --non-interactive
+pnpm dlx eas-cli@25.2.0 workflow:validate .eas/workflows/testflight-upload.yml --non-interactive
+```
+
+The build workflow runs the mobile checks before compiling iOS. Release
+commands and account setup are in `apps/mobile/README.md`. An actual
+TestFlight upload is a release operation, separate from these checks.
+
 For the integration test:
 
 ```sh

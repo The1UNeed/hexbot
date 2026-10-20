@@ -5,7 +5,6 @@ import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } fro
 import { ConnectorFields, connectorValues } from '../components/connector-fields'
 import { isSubscription, ProviderPanel, supportsApiKey } from '../components/provider-panel'
 import { Avatar } from '../components/ui/avatar'
-import { AvatarBuilder } from '../components/ui/avatar-builder'
 import { Button } from '../components/ui/button'
 import { Chip } from '../components/ui/chip'
 import { ConnectorIcon } from '../components/ui/connector-icon'
@@ -16,6 +15,7 @@ import { Textarea } from '../components/ui/textarea'
 import { HexbotMark, Wordmark } from '../components/ui/wordmark'
 import {
   botsCreate,
+  botsCreatePrimary,
   botsList,
   connectorsList,
   connectorsSetup,
@@ -26,20 +26,19 @@ import {
   userMemoryGet,
   userMemorySet
 } from '../lib/api'
-import {
-  avatarPng,
-  type AvatarStyle,
-  botFace,
-  DEFAULT_AVATAR_STYLE,
-  styleForName
-} from '../lib/avatar-builder'
-import { HANDLE_PATTERN, toHandle } from '../lib/bot-handle'
-import { BOT_TEMPLATES } from '../lib/bot-templates'
+import { avatarPng, type AvatarStyle, botFace, styleForName } from '../lib/avatar-builder'
 import { type DaemonProgress, getBridge, hasLocalRuntime, isElectron } from '../lib/bridge'
 import { cn } from '../lib/cn'
 import { connectTo, setLocalDaemonPort } from '../lib/connection'
-import { reasoningOptions, runningLevel } from '../lib/reasoning'
-import type { Bot, Connector, ModelOption, Provider, ReasoningEffort, Section } from '../lib/types'
+import type {
+  Bot,
+  BotCreateInput,
+  BotFace,
+  Connector,
+  ModelOption,
+  Provider,
+  Section
+} from '../lib/types'
 import { useChatSelection } from '../lib/use-chat-selection'
 import { useBots } from '../stores/bots'
 import { useConnection } from '../stores/connection'
@@ -51,7 +50,6 @@ export const Route = createFileRoute('/onboarding')({ component: OnboardingPage 
 
 type OnboardingStep =
   | 'about'
-  | 'bot'
   | 'choice'
   | 'connect'
   | 'continue'
@@ -168,6 +166,52 @@ export function ContinueStep({
       ) : null}
     </SetupFrame>
   )
+}
+
+/** The primary bot, else a bot called hexbot, with its chat. */
+async function existingHexBot(): Promise<{ bot: Bot; section: Section } | null> {
+  const { bots } = await botsList()
+  const bot = bots.find(item => item.primary) ?? bots.find(item => item.name === 'hexbot')
+  const section = bot ? await sectionsActions().chat(bot.name) : null
+
+  return bot && section ? { bot, section } : null
+}
+
+/**
+ * Creates HexBot, the primary bot. A daemon from before the primary bot
+ * gets an ordinary bot with the same name, which it can promote once updated.
+ * When HexBot is already there, as after a create whose reply was lost, it
+ * returns HexBot and its chat instead.
+ */
+export function createHexBot(
+  defaultModel: null | string,
+  avatar: null | string,
+  face?: BotFace
+): Promise<{ bot: Bot; section: Section }> {
+  const [provider, ...rest] = defaultModel?.split('/') ?? []
+  const model = provider && rest.length ? { model: rest.join('/'), provider } : {}
+  // A face describes its picture, so it goes only with one.
+  const input = { ...(avatar ? { avatar, face } : {}), ...model }
+
+  return botsCreatePrimary(input)
+    .catch(reason => {
+      if (!unknownMethod(reason)) {
+        throw reason
+      }
+
+      return botsCreate({ ...input, display_name: 'HexBot', name: 'hexbot' } as BotCreateInput)
+    })
+    .catch(async reason => {
+      // 4214: there is already a primary bot. 4208: a bot called hexbot exists.
+      const code = (reason as { code?: number } | null)?.code
+      const found = code === 4214 || code === 4208 ? await existingHexBot() : null
+
+      if (!found) {
+        throw reason
+      }
+
+      return found
+    })
 }
 
 /**
@@ -1049,266 +1093,6 @@ export function ToolsStep({
   )
 }
 
-function BotStep({
-  configured,
-  defaultModel,
-  onBack,
-  startSelection,
-  onCreated,
-  onCreating,
-  onError
-}: {
-  configured: Provider[]
-  defaultModel: string | null
-  onBack: () => void
-  startSelection: () => () => boolean
-  onCreated: (bot: Bot, section: Section, current: () => boolean) => void
-  /** The page shows a full-screen "getting ready" state while this is true. */
-  onCreating?: (creating: boolean) => void
-  onError: (message: string) => void
-}) {
-  const [style, setStyle] = useState<AvatarStyle>(DEFAULT_AVATAR_STYLE)
-  const [displayName, setDisplayName] = useState('')
-  const [name, setName] = useState('')
-  const [nameEdited, setNameEdited] = useState(false)
-  const [template, setTemplate] = useState<string | null>(null)
-  const [title, setTitle] = useState('')
-  const [description, setDescription] = useState('')
-  const [persona, setPersona] = useState('')
-
-  const [provider, setProvider] = useState(
-    () => defaultModel?.split('/')[0] ?? configured[0]?.id ?? ''
-  )
-
-  const [models, setModels] = useState<ModelOption[]>([])
-  const [reasoning, setReasoning] = useState<null | ReasoningEffort>(null)
-  const [model, setModel] = useState(() => defaultModel?.split('/').slice(1).join('/') ?? '')
-  const [busy, setBusy] = useState(false)
-  const creating = useRef(false)
-  const chosen = models.find(item => item.id === model)
-
-  useEffect(() => {
-    if (!provider) {
-      return
-    }
-
-    // A slower answer for a provider no longer chosen is dropped.
-    let current = true
-    void providerModels(provider)
-      .then(list => {
-        if (!current) {
-          return
-        }
-
-        setModels(list)
-        setModel(current =>
-          list.some(item => item.id === current) ? current : (list[0]?.id ?? '')
-        )
-      })
-      .catch(reason => current && onError(String(reason)))
-
-    return () => {
-      current = false
-    }
-  }, [onError, provider])
-
-  const pickTemplate = (id: string) => {
-    const item = BOT_TEMPLATES.find(entry => entry.id === id)
-
-    if (!item) {
-      return
-    }
-
-    setTemplate(id)
-    setTitle(item.title)
-    setDescription(item.description)
-    setPersona(item.persona)
-  }
-
-  const valid = HANDLE_PATTERN.test(name) && displayName.trim() && provider && model
-
-  const create = async () => {
-    if (!valid || creating.current) {
-      return
-    }
-
-    creating.current = true
-    const current = startSelection()
-    setBusy(true)
-    onCreating?.(true)
-
-    try {
-      const avatar = await avatarPng(style)
-
-      if (!current()) {
-        return
-      }
-
-      const result = await botsCreate({
-        ...(avatar ? { avatar } : {}),
-        description: description.trim(),
-        face: style,
-        display_name: displayName.trim(),
-        model,
-        name,
-        persona: persona.trim(),
-        provider,
-        ...(reasoning ? { reasoning_effort: runningLevel(reasoning, chosen) } : {}),
-        title: title.trim()
-      })
-
-      if (current()) {
-        onCreated(result.bot, result.section, current)
-      }
-    } catch (reason) {
-      if (current()) {
-        onCreating?.(false)
-        onError(String(reason))
-      }
-    } finally {
-      creating.current = false
-      setBusy(false)
-    }
-  }
-
-  return (
-    <div className="w-full space-y-6 py-8">
-      <AvatarBuilder onChange={setStyle} value={style} />
-      <label className="block space-y-2">
-        <span className="font-medium">Name</span>
-        <Input
-          autoFocus
-          className="h-11 text-[length:var(--text-title)] font-semibold"
-          data-testid="onboarding-bot-display-input"
-          onChange={event => {
-            setDisplayName(event.target.value)
-
-            if (!nameEdited) {
-              setName(toHandle(event.target.value))
-            }
-          }}
-          placeholder="What should we call it?"
-          value={displayName}
-        />
-        <span className="flex items-center gap-2 text-[length:var(--text-meta)] text-muted">
-          Handle
-          <input
-            aria-label="Bot handle"
-            className={cn(
-              'min-w-0 flex-1 bg-transparent font-mono outline-none',
-              name && !HANDLE_PATTERN.test(name) ? 'text-danger' : 'text-foreground'
-            )}
-            data-testid="onboarding-bot-name-input"
-            onChange={event => {
-              setNameEdited(true)
-              setName(event.target.value)
-            }}
-            value={name}
-          />
-        </span>
-      </label>
-      <div className="space-y-2">
-        <span className="block text-[length:var(--text-meta)] text-muted">Start from a role</span>
-        <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
-          {BOT_TEMPLATES.map(item => (
-            <button
-              aria-pressed={template === item.id}
-              className={cn(
-                'flex items-center gap-2 rounded-panel border px-3 py-2 text-left transition-colors hover:bg-surface-2',
-                template === item.id ? 'border-accent bg-accent/8' : 'border-border'
-              )}
-              key={item.id}
-              onClick={() => pickTemplate(item.id)}
-              title={item.description}
-              type="button"
-            >
-              <Avatar name={item.title} size="sm" style={styleForName(item.id)} />
-              <span className="min-w-0 truncate font-medium">{item.title}</span>
-            </button>
-          ))}
-        </div>
-      </div>
-      <details className="group">
-        <summary className="cursor-pointer text-secondary text-muted">Customise the soul</summary>
-        <div className="mt-3 space-y-3">
-          <Input
-            aria-label="Bot title"
-            onChange={event => setTitle(event.target.value)}
-            placeholder="Title"
-            value={title}
-          />
-          <Input
-            aria-label="Bot description"
-            onChange={event => setDescription(event.target.value)}
-            placeholder="What this bot is for. Other bots read this."
-            value={description}
-          />
-          <Textarea
-            aria-label="Soul"
-            onChange={event => setPersona(event.target.value)}
-            placeholder="How should it think and talk?"
-            value={persona}
-          />
-        </div>
-      </details>
-      <div className="grid gap-3 sm:grid-cols-2">
-        <label className="block space-y-2">
-          <span className="font-medium">Provider</span>
-          <Select
-            label="Provider"
-            onValueChange={value => {
-              // The old provider's models must not be created with the new provider.
-              setModels([])
-              setModel('')
-              setProvider(value)
-            }}
-            options={configured.map(item => ({ label: item.label, value: item.id }))}
-            value={provider}
-          />
-        </label>
-        <label className="block space-y-2">
-          <span className="font-medium">Model</span>
-          <div data-testid="onboarding-model-select">
-            <Select
-              label="Model"
-              onValueChange={setModel}
-              options={models.map(item => ({ label: item.label, value: item.id }))}
-              placeholder="Choose a model"
-              value={model || undefined}
-            />
-          </div>
-        </label>
-        <label className="block space-y-2">
-          <span className="font-medium">Reasoning</span>
-          <Select
-            label="Reasoning"
-            onValueChange={value => setReasoning(value as ReasoningEffort)}
-            options={reasoningOptions(chosen)}
-            value={runningLevel(reasoning ?? 'medium', chosen)}
-          />
-        </label>
-      </div>
-      <SetupActions className="pt-3">
-        <span data-testid="onboarding-create">
-          <Button
-            busy={busy}
-            className={PILL}
-            data-testid="onboarding-create-button"
-            disabled={!valid}
-            onClick={() => void create()}
-            variant="primary"
-          >
-            Create bot
-          </Button>
-        </span>
-        <Button className={PILL} onClick={onBack} variant="secondary">
-          Back
-        </Button>
-      </SetupActions>
-    </div>
-  )
-}
-
 function OnboardingPage() {
   const navigate = useNavigate()
   const { startSelection } = useChatSelection()
@@ -1321,9 +1105,49 @@ function OnboardingPage() {
   const [defaultModel, setDefaultModel] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [creating, setCreating] = useState(false)
+  const creatingPrimary = useRef(false)
   // The bots of someone whose chat did not open, and why, for Continue.
   const [unopened, setUnopened] = useState<{ bots: Bot[]; error: null | string } | null>(null)
   const onError = useCallback((message: string) => setError(message), [])
+
+  // Onboarding ends by creating HexBot, the primary bot, on the chosen
+  // default model, and opening its chat, where it introduces itself.
+  // A later selection, navigation or daemon wins over a creation still running.
+  const createPrimary = async () => {
+    if (creatingPrimary.current) {
+      return
+    }
+
+    creatingPrimary.current = true
+    const current = startSelection()
+    setCreating(true)
+
+    try {
+      const face = styleForName('hexbot')
+      const avatar = await avatarPng(face)
+
+      if (current()) {
+        const { bot, section } = await createHexBot(defaultModel, avatar, face)
+
+        if (current()) {
+          const last = { bot: bot.name, section: section.id }
+          uiActions().setLastSection(last)
+          void navigate({ to: '/b/$bot/s/$section', params: last })
+          void introduceBot(section, bot)
+
+          return
+        }
+      }
+    } catch (reason) {
+      if (current()) {
+        setError(String(reason))
+      }
+    } finally {
+      creatingPrimary.current = false
+    }
+
+    setCreating(false)
+  }
 
   const finish = useCallback(
     async (bots: Bot[], current = startSelection()) => {
@@ -1481,7 +1305,7 @@ function OnboardingPage() {
         <div className="hex-rise">
           <div className="flex flex-col items-center gap-5">
             <HexbotMark act="type" className={ACT_ROOM} size={132} />
-            <p role="status">Getting your bot ready</p>
+            <p role="status">Getting HexBot ready</p>
           </div>
         </div>
       </main>
@@ -1522,10 +1346,6 @@ function OnboardingPage() {
   const copy = (
     {
       about: ['Tell your bots about you', 'Every bot you own reads this from the first message.'],
-      bot: [
-        'Meet your first bot',
-        'Give it a face, a name and a role. You can change all of it later.'
-      ],
       defaults: [
         'Pick your defaults',
         'The model new bots start with, and where to go when it fails.'
@@ -1560,27 +1380,8 @@ function OnboardingPage() {
         />
       ) : null}
 
-      {step === 'tools' ? <ToolsStep onContinue={() => setStep('bot')} onError={onError} /> : null}
-
-      {step === 'bot' ? (
-        <BotStep
-          configured={configured}
-          defaultModel={defaultModel}
-          onBack={() => setStep('tools')}
-          onCreated={(bot, section, current) => {
-            if (!current()) {
-              return
-            }
-
-            const last = { bot: bot.name, section: section.id }
-            uiActions().setLastSection(last)
-            void navigate({ to: '/b/$bot/s/$section', params: last })
-            void introduceBot(section, bot)
-          }}
-          onCreating={setCreating}
-          onError={onError}
-          startSelection={startSelection}
-        />
+      {step === 'tools' ? (
+        <ToolsStep onContinue={() => void createPrimary()} onError={onError} />
       ) : null}
 
       {error ? (

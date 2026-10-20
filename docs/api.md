@@ -104,8 +104,15 @@ before uploads move or Pi receives the command. Invalid or already reserved
 IDs return 4202 without taking another intent or changing staged uploads.
 Successful staged submissions echo a supplied `input_id`; callers that omit
 it retain the original response shape. This is correlation only, with no
-idempotency, retry or automatic resend promise. Manual `/compact` bypasses
-intent staging and may omit the echo and all identity metadata.
+idempotency, retry or automatic resend promise. A refusal from Pi returns
+5201. When the bot's process fails before Pi answers, the reply is 5200:
+Pi may already have taken the message.
+
+Manual `/compact` is a daemon command, not a Pi user or operation. It sends
+no uploads; staged files stay staged. A supplied `input_id` is reserved
+before Pi compacts and freed if Pi does not compact. After a compaction the
+reply echoes it, and the `/compact` user row the daemon stores carries it.
+That row and its summary notice have no `turn_id` or `message_id`.
 
 A user projection exposes `input_id` only for a proven binding to that actual
 Pi user. The current producer binds the sole identified `started` operation's
@@ -179,7 +186,7 @@ mutation methods check ownership.
 
 ### Bots
 
-Bot shape: `{name, display_name, title, description, persona, tools: [string], available_tools: [string], skills: [string],
+Bot shape: `{name, display_name, title, description, primary, persona, tools: [string], available_tools: [string], skills: [string],
 provider, model, reasoning_effort | null, avatar: {mime, data} | null, face: {shape, color} | null,
 created_at, updated_at, last_activity_at,
 owner_id, dream_enabled, notify, approval_mode, workdir | null,
@@ -230,7 +237,11 @@ without it, and the face is kept as the picture alone.
 `workdir` and the `workspace_dir` setting are refused (4202) when they resolve
 inside the Hexbot home, symlinks included.
 
-- `hexbot.bots.list {all?}` → `{bots: [Bot]}` ordered by `last_activity_at` desc.
+`primary` is true for the primary bot, the one bot that looks after the
+others (`DESIGN.md`, "The primary bot"). There is at most one per owner.
+
+- `hexbot.bots.list {all?}` → `{bots: [Bot]}`, the primary bot first, then by
+  `last_activity_at` desc.
 - `hexbot.bots.get {name}` → `{bot: Bot}`
 - `hexbot.bots.create {name, display_name?, title?, description?, persona?,
   provider, model, avatar?, face?}` → `{bot: Bot, section: Section}` (creates the
@@ -241,6 +252,16 @@ inside the Hexbot home, symlinks included.
   the same way.
   `display_name` defaults to the bot name in title case — never to `title`,
   which is free-form caller text stored verbatim.
+- `hexbot.bots.create_primary {display_name?, provider?, model?,
+  reasoning_effort?, avatar?, face?}` → `{bot: Bot, section: Section}`. Creates
+  HexBot: handle `hexbot`, display name "HexBot" unless given, title
+  "Primary bot", a soul for looking after the user's bots, and every
+  available tool. Refused with 4214 when there is already a primary bot and
+  with 4208 when a bot called `hexbot` exists (make it primary instead).
+  `hexbot.bots.create` refuses the handle `hexbot` (4202).
+- `hexbot.bots.set_primary {name}` → `{bot: Bot}`. Makes an existing bot
+  primary; refused with 4214 once there is one. Its chat takes the primary
+  bot's tools with its next message, which misses the prompt cache once.
 - `hexbot.bots.introduce {name, section}` → `{submitted: true, section}`.
   Resumes the section on the calling transport, then submits the bot's
   hidden first prompt (`backend/hexbot-core/src/catalog.rs`): a one-line greeting and up to
@@ -262,7 +283,8 @@ inside the Hexbot home, symlinks included.
 - `hexbot.bots.delete {name}` → `{deleted: true}` (deletes the profile
   directory, all rows, the bot's scheduled jobs, and the memory proposals those jobs left; refuses with 4211 if any of its sections is live
   and mid-turn — `session.active_list` status `working` or `waiting` —
-  with `data.sections: [{id, status}]`).
+  with `data.sections: [{id, status}]`, and with 4214 for the primary bot
+  before any of its sections stop).
 
 ### Sections
 
@@ -282,7 +304,7 @@ delete. If copying, `reconcile_all`, catalog deletion or history cleanup
 fails, the error is logged, an unfinished copy (`one-chat-per-bot-<time>.partial`)
 is removed, nothing more is deleted, the setting is written anyway, and the
 daemon starts; the sections left are kept for good and no later start deletes
-any. Each delete is the one `hexbot.sections.delete` makes: once its catalog
+any. Each delete uses the private cleanup helper: once its catalog
 row is gone it stays deleted, even if history cleanup fails. Native cleanup
 retries at startup; it never resumes the migration's remaining deletes.
 A bot with a conversation that recovery set aside or could not read, or whose `state.db` cannot be read, keeps all its sections. Sections
@@ -430,11 +452,22 @@ model switch. In a room each bot keeps its own section, so the room has no
 context of its own; the meter belongs to bot sections.
 - `hexbot.sections.rename {id, title}` → `{section: Section}`
 - `hexbot.sections.archive {id}` / `hexbot.sections.unarchive {id}` → `{section}`
+  Current clients offer neither action for a chat; both remain available to
+  older clients.
 - `hexbot.sections.delete {id, purge_memory?: true}` → `{deleted: true, history_pending?: true}`
-  Current clients offer none of these three for a chat; they stay for older
-  clients. The next `create` brings a deleted chat back empty.
-  (closes the live session, `session.delete` on the stored row). The
-  section is tombstoned, its catalog row goes in a transaction of its own,
+  Deletes only a peer thread (`peer_bot` set). An owned section without
+  `peer_bot` is a bot chat, including archived sections and legacy sections
+  kept for repair. Deleting it returns error `4202`,
+  `A bot chat cannot be deleted; delete the bot to remove it`.
+  Ownership and missing-section errors take precedence. Rejection leaves
+  the live session, pending work, staged uploads and stored history untouched,
+  emits no change or deletion event, and ignores the purge option. Opening
+  or creating the bot's chat still resolves its existing conversation.
+  Deleting the bot removes its chat through bot deletion's existing cleanup;
+  the one-time migration can still retire superseded chats privately.
+  For an allowed peer-thread deletion, the daemon closes the live session
+  (`session.delete` on the stored row). The section is tombstoned,
+  its catalog row goes in a transaction of its own,
   and only then its runtime history and `runtime/sessions/<id>`: a stop
   before the row goes leaves the section whole, and the next start removes
   what a stop after it left (`runtime_store::finish_deletes`). With
@@ -545,8 +578,10 @@ and its bots run as the owner.
 - `hexbot.rooms.create {name, members: [bot], main_bot?, limits?, approval_mode?}`
   → `{room: Room}`
 - `hexbot.rooms.update {id, name?, main_bot?, limits?, approval_mode?}` → `{room}`
-- `hexbot.rooms.add_member {id, bot}` / `hexbot.rooms.remove_member {id, bot}`
-  → `{room}`
+- `hexbot.rooms.add_member {id, bot}` / `hexbot.rooms.remove_member {id, bot,
+  keep_room?}` → `{room}`. Removing the last bot deletes the room; with
+  `keep_room: true` that removal is refused with 4216 instead, checked in the
+  same statement that removes the bot.
 - `hexbot.rooms.send {id, text, attachments?}` → `{event}`. This queues the
   room engine after writing the user event.
 - `hexbot.rooms.log {id, after_seq?, before_seq?, limit?}` → `{events}` in

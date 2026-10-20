@@ -6,7 +6,7 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior};
 
 use crate::{Error, Result};
 
-pub const SCHEMA_VERSION: i64 = 14;
+pub const SCHEMA_VERSION: i64 = 15;
 /// Version 13 made a daemon one person's: earlier accounts fold into the owner.
 const ONE_PERSON_VERSION: i64 = 13;
 
@@ -113,6 +113,7 @@ const COLUMNS: &[(&str, &str, &str)] = &[
     ("bots", "auto_description_key", "TEXT"),
     ("sections", "peer_bot", "TEXT"),
     ("bot_messages", "source_section", "TEXT"),
+    ("bots", "is_primary", "INTEGER NOT NULL DEFAULT 0"),
 ];
 
 /// Open the explicitly selected database without running schema migrations.
@@ -171,7 +172,8 @@ pub fn migrate(home: &Path) -> Result<()> {
         }
     }
     transaction.execute_batch(
-        "CREATE INDEX IF NOT EXISTS idx_bot_messages_source ON bot_messages(source_section,created_at);",
+        "CREATE INDEX IF NOT EXISTS idx_bot_messages_source ON bot_messages(source_section,created_at);
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_bots_primary ON bots(owner_id) WHERE is_primary=1;",
     )?;
     transaction.execute("UPDATE sections SET peer_bot=(SELECT from_bot FROM bot_messages b WHERE b.section_id=sections.id ORDER BY created_at LIMIT 1) WHERE peer_bot IS NULL AND title=('From '||(SELECT from_bot FROM bot_messages b WHERE b.section_id=sections.id ORDER BY created_at LIMIT 1))", [])?;
     fold_core_memory(&transaction, home)?;

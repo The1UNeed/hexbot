@@ -73,6 +73,11 @@ export interface HomeScreenProps {
   /** Long press on a bot, such as opening its profile. */
   onBotLongPress?: (id: string) => void
   onNewBot?: () => void
+  /**
+   * Set while a daemon upgraded from before the primary bot has none. Add
+   * creates HexBot; without it, the user promotes a bot from its profile.
+   */
+  primaryChoice?: { onAdd?: () => void } | null
 
   /** Every room, archived ones included; the tab lists the others and counts these. */
   rooms: RoomSummary[]
@@ -231,6 +236,7 @@ function BotsTab({
   onOpenBot,
   onRefresh,
   onSwitchDaemon,
+  primaryChoice,
   refreshing
 }: HomeScreenProps) {
   const [query, setQuery] = useState('')
@@ -241,6 +247,7 @@ function BotsTab({
         .filter(bot => matches(query, bot.name, bot.title, bot.description, bot.preview))
         .sort(
           (a, b) =>
+            Number(!!b.primary) - Number(!!a.primary) ||
             (PINNED[a.status ?? ''] ?? 9) - (PINNED[b.status ?? ''] ?? 9) ||
             (b.updatedAt ?? 0) - (a.updatedAt ?? 0)
         ),
@@ -259,12 +266,22 @@ function BotsTab({
         ) : (
           <EmptyState
             action={
-              onNewBot ? (
+              primaryChoice?.onAdd ? (
+                <Button
+                  label="Add HexBot"
+                  onPress={primaryChoice.onAdd}
+                  testID="bots-empty-primary"
+                />
+              ) : onNewBot ? (
                 <Button label="Create a bot" onPress={onNewBot} testID="bots-empty-create" />
               ) : null
             }
             face={{ name: 'Hexbot' }}
-            message="A bot has its own face, model, skills and memory."
+            message={
+              primaryChoice?.onAdd
+                ? 'HexBot is your primary bot. It sets up and looks after the rest.'
+                : 'A bot has its own face, model, skills and memory.'
+            }
             testID="bots-empty"
             title="No bots yet"
           />
@@ -287,6 +304,18 @@ function BotsTab({
           <Text accessibilityRole="header" style={styles.largeTitle} variant="largeTitle">
             Bots
           </Text>
+          {primaryChoice && bots.length ? (
+            <Banner
+              actionLabel={primaryChoice.onAdd ? 'Add HexBot' : undefined}
+              message={`It sets up and looks after your other bots, rooms, scheduled jobs and settings. ${
+                primaryChoice.onAdd ? 'Add HexBot, or open' : 'Open'
+              } a bot's profile and choose Make primary.`}
+              onAction={primaryChoice.onAdd}
+              testID="bots-primary-choice"
+              title="Choose a primary bot"
+              tone="info"
+            />
+          ) : null}
           {bots.length > 3 ? (
             <View style={styles.search}>
               <SearchField

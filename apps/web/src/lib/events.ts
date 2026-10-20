@@ -295,7 +295,9 @@ export function routeEvent(event: GatewayEvent, deps: EventRouterDeps = {}): voi
     case 'error':
       transcripts.errorEvent(
         sessionId,
-        typeof payload.message === 'string' ? payload.message : 'Unknown error'
+        typeof payload.message === 'string' ? payload.message : 'Unknown error',
+        undefined,
+        typeof payload.turn_id === 'string' ? payload.turn_id : undefined
       )
       useSections.getState().finished(sessionId)
 

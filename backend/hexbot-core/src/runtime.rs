@@ -29,6 +29,8 @@ mod attachments;
 mod delegation;
 #[path = "runtime_identity.rs"]
 mod identity;
+#[path = "runtime_primary.rs"]
+mod primary;
 #[path = "runtime_review.rs"]
 mod review;
 use identity::with_fields;
@@ -227,6 +229,8 @@ pub struct Runtime {
     /// the clock so a report after a daemon restart still outranks the last
     /// one a client kept.
     usage_seq: AtomicU64,
+    /// The App whose methods the primary bot's tools call (`runtime_primary.rs`).
+    dispatcher: Mutex<Option<Weak<crate::server::App>>>,
 }
 impl Runtime {
     pub fn new(home: PathBuf, events: EventHub, pi_executable: PathBuf) -> Result<Arc<Self>> {
@@ -249,6 +253,7 @@ impl Runtime {
             warned_servers: Mutex::new(std::collections::HashSet::new()),
             parked: Mutex::new(HashMap::new()),
             usage_seq: AtomicU64::new((common::now() * 1000.0) as u64),
+            dispatcher: Mutex::new(None),
         });
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
             let weak = Arc::downgrade(&runtime);
@@ -1098,11 +1103,13 @@ impl Runtime {
         bot: &str,
         stored: &str,
         restricted: Option<&[&str]>,
+        overrides: Option<&Value>,
     ) -> Result<(Vec<Value>, Vec<Value>)> {
         let enabled = crate::connectors::toolsets(&self.home, bot)?;
         let mut tools = base_tools();
         tools.retain(|t| t["name"] != "message_bot" || enabled.iter().any(|v| v == "hexbot"));
-        if !shows_visuals(&self.home, stored)? {
+        let own = shows_visuals(&self.home, stored)?;
+        if !own {
             tools.retain(|t| t["name"] != "hexbot_show_html");
         }
         if crate::connectors::toolsets(&self.home, bot)?
@@ -1115,6 +1122,14 @@ impl Runtime {
             tools.push(crate::dreaming::tool_descriptor());
         }
         tools.extend(crate::native_tools::descriptors(&self.home, bot)?);
+        // The primary bot looks after the others from its own chat only.
+        if own
+            && restricted.is_none()
+            && overrides.is_none()
+            && crate::catalog::primary_bot(&self.home, owner)?.as_deref() == Some(bot)
+        {
+            tools.extend(primary::descriptors());
+        }
         if let Some(allowed) = restricted {
             tools.retain(|t| {
                 t["name"]
@@ -1158,7 +1173,7 @@ impl Runtime {
         restricted: Option<&[&str]>,
         overrides: Option<&Value>,
     ) -> Result<(String, Value)> {
-        let (tools, mcp_names) = self.fresh_tools(owner, bot, stored, restricted)?;
+        let (tools, mcp_names) = self.fresh_tools(owner, bot, stored, restricted, overrides)?;
         // The prompt describes the tools frozen with the section, so it is
         // built from them and tagged with their layout (`prompt_layout`).
         let (mut prompt, skills) = self.session_prompt(botrow, owner, bot, cwd, &tools)?;
@@ -1283,7 +1298,7 @@ impl Runtime {
         {
             return Ok(false);
         }
-        let (tools, mcp_names) = self.fresh_tools(owner, bot, stored, None)?;
+        let (tools, mcp_names) = self.fresh_tools(owner, bot, stored, None, None)?;
         let toolsets = crate::connectors::toolsets(&self.home, bot)?;
         Ok(json!([prompt_layout(&tools), tools, mcp_names, toolsets])
             != json!([
@@ -1323,11 +1338,16 @@ impl Runtime {
             about
         );
         let prompt = format!(
-            "{}{}\n\n{}\n\n{}{}",
+            "{}{}\n\n{}\n\n{}{}{}",
             prompt,
             PROMPT_RULES,
             crate::settings::PLATFORM_HINT,
             HEXBOT_GUIDANCE,
+            if is_primary_layout(tools) {
+                primary::GUIDANCE
+            } else {
+                ""
+            },
             PROMPT_FILES
                 .replace("{profile}", &profile.display().to_string())
                 .replace("{cwd}", &cwd.display().to_string())
@@ -1483,43 +1503,58 @@ impl Runtime {
         common::bot_owner(&self.home, &s.owner, &s.bot)?;
         self.register_worker_bridge(s);
         if text.trim() == "/compact" || text.trim().starts_with("/compact ") {
-            {
+            let display = if hidden { "hidden" } else { "normal" };
+            // No Pi user carries a supplied key here: the daemon reserves it
+            // before Pi compacts and keeps it on the row it stores below.
+            let control = {
                 let mut state = s.state.lock().unwrap();
                 if state.busy {
                     return Err(Error::new(4002, "session is already working"));
                 }
+                let control = input_id
+                    .map(|id| {
+                        store::reserve_control(&self.home, &s.stored, text, display, id)
+                            .map(|row| (id, row))
+                    })
+                    .transpose()?;
                 state.busy = true;
                 state.last_activity = common::now();
-            }
+                control
+            };
             self.emit(s, "message.start", json!({}));
             let response = s
                 .process
                 .request(json!({"type":"compact","customInstructions":text.trim().strip_prefix("/compact").unwrap_or("").trim()}), Duration::from_secs(300))
                 .await
                 .map_err(pi_error);
-            let result = response
-                .and_then(|reply| {
-                    if reply.success {
-                        Ok(())
-                    } else {
-                        Err(Error::new(
-                            5201,
-                            reply.error.unwrap_or_else(|| "Summarising failed".into()),
-                        ))
-                    }
-                })
-                .and_then(|()| {
-                    store::append(
-                        &self.home,
-                        &s.stored,
-                        json!({"role":"user","text":text,"display_kind":if hidden{"hidden"}else{"normal"}}),
-                    )?;
-                    store::append(
-                        &self.home,
-                        &s.stored,
-                        json!({"role":"assistant","text":"Older messages summarised."}),
-                    )
-                });
+            let compacted = response.and_then(|reply| {
+                if reply.success {
+                    Ok(())
+                } else {
+                    Err(Error::new(
+                        5201,
+                        reply.error.unwrap_or_else(|| "Summarising failed".into()),
+                    ))
+                }
+            });
+            if compacted.is_err()
+                && let Some((id, row)) = &control
+            {
+                let _ = store::release_control(&self.home, &s.stored, id, row);
+            }
+            let result = compacted.and_then(|()| {
+                let mut user = json!({"role":"user","text":text,"display_kind":display});
+                if let Some((id, row)) = &control {
+                    user["input_id"] = json!(id);
+                    user["row_id"] = json!(row);
+                }
+                store::append(&self.home, &s.stored, user)?;
+                store::append(
+                    &self.home,
+                    &s.stored,
+                    json!({"role":"assistant","text":"Older messages summarised."}),
+                )
+            });
             // Pi settles no turn for a compaction; it ends here, stored or not.
             if s.state.lock().unwrap().end_turn() {
                 self.reload(s);
@@ -1543,7 +1578,11 @@ impl Runtime {
             }
             self.emit(s, "status.update", json!({"kind":"idle","text":""}));
             s.settled.send_modify(|v| *v += 1);
-            return Ok(json!({"status":"completed"}));
+            let mut done = json!({"status":"completed"});
+            if let Some((id, _)) = control {
+                done["input_id"] = json!(id);
+            }
+            return Ok(done);
         }
         if text.trim().is_empty() {
             return Err(Error::new(4200, "missing parameter: text"));
@@ -1627,7 +1666,15 @@ impl Runtime {
             .process
             .input(&mut command, &intent)
             .await
-            .map_err(pi_error)
+            .map_err(|error| match error {
+                // Pi never received these, so it took nothing.
+                crate::pi::PiError::Capacity
+                | crate::pi::PiError::InvalidCommand(_)
+                | crate::pi::PiError::Configuration(_) => pi_error(error),
+                // The command may have reached Pi before the connection failed,
+                // so whether it took the message is unknown: not a refusal.
+                error => Error::new(5200, error.to_string()),
+            })
             .and_then(|reply| {
                 if reply.success {
                     Ok(())
@@ -2762,8 +2809,12 @@ impl Runtime {
 
     /// Ask the section owner about a daemon tool action, unless the mode is Bypass.
     async fn native_approval(&self, s: &Live, params: Value) -> Result<bool> {
+        self.ask_approval(s, params, false).await
+    }
+    /// With `always`, asks even in Bypass.
+    async fn ask_approval(&self, s: &Live, params: Value, always: bool) -> Result<bool> {
         let settings = self.session_settings(s)?;
-        if settings["approvalMode"] == "off" {
+        if settings["approvalMode"] == "off" && !always {
             return Ok(true);
         }
         if settings["canAsk"] == false {
@@ -3360,6 +3411,26 @@ impl Runtime {
                 {
                     return Err(Error::new(4302, "The user denied this action."));
                 }
+                // The primary bot's job removals and job folders ask, whichever of
+                // its jobs tools it uses.
+                // By role, not tools: a promoted bot's older sections lack hexbot_jobs.
+                if crate::catalog::primary_bot(&self.home, &s.owner)?.as_deref()
+                    == Some(s.bot.as_str())
+                {
+                    let job = args["job_id"].as_str().unwrap_or("");
+                    if args["action"] == "remove" {
+                        self.confirm(s, name, format!("Remove the scheduled job {job}"), args)
+                            .await?;
+                    }
+                    // Creating without a folder uses this section's; anything named asks.
+                    if matches!(args["action"].as_str(), Some("create" | "update"))
+                        && !(args["action"] == "create" && args["workdir"].is_null())
+                        && let Some(folder) = primary::job_folder(args)
+                    {
+                        self.confirm(s, name, format!("Run a scheduled job in {folder}"), args)
+                            .await?;
+                    }
+                }
                 let mut args = args.clone();
                 if args["action"] == "create" && args["workdir"].is_null() {
                     args["workdir"] = self.session_settings(s)?["cwd"].clone();
@@ -3560,6 +3631,9 @@ impl Runtime {
             // titles are no longer shown, so there is nothing to rename.
             "hexbot_rename_section" => Ok(json!({"ok":true})),
             "hexbot_show_html" => show_html(&self.home, &s.stored, args),
+            "hexbot_bots" | "hexbot_rooms" | "hexbot_jobs" | "hexbot_settings" => {
+                self.primary_tool(s, name, args).await
+            }
             "self_soul" | "hexbot_soul" => {
                 let path = self.home.join("profiles").join(&s.bot).join("SOUL.md");
                 if let Some(text) = args["text"].as_str() {
@@ -4325,6 +4399,11 @@ fn prompt_layout(tools: &[Value]) -> String {
         hash.update(part);
         hash.update([0]);
     }
+    // Hashed only for the primary bot, so other sections keep their layout.
+    if is_primary_layout(tools) {
+        hash.update(primary::GUIDANCE);
+        hash.update([0]);
+    }
     let mut names: Vec<&str> = tools.iter().filter_map(|t| t["name"].as_str()).collect();
     names.sort_unstable();
     for name in names {
@@ -4332,6 +4411,14 @@ fn prompt_layout(tools: &[Value]) -> String {
         hash.update([0]);
     }
     format!("{:x}", hash.finalize())
+}
+/// A section frozen with the primary bot's tools also carries its guidance.
+fn is_primary_layout(tools: &[Value]) -> bool {
+    tools.iter().any(|t| {
+        t["name"]
+            .as_str()
+            .is_some_and(|n| primary::TOOL_NAMES.contains(&n))
+    })
 }
 /// The prompt's closing block naming the section's connected servers. Built
 /// from the names frozen in `options.mcpServers`, so a rebuilt prompt lists
@@ -4593,6 +4680,7 @@ fn tool_context(name: &str, args: &Value) -> String {
         "delegate_task" => "goal",
         "message_bot" => "to",
         "hexbot_show_html" => "title",
+        "hexbot_bots" | "hexbot_rooms" | "hexbot_jobs" | "hexbot_settings" => "action",
         name if name.starts_with("mcp__") => args
             .as_object()
             .and_then(|args| {

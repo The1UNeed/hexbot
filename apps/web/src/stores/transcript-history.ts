@@ -103,6 +103,7 @@ export function hydrateHistory(
   const inputs = local.filter(message => message.role === 'user')
   const adopted = new Set<string>()
   const attachments = new Map<string, Message['attachments']>()
+  const submissions = new Map<string, TranscriptMessage['submission']>()
 
   for (const input of inputs) {
     const rows = history.filter(
@@ -112,6 +113,7 @@ export function hydrateHistory(
     if (rows.length === 1 && inputs.filter(other => other.inputId === input.inputId).length === 1) {
       adopted.add(input.id)
       attachments.set(rows[0]!.id, input.attachments)
+      submissions.set(rows[0]!.id, input.submission)
     }
   }
 
@@ -128,8 +130,20 @@ export function hydrateHistory(
       candidate => candidate.textId && message.fragmentIds?.includes(candidate.textId)
     )
 
+    const submission =
+      submissions.get(message.id) ??
+      (message.inputId && live?.inputId === message.inputId ? live.submission : undefined)
+
     return {
       ...message,
+      // An exact durable input proves acceptance even if its RPC later failed.
+      submission: submission
+        ? {
+            ...submission,
+            uploads: [],
+            status: submission.status === 'rejected' ? 'accepted' : submission.status
+          }
+        : undefined,
       attachments:
         attachments.get(message.id) ?? previous.get(message.id)?.attachments ?? message.attachments,
       ...reasoningFor(message, live ?? reasoning ?? message),

@@ -18,6 +18,16 @@ fn create(home: &Path) -> Value {
         json!({"name":"research-owl","model":"model-a","provider":"openai"}),
     )
 }
+fn peer_thread(home: &Path, id: &str) {
+    let conn = db::open(home).unwrap();
+    conn.execute(
+        "INSERT INTO bots(name,owner_id) VALUES('teammate','alice')",
+        [],
+    )
+    .unwrap();
+    conn.execute("UPDATE sections SET peer_bot='teammate' WHERE id=?", [id])
+        .unwrap();
+}
 #[test]
 fn a_bot_can_be_created_with_a_reasoning_level() {
     let home = setup();
@@ -81,8 +91,20 @@ fn lifecycle_preserves_memory_and_reopens_archived_sections() {
         call(h, "alice", "hexbot.sections.mark_read", json!({"id":id}))["section"]["done_at"]
             .is_null()
     );
-    call(h, "alice", "hexbot.sections.delete", json!({"id":id}));
-    assert!(runtime_store::history(h, id).unwrap().is_empty());
+    let rejected = catalog::call(h, "alice", "hexbot.sections.delete", &json!({"id":id}))
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(rejected.code, 4202);
+    assert_eq!(runtime_store::history(h, id).unwrap().len(), 1);
+    assert_eq!(
+        call(
+            h,
+            "alice",
+            "hexbot.sections.create",
+            json!({"bot":"research-owl"})
+        )["section"]["id"],
+        id
+    );
     assert_eq!(
         memory.get_bot("alice", "research-owl").unwrap()["memory_md"],
         "Durable memory"
@@ -248,11 +270,12 @@ fn validates_all_fields_before_writes_and_rejects_path_escape() {
     );
 }
 #[test]
-fn reads_legacy_transcripts_and_optional_purge_keeps_them() {
+fn peer_thread_reads_legacy_transcripts_and_optional_purge_keeps_them() {
     let home = setup();
     let h = home.path();
     let created = create(h);
     let id = created["section"]["id"].as_str().unwrap();
+    peer_thread(home.path(), id);
     let conn = rusqlite::Connection::open(h.join("profiles/research-owl/state.db")).unwrap();
     conn.execute_batch("CREATE TABLE sessions(id TEXT PRIMARY KEY);CREATE TABLE messages(id INTEGER,session_id TEXT,role TEXT,content TEXT)").unwrap();
     conn.execute("INSERT INTO sessions VALUES (?)", [id])
@@ -457,6 +480,19 @@ fn a_picked_face_is_kept_with_its_picture_until_the_picture_changes() {
     fs::write(h.join("profiles/owl/assets/face.json"), "not json").unwrap();
     assert!(catalog::bot(h, "alice", "owl").unwrap()["face"].is_null());
 }
+#[test]
+fn hexbot_keeps_the_face_it_is_created_with() {
+    let home = setup();
+    let h = home.path();
+    let face = json!({"shape":"pill","color":"orange"});
+    let created = call(
+        h,
+        "alice",
+        "hexbot.bots.create_primary",
+        json!({"avatar":"data:image/png;base64,iVBORw0KGgo=","face":face}),
+    );
+    assert_eq!(created["bot"]["face"], face);
+}
 #[cfg(unix)]
 #[test]
 fn refuses_symlink_profile_reads_and_mutations() {
@@ -491,11 +527,12 @@ fn refuses_symlink_profile_reads_and_mutations() {
 }
 
 #[test]
-fn purges_legacy_session_keys_and_compression_descendants() {
+fn peer_thread_purges_legacy_session_keys_and_compression_descendants() {
     let home = setup();
     let h = home.path();
     let created = create(h);
     let id = created["section"]["id"].as_str().unwrap();
+    peer_thread(home.path(), id);
     let conn = rusqlite::Connection::open(h.join("profiles/research-owl/state.db")).unwrap();
     conn.execute_batch("CREATE TABLE sessions(id TEXT PRIMARY KEY,session_key TEXT,parent_session_id TEXT);CREATE TABLE messages(id INTEGER,session_id TEXT,role TEXT,content TEXT)").unwrap();
     conn.execute("INSERT INTO sessions VALUES ('parent',?,NULL)", [id])
@@ -869,10 +906,11 @@ fn empty_native_history_never_resurrects_legacy_messages() {
 }
 
 #[test]
-fn failed_section_delete_removes_tombstone() {
+fn peer_thread_failed_section_delete_removes_tombstone() {
     let home = setup();
     let created = create(home.path());
     let id = created["section"]["id"].as_str().unwrap();
+    peer_thread(home.path(), id);
     runtime_store::mark_deleted(home.path(), id).unwrap();
     db::open(home.path()).unwrap().execute_batch("CREATE TRIGGER refuse_delete BEFORE DELETE ON sections BEGIN SELECT RAISE(FAIL, 'busy'); END;").unwrap();
     assert!(

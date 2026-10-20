@@ -1375,15 +1375,10 @@ impl Dreaming {
             let digest_bot = bot.to_owned();
             let digest_room = room.map(str::to_owned);
             let until = context["started_at"].as_f64().unwrap();
-            let digest = tokio::task::spawn_blocking(move || {
+            let (since, digest) = tokio::task::spawn_blocking(move || {
                 let room = digest_room.as_deref();
-                build_digest(
-                    &home,
-                    &digest_bot,
-                    last_successful_start(&home, &digest_bot, room)?,
-                    until,
-                    room,
-                )
+                let since = last_successful_start(&home, &digest_bot, room)?;
+                Ok::<_, Error>((since, build_digest(&home, &digest_bot, since, until, room)?))
             })
             .await
             .map_err(|error| Error::new(5240, format!("dream digest task failed: {error}")))??;
@@ -1433,9 +1428,31 @@ impl Dreaming {
             // This ID was just generated for this dream. It has no legacy
             // conversation to import, even when the bot has an older store.
             runtime_store::mark_fresh(&self.home, stored)?;
-            self.runtime
+            let text = self
+                .runtime
                 .run_hidden_restricted(owner, bot, stored, &prompt, &["memory"])
-                .await
+                .await?;
+            #[cfg(test)]
+            snapshot_tests::before_cutoff(&self.home);
+            // Completing moves the cutoff to this dream's start. Input that
+            // reached its window meanwhile, such as a reply still being written
+            // when it started, would never be read, so then the cutoff stays.
+            let (home, digest_bot, digest_room) =
+                (self.home.clone(), bot.to_owned(), room.map(str::to_owned));
+            let again = tokio::task::spawn_blocking(move || {
+                build_digest(&home, &digest_bot, since, until, digest_room.as_deref())
+            })
+            .await
+            .map_err(|error| Error::new(5240, format!("dream digest task failed: {error}")))?;
+            if !again.is_ok_and(|again| {
+                again["sections"] == digest["sections"] && again["rooms"] == digest["rooms"]
+            }) {
+                return Err(Error::new(
+                    5200,
+                    "A conversation changed while dreaming; the next dream reads it again",
+                ));
+            }
+            Ok(text)
         };
         let result = tokio::select! {
             result = result => result,

@@ -25,6 +25,7 @@ pub const USAGE: &str = concat!(
     "hexbot status [--json]\n",
     "hexbot pair\n",
     "hexbot bots list | create NAME [--title TEXT] [--description TEXT] [--persona TEXT] [--provider NAME] [--model NAME] [--reasoning-effort LEVEL] | delete NAME\n",
+    "hexbot bots primary [NAME]\n",
     "hexbot rooms list\n",
     "hexbot devices list | revoke ID\n",
     "hexbot connect [--name TEXT | status | disconnect]\n",
@@ -47,6 +48,8 @@ fn command(args: &[String]) -> Result<(&'static str, Value)> {
         ["devices", "list"] => Ok(("hexbot.devices.list", json!({}))),
         ["devices", "revoke", id] => Ok(("hexbot.devices.revoke", json!({"id":id}))),
         ["bots", "delete", name] => Ok(("hexbot.bots.delete", json!({"name":name}))),
+        ["bots", "primary"] => Ok(("hexbot.bots.create_primary", json!({}))),
+        ["bots", "primary", name] => Ok(("hexbot.bots.set_primary", json!({"name":name}))),
         ["send", bot, text] => Ok((
             "hexbot.cli.send",
             json!({"bot":bot,"text":text,"request_id":common::id()}),

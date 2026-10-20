@@ -62,7 +62,7 @@ const reply = (method: string) =>
       'hexbot.models.list': { all: [{ id: 'local-model', label: 'Local model' }], curated: [] },
       'hexbot.settings.get': { default_model: 'lmstudio/local-model' },
       'hexbot.connectors.list': { connectors: [] },
-      'hexbot.bots.create': { bot, section: canonical }
+      'hexbot.bots.create_primary': { bot, section: canonical }
     }[method] ?? {}
   )
 
@@ -292,17 +292,16 @@ async function firstBot() {
   const defaults = await screen.findByTestId('onboarding-defaults-continue')
   await waitFor(() => expect(defaults).toBeEnabled())
   fireEvent.click(defaults)
-  fireEvent.click(await screen.findByTestId('onboarding-tools-continue'))
-  fireEvent.change(await screen.findByTestId('onboarding-bot-display-input'), {
-    target: { value: 'Owl' }
-  })
-  await waitFor(() => expect(screen.getByRole('button', { name: 'Create bot' })).toBeEnabled())
+  await screen.findByTestId('onboarding-tools-continue')
 
   return view
 }
 
+/** The tools step's Continue creates HexBot. */
+const createHexBot = () => fireEvent.click(screen.getByTestId('onboarding-tools-continue'))
+
 it.each(['healthy', 'room', 'unmount', 'daemon', 'epoch', 'install', 'avatar'] as const)(
-  'first-bot creation keeps its caller lifetime: %s',
+  'HexBot creation keeps its caller lifetime: %s',
   async action => {
     const view = await firstBot()
     const held = deferred()
@@ -311,17 +310,17 @@ it.each(['healthy', 'room', 'unmount', 'daemon', 'epoch', 'install', 'avatar'] a
       avatar.mockImplementationOnce(() => held.promise as Promise<null>)
     } else {
       call.mockImplementation((method: string) =>
-        method === 'hexbot.bots.create' ? held.promise : reply(method)
+        method === 'hexbot.bots.create_primary' ? held.promise : reply(method)
       )
     }
 
-    fireEvent.click(screen.getByRole('button', { name: 'Create bot' }))
+    createHexBot()
 
     if (action !== 'avatar') {
       await waitFor(() =>
-        expect(call.mock.calls.filter(([method]) => method === 'hexbot.bots.create')).toHaveLength(
-          1
-        )
+        expect(
+          call.mock.calls.filter(([method]) => method === 'hexbot.bots.create_primary')
+        ).toHaveLength(1)
       )
     }
 
@@ -364,7 +363,9 @@ it.each(['healthy', 'room', 'unmount', 'daemon', 'epoch', 'install', 'avatar'] a
       expect(call.mock.calls.some(([method]) => method === 'hexbot.bots.introduce')).toBe(false)
 
       if (action === 'avatar') {
-        expect(call.mock.calls.some(([method]) => method === 'hexbot.bots.create')).toBe(false)
+        expect(call.mock.calls.some(([method]) => method === 'hexbot.bots.create_primary')).toBe(
+          false
+        )
       }
     }
   }
@@ -410,29 +411,27 @@ it.each(['healthy', 'room'] as const)(
     }
   }
 )
-it('duplicate first-bot clicks make one request, and a creation error permits a healthy retry', async () => {
+it('duplicate HexBot clicks make one request, and a creation error permits a healthy retry', async () => {
   const view = await firstBot()
   const held = deferred()
   call.mockImplementation((method: string) =>
-    method === 'hexbot.bots.create' ? held.promise : reply(method)
+    method === 'hexbot.bots.create_primary' ? held.promise : reply(method)
   )
-  const button = screen.getByRole('button', { name: 'Create bot' })
+  const button = screen.getByTestId('onboarding-tools-continue')
   await act(async () => {
     fireEvent.click(button)
     fireEvent.click(button)
   })
-  expect(call.mock.calls.filter(([method]) => method === 'hexbot.bots.create')).toHaveLength(1)
+  expect(
+    call.mock.calls.filter(([method]) => method === 'hexbot.bots.create_primary')
+  ).toHaveLength(1)
   await act(async () => {
     held.reject(new Error('Creation unavailable'))
   })
   expect(await screen.findByRole('alert')).toHaveTextContent('Creation unavailable')
   expect(useUi.getState().lastSection).toBeNull()
   call.mockImplementation(reply)
-  fireEvent.change(await screen.findByTestId('onboarding-bot-display-input'), {
-    target: { value: 'Owl' }
-  })
-  await waitFor(() => expect(screen.getByRole('button', { name: 'Create bot' })).toBeEnabled())
-  fireEvent.click(screen.getByRole('button', { name: 'Create bot' }))
+  createHexBot()
   await screen.findByText('Owner chat')
   expect(view.router.state.location.pathname).toBe('/b/owl/s/canonical')
   expect(call.mock.calls.filter(([method]) => method === 'hexbot.bots.introduce')).toHaveLength(1)
@@ -627,14 +626,16 @@ it.each([false, true])(
   }
 )
 
-it('a roster refresh during first-bot creation does not repeat the completed decision', async () => {
+it('a roster refresh during HexBot creation does not repeat the completed decision', async () => {
   const view = await firstBot()
   const held = deferred()
   call.mockImplementation((method: string) =>
-    method === 'hexbot.bots.create' ? held.promise : reply(method)
+    method === 'hexbot.bots.create_primary' ? held.promise : reply(method)
   )
-  fireEvent.click(screen.getByRole('button', { name: 'Create bot' }))
-  await waitFor(() => expect(call).toHaveBeenCalledWith('hexbot.bots.create', expect.anything()))
+  createHexBot()
+  await waitFor(() =>
+    expect(call).toHaveBeenCalledWith('hexbot.bots.create_primary', expect.anything())
+  )
   await act(async () => {
     useBots.setState({ byName: { owl: bot }, order: ['owl'] })
   })

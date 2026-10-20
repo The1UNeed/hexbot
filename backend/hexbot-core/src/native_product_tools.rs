@@ -704,7 +704,8 @@ impl RecallSession {
 /// a query after a quiet stretch costs a lookup instead of a rebuild of every message.
 struct RecallIndex {
     sessions: Vec<RecallSession>,
-    legacy: Option<Vec<(std::time::SystemTime, u64)>>,
+    /// The older store's stamp, and whether this index could read it.
+    legacy: Option<(Vec<(std::time::SystemTime, u64)>, bool)>,
     index: Connection,
 }
 #[derive(PartialEq)]
@@ -943,6 +944,9 @@ fn recall(
     } else {
         None
     };
+    // Repairing or losing access changes neither time nor length, so the
+    // kept index is reused only while the store reads as it did.
+    let legacy = legacy.map(|stamp| (stamp, legacy_db.is_some()));
     let mut index = match take_index(key).filter(|index| index.legacy == legacy) {
         Some(index) => index,
         None => {

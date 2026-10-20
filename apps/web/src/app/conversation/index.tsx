@@ -705,7 +705,30 @@ async function submitOrReopen(
     return false
   }
 
+  const { target, epoch } = useConnection.getState()
   let active = sessionId
+  let staged: string[] | null = uploads
+  let failure: unknown
+
+  const begin = () => {
+    if (identified) {
+      transcriptActions().inputSubmitting(active, pending.id, staged ?? [])
+    }
+  }
+
+  const accepted = () => {
+    if (identified) {
+      transcriptActions().inputSettled(
+        active,
+        pending.submission?.row ?? pending.id,
+        pending.inputId,
+        'accepted',
+        []
+      )
+    }
+  }
+
+  begin()
 
   try {
     await promptSubmit(
@@ -714,13 +737,15 @@ async function submitOrReopen(
       identified ? { input_id: pending.inputId, attachments: uploads } : {}
     )
 
+    accepted()
+
     return current()
   } catch (error) {
+    failure = error
+
     if (!current()) {
       return false
     }
-
-    let failure = error
 
     // Network failures and provider errors leave acceptance unknown. Only
     // the gateway's missing-live-session rejection is safe to resend.
@@ -730,6 +755,8 @@ async function submitOrReopen(
       error.code === 4001 &&
       /^session not found$/i.test(error.message)
     ) {
+      staged = null
+
       try {
         const reopened = await sectionsActions().open(sectionId)
 
@@ -753,6 +780,7 @@ async function submitOrReopen(
 
           // Closing a process can discard its staged uploads. Send the
           // original bytes again and name only these uploads on the retry.
+          begin()
           const attachments: string[] = []
 
           for (const file of files) {
@@ -775,10 +803,15 @@ async function submitOrReopen(
             pending = { ...pending, inputId }
           }
 
+          staged = attachments
+          begin()
           await promptSubmit(active, text, {
             attachments,
             ...(identified && { input_id: pending.inputId })
           })
+
+          accepted()
+          failure = undefined
 
           return current()
         }
@@ -787,14 +820,48 @@ async function submitOrReopen(
       }
     }
 
-    if (current()) {
-      transcriptActions().errorEvent(
-        active,
-        failure instanceof Error ? failure.message : String(failure)
-      )
-    }
-
     return false
+  } finally {
+    if (
+      failure !== undefined &&
+      target === useConnection.getState().target &&
+      epoch === useConnection.getState().epoch
+    ) {
+      const message = failure instanceof Error ? failure.message : String(failure)
+
+      if (identified) {
+        // 5201 is Pi's refusal. 5200 can be a bot lost before it answered or a
+        // title-save error after acceptance. Transport failures and arbitrary
+        // error objects also prove nothing about whether Pi took input.
+        const rejected =
+          failure instanceof JsonRpcGatewayError &&
+          [4002, 4200, 4202, 5201].includes(failure.code ?? 0)
+
+        const unavailable =
+          staged === null ||
+          (failure instanceof JsonRpcGatewayError && [4001, 4204].includes(failure.code ?? 0))
+
+        const status = unavailable ? 'unavailable' : rejected ? 'rejected' : 'unknown'
+
+        const detail =
+          status === 'unknown'
+            ? `${message}. Could not confirm acceptance. Check the chat before sending again.`
+            : status === 'unavailable'
+              ? `${message}. Attach the files again before sending.`
+              : message
+
+        transcriptActions().inputSettled(
+          active,
+          pending.submission?.row ?? pending.id,
+          pending.inputId,
+          status,
+          status === 'rejected' ? staged : null,
+          current() ? detail : undefined
+        )
+      } else if (current()) {
+        transcriptActions().errorEvent(active, message)
+      }
+    }
   }
 }
 
@@ -845,12 +912,15 @@ function Composer({
 
     // Capture the sender before uploading: a route or daemon can change
     // while a file is on its way in, before prompt submission even starts.
-    const { target, epoch } = useConnection.getState()
+    const { target, epoch, daemon } = useConnection.getState()
     const source = picker.current
 
     const current = () =>
       target === useConnection.getState().target &&
       epoch === useConnection.getState().epoch &&
+      daemon?.install_id === useConnection.getState().daemon?.install_id &&
+      daemon?.one_chat === useConnection.getState().daemon?.one_chat &&
+      daemon?.transcript_identity === useConnection.getState().daemon?.transcript_identity &&
       Boolean(source?.isConnected)
 
     try {
@@ -906,6 +976,15 @@ function Composer({
 
       if (sectionId) {
         draftsActions().clear(sectionId)
+      }
+    } catch (error) {
+      if (current()) {
+        transcriptActions().errorEvent(
+          sessionId,
+          `${error instanceof Error ? error.message : String(error)}. Attach the files again before sending.`,
+          undefined,
+          null
+        )
       }
     } finally {
       setSending(false)
@@ -1063,6 +1142,7 @@ function BotConversation() {
   const epoch = useConnection(state => state.epoch)
   const capability = useConnection(state => state.daemon?.one_chat)
   const installation = useConnection(state => state.daemon?.install_id)
+  const identified = useConnection(state => state.daemon?.transcript_identity === true)
   const [openAttempt, setOpenAttempt] = useState(0)
 
   // Validation belongs to this route entry, even if the same URL or live ID is reused.
@@ -1387,22 +1467,78 @@ function BotConversation() {
     target === useConnection.getState().target &&
     epoch === useConnection.getState().epoch &&
     capability === useConnection.getState().daemon?.one_chat &&
+    identified === (useConnection.getState().daemon?.transcript_identity === true) &&
     installation === useConnection.getState().daemon?.install_id
 
-  const retry = () => {
-    if (!canPrompt()) {
-      return
+  const retryFor = (card: TranscriptMessage): (() => void) | undefined => {
+    if (!ownerInput) {
+      return undefined
     }
 
-    const last = messages.findLast(message => message.role === 'user')
+    // Older daemons keep their original RPC shape and retry behavior.
+    if (!identified) {
+      if (messages.some(message => message.submission)) {
+        return undefined
+      }
 
-    if (liveId && last) {
-      const options =
-        useConnection.getState().daemon?.transcript_identity === true
-          ? { input_id: newInputId(), attachments: [] }
-          : {}
+      return () => {
+        if (canPrompt() && liveId) {
+          const last = messages.findLast(message => message.role === 'user')
 
-      void promptSubmit(liveId, last.text, options)
+          if (last) {
+            void promptSubmit(liveId, last.text).catch(error => {
+              if (canPrompt()) {
+                transcriptActions().errorEvent(liveId, String(error))
+              }
+            })
+          }
+        }
+      }
+    }
+
+    const input = messages.find(message => message.submission?.row === card.retryRow)
+    const source = input?.submission
+
+    if (
+      !input ||
+      !source ||
+      source.card !== card.id ||
+      source.target !== target ||
+      source.epoch !== epoch ||
+      source.installation !== installation ||
+      !['rejected', 'accepted'].includes(source.status) ||
+      source.uploads === null
+    ) {
+      return undefined
+    }
+
+    return () => {
+      if (!canPrompt() || !liveId) {
+        return
+      }
+
+      // Recheck the store: a second click or an old card cannot send again.
+      const held = useTranscripts
+        .getState()
+        .bySession[liveId]?.messages.find(message => message.submission?.row === source.row)
+
+      if (held?.submission !== source) {
+        return
+      }
+
+      const pending =
+        source.status === 'accepted'
+          ? transcriptActions().appendUserMessage(liveId, input.text)
+          : input
+
+      const inputId = newInputId()
+      transcriptActions().setInputId(liveId, pending.id, inputId)
+      void submitOrReopen(liveId, null, input.text, {
+        current: canPrompt,
+        files: [],
+        pending: { ...pending, inputId },
+        uploads: source.uploads ?? []
+      })
     }
   }
 
@@ -1421,14 +1557,12 @@ function BotConversation() {
       const pending = transcriptActions().appendUserMessage(liveId, prompt)
       sectionsActions().markTouched(section.id, prompt)
 
-      const options =
-        useConnection.getState().daemon?.transcript_identity === true
-          ? { input_id: pending.inputId, attachments: [] }
-          : {}
-
-      void promptSubmit(liveId, prompt, options).finally(
-        () => void sectionsActions().settleTitle(section.id)
-      )
+      void submitOrReopen(liveId, section.id, prompt, {
+        current: canPrompt,
+        files: [],
+        pending,
+        uploads: []
+      }).finally(() => void sectionsActions().settleTitle(section.id))
     }
   }
 
@@ -1563,7 +1697,7 @@ function BotConversation() {
                     message={message}
                     onFix={fixConnector}
                     onImage={setLightbox}
-                    onRetry={ownerInput ? retry : undefined}
+                    onRetry={retryFor(message)}
                   />
                 </div>
               )
@@ -1574,7 +1708,7 @@ function BotConversation() {
                 message={stoppedHere}
                 name={bot?.display_name ?? 'Bot'}
                 onFix={fixConnector}
-                onRetry={ownerInput ? retry : undefined}
+                onRetry={retryFor(stoppedHere)}
               />
             ) : null}
             <div className="h-2" />
