@@ -672,5 +672,12 @@ async fn publication_keeps_source_closed_to_writes_until_commit() {
         .unwrap_err();
     assert_eq!(rejected.code, 4002);
     assert!(rejected.message.contains(&target));
+    // An older client's list shows the chat, not the log it replaced.
+    let listed = list_sections(h, "alice", &json!({"bot":"owl","include_archived":true}))
+        .unwrap()
+        .into_iter()
+        .map(|s| s["id"].as_str().unwrap().to_owned())
+        .collect::<Vec<_>>();
+    assert_eq!(listed, vec![target]);
     runtime.shutdown().await;
 }

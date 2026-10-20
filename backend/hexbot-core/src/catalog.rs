@@ -407,14 +407,19 @@ fn list_sections(home: &Path, caller: &str, p: &Value) -> Result<Vec<Value>> {
     let bot = p["bot"].as_str();
     let archived = p["include_archived"].as_bool().unwrap_or(false);
     let threads = p["include_threads"] == true;
-    rows(
-        &db::open(home)?,
+    let conn = db::open(home)?;
+    let mut sections = vec![];
+    for row in rows(
+        &conn,
         "SELECT * FROM sections WHERE owner_id=? AND (? IS NULL OR bot=?) AND (? OR archived_at IS NULL) AND (? OR peer_bot IS NULL) ORDER BY updated_at DESC,id ASC",
         &[&caller, &bot, &bot, &archived, &threads],
-    )?
-    .into_iter()
-    .map(|r| shape_section(home, r))
-    .collect()
+    )? {
+        // A Dreams log its chat replaced opens only as that chat (4002).
+        if superseded_by(&conn, row["id"].as_str().unwrap_or(""))?.is_none() {
+            sections.push(shape_section(home, row)?);
+        }
+    }
+    Ok(sections)
 }
 /// A bot's one chat with its owner, made on first use. Threads in which other
 /// bots ask it for help are not chats. A chat an older client archived comes back.
@@ -523,22 +528,30 @@ mod fork_tests;
 /// Checked under the opener's shared conversation lease. Adoption holds the
 /// exclusive lease through commit, so an old ID cannot admit input in between.
 pub(crate) fn check_chat_source(home: &Path, source: &str) -> Result<()> {
-    let conn = db::open(home)?;
-    if let Some(target) = setting(&conn, "dream_chat_adoptions")?[source]["target"].as_str() {
-        let present: bool = conn.query_row(
-            "SELECT EXISTS(SELECT 1 FROM sections s JOIN sections t ON t.bot=s.bot AND t.owner_id=s.owner_id WHERE s.id=? AND t.id=? AND t.peer_bot IS NULL AND t.purpose IS NULL)",
-            params![source, target], |r| r.get(0),
-        )?;
-        if present {
-            return Err(Error::new(
-                4002,
-                format!(
-                    "This conversation moved to the bot's chat ({target}). Open the chat to continue."
-                ),
-            ));
-        }
+    if let Some(target) = superseded_by(&db::open(home)?, source)? {
+        return Err(Error::new(
+            4002,
+            format!(
+                "This conversation moved to the bot's chat ({target}). Open the chat to continue."
+            ),
+        ));
     }
     Ok(())
+}
+/// The chat that replaced an old Dreams log, while both exist.
+fn superseded_by(conn: &Connection, source: &str) -> Result<Option<String>> {
+    let Some(target) = setting(conn, "dream_chat_adoptions")?[source]["target"]
+        .as_str()
+        .map(str::to_owned)
+    else {
+        return Ok(None);
+    };
+    let present: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sections s JOIN sections t ON t.bot=s.bot AND t.owner_id=s.owner_id WHERE s.id=? AND t.id=? AND t.peer_bot IS NULL AND t.purpose IS NULL)",
+        params![source, target],
+        |r| r.get(0),
+    )?;
+    Ok(present.then_some(target))
 }
 
 pub fn chat_section(home: &Path, caller: &str, name: &str) -> Result<Value> {
