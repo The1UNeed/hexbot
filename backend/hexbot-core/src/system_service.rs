@@ -62,8 +62,72 @@ fn systemd_unit(options: &Options) -> String {
 // The gui domain needs someone signed in at the screen. Over SSH only the
 // user domain exists, and the daemon still runs there.
 fn launchd_domains() -> [String; 2] {
+    #[cfg(unix)]
     let uid = unsafe { libc::getuid() };
+    #[cfg(not(unix))]
+    let uid = 0u32;
     [format!("gui/{uid}"), format!("user/{uid}")]
+}
+
+fn service_script(home: &str, path: &str, executable: &str) -> Result<String> {
+    if [home, path, executable]
+        .iter()
+        .any(|value| value.contains(['"', '\r', '\n']))
+    {
+        return Err(Error::new(
+            4200,
+            "The service path contains a character the command file cannot quote.",
+        ));
+    }
+    Ok(format!(
+        "@echo off\r\nrem HEXBOT_SERVICE_SCRIPT\r\nset \"HEXBOT_HOME={home}\"\r\nset \"HEXBOT_SUPERVISOR=service\"\r\nset \"PATH={path}\"\r\n\"{executable}\" serve\r\n"
+    ))
+}
+
+fn xml_text(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+}
+
+fn utf16_le(text: &str) -> Vec<u8> {
+    let mut bytes = vec![0xFF, 0xFE];
+    for unit in text.encode_utf16() {
+        bytes.extend(unit.to_le_bytes());
+    }
+    bytes
+}
+
+fn task_xml(command: &Path) -> Result<String> {
+    let command = command.to_string_lossy();
+    if command.contains(['\r', '\n']) {
+        return Err(Error::new(4200, "The service command path is not usable."));
+    }
+    Ok(format!(
+        r#"<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <Triggers><LogonTrigger><Enabled>true</Enabled></LogonTrigger></Triggers>
+  <Principals><Principal><LogonType>InteractiveToken</LogonType><RunLevel>LeastPrivilege</RunLevel></Principal></Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <AllowHardTerminate>true</AllowHardTerminate>
+    <StartWhenAvailable>true</StartWhenAvailable>
+    <RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable>
+    <AllowStartOnDemand>true</AllowStartOnDemand>
+    <Enabled>true</Enabled>
+    <Hidden>false</Hidden>
+    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
+    <RestartOnFailure><Interval>PT1M</Interval><Count>3</Count></RestartOnFailure>
+  </Settings>
+  <Actions Context="Author"><Exec><Command>{}</Command></Exec></Actions>
+</Task>
+"#,
+        xml_text(&command)
+    ))
 }
 
 fn linger_args(user: &str) -> Vec<&str> {
@@ -115,7 +179,7 @@ struct Service {
 impl Service {
     fn from_env(home: &Path) -> Result<Self> {
         let root = std::env::var_os("HEXBOT_SERVICE_ROOT")
-            .or_else(|| std::env::var_os("HOME"))
+            .or_else(|| crate::osutil::user_home().map(|path| path.into_os_string()))
             .ok_or_else(|| Error::new(4200, "HOME is required"))?;
         Ok(Self::new(
             home,
@@ -127,7 +191,9 @@ impl Service {
         Self {
             home: home.to_owned(),
             no_load,
-            file: root.join(if cfg!(target_os = "macos") {
+            file: root.join(if cfg!(windows) {
+                "AppData/Local/Hexbot/hexbot-service.cmd"
+            } else if cfg!(target_os = "macos") {
                 "Library/LaunchAgents/app.hexbot.daemon.plist"
             } else {
                 ".config/systemd/user/hexbot.service"
@@ -171,7 +237,9 @@ impl Service {
                 "Service is not installed; run hexbot service install",
             ));
         }
-        if cfg!(target_os = "macos") {
+        if cfg!(windows) {
+            self.command("schtasks", &["/Run", "/TN", "Hexbot"]).await?;
+        } else if cfg!(target_os = "macos") {
             let file = self.file.to_string_lossy();
             if !self.no_load {
                 start_launchd(&file, |args| async move {
@@ -188,7 +256,9 @@ impl Service {
     }
     async fn stop(&self) -> Result<()> {
         self.check_owner()?;
-        if cfg!(target_os = "macos") {
+        if cfg!(windows) {
+            self.command("schtasks", &["/End", "/TN", "Hexbot"]).await?;
+        } else if cfg!(target_os = "macos") {
             let file = self.file.to_string_lossy();
             for domain in launchd_domains() {
                 if self
@@ -208,18 +278,31 @@ impl Service {
     }
     async fn install(&self) -> Result<()> {
         self.check_owner()?;
-        let options = Options {
-            executable: self
-                .home
-                .join("runtime/native-executable")
+        let executable = if cfg!(windows) {
+            self.home.join("runtime/native-executable.exe")
+        } else {
+            self.home.join("runtime/native-executable")
+        };
+        let path = if cfg!(windows) {
+            let mut paths = vec![self.home.join("bin")];
+            if let Some(existing) = std::env::var_os("PATH") {
+                paths.extend(std::env::split_paths(&existing));
+            }
+            std::env::join_paths(paths)
+                .map_err(|_| Error::new(4200, "PATH is not usable for the service."))?
                 .to_string_lossy()
-                .into_owned(),
-            home: self.home.to_string_lossy().into_owned(),
-            path: format!(
+                .into_owned()
+        } else {
+            format!(
                 "{}:{}",
                 self.home.join("bin").display(),
                 std::env::var("PATH").unwrap_or_default()
-            ),
+            )
+        };
+        let options = Options {
+            executable: executable.to_string_lossy().into_owned(),
+            home: self.home.to_string_lossy().into_owned(),
+            path,
             log_dir: self.home.join("logs").to_string_lossy().into_owned(),
         };
         fs::create_dir_all(self.file.parent().unwrap())?;
@@ -228,16 +311,28 @@ impl Service {
         if self.file.exists() {
             let _ = self.stop().await;
         }
-        common::atomic_write(
-            &self.file,
-            if cfg!(target_os = "macos") {
-                launchd_plist(&options)
-            } else {
-                systemd_unit(&options)
-            }
-            .as_bytes(),
-        )?;
-        if cfg!(target_os = "macos") {
+        let body = if cfg!(windows) {
+            service_script(&options.home, &options.path, &options.executable)?
+        } else if cfg!(target_os = "macos") {
+            launchd_plist(&options)
+        } else {
+            systemd_unit(&options)
+        };
+        common::atomic_write(&self.file, body.as_bytes())?;
+        if cfg!(windows) {
+            let xml = self.file.with_extension("xml");
+            common::atomic_write(&xml, &utf16_le(&task_xml(&self.file)?))?;
+            let xml_arg = xml.to_string_lossy().into_owned();
+            let created = self
+                .command(
+                    "schtasks",
+                    &["/Create", "/TN", "Hexbot", "/XML", &xml_arg, "/F"],
+                )
+                .await;
+            let _ = fs::remove_file(&xml);
+            created?;
+            self.command("schtasks", &["/Run", "/TN", "Hexbot"]).await?;
+        } else if cfg!(target_os = "macos") {
             self.start().await?;
         } else {
             self.command("systemctl", &["--user", "daemon-reload"])
@@ -256,7 +351,19 @@ impl Service {
         if !self.file.exists() {
             return Ok(());
         }
-        if cfg!(target_os = "macos") {
+        if cfg!(windows) {
+            let _ = self.command("schtasks", &["/End", "/TN", "Hexbot"]).await;
+            if let Err(error) = self
+                .command("schtasks", &["/Delete", "/TN", "Hexbot", "/F"])
+                .await
+            {
+                if !error.message.to_ascii_lowercase().contains("cannot find the file")
+                    && !error.message.to_ascii_lowercase().contains("cannot find the task")
+                {
+                    return Err(error);
+                }
+            }
+        } else if cfg!(target_os = "macos") {
             let _ = self.stop().await;
         } else {
             let _ = self
@@ -278,6 +385,15 @@ impl Service {
         let installed = self.file.is_file() && self.check_owner().is_ok();
         let running = if self.no_load || !installed {
             false
+        } else if cfg!(windows) {
+            self.command("schtasks", &["/Query", "/TN", "Hexbot", "/FO", "LIST", "/V"])
+                .await
+                .is_ok_and(|output| {
+                    output.lines().any(|line| {
+                        let line = line.trim();
+                        line.starts_with("Status:") && line.contains("Running")
+                    })
+                })
         } else if cfg!(target_os = "macos") {
             let mut running = false;
             for domain in launchd_domains() {
@@ -297,7 +413,7 @@ impl Service {
                 .await
                 .is_ok()
         };
-        json!({"installed":installed,"running":running,"manager":if cfg!(target_os = "macos") {"launchd"} else {"systemd"},"file":self.file})
+        json!({"installed":installed,"running":running,"manager":if cfg!(windows) {"task-scheduler"} else if cfg!(target_os = "macos") {"launchd"} else {"systemd"},"file":self.file})
     }
     async fn logs(&self, follow: bool) -> Result<()> {
         let files = [
@@ -314,19 +430,45 @@ impl Service {
             }
             return Ok(());
         }
+        #[cfg(windows)]
+        {
+            let mut offsets = [0u64, 0u64];
+            loop {
+                for (index, file) in files.iter().enumerate() {
+                    if let Ok(text) = fs::read_to_string(file) {
+                        let bytes = text.len() as u64;
+                        let start = offsets[index] as usize;
+                        if bytes > offsets[index] {
+                            if let Some(chunk) = text.get(start..) {
+                                print!("{chunk}");
+                                offsets[index] = bytes;
+                            }
+                        }
+                    }
+                }
+                tokio::select! {
+                    _ = tokio::signal::ctrl_c() => return Ok(()),
+                    _ = tokio::time::sleep(Duration::from_millis(500)) => {}
+                }
+            }
+        }
+        #[cfg(unix)]
         let mut child = Command::new("tail")
             .args(["-n", "100", "-F"])
             .args(files)
             .stdin(Stdio::null())
             .kill_on_drop(true)
             .spawn()?;
-        tokio::select! {
-            result = child.wait() => {
-                if !result?.success() { return Err(Error::new(5243, "Could not follow service logs")); }
+        #[cfg(unix)]
+        {
+            tokio::select! {
+                result = child.wait() => {
+                    if !result?.success() { return Err(Error::new(5243, "Could not follow service logs")); }
+                }
+                _ = tokio::signal::ctrl_c() => { let _ = child.kill().await; let _ = child.wait().await; }
             }
-            _ = tokio::signal::ctrl_c() => { let _ = child.kill().await; let _ = child.wait().await; }
+            Ok(())
         }
-        Ok(())
     }
 }
 pub async fn status(home: &Path) -> Result<Value> {
@@ -424,6 +566,33 @@ mod tests {
             systemd_unit(&options),
             include_str!("../tests/fixtures/daemon-percent.service")
         );
+    }
+
+    #[test]
+    fn windows_service_script_rejects_quotes_and_round_trips() {
+        let root = tempfile::tempdir().unwrap();
+        let home = root.path().join("home");
+        let executable = home.join("runtime/native-executable.exe");
+        fs::create_dir_all(executable.parent().unwrap()).unwrap();
+        fs::write(&executable, "runtime").unwrap();
+        let home = home.canonicalize().unwrap();
+        let executable = executable.canonicalize().unwrap();
+        let script = service_script(
+            &home.to_string_lossy(),
+            "C:\\Windows\\System32",
+            &executable.to_string_lossy(),
+        )
+        .unwrap();
+        assert!(script.contains("rem HEXBOT_SERVICE_SCRIPT"));
+        assert!(service_script("a\"b", "path", "exe").is_err());
+        let path = root.path().join("hexbot-service.cmd");
+        fs::write(&path, script).unwrap();
+        crate::install_ownership::check_service(&path, &home, false).unwrap();
+        let xml = task_xml(Path::new(r"C:\Users\me\AppData\Local\Hexbot\hexbot-service.cmd")).unwrap();
+        assert!(xml.contains("LeastPrivilege"));
+        assert!(xml.contains("<LogonTrigger>"));
+        let bytes = utf16_le(&xml);
+        assert_eq!(&bytes[..2], &[0xFF, 0xFE]);
     }
 
     #[test]

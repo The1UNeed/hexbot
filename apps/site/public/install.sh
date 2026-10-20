@@ -5,6 +5,7 @@ set -eu
 main() {
     fail() { printf '%s\n' "$*" >&2; exit 1; }
 
+    # Windows uses the NSIS installer, not install.sh.
     case "$(uname -s)/$(uname -m)" in
         Darwin/arm64|Darwin/aarch64) target=macos-aarch64 ;;
         Darwin/x86_64) target=macos-x86_64 ;;

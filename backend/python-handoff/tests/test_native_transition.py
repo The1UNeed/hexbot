@@ -11,6 +11,7 @@ import sys
 import tarfile
 import tempfile
 import unittest
+import zipfile
 from unittest.mock import patch
 
 from hexbot import native_transition as transition
@@ -55,7 +56,15 @@ class NativeTransitionTests(unittest.TestCase):
 
     def download(self, url, destination, limit):
         if url.endswith("manifest.json"):
-            self.assertEqual(url, "https://updates.example/daemon/native/1.2.3/linux-x86_64/manifest.json")
+            system = transition.platform.system()
+            machine = transition.platform.machine()
+            if system == "Windows":
+                expected = "windows-x86_64" if machine in {"AMD64", "x86_64"} else machine
+            elif system == "Darwin":
+                expected = f"macos-{'aarch64' if machine in {'arm64', 'aarch64'} else 'x86_64'}"
+            else:
+                expected = f"linux-{'aarch64' if machine in {'arm64', 'aarch64'} else 'x86_64'}"
+            self.assertEqual(url, f"https://updates.example/daemon/native/1.2.3/{expected}/manifest.json")
             destination.write_text(json.dumps(self.manifest))
         elif url.endswith("manifest.json.sig"):
             self.assertEqual(limit, 1024)
@@ -532,6 +541,55 @@ class NativeTransitionTests(unittest.TestCase):
                 patch.object(transition.os, "execv") as execv:
             transition.handoff(["serve"])
         execv.assert_called_once_with(str(executable), [str(executable), "serve"])
+
+    def test_windows_x64_writes_a_cmd_launcher_and_rejects_arm64(self):
+        self.manifest["target"] = "windows-x86_64"
+        self.manifest["sha256"] = hashlib.sha256(self.archive.read_bytes()).hexdigest()
+        launcher = self.home / "runtime/venv/Scripts/hexbot.cmd"
+        launcher.parent.mkdir(parents=True)
+        launcher.write_text("@echo off\r\necho old\r\n")
+        with patch.object(transition.platform, "system", return_value="Windows"), \
+                patch.object(transition.platform, "machine", return_value="AMD64"):
+            executable = self.install()
+            text = launcher.read_text()
+            self.assertEqual(executable.name, "hexbot")
+            self.assertIn("native-executable.exe", text)
+            self.assertIn(f'set "HEXBOT_HOME={self.home}"', text)
+            self.assertTrue((self.home / "runtime/native-executable.exe").is_symlink())
+            self.assertEqual((self.home / "runtime/native-executable.exe").resolve(), executable)
+            with patch.object(transition.platform, "machine", return_value="ARM64"):
+                with self.assertRaisesRegex(ValueError, "Unsupported"):
+                    self.install()
+        self.manifest["target"] = "linux-x86_64"
+        self.assertTrue(str(self.install()).endswith("hexbot"))
+        self.assertTrue((self.home / "runtime/native-executable").is_symlink())
+
+    def test_windows_service_rewrites_the_cmd_and_does_not_call_schtasks(self):
+        user = self.root / "user"
+        file = user / "AppData/Local/Hexbot/hexbot-service.cmd"
+        file.parent.mkdir(parents=True)
+        file.write_text(
+            "@echo off\n"
+            "rem HEXBOT_SERVICE_SCRIPT\n"
+            f'set "HEXBOT_HOME={self.home}-old"\n'
+            'set "HEXBOT_SUPERVISOR=service"\n'
+            'set "PATH=C:\\Windows"\n'
+            f'"{self.home}\\runtime\\venv\\Scripts\\hexbot.cmd" serve\n'
+        )
+        with patch.object(transition.platform, "system", return_value="Windows"), patch("subprocess.run") as run:
+            transition._migrate_service(self.home, user)
+            run.assert_not_called()
+        text = file.read_text()
+        self.assertIn(f'set "HEXBOT_HOME={self.home}"', text)
+        self.assertIn(f'"{self.home / "runtime" / "native-executable.exe"}" serve', text)
+        self.assertNotIn("schtasks", text)
+
+    def test_windows_zip_rejects_parent_segments(self):
+        archive = self.root / "unsafe.zip"
+        with zipfile.ZipFile(archive, "w") as output:
+            output.writestr("../outside.txt", "nope")
+        with self.assertRaisesRegex(ValueError, "Unsafe"):
+            transition._extract_zip(archive, self.root / "unpacked")
 
 
 if __name__ == "__main__":

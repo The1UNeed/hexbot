@@ -17,10 +17,12 @@ describe('detectTarget', () => {
     expect(detectTarget({ userAgent: mac })).toBe('mac-arm64')
   })
 
-  it('knows Linux, and that phones, tablets, and Windows have no build', () => {
+  it('knows Linux and 64-bit Windows, and that phones, tablets, and Windows on ARM have no build', () => {
     expect(detectTarget({ userAgent: 'Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0' })).toBe('linux')
     expect(detectTarget({ userAgent: mac, maxTouchPoints: 5 })).toBe('other')
-    expect(detectTarget({ userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/128.0' })).toBe('other')
+    expect(detectTarget({ userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/128.0' })).toBe('windows')
+    expect(detectTarget({ userAgent: 'Mozilla/5.0 (Windows NT 10.0; ARM64) Chrome/128.0' })).toBe('other')
+    expect(detectTarget({ userAgent: 'Mozilla/5.0 (Windows Phone 10.0; Android 6.0.1) Chrome/128.0 Mobile' })).toBe('other')
     expect(detectTarget({ userAgent: 'Mozilla/5.0 (Linux; Android 14; Pixel 8) Chrome/128.0 Mobile' })).toBe('other')
     expect(detectTarget({ userAgent: 'Mozilla/5.0 (X11; CrOS x86_64 14541.0.0) Chrome/128.0' })).toBe('other')
   })

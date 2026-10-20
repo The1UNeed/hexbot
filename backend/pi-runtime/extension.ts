@@ -1,10 +1,10 @@
 /** Hexbot's frozen session tools and approval bridge. Pi owns the agent loop. */
 import { createHash } from 'node:crypto';
 import { readFileSync, realpathSync, lstatSync, readlinkSync, statSync, existsSync } from 'node:fs';
-import { resolve, dirname, basename, relative, sep, join } from 'node:path';
+import { resolve, dirname, basename, relative, sep, join, isAbsolute } from 'node:path';
 import { homedir, tmpdir } from 'node:os';
 import { createBashTool, createReadTool, createWriteTool, createEditTool, createGrepTool, createFindTool, createLsTool } from '@earendil-works/pi-coding-agent';
-import {credentialPolicy, fold, isolatedCommand, isolationAvailable, policyRegex, policyRoot, privateKeyName, probeIsolation, readDenied, secretFileName, gitDirectory, SCAN_REASON, SCAN_FILE_REASON, within, workspaceProtected, lockedGit, scanFailureReason} from './isolation.ts';
+import {credentialPolicy, fold, isolatedCommand, isolationAvailable, policyRegex, policyRoot, privateKeyName, probeIsolation, readDenied, secretFileName, gitDirectory, SCAN_REASON, SCAN_FILE_REASON, within, workspaceProtected, lockedGit, scanFailureReason, windowsSandboxArgv} from './isolation.ts';
 import { registerAcp } from './acp.ts';
 import { lazyStream } from '@earendil-works/pi-ai';
 import { builtinProviders } from '@earendil-works/pi-ai/providers/all';
@@ -219,6 +219,7 @@ export default function hexbot(pi: any) {
       }
       if (event.toolName === 'bash') {
         if (!isolationAvailable()) {
+          if (process.platform === 'win32') return {block: true, reason: 'Hexbot has no Windows sandbox helper, so this command did not run.'};
           // Requesting full access cannot bypass the missing-sandbox user card.
           ask = {key: 'shell:unsandboxed', command: event.input.command, reason: 'Hexbot has no OS sandbox on this system, so this command can read and change any file you can. Install bubblewrap and restart the daemon to restore isolation.'};
         } else if (event.input.full_access === true) {
@@ -309,6 +310,13 @@ export default function hexbot(pi: any) {
       if (name === 'bash') {
         const level = allowed.level;
         try {
+          if (process.platform === 'win32' && level !== 'none') {
+            const confine = level === 'base' ? 'base' : live.approvalMode === 'manual' ? 'readonly' : 'workspace';
+            const writes = (confine === 'workspace' ? workspaceRoots() : confine === 'readonly' ? live.outputDirs ?? [] : []).filter((path: string) => isAbsolute(path));
+            const result = await runWindowsCommand(confine, String(args.command ?? ''), cwd, live.home, writes, shellEnvironment(process.env), args.timeout, signal);
+            if (level === 'confined' && result.isError) result.content.push({type: 'text', text: sandboxNote()});
+            return result;
+          }
           const result = await factory(cwd, options(level)).execute(id, {command: args.command, timeout: args.timeout}, signal, update);
           if (level === 'confined' && result.isError) result.content.push({type: 'text', text: sandboxNote()});
           return result;
@@ -346,9 +354,16 @@ export default function hexbot(pi: any) {
     if (denial) return {result: {output: denial.reason, exitCode: 1, cancelled: false, truncated: false}};
     const level = levelFor({});
     return {operations: {exec: async (command: string, cwd: string, opts: any) => {
+      const dir = live.cwd ?? cwd;
+      if (process.platform === 'win32' && level !== 'none') {
+        const confine = level === 'base' ? 'base' : live.approvalMode === 'manual' ? 'readonly' : 'workspace';
+        const writes = (confine === 'workspace' ? workspaceRoots() : confine === 'readonly' ? live.outputDirs ?? [] : []).filter((path: string) => isAbsolute(path));
+        const result = await runWindowsCommand(confine, command, dir, live.home, writes, shellEnvironment(opts?.env ?? process.env));
+        return {output: result.content.map(part => part.text).join(''), exitCode: result.exitCode, cancelled: false, truncated: false};
+      }
       const {createLocalBashOperations} = await import('@earendil-works/pi-coding-agent');
-      if (level === 'none') return createLocalBashOperations().exec(command, live.cwd ?? cwd, opts);
-      return createLocalBashOperations().exec(spawnFor(level, command), live.cwd ?? cwd, {...opts, env: shellEnvironment(opts.env ?? process.env)});
+      if (level === 'none') return createLocalBashOperations().exec(command, dir, opts);
+      return createLocalBashOperations().exec(spawnFor(level, command), dir, {...opts, env: shellEnvironment(opts.env ?? process.env)});
     }}};
   });
 
@@ -578,12 +593,45 @@ export function protectedPath(path: string, home: string, writable: string[] = [
   path = canonicalPath(path, process.cwd());
   return protectedHomePath(path, home, writable) || path.split(sep).some(part => secretFileName(part) || ['.git', 'node_modules', '.ssh'].includes(fold(part)));
 }
+const WINDOWS_ESSENTIAL = new Set(['SYSTEMROOT', 'WINDIR', 'COMSPEC', 'PATHEXT', 'USERPROFILE', 'HOMEDRIVE', 'HOMEPATH', 'SYSTEMDRIVE']);
 export function shellEnvironment(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   // Explicit inheritance prevents unfamiliar connector keys and runtime injection
   // variables (BASH_ENV, NODE_OPTIONS, etc.) from reaching code children. The
   // daemon applies the same list from credential-policy.json to its children.
+  // Windows essentials stay off the shared policy so macOS and Linux still drop them.
   const inherited = new Set((credentialPolicy.environment as string[]).map(name => name.toUpperCase()));
-  return Object.fromEntries(Object.entries(env).filter(([name]) => inherited.has(name.toUpperCase()) || /^LC_/i.test(name)));
+  return Object.fromEntries(Object.entries(env).filter(([name]) => inherited.has(name.toUpperCase()) || /^LC_/i.test(name) || (process.platform === 'win32' && WINDOWS_ESSENTIAL.has(name.toUpperCase()))));
+}
+async function runWindowsCommand(level: 'base' | 'workspace' | 'readonly', command: string, cwd: string, home: string, writes: string[], env: NodeJS.ProcessEnv, timeout?: number, signal?: AbortSignal): Promise<{content: {type: 'text', text: string}[], isError?: boolean, exitCode: number}> {
+  const launch = windowsSandboxArgv(level, command, home, cwd, writes);
+  if (!launch) throw new Error('Hexbot has no Windows sandbox helper, so this command did not run.');
+  const {spawn} = await import('node:child_process');
+  return await new Promise((resolvePromise, reject) => {
+    const child = spawn(launch.exe, launch.args, {cwd, env, shell: false, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe']});
+    const chunks: Buffer[] = [];
+    let size = 0;
+    const take = (chunk: Buffer) => {
+      size += chunk.length;
+      if (size <= 1024 * 1024) chunks.push(chunk);
+    };
+    child.stdout?.on('data', take);
+    child.stderr?.on('data', take);
+    const timer = timeout ? setTimeout(() => child.kill(), timeout * 1000) : undefined;
+    const onAbort = () => child.kill();
+    signal?.addEventListener('abort', onAbort);
+    child.on('error', error => {
+      if (timer) clearTimeout(timer);
+      signal?.removeEventListener('abort', onAbort);
+      reject(error);
+    });
+    child.on('close', code => {
+      if (timer) clearTimeout(timer);
+      signal?.removeEventListener('abort', onAbort);
+      const text = Buffer.concat(chunks).toString('utf8');
+      const exitCode = code ?? 1;
+      resolvePromise({content: [{type: 'text', text}], isError: exitCode !== 0, exitCode});
+    });
+  });
 }
 
 export function escapeMcpValues(values: Record<string, string>): Record<string, string> {

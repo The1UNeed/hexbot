@@ -3,7 +3,7 @@
 // a parity test there compares the two outputs.
 import {readFileSync, readdirSync, readlinkSync, realpathSync, existsSync, statSync, lstatSync, openSync, opendirSync, fstatSync, readSync, closeSync, constants, type Dirent} from 'node:fs';
 import {createHash} from 'node:crypto';
-import {join, relative, resolve, dirname, basename} from 'node:path';
+import {join, relative, resolve, dirname, basename, isAbsolute} from 'node:path';
 import {homedir, tmpdir} from 'node:os';
 import {spawnSync} from 'node:child_process';
 export const credentialPolicy = JSON.parse(readFileSync(new URL('./credential-policy.json', import.meta.url), 'utf8'));
@@ -49,6 +49,13 @@ function secretPaths(home: string): string[] {
   cache.set(home, {at:Date.now(), paths:sorted});
   return sorted;
 }
+/** Absolute daemon binary. Missing on Windows means the shell does not run. */
+export function windowsHelper(): string | null {
+  if (process.platform !== 'win32') return null;
+  const exe = process.env.HEXBOT_EXECUTABLE;
+  if (!exe || !isAbsolute(exe) || !existsSync(exe)) return null;
+  return exe;
+}
 let bwrap: string | null | undefined;
 export function probeIsolation(): string | null {
   if (bwrap !== undefined) return bwrap;
@@ -59,8 +66,9 @@ export function probeIsolation(): string | null {
   }
   return bwrap;
 }
-// macOS always sandboxes (sandbox-exec fails closed). Elsewhere only bubblewrap does.
-export const isolationAvailable = () => process.platform === 'darwin' || !!probeIsolation();
+// macOS always sandboxes (sandbox-exec fails closed). Windows sandboxes only
+// through the daemon's AppContainer helper. Elsewhere only bubblewrap does.
+export const isolationAvailable = () => process.platform === 'darwin' || windowsHelper() !== null || !!probeIsolation();
 // A path that does not exist yet resolves through its existing parent, and a
 // dangling link to where its target would be.
 const LINK_HOPS = 40;
@@ -512,7 +520,24 @@ export function processLimit(): number | undefined {
   const listed = spawnSync('ps', [...process.platform === 'linux' ? ['-L'] : [], '-U', String(process.getuid?.() ?? ''), '-o', 'pid='], {encoding: 'utf8', timeout: 5000});
   return listed.status === 0 ? listed.stdout.split('\n').filter(Boolean).length + PROCESS_HEADROOM : undefined;
 }
+export function windowsSandboxArgv(level: 'base' | 'workspace' | 'readonly', command: string, home: string, cwd: string, writes: string[]): {exe: string, args: string[]} | null {
+  const exe = windowsHelper();
+  const root = process.env.SystemRoot || process.env.SYSTEMROOT;
+  if (!exe || !root || !isAbsolute(home) || !isAbsolute(cwd)) return null;
+  const shell = join(root, 'System32', 'cmd.exe');
+  if (!existsSync(shell)) return null;
+  const args = ['sandbox', '--home', home, '--confine', level, '--cwd', cwd];
+  for (const path of writes) {
+    if (!isAbsolute(path)) return null;
+    args.push('--write', path);
+  }
+  args.push('--', shell, '/d', '/s', '/c', command);
+  return {exe, args};
+}
 export function isolatedCommand(command: string, home: string, outputs: string[] = [], workspace?: string[], searchRoots: string[] = workspace ?? []): string {
+  // Windows never reaches this string. The extension spawns windowsSandboxArgv
+  // directly. A string here would be parsed by a shell, so fail closed.
+  if (process.platform === 'win32') return "echo Hexbot could not create the Windows sandbox.>&2\r\nexit 126";
   // A command that cannot be capped does not run.
   if (workspace) {
     const limit = processLimit();

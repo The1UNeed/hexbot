@@ -41,6 +41,8 @@ fn target_names_match_the_release_manifest() {
         ("macos", "aarch64", "macos-aarch64"),
         ("macos", "x86_64", "macos-x86_64"),
         ("linux", "x86_64", "linux-x86_64"),
+        ("windows", "x86_64", "windows-x86_64"),
+        ("windows", "amd64", "windows-x86_64"),
     ] {
         let target = Target::from_platform(os, arch).unwrap();
         assert_eq!(target.to_string(), expected);
@@ -49,8 +51,15 @@ fn target_names_match_the_release_manifest() {
             format!("\"{expected}\"")
         );
     }
-    assert!(Target::from_platform("windows", "x86_64").is_err());
+    assert!(Target::MacosAarch64.is_macos());
+    assert!(Target::MacosX86_64.is_macos());
+    assert!(!Target::LinuxX86_64.is_macos());
+    assert!(!Target::WindowsX86_64.is_macos());
+    assert!(Target::WindowsX86_64.is_windows());
+    assert!(!Target::LinuxX86_64.is_windows());
     assert!(Target::from_platform("linux", "aarch64").is_err());
+    assert!(Target::from_platform("windows", "aarch64").is_err());
+    assert!(Target::from_platform("windows", "arm64").is_err());
 }
 
 #[test]
@@ -77,6 +86,9 @@ fn receipt_round_trip_and_legacy_detection_are_isolated() {
     if target.is_macos() {
         common::bundle(&apps.join("Renamed.app"), "app.hexbot.client.nightly");
         common::bundle(&apps.join("Hexbot.app"), "org.example.unrelated");
+    } else if target.is_windows() {
+        fs::write(apps.join("app.hexbot.client.nightly.exe"), b"MZ").unwrap();
+        fs::write(apps.join("Unrelated.exe"), b"MZ").unwrap();
     } else {
         fs::write(
             apps.join("HexbotClient-0.1.0-nightly.1-linux-x86_64.AppImage"),

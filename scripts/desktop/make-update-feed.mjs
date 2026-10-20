@@ -7,6 +7,7 @@
 //   dist/updates/full/mac/arm64/latest-mac.yml + Hexbot-<v>-mac-arm64.zip|.dmg
 //   dist/updates/full/mac/x64/latest-mac.yml   + Hexbot-<v>-mac-x64.zip|.dmg
 //   dist/updates/full/linux/x64/latest-linux.yml + AppImage + deb
+//   dist/updates/full/win/x64/latest-win.yml   + NSIS exe, when that artifact exists
 //   dist/updates/client/...                    the same for HexbotClient-*
 // A nightly writes nightly-*.yml instead of latest-*.yml, so both channels
 // share one directory and the updater picks the file for its channel.
@@ -23,33 +24,6 @@ import { fileURLToPath } from 'node:url'
 import { feedMetadataName, writeFeedMetadata } from './update-feed-utils.mjs'
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..')
-const args = process.argv.slice(2)
-const option = name => {
-  const index = args.indexOf(name)
-  return index === -1 ? undefined : args[index + 1]
-}
-const client = args.includes('--client')
-const channel = option('--channel') ?? 'stable'
-const version =
-  option('--version') ??
-  JSON.parse(await readFile(join(repositoryRoot, 'apps/desktop/package.json'), 'utf8')).version
-const positional = args.filter(
-  (arg, i) =>
-    arg !== '--client' &&
-    !['--channel', '--version'].includes(arg) &&
-    !['--channel', '--version'].includes(args[i - 1])
-)
-if (!positional[0])
-  throw new Error(
-    'Usage: node scripts/desktop/make-update-feed.mjs --channel stable|nightly [--version <v>] [--client] <electron-builder-output-directory> [feed-root]'
-  )
-const outputDirectory = resolve(positional[0])
-const prefix = client ? 'HexbotClient' : 'Hexbot'
-const feedRoot = join(
-  positional[1] ? resolve(positional[1]) : join(repositoryRoot, 'dist/updates'),
-  client ? 'client' : 'full'
-)
-const releaseDate = new Date().toISOString()
 
 async function sha512(file) {
   const hash = createHash('sha512')
@@ -66,7 +40,7 @@ async function entry(file) {
   return { url: basename(file), sha512: await sha512(file), size: (await stat(file)).size }
 }
 
-function manifest(entries, primary) {
+function manifestText(entries, primary, version, releaseDate) {
   const lines = [`version: ${version}`, 'files:']
   for (const e of entries)
     lines.push(`  - url: ${e.url}`, `    sha512: ${e.sha512}`, `    size: ${e.size}`)
@@ -79,8 +53,17 @@ function manifest(entries, primary) {
   return lines.join('\n')
 }
 
-const files = await readdir(outputDirectory)
-let prepared = 0
+export async function makeUpdateFeed({
+  outputDirectory,
+  feedRoot,
+  channel = 'stable',
+  version,
+  client = false,
+  releaseDate = new Date().toISOString()
+}) {
+  const prefix = client ? 'HexbotClient' : 'Hexbot'
+  const files = await readdir(outputDirectory)
+  let prepared = 0
 
 for (const arch of ['arm64', 'x64']) {
   const zip = files.find(f => f === `${prefix}-${version}-mac-${arch}.zip`)
@@ -94,7 +77,7 @@ for (const arch of ['arm64', 'x64']) {
   const destination = join(feedRoot, 'mac', arch)
   await mkdir(destination, { recursive: true })
   for (const e of entries) await cp(join(outputDirectory, e.url), join(destination, e.url))
-  await writeFeedMetadata(destination, channel, 'mac', manifest(entries, entries[0]))
+  await writeFeedMetadata(destination, channel, 'mac', manifestText(entries, entries[0], version, releaseDate))
   console.log(`Prepared mac/${arch}`)
   prepared++
 }
@@ -129,4 +112,50 @@ if (linuxManifest) {
   console.log('linux/x64: no latest-linux.yml, skipped')
 }
 
+for (const arch of ['x64']) {
+  const exe = files.find(file => file === `${prefix}-${version}-windows-${arch}.exe`)
+  if (!exe) {
+    console.log(`win/${arch}: no exe artifact, skipped`)
+    continue
+  }
+  const entries = [await entry(join(outputDirectory, exe))]
+  const destination = join(feedRoot, 'win', arch)
+  await mkdir(destination, { recursive: true })
+  for (const item of entries) await cp(join(outputDirectory, item.url), join(destination, item.url))
+  await writeFeedMetadata(destination, channel, 'win', manifestText(entries, entries[0], version, releaseDate))
+  console.log(`Prepared win/${arch}`)
+  prepared++
+}
+
 if (!prepared) throw new Error(`No update artifacts found in ${outputDirectory}`)
+return prepared
+}
+
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  const args = process.argv.slice(2)
+  const option = name => {
+    const index = args.indexOf(name)
+    return index === -1 ? undefined : args[index + 1]
+  }
+  const client = args.includes('--client')
+  const channel = option('--channel') ?? 'stable'
+  const version =
+    option('--version') ??
+    JSON.parse(await readFile(join(repositoryRoot, 'apps/desktop/package.json'), 'utf8')).version
+  const positional = args.filter(
+    (arg, index) =>
+      arg !== '--client' &&
+      !['--channel', '--version'].includes(arg) &&
+      !['--channel', '--version'].includes(args[index - 1])
+  )
+  if (!positional[0])
+    throw new Error(
+      'Usage: node scripts/desktop/make-update-feed.mjs --channel stable|nightly [--version <v>] [--client] <electron-builder-output-directory> [feed-root]'
+    )
+  const outputDirectory = resolve(positional[0])
+  const feedRoot = join(
+    positional[1] ? resolve(positional[1]) : join(repositoryRoot, 'dist/updates'),
+    client ? 'client' : 'full'
+  )
+  await makeUpdateFeed({ outputDirectory, feedRoot, channel, version, client })
+}

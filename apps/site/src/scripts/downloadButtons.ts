@@ -3,6 +3,6 @@
 import { detectTarget } from '../lib/detectPlatform'
 
 const target = detectTarget({ userAgent: navigator.userAgent, maxTouchPoints: navigator.maxTouchPoints })
-const platform = target === 'linux' ? ' for Linux' : target === 'other' ? '' : ' for Mac'
+const platform = target === 'linux' ? ' for Linux' : target === 'windows' ? ' for Windows' : target === 'other' ? '' : ' for Mac'
 for (const label of document.querySelectorAll<HTMLElement>('[data-download-label]'))
   label.textContent = `Download${label.dataset.downloadLabel === 'nightly' ? ' nightly' : ''}${platform}`

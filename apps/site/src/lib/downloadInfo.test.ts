@@ -27,6 +27,12 @@ describe('describeDownload', () => {
     expect(describeDownload(`${updates}/install/0.1.6-nightly.20261003.42/HexbotInstaller-0.1.6-nightly.20261003.42-linux-x86_64.AppImage`)).toEqual({
       artifact: 'installer', os: 'linux', arch: 'x64', format: 'AppImage', version: '0.1.6-nightly.20261003.42', channel: 'nightly',
     })
+    expect(describeDownload(`${updates}/install/0.1.6/HexbotInstaller-0.1.6-windows-x86_64.exe`)).toEqual({
+      artifact: 'installer', os: 'windows', arch: 'x64', format: 'exe', version: '0.1.6', channel: 'stable',
+    })
+    expect(describeDownload(`${updates}/full/win/x64/Hexbot-0.1.6-windows-x64.exe`)).toEqual({
+      artifact: 'package', edition: 'full', os: 'windows', arch: 'x64', format: 'exe', version: '0.1.6', channel: 'stable',
+    })
   })
 
   it('ignores other links', () => {

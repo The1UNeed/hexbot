@@ -32,6 +32,18 @@ pub fn resolved(path: &Path) -> io::Result<PathBuf> {
 }
 
 pub fn wrapper_home(text: &str) -> Option<PathBuf> {
+    if text.lines().any(|line| line.trim_end_matches('\r') == "rem HEXBOT_CLI") {
+        let mut homes = text.lines().filter_map(|line| {
+            line.trim_end_matches('\r')
+                .strip_prefix("set \"HEXBOT_HOME=")?
+                .strip_suffix('"')
+        });
+        let home = homes.next()?;
+        if homes.next().is_some() || home.contains(['"', '\r', '\n']) {
+            return None;
+        }
+        return Some(PathBuf::from(home));
+    }
     if !text.lines().any(|line| line == WRAPPER_MARKER) {
         return None;
     }
@@ -123,6 +135,12 @@ pub fn check_service(path: &Path, home: &Path, macos: bool) -> io::Result<()> {
         ));
     }
     let text = fs::read_to_string(path)?;
+    if text.matches("rem HEXBOT_SERVICE_SCRIPT").count() == 1 {
+        let (owner, executable) = windows_service_command(&text).ok_or_else(|| {
+            io::Error::other("Cannot identify the owner of the Hexbot service; left it alone")
+        })?;
+        return check_service_owner(home, &owner, &executable);
+    }
     if text.matches("HEXBOT_HOME").count() != 1
         || (!macos && text.matches("ExecStart=").count() != 1)
     {
@@ -144,20 +162,47 @@ pub fn check_service(path: &Path, home: &Path, macos: bool) -> io::Result<()> {
     let owner = owner.ok_or_else(|| {
         io::Error::other("Cannot identify the home of the existing Hexbot service; left it alone")
     })?;
+    let executable = executable.ok_or_else(|| {
+        io::Error::other("Cannot identify the executable of the existing Hexbot service")
+    })?;
+    check_service_owner(home, &owner, &executable)
+}
+
+fn windows_service_command(text: &str) -> Option<(String, String)> {
+    let lines: Vec<&str> = text.split('\n').map(|line| line.trim_end_matches('\r')).collect();
+    if lines.len() != 7 || !lines[6].is_empty() {
+        return None;
+    }
+    if lines[0] != "@echo off"
+        || lines[1] != "rem HEXBOT_SERVICE_SCRIPT"
+        || lines[3] != "set \"HEXBOT_SUPERVISOR=service\""
+        || !lines[4].starts_with("set \"PATH=")
+        || !lines[4].ends_with('"')
+    {
+        return None;
+    }
+    let owner = lines[2]
+        .strip_prefix("set \"HEXBOT_HOME=")?
+        .strip_suffix('"')?;
+    let executable = lines[5].strip_prefix('"')?.strip_suffix("\" serve")?;
+    if owner.contains('"') || executable.contains('"') {
+        return None;
+    }
+    Some((owner.to_owned(), executable.to_owned()))
+}
+
+fn check_service_owner(home: &Path, owner: &str, executable: &str) -> io::Result<()> {
     let expected = resolved(home)?;
-    if resolved(Path::new(&owner))? != expected {
+    if resolved(Path::new(owner))? != expected {
         return Err(io::Error::other(format!(
             "The Hexbot service on this computer belongs to {owner}. Uninstall it from there first."
         )));
     }
-    let executable = executable.ok_or_else(|| {
-        io::Error::other("Cannot identify the executable of the existing Hexbot service")
-    })?;
-    let executable = Path::new(&executable);
+    let executable = Path::new(executable);
     // Allow a broken stable pointer so the service can still be uninstalled.
     let stable = executable
         .file_name()
-        .is_some_and(|n| n == "native-executable")
+        .is_some_and(|n| n == "native-executable" || n == "native-executable.exe")
         && executable.parent().and_then(|p| resolved(p).ok()) == Some(expected.join("runtime"));
     let stable = stable
         && match fs::symlink_metadata(executable) {

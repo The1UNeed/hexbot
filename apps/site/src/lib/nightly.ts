@@ -16,6 +16,10 @@ const targets = [
   ['Linux deb', 'linux/x64', 'nightly-linux.yml', /\.deb$/]
 ] as const
 
+// Missing on the server until a Windows package is published. A 404 skips the
+// row. A feed that exists with a different version fails the whole set.
+const windowsTarget = ['Windows', 'win/x64', 'nightly-win.yml', /\.exe$/] as const
+
 export type FeedFile = { url: string; size?: number }
 
 export function parseFeed(yml: string): { version: string; files: FeedFile[] } | null {
@@ -47,25 +51,42 @@ async function fetchText(url: string): Promise<string> {
 export async function nightlyDownloads(load = fetchText): Promise<Downloads | null> {
   try {
     const versions = new Set<string>()
+    const missing = (error: unknown) => /\b404\b/.test((error as Error).message ?? '')
     const edition = async (name: 'full' | 'client') => {
-      const feeds = new Map<string, FeedFile[]>()
+      const feeds = new Map<string, FeedFile[] | null>()
       const rows: Build[] = []
-      for (const [label, dir, feed, artifact] of targets) {
-        const url = `${updates}/${name}/${dir}`
-        if (!feeds.has(dir)) {
-          const parsed = parseFeed(await load(`${url}/${feed}`))
-          if (!parsed) throw new Error(`${url}/${feed} is not an update feed`)
+      const loadFeed = async (dir: string, feed: string, optional: boolean) => {
+        if (feeds.has(dir)) return feeds.get(dir) ?? null
+        const url = `${updates}/${name}/${dir}/${feed}`
+        try {
+          const parsed = parseFeed(await load(url))
+          if (!parsed) throw new Error(`${url} is not an update feed`)
           versions.add(parsed.version)
           feeds.set(dir, parsed.files)
+          return parsed.files
+        } catch (error) {
+          if (optional && missing(error)) {
+            feeds.set(dir, null)
+            return null
+          }
+          throw error
         }
-        const file = feeds.get(dir)!.find(f => artifact.test(f.url))
-        if (!file) throw new Error(`${url}/${feed} names no ${artifact.source} file`)
-        rows.push({ label, url: `${url}/${file.url}`, size: file.size })
       }
+      for (const [label, dir, feed, artifact] of targets) {
+        const files = await loadFeed(dir, feed, false)
+        const file = files?.find(item => artifact.test(item.url))
+        if (!file) throw new Error(`${updates}/${name}/${dir}/${feed} names no ${artifact.source} file`)
+        rows.push({ label, url: `${updates}/${name}/${dir}/${file.url}`, size: file.size })
+      }
+      const [label, dir, feed, artifact] = windowsTarget
+      const windows = await loadFeed(dir, feed, true)
+      const exe = windows?.find(item => artifact.test(item.url))
+      if (windows && !exe) throw new Error(`${updates}/${name}/${dir}/${feed} names no ${artifact.source} file`)
+      if (exe) rows.push({ label, url: `${updates}/${name}/${dir}/${exe.url}`, size: exe.size })
       return rows
     }
     const [full, client] = [await edition('full'), await edition('client')]
-    // Six feed files, one version. Anything else is a half-uploaded nightly.
+    // The macOS and Linux feeds, plus Windows when it is published. One version.
     if (versions.size !== 1) throw new Error(`Nightly feeds disagree: ${[...versions].join(', ')}`)
     return { version: [...versions][0], full, client }
   } catch (error) {

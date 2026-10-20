@@ -1568,7 +1568,6 @@ pub fn prune_current_native(home: &Path) -> Result<()> {
 // Unknown running state defers cleanup. Setup can run from a different bundle
 // than the daemon which still owns this home's lock.
 fn recorded_native_runtime(native: &Path) -> Result<Option<PathBuf>> {
-    use std::os::fd::AsRawFd;
     let runtime = native
         .parent()
         .ok_or_else(|| Error::new(5243, "Missing runtime directory"))?;
@@ -1576,7 +1575,7 @@ fn recorded_native_runtime(native: &Path) -> Result<Option<PathBuf>> {
         .parent()
         .ok_or_else(|| Error::new(5243, "Missing home"))?;
     let locked = match fs::File::open(home.join("native-daemon.lock")) {
-        Ok(file) => unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) != 0 },
+        Ok(file) => crate::osutil::try_lock_exclusive(&file).is_err(),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
         Err(e) => return Err(e.into()),
     };
@@ -1591,8 +1590,7 @@ fn recorded_native_runtime(native: &Path) -> Result<Option<PathBuf>> {
         .as_i64()
         .filter(|pid| *pid > 0 && *pid <= i32::MAX as i64)
         .ok_or_else(|| Error::new(5243, "Invalid running daemon PID"))? as i32;
-    let alive = unsafe { libc::kill(pid, 0) } == 0
-        || std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH);
+    let alive = crate::osutil::process_alive(pid as u32);
     if !alive && !locked {
         return Ok(None);
     }
@@ -1615,7 +1613,6 @@ fn recorded_native_runtime(native: &Path) -> Result<Option<PathBuf>> {
 }
 
 pub(crate) fn activation_lock(runtime: &Path) -> Result<fs::File> {
-    use std::os::fd::AsRawFd;
     let file = fs::OpenOptions::new()
         .create(true)
         .truncate(false)
@@ -1627,21 +1624,33 @@ pub(crate) fn activation_lock(runtime: &Path) -> Result<fs::File> {
     if let Some(held) = inherited_activation_lock(&file, inherited) {
         return Ok(held);
     }
-    loop {
-        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) } == 0 {
-            return Ok(file);
-        }
-        let error = std::io::Error::last_os_error();
-        if error.kind() != std::io::ErrorKind::Interrupted {
-            return Err(error.into());
+    // A Windows installer cannot hand this process its LockFileEx the way a
+    // Unix parent hands down flock. While it still holds the lock, taking it
+    // again would wait forever. A lock violation means that parent is the
+    // guard. Any other failure, or a free lock, is taken here so setting
+    // HEXBOT_ACTIVATION_LOCK_FD cannot skip the lock.
+    if cfg!(windows) && std::env::var_os("HEXBOT_ACTIVATION_LOCK_FD").is_some() {
+        match crate::osutil::try_lock_exclusive(&file) {
+            Ok(()) => return Ok(file),
+            Err(error) if error.raw_os_error() == Some(33) => return Ok(file),
+            Err(error) => return Err(error.into()),
         }
     }
+    crate::osutil::lock_exclusive(&file)?;
+    Ok(file)
 }
 
 /// The installer holds the activation lock across its version check and
 /// `hexbot setup --activate`, and passes the locked descriptor down. Use it
 /// only if it is this lock file and the lock is already ours to take.
 fn inherited_activation_lock(file: &fs::File, fd: Option<i32>) -> Option<fs::File> {
+    #[cfg(not(unix))]
+    {
+        let _ = (file, fd);
+        return None;
+    }
+    #[cfg(unix)]
+    {
     use std::os::fd::{AsRawFd, FromRawFd};
     use std::os::unix::fs::MetadataExt;
     let fd = fd.filter(|fd| *fd > 2)?;
@@ -1658,6 +1667,7 @@ fn inherited_activation_lock(file: &fs::File, fd: Option<i32>) -> Option<fs::Fil
     unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) };
     // Immediate when the inherited file holds the lock; refused while anyone else does.
     (unsafe { libc::flock(copy.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0).then_some(copy)
+    }
 }
 
 // Staging directories remain hidden from pruning until the activation lock is held.
@@ -1737,6 +1747,25 @@ fn activate_native_locked(native: &Path, version: &str, executable: &Path) -> Re
     {
         fs::rename(staged_link.path().join("launcher"), stable)?;
         fs::File::open(runtime)?.sync_all()?;
+    }
+    #[cfg(windows)]
+    {
+        // A hard link keeps the stable name executable without a symlink, which
+        // needs an extra privilege. Both names stay under this runtime directory.
+        for link in [stable.clone(), runtime.join("native-executable.exe")] {
+            if fs::symlink_metadata(&link).is_ok_and(|meta| meta.file_type().is_dir()) {
+                return Err(Error::new(
+                    5243,
+                    "native executable pointer must not be a directory",
+                ));
+            }
+            let temporary = runtime.join(format!(".native-link-{}", common::id()));
+            fs::hard_link(&executable, &temporary)?;
+            if let Err(error) = fs::rename(&temporary, &link) {
+                let _ = fs::remove_file(&temporary);
+                return Err(error.into());
+            }
+        }
     }
     let running = match recorded_native_runtime(native) {
         Ok(recorded) => recorded.or_else(|| std::env::current_exe().ok()),

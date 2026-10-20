@@ -118,17 +118,7 @@ fn hostname(bytes: &[u8]) -> Option<String> {
     (length > 0).then(|| String::from_utf8_lossy(&bytes[..length]).into_owned())
 }
 pub fn daemon_name() -> String {
-    let mut bytes = [0u8; 256];
-    // The buffer is valid for its entire length and is read only after gethostname returns.
-    if unsafe { libc::gethostname(bytes.as_mut_ptr().cast(), bytes.len()) } == 0
-        && let Some(name) = hostname(&bytes)
-    {
-        return name;
-    }
-    std::env::var("HOSTNAME")
-        .ok()
-        .filter(|name| !name.is_empty())
-        .unwrap_or_else(|| "Hexbot".into())
+    crate::osutil::hostname().unwrap_or_else(|| "Hexbot".into())
 }
 /// Main maps the pinned cloud owner to the daemon's owner. Spend and mint atomically.
 pub fn redeem_verified_grant(

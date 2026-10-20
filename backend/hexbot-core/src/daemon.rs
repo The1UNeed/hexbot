@@ -14,21 +14,18 @@ fn home() -> Result<PathBuf> {
     if let Some(home) = std::env::var_os("HEXBOT_HOME").filter(|value| !value.is_empty()) {
         let mut path = PathBuf::from(home);
         if path.starts_with("~") {
-            path = PathBuf::from(
-                std::env::var_os("HOME")
-                    .ok_or_else(|| Error::new(4200, "HOME is required to expand ~"))?,
-            )
-            .join(path.strip_prefix("~").unwrap());
+            path = hexbot_core::osutil::user_home()
+                .ok_or_else(|| Error::new(4200, "HOME is required to expand ~"))?
+                .join(path.strip_prefix("~").unwrap());
         }
         if path.is_relative() {
             path = std::env::current_dir()?.join(path);
         }
         return Ok(path);
     }
-    Ok(PathBuf::from(
-        std::env::var_os("HOME").ok_or_else(|| Error::new(4200, "HEXBOT_HOME is required"))?,
-    )
-    .join(".hexbot"))
+    Ok(hexbot_core::osutil::user_home()
+        .ok_or_else(|| Error::new(4200, "HEXBOT_HOME is required"))?
+        .join(".hexbot"))
 }
 fn refuse_legacy_listener(home: &Path) -> Result<()> {
     if !home.join("runtime/native-transition-pending").exists() {
@@ -135,12 +132,8 @@ fn lock_home(home: &Path) -> Result<std::fs::File> {
         options.mode(0o600);
     }
     let mut file = options.open(path)?;
-    #[cfg(unix)]
-    {
-        use std::os::fd::AsRawFd;
-        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
-            return Err(Error::new(4208, "a daemon already owns this home"));
-        }
+    if hexbot_core::osutil::try_lock_exclusive(&file).is_err() {
+        return Err(Error::new(4208, "a daemon already owns this home"));
     }
     refuse_legacy_listener(home)?;
     file.set_len(0)?;
@@ -158,6 +151,9 @@ fn prints_sign_in_link(terminal: bool, env: impl Fn(&str) -> Option<String>) -> 
 }
 async fn run() -> Result<()> {
     let arguments = std::env::args().skip(1).collect::<Vec<_>>();
+    if arguments.first().map(String::as_str) == Some("sandbox") {
+        return hexbot_core::windows_sandbox::run_cli(&arguments[1..]);
+    }
     let mut args = arguments.clone().into_iter();
     let command = args.next().unwrap_or_else(|| "help".into());
     if matches!(command.as_str(), "--version" | "version" | "-V") {
@@ -445,6 +441,17 @@ async fn run() -> Result<()> {
                 use std::os::unix::process::CommandExt;
                 return Err(next.exec().into());
             }
+            #[cfg(windows)]
+            {
+                use std::os::windows::process::CommandExt;
+                // Leave the scheduler's job so the replacement survives this process exiting.
+                const DETACHED_PROCESS: u32 = 0x0000_0008;
+                const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+                next.creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP);
+                next.spawn()
+                    .map_err(|error| Error::new(5200, error.to_string()))?;
+                std::process::exit(0);
+            }
         }
     }
     Ok(())
@@ -452,6 +459,14 @@ async fn run() -> Result<()> {
 /// Registers the handlers before returning, so a SIGTERM or SIGINT that arrives
 /// between the ready line and the first poll still shuts the daemon down cleanly.
 fn shutdown_signal() -> impl std::future::Future<Output = ()> {
+    #[cfg(windows)]
+    {
+        return async {
+            let _ = tokio::signal::ctrl_c().await;
+        };
+    }
+    #[cfg(unix)]
+    {
     use tokio::signal::unix::{SignalKind, signal};
     let term = signal(SignalKind::terminate()).ok();
     let interrupt = signal(SignalKind::interrupt()).ok();
@@ -465,6 +480,7 @@ fn shutdown_signal() -> impl std::future::Future<Output = ()> {
             }
         };
         tokio::select! {_=wait(term)=>{},_=wait(interrupt)=>{}}
+    }
     }
 }
 #[tokio::main]

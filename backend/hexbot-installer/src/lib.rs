@@ -7,10 +7,11 @@ mod safety;
 mod types;
 #[path = "../../hexbot-core/src/update_path.rs"]
 mod update_path;
+mod windows_service;
 #[path = "../../hexbot-core/src/update_signature.rs"]
 pub mod update_signature;
 
-pub use archive::{extract_native, verify_file};
+pub use archive::{extract_native, extract_zip, verify_file};
 pub use detect::{Paths, app_option, detect, detect_at, read_receipt, sanitize_appimage_env};
 pub use types::*;
 
@@ -294,7 +295,7 @@ impl Installer {
             ));
             self.remove_owned_path(&app.staging)?;
         }
-        if !self.target.is_macos() {
+        if self.target.is_linux() {
             for base in ["app.hexbot.desktop", "app.hexbot.client"] {
                 for suffix in ["", ".nightly", ".dev"] {
                     self.remove_owned_path(
@@ -308,11 +309,25 @@ impl Installer {
         }
         // The runtimes are not user data; bots, memory and settings stay.
         self.remove_owned_path(&self.paths.executable())?;
+        if self.target.is_windows() {
+            self.remove_owned_path(
+                &self
+                    .paths
+                    .hexbot_home
+                    .join("runtime/native-executable.exe"),
+            )?;
+        }
         self.remove_owned_path(&self.paths.hexbot_home.join("runtime/native-current.json"))?;
         self.remove_owned_path(&self.paths.hexbot_home.join("runtime/native"))?;
         // `hexbot setup` marks the wrapper it writes; leave anyone else's `hexbot`.
-        if install_ownership::wrapper_owned(&self.paths.wrapper(), &self.paths.hexbot_home) {
-            self.remove_owned_path(&self.paths.wrapper())?;
+        let wrapper = self.paths.cli_wrapper(self.target);
+        let wrapper_owned = if self.target.is_windows() {
+            windows_service::wrapper_owned(&wrapper, &self.paths.hexbot_home)
+        } else {
+            install_ownership::wrapper_owned(&self.paths.wrapper(), &self.paths.hexbot_home)
+        };
+        if wrapper_owned {
+            self.remove_owned_path(&wrapper)?;
         }
         self.remove_owned_path(&self.paths.receipt())?;
         if remove_data {
@@ -423,7 +438,9 @@ impl Installer {
         let mut warnings = Vec::new();
         let mut status = None;
         let paths = if option == InstallOption::Headless {
-            if artifact.format.as_deref() != Some("tar.gz") {
+            let windows = self.target.is_windows();
+            let expected = if windows { "zip" } else { "tar.gz" };
+            if artifact.format.as_deref() != Some(expected) {
                 return fail("The native archive format is not supported.");
             }
             let runtime = self.paths.hexbot_home.join("runtime");
@@ -431,8 +448,12 @@ impl Installer {
             let staging = tempfile::tempdir_in(&runtime)?;
             let unpacked = staging.path().join("native");
             progress(Progress::new("extract", "Extracting the daemon."));
-            extract_native(&download, &unpacked)?;
-            let binary = unpacked.join("hexbot");
+            if windows {
+                extract_zip(&download, &unpacked)?;
+            } else {
+                extract_native(&download, &unpacked)?;
+            }
+            let binary = unpacked.join(if windows { "hexbot.exe" } else { "hexbot" });
             // The daemon may have activated a newer runtime since the check above.
             let activation = self.lock_activation(progress)?;
             self.refuse_downgrade(manifest)?;
@@ -444,28 +465,32 @@ impl Installer {
             )?;
             drop(activation);
             if enable_lan {
-                self.run(&self.paths.executable(), &["lan", "on"], false, progress)?;
+                self.run(&self.service_executable(), &["lan", "on"], false, progress)?;
                 progress(Progress::new(
                     "lan",
                     "LAN access is on. Turn it off with: hexbot lan off. Direct LAN HTTP does not encrypt sign-ins or chat. Use Tailscale or HTTPS on untrusted networks.",
                 ));
             }
-            self.run(
-                &self.paths.executable(),
-                &["service", "install"],
-                false,
-                progress,
-            )?;
+            if windows {
+                self.install_windows_service(progress)?;
+            } else {
+                self.run(
+                    &self.paths.executable(),
+                    &["service", "install"],
+                    false,
+                    progress,
+                )?;
+            }
             status = self.status().ok();
-            if !self.target.is_macos()
+            if self.target.is_linux()
                 && !sandbox_available(status.as_ref(), || command_exists("bwrap"))
             {
                 warnings.push("Bubblewrap is missing or unusable. Auto mode needs it for the sandbox. For installation and the Ubuntu 24.04 AppArmor fix, see https://hexbot.app/docs/install/#linux.".into());
             }
             vec![
-                self.paths.executable(),
+                self.service_executable(),
                 self.paths.service_file(self.target),
-                self.paths.wrapper(),
+                self.paths.cli_wrapper(self.target),
             ]
         } else if self.target.is_macos() {
             self.install_macos(
@@ -476,8 +501,12 @@ impl Installer {
                 &mut warnings,
                 progress,
             )?
-        } else {
+        } else if self.target.is_linux() {
             self.install_linux(&download, artifact, identity.unwrap(), progress)?
+        } else if self.target.is_windows() {
+            self.install_windows(&download, artifact, identity.unwrap(), progress)?
+        } else {
+            return fail("This installer does not support this computer.");
         };
         for warning in &warnings {
             progress(Progress::new("warning", warning));
@@ -688,10 +717,109 @@ impl Installer {
         Ok(vec![destination, desktop, icon])
     }
 
+    /// Copy an NSIS `.exe` into the apps directory, or extract a `.zip`.
+    /// The NSIS installer is not executed.
+    fn install_windows(
+        &self,
+        download: &Path,
+        artifact: &Artifact,
+        (id, _name): (&str, &str),
+        progress: &mut ProgressCallback<'_>,
+    ) -> Result<Vec<PathBuf>> {
+        let format = artifact.format.as_deref().unwrap_or("");
+        let directory = self.paths.install_apps_dir(self.target)?;
+        let previous: Vec<_> = self
+            .detect()?
+            .apps
+            .into_iter()
+            .filter(|app| app.app_id == id)
+            .collect();
+        self.check_removable(&previous.iter().collect::<Vec<_>>())?;
+        progress(Progress::new("install", "Installing the app."));
+        let destination = if format == "exe" || format == "nsis" {
+            let destination = directory.join(format!("{id}.exe"));
+            self.require_quit(&destination)?;
+            if fs::symlink_metadata(&destination).is_ok_and(|meta| !meta.is_file()) {
+                return fail("The app destination is not a regular file.");
+            }
+            let staged = tempfile::NamedTempFile::new_in(&directory)?;
+            fs::copy(download, staged.path())?;
+            staged.persist(&destination)?;
+            destination
+        } else if format == "zip" {
+            let destination = directory.join(id);
+            self.require_quit(&destination)?;
+            let staging = tempfile::tempdir_in(&directory)?;
+            let unpacked = staging.path().join(id);
+            extract_zip(download, &unpacked)?;
+            if destination.exists() {
+                self.remove_owned_path(&destination)?;
+            }
+            fs::rename(&unpacked, &destination)?;
+            destination
+        } else {
+            return fail("The app archive format is not supported.");
+        };
+        for app in previous {
+            if app.path != destination {
+                self.remove_owned_path(&app.path)?;
+            }
+        }
+        Ok(vec![destination])
+    }
+
+    fn service_executable(&self) -> PathBuf {
+        if self.target.is_windows() {
+            self.paths
+                .hexbot_home
+                .join("runtime/native-executable.exe")
+        } else {
+            self.paths.executable()
+        }
+    }
+
+    fn install_windows_service(&self, progress: &mut ProgressCallback<'_>) -> Result<()> {
+        let home = path_text(&self.paths.hexbot_home)?;
+        let executable = path_text(&self.service_executable())?;
+        let path = windows_service::windows_path_env(
+            &self.paths.hexbot_home.join("bin"),
+            &std::env::var("PATH").unwrap_or_default(),
+        )?;
+        let wrapper = self.paths.cli_wrapper(self.target);
+        archive::write_atomic(
+            &wrapper,
+            windows_service::windows_cli_script(&home, &executable)?.as_bytes(),
+        )?;
+        let file = self.paths.service_file(self.target);
+        archive::write_atomic(
+            &file,
+            windows_service::windows_service_script(&home, &path, &executable)?.as_bytes(),
+        )?;
+        let xml = windows_service::task_xml_path(&file);
+        let command = path_text(&file)?;
+        archive::write_atomic(&xml, &windows_service::windows_task_xml_bytes(&command)?)?;
+        if !self.paths.service_no_load {
+            check_output(
+                self.paths
+                    .command("schtasks")
+                    .args(windows_service::schtasks_create(&xml))
+                    .output()?,
+            )?;
+            check_output(
+                self.paths
+                    .command("schtasks")
+                    .args(windows_service::schtasks_run())
+                    .output()?,
+            )?;
+        }
+        progress(Progress::new("service", "Daemon service installed."));
+        Ok(())
+    }
+
     fn status(&self) -> Result<serde_json::Value> {
         let output = self
             .paths
-            .command(self.paths.executable())
+            .command(self.service_executable())
             .args(["status", "--json"])
             .output()?;
         let bytes = check_output(output)?;
@@ -720,22 +848,49 @@ impl Installer {
         lock: &fs::File,
         progress: &mut ProgressCallback<'_>,
     ) -> Result<()> {
-        use std::os::{fd::AsRawFd, unix::process::CommandExt};
-        let fd = lock.as_raw_fd();
-        let mut command = self.paths.command(executable);
-        command
-            .args(args)
-            .env("HEXBOT_ACTIVATION_LOCK_FD", fd.to_string());
-        // Only this child inherits the descriptor; fcntl is async-signal-safe.
-        unsafe {
-            command.pre_exec(move || {
-                if libc::fcntl(fd, libc::F_SETFD, 0) == -1 {
-                    return Err(std::io::Error::last_os_error());
-                }
-                Ok(())
-            });
+        #[cfg(unix)]
+        {
+            use std::os::{fd::AsRawFd, unix::process::CommandExt};
+            let fd = lock.as_raw_fd();
+            let mut command = self.paths.command(executable);
+            command
+                .args(args)
+                .env("HEXBOT_ACTIVATION_LOCK_FD", fd.to_string());
+            // Only this child inherits the descriptor; fcntl is async-signal-safe.
+            unsafe {
+                command.pre_exec(move || {
+                    if libc::fcntl(fd, libc::F_SETFD, 0) == -1 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                    Ok(())
+                });
+            }
+            self.run_command(command, args, true, progress)
         }
-        self.run_command(command, args, true, progress)
+        #[cfg(windows)]
+        {
+            use std::os::windows::io::AsRawHandle;
+            const HANDLE_FLAG_INHERIT: u32 = 0x00000001;
+            #[link(name = "kernel32")]
+            unsafe extern "system" {
+                fn SetHandleInformation(
+                    handle: *mut std::ffi::c_void,
+                    mask: u32,
+                    flags: u32,
+                ) -> i32;
+            }
+            let raw = lock.as_raw_handle();
+            if unsafe { SetHandleInformation(raw, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT) } == 0
+            {
+                return Err(std::io::Error::last_os_error().into());
+            }
+            let mut command = self.paths.command(executable);
+            command.args(args).env(
+                "HEXBOT_ACTIVATION_LOCK_FD",
+                (raw as usize).to_string(),
+            );
+            self.run_command(command, args, true, progress)
+        }
     }
 
     fn run_command(
@@ -813,7 +968,7 @@ impl Installer {
             format!("Removing {}.", app.path.display()),
         ));
         self.remove_owned_path(&app.path)?;
-        if !self.target.is_macos() {
+        if self.target.is_linux() {
             if app
                 .path
                 .file_stem()
@@ -833,7 +988,7 @@ impl Installer {
 
     // Replacing or deleting an app while it runs breaks it mid-session.
     fn require_quit(&self, app: &Path) -> Result<()> {
-        if !self.target.is_macos() && safety::appimage_running(Path::new("/proc"), app)? {
+        if self.target.is_linux() && safety::appimage_running(Path::new("/proc"), app)? {
             return fail(format!(
                 "Quit {}, then run the installer again.",
                 app.display()
@@ -923,11 +1078,22 @@ fn executable(path: &Path) -> Result<()> {
         use std::os::unix::fs::PermissionsExt;
         fs::set_permissions(path, fs::Permissions::from_mode(0o755))?;
     }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+    }
     Ok(())
 }
 
 fn sandbox_available(status: Option<&serde_json::Value>, on_path: impl FnOnce() -> bool) -> bool {
     status.map_or_else(on_path, |status| status["sandbox_available"] != false)
+}
+
+fn path_text(path: &Path) -> Result<String> {
+    path.to_str()
+        .filter(|text| !text.is_empty())
+        .map(str::to_string)
+        .ok_or_else(|| "The install path is not valid text.".into())
 }
 
 fn command_exists(name: &str) -> bool {

@@ -6,7 +6,7 @@
 import { updates } from './nightly'
 
 export type Track = 'stable' | 'nightly'
-export type InstallerBuild = { key: 'mac-arm64' | 'mac-x64' | 'linux'; name: string; pill: string; url: string; size?: number }
+export type InstallerBuild = { key: 'mac-arm64' | 'mac-x64' | 'linux' | 'windows'; name: string; pill: string; url: string; size?: number }
 export type Installers = { track: Track; version: string; builds: InstallerBuild[] }
 
 // Manifest targets, in the order the page lists them, with the site's names for them.
@@ -14,6 +14,7 @@ const targets = [
   ['macos-aarch64', 'mac-arm64', 'Mac (Apple Silicon)', 'Apple Silicon (.dmg)'],
   ['macos-x86_64', 'mac-x64', 'Mac (Intel)', 'Intel (.dmg)'],
   ['linux-x86_64', 'linux', 'Linux', 'Linux (AppImage)'],
+  ['windows-x86_64', 'windows', 'Windows', 'Windows 10 or later, 64-bit (.exe)'],
 ] as const
 
 type Load = (url: string) => Promise<unknown | null>

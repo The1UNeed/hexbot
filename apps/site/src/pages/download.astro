@@ -15,7 +15,7 @@ const nightlies = downloads?.channel === 'nightly' ? nightlyRows(await loadNight
 const choices = downloadChoices(downloads, installers)
 const first = choices[0]
 const firstFor = first?.kind ?? 'full'
-const firstOs = first?.key.startsWith('linux') ? 'linux' : 'mac'
+const firstOs = first?.key === 'windows' ? 'windows' : first?.key.startsWith('linux') ? 'linux' : 'mac'
 const command = 'curl -fsSL https://hexbot.app/install.sh | sh'
 const steps = [
   ['installer', 'mac', [
@@ -30,6 +30,12 @@ const steps = [
     'Full or Client: open Hexbot from your applications',
     'Full: choose "Run on this machine". Client: pair with your daemon',
   ]],
+  ['installer', 'windows', [
+    'Open the .exe from your Downloads folder',
+    'Choose Full, Client, or Headless',
+    'Full or Client: open Hexbot when it finishes',
+    'Full: choose "Run on this machine". Client: pair with your daemon',
+  ]],
   ['full', 'mac', [
     'Open the Hexbot .dmg file from your Downloads folder',
     'Drag Hexbot into your Applications folder',
@@ -42,14 +48,20 @@ const steps = [
     'Choose "Run on this machine"',
     'Add a model key and say hello to HexBot',
   ]],
+  ['full', 'windows', [
+    'Open the .exe from your Downloads folder and follow the installer',
+    'Open Hexbot',
+    'Choose "Run on this machine"',
+    'Add a model key and say hello to HexBot',
+  ]],
 ] as const
 ---
-<Base title="Download" description="Download the Hexbot nightly for Mac or Linux. In alpha, free and open source.">
+<Base title="Download" description="Download the Hexbot nightly for Mac, Linux, or 64-bit Windows. In alpha, free and open source.">
   <section class="mx-auto max-w-[720px] px-5 pt-14 text-center sm:px-8 lg:pt-20">
     <Logo tile size={112} class="mx-auto" />
     <p class="mt-8"><span class="eyebrow"><span class="nightly-dot" aria-hidden="true"></span>Alpha: very early development</span></p>
     <h1 id="dl-title" class="display-sm mx-auto mt-5 text-[clamp(2rem,5.5vw,3rem)]">Download Hexbot</h1>
-    <p id="dl-sub" class="lede mx-auto mt-3">For Mac and Linux. Free and open source.</p>
+    <p id="dl-sub" class="lede mx-auto mt-3">For Mac, Linux, and 64-bit Windows. Free and open source.</p>
     {first ? (
       <>
         <div class="mt-7 flex flex-wrap items-center justify-center gap-3">
@@ -68,7 +80,7 @@ const steps = [
                 <code class="min-w-0 flex-1 overflow-x-auto py-1.5 font-mono text-[15px] whitespace-nowrap">{command}</code>
                 <button type="button" class="shrink-0 rounded-full px-3 py-1.5 text-[14px] font-medium ring-1 ring-white/25 hover:bg-white/10" data-copy={command} hidden><span aria-live="polite">Copy</span></button>
               </div>
-              <p class="mt-3 text-center text-[15px] text-mute"><a href="/docs/install/">What each option installs</a></p>
+              <p class="mt-3 text-center text-[15px] text-mute">That command is for macOS and Linux. Windows uses the installer, not <code>curl</code> in <code>cmd.exe</code>. <a href="/docs/install/">What each option installs</a></p>
             </div>
           </>
         )}
