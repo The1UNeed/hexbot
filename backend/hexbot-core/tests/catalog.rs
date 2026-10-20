@@ -710,6 +710,7 @@ fn section_deletion_resolves_only_its_bots_private_retry() {
     let home = setup();
     let h = home.path();
     let section = create(h)["section"]["id"].as_str().unwrap().to_owned();
+    peer_thread(h, &section);
     // An older daemon could leave another section; create now opens the chat.
     let sibling = "legacy-sibling";
     db::open(h)
@@ -774,6 +775,7 @@ fn section_deletion_preserves_owned_room_mappings_even_when_ambiguous() {
         let home = setup();
         let h = home.path();
         let section = create(h)["section"]["id"].as_str().unwrap().to_owned();
+        peer_thread(h, &section);
         let conn = db::open(h).unwrap();
         conn.execute_batch("INSERT INTO rooms(id,name,owner_id) VALUES('one','One','alice'),('two','Two','alice'),('foreign','Foreign','bob');").unwrap();
         let (room, bot) = match mapping {

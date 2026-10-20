@@ -37,6 +37,21 @@ if(c.type==='prompt'){emit({type:'agent_start'});emit({type:'message_end',messag
     (home, app)
 }
 
+// Public deletion is only for peer threads; owner chats stay until their bot goes.
+fn peer_thread(home: &std::path::Path, id: &Value) {
+    let conn = db::open(home).unwrap();
+    conn.execute(
+        "INSERT INTO bots(name,owner_id) VALUES('teammate','local')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "UPDATE sections SET peer_bot='teammate' WHERE id=?",
+        [id.as_str().unwrap()],
+    )
+    .unwrap();
+}
+
 async fn event(
     events: &mut tokio::sync::broadcast::Receiver<hexbot_core::events::Event>,
     kind: &str,
@@ -147,6 +162,7 @@ async fn archived_and_deleted_private_failures_do_not_become_hidden_run_failures
         .await
         .unwrap()["sections"][0]["id"]
         .clone();
+    peer_thread(home.path(), &stored);
     let opened = app
         .call("local", "hexbot.sections.open", &json!({"id":stored}))
         .await
@@ -204,6 +220,7 @@ async fn archived_parent_keeps_child_failure_until_deletion_even_after_restart()
         .await
         .unwrap()["section"]["id"]
         .clone();
+    peer_thread(home.path(), &stored);
     app.call("local", "hexbot.sections.open", &json!({"id":stored}))
         .await
         .unwrap();
