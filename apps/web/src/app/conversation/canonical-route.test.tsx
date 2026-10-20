@@ -196,40 +196,51 @@ it('keeps the open chat on screen through a dropped connection and a report relo
   })
   expect(transcript()).toBe(before)
 })
-it.each(['reconnecting', 'connected'] as const)(
-  'a drop longer than a connection wait while %s keeps the chat, or offers Retry once connected',
-  async status => {
+it.each([false, true])(
+  'a drop longer than a connection wait keeps the chat; a reconnect that cannot read the daemon offers Retry, info fails=%s',
+  async infoFails => {
     await mount('/b/owl/s/canonical')
     const shown = await screen.findByText('canonical history')
     vi.useFakeTimers({ shouldAdvanceTime: true })
 
     try {
+      // ConnectionSupervisor.handleDrop: no client, no daemon, reconnecting.
       await act(async () => {
         setActiveRpc(null)
-        // Connected again, but its daemon info never arrived.
-        useConnection.setState({ status })
         useConnection.getState().setDaemon(null)
+        useConnection.getState().setStatus('reconnecting')
       })
       await act(async () => {
         await vi.advanceTimersByTimeAsync(CONNECT_WAIT_MS + 1000)
       })
-
-      if (status === 'connected') {
-        expect(screen.getByRole('button', { name: 'Retry' })).toBeVisible()
-
-        return
-      }
-
       expect(shown).toBeInTheDocument()
       expect(screen.queryByRole('button', { name: 'Retry' })).toBeNull()
     } finally {
       vi.useRealTimers()
     }
 
+    // The same daemon process answers: the client is set, then the status,
+    // and hydration clears the daemon before hexbot.info answers.
+    if (infoFails) {
+      call.mockImplementation((method: string, input: Record<string, unknown>) =>
+        method === 'hexbot.info'
+          ? Promise.reject(new Error('Info unavailable'))
+          : reply(method, input)
+      )
+    }
+
     await act(async () => {
       setActiveRpc({ call } as never)
-      useConnection.getState().setDaemon({ one_chat: true } as DaemonInfo)
+      useConnection.getState().setStatus('connected')
     })
+
+    if (infoFails) {
+      expect(await screen.findByRole('button', { name: 'Retry' })).toBeVisible()
+
+      return
+    }
+
+    await act(async () => useConnection.getState().setDaemon({ one_chat: true } as DaemonInfo))
     await waitFor(() => expect(screen.getByRole('textbox', { name: 'Message' })).toBeEnabled())
   }
 )

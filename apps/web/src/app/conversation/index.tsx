@@ -1143,6 +1143,8 @@ function BotConversation() {
   const epoch = useConnection(state => state.epoch)
   const capability = useConnection(state => state.daemon?.one_chat)
   const installation = useConnection(state => state.daemon?.install_id)
+  // A reconnect checks the chat again even when the daemon info stays the same.
+  const connected = useConnection(state => state.status === 'connected')
   const identified = useConnection(state => state.daemon?.transcript_identity === true)
   const [openAttempt, setOpenAttempt] = useState(0)
 
@@ -1155,10 +1157,21 @@ function BotConversation() {
       epoch,
       capability,
       installation,
+      connected,
       location,
       openAttempt
     }),
-    [params.bot, params.section, target, epoch, capability, installation, location, openAttempt]
+    [
+      params.bot,
+      params.section,
+      target,
+      epoch,
+      capability,
+      installation,
+      connected,
+      location,
+      openAttempt
+    ]
   )
 
   const [resolved, setResolved] = useState<{ entry: typeof entry; peer: boolean } | null>(null)
