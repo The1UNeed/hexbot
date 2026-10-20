@@ -29,6 +29,9 @@ The native scheduler and digest builder live in
   The hidden todo list and fallback notice Hexbot's extension adds are
   exempt: the runtime journals them only when it recovers the log, and the
   digest leaves them out. Any other custom message must match.
+  A last line Pi is still writing is not in the log yet, and a log entry
+  without its journal row holds up the dream only when it is dated inside
+  the window.
   This check only reads the log; it never recovers or rewrites a running chat.
   A missing log cannot replace newer native dialogue with older legacy rows.
   If any conversation still needs that older database, or native recovery is unfinished
@@ -41,12 +44,14 @@ The native scheduler and digest builder live in
   retry. An adopted source must still have its exact copied history version.
   This check does not lock live chats or refresh the digest with unchecked rows.
   It covers changes since readiness, including healthy late appends with an
-  earlier streamed timestamp. After the model answers, the dream builds its
-  digest again for the same window. If that differs, or can no longer be
-  built, the dream fails instead of completing, so input that reached the
-  window while it ran, such as a reply still streaming when it started, is
-  read by the next dream rather than passed by the cutoff. Memory changes
-  the model already made stay. Compaction
+  earlier streamed timestamp. After the model answers, the dream reads again
+  what each conversation said in its window, before any budget: transcript
+  and compactions, without titles, room names, notes or proposals. If that
+  differs, or can no longer be read, the dream fails instead of completing,
+  so input that reached the window while it ran, such as a reply still
+  streaming when it started, is read by the next dream rather than passed by
+  the cutoff. A rename, a note or a message after its start does not count.
+  Memory changes the model already made stay. Compaction
   files and the catalog are separate reads, not a shared database/file snapshot.
   It retains the newest 12,000 characters per conversation,
   caps the complete serialized digest at 60,000 bytes, and reports how many

@@ -339,6 +339,71 @@ async fn input_reaching_the_window_while_dreaming_keeps_the_cutoff() {
     runtime.shutdown().await;
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn renames_notes_and_later_writes_during_a_dream_do_not_hold_its_cutoff() {
+    let home = setup();
+    let h = home.path();
+    runtime_store::mark_fresh(h, "chat").unwrap();
+    fs::create_dir_all(log_path(h).parent().unwrap()).unwrap();
+    fs::write(
+        log_path(h),
+        format!("{}\n", json!({"type":"session","version":3,"id":"chat"})),
+    )
+    .unwrap();
+    let user = json!({"role":"user","content":"durable speech","timestamp":100000});
+    runtime_store::project_seeded(h, "chat", "alice", "owl", &user, None, None).unwrap();
+    append_raw(h, &user);
+    db::open(h).unwrap().execute_batch("INSERT INTO dreams(id,bot,started_at,status,summary) VALUES('previous','owl',1,'complete','previous report');").unwrap();
+    let owned = h.to_path_buf();
+    cutoff_hooks().lock().unwrap().insert(
+        owned.clone(),
+        Box::new(move || {
+            // The user renames the chat and the bot keeps a note.
+            db::open(&owned)
+                .unwrap()
+                .execute("UPDATE sections SET title='Renamed' WHERE id='chat'", [])
+                .unwrap();
+            let notes = owned.join("profiles/owl/memories/notes");
+            fs::create_dir_all(&notes).unwrap();
+            fs::write(
+                notes.join(format!("{}.md", crate::memory::local_today())),
+                "A note kept while dreaming",
+            )
+            .unwrap();
+            // A reply after the dream started is in the log before its
+            // journal row, and Pi is still writing the next line.
+            let later = common::now() * 1000. + 1000.;
+            append_raw(&owned, &raw_message(later / 1000.));
+            use std::io::Write;
+            write!(
+                fs::OpenOptions::new()
+                    .append(true)
+                    .open(log_path(&owned))
+                    .unwrap(),
+                "{{\"type\":\"mess"
+            )
+            .unwrap();
+        }),
+    );
+    let hub = EventHub::new();
+    let mut receiver = hub.subscribe();
+    let runtime = Runtime::new(h.into(), hub.clone(), fake_pi(h, false)).unwrap();
+    let dreams = Dreaming::new(h.into(), runtime.clone(), hub);
+    dreams
+        .call("alice", "hexbot.dreaming.run_now", &json!({"bot":"owl"}))
+        .await
+        .unwrap()
+        .unwrap();
+    let dream = event(&mut receiver, "hexbot.dreaming.changed").await["dream"].clone();
+    assert_eq!(dream["status"], "complete", "{dream}");
+    assert_eq!(
+        last_successful_start(h, "owl", None).unwrap(),
+        dream["started_at"].as_f64().unwrap()
+    );
+    dreams.shutdown().await;
+    runtime.shutdown().await;
+}
+
 #[path = "snapshot_retry.rs"]
 mod retry;
 

@@ -384,12 +384,18 @@ fn native_log_ready(
     // display row in `hexbot`. Classification may only have added a dream flag.
     let mut imported = None;
     let mut header = false;
-    for line in bytes.split(|byte| *byte == b'\n') {
+    let lines = bytes.split(|byte| *byte == b'\n').collect::<Vec<_>>();
+    let writing = !bytes.ends_with(b"\n");
+    for (at, line) in lines.iter().enumerate() {
         if line.iter().all(u8::is_ascii_whitespace) {
             continue;
         }
-        let entry: Value =
-            serde_json::from_slice(line).map_err(|e| Error::new(5200, e.to_string()))?;
+        let entry: Value = match serde_json::from_slice(line) {
+            Ok(entry) => entry,
+            // Pi is still writing its last line: that entry is not in the log yet.
+            Err(_) if writing && at + 1 == lines.len() => break,
+            Err(error) => return Err(Error::new(5200, error.to_string())),
+        };
         if !header {
             if entry["type"] != "session" || entry["version"] != 3 {
                 return Err(Error::new(5200, "Conversation header needs recovery"));
@@ -463,13 +469,18 @@ fn native_log_ready(
             .unwrap()
             .entry(seed.to_string())
             .or_default();
-        if !legacy || *count == 0 {
+        if legacy && *count > 0 {
+            *count -= 1;
+            continue;
+        }
+        // Pi writes before the daemon journals; only input this dream reads waits.
+        let at = message["timestamp"].as_f64().map(|millis| millis / 1000.0);
+        if at.is_none_or(|at| at >= since && at < until) {
             return Err(Error::new(
                 5200,
                 format!("Conversation {stored} must be recovered before dreaming"),
             ));
         }
-        *count -= 1;
     }
     if recorded.values().any(|(_, relevant)| *relevant > 0) {
         return Err(Error::new(
@@ -548,6 +559,19 @@ pub fn build_digest(
     until: f64,
     room: Option<&str>,
 ) -> Result<Value> {
+    Ok(digest_and_input(home, bot, since, until, room)?.0)
+}
+/// The digest, and what its conversations said in the window before any
+/// budget: each one's id, transcript and compactions. Titles, room names,
+/// notes and proposals are left out, so a rename or a note never reads as
+/// changed input.
+fn digest_and_input(
+    home: &Path,
+    bot: &str,
+    since: f64,
+    until: f64,
+    room: Option<&str>,
+) -> Result<(Value, Value)> {
     common::identifier(bot)?;
     // Pi stamps entries in whole milliseconds. Round both starts here, including
     // starts persisted by older versions, so every input uses the same window.
@@ -560,6 +584,7 @@ pub fn build_digest(
         }
     });
     let conn = db::open(home)?;
+    let mut input = vec![];
     let mut sections = vec![];
     let mut proposals = vec![];
     let mut notes = vec![];
@@ -828,6 +853,7 @@ pub fn build_digest(
                 validate_native_snapshot(home, &native, id, since, until, false)?;
             }
             if !transcript.is_empty() || !compactions.is_empty() {
+                input.push(json!({"id":id,"transcript":transcript,"compactions":compactions}));
                 let (compactions, transcript) =
                     section_budget(&compactions, &transcript.join("\n"));
                 let mut entry = json!({"id":metadata(id),"title":metadata(section["title"].as_str().unwrap_or("")),"transcript":transcript});
@@ -860,6 +886,7 @@ pub fn build_digest(
             })
             .unwrap_or_default();
         if !rows.is_empty() || !compactions.is_empty() {
+            input.push(json!({"id":id,"events":rows,"compactions":compactions}));
             let latest = rows
                 .iter()
                 .filter_map(|e| e["created_at"].as_f64())
@@ -915,9 +942,10 @@ pub fn build_digest(
     let (rooms, sections): (Vec<_>, Vec<_>) = entries.into_iter().partition(|e| e.1);
     let values =
         |entries: Vec<(f64, bool, Value)>| entries.into_iter().map(|e| e.2).collect::<Vec<_>>();
-    Ok(
+    Ok((
         json!({"bot":digest_bot,"since":since,"until":until,"sections":values(sections),"rooms":values(rooms),"notes":notes,"proposals":proposals,"omitted_conversations":omitted}),
-    )
+        Value::Array(input),
+    ))
 }
 
 pub fn record_dream(
@@ -1378,10 +1406,13 @@ impl Dreaming {
             let digest_bot = bot.to_owned();
             let digest_room = room.map(str::to_owned);
             let until = context["started_at"].as_f64().unwrap();
-            let (since, digest) = tokio::task::spawn_blocking(move || {
+            let (since, (digest, input)) = tokio::task::spawn_blocking(move || {
                 let room = digest_room.as_deref();
                 let since = last_successful_start(&home, &digest_bot, room)?;
-                Ok::<_, Error>((since, build_digest(&home, &digest_bot, since, until, room)?))
+                Ok::<_, Error>((
+                    since,
+                    digest_and_input(&home, &digest_bot, since, until, room)?,
+                ))
             })
             .await
             .map_err(|error| Error::new(5240, format!("dream digest task failed: {error}")))??;
@@ -1443,13 +1474,11 @@ impl Dreaming {
             let (home, digest_bot, digest_room) =
                 (self.home.clone(), bot.to_owned(), room.map(str::to_owned));
             let again = tokio::task::spawn_blocking(move || {
-                build_digest(&home, &digest_bot, since, until, digest_room.as_deref())
+                digest_and_input(&home, &digest_bot, since, until, digest_room.as_deref())
             })
             .await
             .map_err(|error| Error::new(5240, format!("dream digest task failed: {error}")))?;
-            if !again.is_ok_and(|again| {
-                again["sections"] == digest["sections"] && again["rooms"] == digest["rooms"]
-            }) {
+            if !again.is_ok_and(|(_, again)| again == input) {
                 return Err(Error::new(
                     5200,
                     "A conversation changed while dreaming; the next dream reads it again",
