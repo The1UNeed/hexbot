@@ -19,6 +19,7 @@ import {
   AboutStep,
   ChoiceStep,
   compileAboutYou,
+  createHexBot,
   initialOnboardingStep,
   installPercent,
   InstallStep,
@@ -448,6 +449,94 @@ describe('onboarding', () => {
 
     const values = progress.map((_, index) => installPercent(progress.slice(0, index + 1)))
     expect(values).toEqual([6, 18, 20, 23, 26, 27, 27, 64, 88, 95])
+  })
+
+  it('creates HexBot, and an ordinary bot of that name on an older daemon', async () => {
+    const created = { bot: { name: 'hexbot' }, section: { id: 'general' } }
+
+    const call = vi.fn((method: string) =>
+      method === 'hexbot.bots.create_primary'
+        ? Promise.reject(Object.assign(new Error('unknown method'), { code: -32601 }))
+        : Promise.resolve(created)
+    )
+
+    setActiveRpc({ call } as never)
+    expect(await createHexBot('openai/gpt-5', null)).toEqual(created)
+    expect(call).toHaveBeenCalledWith('hexbot.bots.create_primary', {
+      model: 'gpt-5',
+      provider: 'openai'
+    })
+    expect(call).toHaveBeenCalledWith('hexbot.bots.create', {
+      display_name: 'HexBot',
+      model: 'gpt-5',
+      name: 'hexbot',
+      provider: 'openai'
+    })
+
+    const face = { color: 'orange', shape: 'pill' }
+    const picked = vi.fn(() => Promise.resolve(created))
+    setActiveRpc({ call: picked } as never)
+    await createHexBot(null, 'data:image/png;base64,iVBORw0KGgo=', face)
+    expect(picked).toHaveBeenCalledWith('hexbot.bots.create_primary', {
+      avatar: 'data:image/png;base64,iVBORw0KGgo=',
+      face
+    })
+
+    const failing = vi.fn(() => Promise.reject(new Error('The daemon is stopping.')))
+    setActiveRpc({ call: failing } as never)
+    await expect(createHexBot(null, null)).rejects.toThrow('The daemon is stopping.')
+    expect(failing).toHaveBeenCalledOnce()
+  })
+
+  it('opens HexBot when an earlier create went through, and says why when it cannot', async () => {
+    const general = { id: 'general', bot: 'helper', message_count: 0 }
+    const hexbot = { name: 'helper', primary: true }
+    const taken = Object.assign(new Error('There is already a primary bot.'), { code: 4214 })
+
+    // The daemon names HexBot's chat; its list could hold one recovery set aside.
+    const answer = (bots: object[]) =>
+      vi.fn((method: string) =>
+        method === 'hexbot.bots.list'
+          ? Promise.resolve({ bots })
+          : method === 'hexbot.sections.create'
+            ? Promise.resolve({ section: general })
+            : Promise.reject(taken)
+      )
+
+    useConnection.setState({ daemon: { one_chat: true } as never })
+    setActiveRpc({ call: answer([{ name: 'owl' }, hexbot]) } as never)
+    expect(await createHexBot(null, null)).toEqual({ bot: hexbot, section: general })
+
+    setActiveRpc({ call: answer([]) } as never)
+    await expect(createHexBot(null, null)).rejects.toBe(taken)
+
+    // An older daemon has no create_primary and refuses a second bot called hexbot.
+    const exists = Object.assign(new Error('bot already exists: hexbot'), { code: 4208 })
+    const kept = { id: 'general', bot: 'hexbot', message_count: 2 }
+
+    const older = (bots: object[], sections: object[]) =>
+      vi.fn((method: string) =>
+        method === 'hexbot.bots.list'
+          ? Promise.resolve({ bots })
+          : method === 'hexbot.sections.list'
+            ? Promise.resolve({ sections })
+            : method === 'hexbot.sections.unarchive'
+              ? Promise.resolve({ section: kept })
+              : Promise.reject(
+                  method === 'hexbot.bots.create_primary'
+                    ? Object.assign(new Error('unknown method'), { code: -32601 })
+                    : exists
+                )
+      )
+
+    const plain = { name: 'hexbot' }
+    useConnection.setState({ daemon: { one_chat: false } as never })
+    setActiveRpc({ call: older([plain], [kept]) } as never)
+    expect(await createHexBot(null, null)).toEqual({ bot: plain, section: kept })
+
+    setActiveRpc({ call: older([], []) } as never)
+    await expect(createHexBot(null, null)).rejects.toBe(exists)
+    useConnection.setState({ daemon: null })
   })
 
   it('sets up web search before the first bot, and lets you skip', async () => {

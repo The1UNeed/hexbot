@@ -98,6 +98,26 @@ more freedom and more capability than a hosted product can offer.
 - The activity view shows bot pairs with message counts, later a network
   graph, with click-through to the conversation.
 
+### The primary bot
+
+- Every daemon has at most one primary bot. Onboarding creates it as
+  HexBot (handle `hexbot`) on the default model with every tool on, and
+  opens its chat, where it introduces itself. An install from
+  before it adds HexBot or makes one existing bot primary, once; the role
+  never moves after that, and the primary bot cannot be deleted.
+- In its own chat, and nowhere else (not rooms, threads between bots,
+  scheduled jobs, or delegates), it gets four more tools: `hexbot_bots`,
+  `hexbot_rooms`, `hexbot_jobs`, and `hexbot_settings`. Each calls the daemon
+  method the app uses, as the owner, so the same checks and change events
+  apply. Deleting a bot, room, or job, setting a bot's or room's approval
+  mode or a bot's or job's working folder, and every settings change ask the user,
+  even in Bypass.
+  Network, service, and billing settings and every credential stay with
+  the user.
+- Its tools and guidance are frozen with its chat like any other change of
+  tools, so a bot made primary takes them with its next message, which
+  misses the prompt cache once.
+
 ### Approvals and tools
 
 - Modes: Auto (default, `smart` in config), Manual, Bypass (`off` in

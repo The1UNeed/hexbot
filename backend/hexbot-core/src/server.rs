@@ -46,6 +46,9 @@ pub struct App {
     _network_guard: common::DaemonListener,
     pub web_dist: Option<PathBuf>,
     stop: tokio::sync::watch::Sender<bool>,
+    /// Bot deletion and promotion run one at a time, so a bot made primary
+    /// mid-delete never has its sections purged before the refusal.
+    roles: Arc<tokio::sync::Mutex<()>>,
 }
 struct BrowserLogin {
     client: String,
@@ -122,7 +125,7 @@ impl App {
             crate::dreaming::Dreaming::new(home.clone(), runtime.clone(), events.clone());
         auth::local_token(&home)?;
         let (stop, _) = tokio::sync::watch::channel(false);
-        Ok(Arc::new(Self {
+        let app = Arc::new(Self {
             memory: MemoryStore::new(home.clone()),
             auth_connection: Mutex::new(db::open(&home)?),
             bot_lifecycle: Arc::new(tokio::sync::Mutex::new(())),
@@ -138,13 +141,16 @@ impl App {
             _network_guard: common::DaemonListener::register(address),
             web_dist,
             stop,
-        }))
+            roles: Arc::default(),
+        });
+        app.runtime.set_dispatcher(Arc::downgrade(&app));
+        Ok(app)
     }
     /// Serve another address with the same bots: running turns and the event
     /// log carry over; connections to the old address are closed by `disconnect`.
     pub fn rebind(&self, address: SocketAddr) -> Result<Arc<Self>> {
         let (stop, _) = tokio::sync::watch::channel(false);
-        Ok(Arc::new(Self {
+        let app = Arc::new(Self {
             memory: MemoryStore::new(self.home.clone()),
             auth_connection: Mutex::new(db::open(&self.home)?),
             bot_lifecycle: self.bot_lifecycle.clone(),
@@ -160,13 +166,25 @@ impl App {
             _network_guard: common::DaemonListener::register(address),
             web_dist: self.web_dist.clone(),
             stop,
-        }))
+            roles: self.roles.clone(),
+        });
+        app.runtime.set_dispatcher(Arc::downgrade(&app));
+        Ok(app)
     }
     pub async fn call(self: &Arc<Self>, owner: &str, method: &str, p: &Value) -> Result<Value> {
         // Reserve name reuse in request order before handing deletion to its
         // cancellation-safe task, including through a rebound listener.
-        let bot_lifecycle = if matches!(method, "hexbot.bots.create" | "hexbot.bots.delete") {
+        let bot_lifecycle = if matches!(
+            method,
+            "hexbot.bots.create" | "hexbot.bots.create_primary" | "hexbot.bots.delete"
+        ) {
             Some(self.bot_lifecycle.clone().lock_owned().await)
+        } else {
+            None
+        };
+        // Bot deletion and promotion run one at a time.
+        let roles = if matches!(method, "hexbot.bots.delete" | "hexbot.bots.set_primary") {
+            Some(self.roles.clone().lock_owned().await)
         } else {
             None
         };
@@ -179,14 +197,15 @@ impl App {
             let app = self.clone();
             let (owner, method, p) = (owner.to_owned(), method.to_owned(), p.clone());
             return tokio::spawn(async move {
-                let _bot_lifecycle = bot_lifecycle;
-                app.call_inner(&owner, &method, &p).await
+                let _locks = (bot_lifecycle, roles);
+                Box::pin(app.call_inner(&owner, &method, &p)).await
             })
             .await
             .map_err(|error| Error::new(5200, format!("deletion failed: {error}")))?;
         }
-        let _bot_lifecycle = bot_lifecycle;
-        self.call_inner(owner, method, p).await
+        let _locks = (bot_lifecycle, roles);
+        // Boxed: the dispatcher is large, and the primary bot's tools reach it again.
+        Box::pin(self.call_inner(owner, method, p)).await
     }
     async fn call_inner(self: &Arc<Self>, owner: &str, method: &str, p: &Value) -> Result<Value> {
         if *self.stop.borrow() {
@@ -199,6 +218,7 @@ impl App {
         if method == "hexbot.bots.delete" {
             let bot = common::required(p, "name")?;
             common::bot_owner(&self.home, owner, bot)?;
+            catalog::check_deletable(&self.home, owner, bot)?;
             self.check_bot_delete_idle(bot)?;
             admission.push(
                 self.runtime
@@ -282,8 +302,11 @@ impl App {
                 .filter(|m| m["member_kind"] == "bot" && m["left_at"].is_null())
                 .map(|m| m["member_id"].as_str())
                 .collect::<Vec<_>>();
-            // Removing the last bot deletes the room.
+            // Removing the last bot deletes the room, unless the caller asked to keep it.
             let deleting = method == "hexbot.rooms.delete" || active == [bot];
+            if deleting && method == "hexbot.rooms.remove_member" && p["keep_room"] == true {
+                return Err(rooms::last_bot());
+            }
             if deleting {
                 self.rooms.stop_internal(room).await?;
             }
@@ -386,6 +409,7 @@ impl App {
                 owner,
                 common::required(p, "id")?,
                 common::required(p, "bot")?,
+                p["keep_room"] == true,
             ),
             _ => {
                 if let Some(result) = self.dreaming.call(owner, method, p).await {
@@ -400,7 +424,10 @@ impl App {
                     if let Ok(value) = &result
                         && matches!(
                             method,
-                            "hexbot.bots.create" | "hexbot.bots.update" | "profiles.configure"
+                            "hexbot.bots.create"
+                                | "hexbot.bots.create_primary"
+                                | "hexbot.bots.update"
+                                | "profiles.configure"
                         )
                         && let Some(name) = value["bot"]["name"].as_str().or(value["name"].as_str())
                     {
@@ -633,6 +660,8 @@ impl App {
         if !matches!(
             action,
             "create"
+                | "create_primary"
+                | "set_primary"
                 | "update"
                 | "delete"
                 | "clear_status"

@@ -1174,17 +1174,31 @@ fn legacy_usage(
 
 /// Remove a bot the owner chose; removing the last bot deletes the room.
 /// Callers check ownership first.
-pub fn remove_bot(home: &Path, owner: &str, room: &str, bot: &str) -> Result<Value> {
+/// With `keep_room`, refuses (4216) to remove the last bot instead of
+/// deleting the room; the check and the removal are one statement.
+pub fn remove_bot(
+    home: &Path,
+    owner: &str,
+    room: &str,
+    bot: &str,
+    keep_room: bool,
+) -> Result<Value> {
     let conn = db::open(home)?;
     if conn.execute(
-        "UPDATE room_members SET left_at=? WHERE room_id=? AND member_kind='bot' AND member_id=? AND left_at IS NULL",
-        params![now(), room, bot],
+        "UPDATE room_members SET left_at=?1 WHERE room_id=?2 AND member_kind='bot' AND member_id=?3 AND left_at IS NULL AND (NOT ?4 OR EXISTS(SELECT 1 FROM room_members WHERE room_id=?2 AND member_kind='bot' AND member_id<>?3 AND left_at IS NULL))",
+        params![now(), room, bot, keep_room],
     )? == 0
     {
-        return Err(Error::new(
-            4232,
-            format!("active room member not found: {bot}"),
-        ));
+        let active: bool = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM room_members WHERE room_id=? AND member_kind='bot' AND member_id=? AND left_at IS NULL)",
+            params![room, bot],
+            |r| r.get(0),
+        )?;
+        return Err(if active {
+            last_bot()
+        } else {
+            Error::new(4232, format!("active room member not found: {bot}"))
+        });
     }
     let event = append(
         home,
@@ -1206,6 +1220,11 @@ pub fn remove_bot(home: &Path, owner: &str, room: &str, bot: &str) -> Result<Val
         params![room, bot],
     )?;
     Ok(json!({"room":get(home,owner,room)?,"event":event}))
+}
+/// Refusing to remove a room's last bot when asked to keep the room.
+pub const LAST_BOT: i64 = 4216;
+pub fn last_bot() -> Error {
+    Error::new(LAST_BOT, "Removing the last bot deletes the room.")
 }
 /// Delete a room and its bots' room transcripts. Callers check ownership first.
 pub fn delete(home: &Path, room: &str) -> Result<Value> {

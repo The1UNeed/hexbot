@@ -88,7 +88,16 @@ To remove a bot:
 hexbot bots delete writer
 ```
 
-Deletion removes the bot's profile, conversations, memory, and scheduled jobs. Stop any active work first. This operation is permanent.
+Deletion removes the bot's profile, conversations, memory, and scheduled jobs. Stop any active work first. This operation is permanent. The primary bot can't be deleted.
+
+To create HexBot, the primary bot, on a daemon that has none, or to make an existing bot primary instead:
+
+```sh
+hexbot bots primary
+hexbot bots primary writer
+```
+
+There is one primary bot, and it stays. `hexbot bots list` shows it first, with `"primary": true`.
 
 ## Send a message and list rooms
 
