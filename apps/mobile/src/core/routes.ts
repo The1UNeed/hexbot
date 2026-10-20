@@ -1,6 +1,8 @@
 import type { Bot, Room, Rpc, Section } from './types'
 export type ChatRoute =
   { kind: 'section'; section: Section; bot: Bot } | { kind: 'room'; room: Room }
+/** The bot's chat with its owner: not a teammate thread or a section with its own purpose. */
+export const ownerChat = (s: Section) => !s.peer_bot && !s.purpose
 /** Every section the open conversation can be, teammate threads included. */
 export const SECTIONS_QUERY = { include_archived: true, include_threads: true }
 /** Every room, archived ones included, so Rooms can count them and restore one. */
@@ -19,7 +21,7 @@ export function legacyChat(
   bot: string
 ): { choices: Section[] } | { section: Section } | null {
   const chats = sections
-    .filter(s => s.bot === bot && !s.peer_bot)
+    .filter(s => s.bot === bot && !s.peer_bot && !s.purpose)
     .sort(
       (a, b) =>
         Number(!!a.archived_at) - Number(!!b.archived_at) || (b.updated_at ?? 0) - (a.updated_at ?? 0)
@@ -47,8 +49,9 @@ export async function botChat(
 ): Promise<{ choices: Section[] } | { section: Section }> {
   const create = async () =>
     (await rpc<{ section: Section }>('hexbot.sections.create', { bot })).section
-  // A Pulse question opens its actual thread without changing the owner-chat pick.
-  if (chosen?.peer_bot) return { section: chosen }
+  // A Pulse question opens its actual thread, and a check-in its Check-ins,
+  // without changing the owner-chat pick.
+  if (chosen?.peer_bot || chosen?.purpose) return { section: chosen }
   if (oneChat) return { section: await create() }
   let section = chosen
   if (!section) {
@@ -101,7 +104,9 @@ export function rebind(
 /** A catalog cannot identify a canonical chat among preserved recovery rows. */
 export function chatPreview(bot: string, sections: Section[], recent: Section[] = []): string | null {
   const chats = new Map(
-    [...recent, ...sections].filter(s => s.bot === bot && !s.peer_bot).map(s => [s.id, s])
+    [...recent, ...sections]
+      .filter(s => s.bot === bot && !s.peer_bot && !s.purpose)
+      .map(s => [s.id, s])
   )
   return chats.size === 1 ? [...chats.values()][0]!.preview || null : null
 }

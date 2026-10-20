@@ -1292,7 +1292,10 @@ function BotConversation() {
           throw new Error('This conversation belongs to another bot.')
         }
 
-        const chat = row?.peer_bot ? row : await sectionsActions().chat(botName, current)
+        // A teammate thread or a section with its own purpose, such as the
+        // primary bot's Check-ins, opens as itself; anything else is the chat.
+        const chat =
+          row?.peer_bot || row?.purpose ? row : await sectionsActions().chat(botName, current)
 
         if (!current()) {
           return

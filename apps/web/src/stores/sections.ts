@@ -20,7 +20,7 @@ import { KICKOFF_MARKER } from '../lib/bot-kickoff'
 import type { Bot, BotStatus, DaemonInfo, Message, Section } from '../lib/types'
 
 import { useConnection } from './connection'
-import { useTranscripts } from './transcripts'
+import { releaseCheckinMessages, useTranscripts } from './transcripts'
 
 /**
  * A thread: the private conversation in which `peer_bot` asks `bot` for help.
@@ -43,7 +43,7 @@ export function legacyChat(
   bot: string
 ): { choices: Section[] } | { section: Section } | null {
   const chats = sections
-    .filter(section => section.bot === bot && !isThread(section))
+    .filter(section => section.bot === bot && !isThread(section) && !section.purpose)
     .sort(
       (a, b) =>
         Number(Boolean(a.archived_at)) - Number(Boolean(b.archived_at)) ||
@@ -361,6 +361,11 @@ export const useSections = create<SectionsState>((set, get) => ({
               .map(row => String(row.row_id))
           }
         )
+
+        // Check-ins that arrived while this loaded; the history may hold them already.
+        for (const row of releaseCheckinMessages(id)) {
+          useTranscripts.getState().checkinMessage(live, row)
+        }
 
         const transcript = useTranscripts.getState().bySession[live]
 

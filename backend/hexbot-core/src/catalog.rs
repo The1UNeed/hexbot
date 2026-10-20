@@ -374,6 +374,7 @@ fn shape_section(home: &Path, row: Value) -> Result<Value> {
         "id": row["id"],
         "bot": row["bot"],
         "peer_bot": row["peer_bot"],
+        "purpose": row["purpose"],
         "title": row["title"],
         "title_by": row["title_by"],
         "created_at": row["created_at"],
@@ -388,11 +389,12 @@ fn shape_section(home: &Path, row: Value) -> Result<Value> {
 pub fn section(home: &Path, caller: &str, id: &str) -> Result<Value> {
     shape_section(home, section_row(home, caller, id)?)
 }
-/// Public deletion is only for peer threads. Keep owner chats, including
-/// archived or unreadable legacy targets, until their bot is deleted.
+/// Public deletion is only for peer threads and sections with their own
+/// purpose, such as Check-ins. Keep owner chats, including archived or
+/// unreadable legacy targets, until their bot is deleted.
 pub(crate) fn check_section_delete(home: &Path, caller: &str, id: &str) -> Result<()> {
     let row = section_row(home, caller, id)?;
-    if row["peer_bot"].is_null() {
+    if row["peer_bot"].is_null() && row["purpose"].is_null() {
         return Err(Error::new(
             4202,
             "A bot chat cannot be deleted; delete the bot to remove it",
@@ -524,7 +526,7 @@ pub(crate) fn check_chat_source(home: &Path, source: &str) -> Result<()> {
     let conn = db::open(home)?;
     if let Some(target) = setting(&conn, "dream_chat_adoptions")?[source]["target"].as_str() {
         let present: bool = conn.query_row(
-            "SELECT EXISTS(SELECT 1 FROM sections s JOIN sections t ON t.bot=s.bot AND t.owner_id=s.owner_id WHERE s.id=? AND t.id=? AND t.peer_bot IS NULL)",
+            "SELECT EXISTS(SELECT 1 FROM sections s JOIN sections t ON t.bot=s.bot AND t.owner_id=s.owner_id WHERE s.id=? AND t.id=? AND t.peer_bot IS NULL AND t.purpose IS NULL)",
             params![source, target], |r| r.get(0),
         )?;
         if present {
@@ -550,7 +552,7 @@ pub fn chat_section(home: &Path, caller: &str, name: &str) -> Result<Value> {
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let candidates = rows(
         &tx,
-        "SELECT * FROM sections WHERE bot=? AND owner_id=? AND peer_bot IS NULL ORDER BY updated_at DESC,id",
+        "SELECT * FROM sections WHERE bot=? AND owner_id=? AND peer_bot IS NULL AND purpose IS NULL ORDER BY updated_at DESC,id",
         &[&name, &caller],
     )?;
     // Failed recovery includes transient I/O, not only damaged data. Both
@@ -869,7 +871,7 @@ pub(crate) fn classify_dream_logs(home: &Path, bot: &str) -> Result<BTreeSet<Str
     let sections = rows(
         &conn,
         &format!(
-            "SELECT id,({DREAM_LOG}) AS titled FROM sections WHERE bot=? AND peer_bot IS NULL"
+            "SELECT id,({DREAM_LOG}) AS titled FROM sections WHERE bot=? AND peer_bot IS NULL AND purpose IS NULL"
         ),
         &[&bot],
     )?;
@@ -1026,7 +1028,7 @@ fn plan_one_chat_per_bot(
     let mut unreadable = BTreeSet::new();
     for row in rows(
         conn,
-        "SELECT DISTINCT bot FROM sections WHERE peer_bot IS NULL",
+        "SELECT DISTINCT bot FROM sections WHERE peer_bot IS NULL AND purpose IS NULL",
         &[],
     )? {
         let bot = row["bot"].as_str().unwrap_or("");
@@ -1044,7 +1046,7 @@ fn plan_one_chat_per_bot(
     let mut chats: std::collections::BTreeMap<(String, String), Vec<Value>> = Default::default();
     for row in rows(
         conn,
-        "SELECT * FROM sections WHERE peer_bot IS NULL ORDER BY id",
+        "SELECT * FROM sections WHERE peer_bot IS NULL AND purpose IS NULL ORDER BY id",
         &[],
     )? {
         let key = (
@@ -2078,6 +2080,7 @@ fn delete_section(home: &Path, caller: &str, id: &str, purge: bool) -> Result<Op
             "UPDATE bot_incidents SET resolved_at=? WHERE section_id=? AND resolved_at IS NULL",
             params![now(), id],
         )?;
+        crate::dreaming::checkins::forget_section(&tx, id)?;
         tx.execute(
             "UPDATE bots SET last_activity_at=? WHERE name=?",
             params![now(), row["bot"].as_str()],
@@ -2382,6 +2385,9 @@ fn delete_bot(home: &Path, caller: &str, name: &str) -> Result<Value> {
         bot_owner(home, caller, name)?;
         for target in &targets {
             runtime_store::mark_deleted(home, required(target, "id")?)?;
+        }
+        for section in rows(&tx, "SELECT id FROM sections WHERE bot=?", &[&name])? {
+            crate::dreaming::checkins::forget_section(&tx, required(&section, "id")?)?;
         }
         tx.execute("DELETE FROM sections WHERE bot=?", [name])?;
         // Threads where this bot asked others stay with their recipients.
@@ -3702,6 +3708,54 @@ mod parity_tests {
                 json!({"role":"user","text":format!("In {id}"),"timestamp":time}),
             );
         }
+    }
+    #[test]
+    fn check_ins_are_not_the_chat_and_survive_the_upgrade() {
+        let home = tempfile::tempdir().unwrap();
+        db::migrate(home.path()).unwrap();
+        db::open(home.path()).unwrap().execute_batch(
+            "INSERT INTO users(id,display_name,role,created_at) VALUES('alice','Alice','admin',0);
+             INSERT INTO bots(name,owner_id,is_primary) VALUES('hexbot','alice',1);
+             INSERT INTO sections(id,bot,owner_id,title,updated_at) VALUES('chat','hexbot','alice','General',2),('older','hexbot','alice','Older',1);
+             INSERT INTO sections(id,bot,owner_id,title,updated_at,purpose) VALUES('checkins','hexbot','alice','Check-ins',9,'checkins');
+             INSERT INTO checkin_messages(id,owner_id,bot,section_id,text,created_at) VALUES('m','alice','hexbot','checkins','Due tonight.',9);",
+        ).unwrap();
+        for (id, time) in [("chat", 2), ("older", 1), ("checkins", 9)] {
+            said(
+                home.path(),
+                id,
+                json!({"role":"user","text":format!("In {id}"),"timestamp":time}),
+            );
+        }
+        one_chat_per_bot(home.path()).unwrap();
+        // Newer, but not a chat: the upgrade leaves it and picks among the others.
+        assert_eq!(ids_of(home.path(), "hexbot"), ["chat", "checkins"]);
+        assert_eq!(
+            chat_section(home.path(), "alice", "hexbot").unwrap()["id"],
+            "chat"
+        );
+        assert_eq!(
+            section(home.path(), "alice", "checkins").unwrap()["purpose"],
+            "checkins"
+        );
+        // Unlike the chat, it can be deleted, and what check-ins said goes with it.
+        check_section_delete(home.path(), "alice", "chat").unwrap_err();
+        check_section_delete(home.path(), "alice", "checkins").unwrap();
+        let text = || -> String {
+            db::open(home.path())
+                .unwrap()
+                .query_row("SELECT text FROM checkin_messages WHERE id='m'", [], |r| {
+                    r.get(0)
+                })
+                .unwrap()
+        };
+        assert_eq!(text(), "Due tonight.");
+        db::open(home.path())
+            .unwrap()
+            .execute("UPDATE bots SET is_primary=0", [])
+            .unwrap();
+        delete_bot(home.path(), "alice", "hexbot").unwrap();
+        assert_eq!(text(), "");
     }
     #[test]
     fn unreadable_native_chats_stay_for_repair_but_are_never_canonical() {
