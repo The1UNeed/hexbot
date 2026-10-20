@@ -375,6 +375,10 @@ export const dreamingRestore = (id: string) =>
 
 export const checkinsStatus = () => rpcCall<CheckinStatus>('hexbot.checkins.status')
 export const checkinsRunNow = () => rpcCall<{ id: string }>('hexbot.checkins.run_now')
+/** Delete a section that is not a bot's chat, such as Check-ins (4202 for a chat). */
+export const sectionsDelete = (id: string) =>
+  rpcCall<{ deleted: boolean }>('hexbot.sections.delete', { id })
+
 export const checkinsCancelWakeup = (id: string) =>
   rpcCall<{ cancelled: boolean }>('hexbot.checkins.cancel_wakeup', { id })
 

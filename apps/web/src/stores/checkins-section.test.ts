@@ -15,7 +15,7 @@ beforeEach(() => {
   useConnection.setState({
     target: { kind: 'local' },
     epoch: 'process',
-    daemon: { one_chat: false } as DaemonInfo
+    daemon: { one_chat: false } as unknown as DaemonInfo
   })
 })
 afterEach(() => setActiveRpc(null))

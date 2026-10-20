@@ -76,6 +76,32 @@ describe('check-ins', () => {
     )
   })
 
+  it('deletes the Check-ins conversation after asking', async () => {
+    let deleted = false
+
+    const call = vi.fn((method: string) => {
+      if (method === 'hexbot.sections.delete') {
+        deleted = true
+      }
+
+      return Promise.resolve(
+        method === 'hexbot.checkins.status'
+          ? status(deleted ? { section_id: null } : {})
+          : { deleted: true }
+      )
+    })
+
+    setActiveRpc({ call } as never)
+    render(<CheckinsTab bot={hexbot} />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Delete' }))
+    expect(call).not.toHaveBeenCalledWith('hexbot.sections.delete', expect.anything())
+    fireEvent.click(screen.getByRole('button', { name: 'Delete' }))
+    await waitFor(() =>
+      expect(call).toHaveBeenCalledWith('hexbot.sections.delete', { id: 'checkins-1' })
+    )
+    await waitFor(() => expect(screen.queryByText('Delete Check-ins')).toBeNull())
+  })
+
   it('turns check-ins off and changes their hours', async () => {
     const call = vi.fn((method: string, params?: { patch?: Record<string, unknown> }) =>
       Promise.resolve(

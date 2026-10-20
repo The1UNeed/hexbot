@@ -168,6 +168,8 @@ export function Management({
   const bot = panel?.bot
     ? (mobile.bots.find(b => b.name === panel.bot!.name) ?? panel.bot)
     : undefined
+  // The primary bot's Check-ins conversation, which can be deleted, unlike its chat.
+  const checkinsSection = mobile.sections.find(s => s.bot === bot?.name && s.purpose === 'checkins')
   const room = panel?.room
     ? (mobile.rooms.find(r => r.id === panel.room!.id) ?? panel.room)
     : undefined
@@ -719,6 +721,17 @@ export function Management({
                       )
                       await mobile.openSection(result.bot, section)
                     })
+                  : null}
+                {checkinsSection
+                  ? action(
+                      'Delete Check-ins',
+                      async () => {
+                        await rpc('hexbot.sections.delete', { id: checkinsSection.id })
+                        await mobile.refresh()
+                      },
+                      true,
+                      'This deletes what check-ins told you. The next message starts it again.'
+                    )
                   : null}
                 {/* The primary bot stays; the daemon refuses to delete it too. */}
                 {bot.primary

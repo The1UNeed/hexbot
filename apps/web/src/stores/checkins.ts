@@ -5,11 +5,13 @@
 
 import { create } from 'zustand'
 
-import { checkinsCancelWakeup, checkinsRunNow, checkinsStatus } from '../lib/api'
+import { checkinsCancelWakeup, checkinsRunNow, checkinsStatus, sectionsDelete } from '../lib/api'
 import type { CheckinStatus } from '../lib/types'
 
 export interface CheckinsState {
   cancel: (id: string) => Promise<void>
+  /** Delete the Check-ins conversation and what check-ins said there. */
+  deleteSection: () => Promise<void>
   error: null | string
   loaded: boolean
   refresh: () => Promise<void>
@@ -32,6 +34,16 @@ export const useCheckins = create<CheckinsState>((set, get) => ({
 
   async runNow() {
     await checkinsRunNow()
+    await get().refresh()
+  },
+
+  async deleteSection() {
+    const id = get().status?.section_id
+
+    if (id) {
+      await sectionsDelete(id)
+    }
+
     await get().refresh()
   },
 
