@@ -349,17 +349,23 @@ export const useSections = create<SectionsState>((set, get) => ({
       }
 
       if (live) {
+        // Merging local rows into history needs the daemon's input and
+        // fragment IDs. Without them the snapshot replaces what is shown.
+        const identified = useConnection.getState().daemon?.transcript_identity === true
+
         useTranscripts.getState().open(
           live,
           id,
           messagesFromHistory(messages ?? []).filter(
             message => !(message.role === 'user' && message.text.includes(KICKOFF_MARKER))
           ),
-          {
-            reports: (messages ?? [])
-              .filter(row => row.dream === true)
-              .map(row => String(row.row_id))
-          }
+          identified
+            ? {
+                reports: (messages ?? [])
+                  .filter(row => row.dream === true)
+                  .map(row => String(row.row_id))
+              }
+            : undefined
         )
 
         // Check-ins that arrived while this loaded; the history may hold them already.

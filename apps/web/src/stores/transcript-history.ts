@@ -117,6 +117,28 @@ export function hydrateHistory(
     }
   }
 
+  // A queued or steered input can be saved without its ID. A saved user row
+  // without one that says the same is that input, newest first; one with
+  // uploads or a failed or unconfirmed send stays, so it is never hidden.
+  const unbound = history.filter(row => row.role === 'user' && !row.inputId)
+
+  for (const input of [...inputs].reverse()) {
+    if (
+      adopted.has(input.id) ||
+      input.attachments.length ||
+      (input.submission && input.submission.status !== 'accepted')
+    ) {
+      continue
+    }
+
+    const index = unbound.findLastIndex(row => row.text === input.text)
+
+    if (index >= 0) {
+      unbound.splice(index, 1)
+      adopted.add(input.id)
+    }
+  }
+
   let messages: TranscriptMessage[] = history.map(message => {
     const live = previous.get(message.id)
 

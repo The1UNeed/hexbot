@@ -87,7 +87,7 @@ beforeEach(() => {
   useConnection.setState({
     target: { kind: 'local' },
     epoch: 'first',
-    daemon: { one_chat: true } as DaemonInfo
+    daemon: { one_chat: true, transcript_identity: true } as DaemonInfo
   })
   useBots.setState({ byName: { owl: { name: 'owl', display_name: 'Owl' } as Bot }, loaded: true })
   useSections.setState({
