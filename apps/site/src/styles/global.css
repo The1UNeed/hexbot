@@ -117,7 +117,7 @@ div.rise { display: flex; }
 .composer { display: flex; align-items: center; gap: .75rem; padding: .375rem .5rem .375rem .5rem; border-radius: 999px; border: 1px solid var(--color-line); background: var(--color-paper); box-shadow: 0 1px 2px rgb(0 0 0 / .04); font-size: 1rem; }
 .composer-dot { display: inline-flex; width: 32px; height: 32px; align-items: center; justify-content: center; border-radius: 999px; background: var(--color-wash); color: var(--color-mute); flex-shrink: 0; }
 
-/* Nightly early access: a thin bar on every page and an eyebrow in the hero. */
+/* Alpha: a thin bar on every page and an eyebrow in the hero. */
 .nightly-bar { display: flex; align-items: center; justify-content: center; gap: .55rem; padding: .5rem 1.25rem; background: var(--color-ink); color: var(--color-paper); font-size: .875rem; text-align: center; }
 .nightly-bar:hover { background: #2a2a2a; }
 .nightly-dot { width: 7px; height: 7px; flex-shrink: 0; border-radius: 999px; background: #f5a524; }
