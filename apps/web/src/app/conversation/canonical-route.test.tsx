@@ -9,7 +9,7 @@ import {
 } from '@tanstack/react-router'
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 
-import { setActiveRpc } from '../../lib/rpc'
+import { CONNECT_WAIT_MS, setActiveRpc } from '../../lib/rpc'
 import type { Bot, DaemonInfo, Section } from '../../lib/types'
 import { Route as HomeRoute } from '../../routes/index'
 import { useBots } from '../../stores/bots'
@@ -195,6 +195,31 @@ it('keeps the open chat on screen through a dropped connection and a report relo
     await useSections.getState().open('canonical')
   })
   expect(transcript()).toBe(before)
+})
+it('keeps the open chat, not a Retry card, through a drop longer than a connection wait', async () => {
+  await mount('/b/owl/s/canonical')
+  const shown = await screen.findByText('canonical history')
+  vi.useFakeTimers({ shouldAdvanceTime: true })
+
+  try {
+    await act(async () => {
+      setActiveRpc(null)
+      useConnection.getState().setDaemon(null)
+    })
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(CONNECT_WAIT_MS + 1000)
+    })
+    expect(shown).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Retry' })).toBeNull()
+  } finally {
+    vi.useRealTimers()
+  }
+
+  await act(async () => {
+    setActiveRpc({ call } as never)
+    useConnection.getState().setDaemon({ one_chat: true } as DaemonInfo)
+  })
+  await waitFor(() => expect(screen.getByRole('textbox', { name: 'Message' })).toBeEnabled())
 })
 it('leaves an explicit peer thread and its question on that thread', async () => {
   const view = await mount('/b/owl/s/peer')

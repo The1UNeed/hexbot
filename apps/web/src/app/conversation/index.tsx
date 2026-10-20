@@ -30,6 +30,7 @@ import {
 import { botFace } from '../../lib/avatar-builder'
 import { getBridge } from '../../lib/bridge'
 import { cn } from '../../lib/cn'
+import { NotConnectedError } from '../../lib/rpc'
 import { toMillis } from '../../lib/time'
 import type {
   ApprovalChoice,
@@ -1333,6 +1334,11 @@ function BotConversation() {
 
         setResolved({ entry, peer: Boolean(chat.peer_bot) })
       })().catch(error => {
+        // No daemon to ask: the chat is checked again when one answers.
+        if (error instanceof NotConnectedError && !useConnection.getState().daemon) {
+          return
+        }
+
         if (current()) {
           setOpenFailure({
             section: sectionId,
