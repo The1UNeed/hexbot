@@ -90,7 +90,8 @@ CREATE TABLE IF NOT EXISTS checkin_wakeups(
  checkin_id TEXT);
 -- What a check-in told the user. offered_at: first handed to the section's next
 -- turn; context_at: Pi took it into the section's context (or the second offer);
--- pushed_at (in COLUMNS): its phone push was sent to Connect, or had no one to go to.
+-- push_due_at (in COLUMNS): when its phone push is next tried; NULL once Connect
+-- took it, it had no one to go to, or it grew too old to send.
 CREATE TABLE IF NOT EXISTS checkin_messages(
  id TEXT PRIMARY KEY, owner_id TEXT NOT NULL, bot TEXT NOT NULL, section_id TEXT NOT NULL,
  checkin_id TEXT, text TEXT NOT NULL, created_at REAL NOT NULL, offered_at REAL, context_at REAL);
@@ -134,7 +135,7 @@ const COLUMNS: &[(&str, &str, &str)] = &[
     ("sections", "purpose", "TEXT"),
     ("devices", "push_token", "TEXT"),
     ("devices", "push_platform", "TEXT"),
-    ("checkin_messages", "pushed_at", "REAL"),
+    ("checkin_messages", "push_due_at", "REAL"),
 ];
 
 /// Open the explicitly selected database without running schema migrations.

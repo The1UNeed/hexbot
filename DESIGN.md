@@ -124,8 +124,10 @@ more freedom and more capability than a hosted product can offer.
   check-ins running back to back; one missed by more than six hours is
   dropped. At most 96 check-ins run in any day. `checkin_enabled` turns all
   of it off, including a scheduled check-in already running, which can no
-  longer message the user. Finished check-ins and spent wake-ups are kept for 30 days; a
-  check-in's own transcript goes when it ends, its usage stays.
+  longer message the user. Finished check-ins, spent wake-ups and the daemon's
+  record of each message are kept for 30 days; the message stays in the
+  section's history. A check-in's own transcript goes when it ends, its usage
+  stays.
 - A check-in is an unattended job session (`checkin-<id>`) with the bot's
   connectors: memory writes become proposals, the soul only reads, it cannot
   ask, and it runs in Auto at most. It only reads: of the daemon's tools it
@@ -146,9 +148,10 @@ more freedom and more capability than a hosted product can offer.
   Check-ins section shows it at once, and the app and browsers notify. Phones
   get a push through Hex Connect in Connect's own words, with the section and
   the phone's device id to open it on, never the message. The bot's Notify me
-  switch silences both; the message still lands in the section. If the
-  daemon stops after saving a message but before showing it or sending its
-  push (`checkin_messages.pushed_at`), it does both at its next start.
+  switch silences both; the message still lands in the section. A push
+  Connect does not take, or one the daemon stopped before sending, is tried
+  again every 15 minutes (`checkin_messages.push_due_at`) for six hours, then
+  dropped; a message saved but not shown is shown at the next start.
 - The message reaches the section's context with the user's next message
   there: the extension adds it after that message (`before_agent_start`), so
   the cached prefix and the frozen prompt stay intact. Each message is fenced

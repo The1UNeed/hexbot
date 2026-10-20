@@ -226,7 +226,7 @@ pub(crate) fn wakeups_descriptor() -> Value {
     json!({
         "name": "hexbot_wakeups",
         "label": "Wake-ups",
-        "description": "Set a time to check in again on your own, with a note to yourself on what to look at then. At that time you get a check-in with the note and decide then whether to message the user. list shows the ones waiting; add needs at and note; cancel needs id.",
+        "description": "Set a time to check in again on your own, with a note to yourself on what to look at then. At that time you get a check-in with the note and decide then whether to message the user. list shows the ones waiting; add needs at and note; cancel needs id, and asks the user first. A check-in can't cancel one.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -545,8 +545,8 @@ pub(crate) fn notify(
     let id = common::id();
     let row = format!("checkin-{id}");
     tx.execute(
-        "INSERT INTO checkin_messages(id,owner_id,bot,section_id,checkin_id,text,created_at) VALUES (?,?,?,?,?,?,?)",
-        params![id, owner, bot, section, checkin, message, now],
+        "INSERT INTO checkin_messages(id,owner_id,bot,section_id,checkin_id,text,created_at,push_due_at) VALUES (?,?,?,?,?,?,?,?)",
+        params![id, owner, bot, section, checkin, message, now, now],
     )?;
     tx.execute(
         "UPDATE checkins SET message_id=? WHERE id=?",
@@ -608,7 +608,7 @@ pub(crate) fn notify(
 /// Phones get a push with no message text: Connect relays it, and chat never
 /// passes through Connect. The bot's Notify me switch silences it, as it does
 /// the app's notifications; the message still lands in the section.
-pub(super) fn push_later(home: &Path, message: &str) {
+fn push_later(home: &Path, message: &str) {
     let Ok(handle) = tokio::runtime::Handle::try_current() else {
         return;
     };
@@ -650,18 +650,25 @@ async fn push(home: &Path, message: &str) -> Result<()> {
     Ok(())
 }
 
-/// Sends a message's push once and records that it went, whether or not
-/// Connect took it; a message the daemon stopped before sending is sent at
-/// start (`recover`). Returns Expo's tickets.
+/// Sends a message's phone push and returns Expo's tickets. `push_due_at` is
+/// when it is next due: claiming it moves that RETRY_AFTER on, so two callers
+/// never send it at once and a failure is tried again then (`due_pushes`). It
+/// clears once Connect takes the push or there is no one to send it to.
 async fn send_push(home: &Path, message: &str) -> Result<Vec<Value>> {
+    let now = common::now();
     let (row, targets) = {
         let conn = db::open(home)?;
+        let claimed = conn.execute(
+            "UPDATE checkin_messages SET push_due_at=? WHERE id=? AND push_due_at<=? AND created_at>?",
+            params![now + RETRY_AFTER, message, now, now - WAKEUP_GRACE],
+        )?;
         let Some(row) = common::rows(
             &conn,
-            "SELECT m.owner_id,m.section_id,COALESCE(b.notify=1,0) AS notify FROM checkin_messages m LEFT JOIN bots b ON b.name=m.bot WHERE m.id=? AND m.pushed_at IS NULL",
+            "SELECT m.owner_id,m.section_id,COALESCE(b.notify=1,0) AS notify FROM checkin_messages m LEFT JOIN bots b ON b.name=m.bot WHERE m.id=?",
             &[&message],
         )?
-        .pop() else {
+        .pop()
+        .filter(|_| claimed == 1) else {
             return Ok(vec![]);
         };
         // Each phone learns which of its saved daemons to open from its own device id.
@@ -680,28 +687,38 @@ async fn send_push(home: &Path, message: &str) -> Result<Vec<Value>> {
         (row, targets)
     };
     let section = row["section_id"].as_str().unwrap_or("");
-    // Connect takes 20 targets a request.
+    // Connect takes 20 targets a request. Without Connect set up, it is Ok
+    // with nothing sent.
     let mut gone = vec![];
     let mut tickets = vec![];
-    let mut sent = Ok(());
     for batch in targets.chunks(20) {
-        match crate::services::push(home, batch, section).await {
-            Ok((lost, ticket)) => {
-                gone.extend(lost);
-                tickets.extend(ticket);
-            }
-            Err(error) => {
-                sent = Err(error);
-                break;
-            }
-        }
+        let (lost, sent) = crate::services::push(home, batch, section).await?;
+        gone.extend(lost);
+        tickets.extend(sent);
     }
     db::open(home)?.execute(
-        "UPDATE checkin_messages SET pushed_at=? WHERE id=?",
-        params![common::now(), message],
+        "UPDATE checkin_messages SET push_due_at=NULL WHERE id=?",
+        [message],
     )?;
     forget_tokens(home, &gone)?;
-    sent.map(|()| tickets)
+    Ok(tickets)
+}
+
+/// Pushes still due: Connect did not take them, or the daemon stopped before
+/// sending. One older than a wake-up's grace is dropped, not sent late.
+fn due_pushes(conn: &rusqlite::Connection, now: f64) -> Result<Vec<String>> {
+    conn.execute(
+        "UPDATE checkin_messages SET push_due_at=NULL WHERE push_due_at IS NOT NULL AND created_at<=?",
+        [now - WAKEUP_GRACE],
+    )?;
+    Ok(common::rows(
+        conn,
+        "SELECT id FROM checkin_messages WHERE push_due_at<=? ORDER BY created_at",
+        &[&now],
+    )?
+    .into_iter()
+    .filter_map(|r| r["id"].as_str().map(str::to_owned))
+    .collect())
 }
 
 fn forget_tokens(home: &Path, tokens: &[String]) -> Result<()> {
@@ -718,11 +735,11 @@ fn forget_tokens(home: &Path, tokens: &[String]) -> Result<()> {
     Ok(())
 }
 
-/// A deleted section takes what check-ins said there with it. The rows stay,
-/// empty, so the day's message count still holds.
-pub(crate) fn forget_section(home: &Path, section: &str) -> Result<()> {
-    db::open(home)?.execute(
-        "UPDATE checkin_messages SET text='',context_at=COALESCE(context_at,?) WHERE section_id=?",
+/// A deleted section takes what check-ins said there with it, and any push
+/// still due. The rows stay, empty, so the day's message count still holds.
+pub(crate) fn forget_section(conn: &rusqlite::Connection, section: &str) -> Result<()> {
+    conn.execute(
+        "UPDATE checkin_messages SET text='',context_at=COALESCE(context_at,?),push_due_at=NULL WHERE section_id=?",
         params![common::now(), section],
     )?;
     Ok(())
@@ -902,10 +919,10 @@ fn finish(home: &Path, id: &str, status: &str, summary: &str) -> Result<()> {
 
 /// At start: a check-in the daemon stopped in the middle of failed, and its
 /// wake-ups wait for the next one. A message recorded just before the daemon
-/// stopped, but not yet shown, is shown now. Returns the messages whose push
-/// never went, for the caller to send; no app is connected yet to hear the
-/// message event, and each finds the Check-ins section unread instead.
-pub(super) fn recover(home: &Path) -> Result<Vec<String>> {
+/// stopped, but not yet shown, is shown now; its push is still due, and the
+/// first tick sends it. No app is connected yet to hear the message event, so
+/// each finds the Check-ins section unread instead.
+pub(super) fn recover(home: &Path) -> Result<()> {
     let store = runtime_store::open(home)?;
     // Every message kept (30 days at most), however long the daemon was off.
     for row in common::rows(
@@ -948,14 +965,7 @@ pub(super) fn recover(home: &Path) -> Result<Vec<String>> {
             "Daemon stopped before the check-in finished",
         )?;
     }
-    Ok(common::rows(
-        &db::open(home)?,
-        "SELECT id FROM checkin_messages WHERE text<>'' AND pushed_at IS NULL ORDER BY created_at",
-        &[],
-    )?
-    .into_iter()
-    .filter_map(|r| r["id"].as_str().map(str::to_owned))
-    .collect())
+    Ok(())
 }
 
 impl Dreaming {
@@ -987,10 +997,14 @@ impl Dreaming {
             "DELETE FROM checkin_wakeups WHERE (fired_at<? OR cancelled_at<?)",
             params![now - RETENTION, now - RETENTION],
         )?;
+        // Its row in the section's history stays.
         conn.execute(
-            "DELETE FROM checkin_messages WHERE created_at<? AND (context_at IS NOT NULL OR text='')",
+            "DELETE FROM checkin_messages WHERE created_at<?",
             [now - RETENTION],
         )?;
+        for message in due_pushes(&conn, now)? {
+            push_later(&self.home, &message);
+        }
         let settings = settings::get(&self.home)?;
         if settings["checkin_enabled"] != true {
             return Ok(());
@@ -1486,19 +1500,31 @@ mod tests {
     }
 
     #[test]
-    fn a_message_the_daemon_stopped_before_pushing_is_pushed_at_start() {
+    fn a_push_connect_did_not_take_is_tried_again_while_fresh() {
         let home = tempfile::tempdir().unwrap();
         db::migrate(home.path()).unwrap();
-        db::open(home.path())
+        let conn = db::open(home.path()).unwrap();
+        conn.execute_batch(
+            "INSERT INTO bots(name,owner_id) VALUES ('hexbot','local');
+             INSERT INTO checkins(id,owner_id,bot,kind,started_at,status) VALUES ('c','local','hexbot','heartbeat',1,'running');
+             INSERT INTO devices(id,owner_id,push_token) VALUES ('phone','local','ExponentPushToken[x]');",
+        )
+        .unwrap();
+        // Connect is set up but cannot be reached.
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
             .unwrap()
-            .execute_batch(
-                "INSERT INTO bots(name,owner_id) VALUES ('hexbot','local');
-                 INSERT INTO checkins(id,owner_id,bot,kind,started_at,status) VALUES ('c','local','hexbot','heartbeat',1,'running');",
-            )
-            .unwrap();
+            .local_addr()
+            .unwrap()
+            .port();
+        let connect = home.path().join("connect.json");
+        fs::write(
+            &connect,
+            json!({"api_base":format!("http://127.0.0.1:{port}"),"daemon_id":"d","daemon_token":"t","owner_id":"o","issuer":"i","keys":[{}]}).to_string(),
+        )
+        .unwrap();
         // No async runtime here, so the push never starts: as if the daemon
-        // stopped right after saving the message.
-        let sent = notify(
+        // stopped right after saving the message. The first tick finds it.
+        notify(
             home.path(),
             &EventHub::new(),
             "local",
@@ -1507,17 +1533,45 @@ mod tests {
             "Due tonight.",
         )
         .unwrap();
-        assert_eq!(sent["sent"], true);
-        let unpushed = recover(home.path()).unwrap();
-        assert_eq!(unpushed.len(), 1);
-        tokio::runtime::Builder::new_current_thread()
+        let now = common::now();
+        let due = due_pushes(&conn, now).unwrap();
+        assert_eq!(due.len(), 1);
+        let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
-            .unwrap()
-            .block_on(send_push(home.path(), &unpushed[0]))
             .unwrap();
-        // Sent once: the next start has nothing to send.
-        assert!(recover(home.path()).unwrap().is_empty());
+        let error = runtime
+            .block_on(send_push(home.path(), &due[0]))
+            .unwrap_err();
+        assert!(error.message.contains("unreachable"), "{}", error.message);
+        // Not lost: due again after the retry wait, not before.
+        assert!(due_pushes(&conn, now + 60.0).unwrap().is_empty());
+        assert_eq!(due_pushes(&conn, now + RETRY_AFTER + 60.0).unwrap(), due);
+        // With no one to send to, it is done.
+        fs::remove_file(&connect).unwrap();
+        conn.execute("UPDATE checkin_messages SET push_due_at=?", [now])
+            .unwrap();
+        runtime.block_on(send_push(home.path(), &due[0])).unwrap();
+        assert!(due_pushes(&conn, now + 86_400.0).unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_push_too_old_to_matter_is_dropped_not_sent() {
+        let home = tempfile::tempdir().unwrap();
+        db::migrate(home.path()).unwrap();
+        let conn = db::open(home.path()).unwrap();
+        let now = common::now();
+        let then = now - WAKEUP_GRACE - 60.0;
+        conn.execute(
+            "INSERT INTO checkin_messages(id,owner_id,bot,section_id,text,created_at,push_due_at) VALUES ('m','local','hexbot','s','Due tonight.',?,?)",
+            params![then, then],
+        )
+        .unwrap();
+        assert!(due_pushes(&conn, now).unwrap().is_empty());
+        let due: Option<f64> = conn
+            .query_row("SELECT push_due_at FROM checkin_messages", [], |r| r.get(0))
+            .unwrap();
+        assert!(due.is_none());
     }
 
     #[test]

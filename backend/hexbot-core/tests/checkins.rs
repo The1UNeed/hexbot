@@ -619,3 +619,27 @@ async fn the_primary_bot_asks_before_it_cancels_a_wake_up() {
         .unwrap();
     assert_eq!(status["wakeups"].as_array().unwrap().len(), 1);
 }
+
+#[tokio::test]
+async fn messages_the_user_only_read_still_go_after_thirty_days() {
+    let (h, app) = setup();
+    set(&app, json!({"checkin_enabled": false})).await;
+    let now = common::now();
+    db::open(h.path())
+        .unwrap()
+        .execute(
+            "INSERT INTO checkin_messages(id,owner_id,bot,section_id,text,created_at) VALUES ('old','local','hexbot','s','Due tonight.',?),('new','local','hexbot','s','Due tomorrow.',?)",
+            [now - 31.0 * 86_400.0, now],
+        )
+        .unwrap();
+    app.dreaming.tick_at(now).await.unwrap();
+    let kept: Vec<String> = db::open(h.path())
+        .unwrap()
+        .prepare("SELECT id FROM checkin_messages")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(kept, ["new"]);
+}

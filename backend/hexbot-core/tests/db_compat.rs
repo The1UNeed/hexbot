@@ -160,7 +160,7 @@ fn team_shape(connection: &Connection) -> Vec<(String, Vec<Column>)> {
             real("created_at", true),
             real("offered_at", false),
             real("context_at", false),
-            real("pushed_at", false),
+            real("push_due_at", false),
         ],
     ));
     expected.push((
