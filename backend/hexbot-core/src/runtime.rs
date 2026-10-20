@@ -232,8 +232,16 @@ pub struct Runtime {
     usage_seq: AtomicU64,
     /// The App whose methods the primary bot's tools call (`runtime_primary.rs`).
     dispatcher: Mutex<Option<Weak<crate::server::App>>>,
+    /// Milliseconds a bot gets to stop before it is killed (`set_stop_grace`).
+    stop_grace: AtomicU64,
 }
 impl Runtime {
+    /// How long a bot process gets to stop before it is killed, one second
+    /// by default. Tests that hold a bot mid-stop set it longer.
+    pub fn set_stop_grace(&self, grace: Duration) {
+        self.stop_grace
+            .store(grace.as_millis() as u64, Ordering::Relaxed);
+    }
     pub fn new(home: PathBuf, events: EventHub, pi_executable: PathBuf) -> Result<Arc<Self>> {
         crate::credentials::warn_unavailable_isolation();
         store::reconcile_all(&home)?;
@@ -255,6 +263,7 @@ impl Runtime {
             parked: Mutex::new(HashMap::new()),
             usage_seq: AtomicU64::new((common::now() * 1000.0) as u64),
             dispatcher: Mutex::new(None),
+            stop_grace: AtomicU64::new(1000),
         });
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
             let weak = Arc::downgrade(&runtime);
@@ -865,6 +874,7 @@ impl Runtime {
         // What this Pi process is about to load, kept with the session.
         let compaction = crate::providers::compaction_settings(&agent_dir);
         let mut pi = PiOptions::new(&self.pi_executable, &cwd, &agent_dir);
+        pi.stop_grace = Duration::from_millis(self.stop_grace.load(Ordering::Relaxed));
         // Staged attachments travel in one prompt record and Pi echoes it back.
         // The bound is checked while serializing; it does not preallocate RAM.
         pi.max_record_bytes = attachments::ENVELOPE_LIMIT;
@@ -2917,6 +2927,7 @@ impl Runtime {
                 include_bytes!("../../pi-runtime/acp.ts"),
             )?;
             let mut options = PiOptions::new(&self.pi_executable, dir.path(), profile.join("pi"));
+            options.stop_grace = Duration::from_millis(self.stop_grace.load(Ordering::Relaxed));
             options.args = [
                 "--mode",
                 "rpc",
