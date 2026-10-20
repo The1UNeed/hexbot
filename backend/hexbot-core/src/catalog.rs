@@ -562,7 +562,19 @@ pub fn chat_section(home: &Path, caller: &str, name: &str) -> Result<Value> {
     let mut forked = PendingChat { home, id: None };
     let mut source_lease = None;
     let mut conn = db::open(home)?;
+    #[cfg(all(test, unix))]
+    chat_fork_barrier(home, "before_lock")?;
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    // The bot can be deleted while this waits for the write lock; its chat
+    // must not come back without it.
+    let owned: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM bots WHERE name=? AND owner_id=?)",
+        params![name, caller],
+        |r| r.get(0),
+    )?;
+    if !owned {
+        return Err(Error::new(4205, format!("bot not found: {name}")));
+    }
     let candidates = rows(
         &tx,
         "SELECT * FROM sections WHERE bot=? AND owner_id=? AND peer_bot IS NULL AND purpose IS NULL ORDER BY updated_at DESC,id",

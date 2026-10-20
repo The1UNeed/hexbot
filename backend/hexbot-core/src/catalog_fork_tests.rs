@@ -681,3 +681,35 @@ async fn publication_keeps_source_closed_to_writes_until_commit() {
     assert_eq!(listed, vec![target]);
     runtime.shutdown().await;
 }
+
+#[test]
+fn a_bot_deleted_while_its_chat_is_looked_up_gets_no_new_chat() {
+    use std::io::{Read, Write};
+    let home = tempfile::tempdir().unwrap();
+    let h = home.path().to_path_buf();
+    db::migrate(&h).unwrap();
+    db::open(&h).unwrap().execute_batch("INSERT INTO users(id,display_name,role,created_at) VALUES('alice','Alice','admin',0); INSERT INTO bots(name,owner_id) VALUES('owl','alice');").unwrap();
+    let listener = std::os::unix::net::UnixListener::bind(h.join("fork-barrier.sock")).unwrap();
+    let lookup = std::thread::spawn({
+        let h = h.clone();
+        move || chat_section(&h, "alice", "owl")
+    });
+    // The lookup checked the owner and waits for the write lock: the bot goes.
+    let (mut stream, _) = listener.accept().unwrap();
+    let mut phase = [0; 32];
+    let n = stream.read(&mut phase).unwrap();
+    assert_eq!(&phase[..n], b"before_lock");
+    db::open(&h)
+        .unwrap()
+        .execute("DELETE FROM bots WHERE name='owl'", [])
+        .unwrap();
+    stream.write_all(&[1]).unwrap();
+    assert_eq!(lookup.join().unwrap().unwrap_err().code, 4205);
+    let sections: i64 = db::open(&h)
+        .unwrap()
+        .query_row("SELECT count(*) FROM sections WHERE bot='owl'", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(sections, 0);
+}
