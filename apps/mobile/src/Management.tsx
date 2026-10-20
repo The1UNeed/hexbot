@@ -25,7 +25,7 @@ import {
   type Rpc,
   type Section
 } from './core/types'
-import { avatarSrc } from './core/avatar'
+import { botPhoto } from './core/avatar'
 import { scheduleChange } from './core/jobs'
 import { isOpenRoom } from './core/routes'
 import { pickFile } from './core/pickFile'
@@ -77,7 +77,7 @@ const modes = [
 const modeHelp: Record<string, string> = {
   inherit: 'Uses the approval setting of this daemon.',
   smart:
-    'Works freely in the workspace. Commands run in a sandbox with no network; anything outside the workspace asks first.',
+    "Works freely in the workspace. Steps outside it are checked by the bot's model; only risky ones ask first.",
   manual: 'Reads freely. Every file change and command asks first.',
   off: 'No prompts and no sandbox.'
 }
@@ -86,7 +86,7 @@ const TOOLS: { key: string; label: string; description: string }[] = [
   {
     key: 'terminal',
     label: 'Terminal',
-    description: 'Run commands in a sandbox. Leaving it asks first, except in Bypass.'
+    description: 'Run commands in a sandbox. Leaving it is checked first, except in Bypass.'
   },
   { key: 'files', label: 'Files', description: 'Read, write and search files in the workspace.' },
   {
@@ -595,7 +595,8 @@ export function Management({
         <>
           <View style={[styles.identity, { backgroundColor: theme.surface }]}>
             <BotFace
-              imageUri={avatarSrc(bot?.avatar)}
+              face={bot?.face}
+              imageUri={botPhoto(bot)}
               name={str(values.display_name) || str(values.name) || 'New bot'}
               size={88}
             />
@@ -604,7 +605,7 @@ export function Management({
                 <Button
                   disabled={busy || mobile.connection !== 'connected'}
                   icon="image-outline"
-                  label={bot.avatar ? 'Change photo' : 'Use a photo'}
+                  label={botPhoto(bot) ? 'Change photo' : 'Use a photo'}
                   onPress={() =>
                     void run(async () => {
                       const file = await pickFile(
@@ -623,7 +624,7 @@ export function Management({
                   testID="action-choose-bot-picture"
                   variant="secondary"
                 />
-                {bot.avatar ? (
+                {botPhoto(bot) ? (
                   <Button
                     disabled={busy || mobile.connection !== 'connected'}
                     label="Use its face"
@@ -719,16 +720,32 @@ export function Management({
                 {action('Clear stopped status', () =>
                   rpc('hexbot.bots.clear_status', { name: bot.name })
                 )}
-                {action(
-                  'Delete bot',
-                  async () => {
-                    await rpc('hexbot.bots.delete', { name: bot.name })
-                    mobile.back()
-                    onClose()
-                  },
-                  true,
-                  'This deletes the bot, its threads, memory and scheduled jobs.'
-                )}
+                {bot.primary === false && !mobile.bots.some(b => b.primary)
+                  ? action('Make primary', async () => {
+                      const result = await rpc<{ bot: Bot }>('hexbot.bots.set_primary', {
+                        name: bot.name
+                      })
+                      // Its older threads keep their tools, so a new one opens.
+                      const { section } = await rpc<{ section: Section }>(
+                        'hexbot.sections.create',
+                        { bot: bot.name }
+                      )
+                      await mobile.openSection(result.bot, section)
+                    })
+                  : null}
+                {/* The primary bot stays; the daemon refuses to delete it too. */}
+                {bot.primary
+                  ? null
+                  : action(
+                      'Delete bot',
+                      async () => {
+                        await rpc('hexbot.bots.delete', { name: bot.name })
+                        mobile.back()
+                        onClose()
+                      },
+                      true,
+                      'This deletes the bot, its threads, memory and scheduled jobs.'
+                    )}
               </Group>
             </>
           ) : null}

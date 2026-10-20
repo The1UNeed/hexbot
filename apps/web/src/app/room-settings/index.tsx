@@ -11,7 +11,7 @@ import { Select } from '../../components/ui/select'
 import { settingsPageClass } from '../../components/ui/settings-shell'
 import { roomsLeave } from '../../lib/api'
 import { approvalModes } from '../../lib/approval-modes'
-import { avatarSrc } from '../../lib/avatar-builder'
+import { botFace } from '../../lib/avatar-builder'
 import { cn } from '../../lib/cn'
 import type { Bot, BotApprovalMode, Room } from '../../lib/types'
 import { useBots } from '../../stores/bots'
@@ -65,7 +65,7 @@ function MemberRow({
   return (
     <div className="px-4 py-2.5" data-testid="room-member">
       <div className="flex min-h-[32px] items-center gap-3">
-        <Avatar image={avatarSrc(bot?.avatar)} name={label} size="sm" />
+        <Avatar {...botFace(bot)} name={label} size="sm" />
         <span className="min-w-0 flex-1">
           <span className="flex items-center gap-1.5">
             <span className="truncate">{label}</span>

@@ -24,15 +24,15 @@ Next, sign in to a subscription provider or paste an API key. Choose a default m
 
 Model credentials and tool credentials are separate. A model key does not configure web search, image generation, or other connectors. Setup offers those tools next; skip any of them and add them later. See [Providers and billing](/docs/providers/).
 
-## 4. Create your first bot
+## 4. Meet HexBot
 
-Setup ends by creating your first bot. Choose its name, face, and model, then describe what you want it to do. Hexbot opens the bot's first section, where it introduces itself and may ask a few questions to write its soul and memory. Create more bots later from the roster.
+Setup ends by creating HexBot, your primary bot, on the default model. Hexbot opens its first section, where it introduces itself and asks what you mainly want help with. HexBot looks after your other bots: ask it to create one for a job, put bots together in a room, schedule work, or change a setting. It asks before deleting anything or changing settings. You can also create bots yourself from the roster.
 
-Give it a small first task, such as "Help me plan this week's work. Ask for the deadlines you need." In Bot settings, you can change its Soul, Model, Tools, Connectors, and Skills.
+Give it a small first task, such as "Make me a bot that reviews my writing." In Bot settings, you can rename HexBot and change its Soul, Model, Tools, Connectors, and Skills. See [Bots and sections](/docs/bots-and-sections/#the-primary-bot).
 
 ## 5. Give it a workspace
 
-For file work, set **Working directory** in Bot settings, Tools to the project folder on the daemon computer. Enable the tools the task needs. Auto is the default [approval mode](/docs/approvals/): commands run in a sandbox, and requests for more access wait for your approval.
+For file work, set **Working directory** in Bot settings, Tools to the project folder on the daemon computer. Enable the tools the task needs. Auto is the default [approval mode](/docs/approvals/). Commands run in a sandbox; requests for more access are checked by the bot's model, a judgment rather than a sandbox, and risky or unreviewable steps wait for your approval.
 
 If you connect remotely, files and commands still belong to the daemon computer. Attach a file from your device when the bot needs to read it. Images can be up to 25 MiB; PDFs and other files can be up to 45 MiB each.
 

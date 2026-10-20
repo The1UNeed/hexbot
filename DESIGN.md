@@ -94,22 +94,139 @@ more freedom and more capability than a hosted product can offer.
 - The activity view shows bot pairs with message counts, later a network
   graph, with click-through to the conversation.
 
+### The primary bot
+
+- Every daemon has at most one primary bot. Onboarding creates it as
+  HexBot (handle `hexbot`) on the default model with every tool on, and
+  opens its first section, where it introduces itself. An install from
+  before it adds HexBot or makes one existing bot primary, once; the role
+  never moves after that, and the primary bot cannot be deleted.
+- In its own sections, and nowhere else (not rooms, threads between bots,
+  scheduled jobs, or delegates), it gets four more tools: `hexbot_bots`,
+  `hexbot_rooms`, `hexbot_jobs`, and `hexbot_settings`. Each calls the daemon
+  method the app uses, as the owner, so the same checks and change events
+  apply. Deleting a bot, room, or job, setting a bot's or room's approval
+  mode or a bot's or job's working folder, and every settings change ask the user,
+  even in Bypass.
+  Network, service, and billing settings and every credential stay with
+  the user.
+- Its tools and guidance are frozen with each section like any other, so a
+  bot made primary gets them in its next new section.
+
+### Check-ins
+
+- The primary bot checks in on its own: a heartbeat every
+  `checkin_every_minutes` (default 60, 15 to 1440) inside `checkin_hours`
+  (default `08:00-22:00`, the daemon's time zone, may run past midnight), and
+  at wake-ups it sets with `hexbot_wakeups` in its own sections or during a
+  check-in. A wake-up runs at its time even outside the hours, but at least
+  five minutes after the last check-in, so no chain of wake-ups keeps
+  check-ins running back to back; one missed by more than six hours is
+  dropped. At most 96 check-ins run in any day. `checkin_enabled` turns all
+  of it off, including a scheduled check-in already running, which can no
+  longer message the user. Finished check-ins, spent wake-ups and the daemon's
+  record of each message are kept for 30 days; the message stays in the
+  section's history. A check-in's own transcript goes when it ends, its usage
+  stays.
+- A check-in is an unattended job session (`checkin-<id>`) with the bot's
+  connectors: memory writes become proposals, the soul only reads, it cannot
+  ask, and it runs in Auto at most. It only reads: of the daemon's tools it
+  keeps memory, the soul, `skill_view`, `hexbot_notify`, `hexbot_wakeups`
+  and `hexbot_connector_read`; of Pi's, read, grep, find and ls. Connector
+  tools still ask before changing anything, and nobody can answer. Notion and
+  Airtable work through skills and the shell elsewhere; in a check-in,
+  `hexbot_connector_read` makes their read requests (GET, and Notion's search
+  and queries) with the bot's key, which the model never sees.
+- Cancelling a wake-up from the bot always asks, even in Bypass; a check-in
+  cannot cancel one. The user cancels from Settings without asking. Its prompt gives the time, why it runs, what it told the
+  user and what they wrote back in the Check-ins section in the last day, its
+  last check-ins' logs, and the wake-ups waiting.
+- Its one way to speak is `hexbot_notify`: one message per check-in, eight a
+  day at most. The message is posted in the bot's Check-ins section
+  (`sections.purpose = 'checkins'`, brought back if archived, made again if
+  deleted) and broadcast whole as `hexbot.checkins.message`: an open
+  Check-ins section shows it at once, and the app and browsers notify. Phones
+  get a push through Hex Connect in Connect's own words, with the section and
+  the phone's device id to open it on, never the message. The bot's Notify me
+  switch silences both; the message still lands in the section. A push
+  Connect does not take, or one the daemon stopped before sending, is tried
+  again every 15 minutes (`checkin_messages.push_due_at`) for six hours, then
+  dropped; a message saved but not shown is shown at the next start.
+- The message reaches the section's context with the user's next message
+  there: the extension adds it after that message (`before_agent_start`), so
+  the cached prefix and the frozen prompt stay intact. Each message is fenced
+  in `<checkin_message>` tags under a note that it is a record of what the
+  bot said, not instructions, and only the newest six go in; older ones stay
+  in the section's history. It counts as taken when Pi
+  reports that custom message; one not reported is offered once more.
+  Deleting the section empties what check-ins said there.
+- Only one check-in runs at a time. A failed one, or one the daemon stopped
+  in, gives its wake-ups back, and the next check-in waits 15 minutes from
+  when it ended. One schedule decides both when the tick runs a check-in and
+  what the Check-ins tab shows as the next one.
+- On macOS the app keeps its page when its window closes, whether the daemon
+  runs there or elsewhere, so its notifications keep coming. On Linux closing
+  the window quits the app; phone pushes still arrive.
+  Settings, the bot's Check-ins tab, and `hexbot checkins` manage it.
+
 ### Approvals and tools
 
 - Modes: Auto (default, `smart` in config), Manual, Bypass (`off` in
   config). Overridable per bot and per room. The model follows Codex: the
-  OS sandbox is the boundary, not a judging model and not pattern matching.
-  Pi itself has no approval modes; Bypass is plain Pi.
+  OS sandbox is the boundary, not pattern matching. In Auto, a step that
+  leaves the sandbox goes to a reviewer first, like Codex's auto-review and
+  Claude Code's auto mode. Pi itself has no approval modes; Bypass is plain Pi.
+- Auto trades containment for fewer prompts, on purpose. Inside the sandbox
+  the OS decides; outside it, internet access and writes outside the
+  workspace are decided by a model review on the section's model, which can
+  be a small local one. The step text the reviewer judges (command, reason,
+  file content, tool arguments) is written by the bot and can carry
+  instructions injected by a page or file the bot read, so a reviewer can be
+  talked into allowing a step. That is a judgment, not containment; Manual
+  keeps the user in front of every such step.
 - Auto: shell commands run in a sandbox with no network that can write only
   inside the workspace (the bot's working directory, its artifact and
   attachment folders, temp folders); shell profiles and login items stay
   read-only even there. A command that needs the internet or a write outside
-  the workspace sets `full_access` with a one-sentence `reason`, and the user
-  sees the command and the reason before it runs with the sandbox's base
-  layer only (credential files still unreadable). File tools change the
-  workspace without asking and ask outside it. Code execution runs in the
-  same workspace sandbox without asking. Browser page scripts and absolute
-  cron script paths ask.
+  the workspace sets `full_access` with a one-sentence `reason`, and runs
+  with the sandbox's base layer only (credential files still unreadable).
+  File tools change the workspace without asking. Code execution runs in the
+  same workspace sandbox without asking. Absolute cron script paths ask.
+  File changes to shell profiles and login items use user approval rather than
+  model review. Full-access shell commands can change them after model review,
+  including without a card when the owner requested that exact change.
+- Auto's reviewer (`runtime_review.rs`): a full-access command, a file change
+  outside the workspace, a connected tool that changes something, and a
+  browser page script go to a tool-free one-shot call on the section's model.
+  It reads the owner's visible messages in the section and their room
+  messages, newest first, plus the step's whole input, working directory,
+  checked file destination and overwrite status. It loads no project instruction files,
+  skills or tools. Assistant text, tool output and bot-added messages stay out.
+  Pi starts in an empty directory and explicitly excludes `APPEND_SYSTEM.md`.
+  ACP reviewers also use an isolated temporary home and Copilot/XDG folders,
+  keeping only explicit GitHub-token authentication. Stored CLI login is not
+  imported. Only `--acp` and `--stdio` are accepted as configured ACP arguments.
+  Extra arguments, missing auth or rejected isolation flags fall back to a
+  card; ordinary ACP sessions keep their login behavior.
+  A step over 20,000 characters asks without review, whatever the tool.
+  Owner messages fill the rest of an 80,000-character request, newest first
+  and never clipped. When older ones are left out (or a stored row is too
+  large to load), the request says so and only a low risk `allow` runs: a
+  long chat's lost restriction could forbid a medium-risk step, so it asks.
+  History-read failures also ask. Each section runs at most two reviews at
+  once, and shows "Checking this step" while one runs. The final check
+  retries once when the database or reply slot is briefly busy. Reported reviewer usage counts toward section,
+  room and daily totals. Changed owner messages or pending owner prompts and steers
+  invalidate automatic approval when the complete evidence is rechecked.
+  Copilot ACP reports zero token usage and cost, so its reviews add no measured
+  usage to budgets or totals.
+  A low or medium risk `allow` runs the step; anything else, including a failure,
+  a timeout (60 s) or unparseable output, shows the card with the reviewer's sentence. Those
+  cards offer Approve and Deny only, and reviewed steps ignore section grants
+  from Manual, so one approval never covers the next step. Changing the mode
+  or working directory during review blocks the step. File execution also
+  checks the resolved destination and reviewed overwrite status again.
+  Only visible sections are reviewed; the rest still refuse.
 - Manual: the shell sandbox is read-only, so a command that writes or
   reaches the network sets `full_access` and asks. Every file change and
   every code run asks. Reads are free in both modes except credential files,
@@ -125,20 +242,24 @@ more freedom and more capability than a hosted product can offer.
   change anything the daemon's OS user can, including provider keys.
 - Without an OS sandbox (Linux where bubblewrap fails its startup probe)
   Hexbot warns, Settings shows a notice, Manual and Auto ask before every
-  shell command and code run, and scheduled scripts refuse to run.
+  shell command and code run, including full-access commands, and scheduled
+  scripts refuse to run. Model review cannot replace this user approval;
+  an explicit section grant can cover later shell requests.
 - Connected tools in new sections use Pi's built-in MCP through codemode.
   The section freezes server namespaces and tool declarations. Manual asks for
-  every connected-tool call. Auto asks unless the server marks the tool read-only;
-  Allow in this section covers
-  that server, and Bypass never asks. Every nested codemode call uses the same
-  approval gate. Removal and disable revoke access immediately, including in Bypass.
+  every connected-tool call, and Allow in this section covers that server.
+  Auto runs read-only tools freely and reviews other calls individually;
+  their cards offer Approve and Deny only. Bypass never asks. Every nested
+  codemode call uses the same approval gate. Removal and disable revoke access
+  immediately, including in Bypass.
   Changed credentials block old clients until they reconnect at the next prompt.
   Saved sections keep their existing Rust bridge tools.
 - Approvals render inline in the transcript with Approve, Allow in this
-  section, and Deny. "Allow in this section" quiets the same kind of request
-  for the rest of that section; nothing is saved across sections. Requests
-  the daemon raises itself (code runs, browser scripts, cron) offer Approve
-  and Deny. Native notifications for approvals and mentions.
+  section, and Deny when a section grant is available. "Allow in this section"
+  quiets the same kind of Manual or unreviewed request for the running agent
+  process; nothing is saved across sections. Reviewed Auto cards, incomplete
+  file scans and requests the daemon raises itself (code runs, browser scripts,
+  cron) offer Approve and Deny only. Native notifications for approvals and mentions.
 - New bots get files, web search, browser and terminal (terminal gated by
   approvals). Computer use is off until enabled. Self-authored skills are on,
   with a transcript notice. Bundled and user-shared skills form one library,

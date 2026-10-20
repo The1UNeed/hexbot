@@ -36,14 +36,14 @@ describe('UI components', () => {
   it('renders a generated face when there is no image', () => {
     const { container } = render(<Avatar name="Ada Lovelace" />)
     expect(screen.getByRole('img', { name: 'Ada Lovelace' })).toBeVisible()
-    expect(container.querySelectorAll('ellipse')).toHaveLength(2)
+    expect(container.querySelectorAll('.hex-eyes rect')).toHaveLength(2)
   })
   it('changes the eyes with the mood', () => {
     const { container, rerender } = render(<Avatar mood="idle" name="Ada" />)
-    const idle = container.querySelector('ellipse')?.getAttribute('ry')
+    const idle = container.querySelector('.hex-eyes rect')?.getAttribute('height')
     rerender(<Avatar mood="sleeping" name="Ada" />)
     expect(container.querySelector('.hex-eyes')).toHaveAttribute('data-mood', 'sleeping')
-    expect(container.querySelector('ellipse')?.getAttribute('ry')).not.toBe(idle)
+    expect(container.querySelector('.hex-eyes rect')?.getAttribute('height')).not.toBe(idle)
   })
   it('renders Chip', () => {
     render(<Chip>Ready</Chip>)

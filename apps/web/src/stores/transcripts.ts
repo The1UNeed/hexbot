@@ -79,6 +79,12 @@ export interface Transcript {
   approvals: ApprovalRequest[]
   /** Canonical settlements also cover an answer arriving before its card replay. */
   approvalDecisions?: Record<string, ApprovalChoice>
+  /**
+   * "Checking this step" while Auto mode reviews a step. It belongs to the
+   * turn, not one message: a card can end the bubble that showed it while
+   * another review still runs, so each new bubble takes it over.
+   */
+  checking?: string
   /** Questions the bot asked through the clarify tool, oldest first. */
   clarifies: ClarifyRequest[]
   clarifyAnswers?: Record<string, Record<string, string>>
@@ -213,6 +219,8 @@ export interface TranscriptsState {
    * streaming message alone: the incident fires mid-turn (a tool refused) and
    * the reply keeps streaming after it.
    */
+  /** A message the primary bot sent here from a check-in, once by its history row id. */
+  checkinMessage: (sessionId: string, message: CheckinRow) => void
   incidentEvent: (sessionId: string, message: string, detail: ErrorDetail) => void
   messageComplete: (sessionId: string, payload?: MessageCompletePayload) => void
   messageDelta: (sessionId: string, text: string) => void
@@ -267,6 +275,28 @@ const defaultEffects: TranscriptEffects = {
 }
 
 let effects: TranscriptEffects = defaultEffects
+
+/** A check-in message for a section whose transcript is still loading. */
+export interface CheckinRow {
+  createdAt: number
+  id: string
+  text: string
+}
+const heldCheckins = new Map<string, CheckinRow[]>()
+
+/** Keeps a check-in message until its section's history is in; a few per section. */
+export function holdCheckinMessage(sectionId: string, row: CheckinRow): void {
+  heldCheckins.set(sectionId, [...(heldCheckins.get(sectionId) ?? []), row].slice(-20))
+}
+
+/** The check-in messages held for a section, now that its transcript exists. */
+export function releaseCheckinMessages(sectionId: string): CheckinRow[] {
+  const rows = heldCheckins.get(sectionId) ?? []
+
+  heldCheckins.delete(sectionId)
+
+  return rows
+}
 
 /** Send a native notification through the same effect the store uses. */
 export function transcriptNotify(input: { body: string; sectionId?: string; title: string }): void {
@@ -348,9 +378,10 @@ export function emptyTranscript(sessionId: string, sectionId?: string): Transcri
   }
 }
 
-function newAssistantMessage(): Message {
+function newAssistantMessage(checking?: string): Message {
   return {
     attachments: [],
+    ...(checking && { checking }),
     createdAt: Date.now(),
     id: nextMessageId('a'),
     role: 'assistant',
@@ -448,7 +479,7 @@ function withCurrentAssistant(
     return replaceMessage(transcript, current.id, patch)
   }
 
-  const created = patch(newAssistantMessage())
+  const created = patch(newAssistantMessage(transcript.checking))
 
   return {
     ...transcript,
@@ -658,17 +689,19 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
     },
 
     messageStart(sessionId, retryResolved = false) {
-      const message = newAssistantMessage()
+      update(sessionId, transcript => {
+        const message = newAssistantMessage(transcript.checking)
 
-      update(sessionId, transcript => ({
-        ...advanceAuthority(transcript),
-        waitingRequests: [],
-        retryResolved: retryResolved || transcript.retryResolved,
-        error: null,
-        messages: [...transcript.messages, message],
-        streamingMessageId: message.id,
-        turnPrefix: undefined
-      }))
+        return {
+          ...advanceAuthority(transcript),
+          waitingRequests: [],
+          retryResolved: retryResolved || transcript.retryResolved,
+          error: null,
+          messages: [...transcript.messages, message],
+          streamingMessageId: message.id,
+          turnPrefix: undefined
+        }
+      })
     },
 
     messageDelta(sessionId, text) {
@@ -858,6 +891,7 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
         const finalize = (message: Message): Message => ({
           ...settle(message, finalText),
           activity: undefined,
+          checking: undefined,
           error: payload.error ?? message.error,
           status: payload.status,
           streaming: false,
@@ -872,8 +906,10 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
 
         const next = withCurrentAssistant(transcript, finalize)
 
+        // The turn is over, so no review is left; the daemon's clear may be lost.
         return {
           ...next,
+          checking: undefined,
           turnPrefix: undefined,
           error: payload.error ?? null,
           status: null,
@@ -1309,23 +1345,48 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
     },
 
     statusUpdate(sessionId, status) {
-      // Status text is informational; provider retry keeps an already confirmed Working state.
-      update(sessionId, transcript =>
-        status.kind === 'status' || transcript.superseded
-          ? { ...transcript, status }
-          : {
-              ...advanceAuthority(transcript),
-              waitingRequests: status.kind === 'idle' ? [] : transcript.waitingRequests,
-              roomTurnRunning: status.kind === 'idle' ? undefined : transcript.roomTurnRunning,
-              liveStatus:
-                status.kind === 'working' || status.kind === 'idle'
-                  ? status.kind
-                  : status.kind === 'waiting' && transcript.liveStatus === 'working'
-                    ? 'working'
-                    : undefined,
-              status
+      update(sessionId, transcript => {
+        if (status.kind !== 'checking') {
+          // Informational status and provider retries retain confirmed progress.
+          return status.kind === 'status' || transcript.superseded
+            ? { ...transcript, status }
+            : {
+                ...advanceAuthority(transcript),
+                waitingRequests: status.kind === 'idle' ? [] : transcript.waitingRequests,
+                roomTurnRunning: status.kind === 'idle' ? undefined : transcript.roomTurnRunning,
+                liveStatus:
+                  status.kind === 'working' || status.kind === 'idle'
+                    ? status.kind
+                    : status.kind === 'waiting' && transcript.liveStatus === 'working'
+                      ? 'working'
+                      : undefined,
+                status
+              }
+        }
+
+        // Only the daemon's own clear, an empty `checking` line, ends the
+        // label; it goes once the last overlapping review ends. Until then
+        // the bubble streaming now shows it, and so does every later one.
+        const checking = status.text || undefined
+        const id = transcript.streamingMessageId
+
+        const next: Transcript = checking
+          ? {
+              ...(id
+                ? replaceMessage(transcript, id, message => ({ ...message, checking }))
+                : transcript),
+              checking
             }
-      )
+          : {
+              ...transcript,
+              checking: undefined,
+              messages: transcript.messages.map(message =>
+                message.checking ? { ...message, checking: undefined } : message
+              )
+            }
+
+        return checking || transcript.status?.kind === 'checking' ? { ...next, status } : next
+      })
     },
 
     sessionInfo(sessionId, info) {
@@ -1384,6 +1445,35 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
           messages,
           streamingMessageId: null
         }
+      })
+    },
+
+    checkinMessage(sessionId, message) {
+      update(sessionId, transcript => {
+        if (transcript.messages.some(item => item.id === message.id)) {
+          return transcript
+        }
+
+        const row: TranscriptMessage = {
+          attachments: [],
+          createdAt: message.createdAt,
+          id: message.id,
+          role: 'assistant',
+          streaming: false,
+          text: message.text,
+          toolCalls: []
+        }
+
+        // A turn streaming in this section stays last.
+        const streamingAt = transcript.streamingMessageId
+          ? transcript.messages.findIndex(item => item.id === transcript.streamingMessageId)
+          : -1
+
+        const messages = [...transcript.messages]
+
+        messages.splice(streamingAt >= 0 ? streamingAt : messages.length, 0, row)
+
+        return { ...transcript, messages }
       })
     },
 

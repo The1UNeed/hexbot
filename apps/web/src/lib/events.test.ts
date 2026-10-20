@@ -5,13 +5,14 @@ import { useMe } from '../stores/me'
 import { useSections } from '../stores/sections'
 import {
   emptyTranscript,
+  releaseCheckinMessages,
   resetTranscriptEffects,
   setTranscriptEffects,
   useTranscripts
 } from '../stores/transcripts'
 import fixtures from '../test/fixtures/streaming-turn.json'
 
-import { routeEvent } from './events'
+import { OPEN_SECTION_EVENT, routeEvent } from './events'
 import type { Bot, Section } from './types'
 
 const incident = (overrides: Record<string, unknown> = {}): GatewayEvent =>
@@ -132,6 +133,104 @@ describe('event routing', () => {
     const rows = useTranscripts.getState().bySession['live-9']!.messages
     expect(rows.filter(item => item.error)).toHaveLength(1)
     expect(rows.at(-1)!.error).toBe('Still expired')
+  })
+  it('notifies when the primary bot messages you from a check-in', () => {
+    const notify = vi.fn()
+    setTranscriptEffects({ notify })
+    useBots.setState({
+      byName: { hexbot: { display_name: 'HexBot', name: 'hexbot', primary: true } as Bot }
+    })
+    routeEvent({
+      payload: {
+        bot: 'hexbot',
+        id: 'm1',
+        section_id: 'checkins-1',
+        text: 'Your PE feedback is due tonight at 11:59 PM.'
+      },
+      type: 'hexbot.checkins.message'
+    } as unknown as GatewayEvent)
+    expect(notify).toHaveBeenCalledWith({
+      body: 'Your PE feedback is due tonight at 11:59 PM.',
+      sectionId: 'checkins-1',
+      title: 'HexBot'
+    })
+    // An open Check-ins section shows it at once, and only once.
+    useSections.setState({
+      byId: { 'checkins-1': { bot: 'hexbot', id: 'checkins-1' } as Section },
+      liveSessionId: { 'checkins-1': 'live-c' }
+    })
+    useTranscripts.setState({ bySession: { 'live-c': emptyTranscript('live-c', 'checkins-1') } })
+
+    const event = {
+      payload: {
+        bot: 'hexbot',
+        row_id: 'checkin-m2',
+        section_id: 'checkins-1',
+        text: 'Your essay draft is due at 9 AM.',
+        timestamp: 1_792_000_000
+      },
+      type: 'hexbot.checkins.message'
+    } as unknown as GatewayEvent
+
+    routeEvent(event)
+    routeEvent(event)
+    const shown = useTranscripts.getState().bySession['live-c']!.messages
+    expect(shown.map(m => [m.id, m.role, m.text])).toEqual([
+      ['checkin-m2', 'assistant', 'Your essay draft is due at 9 AM.']
+    ])
+    // Notify me off: the message still lands in the section, quietly.
+    notify.mockClear()
+    useBots.setState({
+      byName: { hexbot: { display_name: 'HexBot', name: 'hexbot', notify: false } as Bot }
+    })
+    routeEvent({
+      payload: { bot: 'hexbot', section_id: 'checkins-1', text: 'Later.' },
+      type: 'hexbot.checkins.message'
+    } as unknown as GatewayEvent)
+    expect(notify).not.toHaveBeenCalled()
+  })
+  it('holds a check-in message until its section has loaded', () => {
+    useSections.setState({ byId: {}, liveSessionId: {} })
+    routeEvent({
+      payload: {
+        bot: 'hexbot',
+        row_id: 'checkin-m9',
+        section_id: 'loading-1',
+        text: 'Soon.',
+        timestamp: 1
+      },
+      type: 'hexbot.checkins.message'
+    } as unknown as GatewayEvent)
+    expect(releaseCheckinMessages('loading-1')).toEqual([
+      { createdAt: 1000, id: 'checkin-m9', text: 'Soon.' }
+    ])
+    expect(releaseCheckinMessages('loading-1')).toEqual([])
+  })
+  it('opens the Check-ins section from a browser notification', () => {
+    const shown: { onclick: null | (() => void) }[] = []
+
+    class FakeNotification {
+      static permission = 'granted'
+      onclick: null | (() => void) = null
+      constructor() {
+        shown.push(this)
+      }
+    }
+
+    vi.stubGlobal('Notification', FakeNotification)
+    const hidden = vi.spyOn(document, 'hidden', 'get').mockReturnValue(true)
+    const opened = vi.fn()
+    window.addEventListener(OPEN_SECTION_EVENT, opened)
+    useBots.setState({ byName: { hexbot: { display_name: 'HexBot', name: 'hexbot' } as Bot } })
+    routeEvent({
+      payload: { bot: 'hexbot', section_id: 'checkins-1', text: 'Due tonight.' },
+      type: 'hexbot.checkins.message'
+    } as unknown as GatewayEvent)
+    shown[0]!.onclick!()
+    expect((opened.mock.calls[0]![0] as CustomEvent<string>).detail).toBe('checkins-1')
+    window.removeEventListener(OPEN_SECTION_EVENT, opened)
+    hidden.mockRestore()
+    vi.unstubAllGlobals()
   })
   it('stays quiet for a bot whose Notify me switch is off', () => {
     const notify = vi.fn()

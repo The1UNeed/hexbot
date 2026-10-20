@@ -25,7 +25,13 @@ import type { Bot, BotStatus, ClarifyRequest, Message, Section } from '../lib/ty
 import { useConnection } from './connection'
 import { draftsActions } from './drafts'
 import { clearDeletedRooms, completedRoomRetry, useRooms } from './rooms'
-import { clarifyWaiting, type Transcript, transcriptRevision, useTranscripts } from './transcripts'
+import {
+  clarifyWaiting,
+  releaseCheckinMessages,
+  type Transcript,
+  transcriptRevision,
+  useTranscripts
+} from './transcripts'
 
 /**
  * A thread: the private conversation in which `peer_bot` asks `bot` for help.
@@ -765,6 +771,11 @@ export const useSections = create<SectionsState>((set, get) => ({
         revision,
         section.bot
       )
+
+      // Check-ins that arrived while this loaded; the history may hold them already.
+      for (const row of releaseCheckinMessages(id)) {
+        useTranscripts.getState().checkinMessage(live, row)
+      }
 
       if (context) {
         useTranscripts.getState().sessionContext(live, context)

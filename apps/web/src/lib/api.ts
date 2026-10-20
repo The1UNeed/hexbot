@@ -11,6 +11,7 @@ import type {
   Bot,
   BotCreateInput,
   BotUpdatePatch,
+  CheckinStatus,
   ClarifyQuestion,
   ClarifyRequest,
   ClarifyRequestPayload,
@@ -132,8 +133,51 @@ export function botsGet(name: string): Promise<{ bot: Bot }> {
   return rpcCall<{ bot: Bot }>('hexbot.bots.get', { name })
 }
 
+/** A daemon from before picked faces refuses the field; it keeps the face PNG as a photo. */
+function rejectsFace(error: unknown): boolean {
+  const { code, message } = (error ?? {}) as { code?: number; message?: string }
+
+  return code === 4201 && message === 'unknown bot field: face'
+}
+
+/** Send a bot write, again without `face` when the daemon does not know the field. */
+async function withFace<T>(
+  method: string,
+  params: Record<string, unknown> & { face?: unknown }
+): Promise<T> {
+  try {
+    return await rpcCall<T>(method, params)
+  } catch (error) {
+    if (params.face === undefined || !rejectsFace(error)) {
+      throw error
+    }
+
+    const rest = { ...params }
+    delete rest.face
+
+    return rpcCall<T>(method, rest)
+  }
+}
+
 export function botsCreate(input: BotCreateInput): Promise<{ bot: Bot; section: Section }> {
-  return rpcCall<{ bot: Bot; section: Section }>('hexbot.bots.create', { ...input })
+  return withFace<{ bot: Bot; section: Section }>('hexbot.bots.create', { ...input })
+}
+
+/** Create HexBot, the primary bot, on the default model. */
+export function botsCreatePrimary(
+  input: Partial<
+    Pick<
+      BotCreateInput,
+      'avatar' | 'display_name' | 'face' | 'model' | 'provider' | 'reasoning_effort'
+    >
+  > = {}
+): Promise<{ bot: Bot; section: Section }> {
+  return rpcCall<{ bot: Bot; section: Section }>('hexbot.bots.create_primary', { ...input })
+}
+
+/** Make an existing bot the primary bot. Refused once there is one. */
+export function botsSetPrimary(name: string): Promise<{ bot: Bot }> {
+  return rpcCall<{ bot: Bot }>('hexbot.bots.set_primary', { name })
 }
 
 /** Have the daemon submit a new bot's hidden first prompt into its section. */
@@ -148,7 +192,7 @@ export function botsIntroduce(
 }
 
 export function botsUpdate(name: string, patch: BotUpdatePatch): Promise<{ bot: Bot }> {
-  return rpcCall<{ bot: Bot }>('hexbot.bots.update', { name, ...patch })
+  return withFace<{ bot: Bot }>('hexbot.bots.update', { name, ...patch })
 }
 
 export function botsDelete(name: string): Promise<{ deleted: boolean }> {
@@ -326,6 +370,11 @@ export const dreamingList = (bot: string, limit = 10) =>
 /** Put the bot's memory back to what it was before this dream. */
 export const dreamingRestore = (id: string) =>
   rpcCall<{ bot: string; memory_md: string }>('hexbot.dreaming.restore', { id })
+
+export const checkinsStatus = () => rpcCall<CheckinStatus>('hexbot.checkins.status')
+export const checkinsRunNow = () => rpcCall<{ id: string }>('hexbot.checkins.run_now')
+export const checkinsCancelWakeup = (id: string) =>
+  rpcCall<{ cancelled: boolean }>('hexbot.checkins.cancel_wakeup', { id })
 
 export interface ConnectStatus {
   registered: boolean

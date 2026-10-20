@@ -101,6 +101,8 @@ export interface TurnState {
     resolved: boolean
   }
   activity: string
+  /** "Checking this step" while Auto mode reviews a step; shown over `activity`. */
+  checking: string
   tools: ChatTool[]
   approvals: PendingApproval[]
   questions: PendingQuestion[]

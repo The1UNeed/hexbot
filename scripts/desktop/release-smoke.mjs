@@ -6,7 +6,7 @@
 //
 // Covers: release-version.mjs for both channels, set-version.mjs, the
 // make-update-feed.mjs CLI for both editions and both channels sharing one
-// feed root, make-install-manifest.mjs, and finalize-release.mjs (website
+// feed root, native/install manifest generation and signing, and finalize-release.mjs (website
 // manifest and casks). Everything
 // happens in a temporary directory; the repository is not modified.
 import assert from 'node:assert/strict'
@@ -20,6 +20,7 @@ import { promisify } from 'node:util'
 import { finalizeRelease } from './finalize-release.mjs'
 import { MIN_INSTALLER } from './make-install-manifest.mjs'
 import { setVersion } from './set-version.mjs'
+import { signUpdates, testKey, testPublicKey, verifies } from './update-signing.mjs'
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..')
 const scripts = join(repositoryRoot, 'scripts/desktop')
@@ -160,24 +161,33 @@ try {
   console.log('make-update-feed: full and client, stable and nightly, one tree')
 
   for (const [channel, version] of [['stable', stable.version], ['nightly', nightly.version]]) {
-    for (const [target, app] of [
-      ['macos-aarch64', 'mac-arm64.dmg'], ['macos-x86_64', 'mac-x64.dmg'], ['linux-x86_64', 'linux-x86_64.AppImage']
+    for (const [target, app, buildTarget] of [
+      ['macos-aarch64', 'mac-arm64.dmg', 'darwin-arm64'], ['macos-x86_64', 'mac-x64.dmg', 'darwin-x64'], ['linux-x86_64', 'linux-x86_64.AppImage', 'linux-x64']
     ]) {
-      const native = join(feedRoot, 'daemon/native', version, target)
+      const bundle = join(work, `native-${channel}-${target}`)
       const install = join(feedRoot, 'install', version)
-      await mkdir(native, { recursive: true })
+      await mkdir(bundle, { recursive: true })
       await mkdir(install, { recursive: true })
-      const name = `hexbot-native-${version}-${target}.tar.gz`
-      await writeFile(join(native, name), target)
-      await writeFile(join(native, 'manifest.json'), JSON.stringify({
-        version, target, format: 'tar.gz', size: target.length,
-        sha256: createHash('sha256').update(target).digest('hex'),
-        url: `https://updates.hexbot.app/daemon/native/${version}/${target}/${name}`
+      await writeFile(join(bundle, 'hexbot'), target)
+      await writeFile(join(bundle, 'manifest.json'), JSON.stringify({
+        version, target: buildTarget, builtAt: 1,
+        files: { hexbot: createHash('sha256').update(target).digest('hex') }
       }))
+      await run(process.execPath, [join(scripts, 'make-native-update.mjs'), bundle, feedRoot])
+      const native = JSON.parse(await readFile(join(feedRoot, 'daemon/native', version, target, 'manifest.json'), 'utf8'))
+      assert.equal(native.path, `daemon/native/${version}/${target}/hexbot-native-${version}-${target}.tar.gz`)
       await writeFile(join(install, `hexbot-install-${version}-${target}`), target)
       await writeFile(join(install, `HexbotInstaller-${version}-${app}`), target)
     }
     await run(process.execPath, [join(scripts, 'make-install-manifest.mjs'), '--channel', channel, '--version', version, feedRoot])
+    const signed = signUpdates(feedRoot, { channel, version, key: testKey(), expected: testPublicKey() })
+    for (const signature of signed) {
+      const path = signature.includes('/install/') ? join(feedRoot, 'install', `${channel}.json`) : signature.slice(0, -4)
+      const bytes = await readFile(path)
+      const text = await readFile(signature, 'utf8')
+      assert.ok(verifies(testPublicKey(), bytes, text), `signature for ${path}`)
+      assert.ok(!verifies(testPublicKey(), Buffer.concat([bytes, Buffer.from(' ')]), text))
+    }
     const manifest = JSON.parse(await readFile(join(feedRoot, 'install', `${channel}.json`), 'utf8'))
     assert.equal(manifest.version, version)
     assert.equal(manifest.minInstaller, MIN_INSTALLER)
@@ -185,7 +195,7 @@ try {
     for (const entry of Object.values(manifest.targets)) assert.equal(Object.keys(entry).length, 5)
     assert.equal((await readFile(join(feedRoot, 'install', `${channel}.txt`), 'utf8')).trim().split('\n').length, 3)
   }
-  console.log('make-install-manifest: every target and option, stable and nightly')
+  console.log('native/install manifests and signing: every target and option, stable and nightly')
 
   // finalize: website manifest and casks (on a copy)
   const site = join(work, 'site')

@@ -56,6 +56,7 @@ import { parseArgs } from './src/core/chat'
 import { chatActivityLabel, readableResult, resultLine, toolLabel } from './src/core/tools'
 import { Management, type Panel } from './src/Management'
 import { useMobile } from './src/core/useMobile'
+import { clearTapped, useTappedSection } from './src/core/tapped'
 import { shownRoom } from './src/core/routes'
 import { CONNECT_ORIGIN, parseConnectCallback } from './src/core/links'
 import { clearConnectSession, loadConnectSession, saveConnectSession } from './src/core/storage'
@@ -64,10 +65,11 @@ import type { Bot, ChatTool, ConnectDaemon, Section } from './src/core/types'
 WebBrowser.maybeCompleteAuthSession()
 const messageOf = (e: unknown) => (e instanceof Error ? e.message : String(e))
 const ms = (seconds: number | null | undefined) => (seconds == null ? undefined : seconds * 1000)
-const faceOf = (b: Bot): FaceSource => ({
-  name: b.display_name,
-  imageUri: avatarSrc(b.avatar)
-})
+// A face picked in an app is drawn live, with its colour; otherwise the picture.
+const faceOf = (b: Bot): FaceSource =>
+  b.face
+    ? { name: b.display_name, face: b.face }
+    : { name: b.display_name, imageUri: avatarSrc(b.avatar) }
 // The daemon's placeholder name for an untitled section; the app calls it a thread.
 const threadTitle = (s: Section) =>
   s.title === 'New section' || !s.title ? 'New conversation' : s.title
@@ -482,6 +484,7 @@ function MobileApp() {
     return {
       ...faceOf(b),
       id: b.name,
+      primary: b.primary === true,
       title: b.title,
       description: b.description,
       latestThread: latest?.preview ? threadTitle(latest) : null,
@@ -496,6 +499,37 @@ function MobileApp() {
     }
   })
   const botByName = (name: string) => mobile.bots.find(b => b.name === name)
+  // A tapped check-in opens its section once the daemon's lists have it.
+  const tapped = useTappedSection()
+  const openedTap = useRef<string | null>(null)
+  // Restoring the last daemon at start can land after the switch; try again, a few times.
+  const switchedTap = useRef<{ key: string; tries: number }>({ key: '', tries: 0 })
+  useEffect(() => {
+    if (!tapped || openedTap.current === tapped.key) return
+    // Sent by another saved daemon: switch to it, then open once its lists load.
+    const daemon = tapped.device ? mobile.saved.find(d => d.deviceId === tapped.device) : null
+    if (daemon && mobile.active?.id !== daemon.id) {
+      const tries = switchedTap.current.key === tapped.key ? switchedTap.current.tries : 0
+      if (tries >= 3) return
+      switchedTap.current = { key: tapped.key, tries: tries + 1 }
+      act(() => mobile.activate(daemon))
+      return
+    }
+    const s = mobile.sections.find(item => item.id === tapped.section)
+    const b = s && mobile.bots.find(item => item.name === s.bot)
+    if (!s || !b) return
+    openedTap.current = tapped.key
+    clearTapped()
+    act(() => mobile.openSection(b, s))
+  }, [
+    tapped?.key,
+    tapped?.section,
+    tapped?.device,
+    mobile.saved,
+    mobile.active?.id,
+    mobile.sections,
+    mobile.bots
+  ])
   const rooms = mobile.rooms.map(r => ({
     id: r.id,
     name: r.name,
@@ -1014,6 +1048,37 @@ function MobileApp() {
               }
         }
         onNewBot={demo ? undefined : () => setPanels([{ kind: 'bot-create' }])}
+        primaryChoice={
+          // A daemon from before the primary bot leaves `primary` out; an
+          // empty one is offered HexBot too, falling back on older daemons.
+          !demo && mobile.bots.every(b => b.primary === false)
+            ? {
+                onAdd: mobile.bots.some(b => b.name === 'hexbot')
+                  ? undefined
+                  : () =>
+                      act(async () => {
+                        const result = await mobile
+                          .rpc<{ bot: Bot; section: Section }>('hexbot.bots.create_primary', {})
+                          .catch(error => {
+                            if (!/unknown method|method not found/i.test(String(error))) throw error
+                            return mobile.rpc<{ bot: Bot; section: Section }>(
+                              'hexbot.bots.create',
+                              { name: 'hexbot', display_name: 'HexBot' }
+                            )
+                          })
+                        await mobile.refresh()
+                        await mobile.openSection(result.bot, result.section)
+                        // HexBot greets the user and says what it does, as it does on the web.
+                        await mobile
+                          .rpc('hexbot.bots.introduce', {
+                            name: result.bot.name,
+                            section: result.section.id
+                          })
+                          .catch(() => undefined)
+                      })
+              }
+            : null
+        }
         rooms={demo ? [] : rooms}
         roomId={roomId}
         onSelectRoom={id => setRoomId(id)}

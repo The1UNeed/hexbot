@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 use base64::{Engine, engine::general_purpose::STANDARD};
-use hexbot_installer::{Artifact, InstallOption, Paths, Target};
+use hexbot_installer::{Artifact, InstallOption, Manifest, Paths, Target};
 use sha2::{Digest, Sha256, Sha512};
 use std::{
     fs,
@@ -11,6 +11,21 @@ use std::{
     sync::{Arc, Mutex},
     thread,
 };
+
+/// Writes `install/<track>.json` and its release signature at
+/// `install/<version>/<track>.json.sig`, as release.yml publishes them, signed
+/// with the test key that debug builds trust.
+pub fn publish(root: &Path, track: impl std::fmt::Display, manifest: &Manifest) {
+    let bytes = serde_json::to_vec(manifest).unwrap();
+    fs::write(root.join(format!("install/{track}.json")), &bytes).unwrap();
+    let signatures = root.join(format!("install/{}", manifest.version));
+    fs::create_dir_all(&signatures).unwrap();
+    fs::write(
+        signatures.join(format!("{track}.json.sig")),
+        hexbot_installer::update_signature::test_signature(&bytes),
+    )
+    .unwrap();
+}
 
 pub fn paths(root: &Path) -> Paths {
     let home = root.join("home");
@@ -78,6 +93,7 @@ pub fn app_artifact_for_track(
     }
     let bytes = fs::read(&path).unwrap();
     Artifact {
+        path: None,
         url: format!("{base}/{file}.{extension}"),
         sha256: None,
         sha512: Some(STANDARD.encode(Sha512::digest(&bytes))),
@@ -86,6 +102,63 @@ pub fn app_artifact_for_track(
         product_name: Some(name),
         app_id: Some(id),
     }
+}
+
+/// A version-bearing package in the formats shipped by electron-builder.
+pub fn versioned_app_artifact(
+    root: &Path,
+    base: &str,
+    option: InstallOption,
+    target: Target,
+    version: &str,
+) -> Artifact {
+    let mut artifact = app_artifact(root, base, option, target);
+    let file = if option == InstallOption::Full {
+        "full"
+    } else {
+        "client"
+    };
+    let archive = root.join(format!("{file}.{}", artifact.format.as_deref().unwrap()));
+    if target.is_macos() {
+        let app = root.join(format!("{}.app", artifact.product_name.as_deref().unwrap()));
+        let plist = app.join("Contents/Info.plist");
+        let text = fs::read_to_string(&plist)
+            .unwrap()
+            .replace("0.0.1", version);
+        fs::write(plist, text).unwrap();
+        fs::remove_file(&archive).unwrap();
+        assert!(
+            Command::new("/usr/bin/ditto")
+                .args(["-c", "-k", "--keepParent"])
+                .arg(app)
+                .arg(&archive)
+                .status()
+                .unwrap()
+                .success()
+        );
+    } else {
+        // Type 2 AppImages contain an ELF runtime followed by SquashFS. This
+        // fixture has the same metadata but no executable app discovery code.
+        let mut image = fs::File::create(&archive).unwrap();
+        let mut runtime = vec![0; 4096];
+        runtime[..4].copy_from_slice(b"\x7fELF");
+        runtime[8..11].copy_from_slice(b"AI\x02");
+        image.write_all(&runtime).unwrap();
+        let mut filesystem = backhand::FilesystemWriter::default();
+        let desktop = format!("[Desktop Entry]\nName=Hexbot\nX-AppImage-Version={version}\n");
+        filesystem
+            .push_file(
+                std::io::Cursor::new(desktop),
+                "hexbot.desktop",
+                backhand::NodeHeader::default(),
+            )
+            .unwrap();
+        filesystem.write_with_offset(&mut image, 4096).unwrap();
+    }
+    let bytes = fs::read(&archive).unwrap();
+    artifact.size = bytes.len() as u64;
+    artifact.sha512 = Some(STANDARD.encode(Sha512::digest(&bytes)));
+    artifact
 }
 
 pub fn native_artifact(root: &Path, base: &str) -> Artifact {
@@ -106,6 +179,8 @@ case "$1" in
             exit 1
         fi
         [ "$*" = 'setup --activate --json' ]
+        # The installer passes down the activation lock it holds.
+        [ -e "/dev/fd/${HEXBOT_ACTIVATION_LOCK_FD:?}" ]
         mkdir -p "$HEXBOT_HOME/runtime" "$HOME/.local/bin"
         cp "$0" "$HEXBOT_HOME/runtime/native-executable"
         chmod +x "$HEXBOT_HOME/runtime/native-executable"
@@ -146,6 +221,7 @@ esac
     tar.into_inner().unwrap().finish().unwrap();
     let bytes = fs::read(&archive).unwrap();
     Artifact {
+        path: None,
         url: format!("{base}/native.tar.gz"),
         sha256: Some(format!("{:x}", Sha256::digest(&bytes))),
         sha512: None,

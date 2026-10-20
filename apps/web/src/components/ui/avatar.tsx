@@ -1,9 +1,24 @@
 import { cva, type VariantProps } from 'class-variance-authority'
+import { useEffect, useReducer } from 'react'
 
-import { type AvatarStyle, resolveStyle, styleForName } from '../../lib/avatar-builder'
+import {
+  AVATAR_SHAPES,
+  type AvatarStyle,
+  type Ball,
+  ballTransform,
+  botFace,
+  eyeRects,
+  type FaceMood,
+  faceReadNow,
+  readFace,
+  resolveStyle,
+  styleForName
+} from '../../lib/avatar-builder'
 import { cn } from '../../lib/cn'
 
 import { ActProps, type HexbotActName, useAct } from './hexbot-act'
+
+export type { FaceMood }
 
 const avatarVariants = cva('relative inline-flex shrink-0 items-center justify-center', {
   defaultVariants: { size: 'md' },
@@ -18,49 +33,30 @@ const avatarVariants = cva('relative inline-flex shrink-0 items-center justify-c
   }
 })
 
+const HEXAGON_BALL = AVATAR_SHAPES.find(shape => shape.id === 'hexagon')!.ball
+
 /**
- * What the face is doing. The eyes change shape with it: wide while idle,
- * lowered while it waits on you, narrowed while it works, squinted when
- * something went well, closed when it sleeps.
+ * The two eyes for a mood on a 100x100 face, painted on the shape's ball so
+ * the CSS poses in tokens.css turn them with its surface. Shared with the
+ * brand mark, which is a hexagon.
  */
-export type FaceMood = 'happy' | 'idle' | 'listening' | 'sleeping' | 'working'
-
-interface Eyes {
-  cy: number
-  gap: number
-  rx: number
-  ry: number
-}
-
-const EYES: Record<FaceMood, Eyes> = {
-  happy: { cy: 46, gap: 19, rx: 4.4, ry: 3 },
-  idle: { cy: 48, gap: 18, rx: 3.6, ry: 6.2 },
-  listening: { cy: 52, gap: 16, rx: 3.8, ry: 4.6 },
-  sleeping: { cy: 50, gap: 18, rx: 4.2, ry: 0.9 },
-  working: { cy: 49, gap: 17, rx: 3.2, ry: 4.4 }
-}
-
-/** The two eyes for a mood, on a 100x100 face; shared with the brand mark. */
-export function FaceEyes({ fill = '#151517', mood = 'idle' }: { fill?: string; mood?: FaceMood }) {
-  const eyes = EYES[mood]
-
+export function FaceEyes({
+  ball = HEXAGON_BALL,
+  fill = '#ffffff',
+  mood = 'idle'
+}: {
+  ball?: Ball
+  fill?: string
+  mood?: FaceMood
+}) {
   return (
-    <g className="hex-gaze">
-      <g className="hex-eyes" data-mood={mood}>
-        <ellipse
-          cx={50 - eyes.gap / 2 - eyes.rx / 2}
-          cy={eyes.cy}
-          fill={fill}
-          rx={eyes.rx}
-          ry={eyes.ry}
-        />
-        <ellipse
-          cx={50 + eyes.gap / 2 + eyes.rx / 2}
-          cy={eyes.cy}
-          fill={fill}
-          rx={eyes.rx}
-          ry={eyes.ry}
-        />
+    <g transform={ballTransform(ball)}>
+      <g className="hex-gaze">
+        <g className="hex-eyes" data-mood={mood}>
+          {eyeRects(mood).map((eye, index) => (
+            <rect fill={fill} key={index} {...eye} />
+          ))}
+        </g>
       </g>
     </g>
   )
@@ -88,23 +84,74 @@ export function Face({
   mood?: FaceMood
   style: AvatarStyle
 }) {
-  const { color, shape } = resolveStyle(style)
+  const { color, eyes, shape } = resolveStyle(style)
 
   return (
     <svg aria-hidden className={cn('size-full', className)} viewBox="0 0 100 100">
       <path d={shape.path} fill={color.value} />
-      <FaceEyes mood={mood} />
+      <FaceEyes ball={shape.ball} fill={eyes} mood={mood} />
     </svg>
   )
 }
 
+/** The face drawn in a bot's picture once read, `null` for a photo, `undefined` while reading. */
+export function useFaceRead(image?: null | string): AvatarStyle | null | undefined {
+  const [, settle] = useReducer((count: number) => count + 1, 0)
+  const read = image ? faceReadNow(image) : null
+
+  useEffect(() => {
+    if (!image || read !== undefined) {
+      return
+    }
+
+    let live = true
+
+    void readFace(image).then(() => {
+      if (live) {
+        settle()
+      }
+    })
+
+    return () => {
+      live = false
+    }
+  }, [image, read])
+
+  return read
+}
+
 /**
- * Uploaded image when there is one, otherwise a generated face on a shape
- * and colour derived from the name, so every bot has a face.
+ * The colour of a bot's face: the one picked in an app, else the one read
+ * from its picture, else the one its name gives. `null` for a photo, or with
+ * neither a bot nor a name.
+ */
+export function useFaceColor(
+  bot: Parameters<typeof botFace>[0],
+  name: null | string
+): null | string {
+  const { image, style } = botFace(bot)
+  const read = useFaceRead(image)
+
+  if (style) {
+    return resolveStyle(style).color.value
+  }
+
+  if (image) {
+    return read ? resolveStyle(read).color.value : null
+  }
+
+  return name ? resolveStyle(styleForName(name)).color.value : null
+}
+
+/**
+ * The generated face, live, whether the bot has none saved or saved one this
+ * app drew; any other uploaded picture as it is.
  */
 export function Avatar({ act, className, image, mood, name, size, style }: AvatarProps) {
   const playing = useAct(act)
-  const face = style ?? styleForName(name)
+  const read = useFaceRead(image)
+  const face = read ?? style ?? styleForName(name)
+  const picture = image && !read ? image : null
 
   return (
     <span
@@ -114,14 +161,17 @@ export function Avatar({ act, className, image, mood, name, size, style }: Avata
       role="img"
     >
       <span className={cn('size-full', playing.act?.body)}>
-        {image ? (
-          <img alt="" className="size-full rounded-full object-cover" src={image} />
+        {picture ? (
+          <img alt="" className="size-full rounded-full object-cover" src={picture} />
         ) : (
           <Face mood={playing.act?.mood ?? mood} style={face} />
         )}
       </span>
       {playing.name ? (
-        <ActProps color={image ? undefined : resolveStyle(face).color.value} name={playing.name} />
+        <ActProps
+          color={picture ? undefined : resolveStyle(face).color.value}
+          name={playing.name}
+        />
       ) : null}
     </span>
   )

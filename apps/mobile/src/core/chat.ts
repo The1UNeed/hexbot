@@ -16,6 +16,7 @@ export const emptyTurn = (): TurnState => ({
   resumedWaiting: false,
   waitingRevision: 0,
   activity: '',
+  checking: '',
   tools: [],
   approvals: [],
   questions: [],
@@ -273,10 +274,19 @@ export function historyMessages(raw: unknown[]): ChatMessage[] {
     } else if (row.role === 'user' || row.role === 'assistant') {
       const text = textContent(row.content ?? row.text)
       if (text || (Array.isArray(row.tool_calls) && row.tool_calls.length))
-        messages.push({ id: String(row.id ?? `history-${messages.length}`), role: row.role, text })
+        messages.push({
+          id: String(row.id ?? row.row_id ?? `history-${messages.length}`),
+          role: row.role,
+          text
+        })
     }
   }
   return messages
+}
+/** A message the primary bot sent from a check-in into the open thread, once by its history row id. */
+export function checkinMessage(state: ChatState, id: string, text: string): ChatState {
+  if (state.messages.some(m => m.id === id)) return state
+  return { ...state, messages: [...state.messages, { id, role: 'assistant', text }] }
 }
 export function reduceChat(state: ChatState, event: GatewayEvent): ChatState {
   const p = (event.payload ?? {}) as Record<string, unknown>
@@ -352,6 +362,8 @@ export function reduceChat(state: ChatState, event: GatewayEvent): ChatState {
         streaming: '',
         interim: [],
         activity: '',
+        // The turn is over, so no review is left; the daemon's clear may be lost.
+        checking: '',
         tools: [],
         approvals: [],
         questions: [],
@@ -362,6 +374,8 @@ export function reduceChat(state: ChatState, event: GatewayEvent): ChatState {
       }
     }
     case 'status.update': {
+      // Review labels do not change which human requests are pending.
+      if (p.kind === 'checking') return { ...state, checking: text, activity: text }
       const waiting =
         p.kind === 'waiting' ||
         (p.kind === 'working' && (state.approvals.length > 0 || state.questions.length > 0))
@@ -371,7 +385,7 @@ export function reduceChat(state: ChatState, event: GatewayEvent): ChatState {
           p.kind === 'interrupted' || p.kind === 'error' || p.kind === 'idle' || p.kind === 'done'
             ? closeExhaustedQuestions(state, sessionId, revision)
             : state.settlements,
-        activity: p.kind === 'working' && waiting ? state.activity : text,
+        activity: state.checking || (p.kind === 'working' && waiting ? state.activity : text),
         waiting,
         // Automatic waits do not revoke an accepted human answer.
         resumedWaiting:
@@ -387,7 +401,7 @@ export function reduceChat(state: ChatState, event: GatewayEvent): ChatState {
       }
     }
     case 'thinking.delta':
-      return { ...state, activity: text }
+      return { ...state, activity: state.checking || text }
     case 'tool.start':
       return {
         ...state,
@@ -402,11 +416,12 @@ export function reduceChat(state: ChatState, event: GatewayEvent): ChatState {
           }
         ],
         activity:
-          typeof p.tool_name === 'string'
+          state.checking ||
+          (typeof p.tool_name === 'string'
             ? `Using ${p.tool_name}`
             : typeof p.name === 'string'
               ? `Using ${p.name}`
-              : 'Working',
+              : 'Working'),
         busy: true
       }
     case 'tool.complete':
@@ -421,7 +436,7 @@ export function reduceChat(state: ChatState, event: GatewayEvent): ChatState {
               }
             : t
         ),
-        activity: ''
+        activity: state.checking
       }
     case 'error':
       return {

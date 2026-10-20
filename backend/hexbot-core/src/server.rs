@@ -45,6 +45,9 @@ pub struct App {
     _network_guard: common::DaemonListener,
     pub web_dist: Option<PathBuf>,
     stop: tokio::sync::watch::Sender<bool>,
+    /// Bot deletion and promotion run one at a time, so a bot made primary
+    /// mid-delete never has its sections purged before the refusal.
+    roles: Arc<tokio::sync::Mutex<()>>,
 }
 struct BrowserLogin {
     client: String,
@@ -110,7 +113,7 @@ impl App {
             crate::dreaming::Dreaming::new(home.clone(), runtime.clone(), events.clone());
         auth::local_token(&home)?;
         let (stop, _) = tokio::sync::watch::channel(false);
-        Ok(Arc::new(Self {
+        let app = Arc::new(Self {
             memory: MemoryStore::new(home.clone()),
             auth_connection: Mutex::new(db::open(&home)?),
             home,
@@ -125,13 +128,16 @@ impl App {
             _network_guard: common::DaemonListener::register(address),
             web_dist,
             stop,
-        }))
+            roles: Arc::default(),
+        });
+        app.runtime.set_dispatcher(Arc::downgrade(&app));
+        Ok(app)
     }
     /// Serve another address with the same bots: running turns and the event
     /// log carry over; connections to the old address are closed by `disconnect`.
     pub fn rebind(&self, address: SocketAddr) -> Result<Arc<Self>> {
         let (stop, _) = tokio::sync::watch::channel(false);
-        Ok(Arc::new(Self {
+        let app = Arc::new(Self {
             memory: MemoryStore::new(self.home.clone()),
             auth_connection: Mutex::new(db::open(&self.home)?),
             home: self.home.clone(),
@@ -146,9 +152,21 @@ impl App {
             _network_guard: common::DaemonListener::register(address),
             web_dist: self.web_dist.clone(),
             stop,
-        }))
+            roles: self.roles.clone(),
+        });
+        app.runtime.set_dispatcher(Arc::downgrade(&app));
+        Ok(app)
     }
     pub async fn call(self: &Arc<Self>, owner: &str, method: &str, p: &Value) -> Result<Value> {
+        let _roles = if matches!(method, "hexbot.bots.delete" | "hexbot.bots.set_primary") {
+            Some(self.roles.lock().await)
+        } else {
+            None
+        };
+        // Boxed: the dispatcher is large, and the primary bot's tools reach it again.
+        Box::pin(self.call_inner(owner, method, p)).await
+    }
+    async fn call_inner(self: &Arc<Self>, owner: &str, method: &str, p: &Value) -> Result<Value> {
         if *self.stop.borrow() {
             return Err(Error::new(5200, "Reconnect to continue"));
         }
@@ -165,6 +183,7 @@ impl App {
         if method == "hexbot.bots.delete" {
             let bot = common::required(p, "name")?;
             common::bot_owner(&self.home, owner, bot)?;
+            catalog::check_deletable(&self.home, owner, bot)?;
             let running: bool = db::open(&self.home)?.query_row(
                 "SELECT EXISTS(SELECT 1 FROM room_turns WHERE bot=? AND status='running')",
                 [bot],
@@ -233,8 +252,11 @@ impl App {
                 .filter(|m| m["member_kind"] == "bot" && m["left_at"].is_null())
                 .map(|m| m["member_id"].as_str())
                 .collect::<Vec<_>>();
-            // Removing the last bot deletes the room.
+            // Removing the last bot deletes the room, unless the caller asked to keep it.
             let deleting = method == "hexbot.rooms.delete" || active == [bot];
+            if deleting && method == "hexbot.rooms.remove_member" && p["keep_room"] == true {
+                return Err(rooms::last_bot());
+            }
             removed_sessions = common::rows(
                 &db::open(&self.home)?,
                 "SELECT stored_session_id FROM room_sessions WHERE room_id=?1 AND (?2 OR bot=?3)",
@@ -323,6 +345,7 @@ impl App {
                 owner,
                 common::required(p, "id")?,
                 common::required(p, "bot")?,
+                p["keep_room"] == true,
             ),
             _ => {
                 if let Some(result) = self.dreaming.call(owner, method, p).await {
@@ -337,7 +360,10 @@ impl App {
                     if let Ok(value) = &result
                         && matches!(
                             method,
-                            "hexbot.bots.create" | "hexbot.bots.update" | "profiles.configure"
+                            "hexbot.bots.create"
+                                | "hexbot.bots.create_primary"
+                                | "hexbot.bots.update"
+                                | "profiles.configure"
                         )
                         && let Some(name) = value["bot"]["name"].as_str().or(value["name"].as_str())
                     {
@@ -360,6 +386,15 @@ impl App {
             }
         }?;
         let mut result = result;
+        // Open Check-ins tabs and the CLI's changes meet: settings and the next run move.
+        if method == "hexbot.settings.set"
+            && p["patch"]
+                .as_object()
+                .is_some_and(|patch| patch.keys().any(|k| k.starts_with("checkin_")))
+        {
+            self.events
+                .emit(owner, None, "hexbot.checkins.changed", json!({}));
+        }
         // Opening a room restores its open approval and question cards.
         if method == "hexbot.rooms.get" {
             for turn in result["room"]["turns"].as_array().into_iter().flatten() {
@@ -553,6 +588,8 @@ impl App {
         if !matches!(
             action,
             "create"
+                | "create_primary"
+                | "set_primary"
                 | "update"
                 | "delete"
                 | "clear_status"
@@ -1669,6 +1706,8 @@ async fn handle_request(
         Err(Error::new(4302, "device revoked"))
     } else if !params.is_object() {
         Err(Error::new(-32602, "params must be an object"))
+    } else if method == "hexbot.devices.set_push" {
+        set_push(&app.home, &owner, &device_id, &params)
     } else {
         app.call(&owner, method, &params).await
     };
@@ -1686,6 +1725,53 @@ async fn handle_request(
         }
         Err(error) => json!({"jsonrpc":"2.0","id":id,"error":error.rpc_value()}),
     })
+}
+/// A phone's push token, for check-in messages. Only the calling device's own
+/// row changes; a null token stops pushes to it.
+fn set_push(home: &std::path::Path, owner: &str, device: &str, p: &Value) -> Result<Value> {
+    // Only a string sets it and only null clears it; anything else is a mistake.
+    if !(p["token"].is_null() || p["token"].is_string()) {
+        return Err(Error::new(4202, "invalid push token"));
+    }
+    let token = p["token"].as_str();
+    let valid = token.is_none_or(|t| {
+        t.len() <= 200
+            && ["ExponentPushToken[", "ExpoPushToken["]
+                .iter()
+                .any(|prefix| {
+                    t.strip_prefix(prefix)
+                        .and_then(|rest| rest.strip_suffix(']'))
+                        .is_some_and(|id| {
+                            !id.is_empty()
+                                && id
+                                    .bytes()
+                                    .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+                        })
+                })
+    });
+    let platform = p["platform"].as_str();
+    if !valid || (token.is_some() && !matches!(platform, Some("ios" | "android"))) {
+        return Err(Error::new(4202, "invalid push token"));
+    }
+    let mut conn = db::open(home)?;
+    let tx = conn.transaction()?;
+    let changed = tx.execute(
+        "UPDATE devices SET push_token=?,push_platform=? WHERE id=? AND owner_id=? AND revoked_at IS NULL",
+        rusqlite::params![token, token.and(platform), device, owner],
+    )?;
+    if changed == 0 {
+        return Err(Error::new(4302, "this connection has no paired device"));
+    }
+    // A phone paired again keeps its token; it moves to the new pairing, so
+    // the phone gets each push once.
+    if let Some(token) = token {
+        tx.execute(
+            "UPDATE devices SET push_token=NULL,push_platform=NULL WHERE push_token=? AND id<>?",
+            rusqlite::params![token, device],
+        )?;
+    }
+    tx.commit()?;
+    Ok(json!({"ok":true}))
 }
 /// Frames on a daemon page may only load from the daemon. A bot's visual runs
 /// in a sandboxed frame (`/visual-frame.html`); this keeps its script from

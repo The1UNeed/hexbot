@@ -522,6 +522,61 @@ async fn daemon_request(
     }
     result
 }
+/// Asks Hex Connect to wake the owner's phones about a check-in. `targets` are
+/// `{token, device}`; the push carries only the section and the device id to
+/// open it from, never the message: chat stays off Connect. Returns the tokens
+/// the push service no longer knows, for the caller to forget, and the receipt
+/// ids (`{id, token}`) to ask about once the phones' services have answered.
+pub async fn push(
+    home: &Path,
+    targets: &[Value],
+    section: &str,
+) -> Result<(Vec<String>, Vec<Value>)> {
+    let Some(config) = ConnectConfig::load(home)?
+        .filter(|c| !c.daemon_id.is_empty() && !c.daemon_token.is_empty())
+    else {
+        return Ok((vec![], vec![]));
+    };
+    let reply = daemon_request(
+        home,
+        &config,
+        Method::POST,
+        &format!("/api/daemons/{}/push", config.daemon_id),
+        Some(json!({"targets":targets,"section":section})),
+    )
+    .await?;
+    let gone = reply["gone"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|t| t.as_str().map(str::to_owned))
+        .collect();
+    let tickets = reply["tickets"].as_array().cloned().unwrap_or_default();
+    Ok((gone, tickets))
+}
+
+/// Which of these receipt ids say the phone's app is gone (`push`).
+pub async fn push_receipts(home: &Path, ids: &[String]) -> Result<Vec<String>> {
+    let Some(config) = ConnectConfig::load(home)?
+        .filter(|c| !c.daemon_id.is_empty() && !c.daemon_token.is_empty())
+    else {
+        return Ok(vec![]);
+    };
+    let reply = daemon_request(
+        home,
+        &config,
+        Method::POST,
+        &format!("/api/daemons/{}/push/receipts", config.daemon_id),
+        Some(json!({ "ids": ids })),
+    )
+    .await?;
+    Ok(reply["gone"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|t| t.as_str().map(str::to_owned))
+        .collect())
+}
 static SERVICES: OnceLock<Mutex<HashMap<PathBuf, Arc<Service>>>> = OnceLock::new();
 async fn service(home: &Path) -> Result<Arc<Service>> {
     if !home.is_absolute() {
@@ -570,6 +625,23 @@ fn same_origin(base: &str, target: &str) -> Result<()> {
     }
     Ok(())
 }
+/// Resolve signed artifact paths against this daemon's update server.
+fn artifact_url(base: &str, manifest: &Value) -> Result<Url> {
+    let root = service_url(&format!("{}/", base.trim_end_matches('/')))?;
+    let url = if manifest.get("path").is_some() {
+        let path = common::required(manifest, "path")?;
+        if !crate::update_path::valid(path) {
+            return Err(Error::new(5243, "invalid native update path"));
+        }
+        root.join(path)
+            .map_err(|_| Error::new(5243, "invalid native update path"))?
+    } else {
+        service_url(common::required(manifest, "url")?)?
+    };
+    same_origin(base, url.as_str())?;
+    Ok(url)
+}
+
 async fn object(
     method: Method,
     url: &str,
@@ -1549,6 +1621,12 @@ pub(crate) fn activation_lock(runtime: &Path) -> Result<fs::File> {
         .truncate(false)
         .write(true)
         .open(runtime.join("activate.lock"))?;
+    let inherited = std::env::var("HEXBOT_ACTIVATION_LOCK_FD")
+        .ok()
+        .and_then(|fd| fd.parse().ok());
+    if let Some(held) = inherited_activation_lock(&file, inherited) {
+        return Ok(held);
+    }
     loop {
         if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) } == 0 {
             return Ok(file);
@@ -1560,18 +1638,53 @@ pub(crate) fn activation_lock(runtime: &Path) -> Result<fs::File> {
     }
 }
 
+/// The installer holds the activation lock across its version check and
+/// `hexbot setup --activate`, and passes the locked descriptor down. Use it
+/// only if it is this lock file and the lock is already ours to take.
+fn inherited_activation_lock(file: &fs::File, fd: Option<i32>) -> Option<fs::File> {
+    use std::os::fd::{AsRawFd, FromRawFd};
+    use std::os::unix::fs::MetadataExt;
+    let fd = fd.filter(|fd| *fd > 2)?;
+    // A private copy that processes setup starts do not inherit.
+    let copy = unsafe { libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, 3) };
+    if copy < 0 {
+        return None;
+    }
+    let copy = unsafe { fs::File::from_raw_fd(copy) };
+    let (inherited, ours) = (copy.metadata().ok()?, file.metadata().ok()?);
+    if (inherited.dev(), inherited.ino()) != (ours.dev(), ours.ino()) {
+        return None;
+    }
+    unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) };
+    // Immediate when the inherited file holds the lock; refused while anyone else does.
+    (unsafe { libc::flock(copy.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0).then_some(copy)
+}
+
 // Staging directories remain hidden from pruning until the activation lock is held.
+// `newer_than_selected` is the daemon updater's manifest: setup or the installer
+// may have selected a newer build while the update downloaded, so chronology is
+// checked again under the lock against the selected runtime, not the running one.
 pub(crate) fn publish_native(
     native: &Path,
     version: &str,
     staging: &Path,
     entrypoint: &str,
+    newer_than_selected: Option<&Value>,
 ) -> Result<PathBuf> {
-    let _lock = activation_lock(
-        native
-            .parent()
-            .ok_or_else(|| Error::new(5243, "Missing runtime directory"))?,
-    )?;
+    let runtime = native
+        .parent()
+        .ok_or_else(|| Error::new(5243, "Missing runtime directory"))?;
+    let _lock = activation_lock(runtime)?;
+    if let Some(requested) = newer_than_selected {
+        let selected = runtime
+            .join("native-executable")
+            .canonicalize()
+            .ok()
+            .and_then(|executable| fs::read(executable.with_file_name("manifest.json")).ok())
+            .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+            .unwrap_or_else(|| json!({}));
+        require_newer_native_build(requested, &selected)?;
+    }
     let directory = native.join(format!("{version}-{}", common::id()));
     fs::rename(staging, &directory)?;
     let executable = directory.join(entrypoint);
@@ -1645,6 +1758,77 @@ mod activation_tests {
     use std::os::unix::fs::{PermissionsExt, symlink};
 
     #[test]
+    fn setup_reuses_only_the_activation_lock_the_installer_passes_down() {
+        use std::os::fd::AsRawFd;
+        let home = tempfile::tempdir().unwrap();
+        let native = native_directory(home.path()).unwrap();
+        let runtime = native.parent().unwrap();
+        let path = runtime.join("activate.lock");
+        let installer = activation_lock(runtime).unwrap();
+        let file = fs::File::open(&path).unwrap();
+        let other = fs::File::open(&path).unwrap();
+        let unrelated = tempfile::tempfile().unwrap();
+        for fd in [
+            None,
+            Some(-1),
+            Some(other.as_raw_fd()),
+            Some(unrelated.as_raw_fd()),
+        ] {
+            assert!(inherited_activation_lock(&file, fd).is_none());
+        }
+        let setup = inherited_activation_lock(&file, Some(installer.as_raw_fd())).unwrap();
+        // Setup finishing does not release the installer's hold.
+        drop(setup);
+        let contender = fs::File::open(&path).unwrap();
+        let try_lock =
+            || unsafe { libc::flock(contender.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+        assert_ne!(try_lock(), 0);
+        drop(installer);
+        assert_eq!(try_lock(), 0);
+    }
+
+    #[test]
+    fn daemon_update_does_not_replace_a_newer_build_selected_while_it_waited() {
+        let home = tempfile::tempdir().unwrap();
+        let native = native_directory(home.path()).unwrap();
+        let runtime = native.parent().unwrap();
+        let package = |version: &str, built_at: u64| {
+            let staging = tempfile::tempdir_in(&native).unwrap();
+            fs::write(staging.path().join("hexbot"), version).unwrap();
+            let manifest = json!({"version": version, "builtAt": built_at});
+            fs::write(
+                staging.path().join("manifest.json"),
+                serde_json::to_vec(&manifest).unwrap(),
+            )
+            .unwrap();
+            (staging, manifest)
+        };
+        // The daemon checked 9.8.7 against its running build and now waits for the lock.
+        let (update, requested) = package("9.8.7", 200);
+        let installer = activation_lock(runtime).unwrap();
+        let waiting = std::thread::spawn({
+            let native = native.clone();
+            let staging = update.path().to_owned();
+            move || publish_native(&native, "9.8.7", &staging, "hexbot", Some(&requested))
+        });
+        // The installer selects 9.8.8 while it holds the lock.
+        let (setup, _) = package("9.8.8", 300);
+        let selected = native.join("9.8.8");
+        fs::rename(setup.path(), &selected).unwrap();
+        activate_native_locked(&native, "9.8.8", &selected.join("hexbot")).unwrap();
+        drop(installer);
+        assert_eq!(waiting.join().unwrap().unwrap_err().code, 4212);
+        let active = runtime.join("native-executable").canonicalize().unwrap();
+        assert_eq!(fs::read_to_string(active).unwrap(), "9.8.8");
+        assert!(update.path().is_dir());
+        // A build newer than the selected one still publishes.
+        let (newer, requested) = package("9.8.9", 400);
+        publish_native(&native, "9.8.9", newer.path(), "hexbot", Some(&requested)).unwrap();
+        let active = runtime.join("native-executable").canonicalize().unwrap();
+        assert_eq!(fs::read_to_string(active).unwrap(), "9.8.9");
+    }
+
+    #[test]
     fn concurrent_publications_keep_selection_and_metadata_together() {
         use std::{
             os::fd::AsRawFd,
@@ -1675,7 +1859,8 @@ mod activation_tests {
                     let staging = tempfile::tempdir_in(native).unwrap();
                     fs::write(staging.path().join("hexbot"), version.to_string()).unwrap();
                     barrier.wait();
-                    publish_native(native, &version.to_string(), staging.path(), "hexbot").unwrap();
+                    publish_native(native, &version.to_string(), staging.path(), "hexbot", None)
+                        .unwrap();
                 });
             }
         });
@@ -1887,6 +2072,46 @@ pub(crate) fn extract_archive(source: &Path, destination: &Path, limit: u64) -> 
     Ok(())
 }
 
+/// A native update manifest with its release signature (`<url>.sig`) checked
+/// before anything in it is trusted.
+async fn signed_manifest(url: &str) -> Result<Value> {
+    service_url(url)?;
+    let fetch = |url: String, limit: usize| async move {
+        let response = client()?
+            .get(&url)
+            .send()
+            .await
+            .map_err(|_| Error::new(5243, "native update manifest unavailable"))?;
+        if !response.status().is_success() {
+            return Err(Error::new(
+                5243,
+                format!(
+                    "native update manifest returned HTTP {}",
+                    response.status().as_u16()
+                ),
+            ));
+        }
+        crate::http::bytes(
+            response,
+            limit,
+            |_| Error::new(5243, "native update manifest interrupted"),
+            Error::new(5243, "native update manifest exceeds byte limit"),
+        )
+        .await
+    };
+    let manifest = fetch(url.to_owned(), 1024 * 1024).await?;
+    let signature = fetch(
+        format!("{url}.sig"),
+        crate::update_signature::SIGNATURE_LIMIT,
+    )
+    .await?;
+    if !crate::update_signature::verify(&manifest, &signature) {
+        return Err(Error::new(5243, crate::update_signature::INVALID));
+    }
+    serde_json::from_slice(&manifest)
+        .map_err(|_| Error::new(5243, "native update manifest is invalid JSON"))
+}
+
 async fn native_update(home: &Path, version: &str, service: &Service) -> Result<PathBuf> {
     let config = common::read_config(home)?;
     let base = config
@@ -1898,15 +2123,10 @@ async fn native_update(home: &Path, version: &str, service: &Service) -> Result<
     service_url(&base)?;
     let target = format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH);
     update_state(service, "checking", None, None).await;
-    let manifest = object(
-        Method::GET,
-        &format!(
-            "{}/daemon/native/{version}/{target}/manifest.json",
-            base.trim_end_matches('/')
-        ),
-        None,
-        None,
-    )
+    let manifest = signed_manifest(&format!(
+        "{}/daemon/native/{version}/{target}/manifest.json",
+        base.trim_end_matches('/')
+    ))
     .await?;
     if manifest["version"] != version || manifest["target"] != target {
         return Err(Error::new(
@@ -1918,8 +2138,7 @@ async fn native_update(home: &Path, version: &str, service: &Service) -> Result<
         .map(|executable| native_manifest(&executable, &crate::version()))
         .unwrap_or_else(|_| json!({}));
     require_newer_native_build(&manifest, &current)?;
-    let url = common::required(&manifest, "url")?;
-    same_origin(&base, url)?;
+    let url = artifact_url(&base, &manifest)?;
     let digest = common::required(&manifest, "sha256")?;
     if digest.len() != 64 || !digest.bytes().all(|b| b.is_ascii_hexdigit()) {
         return Err(Error::new(5243, "invalid native update checksum"));
@@ -1928,7 +2147,7 @@ async fn native_update(home: &Path, version: &str, service: &Service) -> Result<
     let staging = tempfile::tempdir_in(&native)?;
     let tmp = tempfile::NamedTempFile::new_in(&native)?;
     update_state(service, "downloading", None, None).await;
-    download(url, tmp.path(), 1024 * 1024 * 1024, false).await?;
+    download(url.as_str(), tmp.path(), 1024 * 1024 * 1024, false).await?;
     if file_sha256(tmp.path())? != digest.to_ascii_lowercase() {
         return Err(Error::new(5243, "native update checksum mismatch"));
     }
@@ -1995,7 +2214,13 @@ async fn native_update(home: &Path, version: &str, service: &Service) -> Result<
             "updated daemon version does not match request",
         ));
     }
-    publish_native(&native, version, staging.path(), entrypoint)
+    publish_native(
+        &native,
+        version,
+        staging.path(),
+        entrypoint,
+        Some(&manifest),
+    )
 }
 
 /// CLI registration persists credentials without starting a tunnel outside the daemon.
@@ -2300,5 +2525,57 @@ mod native_version_tests {
         }
         assert!(require_newer_native_build(&json!({"builtAt": 1}), &json!({})).is_ok());
         assert!(require_newer_native_build(&json!({}), &json!({"builtAt": 1})).is_err());
+    }
+
+    #[test]
+    fn native_archives_are_fetched_from_the_configured_update_server() {
+        let path = "daemon/native/1.2.3/linux-x86_64/bundle.tar.gz";
+        let canonical = format!("https://updates.hexbot.app/{path}");
+        for base in ["https://mirror.example", "https://mirror.example/hexbot/"] {
+            let expected = format!("{}/{path}", base.trim_end_matches('/'));
+            let manifest = json!({"url": canonical, "path": path});
+            assert_eq!(artifact_url(base, &manifest).unwrap().as_str(), expected);
+            // No path: preserve the old absolute URL and same-origin rules.
+            assert_eq!(
+                artifact_url(base, &json!({"url": expected}))
+                    .unwrap()
+                    .as_str(),
+                expected
+            );
+            assert!(artifact_url(base, &json!({"url": canonical})).is_err());
+            for location in [
+                "",
+                "../binary",
+                "a/../binary",
+                "./binary",
+                "/binary",
+                "%2e%2e/binary",
+                "a/%2Fbinary",
+                "a\\..\\binary",
+                "https://mirror.example/binary",
+                "//mirror.example/binary",
+                "https://attacker.example/binary",
+                "//attacker.example/binary",
+                "http://mirror.example/binary",
+                "https://user@mirror.example/binary",
+                "binary?query",
+                "binary#fragment",
+                " binary",
+                "a//binary",
+            ] {
+                assert!(
+                    artifact_url(base, &json!({"url": expected, "path": location})).is_err(),
+                    "{location}"
+                );
+            }
+            for location in [
+                "binary",
+                "//mirror.example/binary",
+                "https://attacker.example/binary",
+            ] {
+                assert!(artifact_url(base, &json!({"url": location})).is_err());
+            }
+        }
+        assert!(artifact_url("http://mirror.example", &json!({"path": path})).is_err());
     }
 }

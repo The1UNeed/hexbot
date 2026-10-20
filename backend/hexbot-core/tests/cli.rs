@@ -79,6 +79,38 @@ async fn invalid_commands_fail_before_creating_state() {
     assert!(cli::dispatch(&h, &args(&["bots", "list"])).await.is_none());
 }
 #[tokio::test]
+async fn checkins_reach_the_cli_and_settings_work_offline() {
+    let h = home();
+    let h = h.path();
+    // Through dispatch, as `hexbot checkins ...` arrives from the binary.
+    for a in [
+        vec!["checkins", "off"],
+        vec!["checkins", "every", "30"],
+        vec!["checkins", "hours", "22:00-07:00"],
+    ] {
+        cli::dispatch(h, &args(&a)).await.unwrap().unwrap();
+    }
+    let settings = hexbot_core::settings::get(h).unwrap();
+    assert_eq!(settings["checkin_enabled"], false);
+    assert_eq!(settings["checkin_every_minutes"], 30);
+    assert_eq!(settings["checkin_hours"], "22:00-07:00");
+    assert!(
+        cli::dispatch(h, &args(&["checkins", "every", "5"]))
+            .await
+            .unwrap()
+            .is_err()
+    );
+    // Status and runs need the daemon.
+    assert_eq!(
+        cli::dispatch(h, &args(&["checkins"]))
+            .await
+            .unwrap()
+            .unwrap_err()
+            .code,
+        4208
+    );
+}
+#[tokio::test]
 async fn offline_bot_lifecycle_and_device_output_match_python_cli() {
     let h = home();
     let h = h.path();
@@ -138,6 +170,71 @@ async fn offline_bot_lifecycle_and_device_output_match_python_cli() {
         json!({"deleted":true})
     );
     assert!(!h.join("profiles/owl").exists());
+}
+#[tokio::test]
+async fn offline_primary_bot_is_created_once_and_stays() {
+    let h = home();
+    let h = h.path();
+    let created = run(h, &["bots", "primary"]).await;
+    assert_eq!(created["bot"]["name"], "hexbot");
+    assert_eq!(created["bot"]["display_name"], "HexBot");
+    assert_eq!(created["bot"]["primary"], true);
+    for command in [
+        vec!["bots", "primary"],
+        vec!["bots", "delete", "hexbot"],
+        vec!["bots", "primary", "hexbot"],
+    ] {
+        assert_eq!(
+            cli::execute(h, &args(&command)).await.unwrap_err().code,
+            4214
+        );
+    }
+    let bots = catalog::call(h, "local", "hexbot.bots.list", &json!({}))
+        .unwrap()
+        .unwrap();
+    assert_eq!(bots["bots"][0]["name"], "hexbot");
+}
+#[tokio::test]
+async fn offline_existing_bot_can_be_made_primary_when_there_is_none() {
+    let h = home();
+    let h = h.path();
+    run(h, &["bots", "create", "owl"]).await;
+    run(h, &["bots", "create", "fox"]).await;
+    assert_eq!(
+        cli::execute(h, &args(&["bots", "create", "hexbot"]))
+            .await
+            .unwrap_err()
+            .code,
+        4202
+    );
+    let promoted = run(h, &["bots", "primary", "owl"]).await;
+    assert_eq!(promoted["bot"]["primary"], true);
+    assert_eq!(
+        cli::execute(h, &args(&["bots", "primary", "fox"]))
+            .await
+            .unwrap_err()
+            .code,
+        4214
+    );
+    assert_eq!(
+        cli::execute(h, &args(&["bots", "primary"]))
+            .await
+            .unwrap_err()
+            .code,
+        4214
+    );
+    assert_eq!(
+        cli::execute(h, &args(&["bots", "delete", "owl"]))
+            .await
+            .unwrap_err()
+            .code,
+        4214
+    );
+    assert!(h.join("profiles/owl").exists());
+    assert_eq!(
+        run(h, &["bots", "delete", "fox"]).await,
+        json!({"deleted":true})
+    );
 }
 #[cfg(unix)]
 #[tokio::test]

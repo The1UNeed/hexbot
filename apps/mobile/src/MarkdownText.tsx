@@ -34,6 +34,7 @@ function inline(text: string, ink: string): ReactNode[] {
 }
 export function MarkdownText({ text, user = false }: { text: string; user?: boolean }) {
   const theme = useTheme()
+  // Links are underlined in the text colour too; the accent is too faint on a washed bubble.
   const color = user ? theme.onInk : theme.text
   return (
     <View style={{ gap: 10 }}>
@@ -70,10 +71,7 @@ export function MarkdownText({ text, user = false }: { text: string; user?: bool
                     lineHeight: heading ? 26 : 23
                   }}
                 >
-                  {inline(
-                    paragraph.replace(/^#{1,6}\s+/, '').replace(/^[-*]\s/gm, '• '),
-                    user ? color : theme.accent
-                  )}
+                  {inline(paragraph.replace(/^#{1,6}\s+/, '').replace(/^[-*]\s/gm, '• '), color)}
                 </NativeText>
               )
             })

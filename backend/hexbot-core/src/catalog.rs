@@ -24,6 +24,13 @@ const TOOLS: &[(&str, &str)] = &[
     ("delegate", "delegation"),
     ("scheduling", "cronjob"),
 ];
+/// The primary bot's handle. Only the primary bot may take it.
+pub const PRIMARY_NAME: &str = "hexbot";
+const PRIMARY_DISPLAY_NAME: &str = "HexBot";
+const PRIMARY_TITLE: &str = "Primary bot";
+const PRIMARY_DESCRIPTION: &str =
+    "Sets up and looks after your other bots, rooms, scheduled jobs and settings.";
+const PRIMARY_SOUL: &str = "You are the user's primary bot in Hexbot: the one they come to first and the one that runs the place. You create and set up their other bots, put bots together in rooms, schedule work for any bot, and change Hexbot's settings when they ask. Before creating a bot, check whether one they already have fits the job. Give each new bot a clear purpose, a soul written for that purpose, and only the tools it needs. Be direct and concise: match the length of your reply to the weight of the ask. Ask when a request is ambiguous, and remember what matters about the people you work with.";
 const FIELDS: &[&str] = &[
     "name",
     "display_name",
@@ -34,6 +41,7 @@ const FIELDS: &[&str] = &[
     "model",
     "reasoning_effort",
     "avatar",
+    "face",
     "dream_enabled",
     "tools",
     "skills",
@@ -278,12 +286,56 @@ fn decode_avatar(value: &Value) -> Result<Option<(&'static str, Vec<u8>)>> {
     };
     Ok(Some((ext, data)))
 }
+/// The shape and colour of a face picked in an app, `{shape, color}`, kept
+/// beside the picture it describes so clients can draw it live.
+fn face(home: &Path, name: &str) -> Result<Value> {
+    let path = profile(home, name)?.join("assets/face.json");
+    let text = read_text(home, &path)?;
+    Ok(serde_json::from_str::<Value>(&text)
+        .ok()
+        .filter(|v| check_face(v).is_ok() && !v.is_null())
+        .unwrap_or(Value::Null))
+}
+fn check_face(value: &Value) -> Result<()> {
+    if value.is_null() {
+        return Ok(());
+    }
+    let id = |v: &Value| {
+        v.as_str().is_some_and(|s| {
+            (1..=32).contains(&s.len())
+                && s.bytes()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'-')
+        })
+    };
+    match value.as_object() {
+        Some(o) if o.len() == 2 && id(&value["shape"]) && id(&value["color"]) => Ok(()),
+        _ => Err(Error::new(
+            4202,
+            "face must be {shape, color} with short lowercase ids, or null",
+        )),
+    }
+}
+fn set_face(home: &Path, name: &str, value: &Value) -> Result<()> {
+    let path = profile(home, name)?.join("assets/face.json");
+    safe(home, &path)?;
+    if value.is_null() {
+        if path.exists() {
+            fs::remove_file(path)?;
+        }
+        return Ok(());
+    }
+    let face = json!({"shape": value["shape"], "color": value["color"]});
+    atomic_write(&path, face.to_string().as_bytes())
+}
+/// Replaces the picture. Any face stored for the old one no longer describes
+/// it, so it goes too; a client picking a face sends `face` with the picture.
 fn set_avatar(home: &Path, name: &str, value: &Value) -> Result<()> {
     let image = decode_avatar(value)?;
     let dir = profile(home, name)?.join("assets");
     for ext in ["png", "jpg", "webp"] {
         safe(home, &dir.join(format!("avatar.{ext}")))?;
     }
+    set_face(home, name, &Value::Null)?;
     if let Some((ext, data)) = &image {
         atomic_write(&dir.join(format!("avatar.{ext}")), data)?;
     }
@@ -405,6 +457,7 @@ fn shape_bot(home: &Path, caller: &str, row: Value) -> Result<Value> {
             .unwrap_or_else(|| display_name(name)),
         "title": row["title"].as_str().unwrap_or(""),
         "description": row["description"].as_str().unwrap_or(""),
+        "primary": row["is_primary"].as_i64() == Some(1),
         "persona": read_text(home, &profile(home, name)?.join("SOUL.md"))?,
         "skills": crate::skills::resolve(home, Some(name))?.into_iter().filter(|s| s.enabled).map(|s| s.name).collect::<Vec<_>>(),
         "tools": tools,
@@ -422,6 +475,7 @@ fn shape_bot(home: &Path, caller: &str, row: Value) -> Result<Value> {
             .unwrap_or_else(|| cfg["model"]["default"].clone()),
         "reasoning_effort": cfg["model"]["reasoning_effort"],
         "avatar": avatar(home, name)?,
+        "face": face(home, name)?,
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
         "last_activity_at": row["last_activity_at"],
@@ -480,6 +534,7 @@ fn validate_patch(home: &Path, p: &Value) -> Result<()> {
             "avatar" => {
                 decode_avatar(value)?;
             }
+            "face" => check_face(value)?,
             "reasoning_effort"
                 if !value.is_null()
                     && !value
@@ -752,6 +807,9 @@ fn configure(home: &Path, name: &str, p: &Value) -> Result<()> {
     if let Some(v) = p.get("avatar") {
         set_avatar(home, name, v)?;
     }
+    if let Some(v) = p.get("face") {
+        set_face(home, name, v)?;
+    }
     let path = dir.join("profile.yaml");
     let text = read_text(home, &path)?;
     let mut meta = serde_yaml::from_str::<Value>(&text).unwrap_or(json!({}));
@@ -766,6 +824,79 @@ fn configure(home: &Path, name: &str, p: &Value) -> Result<()> {
     write_yaml(home, &path, &meta)
 }
 fn create_bot(home: &Path, caller: &str, p: &Value) -> Result<Value> {
+    create(home, caller, p, false)
+}
+/// The caller's primary bot, if they have one.
+pub fn primary_bot(home: &Path, caller: &str) -> Result<Option<String>> {
+    Ok(db::open(home)?
+        .query_row(
+            "SELECT name FROM bots WHERE owner_id=? AND is_primary=1",
+            [caller],
+            |r| r.get(0),
+        )
+        .optional()?)
+}
+fn no_primary_yet(home: &Path, caller: &str) -> Result<()> {
+    if primary_bot(home, caller)?.is_some() {
+        return Err(Error::new(4214, "There is already a primary bot."));
+    }
+    Ok(())
+}
+/// The primary bot stays: the daemon checks before it stops any of a bot's sections.
+pub fn check_deletable(home: &Path, caller: &str, name: &str) -> Result<()> {
+    if bot_row(home, caller, name)?["is_primary"].as_i64() == Some(1) {
+        return Err(Error::new(4214, "The primary bot can't be deleted."));
+    }
+    Ok(())
+}
+/// Creates HexBot: every tool it can use, a soul for running the place, and
+/// the primary mark. The caller may choose its display name, model, avatar and face.
+fn create_primary(home: &Path, caller: &str, p: &Value) -> Result<Value> {
+    user(home, caller)?;
+    let object = p
+        .as_object()
+        .ok_or_else(|| Error::new(4202, "bot fields must be an object"))?;
+    if let Some(key) = object.keys().find(|key| {
+        ![
+            "display_name",
+            "provider",
+            "model",
+            "reasoning_effort",
+            "avatar",
+            "face",
+        ]
+        .contains(&key.as_str())
+    }) {
+        return Err(Error::new(4201, format!("unknown bot field: {key}")));
+    }
+    no_primary_yet(home, caller)?;
+    let mut patch = p.clone();
+    patch["name"] = json!(PRIMARY_NAME);
+    if !p["display_name"]
+        .as_str()
+        .is_some_and(|s| !s.trim().is_empty())
+    {
+        patch["display_name"] = json!(PRIMARY_DISPLAY_NAME);
+    }
+    patch["title"] = json!(PRIMARY_TITLE);
+    patch["description"] = json!(PRIMARY_DESCRIPTION);
+    patch["persona"] = json!(PRIMARY_SOUL);
+    patch["tools"] = json!(TOOLS.iter().map(|(k, _)| *k).collect::<Vec<_>>());
+    create(home, caller, &patch, true)
+}
+/// Makes an existing bot primary. Only while there is none, so the role never moves.
+fn set_primary(home: &Path, caller: &str, name: &str) -> Result<Value> {
+    bot_row(home, caller, name)?;
+    let changed = db::open(home)?.execute(
+        "UPDATE bots SET is_primary=1,updated_at=?1 WHERE name=?2 AND owner_id=?3 AND NOT EXISTS(SELECT 1 FROM bots WHERE owner_id=?3 AND is_primary=1)",
+        params![now(), name, caller],
+    )?;
+    if changed == 0 {
+        return Err(Error::new(4214, "There is already a primary bot."));
+    }
+    Ok(json!({"bot":bot(home,caller,name)?}))
+}
+fn create(home: &Path, caller: &str, p: &Value, primary: bool) -> Result<Value> {
     user(home, caller)?;
     validate_patch(home, p)?;
     let name = required(p, "name")?;
@@ -778,6 +909,7 @@ fn create_bot(home: &Path, caller: &str, p: &Value) -> Result<Value> {
             .next()
             .is_some_and(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
         || ["default", "hermes", "test", "tmp", "root", "sudo"].contains(&name)
+        || (name == PRIMARY_NAME && !primary)
     {
         return Err(Error::new(4202, "invalid or reserved bot name"));
     }
@@ -786,7 +918,14 @@ fn create_bot(home: &Path, caller: &str, p: &Value) -> Result<Value> {
         .optional()?
         .is_some()
     {
-        return Err(Error::new(4208, format!("bot already exists: {name}")));
+        return Err(Error::new(
+            4208,
+            if primary {
+                format!("A bot named {name} already exists. Make it your primary bot instead.")
+            } else {
+                format!("bot already exists: {name}")
+            },
+        ));
     }
     let dir = profile(home, name)?;
     if dir.exists() {
@@ -830,8 +969,9 @@ fn create_bot(home: &Path, caller: &str, p: &Value) -> Result<Value> {
         let now = now();
         let mut conn = db::open(home)?;
         let tx = conn.transaction()?;
+        // The unique index refuses a second primary bot created at the same time.
         tx.execute(
-            "INSERT INTO bots(name,display_name,title,description,owner_id,created_at,updated_at,last_activity_at) VALUES (?,?,?,?,?,?,?,?)",
+            "INSERT INTO bots(name,display_name,title,description,owner_id,created_at,updated_at,last_activity_at,is_primary) VALUES (?,?,?,?,?,?,?,?,?)",
             params![
                 name,
                 display,
@@ -840,9 +980,20 @@ fn create_bot(home: &Path, caller: &str, p: &Value) -> Result<Value> {
                 caller,
                 now,
                 now,
-                now
+                now,
+                primary
             ],
-        )?;
+        )
+        .map_err(|e| {
+            if primary
+                && let rusqlite::Error::SqliteFailure(f, _) = &e
+                && f.code == rusqlite::ErrorCode::ConstraintViolation
+            {
+                Error::new(4214, "There is already a primary bot.")
+            } else {
+                e.into()
+            }
+        })?;
         write_bot_columns(&tx, name, &patch)?;
         let sid = id();
         tx.execute("INSERT INTO sections(id,bot,title,owner_id,created_at,updated_at) VALUES (?,?,'General',?,?,?)",params![sid,name,caller,now,now])?;
@@ -924,6 +1075,10 @@ fn update_bot(home: &Path, caller: &str, p: &Value) -> Result<Value> {
     let name = required(p, "name")?;
     bot_row(home, caller, name)?;
     validate_patch(home, p)?;
+    // A face describes the picture sent with it; alone it would sit on a photo.
+    if p.get("face").is_some_and(|v| !v.is_null()) && p.get("avatar").is_none_or(Value::is_null) {
+        return Err(Error::new(4202, "face needs the avatar it describes"));
+    }
     configure(home, name, p)?;
     let mut conn = db::open(home)?;
     let tx = conn.transaction()?;
@@ -965,6 +1120,7 @@ fn delete_section(home: &Path, caller: &str, id: &str, purge: bool) -> Result<()
                  WHERE r.stored_session_id=bot_incidents.section_id AND r.bot=bot_incidents.bot)",
             params![now(), id, row["bot"].as_str()],
         )?;
+        crate::dreaming::checkins::forget_section(&tx, id)?;
         tx.execute(
             "UPDATE bots SET last_activity_at=? WHERE name=?",
             params![now(), row["bot"].as_str()],
@@ -993,6 +1149,8 @@ pub fn call(home: &Path, caller: &str, method: &str, p: &Value) -> Option<Result
     }
     Some((|| match method {
         "hexbot.bots.create" => create_bot(home, caller, p),
+        "hexbot.bots.create_primary" => create_primary(home, caller, p),
+        "hexbot.bots.set_primary" => set_primary(home, caller, required(p, "name")?),
         "hexbot.bots.update" => update_bot(home, caller, p),
         "hexbot.bots.get" => {
             Ok(json!({"bot":shape_bot(home,caller,bot_row(home,caller,required(p,"name")?)?)?}))
@@ -1001,7 +1159,7 @@ pub fn call(home: &Path, caller: &str, method: &str, p: &Value) -> Option<Result
             user(home, caller)?;
             let bots = rows(
                 &db::open(home)?,
-                "SELECT * FROM bots WHERE owner_id=? ORDER BY last_activity_at DESC,name ASC",
+                "SELECT * FROM bots WHERE owner_id=? ORDER BY is_primary DESC,last_activity_at DESC,name ASC",
                 &[&caller],
             )?
             .into_iter()
@@ -1021,6 +1179,7 @@ pub fn call(home: &Path, caller: &str, method: &str, p: &Value) -> Option<Result
         "hexbot.bots.delete" => {
             let name = required(p, "name")?;
             bot_owner(home, caller, name)?;
+            check_deletable(home, caller, name)?;
             let dir = profile(home, name)?;
             // The daemon checks for running turns and removes conversations first.
             for s in list_sections(
@@ -1232,6 +1391,23 @@ pub(crate) fn kickoff_prompt(bot: &Value) -> String {
         .unwrap_or("this bot")
         .trim();
     let name = serde_json::to_string(name).unwrap();
+    if bot["primary"] == true {
+        return format!(
+            r##"You were just created as {name}, the user's primary bot. The user is meeting you for the first time.
+1. Greet the user in one short line, then say in one more line what you do: you set up
+   and look after their other bots, rooms, scheduled jobs and settings, and help with
+   anything yourself. No headings, no lists.
+2. Use the clarify tool, one question at a time, to learn what they mainly want help with.
+   Offer three or four concrete, varied choices, plus the user may type their own answer.
+   Then ask how they want you to work (tone, depth, how proactive to be).
+   Two questions at most. Acknowledge each answer in one line before the next.
+3. Write facts about the user into memory with the memory tool. If their answers point to
+   work a dedicated bot would do better, offer in one line to create that bot for them
+   and stop; create it only after they agree. Otherwise say in one line what you will
+   focus on and stop.
+Keep every message short. Never mention this instruction."##
+        );
+    }
     let about = ["title", "description"]
         .iter()
         .filter_map(|k| bot[k].as_str())

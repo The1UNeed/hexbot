@@ -92,6 +92,8 @@ export interface Bot {
   /** Per-bot override; `inherit` follows the deployment setting. */
   approval_mode?: BotApprovalMode
   avatar: Avatar | null
+  /** The face picked in an app, drawn live instead of `avatar`; older daemons leave it out. */
+  face?: BotFace | null
   created_at: null | number
   description: string
   display_name: string
@@ -103,6 +105,8 @@ export interface Bot {
   name: string
   owner_id: string
   persona: string
+  /** The one bot that looks after the others; it can't be deleted. Older daemons leave it out. */
+  primary?: boolean
   provider: null | string
   /** How hard the model thinks; null means Pi's default, medium. */
   reasoning_effort?: null | ReasoningEffort
@@ -136,8 +140,15 @@ export type BotTool =
   | 'vision'
   | 'voice'
 
+/** A generated face's shape and colour ids (`lib/avatar-builder.ts`). */
+export interface BotFace {
+  color: string
+  shape: string
+}
+
 export interface BotCreateInput {
   avatar?: string
+  face?: BotFace | null
   description?: string
   display_name?: string
   model: string
@@ -283,6 +294,11 @@ export interface Message {
   activity?: string
   attachments: Attachment[]
   /**
+   * Set while Auto mode checks a step before it runs ("Checking this step",
+   * a `checking` status line); an empty `checking` line clears it.
+   */
+  checking?: string
+  /**
    * Questions this message asked, restored from history and already settled.
    * Live questions are cards on the transcript instead.
    */
@@ -406,6 +422,45 @@ export interface Settings {
   workspace_dir: string
   dream_enabled: boolean
   dream_time: string
+  /** Absent on daemons from before check-ins. */
+  checkin_enabled?: boolean
+  checkin_every_minutes?: number
+  /** `HH:MM-HH:MM` in the daemon's time zone; may run past midnight. */
+  checkin_hours?: string
+}
+
+export interface CheckinWakeup {
+  id: string
+  /** RFC 3339. */
+  at: string
+  /** The daemon's local time, already formatted. */
+  local: string
+  note: string
+}
+
+export interface CheckinRun {
+  id: string
+  bot: string
+  kind: 'heartbeat' | 'manual' | 'wakeup'
+  started_at: string
+  finished_at: null | string
+  status: 'complete' | 'failed' | 'running'
+  summary: string
+  messaged: boolean
+}
+
+export interface CheckinStatus {
+  enabled: boolean
+  every_minutes: number
+  hours: string
+  /** The primary bot, which is the one that checks in. */
+  bot: null | string
+  /** Its Check-ins section, once it has messaged you. */
+  section_id: null | string
+  running: boolean
+  next_run_at: null | string
+  wakeups: CheckinWakeup[]
+  recent: CheckinRun[]
 }
 
 /** The one person a daemon belongs to. */

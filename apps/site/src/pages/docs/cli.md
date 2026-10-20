@@ -88,7 +88,31 @@ To remove a bot:
 hexbot bots delete writer
 ```
 
-Deletion removes the bot's profile, conversations, memory, and scheduled jobs. Stop any active work first. This operation is permanent.
+Deletion removes the bot's profile, conversations, memory, and scheduled jobs. Stop any active work first. This operation is permanent. The primary bot can't be deleted.
+
+To create HexBot, the primary bot, on a daemon that has none, or to make an existing bot primary instead:
+
+```sh
+hexbot bots primary
+hexbot bots primary writer
+```
+
+There is one primary bot, and it stays. `hexbot bots list` shows it first, with `"primary": true`.
+
+## Check-ins
+
+The primary bot's check-ins can be managed without the app:
+
+```sh
+hexbot checkins                    # settings, next check-in, wake-ups, recent runs
+hexbot checkins now                # check in now
+hexbot checkins off                # or on
+hexbot checkins every 30           # minutes, 15 to 1440
+hexbot checkins hours 07:30-23:00  # regular check-ins stay inside these hours
+hexbot checkins cancel ID          # cancel a wake-up
+```
+
+`hexbot checkins`, `now`, and `cancel` need the daemon running.
 
 ## Send a message and list rooms
 

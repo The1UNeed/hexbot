@@ -48,6 +48,8 @@ Use these words consistently in code, UI copy, docs, and commit messages.
 - **Track**: the channel an installed app takes updates from, Stable or Nightly. Defaults to the channel the build came from; the user switches it in Settings, Updates.
 - **Update server**: `updates.hexbot.app`, a Cloudflare R2 bucket holding every package, the electron-updater feed files, the native daemon archives, and the installers with their `install/<track>.json` manifests. Written only by `release.yml`.
 - **Bot**: a named agent with its own soul, model, skills, and memory. One bot profile with independent Pi conversations managed by the daemon.
+- **Primary bot**: the one bot that looks after the others, created by onboarding as **HexBot** (handle `hexbot`, which no other bot may take). In its own sections it can create, change, and delete bots, manage rooms, schedule jobs for any bot, and change settings; deleting anything and changing settings, approval modes, or working folders always ask, even in Bypass. It cannot be deleted. An install from before it adds HexBot or promotes a bot once. Internal column `bots.is_primary`. UI copy says "primary bot", since the user may rename HexBot.
+- **Check-in**: the primary bot looking at what is going on, on its own: regularly during the user's hours (every hour, 08:00 to 22:00 by default) and at **wake-ups** it sets for itself. It messages the user only when something needs them, in its **Check-ins** section and as a notification on their app, browser, and phone. A check-in runs unattended like a scheduled job and only reads. Internal names `checkins`, `hexbot_notify`, `hexbot_wakeups`.
 - **Section** = **conversation** = **thread**: one persistent chat with a bot or inside a room. A section lives until the user archives or deletes it. Each section is its own Pi session with its own context window.
 - **Room**: a group chat with one or more humans and any number of bots. May have a **main bot** that responds when nobody is @-mentioned.
 - **Turn**: one user message and everything the bots do in response. The room turn engine (`backend/hexbot-core/src/rooms.rs`) decides who speaks.
@@ -57,7 +59,7 @@ Use these words consistently in code, UI copy, docs, and commit messages.
 - **Memory**: a bot's durable facts, preferences, and lessons, the `MEMORY.md` in its profile. The bot writes it during chat, dreaming curates it, the user can edit it. Deleting a section removes its history and leaves memory alone.
 - **About you**: one text per user, written only by the user and read by every bot they own (`users/<id>/user.md`).
 - **Dreaming**: a bot's daily pass over recent notes and conversations that folds what matters into its memory.
-- **Auto mode**: the default approval mode. Bots work freely inside the workspace; shell commands run in an OS sandbox with no network, and anything outside the workspace asks first. The daemon calls it `smart`. The other modes are Manual (read-only sandbox, every file change asks) and Bypass (no prompts and no sandbox; the daemon calls it `off`).
+- **Auto mode**: the default approval mode. Bots work freely inside the workspace; shell commands run in an OS sandbox with no network. A step outside it is reviewed by the section's model first: routine steps run, risky or unreviewable ones ask the user for that step. The review is a model judgment, not containment (`SECURITY.md`, `DESIGN.md`). The daemon calls it `smart`. The other modes are Manual (read-only sandbox, every file change asks) and Bypass (no prompts and no sandbox; the daemon calls it `off`).
 - **Pairing**: connecting an app to a daemon with a one-time code or link over LAN. Never depends on Connect.
 - **Hex Connect**: the optional cloud service at connect.hexbot.app (Clerk auth, Cloudflare tunnels) for reaching a daemon from outside the LAN. Brokers identity and a hostname; chat traffic never passes through it.
 - **`hermes` identifiers**: some code names keep a `hermes` prefix for compatibility with existing installs: `HERMES_HOME` and other `HERMES_*` variables, `@hermes/shared`, the `hermes_session_at` cookie. Do not rename them. Never write "Hermes" in UI copy, docs, or prompts; the only exceptions are the credits to Hermes Agent in `README.md`, `NOTICE`, the site, and Settings, About.
@@ -238,6 +240,16 @@ exercise the graph.
   animations; the bot faces are the one place motion is allowed.
 - Copy is short, concrete, and uses glossary words. No "seamless", no
   exclamation marks.
+
+## Cursor Cloud specific instructions
+
+`pnpm dev` starts on boot in tmux session `hexbot-dev`. Read
+`/tmp/hexbot-dev/dev.log` for the daemon port, the web port, and a one-time
+sign-in link. The code expires in 10 minutes. The log's `hexbot pair` line
+mints another. Vite listens on localhost (`::1`), not `127.0.0.1`.
+
+Node 26.5.0 is linked ahead of the image's Node 22.14, which `engines`
+rejects. Ubuntu 24.04 has no `python3.11` package; uv installs CPython 3.11.
 
 ## Daemon reference
 

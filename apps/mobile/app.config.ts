@@ -5,6 +5,10 @@ const config: ExpoConfig = {
   backgroundColor: '#ffffff',
   name: 'Hexbot',
   slug: 'hexbot-mobile',
+  owner: 'the1uneed',
+  extra: {
+    eas: { projectId: '3d292b3c-aaff-4a09-927a-9d143e90c7c7' }
+  },
   version: '0.1.0',
   scheme: 'hexbot',
   orientation: 'portrait',
@@ -23,7 +27,13 @@ const config: ExpoConfig = {
     predictiveBackGestureEnabled: true,
     permissions: ['INTERNET', 'ACCESS_NETWORK_STATE']
   },
-  plugins: ['expo-secure-store', 'expo-font', 'expo-web-browser', ['./plugins/local-network.cjs']],
+  plugins: [
+    'expo-secure-store',
+    'expo-font',
+    'expo-web-browser',
+    'expo-notifications',
+    ['./plugins/local-network.cjs']
+  ],
   web: { bundler: 'metro' }
 }
 export default config

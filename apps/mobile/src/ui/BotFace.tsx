@@ -1,7 +1,14 @@
 import { Image, StyleSheet, View } from 'react-native'
-import Svg, { Ellipse, Path } from 'react-native-svg'
+import Svg, { G, Path, Rect } from 'react-native-svg'
 
-import { EYES, FACE_EYES, type FaceMood, type FaceStyle, faceForName, resolveFace } from './faces'
+import {
+  ballTransform,
+  eyeRects,
+  type FaceMood,
+  type FaceStyle,
+  faceForName,
+  resolveFace
+} from './faces'
 import { Text } from './Text'
 import { useTheme } from './theme'
 
@@ -60,7 +67,7 @@ function useStatusColor(status?: BotStatus) {
   }
 }
 
-/** The bare drawing: a shape in a colour with two eyes. */
+/** The bare drawing: a shape in a colour with two capsule eyes on its ball. */
 export function FaceDrawing({
   mood = 'idle',
   size,
@@ -70,26 +77,16 @@ export function FaceDrawing({
   size: number
   style: FaceStyle
 }) {
-  const { color, shape } = resolveFace(style)
-  const eyes = EYES[mood]
+  const { color, eyes, shape } = resolveFace(style)
 
   return (
     <Svg height={size} viewBox="0 0 100 100" width={size}>
       <Path d={shape.path} fill={color.value} />
-      <Ellipse
-        cx={50 - eyes.gap / 2 - eyes.rx / 2}
-        cy={eyes.cy}
-        fill={FACE_EYES}
-        rx={eyes.rx}
-        ry={eyes.ry}
-      />
-      <Ellipse
-        cx={50 + eyes.gap / 2 + eyes.rx / 2}
-        cy={eyes.cy}
-        fill={FACE_EYES}
-        rx={eyes.rx}
-        ry={eyes.ry}
-      />
+      <G transform={ballTransform(shape.ball)}>
+        {eyeRects(mood).map((eye, index) => (
+          <Rect fill={eyes} key={index} {...eye} />
+        ))}
+      </G>
     </Svg>
   )
 }

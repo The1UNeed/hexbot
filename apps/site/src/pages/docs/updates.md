@@ -18,10 +18,24 @@ The app and the daemon it talks to can be on different computers. When the daemo
 
 Bots stop while the daemon restarts; sections and memory stay. The client waits for the daemon to come back and reports a failure if it does not. A daemon only moves to a build made from newer source, on either track, so switching between Stable and Nightly never takes it back to an older daemon. An older or equally old build is refused.
 
-Native daemon manifests are not signed yet. The daemon checks the archive's
-SHA-256, but authenticity depends on HTTPS and control of the update origin.
-Provisioning a release signing key and verifying signed manifests remain a
-known gap.
+Native daemon and installer manifests require a signature from a trusted Hexbot
+release key. Their signed checksums pin the downloaded packages. If verification
+fails, the installer or Settings, Updates reports: "The update is not signed by
+the Hexbot release key. Nothing was installed." The existing installation stays
+in place. The installer reports a missing signature file separately from an
+unpublished release.
+Retry later; if it persists, report the error and version to the maintainer.
+
+For HTTPS mirrors, `HEXBOT_UPDATE_URL` selects the base URL. Signed manifests
+keep an absolute `url` for older clients and add a relative `path` that new
+clients prefer. Copy manifests, signatures, and packages without changing the
+signed files. New clients resolve `path` under the mirror's base path; manifests
+without it still use `url`. Downloads must stay on the configured origin.
+
+These signatures do not cover Electron's app update feeds, the initial installer
+download, or the legacy Python handoff source package. macOS app updates rely on
+code signing; Linux AppImage updates use checksums only. The legacy source
+package trusts HTTPS before its native signature check can run.
 
 Existing Python background services try to install the native daemon during their
 next update. If the download or runtime validation fails, the update reports failure
@@ -34,13 +48,13 @@ Hexbot ships on two tracks:
 - **Stable** is the tagged releases. While Hexbot is in alpha the app is named `Hexbot [alpha]` and every release is an early build, but each one was checked before it was tagged.
 - **Nightly** is built from the main branch every day. It is named `Hexbot Nightly`, installs next to the stable app, and updates itself to the next nightly. It may break; back up `~/.hexbot` before opening one, because the two share it.
 
-Hexbot is in nightly early access, so for now only the nightly track has builds.
+Hexbot is in alpha, in very early development, so for now only the nightly track has builds.
 
 A stable install follows the stable track and a nightly install follows the nightly track. You can switch in Settings, Updates. Switching affects the next update check: a stable app on the nightly track is replaced by the next nightly, and a nightly app on the stable track by the next stable release, even when that release has a lower version number. The installed app is not changed until an update is installed.
 
 Dev builds run from a source checkout and do not check for updates.
 
-The [installer](/docs/install/#run-it-again) installs from a track too. A new install uses Stable once it is published and Nightly until then; `--stable` or `--nightly` chooses. Update or repair keeps the installed track.
+The [installer](/docs/install/#run-it-again) installs from a track too. A new install uses Stable once it is published and Nightly until then; `--stable` or `--nightly` chooses. Update or repair keeps the installed track and refuses a version older than the highest valid version in the receipt, installed apps, or selected native runtime. An app counts for the track of its version, so an app moved to Nightly in Settings does not block Update or repair on Stable. The installer rechecks after downloading and holds a shared lock until replacement and receipt writing finish; a second installer says "Waiting for another Hexbot installer to finish." until then. Headless also waits while the daemon installs an update, then checks again. A fresh install or an explicit track change may install an older version.
 
 ## What an update check sends
 

@@ -315,18 +315,24 @@ export function WorkSummary({
   )
 }
 
-/** The live status while a turn runs, the summary line after it. */
+/**
+ * The live status while a turn runs, the summary line after it. `checking`
+ * is the turn's "Checking this step": it stays live after an approval card
+ * ended the message while another review still runs.
+ */
 export function WorkStatus({
+  checking,
   face,
   message,
   name
 }: {
+  checking?: string
   face?: ReactNode
   message: Message
   name: string
 }) {
-  return message.streaming ? (
-    <LiveStatus face={face} message={message} name={name} />
+  return message.streaming || checking ? (
+    <LiveStatus face={face} message={checking ? { ...message, checking } : message} name={name} />
   ) : (
     <WorkSummary message={message} name={name} />
   )

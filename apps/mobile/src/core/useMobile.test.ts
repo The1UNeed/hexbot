@@ -36,6 +36,7 @@ vi.mock('react', () => ({
 }))
 vi.mock('react-native', () => ({ AppState: { addEventListener: () => ({ remove() {} }) } }))
 vi.mock('expo-crypto', () => ({ randomUUID: () => 'uuid' }))
+vi.mock('./push', () => ({ registerPush: async () => {} }))
 vi.mock('./storage', () => ({
   activeDaemonId: async () => null,
   forgetDaemon: async () => {},

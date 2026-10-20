@@ -2,8 +2,13 @@ mod archive;
 mod detect;
 #[path = "../../hexbot-core/src/install_ownership.rs"]
 mod install_ownership;
+mod installed_version;
 mod safety;
 mod types;
+#[path = "../../hexbot-core/src/update_path.rs"]
+mod update_path;
+#[path = "../../hexbot-core/src/update_signature.rs"]
+pub mod update_signature;
 
 pub use archive::{extract_native, verify_file};
 pub use detect::{Paths, app_option, detect, detect_at, read_receipt, sanitize_appimage_env};
@@ -61,6 +66,7 @@ fn client(base: &str) -> Result<Client> {
 
 pub fn default_track(base: &str) -> Result<Track> {
     const ERROR: &str = "Could not reach the update server. Check your connection and try again.";
+    https_origin(base)?;
     let response = client(base)?
         .get(format!(
             "{}/install/stable.json",
@@ -75,28 +81,83 @@ pub fn default_track(base: &str) -> Result<Track> {
     }
 }
 
+/// The track's install manifest, after its release signature is checked. The
+/// signature lives at the immutable `install/<version>/<track>.json.sig`, so
+/// replacing `install/<track>.json` never races its signature.
 pub fn fetch_manifest(base: &str, track: Track) -> Result<Manifest> {
-    let manifest: Manifest = client(base)?
-        .get(format!(
-            "{}/install/{track}.json",
-            base.trim_end_matches('/')
-        ))
-        .send()?
-        .error_for_status()?
-        .json()?;
+    https_origin(base)?;
+    let base = base.trim_end_matches('/');
+    let client = client(base)?;
+    let fetch = |url: String, limit: u64, signature: bool| -> Result<Vec<u8>> {
+        let mut body = Vec::new();
+        let response = client.get(url).send()?;
+        if signature && response.status() == reqwest::StatusCode::NOT_FOUND {
+            return fail("The install manifest signature is missing. Nothing was installed.");
+        }
+        response
+            .error_for_status()?
+            .take(limit + 1)
+            .read_to_end(&mut body)?;
+        if body.len() as u64 > limit {
+            return fail("The install manifest is too large.");
+        }
+        Ok(body)
+    };
+    let bytes = fetch(format!("{base}/install/{track}.json"), 1024 * 1024, false)?;
+    // Only the version is read before verification, to find the signature.
+    let unverified: serde_json::Value = serde_json::from_slice(&bytes)?;
+    let release = semver::Version::parse(unverified["version"].as_str().unwrap_or_default())?;
+    let signature = fetch(
+        format!("{base}/install/{release}/{track}.json.sig"),
+        update_signature::SIGNATURE_LIMIT as u64,
+        true,
+    )?;
+    if !update_signature::verify(&bytes, &signature) {
+        return fail(update_signature::INVALID);
+    }
+    let manifest: Manifest = serde_json::from_slice(&bytes)?;
     manifest.validate(&version())?;
-    validate_origins(base, &manifest)?;
+    validate_artifacts(base, &manifest)?;
     if manifest.channel != track {
         return fail("The install manifest has the wrong track.");
     }
     Ok(manifest)
 }
 
-fn validate_origins(base: &str, manifest: &Manifest) -> Result<()> {
-    let base = reqwest::Url::parse(base)?;
-    if !matches!(base.scheme(), "https" | "http") {
-        return fail("Invalid update URL.");
+/// HTTPS only; plain HTTP just for a loopback test server.
+fn https_origin(base: &str) -> Result<reqwest::Url> {
+    let url = reqwest::Url::parse(base)?;
+    let loopback = matches!(url.host_str(), Some("localhost" | "127.0.0.1" | "[::1]"));
+    if !(url.scheme() == "https" || url.scheme() == "http" && loopback)
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+    {
+        return fail("The update URL must use HTTPS.");
     }
+    Ok(url)
+}
+
+/// Resolve signed artifact paths against the selected update server.
+fn artifact_url(base: &str, artifact: &Artifact) -> Result<reqwest::Url> {
+    let root = https_origin(&format!("{}/", base.trim_end_matches('/')))?;
+    let url = if let Some(path) = &artifact.path {
+        if !update_path::valid(path) {
+            return fail("The install manifest names an invalid artifact path.");
+        }
+        root.join(path)?
+    } else {
+        reqwest::Url::parse(&artifact.url)?
+    };
+    https_origin(url.as_str())?;
+    if url.origin() != root.origin() {
+        return fail("Every artifact URL must have the same origin as the update URL.");
+    }
+    Ok(url)
+}
+
+fn validate_artifacts(base: &str, manifest: &Manifest) -> Result<()> {
     for artifacts in manifest.targets.values() {
         for artifact in [
             &artifacts.headless,
@@ -108,9 +169,7 @@ fn validate_origins(base: &str, manifest: &Manifest) -> Result<()> {
         .into_iter()
         .flatten()
         {
-            if reqwest::Url::parse(&artifact.url)?.origin() != base.origin() {
-                return fail("Every artifact URL must have the same origin as the update URL.");
-            }
+            artifact_url(base, artifact)?;
         }
     }
     Ok(())
@@ -148,7 +207,7 @@ impl Installer {
         progress: &mut ProgressCallback<'_>,
     ) -> Result<InstallResult> {
         let manifest = fetch_manifest(&self.base_url, track)?;
-        let result = self.install(option, &manifest, progress)?;
+        let (result, _install_lock) = self.install(option, &manifest, progress)?;
         self.write_receipt(&result.receipt)?;
         progress(Progress::new("done", done_message(option)));
         Ok(result)
@@ -181,7 +240,12 @@ impl Installer {
             return fail("Change cancelled.");
         }
         let manifest = fetch_manifest(&self.base_url, track)?;
-        let mut result = self.install(to, &manifest, progress)?;
+        let (mut result, _install_lock) = self.install(to, &manifest, progress)?;
+        // Another installer may have changed the old option during the download.
+        let installed = self.detect()?;
+        let old_apps: Vec<_> = installed.apps.iter().filter(|a| a.option == from).collect();
+        self.check_removable(&old_apps)?;
+        self.preflight_home_removal()?;
         if to == InstallOption::Client && installed.service {
             self.remove_service(progress)?;
         }
@@ -203,18 +267,32 @@ impl Installer {
     }
 
     pub fn uninstall(&self, remove_data: bool, progress: &mut ProgressCallback<'_>) -> Result<()> {
+        let _install_lock = self.lock_installation(progress)?;
         if remove_data {
             self.validate_data_removal()?;
         }
         self.preflight_home_removal()?;
         let installed = self.detect()?;
         self.check_removable(&installed.apps.iter().collect::<Vec<_>>())?;
+        // A killed install can leave the previous app in staging, where it
+        // would still set the version floor for a fresh install.
+        let stranded = self.stranded_apps()?;
+        for app in &stranded {
+            self.require_quit(&app.app)?;
+        }
         if installed.service {
             self.remove_service(progress)?;
         }
         let _daemon_lock = self.stop_daemon()?;
         for app in &installed.apps {
             self.remove_app(app, progress)?;
+        }
+        for app in stranded {
+            progress(Progress::new(
+                "remove",
+                format!("Removing {}.", app.app.display()),
+            ));
+            self.remove_owned_path(&app.staging)?;
         }
         if !self.target.is_macos() {
             for base in ["app.hexbot.desktop", "app.hexbot.client"] {
@@ -264,9 +342,33 @@ impl Installer {
         if self.paths.hexbot_home.exists() {
             let data = self.paths.hexbot_home.canonicalize()?;
             let home = self.paths.home.canonicalize()?;
-            if home.starts_with(data) {
+            if home.starts_with(&data) {
                 return fail("Refusing to remove HOME or one of its parent directories.");
             }
+            // Deleting a held lock would let the next installer lock a new file.
+            let lock = self.paths.installer_lock(self.target);
+            let resolved = home.join(lock.strip_prefix(&self.paths.home)?);
+            if lock.starts_with(&self.paths.hexbot_home) || resolved.starts_with(&data) {
+                return fail(format!(
+                    "{} also holds the installer lock. Delete the Hexbot data in it yourself.",
+                    self.paths.hexbot_home.display()
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// A signed manifest stays valid after the next release replaces it, so a
+    /// replayed old one must not move an install back on its own track. A fresh
+    /// install and a track change may install an older version.
+    fn refuse_downgrade(&self, manifest: &Manifest) -> Result<()> {
+        let offered = semver::Version::parse(&manifest.version)?;
+        if let Some(installed) = self.installed_version(manifest.channel)?
+            && offered.cmp_precedence(&installed).is_lt()
+        {
+            return fail(format!(
+                "The update server offers Hexbot {offered}, older than the installed {installed}. Nothing was installed."
+            ));
         }
         Ok(())
     }
@@ -280,15 +382,14 @@ impl Installer {
         option: InstallOption,
         manifest: &Manifest,
         progress: &mut ProgressCallback<'_>,
-    ) -> Result<InstallResult> {
+    ) -> Result<(InstallResult, fs::File)> {
         self.paths.validate()?;
         manifest.validate(&version())?;
-        validate_origins(&self.base_url, manifest)?;
+        validate_artifacts(&self.base_url, manifest)?;
+        self.refuse_downgrade(manifest)?;
         if option == InstallOption::Headless {
             self.preflight_ownership()?;
         }
-        let enable_lan = option == InstallOption::Headless
-            && self.detect()?.option() != Some(InstallOption::Headless);
         let artifact = manifest.artifact(self.target, option)?;
         let identity = if option == InstallOption::Headless {
             None
@@ -300,6 +401,25 @@ impl Installer {
         download_file(&self.base_url, artifact, &download, progress)?;
         progress(Progress::new("verify", "Checking the download."));
         verify_file(&download, artifact, option)?;
+        // Downloads can overlap. Replacement and receipt publication cannot.
+        // Return the lock so apply/change retain it until the receipt is written.
+        let install_lock = self.lock_installation(progress)?;
+        if self.target.is_macos()
+            && let Some((id, name)) = identity
+        {
+            let directory = self.paths.planned_apps_dir(self.target)?;
+            if directory.exists() {
+                // A killed install may have moved the current app into staging.
+                // Restore it before measuring the installed version floor.
+                recover_previous_app(&directory, &directory.join(format!("{name}.app")), id)?;
+            }
+        }
+        self.refuse_downgrade(manifest)?;
+        if option == InstallOption::Headless {
+            self.preflight_ownership()?;
+        }
+        let enable_lan = option == InstallOption::Headless
+            && self.detect()?.option() != Some(InstallOption::Headless);
         let mut warnings = Vec::new();
         let mut status = None;
         let paths = if option == InstallOption::Headless {
@@ -313,7 +433,16 @@ impl Installer {
             progress(Progress::new("extract", "Extracting the daemon."));
             extract_native(&download, &unpacked)?;
             let binary = unpacked.join("hexbot");
-            self.run(&binary, &["setup", "--activate", "--json"], true, progress)?;
+            // The daemon may have activated a newer runtime since the check above.
+            let activation = self.lock_activation(progress)?;
+            self.refuse_downgrade(manifest)?;
+            self.run_holding(
+                &binary,
+                &["setup", "--activate", "--json"],
+                &activation,
+                progress,
+            )?;
+            drop(activation);
             if enable_lan {
                 self.run(&self.paths.executable(), &["lan", "on"], false, progress)?;
                 progress(Progress::new(
@@ -353,17 +482,20 @@ impl Installer {
         for warning in &warnings {
             progress(Progress::new("warning", warning));
         }
-        Ok(InstallResult {
-            receipt: Receipt {
-                option,
-                channel: manifest.channel,
-                version: manifest.version.clone(),
-                paths,
-                installed_at: chrono::Utc::now().to_rfc3339(),
+        Ok((
+            InstallResult {
+                receipt: Receipt {
+                    option,
+                    channel: manifest.channel,
+                    version: manifest.version.clone(),
+                    paths,
+                    installed_at: chrono::Utc::now().to_rfc3339(),
+                },
+                status,
+                warnings,
             },
-            status,
-            warnings,
-        })
+            install_lock,
+        ))
     }
 
     fn app_identity<'a>(
@@ -439,7 +571,6 @@ impl Installer {
         }
         let directory = self.paths.install_apps_dir(self.target)?;
         let destination = directory.join(format!("{name}.app"));
-        recover_previous_app(&directory, &destination, id)?;
         if destination.exists()
             && detect::plist_value(&destination, "CFBundleIdentifier").as_deref() != Some(id)
         {
@@ -574,11 +705,48 @@ impl Installer {
         json: bool,
         progress: &mut ProgressCallback<'_>,
     ) -> Result<()> {
-        let stderr = tempfile::tempfile()?;
-        let mut child = self
-            .paths
-            .command(executable)
+        let mut command = self.paths.command(executable);
+        command.args(args);
+        self.run_command(command, args, json, progress)
+    }
+
+    /// Run `hexbot setup` while this installer holds the activation
+    /// lock. Setup takes the same lock, so it receives the locked descriptor
+    /// in HEXBOT_ACTIVATION_LOCK_FD and uses it instead of waiting on itself.
+    fn run_holding(
+        &self,
+        executable: &Path,
+        args: &[&str],
+        lock: &fs::File,
+        progress: &mut ProgressCallback<'_>,
+    ) -> Result<()> {
+        use std::os::{fd::AsRawFd, unix::process::CommandExt};
+        let fd = lock.as_raw_fd();
+        let mut command = self.paths.command(executable);
+        command
             .args(args)
+            .env("HEXBOT_ACTIVATION_LOCK_FD", fd.to_string());
+        // Only this child inherits the descriptor; fcntl is async-signal-safe.
+        unsafe {
+            command.pre_exec(move || {
+                if libc::fcntl(fd, libc::F_SETFD, 0) == -1 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+        self.run_command(command, args, true, progress)
+    }
+
+    fn run_command(
+        &self,
+        mut command: Command,
+        args: &[&str],
+        json: bool,
+        progress: &mut ProgressCallback<'_>,
+    ) -> Result<()> {
+        let stderr = tempfile::tempfile()?;
+        let mut child = command
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(stderr.try_clone()?)
@@ -697,7 +865,7 @@ fn download_file(
     progress: &mut ProgressCallback<'_>,
 ) -> Result<()> {
     let mut response = client(base)?
-        .get(&artifact.url)
+        .get(artifact_url(base, artifact)?)
         .send()?
         .error_for_status()?;
     let mut file = fs::File::create(path)?;

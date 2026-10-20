@@ -59,6 +59,17 @@ impl Paths {
     pub fn receipt(&self) -> PathBuf {
         self.hexbot_home.join("install.json")
     }
+    /// Shared by every installer for this user. Fixed under HOME rather than
+    /// XDG_STATE_HOME, which a terminal and a desktop session may set
+    /// differently, and kept out of caches that cleaners may sweep while it is held.
+    pub fn installer_lock(&self, target: Target) -> PathBuf {
+        if target.is_macos() {
+            self.home
+                .join("Library/Application Support/Hexbot/installer.lock")
+        } else {
+            self.home.join(".local/state/hexbot/installer.lock")
+        }
+    }
     pub fn executable(&self) -> PathBuf {
         self.hexbot_home.join("runtime/native-executable")
     }

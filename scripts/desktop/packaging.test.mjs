@@ -37,7 +37,7 @@ test('nightly and dev packages select their own icon, with and without Icon Comp
 
 test('service source manifest contains only the handoff package', () => {
   assert.deepEqual(handoffFiles, [
-    'pyproject.toml', 'uv.lock', 'hexbot/__init__.py', 'hexbot/cli.py', 'hexbot/native_transition.py'
+    'pyproject.toml', 'uv.lock', 'hexbot/__init__.py', 'hexbot/cli.py', 'hexbot/native_transition.py', 'hexbot/update_signature.py'
   ])
 })
 

@@ -1,4 +1,4 @@
-import { avatarSrc } from '../../lib/avatar-builder'
+import { botFace } from '../../lib/avatar-builder'
 import { cn } from '../../lib/cn'
 import type { Bot, Room } from '../../lib/types'
 
@@ -44,7 +44,7 @@ export function RoomCluster({
     >
       {members.length <= 1 ? (
         <Avatar
-          image={avatarSrc(bots[members[0]?.member_id ?? '']?.avatar)}
+          {...botFace(bots[members[0]?.member_id ?? ''])}
           name={members[0] ? name(members[0].member_id) : room.name}
           size={size}
         />
@@ -53,7 +53,7 @@ export function RoomCluster({
           {members.slice(0, 4).map(member => (
             <Avatar
               className={cell}
-              image={avatarSrc(bots[member.member_id]?.avatar)}
+              {...botFace(bots[member.member_id])}
               key={member.member_id}
               name={name(member.member_id)}
               size="xs"

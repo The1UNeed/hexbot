@@ -24,6 +24,8 @@ export default defineConfig({
     })
   },
   test: {
+    // Token tests read tokens.css as text (`?raw`); other CSS stays out of tests.
+    css: { include: [/tokens\.css/] },
     environment: 'jsdom',
     globals: true,
     setupFiles: './src/test/setup.ts'

@@ -44,6 +44,8 @@ Connector errors still need attention.
 
 A bot can ask another of your bots for help, outside any room. Each bot has a description that the others read to decide whom to ask. Write it in the bot's settings under Profile. If you leave it blank, Hexbot writes one from the bot's soul and keeps it out of sight. A bot learns who is on its team when a section starts, so a new bot or a changed description reaches the sections started after it.
 
+A bot asked for help does the work itself. It and any work it delegates can't send the request back to a bot that is waiting on its answer.
+
 Each exchange is private between the two bots. While a bot is asking, the two bots' faces turn toward each other under its reply, and the other bot's answer shows as it comes in. Afterwards the row reads, for example, "Writer helped". Select it to read their conversation in a side panel. These conversations stay out of your section lists, but both bots learn from them: dreaming folds them into memory like any other conversation.
 
 Bots ask each other only when Message other bots is on, under Tools in the bot's settings. Hexbot caps a chain at eight messages per originating turn, and daily bot budgets still apply. In a room, only the person who created the room can open these conversations.

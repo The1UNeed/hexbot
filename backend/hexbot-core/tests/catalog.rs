@@ -369,6 +369,131 @@ fn skill_selection_and_avatar_use_existing_profile_files() {
     );
     assert!(catalog::bot(h, "alice", "research-owl").unwrap()["avatar"].is_null());
 }
+#[test]
+fn a_picked_face_is_kept_with_its_picture_until_the_picture_changes() {
+    let home = setup();
+    let h = home.path();
+    let image = "data:image/png;base64,iVBORw0KGgo=";
+    let created = call(
+        h,
+        "alice",
+        "hexbot.bots.create",
+        json!({"name":"owl","model":"model-a","provider":"openai","avatar":image,
+               "face":{"shape":"pill","color":"orange"}}),
+    );
+    let face = json!({"shape":"pill","color":"orange"});
+    assert_eq!(created["bot"]["face"], face);
+    assert_eq!(
+        call(h, "alice", "hexbot.bots.get", json!({"name":"owl"}))["bot"]["face"],
+        face
+    );
+    let listed = call(h, "alice", "hexbot.bots.list", json!({}));
+    assert_eq!(listed["bots"][0]["face"], face);
+
+    // Another face replaces it with its picture; editing anything else keeps it.
+    let next = json!({"shape":"round","color":"blue"});
+    call(
+        h,
+        "alice",
+        "hexbot.bots.update",
+        json!({"name":"owl","avatar":image,"face":next}),
+    );
+    call(
+        h,
+        "alice",
+        "hexbot.bots.update",
+        json!({"name":"owl","description":"Reads"}),
+    );
+    assert_eq!(catalog::bot(h, "alice", "owl").unwrap()["face"], next);
+
+    // A photo from a client that knows nothing of faces drops the stale face.
+    call(
+        h,
+        "alice",
+        "hexbot.bots.update",
+        json!({"name":"owl","avatar":image}),
+    );
+    assert!(catalog::bot(h, "alice", "owl").unwrap()["face"].is_null());
+    call(
+        h,
+        "alice",
+        "hexbot.bots.update",
+        json!({"name":"owl","avatar":image,"face":next}),
+    );
+    call(
+        h,
+        "alice",
+        "profiles.set_asset",
+        json!({"name":"owl","asset":"avatar","clear":true}),
+    );
+    assert!(catalog::bot(h, "alice", "owl").unwrap()["face"].is_null());
+
+    // A face alone would sit on a photo it does not describe.
+    call(
+        h,
+        "alice",
+        "hexbot.bots.update",
+        json!({"name":"owl","avatar":image}),
+    );
+    for patch in [
+        json!({"name":"owl","face":next}),
+        json!({"name":"owl","avatar":null,"face":next}),
+    ] {
+        let error = catalog::call(h, "alice", "hexbot.bots.update", &patch)
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(
+            (error.code, error.message.as_str()),
+            (4202, "face needs the avatar it describes")
+        );
+    }
+    let photo = catalog::bot(h, "alice", "owl").unwrap();
+    assert!(photo["face"].is_null() && !photo["avatar"].is_null());
+    call(
+        h,
+        "alice",
+        "hexbot.bots.update",
+        json!({"name":"owl","face":null}),
+    );
+
+    for bad in [
+        json!("pill"),
+        json!({"shape":"pill"}),
+        json!({"shape":"pill","color":"Orange"}),
+        json!({"shape":"pill","color":"orange","eyes":"white"}),
+        json!({"shape":"../x","color":"orange"}),
+    ] {
+        assert_eq!(
+            catalog::call(
+                h,
+                "alice",
+                "hexbot.bots.update",
+                &json!({"name":"owl","face":bad})
+            )
+            .unwrap()
+            .unwrap_err()
+            .code,
+            4202
+        );
+    }
+
+    // A file that is not a face reads as none.
+    fs::write(h.join("profiles/owl/assets/face.json"), "not json").unwrap();
+    assert!(catalog::bot(h, "alice", "owl").unwrap()["face"].is_null());
+}
+#[test]
+fn hexbot_keeps_the_face_it_is_created_with() {
+    let home = setup();
+    let h = home.path();
+    let face = json!({"shape":"pill","color":"orange"});
+    let created = call(
+        h,
+        "alice",
+        "hexbot.bots.create_primary",
+        json!({"avatar":"data:image/png;base64,iVBORw0KGgo=","face":face}),
+    );
+    assert_eq!(created["bot"]["face"], face);
+}
 #[cfg(unix)]
 #[test]
 fn refuses_symlink_profile_reads_and_mutations() {
@@ -1244,4 +1369,36 @@ fn threads_are_hidden_from_lists_and_counts_but_readable_by_the_owner() {
             .unwrap(),
         0
     );
+}
+#[test]
+fn deleting_a_bot_takes_what_check_ins_said_in_its_sections() {
+    let home = setup();
+    let h = home.path();
+    create(h);
+    let sections = call(
+        h,
+        "alice",
+        "hexbot.sections.list",
+        json!({"bot":"research-owl"}),
+    );
+    let section = sections["sections"][0]["id"].as_str().unwrap();
+    let conn = db::open(h).unwrap();
+    conn.execute(
+        "INSERT INTO checkin_messages(id,owner_id,bot,section_id,text,created_at,push_due_at) VALUES ('m','alice','research-owl',?,'Due tonight.',1,1)",
+        [section],
+    )
+    .unwrap();
+    call(
+        h,
+        "alice",
+        "hexbot.bots.delete",
+        json!({"name":"research-owl"}),
+    );
+    let (text, due): (String, Option<f64>) = conn
+        .query_row("SELECT text,push_due_at FROM checkin_messages", [], |r| {
+            Ok((r.get(0)?, r.get(1)?))
+        })
+        .unwrap();
+    assert_eq!(text, "");
+    assert!(due.is_none());
 }

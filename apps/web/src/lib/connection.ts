@@ -13,9 +13,16 @@
  * is cleared and the connect screen takes over.
  */
 
-import { buildHermesWebSocketUrl, DeviceProofError, isDeviceProofCode, type PairingReply, readDeviceProofError } from '@hermes/shared'
+import {
+  buildHermesWebSocketUrl,
+  DeviceProofError,
+  isDeviceProofCode,
+  type PairingReply,
+  readDeviceProofError
+} from '@hermes/shared'
 
 import { botsActions } from '../stores/bots'
+import { useCheckins } from '../stores/checkins'
 import { connectionActions } from '../stores/connection'
 import { useMe } from '../stores/me'
 import { useRooms } from '../stores/rooms'
@@ -552,7 +559,9 @@ export class ConnectionSupervisor {
         settingsActions().refresh(),
         botsActions().refresh(),
         useRooms.getState().refresh(),
-        useMe.getState().refresh()
+        useMe.getState().refresh(),
+        // An open Check-ins tab missed the events while disconnected.
+        useCheckins.getState().loaded ? useCheckins.getState().refresh() : Promise.resolve()
       ])
 
       store.setDaemon(info)
@@ -607,7 +616,10 @@ export class ConnectionSupervisor {
   private scheduleRetry(proofError: DeviceProofError | null = null): void {
     this.attempt += 1
 
-    const delay = Math.max(proofError?.retryAfterMs ?? 0, Math.min(BACKOFF_MAX_MS, BACKOFF_MIN_MS * 2 ** (this.attempt - 1)))
+    const delay = Math.max(
+      proofError?.retryAfterMs ?? 0,
+      Math.min(BACKOFF_MAX_MS, BACKOFF_MIN_MS * 2 ** (this.attempt - 1))
+    )
 
     connectionActions().setStatus(this.connectedAt ? 'reconnecting' : 'offline', {
       attempt: this.attempt,
@@ -641,41 +653,68 @@ export function disconnect(): void {
   getSupervisor().stop()
 }
 
-
 export function unwrapPairingReply<T>(reply: PairingReply<T>): T {
-  if (reply.ok) {return reply.value}
+  if (reply.ok) {
+    return reply.value
+  }
+
   const { code, serverTime, proofTime, retryAfterMs } = reply.error
 
-  if (isDeviceProofCode(code)) {throw new DeviceProofError(code, serverTime, proofTime, retryAfterMs)}
+  if (isDeviceProofCode(code)) {
+    throw new DeviceProofError(code, serverTime, proofTime, retryAfterMs)
+  }
 
-  if (code === 'invalid_code') {throw new InvalidCodeError()}
+  if (code === 'invalid_code') {
+    throw new InvalidCodeError()
+  }
+
   throw new UnreachableError()
 }
 
 export class BrowserCookieError extends Error {
   constructor(name: string, origin: string) {
-    super(`This browser can't keep a key or a sign-in cookie for ${name} from this page. Open ${origin} directly to connect to ${name}.`)
+    super(
+      `This browser can't keep a key or a sign-in cookie for ${name} from this page. Open ${origin} directly to connect to ${name}.`
+    )
     this.name = 'BrowserCookieError'
   }
 }
 
 /** Check cookie acceptance before persisting a keyless browser target. */
-export async function verifyBrowserCookie(origin: string, name: string, deps: ConnectionDeps = {}): Promise<void> {
+export async function verifyBrowserCookie(
+  origin: string,
+  name: string,
+  deps: ConnectionDeps = {}
+): Promise<void> {
   try {
     await mintTicket(origin, '', false, deps)
   } catch (error) {
-    if (error instanceof UnauthorizedError) {throw new BrowserCookieError(name, origin)}
+    if (error instanceof UnauthorizedError) {
+      throw new BrowserCookieError(name, origin)
+    }
+
     throw error
   }
 }
 
 /** Never display a fetch or Electron IPC exception verbatim. */
 export function pairingErrorMessage(reason: unknown): string {
-  if (reason instanceof DeviceProofError || reason instanceof BrowserCookieError || reason instanceof DaemonIdentityError || reason instanceof DaemonUnreachableError) {return reason.message}
+  if (
+    reason instanceof DeviceProofError ||
+    reason instanceof BrowserCookieError ||
+    reason instanceof DaemonIdentityError ||
+    reason instanceof DaemonUnreachableError
+  ) {
+    return reason.message
+  }
 
-  if (reason instanceof InvalidCodeError) {return 'The pairing code is invalid or expired.'}
+  if (reason instanceof InvalidCodeError) {
+    return 'The pairing code is invalid or expired.'
+  }
 
-  if (reason instanceof UnauthorizedError) {return 'This device was revoked. Pair it again.'}
+  if (reason instanceof UnauthorizedError) {
+    return 'This device was revoked. Pair it again.'
+  }
 
   return 'The daemon could not be reached.'
 }

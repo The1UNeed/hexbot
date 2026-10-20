@@ -23,6 +23,24 @@ Use Bot settings to configure how it works:
 
 The teammate description tells other bots when to ask this one for help. For example, "Reviews database changes and checks migration safety" is more useful than "Helpful assistant." If you leave it blank, Hexbot derives a description from the soul.
 
+## Faces and colours
+
+In Profile, pick a shape and a colour for the bot's face, or use a photo. A picked face is kept with the bot on the daemon, so the web app, the desktop app, and the mobile app all draw it. The bot's message bubbles take a light wash of its face colour in sections and rooms, so you can tell bots apart at a glance. A bot with a photo keeps grey bubbles. The mobile app shows faces and can switch a bot to a photo, but faces are picked in the web or desktop app. On an older daemon a picked face is saved only as a picture: the web and desktop apps still draw it live, and the mobile app shows the picture.
+
+## The primary bot
+
+HexBot is your primary bot. Setup creates it, and it looks after the rest: in its own sections it can list, create, change, and delete your bots, create rooms and change who is in them, schedule jobs for any bot, and change settings, skills, and connectors. It always asks before it deletes a bot, room, or job, removes a room's last bot (which deletes the room), changes a bot's or room's approval mode or a bot's or job's working folder, changes a setting, turns a skill or connector on or off, or cancels a [check-in](#check-ins) wake-up, even in Bypass. It never sees API keys or connector credentials, and it can't change network or service settings.
+
+There is one primary bot, pinned at the top of the roster, and it can't be deleted. You can rename it and change its soul, model, and tools like any other bot. If you used Hexbot before the primary bot existed, the bot list asks you to add HexBot or to make one of your bots primary; on the phone app, choose Make primary in a bot's profile. A bot made primary gets the extra tools in its next new section. Its tools don't work in rooms or scheduled jobs.
+
+## Check-ins
+
+Your primary bot also checks in on its own. Every hour between 08:00 and 22:00 it looks at what is going on: its memory and notes, and what its connectors show, like your calendar, email, or Notion. When it learns about something with a time to it, like a deadline tonight, it sets a wake-up to look again at the right moment. Most check-ins end quietly. When something needs you, it sends one short message with what you need to act on it.
+
+Messages land in its **Check-ins** section and show as a notification in the app, in a browser tab you allowed (browsers notify only over HTTPS, such as through Hex Connect), and on your phone. Reply there and it knows what it told you, and its next check-ins see your reply. It sends at most one message per check-in and eight a day. Its Notify me switch silences the notifications; the messages still arrive in the section. Deleting the section deletes what it said there.
+
+Turn check-ins off, change how often they run, or change your hours in the primary bot's settings, under Check-ins. The same page shows the wake-ups waiting, lets you cancel one, and lists recent check-ins and what came of them. A check-in runs unattended, like a scheduled job, with your keys. It only looks: it can read files and its connectors, including Notion and Airtable, but it can't run commands, browse, use the computer, change anything through a connector, or ask you anything, and it suggests memory changes for its next dream instead of writing them. If a check-in fails, its wake-ups wait for the next one.
+
 ## Keep a conversation going
 
 Reopen a section to continue the same task. Closing the app or restarting the daemon does not delete it. Each section keeps a persistent Pi conversation; a fresh section starts with a new context window and the bot's current settings.
@@ -31,7 +49,7 @@ Waiting means a bot needs your answer. If another question or approval still nee
 
 Reopening restores pending approvals and questions. Answering in another connected app or browser updates the matching card here too. If more than one answer is needed, each card stays available until it is answered or expires. The bot also shows Waiting when a room or teammate conversation needs your answer.
 
-If an answer update was missed, reopening the section clears old question cards once the daemon confirms no questions are pending. Answers stay in the conversation history.
+If an answer update was missed, reopening the section or reconnecting clears old question cards once the daemon confirms no questions are pending. Answers stay in the conversation history.
 
 Soul, selected skills, tool definitions, and the teammate list stay fixed for an existing conversation. Start a new section after changing them so the bot receives the new setup. Credentials and runtime settings can update separately; a temporary section model override does not change the bot's default model.
 
@@ -59,6 +77,6 @@ Deleting the bot removes its profile, sections, memory, and scheduled jobs. Stop
 
 ## Work with other bots
 
-In a [room](/docs/rooms/), everyone sees the shared conversation. With **Message other bots** enabled, a bot can instead ask one of your teammates for help in a private conversation. Open the help row under its reply to read that exchange.
+In a [room](/docs/rooms/), everyone sees the shared conversation. With **Message other bots** enabled, a bot can instead ask one of your teammates for help in a private conversation. The bot it asks does the work itself and can't hand the request back. Open the help row under its reply to read that exchange.
 
 **Delegate** creates an isolated subagent for a subtask and returns the result to the originating conversation. It is a separate capability from asking a named teammate. Both use model tokens and the daemon's usage limits.

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { emptyChat, reduceChat, historyMessages, replayChat } from './chat'
+import { checkinMessage, emptyChat, reduceChat, historyMessages, replayChat } from './chat'
 import type { GatewayEvent } from '@hermes/shared'
 const event = (type: string, payload: Record<string, unknown> = {}): GatewayEvent => ({
   type,
@@ -17,6 +17,32 @@ describe('chat event projection', () => {
     expect(s.messages.map(m => m.text)).toEqual(['Checking files.', 'Found two.'])
     expect(s.busy).toBe(false)
     expect(s.streaming).toBe('')
+  })
+  it('shows Auto mode checking a step and keeps the turn busy after', () => {
+    let s = reduceChat(emptyChat(), event('status.update', { kind: 'working', text: 'Working' }))
+    s = reduceChat(s, event('tool.start', { tool_id: 't', name: 'terminal' }))
+    s = reduceChat(s, event('status.update', { kind: 'checking', text: 'Checking this step' }))
+    expect(s.activity).toBe('Checking this step')
+    // An unrelated status line keeps the label; another review may still run.
+    s = reduceChat(s, event('status.update', { kind: 'status', text: '' }))
+    s = reduceChat(s, event('status.update', { kind: 'waiting', text: 'Retrying' }))
+    expect(s.activity).toBe('Checking this step')
+    s = reduceChat(s, event('status.update', { kind: 'checking', text: '' }))
+    expect(s.activity).toBe('')
+    expect(s.busy).toBe(true)
+  })
+  it('keeps checking a step through an approval card and drops it when the turn ends', () => {
+    let s = reduceChat(
+      emptyChat(),
+      event('status.update', { kind: 'checking', text: 'Checking this step' })
+    )
+    s = reduceChat(s, event('approval.request', { request_id: 'a' }))
+    s = reduceChat(s, event('tool.complete', { tool_id: 'b' }))
+    expect(s.activity).toBe('Checking this step')
+    s = reduceChat(s, event('message.complete', { text: 'Done' }))
+    expect(s.checking).toBe('')
+    s = reduceChat(s, event('tool.start', { tool_id: 'c', name: 'terminal' }))
+    expect(s.activity).toBe('Using terminal')
   })
   it('deduplicates re-sent approval cards and keeps the originating session', () => {
     let s = reduceChat(
@@ -153,5 +179,17 @@ describe('restored tools and questions', () => {
     expect(loaded.state.streaming).toBe('Nearly')
     expect(loaded.state.tools.map(t => t.id)).toEqual(['t2'])
     expect(loaded.state.busy).toBe(true)
+  })
+})
+describe('check-in messages', () => {
+  it('join the open thread once', () => {
+    const once = checkinMessage(emptyChat(), 'checkin-1', 'Your PE feedback is due tonight.')
+    expect(once.messages).toEqual([
+      { id: 'checkin-1', role: 'assistant', text: 'Your PE feedback is due tonight.' }
+    ])
+    expect(checkinMessage(once, 'checkin-1', 'Your PE feedback is due tonight.')).toBe(once)
+    // Already in the history it loaded, under the same row id.
+    const loaded = { ...emptyChat(), messages: historyMessages([{ role: 'assistant', text: 'Hi', row_id: 'checkin-2' }]) }
+    expect(checkinMessage(loaded, 'checkin-2', 'Hi')).toBe(loaded)
   })
 })

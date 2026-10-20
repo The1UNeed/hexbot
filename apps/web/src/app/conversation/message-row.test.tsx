@@ -2,8 +2,13 @@ import { render, screen } from '@testing-library/react'
 import { describe, expect, it } from 'vitest'
 
 import type { Message } from '../../lib/types'
+import {
+  resetTranscriptEffects,
+  setTranscriptEffects,
+  useTranscripts
+} from '../../stores/transcripts'
 
-import { MessageRow } from './index'
+import { CheckingRow, MessageRow } from './index'
 
 const message = (partial: Partial<Message>): Message => ({
   attachments: [],
@@ -88,5 +93,29 @@ describe('MessageRow', () => {
     expect(frame.compareDocumentPosition(screen.getByText('March doubled.'))).toBe(
       Node.DOCUMENT_POSITION_FOLLOWING
     )
+  })
+})
+
+describe('CheckingRow', () => {
+  it('shows checking a step after a card ends the message, until the clear', () => {
+    useTranscripts.setState({ bySession: {} })
+    setTranscriptEffects({ ackApproval: vi.fn(), notify: vi.fn(), touchSection: vi.fn() })
+    const actions = useTranscripts.getState()
+    const transcript = () => useTranscripts.getState().bySession.s
+    actions.messageStart('s')
+    actions.toolStart('s', { name: 'terminal', tool_id: 'a' })
+    actions.toolStart('s', { name: 'terminal', tool_id: 'b' })
+    actions.statusUpdate('s', { kind: 'checking', text: 'Checking this step' })
+    // While a message streams, its own row shows the line.
+    const { rerender } = render(<CheckingRow transcript={transcript()} />)
+    expect(screen.queryByRole('status')).toBeNull()
+    // Review A's card ends the message while review B still runs.
+    actions.approvalRequest('s', { request_id: 'a' })
+    resetTranscriptEffects()
+    rerender(<CheckingRow transcript={transcript()} />)
+    expect(screen.getByRole('status', { name: 'Checking this step' })).toBeVisible()
+    actions.statusUpdate('s', { kind: 'checking', text: '' })
+    rerender(<CheckingRow transcript={transcript()} />)
+    expect(screen.queryByRole('status')).toBeNull()
   })
 })
