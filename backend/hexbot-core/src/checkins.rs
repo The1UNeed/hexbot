@@ -735,8 +735,10 @@ fn forget_tokens(home: &Path, tokens: &[String]) -> Result<()> {
     Ok(())
 }
 
-/// A deleted section takes what check-ins said there with it, and any push
-/// still due. The rows stay, empty, so the day's message count still holds.
+/// A deleted section's check-in records lose their text and any push still
+/// due. The rows stay, empty, so the day's message count still holds. The
+/// copy in the section's history goes only when that history is purged: a
+/// delete without `purge_memory` keeps it, unread, until the bot is deleted.
 pub(crate) fn forget_section(conn: &rusqlite::Connection, section: &str) -> Result<()> {
     conn.execute(
         "UPDATE checkin_messages SET text='',context_at=COALESCE(context_at,?),push_due_at=NULL WHERE section_id=?",
