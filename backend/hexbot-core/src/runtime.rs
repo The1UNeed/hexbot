@@ -2448,6 +2448,8 @@ impl Runtime {
         tasks.abort_all();
         while tasks.join_next().await.is_some() {}
         let pending = {
+            // Under the gate, as a re-sent card is read, so it cannot follow this expiry.
+            let _gate = s.event_gate.lock().unwrap();
             let mut state = s.state.lock().unwrap();
             let mut pending = HashMap::new();
             // Later arrivals belong to the replacement JoinSet. Its response
@@ -6352,9 +6354,21 @@ rl.on('line',line=>{{const c=JSON.parse(line);emit({{type:'response',id:c.id,com
         runtime.shutdown().await;
     }
     /// Stop wakes a daemon approval's waiter, which forgets its request while
-    /// Stop still waits on other dialog tasks. Clients are told it expired.
+    /// Stop still waits on other dialog tasks, and a turn can end meanwhile and
+    /// expire Pi's cards itself. Every card still expires exactly once.
     #[tokio::test]
-    async fn stop_expires_a_waiting_daemon_approval() {
+    async fn stop_expires_every_waiting_card_exactly_once() {
+        /// Dropped when Stop aborts it, mid-Stop: the turn ends as Stop waits.
+        struct TurnEnds(Arc<Runtime>, Arc<Live>);
+        impl Drop for TurnEnds {
+            fn drop(&mut self) {
+                let ended = {
+                    let _gate = self.1.event_gate.lock().unwrap();
+                    std::mem::take(&mut self.1.state.lock().unwrap().pending)
+                };
+                self.0.expired(&self.1, ended);
+            }
+        }
         let (home, runtime, hub) = setup();
         let s = runtime.open_session("alice", "owl", "first").await.unwrap();
         db::open(home.path())
@@ -6362,19 +6376,6 @@ rl.on('line',line=>{{const c=JSON.parse(line);emit({{type:'response',id:c.id,com
             .execute_batch("UPDATE bots SET approval_mode='smart'")
             .unwrap();
         let mut events = hub.subscribe();
-        let next = async |events: &mut tokio::sync::broadcast::Receiver<crate::events::Event>,
-                          kind: &str| {
-            tokio::time::timeout(Duration::from_secs(5), async {
-                loop {
-                    let event = events.recv().await.unwrap();
-                    if event.frame["params"]["type"] == kind {
-                        break event.frame["params"]["payload"].clone();
-                    }
-                }
-            })
-            .await
-            .unwrap()
-        };
         let worker = {
             let (runtime, s) = (runtime.clone(), s.clone());
             tokio::spawn(async move {
@@ -6384,20 +6385,53 @@ rl.on('line',line=>{{const c=JSON.parse(line);emit({{type:'response',id:c.id,com
                     .unwrap()
             })
         };
-        let request = next(&mut events, "approval.request").await;
-        // A dialog task Stop must wait for: the woken waiter runs meanwhile.
-        s.requests
-            .lock()
-            .unwrap()
-            .spawn(std::future::pending::<()>());
+        let native = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let params = events.recv().await.unwrap().frame["params"].clone();
+                if params["type"] == "approval.request" {
+                    break params["payload"]["request_id"].as_str().unwrap().to_owned();
+                }
+            }
+        })
+        .await
+        .unwrap();
+        // Pi's own approval and question cards wait beside it.
+        {
+            let mut state = s.state.lock().unwrap();
+            state.pending.insert(
+                "pi-approval".into(),
+                json!({"kind":"approval","method":"select","approval_payload":{"request_id":"pi-approval"}}),
+            );
+            state.pending.insert(
+                "batch".into(),
+                json!({"kind":"clarify","method":"input","clarify_payload":{"request_id":"batch","questions":[]}}),
+            );
+        }
+        let ends = TurnEnds(runtime.clone(), s.clone());
+        s.requests.lock().unwrap().spawn(async move {
+            let _ends = ends;
+            std::future::pending::<()>().await
+        });
         runtime
             .call("alice", "session.interrupt", &json!({"session_id":s.id}))
             .await
             .unwrap()
             .unwrap();
         assert!(!worker.await.unwrap());
-        let expired = next(&mut events, "approval.expire").await;
-        assert_eq!(expired["request_id"], request["request_id"]);
+        let mut expired = std::iter::from_fn(|| events.try_recv().ok())
+            .map(|event| event.frame["params"].clone())
+            .filter(|params| {
+                matches!(
+                    params["type"].as_str(),
+                    Some("approval.expire" | "clarify.expire")
+                )
+            })
+            .map(|params| params["payload"]["request_id"].as_str().unwrap().to_owned())
+            .collect::<Vec<_>>();
+        expired.sort();
+        let mut expected = vec!["batch".to_owned(), native, "pi-approval".to_owned()];
+        expected.sort();
+        assert_eq!(expired, expected);
         runtime.shutdown().await;
     }
     #[tokio::test]

@@ -65,6 +65,24 @@ describe('chat event projection', () => {
     expect(s.approvals[0].sessionId).toBe('s1')
     expect(reduceChat(s, event('message.complete')).approvals).toEqual([])
   })
+  it('moves a question card forward on a re-send with newer answers, never back', () => {
+    const questions = [
+      { qid: 'q1', question: 'Colour?' },
+      { qid: 'q2', question: 'Shape?' }
+    ]
+    const shown = (s: ReturnType<typeof emptyChat>) =>
+      s.questions.map(q => q.questions.map(question => question.id))
+    let s = reduceChat(emptyChat(), event('clarify.request', { request_id: 'batch', questions }))
+    expect(shown(s)).toEqual([['q1', 'q2']])
+    // Another app answered q1, then opened the room: the daemon re-sends the card.
+    s = reduceChat(
+      s,
+      event('clarify.request', { request_id: 'batch', questions, answers: { q1: 'red' } })
+    )
+    expect(shown(s)).toEqual([['q2']])
+    s = reduceChat(s, event('clarify.request', { request_id: 'batch', questions }))
+    expect(shown(s)).toEqual([['q2']])
+  })
   it('drops exactly the card answered on another app or no longer waited on', () => {
     let s = emptyChat()
     for (const id of ['a1', 'a2']) s = reduceChat(s, event('approval.request', { request_id: id }))
