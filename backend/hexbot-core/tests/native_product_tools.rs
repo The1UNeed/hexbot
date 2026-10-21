@@ -264,6 +264,8 @@ async fn session_search_reuses_its_index_and_follows_every_history_change() {
     let home = setup();
     let h = home.path();
     seed_history(h, 500);
+    // Keep the cache-removal probe on a deletable peer thread.
+    db::open(h).unwrap().execute_batch("INSERT INTO bots(name,owner_id) VALUES('teammate','local'); UPDATE sections SET peer_bot='teammate' WHERE id='s7';").unwrap();
     let section = |method: &str, args: Value| {
         catalog::call(h, "local", method, &args).unwrap().unwrap();
     };
@@ -476,6 +478,310 @@ async fn session_search_defers_asking_history_and_restores_it_after_invalid_matc
     );
     assert_eq!(product::sections_read(), before); // Rollback restored current's rows.
 }
+
+/// Live message_end projection precedes Pi's append, and there is no recovery
+/// pass between these searches. Exercise read, browse, scroll and FTS through
+/// the public tool, including a shared index warmed by another conversation.
+#[tokio::test]
+async fn session_search_live_compaction_excludes_verbatim_context_without_reopen() {
+    let _serial = SEARCH.lock().await;
+    for already_bound in [false, true] {
+        let home = setup();
+        let h = home.path();
+        let path = runtime_store::session_dir(h, "current")
+            .unwrap()
+            .join("conversation.jsonl");
+        let user =
+            |text| json!({"role":"user","content":[{"type":"text","text":text}],"timestamp":1000});
+        let messages = [
+            user("summarized archive"),
+            user("still verbatim"),
+            user("still verbatim"),
+        ];
+        let mut entries = vec![json!({"type":"session","version":3,"id":"current"})];
+        for (i, message) in messages.iter().enumerate() {
+            runtime_store::project_seeded(h, "current", "local", "owl", message, None, None)
+                .unwrap();
+            entries.push(json!({"type":"message","id":format!("m{i}"),"parentId":if i==0 {Value::Null} else {json!(format!("m{}", i-1))},"message":message}));
+        }
+        let write = |entries: &[Value]| {
+            fs::write(
+                &path,
+                entries.iter().map(|v| format!("{v}\n")).collect::<String>(),
+            )
+            .unwrap()
+        };
+        write(&entries);
+        if already_bound {
+            runtime_store::reconcile(h, "owl", "current", "local").unwrap();
+        }
+        let original = runtime_store::history(h, "current").unwrap();
+        assert_eq!(
+            search(h, "local", "owl", "current", &json!({"query":"verbatim"})).await["count"],
+            0
+        );
+        // The other caller has already indexed the full asking conversation.
+        assert_eq!(
+            search(h, "local", "owl", "past", &json!({"query":"verbatim"})).await["count"],
+            1
+        );
+        entries.push(json!({"type":"compaction","id":"c","parentId":"m2","firstKeptEntryId":"m1","summary":"An archive summary"}));
+        write(&entries);
+        let read = search(
+            h,
+            "local",
+            "owl",
+            "current",
+            &json!({"session_id":"current"}),
+        )
+        .await;
+        assert_eq!(read["messages"].as_array().unwrap().len(), 1, "{read}");
+        assert_eq!(read["messages"][0]["content"], "summarized archive");
+        let scroll = search(
+            h,
+            "local",
+            "owl",
+            "current",
+            &json!({"session_id":"current","around_message_id":1}),
+        )
+        .await;
+        assert_eq!(scroll["messages"].as_array().unwrap().len(), 1);
+        let browse = search(h, "local", "owl", "current", &json!({})).await;
+        assert_eq!(browse["results"][0]["message_count"], 1);
+        assert_eq!(
+            search(h, "local", "owl", "current", &json!({"query":"archive"})).await["count"],
+            1
+        );
+        assert_eq!(
+            search(h, "local", "owl", "current", &json!({"query":"verbatim"})).await["count"],
+            0
+        );
+        // Projection of the next event is visible before its durable append.
+        let next = user("new context pending append");
+        runtime_store::project_seeded(h, "current", "local", "owl", &next, None, None).unwrap();
+        assert_eq!(
+            search(h, "local", "owl", "current", &json!({"query":"pending"})).await["count"],
+            0
+        );
+        entries.push(json!({"type":"message","id":"next","parentId":"c","message":next}));
+        write(&entries);
+        assert_eq!(
+            search(
+                h,
+                "local",
+                "owl",
+                "current",
+                &json!({"session_id":"current"})
+            )
+            .await["message_count"],
+            1
+        );
+        assert_eq!(
+            &runtime_store::history(h, "current").unwrap()[..3],
+            original
+        );
+        // A branch abandons a formerly summarized message; cached search must
+        // follow Pi's active path before any reopen/reconcile can update it.
+        let branch = user("branch context");
+        runtime_store::project_seeded(h, "current", "local", "owl", &branch, None, None).unwrap();
+        entries.push(json!({"type":"message","id":"branch","parentId":"m0","message":branch}));
+        entries.push(json!({"type":"compaction","id":"c2","parentId":"branch","firstKeptEntryId":"branch","summary":"Branch summary"}));
+        write(&entries);
+        assert_eq!(
+            search(
+                h,
+                "local",
+                "owl",
+                "current",
+                &json!({"session_id":"current"})
+            )
+            .await["message_count"],
+            1
+        );
+        assert_eq!(
+            search(h, "local", "owl", "past", &json!({"query":"verbatim"})).await["count"],
+            0
+        );
+        let before = fs::read(&path).unwrap();
+        let version =
+            runtime_store::history_version(&runtime_store::open(h).unwrap(), "current").unwrap();
+        // Unknown firstKept is uncertainty, never permission to return all rows.
+        entries.last_mut().unwrap()["firstKeptEntryId"] = json!("unknown");
+        write(&entries);
+        let error = call(h, "session_search", json!({"session_id":"current"}))
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, 5200);
+        assert_eq!(
+            runtime_store::history_version(&runtime_store::open(h).unwrap(), "current").unwrap(),
+            version
+        );
+        fs::write(&path, &before).unwrap();
+        assert_eq!(
+            search(h, "local", "owl", "current", &json!({"query":"archive"})).await["count"],
+            1
+        );
+        for suffix in ["{\"type\":", "invalid\n"] {
+            let mut bytes = before.clone();
+            bytes.extend_from_slice(suffix.as_bytes());
+            fs::write(&path, &bytes).unwrap();
+            assert_eq!(
+                call(h, "session_search", json!({"query":"archive"}))
+                    .await
+                    .unwrap_err()
+                    .code,
+                5200
+            );
+            assert_eq!(
+                fs::read(&path).unwrap(),
+                bytes,
+                "live search rewrote Pi's file"
+            );
+        }
+        fs::write(&path, &before).unwrap();
+        assert_eq!(
+            search(h, "local", "owl", "current", &json!({"query":"archive"})).await["count"],
+            1
+        );
+    }
+}
+
+/// An older store's history that only a read can find, beside newer native
+/// history, and a way to stop that read without touching its time or length:
+/// mode 000 for an unprivileged process, or a damaged header written back
+/// with the original time, which no process can read.
+struct LegacyFault {
+    path: std::path::PathBuf,
+    healthy: Vec<u8>,
+    stamp: (std::time::SystemTime, u64),
+}
+impl LegacyFault {
+    fn new(h: &Path) -> Self {
+        let path = h.join("profiles/owl/state.db");
+        rusqlite::Connection::open(&path).unwrap().execute_batch("CREATE TABLE sessions(id TEXT PRIMARY KEY,session_key TEXT);CREATE TABLE messages(id INTEGER,session_id TEXT,role TEXT,content TEXT,timestamp REAL);INSERT INTO sessions VALUES('old-id','past');INSERT INTO messages VALUES(7,'old-id','user','legacy lantern',5);").unwrap();
+        db::open(h).unwrap().execute("INSERT INTO sections(id,bot,owner_id,title,created_at,updated_at) VALUES('newer','owl','local','Newer',1,4)", []).unwrap();
+        runtime_store::append(h, "newer", json!({"role":"user","text":"native lantern"})).unwrap();
+        let stamp = Self::stamp_of(&path);
+        Self {
+            healthy: fs::read(&path).unwrap(),
+            path,
+            stamp,
+        }
+    }
+    fn stamp_of(path: &Path) -> (std::time::SystemTime, u64) {
+        let meta = fs::metadata(path).unwrap();
+        (meta.modified().unwrap(), meta.len())
+    }
+    /// False when this process reads the file anyway: root ignores mode 000.
+    fn break_it(&self, fault: &str) -> bool {
+        if fault == "header" {
+            let mut bytes = self.healthy.clone();
+            bytes[..16].copy_from_slice(b"not a database\0\0");
+            self.write(&bytes);
+        } else {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                fs::set_permissions(&self.path, fs::Permissions::from_mode(0o000)).unwrap();
+            }
+            if fs::File::open(&self.path).is_ok() {
+                self.repair(fault);
+                return false;
+            }
+        }
+        assert_eq!(Self::stamp_of(&self.path), self.stamp);
+        true
+    }
+    fn repair(&self, fault: &str) {
+        if fault == "header" {
+            self.write(&self.healthy);
+        } else {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                fs::set_permissions(&self.path, fs::Permissions::from_mode(0o644)).unwrap();
+            }
+        }
+        assert_eq!(Self::stamp_of(&self.path), self.stamp);
+        assert_eq!(fs::read(&self.path).unwrap(), self.healthy);
+    }
+    fn write(&self, bytes: &[u8]) {
+        fs::write(&self.path, bytes).unwrap();
+        fs::File::options()
+            .write(true)
+            .open(&self.path)
+            .unwrap()
+            .set_modified(self.stamp.0)
+            .unwrap();
+    }
+}
+/// Which sections a search found, and how many it had to read again.
+async fn lantern(h: &Path) -> (Vec<String>, u64) {
+    let before = product::sections_read();
+    let found = search(h, "local", "owl", "current", &json!({"query":"lantern"})).await;
+    let mut ids = found["results"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["session_id"].as_str().unwrap().to_owned())
+        .collect::<Vec<_>>();
+    ids.sort();
+    (ids, product::sections_read() - before)
+}
+// The header fault runs everywhere; mode 000 also runs wherever it denies the read.
+const LEGACY_FAULTS: [&str; 2] = ["header", "permissions"];
+#[tokio::test]
+async fn session_search_reads_a_repaired_legacy_store_with_unchanged_metadata() {
+    let _serial = SEARCH.lock().await;
+    for fault in LEGACY_FAULTS {
+        let home = setup();
+        let h = home.path();
+        let legacy = LegacyFault::new(h);
+        product::forget_history_indexes();
+        if !legacy.break_it(fault) {
+            eprintln!("{fault}: this process reads mode 000 files; the header fault covers it");
+            continue;
+        }
+        // The unreadable store is searched around, and the index is kept.
+        assert_eq!(lantern(h).await, (vec!["newer".to_owned()], 2), "{fault}");
+        assert_eq!(lantern(h).await, (vec!["newer".to_owned()], 0), "{fault}");
+        legacy.repair(fault);
+        // The next search reads the repaired store, without a restart or cache reset.
+        assert_eq!(
+            lantern(h).await,
+            (vec!["newer".to_owned(), "past".to_owned()], 2),
+            "{fault}"
+        );
+        assert_eq!(
+            lantern(h).await,
+            (vec!["newer".to_owned(), "past".to_owned()], 0),
+            "{fault}"
+        );
+    }
+}
+#[tokio::test]
+async fn session_search_stops_answering_from_a_legacy_store_it_can_no_longer_read() {
+    let _serial = SEARCH.lock().await;
+    for fault in LEGACY_FAULTS {
+        let home = setup();
+        let h = home.path();
+        let legacy = LegacyFault::new(h);
+        product::forget_history_indexes();
+        let both = vec!["newer".to_owned(), "past".to_owned()];
+        assert_eq!(lantern(h).await, (both.clone(), 2), "{fault}");
+        assert_eq!(lantern(h).await, (both.clone(), 0), "{fault}");
+        if !legacy.break_it(fault) {
+            eprintln!("{fault}: this process reads mode 000 files; the header fault covers it");
+            continue;
+        }
+        // Rows read while the store was healthy are not served from the kept index.
+        assert_eq!(lantern(h).await, (vec!["newer".to_owned()], 2), "{fault}");
+        assert_eq!(lantern(h).await, (vec!["newer".to_owned()], 0), "{fault}");
+        legacy.repair(fault);
+        assert_eq!(lantern(h).await, (both, 2), "{fault}");
+    }
+}
+
 /// Search tests share one process-wide index and read counter.
 static SEARCH: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 /// Seeds `count` messages over fifty sections of the bot, in one transaction.

@@ -8,7 +8,7 @@ Transparency use solid controls. Lists and messages use solid backgrounds.
 ## Layout
 
 Three tabs: Bots, Rooms and Daemon. Bots is a feed of bot posts. A bot opens
-its thread page, and a thread opens the chat. Settings, bot settings, tool
+its one chat. Settings, bot settings, tool
 steps and visuals open as front cards (`src/ui/Layer.tsx`) that leave the
 screen below in view. The daemon name above Bots switches daemons. The model
 pill lists the providers with a key or sign-in, plus the bot's own, each from
@@ -49,7 +49,6 @@ when Connect supplies one, and exchanges the grant directly with that daemon.
 | Area | Mobile controls |
 | --- | --- |
 | Bots | Feed with role and description; create, edit, delete, soul, picture, model and thinking level, tools, approvals, workspace, notifications and dreaming |
-| Threads | Each bot's page lists its threads (sections); new, rename, archive, restore and delete; switch threads from the chat title |
 | Conversations | Streamed chat, stop, file/image/PDF attachments, Markdown, tool steps with their results, visuals, questions and approvals |
 | Rooms | Rooms in one tab: chat, stop, switch rooms, bot membership, main bot, budgets, approvals, archive, restore and delete |
 | Memory | Edit each bot's memory and your About you text; inspect dreaming and restore memory |
@@ -58,9 +57,10 @@ when Connect supplies one, and exchanges the grant directly with that daemon.
 | Daemon | Settings, usage, bot activity, connectors and MCP servers, skill library, LAN pairing, Hex Connect and available daemon updates |
 | Devices | List and revoke paired devices, switch or forget saved daemons |
 
-One person owns the daemon and can choose Auto, Manual or Bypass approvals. Soul and tool changes apply to new sections. Model and thinking
-changes also move existing threads that follow the bot's previous defaults when
-idle. Threads with their own overrides keep them. Jobs use the daemon's
+One person owns the daemon and can choose Auto, Manual or Bypass approvals. Tool changes apply from the chat's next
+message; soul changes after it next summarises older messages. Model and
+thinking changes move the chat from its next message unless it has its own
+override. Jobs use the daemon's
 timezone and save their output there. Job details show the last status, error
 and up to 12,000 characters of output. Push notifications and computer power
 controls are outside this app's scope.
@@ -73,7 +73,7 @@ for active turns. Rooms keep each bot’s streaming text, tools and pending card
 separate. Failed turns and budget limits appear in the room history. A room
 opens at its latest 200 events and pages back with `before_seq` on
 `hexbot.rooms.log`; older daemons ignore it and the app reads the whole log.
-Threads take one message at a time, so Stop replaces Send while a bot works.
+A bot's chat takes one message at a time, so Stop replaces Send while it works.
 
 Attachments stay on the phone until Send. Sending files without text uses
 "Please review the attached files." Chips clear only after the daemon accepts
@@ -81,12 +81,10 @@ the message. Answer bot questions before sending attached files; the files stay
 ready for the next message. Failed uploads can be retried without
 resending attachments that already reached the daemon. Each upload returns an
 id, and `prompt.submit` names the ids for that message: the daemon sends only
-those and drops any other file staged on the thread, such as one whose upload
-reply was lost or one removed from the draft. Leaving the thread, switching
-daemons or disconnecting also clears unsent uploads, so a message sent from
-another app does not carry them; that clear is best effort.
+those and keeps other files staged. Leaving the chat, switching daemons or
+disconnecting asks the daemon to clear unsent uploads; that clear is best effort.
 This uses the new `attachments.clear` RPC and the `attachments` list on
-`prompt.submit`; daemons without upload ids send every staged file. Scheduled job controls use the new
+`prompt.submit`; requests without this list send every staged file for compatibility. Scheduled job controls use the new
 owner-scoped `hexbot.jobs.*` RPCs; use a daemon built from this checkout for both. The app shows an update notice
 for older daemons and explains when either RPC is unavailable.
 
@@ -221,7 +219,7 @@ On an Android emulator, replace the daemon address's `127.0.0.1` with `10.0.2.2`
 and run `adb reverse tcp:8081 tcp:8181` for Metro. The iOS flow supplies the Metro
 address through a [launch argument](https://docs.maestro.dev/reference/commands-available/launchapp).
 Pairing codes are one-time; mint another on the test daemon for the second
-platform. The flow clears only this app's local state, pairs, opens a bot, starts a thread,
+platform. The flow clears only this app's local state, pairs, opens a bot's chat,
 sends a native message, waits for its unique reply and opens settings. If the iOS
 simulator cannot reset the app, reinstall it and pass `-e RESET_APP=false`.
 Stop the smoke process to remove its temporary state.

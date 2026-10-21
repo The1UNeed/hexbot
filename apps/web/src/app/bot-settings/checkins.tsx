@@ -57,6 +57,9 @@ export function CheckinsTab({ bot }: { bot: Bot }) {
   const refresh = useCheckins(state => state.refresh)
   const runNow = useCheckins(state => state.runNow)
   const cancel = useCheckins(state => state.cancel)
+  const deleteSection = useCheckins(state => state.deleteSection)
+  const [deleting, setDeleting] = useState(false)
+  const [removing, setRemoving] = useState(false)
   const [error, setError] = useState<null | string>(null)
 
   const [permission, setPermission] = useState(() =>
@@ -276,6 +279,42 @@ export function CheckinsTab({ bot }: { bot: Bot }) {
             <Row title="No check-ins yet" />
           )}
         </Group>
+        {status?.section_id ? (
+          <Group>
+            <Row
+              control={
+                deleting ? (
+                  <div className="flex gap-2">
+                    <Button
+                      busy={removing}
+                      disabled={removing}
+                      onClick={() => {
+                        setRemoving(true)
+                        void attempt(deleteSection).finally(() => {
+                          setRemoving(false)
+                          setDeleting(false)
+                        })
+                      }}
+                      size="sm"
+                      variant="danger"
+                    >
+                      Delete
+                    </Button>
+                    <Button onClick={() => setDeleting(false)} size="sm" variant="ghost">
+                      Cancel
+                    </Button>
+                  </div>
+                ) : (
+                  <Button onClick={() => setDeleting(true)} size="sm" variant="danger">
+                    Delete
+                  </Button>
+                )
+              }
+              description="Deletes what check-ins told you. The next check-in message starts it again."
+              title="Delete Check-ins"
+            />
+          </Group>
+        ) : null}
         {error || loadError ? (
           <p className="text-[length:var(--text-secondary)] text-danger" role="alert">
             {error ?? loadError}

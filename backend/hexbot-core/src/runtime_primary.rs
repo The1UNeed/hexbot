@@ -4,7 +4,7 @@
 //! working folder, and changing settings ask the user every time, even in Bypass.
 use super::*;
 
-/// The tools a primary bot gets in its own sections, never in rooms, threads,
+/// The tools a primary bot gets in its own chat, never in rooms, threads,
 /// scheduled jobs or delegates.
 pub(super) const TOOL_NAMES: &[&str] = &[
     "hexbot_bots",
@@ -291,7 +291,7 @@ impl Runtime {
     }
 
     pub(super) async fn primary_tool(&self, s: &Live, name: &str, args: &Value) -> Result<Value> {
-        // The tools are frozen into the primary bot's own sections only; a
+        // The tools are frozen into the primary bot's own chat only; a
         // job or a delegate never gets them, but refuse here too.
         let settings = self.session_settings(s)?;
         if !s.tools.iter().any(|t| t["name"] == name)
@@ -376,7 +376,7 @@ impl Runtime {
                 self.confirm(
                     s,
                     name,
-                    format!("Delete the bot {target} and all its sections"),
+                    format!("Delete the bot {target} and its chat"),
                     args,
                 )
                 .await?;

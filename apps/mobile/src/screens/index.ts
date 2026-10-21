@@ -6,6 +6,7 @@ export {
   type NewBot,
   NewBotSheet
 } from './BotSheets'
+export { ChatChooser, type ChatChooserProps } from './ChatChooser'
 export { ApprovalCard, ChatBody, ChatScreen, type ChatScreenProps, VisualCard } from './ChatScreen'
 export {
   type ConnectionPending,
@@ -25,5 +26,4 @@ export { type RoomSettings, RoomSheet, type RoomSheetProps } from './RoomSheet'
 export type * from './types'
 export { useDraft } from './useDraft'
 export { type ModelValue, ModelPill, ModelSummary } from './ModelMenu'
-export { ThreadSwitcher, ThreadsScreen, type ThreadsScreenProps } from './ThreadsScreen'
 export { DaemonSwitcher } from './DaemonSwitcher'

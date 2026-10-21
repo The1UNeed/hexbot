@@ -61,8 +61,8 @@ redaction, and pattern checks do not provide equivalent containment.
   do not fit, the reviewer is told, and only a step it rates low risk runs. Changed owner evidence or queued owner prompts and steers
   invalidate automatic approval when the evidence is rechecked. A step it rates
   low or medium risk runs without asking; anything else, and any review that
-  fails or times out, asks the user for that step only. Section grants do not
-  cover reviewed steps. A mode or working-directory change during review
+  fails or times out, asks the user for that step only. Allow for now grants do
+  not cover reviewed steps. A mode or working-directory change during review
   blocks execution; file execution rechecks the destination and reviewed
   overwrite status. The review is a model judgment, not
   containment: a step it allows has the same access as one the user approves.
@@ -76,7 +76,7 @@ redaction, and pattern checks do not provide equivalent containment.
   The base credential-path and Hexbot-home protections still apply. Review both
   the command and its reason before granting more access.
 - File-tool changes to shell profiles and login items use user approval
-  rather than model review, subject to explicit section grants. Full-access
+  rather than model review, subject to an explicit Allow for now. Full-access
   shell commands use the reviewer's system-configuration policy and can
   change these files without a card when the owner requested that exact change.
 - Reviewers run in a fresh empty working directory and exclude
@@ -165,7 +165,7 @@ ask: they stop with the same explanation.
 macOS fails closed when its sandbox cannot start. On Linux, if bubblewrap is
 missing or unusable, Hexbot reports the missing isolation and Auto and Manual
 require user approval for shell commands and code runs, including full-access
-commands. Model review cannot replace that approval; an explicit section grant
+commands. Model review cannot replace that approval; an explicit Allow for now
 can cover later shell requests. Scheduled scripts refuse to run in every mode.
 Approval in this state does not restore OS containment.
 

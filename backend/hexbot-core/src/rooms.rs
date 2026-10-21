@@ -521,6 +521,10 @@ use std::{
 
 type TurnFuture<'a> = Pin<Box<dyn Future<Output = Result<String>> + Send + 'a>>;
 type InterruptFuture<'a> = Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>>;
+type TurnAdmission = (
+    tokio::sync::OwnedRwLockReadGuard<()>,
+    tokio::sync::OwnedRwLockReadGuard<()>,
+);
 /// The scheduler can be tested without credentials, network access, or an LLM.
 pub trait RoomRunner: Send + Sync {
     fn ensure<'a>(&'a self, _owner: &'a str, _bot: &'a str, stored: &'a str) -> TurnFuture<'a> {
@@ -563,6 +567,7 @@ struct Work {
     stopped: bool,
 }
 pub struct RoomEngine {
+    admission: Arc<crate::admission::Admission>,
     home: PathBuf,
     runner: Arc<dyn RoomRunner>,
     events: EventHub,
@@ -571,10 +576,15 @@ pub struct RoomEngine {
 }
 impl RoomEngine {
     pub fn new(home: PathBuf, runtime: Arc<crate::runtime::Runtime>, events: EventHub) -> Self {
-        Self::with_runner(home, runtime, events)
+        let admission = runtime.admission.clone();
+        Self {
+            admission,
+            ..Self::with_runner(home, runtime, events)
+        }
     }
     pub fn with_runner(home: PathBuf, runner: Arc<dyn RoomRunner>, events: EventHub) -> Self {
         Self {
+            admission: Arc::new(crate::admission::Admission::default()),
             home,
             runner,
             events,
@@ -607,6 +617,20 @@ impl RoomEngine {
     }
     /// Wake the room after its owner posts.
     pub async fn notify(self: &Arc<Self>, caller: &str, room: &str) -> Result<()> {
+        let admission = self
+            .admission
+            .enter(crate::admission::Scope::Room(room.into()))?;
+        self.notify_admitted(caller, room, &admission)
+    }
+
+    // An RPC post already holds admission through persistence. Reuse it so a
+    // queued member removal cannot turn a saved message into a failed send.
+    pub(crate) fn notify_admitted(
+        self: &Arc<Self>,
+        caller: &str,
+        room: &str,
+        _admission: &tokio::sync::OwnedRwLockReadGuard<()>,
+    ) -> Result<()> {
         let owner = get(&self.home, caller, room)?["owner_id"]
             .as_str()
             .unwrap_or(caller)
@@ -835,13 +859,18 @@ impl RoomEngine {
             };
             let mut tasks = futures_util::stream::FuturesUnordered::new();
             let mut capped = false;
+            // Refusal must not strand reservations for earlier fanout members.
+            let admissions = bots
+                .iter()
+                .map(|bot| self.admit_turn(room_id, bot))
+                .collect::<Result<Vec<_>>>()?;
             // Reserve each turn before dispatch so a concurrent fanout cannot exceed its cap.
-            for bot in &bots {
+            for (bot, admission) in bots.iter().zip(admissions) {
                 if !self.check_limits(owner, &room, bot, event["seq"].as_i64().unwrap())? {
                     capped = true;
                     break;
                 }
-                tasks.push(self.execute(owner, &room, bot, &event, &[]));
+                tasks.push(self.execute(owner, &room, bot, &event, &[], admission));
             }
             use futures_util::StreamExt;
             let mut replies = vec![];
@@ -865,8 +894,10 @@ impl RoomEngine {
                 && !self.stopped(room_id)
             {
                 let main = room["main_bot"].as_str().unwrap();
+                let admission = self.admit_turn(room_id, main)?;
                 if self.check_limits(owner, &room, main, event["seq"].as_i64().unwrap())? {
-                    self.execute(owner, &room, main, &event, &replies).await?;
+                    self.execute(owner, &room, main, &event, &replies, admission)
+                        .await?;
                 }
             }
         }
@@ -937,6 +968,13 @@ impl RoomEngine {
         )?;
         Ok(true)
     }
+    fn admit_turn(&self, room: &str, bot: &str) -> Result<TurnAdmission> {
+        use crate::admission::Scope;
+        Ok((
+            self.admission.enter(Scope::Room(room.into()))?,
+            self.admission.enter(Scope::Bot(bot.into()))?,
+        ))
+    }
     async fn execute(
         &self,
         owner: &str,
@@ -944,6 +982,7 @@ impl RoomEngine {
         bot: &str,
         event: &Value,
         collecting: &[(String, String)],
+        admission: TurnAdmission,
     ) -> Result<Option<(String, String)>> {
         let rid = room["id"].as_str().unwrap();
         if self.stopped(rid) {
@@ -987,6 +1026,7 @@ impl RoomEngine {
             (stored, delta, text, turn, before)
         };
         let opened = self.runner.ensure(owner, bot, &stored).await;
+        drop(admission);
         let live = opened.as_ref().ok().cloned();
         if let Some(live) = &live {
             db::open(&self.home)?.execute(

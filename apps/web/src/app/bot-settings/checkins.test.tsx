@@ -3,7 +3,9 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { setActiveRpc } from '../../lib/rpc'
 import type { Bot, CheckinStatus } from '../../lib/types'
 import { useCheckins } from '../../stores/checkins'
+import { useSections } from '../../stores/sections'
 import { useSettings } from '../../stores/settings'
+import { useTranscripts } from '../../stores/transcripts'
 
 import { CheckinsTab } from './checkins'
 
@@ -74,6 +76,44 @@ describe('check-ins', () => {
     await waitFor(() =>
       expect(call).toHaveBeenCalledWith('hexbot.checkins.cancel_wakeup', { id: 'w1' })
     )
+  })
+
+  it('deletes the Check-ins conversation after asking', async () => {
+    let deleted = false
+
+    const call = vi.fn((method: string) => {
+      if (method === 'hexbot.sections.delete') {
+        deleted = true
+      }
+
+      return Promise.resolve(
+        method === 'hexbot.checkins.status'
+          ? status(deleted ? { section_id: null } : {})
+          : { deleted: true }
+      )
+    })
+
+    setActiveRpc({ call } as never)
+    // Opened before, so its live transcript is loaded.
+    useSections.setState({ liveSessionId: { 'checkins-1': 'live-checkins' } })
+    useTranscripts.getState().open('live-checkins', 'checkins-1', [])
+    render(<CheckinsTab bot={hexbot} />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Delete' }))
+    expect(call).not.toHaveBeenCalledWith('hexbot.sections.delete', expect.anything())
+    const confirm = screen.getByRole('button', { name: 'Delete' })
+    fireEvent.click(confirm)
+    fireEvent.click(confirm)
+    await waitFor(() =>
+      expect(call).toHaveBeenCalledWith('hexbot.sections.delete', { id: 'checkins-1' })
+    )
+    await waitFor(() => expect(screen.queryByText('Delete Check-ins')).toBeNull())
+    expect(call.mock.calls.filter(([method]) => method === 'hexbot.sections.delete')).toHaveLength(
+      1
+    )
+    // Its transcript and listing go with it.
+    expect(call).toHaveBeenCalledWith('hexbot.sections.list', expect.anything())
+    expect(useTranscripts.getState().bySession['live-checkins']).toBeUndefined()
+    expect(useSections.getState().liveSessionId['checkins-1']).toBeUndefined()
   })
 
   it('turns check-ins off and changes their hours', async () => {

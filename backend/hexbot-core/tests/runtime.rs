@@ -5,7 +5,11 @@ use std::{
     path::{Path, PathBuf},
     time::Duration,
 };
+#[path = "support/chat_migration.rs"]
+mod chat_migration;
 mod support;
+#[path = "support/transcript_identity.rs"]
+mod transcript_identity;
 
 fn setup() -> support::TestHome {
     let home = support::TestHome::new();
@@ -205,10 +209,18 @@ fn imports_legacy_messages_once_and_preserves_hidden_and_tool_rows() {
     let home = setup();
     let conn = rusqlite::Connection::open(home.path().join("profiles/owl/state.db")).unwrap();
     conn.execute_batch("CREATE TABLE sessions(id TEXT,session_key TEXT);CREATE TABLE messages(id INTEGER,session_id TEXT,role TEXT,content TEXT,tool_call_id TEXT,tool_calls TEXT,tool_name TEXT,timestamp REAL,active INTEGER,display_kind TEXT);INSERT INTO sessions VALUES('legacy','section-a');INSERT INTO messages VALUES(1,'legacy','user','secret kickoff',NULL,NULL,NULL,100,1,'hidden');INSERT INTO messages VALUES(2,'legacy','assistant','Calling',NULL,'[{\"id\":\"t1\",\"function\":{\"name\":\"read\",\"arguments\":\"{}\"}}]',NULL,101,1,NULL);INSERT INTO messages VALUES(3,'legacy','tool','Contents','t1',NULL,'read',102,1,NULL);").unwrap();
+    // A dream report posted before the chat was first opened follows its history.
+    runtime_store::append(
+        home.path(),
+        "section-a",
+        json!({"role":"assistant","text":"Last night","dream":true,"timestamp":200}),
+    )
+    .unwrap();
     runtime_store::import_hermes(home.path(), "owl", "section-a", home.path()).unwrap();
     runtime_store::import_hermes(home.path(), "owl", "section-a", home.path()).unwrap();
     let messages = runtime_store::history(home.path(), "section-a").unwrap();
-    assert_eq!(messages.len(), 3);
+    assert_eq!(messages.len(), 4);
+    assert_eq!(messages[3]["dream"], true);
     assert_eq!(messages[0]["display_kind"], "hidden");
     assert_eq!(messages[0]["timestamp"], 100.);
     assert_eq!(messages[2]["name"], "read");
@@ -380,6 +392,447 @@ async fn actual_pi_falls_back_without_repeating_user_message() {
     );
     runtime.shutdown().await;
     server.abort();
+}
+
+#[tokio::test]
+#[ignore = "requires HEXBOT_TEST_PI to the pinned Pi executable"]
+async fn actual_pi_todo_and_fallback_reminders_do_not_block_dreams() {
+    use axum::{
+        Json, Router,
+        extract::State,
+        response::{IntoResponse, Response},
+        routing::post,
+    };
+    use hexbot_core::{
+        catalog, common,
+        dreaming::{self, Dreaming},
+    };
+    use std::sync::{Arc, Mutex};
+    const SPEECH: &str = "native dialogue the dream must learn";
+    type Requests = Arc<Mutex<Vec<Value>>>;
+    // The primary model fails the turn that carries SPEECH once, so Hexbot's
+    // extension hands that chat to the fallback model.
+    async fn complete(State(requests): State<Requests>, Json(body): Json<Value>) -> Response {
+        let fail = {
+            let mut requests = requests.lock().unwrap();
+            let fail = body["model"] == "primary"
+                && body.to_string().contains(SPEECH)
+                && !requests.iter().any(|r| r.to_string().contains(SPEECH));
+            requests.push(body.clone());
+            fail
+        };
+        if fail {
+            return (
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error":{"message":"primary is unavailable","type":"server_error"}})),
+            )
+                .into_response();
+        }
+        let data = json!({"id":"r","object":"chat.completion.chunk","created":1,"model":body["model"],"choices":[{"index":0,"delta":{"role":"assistant","content":"Reply from the fixture"},"finish_reason":"stop"}]});
+        (
+            [("content-type", "text/event-stream")],
+            format!("data: {data}\n\ndata: [DONE]\n\n"),
+        )
+            .into_response()
+    }
+    async fn wait(
+        events: &mut tokio::sync::broadcast::Receiver<hexbot_core::events::Event>,
+        kind: &str,
+        payload: impl Fn(&Value) -> bool,
+    ) -> Value {
+        tokio::time::timeout(Duration::from_secs(25), async {
+            loop {
+                let event = events.recv().await.unwrap();
+                if event.frame["params"]["type"] == kind
+                    && payload(&event.frame["params"]["payload"])
+                {
+                    return event.frame["params"]["payload"].clone();
+                }
+            }
+        })
+        .await
+        .unwrap()
+    }
+    let executable = PathBuf::from(std::env::var_os("HEXBOT_TEST_PI").unwrap());
+    // A manual dream while the chat runs, and a scheduled dream after its
+    // process retired without recovery.
+    for scheduled in [false, true] {
+        let requests = Requests::default();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let app = Router::new()
+            .route("/v1/chat/completions", post(complete))
+            .with_state(requests.clone());
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let home = setup();
+        let h = home.path();
+        fs::write(h.join("profiles/owl/config.yaml"),format!("model:\n  provider: lmstudio\n  default: primary\n  api_key: test-key\n  base_url: http://{address}/v1\ntools:\n  enabled_toolsets: []\n")).unwrap();
+        let conn = db::open(h).unwrap();
+        for (key, value) in [
+            ("fallback_model", json!("lmstudio/fallback")),
+            (
+                "dream_time",
+                json!(chrono::Local::now().format("%H:%M").to_string()),
+            ),
+        ] {
+            conn.execute(
+                "INSERT INTO settings(key,value) VALUES(?,?)",
+                [key.to_owned(), value.to_string()],
+            )
+            .unwrap();
+        }
+        fs::create_dir_all(h.join("profiles/owl/pi")).unwrap();
+        fs::write(
+            h.join("profiles/owl/pi/settings.json"),
+            "{\"retry\":{\"enabled\":false}}",
+        )
+        .unwrap();
+        fs::create_dir_all(h.join("profiles/owl/memories/notes")).unwrap();
+        fs::write(
+            h.join("profiles/owl/memories/notes")
+                .join(format!("{}.md", chrono::Local::now().format("%Y-%m-%d"))),
+            "daily note",
+        )
+        .unwrap();
+        dreaming::propose_memory(
+            h,
+            "alice",
+            "owl",
+            "job",
+            "add",
+            &json!({"text":"pending proposal"}),
+        )
+        .unwrap();
+        let hub = EventHub::new();
+        let mut events = hub.subscribe();
+        let runtime = Runtime::new(h.into(), hub.clone(), executable.clone()).unwrap();
+        let chat = catalog::chat_section(h, "alice", "owl").unwrap();
+        let id = chat["id"].as_str().unwrap().to_owned();
+        let opened = runtime
+            .call("alice", "hexbot.sections.open", &json!({"id":id}))
+            .await
+            .unwrap()
+            .unwrap();
+        let live = opened["section"]["live_session_id"].clone();
+        let dir = runtime_store::session_dir(h, &id).unwrap();
+        // A pending todo makes the extension restate the list after Pi's
+        // automatic compaction. The large turn crosses the default window, so
+        // Pi summarizes the turn before it.
+        fs::write(dir.join("todo.json"),json!({"todos":[{"id":"1","content":"finish the quarterly report","status":"pending"}],"revision":1}).to_string()).unwrap();
+        for text in [
+            "an earlier turn for Pi to summarize".to_owned(),
+            format!(
+                "a long turn before compaction {}",
+                "long context ".repeat(12000)
+            ),
+            SPEECH.to_owned(),
+        ] {
+            runtime
+                .call(
+                    "alice",
+                    "prompt.submit",
+                    &json!({"session_id":live,"text":text}),
+                )
+                .await
+                .unwrap()
+                .unwrap();
+            wait(&mut events, "status.update", |p| p["kind"] == "idle").await;
+        }
+        if scheduled {
+            runtime.close_stored("alice", &id).await.unwrap();
+        }
+        let raw = dir.join("conversation.jsonl");
+        let original = fs::read(&raw).unwrap();
+        let entries = String::from_utf8_lossy(&original)
+            .lines()
+            .map(|line| serde_json::from_str::<Value>(line).unwrap())
+            .collect::<Vec<_>>();
+        let reminders = |entries: &[Value]| {
+            entries
+                .iter()
+                .filter(|e| e["type"] == "custom_message" && e["display"] == false)
+                .map(|e| e["customType"].as_str().unwrap().to_owned())
+                .collect::<Vec<_>>()
+        };
+        assert!(entries.iter().any(|e| e["type"] == "compaction"));
+        assert_eq!(reminders(&entries), ["hexbot_todo", "hexbot_fallback"]);
+        let native = runtime_store::open(h).unwrap();
+        let journaled = || {
+            native
+                .query_row(
+                    "SELECT count(*) FROM native_pi_journal WHERE session_id=? AND json_extract(raw_json,'$.role')='custom'",
+                    [&id],
+                    |r| r.get::<_, i64>(0),
+                )
+                .unwrap()
+        };
+        // The runtime journals Pi's custom messages only when it recovers a log.
+        assert_eq!(journaled(), 0);
+        let frozen = native
+            .query_row(
+                "SELECT prompt,options FROM native_sessions WHERE stored_id=?",
+                [&id],
+                |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
+            )
+            .unwrap();
+        let usage = runtime_store::usage(h, &id).unwrap();
+        let sent = requests.lock().unwrap().len();
+        let dreams = Dreaming::new(h.into(), runtime.clone(), hub);
+        if scheduled {
+            dreams.tick_at(common::now()).await.unwrap();
+        } else {
+            dreams
+                .call("alice", "hexbot.dreaming.run_now", &json!({"bot":"owl"}))
+                .await
+                .unwrap()
+                .unwrap();
+        }
+        let changed = wait(&mut events, "hexbot.dreaming.changed", |p| {
+            !p["dream"].is_null()
+        })
+        .await;
+        assert_eq!(changed["dream"]["status"], "complete", "{changed}");
+        let dream = requests.lock().unwrap()[sent..]
+            .iter()
+            .map(Value::to_string)
+            .filter(|r| r.contains("pending proposal"))
+            .collect::<Vec<_>>();
+        assert_eq!(dream.len(), 1);
+        assert!(dream[0].contains(SPEECH), "{}", dream[0]);
+        assert_eq!(
+            conn.query_row(
+                "SELECT count(*) FROM memory_proposals WHERE consumed_at IS NULL",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+            0
+        );
+        assert_eq!(fs::read(&raw).unwrap(), original);
+        assert_eq!(runtime_store::usage(h, &id).unwrap(), usage);
+        assert_eq!(
+            native
+                .query_row(
+                    "SELECT prompt,options FROM native_sessions WHERE stored_id=?",
+                    [&id],
+                    |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+                )
+                .unwrap(),
+            frozen
+        );
+        // Recovery journals both reminders. Neither the user nor the bot said
+        // them, so the digest leaves them out as it did while the chat was live.
+        runtime.close_stored("alice", &id).await.unwrap();
+        runtime
+            .call("alice", "hexbot.sections.open", &json!({"id":id}))
+            .await
+            .unwrap()
+            .unwrap();
+        runtime.close_stored("alice", &id).await.unwrap();
+        assert_eq!(journaled(), 2);
+        let digest = dreaming::build_digest(h, "owl", 0., f64::MAX, None)
+            .unwrap()
+            .to_string();
+        assert!(digest.contains(SPEECH), "{digest}");
+        assert!(!digest.contains("finish the quarterly report"), "{digest}");
+        assert!(!digest.contains("The model service failed"), "{digest}");
+        dreams.shutdown().await;
+        runtime.shutdown().await;
+        server.abort();
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires HEXBOT_TEST_PI to the pinned Pi executable"]
+async fn actual_pi_session_search_reads_history_after_normal_compaction() {
+    use axum::{Json, Router, routing::post};
+    use hexbot_core::{catalog, native_product_tools};
+    const EARLIER: &str = "an earlier turn about the zephyr harbor";
+    const LATER: &str = "a follow-up about the quokka garden";
+    async fn complete(Json(body): Json<Value>) -> ([(&'static str, &'static str); 1], String) {
+        let data = json!({"id":"r","object":"chat.completion.chunk","created":1,"model":body["model"],"choices":[{"index":0,"delta":{"role":"assistant","content":"Reply from the fixture"},"finish_reason":"stop"}]});
+        (
+            [("content-type", "text/event-stream")],
+            format!("data: {data}\n\ndata: [DONE]\n\n"),
+        )
+    }
+    async fn recall(h: &Path, id: &str, args: Value) -> Value {
+        native_product_tools::call(h, "alice", "owl", id, "session_search", &args)
+            .await
+            .unwrap()
+            .unwrap()
+    }
+    // Search from the chat itself finds only what Pi summarized; the kept
+    // turn and everything after it are already in the bot's context.
+    async fn summarized_turn_only(h: &Path, id: &str) {
+        let found = recall(h, id, json!({"query":"zephyr"})).await;
+        assert_eq!(found["count"], 1, "{found}");
+        assert_eq!(found["results"][0]["session_id"], id);
+        for current in ["quokka", "long"] {
+            assert_eq!(
+                recall(h, id, json!({"query":current})).await["count"],
+                0,
+                "{current}"
+            );
+        }
+        let read = recall(h, id, json!({"session_id":id})).await;
+        let said = read["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|m| m["role"] == "user" || m["role"] == "assistant")
+            .map(|m| m["content"].as_str().unwrap().to_owned())
+            .collect::<Vec<_>>();
+        assert_eq!(said, [EARLIER, "Reply from the fixture"], "{read}");
+    }
+    let executable = PathBuf::from(std::env::var_os("HEXBOT_TEST_PI").unwrap());
+    // Pi's own tool catalog record is enough; a pending todo adds the hidden
+    // list the extension restates after compaction.
+    for todo in [false, true] {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let app = Router::new().route("/v1/chat/completions", post(complete));
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let home = setup();
+        let h = home.path();
+        fs::write(h.join("profiles/owl/config.yaml"),format!("model:\n  provider: lmstudio\n  default: primary\n  api_key: test-key\n  base_url: http://{address}/v1\ntools:\n  enabled_toolsets: [session_search]\n")).unwrap();
+        fs::create_dir_all(h.join("profiles/owl/pi")).unwrap();
+        fs::write(
+            h.join("profiles/owl/pi/settings.json"),
+            "{\"retry\":{\"enabled\":false}}",
+        )
+        .unwrap();
+        let hub = EventHub::new();
+        let mut events = hub.subscribe();
+        let runtime = Runtime::new(h.into(), hub, executable.clone()).unwrap();
+        let id = catalog::chat_section(h, "alice", "owl").unwrap()["id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let opened = runtime
+            .call("alice", "hexbot.sections.open", &json!({"id":id}))
+            .await
+            .unwrap()
+            .unwrap();
+        let live = opened["section"]["live_session_id"].clone();
+        let dir = runtime_store::session_dir(h, &id).unwrap();
+        if todo {
+            fs::write(dir.join("todo.json"),json!({"todos":[{"id":"1","content":"finish the quarterly report","status":"pending"}],"revision":1}).to_string()).unwrap();
+        }
+        // The large turn crosses the default window, so Pi automatically
+        // summarizes the turn before it.
+        for text in [
+            EARLIER.to_owned(),
+            format!(
+                "a long turn before compaction {}",
+                "long context ".repeat(12000)
+            ),
+            LATER.to_owned(),
+        ] {
+            runtime
+                .call(
+                    "alice",
+                    "prompt.submit",
+                    &json!({"session_id":live,"text":text}),
+                )
+                .await
+                .unwrap()
+                .unwrap();
+            tokio::time::timeout(Duration::from_secs(25), async {
+                loop {
+                    let event = events.recv().await.unwrap();
+                    if event.frame["params"]["type"] == "status.update"
+                        && event.frame["params"]["payload"]["kind"] == "idle"
+                    {
+                        break;
+                    }
+                }
+            })
+            .await
+            .unwrap();
+        }
+        let raw = dir.join("conversation.jsonl");
+        let original = fs::read(&raw).unwrap();
+        let entries = String::from_utf8_lossy(&original)
+            .lines()
+            .map(|line| serde_json::from_str::<Value>(line).unwrap())
+            .collect::<Vec<_>>();
+        let compactions = entries
+            .iter()
+            .filter(|e| e["type"] == "compaction")
+            .collect::<Vec<_>>();
+        assert_eq!(compactions.len(), 1);
+        let kept = entries
+            .iter()
+            .find(|e| e["id"] == compactions[0]["firstKeptEntryId"])
+            .unwrap();
+        assert!(runtime_store::text(&kept["message"]["content"]).starts_with("a long turn"));
+        assert!(
+            entries
+                .iter()
+                .any(|e| e["type"] == "message" && e["message"]["role"] == "system")
+        );
+        let notices = entries
+            .iter()
+            .filter(|e| e["type"] == "custom_message")
+            .map(|e| (e["customType"].as_str().unwrap(), e["display"].clone()))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            notices,
+            if todo {
+                vec![("hexbot_todo", json!(false))]
+            } else {
+                vec![]
+            }
+        );
+        let native = runtime_store::open(h).unwrap();
+        let internal = |role: &str| {
+            native
+                .query_row(
+                    "SELECT count(*) FROM native_pi_journal WHERE session_id=? AND json_extract(raw_json,'$.role')=?",
+                    [id.as_str(), role],
+                    |r| r.get::<_, i64>(0),
+                )
+                .unwrap()
+        };
+        // The live runtime journals neither record.
+        assert_eq!((internal("system"), internal("custom")), (0, 0));
+        let frozen = || {
+            native
+                .query_row(
+                    "SELECT prompt,options FROM native_sessions WHERE stored_id=?",
+                    [&id],
+                    |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
+                )
+                .unwrap()
+        };
+        let saved = frozen();
+        let usage = runtime_store::usage(h, &id).unwrap();
+        let history = runtime_store::history(h, &id).unwrap();
+        // While Pi still runs the chat, and after its process retires without
+        // recovery, search reads the log without changing it or billing.
+        summarized_turn_only(h, &id).await;
+        runtime.close_stored("alice", &id).await.unwrap();
+        summarized_turn_only(h, &id).await;
+        assert_eq!(fs::read(&raw).unwrap(), original);
+        assert_eq!(frozen(), saved);
+        assert_eq!(runtime_store::usage(h, &id).unwrap(), usage);
+        assert_eq!(runtime_store::history(h, &id).unwrap(), history);
+        assert_eq!((internal("system"), internal("custom")), (0, 0));
+        // Recovery journals both as hidden rows; search answers the same.
+        runtime
+            .call("alice", "hexbot.sections.open", &json!({"id":id}))
+            .await
+            .unwrap()
+            .unwrap();
+        runtime.close_stored("alice", &id).await.unwrap();
+        assert!(internal("system") > 0);
+        assert_eq!(internal("custom"), i64::from(todo));
+        summarized_turn_only(h, &id).await;
+        assert_eq!(frozen(), saved);
+        runtime.shutdown().await;
+        server.abort();
+    }
 }
 
 #[tokio::test]
@@ -755,7 +1208,7 @@ async fn rejected_prompt_retains_staged_images_and_file_references() {
 }
 
 #[tokio::test]
-async fn named_attachments_send_only_those_and_drop_abandoned_uploads() {
+async fn named_attachments_send_only_those_and_retain_unselected_uploads() {
     let home = setup();
     let executable = fake_pi(home.path());
     let source = fs::read_to_string(&executable).unwrap().replace("const c=JSON.parse(line);", "const c=JSON.parse(line);if(c.type==='prompt')require('node:fs').appendFileSync(__dirname+'/prompts.jsonl',JSON.stringify(c)+'\\n');");
@@ -798,7 +1251,7 @@ async fn named_attachments_send_only_those_and_drop_abandoned_uploads() {
         .await
         .unwrap();
     next_kind(&mut events, "message.complete").await;
-    assert!(!Path::new(stale["path"].as_str().unwrap()).exists());
+    assert!(Path::new(stale["path"].as_str().unwrap()).exists());
     assert!(Path::new(kept["path"].as_str().unwrap()).exists());
     // Without a list, every staged upload rides the next prompt as before.
     let later = attach("later.txt").await;
@@ -815,6 +1268,18 @@ async fn named_attachments_send_only_those_and_drop_abandoned_uploads() {
     let named = prompts[0]["message"].as_str().unwrap();
     assert!(named.contains(kept["path"].as_str().unwrap()));
     assert!(!named.contains(stale["path"].as_str().unwrap()));
+    assert!(
+        prompts[1]["message"]
+            .as_str()
+            .unwrap()
+            .contains(stale["path"].as_str().unwrap())
+    );
+    assert!(
+        !prompts[1]["message"]
+            .as_str()
+            .unwrap()
+            .contains(kept["path"].as_str().unwrap())
+    );
     assert!(
         prompts[1]["message"]
             .as_str()
@@ -931,29 +1396,29 @@ fn legacy_multi_compaction_deduplicates_display_and_uses_only_tip_context() {
 }
 
 #[test]
-fn summary_uses_first_visible_user_and_invalidates_on_history_changes() {
+fn summary_previews_the_latest_visible_message_and_follows_history_changes() {
     let home = setup();
     let text = "界".repeat(61);
     for message in [
-        json!({"role":"user","text":"internal","display_kind":"hidden"}),
+        json!({"role":"user","text":"earlier"}),
         json!({"role":"user","text":text}),
-        json!({"role":"user","text":"later"}),
+        json!({"role":"user","text":"internal","display_kind":"hidden"}),
+        json!({"role":"assistant","text":"","tool_calls":[{"id":"t1"}]}),
     ] {
         runtime_store::append(home.path(), "section-a", message).unwrap();
     }
     let summary = runtime_store::summary(home.path(), "section-a").unwrap();
     assert_eq!(summary["preview"], format!("{}...", "界".repeat(60)));
-    assert_eq!(summary["message_count"], 3);
+    assert_eq!(summary["message_count"], 4);
     runtime_store::append(
         home.path(),
         "section-a",
         json!({"role":"assistant","text":"reply"}),
     )
     .unwrap();
-    assert_eq!(
-        runtime_store::summary(home.path(), "section-a").unwrap()["message_count"],
-        4
-    );
+    let summary = runtime_store::summary(home.path(), "section-a").unwrap();
+    assert_eq!(summary["message_count"], 5);
+    assert_eq!(summary["preview"], "reply");
 }
 
 #[tokio::test]
@@ -1141,8 +1606,196 @@ async fn section_close_releases_the_live_session() {
 }
 
 #[tokio::test]
-async fn deleting_section_removes_delegated_transcripts() {
+async fn a_bot_whose_older_store_cannot_be_read_gets_a_chat_that_opens() {
     let home = setup();
+    // Section A was never opened since the native daemon; its history is here.
+    let store = home.path().join("profiles/owl/state.db");
+    fs::write(&store, "not a database").unwrap();
+    let app = hexbot_core::server::App::new(
+        home.path().into(),
+        "127.0.0.1:0".parse().unwrap(),
+        fake_pi(home.path()),
+        None,
+    )
+    .unwrap();
+    let open = |id: String| {
+        let app = app.clone();
+        async move {
+            app.call("alice", "hexbot.sections.open", &json!({"id":id}))
+                .await
+        }
+    };
+    assert_eq!(open("section-a".into()).await.unwrap_err().code, 5200);
+    let chat = app
+        .call("alice", "hexbot.sections.create", &json!({"bot":"owl"}))
+        .await
+        .unwrap()["section"]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert_ne!(chat, "section-a");
+    open(chat.clone()).await.unwrap();
+    let again = app
+        .call("alice", "hexbot.sections.create", &json!({"bot":"owl"}))
+        .await
+        .unwrap();
+    assert_eq!(again["section"]["id"], chat);
+    // Section A stays and opens with its history once the store is repaired.
+    fs::remove_file(&store).unwrap();
+    rusqlite::Connection::open(&store)
+        .unwrap()
+        .execute_batch(
+            "CREATE TABLE sessions(id TEXT,session_key TEXT);
+             CREATE TABLE messages(id INTEGER,session_id TEXT,role TEXT,content TEXT,timestamp REAL);
+             INSERT INTO sessions VALUES('section-a','section-a');
+             INSERT INTO messages VALUES(1,'section-a','user','Before the upgrade',1);",
+        )
+        .unwrap();
+    let opened = open("section-a".into()).await.unwrap();
+    app.shutdown().await;
+    assert_eq!(opened["messages"][0]["text"], "Before the upgrade");
+}
+
+#[tokio::test]
+async fn a_bot_whose_chat_recovery_set_aside_gets_a_new_chat_that_opens() {
+    let home = setup();
+    // Section A's conversation is damaged; startup recovery sets it aside.
+    runtime_store::open(home.path())
+        .unwrap()
+        .execute(
+            "INSERT INTO native_sessions(stored_id,owner,bot,prompt) VALUES('section-a','alice','owl','')",
+            [],
+        )
+        .unwrap();
+    let dir = runtime_store::session_dir(home.path(), "section-a").unwrap();
+    fs::write(dir.join("conversation.jsonl"), "not a conversation\n").unwrap();
+    let app = hexbot_core::server::App::new(
+        home.path().into(),
+        "127.0.0.1:0".parse().unwrap(),
+        fake_pi(home.path()),
+        None,
+    )
+    .unwrap();
+    let call = |method: &'static str, params: Value| {
+        let app = app.clone();
+        async move { app.call("alice", method, &params).await }
+    };
+    let open = |id: &str| call("hexbot.sections.open", json!({"id":id}));
+    assert_eq!(open("section-a").await.unwrap_err().code, 5200);
+    let chat = call("hexbot.sections.create", json!({"bot":"owl"}))
+        .await
+        .unwrap()["section"]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert_ne!(chat, "section-a");
+    // The new chat opens, takes a message and stays the chat.
+    let live = open(&chat).await.unwrap()["section"]["live_session_id"].clone();
+    call(
+        "prompt.submit",
+        json!({"session_id":live,"text":"Hello again"}),
+    )
+    .await
+    .unwrap();
+    for _ in 0..2 {
+        let again = call("hexbot.sections.create", json!({"bot":"owl"}))
+            .await
+            .unwrap();
+        assert_eq!(again["section"]["id"], chat);
+        open(&chat).await.unwrap();
+    }
+    // The damaged conversation stays, set aside for repair.
+    assert_eq!(open("section-a").await.unwrap_err().code, 5200);
+    let kept = fs::read_dir(&dir)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+        .collect::<Vec<_>>();
+    app.shutdown().await;
+    assert!(
+        kept.iter()
+            .any(|name| name.starts_with("conversation.quarantine-")),
+        "{kept:?}"
+    );
+}
+
+#[tokio::test]
+async fn unreadable_native_history_falls_back_to_a_chat_that_actually_opens() {
+    for healthy in [false, true] {
+        let home = setup();
+        let conn = db::open(home.path()).unwrap();
+        conn.execute("UPDATE sections SET updated_at=9 WHERE id='section-a'", [])
+            .unwrap();
+        let runtime = runtime_store::open(home.path()).unwrap();
+        runtime.execute("INSERT INTO native_sessions(stored_id,owner,bot,prompt) VALUES('section-a','alice','owl','')", []).unwrap();
+        runtime_store::append(
+            home.path(),
+            "section-a",
+            json!({"role":"user","text":"Unrecoverable for now","timestamp":9}),
+        )
+        .unwrap();
+        let path = home
+            .path()
+            .join("runtime/sessions/section-a/conversation.jsonl");
+        fs::create_dir_all(&path).unwrap();
+        fs::write(path.join("kept"), "repair me").unwrap();
+        if healthy {
+            conn.execute("INSERT INTO sections(id,bot,owner_id,title,updated_at) VALUES('healthy','owl','alice','Healthy',2)", []).unwrap();
+            runtime_store::append(
+                home.path(),
+                "healthy",
+                json!({"role":"user","text":"Healthy conversation","timestamp":2}),
+            )
+            .unwrap();
+        }
+        let memories = home.path().join("profiles/owl/memories");
+        fs::create_dir_all(memories.join("notes")).unwrap();
+        fs::write(memories.join("MEMORY.md"), "Keep my memory").unwrap();
+        fs::write(memories.join("notes/2026-10-15.md"), "Keep my notes").unwrap();
+        let app = hexbot_core::server::App::new(
+            home.path().into(),
+            "127.0.0.1:0".parse().unwrap(),
+            fake_pi(home.path()),
+            None,
+        )
+        .unwrap();
+        let chosen = app
+            .call("alice", "hexbot.sections.create", &json!({"bot":"owl"}))
+            .await
+            .unwrap();
+        let id = chosen["section"]["id"].as_str().unwrap();
+        assert_ne!(id, "section-a");
+        if healthy {
+            assert_eq!(id, "healthy");
+        }
+        let opened = app
+            .call("alice", "hexbot.sections.open", &json!({"id":id}))
+            .await
+            .unwrap();
+        assert!(opened["section"]["live_session_id"].is_string());
+        assert_eq!(
+            app.call("alice", "hexbot.sections.create", &json!({"bot":"owl"}))
+                .await
+                .unwrap()["section"]["id"],
+            id
+        );
+        assert!(hexbot_core::catalog::section(home.path(), "alice", "section-a").is_ok());
+        assert_eq!(fs::read_to_string(path.join("kept")).unwrap(), "repair me");
+        assert_eq!(
+            fs::read_to_string(memories.join("MEMORY.md")).unwrap(),
+            "Keep my memory"
+        );
+        assert_eq!(
+            fs::read_to_string(memories.join("notes/2026-10-15.md")).unwrap(),
+            "Keep my notes"
+        );
+        app.shutdown().await;
+    }
+}
+
+#[tokio::test]
+async fn deleting_peer_thread_removes_delegated_transcripts() {
+    let home = setup();
+    db::open(home.path()).unwrap().execute_batch("INSERT INTO bots(name,owner_id) VALUES('teammate','alice'); UPDATE sections SET peer_bot='teammate' WHERE id='section-a';").unwrap();
     let app = hexbot_core::server::App::new(
         home.path().into(),
         "127.0.0.1:0".parse().unwrap(),
@@ -1330,5 +1983,276 @@ async fn deleting_a_bot_stops_the_threads_where_it_asked_others() {
         )
         .unwrap();
     assert!(archived.is_some());
+    app.shutdown().await;
+}
+
+/// The real App used to purge native history before attempting its first catalog write.
+#[tokio::test]
+async fn failed_bot_delete_preserves_native_history_and_profile_across_startup() {
+    for table in ["sections", "bots"] {
+        let home = setup();
+        let h = home.path();
+        let pi = fake_pi(h);
+        let app = hexbot_core::server::App::new(
+            h.into(),
+            "127.0.0.1:0".parse().unwrap(),
+            pi.clone(),
+            None,
+        )
+        .unwrap();
+        open(&app.runtime, "alice").await;
+        app.runtime
+            .ensure_hidden("alice", "owl", "hidden-job")
+            .await
+            .unwrap();
+        for id in ["section-a", "hidden-job"] {
+            runtime_store::append(
+                h,
+                id,
+                json!({"role":"user","text":format!("history of {id}")}),
+            )
+            .unwrap();
+        }
+        fs::create_dir_all(h.join("profiles/owl/memories/notes")).unwrap();
+        fs::write(h.join("profiles/owl/memories/MEMORY.md"), "memory").unwrap();
+        fs::write(h.join("profiles/owl/memories/notes/2026-10-15.md"), "notes").unwrap();
+        db::open(h).unwrap().execute_batch(&format!("CREATE TRIGGER stop_delete BEFORE DELETE ON {table} BEGIN SELECT RAISE(ABORT,'controlled catalog stop'); END;")).unwrap();
+        let error = app
+            .call("alice", "hexbot.bots.delete", &json!({"name":"owl"}))
+            .await
+            .unwrap_err();
+        assert!(error.message.contains("controlled catalog stop"));
+        for id in ["section-a", "hidden-job"] {
+            assert_eq!(
+                runtime_store::history(h, id).unwrap().len(),
+                1,
+                "history erased before catalog {table} commit: {id}"
+            );
+        }
+        assert_eq!(
+            fs::read_to_string(h.join("profiles/owl/memories/MEMORY.md")).unwrap(),
+            "memory"
+        );
+        assert_eq!(
+            fs::read_to_string(h.join("profiles/owl/memories/notes/2026-10-15.md")).unwrap(),
+            "notes"
+        );
+        app.shutdown().await;
+        db::open(h)
+            .unwrap()
+            .execute_batch("DROP TRIGGER stop_delete")
+            .unwrap();
+        let restarted =
+            hexbot_core::server::App::new(h.into(), "127.0.0.1:0".parse().unwrap(), pi, None)
+                .unwrap();
+        assert_eq!(
+            open(&restarted.runtime, "alice").await["messages"][0]["text"],
+            "history of section-a"
+        );
+        assert_eq!(runtime_store::history(h, "hidden-job").unwrap().len(), 1);
+        restarted.shutdown().await;
+    }
+}
+
+#[tokio::test]
+async fn bot_delete_startup_distinguishes_retirement_from_committed_partial_cleanup() {
+    use hexbot_core::catalog;
+    for committed in [false, true] {
+        let home = setup();
+        let h = home.path();
+        let pi = fake_pi(h);
+        let app = hexbot_core::server::App::new(
+            h.into(),
+            "127.0.0.1:0".parse().unwrap(),
+            pi.clone(),
+            None,
+        )
+        .unwrap();
+        open(&app.runtime, "alice").await;
+        app.runtime
+            .ensure_hidden("alice", "owl", "hidden")
+            .await
+            .unwrap();
+        runtime_store::open(h).unwrap().execute("INSERT INTO native_sessions(stored_id,owner,bot,prompt,options) VALUES('delegate','alice','owl','',?)", [json!({"parent_session":"hidden"}).to_string()]).unwrap();
+        db::open(h).unwrap().execute_batch("INSERT INTO rooms(id,owner_id,name) VALUES('room','alice','Room'); INSERT INTO room_sessions VALUES('room','owl','room-history',NULL); INSERT INTO sections(id,bot,owner_id,title) VALUES('legacy-only','owl','alice','Legacy');").unwrap();
+        for id in ["section-a", "hidden", "delegate", "room-history"] {
+            runtime_store::append(
+                h,
+                id,
+                json!({"role":"user","text":format!("original {id}")}),
+            )
+            .unwrap();
+        }
+        let targets = catalog::prepare_bot_delete(h, "alice", "owl").unwrap();
+        for target in targets {
+            app.runtime
+                .retire_stored(
+                    target["owner"].as_str().unwrap(),
+                    target["id"].as_str().unwrap(),
+                )
+                .await
+                .unwrap();
+        }
+        if committed {
+            // Abort native cleanup after the real atomic catalog commit.
+            runtime_store::open(h).unwrap().execute_batch("CREATE TRIGGER stop_purge BEFORE DELETE ON native_messages WHEN OLD.session_id='hidden' BEGIN SELECT RAISE(ABORT,'controlled cleanup stop'); END;").unwrap();
+            let result = catalog::call(h, "alice", "hexbot.bots.delete", &json!({"name":"owl"}))
+                .unwrap()
+                .unwrap();
+            assert_eq!(result, json!({"deleted":true,"history_pending":true}));
+            assert!(catalog::bot(h, "alice", "owl").is_err());
+            assert!(runtime_store::session_dir(h, "hidden").is_err());
+            runtime_store::open(h)
+                .unwrap()
+                .execute_batch("DROP TRIGGER stop_purge")
+                .unwrap();
+        }
+        app.shutdown().await;
+        let restarted =
+            hexbot_core::server::App::new(h.into(), "127.0.0.1:0".parse().unwrap(), pi, None)
+                .unwrap();
+        for id in ["section-a", "hidden", "delegate", "room-history"] {
+            if committed {
+                assert!(
+                    runtime_store::history(h, id).unwrap().is_empty(),
+                    "orphaned {id}"
+                );
+                assert!(
+                    runtime_store::session_dir(h, id).is_err(),
+                    "resurrected {id}"
+                );
+            } else {
+                assert_eq!(
+                    runtime_store::history(h, id).unwrap()[0]["text"],
+                    format!("original {id}")
+                );
+                assert!(runtime_store::session_dir(h, id).is_ok());
+            }
+        }
+        if !committed {
+            assert!(catalog::section(h, "alice", "legacy-only").is_ok());
+        }
+        assert_eq!(
+            db::open(h)
+                .unwrap()
+                .query_row(
+                    "SELECT COUNT(*) FROM settings WHERE key LIKE 'pending_bot_delete:%'",
+                    [],
+                    |r| r.get::<_, i64>(0)
+                )
+                .unwrap(),
+            0
+        );
+        restarted.shutdown().await;
+    }
+}
+
+#[tokio::test]
+async fn never_opened_section_retirement_recovers_without_inventing_history() {
+    let home = setup();
+    runtime_store::mark_deleted(home.path(), "section-a").unwrap();
+    let app = hexbot_core::server::App::new(
+        home.path().into(),
+        "127.0.0.1:0".parse().unwrap(),
+        fake_pi(home.path()),
+        None,
+    )
+    .unwrap();
+    assert!(
+        open(&app.runtime, "alice").await["messages"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    app.shutdown().await;
+}
+
+#[tokio::test]
+async fn overlapping_bot_deletes_and_recreation_are_ordered_across_rebind() {
+    let home = setup();
+    let h = home.path();
+    let app =
+        hexbot_core::server::App::new(h.into(), "127.0.0.1:0".parse().unwrap(), fake_pi(h), None)
+            .unwrap();
+    open(&app.runtime, "alice").await;
+    let rebound = app.rebind("127.0.0.1:0".parse().unwrap()).unwrap();
+    let params = json!({"name":"owl"});
+    // Retirement awaits a real fixture process. Both later requests overlap
+    // that await and must keep their order across the two App instances.
+    let (first, second, created) = tokio::join!(
+        app.call("alice", "hexbot.bots.delete", &params),
+        rebound.call("alice", "hexbot.bots.delete", &params),
+        app.call("alice", "hexbot.bots.create", &params),
+    );
+    assert_eq!(first.unwrap(), json!({"deleted":true}));
+    assert_eq!(second.unwrap_err().code, 4205);
+    let created = created.unwrap();
+    let section = created["section"]["id"].as_str().unwrap();
+    fs::create_dir_all(h.join("profiles/owl/memories")).unwrap();
+    fs::write(h.join("profiles/owl/memories/MEMORY.md"), "new memory").unwrap();
+    runtime_store::finish_deletes(h).unwrap();
+    assert!(hexbot_core::catalog::section(h, "alice", section).is_ok());
+    assert_eq!(
+        fs::read_to_string(h.join("profiles/owl/memories/MEMORY.md")).unwrap(),
+        "new memory"
+    );
+    app.shutdown().await;
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn bot_delete_refuses_memory_symlinks_before_catalog_commit() {
+    let home = setup();
+    let h = home.path();
+    let app =
+        hexbot_core::server::App::new(h.into(), "127.0.0.1:0".parse().unwrap(), fake_pi(h), None)
+            .unwrap();
+    open(&app.runtime, "alice").await;
+    runtime_store::append(h, "section-a", json!({"role":"user","text":"Keep history"})).unwrap();
+    let outside = home.workspace().join("outside-memory");
+    fs::create_dir_all(home.workspace()).unwrap();
+    fs::write(&outside, "Do not touch").unwrap();
+    fs::create_dir_all(h.join("profiles/owl/memories")).unwrap();
+    std::os::unix::fs::symlink(&outside, h.join("profiles/owl/memories/MEMORY.md")).unwrap();
+    assert!(
+        app.call("alice", "hexbot.bots.delete", &json!({"name":"owl"}))
+            .await
+            .is_err()
+    );
+    assert!(hexbot_core::catalog::bot(h, "alice", "owl").is_ok());
+    assert_eq!(
+        runtime_store::history(h, "section-a").unwrap()[0]["text"],
+        "Keep history"
+    );
+    assert_eq!(fs::read_to_string(outside).unwrap(), "Do not touch");
+    app.shutdown().await;
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn bot_delete_removes_owned_session_links_without_touching_their_targets() {
+    let home = setup();
+    let h = home.path();
+    let app =
+        hexbot_core::server::App::new(h.into(), "127.0.0.1:0".parse().unwrap(), fake_pi(h), None)
+            .unwrap();
+    let outside = home.workspace();
+    fs::create_dir_all(&outside).unwrap();
+    fs::write(outside.join("keep.txt"), "unrelated data").unwrap();
+    runtime_store::open(h).unwrap().execute("INSERT INTO native_sessions(stored_id,owner,bot,prompt) VALUES('link-session','alice','owl','')", []).unwrap();
+    fs::create_dir_all(h.join("runtime/sessions")).unwrap();
+    let link = h.join("runtime/sessions/link-session");
+    std::os::unix::fs::symlink(&outside, &link).unwrap();
+    let result = app
+        .call("alice", "hexbot.bots.delete", &json!({"name":"owl"}))
+        .await
+        .unwrap();
+    assert_eq!(result["deleted"], true);
+    assert!(!result["history_pending"].as_bool().unwrap_or(false));
+    assert!(fs::symlink_metadata(link).is_err());
+    assert_eq!(
+        fs::read_to_string(outside.join("keep.txt")).unwrap(),
+        "unrelated data"
+    );
     app.shutdown().await;
 }

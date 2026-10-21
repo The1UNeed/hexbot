@@ -1132,6 +1132,8 @@ async fn daemon_info_reports_home_and_sandbox() {
     let info = request(&mut socket, "info", "hexbot.info", json!({})).await;
     assert_eq!(info["result"]["home"], json!(fixture.home));
     assert!(info["result"]["install_id"].is_string());
+    // Clients let this daemon pick a bot's one chat.
+    assert_eq!(info["result"]["one_chat"], true);
     let sandbox = &info["result"]["sandbox"];
     if cfg!(target_os = "macos") {
         assert_eq!(sandbox, "sandbox-exec");

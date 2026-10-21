@@ -16,7 +16,7 @@ The app and the daemon it talks to can be on different computers. When the daemo
 - **The daemon runs as a service**, because it was installed as [Headless](/docs/install/#headless) or with Settings, Network, "Start the daemon at login". The daemon downloads the new version, installs it, and restarts itself.
 - **Started by hand** or from a source checkout. Update Hexbot on that computer yourself.
 
-Bots stop while the daemon restarts; sections and memory stay. The client waits for the daemon to come back and reports a failure if it does not. A daemon only moves to a build made from newer source, on either track, so switching between Stable and Nightly never takes it back to an older daemon. An older or equally old build is refused.
+Bots stop while the daemon restarts; chats and memory stay. The client waits for the daemon to come back and reports a failure if it does not. A daemon only moves to a build made from newer source, on either track, so switching between Stable and Nightly never takes it back to an older daemon. An older or equally old build is refused.
 
 Native daemon and installer manifests require a signature from a trusted Hexbot
 release key. Their signed checksums pin the downloaded packages. If verification

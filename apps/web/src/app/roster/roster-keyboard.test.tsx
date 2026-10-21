@@ -1,17 +1,24 @@
-import { fireEvent, render, screen } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { vi } from 'vitest'
 
-import type { Bot, Room } from '../../lib/types'
+import type { Bot, Room, Section } from '../../lib/types'
 import { useBots } from '../../stores/bots'
 import { useMe } from '../../stores/me'
 import { useRooms } from '../../stores/rooms'
+import { useSections } from '../../stores/sections'
 import { useSettings } from '../../stores/settings'
 
 import { RosterColumn } from './index'
 
 const navigate = vi.hoisted(() => vi.fn())
 
+const router = vi.hoisted(() => ({
+  history: { location: {}, subscribe: () => () => undefined },
+  subscribe: () => () => undefined
+}))
+
 vi.mock('@tanstack/react-router', () => ({
+  useRouter: () => router,
   useNavigate: () => navigate,
   useParams: () => ({})
 }))
@@ -38,7 +45,7 @@ describe('RosterColumn keyboard', () => {
 
   it('opens the focused row from the search box', () => {
     render(<RosterColumn />)
-    const search = screen.getByLabelText('Search bots and sections')
+    const search = screen.getByLabelText('Search bots and rooms')
 
     fireEvent.keyDown(search, { key: 'ArrowDown' })
     fireEvent.keyDown(search, { key: 'Enter' })
@@ -115,5 +122,100 @@ describe('new room approvals on older daemons', () => {
     if (approval_mode === 'off') {
       expect(picker).toHaveTextContent('Bypass')
     }
+  })
+})
+
+describe('one chat per bot', () => {
+  const scout = {
+    avatar: null,
+    description: 'Finds things',
+    display_name: 'Scout',
+    name: 'scout',
+    sections_recent: [],
+    title: ''
+  } as unknown as Bot
+
+  const chat = {
+    archived_at: null,
+    bot: 'scout',
+    done_at: null,
+    id: 'chat',
+    message_count: 3,
+    peer_bot: null,
+    preview: 'Hi',
+    title: 'General'
+  } as unknown as Section
+
+  const named = vi.fn((bot: string) =>
+    Promise.resolve(bot === 'scout' ? ({ ...chat, id: 'named' } as Section) : null)
+  )
+
+  beforeEach(() => {
+    navigate.mockClear()
+    named.mockClear()
+    useRooms.setState({ byId: {}, order: [] })
+    useBots.setState({ byName: { scout }, loaded: true, order: ['scout'] })
+    useSections.setState({
+      byId: { chat },
+      chat: named,
+      idsByBot: { scout: ['chat'] },
+      open: () => new Promise(() => undefined)
+    })
+  })
+
+  it('lists a bot once, without its sections, and opens the chat the daemon names', async () => {
+    render(<RosterColumn />)
+
+    expect(screen.getAllByRole('button', { name: /Scout/ })).toHaveLength(1)
+    expect(screen.queryByText('General')).toBeNull()
+
+    // The one this window knows may be a chat recovery set aside.
+    fireEvent.click(screen.getByRole('button', { name: /Scout/ }))
+
+    await waitFor(() =>
+      expect(navigate).toHaveBeenCalledWith({
+        params: { bot: 'scout', section: 'named' },
+        to: '/b/$bot/s/$section'
+      })
+    )
+    expect(named).toHaveBeenCalledWith('scout', expect.any(Function))
+  })
+
+  it('marks a bot done only for its chat, not Check-ins or an archived section', async () => {
+    const finished = (extra: Partial<Section>) =>
+      ({ ...chat, done_at: 5, ...extra }) as unknown as Section
+
+    for (const [sections, done] of [
+      [[finished({ id: 'checkins', purpose: 'checkins' })], false],
+      [[finished({ id: 'old', archived_at: 4 })], false],
+      [[finished({})], true]
+    ] as const) {
+      useSections.setState({
+        byId: Object.fromEntries(sections.map(s => [s.id, s])),
+        idsByBot: { scout: sections.map(s => s.id) }
+      })
+      const view = render(<RosterColumn />)
+      expect(screen.queryByLabelText('Done') !== null).toBe(done)
+      view.unmount()
+    }
+  })
+
+  it('opens nothing when the user picks no section on an older daemon', async () => {
+    named.mockResolvedValueOnce(null)
+    render(<RosterColumn />)
+
+    fireEvent.click(screen.getByRole('button', { name: /Scout/ }))
+
+    await waitFor(() => expect(named).toHaveBeenCalledWith('scout', expect.any(Function)))
+    expect(navigate).not.toHaveBeenCalled()
+  })
+
+  it('offers a new bot and a new room, not a new section', async () => {
+    render(<RosterColumn />)
+    fireEvent.click(screen.getByRole('button', { name: 'New' }))
+
+    expect(await screen.findByRole('menuitem', { name: 'New bot' })).toBeVisible()
+    expect(screen.getByRole('menuitem', { name: 'New room' })).toBeVisible()
+    expect(screen.queryByRole('menuitem', { name: 'New section' })).toBeNull()
   })
 })

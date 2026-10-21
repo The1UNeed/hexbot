@@ -24,7 +24,7 @@ Hexbot checks limits before every bot turn. By default, a room allows eight bot 
 
 When a limit is reached, the room shows a notice and stays idle until you send another message. Use Stop to end a running chain sooner.
 
-Tool approvals appear in the room like approvals in a normal section. A room can use its own approval mode. Reloading restores open approval and question cards. A tool reads "Running" until it completes, including while it waits for approval.
+Tool approvals appear in the room like approvals in a bot's chat. A room can use its own approval mode. Reloading restores open approval and question cards. A tool reads "Running" until it completes, including while it waits for approval.
 
 ## Membership and history
 
@@ -34,13 +34,15 @@ A daemon belongs to one person, so you are the only person in its rooms. Rooms w
 
 Archiving hides a room but keeps its history. Deleting it removes the room and its history; each bot's own memory is left as it is.
 
+While a room is being deleted or one of its bots is being removed, new messages and bot starts are refused. Closing the app lets the daemon finish deletion. Bots may still join while its processes close. A message saved just before a member removal stays if the room survives. If its bot response could not start during removal, it waits for the next room message or a daemon restart.
+
 ## Bots working together
 
-A bot can ask another of your bots for help, outside any room. Each bot has a description that the others read to decide whom to ask. Write it in the bot's settings under Profile. If you leave it blank, Hexbot writes one from the bot's soul and keeps it out of sight. A bot learns who is on its team when a section starts, so a new bot or a changed description reaches the sections started after it.
+A bot can ask another of your bots for help, outside any room. Each bot has a description that the others read to decide whom to ask. Write it in the bot's settings under Profile. If you leave it blank, Hexbot writes one from the bot's soul and keeps it out of sight. A bot learns who is on its team when its chat starts, and again when the chat summarises older messages, so a new bot or a changed description reaches it then.
 
 A bot asked for help does the work itself. It and any work it delegates can't send the request back to a bot that is waiting on its answer.
 
-Each exchange is private between the two bots. While a bot is asking, the two bots' faces turn toward each other under its reply, and the other bot's answer shows as it comes in. Afterwards the row reads, for example, "Writer helped". Select it to read their conversation in a side panel. These conversations stay out of your section lists, but both bots learn from them: dreaming folds them into memory like any other conversation.
+Each exchange is private between the two bots. While a bot is asking, the two bots' faces turn toward each other under its reply, and the other bot's answer shows as it comes in. Afterwards the row reads, for example, "Writer helped". Select it to read their conversation in a side panel. These conversations stay out of the sidebar, but both bots learn from them: dreaming folds them into memory like any other conversation.
 
 Bots ask each other only when Message other bots is on, under Tools in the bot's settings. Hexbot caps a chain at eight messages per originating turn, and daily bot budgets still apply. In a room, only the person who created the room can open these conversations.
 

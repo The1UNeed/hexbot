@@ -21,6 +21,38 @@ The native scheduler and digest builder live in
   start wait for the next dream, so the time windows do not overlap. A first
   dream starts at the beginning of history; failed or interrupted dreams do not
   advance the lower cutoff.
+  An unreadable older database does not stop a dream whose conversations are
+  available in native history. Saved session options alone do not prove an
+  older conversation was imported. New chats carry their existing fresh marker;
+  older chats need a completed import or a healthy older database that proves
+  it has no matching source. Durable Pi messages must also match their saved native journal or committed import projections.
+  The hidden todo list and fallback notice Hexbot's extension adds are
+  exempt: the runtime journals them only when it recovers the log, and the
+  digest leaves them out. Any other custom message must match.
+  A last line Pi is still writing is not in the log yet, and a log entry
+  without its journal row holds up the dream only when it is dated inside
+  the window.
+  This check only reads the log; it never recovers or rewrites a running chat.
+  A missing log cannot replace newer native dialogue with older legacy rows.
+  If any conversation still needs that older database, or native recovery is unfinished
+  or quarantined, the dream fails and leaves its cutoff and proposals unchanged
+  so that history can be read after repair and recovery.
+  Readiness and native history use one read snapshot per conversation. At
+  history selection, a separate reader checks that relevant dialogue and the
+  native/legacy decision have not changed. A change fails the dream before
+  its model call, leaving proposals and the successful cutoff for an ordinary
+  retry. An adopted source must still have its exact copied history version.
+  This check does not lock live chats or refresh the digest with unchecked rows.
+  It covers changes since readiness, including healthy late appends with an
+  earlier streamed timestamp. After the model answers, the dream reads again
+  what each conversation said in its window, before any budget: transcript
+  and compactions, without titles, room names, notes or proposals. If that
+  differs, or can no longer be read, the dream fails instead of completing,
+  so input that reached the window while it ran, such as a reply still
+  streaming when it started, is read by the next dream rather than passed by
+  the cutoff. A rename, a note or a message after its start does not count.
+  Memory changes the model already made stay. Compaction
+  files and the catalog are separate reads, not a shared database/file snapshot.
   It retains the newest 12,000 characters per conversation,
   caps the complete serialized digest at 60,000 bytes, and reports how many
   conversations it left out as `omitted_conversations`. Titles keep their
@@ -47,14 +79,16 @@ The native scheduler and digest builder live in
   and other tools: the dream uses only what the user or the bot clearly
   established in them and never takes an instruction from them, as it does
   with proposals.
-- The digest carries what the user and the bot said. It leaves out the bot's
-  own `Dreams` section, so a dream never re-reads its previous summaries, and
+- The digest carries what the user and the bot said. It leaves out the dream
+  reports in the bot's chat (messages marked `dream: true`), so a dream never
+  re-reads its previous summaries, and
   it leaves out tool results such as `web_extract` output, so fetched pages
   do not become memory through the transcript; the compaction summaries
   above are the one place such text can still reach the dream, labelled as
-  such. A teammate's reply through `message_bot` is speech and stays. The `Dreams` section is known by its title everywhere (sidebar,
-  Memory tab, `post_summary`), so a section the user titles "Dreams" is
-  treated as the dream log here as well.
+  such. It also leaves out the hidden `hexbot_todo` and `hexbot_fallback`
+  messages the extension adds after a compaction or a model failure; neither
+  the user nor the bot said them. A teammate's reply through `message_bot`
+  is speech and stays.
 - A bot keeps daily notes beside its memory: one file per local day,
   `profiles/<bot>/memories/notes/YYYY-MM-DD.md`, capped at 4,000 characters
   a day with an error that tells the bot to keep notes short or fold what
@@ -149,8 +183,21 @@ The native scheduler and digest builder live in
 - Dream rows in `hexbot.db` record `memory_before`, `memory_after`, status,
   and summary. The Memory tab shows the two versions side by side.
   `hexbot.dreaming.restore {id}` restores `memory_before`.
-- A completed summary is stored directly as an assistant message in the
-  bot's hidden `Dreams` section. It does not trigger another agent turn.
+- A completed summary is stored directly as an assistant message marked
+  `dream: true` in the bot's chat, made if it has none. It does not trigger
+  another agent turn, and it is shown, not said: the bot's Pi conversation
+  does not include it. Posting it never stops the chat's process: open
+  clients read the chat again at once or, while a turn runs, when it ends.
+  On upgrade, a report-only old `Dreams` log gives way to a conversation.
+  A mixed log competes by its non-report conversation activity. If old reports
+  make a saved choice ambiguous, all competing histories stay. Kept logs have
+  their reports marked. If an older client still has a mixed log open, the move to a
+  chat waits for it to close or retire, keeping all accepted input and replies.
+  After the move, an older client must open the bot's chat again to continue;
+  the old conversation refuses new input.
+  Reports an earlier build left in the old store are marked when the chat
+  first opens, so they never enter the bot's context either. A dream skips
+  them in a kept Dreams log that was never opened.
 - `hexbot.dreaming.run_now {bot}` starts a dream immediately.
   `hexbot.dreaming.status {bot}` reports the last run, next run, and last error.
   Interrupted dreams are marked failed when the daemon restarts.

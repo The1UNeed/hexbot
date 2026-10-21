@@ -417,6 +417,7 @@ export class ConnectionSupervisor {
     this.client?.close()
     this.client = null
     setActiveRpc(null)
+    connectionActions().setDaemon(null)
   }
 
   private async attemptConnect(): Promise<void> {
@@ -537,10 +538,36 @@ export class ConnectionSupervisor {
 
   private async hydrate(): Promise<void> {
     const store = connectionActions()
+    const { target, epoch } = store
+    const client = this.client
+    const generation = this.generation
+
+    const current = () =>
+      client === this.client &&
+      generation === this.generation &&
+      target === connectionActions().target &&
+      epoch === connectionActions().epoch
+
+    store.setDaemon(null)
+
+    // Capabilities and install identity do not depend on settings, rooms, or
+    // profile hydration. Publish them even if another RPC fails first.
+    const info = (client?.call<DaemonInfo>('hexbot.info') ?? Promise.resolve(null)).then(info => {
+      if (!current()) {
+        return
+      }
+
+      store.setDaemon(info)
+      const last = uiActions().lastSection
+
+      if (last?.daemon && info?.install_id && last.daemon !== info.install_id) {
+        uiActions().setLastSection(null)
+      }
+    })
 
     try {
-      const [info] = await Promise.all([
-        this.client?.call<DaemonInfo>('hexbot.info') ?? Promise.resolve(null),
+      await Promise.all([
+        info,
         settingsActions().refresh(),
         botsActions().refresh(),
         useRooms.getState().refresh(),
@@ -548,19 +575,12 @@ export class ConnectionSupervisor {
         // An open Check-ins tab missed the events while disconnected.
         useCheckins.getState().loaded ? useCheckins.getState().refresh() : Promise.resolve()
       ])
-
-      store.setDaemon(info)
-
-      // A section remembered from another daemon must not be reopened here.
-      const last = uiActions().lastSection
-
-      if (last?.daemon && info?.install_id && last.daemon !== info.install_id) {
-        uiActions().setLastSection(null)
-      }
     } catch (error) {
-      store.setStatus('connected', {
-        error: error instanceof Error ? error.message : String(error)
-      })
+      if (current()) {
+        store.setStatus('connected', {
+          error: error instanceof Error ? error.message : String(error)
+        })
+      }
     }
   }
 
@@ -570,6 +590,7 @@ export class ConnectionSupervisor {
     }
 
     setActiveRpc(null)
+    connectionActions().setDaemon(null)
     this.detach?.()
     this.detach = null
     this.client = null

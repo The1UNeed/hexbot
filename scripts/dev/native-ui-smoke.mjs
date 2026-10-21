@@ -128,7 +128,6 @@ try {
     await writeFile(path.join(home, `profiles/${name}/config.yaml`), `model:\n  provider: lmstudio\n  default: test-model\n  api_key: smoke-key\n  base_url: ${modelBase}\ntools:\n  enabled_toolsets: []\napproval_mode: off\n`)
   }
   const section = bots.owl.section.id
-  await rpc('hexbot.sections.rename', { id: section, title: 'Browser smoke conversation' })
   const room = (await rpc('hexbot.rooms.create', { name: 'Browser smoke room', members: ['owl', 'fox'], main_bot: 'owl' })).room.id
   if (desktop) {
     desktopHome = await mkdtemp(path.join(tmpdir(), `hexbot-smoke-${edition}-home-`))
@@ -229,14 +228,13 @@ try {
   await page.getByRole('button', { name: 'Save', exact: true }).click()
   await expect.poll(async () => (await rpc('hexbot.memory.user.get')).text).toBe('I prefer jasmine tea.')
 
-  await visit('/b/owl/settings/sections')
-  await page.getByRole('button', { name: 'Archive Browser smoke conversation', exact: true }).click()
-  await expect(page.getByRole('button', { name: 'Unarchive Browser smoke conversation', exact: true })).toBeVisible()
-  await page.getByRole('button', { name: 'Unarchive Browser smoke conversation', exact: true }).click()
-  await expect(page.getByRole('button', { name: 'Archive Browser smoke conversation', exact: true })).toBeVisible()
-  await visit(`/b/owl/s/${section}`)
+  // A bot has one chat: asking for another returns it, and the roster row opens it with its history.
+  assert.equal((await rpc('hexbot.sections.create', { bot: 'owl' })).section.id, section)
+  await visit(`/r/${room}`)
+  await page.locator('[data-roster-id="bot:owl"]').click()
+  await expect(page).toHaveURL(new RegExp(`/b/owl/s/${section}$`))
   await expect(page.getByTestId('bot-message').filter({ hasText: 'Native browser reply.' })).toBeVisible()
-  await page.screenshot({ path: path.join(artifacts, 'restored.png') })
+  await page.screenshot({ path: path.join(artifacts, 'reopened.png') })
   if (!desktop) {
     // Invalid codes eventually show the distinct rate-limit notice on the real page.
     // A signed-in browser never redeems, so this runs in a context without a session.
@@ -249,7 +247,7 @@ try {
   }
   assert.deepEqual(errors, [], 'No uncaught browser or local model errors')
   assert(requests.length >= 4, 'The real Pi process must call the local streaming model')
-  console.log(JSON.stringify({ passed: true, client: desktop ? 'electron' : 'browser', edition: desktop ? edition : undefined, scenarios: ['chat', 'multi-agent room and @user', 'per-bot memory', 'soul editing', 'About you', 'archive/unarchive and history'], modelRequests: requests.length, artifacts }, null, 2))
+  console.log(JSON.stringify({ passed: true, client: desktop ? 'electron' : 'browser', edition: desktop ? edition : undefined, scenarios: ['chat', 'multi-agent room and @user', 'per-bot memory', 'soul editing', 'About you', 'one chat per bot and history'], modelRequests: requests.length, artifacts }, null, 2))
 } catch (error) {
   if (page) {
     await page.screenshot({ path: path.join(artifacts, 'failure.png') }).catch(() => {})

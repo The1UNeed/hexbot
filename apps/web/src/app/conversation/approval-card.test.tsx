@@ -19,7 +19,7 @@ describe('approval card', () => {
     render(<ApprovalCard approval={request({ choices: ['once', 'deny'] })} />)
     expect(screen.getByRole('button', { name: 'Approve' })).toBeVisible()
     expect(screen.getByRole('button', { name: 'Deny' })).toBeVisible()
-    expect(screen.queryByRole('button', { name: 'Allow in this section' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Allow for now' })).toBeNull()
   })
 
   it('labels an Always allow choice from an older daemon', () => {

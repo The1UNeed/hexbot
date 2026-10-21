@@ -21,10 +21,10 @@ export function formatTokens(tokens: number): string {
   return `${short(tokens / 1_000_000)}M`
 }
 
-/** This close to the compaction point the meter turns warning and asks for a new section. */
+/** This close to the compaction point the meter turns warning and says summarising is near. */
 const HIGH = 0.85
 
-/** The plain numbers behind the pill, in glossary words: context, section, summarised. */
+/** The plain numbers behind the pill, in glossary words: context, summarised. */
 function describe(amount: string, compactAt: null | number, compacting: boolean, high: boolean) {
   if (compacting) {
     return `${amount} Older messages are being summarised now.`
@@ -40,9 +40,7 @@ function describe(amount: string, compactAt: null | number, compacting: boolean,
 
   const point = `${amount} Older messages are summarised above ${formatTokens(compactAt)} tokens.`
 
-  return high
-    ? `${point} Start a new section soon. Long sections make the bot slower and less accurate.`
-    : point
+  return high ? `${point} Summarising starts soon.` : point
 }
 
 export interface MeterReading {

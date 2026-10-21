@@ -1,15 +1,16 @@
-import { useNavigate, useParams } from '@tanstack/react-router'
+import { JsonRpcGatewayError } from '@hermes/shared'
+import { useNavigate, useParams, useRouter } from '@tanstack/react-router'
+import { ArrowDown, Copy, File, PanelRight, RotateCcw, X } from 'lucide-react'
 import {
-  ArrowDown,
-  Copy,
-  File,
-  MoreHorizontal,
-  PanelRight,
-  RotateCcw,
-  Trash2,
-  X
-} from 'lucide-react'
-import { type CSSProperties, isValidElement, useEffect, useMemo, useRef, useState } from 'react'
+  type CSSProperties,
+  isValidElement,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore
+} from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 
@@ -17,14 +18,19 @@ import { Avatar, useFaceColor } from '../../components/ui/avatar'
 import { Button } from '../../components/ui/button'
 import { Chip } from '../../components/ui/chip'
 import { Dialog } from '../../components/ui/dialog'
-import { Input } from '../../components/ui/input'
-import { Menu } from '../../components/ui/menu'
 import { StatusDot } from '../../components/ui/status-dot'
-import { Title } from '../../components/ui/title'
-import { approvalRespond, attachFile, promptSubmit, sessionInterrupt } from '../../lib/api'
+import {
+  approvalRespond,
+  attachFile,
+  newInputId,
+  promptSubmit,
+  sectionsList,
+  sessionInterrupt
+} from '../../lib/api'
 import { botFace } from '../../lib/avatar-builder'
 import { getBridge } from '../../lib/bridge'
 import { cn } from '../../lib/cn'
+import { NotConnectedError } from '../../lib/rpc'
 import { toMillis } from '../../lib/time'
 import type {
   ApprovalChoice,
@@ -35,16 +41,15 @@ import type {
   ClarifyRequest
 } from '../../lib/types'
 import { useBot, useBots } from '../../stores/bots'
+import { useConnection } from '../../stores/connection'
 import { connectorsActions } from '../../stores/connectors'
 import { draftsActions } from '../../stores/drafts'
 import {
-  isThread,
   liveSectionsOf,
   sectionsActions,
   sectionStatusOf,
   useLiveSessionId,
-  useSection,
-  useSections
+  useSection
 } from '../../stores/sections'
 import {
   type Transcript,
@@ -53,7 +58,7 @@ import {
   useTranscript,
   useTranscripts
 } from '../../stores/transcripts'
-import { uiActions, useUi } from '../../stores/ui'
+import { useUi } from '../../stores/ui'
 
 import { AskingRow } from './asking-row'
 import { ClarifyCard } from './clarify-card'
@@ -360,7 +365,7 @@ export function StoppedCard({
   message: TranscriptMessage
   name: string
   onFix?: (connector: string) => void
-  onRetry: () => void
+  onRetry?: () => void
 }) {
   const connector = message.errorDetail?.connector ?? null
 
@@ -391,9 +396,11 @@ export function StoppedCard({
             Fix {connectorName}
           </Button>
         ) : null}
-        <Button onClick={onRetry} size="sm">
-          Retry
-        </Button>
+        {onRetry ? (
+          <Button onClick={onRetry} size="sm">
+            Retry
+          </Button>
+        ) : null}
       </div>
     </div>
   )
@@ -413,7 +420,7 @@ export function MessageRow({
   message: TranscriptMessage
   onFix?: (connector: string) => void
   onImage: (source: string) => void
-  onRetry: () => void
+  onRetry?: () => void
   /** Arrived while this chat was open: each of its bubbles springs in as it appears. */
   fresh?: boolean
   /** Follows a bubble from the same side: it sits 4 px under it, one stack. */
@@ -461,9 +468,10 @@ export function MessageRow({
     onClick: () => void navigator.clipboard.writeText(bubbles.join('\n\n'))
   }
 
-  const actions = assistant
-    ? [copy, { icon: <RotateCcw size={14} />, label: 'Retry', onClick: onRetry }]
-    : [copy]
+  const actions =
+    assistant && onRetry
+      ? [copy, { icon: <RotateCcw size={14} />, label: 'Retry', onClick: onRetry }]
+      : [copy]
 
   const last = bubbles.length - 1
   const name = bot?.display_name ?? 'Bot'
@@ -596,13 +604,7 @@ export function CheckingRow({ bot, transcript }: { bot?: Bot; transcript?: Trans
       <LiveStatus
         computer
         face={
-          <Avatar
-            className="hex-think"
-            {...botFace(bot)}
-            mood="working"
-            name={name}
-            size="sm"
-          />
+          <Avatar className="hex-think" {...botFace(bot)} mood="working" name={name} size="sm" />
         }
         message={{ ...message, checking }}
         name={name}
@@ -628,14 +630,14 @@ const APPROVAL_BUTTONS: Record<ApprovalChoice, string> = {
   always: 'Always allow',
   deny: 'Deny',
   once: 'Approve',
-  session: 'Allow in this section'
+  session: 'Allow for now'
 }
 
 const APPROVAL_CHOICES: Record<ApprovalChoice, string> = {
   always: 'Always allowed',
   deny: 'Denied',
   once: 'Approved',
-  session: 'Allowed in this section'
+  session: 'Allowed for now'
 }
 
 export function ApprovalCard({ approval }: { approval: ApprovalRequest }) {
@@ -689,30 +691,178 @@ export function suggestedPrompts(description: string, name = 'this bot'): string
   ]
 }
 
-/**
- * Submit a prompt, and if the daemon no longer holds the live session (it was
- * reaped after a reload or a daemon restart), reopen the section once and
- * resend on the fresh session. Any other failure lands in the transcript as
- * an error row instead of an unhandled rejection.
- */
-async function submitOrReopen(sessionId: string, sectionId: string | null, text: string) {
+/** Reopen and resend once only after an explicit rejection before acceptance. */
+async function submitOrReopen(
+  sessionId: string,
+  sectionId: string | null,
+  text: string,
+  retry: { current: () => boolean; files: File[]; pending: TranscriptMessage; uploads: string[] }
+): Promise<boolean> {
+  const { current, files, uploads } = retry
+  let pending = retry.pending
+  const identified = useConnection.getState().daemon?.transcript_identity === true
+
+  if (!current()) {
+    return false
+  }
+
+  const { target, epoch } = useConnection.getState()
+  let active = sessionId
+  let staged: string[] | null = uploads
+  let failure: unknown
+
+  const begin = () => {
+    if (identified) {
+      transcriptActions().inputSubmitting(active, pending.id, staged ?? [])
+    }
+  }
+
+  const accepted = () => {
+    if (identified) {
+      transcriptActions().inputSettled(
+        active,
+        pending.submission?.row ?? pending.id,
+        pending.inputId,
+        'accepted',
+        []
+      )
+    }
+  }
+
+  begin()
+
   try {
-    await promptSubmit(sessionId, text)
+    await promptSubmit(
+      sessionId,
+      text,
+      identified ? { input_id: pending.inputId, attachments: uploads } : {}
+    )
+
+    accepted()
+
+    return current()
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error)
+    failure = error
 
-    if (sectionId && /session not found/i.test(message)) {
-      const reopened = await sectionsActions().open(sectionId)
+    if (!current()) {
+      return false
+    }
 
-      if (reopened.liveSessionId && reopened.liveSessionId !== sessionId) {
-        transcriptActions().appendUserMessage(reopened.liveSessionId, text)
-        await promptSubmit(reopened.liveSessionId, text)
+    // Network failures and provider errors leave acceptance unknown. Only
+    // the gateway's missing-live-session rejection is safe to resend.
+    if (
+      sectionId &&
+      error instanceof JsonRpcGatewayError &&
+      error.code === 4001 &&
+      /^session not found$/i.test(error.message)
+    ) {
+      staged = null
 
-        return
+      try {
+        const reopened = await sectionsActions().open(sectionId)
+
+        if (!current()) {
+          return false
+        }
+
+        if (reopened.liveSessionId) {
+          active = reopened.liveSessionId
+
+          // open keeps an optimistic row ahead of history on a reused ID.
+          // A replacement ID, or a replaced snapshot, needs that row once.
+          if (
+            pending &&
+            !useTranscripts
+              .getState()
+              .bySession[active]?.messages.some(message => message.id === pending.id)
+          ) {
+            pending = transcriptActions().appendUserMessage(active, text, pending.attachments)
+          }
+
+          // Closing a process can discard its staged uploads. Send the
+          // original bytes again and name only these uploads on the retry.
+          begin()
+          const attachments: string[] = []
+
+          for (const file of files) {
+            const upload = await attachFile(active, file)
+
+            if (!current()) {
+              return false
+            }
+
+            if (typeof upload.id !== 'string') {
+              throw new Error('The daemon did not return an attachment ID. Attach the file again.')
+            }
+
+            attachments.push(upload.id)
+          }
+
+          if (identified) {
+            const inputId = newInputId()
+            transcriptActions().setInputId(active, pending.id, inputId)
+            pending = { ...pending, inputId }
+          }
+
+          staged = attachments
+          begin()
+          await promptSubmit(active, text, {
+            attachments,
+            ...(identified && { input_id: pending.inputId })
+          })
+
+          accepted()
+          failure = undefined
+
+          return current()
+        }
+      } catch (retryError) {
+        failure = retryError
       }
     }
 
-    transcriptActions().errorEvent(sessionId, message)
+    return false
+  } finally {
+    if (
+      failure !== undefined &&
+      target === useConnection.getState().target &&
+      epoch === useConnection.getState().epoch
+    ) {
+      const message = failure instanceof Error ? failure.message : String(failure)
+
+      if (identified) {
+        // 5201 is Pi's refusal. 5200 can be a bot lost before it answered or a
+        // title-save error after acceptance. Transport failures and arbitrary
+        // error objects also prove nothing about whether Pi took input.
+        const rejected =
+          failure instanceof JsonRpcGatewayError &&
+          [4002, 4200, 4202, 5201].includes(failure.code ?? 0)
+
+        const unavailable =
+          staged === null ||
+          (failure instanceof JsonRpcGatewayError && [4001, 4204].includes(failure.code ?? 0))
+
+        const status = unavailable ? 'unavailable' : rejected ? 'rejected' : 'unknown'
+
+        const detail =
+          status === 'unknown'
+            ? `${message}. Could not confirm acceptance. Check the chat before sending again.`
+            : status === 'unavailable'
+              ? `${message}. Attach the files again before sending.`
+              : message
+
+        transcriptActions().inputSettled(
+          active,
+          pending.submission?.row ?? pending.id,
+          pending.inputId,
+          status,
+          status === 'rejected' ? staged : null,
+          current() ? detail : undefined
+        )
+      } else if (current()) {
+        transcriptActions().errorEvent(active, message)
+      }
+    }
   }
 }
 
@@ -749,7 +899,7 @@ function Composer({
       ...current,
       ...incoming.map(file => ({
         file,
-        id: `${file.name}-${file.size}-${crypto.randomUUID()}`,
+        id: `${file.name}-${file.size}-${newInputId()}`,
         preview: file.type.startsWith('image/') ? URL.createObjectURL(file) : undefined
       }))
     ])
@@ -761,14 +911,40 @@ function Composer({
 
     setSending(true)
 
+    // Capture the sender before uploading: a route or daemon can change
+    // while a file is on its way in, before prompt submission even starts.
+    const { target, epoch, daemon } = useConnection.getState()
+    const source = picker.current
+
+    const current = () =>
+      target === useConnection.getState().target &&
+      epoch === useConnection.getState().epoch &&
+      daemon?.install_id === useConnection.getState().daemon?.install_id &&
+      daemon?.one_chat === useConnection.getState().daemon?.one_chat &&
+      daemon?.transcript_identity === useConnection.getState().daemon?.transcript_identity &&
+      Boolean(source?.isConnected)
+
     try {
+      const identified = useConnection.getState().daemon?.transcript_identity === true
+      const uploads: string[] = []
+
       for (const item of files) {
-        await attachFile(sessionId, item.file)
+        const uploaded = await attachFile(sessionId, item.file)
+
+        if (!current()) {
+          return
+        }
+
+        if (identified && typeof uploaded.id !== 'string') {
+          throw new Error('The daemon did not return an attachment ID. Attach the file again.')
+        }
+
+        uploads.push(typeof uploaded.id === 'string' ? uploaded.id : item.id)
       }
 
-      const attachments: Attachment[] = files.map(item => ({
+      const attachments: Attachment[] = files.map((item, index) => ({
         dataUrl: item.preview,
-        id: item.id,
+        id: uploads[index] ?? item.id,
         kind: item.file.type.startsWith('image/')
           ? 'image'
           : item.file.type === 'application/pdf'
@@ -779,23 +955,42 @@ function Composer({
         size: item.file.size
       }))
 
-      transcriptActions().appendUserMessage(sessionId, text.trim(), attachments)
+      const pending = transcriptActions().appendUserMessage(sessionId, text.trim(), attachments)
 
       if (sectionId) {
         sectionsActions().markTouched(sectionId, text)
       }
 
-      await submitOrReopen(sessionId, sectionId, text.trim())
+      if (
+        !(await submitOrReopen(sessionId, sectionId, text.trim(), {
+          current,
+          files: files.map(item => item.file),
+          pending,
+          uploads
+        }))
+      ) {
+        return
+      }
+
       setText('')
       setFiles([])
 
       if (sectionId) {
         draftsActions().clear(sectionId)
       }
+    } catch (error) {
+      if (current()) {
+        transcriptActions().errorEvent(
+          sessionId,
+          `${error instanceof Error ? error.message : String(error)}. Attach the files again before sending.`,
+          undefined,
+          null
+        )
+      }
     } finally {
       setSending(false)
 
-      if (sectionId) {
+      if (sectionId && current()) {
         void sectionsActions().settleTitle(sectionId)
       }
     }
@@ -942,12 +1137,82 @@ function useHeight<T extends HTMLElement>(): [React.RefObject<T | null>, number]
 function BotConversation() {
   const params = useParams({ strict: false }) as { bot?: string; section?: string }
   const navigate = useNavigate()
+  const router = useRouter()
+  const location = useSyncExternalStore(router.history.subscribe, () => router.history.location)
+  const target = useConnection(state => state.target)
+  const epoch = useConnection(state => state.epoch)
+  const capability = useConnection(state => state.daemon?.one_chat)
+  const installation = useConnection(state => state.daemon?.install_id)
+  // A reconnect checks the chat again even when the daemon info stays the same.
+  const connected = useConnection(state => state.status === 'connected')
+  const identified = useConnection(state => state.daemon?.transcript_identity === true)
+  const [openAttempt, setOpenAttempt] = useState(0)
+
+  // Validation belongs to this route entry, even if the same URL or live ID is reused.
+  const entry = useMemo(
+    () => ({
+      bot: params.bot,
+      section: params.section,
+      target,
+      epoch,
+      capability,
+      installation,
+      connected,
+      location,
+      openAttempt
+    }),
+    [
+      params.bot,
+      params.section,
+      target,
+      epoch,
+      capability,
+      installation,
+      connected,
+      location,
+      openAttempt
+    ]
+  )
+
+  const [resolved, setResolved] = useState<{ entry: typeof entry; peer: boolean } | null>(null)
   const bot = useBot(params.bot ?? null)
   const botsLoaded = useBots(state => state.loaded)
   const section = useSection(params.section ?? null)
-  const liveId = useLiveSessionId(params.section ?? null)
-  const transcript = useTranscript(liveId)
-  const [editing, setEditing] = useState(false)
+  const loadedLiveId = useLiveSessionId(params.section ?? null)
+  const ready = resolved?.entry === entry
+  const ownerInput = ready && !resolved.peer
+  const liveId = ready ? loadedLiveId : null
+
+  // While the owner chat validated here is checked again (a reconnect, a
+  // daemon restart, the same URL), its composer stays, disabled, so staged
+  // files survive. Another daemon, bot, chat or a peer thread starts without one.
+  const composer = ready
+    ? !resolved.peer
+    : Boolean(
+        resolved &&
+        !resolved.peer &&
+        resolved.entry.target === target &&
+        resolved.entry.bot === params.bot &&
+        resolved.entry.section === params.section &&
+        (!installation ||
+          !resolved.entry.installation ||
+          resolved.entry.installation === installation)
+      )
+
+  // So does what it showed, with the reading position, until the check ends;
+  // and a report reload or turn end, which clear the live ID, keep it too.
+  const kept = !ready && composer
+  const [shownLive, setShownLive] = useState({ section: params.section, live: loadedLiveId })
+
+  if (loadedLiveId && (shownLive.section !== params.section || shownLive.live !== loadedLiveId)) {
+    setShownLive({ section: params.section, live: loadedLiveId })
+  }
+
+  const lastLive = shownLive.section === params.section ? shownLive.live : null
+
+  const transcript = useTranscript(
+    liveId ?? (ready || kept ? lastLive : null) ?? (ready ? section?.live_session_id : null) ?? null
+  )
 
   // Connector tools are named from the bot's catalog ("Connecting to Project tools").
   useEffect(() => {
@@ -955,7 +1220,6 @@ function BotConversation() {
       void connectorsActions().load(params.bot)
     }
   }, [params.bot])
-  const [title, setTitle] = useState('')
   const [lightbox, setLightbox] = useState<string | null>(null)
   const [visible, setVisible] = useState(60)
   const [atBottom, setAtBottom] = useState(true)
@@ -988,7 +1252,7 @@ function BotConversation() {
   const approvals = useMemo(() => transcript?.approvals ?? [], [transcript?.approvals])
   const clarifies = useMemo(() => transcript?.clarifies ?? [], [transcript?.clarifies])
   const streaming = Boolean(transcript?.streamingMessageId)
-  const [unavailable, setUnavailable] = useState<string | null>(null)
+  const [openFailure, setOpenFailure] = useState<{ section: string; message: string } | null>(null)
   const stoppedHere = stoppedCardFor(bot, params.section ?? null, messages)
 
   const status = sectionStatusOf(
@@ -1003,19 +1267,145 @@ function BotConversation() {
       ? (bot?.status_detail?.text ?? messages.findLast(message => message.error)?.error)
       : null
 
-  useEffect(() => {
-    if (params.section && !liveId && unavailable !== params.section) {
-      sectionsActions()
-        .open(params.section)
-        .catch(() => {
-          // The section does not exist on this daemon: show that instead of
-          // bouncing through `/`, which would remember it and come back here.
-          setUnavailable(params.section ?? null)
-          uiActions().setLastSection(null)
-        })
+  useLayoutEffect(() => {
+    let cancelled = false
+
+    const current = () =>
+      !cancelled &&
+      router.history.location === location &&
+      target === useConnection.getState().target &&
+      epoch === useConnection.getState().epoch &&
+      capability === useConnection.getState().daemon?.one_chat &&
+      installation === useConnection.getState().daemon?.install_id
+
+    const cancel = () => {
+      cancelled = true
+      const choice = sectionsActions().choosing
+
+      if (choice && !choice.current()) {
+        choice.pick(null)
+      }
     }
-  }, [liveId, params.section, unavailable])
-  useEffect(() => setTitle(section?.title ?? ''), [section?.title])
+
+    const offHistory = router.history.subscribe(cancel)
+    const offNavigate = router.subscribe('onBeforeNavigate', cancel)
+    setOpenFailure(null)
+    const botName = params.bot
+    const sectionId = params.section
+
+    const destination = router.matchRoutes(location.pathname).at(-1)?.params as
+      { bot?: string; section?: string } | undefined
+
+    if (
+      botName &&
+      sectionId &&
+      destination?.bot === botName &&
+      destination?.section === sectionId
+    ) {
+      void (async () => {
+        // A bookmark can name an owner chat that survived a conservative upgrade,
+        // or an explicit teammate thread. Missing metadata must be read before
+        // choosing either policy; a failed read is never evidence of deletion.
+        const row =
+          section ??
+          (
+            await sectionsList({ bot: botName, include_archived: true, include_threads: true })
+          ).sections.find(s => s.id === sectionId)
+
+        if (!current()) {
+          return
+        }
+
+        if (row && row.bot !== botName) {
+          throw new Error('This conversation belongs to another bot.')
+        }
+
+        // A teammate thread or a section with its own purpose, such as the
+        // primary bot's Check-ins, opens as itself; anything else is the chat.
+        const chat =
+          row?.peer_bot || row?.purpose ? row : await sectionsActions().chat(botName, current)
+
+        if (!current()) {
+          return
+        }
+
+        if (!chat) {
+          setOpenFailure({ section: sectionId, message: 'Choose a chat to continue.' })
+
+          return
+        }
+
+        if (chat.id !== sectionId) {
+          void navigate({
+            to: '/b/$bot/s/$section',
+            params: { bot: chat.bot, section: chat.id },
+            replace: true
+          })
+
+          return
+        }
+
+        setResolved({ entry, peer: Boolean(chat.peer_bot) })
+      })().catch(error => {
+        // Not connected: the chat is checked again when a daemon answers.
+        // Connected without daemon info, Retry is the way forward.
+        const connection = useConnection.getState()
+
+        if (
+          error instanceof NotConnectedError &&
+          !connection.daemon &&
+          connection.status !== 'connected'
+        ) {
+          return
+        }
+
+        if (current()) {
+          setOpenFailure({
+            section: sectionId,
+            message: error instanceof Error ? error.message : String(error)
+          })
+        }
+      })
+    }
+
+    return () => {
+      cancel()
+      offHistory()
+      offNavigate()
+    }
+    // Catalog/history updates do not reselect a chat. Retry and a new route entry do.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [entry, router])
+
+  useEffect(() => {
+    if (!ready || !params.section || liveId) {
+      return
+    }
+
+    let cancelled = false
+
+    const current = () =>
+      !cancelled &&
+      router.history.location === location &&
+      target === useConnection.getState().target &&
+      epoch === useConnection.getState().epoch
+
+    const sectionId = params.section
+    void sectionsActions()
+      .open(sectionId)
+      .catch(error => {
+        if (current()) {
+          setOpenFailure({
+            section: sectionId,
+            message: error instanceof Error ? error.message : String(error)
+          })
+        }
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [ready, entry, params.section, liveId, router, location, target, epoch])
   useEffect(() => {
     if (atBottom) {
       toEnd()
@@ -1060,31 +1450,138 @@ function BotConversation() {
   // Restored history carries no times and stays first, each question it
   // asked right under the message that asked it.
   const timeline = useMemo(() => {
-    const items: TimelineItem[] = [
-      ...shown.flatMap((message, index) => {
-        const at = message.createdAt > 0 ? toMillis(message.createdAt) : 0
+    // The store's message order is authoritative after hydration. Cards with
+    // a source fragment follow that fragment, even across queued user inputs.
+    const items: TimelineItem[] = shown.flatMap((message, index) => {
+      const at = message.createdAt > 0 ? toMillis(message.createdAt) : 0
 
-        return [
-          { at, index, kind: 'message' as const, message },
-          ...(message.clarifies ?? []).map(clarify => ({ at, clarify, kind: 'clarify' as const }))
-        ]
-      }),
+      return [
+        { at, index, kind: 'message' as const, message },
+        ...(message.clarifies ?? []).map(clarify => ({ at, clarify, kind: 'clarify' as const }))
+      ]
+    })
+
+    const cards: TimelineItem[] = [
       ...clarifies.map(clarify => ({ at: clarify.receivedAt, clarify, kind: 'clarify' as const })),
       ...approvals.map(approval => ({
-        approval,
         at: approval.receivedAt,
+        approval,
         kind: 'approval' as const
       }))
     ]
 
-    return items.sort((a, b) => a.at - b.at)
+    for (const card of cards.sort((a, b) => a.at - b.at)) {
+      const source =
+        card.kind === 'approval'
+          ? card.approval.messageId
+          : card.kind === 'clarify'
+            ? card.clarify.messageId
+            : undefined
+
+      const anchor = source
+        ? items.findLastIndex(
+            item => item.kind === 'message' && item.message.fragmentIds?.includes(source)
+          )
+        : -1
+
+      let position = anchor < 0 ? items.findIndex(item => item.at > card.at) : anchor + 1
+
+      if (position < 0) {
+        position = items.length
+      }
+
+      while (
+        position < items.length &&
+        items[position]!.kind !== 'message' &&
+        items[position]!.at <= card.at
+      ) {
+        position++
+      }
+
+      items.splice(position, 0, card)
+    }
+
+    return items
   }, [approvals, clarifies, shown])
 
-  const retry = () => {
-    const last = messages.findLast(message => message.role === 'user')
+  const canPrompt = () =>
+    ownerInput &&
+    router.history.location === location &&
+    target === useConnection.getState().target &&
+    epoch === useConnection.getState().epoch &&
+    capability === useConnection.getState().daemon?.one_chat &&
+    identified === (useConnection.getState().daemon?.transcript_identity === true) &&
+    installation === useConnection.getState().daemon?.install_id
 
-    if (liveId && last) {
-      void promptSubmit(liveId, last.text)
+  const retryFor = (card: TranscriptMessage): (() => void) | undefined => {
+    if (!ownerInput) {
+      return undefined
+    }
+
+    // Older daemons keep their original RPC shape and retry behavior.
+    if (!identified) {
+      if (messages.some(message => message.submission)) {
+        return undefined
+      }
+
+      return () => {
+        if (canPrompt() && liveId) {
+          const last = messages.findLast(message => message.role === 'user')
+
+          if (last) {
+            void promptSubmit(liveId, last.text).catch(error => {
+              if (canPrompt()) {
+                transcriptActions().errorEvent(liveId, String(error))
+              }
+            })
+          }
+        }
+      }
+    }
+
+    const input = messages.find(message => message.submission?.row === card.retryRow)
+    const source = input?.submission
+
+    if (
+      !input ||
+      !source ||
+      source.card !== card.id ||
+      source.target !== target ||
+      source.epoch !== epoch ||
+      source.installation !== installation ||
+      !['rejected', 'accepted'].includes(source.status) ||
+      source.uploads === null
+    ) {
+      return undefined
+    }
+
+    return () => {
+      if (!canPrompt() || !liveId) {
+        return
+      }
+
+      // Recheck the store: a second click or an old card cannot send again.
+      const held = useTranscripts
+        .getState()
+        .bySession[liveId]?.messages.find(message => message.submission?.row === source.row)
+
+      if (held?.submission !== source) {
+        return
+      }
+
+      const pending =
+        source.status === 'accepted'
+          ? transcriptActions().appendUserMessage(liveId, input.text)
+          : input
+
+      const inputId = newInputId()
+      transcriptActions().setInputId(liveId, pending.id, inputId)
+      void submitOrReopen(liveId, null, input.text, {
+        current: canPrompt,
+        files: [],
+        pending: { ...pending, inputId },
+        uploads: source.uploads ?? []
+      })
     }
   }
 
@@ -1098,49 +1595,17 @@ function BotConversation() {
     }
   }
 
-  const rename = async () => {
-    if (section && title.trim() && title.trim() !== section.title) {
-      await sectionsActions().rename(section.id, title.trim())
-    }
-
-    setEditing(false)
-  }
-
-  const archive = async () => {
-    if (!section) {
-      return
-    }
-
-    await sectionsActions().archive(section.id)
-
-    // Leave the archived section: go to the bot's latest open one, or start a fresh one.
-    const next = Object.values(useSections.getState().byId)
-      .filter(
-        item =>
-          item.bot === section.bot && !item.archived_at && !isThread(item) && item.id !== section.id
-      )
-      .sort((a, b) => toMillis(b.updated_at) - toMillis(a.updated_at))[0]
-
-    const target = next ?? (await sectionsActions().create(section.bot))
-    void navigate({ params: { bot: section.bot, section: target.id }, to: '/b/$bot/s/$section' })
-  }
-
-  const remove = async () => {
-    if (!section || !window.confirm(`Delete “${section.title}”? Its history goes with it.`)) {
-      return
-    }
-
-    await sectionsActions().remove(section.id)
-    void navigate({ to: '/' })
-  }
-
   const send = (prompt: string) => {
-    if (liveId && section) {
-      transcriptActions().appendUserMessage(liveId, prompt)
+    if (canPrompt() && liveId && section) {
+      const pending = transcriptActions().appendUserMessage(liveId, prompt)
       sectionsActions().markTouched(section.id, prompt)
-      void promptSubmit(liveId, prompt).finally(
-        () => void sectionsActions().settleTitle(section.id)
-      )
+
+      void submitOrReopen(liveId, section.id, prompt, {
+        current: canPrompt,
+        files: [],
+        pending,
+        uploads: []
+      }).finally(() => void sectionsActions().settleTitle(section.id))
     }
   }
 
@@ -1162,6 +1627,10 @@ function BotConversation() {
       onDragOver={event => event.preventDefault()}
       onDrop={event => {
         event.preventDefault()
+
+        if (!canPrompt()) {
+          return
+        }
 
         const input =
           viewport.current?.parentElement?.querySelector<HTMLInputElement>('input[type=file]')
@@ -1187,34 +1656,19 @@ function BotConversation() {
         ref={viewport}
         style={{ paddingBottom: composerHeight + 8, paddingTop: 60 }}
       >
-        {unavailable === params.section && !liveId ? (
-          <div className="hex-rise grid h-full place-content-center justify-items-center gap-4 p-8 text-center">
-            <Avatar {...botFace(bot)} name={name} size="xl" />
-            <div>
-              <h2 className="text-[length:var(--text-title)] font-semibold">
-                This conversation is no longer available
-              </h2>
-              <p className="mt-1 text-muted">
-                It may have been deleted, or it lives on another daemon.
-              </p>
-            </div>
-            {bot ? (
-              <Button
-                onClick={() =>
-                  void sectionsActions()
-                    .create(bot.name)
-                    .then(section =>
-                      navigate({
-                        to: '/b/$bot/s/$section',
-                        params: { bot: bot.name, section: section.id }
-                      })
-                    )
-                }
-                variant="primary"
-              >
-                Start a new section
-              </Button>
-            ) : null}
+        {openFailure && openFailure.section === params.section ? (
+          <div
+            className="grid h-full place-content-center justify-items-center gap-4 p-8 text-center"
+            role="alert"
+          >
+            <p>{openFailure.message}</p>
+            <Button onClick={() => setOpenAttempt(attempt => attempt + 1)} size="sm">
+              Retry
+            </Button>
+          </div>
+        ) : !ready && !(kept && transcript) ? (
+          <div className="grid h-full place-content-center text-muted" role="status">
+            Opening conversation
           </div>
         ) : messages.length === 0 && clarifies.length === 0 ? (
           <div className="hex-rise grid h-full place-content-center justify-items-center gap-6 p-8 text-center">
@@ -1225,21 +1679,23 @@ function BotConversation() {
                 <p className="mx-auto mt-1.5 max-w-sm text-muted">{bot.title || bot.description}</p>
               ) : null}
             </div>
-            <div className="flex max-w-lg flex-col items-center gap-2">
-              {suggestedPrompts(bot?.description ?? '', bot?.display_name).map(prompt => (
-                <button
-                  className="hex-glass-press hex-focus rounded-full bg-bubble [--hex-press-scale:1.04] px-4 py-2 text-[length:var(--text-secondary)] text-foreground/85 hover:bg-surface-2 hover:text-foreground"
-                  key={prompt}
-                  onClick={() => send(prompt)}
-                  type="button"
-                >
-                  {prompt}
-                </button>
-              ))}
-            </div>
+            {ownerInput ? (
+              <div className="flex max-w-lg flex-col items-center gap-2">
+                {suggestedPrompts(bot?.description ?? '', bot?.display_name).map(prompt => (
+                  <button
+                    className="hex-glass-press hex-focus rounded-full bg-bubble [--hex-press-scale:1.04] px-4 py-2 text-[length:var(--text-secondary)] text-foreground/85 hover:bg-surface-2 hover:text-foreground"
+                    key={prompt}
+                    onClick={() => send(prompt)}
+                    type="button"
+                  >
+                    {prompt}
+                  </button>
+                ))}
+              </div>
+            ) : null}
           </div>
         ) : (
-          <div className={cn(transcriptClass, 'hex-fade')} key={liveId ?? params.section}>
+          <div className={cn(transcriptClass, 'hex-fade')} key={params.section}>
             {messages.length > visible ? (
               <button
                 className="hex-focus mx-auto mb-3 block rounded-full px-3 py-1 text-[length:var(--text-secondary)] text-muted transition-colors duration-[var(--hex-motion-fast)] hover:bg-surface-2 hover:text-foreground"
@@ -1284,7 +1740,7 @@ function BotConversation() {
                     message={message}
                     onFix={fixConnector}
                     onImage={setLightbox}
-                    onRetry={retry}
+                    onRetry={retryFor(message)}
                   />
                 </div>
               )
@@ -1295,7 +1751,7 @@ function BotConversation() {
                 message={stoppedHere}
                 name={bot?.display_name ?? 'Bot'}
                 onFix={fixConnector}
-                onRetry={retry}
+                onRetry={retryFor(stoppedHere)}
               />
             ) : null}
             <div className="h-2" />
@@ -1307,91 +1763,33 @@ function BotConversation() {
           aria-hidden
           className="absolute inset-x-0 top-0 h-9 bg-gradient-to-b from-background/70 to-transparent"
         />
-        {editing ? (
-          <div className="hex-glass hex-no-drag pointer-events-auto flex h-9 max-w-full min-w-0 items-center gap-2 rounded-full pr-1.5 pl-1.5">
-            <Avatar {...botFace(bot)} name={name} size="sm" />
-            <Input
-              aria-label="Section title"
-              autoFocus
-              className="h-7 w-64 max-w-full min-w-0 rounded-full border-transparent bg-foreground/[0.05] px-3 text-[length:var(--text-secondary)]"
-              onBlur={() => void rename()}
-              onChange={event => setTitle(event.target.value)}
-              onKeyDown={event => {
-                if (event.key === 'Enter') {
-                  void rename()
-                }
-
-                if (event.key === 'Escape') {
-                  setTitle(section?.title ?? '')
-                  setEditing(false)
-                }
-              }}
-              value={title}
+        <button
+          aria-expanded={panelOpen}
+          aria-label={name}
+          className="hex-glass hex-glass-press hex-focus hex-no-drag pointer-events-auto flex h-9 max-w-[min(100%_-_7rem,30rem)] [--hex-press-scale:1.04] min-w-0 items-center gap-2 rounded-full pr-4 pl-1.5 @min-[54rem]:max-w-[min(100%_-_12.5rem,30rem)]"
+          onClick={() => togglePanel()}
+          title={panelOpen ? 'Hide details' : 'Show details'}
+          type="button"
+        >
+          <span className="relative shrink-0">
+            <Avatar
+              className={cn(status === 'working' && 'hex-think')}
+              {...botFace(bot)}
+              mood={status === 'working' ? 'working' : undefined}
+              name={name}
+              size="sm"
             />
-          </div>
-        ) : (
-          <button
-            aria-expanded={panelOpen}
-            aria-label={
-              section?.title && section.title !== bot?.display_name
-                ? `${name}, ${section.title}`
-                : name
-            }
-            className="hex-glass hex-glass-press hex-focus hex-no-drag pointer-events-auto flex h-9 max-w-[min(100%_-_7rem,30rem)] [--hex-press-scale:1.04] min-w-0 items-center gap-2 rounded-full pr-4 pl-1.5 @min-[54rem]:max-w-[min(100%_-_12.5rem,30rem)]"
-            onClick={() => togglePanel()}
-            title={panelOpen ? 'Hide details' : 'Show details'}
-            type="button"
-          >
-            <span className="relative shrink-0">
-              <Avatar
-                className={cn(status === 'working' && 'hex-think')}
-                {...botFace(bot)}
-                mood={status === 'working' ? 'working' : undefined}
-                name={name}
-                size="sm"
-              />
-              <StatusDot size="sm" status={status} />
-            </span>
-            <span className="shrink-0 truncate text-[length:var(--text-secondary)] font-semibold">
-              {name}
-            </span>
-            {section?.title && section.title !== bot?.display_name ? (
-              <span className="min-w-0 truncate text-[length:var(--text-secondary)] text-muted max-[860px]:hidden">
-                <Title key={section.id} text={section.title} />
-              </span>
-            ) : null}
-          </button>
-        )}
+            <StatusDot size="sm" status={status} />
+          </span>
+          <span className="shrink-0 truncate text-[length:var(--text-secondary)] font-semibold">
+            {name}
+          </span>
+        </button>
         {status === 'needs_you' ? <WaitingBanner /> : null}
         <ConnectedToolsNotice sectionId={params.section ?? ''} />
       </header>
       <div className="hex-no-drag absolute top-2.5 right-3 z-30 flex items-center gap-1.5">
         <ContextMeter context={transcript?.context} />
-        <Menu
-          items={[
-            { label: 'Rename', onSelect: () => setEditing(true) },
-            { label: 'Archive', onSelect: () => void archive() },
-            { separator: true, label: '' },
-            {
-              label: (
-                <span className="flex items-center gap-2 text-danger">
-                  <Trash2 size={14} />
-                  Delete
-                </span>
-              ),
-              onSelect: () => void remove()
-            }
-          ]}
-          trigger={
-            <button
-              aria-label="Conversation actions"
-              className="hex-glass hex-glass-press hex-focus grid size-9 place-items-center rounded-full text-foreground/70 hover:text-foreground"
-              type="button"
-            >
-              <MoreHorizontal size={16} />
-            </button>
-          }
-        />
         {panelOpen ? null : (
           <button
             aria-label="Toggle profile panel"
@@ -1418,17 +1816,19 @@ function BotConversation() {
         </button>
       ) : null}
       <div className="absolute inset-x-0 bottom-0 z-20" ref={composerBox}>
-        <div className="relative mx-auto max-w-[52rem] px-1">
-          <Composer
-            bot={bot}
-            key={params.section}
-            notice={notice}
-            sectionId={params.section ?? null}
-            sessionId={liveId}
-            status={status}
-            streaming={streaming}
-          />
-        </div>
+        {composer ? (
+          <div className="relative mx-auto max-w-[52rem] px-1">
+            <Composer
+              bot={bot}
+              key={params.section}
+              notice={notice}
+              sectionId={params.section ?? null}
+              sessionId={liveId}
+              status={status}
+              streaming={streaming}
+            />
+          </div>
+        ) : null}
       </div>
       <Dialog
         onOpenChange={open => !open && setLightbox(null)}

@@ -18,33 +18,38 @@ data model. The native transport and event projection live in
 | bot model | profile `model` + `provider` |
 | avatar | profile asset `avatar`; a face picked in an app also in `assets/face.json` |
 | bot memory | profile `memories/MEMORY.md` (the core `USER.md` target is off) |
-| history search | in-memory FTS5 index over the bot's sections, refreshed as history changes (`native_history_versions` in `hexbot-runtime.db`); the asking section is excluded from results and BM25 statistics; cache budget counts retained JSON and allocated SQLite pages |
+| history search | in-memory FTS5 index over the bot's sections, refreshed as history changes (`native_history_versions` in `hexbot-runtime.db`); the asking section is excluded from results and BM25 statistics, except that a chat Pi has compacted keeps its messages from before the latest compaction; cache budget counts retained JSON and allocated SQLite pages |
 | About you | `~/.hexbot/users/<owner_id>/user.md`, injected every turn by the hexbot plugin |
 
 ## Core methods the client calls directly
 
-- Chat: `prompt.submit {session_id, text, attachments?}`, `session.interrupt`, `session.steer`.
+- Chat: `prompt.submit {session_id, text, attachments?, input_id?}`,
+  `session.interrupt`, `session.steer {session_id, text, input_id?}`.
 - History: `session.history {session_id}`, `session.events.since` on reconnect.
 - Attachments: `image.attach_bytes {session_id, content_base64, filename}`,
   `file.attach {session_id, data_url, name}`, `pdf.attach {session_id, content_base64}`.
   `attachments.clear {session_id}` clears all unsubmitted attachments and removes
   their staged files. It refuses while the bot is working and keeps the session.
   Each attach call answers with an `id`. `prompt.submit` with
-  `attachments: [id, ...]` sends only those uploads and removes every other
-  staged file in the section first, so a file left by an upload that never
-  made it into a message (another client, a lost reply, a closed screen) never
-  rides a later one. An id that is no longer staged answers 4204 and changes
-  nothing. Without `attachments`, every staged upload goes with the prompt.
+  `attachments: [id, ...]` consumes only those staged uploads. Unselected
+  uploads remain staged for a later submission, including uploads from another
+  paired client. An explicit empty list sends no uploads and retains all staging.
+  An id that is no longer staged answers 4204 and changes nothing. Without
+  `attachments`, every staged upload goes with the prompt as before. Rejected
+  prompts restore selected uploads alongside unselected and newly staged ones.
+  Retained uploads still count toward staging limits, prevent idle retirement,
+  and survive a tools or model restart. `attachments.clear`, session close and
+  section deletion remove unused staged files; submitting an exact list does not.
   Images allow 25 MiB decoded; PDFs and generic files allow 45 MiB.
   Larger attachments return 4202 with the size limit. Browser clients check
   before reading or uploading. WebSocket frames and in-flight request bytes
   are capped at 64 MiB per connection.
 - Approvals: `approval.respond {session_id, request_id, choice}`
-  with `choice` in `once | session | deny`. `session` quiets the same kind
-  of Manual or unreviewed request for the running agent process; nothing
-  persists across sections. Reviewed Auto cards, incomplete file scans and
-  requests raised by the daemon offer `once | deny` only. Clients must use the
-  card's `choices`; `session` is rejected when not offered. Delegates and
+  with `choice` in `once | session | deny`. `session` ("Allow for now")
+  quiets the same kind of Manual or unreviewed request until the section's
+  Pi session restarts; nothing persists. Reviewed Auto cards, incomplete file
+  scans and requests raised by the daemon offer `once | deny` only. Clients
+  must use the card's `choices`; `session` is rejected when not offered. Delegates and
   background sections cannot wait for approval; actions that need it are
   refused. Opening a section re-emits its pending approval. Questions arrive as `clarify.request` and
   `pending_clarify` on section open; use `clarify.respond` to answer.
@@ -71,7 +76,7 @@ data model. The native transport and event projection live in
   flags also produce a one-step card.
   Without OS isolation, shell commands require user approval even with
   `full_access`; review cannot replace
-  it. Explicit section grants can cover unreviewed requests when offered.
+  it. An explicit Allow for now (`session`) can cover unreviewed requests when offered.
 - Per-section model override: `config.set {key: "model", value, session_id}`.
 - Model picker source: `model.options`.
 - Keys: `model.save_key`, `model.disconnect`.
@@ -86,6 +91,63 @@ the bot's daily token budget without adding reviewer text to the conversation.
 Copilot ACP reports zero token usage and cost, so its reviews add no measured
 usage to these totals or budgets.
 
+### Optional transcript identity
+
+`hexbot.info.transcript_identity: true` advertises authoritative metadata when
+present. A missing or false capability keeps the legacy request shapes.
+Coverage is partial. Historical, recovered, queued and ambiguous rows may omit
+identity fields even when the capability is true.
+
+`prompt.submit` and `session.steer` accept a fresh, lowercase hyphenated,
+nonzero UUID `input_id`. It reserves the existing native prompt-intent key
+before uploads move or Pi receives the command. Invalid or already reserved
+IDs return 4202 without taking another intent or changing staged uploads.
+Successful staged submissions echo a supplied `input_id`; callers that omit
+it retain the original response shape. This is correlation only, with no
+idempotency, retry or automatic resend promise. A refusal from Pi returns
+5201. When the bot's process fails before Pi answers, the reply is 5200:
+Pi may already have taken the message.
+
+Manual `/compact` is a daemon command, not a Pi user or operation. It sends
+no uploads; staged files stay staged. A supplied `input_id` is reserved
+before Pi compacts and freed if Pi does not compact. After a compaction the
+reply echoes it, and the `/compact` user row the daemon stores carries it.
+That row and its summary notice have no `turn_id` or `message_id`.
+
+A user projection exposes `input_id` only for a proven binding to that actual
+Pi user. The current producer binds the sole identified `started` operation's
+initial user slot through ordered transport preflight, including transformed
+and image input. A queued or steer ACK, equal text, display matching or a late
+RPC reply cannot establish ownership. Same-text queued and steered inputs
+remain unbound, including a follow-up dequeued before a late steer ACK.
+
+`turn_id` names each actual Pi agent operation, independently of room turns,
+visible users and input IDs. One operation may consume several users or no new
+user and produce several assistant fragments. Each actual assistant
+`message_start` allocates `message_id`. Its durable assistant `row_id` is that
+same value, retained through SQLite retries and full-raw reconciliation.
+The existing `message.start` timing remains at `agent_start` and carries only
+`turn_id`. Later deltas, reasoning, interims, tool events and completion carry
+the optional IDs when known. There are no extra legacy starts per fragment.
+Tool-event `message_id` names the assistant that actually owns `toolCallId`.
+Unknown, nested or ambiguous owners omit it. An explicit `parentToolCallId`
+prevents direct-call attribution even when the nested ID equals an earlier
+top-level tool ID. Tool-result history keeps its
+own distinct `row_id` and `tool_call_id`. Cards may omit fragment association.
+
+Terminal metadata is captured at `agent_end`, rather than read from a newer
+operation at settlement. Unmatched settlement cannot finish a known active
+operation. Error, EOF and compact paths do not invent an assistant fragment.
+Independent operations can settle out of order. When their untagged settlements
+cannot be paired, terminal IDs are omitted while durable rows retain their IDs.
+A live fragment ID alone does not prove a durable row. Clients adopt
+authoritative history and keep unresolved local files unconfirmed rather
+than attach them to another user. Committed projection metadata survives
+reconcile/restart. A raw-only recovered occurrence cannot recover a client
+UUID from text, position or an old pending intent and omits `input_id`.
+All identity metadata stays outside the original Pi messages, model context,
+frozen prompts, tools, options and usage records.
+
 ## `hexbot.*` methods
 
 All results are objects. Errors use JSON-RPC error objects with core-style
@@ -99,7 +161,10 @@ mutation methods check ownership.
 
 - `hexbot.info {}` → `{version, hermes_version, daemon_name, install_id,
   auth_required, lan_enabled, addresses: [string], platform, sandbox, home,
-  update_capability}`. `update_capability` is `desktop` when the Hexbot app
+  update_capability, one_chat, transcript_identity?}`. See optional transcript
+  identity above. `one_chat` is true once
+  `hexbot.sections.create` returns the bot's one chat; older daemons leave it
+  out. `update_capability` is `desktop` when the Hexbot app
   on that machine runs the daemon, `service` when launchd or systemd does,
   and `null` for a checkout or a hand-started daemon. `sandbox` is the OS
   sandbox shell and code tools run in: `sandbox-exec` on macOS, `bubblewrap`
@@ -195,8 +260,8 @@ others (`DESIGN.md`, "The primary bot"). There is at most one per owner.
   with 4208 when a bot called `hexbot` exists (make it primary instead).
   `hexbot.bots.create` refuses the handle `hexbot` (4202).
 - `hexbot.bots.set_primary {name}` → `{bot: Bot}`. Makes an existing bot
-  primary; refused with 4214 once there is one. Its next new section gets the
-  primary bot's tools.
+  primary; refused with 4214 once there is one. Its chat takes the primary
+  bot's tools with its next message, which misses the prompt cache once.
 - `hexbot.bots.introduce {name, section}` → `{submitted: true, section}`.
   Resumes the section on the calling transport, then submits the bot's
   hidden first prompt (`backend/hexbot-core/src/catalog.rs`): a one-line greeting and up to
@@ -223,17 +288,108 @@ others (`DESIGN.md`, "The primary bot"). There is at most one per owner.
 
 ### Sections
 
+A bot has one chat with its owner: the one section of that bot with no
+`peer_bot` and no `purpose`. The other sections are threads (`peer_bot`
+set) and, for the primary bot, its Check-ins (`purpose` `checkins`). Rooms keep their
+conversations in `room_sessions`, not here. On its first start after the
+upgrade the daemon keeps one chat per bot (`catalog::one_chat_per_bot`, once,
+recorded as the `one_chat_per_bot` setting): for a bot with several, the one
+with non-report dialogue, then not archived, then newest, and deletes the
+others with their history. It runs in `App::new`
+before `Runtime::new`, so no client is connected, and it is tried once. Before
+deleting anything it makes a fresh full copy of `hexbot.db`,
+`hexbot-runtime.db`, the affected bots' `state.db` and all of
+`runtime/sessions` in `<home>/backups/one-chat-per-bot-<time>/`, so it needs
+about that much free disk space. The setting is written before the first
+delete. If copying, `reconcile_all`, catalog deletion or history cleanup
+fails, the error is logged, an unfinished copy (`one-chat-per-bot-<time>.partial`)
+is removed, nothing more is deleted, the setting is written anyway, and the
+daemon starts; the sections left are kept for good and no later start deletes
+any. Each delete uses the private cleanup helper: once its catalog
+row is gone it stays deleted, even if history cleanup fails. Native cleanup
+retries at startup; it never resumes the migration's remaining deletes.
+A bot with a conversation that recovery set aside or could not read, or whose `state.db` cannot be read, keeps all its sections. Sections
+made later, by an older build, are never deleted. `hexbot.sections.create`,
+and a dream posting its report, rank a bot's healthy sections the same way,
+so a report-only Dreams log never outranks a conversation. A mixed log with
+non-report dialogue competes as a conversation; the daemon filters reports
+using stored dream summaries and message markers, never title or prefix
+heuristics. For known mixed logs, reports never advance dialogue recency.
+If a report followed the dialogue, or a message timestamp is absent or invalid,
+the upgrade preserves every section of that bot and chooses the chat using
+known non-report dialogue times. Older reports and the old `unarchive` RPC
+both write `updated_at`, without recording why. A report can overwrite a saved
+choice, and the separate report and catalog timestamps cannot prove whether a
+choice came after the report either. The daemon cannot recover that intent:
+it preserves the competing histories instead of deleting either. When the
+latest report predates the dialogue, a later catalog update still counts,
+preserving an explicit choice without another message. Unreadable history stays untouched. A section that recovery
+set aside or could not recover, or whose history is only in an unreadable
+`state.db`, is never the chat, since it would not open; when nothing else is left, `create`
+makes a new General chat and the other stays for repair. Sections `create`
+makes are recorded in `native_fresh` and open without reading `state.db`.
+Transient native recovery failures are recorded in `native_unrecovered`, so
+lookup skips them without rereading the Pi logs or attempting recovery under
+the catalog write lock. A successful recovery on a later start clears the record.
+Before anything else, the upgrade finds each bot's old Dreams logs and
+records them as the `dream_logs` setting, with the bots it could read as
+`dream_log_bots`: only in those logs are messages matching a dream summary
+treated as dream reports, when the log is first opened, in history search
+and in a dream's digest. A bot whose `state.db` could not be read then
+has its logs found at the next `create`, first open or history search that
+can read the store (`catalog::dream_logs`); until then the recorded logs stand.
+Classification also inspects current sections at chat lookup and before a dream,
+so logs recreated by an older build after migration are marked too. This never
+repeats migration deletes or changes Pi context. A failed classification stops
+the dream before it can learn from uncertain reports. Filesystem metadata errors
+are read failures, not missing legacy databases; backup cannot omit such a database.
+
+Already-imported legacy Dream logs can contain reports in Pi JSONL as well as
+in the display projection. When one would become the owner chat, chat lookup
+starts an independent section with the original dialogue and marked display
+reports. Its context replays the selected branch's original messages, expanding
+compaction and branch summaries, and excludes the reports. Original JSONL,
+journal, frozen options and prompt remain unchanged. `dream_chat_adoptions`
+records the source, replacement and source history version. Lookup prefers the
+healthy replacement. Dream input omits the copied source snapshot and its old
+summaries; later writes from old clients remain eligible. Copied usage is zero;
+original usage remains on the original conversation.
+
+Bot deletion blocks new bot starts and waits for opens already in progress,
+including hidden jobs, CLI runs and room turns. New starts fail with 4211 while
+deletion waits or runs. One-shot description and review processes also finish
+shutting down before cleanup, even if their caller was cancelled. Active turns
+still refuse deletion with 4211, including work that became active while opens
+were draining. It retires sessions before changing the catalog, then atomically
+removes its sections, bot and room mappings before purging history or profile
+files. A `pending_bot_delete:<name>` settings journal records exact native,
+legacy-only, room and delegated targets and the catalog commit decision. Startup
+rolls back uncommitted retirement or finishes committed cleanup. A committed
+cleanup failure returns `{deleted:true, history_pending:true}` and keeps its
+journal for startup retry. No failed catalog commit removes history, memory or
+notes. Creation refuses with 4208 while that name has a pending deletion, even
+if its profile is already gone. App create/delete requests are ordered across
+retirement and cleanup; startup cleanup re-reads the decision under the same
+catalog write reservation used to reserve a new profile. If an older journal
+conflicts with a catalog bot, or its remaining profile has no name-reservation
+provenance, cleanup reports an error and keeps the files, jobs and journal for
+manual recovery. This does not reconstruct data already purged by an older build.
+
+
 Section shape: `{id, bot, title, title_by: "bot" | null, created_at,
 updated_at, archived_at | null, done_at | null, preview, message_count,
-live_session_id | null, peer_bot | null}`
+live_session_id | null, peer_bot | null, purpose | null}`
 
 `peer_bot` is set on a thread: the private conversation in which `peer_bot`
-asked `bot` for help through `message_bot`.
+asked `bot` for help through `message_bot`. `purpose` is set on a section
+with its own job, so far only `checkins`, the primary bot's Check-ins; it
+is never the bot's chat. Daemons from before one chat per bot leave it out;
+there, `hexbot.checkins.status` names the Check-ins section.
 
-`title_by` is `"bot"` when the daemon named the section, either from the
-first prompt or through the bot's `hexbot_rename_section` tool; a user rename
-clears it. `preview` is the first user message, also returned by `open`. The
-roster shows only the title.
+`title_by` is `"bot"` when the daemon named the section from the first
+prompt; a user rename clears it. Clients do not show chat titles. `preview`
+is the latest visible message from either side, as a chat list shows it, also
+returned by `open`.
 
 - `hexbot.sections.list {bot?, include_archived?, include_threads?}` →
   `{sections: [Section]}`. Threads are left out unless `include_threads` is
@@ -242,11 +398,31 @@ roster shows only the title.
   as soon as `prompt.submit` accepts it, before the bot replies. The
   `General` section created with a bot, and any name the user or bot set, are
   kept.
-- `hexbot.sections.create {bot, title?}` → `{section: Section}` (calls
-  `session.create {profile: bot, close_on_disconnect: false}`, records the
-  stored id). `title` is passed to the core only when given; an untitled
-  core session is what its auto-titler names from the first prompt, and the
-  row shows `New section` until then.
+- `hexbot.sections.create {bot}` → `{section: Section}`: the bot's chat,
+  made titled `General` on first use. An archived chat comes back. A `title`
+  from an older client is ignored. Clients call it for the bot's chat rather
+  than pick from their own list, which cannot tell a section recovery set
+  aside. A retained old Dreams conversation stays the chat while it is open,
+  including accepted messages, uploads and background work. Once it closes or
+  retires, a later lookup can move it to a chat without the old reports in
+  model context. Opening its old ID then returns `4002` with the replacement
+  ID; the client must resolve the bot's chat again before sending input, and
+  `hexbot.sections.list` no longer lists it. The new chat replays the log's
+  original messages, not its old summaries, which were written with the
+  reports in context. Its first reply therefore reads the whole history
+  without the prompt cache, once; a history past the model's window is
+  summarised the way any chat that outgrew it is.
+  A daemon without `one_chat` in `hexbot.info` makes a new section on
+  every call, so clients there list the bot's sections and call `create`
+  only when it has none. Its upgrade keeps the latest conversation, giving
+  way only for a report-only log, which its list cannot tell apart, so a client
+  opens a section by itself only while at most one has something said (the
+  newest open one when none has); otherwise the user picks among those, once
+  per bot while the app runs. Every resolved choice is persisted with
+  `hexbot.sections.unarchive`, supported by older daemons: it updates
+  `updated_at` even for an open section. The pick is remembered only after
+  that RPC succeeds. A real conversation then survives upgrade without
+  another message. Cancelled or obsolete lookups do not save a choice.
 - `hexbot.sections.thread {bot, peer}` → `{section: Section | null}`: the
   caller's thread on `bot` whose sender is `peer`. It never creates one.
 - `hexbot.sections.open {id}` → `{section: Section, messages: [Message],
@@ -254,6 +430,13 @@ roster shows only the title.
   bot's profile; idempotent if live). If the bot is waiting on an approval,
   the daemon sends its `approval.request` event again so a reloaded client
   gets the card back; clients dedupe on `request_id`.
+  A missing catalog section returns code `4204`. Ordinary web bot-chat routes
+  resolve the daemon's canonical chat before opening history, displaying it,
+  or enabling input, including saved routes and already-loaded live IDs.
+  Explicit peer threads keep their own route. Metadata or open failures keep
+  the selected route and offer Retry, including when canonical resolution
+  returns the same ID. Late replies from an obsolete route or daemon do not
+  redirect the current view.
 
 `Context = {tokens, window, compact_at, compacting, recounting, seq}` is how
 full the section's context is: Pi's own estimate of the tokens the next
@@ -278,10 +461,39 @@ model switch. In a room each bot keeps its own section, so the room has no
 context of its own; the meter belongs to bot sections.
 - `hexbot.sections.rename {id, title}` → `{section: Section}`
 - `hexbot.sections.archive {id}` / `hexbot.sections.unarchive {id}` → `{section}`
-- `hexbot.sections.delete {id, purge_memory?: true}` → `{deleted: true}`
-  (closes the live session, `session.delete` on the stored row). With
-  `purge_memory: false` only the Hexbot row goes and the core transcript
-  is left in place. The bot's memory is not touched either way.
+  Current clients offer neither action for a chat; both remain available to
+  older clients.
+- `hexbot.sections.delete {id, purge_memory?: true}` → `{deleted: true, history_pending?: true}`
+  Deletes only a peer thread (`peer_bot` set) or a section with its own
+  `purpose`, such as the primary bot's Check-ins, which also forgets what
+  check-ins said there. Any other owned section is a bot chat, including
+  archived sections and legacy sections kept for repair. Deleting it returns
+  error `4202`,
+  `A bot chat cannot be deleted; delete the bot to remove it`.
+  Ownership and missing-section errors take precedence. Rejection leaves
+  the live session, pending work, staged uploads and stored history untouched,
+  emits no change or deletion event, and ignores the purge option. Opening
+  or creating the bot's chat still resolves its existing conversation.
+  Deleting the bot removes its chat through bot deletion's existing cleanup;
+  the one-time migration can still retire superseded chats privately.
+  For an allowed peer-thread deletion, the daemon closes the live session
+  (`session.delete` on the stored row). The section is tombstoned,
+  its catalog row goes in a transaction of its own,
+  and only then its runtime history and `runtime/sessions/<id>`: a stop
+  before the row goes leaves the section whole, and the next start removes
+  what a stop after it left (`runtime_store::finish_deletes`). With
+  `purge_memory: false` the core transcript in `state.db` is left in place;
+  with `true`, cleanup ownership and the catalog decision are saved before
+  that row goes. Startup retries native files and identifiable legacy history,
+  including when native rows are already gone. Conflicting ownership or a
+  reference from a retained legacy conversation keeps cleanup pending;
+  restarting alone cannot resolve that conflict.
+  Older untagged tombstones have no legacy ownership to recover.
+  If any history cleanup fails after
+  the catalog commit, `history_pending: true` reports that the section is
+  already deleted with cleanup incomplete. A catalog failure returns an
+  error and removes the tombstone, leaving the section usable.
+  The bot's memory is not touched either way.
 - `hexbot.sections.touch {id}` is internal; activity is stamped by the plugin
   on `message.complete`. It also sets the section's `done_at`.
 - `hexbot.sections.mark_read {id}` → `{section: Section}` clears `done_at`:
@@ -411,6 +623,15 @@ and its bots run as the owner.
 - `hexbot.rooms.archive {id}` → `{room}`
 - `hexbot.rooms.unarchive {id}` → `{room}`
 - `hexbot.rooms.delete {id}` → `{deleted: true}`
+  New posts, worker starts and mapped conversation opens fail with 4211 while
+  deletion waits or runs. Opens already in progress finish before the daemon
+  captures and closes its conversations. Cancelling the request lets the daemon
+  finish the operation. Member removals are ordered per room and reject new
+  posts and bot starts with 4211 until the operation finishes. An already
+  accepted post stays saved if the room survives removal, but a blocked bot
+  response waits for the next room post or startup reconciliation. Bots may
+  still join while its processes close;
+  a join can keep the room when its last bot was being removed.
 - `hexbot.rooms.mark_read {id, seq}` → `{room}`
 
 Room turns use hidden sessions on each bot profile. The daemon waits
@@ -452,15 +673,10 @@ continuation within the active run defers refresh until another compaction.
 The refreshed prompt is saved only once the extension adopts it, so idle
 retirement and daemon restart never reopen a section on a discarded refresh.
 Older sections and those whose fixed guidance or tool layout no longer matches
-after an update keep their prompt. The chat
+after an update keep their prompt, except a chat, which is rebuilt with its
+bot's current tools at its next message. The chat
 shows a "Soul updated" mark under the bubble, as it shows "Memory updated"
 for the builtin memory tool and "Note added" for its `note` action.
-
-The `hexbot_rename_section {title}` tool (toolset `hexbot-section`, kept on
-the same way) renames the section the bot is speaking in, up to 60
-characters, and broadcasts `hexbot.sections.changed`. It refuses in rooms and
-in the Dreams section. The roster and the conversation header fade the new
-title in where the old one was.
 
 The `hexbot_show_html {title, html}` tool shows a visual: one self-contained
 HTML page (a chart, table, diagram or mockup) drawn in the conversation. It
@@ -608,7 +824,11 @@ keep their stored prompts and tool definitions. The former shared-session
 About you repair is removed because every section now belongs to the owner.
 
 New sections freeze connected server names and reach tools through Pi's codemode.
-Saved sections keep their frozen Rust bridge tools, including SSE. New sections
+Saved sections keep their frozen Rust bridge tools, including SSE. A chat is
+the exception: when its bot's tools, connected servers or Hexbot's tool layout
+differ from what it froze, its next input rebuilds its tools and prompt and
+restarts its process on the same conversation, keeping its model, thinking
+level and directory. That request misses the prompt cache once. New sections
 skip existing SSE entries and emit an owner-scoped `warning` with `{section_id,
 room_id, message}`, once per bot/server for each daemon run. Room notices name
 the bot. Pi warning/error notifications use the same event. Clients
@@ -617,7 +837,7 @@ show a dismissible notice under the conversation header.
 Manual asks for every connected-tool call, including tools marked read-only.
 Auto runs tools with `readOnlyHint: true` freely and reviews other calls one at
 a time, asking about risky or unreviewable calls with `once | deny` only.
-Resource tools are read-only. In Manual, Allow in this section covers one server
+Resource tools are read-only. In Manual, Allow for now covers one server
 for the running Pi session. Bypass never asks. Each nested
 codemode call uses the approval gate, including shell and file tools.
 
@@ -810,7 +1030,14 @@ devices, and removes the invite and update methods.
 
 `hexbot.bots.changed {name}`, `hexbot.sections.changed {id, bot}`,
 `hexbot.memory.user.changed {}`, `hexbot.network.changed {}`. Session-less,
-broadcast to every connection.
+broadcast to every connection. When a dream report lands in a chat,
+`hexbot.sections.changed` also carries `reload`: true when a client showing
+the chat should open it again to read the report. The report never stops the
+chat's process. While a turn runs, `reload` is false and a second
+`hexbot.sections.changed {id, bot, reload: true}` follows when that turn
+ends, always after the report is stored: when it settles, when a manual
+compaction finishes or fails, when Pi refuses the message, or when its
+process exits.
 Connect registration and disconnection emit `hexbot.connect.changed {}`.
 Room mutations emit `hexbot.rooms.changed {id}`. Every persisted room event
 emits `hexbot.rooms.event {room_id, event}`. Turn state changes emit

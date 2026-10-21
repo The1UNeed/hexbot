@@ -472,7 +472,7 @@ async fn primary_bot_manages_other_bots_and_always_asks_before_deleting() {
 }
 
 #[tokio::test]
-async fn other_bots_and_promoted_bots_get_the_tools_only_in_new_own_sections() {
+async fn other_bots_and_promoted_bots_get_the_tools_only_in_their_own_chat() {
     let (h, app) = setup();
     let owl = app
         .call("local", "hexbot.bots.create", &json!({"name":"owl"}))
@@ -507,8 +507,8 @@ async fn other_bots_and_promoted_bots_get_the_tools_only_in_new_own_sections() {
         .await
         .unwrap();
     assert_eq!(promoted["bot"]["primary"], true);
-    // The open section keeps the tools it was frozen with, but its jobs tool
-    // follows the bot's role: a removal asks there too.
+    // Reopening keeps the tools the chat was frozen with until its next
+    // message. Its jobs tool follows the bot's role: a removal asks there too.
     app.call("local", "hexbot.sections.close", &json!({"id":before}))
         .await
         .unwrap();
@@ -525,19 +525,13 @@ async fn other_bots_and_promoted_bots_get_the_tools_only_in_new_own_sections() {
     .await;
     assert!(asked);
     assert!(reply.contains("denied"), "{reply}");
-    let after = app
-        .call(
-            "local",
-            "hexbot.sections.create",
-            &json!({"bot":"owl","title":"New"}),
-        )
+    // That message took the primary bot's tools into the bot's one chat.
+    assert!(tools(&before).iter().any(|t| t == "hexbot_bots"));
+    let chat = app
+        .call("local", "hexbot.sections.create", &json!({"bot":"owl"}))
         .await
-        .unwrap()["section"]["id"]
-        .as_str()
-        .unwrap()
-        .to_owned();
-    open(&app, &after).await;
-    assert!(tools(&after).iter().any(|t| t == "hexbot_bots"));
+        .unwrap();
+    assert_eq!(chat["section"]["id"], before);
     assert_eq!(
         app.call("local", "hexbot.bots.delete", &json!({"name":"owl"}))
             .await

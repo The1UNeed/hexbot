@@ -43,15 +43,18 @@ more freedom and more capability than a hosted product can offer.
   are never injected; the dream folds what lasts into memory, and a day is
   deleted after 30 days. The user reads, edits, and deletes them by day in
   the bot's Memory tab.
-  Searchable history over its own sections and rooms sits beside them.
+  Searchable history over its chat and rooms sits beside them. The chat's
+  own history is searchable from before its latest summary.
 - About you: one text per user, capped at 2,000 characters, written only by
   the user and injected into every bot they own. Nothing else is shared
   between bots.
 - A room is a shared section for its members. Late joiners see the full
   transcript. A bot that leaves keeps history up to that point.
-- Archive keeps a section. Delete removes the section and its history; what
-  the bot wrote to its memory and its notes stays until the user or dreaming
-  edits it.
+- A bot has one chat with you; it is never archived or deleted on its own.
+  Deleting the bot deletes the chat with its memory and notes; a copy of its
+  memory is kept in `runtime/deleted-bots/` in the daemon's data directory.
+  An older app's request to delete just the chat is refused; its history
+  stays intact. Only deleting the bot removes its chat.
 - Dreaming: every bot, daily at a configurable time (default 03:00), reads
   conversations from the start of its last successful dream up to, but
   excluding, its own start and folds what matters into its memory using its
@@ -60,10 +63,11 @@ more freedom and more capability than a hosted product can offer.
   Failed or interrupted dreams leave the lower cutoff unchanged; the first
   dream reviews earlier history. It reads what people
   and bots said, not tool output or its own earlier reports, plus the summaries
-  written when a long section or that bot's room conversation was compacted,
+  written when its chat or that bot's room conversation was compacted,
   which it treats as untrusted since they were written with tool output in
-  view, and its notes from those days first of all. It never touches the soul or About you. It posts a report in its
-  direct message thread. A "dream now" action exists. Rooms dream through
+  view, and its notes from those days first of all. It never touches the soul or About you. It posts a report in the
+  bot's chat as a message the bot itself does not see, marked so later dreams
+  skip it. A "dream now" action exists. Rooms dream through
   their main bot into the room's section.
 - Scheduled jobs run unattended, so they cannot write memory, notes, or
   the soul. What a job asks to remember is a proposal; the bot's next dream reviews it
@@ -98,10 +102,10 @@ more freedom and more capability than a hosted product can offer.
 
 - Every daemon has at most one primary bot. Onboarding creates it as
   HexBot (handle `hexbot`) on the default model with every tool on, and
-  opens its first section, where it introduces itself. An install from
+  opens its chat, where it introduces itself. An install from
   before it adds HexBot or makes one existing bot primary, once; the role
   never moves after that, and the primary bot cannot be deleted.
-- In its own sections, and nowhere else (not rooms, threads between bots,
+- In its own chat, and nowhere else (not rooms, threads between bots,
   scheduled jobs, or delegates), it gets four more tools: `hexbot_bots`,
   `hexbot_rooms`, `hexbot_jobs`, and `hexbot_settings`. Each calls the daemon
   method the app uses, as the owner, so the same checks and change events
@@ -110,8 +114,9 @@ more freedom and more capability than a hosted product can offer.
   even in Bypass.
   Network, service, and billing settings and every credential stay with
   the user.
-- Its tools and guidance are frozen with each section like any other, so a
-  bot made primary gets them in its next new section.
+- Its tools and guidance are frozen with its chat like any other change of
+  tools, so a bot made primary takes them with its next message, which
+  misses the prompt cache once.
 
 ### Check-ins
 
@@ -222,8 +227,8 @@ more freedom and more capability than a hosted product can offer.
   usage to budgets or totals.
   A low or medium risk `allow` runs the step; anything else, including a failure,
   a timeout (60 s) or unparseable output, shows the card with the reviewer's sentence. Those
-  cards offer Approve and Deny only, and reviewed steps ignore section grants
-  from Manual, so one approval never covers the next step. Changing the mode
+  cards offer Approve and Deny only, and reviewed steps ignore Allow for now
+  grants from Manual, so one approval never covers the next step. Changing the mode
   or working directory during review blocks the step. File execution also
   checks the resolved destination and reviewed overwrite status again.
   Only visible sections are reviewed; the rest still refuse.
@@ -244,22 +249,23 @@ more freedom and more capability than a hosted product can offer.
   Hexbot warns, Settings shows a notice, Manual and Auto ask before every
   shell command and code run, including full-access commands, and scheduled
   scripts refuse to run. Model review cannot replace this user approval;
-  an explicit section grant can cover later shell requests.
-- Connected tools in new sections use Pi's built-in MCP through codemode.
-  The section freezes server namespaces and tool declarations. Manual asks for
-  every connected-tool call, and Allow in this section covers that server.
-  Auto runs read-only tools freely and reviews other calls individually;
-  their cards offer Approve and Deny only. Bypass never asks. Every nested
-  codemode call uses the same approval gate. Removal and disable revoke access
-  immediately, including in Bypass.
+  an explicit Allow for now can cover later shell requests.
+- Connected tools use Pi's built-in MCP through codemode. A section freezes
+  server namespaces and tool declarations; a bot's chat takes changed ones at
+  its next message, rebuilt once without the cache. Manual asks for every
+  connected-tool call, and Allow for now covers that server. Auto runs
+  read-only tools freely and reviews other calls individually; their cards
+  offer Approve and Deny only. Bypass never asks. Every nested codemode call
+  uses the same approval gate. Removal and disable revoke access immediately,
+  including in Bypass.
   Changed credentials block old clients until they reconnect at the next prompt.
   Saved sections keep their existing Rust bridge tools.
-- Approvals render inline in the transcript with Approve, Allow in this
-  section, and Deny when a section grant is available. "Allow in this section"
-  quiets the same kind of Manual or unreviewed request for the running agent
-  process; nothing is saved across sections. Reviewed Auto cards, incomplete
-  file scans and requests the daemon raises itself (code runs, browser scripts,
-  cron) offer Approve and Deny only. Native notifications for approvals and mentions.
+- Approvals render inline in the transcript with Approve, Allow for now, and
+  Deny when a grant is available. "Allow for now" quiets the same kind of
+  Manual or unreviewed request until the bot's agent process restarts;
+  nothing is saved. Reviewed Auto cards, incomplete file scans and requests
+  the daemon raises itself (code runs, browser scripts, cron) offer Approve
+  and Deny only. Native notifications for approvals and mentions.
 - New bots get files, web search, browser and terminal (terminal gated by
   approvals). Computer use is off until enabled. Self-authored skills are on,
   with a transcript notice. Bundled and user-shared skills form one library,
@@ -269,21 +275,50 @@ more freedom and more capability than a hosted product can offer.
 - Tools run on the host in a shared workspace at `~/Hexbot`. Per-bot working
   directories come with the roster milestone.
 
-### Sections
+### Chats
 
-- Persistent, Discord-thread-like conversations per bot and per room. Each is
-  its own persistent conversation with its own context window.
-- A new section starts with the bot's memory and a catalog of skill descriptions.
-  It loads skill bodies when needed. Sections started with prompt refresh
-  support can pick up the current name, soul, memory, About you, teammates
-  and skill catalog after compaction if the next request starts a new run.
-  A continuation within the active run discards that refresh until another
-  compaction. Older sections and sections whose fixed guidance or tool layout
-  no longer matches after an update retain their prompt. Skill reads use
-  current bodies and grants.
-- Sidebar: one list of bots and rooms ordered by recent activity. Each entry
-  shows one or two recent sections and expands to show the rest. Archived
-  sections sit collapsed at the bottom.
+- One chat per bot, like a contact in a messaging app. It never ends: there
+  is no new chat, archive or delete, and summarising older messages keeps it
+  going. Rooms have one conversation each. Internally each is a section, its
+  own persistent Pi conversation with its own context window; the threads in
+  which bots ask each other for help are sections too.
+- Updating from a build with many sections per bot keeps, for each bot, the
+  section with the latest conversation (something said, not the old Dreams
+  log, not archived, newest) and deletes the rest with their history. It runs
+  once, at the first start of this version before any client can connect,
+  and first makes a full copy of `hexbot.db`, `hexbot-runtime.db`, the bots'
+  `state.db` and `runtime/sessions` in `backups/one-chat-per-bot-<time>/`, so
+  it needs that much free disk. If anything fails (the copy, recovery, a
+  delete) nothing more is deleted, the partial copy is removed, and the
+  sections left stay for good; no later start tries again. A section leaves
+  the list before its history is removed, so a stop part way never leaves a
+  broken one: it is whole or gone, and what is left of a gone one is removed
+  at the next start. A bot whose conversations recovery could not read, or
+  whose older `state.db` cannot be read, keeps them all with their history.
+  Its chat is ranked the same way among the sections that open, so the old
+  Dreams log is never a bot's chat while a conversation remains; one
+  recovery set aside, or whose history is only in a `state.db` that cannot
+  be read, is skipped, and a new chat is made only when none can be the
+  chat. No client lists or opens the others. Memory and notes stay.
+- An updated app on a daemon from before one chat per bot makes a section
+  only for a bot with none, since that daemon makes a new one on every
+  create. That daemon's list cannot tell its Dreams log, renamed or not, from
+  a conversation, so the app opens a section by itself only while at most
+  one has something said, and otherwise asks which one to continue. The pick
+  lasts while the app runs. When supported, successful unarchive also saves
+  the choice for upgrade. Old reports can overwrite that same activity time;
+  when a mixed log makes the choice ambiguous, the upgrade keeps all competing
+  histories and ranks the chat by known human conversation activity.
+- A chat starts with the bot's memory and a catalog of skill descriptions.
+  It loads skill bodies when needed. It picks up the current name, soul,
+  memory, About you, teammates and skill catalog after compaction if the next
+  request starts a new run. A continuation within the active run discards that
+  refresh until another compaction. When the bot's tools or connected servers
+  change, or an update changes Hexbot's own tools, the chat is rebuilt with
+  them at its next message; rooms, threads between bots, jobs and delegates
+  keep what they started with. Skill reads use current bodies and grants.
+- Sidebar: one list of bots and rooms ordered by recent activity. A bot is one
+  row; opening it opens the chat.
 
 ## 3. Client
 

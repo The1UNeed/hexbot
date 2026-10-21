@@ -33,6 +33,11 @@ Connect sequence:
 3. Wait for the `gateway.ready` event; keep its `replay_epoch`.
 4. Call `hexbot.info`, `hexbot.settings.get`, `hexbot.bots.list`.
 
+Daemon capabilities belong to the current target and replay epoch. Clear them
+when that connection ends or changes, and publish `hexbot.info` independently
+of other hydration RPCs. If info is unavailable, chat selection waits for a
+successful info request before deciding whether create is safe on that daemon.
+
 Reconnect with exponential backoff from 1 s to 16 s, forever, reset after
 30 s stable. On reconnect, for every open live session call
 `session.events.since {session_id, last_seen}`; if the returned epoch
@@ -70,6 +75,19 @@ store and by `params.type` for global events (`hexbot.*.changed`).
   persisted to localStorage.
 
 Only the transcript store is hot; everything else is small.
+
+A catalog live ID does not mean its history has loaded. Only `sections.open`
+registers a chat as loaded; list refreshes and canonical lookups leave that
+registration alone. A report reload drops that registration, including when
+the chat is offscreen; the transcript stays on screen until the next read
+replaces it, and is dropped only if it is still empty. Concurrent history opens share a request and reread
+if another report invalidates the snapshot before it arrives.
+
+Roster selections and Dream log entries resolve the daemon's canonical chat
+on activation. Older daemons use the same explicit chooser and persist a pick
+before opening it. Later navigation, unmount, or a daemon change cancels the
+lookup before any further writes or navigation. Mobile omits a bot card's quote
+when multiple preserved owner conversations make its source uncertain.
 
 ## Event mapping
 
@@ -132,3 +150,26 @@ native-only controls.
 - End to end: Playwright drives the packaged Electron app against a
   daemon started in a temp home with a stub provider: connect, create a
   bot, send a message, see a reply.
+
+Ordinary bot-chat URLs resolve the daemon's chat before showing history or enabling
+input, including restored URLs and already-loaded live IDs. Explicit teammate
+threads keep their own route and accept only answers to existing approval and
+question cards. Metadata or open failures offer Retry. The same
+navigation and daemon guards cover closing bot settings, so a late lookup cannot
+pull the user out of a later room or route. Mobile Pulse opens a waiting teammate
+thread's approval or question on its own live ID; ordinary bot taps still open
+the canonical owner chat. Reconnects discard old chooser state, and a fresh
+modern capability never accepts a stale ordinary chooser row as canonical.
+
+Closing settings for a deleted bot clears only that bot's remembered chat and
+leaves through the normal Home route. A later navigation or daemon change
+cancels that exit, including while chat selection is waiting.
+
+Mobile reconnect resolves an ordinary owner route through the daemon before
+restoring history or enabling input, even when its old row still exists. A
+failed lookup keeps input closed and offers Retry. Explicit peer threads and
+rooms keep their own routes; older daemons keep their remembered explicit pick.
+
+Onboarding's initial decision, Continue retry and first-bot creation use the
+same route and daemon guard. Leaving that visit prevents later chat selection,
+remembered-selection updates, navigation and bot introduction from its replies.

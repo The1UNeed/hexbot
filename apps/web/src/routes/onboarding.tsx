@@ -21,13 +21,12 @@ import {
   connectorsSetup,
   providerModels,
   providersList,
-  sectionsCreate,
   settingsGet,
   settingsSet,
   userMemoryGet,
   userMemorySet
 } from '../lib/api'
-import { avatarPng, type AvatarStyle, styleForName } from '../lib/avatar-builder'
+import { avatarPng, type AvatarStyle, botFace, styleForName } from '../lib/avatar-builder'
 import { type DaemonProgress, getBridge, hasLocalRuntime, isElectron } from '../lib/bridge'
 import { cn } from '../lib/cn'
 import { connectTo, setLocalDaemonPort } from '../lib/connection'
@@ -40,10 +39,11 @@ import type {
   Provider,
   Section
 } from '../lib/types'
+import { useChatSelection } from '../lib/use-chat-selection'
 import { useBots } from '../stores/bots'
 import { useConnection } from '../stores/connection'
 import { unknownMethod, useMe } from '../stores/me'
-import { introduceBot } from '../stores/sections'
+import { introduceBot, oneChat, sectionsActions } from '../stores/sections'
 import { type LastSection, uiActions } from '../stores/ui'
 
 export const Route = createFileRoute('/onboarding')({ component: OnboardingPage })
@@ -52,6 +52,7 @@ type OnboardingStep =
   | 'about'
   | 'choice'
   | 'connect'
+  | 'continue'
   | 'deciding'
   | 'defaults'
   | 'install'
@@ -78,37 +79,100 @@ export function initialOnboardingStep(input: {
 }
 
 /**
- * Where onboarding ends for someone who already has bots: the section they
- * were in, else any bot's latest section, else a new section on the first
- * bot. Null when there are no bots yet.
+ * The bot onboarding ends with for someone who already has bots: the one
+ * they were with, else one they have talked to, else the first.
  */
-export async function landingSection(bots: Bot[]): Promise<LastSection | null> {
-  if (!bots.length) {
+export function landingBot(bots: Bot[]): Bot | undefined {
+  const last = uiActions().lastSection
+
+  return (
+    bots.find(bot => bot.name === last?.bot) ??
+    bots.find(bot => bot.sections_recent.length) ??
+    bots[0]
+  )
+}
+
+/**
+ * Where onboarding ends for someone who already has bots: the chat of
+ * `landingBot` as the daemon names it, never the section remembered here,
+ * which the upgrade may have deleted or recovery set aside. An older daemon
+ * names no chat, so there the section they were in stays theirs. Null when
+ * there are no bots yet, or when an older daemon asked which section to
+ * continue and the user picked none.
+ */
+export async function landingSection(
+  bots: Bot[],
+  current: () => boolean = () => true
+): Promise<LastSection | null> {
+  const bot = landingBot(bots)
+
+  if (!bot || !current()) {
     return null
   }
 
   const last = uiActions().lastSection
 
-  if (last && bots.some(bot => bot.name === last.bot)) {
-    return last
+  if (last?.bot === bot.name && !(await oneChat())) {
+    return current() ? last : null
   }
 
-  const recent = bots.find(bot => bot.sections_recent.length)
-
-  if (recent) {
-    return { bot: recent.name, section: recent.sections_recent[0]!.id }
+  if (!current()) {
+    return null
   }
 
-  const { section } = await sectionsCreate(bots[0]!.name)
+  const section = await sectionsActions().chat(bot.name, current)
 
-  return { bot: bots[0]!.name, section: section.id }
+  return current() && section ? { bot: bot.name, section: section.id } : null
 }
 
-/** The primary bot, else a bot called hexbot, with its latest section. */
+/**
+ * Where someone with bots waits when their chat did not open: an older
+ * daemon asked which section to continue and they picked none, or the daemon
+ * failed. Continue asks again; nothing is opened or made until then.
+ */
+export function ContinueStep({
+  bot,
+  error,
+  onContinue
+}: {
+  bot: Bot
+  error: null | string
+  onContinue: () => Promise<void>
+}) {
+  const [busy, setBusy] = useState(false)
+
+  return (
+    <SetupFrame subtitle="Pick up where you left off." title={`Continue with ${bot.display_name}`}>
+      <div className="grid w-full flex-1 place-items-center py-8">
+        <Avatar {...botFace(bot)} name={bot.display_name} size="xl" />
+      </div>
+      <SetupActions className="pb-[12vh]">
+        <Button
+          busy={busy}
+          className={PILL}
+          onClick={() => {
+            setBusy(true)
+            void onContinue().finally(() => setBusy(false))
+          }}
+          variant="primary"
+        >
+          Continue
+        </Button>
+      </SetupActions>
+      {error ? (
+        <p className="pb-10 text-center text-secondary text-danger" role="alert">
+          {error}
+        </p>
+      ) : null}
+    </SetupFrame>
+  )
+}
+
+/** The primary bot, else a bot called hexbot, with its chat. */
 async function existingHexBot(): Promise<{ bot: Bot; section: Section } | null> {
   const { bots } = await botsList()
   const bot = bots.find(item => item.primary) ?? bots.find(item => item.name === 'hexbot')
-  const section = bot?.sections_recent[0]
+  const section = bot ? await sectionsActions().chat(bot.name) : null
 
   return bot && section ? { bot, section } : null
 }
@@ -117,7 +181,7 @@ async function existingHexBot(): Promise<{ bot: Bot; section: Section } | null> 
  * Creates HexBot, the primary bot. A daemon from before the primary bot
  * gets an ordinary bot with the same name, which it can promote once updated.
  * When HexBot is already there, as after a create whose reply was lost, it
- * returns HexBot and its latest section instead.
+ * returns HexBot and its chat instead.
  */
 export function createHexBot(
   defaultModel: null | string,
@@ -1031,6 +1095,7 @@ export function ToolsStep({
 
 function OnboardingPage() {
   const navigate = useNavigate()
+  const { startSelection } = useChatSelection()
   const connected = useConnection(state => state.status === 'connected')
   const hasBots = useBots(state => state.order.length > 0)
 
@@ -1040,45 +1105,82 @@ function OnboardingPage() {
   const [defaultModel, setDefaultModel] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [creating, setCreating] = useState(false)
+  const creatingPrimary = useRef(false)
+  // The bots of someone whose chat did not open, and why, for Continue.
+  const [unopened, setUnopened] = useState<{ bots: Bot[]; error: null | string } | null>(null)
   const onError = useCallback((message: string) => setError(message), [])
 
   // Onboarding ends by creating HexBot, the primary bot, on the chosen
-  // default model, and opening its first section, where it introduces itself.
+  // default model, and opening its chat, where it introduces itself.
+  // A later selection, navigation or daemon wins over a creation still running.
   const createPrimary = async () => {
+    if (creatingPrimary.current) {
+      return
+    }
+
+    creatingPrimary.current = true
+    const current = startSelection()
     setCreating(true)
 
     try {
       const face = styleForName('hexbot')
       const avatar = await avatarPng(face)
-      const { bot, section } = await createHexBot(defaultModel, avatar, face)
-      const last = { bot: bot.name, section: section.id }
-      uiActions().setLastSection(last)
-      void navigate({ to: '/b/$bot/s/$section', params: last })
-      void introduceBot(section, bot)
+
+      if (current()) {
+        const { bot, section } = await createHexBot(defaultModel, avatar, face)
+
+        if (current()) {
+          const last = { bot: bot.name, section: section.id }
+          uiActions().setLastSection(last)
+          void navigate({ to: '/b/$bot/s/$section', params: last })
+          void introduceBot(section, bot)
+
+          return
+        }
+      }
     } catch (reason) {
-      setCreating(false)
-      setError(String(reason))
+      if (current()) {
+        setError(String(reason))
+      }
+    } finally {
+      creatingPrimary.current = false
     }
+
+    setCreating(false)
   }
 
   const finish = useCallback(
-    (bots: Bot[]) =>
-      landingSection(bots)
-        .then(last => {
-          if (!last) {
-            setStep('providers')
+    async (bots: Bot[], current = startSelection()) => {
+      if (!current()) {
+        return
+      }
 
-            return
-          }
+      try {
+        const last = await landingSection(bots, current)
 
+        if (!current()) {
+          return
+        }
+
+        if (last) {
           uiActions().setLastSection(last)
           void navigate({ to: '/b/$bot/s/$section', params: last })
-        })
-        .catch(reason => {
-          setError(String(reason))
+        } else if (bots.length) {
+          // An older daemon asked which section to continue and none was
+          // picked: that opens nothing, and these bots are still here.
+          setUnopened({ bots, error: null })
+          setStep('continue')
+        } else {
           setStep('providers')
-        }),
-    [navigate]
+        }
+      } catch (reason) {
+        if (current()) {
+          setUnopened({ bots, error: String(reason) })
+          setStep('continue')
+        }
+      }
+    },
+    [navigate, startSelection]
   )
 
   // One decision per visit, taken once the daemon is connected and never
@@ -1086,31 +1188,41 @@ function OnboardingPage() {
   // never written (its Skip writes an empty text, so the form only mounts
   // once the read says the file is absent), then the user's section, or
   // provider setup when there are no bots yet.
-  const decided = useRef(false)
+  const decided = useRef<null | (() => boolean)>(null)
+  const decisionComplete = useRef(false)
   const afterAbout = useRef<() => void>(() => setStep('providers'))
 
   const decide = useCallback(() => {
-    if (decided.current) {
+    if (decisionComplete.current || decided.current?.()) {
       return
     }
 
-    decided.current = true
+    const current = startSelection({ hydrate: true })
+    decided.current = current
     setStep('deciding')
     void Promise.all([userMemoryGet(), botsList()])
       .then(([memory, list]) => {
+        if (!current()) {
+          return
+        }
+
+        decisionComplete.current = true
+
         if (memory.updated_at === null) {
-          afterAbout.current = () => void finish(list.bots)
+          afterAbout.current = () => void finish(list.bots, current)
           setStep('about')
         } else {
-          void finish(list.bots)
+          void finish(list.bots, current)
         }
       })
       .catch(reason => {
-        decided.current = false
-        setError(String(reason))
-        setStep('providers')
+        if (current()) {
+          decided.current = null
+          setError(String(reason))
+          setStep('providers')
+        }
       })
-  }, [finish])
+  }, [finish, startSelection])
 
   // Decided when the button is pressed, not when the page mounts, so a daemon
   // that connected while the welcome screen was up is taken into account.
@@ -1179,6 +1291,14 @@ function OnboardingPage() {
     return null
   }
 
+  if (step === 'continue') {
+    const bot = landingBot(unopened?.bots ?? [])
+
+    return unopened && bot ? (
+      <ContinueStep bot={bot} error={unopened.error} onContinue={() => finish(unopened.bots)} />
+    ) : null
+  }
+
   if (creating) {
     return (
       <main className="grid min-h-screen place-items-center bg-background text-foreground">
@@ -1237,9 +1357,7 @@ function OnboardingPage() {
 
   return (
     <SetupFrame subtitle={copy[1]} title={copy[0]}>
-      {step === 'about' ? (
-        <AboutStep onContinue={() => afterAbout.current()} onError={onError} />
-      ) : null}
+      {step === 'about' ? <AboutStep onContinue={afterAbout.current} onError={onError} /> : null}
 
       {step === 'providers' ? (
         <ProvidersStep

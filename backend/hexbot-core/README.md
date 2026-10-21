@@ -112,6 +112,19 @@ it also installs over SSH when nobody is signed in at the screen.
   directory. Existing Python `state.db` history is imported once, including
   hidden and tool messages. New native turns are not mirrored into legacy
   Python history. There is no Python rollback package.
+  Section deletion commits its catalog decision before purging history.
+  Requested legacy purges persist exact native targets, bot, owner and the
+  decision root in `native_delete_options`/`native_delete_pending`, then save
+  identifiable legacy IDs before removing native relationships. Startup retries
+  incomplete cleanup even when native rows and files are gone. Conflicting
+  ownership or a reference from retained legacy history leaves the request
+  pending; restarting alone cannot resolve the conflict. Completed targets
+  remain tombstoned. A failed catalog decision rolls back its own
+  request without changing raw history or frozen options. `purge_memory: false`
+  still purges native history and leaves legacy history alone. Old tombstones
+  without ownership metadata retain their native-only recovery behavior.
+  The one-shot upgrade backup already copies the entire runtime database,
+  including these requests; cleanup retries do not rerun its deletion plan.
   Session recovery reconciles Pi's durable log with native history and usage;
   replaying an already recorded message does not duplicate it or its cost.
   `native_history_versions` counts, by trigger, every change to a session's
@@ -122,6 +135,12 @@ it also installs over SSH when nobody is signed in at the screen.
   searches. For a full-text query, a savepoint temporarily deletes the asking
   section's rowid range before MATCH and BM25 ranking, then rolls back and
   releases it even on an invalid expression. Its text cannot affect ranking.
+  A compacted asking chat stays searchable before Pi's first kept entry.
+  Search finds that boundary by matching the log to the native journal,
+  without recovering a running chat. Pi's empty system/tool catalog records
+  and the hidden todo and fallback notices are journaled only on recovery, so
+  they mark no position. Any other projected log message without its exact
+  journal row fails the search with 5200 instead of guessing the boundary.
   Index refresh and removal of deleted sections use the same rowid ranges.
   The cache retains at most eight indexes within a 256 MiB estimated budget:
   all retained message JSON, including tool-call arguments, plus 512 bytes a
@@ -132,11 +151,16 @@ it also installs over SSH when nobody is signed in at the screen.
   answered but not retained, without evicting other indexes. Concurrent searches
   can build separately; the last returned entry replaces the same cache key.
   Every query checks section metadata and history versions; unchanged eligible
-  sections require no transcript reads. A deleted section disappears at the
-  next query, and `delete` drops its version row with the rest of its history.
+  sections require no transcript reads. A legacy `state.db` that cannot be
+  read is left out; the next search after it becomes readable again, or stops
+  being readable, rebuilds the index even if its time and size are unchanged.
+  A deleted section disappears at the next query, and `delete` drops its
+  version row with the rest of its history.
 - Settled Pi processes retire after 15 idle minutes. Session IDs remain valid;
-  a later RPC resumes the durable session. Staged files and pending questions
-  prevent retirement. Replay retention is bounded by session count and bytes.
+  a later RPC resumes the durable session. Staged files, pending questions,
+  and uploads or messages still on their way in prevent retirement; that
+  includes the restart that moves a chat to new tools or a new model. Replay
+  retention is bounded by session count and bytes.
 - `profiles/<bot>/pi/` is the bot's Pi agent directory. The daemon rewrites
   `auth.json`, `models.json`, and the `compaction` key of `settings.json`
   atomically before every Pi start and whenever credentials change; other
@@ -198,6 +222,17 @@ it also installs over SSH when nobody is signed in at the screen.
   Only the bot's name, soul, memory, About you, teammates and skill catalog
   can change. Guidance and tool changes still reach new sections only.
   Native live session IDs remain distinct from stored section IDs.
+  Forking a retained Dream source takes an exclusive conversation file lease
+  through catalog publication. Runtime open/recovery, its process, input
+  landings, parked uploads after a failed restart and background work hold
+  shared leases, so lookup keeps that source
+  until they finish and the process closes or retires. Projection writes and
+  recovery also take shared leases. No catalog writer waits for a source.
+  An opener checks the committed adoption under its lease before changing
+  options or starting Pi; old source IDs return 4002 with the canonical ID.
+  Lock files stay outside session directories so cleanup cannot replace their
+  inodes. A process crash releases leases; the existing pending-fork decision
+  still owns recovery and cleanup.
 - HTTP cookies, pairing, device revocation, JSON-RPC names, error objects,
   owner-scoped events, replay sequence numbers, and replay epochs preserve the
   existing client contract. LAN setting changes restart the listener and close
@@ -206,6 +241,24 @@ it also installs over SSH when nobody is signed in at the screen.
   per bot and are not exposed in client responses or model event streams.
 
 ## Modules
+
+Transcript identity is optional projection metadata. `runtime_identity.rs`
+observes ordered preflight, actual operations and assistant fragments; it owns
+no admission, Stop, replay or upload policy. A sole `started` input can bind
+the initial real user slot. Queued, steered and raw-only recovered users omit
+`input_id` without a proven binding. Manual `/compact` reserves its key before
+Pi compacts and keeps it on the user row the daemon stores afterwards.
+`turn_id` identifies each actual Pi operation; each assistant fragment's
+`message_id` equals its projected `row_id`. Seeds survive SQLite retries.
+Reconciliation preserves committed metadata through the full-raw journal
+match without changing Pi messages, frozen prompts/options or billing. See [the API contract](../../docs/api.md#optional-transcript-identity).
+
+Explicit attachment lists consume only selected staged uploads. Unselected
+uploads, including another paired client's files, remain available for later
+submission. An empty list retains all staging; omitting the list consumes all
+staging for legacy clients. Rejection restores selected files alongside retained
+and concurrent uploads. Existing staging quotas, restart transfer and explicit
+clear, close and deletion cleanup apply to retained uploads.
 
 | Module | Responsibility |
 | --- | --- |
@@ -351,7 +404,7 @@ level sends Apple Events. A command that needs more sets `full_access` with a
 `reason` on the bash tool. Manual asks the user; Auto reviews the command and
 asks about risky or unreviewable steps. An allowed command runs with the
 sandbox's base layer only. File-tool writes to shell profiles and login items
-use user approval, subject to explicit section grants; full-access shell
+use user approval, subject to an explicit Allow for now; full-access shell
 commands use model review. In Manual the shell sandbox is read-only and every
 file change asks. Manual scheduled scripts cannot write artifacts. Manual asks
 before browser page scripts; Auto reviews them. Both modes ask before
@@ -391,7 +444,7 @@ restricted bridge for provider authentication, request adaptation and tool-free
 ACP completion. Reported reviewer usage is recorded without chat text and
 counts toward section totals, room turn budgets and daily token budgets.
 Reviewed Auto cards offer Approve and Deny only, and never use remembered
-section grants.
+Allow for now grants.
 
 The workspace scan is breadth-first, through three nested folders, skipping
 policy dependency/runtime folders and shared temporary roots. Manual searches
@@ -447,7 +500,7 @@ is missing or cannot start, a startup warning records the lack of OS isolation,
 `hexbot.info` reports `sandbox: null` so Settings can show a notice,
 Manual and Auto require user approval for shell commands and code runs,
 including full-access commands. Model review cannot replace that approval;
-an explicit section grant can cover later shell requests. Scheduled scripts
+an explicit Allow for now can cover later shell requests. Scheduled scripts
 refuse to run.
 Provider keys reach the agent through its auth file. The selected Bedrock or Vertex provider also receives its cloud environment settings; shell and scheduled script children do not.
 The Python environment does not include `HEXBOT_HOME`.
@@ -488,8 +541,8 @@ rejected; new sections skip existing SSE entries with a warning.
 
 Manual asks for every connected-tool call. Auto runs tools with
 `readOnlyHint: true` freely and reviews other calls individually. Resource tools
-are read-only. In Manual, Allow in this section covers that server until the Pi
-process ends. Reviewed Auto calls offer no section grant. Bypass never asks.
+are read-only. In Manual, Allow for now covers that server until the Pi
+process ends. Reviewed Auto calls never offer it. Bypass never asks.
 Codemode itself needs no approval, but every nested tool call passes the same gates.
 Its QuickJS worker has no Node, filesystem, or network globals. Its `models`
 helpers can call provider APIs using session credentials and incur costs.
@@ -542,7 +595,11 @@ Pi's changing server section is hidden by the forced-prompt projection.
 
 Hidden turns include prompt submission in their 30-minute deadline.
 Recovery quarantines damaged data; transient I/O or SQLite failures leave the
-files in place for a later attempt. A quarantined section moves its
+files in place for a later attempt. Startup records transient failures in
+`native_unrecovered` so canonical chat lookup can skip those sections without
+repeating recovery under the catalog write lock. A later successful startup
+recovery clears the record. Filesystem access errors count as failures, never
+as missing logs. A quarantined section moves its
 `conversation.jsonl` aside as `conversation.quarantine-<id>.jsonl` and refuses
 to open until a `conversation.jsonl` is put back; the next daemon start then
 recovers that file and lifts the quarantine if it is sound.

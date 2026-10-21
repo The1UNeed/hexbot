@@ -41,6 +41,7 @@ pub struct App {
     proofs: Arc<dpop::Proofs>,
     logins: Mutex<HashMap<String, BrowserLogin>>,
     auth_connection: Mutex<rusqlite::Connection>,
+    bot_lifecycle: Arc<tokio::sync::Mutex<()>>,
     pub address: SocketAddr,
     _network_guard: common::DaemonListener,
     pub web_dist: Option<PathBuf>,
@@ -82,6 +83,17 @@ impl App {
         web_dist: Option<PathBuf>,
     ) -> Result<Arc<Self>> {
         db::migrate(&home)?;
+        if let Err(error) = crate::runtime_store::finish_deletes(&home) {
+            eprintln!("Could not finish deleting sections: {}", error.message);
+        }
+        // Before any client can connect. The daemon starts without it; it
+        // fails this way only before it deletes anything.
+        if let Err(error) = catalog::one_chat_per_bot(&home) {
+            eprintln!(
+                "The upgrade to one chat per bot stopped before deleting anything and runs again on the next start: {}",
+                error.message
+            );
+        }
         let events = EventHub::new();
         let runtime = Runtime::new(home.clone(), events.clone(), pi)?;
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
@@ -116,6 +128,7 @@ impl App {
         let app = Arc::new(Self {
             memory: MemoryStore::new(home.clone()),
             auth_connection: Mutex::new(db::open(&home)?),
+            bot_lifecycle: Arc::new(tokio::sync::Mutex::new(())),
             home,
             events,
             runtime,
@@ -140,6 +153,7 @@ impl App {
         let app = Arc::new(Self {
             memory: MemoryStore::new(self.home.clone()),
             auth_connection: Mutex::new(db::open(&self.home)?),
+            bot_lifecycle: self.bot_lifecycle.clone(),
             home: self.home.clone(),
             events: self.events.clone(),
             runtime: self.runtime.clone(),
@@ -158,11 +172,38 @@ impl App {
         Ok(app)
     }
     pub async fn call(self: &Arc<Self>, owner: &str, method: &str, p: &Value) -> Result<Value> {
-        let _roles = if matches!(method, "hexbot.bots.delete" | "hexbot.bots.set_primary") {
-            Some(self.roles.lock().await)
+        // Reserve name reuse in request order before handing deletion to its
+        // cancellation-safe task, including through a rebound listener.
+        let bot_lifecycle = if matches!(
+            method,
+            "hexbot.bots.create" | "hexbot.bots.create_primary" | "hexbot.bots.delete"
+        ) {
+            Some(self.bot_lifecycle.clone().lock_owned().await)
         } else {
             None
         };
+        // Bot deletion and promotion run one at a time.
+        let roles = if matches!(method, "hexbot.bots.delete" | "hexbot.bots.set_primary") {
+            Some(self.roles.clone().lock_owned().await)
+        } else {
+            None
+        };
+        if matches!(
+            method,
+            "hexbot.bots.delete" | "hexbot.rooms.delete" | "hexbot.rooms.remove_member"
+        ) {
+            // A disconnected/cancelled RPC must not abandon retirement halfway
+            // through Pi shutdown. This task owns closure, decision and rollback.
+            let app = self.clone();
+            let (owner, method, p) = (owner.to_owned(), method.to_owned(), p.clone());
+            return tokio::spawn(async move {
+                let _locks = (bot_lifecycle, roles);
+                Box::pin(app.call_inner(&owner, &method, &p)).await
+            })
+            .await
+            .map_err(|error| Error::new(5200, format!("deletion failed: {error}")))?;
+        }
+        let _locks = (bot_lifecycle, roles);
         // Boxed: the dispatcher is large, and the primary bot's tools reach it again.
         Box::pin(self.call_inner(owner, method, p)).await
     }
@@ -171,33 +212,40 @@ impl App {
             return Err(Error::new(5200, "Reconnect to continue"));
         }
         common::user(&self.home, owner)?;
-        let mut affected_rooms = Vec::new();
-        // Deletes are orchestrated here alone: one busy check, one close pass.
-        if method == "hexbot.sections.delete" {
-            let stored = common::required(p, "id")?;
-            catalog::section(&self.home, owner, stored)?;
-            self.runtime.delete_stored(owner, stored).await?;
-        }
+        let mut admission = Vec::new();
+        // Drain openers before the final busy check. New opens fail admission
+        // until closure and the catalog decision finish.
         if method == "hexbot.bots.delete" {
             let bot = common::required(p, "name")?;
             common::bot_owner(&self.home, owner, bot)?;
             catalog::check_deletable(&self.home, owner, bot)?;
-            let running: bool = db::open(&self.home)?.query_row(
-                "SELECT EXISTS(SELECT 1 FROM room_turns WHERE bot=? AND status='running')",
-                [bot],
-                |r| r.get(0),
-            )?;
-            let busy = self.runtime.busy_sections(bot);
-            if running || !busy.is_empty() {
-                let sections = busy
-                    .iter()
-                    .map(|s| json!({"id":s["id"],"status":s["status"]}))
-                    .collect::<Vec<_>>();
-                return Err(
-                    Error::new(4211, format!("bot {bot} has a streaming section"))
-                        .with_data(json!({"sections":sections})),
-                );
-            }
+            self.check_bot_delete_idle(bot)?;
+            admission.push(
+                self.runtime
+                    .admission
+                    .pause(crate::admission::Scope::Bot(bot.into()))
+                    .await,
+            );
+        }
+        let room_post = if method == "hexbot.rooms.send" {
+            Some(self.runtime.admission.enter(crate::admission::Scope::Room(
+                common::required(p, "id")?.into(),
+            ))?)
+        } else {
+            None
+        };
+        let mut affected_rooms = Vec::new();
+        // Deletes are orchestrated here: admission, close, catalog decision.
+        if method == "hexbot.sections.delete" {
+            let stored = common::required(p, "id")?;
+            catalog::check_section_delete(&self.home, owner, stored)?;
+            // The catalog removes its row before its history.
+            self.runtime.retire_stored(owner, stored).await?;
+        }
+        if method == "hexbot.bots.delete" {
+            let bot = common::required(p, "name")?;
+            common::bot_owner(&self.home, owner, bot)?;
+            self.check_bot_delete_idle(bot)?;
             affected_rooms = common::rows(
                 &db::open(&self.home)?,
                 "SELECT r.id,r.owner_id FROM rooms r JOIN room_members m ON m.room_id=r.id WHERE m.member_kind='bot' AND m.member_id=? AND m.left_at IS NULL",
@@ -208,31 +256,28 @@ impl App {
                     .stop_internal(room["id"].as_str().unwrap_or(""))
                     .await?;
             }
-            // Sections, room conversations and hidden jobs, each under its owner.
-            let sessions = common::rows(
-                &crate::runtime_store::open(&self.home)?,
-                "SELECT stored_id,owner FROM native_sessions WHERE bot=?",
-                &[&bot],
-            )?;
-            for session in sessions {
-                self.runtime
-                    .delete_stored(
+            let sessions = catalog::prepare_bot_delete(&self.home, owner, bot)?;
+            let prepared: Result<()> = async {
+                for session in sessions {
+                    self.runtime.retire_stored(
                         common::required(&session, "owner")?,
-                        common::required(&session, "stored_id")?,
-                    )
-                    .await?;
-            }
-            // Threads where this bot asked others are archived below; stop any still answering
-            // or waiting on the owner, since their panel can no longer be opened.
-            let threads = common::rows(
-                &db::open(&self.home)?,
-                "SELECT id FROM sections WHERE peer_bot=? AND owner_id=? AND archived_at IS NULL",
-                &[&bot, &owner],
-            )?;
-            for thread in threads {
-                self.runtime
-                    .close_stored(owner, common::required(&thread, "id")?)
-                    .await?;
+                        common::required(&session, "id")?,
+                    ).await?;
+                }
+                // Stop recipient threads before archiving them in the catalog transaction.
+                let threads = common::rows(
+                    &db::open(&self.home)?,
+                    "SELECT id FROM sections WHERE peer_bot=? AND owner_id=? AND archived_at IS NULL",
+                    &[&bot, &owner],
+                )?;
+                for thread in threads {
+                    self.runtime.close_stored(owner, common::required(&thread, "id")?).await?;
+                }
+                Ok(())
+            }.await;
+            if let Err(error) = prepared {
+                catalog::rollback_bot_delete(&self.home, bot)?;
+                return Err(error);
             }
         }
         let mut removed_sessions = Vec::new();
@@ -240,6 +285,14 @@ impl App {
         // checked once here and the rooms helpers below do not repeat it.
         if matches!(method, "hexbot.rooms.delete" | "hexbot.rooms.remove_member") {
             let room = common::required(p, "id")?;
+            // Order removals before deciding which one removes the last bot.
+            // Joins remain allowed while processes close.
+            admission.push(
+                self.runtime
+                    .admission
+                    .pause(crate::admission::Scope::Room(room.into()))
+                    .await,
+            );
             let row = rooms::get(&self.home, owner, room)?;
             let bot = p["bot"].as_str();
             let active = row["members"]
@@ -254,6 +307,9 @@ impl App {
             if deleting && method == "hexbot.rooms.remove_member" && p["keep_room"] == true {
                 return Err(rooms::last_bot());
             }
+            if deleting {
+                self.rooms.stop_internal(room).await?;
+            }
             removed_sessions = common::rows(
                 &db::open(&self.home)?,
                 "SELECT stored_session_id FROM room_sessions WHERE room_id=?1 AND (?2 OR bot=?3)",
@@ -261,13 +317,20 @@ impl App {
             )?;
             if deleting {
                 // Close before metadata cascades remove the only stored-id mapping.
-                self.rooms.stop_internal(room).await?;
                 for session in std::mem::take(&mut removed_sessions) {
                     self.runtime
                         .close_stored(owner, common::required(&session, "stored_session_id")?)
                         .await?;
                 }
             }
+        }
+        // A concurrent bot deletion can make a non-last removal become the
+        // last one in the catalog decision. Close its bot before that decision
+        // too; the other room members keep their processes.
+        for session in &removed_sessions {
+            self.runtime
+                .close_stored(owner, common::required(session, "stored_session_id")?)
+                .await?;
         }
         let result = match method {
             "hexbot.cli.send" => {
@@ -309,6 +372,7 @@ impl App {
                 p["last_seen"].as_u64().unwrap_or(0),
             )),
             "hexbot.info" => Ok(json!({
+                "transcript_identity": true,
                 "version": crate::version(),
                 "hermes_version": serde_json::from_str::<Value>(include_str!("../../pi-runtime/package.json"))
                     .ok()
@@ -331,6 +395,9 @@ impl App {
                 "sandbox": crate::credentials::sandbox(),
                 // Clients describe Manual, Auto and Bypass only to a daemon that has them.
                 "approvals": "sandbox",
+                // `hexbot.sections.create` returns the bot's one chat; an older
+                // daemon makes a new section every time.
+                "one_chat": true,
                 "home": self.home
             })),
             "hexbot.rooms.stop" => {
@@ -381,8 +448,11 @@ impl App {
                     Err(Error::new(-32601, format!("unknown method: {method}")))
                 }
             }
-        }?;
-        let mut result = result;
+        };
+        if result.is_err() && method == "hexbot.bots.delete" {
+            catalog::rollback_bot_delete(&self.home, common::required(p, "name")?)?;
+        }
+        let mut result = result?;
         // Open Check-ins tabs and the CLI's changes meet: settings and the next run move.
         if method == "hexbot.settings.set"
             && p["patch"]
@@ -404,12 +474,6 @@ impl App {
             self.rooms.stop(owner, common::required(p, "id")?).await?;
         }
         if !removed_sessions.is_empty() {
-            // Only the removed bot stops; the rest of the room keeps going.
-            for session in removed_sessions {
-                self.runtime
-                    .close_stored(owner, common::required(&session, "stored_session_id")?)
-                    .await?;
-            }
             db::open(&self.home)?.execute(
                 "UPDATE room_sessions SET live_session_id=NULL WHERE room_id=? AND bot=?",
                 rusqlite::params![common::required(p, "id")?, common::required(p, "bot")?],
@@ -448,7 +512,8 @@ impl App {
                 "hexbot.rooms.event",
                 json!({"room_id":id,"event":result["event"]}),
             );
-            self.rooms.notify(owner, id).await?;
+            self.rooms
+                .notify_admitted(owner, id, room_post.as_ref().unwrap())?;
         }
         if matches!(
             method,
@@ -482,6 +547,25 @@ impl App {
             );
         }
         Ok(result)
+    }
+    fn check_bot_delete_idle(&self, bot: &str) -> Result<()> {
+        let running: bool = db::open(&self.home)?.query_row(
+            "SELECT EXISTS(SELECT 1 FROM room_turns WHERE bot=? AND status='running')",
+            [bot],
+            |r| r.get(0),
+        )?;
+        let busy = self.runtime.busy_sections(bot);
+        if running || !busy.is_empty() {
+            let sections = busy
+                .iter()
+                .map(|s| json!({"id":s["id"],"status":s["status"]}))
+                .collect::<Vec<_>>();
+            return Err(
+                Error::new(4211, format!("bot {bot} has a streaming section"))
+                    .with_data(json!({"sections":sections})),
+            );
+        }
+        Ok(())
     }
     /// Close this App's connections and refuse new calls; bots keep running.
     pub fn disconnect(&self) {

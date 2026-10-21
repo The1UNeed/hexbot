@@ -408,7 +408,7 @@ test('Auto asks before full access, with the bot reason, and before writes outsi
 
 test('Auto reviews every step outside the sandbox, whatever was allowed before', async t => {
   const f = fixture(t, 'manual', ['terminal']);
-  // A section grant from Manual does not carry into Auto's reviewed steps.
+  // An Allow for now grant from Manual does not carry into Auto's reviewed steps.
   f.ctx.choice = 'session';
   assert.equal(await f.gate('bash', {command:'make', full_access:true}), undefined);
   assert.equal(await f.gate('bash', {command:'make', full_access:true}), undefined);
@@ -1002,7 +1002,7 @@ test('an incomplete scan asks once per file change and never widens a section ap
   f.ctx.choice = 'deny';
   assert.equal((await f.gate('write', {path:join(homedir(), '.zshrc'), content:'x'})).block, true);
   assert.match(f.choices.at(-1).reason, /shell profile.*directory budget/);
-  assert.equal((await f.gate('write', {path:join(tmpdir(), '..', 'hexbot-outside-' + process.pid), content:'x'})).block, true);
+  assert.equal((await f.gate('write', {path:join(homedir(), 'hexbot-outside-' + process.pid), content:'x'})).block, true);
   assert.match(f.choices.at(-1).reason, /outside the workspace.*directory budget/);
   // With a complete scan the change goes to Auto's reviewer again, one at a time.
   for (let i = 0; i < 1001; i++) rmSync(join(work, String(i)), {recursive:true});

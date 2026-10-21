@@ -52,7 +52,6 @@ import { MemoryEditor } from '../bot-settings/memory'
 import { ChoiceRow, dividerClass, Group, Heading, Row } from '../bot-settings/shared'
 import { ConfirmUpdate, installTarget } from '../confirm-update'
 
-import { ArchiveSettings } from './archive'
 import { OPEN_SOURCE } from './licenses'
 
 export const SETTINGS_TABS = [
@@ -60,7 +59,6 @@ export const SETTINGS_TABS = [
   'network',
   'connect',
   'memory',
-  'archive',
   'usage',
   'approvals',
   'appearance',
@@ -111,7 +109,6 @@ export function SettingsPanel({ tab }: { tab: string }): React.JSX.Element {
       {tab === 'network' && <NetworkSettings />}
       {tab === 'connect' && <ConnectSettings />}
       {tab === 'memory' && <MemorySettings />}
-      {tab === 'archive' && <ArchiveSettings />}
       {tab === 'usage' && <UsageSettings />}
       {tab === 'approvals' && <ApprovalsSettings />}
       {tab === 'appearance' && <AppearanceSettings />}

@@ -25,8 +25,8 @@ export function PrimaryChoice({
 }: {
   bots: Bot[]
   /**
-   * Opens the primary bot's new section. `created` is false for a promoted
-   * bot, whose older sections lack the new tools and which needs no greeting.
+   * Opens the primary bot's chat. `created` is false for a promoted bot,
+   * which needs no greeting: its chat takes the new tools with the next message.
    */
   onCreated: (bot: Bot, section: Section, created: boolean) => void
 }) {
@@ -49,6 +49,8 @@ export function PrimaryChoice({
         onCreated(bot, section, true)
       } else {
         const { bot } = await botsSetPrimary(chosen)
+        // The bot's chat takes the new tools with its next message. An older
+        // daemon makes a new section, as its older ones keep their tools.
         const { section } = await sectionsCreate(bot.name)
         await botsActions().refresh()
         onCreated(bot, section, false)

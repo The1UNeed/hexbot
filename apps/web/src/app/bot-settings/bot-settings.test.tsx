@@ -19,7 +19,13 @@ import {
 import { ModelTab } from './model'
 import { ToolsTab } from './tools'
 
+const router = vi.hoisted(() => ({
+  history: { location: {}, subscribe: () => () => undefined },
+  subscribe: () => () => undefined
+}))
+
 vi.mock('@tanstack/react-router', () => ({
+  useRouter: () => router,
   Link: ({ children }: { children: React.ReactNode }) => <a>{children}</a>,
   useNavigate: () => vi.fn()
 }))

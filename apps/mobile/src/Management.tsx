@@ -52,8 +52,6 @@ export type Panel = {
     | 'room'
     | 'room-create'
     | 'rooms'
-    | 'section'
-    | 'sections'
     | 'settings'
     | 'skill'
     | 'skill-create'
@@ -170,6 +168,8 @@ export function Management({
   const bot = panel?.bot
     ? (mobile.bots.find(b => b.name === panel.bot!.name) ?? panel.bot)
     : undefined
+  // The primary bot's Check-ins conversation, which can be deleted, unlike its chat.
+  const checkinsSection = mobile.sections.find(s => s.bot === bot?.name && s.purpose === 'checkins')
   const room = panel?.room
     ? (mobile.rooms.find(r => r.id === panel.room!.id) ?? panel.room)
     : undefined
@@ -187,7 +187,7 @@ export function Management({
       onSaved?.()
       if (close) (onBack ?? onClose)()
       else if (
-        ['sections', 'devices', 'skills', 'jobs', 'dreams', 'network', 'usage', 'updates'].includes(
+        ['devices', 'skills', 'jobs', 'dreams', 'network', 'usage', 'updates'].includes(
           kind
         )
       )
@@ -252,18 +252,6 @@ export function Management({
         fields = { text: str(result.text) }
         break
       }
-      case 'sections':
-        data = (
-          await rpc<{ sections: Section[] }>('hexbot.sections.list', {
-            bot: bot?.name,
-            include_archived: true,
-            include_threads: true
-          })
-        ).sections as unknown as RowData[]
-        break
-      case 'section':
-        fields = { title: str(panel?.data?.title) }
-        break
       case 'tools':
         break
       case 'rooms':
@@ -546,7 +534,7 @@ export function Management({
           </Group>
           <Group
             title="Dreaming"
-            footer="Each night, bots fold the day's threads into their memory."
+            footer="Each night, bots fold the day's conversations into their memory."
           >
             {toggle('dream_enabled', 'Dreaming')}
             <View style={styles.inset}>
@@ -668,11 +656,11 @@ export function Management({
             'persona',
             'Soul',
             true,
-            `${str(values.display_name) || 'The bot'} can edit its soul too and says when it does. Changes apply to new threads.`,
+            `${str(values.display_name) || 'The bot'} can edit its soul too and says when it does. Your chat takes changes after it summarises older messages.`,
             false,
             4000
           )}
-          <Group title="Model" footer="Applies to new threads.">
+          <Group title="Model" footer="Applies from the next message.">
             <View style={styles.inset}>
               <ModelPill
                 disabled={busy || mobile.connection !== 'connected'}
@@ -725,13 +713,25 @@ export function Management({
                       const result = await rpc<{ bot: Bot }>('hexbot.bots.set_primary', {
                         name: bot.name
                       })
-                      // Its older threads keep their tools, so a new one opens.
+                      // The bot's chat takes the new tools with its next message. An
+                      // older daemon makes a new section, as its older ones keep theirs.
                       const { section } = await rpc<{ section: Section }>(
                         'hexbot.sections.create',
                         { bot: bot.name }
                       )
                       await mobile.openSection(result.bot, section)
                     })
+                  : null}
+                {checkinsSection
+                  ? action(
+                      'Delete Check-ins',
+                      async () => {
+                        await rpc('hexbot.sections.delete', { id: checkinsSection.id })
+                        await mobile.refresh()
+                      },
+                      true,
+                      'This deletes what check-ins told you. The next check-in message starts it again.'
+                    )
                   : null}
                 {/* The primary bot stays; the daemon refuses to delete it too. */}
                 {bot.primary
@@ -744,7 +744,7 @@ export function Management({
                         onClose()
                       },
                       true,
-                      'This deletes the bot, its threads, memory and scheduled jobs.'
+                      'This deletes the bot, its chat, memory and scheduled jobs.'
                     )}
               </Group>
             </>
@@ -764,7 +764,7 @@ export function Management({
       const available = bot?.available_tools as string[] | undefined
       content = (
         <Group
-          footer={`What ${bot?.display_name ?? 'this bot'} can do on this computer. Tools this computer isn't set up for don't appear. Changes apply to new threads.`}
+          footer={`What ${bot?.display_name ?? 'this bot'} can do on this computer. Tools this computer isn't set up for don't appear. Changes apply from the next message.`}
         >
           {TOOLS.filter(tool => !available || available.includes(tool.key)).map(tool => (
             <SwitchRow
@@ -789,56 +789,6 @@ export function Management({
             />
           ))}
         </Group>
-      )
-      break
-    }
-    case 'sections':
-      content = (
-        <Group>
-          {rows.map(s => (
-            <Row
-              key={str(s.id)}
-              title={str(s.title)}
-              subtitle={s.archived_at ? 'Archived' : str(s.preview)}
-              testID={`section-${s.id}`}
-              chevron
-              onPress={() => navigate('section', s)}
-            />
-          ))}
-        </Group>
-      )
-      break
-    case 'section': {
-      const s = panel!.data as unknown as Section
-      save = () => rpc('hexbot.sections.rename', { id: s.id, title: values.title })
-      content = (
-        <>
-          {field('title', 'Thread title')}
-          <Group footer="Each thread is its own conversation. Archived threads keep their history.">
-            {action('Open thread', async () => {
-              if (bot) await mobile.openSection(bot, s)
-              onClose()
-            })}
-            {action(s.archived_at ? 'Restore thread' : 'Archive thread', async () => {
-              const result = await rpc<{ section: Section }>(
-                s.archived_at ? 'hexbot.sections.unarchive' : 'hexbot.sections.archive',
-                { id: s.id }
-              )
-              onNavigate({ ...panel!, data: result.section as unknown as RowData })
-            })}
-            {action(
-              'Delete thread',
-              async () => {
-                await rpc('hexbot.sections.delete', { id: s.id })
-                if (mobile.route?.kind === 'section' && mobile.route.section.id === s.id)
-                  mobile.back()
-                onClose()
-              },
-              true,
-              'This deletes the thread history. Bot memory stays.'
-            )}
-          </Group>
-        </>
       )
       break
     }
@@ -1554,8 +1504,6 @@ export function Management({
     memory: 'Memory',
     about: 'About you',
     tools: 'Tools',
-    sections: 'Threads',
-    section: 'Thread',
     rooms: 'All rooms',
     'room-create': 'New room',
     room: room?.name ?? 'Room',
@@ -1579,7 +1527,6 @@ export function Management({
     activity: 'Bot activity'
   }
   const empty: Record<string, string> = {
-    sections: 'No threads yet.',
     devices: 'No paired devices.',
     skills: 'No skills yet.',
     jobs: 'No scheduled jobs yet.',

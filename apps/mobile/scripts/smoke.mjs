@@ -23,6 +23,7 @@ const workspace = await mkdtemp(path.join(tmpdir(), 'hexbot-mobile-workspace-'))
 await mkdir(artifacts, { recursive: true })
 const errors = []
 const modelRequests = []
+let retainedUploadPath
 let daemon,
   browser,
   page,
@@ -86,7 +87,9 @@ const model = createServer(async (req, res) => {
             }
           : !toolAnswered && prompt.includes('Ask for approval')
             ? { name: 'write', args: { path: 'mobile-approval.txt', content: 'approved' } }
-            : null
+            : !toolAnswered && prompt.startsWith('Read the other app attachment')
+              ? { name: 'read', args: { path: retainedUploadPath } }
+              : null
     const answer = prompt.startsWith('Room: ')
       ? 'The mobile room is working. @user your team is ready.'
       : /native|Hello from/i.test(prompt)
@@ -95,12 +98,14 @@ const model = createServer(async (req, res) => {
           ? 'Questions answered on mobile.'
           : prompt.includes('Show a visual')
             ? 'The mobile visual is ready.'
-            : prompt.includes('Read the attachment') ||
-                prompt.includes('Please review the attached files.')
-              ? 'The mobile attachment reached Pi.'
-              : prompt.includes('Ask for approval')
-                ? 'The mobile approval reached Pi.'
-                : 'Your daemon received this from mobile. The connection is working.'
+            : prompt.startsWith('Read the other app attachment')
+              ? 'The other app attachment reached Pi.'
+              : prompt.includes('Read the attachment') ||
+                  prompt.includes('Please review the attached files.')
+                ? 'The mobile attachment reached Pi.'
+                : prompt.includes('Ask for approval')
+                  ? 'The mobile approval reached Pi.'
+                  : 'Your daemon received this from mobile. The connection is working.'
     res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' })
     const frame = (delta, finish_reason = null) =>
       JSON.stringify({
@@ -283,12 +288,8 @@ try {
     )
   }
   const section = bots.owl.section.id
-  await rpc('hexbot.sections.rename', { id: section, title: 'Daily brief' })
-  const trip = (await rpc('hexbot.sections.create', { bot: 'owl' })).section.id
-  await rpc('hexbot.sections.rename', { id: trip, title: 'Tokyo trip' })
-  const old = (await rpc('hexbot.sections.create', { bot: 'owl' })).section.id
-  await rpc('hexbot.sections.rename', { id: old, title: 'Old errands' })
-  await rpc('hexbot.sections.archive', { id: old })
+  // A bot has one chat: asking for another returns it.
+  assert.equal((await rpc('hexbot.sections.create', { bot: 'owl' })).section.id, section)
   const room = (
     await rpc('hexbot.rooms.create', { name: 'Our team', members: ['owl', 'fox'], main_bot: 'owl' })
   ).room
@@ -335,42 +336,41 @@ try {
   await shot('daemon-switcher')
   await page.getByTestId('daemon-switcher-close').click()
   await expect(page.getByTestId('daemon-switcher')).not.toBeVisible()
+  // The bot row opens its one chat.
   await page.getByTestId('bot-row-owl').click()
-  await expect(page.getByTestId(`thread-row-${section}`)).toBeVisible()
-  await expect(page.getByTestId(`thread-row-${trip}`)).toBeVisible()
-  await expect(page.getByTestId(`thread-row-${old}`)).not.toBeVisible()
-  await page.getByTestId('threads-model').click()
-  // The menu asks each connected provider for its current list: mobile-live
-  // exists only in LM Studio's live /models reply. Providers without a key or
-  // sign-in are left out.
-  await expect(page.getByTestId('threads-model-menu-model-lmstudio-mobile-live')).toBeVisible({
-    timeout: 30000
-  })
-  await expect(page.locator('[data-testid^="threads-model-menu-model-nous-"]')).toHaveCount(0)
-  // The daemon knows no levels for mobile-test, so every level is offered, as on the web.
-  await expect(page.getByTestId('threads-model-menu-level-max')).toBeVisible()
-  await page.getByTestId('threads-model-menu-level-high').click()
-  const owl = async () => (await rpc('hexbot.bots.get', { name: 'owl' })).bot
-  await expect.poll(async () => (await owl()).reasoning_effort).toBe('high')
-  await expect(page.getByTestId('threads-model')).toContainText('High')
-  await shot('model-menu')
-  // A model without thinking runs with it off, whatever level is saved.
-  await page.getByTestId('threads-model-menu-model-lmstudio-mobile-live').click()
-  await expect.poll(async () => (await owl()).model).toBe('mobile-live')
-  await expect(page.getByTestId('threads-model-menu-no-thinking')).toBeVisible()
-  await expect(page.getByTestId('threads-model')).not.toContainText('High')
-  await page.getByTestId('threads-model-menu-model-lmstudio-mobile-test').click()
-  await expect.poll(async () => (await owl()).model).toBe('mobile-test')
-  await expect(page.getByTestId('threads-model')).toContainText('High')
-  await page.getByTestId('threads-model-menu-backdrop').click({ position: { x: 12, y: 12 } })
-  await page.getByTestId(`thread-row-${section}`).click()
   await expect(page.getByTestId('chat-empty')).toBeVisible()
-  // The intro reads the level the model runs at, like the pill.
-  await expect(page.getByTestId('chat-intro-model')).toHaveText('mobile-test, thinking high')
   await expect(page.getByText('Opening conversation', { exact: true })).not.toBeVisible({
     timeout: 30000
   })
-  await shot('thread-empty')
+  await page.getByTestId('chat-settings').click()
+  await page.getByTestId('manage-models').click()
+  // The menu asks each connected provider for its current list: mobile-live
+  // exists only in LM Studio's live /models reply. Providers without a key or
+  // sign-in are left out.
+  await expect(page.getByTestId('manage-models-menu-model-lmstudio-mobile-live')).toBeVisible({
+    timeout: 30000
+  })
+  await expect(page.locator('[data-testid^="manage-models-menu-model-nous-"]')).toHaveCount(0)
+  // The daemon knows no levels for mobile-test, so every level is offered, as on the web.
+  await expect(page.getByTestId('manage-models-menu-level-max')).toBeVisible()
+  await page.getByTestId('manage-models-menu-level-high').click()
+  await expect(page.getByTestId('manage-models')).toContainText('High')
+  await shot('model-menu')
+  // A model without thinking runs with it off, whatever level is saved.
+  await page.getByTestId('manage-models-menu-model-lmstudio-mobile-live').click()
+  await expect(page.getByTestId('manage-models-menu-no-thinking')).toBeVisible()
+  await expect(page.getByTestId('manage-models')).not.toContainText('High')
+  await page.getByTestId('manage-models-menu-model-lmstudio-mobile-test').click()
+  await expect(page.getByTestId('manage-models')).toContainText('High')
+  await page.getByTestId('manage-models-menu-backdrop').click({ position: { x: 12, y: 12 } })
+  await page.getByTestId('management-sheet-action').click()
+  const owl = async () => (await rpc('hexbot.bots.get', { name: 'owl' })).bot
+  await expect.poll(async () => (await owl()).reasoning_effort).toBe('high')
+  assert.equal((await owl()).model, 'mobile-test')
+  await expect(page.getByTestId('management-sheet')).not.toBeVisible()
+  // The intro reads the level the model runs at, like the picker.
+  await expect(page.getByTestId('chat-intro-model')).toHaveText('mobile-test, thinking high')
+  await shot('chat-empty')
   await page.getByTestId('chat-input').fill('Check the mobile connection')
   await page.getByTestId('chat-send').click()
   await expect(
@@ -437,7 +437,7 @@ try {
     buffer: Buffer.from('A brief from the phone.')
   })
   await expect(page.getByText('brief.txt', { exact: true })).toBeVisible()
-  // A file another app staged on this thread and never sent stays out of this message.
+  // A file another app staged on this chat and never sent stays out of this message.
   const live = (await rpc('hexbot.sections.list', { include_archived: true })).sections.find(
     s => s.id === section
   ).live_session_id
@@ -446,6 +446,7 @@ try {
     name: 'left-behind.txt',
     data_url: 'data:text/plain;base64,' + Buffer.from('Not for this message.').toString('base64')
   })
+  retainedUploadPath = left.path
   await page.getByTestId('chat-send').click()
   await expect(page.getByText('The mobile attachment reached Pi.', { exact: true })).toBeVisible({
     timeout: 30000
@@ -453,11 +454,56 @@ try {
   assert.match(JSON.stringify(modelRequests.at(-1).messages), /brief\.txt/)
   assert.match(JSON.stringify(modelRequests.at(-1).messages), /Please review the attached files\./)
   assert.doesNotMatch(JSON.stringify(modelRequests.at(-1).messages), /left-behind\.txt/)
-  await access(left.path).then(
-    () => assert.fail('The daemon must drop a staged file the message did not name'),
-    () => {}
-  )
+  // Exact selection keeps the other app's upload available, with its bytes intact.
+  const retainedText = await readFile(left.path, 'utf8')
+  assert.equal(retainedText, 'Not for this message.')
   await expect(page.getByText('brief.txt', { exact: true })).not.toBeVisible()
+  await expect
+    .poll(async () => (await rpc('session.status', { session_id: live })).status)
+    .toBe('idle')
+  const otherSubmit = {
+    session_id: live,
+    text: 'Read the other app attachment',
+    attachments: [left.id]
+  }
+  // The same paired app that staged it submits the returned ID through real RPC.
+  const otherAck = await rpc('prompt.submit', otherSubmit)
+  await expect(page.getByText('The other app attachment reached Pi.', { exact: true })).toBeVisible(
+    {
+      timeout: 30000
+    }
+  )
+  const otherRequest = modelRequests.at(-1)
+  const otherUserIndex = otherRequest.messages.findLastIndex(m => m.role === 'user')
+  const otherUser = textOf(otherRequest.messages[otherUserIndex].content)
+  // Check only the new user. The previous mobile file remains in cached context.
+  assert.match(otherUser, /^Read the other app attachment/)
+  assert.match(otherUser, /left-behind\.txt/)
+  assert.doesNotMatch(otherUser, /brief\.txt|Please review the attached files\./)
+  const otherTools = otherRequest.messages.slice(otherUserIndex + 1).filter(m => m.role === 'tool')
+  assert.equal(otherTools.length, 1)
+  assert.match(textOf(otherTools[0].content), /Not for this message\./)
+  await expect
+    .poll(async () => (await rpc('session.status', { session_id: live })).status)
+    .toBe('idle')
+  let repeatedError
+  await assert.rejects(rpc('prompt.submit', otherSubmit), error => {
+    repeatedError = error.message
+    return /"code":4204/.test(error.message)
+  })
+  const otherUsers = (await rpc('session.history', { session_id: live })).messages.filter(
+    m => m.role === 'user' && m.text.startsWith(otherSubmit.text)
+  )
+  assert.equal(otherUsers.length, 1)
+  await shot('paired-upload')
+  await writeFile(
+    path.join(artifacts, 'paired-upload.json'),
+    JSON.stringify(
+      { left, retainedText, otherSubmit, otherAck, otherRequest, repeatedError, otherUsers },
+      null,
+      2
+    ) + '\n'
+  )
   await page.getByTestId('chat-input').fill('Ask for approval')
   await page.getByTestId('chat-send').click()
   const allowOnce = page.locator('[data-testid^="approval-"][data-testid$="-once"]')
@@ -476,12 +522,6 @@ try {
   await shot('tool-card')
   await page.getByTestId('tool-sheet-close').click()
   await expect(page.getByTestId('tool-sheet')).not.toBeVisible()
-  await page.getByTestId('chat-title').click()
-  await expect(page.getByTestId(`sections-row-${trip}`)).toBeVisible()
-  await settle()
-  await shot('thread-switcher')
-  await page.getByTestId('sections-close').click()
-  await expect(page.getByTestId('sections')).not.toBeVisible()
   await page.getByTestId('chat-settings').click()
   await expect(page.getByTestId('field-persona')).toBeVisible()
   await settle()
@@ -515,42 +555,6 @@ try {
   await page.getByTestId('management-sheet-back').click()
   await page.getByTestId('management-sheet-close').click()
   await expect(page.getByTestId('management-sheet')).not.toBeVisible()
-  await page.getByTestId('chat-new-section').click()
-  await expect(page.getByTestId('chat-empty')).toBeVisible()
-  await expect(page.getByText('Opening conversation', { exact: true })).not.toBeVisible({
-    timeout: 30000
-  })
-  await shot('thread-new')
-  await page.getByRole('button', { name: 'Back', exact: true }).click()
-  await expect(page.getByTestId('threads-screen')).toBeVisible()
-  await page.getByTestId(`thread-actions-${trip}`).click()
-  await settle()
-  await shot('thread-options')
-  await page.getByTestId('field-title').fill('Tokyo trip, November')
-  await page.getByTestId('management-sheet-action').click()
-  await expect
-    .poll(
-      async () =>
-        (await rpc('hexbot.sections.list', { include_archived: true })).sections.find(
-          s => s.id === trip
-        ).title
-    )
-    .toBe('Tokyo trip, November')
-  await page.getByTestId('threads-shelf').click()
-  await expect(page.getByTestId(`thread-row-${old}`)).toBeVisible()
-  await shot('threads-archived')
-  await page.getByTestId(`thread-restore-${old}`).click()
-  await expect
-    .poll(
-      async () =>
-        (await rpc('hexbot.sections.list', { include_archived: true })).sections.find(
-          s => s.id === old
-        ).archived_at
-    )
-    .toBe(null)
-  await page.getByTestId('threads-shelf').click()
-  await expect(page.getByTestId(`thread-row-${old}`)).toBeVisible()
-  await shot('threads')
   await page.getByRole('button', { name: 'Back', exact: true }).click()
   await page.getByTestId('home-tabs-rooms').click()
   await expect(page.getByTestId('rooms-view')).toBeVisible()
@@ -705,7 +709,6 @@ try {
   await page.getByTestId('management-sheet-close').click()
   await expect(page.getByTestId('management-sheet')).not.toBeVisible()
   await page.getByTestId('bot-row-owl').click()
-  await page.getByTestId(`thread-row-${section}`).click()
   await expect(
     page.getByText('Your daemon received this from mobile. The connection is working.', {
       exact: true
@@ -717,7 +720,6 @@ try {
   // A reload keeps metadata, but the browser preview intentionally has no persistent secrets.
   // Reconnect the same client by disconnecting and selecting its saved target.
   await page.getByRole('button', { name: 'Back', exact: true }).click()
-  await page.getByRole('button', { name: 'Back', exact: true }).click()
   await page.getByTestId('home-tabs-daemon').click()
   await page.getByTestId('daemon-disconnect').click()
   await expect(page.getByTestId('connection-screen')).toBeVisible()
@@ -726,7 +728,6 @@ try {
   await page.getByTestId('home-tabs-bots').click()
   await expect(page.getByTestId('bot-row-owl')).toBeVisible({ timeout: 30000 })
   await page.getByTestId('bot-row-owl').click()
-  await page.getByTestId(`thread-row-${section}`).click()
   await expect(
     page.getByText('Your daemon received this from mobile. The connection is working.', {
       exact: true
@@ -749,10 +750,11 @@ try {
       'batched questions, multiple choices and explicit retention of attached files',
       'sandboxed bot visual',
       'attachment-only send delivered to Pi, clears chips after acceptance, and leaves out a file staged by another app',
+      'retained paired-app upload keeps its bytes and submits exactly once without the mobile file',
       'approval gates a real file write',
-      'bot feed, thread list, rename, archive shelf and restore',
+      'bot feed, and one chat per bot opened from its row',
       'model menu lists connected providers from their live lists and shows the level the model runs at',
-      'thread switcher, tool card and new thread',
+      'tool card',
       'soul editing',
       'isolated bot memory',
       'About you',
@@ -788,6 +790,11 @@ try {
   )
   throw e
 } finally {
+  await writeFile(
+    path.join(artifacts, 'model-requests.json'),
+    JSON.stringify(modelRequests, null, 2) + '\n'
+  )
+  await writeFile(path.join(artifacts, 'daemon.log'), daemonLog)
   socket?.close()
   await browser?.close()
   if (daemon && daemon.exitCode === null) {

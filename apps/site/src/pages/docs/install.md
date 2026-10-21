@@ -92,7 +92,7 @@ Client opens straight on the connect screen.
 
 Setup then asks about you (your name, your work, and how bots should speak to you), then for a model provider, your default models, and the tools that need their own account: web search, cloud browser, image and video generation, and premium voice. Pick a provider for a tool and paste its key, or skip it. A bot cannot use a tool that is not set up; add it later under a bot's Connectors.
 
-Setup finishes by creating HexBot, your primary bot, and opening its first section. [Quick start](/docs/quick-start/) walks through each step. Model providers and optional tool services bill your own accounts.
+Setup finishes by creating HexBot, your primary bot, and opening your chat with it. [Quick start](/docs/quick-start/) walks through each step. Model providers and optional tool services bill your own accounts.
 
 The daemon must keep running and the computer must stay awake for remote devices and scheduled work. Quitting the app stops an app-owned daemon unless "Start the daemon at login" is on in Settings, Network. For a daemon without the app, install [Headless](#headless). For a second device, turn on **Allow other devices** in Settings, Network and follow [Pairing and LAN](/docs/pairing-and-lan/).
 
