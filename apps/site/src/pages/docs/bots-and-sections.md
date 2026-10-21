@@ -75,6 +75,8 @@ An updated app connected to a daemon that hasn't been updated yet asks which con
 
 The daemon API reference, `docs/api.md` in the source, describes the update and what clients can rely on in detail.
 
+For sections kept from an earlier version, archiving hides the section's own failed-turn status; restoring it brings that status back. Archiving leaves failures from its subagents visible. Deleting a private conversation between bots clears its own turn failures and removes its delegated conversations. Connector problems and failures in other surviving rooms, sections, or background runs remain.
+
 ## Work with other bots
 
 In a [room](/docs/rooms/), everyone sees the shared conversation. With **Message other bots** enabled, a bot can instead ask one of your teammates for help in a private conversation. The bot it asks does the work itself and can't hand the request back. Open the help row under its reply to read that exchange.

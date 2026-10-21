@@ -315,6 +315,55 @@ pub fn network(home: &Path) -> Result<Value> {
     )
 }
 
+/// Room attribution uses stored IDs; live IDs change with each process.
+pub(crate) fn normalize_incident_room(conn: &Connection, incident: &mut Value) -> Result<()> {
+    if incident["kind"] != "turn_failed" || !incident["room_id"].is_null() {
+        return Ok(());
+    }
+    let Some(section) = incident["section_id"].as_str() else {
+        return Ok(());
+    };
+    let room: Option<String> = conn
+        .query_row(
+            "SELECT MIN(s.room_id) FROM room_sessions s
+             JOIN rooms r ON r.id=s.room_id JOIN bots b ON b.name=s.bot
+             WHERE s.stored_session_id=? AND s.bot=? AND r.owner_id=b.owner_id
+             HAVING COUNT(*)=1",
+            params![section, incident["bot"].as_str()],
+            |row| row.get(0),
+        )
+        .optional()?;
+    if let Some(room) = room {
+        incident["room_id"] = json!(room);
+    }
+    Ok(())
+}
+
+/// Run before deleting the room's stored-session mappings, in the deletion transaction.
+pub(crate) fn retire_room_incidents(conn: &Connection, room: &str) -> Result<()> {
+    let incidents = common::rows(
+        conn,
+        "SELECT i.* FROM bot_incidents i JOIN bots b ON b.name=i.bot
+         JOIN rooms r ON r.owner_id=b.owner_id
+         WHERE r.id=?1 AND i.kind='turn_failed' AND i.resolved_at IS NULL
+         AND (i.room_id=?1 OR (i.room_id IS NULL AND EXISTS(
+             SELECT 1 FROM room_sessions s WHERE s.room_id=?1
+             AND s.bot=i.bot AND s.stored_session_id=i.section_id)))",
+        &[&room],
+    )?;
+    let now = common::now();
+    for mut incident in incidents {
+        normalize_incident_room(conn, &mut incident)?;
+        if incident["room_id"] == room {
+            conn.execute(
+                "UPDATE bot_incidents SET room_id=?,resolved_at=? WHERE id=?",
+                params![room, now, incident["id"].as_str()],
+            )?;
+        }
+    }
+    Ok(())
+}
+
 /// Internal incident write; the runtime publishes the returned row to affected clients.
 pub fn record_incident(
     home: &Path,
@@ -328,16 +377,24 @@ pub fn record_incident(
         return Err(Error::new(4202, "invalid incident kind"));
     }
     let mut conn = db::open(home)?;
-    let tx = conn.transaction()?;
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
     let connector = context["connector"].as_str();
     let section = context["section_id"].as_str();
-    let existing = common::rows(
+    let mut attribution =
+        json!({"bot":bot,"kind":kind,"section_id":section,"room_id":context["room_id"]});
+    normalize_incident_room(&tx, &mut attribution)?;
+    let mut existing = None;
+    for mut candidate in common::rows(
         &tx,
         "SELECT * FROM bot_incidents WHERE bot=? AND kind=? AND resolved_at IS NULL AND COALESCE(connector,'')=COALESCE(?,'') AND COALESCE(section_id,'')=COALESCE(?,'')",
         &[&bot, &kind, &connector, &section],
-    )?
-    .into_iter()
-    .next();
+    )? {
+        normalize_incident_room(&tx, &mut candidate)?;
+        if candidate["room_id"] == attribution["room_id"] {
+            existing = Some(candidate);
+            break;
+        }
+    }
     let text = text.trim().chars().take(500).collect::<String>();
     let now = common::now();
     let id = if let Some(existing) = existing {
@@ -352,8 +409,8 @@ pub fn record_incident(
             .filter(|s| !s.is_empty())
             .or_else(|| existing["session_id"].as_str());
         tx.execute(
-            "UPDATE bot_incidents SET text=?,created_at=?,session_id=? WHERE id=?",
-            params![text, now, session, id],
+            "UPDATE bot_incidents SET text=?,created_at=?,session_id=?,room_id=? WHERE id=?",
+            params![text, now, session, attribution["room_id"].as_str(), id],
         )?;
         id
     } else {
@@ -364,7 +421,7 @@ pub fn record_incident(
                 id,
                 bot,
                 section,
-                context["room_id"].as_str(),
+                attribution["room_id"].as_str(),
                 context["session_id"].as_str(),
                 kind,
                 connector,
@@ -403,7 +460,9 @@ pub fn resolve_incidents(home: &Path, filters: &Value) -> Result<Vec<Value>> {
         }
     }
     let mut conn = db::open(home)?;
-    let tx = conn.transaction()?;
+    // Reserve the write before reading, as record_incident does; a deferred
+    // snapshot cannot upgrade after another writer commits.
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
     let args = args
         .iter()
         .map(|s| s as &dyn rusqlite::ToSql)

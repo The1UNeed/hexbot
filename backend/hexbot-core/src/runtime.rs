@@ -2536,7 +2536,7 @@ impl Runtime {
                 &s.owner,
                 None,
                 "hexbot.bots.incident",
-                json!({"bot":s.bot,"section_id":s.stored,"session_id":s.id,"incident":incident}),
+                json!({"bot":s.bot,"section_id":s.stored,"room_id":incident["room_id"],"session_id":s.id,"incident":incident}),
             );
         }
     }

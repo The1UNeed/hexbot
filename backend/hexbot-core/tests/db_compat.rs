@@ -880,6 +880,53 @@ fn version_13_upgrades_and_preserves_proposals_on_repeat() {
 }
 
 #[test]
+fn room_transcript_index_reaches_new_existing_and_legacy_homes() {
+    let columns = |connection: &Connection| -> Vec<String> {
+        connection
+            .prepare(
+                "SELECT name FROM pragma_index_info('idx_room_sessions_stored') ORDER BY seqno",
+            )
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect()
+    };
+    let home = TempDir::new().unwrap();
+    db::migrate(home.path()).unwrap();
+    let connection = db::open(home.path()).unwrap();
+    assert_eq!(columns(&connection), ["stored_session_id", "bot"]);
+    // A current home written before the index gains it without a version bump.
+    connection
+        .execute_batch(
+            "DROP INDEX idx_room_sessions_stored;
+             INSERT INTO rooms(id,name) VALUES('room','Room');
+             INSERT INTO room_sessions(room_id,bot,stored_session_id) VALUES('room','scout','kept');",
+        )
+        .unwrap();
+    assert!(columns(&connection).is_empty());
+    db::migrate(home.path()).unwrap();
+    db::migrate(home.path()).unwrap();
+    assert_eq!(columns(&connection), ["stored_session_id", "bot"]);
+    assert_eq!(
+        connection
+            .query_row(
+                "SELECT room_id FROM room_sessions WHERE stored_session_id='kept' AND bot='scout'",
+                [],
+                |row| row.get::<_, String>(0)
+            )
+            .unwrap(),
+        "room"
+    );
+    let legacy = legacy_home(12);
+    db::migrate(legacy.path()).unwrap();
+    assert_eq!(
+        columns(&db::open(legacy.path()).unwrap()),
+        ["stored_session_id", "bot"]
+    );
+}
+
+#[test]
 fn version_14_upgrades_to_15_with_at_most_one_primary_bot() {
     let home = legacy_home(11);
     db::migrate(home.path()).unwrap();

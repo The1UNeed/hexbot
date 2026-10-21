@@ -109,6 +109,8 @@ CREATE INDEX IF NOT EXISTS idx_bots_owner ON bots(owner_id);
 CREATE INDEX IF NOT EXISTS idx_sections_owner ON sections(owner_id);
 CREATE INDEX IF NOT EXISTS idx_rooms_owner ON rooms(owner_id);
 CREATE INDEX IF NOT EXISTS idx_bot_incidents_bot_open ON bot_incidents(bot,resolved_at);
+-- Bot status checks each open failure's stored ID against room transcripts.
+CREATE INDEX IF NOT EXISTS idx_room_sessions_stored ON room_sessions(stored_session_id,bot);
 ";
 
 const COLUMNS: &[(&str, &str, &str)] = &[
