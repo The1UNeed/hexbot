@@ -25,6 +25,8 @@ vi.mock('./storage', () => ({
   saveDaemon: async () => {}
 }))
 vi.mock('./transport', () => ({ pair: vi.fn() }))
+// Push registration needs the native notifications module.
+vi.mock('./push', () => ({ registerPush: vi.fn(async () => undefined) }))
 vi.mock('./session', () => ({
   MobileSession: class {
     client = { connectionState: 'open', request: state.request }
@@ -403,6 +405,21 @@ it.each(['daemon', 'back'] as const)('a Pulse thread open yields to later %s', a
   expect(hook.result.current.chat.questions).toHaveLength(0)
 })
 
+it('reconnect keeps Check-ins open on a daemon from before one chat', async () => {
+  oneChat = false
+  sections = [section('owl-chat', { message_count: 2 }), section('checkins', { message_count: 2 })]
+  // That daemon names no purpose; its check-ins status names the section.
+  state.request.mockImplementation(async (method: string, params: Record<string, unknown> = {}) =>
+    method === 'hexbot.checkins.status' ? { section_id: 'checkins' } : reply(method, params))
+  const hook = await connected()
+  const listed = hook.result.current.sections.find(s => s.id === 'checkins')!
+  expect(listed.purpose).toBe('checkins')
+  await act(async () => { await hook.result.current.openSection(bot, listed) })
+  expect(hook.result.current.route).toMatchObject({ section: { id: 'checkins', purpose: 'checkins' } })
+  await act(async () => { await state.ready() })
+  expect(hook.result.current.route).toMatchObject({ section: { id: 'checkins' } })
+  expect(hook.result.current.choosing).toBeNull()
+})
 it('reconnect clears a legacy chooser even when capability is unchanged', async () => {
   oneChat = false
   sections = [section('a', { message_count: 2 }), section('b', { message_count: 2 })]

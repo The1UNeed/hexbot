@@ -61,7 +61,8 @@ beforeEach(() => {
     epoch: 'process',
     daemon: {
       one_chat: true,
-      install_id: 'installation'
+      install_id: 'installation',
+      transcript_identity: true
     } as DaemonInfo
   })
   useSections.setState({

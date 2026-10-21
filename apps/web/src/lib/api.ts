@@ -5,12 +5,15 @@
  * a call before the connection is up rejects with `NotConnectedError`.
  */
 
+import { useConnection } from '../stores/connection'
+
 import { rpcCall } from './rpc'
 import type {
   ApprovalChoice,
   Bot,
   BotCreateInput,
   BotUpdatePatch,
+  CheckinStatus,
   ClarifyQuestion,
   ClarifyRequest,
   ClarifyRequestPayload,
@@ -370,6 +373,15 @@ export const dreamingList = (bot: string, limit = 10) =>
 export const dreamingRestore = (id: string) =>
   rpcCall<{ bot: string; memory_md: string }>('hexbot.dreaming.restore', { id })
 
+export const checkinsStatus = () => rpcCall<CheckinStatus>('hexbot.checkins.status')
+export const checkinsRunNow = () => rpcCall<{ id: string }>('hexbot.checkins.run_now')
+/** Delete a section that is not a bot's chat, such as Check-ins (4202 for a chat). */
+export const sectionsDelete = (id: string) =>
+  rpcCall<{ deleted: boolean }>('hexbot.sections.delete', { id })
+
+export const checkinsCancelWakeup = (id: string) =>
+  rpcCall<{ cancelled: boolean }>('hexbot.checkins.cancel_wakeup', { id })
+
 export interface ConnectStatus {
   registered: boolean
   daemon_id: null | string
@@ -408,7 +420,31 @@ export function sectionsList(
 ): Promise<{
   sections: Section[]
 }> {
-  return rpcCall<{ sections: Section[] }>('hexbot.sections.list', { ...options })
+  const listed = rpcCall<{ sections: Section[] }>('hexbot.sections.list', { ...options })
+
+  // A daemon with one chat per bot names each section's purpose itself.
+  return useConnection.getState().daemon?.one_chat === true
+    ? listed
+    : listed.then(async result => ({ ...result, sections: await withPurpose(result.sections) }))
+}
+
+/**
+ * A daemon with check-ins from before one chat per bot names no section's
+ * purpose. Its check-ins status names the Check-ins section, which is never
+ * a bot's chat. Daemons that name purposes, or have no check-ins, are as they say.
+ */
+async function withPurpose(sections: Section[] = []): Promise<Section[]> {
+  if (!sections.length || sections.some(section => 'purpose' in section)) {
+    return sections
+  }
+
+  const checkins = await checkinsStatus()
+    .then(status => status.section_id)
+    .catch(() => null)
+
+  return sections.map(section =>
+    section.id === checkins ? { ...section, purpose: 'checkins' } : section
+  )
 }
 
 /** The thread on `bot` in which `peer` asks it for help; null until the first ask. Owner only. */

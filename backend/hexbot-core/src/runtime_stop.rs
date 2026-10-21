@@ -577,7 +577,11 @@ impl Runtime {
                     .ok_or_else(|| Error::new(5201, "daemon is stopping"))?;
                 let s = s.clone();
                 let echo = input_id.is_some();
+                // Serial admission lasts until Pi acknowledges this steer,
+                // even when the caller is cancelled first.
+                let admitted = (_input, _reservation);
                 return tokio::spawn(async move {
+                    let _admitted = admitted;
                     let response = Self::input_preflight(&s, &intent, reply)
                         .await
                         // Pi may already have taken the steer: not a refusal.

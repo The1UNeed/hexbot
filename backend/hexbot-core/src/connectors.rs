@@ -282,7 +282,7 @@ pub fn pi_mcp_servers(home: &Path, bot: &str, names: &[Value]) -> Result<Vec<Val
     Ok(result)
 }
 
-fn enabled(home: &Path, bot: &str, id: &str) -> Result<bool> {
+pub(crate) fn enabled(home: &Path, bot: &str, id: &str) -> Result<bool> {
     if let Some(server) = id.strip_prefix("mcp:") {
         return Ok(mcp_servers(home, bot)?.get(server).is_some());
     }

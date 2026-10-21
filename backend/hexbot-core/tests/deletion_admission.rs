@@ -78,6 +78,12 @@ process.on('SIGTERM',()=>{const marker=path.join(home,'stopped-once');if(fs.exis
     fn h(&self) -> &Path {
         self.home.path()
     }
+    /// A bot held at the closing barrier stays held until the test releases
+    /// it, however long the work in between takes under load. Only for tests
+    /// that release it: teardown would wait for an unreleased one.
+    fn hold_stops(&self) {
+        self.app.runtime.set_stop_grace(Duration::from_secs(60));
+    }
     async fn barrier(&self, expected: &[u8; 8]) -> tokio::net::TcpStream {
         let (mut stream, _) = tokio::time::timeout(Duration::from_secs(5), self.listener.accept())
             .await
@@ -277,6 +283,7 @@ unsafe extern "C" fn trace_insert(
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn deletion_waits_after_authoritative_owner_check_before_native_insert() {
     let f = Fixture::new(false).await;
+    f.hold_stops();
     let _trace = NativeInsertBarrier::new(f.h(), f.listener.local_addr().unwrap());
     let a = f.app.clone();
     let opening = tokio::spawn(async move {
@@ -507,6 +514,7 @@ async fn wrong_owner_cannot_open_or_delete_while_healthy_owned_work_survives() {
 async fn deletion_blocks_late_hidden_cli_job_and_room_workers_before_purge() {
     for mode in ["bot", "room", "last"] {
         let f = Fixture::new(mode == "last").await;
+        f.hold_stops();
         if mode == "room" {
             db::open(f.h()).unwrap().execute("INSERT INTO room_sessions(room_id,bot,stored_session_id) VALUES(?,'fox','unopened')", [&f.room]).unwrap();
         }
@@ -776,8 +784,8 @@ async fn deletion_blocks_late_hidden_cli_job_and_room_workers_before_purge() {
 #[tokio::test]
 async fn failed_decisions_release_admission_and_allow_actual_next_jobs_and_room_posts() {
     for mode in ["bot", "room", "last"] {
-        // This prefix purges room history before its catalog decision. Its
-        // later catalog faults cannot promise history rollback. Last-member
+        // Room deletion purges history before its catalog commit, so a commit
+        // fault cannot promise history rollback. Last-member
         // removal also changes membership before purging. Exercise those room
         // failures before mutation, and bot rollback at each existing boundary.
         let faults: &[&str] = if mode == "bot" {
@@ -857,6 +865,7 @@ async fn failed_decisions_release_admission_and_allow_actual_next_jobs_and_room_
 async fn cancelled_delete_rpc_still_closes_before_committing_and_releases_the_guard() {
     for mode in ["bot", "room", "last"] {
         let f = Fixture::new(mode == "last").await;
+        f.hold_stops();
         f.roots().await;
         let a = f.app.clone();
         let room = f.room.clone();
@@ -920,6 +929,7 @@ async fn cancelled_delete_rpc_still_closes_before_committing_and_releases_the_gu
 async fn bot_delete_drains_hidden_job_cli_and_incoming_teammate_registration() {
     for mode in ["hidden", "job", "cli", "teammate"] {
         let f = Fixture::new(false).await;
+        f.hold_stops();
         eprintln!("registration path: {mode}");
         if mode == "teammate" {
             f.sender().await;
@@ -1066,6 +1076,7 @@ async fn bot_delete_drains_hidden_job_cli_and_incoming_teammate_registration() {
 #[tokio::test]
 async fn last_member_join_releases_admission_for_the_surviving_room() {
     let f = Fixture::new(true).await;
+    f.hold_stops();
     f.roots().await;
     let a = f.app.clone();
     let room = f.room.clone();
@@ -1099,6 +1110,7 @@ async fn last_member_join_releases_admission_for_the_surviving_room() {
 #[tokio::test]
 async fn concurrent_member_removals_close_both_processes_before_deleting_the_room() {
     let f = Fixture::new(false).await;
+    f.hold_stops();
     f.roots().await;
     db::open(f.h())
         .unwrap()
@@ -1157,6 +1169,7 @@ async fn concurrent_member_removals_close_both_processes_before_deleting_the_roo
 async fn description_process_admission_survives_caller_cancellation_until_actual_shutdown() {
     for cancel in [false, true] {
         let f = Fixture::new(false).await;
+        f.hold_stops();
         // Let startup's automatic description scan finish while every bot has
         // its explicit description, before starting the refresh we will cancel.
         f.app
@@ -1221,6 +1234,7 @@ async fn description_process_admission_survives_caller_cancellation_until_actual
 #[tokio::test]
 async fn concurrent_bot_deletion_can_make_a_member_removal_last_only_after_processes_close() {
     let f = Fixture::new(false).await;
+    f.hold_stops();
     f.roots().await;
     db::open(f.h())
         .unwrap()

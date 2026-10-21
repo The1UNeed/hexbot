@@ -22,6 +22,9 @@ pub fn defaults() -> Value {
         "bot_daily_token_budget": null,
         "dream_time": "03:00",
         "dream_enabled": true,
+        "checkin_enabled": true,
+        "checkin_every_minutes": 60,
+        "checkin_hours": "08:00-22:00",
         "default_model": null,
         "fallback_model": null
     })
@@ -37,6 +40,20 @@ pub fn get(home: &Path) -> Result<Value> {
         }
     }
     Ok(result)
+}
+
+/// How often the primary bot may check in on its own, in minutes.
+pub const CHECKIN_EVERY_MIN: u64 = 15;
+pub const CHECKIN_EVERY_MAX: u64 = 1440;
+
+/// A 24-hour clock time, `HH:MM`.
+pub fn clock(s: &str) -> bool {
+    let b = s.as_bytes();
+    b.len() == 5
+        && b[2] == b':'
+        && [b[0], b[1], b[3], b[4]].iter().all(u8::is_ascii_digit)
+        && &s[..2] <= "23"
+        && &s[3..] <= "59"
 }
 
 fn validate(patch: &Value) -> Result<()> {
@@ -62,13 +79,14 @@ fn validate(patch: &Value) -> Result<()> {
             "workspace_dir" => value
                 .as_str()
                 .is_some_and(|s| !s.is_empty() && !s.contains('\0')),
-            "dream_time" => value.as_str().is_some_and(|s| {
-                let b = s.as_bytes();
-                b.len() == 5
-                    && b[2] == b':'
-                    && [b[0], b[1], b[3], b[4]].iter().all(u8::is_ascii_digit)
-                    && &s[..2] <= "23"
-                    && &s[3..] <= "59"
+            "dream_time" => value.as_str().is_some_and(clock),
+            "checkin_enabled" => value.is_boolean(),
+            "checkin_every_minutes" => value
+                .as_u64()
+                .is_some_and(|m| (CHECKIN_EVERY_MIN..=CHECKIN_EVERY_MAX).contains(&m)),
+            "checkin_hours" => value.as_str().is_some_and(|s| {
+                s.split_once('-')
+                    .is_some_and(|(from, to)| clock(from) && clock(to) && from != to)
             }),
             "room_bot_turns_per_human_turn"
             | "room_budget_tokens_per_human_turn"

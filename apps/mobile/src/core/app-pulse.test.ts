@@ -33,6 +33,8 @@ vi.mock('expo-web-browser', () => ({ maybeCompleteAuthSession() {} }))
 vi.mock('expo-crypto', () => ({ randomUUID: () => 'message' }))
 vi.mock('@react-native-async-storage/async-storage', () => ({ default: {} }))
 vi.mock('./pickFile', () => ({ pickFile: vi.fn() }))
+// Push registration needs the native notifications module.
+vi.mock('./push', () => ({ registerPush: vi.fn(async () => undefined) }))
 vi.mock('./transport', () => ({ pair: vi.fn(), connectGrant: vi.fn(), request: vi.fn(), RevokedError: class extends Error {} }))
 vi.mock('./storage', () => ({
   activeDaemonId: async () => 'first',
@@ -147,6 +149,16 @@ it.each(['working', 'stopped', 'needs_you'] as const)('rendered Pulse opens the 
   expect(calls('prompt.submit')).toHaveLength(0)
   fireEvent.click(screen.getByRole('button', { name: 'Approve' }))
   await waitFor(() => expect(state.request).toHaveBeenCalledWith('approval.respond', expect.objectContaining({ session_id: 'live-thread', request_id: 'pending' })))
+})
+
+it('rendered Pulse opens Check-ins when its card waits there, not the chat', async () => {
+  const checkins = { ...owner, id: 'checkins', purpose: 'checkins', live_session_id: 'live-checkins' } as Section
+  sections = [owner, checkins]
+  bot.status_detail = { section_id: 'checkins', session_id: 'live-checkins' } as Bot['status_detail']
+  await open()
+  await screen.findByText('checkins history')
+  expect(calls('hexbot.sections.create')).toHaveLength(0)
+  expect(state.chat!.items.find(item => item.kind === 'approval')).toMatchObject({ request: { sessionId: 'live-checkins' } })
 })
 
 it.each(['working', 'stopped', 'needs_you'] as const)('rendered Pulse keeps room precedence for %s', async status => {

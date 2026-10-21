@@ -32,23 +32,33 @@ export function hydrateHistory(
 
   const previous = new Map(existing.messages.map(message => [message.id, message]))
 
-  const tools = existing.messages.flatMap(message => message.toolCalls)
-  const stored = history.flatMap(message => message.toolCalls)
+  // Looked up once per tool, so a long chat reopens in linear time.
+  const findLive = occurrences(existing.messages.flatMap(message => message.toolCalls))
+  const findStored = occurrences(history.flatMap(message => message.toolCalls))
+  const owners = new Map<string, Message[]>()
+
+  for (const row of history) {
+    for (const id of reports.has(row.id) ? [] : (row.fragmentIds ?? [])) {
+      const group = owners.get(id)
+
+      if (group) {
+        group.push(row)
+      } else {
+        owners.set(id, [row])
+      }
+    }
+  }
 
   const fragmentOwners = (source: string | undefined) =>
-    history.flatMap(row =>
-      !reports.has(row.id) ? (row.fragmentIds ?? []).filter(id => id === source).map(() => row) : []
-    )
+    (source === undefined ? undefined : owners.get(source)) ?? []
 
   const matchingLive = (tool: ToolCall) => {
-    const live = findToolOccurrence(tool, tools)
-
-    const owners = fragmentOwners(live?.messageId)
+    const live = findLive(tool)
 
     return live &&
       (!tool.messageId || live.messageId === tool.messageId) &&
-      (!live.messageId || owners.length === 1) &&
-      findToolOccurrence(live, stored) === tool
+      (!live.messageId || fragmentOwners(live.messageId).length === 1) &&
+      findStored(live) === tool
       ? live
       : undefined
   }
@@ -117,6 +127,32 @@ export function hydrateHistory(
     }
   }
 
+  // A queued or steered input can be saved without its ID. A saved user row
+  // without one, new in this snapshot, that says the same is that input,
+  // newest first. A row already shown, such as one from before the upgrade,
+  // never covers it, and nor does one with uploads or a failed or unconfirmed
+  // send: a rare miss shows twice, a sent message is never hidden.
+  const unbound = history.filter(
+    row => row.role === 'user' && !row.inputId && !previous.has(row.id)
+  )
+
+  for (const input of [...inputs].reverse()) {
+    if (
+      adopted.has(input.id) ||
+      input.attachments.length ||
+      (input.submission && input.submission.status !== 'accepted')
+    ) {
+      continue
+    }
+
+    const index = unbound.findLastIndex(row => row.text === input.text)
+
+    if (index >= 0) {
+      unbound.splice(index, 1)
+      adopted.add(input.id)
+    }
+  }
+
   let messages: TranscriptMessage[] = history.map(message => {
     const live = previous.get(message.id)
 
@@ -165,8 +201,6 @@ export function hydrateHistory(
         .map(part => [part.id!, part.text] as const)
     )
   )
-
-  const storedTools = history.flatMap(message => message.toolCalls)
 
   for (const live of local.flatMap(message => splitLive(message, history, reports))) {
     if (adopted.has(live.id)) {
@@ -248,7 +282,7 @@ export function hydrateHistory(
       .filter(tool => tool.messageId && selected.has(tool.messageId))
 
     const liveTools = live.toolCalls.filter(tool => {
-      const stored = findToolOccurrence(tool, storedTools)
+      const stored = findStored(tool)
 
       return (
         !stored ||
@@ -290,6 +324,26 @@ export function hydrateHistory(
   }
 
   return { messages, durableFragments: history.flatMap(message => message.fragmentIds ?? []) }
+}
+
+/** `findToolOccurrence` over `tools`, grouped once by call ID and parent scope. */
+function occurrences(tools: ToolCall[]) {
+  const key = (tool: Pick<ToolCall, 'toolId' | 'parentToolCallId'>) =>
+    `${tool.toolId}\u0000${tool.parentToolCallId ?? ''}`
+
+  const groups = new Map<string, ToolCall[]>()
+
+  for (const tool of tools) {
+    const group = groups.get(key(tool))
+
+    if (group) {
+      group.push(tool)
+    } else {
+      groups.set(key(tool), [tool])
+    }
+  }
+
+  return (tool: ToolCall) => findToolOccurrence(tool, groups.get(key(tool)) ?? [])
 }
 
 function overlaps(a: Message, b: Message) {

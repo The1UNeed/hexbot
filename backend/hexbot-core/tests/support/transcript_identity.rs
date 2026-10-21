@@ -233,13 +233,18 @@ if (mode === 'settlement') {{
   const settled = AgentSession.prototype._emitAgentSettled;
   AgentSession.prototype._emitAgentSettled = async function(...args) {{ const result = await settled.apply(this,args); this._emit({{type:'extension_ui_request',method:'notify',message:'identity settlement barrier'}}); return result; }};
 }}
-if (mode === 'late-settlement') {{
-  const normalize = AgentSession.prototype._normalizePromptImages;
-  let firstInput = true;
-  AgentSession.prototype._normalizePromptImages = async function(...args) {{ if(firstInput) {{ firstInput = false; await hold('prepared-input'); }} return normalize.apply(this,args); }};
+if (mode === 'settle-gap') {{
   const settled = AgentSession.prototype._emitAgentSettled;
   let firstEnd = true;
-  AgentSession.prototype._emitAgentSettled = async function(...args) {{ if(firstEnd) {{ firstEnd = false; await hold('old-settlement'); }} const result = await settled.apply(this,args); this._emit({{type:'extension_ui_request',method:'notify',message:'identity late settlement boundary'}}); return result; }};
+  AgentSession.prototype._emitAgentSettled = async function(...args) {{
+    if (firstEnd) {{
+      firstEnd = false;
+      const runner = this._extensionRunner;
+      const emit = runner.emit.bind(runner);
+      runner.emit = async event => {{ if (event.type === 'agent_settled') {{ runner.emit = emit; await hold('old-settlement'); }} return emit(event); }};
+    }}
+    return settled.apply(this,args);
+  }};
 }}
 if (mode === 'transform') {{
   const input = AgentSession.prototype._runInputHandlers;
@@ -580,7 +585,11 @@ async fn actual_pi_transcript_identity_held_dequeue_late_identical_steer_omits_i
 
 #[tokio::test]
 #[ignore = "requires HEXBOT_TEST_PI to the pinned Pi executable"]
-async fn actual_pi_transcript_identity_unstarted_old_settlement_omits_association() {
+async fn actual_pi_transcript_identity_queued_input_waits_for_an_older_preflight() {
+    // Input reaches Pi one at a time: a newer input waits until Pi has
+    // acknowledged the older prompt, so it can neither start a run first nor
+    // settle out of order. The observer's handling of those orders stays
+    // covered by the identity unit tests.
     let mut f = PiFixture::new("settlement").await;
     let runtime = f.runtime.clone();
     let live = f.live.clone();
@@ -597,114 +606,188 @@ async fn actual_pi_transcript_identity_unstarted_old_settlement_omits_associatio
     });
     let held = receive(&mut f.barriers).await;
     assert_eq!(held.kind, "old-preflight");
-    f.submit(SECOND, false, true).await;
-    let next = receive(&mut f.requests).await;
-    let starts = f.until("message.start").await;
-    let new_turn = starts.last().unwrap()["payload"]["turn_id"].clone();
-    held.release.send(()).unwrap();
-    assert_eq!(
-        tokio::time::timeout(LIMIT, older).await.unwrap().unwrap()["input_id"],
-        INPUT
-    );
-    let observed = f
-        .until_event(|event| {
-            event["type"] == "status.update"
-                && event["payload"]["text"] == "identity settlement barrier"
-        })
-        .await;
-    assert_eq!(
-        observed.last().unwrap()["payload"]["text"],
-        "identity settlement barrier"
-    );
-    assert!(observed.iter().all(|e| e["type"] != "message.complete"));
-    assert_eq!(
-        f.runtime
-            .call("alice", "session.status", &json!({"session_id":f.live}))
-            .await
-            .unwrap()
-            .unwrap()["status"],
-        "working"
-    );
-    next.answer("new");
-    // Preserve the stronger completion probe in evidence. On this base, the
-    // older accepted-but-unstarted input leaves a display entry pending. That
-    // PR111 admission policy is separate: this observer must not clear it.
-    let ended = f
-        .until_event(|event| {
-            event["type"] == "status.update"
-                && event["payload"]["text"] == "identity settlement barrier"
-        })
-        .await;
-    assert!(
-        ended
-            .iter()
-            .all(|event| event["type"] != "message.complete")
-    );
-    assert_eq!(
-        f.runtime
-            .call("alice", "session.status", &json!({"session_id":f.live}))
-            .await
-            .unwrap()
-            .unwrap()["status"],
-        "working"
-    );
-    let rows = f.rows();
-    let users = rows
-        .iter()
-        .filter(|r| r["role"] == "user")
-        .collect::<Vec<_>>();
-    assert_eq!(users.len(), 1);
-    assert_eq!(users[0]["input_id"], SECOND);
-    assert_eq!(users[0]["turn_id"], new_turn);
-    assert!(rows.iter().all(|row| row["input_id"] != INPUT));
-    f.close().await;
-}
-
-#[tokio::test]
-#[ignore = "requires HEXBOT_TEST_PI to the pinned Pi executable"]
-async fn actual_pi_transcript_identity_real_old_end_settles_after_new_start() {
-    let mut f = PiFixture::new("late-settlement").await;
     let runtime = f.runtime.clone();
     let live = f.live.clone();
-    let prepared = tokio::spawn(async move {
+    let newer = tokio::spawn(async move {
         runtime
             .call(
                 "alice",
                 "prompt.submit",
-                &json!({"session_id":live,"text":"same","input_id":INPUT}),
+                &json!({"session_id":live,"text":"same","input_id":SECOND,"queued":true}),
             )
             .await
             .unwrap()
             .unwrap()
     });
-    let input = receive(&mut f.barriers).await;
-    assert_eq!(input.kind, "prepared-input");
-    f.submit(SECOND, false, true).await;
+    // The older input owns admission until Pi acknowledges it.
+    assert!(
+        tokio::time::timeout(Duration::from_millis(500), f.requests.recv())
+            .await
+            .is_err()
+    );
+    assert!(!newer.is_finished());
+    held.release.send(()).unwrap();
+    assert_eq!(
+        tokio::time::timeout(LIMIT, older).await.unwrap().unwrap()["input_id"],
+        INPUT
+    );
+    let first = receive(&mut f.requests).await;
+    // Only the older input had reached Pi when its run started.
+    assert_eq!(first.body.to_string().matches("same").count(), 1);
+    assert_eq!(
+        tokio::time::timeout(LIMIT, newer).await.unwrap().unwrap()["input_id"],
+        SECOND
+    );
+    first.answer("old");
+    let second = receive(&mut f.requests).await;
+    assert_eq!(second.body.to_string().matches("same").count(), 2);
+    second.answer("new");
+    let ended = f.until("message.complete").await;
+    let terminal = &ended.last().unwrap()["payload"];
+    assert_eq!(terminal["text"], "new");
+    let rows = f.rows();
+    let users = rows
+        .iter()
+        .filter(|r| r["role"] == "user")
+        .collect::<Vec<_>>();
+    assert_eq!(users.len(), 2);
+    assert_eq!(users[0]["input_id"], INPUT);
+    // A queued acknowledgement never binds its user row.
+    assert!(users[1].get("input_id").is_none());
+    assert_eq!(users[0]["turn_id"], users[1]["turn_id"]);
+    assert!(users.iter().all(|r| r["display_kind"] == "normal"));
+    assert_eq!(
+        f.runtime
+            .call("alice", "session.status", &json!({"session_id":f.live}))
+            .await
+            .unwrap()
+            .unwrap()["status"],
+        "idle"
+    );
+    f.close().await;
+}
+
+#[tokio::test]
+#[ignore = "requires HEXBOT_TEST_PI to the pinned Pi executable"]
+async fn actual_pi_transcript_identity_cancelled_hidden_input_keeps_admission() {
+    // A room fan-out can drop a hidden turn while Pi still prepares it. The
+    // input keeps admission until Pi acknowledges it, and the section ends.
+    let mut f = PiFixture::new("settlement").await;
+    let runtime = f.runtime.clone();
+    let hidden = tokio::spawn(async move {
+        runtime
+            .run_hidden("alice", "owl", "section-a", "same")
+            .await
+    });
+    let held = receive(&mut f.barriers).await;
+    assert_eq!(held.kind, "old-preflight");
+    hidden.abort();
+    assert!(hidden.await.unwrap_err().is_cancelled());
+    let runtime = f.runtime.clone();
+    let live = f.live.clone();
+    let newer = tokio::spawn(async move {
+        runtime
+            .call(
+                "alice",
+                "prompt.submit",
+                &json!({"session_id":live,"text":"same","input_id":SECOND,"queued":true}),
+            )
+            .await
+            .unwrap()
+            .unwrap()
+    });
+    assert!(
+        tokio::time::timeout(Duration::from_millis(500), f.requests.recv())
+            .await
+            .is_err()
+    );
+    assert!(!newer.is_finished());
+    held.release.send(()).unwrap();
+    let first = receive(&mut f.requests).await;
+    assert_eq!(first.body.to_string().matches("same").count(), 1);
+    assert_eq!(
+        tokio::time::timeout(LIMIT, newer).await.unwrap().unwrap()["input_id"],
+        SECOND
+    );
+    first.answer("old");
+    let second = receive(&mut f.requests).await;
+    assert_eq!(second.body.to_string().matches("same").count(), 2);
+    second.answer("new");
+    let ended = f
+        .until_event(|e| e["type"] == "status.update" && e["payload"]["kind"] == "idle")
+        .await;
+    let terminal = ended
+        .iter()
+        .rev()
+        .find(|e| e["type"] == "message.complete")
+        .unwrap();
+    assert_eq!(terminal["payload"]["text"], "new");
+    assert_eq!(
+        f.runtime
+            .call("alice", "session.status", &json!({"session_id":f.live}))
+            .await
+            .unwrap()
+            .unwrap()["status"],
+        "idle"
+    );
+    let users = f
+        .rows()
+        .into_iter()
+        .filter(|r| r["role"] == "user")
+        .collect::<Vec<_>>();
+    assert_eq!(users.len(), 2);
+    assert_eq!(users[0]["display_kind"], "hidden");
+    assert_eq!(users[1]["display_kind"], "normal");
+    // The hidden input's started acknowledgement binds it; the queued one
+    // never binds.
+    assert!(users[0]["input_id"].is_string());
+    assert!(users[1].get("input_id").is_none());
+    f.close().await;
+}
+
+#[tokio::test]
+#[ignore = "requires HEXBOT_TEST_PI to the pinned Pi executable"]
+async fn actual_pi_transcript_identity_input_during_settlement_runs_after_it() {
+    // Pi defers a prompt that arrives while agent_settled handlers run. The
+    // queued input joins the unsettled turn and starts its own run after it.
+    let mut f = PiFixture::new("settle-gap").await;
+    f.submit(INPUT, false, false).await;
+    let old_start = f.until("message.start").await;
+    let old_turn = old_start.last().unwrap()["payload"]["turn_id"].clone();
     receive(&mut f.requests).await.answer("old");
     let old_settle = receive(&mut f.barriers).await;
     assert_eq!(old_settle.kind, "old-settlement");
-    let old_start = f.until("message.start").await;
-    let old_turn = old_start.last().unwrap()["payload"]["turn_id"].clone();
-    input.release.send(()).unwrap();
-    assert_eq!(
-        tokio::time::timeout(LIMIT, prepared)
+    let runtime = f.runtime.clone();
+    let live = f.live.clone();
+    let newer = tokio::spawn(async move {
+        runtime
+            .call(
+                "alice",
+                "prompt.submit",
+                &json!({"session_id":live,"text":"same","input_id":SECOND,"queued":true}),
+            )
             .await
             .unwrap()
-            .unwrap()["input_id"],
-        INPUT
+            .unwrap()
+    });
+    assert!(
+        tokio::time::timeout(Duration::from_millis(500), f.requests.recv())
+            .await
+            .is_err()
+    );
+    old_settle.release.send(()).unwrap();
+    assert_eq!(
+        tokio::time::timeout(LIMIT, newer).await.unwrap().unwrap()["input_id"],
+        SECOND
     );
     let next = receive(&mut f.requests).await;
-    let new_start = f.until("message.start").await;
-    let new_turn = new_start.last().unwrap()["payload"]["turn_id"].clone();
+    let seen = f.until("message.start").await;
+    let new_turn = seen.last().unwrap()["payload"]["turn_id"].clone();
     assert_ne!(new_turn, old_turn);
-    old_settle.release.send(()).unwrap();
-    let old_terminal = f.until("message.complete").await;
-    let old = &old_terminal.last().unwrap()["payload"];
-    assert_eq!(old["turn_id"], old_turn);
-    assert_eq!(old["text"], "old");
+    // The old run ended inside the turn the queued input joined.
+    assert!(seen.iter().all(|e| e["type"] != "message.complete"));
     assert!(
-        old_terminal
-            .iter()
+        seen.iter()
             .all(|e| !(e["type"] == "status.update" && e["payload"]["kind"] == "idle"))
     );
     assert_eq!(
@@ -716,104 +799,44 @@ async fn actual_pi_transcript_identity_real_old_end_settles_after_new_start() {
         "working"
     );
     next.answer("new");
-    let new_terminal = f.until("message.complete").await;
-    let new = &new_terminal.last().unwrap()["payload"];
+    let ended = f
+        .until_event(|e| e["type"] == "status.update" && e["payload"]["kind"] == "idle")
+        .await;
+    let completes = ended
+        .iter()
+        .filter(|e| e["type"] == "message.complete")
+        .collect::<Vec<_>>();
+    assert_eq!(completes.len(), 1);
+    let new = &completes[0]["payload"];
     assert_eq!(new["turn_id"], new_turn);
     assert_eq!(new["text"], "new");
-    let rows = f.rows();
-    let users = rows
-        .iter()
-        .filter(|r| r["role"] == "user")
-        .collect::<Vec<_>>();
-    assert_eq!(users.len(), 2);
-    // Submission order differs from actual Pi user order. Only the explicit
-    // started slot can bind these equal-text messages to their correct keys.
-    assert_eq!(users[0]["input_id"], SECOND);
-    assert_eq!(users[0]["turn_id"], old_turn);
-    assert_eq!(users[1]["input_id"], INPUT);
-    assert_eq!(users[1]["turn_id"], new_turn);
-    let assistants = rows
-        .iter()
-        .filter(|r| r["role"] == "assistant")
-        .collect::<Vec<_>>();
-    assert_eq!(assistants.len(), 2);
-    assert_eq!(old["message_id"], assistants[0]["row_id"]);
-    assert_eq!(new["message_id"], assistants[1]["row_id"]);
-    assert_ne!(assistants[0]["row_id"], assistants[1]["row_id"]);
-    f.close().await;
-}
-
-#[tokio::test]
-#[ignore = "requires HEXBOT_TEST_PI to the pinned Pi executable"]
-async fn actual_pi_transcript_identity_reversed_settlements_omit_terminal_ids() {
-    let mut f = PiFixture::new("late-settlement").await;
-    let runtime = f.runtime.clone();
-    let live = f.live.clone();
-    let prepared = tokio::spawn(async move {
-        runtime
-            .call(
-                "alice",
-                "prompt.submit",
-                &json!({"session_id":live,"text":"same","input_id":INPUT}),
-            )
-            .await
-            .unwrap()
-            .unwrap()
-    });
-    let input = receive(&mut f.barriers).await;
-    assert_eq!(input.kind, "prepared-input");
-    f.submit(SECOND, false, true).await;
-    receive(&mut f.requests).await.answer("old");
-    let old_settle = receive(&mut f.barriers).await;
-    assert_eq!(old_settle.kind, "old-settlement");
-    input.release.send(()).unwrap();
-    assert_eq!(
-        tokio::time::timeout(LIMIT, prepared)
-            .await
-            .unwrap()
-            .unwrap()["input_id"],
-        INPUT
-    );
-    receive(&mut f.requests).await.answer("new");
-    let early = f
-        .until_event(|e| {
-            e["type"] == "status.update"
-                && e["payload"]["text"] == "identity late settlement boundary"
-        })
-        .await;
-    assert!(early.iter().all(|e| e["type"] != "message.complete"));
     assert_eq!(
         f.runtime
             .call("alice", "session.status", &json!({"session_id":f.live}))
             .await
             .unwrap()
             .unwrap()["status"],
-        "working"
+        "idle"
     );
-    let before = f.rows();
-    old_settle.release.send(()).unwrap();
-    let ended = f.until("message.complete").await;
-    let terminal = &ended.last().unwrap()["payload"];
-    assert_eq!(terminal["text"], "new");
-    assert!(terminal.get("turn_id").is_none());
-    assert!(terminal.get("message_id").is_none());
     let rows = f.rows();
-    assert_eq!(rows, before);
-    let assistants = rows
-        .iter()
-        .filter(|r| r["role"] == "assistant")
-        .collect::<Vec<_>>();
-    assert_eq!(assistants.len(), 2);
-    assert!(assistants.iter().all(|r| r["turn_id"].is_string()));
-    assert_ne!(assistants[0]["turn_id"], assistants[1]["turn_id"]);
-    assert_ne!(assistants[0]["row_id"], assistants[1]["row_id"]);
     let users = rows
         .iter()
         .filter(|r| r["role"] == "user")
         .collect::<Vec<_>>();
     assert_eq!(users.len(), 2);
-    assert_eq!(users[0]["input_id"], SECOND);
-    assert_eq!(users[1]["input_id"], INPUT);
+    assert_eq!(users[0]["input_id"], INPUT);
+    assert_eq!(users[0]["turn_id"], old_turn);
+    assert_eq!(users[1]["input_id"], SECOND);
+    assert_eq!(users[1]["turn_id"], new_turn);
+    assert!(users.iter().all(|r| r["display_kind"] == "normal"));
+    let assistants = rows
+        .iter()
+        .filter(|r| r["role"] == "assistant")
+        .collect::<Vec<_>>();
+    assert_eq!(assistants.len(), 2);
+    assert_eq!(assistants[0]["turn_id"], old_turn);
+    assert_eq!(new["message_id"], assistants[1]["row_id"]);
+    assert_ne!(assistants[0]["row_id"], assistants[1]["row_id"]);
     f.close().await;
 }
 

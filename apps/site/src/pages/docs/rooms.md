@@ -30,7 +30,7 @@ The daemon stores room context with failures recorded by the bot runtime and pre
 
 ## Membership and history
 
-You can add or remove bots after creating a room, from Room settings (the info button in the room header). A newly added bot receives the existing transcript so it can follow the discussion. Removing a bot stops only that bot and keeps the old messages and their author labels. Removing the last bot deletes the room; the bot itself is kept.
+You can add or remove bots after creating a room, from Room settings (the info button in the room header). A newly added bot receives the existing transcript so it can follow the discussion. Removing a bot stops only that bot and keeps the old messages and their author labels. A removed bot's status no longer shows that room's failed turns; adding it back shows them again. Removing the last bot deletes the room; the bot itself is kept.
 
 A daemon belongs to one person, so you are the only person in its rooms. Rooms with people who run their own Hexbot will come through [Hex Connect](/docs/connect/).
 

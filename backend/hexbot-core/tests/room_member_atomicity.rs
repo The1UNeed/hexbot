@@ -590,7 +590,7 @@ async fn catalog_failure_rolls_back_member_event_and_incident_in_public_and_dire
                 "member.left"
             );
         }
-        // PR113 strengthens the old112 negative control: a failed catalog
+        // History is purged only after the catalog commits, so a failed
         // decision preserves every native row, frozen option and raw byte.
         assert_eq!(
             store::history(f.home.path(), "stored").unwrap(),
@@ -613,6 +613,7 @@ async fn catalog_failure_rolls_back_member_event_and_incident_in_public_and_dire
         assert_eq!(removed["room"]["deleted"], true);
         assert_eq!(removed["event"]["seq"], 2);
         assert!(f.resolved());
+        assert!(store::history(f.home.path(), "stored").unwrap().is_empty());
         println!(
             "catalog fault direct={direct}: membership/event/incident/native/raw/options exactly preserved; retry succeeds"
         );

@@ -1811,7 +1811,9 @@ pub fn import_hermes(home: &Path, bot: &str, stored: &str, cwd: &Path) -> Result
 /// compaction/branch summaries may contain reports, so replay original messages
 /// on the selected branch rather than transferring those generated summaries.
 /// Display history still includes reports, marked as output; usage stays on the
-/// original conversation and is never billed again for this copy.
+/// original conversation and is never billed again for this copy. The cost is
+/// one uncached read of that whole history at the chat's first reply, and a
+/// summary then if it no longer fits: a kept summary would carry reports.
 /// The caller holds the source's exclusive conversation lease through catalog
 /// publication and owns the unpublished target, including cleanup on any error.
 /// Ok(false) means no target files or native rows were written.

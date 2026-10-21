@@ -583,6 +583,7 @@ fn bot_reads_skip_stale_retry_causes_and_show_the_latest_remaining_incident() {
     conn.execute_batch("INSERT INTO bots(name,owner_id) VALUES('writer','alice');
         INSERT INTO sections(id,bot,owner_id) VALUES('other-bot','writer','alice'),('foreign-section','research-owl','bob');
         INSERT INTO rooms(id,name,owner_id,archived_at) VALUES('room','Room','alice',1),('foreign','Foreign','bob',NULL);
+        INSERT INTO room_members(room_id,member_kind,member_id) VALUES('room','bot','research-owl'),('foreign','bot','research-owl');
         INSERT INTO room_sessions(room_id,bot,stored_session_id) VALUES('room','research-owl','stored'),('foreign','research-owl','foreign-stored'),('room','writer','wrong-bot-stored');
         INSERT INTO bot_incidents(id,bot,kind,text,created_at) VALUES('older','research-owl','turn_failed','Global failure',1);").unwrap();
     call(h, "alice", "hexbot.sections.archive", json!({"id":section}));
@@ -1162,4 +1163,36 @@ fn threads_are_hidden_from_lists_and_counts_but_readable_by_the_owner() {
             .unwrap(),
         0
     );
+}
+#[test]
+fn deleting_a_bot_takes_what_check_ins_said_in_its_sections() {
+    let home = setup();
+    let h = home.path();
+    create(h);
+    let sections = call(
+        h,
+        "alice",
+        "hexbot.sections.list",
+        json!({"bot":"research-owl"}),
+    );
+    let section = sections["sections"][0]["id"].as_str().unwrap();
+    let conn = db::open(h).unwrap();
+    conn.execute(
+        "INSERT INTO checkin_messages(id,owner_id,bot,section_id,text,created_at,push_due_at) VALUES ('m','alice','research-owl',?,'Due tonight.',1,1)",
+        [section],
+    )
+    .unwrap();
+    call(
+        h,
+        "alice",
+        "hexbot.bots.delete",
+        json!({"name":"research-owl"}),
+    );
+    let (text, due): (String, Option<f64>) = conn
+        .query_row("SELECT text,push_due_at FROM checkin_messages", [], |r| {
+            Ok((r.get(0)?, r.get(1)?))
+        })
+        .unwrap();
+    assert_eq!(text, "");
+    assert!(due.is_none());
 }

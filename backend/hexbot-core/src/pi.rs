@@ -69,6 +69,8 @@ pub struct PiOptions {
     /// reading Pi's stdout until the consumer catches up; nothing is dropped.
     pub event_capacity: usize,
     pub request_capacity: usize,
+    /// How long Pi gets after SIGTERM before it is killed.
+    pub stop_grace: Duration,
 }
 
 impl PiOptions {
@@ -90,6 +92,7 @@ impl PiOptions {
             max_record_bytes: 1024 * 1024,
             event_capacity: 128,
             request_capacity: 32,
+            stop_grace: Duration::from_secs(1),
         }
     }
 }
@@ -650,7 +653,8 @@ impl PiProcess {
             .try_acquire_owned()
             .unwrap()
     }
-    /// Request SIGTERM cleanup on Unix, then force termination after one second.
+    /// Request SIGTERM cleanup on Unix, then force termination after
+    /// `stop_grace` (one second).
     /// Success means the owned child was reaped. Forced reaping also has a one
     /// second deadline; OS cleanup failures are reported, never awaited forever.
     pub async fn shutdown(&self) -> Result<(), PiError> {
@@ -801,7 +805,10 @@ async fn supervise(
     // Keep stdin open throughout graceful shutdown. Closing it immediately
     // after SIGTERM can race Pi's input-EOF handler against tool cleanup.
     let graceful = !exited && signal_termination(&mut child);
-    let cleanup_failed = !exited && terminate(&mut child, graceful).await.is_err();
+    let cleanup_failed = !exited
+        && terminate(&mut child, graceful, options.stop_grace)
+            .await
+            .is_err();
     if !writer_finished {
         writer.abort();
         let _ = writer.await;
@@ -830,14 +837,18 @@ fn signal_termination(child: &mut tokio::process::Child) -> bool {
     false
 }
 
-async fn terminate(child: &mut tokio::process::Child, graceful: bool) -> Result<(), PiError> {
+async fn terminate(
+    child: &mut tokio::process::Child,
+    graceful: bool,
+    grace: Duration,
+) -> Result<(), PiError> {
     match child.try_wait() {
         Ok(Some(_)) => return Ok(()),
         Err(_) => return Err(PiError::Cleanup),
         Ok(None) => {}
     }
     if graceful {
-        match tokio::time::timeout(Duration::from_secs(1), child.wait()).await {
+        match tokio::time::timeout(grace, child.wait()).await {
             Ok(Ok(_)) => return Ok(()),
             Ok(Err(_)) => return Err(PiError::Cleanup),
             Err(_) => {}

@@ -36,7 +36,8 @@ export function schemaGaps(present: Set<string>): string[] {
 export interface Store {
   /** What the database lacks from migrations.sql, empty when the migration has run. */
   missingSchema(): Promise<string[]>;
-  claimRegistrationAttempt(clientHash: string, windowStart: Date): Promise<boolean>;
+  /** One attempt in a one-minute window, at most `limit` per key. Pushes share it under `push:<daemon id>`. */
+  claimRegistrationAttempt(clientHash: string, windowStart: Date, limit?: number): Promise<boolean>;
   getOrCreateUser(clerkUserId: string): Promise<User>;
   createRegistration(input: Omit<Registration, "id" | "userId" | "approvedAt" | "consumedAt" | "daemonId">): Promise<Registration>;
   findRegistrationByDeviceHash(hash: string): Promise<Registration | null>;
@@ -80,13 +81,13 @@ export interface Store {
 export class MemoryStore implements Store {
   private registrationAttempts = new Map<string, { window: number; count: number }>();
   async missingSchema(): Promise<string[]> { return []; }
-  async claimRegistrationAttempt(clientHash: string, windowStart: Date) {
+  async claimRegistrationAttempt(clientHash: string, windowStart: Date, limit = REGISTRATION_ATTEMPTS_PER_MINUTE) {
     const window = windowStart.getTime();
     for (const [key, value] of this.registrationAttempts) if (value.window < window - GRANT_CODE_RETENTION_MS) this.registrationAttempts.delete(key);
     const previous = this.registrationAttempts.get(clientHash);
     if (previous && previous.window > window) return false;
     const count = previous?.window === window ? previous.count : 0;
-    if (count >= REGISTRATION_ATTEMPTS_PER_MINUTE) return false;
+    if (count >= limit) return false;
     this.registrationAttempts.set(clientHash, { window, count: count + 1 });
     return true;
   }
@@ -147,7 +148,7 @@ export class NeonStore implements Store {
   private nextRegistrationCleanup = 0;
   constructor(databaseUrl: string) { this.sql = neon(databaseUrl); }
   async missingSchema() { const rows = await this.sql`SELECT table_name, column_name FROM information_schema.columns WHERE table_schema = current_schema()`; return schemaGaps(new Set(rows.map(r => `${r.table_name}.${r.column_name}`))); }
-  async claimRegistrationAttempt(clientHash: string, windowStart: Date) {
+  async claimRegistrationAttempt(clientHash: string, windowStart: Date, limit = REGISTRATION_ATTEMPTS_PER_MINUTE) {
     const rows = await this.sql`
       INSERT INTO registration_attempts (client_hash, window_start, attempts)
       VALUES (${clientHash}, ${windowStart.toISOString()}, 1)
@@ -157,7 +158,7 @@ export class NeonStore implements Store {
           THEN 1 ELSE registration_attempts.attempts + 1 END
       WHERE registration_attempts.window_start < EXCLUDED.window_start
         OR (registration_attempts.window_start = EXCLUDED.window_start
-          AND registration_attempts.attempts < ${REGISTRATION_ATTEMPTS_PER_MINUTE})
+          AND registration_attempts.attempts < ${limit})
       RETURNING attempts`;
     return rows.length === 1;
   }

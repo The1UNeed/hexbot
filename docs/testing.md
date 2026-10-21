@@ -65,6 +65,9 @@
   frozen options, incident rows, membership and event sequence before retry.
   The section recovery false-purge control likewise requires exact retention
   of native and legacy history, frozen settings and raw files after restart.
+  Room deletion purges room history only after its catalog commit, so a failed
+  statement keeps the room and its history (`room_incidents`). Purge faults
+  after the commit and last-member races are in `tests/room_delete.rs`.
 - Pi runtime: `node --test backend/pi-runtime/*.test.mjs` after
   `npm ci --prefix backend/pi-runtime --ignore-scripts --no-audit --no-fund`.
   CI runs the Rust and Pi suites on Linux and macOS. Approval tests use a stub
@@ -135,6 +138,18 @@
   only existing repositories within the bounded scan; repositories created
   during a command remain unprotected. macOS filename rules cover new `.git`
   metadata directories.
+- Live Pi suites: ignored unless `HEXBOT_TEST_PI` names a Pi executable. CI runs
+  them with the pinned Pi after the Pi runtime install above, from
+  `backend/hexbot-core`:
+
+  ```sh
+  export HEXBOT_TEST_PI="$PWD/../pi-runtime/node_modules/.bin/pi"
+  cargo test --locked --test pi_live -- --ignored
+  cargo test --locked --test runtime -- --ignored
+  cargo test --locked --test runtime_recovery -- --ignored
+  cargo test --locked --lib runtime::lifecycle_tests::actual_pi_reviewer -- --ignored
+  cargo test --locked --test room_incidents -- --ignored
+  ```
 - Native browser end to end: `node scripts/dev/native-ui-smoke.mjs` after building
   Rust and the web bundle and installing the locked Pi dependency and Chromium.
   Uses a local streaming model with actual Pi; no provider credentials needed.

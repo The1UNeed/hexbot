@@ -89,6 +89,11 @@ data model. The native transport and event projection live in
   accepted into Pi's queue is recovered at that boundary too, before later
   input is admitted. Pi's steering-before-follow-up order is preserved, with
   each input's original display intent, images, file references and Chain.
+  Queued input is held in memory. A model or tool change hands waiting input
+  to the replacement process; it is lost only when the daemon restarts or Pi
+  crashes.
+  Input reaches Pi one at a time: later input waits until Pi acknowledges
+  the earlier prompt.
   Replay uses acknowledged intents and actual user projections, so identical
   text remains distinct even when Pi omits it from returned queue metadata.
   A delayed original submission that starts after Stop finishes runs once as
@@ -236,7 +241,9 @@ when it overrides the default.
 reverse order), folded by the daemon from live session state, room turns,
 room `waiting.human` events, and open incidents. `status_detail` is
 `{text, section_id, room_id, session_id, since, action}` where `action` is
-null, `{kind: "fix_connector", connector}`, or `{kind: "retry"}`.
+null, `{kind: "fix_connector", connector}`, or `{kind: "retry"}`. A room's
+failed turns count only while the bot is still in that room; adding it back
+restores them.
 `approval_mode` is `inherit` (the deployment setting), `manual`, `smart`
 (Auto), or `off` (Bypass); `workdir` overrides the deployment workspace for
 that bot's terminal.
@@ -320,7 +327,8 @@ others (`DESIGN.md`, "The primary bot"). There is at most one per owner.
 ### Sections
 
 A bot has one chat with its owner: the one section of that bot with no
-`peer_bot`. The other sections are threads (`peer_bot` set). Rooms keep their
+`peer_bot` and no `purpose`. The other sections are threads (`peer_bot`
+set) and, for the primary bot, its Check-ins (`purpose` `checkins`). Rooms keep their
 conversations in `room_sessions`, not here. On its first start after the
 upgrade the daemon keeps one chat per bot (`catalog::one_chat_per_bot`, once,
 recorded as the `one_chat_per_bot` setting): for a bot with several, the one
@@ -414,10 +422,13 @@ manual recovery. This does not reconstruct data already purged by an older build
 
 Section shape: `{id, bot, title, title_by: "bot" | null, created_at,
 updated_at, archived_at | null, done_at | null, preview, message_count,
-live_session_id | null, peer_bot | null}`
+live_session_id | null, peer_bot | null, purpose | null}`
 
 `peer_bot` is set on a thread: the private conversation in which `peer_bot`
-asked `bot` for help through `message_bot`.
+asked `bot` for help through `message_bot`. `purpose` is set on a section
+with its own job, so far only `checkins`, the primary bot's Check-ins; it
+is never the bot's chat. Daemons from before one chat per bot leave it out;
+there, `hexbot.checkins.status` names the Check-ins section.
 
 `title_by` is `"bot"` when the daemon named the section from the first
 prompt; a user rename clears it. Clients do not show chat titles. `preview`
@@ -439,7 +450,12 @@ returned by `open`.
   including accepted messages, uploads and background work. Once it closes or
   retires, a later lookup can move it to a chat without the old reports in
   model context. Opening its old ID then returns `4002` with the replacement
-  ID; the client must resolve the bot's chat again before sending input.
+  ID; the client must resolve the bot's chat again before sending input, and
+  `hexbot.sections.list` no longer lists it. The new chat replays the log's
+  original messages, not its old summaries, which were written with the
+  reports in context. Its first reply therefore reads the whole history
+  without the prompt cache, once; a history past the model's window is
+  summarised the way any chat that outgrew it is.
   A daemon without `one_chat` in `hexbot.info` makes a new section on
   every call, so clients there list the bot's sections and call `create`
   only when it has none. Its upgrade keeps the latest conversation, giving
@@ -492,9 +508,11 @@ context of its own; the meter belongs to bot sections.
   Current clients offer neither action for a chat; both remain available to
   older clients.
 - `hexbot.sections.delete {id, purge_memory?: true}` → `{deleted: true, history_pending?: true}`
-  Deletes only a peer thread (`peer_bot` set). An owned section without
-  `peer_bot` is a bot chat, including archived sections and legacy sections
-  kept for repair. Deleting it returns error `4202`,
+  Deletes only a peer thread (`peer_bot` set) or a section with its own
+  `purpose`, such as the primary bot's Check-ins, which also forgets what
+  check-ins said there. Any other owned section is a bot chat, including
+  archived sections and legacy sections kept for repair. Deleting it returns
+  error `4202`,
   `A bot chat cannot be deleted; delete the bot to remove it`.
   Ownership and missing-section errors take precedence. Rejection leaves
   the live session, pending work, staged uploads and stored history untouched,
@@ -591,6 +609,26 @@ context of its own; the meter belongs to bot sections.
   bot exists. The restore is logged as a dream of its own (`dream_id`) whose
   `memory_before` is the memory it replaced, so it can be undone in turn.
   Broadcasts `hexbot.dreaming.changed`.
+
+### Check-ins
+
+The primary bot's own looks at what is going on (`DESIGN.md`, "Check-ins").
+Settings `checkin_enabled`, `checkin_every_minutes` (15 to 1440) and
+`checkin_hours` (`HH:MM-HH:MM`) go through `hexbot.settings.set`.
+
+- `hexbot.checkins.status {}` → `{enabled, every_minutes, hours, bot,
+  section_id, running, next_run_at, wakeups: [{id, at, local, note}], recent:
+  [{id, bot, kind, started_at, finished_at, status, summary, messaged}]}`.
+  `bot` is the primary bot or null; `kind` is `heartbeat`, `wakeup`, or
+  `manual`; `section_id` is its Check-ins section once it has one.
+- `hexbot.checkins.run_now {}` → `{id, kind, status}`. Error 4246 without a
+  primary bot, 4243 while one runs.
+- `hexbot.checkins.cancel_wakeup {id}` → `{cancelled: true}`; 4244 if it ran
+  or is unknown.
+- Changes broadcast `hexbot.checkins.changed {bot?}`. A message from a
+  check-in broadcasts `hexbot.sections.changed {id, bot}` and then
+  `hexbot.checkins.message {bot, section_id, id, row_id, timestamp, text}`
+  with the whole text; `row_id` is the message's id in the section history.
 
 ### Scheduled jobs
 
@@ -961,6 +999,10 @@ and [provider setup guide](https://hexbot.app/docs/providers/).
 - `hexbot.devices.list {}` → `{devices: [{id, name, platform, created_at,
   last_seen_at, current: bool}]}`
 - `hexbot.devices.revoke {id}` → `{revoked: true}`
+- `hexbot.devices.set_push {token, platform}` → `{ok: true}` stores the
+  calling device's Expo push token (`ExponentPushToken[...]`) and platform
+  (`ios` or `android`) for check-in pushes; `{token: null}` stops them. Only
+  the calling connection's own paired device changes.
 
 ### Local daemon identity
 
@@ -1070,8 +1112,9 @@ process exits.
 Connect registration and disconnection emit `hexbot.connect.changed {}`.
 Room mutations emit `hexbot.rooms.changed {id, deleted?}`; `add_member` and
 `remove_member` also name the bot in `bot` and `name`. Room deletion,
-including last-member removal, sets `deleted: true` and then emits an
-owner-scoped, session-less `hexbot.bots.changed {}`. Every persisted room event
+including last-member removal, sets `deleted: true`. Deletion, `add_member` and
+`remove_member` then emit an owner-scoped, session-less `hexbot.bots.changed
+{}`. Every persisted room event
 emits `hexbot.rooms.event {room_id, event}`. Turn state changes emit
 `hexbot.rooms.turn {room_id, bot, live_session_id, status}`. Room events go
 to the owner.
@@ -1163,6 +1206,9 @@ on the pairing code or grant's single-use protection instead. CORS exposes
 - `hexbot status [--json]`, `hexbot service install|uninstall|start|stop|restart|status|logs`,
   and `hexbot setup [--activate]`: the Headless commands, described in
   `backend/hexbot-core/README.md`.
+- `hexbot checkins [now | on | off | every MINUTES | hours HH:MM-HH:MM |
+  cancel ID]`: shows check-ins and wake-ups, runs one, or changes their
+  settings. Status, now, and cancel need the daemon running.
 - `hexbot devices list|revoke`, `hexbot bots list|create|delete`,
   `hexbot rooms list`, and `hexbot send <bot> <text>`.
 - Native commands use the running daemon when available, preserving event

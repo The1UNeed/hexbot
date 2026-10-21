@@ -485,9 +485,7 @@ async fn queued_result_after_stop(idle_before_settled: bool) {
     )
     .await
     .unwrap();
-    tokio::time::timeout(Duration::from_secs(5), result)
-        .await
-        .unwrap();
+    tokio::time::timeout(EVENT_WAIT, result).await.unwrap();
     stop.await.unwrap();
     let card = stop_event(&mut events, |event| event["type"] == "clarify.request").await;
     assert_eq!(card["payload"]["request_id"], "fresh-question");

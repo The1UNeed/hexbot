@@ -1742,3 +1742,83 @@ async fn rejected_replay_reloads_a_report_while_the_second_stop_keeps_admission(
     assert!(Arc::ptr_eq(&s, &runtime.sessions.lock().unwrap()["first"]));
     runtime.shutdown().await;
 }
+
+#[tokio::test]
+async fn a_cancelled_hidden_submission_keeps_admission_until_pi_acknowledges_it() {
+    let (home, runtime, hub) = setup();
+    install_queue_pi(home.path(), false);
+    let script = home.path().join("pi.cjs");
+    // Pi holds the older prompt's acknowledgement until release_older.
+    let source = fs::read_to_string(&script)
+        .unwrap()
+        .replace(
+            ".on('line', line => {",
+            ".on('line', function handle(line) {",
+        )
+        .replace(
+            "  const c = JSON.parse(line);",
+            "  const c = JSON.parse(line);\n  if (c.type === 'prompt' && c.message === 'older' && !c.released) { held = c; status('older preflight waiting'); return; }\n  if (c.type === 'release_older') { response(c); handle(JSON.stringify({...held, released:true})); return; }",
+        )
+        .replace("let active = false, abort;", "let active = false, abort, held;");
+    fs::write(script, source).unwrap();
+    open(&runtime).await;
+    let s = runtime.sessions.lock().unwrap()["first"].clone();
+    let mut events = hub.subscribe();
+    let older = {
+        let (runtime, s) = (runtime.clone(), s.clone());
+        tokio::spawn(async move { runtime.submit(&s, "older", true, false, None, None).await })
+    };
+    stop_event(&mut events, |e| {
+        e["payload"]["text"] == "older preflight waiting"
+    })
+    .await;
+    // A room fan-out drops its sibling futures on error, like this abort.
+    older.abort();
+    assert!(older.await.unwrap_err().is_cancelled());
+    let newer = {
+        let (runtime, s) = (runtime.clone(), s.clone());
+        tokio::spawn(async move { runtime.submit(&s, "newer", true, true, None, None).await })
+    };
+    // The older input still owns admission: the newer one cannot reach Pi.
+    assert!(
+        tokio::time::timeout(
+            Duration::from_millis(500),
+            stop_event(&mut events, |e| e["payload"]["text"] == "projected newer")
+        )
+        .await
+        .is_err()
+    );
+    assert!(!newer.is_finished());
+    Runtime::command(&s, json!({"type":"release_older"}))
+        .await
+        .unwrap();
+    tokio::time::timeout(EVENT_WAIT, newer)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    Runtime::command(&s, json!({"type":"finish_run"}))
+        .await
+        .unwrap();
+    stop_event(&mut events, |e| e["type"] == "message.complete").await;
+    {
+        let state = s.state.lock().unwrap();
+        assert!(!state.busy);
+        assert!(state.display.is_empty());
+        assert!(state.inputs.is_empty());
+    }
+    let users = store::history(home.path(), "first")
+        .unwrap()
+        .into_iter()
+        .filter(|r| r["role"] == "user")
+        .map(|r| (r["text"].clone(), r["display_kind"].clone()))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        users,
+        [
+            (json!("older"), json!("hidden")),
+            (json!("newer"), json!("hidden"))
+        ]
+    );
+    runtime.shutdown().await;
+}

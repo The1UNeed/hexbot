@@ -27,7 +27,13 @@ const config: ExpoConfig = {
     predictiveBackGestureEnabled: true,
     permissions: ['INTERNET', 'ACCESS_NETWORK_STATE']
   },
-  plugins: ['expo-secure-store', 'expo-font', 'expo-web-browser', ['./plugins/local-network.cjs']],
+  plugins: [
+    'expo-secure-store',
+    'expo-font',
+    'expo-web-browser',
+    'expo-notifications',
+    ['./plugins/local-network.cjs']
+  ],
   web: { bundler: 'metro' }
 }
 export default config

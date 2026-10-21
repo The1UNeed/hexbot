@@ -79,6 +79,38 @@ async fn invalid_commands_fail_before_creating_state() {
     assert!(cli::dispatch(&h, &args(&["bots", "list"])).await.is_none());
 }
 #[tokio::test]
+async fn checkins_reach_the_cli_and_settings_work_offline() {
+    let h = home();
+    let h = h.path();
+    // Through dispatch, as `hexbot checkins ...` arrives from the binary.
+    for a in [
+        vec!["checkins", "off"],
+        vec!["checkins", "every", "30"],
+        vec!["checkins", "hours", "22:00-07:00"],
+    ] {
+        cli::dispatch(h, &args(&a)).await.unwrap().unwrap();
+    }
+    let settings = hexbot_core::settings::get(h).unwrap();
+    assert_eq!(settings["checkin_enabled"], false);
+    assert_eq!(settings["checkin_every_minutes"], 30);
+    assert_eq!(settings["checkin_hours"], "22:00-07:00");
+    assert!(
+        cli::dispatch(h, &args(&["checkins", "every", "5"]))
+            .await
+            .unwrap()
+            .is_err()
+    );
+    // Status and runs need the daemon.
+    assert_eq!(
+        cli::dispatch(h, &args(&["checkins"]))
+            .await
+            .unwrap()
+            .unwrap_err()
+            .code,
+        4208
+    );
+}
+#[tokio::test]
 async fn offline_bot_lifecycle_and_device_output_match_python_cli() {
     let h = home();
     let h = h.path();
