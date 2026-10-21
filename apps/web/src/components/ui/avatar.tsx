@@ -105,7 +105,7 @@ export function LiveFace({
     if (reduced) {
       element.current?.step()
     }
-  }, [mood, reduced, shape])
+  }, [color, eyes, mood, reduced, shape])
 
   return (
     <morph-bot

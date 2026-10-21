@@ -10,6 +10,8 @@ export function updateStateTargets(now, config, delta) {
   const elapsed = (now - this.stateStartedAt) / 1000;
   const runtime = (now - this.startedAt) / 1000;
   const motion = config.motionScale;
+  // Hexbot: a held head (motionScale 0) also skips impulses, scale pulses and gestures.
+  this.motionScale = motion;
   let eyeOpen = 1;
   let eyeScale = 1;
   let rotation = 0;
@@ -63,10 +65,10 @@ export function updateStateTargets(now, config, delta) {
       case "surprised": { const settle = Math.min(elapsed / 1.2, 1); x = -4 * (1 - settle); y = -8 * (1 - settle); scaleY = elapsed < 0.2 ? 1.08 : 1; eyeScale = 1.15 - 0.08 * settle; rotation = 1.5 * Math.sin(11 * runtime) * (1 - settle); break; }
       case "suspicious":
         rotation = -6 + 3 * Math.sin(0.3 * runtime); x = -4 * Math.sin(0.25 * runtime); y = 1 + 1.2 * Math.sin(0.45 * runtime); eyeOpen = 0.85;
-        if (now >= this.impulseNext) { this.rotation.v += 30 * Math.PI / 180; this.impulseNext = now + random(4000, 7000); }
+        if (now >= this.impulseNext) { this.rotation.v += 30 * Math.PI / 180 * motion; this.impulseNext = now + random(4000, 7000); }
         break;
       case "angry":
-        if (now >= this.impulseNext) { this.impulseUntil = now + 420; this.headY.v += 70; this.impulseNext = now + random(1800, 3200); }
+        if (now >= this.impulseNext) { this.impulseUntil = now + 420; this.headY.v += 70 * motion; this.impulseNext = now + random(1800, 3200); }
         rotation = now < this.impulseUntil ? 4.5 * Math.sin(0.05 * now) : 0; y = 3.5; scaleY = 0.975;
         break;
       case "drowsy":
@@ -86,7 +88,7 @@ export function updateStateTargets(now, config, delta) {
         if (now >= this.listenNodNext) { this.listenNodUntil = now + 440; this.listenNodNext = now + random(1600, 2800); }
         if (now < this.listenNodUntil) { const phase = 1 - (this.listenNodUntil - now) / 440; x += 8 * Math.sin(phase * Math.PI); rotation += 5 * Math.sin(phase * Math.PI); }
         break;
-      case "confused": { const wave = Math.sin(0.8 * runtime); rotation = 12 * wave; x = 3 * wave; y = 2 * Math.sin(0.5 * runtime); eyeOpen = 0.9; if (now >= this.impulseNext) { this.rotation.v += 22 * Math.PI / 180; this.impulseNext = now + random(2600, 4200); } break; }
+      case "confused": { const wave = Math.sin(0.8 * runtime); rotation = 12 * wave; x = 3 * wave; y = 2 * Math.sin(0.5 * runtime); eyeOpen = 0.9; if (now >= this.impulseNext) { this.rotation.v += 22 * Math.PI / 180 * motion; this.impulseNext = now + random(2600, 4200); } break; }
       case "bored":
         rotation = -3 + 4 * Math.sin(0.25 * runtime); x = 4 * Math.sin(0.2 * runtime); y = 5 + 1.5 * Math.sin(0.35 * runtime); scaleY = 0.99; eyeOpen = 0.6; eyeScale = 0.98;
         if (now >= this.impulseNext) { this.impulseUntil = now + 600; this.impulseNext = now + random(4000, 7000); }
@@ -126,7 +128,7 @@ export function updateStateTargets(now, config, delta) {
   this.rotation.target = (rotation * motion + config.headRotation) * Math.PI / 180;
   this.headX.target = x * motion + config.headX;
   this.headY.target = y * motion + config.headY;
-  this.scaleY.target = scaleY * config.scaleY;
+  this.scaleY.target = (1 + (scaleY - 1) * motion) * config.scaleY;
   this.eyeOpen.target = (blinkOverride ?? eyeOpen) * config.eyeOpen;
   this.eyeScale.target = eyeScale * config.eyeScale;
   this.notify.target = this.state === "notifying" ? 1 : 0;
@@ -238,14 +240,14 @@ export function updateGestures(now) {
     this.winkEye = Math.random() < 0.5 ? 0 : 1;
     this.winkNext = now + random(4500, 10000);
   }
-  if (now >= this.behaviorNext && !this.gesture && !this.spinSpring) {
+  if (now >= this.behaviorNext && !this.gesture && !this.spinSpring && this.motionScale !== 0) {
     if (this.state === "searching") { this.startSpin(); this.behaviorNext = now + random(4000, 7000); }
     else if (this.state === "working") { this.startSpin(1, 1); this.behaviorNext = now + random(6000, 9000); }
     else if (this.state === "excited") { this.startSpin(1); this.behaviorNext = now + random(2800, 5000); }
     else if (this.state === "playful") { this.startSpin(1); this.behaviorNext = now + random(3500, 6000); }
   }
   if (now >= this.ambientNext) {
-    if (!this.gesture && !this.spinSpring) {
+    if (!this.gesture && !this.spinSpring && this.motionScale !== 0) {
       const roll = Math.random();
       if (["happy", "excited", "proud"].includes(this.state)) roll < 0.55 ? this.startSpin(1) : this.startGesture("spinBounce");
       else if (this.state === "playful") {
