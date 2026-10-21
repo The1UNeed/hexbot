@@ -893,21 +893,28 @@ async fn a_bot_removed_from_a_surviving_room_shows_its_room_failure_only_while_a
             let (app, room) = (app.clone(), room.clone());
             async move {
                 let mut events = app.events.subscribe();
+                // A client cannot mark a surviving room deleted.
                 let result = app
                     .call(
                         "local",
                         &format!("hexbot.rooms.{action}"),
-                        &json!({"id":room,"bot":bot}),
+                        &json!({"id":room,"bot":bot,"deleted":true}),
                     )
                     .await
                     .unwrap();
                 assert_ne!(result["room"]["deleted"], true);
+                let emitted = notifications(&mut events);
                 assert!(
-                    notifications(&mut events)
+                    emitted
                         .iter()
                         .any(|e| e.frame["params"]["type"] == "hexbot.bots.changed"),
                     "{action} {bot}"
                 );
+                let changed = emitted
+                    .iter()
+                    .find(|e| e.frame["params"]["type"] == "hexbot.rooms.changed")
+                    .unwrap();
+                assert_ne!(changed.frame["params"]["payload"]["deleted"], true);
             }
         };
         member("add_member", "fox").await;

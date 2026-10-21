@@ -1361,9 +1361,12 @@ fn status_reader(home: &Path) -> Result<StatusReader> {
     let query = match attached {
         Ok(()) => OPEN_INCIDENT,
         Err(error) => {
-            eprintln!(
-                "Bot status shows every open failure; the runtime store is unavailable: {error}"
-            );
+            static WARN: std::sync::Once = std::sync::Once::new();
+            WARN.call_once(|| {
+                eprintln!(
+                    "Bot status shows every open failure; the runtime store is unavailable: {error}"
+                )
+            });
             ANY_OPEN_INCIDENT
         }
     };
