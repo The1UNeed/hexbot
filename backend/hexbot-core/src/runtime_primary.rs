@@ -23,7 +23,10 @@ You are the user's primary bot. Besides your own work, you look after their Hexb
 - hexbot_jobs schedules work for any of their bots.
 - hexbot_settings reads and changes Hexbot's settings, skills and connectors.
 Deleting a bot, room or job, changing a bot's or room's approval mode or a bot's or job's working folder, and changing settings always ask the user first. Do the rest when the user asks. You never see or set API keys or connector credentials; tell the user to add them in Settings.
-These tools work only in your own sections."###;
+These tools work only in your own sections.
+
+# Check-ins
+You also check in on your own: regularly during the user's hours, and at wake-ups you set. In a check-in you look at what is going on and message the user only when something needs their attention; that message lands in your Check-ins section and on their devices. When you learn of something with a time to it (a deadline, a meeting, a reply they wait for), set a wake-up with hexbot_wakeups for when it should be raised, with a note on what to look at then. The user turns check-ins on or off and sets their hours in Settings."###;
 
 const BOT_FIELDS: &[&str] = &[
     "name",
@@ -203,6 +206,52 @@ fn compact_bot(bot: &Value, soul: bool) -> Value {
 }
 
 impl Runtime {
+    /// `hexbot_notify` in the primary bot's check-ins; `hexbot_wakeups` there
+    /// and in its own sections. Both are frozen only into those.
+    pub(super) async fn checkin_tool(&self, s: &Live, name: &str, args: &Value) -> Result<Value> {
+        let settings = self.session_settings(s)?;
+        let checkin = settings["checkin"].as_str();
+        let own = checkin.is_none()
+            && !settings["job"].is_string()
+            && shows_visuals(&self.home, &s.stored)?;
+        let allowed = match name {
+            "hexbot_notify" => checkin.is_some(),
+            _ => checkin.is_some() || own,
+        };
+        if !allowed
+            || !s.tools.iter().any(|t| t["name"] == name)
+            || crate::catalog::primary_bot(&self.home, &s.owner)?.as_deref() != Some(s.bot.as_str())
+        {
+            return Err(Error::new(4210, "This tool is disabled for this section."));
+        }
+        match (name, checkin) {
+            ("hexbot_notify", Some(checkin)) => checkins::notify(
+                &self.home,
+                &self.events,
+                &s.owner,
+                &s.bot,
+                checkin,
+                required(args, "message")?,
+            ),
+            // Cancelling is deleting: it asks in the bot's own sections, even in
+            // Bypass, and a check-in, which cannot ask, leaves it to the user.
+            (_, checkin) if args["action"] == "cancel" => {
+                if checkin.is_some() {
+                    return Err(Error::new(
+                        4302,
+                        "A check-in can't cancel a wake-up. Leave it; the user can cancel it in Settings.",
+                    ));
+                }
+                let id = required(args, "id")?;
+                let wakeup = checkins::wakeup_label(&self.home, &s.owner, id)?;
+                self.confirm(s, name, format!("Cancel the wake-up {wakeup}"), args)
+                    .await?;
+                checkins::wakeups_tool(&self.home, &self.events, &s.owner, &s.bot, args)
+            }
+            _ => checkins::wakeups_tool(&self.home, &self.events, &s.owner, &s.bot, args),
+        }
+    }
+
     /// Called once the App exists, and again when it moves to another address.
     pub fn set_dispatcher(&self, app: Weak<crate::server::App>) {
         *self.dispatcher.lock().unwrap() = Some(app);

@@ -41,7 +41,7 @@ overrides:
   sharp@^0.35: 0.35.5
   smol-toml@^1: 1.9.0
   source-map-js@^1: 1.2.2
-  postcss: 8.5.23
+  postcss: 8.5.29
   tar: 7.5.22
 
 # Refuse releases younger than 14 days (the value is in minutes).
@@ -115,13 +115,11 @@ minimumReleaseAgeExclude:
   - fast-uri
   # minimatch 10.2.6 includes fixes for vulns. remove this when 10.2.6 is > 2wks old
   - minimatch
-  # vite 8.2.0 is the first release depending on rolldown >= 1.2.1, which fixes
-  # a rolldown panic that breaks `pnpm run build` in apps/desktop
-  # (rolldown/rolldown#10337 — a regression in 1.1.5, the version vite 8.1.5
-  # pins as ~1.1.5). @oxc-project/types is here because rolldown 1.2.1 pins it
-  # as `=0.142.0` — an exact pin, so no older release satisfies it and the age
-  # gate would fail the whole install.
-  # remove these once vite 8.2.0 is > 2wks old.
+  # vite 8.2.4 fixes GHSA-698v-4r3x-3vcv and needs rolldown ~1.2.4, which
+  # resolves to 1.2.14 (rel 2026-10-14). @oxc-project/types is here because
+  # rolldown 1.2.14 pins it as `=0.154.0` (rel 2026-10-13) — an exact pin, so
+  # no older release satisfies it and the age gate would fail the whole install.
+  # remove these once rolldown 1.2.14 is > 2wks old.
   - vite
   - rolldown
   - '@rolldown/*'

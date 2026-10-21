@@ -12,12 +12,21 @@ import {
   selectDaemon
 } from './storage'
 import { pair } from './transport'
+import { registerPush } from './push'
 import { parsePairing, normalizeOrigin } from './links'
-import { emptyChat, historyMessages, reduceChat, replayChat } from './chat'
+import { checkinMessage, emptyChat, historyMessages, reduceChat, replayChat } from './chat'
 import { reduceRoom, restoreRoom, roomChat, roomMessage } from './room-chat'
 import { attachmentPrompt } from './chat-send'
 import { modelLists, providerModels } from './models'
-import { ROOMS_QUERY, SECTIONS_QUERY, botChat, rebind, type ChatRoute } from './routes'
+import {
+  ROOMS_QUERY,
+  SECTIONS_QUERY,
+  botChat,
+  listSections,
+  ownerChat,
+  rebind,
+  type ChatRoute
+} from './routes'
 import type {
   Bot,
   Section,
@@ -136,7 +145,7 @@ export function useMobile() {
     const [b, r, s, i, config, me] = await Promise.all([
       rpc<{ bots: Bot[] }>('hexbot.bots.list'),
       rpc<{ rooms: Room[] }>('hexbot.rooms.list', ROOMS_QUERY),
-      rpc<{ sections: Section[] }>('hexbot.sections.list', SECTIONS_QUERY),
+      listSections(rpc, SECTIONS_QUERY).then(sections => ({ sections })),
       rpc<DaemonInfo>('hexbot.info'),
       rpc<Settings>('hexbot.settings.get'),
       rpc<CurrentUser>('hexbot.users.me')
@@ -159,7 +168,7 @@ export function useMobile() {
     if (!before || routeRef.current !== before) return i
     // Reconnect resolves owner chats before restoring history, even if the
     // old row survived migration. It may also have disappeared from this list.
-    if (reconnecting && before.kind === 'section' && !before.section.peer_bot) return i
+    if (reconnecting && before.kind === 'section' && ownerChat(before.section)) return i
     const next = rebind(before, { bots: b.bots, rooms: r.rooms, sections: s.sections })
     if (!next) {
       leave()
@@ -258,6 +267,17 @@ export function useMobile() {
         if (replay.reread && attempt < 2) continue
         straddling.current = replay.state.busy ? restoredLiveId : null
         let restored = { ...replay.state, error: failure }
+        // Check-ins that arrived while it loaded carry no session; match the section.
+        for (const event of loadingEvents.current ?? []) {
+          const p = (event.payload ?? {}) as Record<string, unknown>
+          if (
+            event.type === 'hexbot.checkins.message' &&
+            p.section_id === target.section.id &&
+            typeof p.row_id === 'string' &&
+            typeof p.text === 'string'
+          )
+            restored = checkinMessage(restored, p.row_id, p.text)
+        }
         if (result.pending_clarify)
           restored = reduceChat(restored, {
             type: 'clarify.request',
@@ -267,7 +287,12 @@ export function useMobile() {
         loadingEvents.current = null
         liveId.current = restoredLiveId
         setChat(restored)
-        const newRoute: ChatRoute = { ...target, section: result.section }
+        // A daemon from before one chat names no purpose; keep the one the list marked.
+        const section =
+          'purpose' in result.section
+            ? result.section
+            : { ...result.section, purpose: target.section.purpose }
+        const newRoute: ChatRoute = { ...target, section }
         routeRef.current = newRoute
         setRoute(newRoute)
         await rpc('hexbot.sections.mark_read', { id: target.section.id })
@@ -325,6 +350,19 @@ export function useMobile() {
           )
         )
       } else {
+        if (event.type === 'hexbot.checkins.message') {
+          if (
+            p.section_id === target.section.id &&
+            typeof p.row_id === 'string' &&
+            typeof p.text === 'string'
+          ) {
+            const [id, text] = [p.row_id, p.text]
+            setChat(c => checkinMessage(c, id, text))
+            // Seen as it arrived, so it is read.
+            void rpc('hexbot.sections.mark_read', { id: target.section.id }).catch(() => {})
+          }
+          return
+        }
         if (!event.session_id || event.session_id !== liveId.current) return
         if (event.type === 'message.complete' && straddling.current === event.session_id) {
           // Part of this turn was already in the history; the history now has all of it.
@@ -409,7 +447,7 @@ export function useMobile() {
           cancelNavigation()
           const generation = navigation.current
           const before = routeRef.current
-          ownerPending.current = before?.kind === 'section' && !before.section.peer_bot
+          ownerPending.current = before?.kind === 'section' && ownerChat(before.section)
           const current = () =>
             mounted.current && session.current === next && navigation.current === generation
           const previousInfo = infoRef.current
@@ -429,13 +467,14 @@ export function useMobile() {
             }
             if (refreshed.one_chat === true || previousInfo?.install_id !== refreshed.install_id)
               picked.current.clear()
-            if (before?.kind === 'section' && !before.section.peer_bot) {
+            if (before?.kind === 'section' && ownerChat(before.section)) {
               // Old daemons keep their explicit remembered choice. Modern ones
               // must name the canonical owner chat before any history is opened.
               await openSectionRef.current(before.bot)
             } else {
               await syncChatRef.current()
             }
+            void registerPush(rpc, daemon.deviceId).catch(() => undefined)
           } catch (error) {
             if (current()) setError(errorText(error))
             throw error
@@ -745,6 +784,10 @@ export function useMobile() {
       setConnection('offline')
     },
     remove: async (id: string) => {
+      // A forgotten daemon stops pushing to this phone. Only the connected one
+      // can be told; revoking this device on another daemon stops it there.
+      if (active?.id === id)
+        await rpc('hexbot.devices.set_push', { token: null }).catch(() => undefined)
       if (active?.id === id) {
         leave()
         session.current?.stop()

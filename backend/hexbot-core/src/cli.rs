@@ -26,6 +26,7 @@ pub const USAGE: &str = concat!(
     "hexbot pair\n",
     "hexbot bots list | create NAME [--title TEXT] [--description TEXT] [--persona TEXT] [--provider NAME] [--model NAME] [--reasoning-effort LEVEL] | delete NAME\n",
     "hexbot bots primary [NAME]\n",
+    "hexbot checkins [now | on | off | every MINUTES | hours HH:MM-HH:MM | cancel ID]\n",
     "hexbot rooms list\n",
     "hexbot devices list | revoke ID\n",
     "hexbot connect [--name TEXT | status | disconnect]\n",
@@ -50,6 +51,21 @@ fn command(args: &[String]) -> Result<(&'static str, Value)> {
         ["bots", "delete", name] => Ok(("hexbot.bots.delete", json!({"name":name}))),
         ["bots", "primary"] => Ok(("hexbot.bots.create_primary", json!({}))),
         ["bots", "primary", name] => Ok(("hexbot.bots.set_primary", json!({"name":name}))),
+        ["checkins"] => Ok(("hexbot.checkins.status", json!({}))),
+        ["checkins", "now"] => Ok(("hexbot.checkins.run_now", json!({}))),
+        ["checkins", "cancel", id] => Ok(("hexbot.checkins.cancel_wakeup", json!({"id":id}))),
+        ["checkins", toggle @ ("on" | "off")] => Ok((
+            "hexbot.settings.set",
+            json!({"patch":{"checkin_enabled":*toggle == "on"}}),
+        )),
+        ["checkins", "every", minutes] => Ok((
+            "hexbot.settings.set",
+            json!({"patch":{"checkin_every_minutes":minutes.parse::<u64>().map_err(|_| invalid())?}}),
+        )),
+        ["checkins", "hours", window] => Ok((
+            "hexbot.settings.set",
+            json!({"patch":{"checkin_hours":window}}),
+        )),
         ["send", bot, text] => Ok((
             "hexbot.cli.send",
             json!({"bot":bot,"text":text,"request_id":common::id()}),
@@ -425,6 +441,12 @@ async fn invoke(home: &Path, socket: &mut Option<Socket>, method: &str, p: Value
     if method == "hexbot.cli.send" {
         return offline_send(home, &p).await;
     }
+    if method.starts_with("hexbot.checkins.") {
+        return Err(Error::new(
+            4208,
+            "Check-ins run in the daemon. Start it with `hexbot serve` or `hexbot service start`.",
+        ));
+    }
     if method == "hexbot.connect.register_poll" {
         return services::register_poll(home, common::required(&p, "device_code")?, false).await;
     }
@@ -528,7 +550,7 @@ pub async fn execute(home: &Path, args: &[String]) -> Result<Value> {
 pub async fn dispatch(home: &Path, args: &[String]) -> Option<Result<()>> {
     let recognized = matches!(
         args.first().map(String::as_str),
-        Some("connect" | "devices" | "lan" | "send" | "hermes")
+        Some("connect" | "devices" | "lan" | "send" | "checkins" | "hermes")
     ) || (args.first().map(String::as_str) == Some("bots")
         && args.get(1).map(String::as_str) != Some("list"));
     if !recognized {

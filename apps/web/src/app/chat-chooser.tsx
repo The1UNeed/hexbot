@@ -19,7 +19,7 @@ export function ChatChooser() {
 
   return (
     <Dialog
-      description="This daemon keeps several conversations per bot. Pick one to continue. Your choice is saved for the update. If dream reports obscure that choice, Hexbot keeps all histories and may open another chat. Other histories are removed only after a full backup and a safe selection."
+      description="This daemon keeps several conversations per bot. Pick the one to keep as your chat."
       onOpenChange={open => !open && choosing?.pick(null)}
       open={Boolean(choosing)}
       title={`Continue with ${name}`}

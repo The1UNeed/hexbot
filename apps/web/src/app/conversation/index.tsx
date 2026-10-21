@@ -30,6 +30,7 @@ import {
 import { botFace } from '../../lib/avatar-builder'
 import { getBridge } from '../../lib/bridge'
 import { cn } from '../../lib/cn'
+import { NotConnectedError } from '../../lib/rpc'
 import { toMillis } from '../../lib/time'
 import type {
   ApprovalChoice,
@@ -1142,6 +1143,8 @@ function BotConversation() {
   const epoch = useConnection(state => state.epoch)
   const capability = useConnection(state => state.daemon?.one_chat)
   const installation = useConnection(state => state.daemon?.install_id)
+  // A reconnect checks the chat again even when the daemon info stays the same.
+  const connected = useConnection(state => state.status === 'connected')
   const identified = useConnection(state => state.daemon?.transcript_identity === true)
   const [openAttempt, setOpenAttempt] = useState(0)
 
@@ -1154,10 +1157,21 @@ function BotConversation() {
       epoch,
       capability,
       installation,
+      connected,
       location,
       openAttempt
     }),
-    [params.bot, params.section, target, epoch, capability, installation, location, openAttempt]
+    [
+      params.bot,
+      params.section,
+      target,
+      epoch,
+      capability,
+      installation,
+      connected,
+      location,
+      openAttempt
+    ]
   )
 
   const [resolved, setResolved] = useState<{ entry: typeof entry; peer: boolean } | null>(null)
@@ -1168,7 +1182,6 @@ function BotConversation() {
   const ready = resolved?.entry === entry
   const ownerInput = ready && !resolved.peer
   const liveId = ready ? loadedLiveId : null
-  const transcript = useTranscript(liveId ?? (ready ? section?.live_session_id : null) ?? null)
 
   // While the owner chat validated here is checked again (a reconnect, a
   // daemon restart, the same URL), its composer stays, disabled, so staged
@@ -1185,6 +1198,21 @@ function BotConversation() {
           !resolved.entry.installation ||
           resolved.entry.installation === installation)
       )
+
+  // So does what it showed, with the reading position, until the check ends;
+  // and a report reload or turn end, which clear the live ID, keep it too.
+  const kept = !ready && composer
+  const [shownLive, setShownLive] = useState({ section: params.section, live: loadedLiveId })
+
+  if (loadedLiveId && (shownLive.section !== params.section || shownLive.live !== loadedLiveId)) {
+    setShownLive({ section: params.section, live: loadedLiveId })
+  }
+
+  const lastLive = shownLive.section === params.section ? shownLive.live : null
+
+  const transcript = useTranscript(
+    liveId ?? (ready || kept ? lastLive : null) ?? (ready ? section?.live_session_id : null) ?? null
+  )
 
   // Connector tools are named from the bot's catalog ("Connecting to Project tools").
   useEffect(() => {
@@ -1292,7 +1320,10 @@ function BotConversation() {
           throw new Error('This conversation belongs to another bot.')
         }
 
-        const chat = row?.peer_bot ? row : await sectionsActions().chat(botName, current)
+        // A teammate thread or a section with its own purpose, such as the
+        // primary bot's Check-ins, opens as itself; anything else is the chat.
+        const chat =
+          row?.peer_bot || row?.purpose ? row : await sectionsActions().chat(botName, current)
 
         if (!current()) {
           return
@@ -1316,6 +1347,18 @@ function BotConversation() {
 
         setResolved({ entry, peer: Boolean(chat.peer_bot) })
       })().catch(error => {
+        // Not connected: the chat is checked again when a daemon answers.
+        // Connected without daemon info, Retry is the way forward.
+        const connection = useConnection.getState()
+
+        if (
+          error instanceof NotConnectedError &&
+          !connection.daemon &&
+          connection.status !== 'connected'
+        ) {
+          return
+        }
+
         if (current()) {
           setOpenFailure({
             section: sectionId,
@@ -1623,7 +1666,7 @@ function BotConversation() {
               Retry
             </Button>
           </div>
-        ) : !ready ? (
+        ) : !ready && !(kept && transcript) ? (
           <div className="grid h-full place-content-center text-muted" role="status">
             Opening conversation
           </div>
@@ -1652,7 +1695,7 @@ function BotConversation() {
             ) : null}
           </div>
         ) : (
-          <div className={cn(transcriptClass, 'hex-fade')} key={liveId ?? params.section}>
+          <div className={cn(transcriptClass, 'hex-fade')} key={params.section}>
             {messages.length > visible ? (
               <button
                 className="hex-focus mx-auto mb-3 block rounded-full px-3 py-1 text-[length:var(--text-secondary)] text-muted transition-colors duration-[var(--hex-motion-fast)] hover:bg-surface-2 hover:text-foreground"

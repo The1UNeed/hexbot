@@ -27,9 +27,10 @@ Three facts shape most decisions:
   soul, memory, About you, teammates, and skill catalog. If the active run
   resumes first, keep its prompt until another compaction. And because a
   bot's chat never ends, when the bot's tools or connected servers change,
-  or an update changes Hexbot's own tools, the chat is rebuilt with them at
-  its next message (`tools_stale` in `runtime.rs`); that one request misses
-  the cache. Rooms, threads between bots, jobs and delegates keep what
+  including when it becomes the primary bot, or an update changes Hexbot's
+  own tools, the chat, and the primary bot's Check-ins too, is rebuilt with
+  them at its next message (`tools_stale` in `runtime.rs`); that one request
+  misses the cache. Rooms, threads between bots, jobs and delegates keep what
   they started with.
 - **One product, two packages, three channels.** Full package (app plus
   daemon) and client-only package (app alone) are build-time editions
@@ -55,7 +56,8 @@ Use these words consistently in code, UI copy, docs, and commit messages.
 - **Bot**: a named agent with its own soul, model, skills, and memory. One bot profile with independent Pi conversations managed by the daemon.
 - **Chat**: your one ongoing conversation with a bot, like a contact in a messaging app. A bot has exactly one chat with you; it never ends, and summarising older messages keeps it going. There is no new chat, archive, or delete; deleting the bot deletes it. Its dream reports appear in it.
 - **Primary bot**: the one bot that looks after the others, created by onboarding as **HexBot** (handle `hexbot`, which no other bot may take). In its own chat it can create, change, and delete bots, manage rooms, schedule jobs for any bot, and change settings; deleting anything and changing settings, approval modes, or working folders always ask, even in Bypass. It cannot be deleted. An install from before it adds HexBot or promotes a bot once. Internal column `bots.is_primary`. UI copy says "primary bot", since the user may rename HexBot.
-- **Section** = **conversation** = **thread**: the daemon's name for one persistent Pi session with its own context window: a bot's chat, a room conversation, or a thread in which one bot asks another for help. UI copy says chat, room, or conversation, not section.
+- **Check-in**: the primary bot looking at what is going on, on its own: regularly during the user's hours (every hour, 08:00 to 22:00 by default) and at **wake-ups** it sets for itself. It messages the user only when something needs them, in its **Check-ins** conversation, which is not its chat, and as a notification on their app, browser, and phone. A check-in runs unattended like a scheduled job and only reads. Internal names `checkins`, `hexbot_notify`, `hexbot_wakeups`.
+- **Section** = **conversation** = **thread**: the daemon's name for one persistent Pi session with its own context window: a bot's chat, a room conversation, the primary bot's Check-ins, or a thread in which one bot asks another for help. UI copy says chat, room, or conversation, not section.
 - **Room**: a group chat with one or more humans and any number of bots. May have a **main bot** that responds when nobody is @-mentioned.
 - **Turn**: one user message and everything the bots do in response. The room turn engine (`backend/hexbot-core/src/rooms.rs`) decides who speaks.
 - **Soul**: a bot's persona, the `SOUL.md` in its profile. The user and the bot both edit it; the bot says so when it does.
