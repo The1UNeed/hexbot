@@ -132,7 +132,7 @@ describe('the live face', () => {
       <LiveFace color="#ec2f8a" eyes="#ffffff" mood="working" shape="hexagon" />
     )
 
-    const bot = container.querySelector('morph-bot') as HTMLElement & {
+    const bot = container.querySelector('morph-bot') as unknown as {
       _engine: { gesture: unknown; spinSpring: unknown; startSpin(): boolean }
     }
 
