@@ -1,6 +1,7 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { vi } from 'vitest'
 
+import { ConfirmHost } from '../../components/ui/confirm'
 import { setActiveRpc } from '../../lib/rpc'
 import type { Bot, Connector } from '../../lib/types'
 import { useConnectors } from '../../stores/connectors'
@@ -140,7 +141,12 @@ describe('notes', () => {
       'hexbot.memory.notes.set': params => ({ cap: 4000, date: params.date, text: params.text })
     })
 
-    render(<NotesBlock bot="scout" />)
+    render(
+      <>
+        <NotesBlock bot="scout" />
+        <ConfirmHost />
+      </>
+    )
     expect(await screen.findByRole('button', { name: /Today/, pressed: true })).toBeVisible()
     expect(screen.getByRole('button', { name: /Yesterday/, pressed: false })).toBeVisible()
     expect(screen.getByText('2 notes')).toBeVisible()
@@ -170,9 +176,11 @@ describe('notes', () => {
     )
 
     await waitFor(() => expect(screen.getByRole('button', { name: 'Delete' })).toBeEnabled())
-    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true)
     fireEvent.click(screen.getByRole('button', { name: 'Delete' }))
-    expect(confirm).toHaveBeenCalledWith("Delete yesterday's notes?")
+    const question = await screen.findByRole('alertdialog')
+    expect(question).toHaveTextContent("Delete yesterday's notes?")
+    expect(call).not.toHaveBeenCalledWith('hexbot.memory.notes.delete', expect.anything())
+    fireEvent.click(within(question).getByRole('button', { name: 'Yes' }))
     await waitFor(() =>
       expect(call).toHaveBeenCalledWith('hexbot.memory.notes.delete', {
         bot: 'scout',
@@ -183,7 +191,6 @@ describe('notes', () => {
     await waitFor(() => expect(screen.queryByRole('button', { name: /Yesterday/ })).toBeNull())
     // The editor moves to the day that is left.
     expect(screen.getByLabelText('Notes for Today')).toBeVisible()
-    confirm.mockRestore()
     setActiveRpc(null)
   })
 
@@ -314,16 +321,22 @@ describe('dreaming block', () => {
     })
 
     const restored = vi.fn()
-    render(<DreamingBlock bot={bot} onRestored={restored} onSave={vi.fn()} />)
+    render(
+      <>
+        <DreamingBlock bot={bot} onRestored={restored} onSave={vi.fn()} />
+        <ConfirmHost />
+      </>
+    )
     expect(await screen.findByText('Dream log')).toBeVisible()
     // Only the dream that changed memory offers a diff.
     expect(screen.getAllByRole('button', { name: 'What changed' })).toHaveLength(1)
     fireEvent.click(screen.getByRole('button', { name: 'What changed' }))
     expect(screen.getByText('Likes tea')).toBeVisible()
-    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true)
     fireEvent.click(screen.getByRole('button', { name: /Restore memory/ }))
+    const question = await screen.findByRole('alertdialog')
+    expect(question).toHaveTextContent('Restore the memory from before this dream?')
+    fireEvent.click(within(question).getByRole('button', { name: 'Yes' }))
     await waitFor(() => expect(restored).toHaveBeenCalledWith('Likes tea'))
-    confirm.mockRestore()
     expect(call).toHaveBeenCalledWith('hexbot.dreaming.restore', { id: 'd1' })
     setActiveRpc(null)
   })

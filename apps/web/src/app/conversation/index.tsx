@@ -16,6 +16,7 @@ import remarkGfm from 'remark-gfm'
 import { Avatar, useFaceColor } from '../../components/ui/avatar'
 import { Button } from '../../components/ui/button'
 import { Chip } from '../../components/ui/chip'
+import { confirm } from '../../components/ui/confirm'
 import { Dialog } from '../../components/ui/dialog'
 import { Input } from '../../components/ui/input'
 import { Menu } from '../../components/ui/menu'
@@ -1126,7 +1127,10 @@ function BotConversation() {
   }
 
   const remove = async () => {
-    if (!section || !window.confirm(`Delete “${section.title}”? Its history goes with it.`)) {
+    if (
+      !section ||
+      !(await confirm({ detail: 'Its history goes with it.', title: `Delete “${section.title}”?` }))
+    ) {
       return
     }
 

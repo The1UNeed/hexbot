@@ -6,6 +6,9 @@ import { setActiveRpc } from '../../lib/rpc'
 
 import { MemoryEditor, NotesBlock } from './memory'
 
+// Every delete here is answered Yes; the prompt itself is tested in components/ui.
+vi.mock('../../components/ui/confirm', () => ({ confirm: vi.fn(async () => true) }))
+
 const today = '2026-10-07'
 
 const listed = (text: string) => ({
@@ -116,7 +119,6 @@ describe('notes conflicts', () => {
       throw conflict()
     })
 
-    vi.spyOn(window, 'confirm').mockReturnValue(true)
     render(<NotesBlock bot="scout" />)
     fireEvent.change(await screen.findByRole('textbox'), { target: { value: 'My draft' } })
     fireEvent.click(screen.getByRole('button', { name: 'Delete' }))
@@ -152,7 +154,6 @@ describe('notes conflicts', () => {
       return { deleted: true }
     })
 
-    vi.spyOn(window, 'confirm').mockReturnValue(true)
     render(<NotesBlock bot="scout" />)
     await screen.findByRole('textbox')
     fireEvent.click(screen.getByRole('button', { name: /Yesterday/ }))
@@ -197,7 +198,6 @@ describe('notes conflicts', () => {
       return { date: today, text }
     })
 
-    vi.spyOn(window, 'confirm').mockReturnValue(true)
     render(<NotesBlock bot="scout" />)
     fireEvent.change(await screen.findByRole('textbox'), { target: { value: draft } })
     fireEvent.click(screen.getByRole('button', { name: 'Delete' }))
@@ -253,8 +253,7 @@ describe('notes conflicts', () => {
         return { date: today, text }
       })
 
-      vi.spyOn(window, 'confirm').mockReturnValue(true)
-      render(<NotesBlock bot="scout" />)
+        render(<NotesBlock bot="scout" />)
       fireEvent.change(await screen.findByRole('textbox'), { target: { value: draft } })
       fireEvent.click(screen.getByRole('button', { name: 'Delete' }))
       await waitFor(() => expect(reads).toBe(2))
@@ -293,11 +292,10 @@ describe('notes conflicts', () => {
   it.each(['save', 'delete'])('prevents overlapping mutations during %s', async action => {
     const pending = deferred<unknown>()
     const call = rpc(method => (method.endsWith('.list') ? listed('Plan') : pending.promise))
-    vi.spyOn(window, 'confirm').mockReturnValue(true)
     render(<NotesBlock bot="scout" />)
     fireEvent.change(await screen.findByRole('textbox'), { target: { value: 'My plan' } })
     fireEvent.click(screen.getByRole('button', { name: action === 'save' ? 'Save' : 'Delete' }))
-    expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled()
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled())
     expect(screen.getByRole('button', { name: 'Delete' })).toBeDisabled()
     fireEvent.click(screen.getByRole('button', { name: 'Save' }))
     fireEvent.click(screen.getByRole('button', { name: 'Delete' }))
@@ -354,8 +352,7 @@ describe('notes bot switches', () => {
         return pending.promise
       })
 
-      vi.spyOn(window, 'confirm').mockReturnValue(true)
-      const view = render(<NotesBlock bot="scout" />)
+        const view = render(<NotesBlock bot="scout" />)
       await screen.findByRole('textbox')
 
       if (action.startsWith('delete')) {

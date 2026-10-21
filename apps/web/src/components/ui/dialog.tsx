@@ -1,9 +1,12 @@
+import { AlertDialog as BaseAlertDialog } from '@base-ui/react/alert-dialog'
 import { Dialog as BaseDialog } from '@base-ui/react/dialog'
 import { type ReactNode, useRef } from 'react'
 
 import { cn } from '../../lib/cn'
 
 export interface DialogProps {
+  /** A question that needs an answer: an alertdialog a click outside does not close. */
+  alert?: boolean
   children: ReactNode
   className?: string
   description?: ReactNode
@@ -22,6 +25,7 @@ export interface DialogProps {
  * the glass rim and shadow stay intact.
  */
 export function Dialog({
+  alert = false,
   children,
   className,
   description,
@@ -32,9 +36,10 @@ export function Dialog({
   toolbar
 }: DialogProps) {
   const popup = useRef<HTMLDivElement>(null)
+  const Root = alert ? BaseAlertDialog.Root : BaseDialog.Root
 
   return (
-    <BaseDialog.Root onOpenChange={onOpenChange} open={open}>
+    <Root onOpenChange={onOpenChange} open={open}>
       <BaseDialog.Portal>
         <BaseDialog.Backdrop className="hex-fade fixed inset-0 z-50 bg-black/25 backdrop-blur-md" />
         <BaseDialog.Popup
@@ -70,6 +75,6 @@ export function Dialog({
           </div>
         </BaseDialog.Popup>
       </BaseDialog.Portal>
-    </BaseDialog.Root>
+    </Root>
   )
 }

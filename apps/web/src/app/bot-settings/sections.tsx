@@ -2,6 +2,7 @@ import { Archive, Trash2, Undo2 } from 'lucide-react'
 import { useEffect } from 'react'
 
 import { Button } from '../../components/ui/button'
+import { confirm } from '../../components/ui/confirm'
 import { cn } from '../../lib/cn'
 import type { Section } from '../../lib/types'
 import { useSections, useSectionsForBot } from '../../stores/sections'
@@ -44,11 +45,12 @@ export function SectionsTab({ botName }: { botName: string }) {
       <Button
         aria-label={`Delete ${section.title}`}
         icon={<Trash2 size={14} />}
-        onClick={() => {
-          if (window.confirm(`Delete “${section.title}”? Its history goes with it.`)) {
-            void remove(section.id)
-          }
-        }}
+        onClick={() =>
+          void confirm({
+            detail: 'Its history goes with it.',
+            title: `Delete “${section.title}”?`
+          }).then(yes => (yes ? remove(section.id) : undefined))
+        }
         size="icon"
         variant="ghost"
       />

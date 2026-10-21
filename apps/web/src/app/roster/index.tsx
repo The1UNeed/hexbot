@@ -14,6 +14,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { Avatar, PersonAvatar } from '../../components/ui/avatar'
 import { AvatarBuilder } from '../../components/ui/avatar-builder'
 import { Button } from '../../components/ui/button'
+import { confirm } from '../../components/ui/confirm'
 import { Dialog } from '../../components/ui/dialog'
 import { Input } from '../../components/ui/input'
 import { ContextMenu, Menu } from '../../components/ui/menu'
@@ -598,7 +599,9 @@ export function RosterColumn() {
   }
 
   const deleteSection = async (section: Section) => {
-    if (!window.confirm(`Delete “${section.title}”? Its history goes with it.`)) {
+    if (
+      !(await confirm({ detail: 'Its history goes with it.', title: `Delete “${section.title}”?` }))
+    ) {
       return
     }
 

@@ -1,6 +1,7 @@
 import { JsonRpcGatewayError } from '@hermes/shared'
 import { act, fireEvent, render, renderHook, screen, waitFor, within } from '@testing-library/react'
 
+import { ConfirmHost } from '../../components/ui/confirm'
 import { useRoomOrLeave } from '../../lib/room-or-leave'
 import { setActiveRpc } from '../../lib/rpc'
 import type { Bot, Room } from '../../lib/types'
@@ -71,13 +72,19 @@ describe('room settings', () => {
     )
 
     setActiveRpc({ call } as never)
-    render(<RoomSettingsPanel room={two} />)
+    render(
+      <>
+        <RoomSettingsPanel room={two} />
+        <ConfirmHost />
+      </>
+    )
     expect(screen.getAllByTestId('room-member')).toHaveLength(2)
     fireEvent.click(screen.getAllByRole('button', { name: 'Remove' })[1]!)
     expect(call).not.toHaveBeenCalled()
-    const confirm = screen.getByRole('alertdialog')
+    const confirm = await screen.findByRole('alertdialog')
     expect(confirm).toHaveTextContent('Remove Writer from this room?')
-    fireEvent.click(within(confirm).getByRole('button', { name: 'Remove' }))
+    expect(confirm).toHaveTextContent('Its memory of the room stays with the bot.')
+    fireEvent.click(within(confirm).getByRole('button', { name: 'Yes' }))
 
     await waitFor(() =>
       expect(call).toHaveBeenCalledWith('hexbot.rooms.remove_member', { bot: 'writer', id: 'r1' })
@@ -93,11 +100,17 @@ describe('room settings', () => {
       call: vi.fn(() => Promise.resolve({ room: { ...one, deleted: true } }))
     } as never)
 
-    render(<RoomSettingsPanel room={one} />)
+    render(
+      <>
+        <RoomSettingsPanel room={one} />
+        <ConfirmHost />
+      </>
+    )
     fireEvent.click(screen.getByRole('button', { name: 'Remove' }))
-    expect(screen.getByRole('alertdialog')).toHaveTextContent('deletes this room')
-    expect(screen.getByRole('alertdialog')).toHaveTextContent('The bot itself stays')
-    fireEvent.click(screen.getByRole('button', { name: 'Remove and delete room' }))
+    const confirm = await screen.findByRole('alertdialog')
+    expect(confirm).toHaveTextContent('Remove Scout and delete this room?')
+    expect(confirm).toHaveTextContent('The bot itself stays')
+    fireEvent.click(within(confirm).getByRole('button', { name: 'Yes' }))
 
     await waitFor(() => expect(navigate).toHaveBeenCalledWith({ to: '/' }))
     expect(useRooms.getState().byId.r1).toBeUndefined()
@@ -130,7 +143,12 @@ describe('room settings', () => {
     useRooms.setState({ byId: { r1: legacy }, order: ['r1'] })
     const call = vi.fn().mockResolvedValue({ left: true })
     setActiveRpc({ call } as never)
-    render(<RoomSettingsPanel room={legacy} />)
+    render(
+      <>
+        <RoomSettingsPanel room={legacy} />
+        <ConfirmHost />
+      </>
+    )
     expect(screen.queryByLabelText('Room name')).toBeNull()
     expect(screen.queryByText('Approval mode')).toBeNull()
 
@@ -141,15 +159,14 @@ describe('room settings', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Leave' }))
     expect(call).not.toHaveBeenCalled()
     expect(navigate).not.toHaveBeenCalled()
-    const confirmation = screen.getByRole('alertdialog')
-    expect(confirmation).toHaveTextContent('Leave this room? You can no longer read or post in it.')
-    fireEvent.click(within(confirmation).getByRole('button', { name: 'Cancel' }))
-    expect(screen.queryByRole('alertdialog')).toBeNull()
+    const confirmation = await screen.findByRole('alertdialog')
+    expect(confirmation).toHaveTextContent('Leave this room?')
+    expect(confirmation).toHaveTextContent('You can no longer read or post in it.')
+    fireEvent.click(within(confirmation).getByRole('button', { name: 'No' }))
+    await waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull())
     expect(call).not.toHaveBeenCalled()
     fireEvent.click(screen.getByRole('button', { name: 'Leave' }))
-    const leave = within(screen.getByRole('alertdialog')).getByRole('button', { name: 'Leave' })
-    expect(leave).toHaveClass('bg-danger')
-    fireEvent.click(leave)
+    fireEvent.click(within(await screen.findByRole('alertdialog')).getByRole('button', { name: 'Yes' }))
     await waitFor(() => expect(navigate).toHaveBeenCalledWith({ to: '/' }))
     expect(call).toHaveBeenCalledWith('hexbot.rooms.remove_member', { id: 'r1', user: 'bob' })
     expect(useRooms.getState().byId.r1).toBeUndefined()

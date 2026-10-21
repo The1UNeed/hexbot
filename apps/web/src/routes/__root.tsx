@@ -3,6 +3,7 @@ import { useEffect, useRef } from 'react'
 
 import { ConnectionLost, useConnectionLost } from '../app/connection-lost'
 import { UpdateInstalling, useUpdateInstalling } from '../app/update-installing'
+import { ConfirmHost } from '../components/ui/confirm'
 import { userMemoryGet } from '../lib/api'
 import { getBridge, hasLocalRuntime } from '../lib/bridge'
 import { getSupervisor, setLocalDaemonPort } from '../lib/connection'
@@ -120,6 +121,7 @@ function RootLayout() {
       </div>
       <div className="contents" inert={lost || installing}>
         <Outlet />
+        <ConfirmHost />
       </div>
       {lost && !installing ? <ConnectionLost /> : null}
       {installing ? <UpdateInstalling /> : null}
