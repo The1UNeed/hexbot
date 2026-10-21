@@ -4415,6 +4415,9 @@ impl Runtime {
                     if state.end_turn() {
                         self.reload(s);
                     }
+                    // Waiters check busy under this lock: wake them again now
+                    // that the run has ended, or they sleep through it.
+                    s.run_ended.send_modify(|v| *v += 1);
                     state.last_activity = common::now();
                     // Pi sends no end event for tools cut short by an abort.
                     state.tool_started.clear();

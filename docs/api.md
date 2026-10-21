@@ -89,6 +89,9 @@ data model. The native transport and event projection live in
   accepted into Pi's queue is recovered at that boundary too, before later
   input is admitted. Pi's steering-before-follow-up order is preserved, with
   each input's original display intent, images, file references and Chain.
+  Queued input is held in memory; a daemon or bot process restart drops it.
+  Input reaches Pi one at a time: later input waits until Pi acknowledges
+  the earlier prompt.
   Replay uses acknowledged intents and actual user projections, so identical
   text remains distinct even when Pi omits it from returned queue metadata.
   A delayed original submission that starts after Stop finishes runs once as
