@@ -480,7 +480,7 @@ export interface LiveStatusLine {
 }
 
 /** Tools that look for something; the face searches with them. */
-const SEARCHING = new Set(['search_files', 'session_search', 'web_search'])
+const SEARCHING = new Set(['search_files', 'session_search', 'web_search', 'x_search'])
 
 /**
  * The live line at the foot of a running turn: the running step in plain
@@ -514,9 +514,12 @@ export function liveStatus(message: Message, name: string): LiveStatusLine {
     return { label: `${name} is writing`, mood: 'writing' }
   }
 
-  return message.thinking
-    ? { label: `${name} is thinking`, mood: 'thinking' }
-    : { label: `${name} is working`, mood: 'working' }
+  if (message.thinking) {
+    return { label: `${name} is thinking`, mood: 'thinking' }
+  }
+
+  // Nothing has happened yet: the bot thinks until it does, whatever the model shows.
+  return { label: `${name} is working`, mood: message.toolCalls.length ? 'working' : 'thinking' }
 }
 
 /** The face a bot wears over a message: its live status's while it streams, else none. */

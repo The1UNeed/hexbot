@@ -1,5 +1,5 @@
 import { cva, type VariantProps } from 'class-variance-authority'
-import { useEffect, useReducer, useRef } from 'react'
+import { useEffect, useReducer, useRef, useSyncExternalStore } from 'react'
 
 import {
   type AvatarStyle,
@@ -51,11 +51,31 @@ export interface LiveFaceProps {
   still?: boolean
 }
 
+const REDUCED_MOTION = '(prefers-reduced-motion: reduce)'
+
+const motionQuery = () => (typeof matchMedia === 'function' ? matchMedia(REDUCED_MOTION) : null)
+
+/** Whether the user asks for reduced motion, kept current as the setting changes. */
+function useReducedMotion(): boolean {
+  return useSyncExternalStore(
+    notify => {
+      const query = motionQuery()
+      query?.addEventListener('change', notify)
+
+      return () => query?.removeEventListener('change', notify)
+    },
+    () => motionQuery()?.matches ?? false,
+    () => false
+  )
+}
+
 /**
  * A face brought to life: the `<morph-bot>` component wearing the mood, look
- * and shape it is given. The component runs its own clock, pauses off
- * screen, and honours reduced motion on its own; this only hands it the
- * attributes and, for a look or a held head, a preset over every state.
+ * and shape it is given. The component runs its own clock and pauses off
+ * screen; this hands it the attributes and, for a look or a held head, a
+ * preset over every state. The component only softens motion for reduced
+ * motion, so here such a face is paused and stepped one frame whenever its
+ * mood or shape changes: it holds still, and still says what the bot does.
  */
 export function LiveFace({
   className,
@@ -69,6 +89,7 @@ export function LiveFace({
 }: LiveFaceProps) {
   const element = useRef<MorphBotElement>(null)
   const tuned = useRef(false)
+  const reduced = useReducedMotion()
 
   useEffect(() => {
     const preset = facePreset(look, still)
@@ -80,12 +101,19 @@ export function LiveFace({
     }
   }, [look, still])
 
+  useEffect(() => {
+    if (reduced) {
+      element.current?.step()
+    }
+  }, [mood, reduced, shape])
+
   return (
     <morph-bot
       className={cn('block size-full', className)}
       color={color}
       decorative=""
       eye-color={eyes}
+      paused={reduced}
       ref={element}
       shape={faceShape(shape)}
       state={mood}

@@ -222,6 +222,12 @@ export class GrokBotEngine {
 
   frame(realNow) {
     const { now, delta } = simulationClock.advanceSimulationClock.call(this, realNow);
+    // Hexbot: a paused face (off screen, or held for reduced motion) does no
+    // DOM work until it is stepped or resumed.
+    if (this.paused && delta === 0) {
+      this.frameId = requestAnimationFrame(this.boundFrame);
+      return;
+    }
     const config = this.getConfig();
     this.svg.dataset.state = this.state;
     this.materials.apply(config);

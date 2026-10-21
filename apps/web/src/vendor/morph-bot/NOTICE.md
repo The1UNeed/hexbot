@@ -11,6 +11,9 @@ Copied as it is, except:
   voices (`animalese-tts`, `pinyin-pro`) and the speech analyzer are left out,
   with the `performDialogue`, `pauseDialogue`, `resumeDialogue` and
   `stopDialogue` methods and the dialogue exports that needed them.
+- `grok-bot-engine.js`: `frame()` returns early while the simulation is
+  paused and no step is pending, so a face off screen or held for reduced
+  motion does no DOM work. Upstream keeps rendering every frame while paused.
 - The editor, docs, demo and download bundles are left out.
 
 The upstream repository carries no licence file. Its README says that the

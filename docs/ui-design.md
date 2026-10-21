@@ -63,8 +63,9 @@ own visual identity. Read `CLAUDE.md` for the words.
   (working, listening when it needs you, happy when done and unseen); the
   two faces of an ask turn toward each other (`look`); the mark sleeps when
   the connection is lost and loads while an update installs. Each face runs
-  on the component's own clock, pauses off screen, and snaps its expressions
-  under reduced motion. Click any face, or the Hexbot
+  on the component's own clock and pauses off screen, where it costs nothing.
+  Under reduced motion a face holds still and redraws only when its mood or
+  shape changes. Click any face, or the Hexbot
   mark, and it plays a random act for a few seconds: typing with its two
   round hands, juggling, blowing a horn (`components/ui/hexbot-act.tsx`, 21
   acts); the head holds still while the act moves the body. The install

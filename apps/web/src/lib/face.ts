@@ -88,6 +88,7 @@ declare module 'react' {
         decorative?: string
         'eye-color'?: string
         'follow-pointer'?: string
+        paused?: boolean
         shape?: MorphBotShape
         size?: number
         state?: FaceMood

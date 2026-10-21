@@ -61,6 +61,58 @@ describe('the live face', () => {
     )
   })
 
+  it('holds a face still under reduced motion, drawing a frame only when its mood changes', async () => {
+    const listeners = new Set<() => void>()
+
+    vi.stubGlobal(
+      'matchMedia',
+      vi.fn((query: string) => ({
+        addEventListener: (_: string, listener: () => void) => listeners.add(listener),
+        matches: query.includes('reduce'),
+        removeEventListener: (_: string, listener: () => void) => listeners.delete(listener)
+      }))
+    )
+
+    try {
+      const { container, rerender } = render(
+        <LiveFace color="#ec2f8a" eyes="#ffffff" mood="idle" shape="round" />
+      )
+
+      const bot = container.querySelector('morph-bot')!
+      expect(bot).toHaveAttribute('paused')
+
+      await act(async () => {
+        await frame()
+        await frame()
+      })
+
+      const eye = bot.shadowRoot!.querySelector('.eye-path')!
+      const drawn = eye.getAttribute('transform')
+      expect(drawn).toMatch(/^translate\(/)
+
+      await act(async () => {
+        await frame()
+        await frame()
+        await frame()
+      })
+
+      expect(eye.getAttribute('transform')).toBe(drawn)
+
+      rerender(<LiveFace color="#ec2f8a" eyes="#ffffff" mood="happy" shape="round" />)
+
+      await act(async () => {
+        await frame()
+        await frame()
+      })
+
+      expect(bot.snapshot()?.state).toBe('happy')
+      expect(bot.snapshot()?.paused).toBe(true)
+      expect(eye.getAttribute('d')).not.toBe('')
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
   it('turns toward a neighbour and holds still through a preset over every state', () => {
     expect(facePreset(null, false)).toBeNull()
 

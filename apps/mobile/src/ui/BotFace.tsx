@@ -1,3 +1,4 @@
+import { useId } from 'react'
 import { Image, StyleSheet, View } from 'react-native'
 import Svg, { ClipPath, Defs, G, Path } from 'react-native-svg'
 
@@ -78,16 +79,18 @@ export function FaceDrawing({
   style: FaceStyle
 }) {
   const { color, eyes, shape } = resolveFace(style)
+  // Ids are global on the web, so each face clips its eyes to its own head.
+  const clip = `head-${useId().replace(/[^a-zA-Z0-9]/g, '')}`
 
   return (
     <Svg height={size} viewBox={FACE_VIEWBOX} width={size}>
       <Defs>
-        <ClipPath id="head">
+        <ClipPath id={clip}>
           <Path d={shape.path} />
         </ClipPath>
       </Defs>
       <Path d={shape.path} fill={color.value} />
-      <G clipPath="url(#head)">
+      <G clipPath={`url(#${clip})`}>
         {eyePaths(shape.id, mood).map((eye, index) => (
           <Path d={eye.d} fill={eyes} key={index} transform={eye.transform} />
         ))}
