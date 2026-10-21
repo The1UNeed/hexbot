@@ -404,14 +404,20 @@ still refuse deletion with 4211, including work that became active while opens
 were draining. It retires sessions before changing the catalog, then atomically
 removes its sections, bot and room mappings before purging history or profile
 files. A `pending_bot_delete:<name>` settings journal records exact native,
-legacy-only, room and delegated targets and the catalog commit decision. Startup
+legacy-only, room, retained and delegated targets and the catalog commit decision.
+Its native retirement claim is recorded before retirement, without changing any
+previous retention choice. Only a committed bot decision promotes those targets
+to purge. A failed bot decision releases its own provisional claim and preserves
+earlier committed section deletions, frozen options and completed cleanup. Startup
 rolls back uncommitted retirement or finishes committed cleanup. A committed
 cleanup failure returns `{deleted:true, history_pending:true}` and keeps its
 journal for startup retry. No failed catalog commit removes history, memory or
 notes. Creation refuses with 4208 while that name has a pending deletion, even
 if its profile is already gone. App create/delete requests are ordered across
 retirement and cleanup; startup cleanup re-reads the decision under the same
-catalog write reservation used to reserve a new profile. If an older journal
+catalog write reservation used to reserve a new profile. The shared product-tool
+boundary is acquired before either database writer, including during bot and
+room cleanup. If an older journal
 conflicts with a catalog bot, or its remaining profile has no name-reservation
 provenance, cleanup reports an error and keeps the files, jobs and journal for
 manual recovery. This does not reconstruct data already purged by an older build.
@@ -517,24 +523,45 @@ context of its own; the meter belongs to bot sections.
   or creating the bot's chat still resolves its existing conversation.
   Deleting the bot removes its chat through bot deletion's existing cleanup;
   the one-time migration can still retire superseded chats privately.
-  For an allowed peer-thread deletion, the daemon closes the live session
-  (`session.delete` on the stored row). The section is tombstoned,
-  its catalog row goes in a transaction of its own,
-  and only then its runtime history and `runtime/sessions/<id>`: a stop
-  before the row goes leaves the section whole, and the next start removes
-  what a stop after it left (`runtime_store::finish_deletes`). With
-  `purge_memory: false` the core transcript in `state.db` is left in place;
-  with `true`, cleanup ownership and the catalog decision are saved before
-  that row goes. Startup retries native files and identifiable legacy history,
-  including when native rows are already gone. Conflicting ownership or a
-  reference from a retained legacy conversation keeps cleanup pending;
-  restarting alone cannot resolve that conflict.
-  Older untagged tombstones have no legacy ownership to recover.
-  If any history cleanup fails after
-  the catalog commit, `history_pending: true` reports that the section is
-  already deleted with cleanup incomplete. A catalog failure returns an
-  error and removes the tombstone, leaving the section usable.
-  The bot's memory is not touched either way.
+  An allowed peer-thread deletion closes the live session and its delegated
+  tasks, removes the catalog row and permanently blocks the deleted IDs from
+  reopening or accepting late messages or delegated results.
+  By default, or with `purge_memory: true`, it deletes native transcripts,
+  session settings, Pi files in `runtime/sessions/<id>` and matching legacy
+  `state.db` sessions and messages, including descendants. With
+  `purge_memory: false`, those records and files remain across daemon restarts.
+  Retained history is no longer available through the section or session APIs;
+  there is no restore RPC. The historical parameter name refers to section
+  history. Neither choice changes the bot's `MEMORY.md` or daily notes.
+  The durable tombstone and retention choice precede the catalog transaction;
+  history removal follows its commit. A stop before that commit keeps the
+  section whole. A failed parent deletion preserves any descendant deleted
+  earlier, including its ownership, retention choice and completion marker.
+  Overlapping deletion attempts cannot undo one another's committed markers.
+  After the catalog commit, startup preserves retained history or retries an
+  interrupted purge. A durable completion marker prevents later startups from
+  repeating successful native, file and legacy cleanup; the tombstone remains.
+  Bulk bot deletion also skips descendants completed earlier in the same pass.
+  An explicit storage cleanup retry can remove replacement artifacts for an
+  already completed ID.
+  Product tools and Python tool callbacks also reject deleted source IDs,
+  including retained conversations. An admitted product-tool write finishes
+  before deletion commits, even if its waiting tool call was cancelled. Bot
+  model changes leave retained section settings alone.
+  Cleanup failures after the catalog commit are logged and deletion still
+  succeeds with `history_pending: true`. A catalog failure returns an error
+  and releases only that attempt's provisional markers. Migration and bot
+  deletion stop when cleanup is pending, leaving later sections untouched.
+  Tombstones from earlier builds record no retention choice. Startup reopens
+  those still belonging to a surviving section, owned room mapping or exact
+  uncommitted bot deletion journal, along with their owned delegated tasks.
+  Recorded committed deletions, retained history and completed cleanup stay
+  closed. Other old tombstones are destructively cleaned up, including
+  identifiable legacy history.
+  Legacy cleanup requires known bot ownership; older tombstones that have lost
+  it can leave unread legacy rows. Usage accounting and upgrade backups are
+  kept. `hexbot.bots.delete` purges the bot's owned history, including retained
+  sections whose catalog rows have already gone.
 - `hexbot.sections.touch {id}` is internal; activity is stamped by the plugin
   on `message.complete`. It also sets the section's `done_at`.
 - `hexbot.sections.mark_read {id}` → `{section: Section}` clears `done_at`:
@@ -663,16 +690,22 @@ and its bots run as the owner.
 - `hexbot.rooms.stop {id}` → `{stopped: true}`
 - `hexbot.rooms.archive {id}` → `{room}`
 - `hexbot.rooms.unarchive {id}` → `{room}`
-- `hexbot.rooms.delete {id}` → `{deleted: true}`
-  New posts, worker starts and mapped conversation opens fail with 4211 while
-  deletion waits or runs. Opens already in progress finish before the daemon
-  captures and closes its conversations. Cancelling the request lets the daemon
-  finish the operation. Member removals are ordered per room and reject new
-  posts and bot starts with 4211 until the operation finishes. An already
-  accepted post stays saved if the room survives removal, but a blocked bot
-  response waits for the next room post or startup reconciliation. Bots may
-  still join while its processes close;
-  a join can keep the room when its last bot was being removed.
+- `hexbot.rooms.delete {id}` → `{deleted: true, history_pending?: true}`
+  New posts, worker starts and mapped session opens fail with 4211 while the
+  room is being deleted. Opens already in progress finish before the daemon
+  captures and closes its sessions. A cancelled request still completes the
+  deletion or rollback. A failed decision releases admission; removing the
+  last bot also releases it if a concurrent join keeps the room.
+  Member removals are ordered per room and pause new work until the removal
+  finishes; other bots may still join while its processes close.
+  The room, its mappings and its owned turn failures change in one catalog
+  transaction before transcript or Pi-file cleanup. A failed decision keeps
+  history, frozen settings, incidents and membership. Successful deletion
+  permanently closes the mapped IDs and their owned delegated descendants.
+  Partial cleanup reports `history_pending` and retries from durable native
+  ownership on restart, including after mappings or parent links are gone.
+  Removing the last bot uses this same decision; pending cleanup is reported
+  as `room.history_pending`. Neither operation changes bot memory or notes.
 - `hexbot.rooms.mark_read {id, seq}` → `{room}`
 
 Room turns use hidden sessions on each bot profile. The daemon waits

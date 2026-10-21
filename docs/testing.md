@@ -8,9 +8,46 @@
   captured legacy schema fixtures in temporary homes. Local HTTP/SSE/MCP
   fixtures test provider and tool behavior. Actual Pi checks are documented
   in [`backend/hexbot-core/README.md`](../backend/hexbot-core/README.md).
+  Section deletion regressions in `tests/section_delete.rs` cover public calls,
+  offline catalog deletion, restart recovery, deferred catalog commit failures,
+  disposition write failures and completed descendant cleanup in both orders.
+  Concurrent deletes reserve SQLite writers and wait for committed policy rows;
+  they use the existing busy timeouts, with no sleeps. Unit tests cover
+  overlapping retirement claims and real todo/skill writes whose awaiters were
+  cancelled. All deletion fixtures use disposable homes. Public deletion
+  refuses owner chats (`4202`), so these fixtures delete peer threads; the
+  one-chat migration case keeps an owner chat.
+  `tests/runtime_config.rs` pauses the caller after Pi records a model reply,
+  then completes deletion on another executor before resuming the caller.
+  Prompt adoption tests also exercise the interval between tombstoning and close.
+  `tests/bot_retained_delete.rs` combines retained children and legacy aliases
+  with bot catalog COMMIT, native metadata, purge, completion, journal, jobs and
+  profile cleanup faults. It checks exact frozen settings, restart retry, name
+  reuse, other bots and completed-child exclusions. Product closure tests also
+  exercise room deletion and last-member removal before either SQLite writer.
+  `tests/room_delete.rs` checks public and direct room deletion, last-member
+  removal, catalog rollback, exact owned descendants, legacy cleanup, terminal
+  retry after cleanup faults, retained children and foreign-owner controls.
+  The section, bot and room deletion files also start from tombstones and bot
+  journals in the format of builds before retention, stopped before their
+  catalog commit, and restart twice. Committed old deletions, recorded
+  retention and foreign mappings stay closed.
   `section_delete_recovery` exercises public catalog/App deletions with native,
   legacy transaction, file and final metadata faults, restart, denied paths,
-  exact aliases, descendants and ownership controls. The catalog library's
+  exact aliases, descendants and ownership controls.
+  `section_delete_ownership` compares catalog-only and native roots through
+  public and direct deletion, exact foreign bot/owner branches, rollback,
+  retention, completion and restart. A foreign ancestor blocks its entire
+  branch, including an owned grandchild and live aliases.
+  `unused_chat_fork` repeats missing-log and no-report lookups through both
+  routes, checks restart leaves no empty tombstones, and rejects any reservation
+  writes on the no-copy path. Partial-copy and published-adoption faults remain in
+  `chat_fork_cleanup` and the catalog fork tests.
+  `bot_journal_section_purge` checks independent public/direct section purges
+  under provisional bot journals, explicit and startup rollback, healthy
+  purges and committed profile removal. Exact legacy data and permanent native
+  deletion metadata are checked across retries.
+  The catalog library's
   `section_delete_crash_at_the_real_catalog_commit_recovers_the_decision`
   kills a child process at socket barriers before and after the actual SQLite
   catalog COMMIT. It checks rollback versus completed native and legacy erasure.
@@ -23,10 +60,14 @@
   A held accepted turn checks the final busy refusal after admission drains.
   Bot catalog faults and room faults before mutation
   check that admission releases and actual jobs and room posts can run again.
-  Room deletion purges room history after its catalog statements, so a failed
-  statement keeps the room and its history (`room_incidents`). A purge that
-  fails part way, and membership changes before last-member purge failures,
-  are outside the rollback assertions in this suite.
+  `room_member_atomicity` checks joins and final-member removal in one catalog
+  transaction. Catalog failure preserves exact native history, raw Pi files,
+  frozen options, incident rows, membership and event sequence before retry.
+  The section recovery false-purge control likewise requires exact retention
+  of native and legacy history, frozen settings and raw files after restart.
+  Room deletion purges room history only after its catalog commit, so a failed
+  statement keeps the room and its history (`room_incidents`). Purge faults
+  after the commit and last-member races are in `tests/room_delete.rs`.
 - Pi runtime: `node --test backend/pi-runtime/*.test.mjs` after
   `npm ci --prefix backend/pi-runtime --ignore-scripts --no-audit --no-fund`.
   CI runs the Rust and Pi suites on Linux and macOS. Approval tests use a stub

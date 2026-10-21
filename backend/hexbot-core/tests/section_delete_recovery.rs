@@ -139,23 +139,36 @@ fn erased(home: &Path) {
 
 #[tokio::test]
 async fn non_chat_public_purge_retries_native_legacy_and_final_metadata_failures_after_restart() {
-    for (table, condition, expect_native) in [
-        ("native_messages", " WHEN OLD.session_id='chat'", true),
-        ("messages", "", false),
-        ("native_delete_legacy", " WHEN NEW.session_id='chat'", true),
+    for (table, event, condition, expect_native) in [
+        (
+            "native_messages",
+            "DELETE",
+            " WHEN OLD.session_id='chat'",
+            true,
+        ),
+        ("messages", "DELETE", "", false),
+        (
+            "native_delete_legacy",
+            "INSERT",
+            " WHEN NEW.session_id='chat'",
+            true,
+        ),
         (
             "native_delete_completed",
+            "INSERT",
             " WHEN NEW.session_id='chat'",
             false,
         ),
         (
-            "native_delete_options",
+            "native_delete_legacy",
+            "DELETE",
             " WHEN OLD.session_id='chat'",
             false,
         ),
         (
             "native_delete_pending",
-            " WHEN OLD.session_id='chat'",
+            "DELETE",
+            " WHEN OLD.session_id='chat' AND NOT EXISTS(SELECT 1 FROM native_sessions WHERE stored_id='chat')",
             false,
         ),
     ] {
@@ -163,15 +176,27 @@ async fn non_chat_public_purge_retries_native_legacy_and_final_metadata_failures
         let h = home.path();
         let running = app(h);
         fixture(h);
+        let before_native = ["chat", "delegate", "grandchild"].map(|id| {
+            (
+                store::history(h, id).unwrap(),
+                fs::read(
+                    h.join("runtime/sessions")
+                        .join(id)
+                        .join("conversation.jsonl"),
+                )
+                .unwrap(),
+                hexbot_core::common::rows(
+                    &store::open(h).unwrap(),
+                    "SELECT * FROM native_sessions WHERE stored_id=?",
+                    &[&id],
+                )
+                .unwrap(),
+            )
+        });
         let fault = if table == "messages" {
             legacy(h)
         } else {
             store::open(h).unwrap()
-        };
-        let event = if ["native_delete_legacy", "native_delete_completed"].contains(&table) {
-            "INSERT"
-        } else {
-            "DELETE"
         };
         fault.execute_batch(&format!("CREATE TRIGGER stop_cleanup BEFORE {event} ON {table}{condition} BEGIN SELECT RAISE(ABORT,'controlled {table} failure'); END;")).unwrap();
         assert_eq!(
@@ -191,6 +216,32 @@ async fn non_chat_public_purge_retries_native_legacy_and_final_metadata_failures
             expect_native
         );
         assert!(store::session_dir(h, "chat").is_err());
+        if table == "native_delete_legacy" && event == "INSERT" {
+            for (id, before) in ["chat", "delegate", "grandchild"]
+                .into_iter()
+                .zip(before_native)
+            {
+                assert_eq!(store::history(h, id).unwrap(), before.0);
+                assert_eq!(
+                    fs::read(
+                        h.join("runtime/sessions")
+                            .join(id)
+                            .join("conversation.jsonl")
+                    )
+                    .unwrap(),
+                    before.1
+                );
+                assert_eq!(
+                    hexbot_core::common::rows(
+                        &store::open(h).unwrap(),
+                        "SELECT * FROM native_sessions WHERE stored_id=?",
+                        &[&id]
+                    )
+                    .unwrap(),
+                    before.2
+                );
+            }
+        }
         if table == "messages" {
             assert!(legacy_texts(h).contains(&"legacy old-root".to_owned()));
         }
@@ -308,13 +359,51 @@ fn non_chat_healthy_and_false_purge_controls_keep_the_existing_disposition() {
         let h = home.path();
         fixture(h);
         let old = legacy_texts(h);
+        let retained = ["chat", "delegate", "grandchild"].map(|id| {
+            (
+                store::history(h, id).unwrap(),
+                fs::read(
+                    h.join("runtime/sessions")
+                        .join(id)
+                        .join("conversation.jsonl"),
+                )
+                .unwrap(),
+                hexbot_core::common::rows(
+                    &store::open(h).unwrap(),
+                    "SELECT * FROM native_sessions WHERE stored_id=?",
+                    &[&id],
+                )
+                .unwrap(),
+            )
+        });
         assert_eq!(delete(h, "chat", purge).unwrap(), json!({"deleted":true}));
         store::finish_deletes(h).unwrap();
         if purge {
             erased(h);
         } else {
             assert_eq!(legacy_texts(h), old);
-            assert!(store::history(h, "chat").unwrap().is_empty());
+            for (id, before) in ["chat", "delegate", "grandchild"].into_iter().zip(retained) {
+                assert_eq!(store::history(h, id).unwrap(), before.0);
+                assert_eq!(
+                    fs::read(
+                        h.join("runtime/sessions")
+                            .join(id)
+                            .join("conversation.jsonl")
+                    )
+                    .unwrap(),
+                    before.1
+                );
+                assert_eq!(
+                    hexbot_core::common::rows(
+                        &store::open(h).unwrap(),
+                        "SELECT * FROM native_sessions WHERE stored_id=?",
+                        &[&id]
+                    )
+                    .unwrap(),
+                    before.2
+                );
+                assert!(store::session_dir(h, id).is_err());
+            }
             preserved(h);
         }
     }
@@ -411,7 +500,7 @@ async fn non_chat_bot_cleanup_absorbs_pending_catalogless_requests_before_releas
     legacy(h).execute_batch("CREATE TRIGGER stop_legacy BEFORE DELETE ON messages BEGIN SELECT RAISE(ABORT,'legacy failure'); END;").unwrap();
     assert_eq!(delete(h, "chat", true).unwrap()["history_pending"], true);
     let native = store::open(h).unwrap();
-    native.execute_batch("CREATE TRIGGER stop_final BEFORE DELETE ON native_delete_options BEGIN SELECT RAISE(ABORT,'final request failure'); END;").unwrap();
+    native.execute_batch("CREATE TRIGGER stop_final BEFORE DELETE ON native_delete_legacy BEGIN SELECT RAISE(ABORT,'final request failure'); END;").unwrap();
     assert_eq!(
         running
             .call("alice", "hexbot.bots.delete", &json!({"name":"owl"}))
@@ -517,7 +606,19 @@ fn non_chat_foreign_native_descendants_and_untagged_old_tombstones_keep_their_bo
     }
     // Old builds left no bot/owner/purge proof. Keep that legacy compatibility
     // instead of guessing which profile an arbitrary orphan ID belongs to.
-    store::mark_deleted(h, "other").unwrap();
+    // Reproduce the actual unowned old format, not today's owned retirement.
+    store::open(h).unwrap().execute_batch("DELETE FROM native_sessions WHERE stored_id='other'; INSERT INTO native_deleted VALUES('other');").unwrap();
+    assert_eq!(
+        store::open(h)
+            .unwrap()
+            .query_row(
+                "SELECT count(*) FROM native_delete_options WHERE session_id='other'",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+        0
+    );
     db::open(h)
         .unwrap()
         .execute("DELETE FROM sections WHERE id='other'", [])

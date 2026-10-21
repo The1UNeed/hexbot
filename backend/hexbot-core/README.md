@@ -121,8 +121,20 @@ it also installs over SSH when nobody is signed in at the screen.
   pending; restarting alone cannot resolve the conflict. Completed targets
   remain tombstoned. A failed catalog decision rolls back its own
   request without changing raw history or frozen options. `purge_memory: false`
-  still purges native history and leaves legacy history alone. Old tombstones
-  without ownership metadata retain their native-only recovery behavior.
+  retains native history, raw logs and frozen options as well as legacy history.
+  Reading retained history still requires the original bot configuration.
+  Catalog deletion and process retirement use the catalog's bot and owner even
+  before a legacy chat has a native root. Each foreign ancestor stops traversal,
+  including a different bot with the same owner. Unknown ownership authorizes
+  only the retirement root, also on restart. Explicit low-level store deletion
+  remains a separate destructive operation.
+  Only committed bot cleanup defers a section's legacy purge to profile
+  removal. A provisional bot journal cannot suppress an independent section
+  purge. Dream chat forks reserve their cleanup identity only after the log is
+  proven to need copying, before the first target write. No-copy lookups create
+  neither a reservation nor an empty tombstone.
+  Old tombstones without ownership metadata retain their native-only recovery
+  behavior.
   The one-shot upgrade backup already copies the entire runtime database,
   including these requests; cleanup retries do not rerun its deletion plan.
   Session recovery reconciles Pi's durable log with native history and usage;

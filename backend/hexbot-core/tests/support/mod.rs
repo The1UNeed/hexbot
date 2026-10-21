@@ -26,6 +26,18 @@ impl TestHome {
     }
 }
 
+/// Public deletion is only for peer threads; owner chats stay until their bot goes.
+/// Turns the section into a thread with a teammate bot of the same owner.
+pub fn peer_thread(home: &Path, owner: &str, id: &str) {
+    hexbot_core::db::open(home)
+        .unwrap()
+        .execute_batch(&format!(
+            "INSERT OR IGNORE INTO bots(name,owner_id) VALUES('teammate','{owner}');
+             UPDATE sections SET peer_bot='teammate' WHERE id='{id}';"
+        ))
+        .unwrap();
+}
+
 /// Pair test devices through the same code redemption path as clients.
 pub fn mint_device(
     home: &Path,
