@@ -247,8 +247,10 @@ restores them. When a message you send, such as Retry, starts a turn in a
 private section, it resolves that section's own failed turn: same bot and
 owner, no room. Room, connector and other sections' failures stay, and
 background, room and other hidden runs resolve nothing when they start.
-`hexbot.bots.changed {name}` follows a section's first turn start and any
-start that resolved a failure, so clients show Working instead of Stopped.
+`hexbot.bots.changed {name}` follows the start of each turn, once per turn,
+and any start that resolved a failure, so clients show Working instead of
+Stopped. Pi decides where an owner's input starts a turn, including an idle
+steer and a message queued behind a settling run.
 Failing again records a new incident.
 `approval_mode` is `inherit` (the deployment setting), `manual`, `smart`
 (Auto), or `off` (Bypass); `workdir` overrides the deployment workspace for

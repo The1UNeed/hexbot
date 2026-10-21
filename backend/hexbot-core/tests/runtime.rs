@@ -1781,6 +1781,193 @@ async fn only_an_owner_message_clears_its_sections_own_failed_turn() {
     assert_eq!(failed, 1);
     runtime.shutdown().await;
 }
+/// Pi decides when an owner's input starts a run: an idle steer becomes a
+/// prompt, and a queued message can start its own run while an older hidden
+/// run settles. Each such start clears Stopped and tells every client.
+#[tokio::test]
+#[ignore = "requires HEXBOT_TEST_PI to the pinned Pi executable"]
+async fn actual_pi_owner_input_clears_stopped_where_pi_starts_it() {
+    use axum::{Json, Router, extract::State, routing::post};
+    use std::sync::Arc;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    #[derive(Clone)]
+    struct Provider {
+        requests: tokio::sync::mpsc::UnboundedSender<String>,
+        release: Arc<tokio::sync::Semaphore>,
+    }
+    async fn complete(
+        State(provider): State<Provider>,
+        Json(body): Json<Value>,
+    ) -> axum::response::Response {
+        use axum::response::IntoResponse;
+        let text = runtime_store::text(
+            &body["messages"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .rev()
+                .find(|m| m["role"] == "user")
+                .unwrap()["content"],
+        );
+        provider.requests.send(text.clone()).unwrap();
+        // The background run fails, so its end clears nothing either.
+        if text == "background result" {
+            let error = json!({"error":{"message":"Bad request","type":"invalid_request_error"}});
+            return (axum::http::StatusCode::BAD_REQUEST, Json(error)).into_response();
+        }
+        if text == "block" {
+            provider.release.acquire().await.unwrap().forget();
+        }
+        let chunk = json!({"id":"owner","object":"chat.completion.chunk","created":1,"model":"test-model","choices":[{"index":0,"delta":{"role":"assistant","content":"finished"},"finish_reason":null}]});
+        let end = json!({"id":"owner","object":"chat.completion.chunk","created":1,"model":"test-model","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]});
+        (
+            [("content-type", "text/event-stream")],
+            format!("data: {chunk}\n\ndata: {end}\n\ndata: [DONE]\n\n"),
+        )
+            .into_response()
+    }
+    async fn wait<T>(future: impl std::future::Future<Output = T>) -> T {
+        tokio::time::timeout(Duration::from_secs(20), future)
+            .await
+            .unwrap()
+    }
+    let (requests, mut received) = tokio::sync::mpsc::unbounded_channel();
+    let release = Arc::new(tokio::sync::Semaphore::new(0));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let app = Router::new()
+        .route("/v1/chat/completions", post(complete))
+        .with_state(Provider {
+            requests,
+            release: release.clone(),
+        });
+    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let home = setup();
+    fs::write(home.path().join("profiles/owl/config.yaml"), format!("model:\n  provider: lmstudio\n  default: test-model\n  api_key: test-key\n  base_url: http://{address}/v1\ntools:\n  enabled_toolsets: []\n")).unwrap();
+    // Holds the first run's settlement, so the next input starts while it settles.
+    let settled = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let extension = home.path().join("hold-settled.mjs");
+    fs::write(
+        &extension,
+        format!(
+            r#"import net from 'node:net';
+export default function(pi) {{
+  let settlements = 0;
+  pi.on('agent_settled', async () => {{
+    if (++settlements !== 1) return;
+    await new Promise(resolve => {{
+      const socket = net.connect({}, '127.0.0.1', () => socket.write('held\n'));
+      socket.once('data', () => {{socket.end(); resolve();}});
+    }});
+  }});
+}}
+"#,
+            settled.local_addr().unwrap().port()
+        ),
+    )
+    .unwrap();
+    let executable = home.path().join("owner-pi.sh");
+    fs::write(
+        &executable,
+        format!(
+            "#!/bin/sh\nexec '{}' \"$@\" --extension '{}'\n",
+            Path::new(&std::env::var_os("HEXBOT_TEST_PI").unwrap()).display(),
+            extension.display()
+        ),
+    )
+    .unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(&executable, fs::Permissions::from_mode(0o755)).unwrap();
+    let hub = EventHub::new();
+    let mut events = hub.subscribe();
+    let runtime = Runtime::new(home.path().into(), hub, executable).unwrap();
+    let live = open(&runtime, "alice").await["section"]["live_session_id"].clone();
+    let failed = || {
+        hexbot_core::settings::record_incident(
+            home.path(),
+            "owl",
+            "turn_failed",
+            "Provider timed out",
+            &json!({"section_id":"section-a"}),
+        )
+        .unwrap();
+    };
+    let stopped = || {
+        db::open(home.path())
+            .unwrap()
+            .query_row(
+                "SELECT count(*) FROM bot_incidents WHERE section_id='section-a' AND resolved_at IS NULL",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap()
+    };
+    // The run's start is announced after its message.start.
+    async fn started(
+        events: &mut tokio::sync::broadcast::Receiver<hexbot_core::events::Event>,
+    ) -> Value {
+        next_kind(events, "message.start").await;
+        next_kind(events, "hexbot.bots.changed").await
+    }
+
+    // A queued owner message that Pi starts while an older hidden run settles.
+    failed();
+    runtime
+        .call(
+            "alice",
+            "prompt.submit",
+            &json!({"session_id":live,"text":"background result","display_kind":"hidden"}),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(started(&mut events).await["payload"]["name"], "owl");
+    assert_eq!(wait(received.recv()).await.unwrap(), "background result");
+    let (mut hold, _) = wait(settled.accept()).await.unwrap();
+    let mut marker = [0; 5];
+    hold.read_exact(&mut marker).await.unwrap();
+    assert_eq!(stopped(), 1);
+    let queued = {
+        let (runtime, live) = (runtime.clone(), live.clone());
+        tokio::spawn(async move {
+            runtime
+                .call(
+                    "alice",
+                    "prompt.submit",
+                    &json!({"session_id":live,"text":"block","queued":true}),
+                )
+                .await
+                .unwrap()
+                .unwrap()
+        })
+    };
+    hold.write_all(b"release").await.unwrap();
+    assert_eq!(wait(received.recv()).await.unwrap(), "block");
+    assert_eq!(started(&mut events).await["payload"]["name"], "owl");
+    assert_eq!(stopped(), 0);
+    wait(queued).await.unwrap();
+    release.add_permits(1);
+    next_kind(&mut events, "message.complete").await;
+
+    // An owner steer while the bot is idle becomes a prompt of its own.
+    failed();
+    assert_eq!(stopped(), 1);
+    runtime
+        .call(
+            "alice",
+            "session.steer",
+            &json!({"session_id":live,"text":"block"}),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(wait(received.recv()).await.unwrap(), "block");
+    assert_eq!(started(&mut events).await["payload"]["name"], "owl");
+    assert_eq!(stopped(), 0);
+    release.add_permits(1);
+    runtime.shutdown().await;
+    server.abort();
+}
 
 #[tokio::test]
 async fn disabled_messaging_and_scheduling_are_not_advertised() {
