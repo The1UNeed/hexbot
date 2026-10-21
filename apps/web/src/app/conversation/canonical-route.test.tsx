@@ -129,6 +129,8 @@ beforeEach(() => {
   useConnection.setState({
     target: { kind: 'local' },
     epoch: 'first',
+    // The store's initial status; the drop test moves it.
+    status: 'idle',
     daemon: { one_chat: true } as DaemonInfo
   })
   useBots.setState({ byName: { owl: { name: 'owl', display_name: 'Owl' } as Bot }, loaded: true })
