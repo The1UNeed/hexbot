@@ -8,17 +8,15 @@ import {
   AVATAR_SHAPES,
   avatarSvg,
   avatarSvgDataUrl,
-  BALL,
   botFace,
-  EYE_GAP,
-  eyeRects,
   faceReadNow,
   faceReadsHeld,
+  legacyMask,
   matchFace,
   readFace,
-  READS_KEPT
+  READS_KEPT,
+  restingEyes
 } from '../lib/avatar-builder'
-import tokens from '../styles/tokens.css?raw'
 
 /** A 100×100 picture filled with `hex`, with `dots` painted in other colours. */
 function picture(hex: string, dots: [number, number, string][] = []) {
@@ -50,10 +48,18 @@ const masks = Object.fromEntries(
 
 describe('avatar builder', () => {
   it('reads a saved face back into its shape and colour', () => {
+    const eyes = restingEyes('round').map(
+      eye => [eye.cx, eye.cy, '#ffffff'] as [number, number, string]
+    )
+
+    expect(matchFace(picture('#f97316', eyes), masks)).toEqual({ color: 'orange', shape: 'round' })
+  })
+
+  it('reads a face from before the eyes looked up, which sat on the centre', () => {
     const round = AVATAR_SHAPES.find(item => item.id === 'round')!
 
     const eyes = [-1, 1].map(
-      side => [50 + side * (EYE_GAP / 2), round.ball.cy, '#ffffff'] as [number, number, string]
+      side => [50 + side * 14.5, round.ball.cy, '#ffffff'] as [number, number, string]
     )
 
     expect(matchFace(picture('#f97316', eyes), masks)).toEqual({ color: 'orange', shape: 'round' })
@@ -73,16 +79,17 @@ describe('avatar builder', () => {
     expect(matchFace(picture('#f97316'), masks)).toBeNull()
   })
 
-  it('draws the chosen shape in the chosen colour with a face', () => {
+  it("draws the chosen shape in the chosen colour with a face, in the live face's frame", () => {
     const svg = avatarSvg({ color: 'pink', shape: 'hexagon' })
     const hexagon = AVATAR_SHAPES.find(item => item.id === 'hexagon')!
     const pink = AVATAR_COLORS.find(item => item.id === 'pink')!
 
+    expect(svg).toContain('viewBox="-15 -15 259 259"')
     expect(svg).toContain(hexagon.path)
     expect(svg).toContain(pink.value)
-    expect(svg.match(/<rect/g)).toHaveLength(2)
+    expect(svg.match(/<path/g)).toHaveLength(4)
     expect(svg).toContain('fill="#ffffff"')
-    expect(svg).toContain(`translate(50 ${hexagon.ball.cy}) scale(${hexagon.ball.r / BALL})`)
+    expect(svg).toContain('clip-path="url(#head)"')
     expect(avatarSvgDataUrl({ color: 'pink', shape: 'hexagon' })).toMatch(/^data:image\/svg\+xml/)
   })
 
@@ -95,47 +102,34 @@ describe('avatar builder', () => {
     expect(avatarSvg({ color: 'nope', shape: 'nope' })).toContain(AVATAR_SHAPES[0]!.path)
   })
 
-  it('draws both eyes as capsules the same width, mirrored about the centre', () => {
-    for (const mood of ['happy', 'idle', 'listening', 'sleeping', 'working'] as const) {
-      const [left, right] = eyeRects(mood)
+  it('rests every shape with both eyes up and to the right, inside the picture', () => {
+    for (const shape of AVATAR_SHAPES) {
+      const [left, right] = restingEyes(shape.id)
 
-      expect(left!.x + left!.width / 2).toBeCloseTo(-(right!.x + right!.width / 2))
-      expect(left!.rx).toBe(Math.min(left!.width, left!.height) / 2)
-      expect(left!.y + left!.height / 2).toBeLessThan(BALL / 2)
+      expect(left!.cx).toBeLessThan(right!.cx)
+      expect(left!.cy).toBeLessThan(50)
+      expect(left!.d).toMatch(/^M[-\d.]+ [-\d.]+L/)
+      expect(right!.cx).toBeLessThan(100)
+      expect(left!.cx).toBeGreaterThan(0)
     }
   })
 
-  it('keeps both eyes inside the ball at every gaze pose in tokens.css', () => {
-    const poses = [
-      ...tokens.matchAll(
-        /translate\((-?[\d.]+)px, (-?[\d.]+)px\) rotate\((-?[\d.]+)deg\) scale\(([\d.]+)\)/g
-      )
-    ].map(match => match.slice(1, 5).map(Number) as [number, number, number, number])
+  it('reads a picture drawn with the earlier outline by its legacy mask', () => {
+    const eyes = restingEyes('hexagon').map(
+      eye => [eye.cx, eye.cy, '#ffffff'] as [number, number, string]
+    )
 
-    // The three wander poses and a look each way.
-    expect(poses.length).toBeGreaterThanOrEqual(5)
+    const legacy = Object.fromEntries(
+      AVATAR_SHAPES.map(shape => [
+        legacyMask(shape.id),
+        new Uint8ClampedArray(100 * 100 * 4).fill(shape.id === 'hexagon' ? 255 : 0)
+      ])
+    )
 
-    for (const [tx, ty, degrees, scale] of poses) {
-      const turn = (degrees * Math.PI) / 180
-
-      for (const mood of ['happy', 'idle', 'listening', 'sleeping', 'working'] as const) {
-        for (const eye of eyeRects(mood)) {
-          // The capsule's bounding corners, a little outside the capsule itself.
-          for (const [x, y] of [
-            [eye.x, eye.y],
-            [eye.x + eye.width, eye.y],
-            [eye.x, eye.y + eye.height],
-            [eye.x + eye.width, eye.y + eye.height]
-          ] as const) {
-            // CSS applies scale, then rotate, then translate, about the ball's centre.
-            const px = tx + scale * (x * Math.cos(turn) - y * Math.sin(turn))
-            const py = ty + scale * (x * Math.sin(turn) + y * Math.cos(turn))
-
-            expect(Math.hypot(px, py), `${mood} at ${degrees}deg`).toBeLessThan(BALL)
-          }
-        }
-      }
-    }
+    expect(matchFace(picture('#f97316', eyes), legacy)).toEqual({
+      color: 'orange',
+      shape: 'hexagon'
+    })
   })
 
   it('draws the face picked in an app live, and the picture only when there is none', () => {

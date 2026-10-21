@@ -116,25 +116,30 @@ function AskRow({ ask, sender }: { ask: Ask; sender: null | string }) {
 
   const faces = (size: 'md' | 'xs') => (
     <span className="flex shrink-0 items-center">
-      <span className={cn(size === 'md' && 'hex-lean-right')}>
-        <Avatar
-          className="hex-look-right"
-          {...botFace(from)}
-          mood={running ? 'listening' : undefined}
-          name={senderName ?? 'Bot'}
-          size={size}
-        />
-      </span>
-      <span className={cn(size === 'md' ? 'hex-lean-left' : '-ml-0.5')}>
-        <Avatar
-          className={cn('hex-look-left', running && reply.streaming && 'hex-think')}
-          {...botFace(target)}
-          mood={running ? (reply.streaming ? 'working' : 'listening') : undefined}
-          name={targetName ?? 'Teammate'}
-          size={size}
-          {...(ask.target ? {} : { style: TEAMMATE_FACE })}
-        />
-      </span>
+      <Avatar
+        {...botFace(from)}
+        look="right"
+        mood={running ? 'listening' : undefined}
+        name={senderName ?? 'Bot'}
+        size={size}
+      />
+      <Avatar
+        className={cn(size === 'xs' && '-ml-0.5')}
+        {...botFace(target)}
+        look="left"
+        mood={
+          running
+            ? reply.streaming
+              ? reply.text
+                ? 'writing'
+                : 'thinking'
+              : 'listening'
+            : undefined
+        }
+        name={targetName ?? 'Teammate'}
+        size={size}
+        {...(ask.target ? {} : { style: TEAMMATE_FACE })}
+      />
     </span>
   )
 

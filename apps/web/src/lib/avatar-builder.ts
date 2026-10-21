@@ -1,86 +1,81 @@
 /**
- * Generated bot faces: a shape and a colour with two capsule eyes, drawn as
- * if painted on a ball. Drawn as SVG in the UI and rasterised to PNG for the
- * profile asset (the daemon accepts png, jpeg or webp only). Bots without an
- * uploaded avatar get a face derived from their name so every bot has one.
+ * Generated bot faces: a shape and a colour with two eyes, the morph-bot
+ * component's (`face.ts`) at rest. Drawn as SVG in the UI and rasterised to
+ * PNG for the profile asset (the daemon accepts png, jpeg or webp only). Bots
+ * without an uploaded avatar get a face derived from their name so every bot
+ * has one.
  *
- * The eyes live in the "ball frame": a group translated to the shape's eye
- * centre and scaled by the shape's ball radius over `BALL`. Everything that
- * moves them (the wander, the look classes, the blink in tokens.css) works
- * in that frame, so the same CSS pose turns a small triangle and a big round
- * face by the same angle and keeps both inside their silhouette.
+ * A shape is drawn as the component shape nearest to it, with the eyes where
+ * the component rests them (`face-rest.ts`). Each shape also keeps the
+ * outline and the "ball" (the circle the eyes once sat in) that the earlier
+ * flat faces were drawn with, so a picture saved then is still read back.
  */
 
 import { hueFromString } from './cn'
+import { FACE_VIEWBOX } from './face'
+import { FACE_REST } from './face-rest'
 
 export interface AvatarStyle {
   color: string
   shape: string
 }
 
-/** The ball the eyes sit on: its centre is the eyes' resting point. */
+/** The ball the earlier faces' eyes sat on; its centre was their resting point. */
 export interface Ball {
   cy: number
   r: number
 }
 
 export interface AvatarShape {
+  /** The earlier outline's ball, in the 100-unit frame. */
   ball: Ball
   id: string
   label: string
+  /** The earlier outline, in the 100-unit frame, for reading old pictures. */
+  legacyPath: string
+  /** The head outline, in the component's head frame. */
   path: string
 }
 
-export const AVATAR_SHAPES: AvatarShape[] = [
-  {
-    ball: { cy: 54, r: 45 },
-    id: 'round',
-    label: 'Round',
-    path: 'M50 5a45 45 0 1 1 0 90a45 45 0 1 1 0-90Z'
-  },
-  {
-    ball: { cy: 54, r: 45 },
-    id: 'squircle',
-    label: 'Squircle',
-    path: 'M50 5c34 0 45 11 45 45S84 95 50 95 5 84 5 50 16 5 50 5Z'
-  },
-  {
-    ball: { cy: 53, r: 43 },
-    id: 'square',
-    label: 'Square',
-    path: 'M24 7h52a17 17 0 0 1 17 17v52a17 17 0 0 1-17 17H24A17 17 0 0 1 7 76V24A17 17 0 0 1 24 7Z'
-  },
-  {
-    ball: { cy: 51, r: 32 },
-    id: 'pill',
-    label: 'Pill',
-    path: 'M50 20c31 0 47 13 47 30S81 80 50 80 3 67 3 50s16-30 47-30Z'
-  },
-  {
-    ball: { cy: 67, r: 24 },
-    id: 'triangle',
-    label: 'Triangle',
-    path: 'M43 12a8 8 0 0 1 14 0l38 66a8 8 0 0 1-7 12H12a8 8 0 0 1-7-12Z'
-  },
-  {
-    ball: { cy: 52, r: 44 },
-    id: 'hexagon',
-    label: 'Hexagon',
-    path: 'M44 6a12 12 0 0 1 12 0l30 17a12 12 0 0 1 6 10v34a12 12 0 0 1-6 10L56 94a12 12 0 0 1-12 0L14 77a12 12 0 0 1-6-10V33a12 12 0 0 1 6-10Z'
-  },
-  {
+const LEGACY: Record<string, { ball: Ball; path: string }> = {
+  cloud: {
     ball: { cy: 57, r: 30 },
-    id: 'cloud',
-    label: 'Cloud',
     path: 'M26 85a19 19 0 0 1-5.9-37 28 28 0 0 1 55.8-4.6 21 21 0 0 1-3.9 41.6Z'
   },
-  {
+  drop: {
     ball: { cy: 59, r: 37 },
-    id: 'drop',
-    label: 'Drop',
     path: 'M50 5c12.7 19.8 38 36.3 38 52a38 38 0 0 1-76 0C12 41.3 37.3 24.8 50 5Z'
+  },
+  hexagon: {
+    ball: { cy: 52, r: 44 },
+    path: 'M44 6a12 12 0 0 1 12 0l30 17a12 12 0 0 1 6 10v34a12 12 0 0 1-6 10L56 94a12 12 0 0 1-12 0L14 77a12 12 0 0 1-6-10V33a12 12 0 0 1 6-10Z'
+  },
+  pill: {
+    ball: { cy: 51, r: 32 },
+    path: 'M50 20c31 0 47 13 47 30S81 80 50 80 3 67 3 50s16-30 47-30Z'
+  },
+  round: { ball: { cy: 54, r: 45 }, path: 'M50 5a45 45 0 1 1 0 90a45 45 0 1 1 0-90Z' },
+  square: {
+    ball: { cy: 53, r: 43 },
+    path: 'M24 7h52a17 17 0 0 1 17 17v52a17 17 0 0 1-17 17H24A17 17 0 0 1 7 76V24A17 17 0 0 1 24 7Z'
+  },
+  squircle: {
+    ball: { cy: 54, r: 45 },
+    path: 'M50 5c34 0 45 11 45 45S84 95 50 95 5 84 5 50 16 5 50 5Z'
+  },
+  triangle: {
+    ball: { cy: 67, r: 24 },
+    path: 'M43 12a8 8 0 0 1 14 0l38 66a8 8 0 0 1-7 12H12a8 8 0 0 1-7-12Z'
   }
-]
+}
+
+export const AVATAR_SHAPES: AvatarShape[] = Object.entries(FACE_REST).map(([id, rest]) => ({
+  ball: LEGACY[id]!.ball,
+  id,
+  label: rest.label,
+  legacyPath: LEGACY[id]!.path,
+  path: rest.head
+}))
 
 /** Ink for eyes on a body too light for white ones. */
 const INK = '#151517'
@@ -104,52 +99,34 @@ export const DEFAULT_AVATAR_STYLE: AvatarStyle = { color: 'pink', shape: 'hexago
 /** Eyes are white unless the colour says otherwise, so they read as paint on a solid body. */
 export const EYES = '#ffffff'
 
-/**
- * What the face is doing. The eyes change shape with it: tall while idle,
- * lowered while it waits on you, narrowed while it works, squinted when
- * something went well, closed when it sleeps.
- */
-export type FaceMood = 'happy' | 'idle' | 'listening' | 'sleeping' | 'working'
+export type { FaceMood } from './face'
 
-/** The radius of the ball frame; eye sizes and poses below are in its units. */
+/** The radius of the earlier faces' ball frame. */
 export const BALL = 45
 
-/** Distance between the two eye centres in the ball frame. */
-export const EYE_GAP = 29
+/** The head frame's span and offset, as `FACE_VIEWBOX` lays it out. */
+const HEAD_SPAN = 259
+const HEAD_OFFSET = 15
 
-/** One capsule eye in the ball frame: its width, height, and drop below the centre. */
-export interface EyeShape {
-  dy: number
-  h: number
-  w: number
-}
+/** A head-frame coordinate in the 100-unit picture. */
+const toPicture = (value: number) => ((value + HEAD_OFFSET) * 100) / HEAD_SPAN
 
-export const EYE_MOODS: Record<FaceMood, EyeShape> = {
-  happy: { dy: -1.5, h: 8, w: 13 },
-  idle: { dy: 0, h: 27, w: 11.7 },
-  listening: { dy: 3, h: 20, w: 11.7 },
-  sleeping: { dy: 1, h: 3, w: 12.5 },
-  working: { dy: 1.5, h: 17, w: 10 }
-}
+/**
+ * The resting eyes of a shape: the component's idle rest (`face-rest.ts`),
+ * with each eye's centre in the 100-unit picture frame too. What the still
+ * picture of a bot shows.
+ */
+export function restingEyes(
+  shapeId: string
+): { cx: number; cy: number; d: string; transform: string }[] {
+  const rest = FACE_REST[shapeId] ?? FACE_REST.round!
 
-/** The two capsules of a mood as `<rect>` attributes in the ball frame. */
-export function eyeRects(mood: FaceMood = 'idle') {
-  const eye = EYE_MOODS[mood]
-  const radius = Math.min(eye.w, eye.h) / 2
-
-  return [-1, 1].map(side => ({
-    height: eye.h,
-    rx: radius,
-    ry: radius,
-    width: eye.w,
-    x: side * (EYE_GAP / 2) - eye.w / 2,
-    y: eye.dy - eye.h / 2
+  return rest.eyes.map(eye => ({
+    cx: toPicture(eye.cx),
+    cy: toPicture(eye.cy),
+    d: eye.d,
+    transform: eye.transform
   }))
-}
-
-/** The `transform` that takes the ball frame onto a shape. */
-export function ballTransform(ball: Ball): string {
-  return `translate(50 ${ball.cy}) scale(${ball.r / BALL})`
 }
 
 /** A stable face for a bot that has no uploaded avatar. */
@@ -173,31 +150,22 @@ export function resolveStyle(style: AvatarStyle) {
   }
 }
 
-/** The eyes as SVG markup, shared by the inline face and the rasterised one. */
-export function faceEyes(ball: Ball, fill: string, mood: FaceMood = 'idle'): string {
-  const rects = eyeRects(mood)
-    .map(
-      eye =>
-        `<rect x="${eye.x}" y="${eye.y}" width="${eye.width}" height="${eye.height}"` +
-        ` rx="${eye.rx}" ry="${eye.ry}" fill="${fill}"/>`
-    )
+/** The eyes as SVG markup for the rasterised face, clipped to the head as the live one is. */
+export function faceEyes(shapeId: string, fill: string): string {
+  return restingEyes(shapeId)
+    .map(eye => `<path d="${eye.d}" transform="${eye.transform}" fill="${fill}"/>`)
     .join('')
-
-  return (
-    `<g transform="${ballTransform(ball)}">` +
-    `<g class="hex-gaze"><g class="hex-eyes">${rects}</g></g>` +
-    `</g>`
-  )
 }
 
-/** The face as an SVG document (100×100 viewBox). */
+/** The face as an SVG document, in the component's head frame (`FACE_VIEWBOX`). */
 export function avatarSvg(style: AvatarStyle): string {
   const { color, eyes, shape } = resolveStyle(style)
 
   return (
-    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">` +
+    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${FACE_VIEWBOX}">` +
+    `<clipPath id="head"><path d="${shape.path}"/></clipPath>` +
     `<path d="${shape.path}" fill="${color.value}"/>` +
-    faceEyes(shape.ball, eyes) +
+    `<g clip-path="url(#head)">${faceEyes(shape.id, eyes)}</g>` +
     `</svg>`
   )
 }
@@ -305,11 +273,15 @@ function near(rgba: number[], hex: string, tolerance: number): boolean {
   )
 }
 
+/** The key of a shape's earlier outline in the masks given to `matchFace`. */
+export const legacyMask = (shapeId: string) => `${shapeId}:legacy`
+
 /**
  * Matches a 100×100 RGBA picture against every colour and shape, given each
- * shape's mask drawn at the same size, with its eyes where this module puts
- * them now or where it put them before they moved onto the ball. A photo or
- * any other upload matches nothing.
+ * shape's mask drawn at the same size (its outline now, and under
+ * `legacyMask` the one before), with its eyes where this module puts them
+ * now or where it put them before they moved onto the ball. A photo or any
+ * other upload matches nothing.
  */
 export function matchFace(
   pixels: Uint8ClampedArray,
@@ -326,23 +298,23 @@ export function matchFace(
   let fewest = Number.POSITIVE_INFINITY
 
   for (const candidate of AVATAR_SHAPES) {
-    const mask = masks[candidate.id]
-
-    if (!mask) {
-      continue
-    }
-
-    let misses = 0
-
-    for (let index = 3; index < pixels.length; index += 4) {
-      if (Math.abs(pixels[index]! - mask[index]!) > 128) {
-        misses += 1
+    for (const mask of [masks[candidate.id], masks[legacyMask(candidate.id)]]) {
+      if (!mask) {
+        continue
       }
-    }
 
-    if (misses < fewest) {
-      fewest = misses
-      shape = candidate
+      let misses = 0
+
+      for (let index = 3; index < pixels.length; index += 4) {
+        if (Math.abs(pixels[index]! - mask[index]!) > 128) {
+          misses += 1
+        }
+      }
+
+      if (misses < fewest) {
+        fewest = misses
+        shape = candidate
+      }
     }
   }
 
@@ -354,13 +326,13 @@ export function matchFace(
   const style = { color: color.id, shape: shape.id }
   const scale = shape.ball.r / BALL
   const { ball } = shape
-
-  const eyes = [-1, 1].map(
-    side => [50 + side * (EYE_GAP / 2) * scale, ball.cy + EYE_MOODS.idle.dy * scale] as const
-  )
+  const eyes = restingEyes(shape.id).map(eye => [eye.cx, eye.cy] as const)
+  // Faces drawn before the eyes looked up and to the right sat on the ball's centre.
+  const centred = [-1, 1].map(side => [50 + side * 14.5 * scale, ball.cy] as const)
 
   const drawn =
     eyes.every(([x, y]) => near(pixel(pixels, x, y), color.eyes ?? EYES, 24)) ||
+    centred.every(([x, y]) => near(pixel(pixels, x, y), color.eyes ?? EYES, 24)) ||
     LEGACY_EYES.every(([x, y]) => near(pixel(pixels, x, y), INK, 24))
 
   return drawn ? style : null
@@ -462,8 +434,19 @@ function samplePicture(src: string): Promise<AvatarStyle | null> {
       try {
         const pixels = draw(() => context.drawImage(image, 0, 0, SIDE, SIDE))
 
+        // The head frame drawn into the 100-unit picture, as `avatarSvg` lays it out.
+        const toPicture = new DOMMatrix().scale(100 / HEAD_SPAN).translate(HEAD_OFFSET, HEAD_OFFSET)
+
         const masks = Object.fromEntries(
-          AVATAR_SHAPES.map(shape => [shape.id, draw(() => context.fill(new Path2D(shape.path)))])
+          AVATAR_SHAPES.flatMap(shape => {
+            const head = new Path2D()
+            head.addPath(new Path2D(shape.path), toPicture)
+
+            return [
+              [shape.id, draw(() => context.fill(head))],
+              [legacyMask(shape.id), draw(() => context.fill(new Path2D(shape.legacyPath)))]
+            ]
+          })
         )
 
         resolve(matchFace(pixels, masks))

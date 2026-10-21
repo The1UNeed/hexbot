@@ -36,22 +36,40 @@ own visual identity. Read `CLAUDE.md` for the words.
 - Chart series, for bot visuals only: light #4F46E5, #0D9488, #D97706,
   #DB2777, #2F7CF6, #65A30D; dark #8B85FF, #2DD4BF, #FBBF24, #F472B6,
   #4C9AFF, #A3E635. The first is the accent; the rest step apart in hue.
-- Bot faces: every bot has a face, a shape and a colour with two white
-  capsule eyes painted on a ball (`lib/avatar-builder.ts`; Chalk gets ink
-  eyes). A face picked in an app is stored on the bot as its shape and
-  colour (`face` in `docs/api.md`), which the web and mobile apps draw live,
-  and as a picture for clients that only show pictures. A bot whose face was
-  saved before that keeps only the picture: the web app reads it back into a
-  live face, and mobile shows the picture. Other uploaded images replace the
-  face; otherwise it is derived from the bot's name. Faces wiggle on hover
-  and blink at rest, and a glance moves the eyes over the ball's surface:
-  toward the rim, rolled with it, smaller as it turns away. Every shape
-  places the ball so the eyes stay inside it. Click any face, or the Hexbot
+- Bot faces: every bot has a face, a shape and a colour with two white eyes
+  (`lib/avatar-builder.ts`; Chalk gets ink eyes). A face picked in an app is
+  stored on the bot as its shape and colour (`face` in `docs/api.md`), which
+  the web and mobile apps draw live, and as a picture for clients that only
+  show pictures. A bot whose face was saved before that keeps only the
+  picture: the web app reads it back into a live face (old outlines
+  included), and mobile shows the picture. Other uploaded images replace the
+  face; otherwise it is derived from the bot's name. Faces live as the Grok
+  bot's (x.ai/bot): the web app runs the `<morph-bot>` Web Component from
+  the open reconstruction, copied as it is (`src/vendor/morph-bot/`, its
+  NOTICE.md says what was left out and that its data carries no licence) and
+  loaded by `lib/face.ts` alone. Hexbot's eight shapes are drawn as the
+  component shapes nearest to them (round as blob, square as cylinder, pill
+  as tablet, triangle as wedge, hexagon as hex, drop as teardrop) and the
+  still faces, on the web and on mobile, are the component's own first
+  frame, generated into `lib/face-rest.ts` by `apps/web/scripts/face-rest.mjs`.
+  The component has 39 states (`FACE_MOODS`, idle first): the bot's life in
+  a chat (idle, sleeping, waking, listening, thinking, searching, working),
+  reactions (happy, surprised, celebrate...), agent morphs (orbit, radar,
+  progress), and tasks (writing, sending, uploading, powering down...), and a
+  chat links them to what the bot does: a resting bot is idle; over a running
+  turn it thinks until anything happens, searches while a search tool runs,
+  writes (the pencil) while its text streams, and works for every other
+  step; in the roster and the header the face says what the status dot says
+  (working, listening when it needs you, happy when done and unseen); the
+  two faces of an ask turn toward each other (`look`); the mark sleeps when
+  the connection is lost and loads while an update installs. Each face runs
+  on the component's own clock, pauses off screen, and snaps its expressions
+  under reduced motion. Click any face, or the Hexbot
   mark, and it plays a random act for a few seconds: typing with its two
   round hands, juggling, blowing a horn (`components/ui/hexbot-act.tsx`, 21
-  acts). The install screen gives each stage its own act. In a chat the
-  face never changes size or plays acts on its own: a working bot's face
-  only bobs (`hex-think`).
+  acts); the head holds still while the act moves the body. The install
+  screen gives each stage its own act. In a chat the face never changes
+  size or plays acts on its own.
 - Shadows only on floating layers (menus, dialogs, the glass chrome) and the
   cards that sit on the canvas: a hairline plus one soft shadow.
 - Liquid glass (`hex-glass`, `hex-glass-strong` in `tokens.css`) is for
@@ -77,7 +95,8 @@ own visual identity. Read `CLAUDE.md` for the words.
   `ease-out` settles, `ease-in-out` is for things leaving, `ease-spring` is
   for small controls that snap into place (the switch knob). Only what
   arrives while the chat is open animates: history is drawn still. The one
-  continuous motion is a working bot's face. Respect prefers-reduced-motion.
+  continuous motion is the bot faces, which sway, blink and glance as the
+  Grok bot does. Respect prefers-reduced-motion.
 - Focus: the accent ring, 2 px outside the shape (`hex-focus`), on every
   rounded control, including the glass pills.
 
@@ -149,12 +168,13 @@ the roster slides in as a drawer.
   20 quiet minutes.
 - Live status: from the moment a turn starts until the whole turn is done,
   a line sits at its foot, under the messages the bot has finished: the
-  bot's bobbing face and muted words, with no bubble behind them. It says
+  bot's face, thinking until it writes or runs something and working from
+  then on, and muted words, with no bubble behind them. It says
   what the bot is doing in plain words ("General is thinking", "General is
   writing", "General is working", "General is searching the web", "General
   is running a command", "Connecting to GitHub" for a connector's tool, or
   the provider's wait notice), never the command, the query or the time;
-  the side panel says the same. The face keeps bobbing while a tool runs.
+  the side panel says the same. The face keeps working while a tool runs.
   No spinner, no ring, no shimmer. Each new label crossfades in. What the
   bot is still writing stays hidden ("General is writing"); the message
   appears whole when it is done and springs in. When the turn ends the line

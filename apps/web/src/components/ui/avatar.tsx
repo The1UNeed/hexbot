@@ -1,24 +1,26 @@
 import { cva, type VariantProps } from 'class-variance-authority'
-import { useEffect, useReducer } from 'react'
+import { useEffect, useReducer, useRef } from 'react'
 
 import {
-  AVATAR_SHAPES,
   type AvatarStyle,
-  type Ball,
-  ballTransform,
   botFace,
-  eyeRects,
-  type FaceMood,
   faceReadNow,
   readFace,
   resolveStyle,
   styleForName
 } from '../../lib/avatar-builder'
 import { cn } from '../../lib/cn'
+import {
+  type FaceLook,
+  type FaceMood,
+  facePreset,
+  faceShape,
+  type MorphBotElement
+} from '../../lib/face'
 
 import { ActProps, type HexbotActName, useAct } from './hexbot-act'
 
-export type { FaceMood }
+export type { FaceLook, FaceMood }
 
 const avatarVariants = cva('relative inline-flex shrink-0 items-center justify-center', {
   defaultVariants: { size: 'md' },
@@ -33,32 +35,94 @@ const avatarVariants = cva('relative inline-flex shrink-0 items-center justify-c
   }
 })
 
-const HEXAGON_BALL = AVATAR_SHAPES.find(shape => shape.id === 'hexagon')!.ball
+export interface LiveFaceProps {
+  className?: string
+  /** The head's colour; any CSS colour, `currentColor` included. */
+  color: string
+  /** The eyes' colour. */
+  eyes: string
+  look?: FaceLook | null
+  mood?: FaceMood
+  /** The eyes follow the pointer over the page. */
+  pointer?: boolean
+  /** A Hexbot shape id; drawn as the component shape nearest to it. */
+  shape?: string
+  /** Hold the head while something else moves the body, as an act does. */
+  still?: boolean
+}
 
 /**
- * The two eyes for a mood on a 100x100 face, painted on the shape's ball so
- * the CSS poses in tokens.css turn them with its surface. Shared with the
- * brand mark, which is a hexagon.
+ * A face brought to life: the `<morph-bot>` component wearing the mood, look
+ * and shape it is given. The component runs its own clock, pauses off
+ * screen, and honours reduced motion on its own; this only hands it the
+ * attributes and, for a look or a held head, a preset over every state.
  */
-export function FaceEyes({
-  ball = HEXAGON_BALL,
-  fill = '#ffffff',
-  mood = 'idle'
-}: {
-  ball?: Ball
-  fill?: string
-  mood?: FaceMood
-}) {
+export function LiveFace({
+  className,
+  color,
+  eyes,
+  look = null,
+  mood = 'idle',
+  pointer = false,
+  shape = 'hexagon',
+  still = false
+}: LiveFaceProps) {
+  const element = useRef<MorphBotElement>(null)
+  const tuned = useRef(false)
+
+  useEffect(() => {
+    const preset = facePreset(look, still)
+
+    // A preset replays the state, so an untuned face is left alone.
+    if (preset || tuned.current) {
+      element.current?.configure(preset ?? {})
+      tuned.current = Boolean(preset)
+    }
+  }, [look, still])
+
   return (
-    <g transform={ballTransform(ball)}>
-      <g className="hex-gaze">
-        <g className="hex-eyes" data-mood={mood}>
-          {eyeRects(mood).map((eye, index) => (
-            <rect fill={fill} key={index} {...eye} />
-          ))}
-        </g>
-      </g>
-    </g>
+    <morph-bot
+      className={cn('block size-full', className)}
+      color={color}
+      decorative=""
+      eye-color={eyes}
+      ref={element}
+      shape={faceShape(shape)}
+      state={mood}
+      {...(pointer ? { 'follow-pointer': '' } : {})}
+    />
+  )
+}
+
+/** A bot face drawn inline and brought to life: it blinks, glances, and moves with its mood. */
+export function Face({
+  className,
+  look,
+  mood,
+  pointer,
+  still,
+  style
+}: {
+  className?: string
+  look?: FaceLook | null
+  mood?: FaceMood
+  pointer?: boolean
+  still?: boolean
+  style: AvatarStyle
+}) {
+  const { color, eyes, shape } = resolveStyle(style)
+
+  return (
+    <LiveFace
+      className={className}
+      color={color.value}
+      eyes={eyes}
+      look={look}
+      mood={mood}
+      pointer={pointer}
+      shape={shape.id}
+      still={still}
+    />
   )
 }
 
@@ -68,30 +132,12 @@ export interface AvatarProps extends VariantProps<typeof avatarVariants> {
   className?: string
   /** Data URL or `data:<mime>;base64,...` from the bot's profile asset. */
   image?: null | string
+  /** Turned toward a neighbour, as the two faces of an ask are. */
+  look?: FaceLook | null
   mood?: FaceMood
   name: string
   /** Face to draw when there is no image; defaults to one derived from the name. */
   style?: AvatarStyle
-}
-
-/** A bot face drawn inline so the eyes can blink, wander, and change mood. */
-export function Face({
-  className,
-  mood,
-  style
-}: {
-  className?: string
-  mood?: FaceMood
-  style: AvatarStyle
-}) {
-  const { color, eyes, shape } = resolveStyle(style)
-
-  return (
-    <svg aria-hidden className={cn('size-full', className)} viewBox="0 0 100 100">
-      <path d={shape.path} fill={color.value} />
-      <FaceEyes ball={shape.ball} fill={eyes} mood={mood} />
-    </svg>
-  )
 }
 
 /** The face drawn in a bot's picture once read, `null` for a photo, `undefined` while reading. */
@@ -147,16 +193,19 @@ export function useFaceColor(
  * The generated face, live, whether the bot has none saved or saved one this
  * app drew; any other uploaded picture as it is.
  */
-export function Avatar({ act, className, image, mood, name, size, style }: AvatarProps) {
+export function Avatar({ act, className, image, look, mood, name, size, style }: AvatarProps) {
   const playing = useAct(act)
   const read = useFaceRead(image)
   const face = read ?? style ?? styleForName(name)
   const picture = image && !read ? image : null
+  const shownMood = playing.act?.mood ?? mood ?? 'idle'
 
   return (
     <span
       aria-label={name}
       className={cn(avatarVariants({ size }), 'hex-face', className)}
+      data-look={look ?? undefined}
+      data-mood={picture ? undefined : shownMood}
       onClick={playing.play}
       role="img"
     >
@@ -164,7 +213,7 @@ export function Avatar({ act, className, image, mood, name, size, style }: Avata
         {picture ? (
           <img alt="" className="size-full rounded-full object-cover" src={picture} />
         ) : (
-          <Face mood={playing.act?.mood ?? mood} style={face} />
+          <Face look={look} mood={shownMood} still={Boolean(playing.act)} style={face} />
         )}
       </span>
       {playing.name ? (

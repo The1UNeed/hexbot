@@ -475,7 +475,12 @@ export interface LiveStatusLine {
   /** The running step, when a tool is what the bot is doing right now. */
   call?: ToolCall
   label: string
+  /** The face to wear: thinking before anything happens, searching, writing, or working. */
+  mood: 'searching' | 'thinking' | 'working' | 'writing'
 }
+
+/** Tools that look for something; the face searches with them. */
+const SEARCHING = new Set(['search_files', 'session_search', 'web_search'])
 
 /**
  * The live line at the foot of a running turn: the running step in plain
@@ -490,20 +495,31 @@ export function liveStatus(message: Message, name: string): LiveStatusLine {
 
   // Auto mode is checking the step before it runs; say so over the step.
   if (message.checking) {
-    return { call: running, label: message.checking }
+    return { call: running, label: message.checking, mood: 'working' }
   }
 
   if (running) {
-    return { call: running, label: activityLabel(running, name) }
+    return {
+      call: running,
+      label: activityLabel(running, name),
+      mood: SEARCHING.has(running.name) ? 'searching' : 'working'
+    }
   }
 
   if (message.activity) {
-    return { label: message.activity }
+    return { label: message.activity, mood: 'working' }
   }
 
   if (message.text) {
-    return { label: `${name} is writing` }
+    return { label: `${name} is writing`, mood: 'writing' }
   }
 
-  return { label: message.thinking ? `${name} is thinking` : `${name} is working` }
+  return message.thinking
+    ? { label: `${name} is thinking`, mood: 'thinking' }
+    : { label: `${name} is working`, mood: 'working' }
+}
+
+/** The face a bot wears over a message: its live status's while it streams, else none. */
+export function liveMood(message: Message): LiveStatusLine['mood'] | undefined {
+  return message.streaming ? liveStatus(message, '').mood : undefined
 }

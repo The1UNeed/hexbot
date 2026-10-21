@@ -391,13 +391,7 @@ export function RoomConversation() {
               <Fragment key={turn.bot}>
                 <article className="flex gap-2 py-1" data-testid="room-event">
                   <span className="relative mt-1 shrink-0">
-                    <Avatar
-                      className="hex-think"
-                      {...botFace(bot)}
-                      mood="working"
-                      name={name}
-                      size="sm"
-                    />
+                    <Avatar {...botFace(bot)} mood="working" name={name} size="sm" />
                     <StatusDot size="sm" status="working" />
                   </span>
                   <div className="flex min-w-0 max-w-[80%] flex-col">
