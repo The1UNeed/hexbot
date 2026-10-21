@@ -19,8 +19,9 @@ Copied as it is, except:
   to every face.
 - `runtime/state-behavior-system.js`: a state's `motionScale` also scales
   its impulses and scale pulses, and at 0 the ambient spins, bounces and
-  gestures do not start, so a head held for an act stays put. Upstream
-  scales only the head's position and tilt.
+  gestures do not start and any already in flight are dropped, so a head
+  held for an act stays put. Upstream scales only the head's position and
+  tilt.
 - The editor, docs, demo and download bundles are left out.
 
 The upstream repository carries no licence file. Its README says that the

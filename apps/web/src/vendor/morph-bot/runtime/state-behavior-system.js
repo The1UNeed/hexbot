@@ -10,8 +10,14 @@ export function updateStateTargets(now, config, delta) {
   const elapsed = (now - this.stateStartedAt) / 1000;
   const runtime = (now - this.startedAt) / 1000;
   const motion = config.motionScale;
-  // Hexbot: a held head (motionScale 0) also skips impulses, scale pulses and gestures.
+  // Hexbot: a held head (motionScale 0) also skips impulses, scale pulses and gestures,
+  // and drops any spin, gesture or bounce already in flight.
   this.motionScale = motion;
+  if (motion === 0) {
+    this.spinSpring = null;
+    this.gesture = null;
+    this.bounceStartedAt = -1;
+  }
   let eyeOpen = 1;
   let eyeScale = 1;
   let rotation = 0;

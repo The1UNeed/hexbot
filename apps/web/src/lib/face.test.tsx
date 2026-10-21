@@ -127,6 +127,39 @@ describe('the live face', () => {
     }
   })
 
+  it('drops a spin already in flight when a face is held still', async () => {
+    const { container, rerender } = render(
+      <LiveFace color="#ec2f8a" eyes="#ffffff" mood="working" shape="hexagon" />
+    )
+
+    const bot = container.querySelector('morph-bot') as HTMLElement & {
+      _engine: { gesture: unknown; spinSpring: unknown; startSpin(): boolean }
+    }
+
+    await act(async () => {
+      await frame()
+    })
+
+    expect(bot._engine.startSpin()).toBe(true)
+
+    await act(async () => {
+      await frame()
+      await frame()
+    })
+
+    expect(bot._engine.spinSpring).not.toBeNull()
+
+    rerender(<LiveFace color="#ec2f8a" eyes="#ffffff" mood="working" shape="hexagon" still />)
+
+    await act(async () => {
+      await frame()
+      await frame()
+    })
+
+    expect(bot._engine.spinSpring).toBeNull()
+    expect(bot._engine.gesture).toBeNull()
+  })
+
   it('turns toward a neighbour and holds still through a preset over every state', () => {
     expect(facePreset(null, false)).toBeNull()
 
