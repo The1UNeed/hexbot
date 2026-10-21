@@ -919,6 +919,48 @@ async fn manual_compaction_after_idle_stop_waits_for_empty_recovery() {
     runtime.shutdown().await;
 }
 
+/// A manual `/compact` key never outlives a deletion. Deletion tombstones the
+/// section before it closes Pi; a compaction finishing in between stores no row
+/// and frees its reservation, and a later one reserves nothing.
+#[tokio::test]
+async fn manual_compaction_reservation_never_outlives_a_deletion_tombstone() {
+    let (home, runtime, hub) = setup();
+    install_stop_lifecycle_pi(home.path());
+    let id = open(&runtime).await;
+    let s = runtime.sessions.lock().unwrap()["first"].clone();
+    let mut events = hub.subscribe();
+    let reservations = || {
+        store::open(home.path())
+            .unwrap()
+            .query_row(
+                "SELECT count(*) FROM native_prompt_intents WHERE session_id='first'",
+                [],
+                |r| r.get::<_, i64>(0),
+            )
+            .unwrap()
+    };
+    let params = json!({"session_id":id,"text":"/compact","input_id":"6f0c2f1e-3f4a-4b5c-8d6e-7f8091a2b3c4"});
+    let compact = runtime.call_inner("alice", "prompt.submit", &params);
+    let release = async {
+        stop_event(&mut events, |e| e["payload"]["text"] == "compact waiting").await;
+        assert_eq!(reservations(), 1);
+        store::open(home.path())
+            .unwrap()
+            .execute("INSERT INTO native_deleted VALUES('first')", [])
+            .unwrap();
+        Runtime::command(&s, json!({"type":"release_compact"}))
+            .await
+            .unwrap();
+    };
+    let (result, ()) = tokio::time::timeout(EVENT_WAIT, async { tokio::join!(compact, release) })
+        .await
+        .unwrap();
+    assert_eq!(result.unwrap_err().code, 4001);
+    assert_eq!(reservations(), 0);
+    assert!(store::history(home.path(), "first").unwrap().is_empty());
+    runtime.shutdown().await;
+}
+
 #[tokio::test]
 async fn idle_owner_admission_cannot_overtake_retained_stop_input() {
     let (home, runtime, hub) = setup();

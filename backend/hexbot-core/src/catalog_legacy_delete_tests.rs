@@ -68,7 +68,14 @@ fn legacy_purge_removes_compression_parents_and_children_in_one_transaction() {
             &[]
         )
         .unwrap()
-        .is_empty()
+            == vec![json!({"session_id":"first","bot":"owl","owner":"alice","purge":1})]
+            && rows(
+                &runtime_store::open(h).unwrap(),
+                "SELECT * FROM native_delete_completed",
+                &[]
+            )
+            .unwrap()
+                == vec![json!({"session_id":"first"})]
     );
     assert!(
         rows(

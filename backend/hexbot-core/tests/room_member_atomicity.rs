@@ -515,6 +515,49 @@ async fn catalog_failure_rolls_back_member_event_and_incident_in_public_and_dire
     let _serial = SERIAL.lock().await;
     for direct in [false, true] {
         let f = Fixture::new(false);
+        let raw_path = store::session_dir(f.home.path(), "stored")
+            .unwrap()
+            .join("conversation.jsonl");
+        std::fs::write(
+            &raw_path,
+            b"{\"type\":\"session\",\"version\":3,\"id\":\"stored\"}\n",
+        )
+        .unwrap();
+        store::open(f.home.path()).unwrap().execute("UPDATE native_sessions SET prompt='frozen prompt',options='{\"model\":\"frozen\",\"room_id\":\"room\"}' WHERE stored_id='stored'", []).unwrap();
+        let snapshot = || {
+            let native = store::open(f.home.path()).unwrap();
+            [
+                "native_sessions",
+                "native_messages",
+                "native_usage",
+                "native_pi_journal",
+                "native_prompt_intents",
+                "native_history_versions",
+                "native_deleted",
+                "native_delete_options",
+                "native_delete_pending",
+                "native_delete_claims",
+                "native_delete_completed",
+                "native_delete_legacy",
+            ]
+            .map(|table| {
+                hexbot_core::common::rows(
+                    &native,
+                    &format!("SELECT * FROM {table} ORDER BY 1"),
+                    &[],
+                )
+                .unwrap()
+            })
+        };
+        let before = snapshot();
+        let raw_before = std::fs::read(&raw_path).unwrap();
+        let history_before = store::history(f.home.path(), "stored").unwrap();
+        let incident_before = hexbot_core::common::rows(
+            &db::open(f.home.path()).unwrap(),
+            "SELECT * FROM bot_incidents",
+            &[],
+        )
+        .unwrap();
         let mut events = f.app.events.subscribe();
         let conn = db::open(f.home.path()).unwrap();
         conn.execute_batch("CREATE TRIGGER refuse_room_delete BEFORE DELETE ON rooms BEGIN SELECT RAISE(ABORT,'controlled room delete fault'); END;").unwrap();
@@ -547,9 +590,23 @@ async fn catalog_failure_rolls_back_member_event_and_incident_in_public_and_dire
                 "member.left"
             );
         }
-        // History is purged only after the catalog statements, so the
-        // surviving room keeps it.
-        assert!(!store::history(f.home.path(), "stored").unwrap().is_empty());
+        // History is purged only after the catalog commits, so a failed
+        // decision preserves every native row, frozen option and raw byte.
+        assert_eq!(
+            store::history(f.home.path(), "stored").unwrap(),
+            history_before
+        );
+        assert_eq!(snapshot(), before);
+        assert_eq!(std::fs::read(&raw_path).unwrap(), raw_before);
+        assert_eq!(
+            hexbot_core::common::rows(
+                &db::open(f.home.path()).unwrap(),
+                "SELECT * FROM bot_incidents",
+                &[]
+            )
+            .unwrap(),
+            incident_before
+        );
         conn.execute_batch("DROP TRIGGER refuse_room_delete;")
             .unwrap();
         let removed = rooms::remove_bot(f.home.path(), "local", "room", "owl", false).unwrap();
@@ -558,7 +615,7 @@ async fn catalog_failure_rolls_back_member_event_and_incident_in_public_and_dire
         assert!(f.resolved());
         assert!(store::history(f.home.path(), "stored").unwrap().is_empty());
         println!(
-            "catalog fault direct={direct}: membership/event/incident rolled back; history kept; retry succeeds"
+            "catalog fault direct={direct}: membership/event/incident/native/raw/options exactly preserved; retry succeeds"
         );
         f.app.shutdown().await;
     }

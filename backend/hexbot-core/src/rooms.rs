@@ -1206,48 +1206,53 @@ pub fn remove_bot(
     keep_room: bool,
 ) -> Result<Value> {
     user(home, owner)?;
-    let mut conn = db::open(home)?;
-    // App closes processes before calling here. Reserve only the synchronous
-    // catalog decision, so joins can still commit while those processes close.
-    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-    if tx.execute(
-        "UPDATE room_members SET left_at=?1 WHERE room_id=?2 AND member_kind='bot' AND member_id=?3 AND left_at IS NULL AND (NOT ?4 OR EXISTS(SELECT 1 FROM room_members WHERE room_id=?2 AND member_kind='bot' AND member_id<>?3 AND left_at IS NULL))",
-        params![now(), room, bot, keep_room],
-    )? == 0
-    {
-        let active: bool = tx.query_row(
-            "SELECT EXISTS(SELECT 1 FROM room_members WHERE room_id=? AND member_kind='bot' AND member_id=? AND left_at IS NULL)",
-            params![room, bot],
-            |r| r.get(0),
+    crate::runtime_store::with_tombstone(home, || {
+        let mut conn = db::open(home)?;
+        // Process closure finished before this final membership decision.
+        // Joins remain free to commit until this IMMEDIATE transaction starts.
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        if tx.execute(
+            "UPDATE room_members SET left_at=?1 WHERE room_id=?2 AND member_kind='bot' AND member_id=?3 AND left_at IS NULL AND (NOT ?4 OR EXISTS(SELECT 1 FROM room_members WHERE room_id=?2 AND member_kind='bot' AND member_id<>?3 AND left_at IS NULL))",
+            params![now(), room, bot, keep_room],
+        )? == 0
+        {
+            let active: bool = tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM room_members WHERE room_id=? AND member_kind='bot' AND member_id=? AND left_at IS NULL)",
+                params![room, bot],
+                |r| r.get(0),
+            )?;
+            return Err(if active {
+                last_bot()
+            } else {
+                Error::new(4232, format!("active room member not found: {bot}"))
+            });
+        }
+        get_with_conn(&tx, owner, room)?;
+        let event = append_with_conn(
+            &tx,
+            room,
+            "member.left",
+            "human",
+            Some(owner),
+            json!({"bot":bot}),
         )?;
-        return Err(if active {
-            last_bot()
-        } else {
-            Error::new(4232, format!("active room member not found: {bot}"))
-        });
-    }
-    get_with_conn(&tx, owner, room)?;
-    let event = append_with_conn(
-        &tx,
-        room,
-        "member.left",
-        "human",
-        Some(owner),
-        json!({"bot":bot}),
-    )?;
-    let mut result = get_with_conn(&tx, owner, room)?;
-    if active_bots(&result).is_empty() {
-        delete_with_conn(home, &tx, room)?;
-        result["deleted"] = json!(true);
-    } else {
+        let mut result = get_with_conn(&tx, owner, room)?;
+        if active_bots(&result).is_empty() {
+            let deleted = delete_with_conn(home, room, tx)?;
+            result["deleted"] = json!(true);
+            if deleted["history_pending"] == true {
+                result["history_pending"] = json!(true);
+            }
+            return Ok(json!({"room":result,"event":event}));
+        }
         tx.execute(
             "UPDATE rooms SET main_bot=NULL WHERE id=? AND main_bot=?",
             params![room, bot],
         )?;
         result = get_with_conn(&tx, owner, room)?;
-    }
-    tx.commit()?;
-    Ok(json!({"room":result,"event":event}))
+        tx.commit()?;
+        Ok(json!({"room":result,"event":event}))
+    })
 }
 /// Refusing to remove a room's last bot when asked to keep the room.
 pub const LAST_BOT: i64 = 4216;
@@ -1256,29 +1261,66 @@ pub fn last_bot() -> Error {
 }
 /// Delete a room and its bots' room transcripts. Callers check ownership first.
 pub fn delete(home: &Path, room: &str) -> Result<Value> {
-    let mut conn = db::open(home)?;
-    // Reserve the metadata write before destructive transcript cleanup and the
-    // incident reads; a deferred snapshot cannot upgrade after another writer.
-    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-    delete_with_conn(home, &tx, room)?;
-    tx.commit()?;
-    Ok(json!({"deleted":true}))
+    crate::runtime_store::with_tombstone(home, || {
+        let mut conn = db::open(home)?;
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        delete_with_conn(home, room, tx)
+    })
 }
-fn delete_with_conn(home: &Path, conn: &rusqlite::Connection, room: &str) -> Result<()> {
-    // Deleting the room cascades these mappings, so read them first.
-    let transcripts = rows(
+/// Resolve the exact mapped roots before their catalog mappings disappear.
+/// Never use a foreign bot/owner mapping to authorize native history cleanup.
+pub(crate) fn delete_targets(
+    home: &Path,
+    conn: &rusqlite::Connection,
+    room: &str,
+) -> Result<Vec<Value>> {
+    let native = crate::runtime_store::open(home)?;
+    let mut targets = Vec::new();
+    for row in rows(
         conn,
-        "SELECT stored_session_id FROM room_sessions WHERE room_id=?",
+        "SELECT s.stored_session_id AS id,s.bot,r.owner_id AS owner FROM room_sessions s JOIN rooms r ON r.id=s.room_id JOIN bots b ON b.name=s.bot AND b.owner_id=r.owner_id WHERE s.room_id=?",
         &[&room],
-    )?;
-    crate::settings::retire_room_incidents(conn, room)?;
-    conn.execute("DELETE FROM rooms WHERE id=?", [room])?;
-    // History deletion commits on its own. Run it after every catalog
-    // statement, so a failed one leaves the room with its history.
-    for row in transcripts {
-        crate::runtime_store::delete(home, required(&row, "stored_session_id")?)?;
+    )? {
+        for stored in crate::runtime_store::descendants(home, required(&row, "id")?)? {
+            for actual in rows(
+                &native,
+                "SELECT bot,owner FROM native_sessions WHERE stored_id=?1 UNION SELECT bot,owner FROM native_delete_options WHERE session_id=?1",
+                &[&stored],
+            )? {
+                if actual["bot"] != row["bot"] || actual["owner"] != row["owner"] {
+                    return Err(Error::new(4302, "room transcript ownership changed"));
+                }
+            }
+        }
+        targets.push(row);
     }
-    Ok(())
+    Ok(targets)
+}
+fn delete_with_conn(home: &Path, room: &str, tx: rusqlite::Transaction<'_>) -> Result<Value> {
+    let targets = delete_targets(home, &tx, room)?;
+    let pending = crate::runtime_store::with_room_delete(home, room, &targets, || {
+        crate::settings::retire_room_incidents(&tx, room)?;
+        tx.execute("DELETE FROM rooms WHERE id=?", [room])?;
+        tx.commit()?;
+        Ok(())
+    })?;
+    let cleaned = pending.map_or_else(
+        || {
+            (|| {
+                for target in &targets {
+                    crate::runtime_store::purge_locked(home, required(target, "id")?, false)?;
+                }
+                Ok::<_, Error>(())
+            })()
+        },
+        Err,
+    );
+    if let Err(error) = cleaned {
+        eprintln!("Deleted room {room}, but history cleanup is pending: {error}");
+        return Ok(json!({"deleted":true,"history_pending":true}));
+    }
+    // Successful purge also finalizes a pending marker. Empty rooms have no work.
+    Ok(json!({"deleted":true}))
 }
 /// Room limits carry the keys the room settings save, each a count or null.
 fn validate_limits(p: &Value) -> Result<()> {

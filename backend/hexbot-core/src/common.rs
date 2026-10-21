@@ -901,6 +901,16 @@ impl TestHome {
     pub(crate) fn workspace(&self) -> std::path::PathBuf {
         self.root.path().join("workspace")
     }
+    /// Public deletion is only for peer threads; owner chats stay until their bot goes.
+    pub(crate) fn peer_thread(&self, owner: &str, id: &str) {
+        crate::db::open(&self.home)
+            .unwrap()
+            .execute_batch(&format!(
+                "INSERT OR IGNORE INTO bots(name,owner_id) VALUES('teammate','{owner}');
+                 UPDATE sections SET peer_bot='teammate' WHERE id='{id}';"
+            ))
+            .unwrap();
+    }
 }
 
 #[cfg(test)]
