@@ -133,7 +133,8 @@ it.each([false, true])(
     expect(await screen.findByText('Dream report')).toBeVisible()
     expect(screen.getAllByText('Previous conversation')).toHaveLength(1)
     expect(screen.getAllByText('Dream report')).toHaveLength(1)
-    expect(opens()).toHaveLength(2)
+    // The first read, the view's own read when it opens, and the report's.
+    expect(opens()).toHaveLength(3)
   }
 )
 
@@ -665,4 +666,37 @@ it('renders queued users, identified replies and an answered card in their actua
   expect(
     before(screen.getByText('read first.txt'), screen.getByText('Second queued question'))
   ).toBe(true)
+})
+
+it('reads the chat again on reconnect, so a card answered on another app meanwhile goes', async () => {
+  vi.useFakeTimers({ toFake: ['Date'] })
+  vi.setSystemTime(1_000)
+
+  try {
+    useConnection.setState({ status: 'connected' })
+    render(<ConversationColumn />)
+    expect(await screen.findByText('Previous conversation')).toBeVisible()
+    act(() =>
+      routeEvent({
+        type: 'approval.request',
+        session_id: 'chat',
+        payload: { choices: ['once', 'deny'], command: 'rm -rf build', request_id: 'a1' }
+      } as GatewayEvent)
+    )
+    expect(screen.getByText('rm -rf build')).toBeVisible()
+    // Answered on the phone while this app was offline: the answer event was missed.
+    vi.setSystemTime(2_000)
+    call.mockImplementation((method: string) =>
+      method === 'hexbot.sections.open'
+        ? Promise.resolve({ ...history(texts), busy: false, pending_requests: [] })
+        : reply(method)
+    )
+    act(() => useConnection.setState({ status: 'reconnecting' }))
+    act(() => useConnection.setState({ status: 'connected' }))
+    await waitFor(() => expect(screen.queryByText('rm -rf build')).toBeNull())
+    expect(screen.getByText('Previous conversation')).toBeVisible()
+    expect(opens()).toHaveLength(2)
+  } finally {
+    vi.useRealTimers()
+  }
 })

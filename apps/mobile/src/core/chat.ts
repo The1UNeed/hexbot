@@ -208,8 +208,13 @@ export function reduceChat(state: ChatState, event: GatewayEvent): ChatState {
         ]
       }
     }
+    // Answered here or on another app, or the bot stopped waiting: that card goes.
     case 'clarify.expire':
+    case 'clarify.resolved':
       return { ...state, questions: state.questions.filter(q => q.requestId !== p.request_id) }
+    case 'approval.expire':
+    case 'approval.resolved':
+      return { ...state, approvals: state.approvals.filter(a => a.requestId !== p.request_id) }
     default:
       return state
   }

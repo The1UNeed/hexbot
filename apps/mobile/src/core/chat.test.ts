@@ -65,6 +65,20 @@ describe('chat event projection', () => {
     expect(s.approvals[0].sessionId).toBe('s1')
     expect(reduceChat(s, event('message.complete')).approvals).toEqual([])
   })
+  it('drops exactly the card answered on another app or no longer waited on', () => {
+    let s = emptyChat()
+    for (const id of ['a1', 'a2']) s = reduceChat(s, event('approval.request', { request_id: id }))
+    for (const id of ['q1', 'q2'])
+      s = reduceChat(s, event('clarify.request', { request_id: id, question: 'Colour?' }))
+    s = reduceChat(s, event('approval.resolved', { request_id: 'a1', choice: 'once' }))
+    s = reduceChat(s, event('clarify.resolved', { request_id: 'q1', answers: { q1: 'red' } }))
+    expect(s.approvals.map(a => a.requestId)).toEqual(['a2'])
+    expect(s.questions.map(q => q.requestId)).toEqual(['q2'])
+    s = reduceChat(s, event('approval.expire', { request_id: 'a2' }))
+    expect(s.approvals).toEqual([])
+    expect(s.questions.map(q => q.requestId)).toEqual(['q2'])
+    expect(s.busy).toBe(true)
+  })
   it('restores text content without exposing hidden system prompts or tool rows', () => {
     expect(
       historyMessages([

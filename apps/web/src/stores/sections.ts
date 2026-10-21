@@ -326,6 +326,7 @@ export const useSections = create<SectionsState>((set, get) => ({
     const read = async (): ReturnType<SectionsState['open']> => {
       const asked = reloads.get(id) ?? 0
       const completed = new Map(terminals)
+      const readAt = Date.now()
       let result
 
       try {
@@ -347,7 +348,7 @@ export const useSections = create<SectionsState>((set, get) => ({
         return read()
       }
 
-      const { context, messages, pending_clarify, section } = result
+      const { busy, context, messages, pending_clarify, pending_requests, section } = result
       const live = section.live_session_id
 
       if (live && terminals.get(live) !== completed.get(live)) {
@@ -371,7 +372,8 @@ export const useSections = create<SectionsState>((set, get) => ({
                   .filter(row => row.dream === true)
                   .map(row => String(row.row_id))
               }
-            : undefined
+            : undefined,
+          { busy, pending: pending_requests, readAt }
         )
 
         // Check-ins that arrived while this loaded; the history may hold them already.

@@ -208,6 +208,78 @@ async fn approval_interrupt_hidden_and_frozen_prompt() {
     assert!(!config["prompt"].as_str().unwrap().contains("Changed soul"));
     runtime.shutdown().await;
 }
+/// Every client of the owner learns that a card was answered or that the bot
+/// stopped waiting on it, and a read lists only the cards still waiting.
+#[tokio::test]
+async fn cards_settle_for_every_client_and_reads_list_what_still_waits() {
+    let home = setup();
+    let hub = EventHub::new();
+    let mut events = hub.subscribe();
+    let runtime = Runtime::new(home.path().into(), hub, fake_pi(home.path())).unwrap();
+    let live = open(&runtime, "alice").await["section"]["live_session_id"].clone();
+    let call = async |method: &str, params: Value| {
+        let mut params = params;
+        params["session_id"] = live.clone();
+        runtime
+            .call("alice", method, &params)
+            .await
+            .unwrap()
+            .unwrap()
+    };
+
+    call("prompt.submit", json!({"text":"approval"})).await;
+    next_kind(&mut events, "approval.request").await;
+    let opened = open(&runtime, "alice").await;
+    assert_eq!(opened["busy"], true);
+    assert_eq!(opened["pending_requests"], json!(["approval-1"]));
+    call(
+        "approval.respond",
+        json!({"request_id":"approval-1","choice":"once"}),
+    )
+    .await;
+    let resolved = next_kind(&mut events, "approval.resolved").await;
+    assert_eq!(resolved["session_id"], live);
+    assert_eq!(resolved["payload"]["request_id"], "approval-1");
+    assert_eq!(resolved["payload"]["choice"], "once");
+    assert_eq!(resolved["payload"]["section_id"], "section-a");
+    assert_eq!(
+        next_kind(&mut events, "hexbot.bots.changed").await["payload"]["name"],
+        "owl"
+    );
+    next_kind(&mut events, "message.complete").await;
+
+    // A batch settles once its last question is answered, with every answer.
+    call("prompt.submit", json!({"text":"batch"})).await;
+    next_kind(&mut events, "clarify.request").await;
+    let answer = async |question: &str, answer: &str| {
+        call(
+            "clarify.respond",
+            json!({"request_id":"batch-1","question_id":question,"answer":answer}),
+        )
+        .await
+    };
+    assert_eq!(answer("color", "blue").await["status"], "waiting");
+    assert_eq!(answer("shape", "circle").await["status"], "answered");
+    let resolved = next_kind(&mut events, "clarify.resolved").await;
+    assert_eq!(resolved["payload"]["request_id"], "batch-1");
+    assert_eq!(
+        resolved["payload"]["answers"],
+        json!({"color":"blue","shape":"circle"})
+    );
+    next_kind(&mut events, "message.complete").await;
+
+    // Stop ends the wait without an answer.
+    call("prompt.submit", json!({"text":"approval"})).await;
+    next_kind(&mut events, "approval.request").await;
+    call("session.interrupt", json!({})).await;
+    let expired = next_kind(&mut events, "approval.expire").await;
+    assert_eq!(expired["payload"]["request_id"], "approval-1");
+    next_kind(&mut events, "message.complete").await;
+    let opened = open(&runtime, "alice").await;
+    assert_eq!(opened["busy"], false);
+    assert_eq!(opened["pending_requests"], json!([]));
+    runtime.shutdown().await;
+}
 #[test]
 fn imports_legacy_messages_once_and_preserves_hidden_and_tool_rows() {
     let home = setup();

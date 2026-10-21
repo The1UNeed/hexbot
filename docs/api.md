@@ -56,6 +56,15 @@ data model. The native transport and event projection live in
   background sections cannot wait for approval; actions that need it are
   refused. Opening a section re-emits its pending approval. Questions arrive as `clarify.request` and
   `pending_clarify` on section open; use `clarify.respond` to answer.
+  Every card that stops waiting is settled once, to every client of the
+  owner, by its `request_id`. An answer sends `approval.resolved
+  {request_id, choice}` or `clarify.resolved {request_id, answers}` (answers
+  by question id; a single question uses the request id), after the last
+  question of a batch. Stop, turn end, section close and a process exit send
+  `approval.expire {request_id}` or `clarify.expire {request_id}`. All four
+  carry `bot` and `section_id`, and `hexbot.bots.changed {name}` follows.
+  Clients settle exactly that card: a resolved one shows the answer, an
+  expired approval goes and an expired question no longer takes input.
   In Auto, full-access shell commands, outside-workspace file changes,
   changing connected-tool calls and browser page scripts are reviewed against
   the owner's most recent messages before a card is needed. Review failures,
@@ -118,7 +127,8 @@ data model. The native transport and event projection live in
 
 Events the client renders: `message.start`, `message.delta`, `message.interim`,
 `message.complete` (turn end), `reasoning.delta`, `thinking.delta`, `tool.start`, `tool.complete`,
-`approval.request`, `status.update`, `session.info`, `session.usage {usage,
+`approval.request`, `approval.resolved`, `approval.expire`, `clarify.request`,
+`clarify.resolved`, `clarify.expire`, `status.update`, `session.info`, `session.usage {usage,
 context}` (the section's totals and its context meter, see Sections), `error`.
 Reported reviewer usage contributes to section totals, room turn budgets and
 the bot's daily token budget without adding reviewer text to the conversation.
@@ -464,10 +474,16 @@ returned by `open`.
 - `hexbot.sections.thread {bot, peer}` → `{section: Section | null}`: the
   caller's thread on `bot` whose sender is `peer`. It never creates one.
 - `hexbot.sections.open {id}` → `{section: Section, messages: [Message],
-  context: Context, pending_clarify?}` (resumes the stored session on the
-  bot's profile; idempotent if live). If the bot is waiting on an approval,
+  context: Context, pending_clarify?, busy, pending_requests}` (resumes the
+  stored session on the bot's profile; idempotent if live). If the bot is waiting on an approval,
   the daemon sends its `approval.request` event again so a reloaded client
-  gets the card back; clients dedupe on `request_id`.
+  gets the card back; clients dedupe on `request_id`. `busy` says whether a
+  turn runs at this read and `pending_requests` lists the `request_id` of
+  every approval and question still waiting. A client that missed events,
+  such as while it was offline, drops the unanswered cards it showed before
+  the read that are not listed, and ends a turn it showed when `busy` is
+  false. Answered cards and anything received during the read stay. The web
+  app reads a chat again each time it opens it and after a reconnect.
   A missing catalog section returns code `4204`. Ordinary web bot-chat routes
   resolve the daemon's canonical chat before opening history, displaying it,
   or enabling input, including saved routes and already-loaded live IDs.
