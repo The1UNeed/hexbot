@@ -243,10 +243,13 @@ room `waiting.human` events, and open incidents. `status_detail` is
 `{text, section_id, room_id, session_id, since, action}` where `action` is
 null, `{kind: "fix_connector", connector}`, or `{kind: "retry"}`. A room's
 failed turns count only while the bot is still in that room; adding it back
-restores them. A new turn in a section, such as Retry, resolves that
-section's failed turn when it starts, and every turn start emits
-`hexbot.bots.changed {name}`, so clients show Working instead of Stopped
-while it runs. Failing again records a new incident.
+restores them. When a message you send, such as Retry, starts a turn in a
+private section, it resolves that section's own failed turn: same bot and
+owner, no room. Room, connector and other sections' failures stay, and
+background, room and other hidden runs resolve nothing when they start.
+`hexbot.bots.changed {name}` follows a section's first turn start and any
+start that resolved a failure, so clients show Working instead of Stopped.
+Failing again records a new incident.
 `approval_mode` is `inherit` (the deployment setting), `manual`, `smart`
 (Auto), or `off` (Bypass); `workdir` overrides the deployment workspace for
 that bot's terminal.

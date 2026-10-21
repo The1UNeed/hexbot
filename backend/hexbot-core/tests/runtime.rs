@@ -42,8 +42,8 @@ const emit=v=>process.stdout.write(JSON.stringify(v)+'\n');
 let pending;
 function complete(text){emit({type:'message_update',assistantMessageEvent:{type:'text_delta',delta:text}});emit({type:'message_end',message:{role:'assistant',content:[{type:'text',text}],model:'test-model',provider:'test',usage:{input:11,output:4,cacheRead:2,cacheWrite:0,cost:{total:.01}},stopReason:'stop'}});emit({type:'agent_end'});emit({type:'agent_settled'});}
 rl.on('line',line=>{const c=JSON.parse(line);if(c.type==='extension_ui_response'){complete(c.value==='deny'?'Denied':'Approved');return;}emit({type:'response',id:c.id,command:c.type,success:true,data:c.type==='get_available_models'?{models:[{id:'test-model',provider:'test'},{id:'costly',provider:'test',cost:{input:21,output:101}}]}:{}});
-if(c.type==='prompt'){emit({type:'agent_start'});emit({type:'message_end',message:{role:'user',content:c.message}});if(c.message==='approval'){emit({type:'extension_ui_request',id:'approval-1',method:'select',title:'__HEXBOT_APPROVAL__'+JSON.stringify({tool:'bash',command:'pwd',reason:'Run command'}),options:['once','session','deny']});}else if(c.message==='batch'){emit({type:'extension_ui_request',id:'batch-1',method:'input',title:'__HEXBOT_CLARIFY__'+JSON.stringify({questions:[{qid:'color',question:'Color?',choices:['red','blue']},{qid:'shape',question:'Shape?'}]})});}else if(c.message==='waiting'){}else complete('Reply: '+c.message);}
-if(c.type==='abort'){emit({type:'agent_settled'});}
+if(c.type==='prompt'){emit({type:'agent_start'});emit({type:'message_end',message:{role:'user',content:c.message}});if(c.message==='approval'){emit({type:'extension_ui_request',id:'approval-1',method:'select',title:'__HEXBOT_APPROVAL__'+JSON.stringify({tool:'bash',command:'pwd',reason:'Run command'}),options:['once','session','deny']});}else if(c.message==='batch'){emit({type:'extension_ui_request',id:'batch-1',method:'input',title:'__HEXBOT_CLARIFY__'+JSON.stringify({questions:[{qid:'color',question:'Color?',choices:['red','blue']},{qid:'shape',question:'Shape?'}]})});}else if(c.message==='waiting'){}else if(c.message==='streaming'){pending='streaming';}else if(c.message==='fail'){emit({type:'message_end',message:{role:'assistant',content:[],model:'test-model',provider:'test',stopReason:'error',errorMessage:'Provider down'}});emit({type:'agent_end'});emit({type:'agent_settled'});}else complete('Reply: '+c.message);}
+if(c.type==='abort'){if(pending==='streaming'){pending=undefined;emit({type:'message_end',message:{role:'assistant',content:[],model:'test-model',provider:'test',stopReason:'aborted'}});}emit({type:'agent_settled'});}
 });
 "##).unwrap();
     #[cfg(unix)]
@@ -1695,6 +1695,90 @@ async fn a_retry_clears_stopped_as_soon_as_its_turn_starts() {
         runtime.status_for_bot("alice", "owl").unwrap()["status"],
         "working"
     );
+    runtime.shutdown().await;
+}
+/// Only a message from the owner answers a failed turn when it starts, and only
+/// that section's private failure. A hidden run (background results, rooms,
+/// check-ins) leaves it, and so do room, connector, other-section and other
+/// owners' failures. A retry that fails again records a new one.
+#[tokio::test]
+async fn only_an_owner_message_clears_its_sections_own_failed_turn() {
+    let home = setup();
+    db::open(home.path())
+        .unwrap()
+        .execute_batch(
+            "INSERT INTO bots(name,owner_id) VALUES('fox','bob');
+         INSERT INTO bot_incidents(id,bot,section_id,room_id,kind,connector,text,created_at) VALUES
+         ('private','owl','section-a',NULL,'turn_failed',NULL,'Timed out',1),
+         ('room','owl','section-a','garden','turn_failed',NULL,'Room failed',1),
+         ('connector','owl','section-a',NULL,'connector_error','notion','Token expired',1),
+         ('other-section','owl','section-b',NULL,'turn_failed',NULL,'Other',1),
+         ('other-owner','fox','section-a',NULL,'turn_failed',NULL,'Not yours',1);",
+        )
+        .unwrap();
+    let open_incidents = || {
+        let conn = db::open(home.path()).unwrap();
+        let mut query = conn
+            .prepare("SELECT id FROM bot_incidents WHERE resolved_at IS NULL ORDER BY id")
+            .unwrap();
+        query
+            .query_map([], |row| row.get::<_, String>(0))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect::<Vec<_>>()
+    };
+    let hub = EventHub::new();
+    let mut events = hub.subscribe();
+    let runtime = Runtime::new(home.path().into(), hub, fake_pi(home.path())).unwrap();
+    let live = open(&runtime, "alice").await["section"]["live_session_id"].clone();
+    let call = async |method: &str, params: Value| {
+        let mut params = params;
+        params["session_id"] = live.clone();
+        runtime
+            .call("alice", method, &params)
+            .await
+            .unwrap()
+            .unwrap()
+    };
+    let everything = [
+        "connector",
+        "other-owner",
+        "other-section",
+        "private",
+        "room",
+    ];
+
+    call(
+        "prompt.submit",
+        json!({"text":"streaming","display_kind":"hidden"}),
+    )
+    .await;
+    next_kind(&mut events, "message.start").await;
+    call("session.interrupt", json!({})).await;
+    next_kind(&mut events, "message.complete").await;
+    assert_eq!(open_incidents(), everything);
+
+    call("prompt.submit", json!({"text":"streaming"})).await;
+    next_kind(&mut events, "message.start").await;
+    assert_eq!(
+        open_incidents(),
+        ["connector", "other-owner", "other-section", "room"]
+    );
+    call("session.interrupt", json!({})).await;
+    next_kind(&mut events, "message.complete").await;
+
+    call("prompt.submit", json!({"text":"fail"})).await;
+    next_kind(&mut events, "message.complete").await;
+    let failed = db::open(home.path())
+        .unwrap()
+        .query_row(
+            "SELECT count(*) FROM bot_incidents WHERE bot='owl' AND section_id='section-a'
+             AND kind='turn_failed' AND room_id IS NULL AND resolved_at IS NULL",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap();
+    assert_eq!(failed, 1);
     runtime.shutdown().await;
 }
 
