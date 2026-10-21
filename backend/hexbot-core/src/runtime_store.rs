@@ -1727,13 +1727,17 @@ fn persist_pi_message(
             let intent = explicit
                 .as_str()
                 .ok_or_else(|| crate::Error::new(4202, "invalid input intent binding"))?;
-            let found: (String, String) = conn.query_row(
+            let found: Option<(String, String)> = conn.query_row(
                 "SELECT i.id,i.display_kind FROM native_prompt_intents i JOIN native_sessions s ON s.stored_id=i.session_id WHERE i.id=? AND i.session_id=? AND i.consumed_by IS NULL AND s.owner=? AND s.bot=?",
                 params![intent,stored,owner,bot], |r| Ok((r.get(0)?,r.get(1)?))
-            ).optional()?.ok_or_else(|| crate::Error::new(4202, "input intent does not belong to this conversation"))?;
+            ).optional()?;
             // PR111 also uses an exact intent seed for legacy display policy.
-            // That selection alone is not proof of originating client identity.
+            // That selection alone is not proof of originating client identity,
+            // so an intent that is gone only loses its display kind.
             if let Some(input_id) = seed.and_then(|seed| seed.get("input_id")) {
+                let found = found.as_ref().ok_or_else(|| {
+                    crate::Error::new(4202, "input intent does not belong to this conversation")
+                })?;
                 if input_id.as_str() != Some(found.0.as_str()) {
                     return Err(crate::Error::new(
                         4202,
@@ -1742,7 +1746,7 @@ fn persist_pi_message(
                 }
                 bound = Some(found.0.clone());
             }
-            Some(found)
+            found
         } else {
             conn
             .query_row(

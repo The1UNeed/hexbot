@@ -2,6 +2,11 @@
 #![allow(dead_code)]
 use std::path::{Path, PathBuf};
 
+/// How long a test waits for an event its Node fixture emits. Generous, since
+/// the whole suite runs these fixtures in parallel; a test still waits on the
+/// event itself and never sleeps.
+pub const EVENT_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
+
 pub struct TestHome {
     root: tempfile::TempDir,
     home: PathBuf,

@@ -119,6 +119,23 @@ pub(crate) struct ExtensionWrite {
     deadline: Duration,
 }
 
+/// Input already enqueued under the session's event gate. Retains command
+/// admission until preflight replies, even when the RPC client disconnects.
+pub(crate) struct InputReply {
+    response: oneshot::Receiver<Result<PiResponse, PiError>>,
+    done: watch::Receiver<Option<PiError>>,
+    _admission: OwnedSemaphorePermit,
+}
+impl InputReply {
+    pub(crate) async fn wait(mut self) -> Result<PiResponse, PiError> {
+        tokio::select! {
+            biased;
+            result = &mut self.response => result.map_err(|_| PiError::Exited)?,
+            error = terminal(&mut self.done) => Err(error),
+        }
+    }
+}
+
 impl ExtensionWrite {
     pub(crate) async fn wait(mut self) -> Result<(), PiError> {
         tokio::time::timeout(self.deadline, async {
@@ -195,7 +212,7 @@ struct Inner {
     stop: watch::Sender<Option<PiError>>,
     done: watch::Receiver<Option<PiError>>,
     next_id: AtomicU64,
-    admission: Semaphore,
+    admission: Arc<Semaphore>,
     extension_admission: Arc<Semaphore>,
     max_record_bytes: usize,
 }
@@ -287,7 +304,7 @@ impl PiProcess {
         let (stop, stop_rx) = watch::channel(None);
         let (done_tx, done) = watch::channel(None);
         let max_record_bytes = options.max_record_bytes;
-        let admission = Semaphore::new(options.request_capacity);
+        let admission = Arc::new(Semaphore::new(options.request_capacity));
         tokio::spawn(supervise(
             child, stdin, stdout, request_rx, event_tx, stop_rx, done_tx, options,
         ));
@@ -317,7 +334,7 @@ impl PiProcess {
         mut command: Value,
         deadline: Duration,
     ) -> Result<PiResponse, PiError> {
-        self.request_with_policy(&mut command, Some(deadline), false, None)
+        self.request_with_policy(&mut command, Some(deadline), false)
             .await
     }
 
@@ -327,25 +344,62 @@ impl PiProcess {
         mut command: Value,
         deadline: Duration,
     ) -> Result<PiResponse, PiError> {
-        self.request_with_policy(&mut command, Some(deadline), true, None)
+        self.request_with_policy(&mut command, Some(deadline), true)
             .await
     }
 
     /// Prompt acceptance can include auto-compaction. Terminal events, Stop, or
     /// shutdown bound its lifetime rather than a short acknowledgement timer.
     pub async fn prompt(&self, command: &mut Value) -> Result<PiResponse, PiError> {
-        self.request_with_policy(command, None, false, None).await
+        self.request_with_policy(command, None, false).await
     }
 
-    /// Retain the intent beside the RPC request, never inside its bytes.
-    /// Its preflight disposition joins the ordered event stream before users.
-    pub(crate) async fn input(
-        &self,
-        command: &mut Value,
-        intent: &str,
-    ) -> Result<PiResponse, PiError> {
-        self.request_with_policy(command, None, false, Some(intent))
-            .await
+    /// Commit an input before Stop can claim the event gate. Unlike an async
+    /// send, this cannot enqueue a pre-Stop input behind the abort command.
+    pub(crate) fn try_input(&self, command: &Value, intent: &str) -> Result<InputReply, PiError> {
+        let admission = self
+            .inner
+            .admission
+            .clone()
+            .try_acquire_owned()
+            .map_err(|_| PiError::Capacity)?;
+        let name = command["type"]
+            .as_str()
+            .filter(|name| matches!(*name, "prompt" | "steer"))
+            .ok_or(PiError::InvalidCommand("expected prompt or steer"))?;
+        if command.get("id").is_some() {
+            return Err(PiError::InvalidCommand("id is assigned by the transport"));
+        }
+        let id = format!(
+            "hexbot-{}",
+            self.inner.next_id.fetch_add(1, Ordering::Relaxed)
+        );
+        let mut command = command.clone();
+        command["id"] = Value::String(id.clone());
+        let bytes = self.serialize(&command)?;
+        let stop = self.inner.stop.borrow();
+        if let Some(error) = stop.as_ref().or(self.inner.done.borrow().as_ref()) {
+            return Err(error.clone());
+        }
+        let (reply, response) = oneshot::channel();
+        self.inner
+            .requests
+            .try_send(Request::Command {
+                id,
+                command: name.into(),
+                input: Some(intent.into()),
+                bytes,
+                reply,
+            })
+            .map_err(|error| match error {
+                mpsc::error::TrySendError::Full(_) => PiError::Capacity,
+                mpsc::error::TrySendError::Closed(_) => PiError::Exited,
+            })?;
+        Ok(InputReply {
+            response,
+            done: self.inner.done.clone(),
+            _admission: admission,
+        })
     }
 
     async fn request_with_policy(
@@ -353,7 +407,6 @@ impl PiProcess {
         command: &mut Value,
         deadline: Option<Duration>,
         kill_on_cancel: bool,
-        input: Option<&str>,
     ) -> Result<PiResponse, PiError> {
         let _admission = self
             .inner
@@ -390,7 +443,7 @@ impl PiProcess {
             Request::Command {
                 id,
                 command: name,
-                input: input.map(str::to_owned),
+                input: None,
                 bytes,
                 reply,
             },
@@ -445,6 +498,36 @@ impl PiProcess {
             .clone()
             .try_acquire_owned()
             .map_err(|_| PiError::Capacity)?;
+        self.respond_extension_with(admission, id, fields, deadline)
+    }
+
+    /// Wait for the extension reply slot, so a caller can then commit its
+    /// reply synchronously with `respond_extension_with`.
+    pub(crate) async fn extension_permit(
+        &self,
+        deadline: Duration,
+    ) -> Result<OwnedSemaphorePermit, PiError> {
+        let mut stop = self.inner.stop.subscribe();
+        let mut done = self.inner.done.clone();
+        tokio::time::timeout(deadline, async {
+            tokio::select! {
+                biased;
+                error = terminal(&mut stop) => Err(error),
+                error = terminal(&mut done) => Err(error),
+                permit = self.inner.extension_admission.clone().acquire_owned() => permit.map_err(|_| PiError::Capacity),
+            }
+        })
+        .await
+        .map_err(|_| PiError::Timeout)?
+    }
+
+    pub(crate) fn respond_extension_with(
+        &self,
+        admission: OwnedSemaphorePermit,
+        id: &str,
+        fields: Value,
+        deadline: Duration,
+    ) -> Result<ExtensionWrite, PiError> {
         let bytes = self.extension_record(id, fields)?;
         let stop = self.inner.stop.borrow();
         if let Some(error) = stop.as_ref().or(self.inner.done.borrow().as_ref()) {
@@ -800,7 +883,8 @@ fn record(bytes: &[u8], pending: &mut HashMap<String, Pending>) -> Result<Option
             return Err(PiError::Protocol("failed response missing error"));
         }
         let request = pending.remove(&response.id).unwrap();
-        // Mechanical observer from PR111. No queue or Stop policy here.
+        // Put preflight disposition in the same ordered stream as user events.
+        // Daemon scheduling must not attribute identical text to a later steer.
         let input = request.input.map(|intent| serde_json::json!({"type":"hexbot_input_preflight","intent":intent,"disposition":if response.success { response.data.as_ref().map(|data| &data["disposition"]) } else { None }}));
         let _ = request.reply.send(Ok(response));
         Ok(input)
@@ -857,7 +941,7 @@ mod commit_tests {
                     stop,
                     done,
                     next_id: AtomicU64::new(1),
-                    admission: Semaphore::new(1),
+                    admission: Arc::new(Semaphore::new(1)),
                     extension_admission: Arc::new(Semaphore::new(1)),
                     max_record_bytes: 1024,
                 }),

@@ -560,10 +560,8 @@ impl App {
                 .iter()
                 .map(|s| json!({"id":s["id"],"status":s["status"]}))
                 .collect::<Vec<_>>();
-            return Err(
-                Error::new(4211, format!("bot {bot} has a streaming section"))
-                    .with_data(json!({"sections":sections})),
-            );
+            return Err(Error::new(4211, format!("bot {bot} has unfinished work"))
+                .with_data(json!({"sections":sections})));
         }
         Ok(())
     }

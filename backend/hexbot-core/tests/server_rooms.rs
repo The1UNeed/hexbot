@@ -233,7 +233,7 @@ async fn running_room(app: &Arc<App>, room: &str) -> String {
     )
     .await
     .unwrap();
-    tokio::time::timeout(Duration::from_secs(5), async {
+    tokio::time::timeout(support::EVENT_WAIT, async {
         loop {
             let event = events.recv().await.unwrap();
             if event.visible_to("alice") && event.frame["params"]["type"] == "message.delta" {
@@ -327,7 +327,7 @@ async fn removing_one_bot_leaves_the_other_bots_running() {
     .await
     .unwrap();
     let mut live = std::collections::HashSet::new();
-    tokio::time::timeout(Duration::from_secs(5), async {
+    tokio::time::timeout(support::EVENT_WAIT, async {
         while live.len() < 2 {
             let event = events.recv().await.unwrap();
             if event.frame["params"]["type"] == "message.delta" {
@@ -364,7 +364,7 @@ async fn removing_one_bot_leaves_the_other_bots_running() {
             .unwrap()["status"],
         "working"
     );
-    tokio::time::timeout(Duration::from_secs(5), async {
+    tokio::time::timeout(support::EVENT_WAIT, async {
         loop {
             let event = events.recv().await.unwrap();
             let room_event = &event.frame["params"]["payload"]["event"];
@@ -425,7 +425,7 @@ async fn wait_for(
     events: &mut Events,
     found: impl Fn(&Value) -> bool,
 ) -> hexbot_core::events::Event {
-    tokio::time::timeout(Duration::from_secs(5), async {
+    tokio::time::timeout(support::EVENT_WAIT, async {
         loop {
             let event = events.recv().await.unwrap();
             if found(&event.frame["params"]) {

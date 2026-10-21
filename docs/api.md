@@ -25,6 +25,9 @@ data model. The native transport and event projection live in
 
 - Chat: `prompt.submit {session_id, text, attachments?, input_id?}`,
   `session.interrupt`, `session.steer {session_id, text, input_id?}`.
+  `session.steer` steers a healthy busy run. During Stop or manual compaction
+  it waits before staging input; when idle it starts a fresh run. Close or
+  process exit rejects a waiting steer with a session error.
 - History: `session.history {session_id}`, `session.events.since` on reconnect.
 - Attachments: `image.attach_bytes {session_id, content_base64, filename}`,
   `file.attach {session_id, data_url, name}`, `pdf.attach {session_id, content_base64}`.
@@ -74,6 +77,37 @@ data model. The native transport and event projection live in
   retains explicit GitHub-token authentication; unavailable stored login,
   configured arguments beyond `--acp`/`--stdio`, or incompatible isolation
   flags also produce a one-step card.
+  Stop cancels pending approvals, questions and Auto reviews, including the
+  primary bot's approvals that ask even in Bypass. Approvals and
+  questions arriving while the turn is stopping are cancelled before Pi's abort
+  finishes, without publishing new cards. A client answer that Stop has already
+  claimed returns 4204. An answer committed to Pi before Stop can finish;
+  duplicate answers cannot commit again. Partial clarification answers remain
+  waiting, and a failed final enqueue leaves the last question retryable.
+  Queued input arriving during Stop waits until Stop finishes and the stopped
+  run or command completes, then starts or joins a fresh run. Input already
+  accepted into Pi's queue is recovered at that boundary too, before later
+  input is admitted. Pi's steering-before-follow-up order is preserved, with
+  each input's original display intent, images, file references and Chain.
+  Queued input is held in memory. A model or tool change hands waiting input
+  to the replacement process; it is lost only when the daemon restarts or Pi
+  crashes.
+  Input reaches Pi one at a time: later input waits until Pi acknowledges
+  the earlier prompt.
+  Replay uses acknowledged intents and actual user projections, so identical
+  text remains distinct even when Pi omits it from returned queue metadata.
+  A delayed original submission that starts after Stop finishes runs once as
+  fresh work. Its acknowledgement records the new operation before recovery
+  or later input can proceed. An active Stop keeps cancellation ownership until
+  its cleanup finishes.
+  Recovery keeps the same Pi session, stored history, prompt and tools.
+  Idle Stop needs no run-settlement event. A new owner prompt or `/compact`
+  arriving while idle recovery finishes waits for the admission handoff; it
+  does not return 4002 just because the recovery worker has not run yet. An
+  active Stop, unfinished run, or input reserved ahead of it or while it waits
+  still returns 4002.
+  That run accepts tools, approvals and questions again.
+  If abort fails or times out, Pi exits and waiting deliveries report an error.
   Without OS isolation, shell commands require user approval even with
   `full_access`; review cannot replace
   it. An explicit Allow for now (`session`) can cover unreviewed requests when offered.
@@ -283,10 +317,12 @@ others (`DESIGN.md`, "The primary bot"). There is at most one per owner.
 - `hexbot.bots.clear_status {name}` → `{bot: Bot}`. Closes every open incident
   for the bot.
 - `hexbot.bots.delete {name}` → `{deleted: true}` (deletes the profile
-  directory, all rows, the bot's scheduled jobs, and the memory proposals those jobs left; refuses with 4211 if any of its sections is live
-  and mid-turn — `session.active_list` status `working` or `waiting` —
-  with `data.sections: [{id, status}]`, and with 4214 for the primary bot
-  before any of its sections stop).
+  directory, all rows, the bot's scheduled jobs, and the memory proposals those jobs left;
+  refuses with 4211 while any conversation has active work, Stop cleanup or
+  recovery, or input reserved to run next, with `data.sections: [{id, status}]`,
+  and with 4214 for the primary bot before any of its sections stop).
+  Reserved input and Stop recovery report `working` in this refusal even after
+  the previous run has settled. Deletion can proceed once that work finishes.
 
 ### Sections
 
