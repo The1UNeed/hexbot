@@ -67,6 +67,12 @@ Use **Stop** to interrupt a running answer. The chat stays available, and you ca
 
 A chat can't be deleted on its own, even from an older app; deleting the bot removes its profile, chat, memory, and scheduled jobs. Stop its active work first, then wait for Stop cleanup and any queued results to finish; deletion is refused until they do. Back up the daemon's data directory before removing a bot you may need again. Private conversations between bots can still be deleted. While a bot is being deleted it can't start new work; if deletion fails, it can work again.
 
+An older app or API client can still delete a private conversation between bots and ask to keep its history. That conversation stays closed after a restart, and deleting the bot removes its retained history too. Deletion waits for task list and skill writes already in progress, even when their waiting calls were cancelled. Changing the bot's model leaves retained conversation settings alone. If deletion fails, any conversations deleted earlier stay closed with their saved retention choices. Restarting the daemon or deleting the bot skips history cleanup that already succeeded.
+
+If the bot's deletion cannot be saved, its profile and history stay, including conversations you had already deleted with their history kept. Once the deletion is saved, an interrupted cleanup keeps the name reserved until a restart finishes it.
+
+When updating after an interrupted deletion from an older build, a restart restores the conversations still belonging to a surviving section, owned room mapping or uncommitted bot deletion. Conversations with a recorded committed deletion stay closed. History already erased by the older build cannot be restored.
+
 ## Updating from earlier versions
 
 Earlier versions let you keep many conversations per bot. The first time the updated daemon starts, before any app can connect, it keeps one of each bot's conversations as its chat: the one with the latest real conversation, not a log of dream reports. It deletes the others with their history, after copying the daemon's databases and conversation files to `backups/one-chat-per-bot-<date>-<time>/` in its data directory (`~/.hexbot` by default), so the disk needs about that much free space. The bot's memory and notes stay. It happens once; if the copy or anything else fails, it deletes nothing more. A bot whose conversations can't be read, or whose choice the update can't be sure of, keeps all of them, and the app opens the one most likely to be its chat.

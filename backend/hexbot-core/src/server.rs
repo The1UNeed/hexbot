@@ -235,12 +235,13 @@ impl App {
             None
         };
         let mut affected_rooms = Vec::new();
+        let mut retirements = Vec::new();
         // Deletes are orchestrated here: admission, close, catalog decision.
         if method == "hexbot.sections.delete" {
             let stored = common::required(p, "id")?;
             catalog::check_section_delete(&self.home, owner, stored)?;
             // The catalog removes its row before its history.
-            self.runtime.retire_stored(owner, stored).await?;
+            retirements.push(self.runtime.retire_for_delete(owner, stored).await?);
         }
         if method == "hexbot.bots.delete" {
             let bot = common::required(p, "name")?;
@@ -256,10 +257,17 @@ impl App {
                     .stop_internal(room["id"].as_str().unwrap_or(""))
                     .await?;
             }
-            let sessions = catalog::prepare_bot_delete(&self.home, owner, bot)?;
+            let home = self.home.clone();
+            let caller = owner.to_owned();
+            let name = bot.to_owned();
+            let sessions = tokio::task::spawn_blocking(move || {
+                catalog::retire_bot_delete(&home, &caller, &name)
+            })
+            .await
+            .map_err(|error| Error::new(5200, format!("bot retirement failed: {error}")))??;
             let prepared: Result<()> = async {
                 for session in sessions {
-                    self.runtime.retire_stored(
+                    self.runtime.close_stored(
                         common::required(&session, "owner")?,
                         common::required(&session, "id")?,
                     ).await?;
@@ -317,16 +325,33 @@ impl App {
             )?;
             if deleting {
                 // Close before metadata cascades remove the only stored-id mapping.
-                for session in std::mem::take(&mut removed_sessions) {
-                    self.runtime
-                        .close_stored(owner, common::required(&session, "stored_session_id")?)
-                        .await?;
+                self.rooms.stop_internal(room).await?;
+                let targets = rooms::delete_targets(&self.home, &db::open(&self.home)?, room)?;
+                removed_sessions.clear();
+                let prepared: Result<()> = async {
+                    for target in targets {
+                        retirements.push(
+                            self.runtime
+                                .retire_for_room_delete(
+                                    common::required(&target, "owner")?,
+                                    common::required(&target, "id")?,
+                                    room,
+                                )
+                                .await?,
+                        );
+                    }
+                    Ok(())
+                }
+                .await;
+                if let Err(error) = prepared {
+                    self.runtime.rollback_retirements(retirements).await?;
+                    return Err(error);
                 }
             }
         }
         // A concurrent bot deletion can make a non-last removal become the
-        // last one in the catalog decision. Close its bot before that decision
-        // too; the other room members keep their processes.
+        // last one in the catalog transaction. Close its bot before that
+        // decision too; the other room members keep their processes.
         for session in &removed_sessions {
             self.runtime
                 .close_stored(owner, common::required(session, "stored_session_id")?)
@@ -452,7 +477,20 @@ impl App {
         if result.is_err() && method == "hexbot.bots.delete" {
             catalog::rollback_bot_delete(&self.home, common::required(p, "name")?)?;
         }
+        if result.is_err() && !retirements.is_empty() {
+            self.runtime
+                .rollback_retirements(std::mem::take(&mut retirements))
+                .await?;
+        }
         let mut result = result?;
+        // Membership may change while Pi closes. If another bot now keeps the
+        // room, removal has no deletion decision to commit these retirements.
+        if method == "hexbot.rooms.remove_member"
+            && result["room"]["deleted"] != true
+            && !retirements.is_empty()
+        {
+            self.runtime.rollback_retirements(retirements).await?;
+        }
         // Open Check-ins tabs and the CLI's changes meet: settings and the next run move.
         if method == "hexbot.settings.set"
             && p["patch"]
