@@ -2207,15 +2207,11 @@ fn delete_section(home: &Path, caller: &str, id: &str, purge: bool) -> Result<Op
             if tx.execute("DELETE FROM sections WHERE id=?", [id])? == 0 {
                 return Err(Error::new(4204, "section not found"));
             }
-            // Room and connector failures still have a cause outside this section.
-            tx.execute(
-                "UPDATE bot_incidents SET resolved_at=? WHERE section_id=? AND bot=?
-                 AND kind='turn_failed' AND room_id IS NULL AND resolved_at IS NULL
-                 AND EXISTS(SELECT 1 FROM bots b WHERE b.name=bot_incidents.bot AND b.owner_id=?4)
-                 AND NOT EXISTS(SELECT 1 FROM room_sessions s JOIN rooms r ON r.id=s.room_id
-                     WHERE s.stored_session_id=bot_incidents.section_id
-                     AND s.bot=bot_incidents.bot AND r.owner_id=?4)",
-                params![now(), id, row["bot"].as_str(), caller],
+            crate::settings::resolve_private_turn_failures(
+                &tx,
+                id,
+                required(&row, "bot")?,
+                caller,
             )?;
             crate::dreaming::checkins::forget_section(&tx, id)?;
             tx.execute(

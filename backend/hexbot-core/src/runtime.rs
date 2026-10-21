@@ -83,6 +83,11 @@ struct State {
     /// Something was added to the conversation outside the turn; clients
     /// read it again once the turn ends.
     reread: bool,
+    /// The owner started this run with a message, such as Retry. Its start
+    /// answers the section's failed turn; background and room runs do not.
+    owner_run: bool,
+    /// The owner's clients were told this run started.
+    announced: bool,
 }
 impl State {
     /// Ends the turn, however it ends: settled, compacted, refused or cut
@@ -90,6 +95,8 @@ impl State {
     /// added outside it meanwhile.
     fn end_turn(&mut self) -> bool {
         self.busy = false;
+        self.owner_run = false;
+        self.announced = false;
         std::mem::take(&mut self.reread)
     }
     fn dialogs_cancelled(&self) -> bool {
@@ -1199,6 +1206,8 @@ impl Runtime {
                 tool_context: HashMap::new(),
                 unsaved: VecDeque::new(),
                 reread: false,
+                owner_run: false,
+                announced: false,
             }),
             requests: Mutex::new(tokio::task::JoinSet::new()),
             event_gate: Mutex::new(()),
@@ -1940,6 +1949,7 @@ impl Runtime {
                         state.error = None;
                         state.interrupted = false;
                         state.chain = chain.take().unwrap_or_default();
+                        state.owner_run = !hidden;
                         // A background result that finds the section idle starts a turn
                         // nobody waits on: keep the shared hop count, drop the requesters
                         // so the bot can pass the answer on.
@@ -4345,12 +4355,34 @@ impl Runtime {
                 self.accept_input(s, &event)?;
             }
             "agent_start" => {
+                let (owner_run, announced) = {
+                    let mut state = s.state.lock().unwrap();
+                    (
+                        std::mem::take(&mut state.owner_run),
+                        std::mem::replace(&mut state.announced, true),
+                    )
+                };
+                // A message from the owner answers the last turn's failure;
+                // failing again records it again.
+                let resolved = owner_run
+                    && db::open(&self.home)
+                        .and_then(|conn| {
+                            crate::settings::resolve_private_turn_failures(
+                                &conn, &s.stored, &s.bot, &s.owner,
+                            )
+                        })
+                        .is_ok_and(|count| count > 0);
                 self.emit(s, "message.start", observed.fields.clone());
                 self.emit(
                     s,
                     "status.update",
                     json!({"kind":"working","text":"Working"}),
                 );
+                // Clients read the bot again once per run, or when Stopped went.
+                if resolved || !announced {
+                    self.events
+                        .emit(&s.owner, None, "hexbot.bots.changed", json!({"name":s.bot}));
+                }
             }
             "message_update" => {
                 let update = &event["assistantMessageEvent"];
