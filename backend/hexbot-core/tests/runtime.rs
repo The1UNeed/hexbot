@@ -1652,6 +1652,51 @@ async fn a_clean_turn_clears_the_sections_failed_turn() {
     assert_ne!(bot["bot"]["status"], "stopped");
     runtime.shutdown().await;
 }
+#[tokio::test]
+async fn a_retry_clears_stopped_as_soon_as_its_turn_starts() {
+    let home = setup();
+    hexbot_core::settings::record_incident(
+        home.path(),
+        "owl",
+        "turn_failed",
+        "Provider timed out",
+        &json!({"section_id":"section-a"}),
+    )
+    .unwrap();
+    let hub = EventHub::new();
+    let mut events = hub.subscribe();
+    let runtime = Runtime::new(home.path().into(), hub, fake_pi(home.path())).unwrap();
+    let live = open(&runtime, "alice").await["section"]["live_session_id"].clone();
+    runtime
+        .call(
+            "alice",
+            "prompt.submit",
+            &json!({"session_id":live,"text":"waiting"}),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    // The turn is still running; every client reads the bot again.
+    next_kind(&mut events, "message.start").await;
+    assert_eq!(
+        next_kind(&mut events, "hexbot.bots.changed").await["payload"]["name"],
+        "owl"
+    );
+    let bot = hexbot_core::catalog::call(
+        home.path(),
+        "alice",
+        "hexbot.bots.get",
+        &json!({"name":"owl"}),
+    )
+    .unwrap()
+    .unwrap();
+    assert_ne!(bot["bot"]["status"], "stopped");
+    assert_eq!(
+        runtime.status_for_bot("alice", "owl").unwrap()["status"],
+        "working"
+    );
+    runtime.shutdown().await;
+}
 
 #[tokio::test]
 async fn disabled_messaging_and_scheduling_are_not_advertised() {

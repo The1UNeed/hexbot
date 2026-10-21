@@ -4269,12 +4269,20 @@ impl Runtime {
                 self.accept_input(s, &event)?;
             }
             "agent_start" => {
+                // A new turn answers the last one's failure; failing again records it again.
+                let _ = crate::settings::resolve_incidents(
+                    &self.home,
+                    &json!({"section_id":s.stored,"kind":"turn_failed"}),
+                );
                 self.emit(s, "message.start", observed.fields.clone());
                 self.emit(
                     s,
                     "status.update",
                     json!({"kind":"working","text":"Working"}),
                 );
+                // Every client reads the bot again: Working, no longer Stopped.
+                self.events
+                    .emit(&s.owner, None, "hexbot.bots.changed", json!({"name":s.bot}));
             }
             "message_update" => {
                 let update = &event["assistantMessageEvent"];
