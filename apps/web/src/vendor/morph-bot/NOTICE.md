@@ -14,6 +14,9 @@ Copied as it is, except:
 - `grok-bot-engine.js`: `frame()` returns early while the simulation is
   paused and no step is pending, so a face off screen or held for reduced
   motion does no DOM work. Upstream keeps rendering every frame while paused.
+- `grok-bot-engine.js`: the window pointer listeners are added only when the
+  face follows the pointer (`follow-pointer` at connect). Upstream adds them
+  to every face.
 - `runtime/state-behavior-system.js`: a state's `motionScale` also scales
   its impulses and scale pulses, and at 0 the ambient spins, bounces and
   gestures do not start, so a head held for an act stays put. Upstream

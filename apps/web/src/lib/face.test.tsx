@@ -108,6 +108,20 @@ describe('the live face', () => {
       expect(bot.snapshot()?.state).toBe('happy')
       expect(bot.snapshot()?.paused).toBe(true)
       expect(eye.getAttribute('d')).not.toBe('')
+
+      rerender(<LiveFace color="#ec2f8a" eyes="#ffffff" mood="happy" shape="hexagon" />)
+
+      await act(async () => {
+        await frame()
+        await frame()
+        await frame()
+      })
+
+      // jsdom has no matchMedia when the engine loads, so it eases between
+      // shapes here instead of snapping; the second frame has left the blob.
+      expect(bot.shadowRoot!.querySelector('#head-path')!.getAttribute('d')).not.toBe(
+        FACE_REST.round!.head
+      )
     } finally {
       vi.unstubAllGlobals()
     }

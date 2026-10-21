@@ -12,7 +12,7 @@ import { useSections } from '../../stores/sections'
 import { useTranscript, useTranscripts } from '../../stores/transcripts'
 import { uiActions } from '../../stores/ui'
 
-import { type Ask, askLabel, asks } from './steps'
+import { type Ask, askLabel, asks, liveMood } from './steps'
 
 /** The face of a teammate whose name the call did not carry. */
 const TEAMMATE_FACE: AvatarStyle = { color: 'gray', shape: 'round' }
@@ -30,7 +30,10 @@ const MARKS = /[*_`>#]+/g
  * appears (the target's session just started, so the thread now names it).
  * Nothing is shown when the lookup is refused or fails.
  */
-function useLiveReply(ask: Ask, sender: null | string): { streaming: boolean; text: string } {
+function useLiveReply(
+  ask: Ask,
+  sender: null | string
+): { message?: Message; streaming: boolean; text: string } {
   const wanted = ask.status === 'running' && Boolean(ask.target && sender)
   const [liveId, setLiveId] = useState<null | string>(null)
   const lookups = useRef(0)
@@ -67,13 +70,14 @@ function useLiveReply(ask: Ask, sender: null | string): { streaming: boolean; te
   const transcript = useTranscript(wanted ? liveId : null)
   const streamingId = transcript?.streamingMessageId ?? null
 
-  const text = streamingId
-    ? (transcript?.messages.find(message => message.id === streamingId)?.text ?? '')
-    : ''
+  const message = streamingId
+    ? transcript?.messages.find(item => item.id === streamingId)
+    : undefined
 
   return {
+    message,
     streaming: Boolean(streamingId),
-    text: text.replace(MARKS, '').replace(/\s+/g, ' ').trim()
+    text: (message?.text ?? '').replace(MARKS, '').replace(/\s+/g, ' ').trim()
   }
 }
 
@@ -129,10 +133,8 @@ function AskRow({ ask, sender }: { ask: Ask; sender: null | string }) {
         look="left"
         mood={
           running
-            ? reply.streaming
-              ? reply.text
-                ? 'writing'
-                : 'thinking'
+            ? reply.message
+              ? (liveMood(reply.message) ?? 'thinking')
               : 'listening'
             : undefined
         }

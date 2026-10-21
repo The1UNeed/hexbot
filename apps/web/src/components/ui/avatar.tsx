@@ -101,10 +101,18 @@ export function LiveFace({
     }
   }, [look, still])
 
+  // Two frames, not one: the engine notices a new shape while drawing the
+  // first and settles on it in the second.
   useEffect(() => {
-    if (reduced) {
-      element.current?.step()
+    if (!reduced) {
+      return
     }
+
+    const face = element.current
+    face?.step()
+    const next = requestAnimationFrame(() => face?.step())
+
+    return () => cancelAnimationFrame(next)
   }, [color, eyes, mood, reduced, shape])
 
   return (

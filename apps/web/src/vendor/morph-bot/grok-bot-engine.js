@@ -137,8 +137,12 @@ export class GrokBotEngine {
       this.pointer.clientY = event.clientY;
     };
     this.pointerLeave = () => { this.pointer.active = false; };
-    window.addEventListener("pointermove", this.pointerMove, { passive: true });
-    document.documentElement.addEventListener("mouseleave", this.pointerLeave);
+    // Hexbot: only a face that follows the pointer listens to it, so a long
+    // chat does not add a window listener per face.
+    if (getConfig()?.pointer) {
+      window.addEventListener("pointermove", this.pointerMove, { passive: true });
+      document.documentElement.addEventListener("mouseleave", this.pointerLeave);
+    }
     this.setState("idle", true);
     this.frameId = requestAnimationFrame(this.boundFrame);
   }
