@@ -372,7 +372,10 @@ const SPINNER_LINE = /^[^a-z]*[a-z]+\.\.\.$/i
 export const clarifyWaiting = (clarify: ClarifyRequest) =>
   !clarify.expired && !clarifyAnswered(clarify)
 
-/** Remembers a settled card, the most recent hundred per session. */
+/**
+ * Remembers a settled card, the most recent hundred per session. It only has
+ * to outlast one read or re-send in flight, so a hundred is plenty.
+ */
 function settledCard(transcript: Transcript, requestId: string): Transcript {
   return transcript.settled?.includes(requestId)
     ? transcript

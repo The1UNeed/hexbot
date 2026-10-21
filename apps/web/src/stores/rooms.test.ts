@@ -93,6 +93,56 @@ describe('rooms reducer', () => {
     expect(useTranscripts.getState().bySession['live-1']).toBeDefined()
   })
 
+  it('keeps a card that arrived after the last list when another turn changes during a refresh', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(1_000)
+
+    try {
+      const turn = { bot: 'writer', live_session_id: 'live-1', room_id: 'room-1' }
+
+      const room = (pending: string[]) =>
+        ({
+          id: 'room-1',
+          members: [],
+          name: 'Lab',
+          turns: [{ ...turn, pending_requests: pending }]
+        }) as unknown as Room
+
+      let listed = Promise.resolve({ rooms: [room([])] })
+
+      setActiveRpc({
+        call: vi.fn((method: string) =>
+          method === 'hexbot.rooms.list' ? listed : Promise.resolve({ events: [] })
+        )
+      } as never)
+
+      await useRooms.getState().refresh()
+      vi.setSystemTime(2_000)
+      routeEvent({
+        payload: { command: 'new', request_id: 'new' },
+        session_id: 'live-1',
+        type: 'approval.request'
+      } as GatewayEvent)
+      vi.setSystemTime(3_000)
+      let answer!: (value: { rooms: Room[] }) => void
+      listed = new Promise(resolve => (answer = resolve))
+      const refreshing = useRooms.getState().refresh()
+      // Another bot's turn changes while the list is read: the room keeps its
+      // turns, whose saved list is older than the card.
+      useRooms
+        .getState()
+        .handleTurn({ bot: 'scout', live_session_id: 'live-2', room_id: 'room-1', status: 'running' })
+      answer({ rooms: [room(['new'])] })
+      await refreshing
+
+      expect(
+        useTranscripts.getState().bySession['live-1']?.approvals.map(card => card.requestId)
+      ).toEqual(['new'])
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('drops a card the turn no longer waits on after a reconnect, keeping what still waits', async () => {
     vi.useFakeTimers({ toFake: ['Date'] })
     vi.setSystemTime(1_000)

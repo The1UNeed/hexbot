@@ -683,6 +683,9 @@ impl Runtime {
             .find(|s| s.id == live && s.owner == owner)
             .cloned();
         let Some(s) = s else { return };
+        // Under the event gate, as answers and expiry publish, so a re-sent
+        // card never follows the event that settled it.
+        let _gate = s.event_gate.lock().unwrap();
         let (approval, clarify, _, _) = Self::pending_cards(&s);
         let emit = |kind, payload| self.emit(&s, kind, payload);
         if let Some(payload) = approval {
@@ -2414,13 +2417,19 @@ impl Runtime {
     }
     /// Cancels the session's dialogs; returns the cards that were waiting.
     async fn cancel_dialogs(s: &Live) -> HashMap<String, Value> {
-        let (mut tasks, owned, cards) = {
+        let (mut tasks, owned, mut cards) = {
             let _gate = s.event_gate.lock().unwrap();
             let mut state = s.state.lock().unwrap();
             state.interrupted = true;
-            // The cards that go, taken before clearing wakes a daemon
-            // approval's waiter, which forgets its own request.
-            let cards = state.pending.clone();
+            // Daemon approvals' cards are taken before clearing wakes their
+            // waiters, which forget their own requests. The rest are taken
+            // below, so a turn that ends meanwhile expires each only once.
+            let mut cards = HashMap::new();
+            for id in state.native_approvals.keys().cloned().collect::<Vec<_>>() {
+                if let Some(request) = state.pending.remove(&id) {
+                    cards.insert(id, request);
+                }
+            }
             state.native_approvals.clear();
             state.display.clear();
             let owned = state
@@ -2445,6 +2454,7 @@ impl Runtime {
             // tasks own their cancellation; taking them here would reply twice.
             for id in owned {
                 if let Some(request) = state.pending.remove(&id) {
+                    cards.insert(id.clone(), request.clone());
                     pending.insert(id.clone(), request);
                 }
                 if state.tool_dialogs.remove(&id) {
@@ -2871,6 +2881,9 @@ impl Runtime {
             s.usage_sent.fetch_max(seq, Ordering::AcqRel);
             // What still runs and waits at this read. A client drops the
             // cards it showed before the read that are not listed here.
+            // Under the event gate, as answers and expiry publish, so the
+            // re-sent approval never follows the event that settled it.
+            let _gate = s.event_gate.lock().unwrap();
             let (approval, clarify, pending, busy) = Self::pending_cards(&s);
             result["busy"] = json!(busy);
             result["pending_requests"] = json!(pending);

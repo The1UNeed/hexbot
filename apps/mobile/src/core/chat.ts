@@ -187,6 +187,8 @@ export function reduceChat(state: ChatState, event: GatewayEvent): ChatState {
     }
     case 'clarify.request': {
       if (typeof p.request_id !== 'string') return state
+      // Re-sent or replayed after a read: the card shown already has its answers.
+      if (state.questions.some(q => q.requestId === p.request_id)) return state
       const answers = p.answers as Record<string, string> | undefined
       const questions = (Array.isArray(p.questions) ? p.questions : [p])
         .filter(

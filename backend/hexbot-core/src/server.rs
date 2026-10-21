@@ -503,7 +503,7 @@ impl App {
         // Each running turn lists the cards it still waits on, so a client
         // drops the ones it missed being settled. Opening a room restores them.
         if matches!(method, "hexbot.rooms.get" | "hexbot.rooms.list") {
-            let rooms = match result["rooms"].as_array_mut() {
+            let rooms = match result.get_mut("rooms").and_then(Value::as_array_mut) {
                 Some(rooms) => rooms.iter_mut().collect::<Vec<_>>(),
                 None => vec![&mut result["room"]],
             };

@@ -272,9 +272,21 @@ async fn cards_settle_for_every_client_and_reads_list_what_still_waits() {
     call("prompt.submit", json!({"text":"approval"})).await;
     next_kind(&mut events, "approval.request").await;
     call("session.interrupt", json!({})).await;
-    let expired = next_kind(&mut events, "approval.expire").await;
-    assert_eq!(expired["payload"]["request_id"], "approval-1");
-    next_kind(&mut events, "message.complete").await;
+    // Settled once, even when the turn ends while Stop runs.
+    let expired = tokio::time::timeout(Duration::from_secs(5), async {
+        let mut expired = vec![];
+        loop {
+            let params = events.recv().await.unwrap().frame["params"].clone();
+            match params["type"].as_str() {
+                Some("approval.expire") => expired.push(params["payload"]["request_id"].clone()),
+                Some("message.complete") => break expired,
+                _ => {}
+            }
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(expired, ["approval-1"]);
     let opened = open(&runtime, "alice").await;
     assert_eq!(opened["busy"], false);
     assert_eq!(opened["pending_requests"], json!([]));
