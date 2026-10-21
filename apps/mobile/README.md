@@ -103,11 +103,11 @@ iOS beta builds are distributed through TestFlight.
 
 ```sh
 cd apps/mobile
-eas build --platform ios --profile preview
-eas build --platform android --profile preview
+pnpm exec eas build --platform ios --profile preview
+pnpm exec eas build --platform android --profile preview
 ```
 
-Use a separately installed EAS CLI for those commands. Local native builds use
+Local native builds use
 `pnpm mobile:ios` and `pnpm mobile:android` and need no EAS account.
 
 Check-in notifications use push through the EAS project above
@@ -165,7 +165,10 @@ pnpm mobile:testflight
 
 The command prints the workflow link and waits for the complete result,
 returning a nonzero exit code if the workflow fails, is canceled, or waiting
-is interrupted. The EAS CLI version is pinned in the package scripts.
+is interrupted. The EAS CLI is a locked dev dependency of `apps/mobile`, so
+releases install it from the lockfile and never resolve it on the runner.
+Update it with `pnpm add -D --save-exact eas-cli@VERSION` in `apps/mobile`;
+the workspace's 14-day release-age rule applies then, not during a release.
 `pnpm mobile:testflight:status` reads Apple processing and TestFlight status
 using the assigned API key, so you can verify which build reached Apple.
 An accepted upload can take several minutes to appear in Apple's build list.
@@ -186,7 +189,7 @@ If a submission fails with no logs in its submission record, open its backing
 `EAS Submit` run under Workflows and inspect the failed upload job. Apple
 `401 NOT_AUTHORIZED` means the stored submission API key is invalid; an Apple
 ID session used to configure signing does not authenticate the remote upload.
-Run `EXPO_NO_KEYCHAIN=1 pnpm dlx eas-cli@25.2.0 credentials --platform ios`,
+Run `EXPO_NO_KEYCHAIN=1 pnpm exec eas credentials --platform ios`,
 choose production, then App Store Connect to assign a valid API key. Retry
 the existing build after fixing credentials. Do not revoke a shared key
 without checking its other uses.

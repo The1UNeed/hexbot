@@ -13,9 +13,9 @@
     "lint": "eslint src App.tsx index.ts",
     "check": "pnpm run typecheck && pnpm run test && pnpm run lint",
     "export": "expo export --platform all",
-    "testflight": "pnpm dlx eas-cli@25.2.0 workflow:run .eas/workflows/testflight.yml --non-interactive --wait",
-    "testflight:upload": "pnpm dlx eas-cli@25.2.0 workflow:run .eas/workflows/testflight-upload.yml --non-interactive --wait",
-    "testflight:status": "pnpm dlx eas-cli@25.2.0 submit:status",
+    "testflight": "eas workflow:run .eas/workflows/testflight.yml --non-interactive --wait",
+    "testflight:upload": "eas workflow:run .eas/workflows/testflight-upload.yml --non-interactive --wait",
+    "testflight:status": "eas submit:status",
     "smoke": "node scripts/smoke.mjs"
   },
   "dependencies": {
@@ -38,6 +38,7 @@
     "expo-notifications": "~57.0.0",
     "expo-secure-store": "~57.0.0",
     "expo-status-bar": "~57.0.0",
+    "expo-system-ui": "~57.0.0",
     "expo-web-browser": "~57.0.0",
     "react": "19.2.3",
     "react-dom": "19.2.3",
@@ -45,16 +46,16 @@
     "react-native-safe-area-context": "~5.7.0",
     "react-native-svg": "15.15.4",
     "react-native-web": "~0.21.0",
-    "react-native-webview": "13.16.1",
-    "expo-system-ui": "~57.0.0"
+    "react-native-webview": "13.16.1"
   },
   "devDependencies": {
-    "@types/react": "~19.2.4",
-    "typescript": "6.0.3",
-    "vitest": "4.1.11",
     "@babel/core": "7.29.7",
     "@playwright/test": "1.62.1",
     "@testing-library/react": "16.3.2",
-    "jsdom": "29.1.1"
+    "@types/react": "~19.2.4",
+    "eas-cli": "24.11.0",
+    "jsdom": "29.1.1",
+    "typescript": "6.0.3",
+    "vitest": "4.1.11"
   }
 }
