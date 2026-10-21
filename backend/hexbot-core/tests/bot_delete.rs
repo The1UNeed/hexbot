@@ -182,6 +182,12 @@ async fn bot_delete_old_committed_journal_preserves_a_recreated_bot() {
     let restarted = app(h);
     assert_new_data(h, section);
     assert_eq!(journal(h), old_journal);
+    // The recreated bot's chat still resolves while that journal stays.
+    let chat = restarted
+        .call("alice", "hexbot.sections.create", &json!({"bot":"owl"}))
+        .await
+        .unwrap();
+    assert_eq!(chat["section"]["id"], section);
     restarted.shutdown().await;
     // After the old decision is explicitly resolved, ordinary cleanup is harmless.
     conn.execute("DELETE FROM settings WHERE key=?", [JOURNAL])

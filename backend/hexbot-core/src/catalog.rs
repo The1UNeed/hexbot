@@ -576,7 +576,8 @@ pub fn chat_section(home: &Path, caller: &str, name: &str) -> Result<Value> {
         return Err(Error::new(4205, format!("bot not found: {name}")));
     }
     // Nor while its deletion runs: a Dreams log forked now would outlive it.
-    if bot_delete_journal(&tx, name)?.is_some() {
+    // A committed journal an older build left behind a reused name is not one.
+    if bot_delete_journal(&tx, name)?.is_some_and(|journal| journal["committed"] != true) {
         return Err(Error::new(
             4211,
             "Deletion is in progress. Try again after it finishes.",
