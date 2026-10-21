@@ -436,6 +436,27 @@ pub fn record_incident(
     Ok(row)
 }
 
+/// Resolves a private section's own failed turns: that bot's, checked against
+/// its owner, with no room behind them (an explicit room or an owner's room
+/// transcript). Room and connector failures keep a cause outside the section.
+/// Returns how many it resolved.
+pub(crate) fn resolve_private_turn_failures(
+    conn: &Connection,
+    section: &str,
+    bot: &str,
+    owner: &str,
+) -> Result<usize> {
+    Ok(conn.execute(
+        "UPDATE bot_incidents SET resolved_at=?1 WHERE section_id=?2 AND bot=?3
+         AND kind='turn_failed' AND room_id IS NULL AND resolved_at IS NULL
+         AND EXISTS(SELECT 1 FROM bots b WHERE b.name=bot_incidents.bot AND b.owner_id=?4)
+         AND NOT EXISTS(SELECT 1 FROM room_sessions s JOIN rooms r ON r.id=s.room_id
+             WHERE s.stored_session_id=bot_incidents.section_id
+             AND s.bot=bot_incidents.bot AND r.owner_id=?4)",
+        params![common::now(), section, bot, owner],
+    )?)
+}
+
 pub fn resolve_incidents(home: &Path, filters: &Value) -> Result<Vec<Value>> {
     if !["bot", "connector", "section_id", "incident_id"]
         .iter()

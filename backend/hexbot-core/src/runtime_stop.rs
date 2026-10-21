@@ -248,6 +248,10 @@ impl Runtime {
                     // still considered the previous operation busy at enqueue.
                     state.busy = true;
                     state.input_run = Some(input.intent.clone());
+                    // Pi's word on where a run starts: an idle steer, a queued
+                    // message after a settling run, or a replay after Stop.
+                    state.owner_run = input.display != "hidden";
+                    state.announced = false;
                     let late = state.stop_epoch != input.stop_epoch;
                     if late && (state.stops != 0 || input.replaying) {
                         // An active Stop, or a second Stop of replay, still owns

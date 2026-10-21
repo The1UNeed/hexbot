@@ -42,8 +42,8 @@ const emit=v=>process.stdout.write(JSON.stringify(v)+'\n');
 let pending;
 function complete(text){emit({type:'message_update',assistantMessageEvent:{type:'text_delta',delta:text}});emit({type:'message_end',message:{role:'assistant',content:[{type:'text',text}],model:'test-model',provider:'test',usage:{input:11,output:4,cacheRead:2,cacheWrite:0,cost:{total:.01}},stopReason:'stop'}});emit({type:'agent_end'});emit({type:'agent_settled'});}
 rl.on('line',line=>{const c=JSON.parse(line);if(c.type==='extension_ui_response'){complete(c.value==='deny'?'Denied':'Approved');return;}emit({type:'response',id:c.id,command:c.type,success:true,data:c.type==='get_available_models'?{models:[{id:'test-model',provider:'test'},{id:'costly',provider:'test',cost:{input:21,output:101}}]}:{}});
-if(c.type==='prompt'){emit({type:'agent_start'});emit({type:'message_end',message:{role:'user',content:c.message}});if(c.message==='approval'){emit({type:'extension_ui_request',id:'approval-1',method:'select',title:'__HEXBOT_APPROVAL__'+JSON.stringify({tool:'bash',command:'pwd',reason:'Run command'}),options:['once','session','deny']});}else if(c.message==='batch'){emit({type:'extension_ui_request',id:'batch-1',method:'input',title:'__HEXBOT_CLARIFY__'+JSON.stringify({questions:[{qid:'color',question:'Color?',choices:['red','blue']},{qid:'shape',question:'Shape?'}]})});}else if(c.message==='waiting'){}else complete('Reply: '+c.message);}
-if(c.type==='abort'){emit({type:'agent_settled'});}
+if(c.type==='prompt'){emit({type:'agent_start'});emit({type:'message_end',message:{role:'user',content:c.message}});if(c.message==='approval'){emit({type:'extension_ui_request',id:'approval-1',method:'select',title:'__HEXBOT_APPROVAL__'+JSON.stringify({tool:'bash',command:'pwd',reason:'Run command'}),options:['once','session','deny']});}else if(c.message==='batch'){emit({type:'extension_ui_request',id:'batch-1',method:'input',title:'__HEXBOT_CLARIFY__'+JSON.stringify({questions:[{qid:'color',question:'Color?',choices:['red','blue']},{qid:'shape',question:'Shape?'}]})});}else if(c.message==='waiting'){}else if(c.message==='streaming'){pending='streaming';}else if(c.message==='fail'){emit({type:'message_end',message:{role:'assistant',content:[],model:'test-model',provider:'test',stopReason:'error',errorMessage:'Provider down'}});emit({type:'agent_end'});emit({type:'agent_settled'});}else complete('Reply: '+c.message);}
+if(c.type==='abort'){if(pending==='streaming'){pending=undefined;emit({type:'message_end',message:{role:'assistant',content:[],model:'test-model',provider:'test',stopReason:'aborted'}});}emit({type:'agent_settled'});}
 });
 "##).unwrap();
     #[cfg(unix)]
@@ -1735,6 +1735,322 @@ async fn a_clean_turn_clears_the_sections_failed_turn() {
     .unwrap();
     assert_ne!(bot["bot"]["status"], "stopped");
     runtime.shutdown().await;
+}
+#[tokio::test]
+async fn a_retry_clears_stopped_as_soon_as_its_turn_starts() {
+    let home = setup();
+    hexbot_core::settings::record_incident(
+        home.path(),
+        "owl",
+        "turn_failed",
+        "Provider timed out",
+        &json!({"section_id":"section-a"}),
+    )
+    .unwrap();
+    let hub = EventHub::new();
+    let mut events = hub.subscribe();
+    let runtime = Runtime::new(home.path().into(), hub, fake_pi(home.path())).unwrap();
+    let live = open(&runtime, "alice").await["section"]["live_session_id"].clone();
+    runtime
+        .call(
+            "alice",
+            "prompt.submit",
+            &json!({"session_id":live,"text":"waiting"}),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    // The turn is still running; every client reads the bot again.
+    next_kind(&mut events, "message.start").await;
+    assert_eq!(
+        next_kind(&mut events, "hexbot.bots.changed").await["payload"]["name"],
+        "owl"
+    );
+    let bot = hexbot_core::catalog::call(
+        home.path(),
+        "alice",
+        "hexbot.bots.get",
+        &json!({"name":"owl"}),
+    )
+    .unwrap()
+    .unwrap();
+    assert_ne!(bot["bot"]["status"], "stopped");
+    assert_eq!(
+        runtime.status_for_bot("alice", "owl").unwrap()["status"],
+        "working"
+    );
+    runtime.shutdown().await;
+}
+/// Only a message from the owner answers a failed turn when it starts, and only
+/// that section's private failure. A hidden run (background results, rooms,
+/// check-ins) leaves it, and so do room, connector, other-section and other
+/// owners' failures. A retry that fails again records a new one.
+#[tokio::test]
+async fn only_an_owner_message_clears_its_sections_own_failed_turn() {
+    let home = setup();
+    db::open(home.path())
+        .unwrap()
+        .execute_batch(
+            "INSERT INTO bots(name,owner_id) VALUES('fox','bob');
+         INSERT INTO bot_incidents(id,bot,section_id,room_id,kind,connector,text,created_at) VALUES
+         ('private','owl','section-a',NULL,'turn_failed',NULL,'Timed out',1),
+         ('room','owl','section-a','garden','turn_failed',NULL,'Room failed',1),
+         ('connector','owl','section-a',NULL,'connector_error','notion','Token expired',1),
+         ('other-section','owl','section-b',NULL,'turn_failed',NULL,'Other',1),
+         ('other-owner','fox','section-a',NULL,'turn_failed',NULL,'Not yours',1);",
+        )
+        .unwrap();
+    let open_incidents = || {
+        let conn = db::open(home.path()).unwrap();
+        let mut query = conn
+            .prepare("SELECT id FROM bot_incidents WHERE resolved_at IS NULL ORDER BY id")
+            .unwrap();
+        query
+            .query_map([], |row| row.get::<_, String>(0))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect::<Vec<_>>()
+    };
+    let hub = EventHub::new();
+    let mut events = hub.subscribe();
+    let runtime = Runtime::new(home.path().into(), hub, fake_pi(home.path())).unwrap();
+    let live = open(&runtime, "alice").await["section"]["live_session_id"].clone();
+    let call = async |method: &str, params: Value| {
+        let mut params = params;
+        params["session_id"] = live.clone();
+        runtime
+            .call("alice", method, &params)
+            .await
+            .unwrap()
+            .unwrap()
+    };
+    let everything = [
+        "connector",
+        "other-owner",
+        "other-section",
+        "private",
+        "room",
+    ];
+
+    call(
+        "prompt.submit",
+        json!({"text":"streaming","display_kind":"hidden"}),
+    )
+    .await;
+    next_kind(&mut events, "message.start").await;
+    call("session.interrupt", json!({})).await;
+    next_kind(&mut events, "message.complete").await;
+    assert_eq!(open_incidents(), everything);
+
+    call("prompt.submit", json!({"text":"streaming"})).await;
+    next_kind(&mut events, "message.start").await;
+    assert_eq!(
+        open_incidents(),
+        ["connector", "other-owner", "other-section", "room"]
+    );
+    call("session.interrupt", json!({})).await;
+    next_kind(&mut events, "message.complete").await;
+
+    call("prompt.submit", json!({"text":"fail"})).await;
+    next_kind(&mut events, "message.complete").await;
+    let failed = db::open(home.path())
+        .unwrap()
+        .query_row(
+            "SELECT count(*) FROM bot_incidents WHERE bot='owl' AND section_id='section-a'
+             AND kind='turn_failed' AND room_id IS NULL AND resolved_at IS NULL",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap();
+    assert_eq!(failed, 1);
+    runtime.shutdown().await;
+}
+/// Pi decides when an owner's input starts a run: an idle steer becomes a
+/// prompt, and a queued message can start its own run while an older hidden
+/// run settles. Each such start clears Stopped and tells every client.
+#[tokio::test]
+#[ignore = "requires HEXBOT_TEST_PI to the pinned Pi executable"]
+async fn actual_pi_owner_input_clears_stopped_where_pi_starts_it() {
+    use axum::{Json, Router, extract::State, routing::post};
+    use std::sync::Arc;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    #[derive(Clone)]
+    struct Provider {
+        requests: tokio::sync::mpsc::UnboundedSender<String>,
+        release: Arc<tokio::sync::Semaphore>,
+    }
+    async fn complete(
+        State(provider): State<Provider>,
+        Json(body): Json<Value>,
+    ) -> axum::response::Response {
+        use axum::response::IntoResponse;
+        let text = runtime_store::text(
+            &body["messages"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .rev()
+                .find(|m| m["role"] == "user")
+                .unwrap()["content"],
+        );
+        provider.requests.send(text.clone()).unwrap();
+        // The background run fails, so its end clears nothing either.
+        if text == "background result" {
+            let error = json!({"error":{"message":"Bad request","type":"invalid_request_error"}});
+            return (axum::http::StatusCode::BAD_REQUEST, Json(error)).into_response();
+        }
+        if text == "block" {
+            provider.release.acquire().await.unwrap().forget();
+        }
+        let chunk = json!({"id":"owner","object":"chat.completion.chunk","created":1,"model":"test-model","choices":[{"index":0,"delta":{"role":"assistant","content":"finished"},"finish_reason":null}]});
+        let end = json!({"id":"owner","object":"chat.completion.chunk","created":1,"model":"test-model","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]});
+        (
+            [("content-type", "text/event-stream")],
+            format!("data: {chunk}\n\ndata: {end}\n\ndata: [DONE]\n\n"),
+        )
+            .into_response()
+    }
+    async fn wait<T>(future: impl std::future::Future<Output = T>) -> T {
+        tokio::time::timeout(Duration::from_secs(20), future)
+            .await
+            .unwrap()
+    }
+    let (requests, mut received) = tokio::sync::mpsc::unbounded_channel();
+    let release = Arc::new(tokio::sync::Semaphore::new(0));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let app = Router::new()
+        .route("/v1/chat/completions", post(complete))
+        .with_state(Provider {
+            requests,
+            release: release.clone(),
+        });
+    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let home = setup();
+    fs::write(home.path().join("profiles/owl/config.yaml"), format!("model:\n  provider: lmstudio\n  default: test-model\n  api_key: test-key\n  base_url: http://{address}/v1\ntools:\n  enabled_toolsets: []\n")).unwrap();
+    // Holds the first run's settlement, so the next input starts while it settles.
+    let settled = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let extension = home.path().join("hold-settled.mjs");
+    fs::write(
+        &extension,
+        format!(
+            r#"import net from 'node:net';
+export default function(pi) {{
+  let settlements = 0;
+  pi.on('agent_settled', async () => {{
+    if (++settlements !== 1) return;
+    await new Promise(resolve => {{
+      const socket = net.connect({}, '127.0.0.1', () => socket.write('held\n'));
+      socket.once('data', () => {{socket.end(); resolve();}});
+    }});
+  }});
+}}
+"#,
+            settled.local_addr().unwrap().port()
+        ),
+    )
+    .unwrap();
+    let executable = home.path().join("owner-pi.sh");
+    fs::write(
+        &executable,
+        format!(
+            "#!/bin/sh\nexec '{}' \"$@\" --extension '{}'\n",
+            Path::new(&std::env::var_os("HEXBOT_TEST_PI").unwrap()).display(),
+            extension.display()
+        ),
+    )
+    .unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(&executable, fs::Permissions::from_mode(0o755)).unwrap();
+    let hub = EventHub::new();
+    let mut events = hub.subscribe();
+    let runtime = Runtime::new(home.path().into(), hub, executable).unwrap();
+    let live = open(&runtime, "alice").await["section"]["live_session_id"].clone();
+    let failed = || {
+        hexbot_core::settings::record_incident(
+            home.path(),
+            "owl",
+            "turn_failed",
+            "Provider timed out",
+            &json!({"section_id":"section-a"}),
+        )
+        .unwrap();
+    };
+    let stopped = || {
+        db::open(home.path())
+            .unwrap()
+            .query_row(
+                "SELECT count(*) FROM bot_incidents WHERE section_id='section-a' AND resolved_at IS NULL",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap()
+    };
+    // The run's start is announced after its message.start.
+    async fn started(
+        events: &mut tokio::sync::broadcast::Receiver<hexbot_core::events::Event>,
+    ) -> Value {
+        next_kind(events, "message.start").await;
+        next_kind(events, "hexbot.bots.changed").await
+    }
+
+    // A queued owner message that Pi starts while an older hidden run settles.
+    failed();
+    runtime
+        .call(
+            "alice",
+            "prompt.submit",
+            &json!({"session_id":live,"text":"background result","display_kind":"hidden"}),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(started(&mut events).await["payload"]["name"], "owl");
+    assert_eq!(wait(received.recv()).await.unwrap(), "background result");
+    let (mut hold, _) = wait(settled.accept()).await.unwrap();
+    let mut marker = [0; 5];
+    hold.read_exact(&mut marker).await.unwrap();
+    assert_eq!(stopped(), 1);
+    let queued = {
+        let (runtime, live) = (runtime.clone(), live.clone());
+        tokio::spawn(async move {
+            runtime
+                .call(
+                    "alice",
+                    "prompt.submit",
+                    &json!({"session_id":live,"text":"block","queued":true}),
+                )
+                .await
+                .unwrap()
+                .unwrap()
+        })
+    };
+    hold.write_all(b"release").await.unwrap();
+    assert_eq!(wait(received.recv()).await.unwrap(), "block");
+    assert_eq!(started(&mut events).await["payload"]["name"], "owl");
+    assert_eq!(stopped(), 0);
+    wait(queued).await.unwrap();
+    release.add_permits(1);
+    next_kind(&mut events, "message.complete").await;
+
+    // An owner steer while the bot is idle becomes a prompt of its own.
+    failed();
+    assert_eq!(stopped(), 1);
+    runtime
+        .call(
+            "alice",
+            "session.steer",
+            &json!({"session_id":live,"text":"block"}),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(wait(received.recv()).await.unwrap(), "block");
+    assert_eq!(started(&mut events).await["payload"]["name"], "owl");
+    assert_eq!(stopped(), 0);
+    release.add_permits(1);
+    runtime.shutdown().await;
+    server.abort();
 }
 
 #[tokio::test]
