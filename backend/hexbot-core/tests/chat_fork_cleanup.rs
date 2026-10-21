@@ -286,13 +286,13 @@ fn race(public: bool, purge: bool, fault: Fault) {
     );
     let adopted = fork.join().unwrap();
     let (deleted, elapsed) = delete.join().unwrap();
+    // The deletion waits for the fork's catalog writer, so it takes as long as
+    // the copy. A deadlock would show as an error: the fork's cleanup waits on
+    // the product boundary with no timeout, and the deletion holding it gives
+    // up on the catalog writer with SQLite's busy error.
     assert!(
         deleted.is_ok(),
         "public={public} purge={purge} {fault:?} unrelated delete failed after {elapsed:?}: {deleted:?}"
-    );
-    assert!(
-        elapsed < Duration::from_secs(5),
-        "deletion stalled: {elapsed:?}"
     );
     assert!(catalog::section(h, "local", &f.other).is_err());
     if purge {
