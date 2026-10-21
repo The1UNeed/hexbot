@@ -143,6 +143,51 @@ describe('reading a section again', () => {
     expect(status()).toBe('working')
   })
 
+  it.each([
+    ['clarify.resolved', { answers: { q1: 'red' } }, false],
+    ['clarify.resolved', { answers: { q1: 'red' } }, true],
+    ['clarify.expire', {}, false],
+    ['clarify.expire', {}, true]
+  ] as const)(
+    'a question settled by %s %j during the read stays settled, card shown before=%s',
+    async (type, settle, shown) => {
+      if (shown) {
+        question('q1')
+      }
+
+      vi.setSystemTime(2_000)
+      let release!: () => void
+      held = new Promise(resolve => (release = resolve))
+      // The snapshot was taken before another app answered or the bot stopped waiting.
+      opened = {
+        ...opened,
+        busy: true,
+        pending_clarify: { choices: ['red', 'blue'], question: 'Colour?', request_id: 'q1' },
+        pending_requests: ['q1']
+      }
+      const read = useSections.getState().open('chat')
+      event(type, { ...settle, request_id: 'q1' })
+      release()
+      await read
+      expect(transcript().clarifies.filter(card => !card.expired && !card.answers.q1)).toEqual([])
+      expect(status()).toBeUndefined()
+    }
+  )
+
+  it('still reads again when a turn this read ended completes', async () => {
+    const opens = vi.fn(async () => opened)
+    setActiveRpc({
+      call: (method: string) => (method === 'hexbot.sections.open' ? opens() : {})
+    } as never)
+    event('message.start')
+    vi.setSystemTime(2_000)
+    opened = { ...opened, busy: false, pending_requests: [] }
+    await useSections.getState().open('chat')
+    expect(transcript().turnActive).toBe(false)
+    event('message.complete', { text: 'Done' })
+    await vi.waitFor(() => expect(opens).toHaveBeenCalledTimes(2))
+  })
+
   it('keeps every card from a daemon that does not list what waits', async () => {
     approval('a1')
     question('q1')

@@ -93,6 +93,48 @@ describe('rooms reducer', () => {
     expect(useTranscripts.getState().bySession['live-1']).toBeDefined()
   })
 
+  it('drops a card the turn no longer waits on after a reconnect, keeping what still waits', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(1_000)
+
+    try {
+      const turn = { bot: 'writer', live_session_id: 'live-1', room_id: 'room-1' }
+      useRooms.getState().handleTurn({ ...turn, status: 'running' })
+
+      for (const id of ['answered-meanwhile', 'still-waiting']) {
+        routeEvent({
+          payload: { command: id, request_id: id },
+          session_id: 'live-1',
+          type: 'approval.request'
+        } as GatewayEvent)
+      }
+
+      // Another app answered one while this one was offline; the same turn runs on.
+      vi.setSystemTime(2_000)
+
+      const room = {
+        id: 'room-1',
+        members: [],
+        name: 'Lab',
+        turns: [{ ...turn, pending_requests: ['still-waiting'] }]
+      } as unknown as Room
+
+      setActiveRpc({
+        call: vi.fn((method: string) =>
+          Promise.resolve(method === 'hexbot.rooms.list' ? { rooms: [room] } : { events: [] })
+        )
+      } as never)
+
+      await useRooms.getState().refresh()
+
+      expect(
+        useTranscripts.getState().bySession['live-1']?.approvals.map(card => card.requestId)
+      ).toEqual(['still-waiting'])
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('does not bring back a turn that ended while the refresh was loading', async () => {
     const room = { id: 'room-1', members: [], name: 'Lab' } as unknown as Room
     room.turns = [{ bot: 'writer', live_session_id: 'live-1' }]

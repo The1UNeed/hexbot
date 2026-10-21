@@ -576,6 +576,8 @@ export interface RoomEvent {
 export interface RoomTurn {
   bot: string
   live_session_id: null | string
+  /** Cards the running turn still waits on, at this read; older daemons leave it out. */
+  pending_requests?: string[]
   room_id: string
   status: string
 }

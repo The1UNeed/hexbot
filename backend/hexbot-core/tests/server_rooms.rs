@@ -483,6 +483,23 @@ async fn the_owner_answers_room_approvals_and_questions_and_opening_the_room_res
             (&again[0]["session_id"], &again[0]["payload"]),
             (&card["session_id"], &card["payload"])
         );
+        // The running turn lists what it waits on, so a client that missed
+        // an answer drops that card.
+        let listed = app
+            .call("alice", "hexbot.rooms.list", &json!({}))
+            .await
+            .unwrap();
+        let turn = &listed["rooms"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["id"] == room)
+            .unwrap()["turns"][0];
+        assert_eq!(turn["live_session_id"], live);
+        assert_eq!(
+            turn["pending_requests"],
+            json!([card["payload"]["request_id"]])
+        );
         let answer =
             json!({"session_id":live,"request_id":card["payload"]["request_id"],"choice":choice});
         app.call("alice", "approval.respond", &answer)

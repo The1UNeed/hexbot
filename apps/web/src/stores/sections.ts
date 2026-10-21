@@ -356,6 +356,7 @@ export const useSections = create<SectionsState>((set, get) => ({
       }
 
       if (live) {
+        const wasActive = useTranscripts.getState().bySession[live]?.turnActive
         // Merging local rows into history needs the daemon's input and
         // fragment IDs. Without them the snapshot replaces what is shown.
         const identified = useConnection.getState().daemon?.transcript_identity === true
@@ -383,7 +384,8 @@ export const useSections = create<SectionsState>((set, get) => ({
 
         const transcript = useTranscripts.getState().bySession[live]
 
-        if (transcript?.turnActive) {
+        // A turn this read ended still reads again on its message.complete.
+        if (transcript?.turnActive || wasActive) {
           straddling.set(live, { id, current })
         } else {
           straddling.delete(live)

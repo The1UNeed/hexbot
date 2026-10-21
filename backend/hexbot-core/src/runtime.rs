@@ -637,8 +637,9 @@ impl Runtime {
             json!({"section_id":stored,"room_id":room,"message":message}),
         );
     }
-    /// The approval and the question a session waits on, as their events.
-    fn pending_cards(s: &Live) -> (Option<Value>, Option<Value>) {
+    /// What a session waits on, read at one moment: its approval and its
+    /// question as their events, every waiting request_id, and whether a turn runs.
+    fn pending_cards(s: &Live) -> (Option<Value>, Option<Value>, Vec<String>, bool) {
         let state = s.state.lock().unwrap();
         let clarify = state
             .pending
@@ -658,7 +659,19 @@ impl Runtime {
             .values()
             .find(|v| v["kind"] == "approval" && v["approval_payload"].is_object())
             .map(|v| v["approval_payload"].clone());
-        (approval, clarify)
+        let ids = state.pending.keys().cloned().collect();
+        (approval, clarify, ids, state.busy)
+    }
+    /// The request_ids an owner's live session still waits on.
+    pub fn pending_requests(&self, owner: &str, live: &str) -> Option<Vec<String>> {
+        let s = self
+            .sessions
+            .lock()
+            .unwrap()
+            .values()
+            .find(|s| s.id == live && s.owner == owner)
+            .cloned()?;
+        Some(Self::pending_cards(&s).2)
     }
     /// Replay open approval and question cards to the owner.
     pub fn replay_pending(&self, owner: &str, live: &str) {
@@ -670,7 +683,7 @@ impl Runtime {
             .find(|s| s.id == live && s.owner == owner)
             .cloned();
         let Some(s) = s else { return };
-        let (approval, clarify) = Self::pending_cards(&s);
+        let (approval, clarify, _, _) = Self::pending_cards(&s);
         let emit = |kind, payload| self.emit(&s, kind, payload);
         if let Some(payload) = approval {
             emit("approval.request", payload);
@@ -2401,10 +2414,13 @@ impl Runtime {
     }
     /// Cancels the session's dialogs; returns the cards that were waiting.
     async fn cancel_dialogs(s: &Live) -> HashMap<String, Value> {
-        let (mut tasks, owned) = {
+        let (mut tasks, owned, cards) = {
             let _gate = s.event_gate.lock().unwrap();
             let mut state = s.state.lock().unwrap();
             state.interrupted = true;
+            // The cards that go, taken before clearing wakes a daemon
+            // approval's waiter, which forgets its own request.
+            let cards = state.pending.clone();
             state.native_approvals.clear();
             state.display.clear();
             let owned = state
@@ -2414,18 +2430,21 @@ impl Runtime {
                 .cloned()
                 .collect::<std::collections::HashSet<_>>();
             drop(state);
-            (std::mem::take(&mut *s.requests.lock().unwrap()), owned)
+            (
+                std::mem::take(&mut *s.requests.lock().unwrap()),
+                owned,
+                cards,
+            )
         };
         tasks.abort_all();
         while tasks.join_next().await.is_some() {}
-        let (cards, pending) = {
+        let pending = {
             let mut state = s.state.lock().unwrap();
-            let (mut cards, mut pending) = (HashMap::new(), HashMap::new());
+            let mut pending = HashMap::new();
             // Later arrivals belong to the replacement JoinSet. Its response
             // tasks own their cancellation; taking them here would reply twice.
             for id in owned {
                 if let Some(request) = state.pending.remove(&id) {
-                    cards.insert(id.clone(), request.clone());
                     pending.insert(id.clone(), request);
                 }
                 if state.tool_dialogs.remove(&id) {
@@ -2434,7 +2453,7 @@ impl Runtime {
                         .or_insert_with(|| json!({"method":"input"}));
                 }
             }
-            (cards, pending)
+            pending
         };
         for (id, request) in pending {
             if request["method"] == "native" {
@@ -2850,14 +2869,11 @@ impl Runtime {
             let seq = self.next_usage_seq();
             result["context"] = Self::context_usage(&s, false, seq).await;
             s.usage_sent.fetch_max(seq, Ordering::AcqRel);
-            let (approval, clarify) = Self::pending_cards(&s);
-            {
-                // What still runs and waits at this read. A client drops the
-                // cards it showed before the read that are not listed here.
-                let state = s.state.lock().unwrap();
-                result["busy"] = json!(state.busy);
-                result["pending_requests"] = json!(state.pending.keys().collect::<Vec<_>>());
-            }
+            // What still runs and waits at this read. A client drops the
+            // cards it showed before the read that are not listed here.
+            let (approval, clarify, pending, busy) = Self::pending_cards(&s);
+            result["busy"] = json!(busy);
+            result["pending_requests"] = json!(pending);
             if let Some(payload) = clarify {
                 result["pending_clarify"] = payload;
             }
@@ -6320,6 +6336,55 @@ rl.on('line',line=>{{const c=JSON.parse(line);emit({{type:'response',id:c.id,com
                 .await
                 .unwrap()
         );
+        runtime.shutdown().await;
+    }
+    /// Stop wakes a daemon approval's waiter, which forgets its request while
+    /// Stop still waits on other dialog tasks. Clients are told it expired.
+    #[tokio::test]
+    async fn stop_expires_a_waiting_daemon_approval() {
+        let (home, runtime, hub) = setup();
+        let s = runtime.open_session("alice", "owl", "first").await.unwrap();
+        db::open(home.path())
+            .unwrap()
+            .execute_batch("UPDATE bots SET approval_mode='smart'")
+            .unwrap();
+        let mut events = hub.subscribe();
+        let next = async |events: &mut tokio::sync::broadcast::Receiver<crate::events::Event>,
+                          kind: &str| {
+            tokio::time::timeout(Duration::from_secs(5), async {
+                loop {
+                    let event = events.recv().await.unwrap();
+                    if event.frame["params"]["type"] == kind {
+                        break event.frame["params"]["payload"].clone();
+                    }
+                }
+            })
+            .await
+            .unwrap()
+        };
+        let worker = {
+            let (runtime, s) = (runtime.clone(), s.clone());
+            tokio::spawn(async move {
+                runtime
+                    .native_approval(&s, json!({"tool":"execute_code"}))
+                    .await
+                    .unwrap()
+            })
+        };
+        let request = next(&mut events, "approval.request").await;
+        // A dialog task Stop must wait for: the woken waiter runs meanwhile.
+        s.requests
+            .lock()
+            .unwrap()
+            .spawn(std::future::pending::<()>());
+        runtime
+            .call("alice", "session.interrupt", &json!({"session_id":s.id}))
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(!worker.await.unwrap());
+        let expired = next(&mut events, "approval.expire").await;
+        assert_eq!(expired["request_id"], request["request_id"]);
         runtime.shutdown().await;
     }
     #[tokio::test]

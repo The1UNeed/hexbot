@@ -500,11 +500,23 @@ impl App {
             self.events
                 .emit(owner, None, "hexbot.checkins.changed", json!({}));
         }
-        // Opening a room restores its open approval and question cards.
-        if method == "hexbot.rooms.get" {
-            for turn in result["room"]["turns"].as_array().into_iter().flatten() {
-                if let Some(live) = turn["live_session_id"].as_str() {
-                    self.runtime.replay_pending(owner, live);
+        // Each running turn lists the cards it still waits on, so a client
+        // drops the ones it missed being settled. Opening a room restores them.
+        if matches!(method, "hexbot.rooms.get" | "hexbot.rooms.list") {
+            let rooms = match result["rooms"].as_array_mut() {
+                Some(rooms) => rooms.iter_mut().collect::<Vec<_>>(),
+                None => vec![&mut result["room"]],
+            };
+            for room in rooms {
+                for turn in room["turns"].as_array_mut().into_iter().flatten() {
+                    if let Some(live) = turn["live_session_id"].as_str().map(str::to_owned) {
+                        if method == "hexbot.rooms.get" {
+                            self.runtime.replay_pending(owner, &live);
+                        }
+                        if let Some(pending) = self.runtime.pending_requests(owner, &live) {
+                            turn["pending_requests"] = json!(pending);
+                        }
+                    }
                 }
             }
         }

@@ -63,8 +63,9 @@ data model. The native transport and event projection live in
   question of a batch. Stop, turn end, section close and a process exit send
   `approval.expire {request_id}` or `clarify.expire {request_id}`. All four
   carry `bot` and `section_id`, and `hexbot.bots.changed {name}` follows.
-  Clients settle exactly that card: a resolved one shows the answer, an
-  expired approval goes and an expired question no longer takes input.
+  Clients settle exactly that card, so it no longer takes an answer in any
+  app. A request a client saw settled never comes back from an older read
+  or replay.
   In Auto, full-access shell commands, outside-workspace file changes,
   changing connected-tool calls and browser page scripts are reviewed against
   the owner's most recent messages before a card is needed. Review failures,
@@ -489,7 +490,8 @@ returned by `open`.
   such as while it was offline, drops the unanswered cards it showed before
   the read that are not listed, and ends a turn it showed when `busy` is
   false. Answered cards and anything received during the read stay. The web
-  app reads a chat again each time it opens it and after a reconnect.
+  app reads a chat again each time it opens it and after a reconnect. The
+  three fields come from one moment.
   A missing catalog section returns code `4204`. Ordinary web bot-chat routes
   resolve the daemon's canonical chat before opening history, displaying it,
   or enabling input, including saved routes and already-loaded live IDs.
@@ -727,7 +729,10 @@ for the corresponding assistant row through `session.history` after
 The live session's events (`message.delta`, `tool.*`, `approval.*`,
 `clarify.*` and the rest) reach the owner, who answers approvals and
 questions; `session.events.since` replays a room session. Opening a room with
-`hexbot.rooms.get` re-sends pending cards for each running turn. Tool labels in
+`hexbot.rooms.get` re-sends pending cards for each running turn. In
+`hexbot.rooms.get` and `hexbot.rooms.list`, each running turn with a live
+session carries `pending_requests`, the cards it still waits on; a client
+that missed events drops the other cards it showed before that read. Tool labels in
 rooms and sections stay in the present tense until the tool completes.
 
 ### Bot activity

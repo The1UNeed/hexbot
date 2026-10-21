@@ -94,7 +94,7 @@ When a Manual or unreviewed card offers Allow for now, it stops asking for that 
 
 Delegates and background jobs cannot wait for approval; actions that need it are refused.
 
-Answer a card or a bot's question in any app connected to the daemon: the desktop app, a browser, or your phone. The other apps show your answer, and the bot shows Working again. When the bot stops waiting, for example after Stop, the card goes from every app. An app that was offline catches up when it reconnects or opens the chat.
+Answer a card or a bot's question in any app connected to the daemon: the desktop app, a browser, or your phone. The card settles in every app, and the bot shows Working again. When the bot stops waiting, for example after Stop, the card settles everywhere too. This works in rooms as well. An app that was offline catches up when it reconnects or opens the chat.
 
 Read the command and the reason before approving. A familiar tool can still do damage with broad arguments.
 
