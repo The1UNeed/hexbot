@@ -1960,7 +1960,11 @@ impl Runtime {
             .ok_or_else(|| Error::new(5201, "daemon is stopping"))?;
         let s = s.clone();
         let echo = input_id.is_some();
+        // Serial admission lasts until Pi acknowledges this input, even when
+        // the caller is cancelled first.
+        let admitted = (_input, _reservation);
         tokio::spawn(async move {
+            let _admitted = admitted;
             let committed = reply.is_ok();
             let response = match reply {
                 Ok(reply) => Self::input_preflight(&s, &intent, reply)
