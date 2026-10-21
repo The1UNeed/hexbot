@@ -112,6 +112,7 @@ export const useRooms = create<RoomsState>((set, get) => ({
   async refresh() {
     set({ error: null, loading: true })
     const changes = new Map(turnChanges)
+    const readAt = Date.now()
 
     try {
       const { rooms } = await roomsList(true)
@@ -124,8 +125,10 @@ export const useRooms = create<RoomsState>((set, get) => ({
       const current = get().liveTurnsByRoom
 
       // A daemon without `turns` cannot say, so those rooms keep what they had.
+      const read = runningTurns(active)
+
       const liveTurnsByRoom = Object.fromEntries(
-        Object.entries(runningTurns(active)).map(([id, turns]) => [
+        Object.entries(read).map(([id, turns]) => [
           id,
           turnChanges.get(id) === changes.get(id) && rooms?.find(room => room.id === id)?.turns
             ? turns
@@ -145,10 +148,20 @@ export const useRooms = create<RoomsState>((set, get) => ({
         }
       }
 
-      for (const turns of Object.values(liveTurnsByRoom)) {
+      for (const [id, turns] of Object.entries(liveTurnsByRoom)) {
         for (const turn of Object.values(turns)) {
+          // Cards the turn no longer waits on were settled while this was away.
+          // Only this read's list says so; a kept turn's older list does not.
+          const pending = turns === read[id] ? turn.pending_requests : undefined
+
           if (turn.live_session_id) {
-            transcripts.open(turn.live_session_id, `room:${turn.room_id}`, [])
+            transcripts.open(
+              turn.live_session_id,
+              `room:${turn.room_id}`,
+              [],
+              undefined,
+              pending ? { pending, readAt } : undefined
+            )
           }
         }
       }

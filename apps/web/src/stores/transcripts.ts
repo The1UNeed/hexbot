@@ -89,6 +89,11 @@ export interface Transcript {
   /** The section this live session belongs to, when known. */
   sectionId?: string
   sessionId: string
+  /**
+   * Cards this session saw answered or stopped. A read or replay that still
+   * names one is older than that event and cannot bring the card back.
+   */
+  settled?: string[]
   status: null | StatusLine
   /** Id of the assistant message currently receiving deltas. */
   streamingMessageId: null | string
@@ -147,6 +152,16 @@ export interface ApprovalRequestPayload {
   tool?: string
 }
 
+/**
+ * What the daemon said at a section read (`hexbot.sections.open`): whether a
+ * turn runs and which cards still wait. `readAt` is when the read began.
+ */
+export interface OpenSnapshot {
+  busy?: boolean
+  pending?: string[]
+  readAt: number
+}
+
 export interface TranscriptsState {
   eventIdentity: (sessionId: string, identity: { turnId?: string; messageId?: string }) => void
   setInputId: (sessionId: string, messageId: string, inputId: string) => void
@@ -156,7 +171,11 @@ export interface TranscriptsState {
     payload: ApprovalRequestPayload,
     options?: { notify?: boolean }
   ) => void
+  /** The bot stopped waiting on an approval: an unanswered card goes. */
+  approvalExpire: (sessionId: string, requestId: string) => void
   clarifyExpire: (sessionId: string, requestId: string) => void
+  /** A question was answered, here or on another app. */
+  clarifyResolved: (sessionId: string, requestId: string, answers: Record<string, string>) => void
   clarifyRequest: (
     sessionId: string,
     payload: ClarifyRequestPayload & { answers?: Record<string, string> },
@@ -199,7 +218,8 @@ export interface TranscriptsState {
     sessionId: string,
     sectionId: string,
     messages: Message[],
-    hydration?: { reports: string[] }
+    hydration?: { reports: string[] },
+    snapshot?: OpenSnapshot
   ) => void
   reasoningDelta: (sessionId: string, text: string) => void
   resolveApproval: (sessionId: string, requestId: string, choice: ApprovalChoice) => void
@@ -351,6 +371,54 @@ const SPINNER_LINE = /^[^a-z]*[a-z]+\.\.\.$/i
 /** A question the bot still waits on: not every answer is in and it has not expired. */
 export const clarifyWaiting = (clarify: ClarifyRequest) =>
   !clarify.expired && !clarifyAnswered(clarify)
+
+/**
+ * Remembers a settled card, the most recent hundred per session. It only has
+ * to outlast one read or re-send in flight, so a hundred is plenty.
+ */
+function settledCard(transcript: Transcript, requestId: string): Transcript {
+  return transcript.settled?.includes(requestId)
+    ? transcript
+    : { ...transcript, settled: [...(transcript.settled ?? []), requestId].slice(-100) }
+}
+
+/**
+ * A read settles what was shown before it began and missed its ending, such
+ * as an answer from another app during a disconnect: a card the daemon no
+ * longer waits on goes, and a turn it says is over ends. Answered cards stay,
+ * and so does anything that arrived during the read, which is newer.
+ */
+function reconcile(transcript: Transcript, { busy, pending, readAt }: OpenSnapshot): Transcript {
+  const stale = (card: { receivedAt: number; requestId: string }) =>
+    pending !== undefined && card.receivedAt < readAt && !pending.includes(card.requestId)
+
+  const approvals = transcript.approvals.filter(card => card.decision || !stale(card))
+  const clarifies = transcript.clarifies.filter(card => !clarifyWaiting(card) || !stale(card))
+
+  const stream = transcript.messages.find(message => message.id === transcript.streamingMessageId)
+
+  const newer =
+    (stream?.createdAt ?? 0) >= readAt ||
+    [...approvals, ...clarifies].some(card => card.receivedAt >= readAt)
+
+  if (busy !== false || newer || !(transcript.turnActive || stream)) {
+    return { ...transcript, approvals, clarifies }
+  }
+
+  return {
+    ...transcript,
+    approvals,
+    checking: undefined,
+    clarifies,
+    messages: transcript.messages.map(message =>
+      message === stream ? { ...message, checking: undefined, streaming: false } : message
+    ),
+    status: null,
+    streamingMessageId: null,
+    turnActive: false,
+    turnPrefix: undefined
+  }
+}
 
 /**
  * Ends the message the bot is writing: its words become a finished part, and
@@ -531,9 +599,10 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
     },
     bySession: {},
 
-    open(sessionId, sectionId, messages, hydration) {
+    open(sessionId, sectionId, messages, hydration, snapshot) {
       set(state => {
-        const existing = state.bySession[sessionId]
+        const shown = state.bySession[sessionId]
+        const existing = shown && snapshot ? reconcile(shown, snapshot) : shown
 
         if (existing && hydration) {
           const restored = hydrateHistory(existing, messages, new Set(hydration.reports))
@@ -570,6 +639,7 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
               ...emptyTranscript(sessionId, sectionId),
               approvals: existing?.approvals ?? [],
               clarifies: (existing?.clarifies ?? []).filter(clarifyWaiting),
+              settled: existing?.settled,
               context: existing?.context ?? null,
               messages,
               status: existing?.status ?? null
@@ -980,7 +1050,10 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
       let added = false
 
       update(sessionId, transcript => {
-        if (transcript.approvals.some(item => item.requestId === requestId)) {
+        if (
+          transcript.approvals.some(item => item.requestId === requestId) ||
+          transcript.settled?.includes(requestId)
+        ) {
           return transcript
         }
 
@@ -1012,7 +1085,10 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
       let added = false
 
       update(sessionId, transcript => {
-        if (transcript.clarifies.some(item => item.requestId === requestId)) {
+        if (
+          transcript.clarifies.some(item => item.requestId === requestId) ||
+          transcript.settled?.includes(requestId)
+        ) {
           return transcript
         }
 
@@ -1055,16 +1131,36 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
 
     clarifyExpire(sessionId, requestId) {
       update(sessionId, transcript => ({
-        ...transcript,
+        ...settledCard(transcript, requestId),
         clarifies: transcript.clarifies.map(item =>
           item.requestId === requestId ? { ...item, expired: true } : item
         )
       }))
     },
 
+    clarifyResolved(sessionId, requestId, answers) {
+      update(sessionId, transcript => ({
+        ...settledCard(transcript, requestId),
+        clarifies: transcript.clarifies.map(item =>
+          item.requestId === requestId
+            ? { ...item, answers: { ...item.answers, ...answers } }
+            : item
+        )
+      }))
+    },
+
+    approvalExpire(sessionId, requestId) {
+      update(sessionId, transcript => ({
+        ...settledCard(transcript, requestId),
+        approvals: transcript.approvals.filter(
+          approval => approval.requestId !== requestId || approval.decision
+        )
+      }))
+    },
+
     resolveApproval(sessionId, requestId, choice) {
       update(sessionId, transcript => ({
-        ...transcript,
+        ...settledCard(transcript, requestId),
         approvals: transcript.approvals.map(approval =>
           approval.requestId === requestId ? { ...approval, decision: choice } : approval
         )

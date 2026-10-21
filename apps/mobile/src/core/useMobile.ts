@@ -29,6 +29,7 @@ import {
 } from './routes'
 import type {
   Bot,
+  ChatState,
   Section,
   Room,
   RoomEvent,
@@ -254,12 +255,20 @@ export function useMobile() {
           session_id: restoredLiveId
         })
         if (sequence !== openSequence.current) return
+        let snapshot: ChatState = {
+          ...emptyChat(),
+          busy: status.status === 'working',
+          messages: historyMessages(result.messages)
+        }
+        // The snapshot goes first: an answer or Stop that arrived while it loaded is newer.
+        if (result.pending_clarify)
+          snapshot = reduceChat(snapshot, {
+            type: 'clarify.request',
+            session_id: restoredLiveId,
+            payload: result.pending_clarify
+          })
         const replay = replayChat(
-          {
-            ...emptyChat(),
-            busy: status.status === 'working',
-            messages: historyMessages(result.messages)
-          },
+          snapshot,
           (loadingEvents.current ?? []).filter(event => event.session_id === restoredLiveId)
         )
         failure = replay.state.error ?? failure
@@ -278,12 +287,6 @@ export function useMobile() {
           )
             restored = checkinMessage(restored, p.row_id, p.text)
         }
-        if (result.pending_clarify)
-          restored = reduceChat(restored, {
-            type: 'clarify.request',
-            session_id: restoredLiveId,
-            payload: result.pending_clarify
-          })
         loadingEvents.current = null
         liveId.current = restoredLiveId
         setChat(restored)

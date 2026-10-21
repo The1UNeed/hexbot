@@ -10,7 +10,10 @@
  *   thinking.delta         replace the daemon's status line (a wait notice)
  *   tool.start/complete    add or resolve a tool call in the current message
  *   approval.request       push an approval card (session scoped) and notify
+ *   approval.resolved      the card was answered, here or on another app: its choice shows
+ *   approval.expire        the bot stopped waiting: an unanswered card goes
  *   clarify.request/expire push a question card the bot is waiting on; expire freezes it
+ *   clarify.resolved       the question was answered, here or on another app
  *   status.update          header status line; `checking` marks the live message
  *   session.info           section model and provider chips
  *   session.usage          usage badge
@@ -41,6 +44,7 @@ import { useUi } from '../stores/ui'
 import { getBridge } from './bridge'
 import type { HexbotRpcClient } from './rpc'
 import type {
+  ApprovalChoice,
   ClarifyRequestPayload,
   ContextUsage,
   RoomEvent,
@@ -354,6 +358,31 @@ export function routeEvent(event: GatewayEvent, deps: EventRouterDeps = {}): voi
     case 'clarify.expire':
       if (typeof payload.request_id === 'string') {
         transcripts.clarifyExpire(sessionId, payload.request_id)
+      }
+
+      return
+
+    case 'clarify.resolved':
+      if (typeof payload.request_id === 'string' && payload.answers) {
+        transcripts.clarifyResolved(
+          sessionId,
+          payload.request_id,
+          payload.answers as Record<string, string>
+        )
+      }
+
+      return
+
+    case 'approval.resolved':
+      if (typeof payload.request_id === 'string' && typeof payload.choice === 'string') {
+        transcripts.resolveApproval(sessionId, payload.request_id, payload.choice as ApprovalChoice)
+      }
+
+      return
+
+    case 'approval.expire':
+      if (typeof payload.request_id === 'string') {
+        transcripts.approvalExpire(sessionId, payload.request_id)
       }
 
       return

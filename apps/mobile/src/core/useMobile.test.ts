@@ -599,3 +599,33 @@ it('an obsolete legacy sheet answer cannot change a later room after reconnect',
   expect(hook.result.current.route?.kind).toBe('room')
   expect(state.request.mock.calls.some(([method]) => method === 'hexbot.sections.unarchive' || method === 'hexbot.sections.open' || method === 'hexbot.sections.create')).toBe(false)
 })
+
+it('a question replayed while the chat loads keeps the answers the read has', async () => {
+  const hook = await connected()
+  const held = pause('hexbot.sections.open')
+  let opening!: Promise<unknown>
+  await act(async () => { opening = hook.result.current.openSection(bot); await held.called })
+  const questions = [{ qid: 'q1', question: 'Colour?' }, { qid: 'q2', question: 'Shape?' }]
+  await act(async () => {
+    // The original card, then a read taken after the first answer.
+    state.event({ type: 'clarify.request', session_id: 'live-owl-chat', payload: { request_id: 'batch', questions } })
+    held.resolve({ section: section('owl-chat'), messages: [], pending_clarify: { request_id: 'batch', questions, answers: { q1: 'red' } } })
+    await opening
+  })
+  expect(hook.result.current.chat.questions.map(q => q.questions.map(question => question.id))).toEqual([['q2']])
+})
+
+it.each(['clarify.resolved', 'clarify.expire'])('a question settled by %s while the chat loads stays settled', async type => {
+  const hook = await connected()
+  const held = pause('hexbot.sections.open')
+  let opening!: Promise<unknown>
+  await act(async () => { opening = hook.result.current.openSection(bot); await held.called })
+  // The snapshot still names the question; another app answered it, or the bot stopped waiting, meanwhile.
+  await act(async () => {
+    state.event({ type, session_id: 'live-owl-chat', payload: { request_id: 'q1', answers: { q1: 'red' } } })
+    held.resolve({ section: section('owl-chat'), messages: [], pending_clarify: { request_id: 'q1', question: 'Colour?' } })
+    await opening
+  })
+  expect(hook.result.current.route).toMatchObject({ section: { id: 'owl-chat' } })
+  expect(hook.result.current.chat.questions).toEqual([])
+})

@@ -145,6 +145,27 @@ describe('room sessions', () => {
     expect(restoreRoom({ ...room, turns: [] }, []).approvals).toEqual([])
   })
 
+  it('drops a card answered on another app from its own turn only', () => {
+    let state = restoreRoom(
+      {
+        ...room,
+        turns: [
+          { bot: 'alpha', live_session_id: 'a' },
+          { bot: 'beta', live_session_id: 'b' }
+        ]
+      },
+      []
+    )
+    state = reduce(state, wire('approval.request', 'a', { request_id: 'alpha-card' }))
+    state = reduce(state, wire('approval.request', 'b', { request_id: 'beta-card' }))
+    state = reduce(
+      state,
+      wire('approval.resolved', 'b', { request_id: 'beta-card', choice: 'deny' })
+    )
+    expect(state.approvals.map(a => a.requestId)).toEqual(['alpha-card'])
+    expect(state.busy).toBe(true)
+  })
+
   it('uses display names for live activity', () => {
     const state = reduce(
       restoreRoom(room, []),

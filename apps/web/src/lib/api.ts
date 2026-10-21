@@ -463,11 +463,15 @@ export function sectionsUnarchive(id: string): Promise<{ section: Section }> {
 }
 
 export interface SectionOpened {
+  /** Whether a turn runs at this read; older daemons leave it out. */
+  busy?: boolean
   /** How full the section's context is; see `ContextUsage`. */
   context?: ContextUsage
   messages: HistoryRow[]
   /** A clarify question the bot is still waiting on (same shape as the event, plus locked answers). */
   pending_clarify?: ClarifyRequestPayload & { answers?: Record<string, string> }
+  /** Every approval and question still waiting at this read; older daemons leave it out. */
+  pending_requests?: string[]
   section: Section
 }
 

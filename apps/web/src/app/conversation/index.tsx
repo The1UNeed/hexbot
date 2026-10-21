@@ -1377,11 +1377,16 @@ function BotConversation() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [entry, router])
 
+  // Each route entry (opening the chat, a reconnect, Retry) reads the history
+  // again, even when the live session is still known: events may have been missed.
+  const readFor = useRef<typeof entry | null>(null)
+
   useEffect(() => {
-    if (!ready || !params.section || liveId) {
+    if (!ready || !params.section || (liveId && readFor.current === entry)) {
       return
     }
 
+    readFor.current = entry
     let cancelled = false
 
     const current = () =>

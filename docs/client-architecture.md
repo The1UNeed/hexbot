@@ -101,6 +101,8 @@ when multiple preserved owner conversations make its source uncertain.
 | `thinking.delta` | replace the daemon's status line (a wait notice); spinner copy is dropped |
 | `tool.start` / `tool.complete` | add or resolve a tool call in the current assistant message |
 | `approval.request` | push an approval card (session scoped) and notify |
+| `approval.resolved` / `approval.expire` | show that card's answer / drop it while unanswered |
+| `clarify.request` / `clarify.resolved` / `clarify.expire` | push a question card / show its answers / freeze it |
 | `status.update` | header status line; `checking` replaces the live status with "Checking this step" until an empty `checking` line |
 | `session.info` | update section's model and provider chips |
 | `session.usage` | usage badge |

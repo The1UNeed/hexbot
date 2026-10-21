@@ -187,12 +187,22 @@ export function reduceChat(state: ChatState, event: GatewayEvent): ChatState {
     }
     case 'clarify.request': {
       if (typeof p.request_id !== 'string') return state
-      const answers = p.answers as Record<string, string> | undefined
+      const answered = (id: string) =>
+        Object.prototype.hasOwnProperty.call(p.answers ?? {}, id)
+      // Re-sent or replayed: keep the card shown, so its answers only move forward.
+      if (state.questions.some(q => q.requestId === p.request_id))
+        return {
+          ...state,
+          questions: state.questions
+            .map(q =>
+              q.requestId === p.request_id
+                ? { ...q, questions: q.questions.filter(question => !answered(question.id)) }
+                : q
+            )
+            .filter(q => q.questions.length)
+        }
       const questions = (Array.isArray(p.questions) ? p.questions : [p])
-        .filter(
-          (q: Record<string, unknown>) =>
-            !Object.prototype.hasOwnProperty.call(answers ?? {}, String(q.qid ?? p.request_id))
-        )
+        .filter((q: Record<string, unknown>) => !answered(String(q.qid ?? p.request_id)))
         .map((q: Record<string, unknown>) => ({
           id: String(q.qid ?? p.request_id),
           text: String(q.question ?? ''),
@@ -208,8 +218,13 @@ export function reduceChat(state: ChatState, event: GatewayEvent): ChatState {
         ]
       }
     }
+    // Answered here or on another app, or the bot stopped waiting: that card goes.
     case 'clarify.expire':
+    case 'clarify.resolved':
       return { ...state, questions: state.questions.filter(q => q.requestId !== p.request_id) }
+    case 'approval.expire':
+    case 'approval.resolved':
+      return { ...state, approvals: state.approvals.filter(a => a.requestId !== p.request_id) }
     default:
       return state
   }

@@ -534,7 +534,7 @@ impl Runtime {
     /// Stops the process of a section already marked closed and out of the map.
     async fn stop_retired(&self, s: &Live) {
         crate::provider_acp::cancel(&self.home, &s.stored).await;
-        Self::cancel_dialogs(s).await;
+        self.stop_dialogs(s).await;
         crate::native_tools::close_session(&self.home, &s.stored).await;
         if let Err(error) = s.process.shutdown().await {
             eprintln!("Could not stop section {}: {error}", s.stored);
@@ -561,11 +561,42 @@ impl Runtime {
     fn emit(&self, s: &Live, kind: &str, mut payload: Value) {
         // A card names its bot and section, so a client that does not list the section (a
         // private thread) still honours that bot's Notify me and can notify about it.
-        if matches!(kind, "approval.request" | "clarify.request") && payload.is_object() {
+        if (kind.starts_with("approval.") || kind.starts_with("clarify.")) && payload.is_object() {
             payload["bot"] = json!(s.bot);
             payload["section_id"] = json!(s.stored);
         }
         self.events.emit(&s.owner, Some(&s.id), kind, payload);
+    }
+    /// The owner answered a card. Every client of the owner settles exactly
+    /// that card with the answer (`choice` or `answers`), and the bot's status
+    /// is read again.
+    fn resolved(&self, s: &Live, id: &str, request: &Value, mut answer: Value) {
+        answer["request_id"] = json!(id);
+        let kind = if request["kind"] == "clarify" {
+            "clarify.resolved"
+        } else {
+            "approval.resolved"
+        };
+        self.emit(s, kind, answer);
+        self.events
+            .emit(&s.owner, None, "hexbot.bots.changed", json!({"name":s.bot}));
+    }
+    /// The bot stopped waiting on these cards (Stop, turn end, close). Every
+    /// client of the owner drops them, and the bot's status is read again.
+    fn expired(&self, s: &Live, pending: HashMap<String, Value>) {
+        if pending.is_empty() {
+            return;
+        }
+        for (id, request) in pending {
+            let kind = if request["kind"] == "clarify" {
+                "clarify.expire"
+            } else {
+                "approval.expire"
+            };
+            self.emit(s, kind, json!({"request_id":id}));
+        }
+        self.events
+            .emit(&s.owner, None, "hexbot.bots.changed", json!({"name":s.bot}));
     }
     /// Asks clients to read a section again for what was added outside its turn.
     fn reload(&self, s: &Live) {
@@ -613,8 +644,9 @@ impl Runtime {
             json!({"section_id":stored,"room_id":room,"message":message}),
         );
     }
-    /// The approval and the question a session waits on, as their events.
-    fn pending_cards(s: &Live) -> (Option<Value>, Option<Value>) {
+    /// What a session waits on, read at one moment: its approval and its
+    /// question as their events, every waiting request_id, and whether a turn runs.
+    fn pending_cards(s: &Live) -> (Option<Value>, Option<Value>, Vec<String>, bool) {
         let state = s.state.lock().unwrap();
         let clarify = state
             .pending
@@ -634,7 +666,19 @@ impl Runtime {
             .values()
             .find(|v| v["kind"] == "approval" && v["approval_payload"].is_object())
             .map(|v| v["approval_payload"].clone());
-        (approval, clarify)
+        let ids = state.pending.keys().cloned().collect();
+        (approval, clarify, ids, state.busy)
+    }
+    /// The request_ids an owner's live session still waits on.
+    pub fn pending_requests(&self, owner: &str, live: &str) -> Option<Vec<String>> {
+        let s = self
+            .sessions
+            .lock()
+            .unwrap()
+            .values()
+            .find(|s| s.id == live && s.owner == owner)
+            .cloned()?;
+        Some(Self::pending_cards(&s).2)
     }
     /// Replay open approval and question cards to the owner.
     pub fn replay_pending(&self, owner: &str, live: &str) {
@@ -646,7 +690,10 @@ impl Runtime {
             .find(|s| s.id == live && s.owner == owner)
             .cloned();
         let Some(s) = s else { return };
-        let (approval, clarify) = Self::pending_cards(&s);
+        // Under the event gate, as answers and expiry publish, so a re-sent
+        // card never follows the event that settled it.
+        let _gate = s.event_gate.lock().unwrap();
+        let (approval, clarify, _, _) = Self::pending_cards(&s);
         let emit = |kind, payload| self.emit(&s, kind, payload);
         if let Some(payload) = approval {
             emit("approval.request", payload);
@@ -2254,6 +2301,8 @@ impl Runtime {
             .get(id)
             .cloned()
             .ok_or_else(|| Error::new(4204, "request is no longer waiting"))?;
+        // What every client of the owner is told was answered.
+        let settled;
         let answer = if method == "approval.respond" {
             if request["kind"] != "approval" {
                 return Err(Error::new(4202, "not an approval request"));
@@ -2272,6 +2321,7 @@ impl Runtime {
             if !offered(choice) {
                 return Err(Error::new(4202, "invalid approval choice"));
             }
+            settled = json!({"choice":choice});
             if request["method"] == "confirm" {
                 json!({"confirmed":choice!="deny"})
             } else {
@@ -2304,9 +2354,12 @@ impl Runtime {
                     state.pending.insert(id.into(), request);
                     return Ok((result, None));
                 }
+                settled = json!({"answers":pending["answers"]});
                 json!({"value":pending["answers"].to_string()})
             } else {
-                json!({"value":p["answer"].as_str().unwrap_or("")})
+                let answer = p["answer"].as_str().unwrap_or("");
+                settled = json!({"answers":{id:answer}});
+                json!({"value":answer})
             }
         };
 
@@ -2325,6 +2378,7 @@ impl Runtime {
         state.pending.remove(id);
         drop(state);
         // Publish before Pi can settle, never after awaiting its write receipt.
+        self.resolved(s, id, &request, settled);
         self.emit(
             s,
             "status.update",
@@ -2366,11 +2420,26 @@ impl Runtime {
             eprintln!("Could not cancel late bot dialog {id}: {error}");
         }
     }
-    async fn cancel_dialogs(s: &Live) {
-        let (mut tasks, owned) = {
+    /// Cancels the session's dialogs and tells every client which cards went.
+    async fn stop_dialogs(&self, s: &Live) {
+        let cards = Self::cancel_dialogs(s).await;
+        self.expired(s, cards);
+    }
+    /// Cancels the session's dialogs; returns the cards that were waiting.
+    async fn cancel_dialogs(s: &Live) -> HashMap<String, Value> {
+        let (mut tasks, owned, mut cards) = {
             let _gate = s.event_gate.lock().unwrap();
             let mut state = s.state.lock().unwrap();
             state.interrupted = true;
+            // Daemon approvals' cards are taken before clearing wakes their
+            // waiters, which forget their own requests. The rest are taken
+            // below, so a turn that ends meanwhile expires each only once.
+            let mut cards = HashMap::new();
+            for id in state.native_approvals.keys().cloned().collect::<Vec<_>>() {
+                if let Some(request) = state.pending.remove(&id) {
+                    cards.insert(id, request);
+                }
+            }
             state.native_approvals.clear();
             state.display.clear();
             let owned = state
@@ -2380,17 +2449,24 @@ impl Runtime {
                 .cloned()
                 .collect::<std::collections::HashSet<_>>();
             drop(state);
-            (std::mem::take(&mut *s.requests.lock().unwrap()), owned)
+            (
+                std::mem::take(&mut *s.requests.lock().unwrap()),
+                owned,
+                cards,
+            )
         };
         tasks.abort_all();
         while tasks.join_next().await.is_some() {}
         let pending = {
+            // Under the gate, as a re-sent card is read, so it cannot follow this expiry.
+            let _gate = s.event_gate.lock().unwrap();
             let mut state = s.state.lock().unwrap();
             let mut pending = HashMap::new();
             // Later arrivals belong to the replacement JoinSet. Its response
             // tasks own their cancellation; taking them here would reply twice.
             for id in owned {
                 if let Some(request) = state.pending.remove(&id) {
+                    cards.insert(id.clone(), request.clone());
                     pending.insert(id.clone(), request);
                 }
                 if state.tool_dialogs.remove(&id) {
@@ -2413,10 +2489,11 @@ impl Runtime {
                 eprintln!("Could not cancel bot dialog {id}: {error}");
             }
         }
+        cards
     }
     async fn abort_turn(&self, s: &Arc<Live>, deadline: Duration) -> Result<()> {
         crate::provider_acp::cancel(&self.home, &s.stored).await;
-        Self::cancel_dialogs(s).await;
+        self.stop_dialogs(s).await;
         crate::native_tools::close_session(&self.home, &s.stored).await;
         let result = s
             .process
@@ -2641,7 +2718,7 @@ impl Runtime {
                 child.stop.send_replace(true);
             }
             crate::provider_acp::cancel(&self.home, &s.stored).await;
-            Self::cancel_dialogs(&s).await;
+            self.stop_dialogs(&s).await;
             {
                 let mut state = s.state.lock().unwrap();
                 remove_staged(std::mem::take(&mut state.staged));
@@ -2692,7 +2769,7 @@ impl Runtime {
         // running at the deadline is killed when the process exits.
         let stops = sessions.iter().map(|s| async move {
             crate::provider_acp::cancel(&self.home, &s.stored).await;
-            Self::cancel_dialogs(s).await;
+            self.stop_dialogs(s).await;
             crate::native_tools::close_session(&self.home, &s.stored).await;
             if let Err(error) = s.process.shutdown().await {
                 eprintln!("Bot shutdown failed: {error}");
@@ -2814,7 +2891,14 @@ impl Runtime {
             let seq = self.next_usage_seq();
             result["context"] = Self::context_usage(&s, false, seq).await;
             s.usage_sent.fetch_max(seq, Ordering::AcqRel);
-            let (approval, clarify) = Self::pending_cards(&s);
+            // What still runs and waits at this read. A client drops the
+            // cards it showed before the read that are not listed here.
+            // Under the event gate, as answers and expiry publish, so the
+            // re-sent approval never follows the event that settled it.
+            let _gate = s.event_gate.lock().unwrap();
+            let (approval, clarify, pending, busy) = Self::pending_cards(&s);
+            result["busy"] = json!(busy);
+            result["pending_requests"] = json!(pending);
             if let Some(payload) = clarify {
                 result["pending_clarify"] = payload;
             }
@@ -4610,11 +4694,7 @@ impl Runtime {
                         std::mem::take(&mut state.pending),
                     )
                 };
-                for (id, request) in pending {
-                    if request["kind"] == "clarify" {
-                        self.emit(s, "clarify.expire", json!({"request_id":id}));
-                    }
-                }
+                self.expired(s, pending);
                 match error.as_deref() {
                     Some("The turn was interrupted") => {}
                     Some(error) => self.incident(s, error),
@@ -4869,7 +4949,7 @@ fn pump(
                 Err(error) => Some(pi_error(error)),
             };
             if let Some(error) = error {
-                let (busy, was_closed, reread, fields) = {
+                let (busy, was_closed, reread, fields, pending) = {
                     let _gate = s.event_gate.lock().unwrap();
                     let mut state = s.state.lock().unwrap();
                     let was_closed = state.closed;
@@ -4880,10 +4960,17 @@ fn pump(
                         s.input_queue.generation.fetch_add(1, Ordering::AcqRel);
                     }
                     state.error = Some(error.message.clone());
-                    state.pending.clear();
+                    let pending = std::mem::take(&mut state.pending);
                     s.run_ended.send_modify(|v| *v += 1);
-                    (busy, was_closed, reread, state.identity.turn_fields())
+                    (
+                        busy,
+                        was_closed,
+                        reread,
+                        state.identity.turn_fields(),
+                        pending,
+                    )
                 };
+                runtime.expired(&s, pending);
                 if busy {
                     runtime.incident(&s, &error.message);
                     runtime.emit(
@@ -4901,7 +4988,7 @@ fn pump(
                     );
                 }
                 if !was_closed {
-                    Runtime::cancel_dialogs(&s).await;
+                    runtime.stop_dialogs(&s).await;
                     crate::native_tools::close_session(&runtime.home, &s.stored).await;
                 }
                 // What was added during the turn is read now that it has
@@ -6296,6 +6383,87 @@ rl.on('line',line=>{{const c=JSON.parse(line);emit({{type:'response',id:c.id,com
                 .await
                 .unwrap()
         );
+        runtime.shutdown().await;
+    }
+    /// Stop wakes a daemon approval's waiter, which forgets its request while
+    /// Stop still waits on other dialog tasks, and a turn can end meanwhile and
+    /// expire Pi's cards itself. Every card still expires exactly once.
+    #[tokio::test]
+    async fn stop_expires_every_waiting_card_exactly_once() {
+        /// Dropped when Stop aborts it, mid-Stop: the turn ends as Stop waits.
+        struct TurnEnds(Arc<Runtime>, Arc<Live>);
+        impl Drop for TurnEnds {
+            fn drop(&mut self) {
+                let ended = {
+                    let _gate = self.1.event_gate.lock().unwrap();
+                    std::mem::take(&mut self.1.state.lock().unwrap().pending)
+                };
+                self.0.expired(&self.1, ended);
+            }
+        }
+        let (home, runtime, hub) = setup();
+        let s = runtime.open_session("alice", "owl", "first").await.unwrap();
+        db::open(home.path())
+            .unwrap()
+            .execute_batch("UPDATE bots SET approval_mode='smart'")
+            .unwrap();
+        let mut events = hub.subscribe();
+        let worker = {
+            let (runtime, s) = (runtime.clone(), s.clone());
+            tokio::spawn(async move {
+                runtime
+                    .native_approval(&s, json!({"tool":"execute_code"}))
+                    .await
+                    .unwrap()
+            })
+        };
+        let native = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let params = events.recv().await.unwrap().frame["params"].clone();
+                if params["type"] == "approval.request" {
+                    break params["payload"]["request_id"].as_str().unwrap().to_owned();
+                }
+            }
+        })
+        .await
+        .unwrap();
+        // Pi's own approval and question cards wait beside it.
+        {
+            let mut state = s.state.lock().unwrap();
+            state.pending.insert(
+                "pi-approval".into(),
+                json!({"kind":"approval","method":"select","approval_payload":{"request_id":"pi-approval"}}),
+            );
+            state.pending.insert(
+                "batch".into(),
+                json!({"kind":"clarify","method":"input","clarify_payload":{"request_id":"batch","questions":[]}}),
+            );
+        }
+        let ends = TurnEnds(runtime.clone(), s.clone());
+        s.requests.lock().unwrap().spawn(async move {
+            let _ends = ends;
+            std::future::pending::<()>().await
+        });
+        runtime
+            .call("alice", "session.interrupt", &json!({"session_id":s.id}))
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(!worker.await.unwrap());
+        let mut expired = std::iter::from_fn(|| events.try_recv().ok())
+            .map(|event| event.frame["params"].clone())
+            .filter(|params| {
+                matches!(
+                    params["type"].as_str(),
+                    Some("approval.expire" | "clarify.expire")
+                )
+            })
+            .map(|params| params["payload"]["request_id"].as_str().unwrap().to_owned())
+            .collect::<Vec<_>>();
+        expired.sort();
+        let mut expected = vec!["batch".to_owned(), native, "pi-approval".to_owned()];
+        expected.sort();
+        assert_eq!(expired, expected);
         runtime.shutdown().await;
     }
     #[tokio::test]
