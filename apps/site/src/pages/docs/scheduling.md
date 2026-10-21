@@ -20,7 +20,7 @@ Jobs belong to the bot that creates them. By default, an agent job starts a fres
 
 Scheduled output is saved locally, not delivered into the conversation that created the job. Output files live under `profiles/<bot>/cron/output/` in the daemon's data directory. Ask the bot to read the latest result or error for a named job.
 
-Hexbot currently supports local delivery only. Do not rely on a reminder appearing as a chat message, email, or push notification. Ask the bot to confirm where it saved the result.
+Scheduled jobs support local delivery only. Do not rely on a job's result appearing as a chat message, email, or push notification. Ask the bot to confirm where it saved the result. For reminders that should reach you, tell your primary bot: its [check-ins](/docs/bots-and-sections#check-ins) message you when something needs you.
 
 ## Manage jobs
 

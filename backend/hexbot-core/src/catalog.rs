@@ -374,6 +374,7 @@ fn shape_section(home: &Path, row: Value) -> Result<Value> {
         "id": row["id"],
         "bot": row["bot"],
         "peer_bot": row["peer_bot"],
+        "purpose": row["purpose"],
         "title": row["title"],
         "title_by": row["title_by"],
         "created_at": row["created_at"],
@@ -388,11 +389,12 @@ fn shape_section(home: &Path, row: Value) -> Result<Value> {
 pub fn section(home: &Path, caller: &str, id: &str) -> Result<Value> {
     shape_section(home, section_row(home, caller, id)?)
 }
-/// Public deletion is only for peer threads. Keep owner chats, including
-/// archived or unreadable legacy targets, until their bot is deleted.
+/// Public deletion is only for peer threads and sections with their own
+/// purpose, such as Check-ins. Keep owner chats, including archived or
+/// unreadable legacy targets, until their bot is deleted.
 pub(crate) fn check_section_delete(home: &Path, caller: &str, id: &str) -> Result<()> {
     let row = section_row(home, caller, id)?;
-    if row["peer_bot"].is_null() {
+    if row["peer_bot"].is_null() && row["purpose"].is_null() {
         return Err(Error::new(
             4202,
             "A bot chat cannot be deleted; delete the bot to remove it",
@@ -405,14 +407,20 @@ fn list_sections(home: &Path, caller: &str, p: &Value) -> Result<Vec<Value>> {
     let bot = p["bot"].as_str();
     let archived = p["include_archived"].as_bool().unwrap_or(false);
     let threads = p["include_threads"] == true;
-    rows(
-        &db::open(home)?,
+    let conn = db::open(home)?;
+    let adoptions = setting(&conn, "dream_chat_adoptions")?;
+    let mut sections = vec![];
+    for row in rows(
+        &conn,
         "SELECT * FROM sections WHERE owner_id=? AND (? IS NULL OR bot=?) AND (? OR archived_at IS NULL) AND (? OR peer_bot IS NULL) ORDER BY updated_at DESC,id ASC",
         &[&caller, &bot, &bot, &archived, &threads],
-    )?
-    .into_iter()
-    .map(|r| shape_section(home, r))
-    .collect()
+    )? {
+        // A Dreams log its chat replaced opens only as that chat (4002).
+        if superseded_by(&conn, &adoptions, row["id"].as_str().unwrap_or(""))?.is_none() {
+            sections.push(shape_section(home, row)?);
+        }
+    }
+    Ok(sections)
 }
 /// A bot's one chat with its owner, made on first use. Threads in which other
 /// bots ask it for help are not chats. A chat an older client archived comes back.
@@ -522,21 +530,28 @@ mod fork_tests;
 /// exclusive lease through commit, so an old ID cannot admit input in between.
 pub(crate) fn check_chat_source(home: &Path, source: &str) -> Result<()> {
     let conn = db::open(home)?;
-    if let Some(target) = setting(&conn, "dream_chat_adoptions")?[source]["target"].as_str() {
-        let present: bool = conn.query_row(
-            "SELECT EXISTS(SELECT 1 FROM sections s JOIN sections t ON t.bot=s.bot AND t.owner_id=s.owner_id WHERE s.id=? AND t.id=? AND t.peer_bot IS NULL)",
-            params![source, target], |r| r.get(0),
-        )?;
-        if present {
-            return Err(Error::new(
-                4002,
-                format!(
-                    "This conversation moved to the bot's chat ({target}). Open the chat to continue."
-                ),
-            ));
-        }
+    if let Some(target) = superseded_by(&conn, &setting(&conn, "dream_chat_adoptions")?, source)? {
+        return Err(Error::new(
+            4002,
+            format!(
+                "This conversation moved to the bot's chat ({target}). Open the chat to continue."
+            ),
+        ));
     }
     Ok(())
+}
+/// The chat that replaced an old Dreams log, while both exist. `adoptions`
+/// is the `dream_chat_adoptions` setting, read once by the caller.
+fn superseded_by(conn: &Connection, adoptions: &Value, source: &str) -> Result<Option<String>> {
+    let Some(target) = adoptions[source]["target"].as_str().map(str::to_owned) else {
+        return Ok(None);
+    };
+    let present: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sections s JOIN sections t ON t.bot=s.bot AND t.owner_id=s.owner_id WHERE s.id=? AND t.id=? AND t.peer_bot IS NULL AND t.purpose IS NULL)",
+        params![source, target],
+        |r| r.get(0),
+    )?;
+    Ok(present.then_some(target))
 }
 
 pub fn chat_section(home: &Path, caller: &str, name: &str) -> Result<Value> {
@@ -547,10 +562,30 @@ pub fn chat_section(home: &Path, caller: &str, name: &str) -> Result<Value> {
     let mut forked = PendingChat { home, id: None };
     let mut source_lease = None;
     let mut conn = db::open(home)?;
+    #[cfg(all(test, unix))]
+    chat_fork_barrier(home, "before_lock")?;
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    // The bot can be deleted while this waits for the write lock; its chat
+    // must not come back without it.
+    let owned: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM bots WHERE name=? AND owner_id=?)",
+        params![name, caller],
+        |r| r.get(0),
+    )?;
+    if !owned {
+        return Err(Error::new(4205, format!("bot not found: {name}")));
+    }
+    // Nor while its deletion runs: a Dreams log forked now would outlive it.
+    // A committed journal an older build left behind a reused name is not one.
+    if bot_delete_journal(&tx, name)?.is_some_and(|journal| journal["committed"] != true) {
+        return Err(Error::new(
+            4211,
+            "Deletion is in progress. Try again after it finishes.",
+        ));
+    }
     let candidates = rows(
         &tx,
-        "SELECT * FROM sections WHERE bot=? AND owner_id=? AND peer_bot IS NULL ORDER BY updated_at DESC,id",
+        "SELECT * FROM sections WHERE bot=? AND owner_id=? AND peer_bot IS NULL AND purpose IS NULL ORDER BY updated_at DESC,id",
         &[&name, &caller],
     )?;
     // Failed recovery includes transient I/O, not only damaged data. Both
@@ -869,7 +904,7 @@ pub(crate) fn classify_dream_logs(home: &Path, bot: &str) -> Result<BTreeSet<Str
     let sections = rows(
         &conn,
         &format!(
-            "SELECT id,({DREAM_LOG}) AS titled FROM sections WHERE bot=? AND peer_bot IS NULL"
+            "SELECT id,({DREAM_LOG}) AS titled FROM sections WHERE bot=? AND peer_bot IS NULL AND purpose IS NULL"
         ),
         &[&bot],
     )?;
@@ -1026,7 +1061,7 @@ fn plan_one_chat_per_bot(
     let mut unreadable = BTreeSet::new();
     for row in rows(
         conn,
-        "SELECT DISTINCT bot FROM sections WHERE peer_bot IS NULL",
+        "SELECT DISTINCT bot FROM sections WHERE peer_bot IS NULL AND purpose IS NULL",
         &[],
     )? {
         let bot = row["bot"].as_str().unwrap_or("");
@@ -1044,7 +1079,7 @@ fn plan_one_chat_per_bot(
     let mut chats: std::collections::BTreeMap<(String, String), Vec<Value>> = Default::default();
     for row in rows(
         conn,
-        "SELECT * FROM sections WHERE peer_bot IS NULL ORDER BY id",
+        "SELECT * FROM sections WHERE peer_bot IS NULL AND purpose IS NULL ORDER BY id",
         &[],
     )? {
         let key = (
@@ -1316,17 +1351,23 @@ fn display_name(name: &str) -> String {
         .collect::<Vec<_>>()
         .join(" ")
 }
-/// The bot's newest failure that still has a visible cause. Hidden native runs
-/// have no catalog section: require their bot and owner, and exclude deleted
-/// sessions and catalog entries hidden by other filters. Connector and global
-/// failures outlive their original chat. Needs `runtime` attached.
+/// The bot's newest failure that still has a visible cause. Room failures
+/// count while the bot is a member, so they return if it is added back.
+/// Hidden native runs have no catalog section: require their bot and owner,
+/// and exclude deleted sessions and catalog entries hidden by other filters.
+/// Connector and global failures outlive their original chat. Needs
+/// `runtime` attached.
 const OPEN_INCIDENT: &str = "SELECT i.* FROM bot_incidents i JOIN bots b ON b.name=i.bot
  WHERE i.bot=? AND i.resolved_at IS NULL AND (
     i.kind<>'turn_failed' OR CASE WHEN i.room_id IS NOT NULL
-        THEN EXISTS(SELECT 1 FROM rooms r WHERE r.id=i.room_id AND r.owner_id=b.owner_id)
+        THEN EXISTS(SELECT 1 FROM rooms r JOIN room_members m ON m.room_id=r.id
+            WHERE r.id=i.room_id AND r.owner_id=b.owner_id
+            AND m.member_kind='bot' AND m.member_id=i.bot AND m.left_at IS NULL)
         ELSE i.section_id IS NULL
             OR EXISTS(SELECT 1 FROM room_sessions s JOIN rooms r ON r.id=s.room_id
-                WHERE s.stored_session_id=i.section_id AND s.bot=i.bot AND r.owner_id=b.owner_id)
+                JOIN room_members m ON m.room_id=r.id
+                WHERE s.stored_session_id=i.section_id AND s.bot=i.bot AND r.owner_id=b.owner_id
+                AND m.member_kind='bot' AND m.member_id=i.bot AND m.left_at IS NULL)
             OR EXISTS(SELECT 1 FROM sections s WHERE s.id=i.section_id
                 AND s.bot=i.bot AND s.owner_id=b.owner_id AND s.archived_at IS NULL)
             OR (NOT EXISTS(SELECT 1 FROM sections s WHERE s.id=i.section_id)
@@ -1336,7 +1377,37 @@ const OPEN_INCIDENT: &str = "SELECT i.* FROM bot_incidents i JOIN bots b ON b.na
                 AND NOT EXISTS(SELECT 1 FROM runtime.native_deleted d WHERE d.session_id=i.section_id))
         END
  ) ORDER BY i.created_at DESC LIMIT 1";
-fn shape_bot(home: &Path, caller: &str, row: Value) -> Result<Value> {
+/// Without the runtime store, status shows the newest open failure.
+const ANY_OPEN_INCIDENT: &str = "SELECT * FROM bot_incidents WHERE bot=? AND resolved_at IS NULL ORDER BY created_at DESC LIMIT 1";
+/// The catalog connection and failure query for bot reads. A list opens it once.
+struct StatusReader {
+    conn: Connection,
+    query: &'static str,
+}
+fn status_reader(home: &Path) -> Result<StatusReader> {
+    let conn = db::open(home)?;
+    let attached = runtime_store::open(home).and_then(|_| {
+        conn.execute(
+            "ATTACH DATABASE ? AS runtime",
+            [home.join("hexbot-runtime.db").to_string_lossy().as_ref()],
+        )?;
+        Ok(())
+    });
+    let query = match attached {
+        Ok(()) => OPEN_INCIDENT,
+        Err(error) => {
+            static WARN: std::sync::Once = std::sync::Once::new();
+            WARN.call_once(|| {
+                eprintln!(
+                    "Bot status shows every open failure; the runtime store is unavailable: {error}"
+                )
+            });
+            ANY_OPEN_INCIDENT
+        }
+    };
+    Ok(StatusReader { conn, query })
+}
+fn shape_bot(home: &Path, caller: &str, status: &StatusReader, row: Value) -> Result<Value> {
     let name = row["name"].as_str().unwrap_or("");
     let cfg = config(home, name)?;
     let sections = list_sections(home, caller, &json!({"bot":name,"include_archived":true}))?;
@@ -1346,16 +1417,11 @@ fn shape_bot(home: &Path, caller: &str, row: Value) -> Result<Value> {
         .take(2)
         .cloned()
         .collect::<Vec<_>>();
-    let conn = db::open(home)?;
-    runtime_store::open(home)?;
-    conn.execute(
-        "ATTACH DATABASE ? AS runtime",
-        [home.join("hexbot-runtime.db").to_string_lossy().as_ref()],
-    )?;
-    let incident = rows(&conn, OPEN_INCIDENT, &[&name])?.into_iter().next();
+    let conn = &status.conn;
+    let incident = rows(conn, status.query, &[&name])?.into_iter().next();
     let (mut status, mut detail) = ("idle", Value::Null);
     if let Some(mut i) = incident {
-        crate::settings::normalize_incident_room(&conn, &mut i)?;
+        crate::settings::normalize_incident_room(conn, &mut i)?;
         status = "stopped";
         let action = if i["kind"] == "turn_failed" {
             json!({"kind":"retry"})
@@ -1450,7 +1516,8 @@ fn shape_bot(home: &Path, caller: &str, row: Value) -> Result<Value> {
     }))
 }
 pub fn bot(home: &Path, caller: &str, name: &str) -> Result<Value> {
-    shape_bot(home, caller, bot_row(home, caller, name)?)
+    let row = bot_row(home, caller, name)?;
+    shape_bot(home, caller, &status_reader(home)?, row)
 }
 fn validate_patch(home: &Path, p: &Value) -> Result<()> {
     let object = p
@@ -2110,6 +2177,7 @@ fn delete_section(home: &Path, caller: &str, id: &str, purge: bool) -> Result<Op
                  AND s.bot=bot_incidents.bot AND r.owner_id=?4)",
             params![now(), id, row["bot"].as_str(), caller],
         )?;
+        crate::dreaming::checkins::forget_section(&tx, id)?;
         tx.execute(
             "UPDATE bots SET last_activity_at=? WHERE name=?",
             params![now(), row["bot"].as_str()],
@@ -2415,6 +2483,9 @@ fn delete_bot(home: &Path, caller: &str, name: &str) -> Result<Value> {
         for target in &targets {
             runtime_store::mark_deleted(home, required(target, "id")?)?;
         }
+        for section in rows(&tx, "SELECT id FROM sections WHERE bot=?", &[&name])? {
+            crate::dreaming::checkins::forget_section(&tx, required(&section, "id")?)?;
+        }
         tx.execute("DELETE FROM sections WHERE bot=?", [name])?;
         // Threads where this bot asked others stay with their recipients.
         tx.execute("UPDATE sections SET archived_at=? WHERE peer_bot=? AND owner_id=? AND archived_at IS NULL", params![now(), name, caller])?;
@@ -2464,18 +2535,17 @@ pub fn call(home: &Path, caller: &str, method: &str, p: &Value) -> Option<Result
         "hexbot.bots.create_primary" => create_primary(home, caller, p),
         "hexbot.bots.set_primary" => set_primary(home, caller, required(p, "name")?),
         "hexbot.bots.update" => update_bot(home, caller, p),
-        "hexbot.bots.get" => {
-            Ok(json!({"bot":shape_bot(home,caller,bot_row(home,caller,required(p,"name")?)?)?}))
-        }
+        "hexbot.bots.get" => Ok(json!({"bot":bot(home,caller,required(p,"name")?)?})),
         "hexbot.bots.list" => {
             user(home, caller)?;
+            let status = status_reader(home)?;
             let bots = rows(
-                &db::open(home)?,
+                &status.conn,
                 "SELECT * FROM bots WHERE owner_id=? ORDER BY is_primary DESC,last_activity_at DESC,name ASC",
                 &[&caller],
             )?
             .into_iter()
-            .map(|r| shape_bot(home, caller, r))
+            .map(|r| shape_bot(home, caller, &status, r))
             .collect::<Result<Vec<_>>>()?;
             Ok(json!({"bots":bots}))
         }
@@ -2761,6 +2831,29 @@ mod parity_tests {
         let id: String = query.query_row(["owl"], |row| row.get("id")).unwrap();
         assert_eq!(id, "failure-999");
         assert_eq!(query.get_status(rusqlite::StatementStatus::FullscanStep), 0);
+    }
+    #[test]
+    fn status_without_the_runtime_store_shows_the_newest_open_failure() {
+        let home = home();
+        // A failure the filtered status hides: its room no longer has the bot.
+        db::open(home.path()).unwrap().execute_batch(
+            "INSERT INTO rooms(id,name,owner_id) VALUES('room','Room','alice');
+             INSERT INTO room_members(room_id,member_kind,member_id,left_at) VALUES('room','bot','owl',1);
+             INSERT INTO bot_incidents(id,bot,room_id,kind,created_at) VALUES('left','owl','room','turn_failed',1);",
+        ).unwrap();
+        let attached = status_reader(home.path()).unwrap();
+        assert!(
+            rows(&attached.conn, attached.query, &[&"owl"])
+                .unwrap()
+                .is_empty()
+        );
+        drop(attached);
+        fs::remove_file(home.path().join("hexbot-runtime.db")).unwrap();
+        fs::create_dir(home.path().join("hexbot-runtime.db")).unwrap();
+        let fallback = status_reader(home.path()).unwrap();
+        assert_eq!(fallback.query, ANY_OPEN_INCIDENT);
+        let open = rows(&fallback.conn, fallback.query, &[&"owl"]).unwrap();
+        assert_eq!(open[0]["id"], "left");
     }
 
     #[test]
@@ -3964,6 +4057,88 @@ mod parity_tests {
                 );
             }
         }
+    }
+    #[test]
+    fn a_renamed_thread_from_before_peer_bot_is_never_the_chat() {
+        let home = tempfile::tempdir().unwrap();
+        db::migrate(home.path()).unwrap();
+        db::open(home.path()).unwrap().execute_batch(
+            "INSERT INTO users(id,display_name,role,created_at) VALUES('alice','Alice','admin',0);
+             INSERT INTO bots(name,owner_id) VALUES('owl','alice'),('fox','alice');
+             INSERT INTO sections(id,bot,owner_id,title,updated_at) VALUES('trip','owl','alice','Trip',2),('asked','owl','alice','Research',9);
+             INSERT INTO bot_messages(id,from_bot,to_bot,section_id,created_at,text) VALUES('m','fox','owl','asked',8,'Can you look this up?');",
+        ).unwrap();
+        // Once 'From fox'; the bot renamed it. Its dialogue is the newest.
+        said(
+            home.path(),
+            "trip",
+            json!({"role":"user","text":"Plan the trip","timestamp":2}),
+        );
+        said(
+            home.path(),
+            "asked",
+            json!({"role":"user","text":"Can you look this up?","timestamp":9}),
+        );
+        db::migrate(home.path()).unwrap();
+        one_chat_per_bot(home.path()).unwrap();
+        // The thread stays a thread, and the user's conversation stays their chat.
+        assert_eq!(ids_of(home.path(), "owl"), ["asked", "trip"]);
+        assert_eq!(
+            section(home.path(), "alice", "asked").unwrap()["peer_bot"],
+            "fox"
+        );
+        assert_eq!(
+            chat_section(home.path(), "alice", "owl").unwrap()["id"],
+            "trip"
+        );
+    }
+    #[test]
+    fn check_ins_are_not_the_chat_and_survive_the_upgrade() {
+        let home = tempfile::tempdir().unwrap();
+        db::migrate(home.path()).unwrap();
+        db::open(home.path()).unwrap().execute_batch(
+            "INSERT INTO users(id,display_name,role,created_at) VALUES('alice','Alice','admin',0);
+             INSERT INTO bots(name,owner_id,is_primary) VALUES('hexbot','alice',1);
+             INSERT INTO sections(id,bot,owner_id,title,updated_at) VALUES('chat','hexbot','alice','General',2),('older','hexbot','alice','Older',1);
+             INSERT INTO sections(id,bot,owner_id,title,updated_at,purpose) VALUES('checkins','hexbot','alice','Check-ins',9,'checkins');
+             INSERT INTO checkin_messages(id,owner_id,bot,section_id,text,created_at) VALUES('m','alice','hexbot','checkins','Due tonight.',9);",
+        ).unwrap();
+        for (id, time) in [("chat", 2), ("older", 1), ("checkins", 9)] {
+            said(
+                home.path(),
+                id,
+                json!({"role":"user","text":format!("In {id}"),"timestamp":time}),
+            );
+        }
+        one_chat_per_bot(home.path()).unwrap();
+        // Newer, but not a chat: the upgrade leaves it and picks among the others.
+        assert_eq!(ids_of(home.path(), "hexbot"), ["chat", "checkins"]);
+        assert_eq!(
+            chat_section(home.path(), "alice", "hexbot").unwrap()["id"],
+            "chat"
+        );
+        assert_eq!(
+            section(home.path(), "alice", "checkins").unwrap()["purpose"],
+            "checkins"
+        );
+        // Unlike the chat, it can be deleted, and what check-ins said goes with it.
+        check_section_delete(home.path(), "alice", "chat").unwrap_err();
+        check_section_delete(home.path(), "alice", "checkins").unwrap();
+        let text = || -> String {
+            db::open(home.path())
+                .unwrap()
+                .query_row("SELECT text FROM checkin_messages WHERE id='m'", [], |r| {
+                    r.get(0)
+                })
+                .unwrap()
+        };
+        assert_eq!(text(), "Due tonight.");
+        db::open(home.path())
+            .unwrap()
+            .execute("UPDATE bots SET is_primary=0", [])
+            .unwrap();
+        delete_bot(home.path(), "alice", "hexbot").unwrap();
+        assert_eq!(text(), "");
     }
     #[test]
     fn unreadable_native_chats_stay_for_repair_but_are_never_canonical() {

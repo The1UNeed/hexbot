@@ -225,6 +225,20 @@ per minute per running app instance, when a registration is created.
    with the daemon token, the first one as soon as the tunnel starts; Connect
    records `last_seen_at` and the port, which only the loopback development
    address uses.
+6. Check-in push: `POST /api/daemons/{id}/push {targets: [{token, device}],
+   section}` with the daemon token, when the primary bot messages the user
+   from a check-in. Connect relays it to Expo's push service in its own words,
+   "Hexbot: Your primary bot has a message for you.", with `section` and
+   `device` (the phone's paired device id, so it opens the right saved daemon)
+   as data. A daemon sends only ids and tokens: the message never reaches
+   Connect, and no daemon can put its own text in a push. Connect stores
+   nothing. At most 20 targets per call and ten calls a minute per daemon. The
+   reply is `{gone, failed, tickets}`: tokens Expo no longer knows, which the
+   daemon forgets; how many Expo refused otherwise (logged by Connect); and
+   `{id, token}` receipt ids. Fifteen minutes later the daemon asks
+   `POST /api/daemons/{id}/push/receipts {ids}` (at most 300) and forgets the
+   tokens whose receipts say the app is gone (`{gone: [ids]}`), since Apple
+   and Google report a removed app only then.
 
 ## Online state
 

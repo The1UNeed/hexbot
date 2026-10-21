@@ -86,7 +86,9 @@ it.each([false, true])(
     await vi.waitFor(() => expect(useConnection.getState().daemon?.install_id).toBe('next'))
     expect((await useSections.getState().chat('owl'))?.id).toBe(modern ? 'new-empty' : 'existing')
     expect(call.mock.calls.map(([method]) => method)).toEqual(
-      modern ? ['hexbot.sections.create'] : ['hexbot.sections.list', 'hexbot.sections.unarchive']
+      modern
+        ? ['hexbot.sections.create']
+        : ['hexbot.sections.list', 'hexbot.checkins.status', 'hexbot.sections.unarchive']
     )
   }
 )

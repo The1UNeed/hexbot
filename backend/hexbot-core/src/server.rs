@@ -453,6 +453,15 @@ impl App {
             catalog::rollback_bot_delete(&self.home, common::required(p, "name")?)?;
         }
         let mut result = result?;
+        // Open Check-ins tabs and the CLI's changes meet: settings and the next run move.
+        if method == "hexbot.settings.set"
+            && p["patch"]
+                .as_object()
+                .is_some_and(|patch| patch.keys().any(|k| k.starts_with("checkin_")))
+        {
+            self.events
+                .emit(owner, None, "hexbot.checkins.changed", json!({}));
+        }
         // Opening a room restores its open approval and question cards.
         if method == "hexbot.rooms.get" {
             for turn in result["room"]["turns"].as_array().into_iter().flatten() {
@@ -722,7 +731,10 @@ impl App {
             return;
         };
         self.events.emit(owner, None, &event, payload.clone());
-        if group == "rooms" && payload["deleted"] == true {
+        // Room failures count only for the room's current bots.
+        if group == "rooms"
+            && (payload["deleted"] == true || matches!(action, "add_member" | "remove_member"))
+        {
             self.events
                 .emit(owner, None, "hexbot.bots.changed", json!({}));
         }
@@ -1776,6 +1788,8 @@ async fn handle_request(
         Err(Error::new(4302, "device revoked"))
     } else if !params.is_object() {
         Err(Error::new(-32602, "params must be an object"))
+    } else if method == "hexbot.devices.set_push" {
+        set_push(&app.home, &owner, &device_id, &params)
     } else {
         app.call(&owner, method, &params).await
     };
@@ -1793,6 +1807,53 @@ async fn handle_request(
         }
         Err(error) => json!({"jsonrpc":"2.0","id":id,"error":error.rpc_value()}),
     })
+}
+/// A phone's push token, for check-in messages. Only the calling device's own
+/// row changes; a null token stops pushes to it.
+fn set_push(home: &std::path::Path, owner: &str, device: &str, p: &Value) -> Result<Value> {
+    // Only a string sets it and only null clears it; anything else is a mistake.
+    if !(p["token"].is_null() || p["token"].is_string()) {
+        return Err(Error::new(4202, "invalid push token"));
+    }
+    let token = p["token"].as_str();
+    let valid = token.is_none_or(|t| {
+        t.len() <= 200
+            && ["ExponentPushToken[", "ExpoPushToken["]
+                .iter()
+                .any(|prefix| {
+                    t.strip_prefix(prefix)
+                        .and_then(|rest| rest.strip_suffix(']'))
+                        .is_some_and(|id| {
+                            !id.is_empty()
+                                && id
+                                    .bytes()
+                                    .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+                        })
+                })
+    });
+    let platform = p["platform"].as_str();
+    if !valid || (token.is_some() && !matches!(platform, Some("ios" | "android"))) {
+        return Err(Error::new(4202, "invalid push token"));
+    }
+    let mut conn = db::open(home)?;
+    let tx = conn.transaction()?;
+    let changed = tx.execute(
+        "UPDATE devices SET push_token=?,push_platform=? WHERE id=? AND owner_id=? AND revoked_at IS NULL",
+        rusqlite::params![token, token.and(platform), device, owner],
+    )?;
+    if changed == 0 {
+        return Err(Error::new(4302, "this connection has no paired device"));
+    }
+    // A phone paired again keeps its token; it moves to the new pairing, so
+    // the phone gets each push once.
+    if let Some(token) = token {
+        tx.execute(
+            "UPDATE devices SET push_token=NULL,push_platform=NULL WHERE push_token=? AND id<>?",
+            rusqlite::params![token, device],
+        )?;
+    }
+    tx.commit()?;
+    Ok(json!({"ok":true}))
 }
 /// Frames on a daemon page may only load from the daemon. A bot's visual runs
 /// in a sandboxed frame (`/visual-frame.html`); this keeps its script from

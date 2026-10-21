@@ -7,6 +7,7 @@ import { useBots } from '../../stores/bots'
 
 import { AdvancedTab } from './advanced'
 import { ApprovalsTab } from './approvals'
+import { CheckinsTab } from './checkins'
 import { ConnectorsTab } from './connectors'
 import { MemoryTab } from './memory'
 import { ModelTab } from './model'
@@ -25,6 +26,7 @@ export const BOT_SETTINGS_TABS = [
   'connectors',
   'skills',
   'approvals',
+  'checkins',
   'advanced'
 ] as const
 
@@ -33,6 +35,7 @@ export type BotSettingsTab = (typeof BOT_SETTINGS_TABS)[number]
 export const TAB_LABELS: Record<BotSettingsTab, string> = {
   advanced: 'Advanced',
   approvals: 'Approvals',
+  checkins: 'Check-ins',
   connectors: 'Connectors',
   memory: 'Memory',
   model: 'Model',
@@ -107,6 +110,7 @@ export function BotSettingsPanel({
       {tab === 'connectors' && <ConnectorsTab bot={bot} initialConnector={connector} />}
       {tab === 'skills' && <SkillsTab bot={bot} onSave={save} />}
       {tab === 'approvals' && <ApprovalsTab bot={bot} onSave={save} />}
+      {tab === 'checkins' && bot.primary ? <CheckinsTab bot={bot} /> : null}
       {tab === 'advanced' && <AdvancedTab bot={bot} onDelete={remove} />}
       {error ? (
         <p className="mt-6 text-[length:var(--text-secondary)] text-danger" role="alert">

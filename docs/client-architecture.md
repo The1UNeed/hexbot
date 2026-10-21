@@ -78,8 +78,9 @@ Only the transcript store is hot; everything else is small.
 
 A catalog live ID does not mean its history has loaded. Only `sections.open`
 registers a chat as loaded; list refreshes and canonical lookups leave that
-registration alone. A report reload discards it and its transcript, including
-when the chat is offscreen. Concurrent history opens share a request and reread
+registration alone. A report reload drops that registration, including when
+the chat is offscreen; the transcript stays on screen until the next read
+replaces it, and is dropped only if it is still empty. Concurrent history opens share a request and reread
 if another report invalidates the snapshot before it arrives.
 
 Roster selections and Dream log entries resolve the daemon's canonical chat

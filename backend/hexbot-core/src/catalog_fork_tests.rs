@@ -672,5 +672,63 @@ async fn publication_keeps_source_closed_to_writes_until_commit() {
         .unwrap_err();
     assert_eq!(rejected.code, 4002);
     assert!(rejected.message.contains(&target));
+    // An older client's list shows the chat, not the log it replaced.
+    let listed = list_sections(h, "alice", &json!({"bot":"owl","include_archived":true}))
+        .unwrap()
+        .into_iter()
+        .map(|s| s["id"].as_str().unwrap().to_owned())
+        .collect::<Vec<_>>();
+    assert_eq!(listed, vec![target]);
     runtime.shutdown().await;
+}
+
+#[test]
+fn a_bot_deleted_while_its_chat_is_looked_up_gets_no_new_chat() {
+    use std::io::{Read, Write};
+    let home = tempfile::tempdir().unwrap();
+    let h = home.path().to_path_buf();
+    db::migrate(&h).unwrap();
+    db::open(&h).unwrap().execute_batch("INSERT INTO users(id,display_name,role,created_at) VALUES('alice','Alice','admin',0); INSERT INTO bots(name,owner_id) VALUES('owl','alice');").unwrap();
+    let listener = std::os::unix::net::UnixListener::bind(h.join("fork-barrier.sock")).unwrap();
+    let lookup = std::thread::spawn({
+        let h = h.clone();
+        move || chat_section(&h, "alice", "owl")
+    });
+    // The lookup checked the owner and waits for the write lock: the bot goes.
+    let (mut stream, _) = listener.accept().unwrap();
+    let mut phase = [0; 32];
+    let n = stream.read(&mut phase).unwrap();
+    assert_eq!(&phase[..n], b"before_lock");
+    db::open(&h)
+        .unwrap()
+        .execute("DELETE FROM bots WHERE name='owl'", [])
+        .unwrap();
+    stream.write_all(&[1]).unwrap();
+    assert_eq!(lookup.join().unwrap().unwrap_err().code, 4205);
+    let sections: i64 = db::open(&h)
+        .unwrap()
+        .query_row("SELECT count(*) FROM sections WHERE bot='owl'", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(sections, 0);
+}
+
+#[test]
+fn no_chat_is_looked_up_or_forked_while_its_bot_is_being_deleted() {
+    let home = fixture();
+    let h = home.path();
+    // Deletion has recorded what it retires and is closing processes.
+    prepare_bot_delete(h, "alice", "owl").unwrap();
+    assert_eq!(chat_section(h, "alice", "owl").unwrap_err().code, 4211);
+    let forks: i64 = store::open(h)
+        .unwrap()
+        .query_row("SELECT count(*) FROM native_pending_chat_forks", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(forks, 0);
+    // A failed deletion gives the bot back its chat.
+    rollback_bot_delete(h, "owl").unwrap();
+    chat_section(h, "alice", "owl").unwrap();
 }

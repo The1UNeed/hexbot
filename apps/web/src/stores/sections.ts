@@ -20,7 +20,7 @@ import { KICKOFF_MARKER } from '../lib/bot-kickoff'
 import type { Bot, BotStatus, DaemonInfo, Message, Section } from '../lib/types'
 
 import { useConnection } from './connection'
-import { useTranscripts } from './transcripts'
+import { releaseCheckinMessages, useTranscripts } from './transcripts'
 
 /**
  * A thread: the private conversation in which `peer_bot` asks `bot` for help.
@@ -43,7 +43,7 @@ export function legacyChat(
   bot: string
 ): { choices: Section[] } | { section: Section } | null {
   const chats = sections
-    .filter(section => section.bot === bot && !isThread(section))
+    .filter(section => section.bot === bot && !isThread(section) && !section.purpose)
     .sort(
       (a, b) =>
         Number(Boolean(a.archived_at)) - Number(Boolean(b.archived_at)) ||
@@ -171,11 +171,17 @@ function mergeSection(state: SectionsState, section: Section): Partial<SectionsS
   const existing = state.idsByBot[section.bot] ?? []
   // Only the list carries the preview; a rename or archive reply must not blank it.
   const preview = section.preview || state.byId[section.id]?.preview || ''
+  // A daemon from before one chat names no purpose; the list marked Check-ins.
+  const purpose = 'purpose' in section ? section.purpose : state.byId[section.id]?.purpose
 
   return {
     byId: {
       ...state.byId,
-      [section.id]: { ...withSendingTitle(section, state.sendingTitles), preview }
+      [section.id]: {
+        ...withSendingTitle(section, state.sendingTitles),
+        preview,
+        ...(purpose !== undefined && { purpose })
+      }
     },
     idsByBot: {
       ...state.idsByBot,
@@ -349,18 +355,29 @@ export const useSections = create<SectionsState>((set, get) => ({
       }
 
       if (live) {
+        // Merging local rows into history needs the daemon's input and
+        // fragment IDs. Without them the snapshot replaces what is shown.
+        const identified = useConnection.getState().daemon?.transcript_identity === true
+
         useTranscripts.getState().open(
           live,
           id,
           messagesFromHistory(messages ?? []).filter(
             message => !(message.role === 'user' && message.text.includes(KICKOFF_MARKER))
           ),
-          {
-            reports: (messages ?? [])
-              .filter(row => row.dream === true)
-              .map(row => String(row.row_id))
-          }
+          identified
+            ? {
+                reports: (messages ?? [])
+                  .filter(row => row.dream === true)
+                  .map(row => String(row.row_id))
+              }
+            : undefined
         )
+
+        // Check-ins that arrived while this loaded; the history may hold them already.
+        for (const row of releaseCheckinMessages(id)) {
+          useTranscripts.getState().checkinMessage(live, row)
+        }
 
         const transcript = useTranscripts.getState().bySession[live]
 

@@ -92,6 +92,12 @@ saved on the daemon. Attachments can be sent without text. The app asks the bot
 to review the files and keeps attachment chips until the send succeeds. A
 message carries only the files picked for it, and files picked for a chat you
 leave without sending are removed from the daemon. Older
-daemons show an update notice for unavailable attachment or job controls. The app does not provide push notifications
-or computer power controls. For development checks and native simulator flows,
+daemons show an update notice for unavailable attachment or job controls.
+
+When your primary bot messages you from a [check-in](/docs/bots-and-sections#check-ins),
+the phone gets a notification, if you allowed notifications and the daemon is
+on Hex Connect. The notification only says your primary bot has a message;
+the message stays on your daemon until you open it. Tap it to open the
+Check-ins thread, on the right daemon if you have several. The app does not
+provide computer power controls. For development checks and native simulator flows,
 see `apps/mobile/README.md` and `docs/testing.md` in the repository.

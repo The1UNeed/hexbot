@@ -181,6 +181,25 @@ describe('one chat per bot', () => {
     expect(named).toHaveBeenCalledWith('scout', expect.any(Function))
   })
 
+  it('marks a bot done only for its chat, not Check-ins or an archived section', async () => {
+    const finished = (extra: Partial<Section>) =>
+      ({ ...chat, done_at: 5, ...extra }) as unknown as Section
+
+    for (const [sections, done] of [
+      [[finished({ id: 'checkins', purpose: 'checkins' })], false],
+      [[finished({ id: 'old', archived_at: 4 })], false],
+      [[finished({})], true]
+    ] as const) {
+      useSections.setState({
+        byId: Object.fromEntries(sections.map(s => [s.id, s])),
+        idsByBot: { scout: sections.map(s => s.id) }
+      })
+      const view = render(<RosterColumn />)
+      expect(screen.queryByLabelText('Done') !== null).toBe(done)
+      view.unmount()
+    }
+  })
+
   it('opens nothing when the user picks no section on an older daemon', async () => {
     named.mockResolvedValueOnce(null)
     render(<RosterColumn />)

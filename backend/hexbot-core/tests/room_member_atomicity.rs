@@ -547,17 +547,18 @@ async fn catalog_failure_rolls_back_member_event_and_incident_in_public_and_dire
                 "member.left"
             );
         }
-        // Retain the inherited cross-store negative control. Catalog rollback
-        // cannot undo native file/history purge; future retention policy owns it.
-        assert!(store::history(f.home.path(), "stored").unwrap().is_empty());
+        // History is purged only after the catalog statements, so the
+        // surviving room keeps it.
+        assert!(!store::history(f.home.path(), "stored").unwrap().is_empty());
         conn.execute_batch("DROP TRIGGER refuse_room_delete;")
             .unwrap();
         let removed = rooms::remove_bot(f.home.path(), "local", "room", "owl", false).unwrap();
         assert_eq!(removed["room"]["deleted"], true);
         assert_eq!(removed["event"]["seq"], 2);
         assert!(f.resolved());
+        assert!(store::history(f.home.path(), "stored").unwrap().is_empty());
         println!(
-            "catalog fault direct={direct}: membership/event/incident rolled back; inherited native history loss retained; retry succeeds"
+            "catalog fault direct={direct}: membership/event/incident rolled back; history kept; retry succeeds"
         );
         f.app.shutdown().await;
     }

@@ -9,7 +9,7 @@ import {
 } from '@tanstack/react-router'
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 
-import { setActiveRpc } from '../../lib/rpc'
+import { CONNECT_WAIT_MS, setActiveRpc } from '../../lib/rpc'
 import type { Bot, DaemonInfo, Section } from '../../lib/types'
 import { Route as HomeRoute } from '../../routes/index'
 import { useBots } from '../../stores/bots'
@@ -129,6 +129,8 @@ beforeEach(() => {
   useConnection.setState({
     target: { kind: 'local' },
     epoch: 'first',
+    // The store's initial status; the drop test moves it.
+    status: 'idle',
     daemon: { one_chat: true } as DaemonInfo
   })
   useBots.setState({ byName: { owl: { name: 'owl', display_name: 'Owl' } as Bot }, loaded: true })
@@ -167,6 +169,81 @@ it.each(['bookmark', 'startup', 'back', 'loaded'] as const)(
     }
 
     expect(calls('hexbot.sections.create').length).toBeLessThanOrEqual(3)
+  }
+)
+it('keeps the open chat on screen through a dropped connection and a report reload', async () => {
+  // A live ID unlike the section's own, as the daemon gives.
+  call.mockImplementation(async (method: string, input: Record<string, unknown>) => {
+    const answer = (await reply(method, input)) as { section?: Section }
+
+    return method === 'hexbot.sections.open'
+      ? {
+          section: { ...answer.section, live_session_id: 'live-1' },
+          messages: [{ role: 'assistant', row_id: 'kept', text: 'canonical history' }]
+        }
+      : answer
+  })
+  await mount('/b/owl/s/canonical')
+  const shown = await screen.findByText('canonical history')
+  await act(async () => useConnection.getState().setDaemon(null))
+  expect(shown).toBeInTheDocument()
+  await act(async () => useConnection.getState().setDaemon({ one_chat: true } as DaemonInfo))
+  await waitFor(() => expect(screen.getByRole('textbox', { name: 'Message' })).toBeEnabled())
+  // A dream report: the chat is read again into the same transcript.
+  const transcript = () => screen.getByText('canonical history').closest('[class*="52rem"]')
+  const before = transcript()
+  await act(async () => {
+    useSections.getState().forgetLive('canonical')
+    await useSections.getState().open('canonical')
+  })
+  expect(transcript()).toBe(before)
+})
+it.each([false, true])(
+  'a drop longer than a connection wait keeps the chat; a reconnect that cannot read the daemon offers Retry, info fails=%s',
+  async infoFails => {
+    await mount('/b/owl/s/canonical')
+    const shown = await screen.findByText('canonical history')
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+
+    try {
+      // ConnectionSupervisor.handleDrop: no client, no daemon, reconnecting.
+      await act(async () => {
+        setActiveRpc(null)
+        useConnection.getState().setDaemon(null)
+        useConnection.getState().setStatus('reconnecting')
+      })
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(CONNECT_WAIT_MS + 1000)
+      })
+      expect(shown).toBeInTheDocument()
+      expect(screen.queryByRole('button', { name: 'Retry' })).toBeNull()
+    } finally {
+      vi.useRealTimers()
+    }
+
+    // The same daemon process answers: the client is set, then the status,
+    // and hydration clears the daemon before hexbot.info answers.
+    if (infoFails) {
+      call.mockImplementation((method: string, input: Record<string, unknown>) =>
+        method === 'hexbot.info'
+          ? Promise.reject(new Error('Info unavailable'))
+          : reply(method, input)
+      )
+    }
+
+    await act(async () => {
+      setActiveRpc({ call } as never)
+      useConnection.getState().setStatus('connected')
+    })
+
+    if (infoFails) {
+      expect(await screen.findByRole('button', { name: 'Retry' })).toBeVisible()
+
+      return
+    }
+
+    await act(async () => useConnection.getState().setDaemon({ one_chat: true } as DaemonInfo))
+    await waitFor(() => expect(screen.getByRole('textbox', { name: 'Message' })).toBeEnabled())
   }
 )
 it('leaves an explicit peer thread and its question on that thread', async () => {

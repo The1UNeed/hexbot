@@ -1265,17 +1265,17 @@ pub fn delete(home: &Path, room: &str) -> Result<Value> {
     Ok(json!({"deleted":true}))
 }
 fn delete_with_conn(home: &Path, conn: &rusqlite::Connection, room: &str) -> Result<()> {
-    purge_transcripts(home, conn, room)?;
-    crate::settings::retire_room_incidents(conn, room)?;
-    conn.execute("DELETE FROM rooms WHERE id=?", [room])?;
-    Ok(())
-}
-fn purge_transcripts(home: &Path, conn: &rusqlite::Connection, room: &str) -> Result<()> {
-    for row in rows(
+    // Deleting the room cascades these mappings, so read them first.
+    let transcripts = rows(
         conn,
         "SELECT stored_session_id FROM room_sessions WHERE room_id=?",
         &[&room],
-    )? {
+    )?;
+    crate::settings::retire_room_incidents(conn, room)?;
+    conn.execute("DELETE FROM rooms WHERE id=?", [room])?;
+    // History deletion commits on its own. Run it after every catalog
+    // statement, so a failed one leaves the room with its history.
+    for row in transcripts {
         crate::runtime_store::delete(home, required(&row, "stored_session_id")?)?;
     }
     Ok(())

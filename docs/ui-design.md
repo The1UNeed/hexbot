@@ -280,7 +280,8 @@ nested inside a card and no row carries more than one line of explanation.
   that connector's set-up sheet, which is how a "Fix Notion" action in the
   chat lands here.
 - Tabs in three groups: Profile, Soul, Model; Abilities (Memory, Tools,
-  Connectors, Skills); Manage (Approvals, Advanced).
+  Connectors, Skills); Manage (Approvals, Check-ins for the primary bot,
+  Advanced).
 - Tabs: Profile (face, name, label, description), Soul
   (full-height editor, template menu with a confirm, word count), Model
   (configured providers only, the provider's model list with the

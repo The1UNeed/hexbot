@@ -16,6 +16,7 @@
  *   session.usage          usage badge
  *   error                  inline error row
  *   hexbot.bots.incident   Stopped card in the section's transcript, notification
+ *   hexbot.checkins.message the primary bot messaged you on its own: notification
  *
  * Session-less `hexbot.*.changed` events refresh the cold stores.
  */
@@ -23,6 +24,7 @@
 import type { GatewayEvent } from '@hermes/shared'
 
 import { useBots } from '../stores/bots'
+import { useCheckins } from '../stores/checkins'
 import { useConnectors } from '../stores/connectors'
 import { useMe } from '../stores/me'
 import { useRooms } from '../stores/rooms'
@@ -33,9 +35,10 @@ import type {
   ToolCompletePayload,
   ToolStartPayload
 } from '../stores/transcripts'
-import { transcriptNotify, useTranscripts } from '../stores/transcripts'
+import { holdCheckinMessage, transcriptNotify, useTranscripts } from '../stores/transcripts'
 import { useUi } from '../stores/ui'
 
+import { getBridge } from './bridge'
 import type { HexbotRpcClient } from './rpc'
 import type {
   ClarifyRequestPayload,
@@ -45,6 +48,11 @@ import type {
   SessionInfo,
   Usage
 } from './types'
+
+/** A browser notification asks the app shell to open a section (routes/__root.tsx). */
+export const OPEN_SECTION_EVENT = 'hexbot:open-section'
+/** Under the app's notification limit (apps/desktop, `hexbot:notify`). */
+const NOTIFY_BODY = 1_000
 
 export interface EventRouterDeps {
   refreshBots?: () => void
@@ -146,6 +154,64 @@ export function routeEvent(event: GatewayEvent, deps: EventRouterDeps = {}): voi
 
     case 'hexbot.memory.user.changed':
       return
+
+    case 'hexbot.checkins.changed':
+      // Changed elsewhere, through another app or `hexbot checkins`.
+      void useSettings.getState().refresh()
+
+      if (useCheckins.getState().loaded) {
+        void useCheckins.getState().refresh()
+      }
+
+      return
+    case 'hexbot.checkins.message': {
+      const bot = typeof payload.bot === 'string' ? payload.bot : ''
+      const whole = typeof payload.text === 'string' ? payload.text : ''
+      const sectionId = typeof payload.section_id === 'string' ? payload.section_id : undefined
+      // An open Check-ins section shows it at once; history has the same row id.
+      const live = sectionId ? useSections.getState().liveSessionId[sectionId] : undefined
+
+      if (sectionId && whole && typeof payload.row_id === 'string') {
+        const row = {
+          createdAt: typeof payload.timestamp === 'number' ? payload.timestamp * 1000 : Date.now(),
+          id: payload.row_id,
+          text: whole
+        }
+
+        // Opening as it arrives: it joins once the history is in (stores/sections.ts).
+        if (live && transcripts.bySession[live]) {
+          transcripts.checkinMessage(live, row)
+        } else {
+          holdCheckinMessage(sectionId, row)
+        }
+      }
+
+      if (whole && botNotifies(bot)) {
+        const title = useBots.getState().byName[bot]?.display_name ?? bot
+        // A notification shows a few lines; the whole message is in the section.
+        const body = whole.length > NOTIFY_BODY ? `${whole.slice(0, NOTIFY_BODY - 1)}…` : whole
+        // The app notifies even with its window closed. A browser tab has no app
+        // to go through, so it shows its own while in the background.
+        transcriptNotify({ body, sectionId, title })
+
+        if (
+          !getBridge() &&
+          document.hidden &&
+          'Notification' in window &&
+          Notification.permission === 'granted'
+        ) {
+          new Notification(title, { body }).onclick = () => {
+            window.focus()
+
+            if (sectionId) {
+              window.dispatchEvent(new CustomEvent(OPEN_SECTION_EVENT, { detail: sectionId }))
+            }
+          }
+        }
+      }
+
+      return
+    }
 
     case 'hexbot.connectors.changed':
       effects.refreshConnectors()

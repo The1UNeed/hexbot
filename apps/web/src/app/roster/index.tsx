@@ -212,9 +212,14 @@ function BotRow({
   const label = bot.title || bot.description
   const status = botStatusWithLive(bot, available, live)
 
-  // A turn finished that you have not seen on any device.
+  // A turn finished in the chat that you have not seen on any device. Check-ins
+  // and archived sections do not count: opening the bot never clears them.
   const dot =
-    status === 'idle' && !active && available.some(section => section.done_at) ? 'done' : status
+    status === 'idle' &&
+    !active &&
+    available.some(section => section.done_at && !section.archived_at && !section.purpose)
+      ? 'done'
+      : status
 
   return (
     <ContextMenu items={[{ label: 'Settings', onSelect: () => onSettings(bot.name) }]}>

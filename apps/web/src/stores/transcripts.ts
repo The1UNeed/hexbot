@@ -188,6 +188,8 @@ export interface TranscriptsState {
    * streaming message alone: the incident fires mid-turn (a tool refused) and
    * the reply keeps streaming after it.
    */
+  /** A message the primary bot sent here from a check-in, once by its history row id. */
+  checkinMessage: (sessionId: string, message: CheckinRow) => void
   incidentEvent: (sessionId: string, message: string, detail: ErrorDetail) => void
   messageComplete: (sessionId: string, payload?: MessageCompletePayload) => void
   messageDelta: (sessionId: string, text: string) => void
@@ -224,6 +226,28 @@ const defaultEffects: TranscriptEffects = {
 }
 
 let effects: TranscriptEffects = defaultEffects
+
+/** A check-in message for a section whose transcript is still loading. */
+export interface CheckinRow {
+  createdAt: number
+  id: string
+  text: string
+}
+const heldCheckins = new Map<string, CheckinRow[]>()
+
+/** Keeps a check-in message until its section's history is in; a few per section. */
+export function holdCheckinMessage(sectionId: string, row: CheckinRow): void {
+  heldCheckins.set(sectionId, [...(heldCheckins.get(sectionId) ?? []), row].slice(-20))
+}
+
+/** The check-in messages held for a section, now that its transcript exists. */
+export function releaseCheckinMessages(sectionId: string): CheckinRow[] {
+  const rows = heldCheckins.get(sectionId) ?? []
+
+  heldCheckins.delete(sectionId)
+
+  return rows
+}
 
 /** Send a native notification through the same effect the store uses. */
 export function transcriptNotify(input: { body: string; sectionId?: string; title: string }): void {
@@ -1237,6 +1261,35 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
           messages[existing >= 0 ? existing : messages.length - 1]!.id,
           turnId
         )
+      })
+    },
+
+    checkinMessage(sessionId, message) {
+      update(sessionId, transcript => {
+        if (transcript.messages.some(item => item.id === message.id)) {
+          return transcript
+        }
+
+        const row: TranscriptMessage = {
+          attachments: [],
+          createdAt: message.createdAt,
+          id: message.id,
+          role: 'assistant',
+          streaming: false,
+          text: message.text,
+          toolCalls: []
+        }
+
+        // A turn streaming in this section stays last.
+        const streamingAt = transcript.streamingMessageId
+          ? transcript.messages.findIndex(item => item.id === transcript.streamingMessageId)
+          : -1
+
+        const messages = [...transcript.messages]
+
+        messages.splice(streamingAt >= 0 ? streamingAt : messages.length, 0, row)
+
+        return { ...transcript, messages }
       })
     },
 
