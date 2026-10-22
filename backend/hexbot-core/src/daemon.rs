@@ -276,11 +276,10 @@ async fn run() -> Result<()> {
     #[cfg(windows)]
     windows_process_lifetime::retain_until_process_exit()?;
     let executable = std::env::current_exe()?;
-    common::atomic_write(
-        &home.join("runtime/native-running.json"),
-        &serde_json::to_vec(&serde_json::json!({"pid":std::process::id(),"executable":executable}))
-            .unwrap(),
-    )?;
+    let running_record =
+        serde_json::to_vec(&serde_json::json!({"pid":std::process::id(),"executable":executable}))
+            .unwrap();
+    common::atomic_write(&home.join("runtime/native-running.json"), &running_record)?;
     db::migrate(&home)?;
     if let Some(lan) = lan {
         hexbot_core::settings::update(&home, "local", &serde_json::json!({"lan_enabled":lan}))?;
@@ -375,6 +374,11 @@ async fn run() -> Result<()> {
                 Err(error) => eprintln!("Sign-in link: {error}"),
             }
         }
+        // Windows observers cannot read the held byte-range lock's PID. Keep
+        // the early retention record and publish its readiness event after the
+        // HTTP identity service exists, including after a listener rebind.
+        #[cfg(windows)]
+        common::atomic_write(&home.join("runtime/native-running.json"), &running_record)?;
         println!("HERMES_BACKEND_READY port={port}");
         std::io::stdout().flush()?;
         let mut tick = tokio::time::interval(std::time::Duration::from_millis(250));

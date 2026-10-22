@@ -5,7 +5,7 @@ import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 
 import { binDir, canonicalRuntimePath, hexbotExecutable, hexbotHome } from './backend/paths'
-import { lockedDaemonPid, runningDaemonPort, selectedDaemon } from './backend/manager'
+import { runningDaemon } from './backend/manager'
 import { launchdPlist, systemdUnit, type ServiceFileOptions } from './service-files'
 
 const exec = promisify(execFile)
@@ -81,14 +81,10 @@ export async function uninstallService(
 export async function reconcileWindowsService(targetPlatform = process.platform, run: Run = exec): Promise<number | undefined> {
   if (targetPlatform !== 'win32') return undefined
   const status = await serviceStatus(undefined, targetPlatform, run)
-  if (!status.installed || !status.running || !await runningDaemonPort()) return undefined
-  if (await selectedDaemon()) return undefined
-  const record = JSON.parse(await readFile(join(hexbotHome(), 'runtime/native-running.json'), 'utf8')) as { pid?: number; executable?: string }
-  if (!record.pid || record.pid !== await lockedDaemonPid() || !record.executable)
-    throw new Error('Cannot verify the running service runtime')
-  // Resolve before changing the task. A damaged/stale record is not proof of
-  // an older process; restart must not guess about its identity.
-  if (canonicalRuntimePath(record.executable) === canonicalRuntimePath(hexbotExecutable())) return undefined
+  if (!status.installed || !status.running) return undefined
+  const record = await runningDaemon()
+  if (!record) return undefined
+  if (record.executable === canonicalRuntimePath(hexbotExecutable())) return undefined
   // Install also repairs a missing script after the scheduler/home/PID checks.
   await run(hexbotExecutable(), ['service', 'install'], windowsOptions())
   return record.pid

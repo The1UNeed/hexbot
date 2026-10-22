@@ -6,7 +6,7 @@ import { join, resolve } from 'node:path'
 import test from 'node:test'
 import { promisify } from 'node:util'
 import { productName } from './release-version.mjs'
-import { pnpmCommand } from './pnpm-command.mjs'
+import { pnpmCommand, windowsPnpmCommand } from './pnpm-command.mjs'
 
 const exec = promisify(execFile)
 const desktop = resolve('apps/desktop')
@@ -17,8 +17,8 @@ const packagerRequire = createRequire(packager)
 const collector = packagerRequire.resolve('./node-module-collector')
 const hooks = builderRequire.resolve('app-builder-lib/out/util/resolve.js')
 
-for (const client of [false, true]) {
-  test(`${client ? 'Client' : 'Full'} real pnpm/builder CLI loads and executes project-contained hooks`, async t => {
+for (const corepack of [false, ...(process.env.HEXBOT_TEST_COREPACK_ROOT ? [true] : [])]) for (const client of [false, true]) {
+  test(`${client ? 'Client' : 'Full'} ${corepack ? 'Corepack' : 'native'} real pnpm/builder CLI loads and executes project-contained hooks`, async t => {
     const root = await mkdtemp(join(desktop, '.hook-probe-'))
     t.after(() => rm(root, { recursive: true, force: true }))
     const config = join(root, 'builder.cjs')
@@ -66,7 +66,7 @@ for (const client of [false, true]) {
         }
       }
     `)
-    const { command, prefix } = await pnpmCommand()
+    const { command, prefix } = corepack ? windowsPnpmCommand([join(process.env.HEXBOT_TEST_COREPACK_ROOT, 'pnpm.cmd')]) : await pnpmCommand()
     // Same pnpm executable/JS entrypoint, exec argv, cwd and inherited process
     // environment as dist.mjs. No artificial PATH or forced workspace root.
     const version = JSON.parse(await readFile(join(desktop, 'package.json'), 'utf8')).version

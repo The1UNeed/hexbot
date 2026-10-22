@@ -355,3 +355,73 @@ it('serializes runtime preparation and owned-task reconciliation before attachin
     await rm(home, { recursive: true, force: true })
   }
 })
+
+for (const installed of [false, true]) for (const fails of [false, true])
+it(`revokes a backoff retry before service ${installed ? 'install' : 'remove'}, failure=${fails}`, async () => {
+  const home = await mkdtemp(join(tmpdir(), 'hexbot-backoff-service-'))
+  const previous = process.env.HEXBOT_HOME
+  process.env.HEXBOT_HOME = home
+  const children = [0, 1, 2].map(() => {
+    const child = Object.assign(new EventEmitter(), { stdout: new PassThrough(), stderr: new PassThrough(), stdin: new PassThrough(), pid: process.pid,
+      kill: vi.fn(() => { child.emit('exit', 0, null); return true }) })
+    child.stdin.on('finish', () => child.emit('exit', 0, null))
+    return child
+  })
+  spawnDaemon.mockReset()
+  for (const child of children) spawnDaemon.mockImplementationOnce(() => {
+    queueMicrotask(() => child.stdout.emit('data', Buffer.from('HERMES_BACKEND_READY port=9120\n')))
+    return child
+  })
+  let release!: () => void, entered!: () => void
+  const gate = new Promise<void>(resolve => { release = resolve })
+  const operationEntered = new Promise<void>(resolve => { entered = resolve })
+  const server = http.createServer((_request, response) => response.end(JSON.stringify({ install_id: 'retry-home', pid: process.pid })))
+  const manager = new DaemonManager(9120)
+  try {
+    await manager.start()
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] })
+    const timers = vi.spyOn(globalThis, 'setTimeout')
+    children[0]!.emit('exit', 1, null)
+    const queuedRetry = timers.mock.calls.find(call => call[1] === backoffSchedule[0])![0] as () => void
+    timers.mockRestore()
+    expect(manager.status().state).toBe('starting')
+    const operation = async () => {
+      entered()
+      await gate
+      if (fails) throw new Error('Verified task operation refused')
+      if (installed) {
+        const port = await new Promise<number>(resolve => server.listen(0, '127.0.0.1', () => resolve((server.address() as net.AddressInfo).port)))
+        await writeFile(join(home, 'native-daemon.lock'), String(process.pid))
+        await writeFile(join(home, 'install_id'), 'retry-home')
+        await writeFile(join(home, 'serve-state.json'), JSON.stringify({ port }))
+      }
+    }
+    const result = installed ? manager.installService(operation) : manager.uninstallService(operation)
+    const checked = fails ? expect(result).rejects.toThrow('Verified task operation refused') : result
+    await operationEntered
+    // A timer callback can already be dequeued when clearTimeout runs.
+    queuedRetry()
+    await vi.advanceTimersByTimeAsync(backoffSchedule[0])
+    expect(spawnDaemon, 'The old retry must not spawn during service ownership changes').toHaveBeenCalledTimes(1)
+    release()
+    await checked
+    expect(spawnDaemon).toHaveBeenCalledTimes(installed && !fails ? 1 : 2)
+    expect(manager.status().state).toBe(installed && !fails ? 'external' : 'running')
+    const current = manager.status()
+    children[0]!.stdout.emit('data', Buffer.from('HERMES_BACKEND_READY port=65530\n'))
+    children[0]!.emit('error', new Error('Late replaced-child error'))
+    expect(manager.status()).toEqual(current)
+    await vi.advanceTimersByTimeAsync(backoffSchedule.at(-1)!)
+    expect(spawnDaemon).toHaveBeenCalledTimes(installed && !fails ? 1 : 2)
+  } finally {
+    release()
+    vi.useRealTimers()
+    await manager.stop()
+    spawnDaemon.mockReset()
+    server.closeAllConnections()
+    if (server.listening) await new Promise<void>(resolve => server.close(() => resolve()))
+    if (previous === undefined) delete process.env.HEXBOT_HOME
+    else process.env.HEXBOT_HOME = previous
+    await rm(home, { recursive: true, force: true })
+  }
+})

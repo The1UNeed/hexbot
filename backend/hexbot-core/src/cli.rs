@@ -1,4 +1,7 @@
 //! Native command line operations. A running daemon remains the sole runtime owner.
+#[cfg(windows)]
+#[path = "windows_terminal.rs"]
+mod windows_terminal;
 use crate::{
     Error, Result, auth, catalog, common, db, events::EventHub, runtime::Runtime, services,
     settings,
@@ -301,15 +304,14 @@ async fn input(prompt: String) -> Result<String> {
                 "-NoProfile",
                 "-NonInteractive",
                 "-Command",
-                "[Console]::ReadLine()",
+                windows_terminal::READ_LINE,
             ])
             .stdin(std::process::Stdio::inherit())
             .kill_on_drop(true);
         tokio::select! {
             result = command.output() => {
                 let output = result?;
-                if !output.status.success() || output.stdout.len() > 65536 { return Err(Error::new(5200, "Terminal answer failed or exceeded 64 KiB")); }
-                Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
+                windows_terminal::answer(&output).ok_or_else(|| Error::new(5200, "Terminal answer failed or exceeded 64 KiB"))
             },
             _ = tokio::signal::ctrl_c() => Err(Error::new(5200, "Command interrupted"))
         }

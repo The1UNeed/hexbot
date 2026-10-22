@@ -282,3 +282,23 @@ scheduler/home/PID checks, so a verified task with a deleted script can recover.
 The installed Full relaunch probe deletes that script and requires exact owned
 script restoration, old PID exit and the new selected runtime. Foreign/unbound
 refusals and the unchanged-build PID control remain mandatory.
+
+Windows app readiness does not read the held lock's PID bytes. It probes the
+lock range and retains a kernel process handle while checking the process
+owner, HTTP install ID/PID and unchanged running/port metadata. The executable
+must resolve inside this home's canonical managed runtime and match the live
+process image. A held home with unreadable, stale or inconsistent evidence is
+an error, never permission to spawn or stop a process. The daemon republishes
+its running record after HTTP startup so event-based observers can check again.
+The task fixture also binds that process to the verified scheduler instance and
+excludes prior desktop/task PIDs. The a305 native run failed before either
+repair because its old fixture accepted an exited PID from a retained record;
+the historical log does not identify that PID as the desktop fixture. New
+explicit desktop identity and retained-handle checks still need native execution.
+
+Service ownership transitions revoke pending crash retries before entering the
+serialized operation. Recovery retains the intent to own a daemon even during
+backoff; dequeued callbacks must still hold the current retry generation. The
+Windows terminal answer uses BOMless UTF-8 independently of the console code
+page. Build commands recognize Corepack's explicit JavaScript entrypoint and
+invoke it through Node with literal argument arrays, without executing shims.

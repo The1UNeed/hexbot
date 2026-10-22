@@ -8,6 +8,7 @@ import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import { app } from 'electron'
 
 import { binDir, daemonDirectory, hexbotExecutable, hexbotHome, canonicalRuntimePath } from './paths'
+import { windowsDaemon } from './windows-readiness'
 import { nodePath } from './node-path'
 
 // 'external': a service or another copy of the app runs the daemon for this
@@ -51,6 +52,7 @@ export async function findFreePort(
 // The PID in native-daemon.lock while that process is alive. A permission
 // error counts as alive: uncertain ownership must never look like a stopped daemon.
 export async function lockedDaemonPid(home = hexbotHome()): Promise<number | undefined> {
+  if (process.platform === 'win32') return (await windowsDaemon(home))?.pid
   const pid = Number(await readFile(join(home, 'native-daemon.lock'), 'utf8').catch(() => ''))
   if (!Number.isSafeInteger(pid) || pid <= 0) return undefined
   try {
@@ -65,6 +67,7 @@ export async function lockedDaemonPid(home = hexbotHome()): Promise<number | und
 // home; a second one would exit on the home lock. The running daemon holds that
 // lock and records its port in serve-state.json.
 export async function runningDaemonPort(home = hexbotHome()): Promise<number | undefined> {
+  if (process.platform === 'win32') return (await windowsDaemon(home))?.port
   const pid = await lockedDaemonPid(home)
   if (!pid) return undefined
   try {
@@ -105,13 +108,18 @@ export interface RuntimeActivation { executable: string }
 
 // Readiness includes both the authenticated home identity and the selected
 // immutable executable. A stale serve-state or old PID cannot satisfy restart.
+export async function runningDaemon(home = hexbotHome()): Promise<{ pid: number; port: number; executable: string } | undefined> {
+  if (process.platform === 'win32') return windowsDaemon(home)
+  const port = await runningDaemonPort(home)
+  if (!port) return undefined
+  const record = JSON.parse(await readFile(join(home, 'runtime/native-running.json'), 'utf8')) as { pid?: number; executable?: string }
+  if (!record.pid || record.pid !== await lockedDaemonPid(home) || !record.executable)
+    throw new Error('Cannot verify the running service runtime')
+  return { pid: record.pid, port, executable: canonicalRuntimePath(record.executable) }
+}
 export async function selectedDaemon(): Promise<{ pid: number; port: number } | undefined> {
-  try {
-    const record = JSON.parse(await readFile(join(hexbotHome(), 'runtime/native-running.json'), 'utf8')) as { pid?: number; executable?: string }
-    const port = await runningDaemonPort()
-    if (!port || !record.pid || record.pid !== await lockedDaemonPid() || !record.executable) return undefined
-    return canonicalRuntimePath(record.executable) === canonicalRuntimePath(hexbotExecutable()) ? { pid: record.pid, port } : undefined
-  } catch { return undefined }
+  const ready = process.platform === 'win32' ? await runningDaemon() : await runningDaemon().catch(() => undefined)
+  return ready && ready.executable === canonicalRuntimePath(hexbotExecutable()) ? ready : undefined
 }
 
 export class DaemonManager extends EventEmitter {
@@ -121,6 +129,8 @@ export class DaemonManager extends EventEmitter {
   private intentionalStop = false
   private failures: number[] = []
   private restartTimer?: NodeJS.Timeout
+  private retryEpoch = 0
+  private ownedIntent = false
   private quitting = false
   private transition: Promise<unknown> = Promise.resolve()
   private pendingTransitions = 0
@@ -132,9 +142,10 @@ export class DaemonManager extends EventEmitter {
   ) {
     super()
     app.on('before-quit', event => {
-      if (this.quitting || (!this.child && !this.pendingTransitions)) return
+      if (this.quitting || (!this.ownedIntent && !this.child && !this.pendingTransitions)) return
       event.preventDefault()
       this.quitting = true
+      this.revokeRetry()
       void this.stopForQuit().finally(() => app.exit(0))
     })
   }
@@ -154,9 +165,19 @@ export class DaemonManager extends EventEmitter {
   uninstallService(uninstall: () => Promise<void>): Promise<void> {
     return this.changeService(uninstall, false)
   }
+  private revokeRetry(): void {
+    this.retryEpoch++
+    clearTimeout(this.restartTimer)
+    this.restartTimer = undefined
+  }
   private changeService(operation: () => Promise<void>, installed: boolean): Promise<void> {
+    // Revoke synchronously, before an already queued retry can enter the
+    // transition queue. Intent survives the gap between a crash and its retry.
+    const requestedOwned = this.ownedIntent || Boolean(this.child)
+    this.revokeRetry()
     return this.serialize(async () => {
-      const owned = Boolean(this.child)
+      this.revokeRetry()
+      const owned = requestedOwned || this.ownedIntent || Boolean(this.child)
       if (owned) await this.stopOwned()
       try {
         await operation()
@@ -182,6 +203,7 @@ export class DaemonManager extends EventEmitter {
     })
   }
   private async restoreOwned(): Promise<void> {
+    if (this.quitting) return
     await this.startOwned()
     if (this.current.state === 'running' || this.current.state === 'external') return
     await new Promise<void>((resolve, reject) => {
@@ -204,8 +226,9 @@ export class DaemonManager extends EventEmitter {
     return new Promise((resolve, reject) => {
       const directory = nodePath(realpathSync.native(hexbotHome()))
       const watchers = [watch(directory, () => { void check() })]
-      if (previousPid !== undefined) watchers.push(watch(join(directory, 'runtime'), () => { void check() }))
-      const timer = setTimeout(() => finish(new Error('Installed service did not acquire this home and become ready')), 30_000)
+      if (existsSync(join(directory, 'runtime'))) watchers.push(watch(join(directory, 'runtime'), () => { void check() }))
+      let lastError: unknown
+      const timer = setTimeout(() => finish(new Error('Installed service did not acquire this home and become ready', { cause: lastError })), 30_000)
       let settled = false
       const finish = (error?: Error, port?: number): void => {
         if (settled) return
@@ -215,14 +238,24 @@ export class DaemonManager extends EventEmitter {
         if (error) reject(error)
         else resolve(port!)
       }
+      let checking = false, changed = false
       const check = async (): Promise<void> => {
-        if (previousPid === undefined) {
-          const port = await runningDaemonPort()
-          if (port) finish(undefined, port)
-        } else {
-          const ready = await selectedDaemon()
-          if (ready && ready.pid !== previousPid) finish(undefined, ready.port)
-        }
+        changed = true
+        if (checking || settled) return
+        checking = true
+        do {
+          changed = false
+          try {
+            if (previousPid === undefined) {
+              const port = await runningDaemonPort()
+              if (port) finish(undefined, port)
+            } else {
+              const ready = await selectedDaemon()
+              if (ready && ready.pid !== previousPid) finish(undefined, ready.port)
+            }
+          } catch (error) { lastError = error }
+        } while (changed && !settled)
+        checking = false
       }
       for (const watcher of watchers) watcher.once('error', finish)
       void check()
@@ -234,8 +267,9 @@ export class DaemonManager extends EventEmitter {
   }
 
   start(prepare?: () => Promise<RuntimeActivation | undefined>): Promise<DaemonStatus> {
+    this.revokeRetry()
     return this.serialize(async () => {
-      const owned = Boolean(this.child)
+      const owned = this.ownedIntent || Boolean(this.child)
       try {
         const activation = await prepare?.()
         if (activation && this.child && canonicalRuntimePath(activation.executable) !== this.childExecutable) await this.stopOwned()
@@ -259,10 +293,13 @@ export class DaemonManager extends EventEmitter {
     })
   }
   private async startOwned(): Promise<DaemonStatus> {
-    if (this.current.state === 'starting' || this.current.state === 'running') return this.status()
+    if (this.quitting || (this.child && (this.current.state === 'starting' || this.current.state === 'running'))) return this.status()
+    this.revokeRetry()
+    this.ownedIntent = true
     this.intentionalStop = false
     const running = await runningDaemonPort()
     if (running) {
+      this.ownedIntent = false
       this.setStatus({ state: 'external', port: running })
       return this.status()
     }
@@ -270,15 +307,19 @@ export class DaemonManager extends EventEmitter {
     return this.status()
   }
 
-  private async spawnDaemon(port: number): Promise<void> {
+  private async spawnDaemon(port: number, epoch = this.retryEpoch): Promise<void> {
+    const authorized = (): boolean => epoch === this.retryEpoch && this.ownedIntent && !this.quitting && !this.intentionalStop && !this.child
+    if (!authorized()) return
     const running = await runningDaemonPort()
-    if (this.intentionalStop) return
+    if (!authorized()) return
     if (running) {
+      this.ownedIntent = false
       this.failures = []
       this.setStatus({ state: 'external', port: running })
       return
     }
     await mkdir(join(hexbotHome(), 'logs'), { recursive: true })
+    if (!authorized()) return
     const logPath = join(hexbotHome(), 'logs', 'daemon.log')
     rotateLog(logPath)
     const log = createWriteStream(logPath, { flags: 'a' })
@@ -300,6 +341,7 @@ export class DaemonManager extends EventEmitter {
     this.childExecutable = existsSync(executable) ? canonicalRuntimePath(executable) : executable
     const pending = new Map<NodeJS.ReadableStream, string>()
     const consume = (stream: NodeJS.ReadableStream, chunk: Buffer): void => {
+      if (this.child !== child) return
       log.write(chunk)
       const lines = `${pending.get(stream) ?? ''}${chunk.toString()}`.split(/\r?\n/)
       pending.set(stream, lines.pop() ?? '')
@@ -312,12 +354,14 @@ export class DaemonManager extends EventEmitter {
     }
     child.stdout.on('data', chunk => consume(child.stdout, chunk))
     child.stderr.on('data', chunk => consume(child.stderr, chunk))
-    child.once('error', error =>
-      this.setStatus({ state: 'crashed', port, lastError: error.message })
-    )
+    child.once('error', error => {
+      if (this.child === child) this.setStatus({ state: 'crashed', port, lastError: error.message })
+    })
     child.once('exit', (code, signal) => {
       log.end()
-      if (this.child === child) { this.child = undefined; this.childExecutable = undefined }
+      if (this.child !== child) return
+      this.child = undefined
+      this.childExecutable = undefined
       if (this.intentionalStop) {
         this.setStatus({ state: 'stopped' })
         return
@@ -339,16 +383,26 @@ export class DaemonManager extends EventEmitter {
         port,
         lastError: `Daemon exited (${code ?? signal ?? 'unknown'}); restarting`
       })
+      const epoch = this.retryEpoch
       this.restartTimer = setTimeout(() => {
-        void this.spawnDaemon(port)
+        // The callback may already be queued when a service transition cancels
+        // the timer. Both the queue and the async spawn retain this authority.
+        void this.serialize(async () => {
+          if (epoch === this.retryEpoch) await this.spawnDaemon(port, epoch)
+        }).catch(error => {
+          if (epoch === this.retryEpoch) this.setStatus({ state: 'crashed', port, lastError: String(error) })
+        })
       }, backoffSchedule[retry])
     })
   }
 
   stop(): Promise<DaemonStatus> {
+    this.revokeRetry()
     return this.serialize(() => this.stopOwned())
   }
   private async stopOwned(): Promise<DaemonStatus> {
+    this.revokeRetry()
+    this.ownedIntent = false
     if (this.current.state === 'external') {
       const running = await runningDaemonPort()
       if (running) {
@@ -357,7 +411,6 @@ export class DaemonManager extends EventEmitter {
       }
     }
     this.intentionalStop = true
-    if (this.restartTimer) clearTimeout(this.restartTimer)
     const child = this.child
     if (!child) {
       this.setStatus({ state: 'stopped' })

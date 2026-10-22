@@ -94,7 +94,8 @@ try {
     assert.throws(() => process.kill(beforeHandoff, 0), { code: 'ESRCH' })
     assert.equal((await window.evaluate(() => window.hexbot.daemon.status())).state, 'external')
     assert.deepEqual(await window.evaluate(() => window.hexbot.service.status()), { installed: true, running: true })
-    assert.equal(Number(await readFile(join(home, 'native-daemon.lock'), 'utf8')), servicePid)
+    await assert.rejects(readFile(join(home, 'native-daemon.lock')), { code: 'EBUSY' })
+    assert.equal((await fetch(`http://127.0.0.1:${(await state()).port}/api/daemon/identity`).then(response => response.json())).pid, servicePid)
     await assertHomeLock('held')
     // Stop and Quit must leave the task owner alive after the successful IPC.
     assert.equal((await window.evaluate(() => window.hexbot.daemon.stop())).state, 'external')

@@ -4,12 +4,16 @@
 mod install_ownership;
 #[path = "support/windows_process_handle.rs"]
 mod process_handle;
+#[path = "support/task_readiness.rs"]
+mod task_readiness;
 #[path = "../src/windows_node_path.rs"]
 mod windows_node_path;
 #[path = "../src/windows_paths.rs"]
 mod windows_paths;
 #[path = "../src/windows_task.rs"]
 mod windows_task;
+#[path = "../src/windows_terminal.rs"]
+mod windows_terminal;
 use hexbot_core::{system_service, windows_cli};
 use serde_json::json;
 use std::os::windows::process::CommandExt;
@@ -871,22 +875,57 @@ fn interrupted_task_install_uninstalls_owned_files_when_the_task_is_absent() {
             .output()
             .unwrap()
     };
-    let ready = |previous: u32| -> u32 {
-        let path = home.join("runtime/native-running.json");
-        let output = powershell(&format!(
-            r#"[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false);$p={};$w=[IO.FileSystemWatcher]::new([IO.Path]::GetDirectoryName($p));$w.Filter=[IO.Path]::GetFileName($p);$w.EnableRaisingEvents=$true;$clock=[Diagnostics.Stopwatch]::StartNew();try{{do{{if(Test-Path -LiteralPath $p){{$v=Get-Content -LiteralPath $p -Raw -Encoding UTF8|ConvertFrom-Json;if($v.pid -and $v.pid -ne {previous}){{$v.pid;exit 0}}}}$remaining=30000-[int]$clock.ElapsedMilliseconds;if($remaining -le 0){{throw 'Daemon did not become ready'}};$null=$w.WaitForChanged([IO.WatcherChangeTypes]::All,$remaining)}}while($true)}}finally{{$w.Dispose()}}"#,
-            quote(&path)
-        ));
-        assert!(
-            output.status.success(),
-            "{}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        String::from_utf8(output.stdout)
-            .unwrap()
-            .trim()
-            .parse()
-            .unwrap()
+    let ready = |excluded: &[u32]| -> process_handle::ProcessHandle {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        let observe = |once: bool| -> Option<task_readiness::Witness> {
+            let budget = deadline
+                .saturating_duration_since(std::time::Instant::now())
+                .as_millis();
+            assert!(budget > 0, "Task readiness exhausted its overall deadline");
+            let output = powershell(&format!(
+                "[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false);$env:HEXBOT_HOME={};$excluded=@({});$once=${once};$budget={budget};\n$null = . {{ {} }}\n{}\n{}",
+                quote(&home),
+                excluded
+                    .iter()
+                    .map(u32::to_string)
+                    .collect::<Vec<_>>()
+                    .join(","),
+                windows_task::control(&file, &home, "state").unwrap(),
+                include_str!("../assets/windows-runtime-selection.ps1"),
+                include_str!("support/task_readiness.ps1")
+            ));
+            if !output.status.success() {
+                let diagnostic =
+                    powershell(&windows_task::control(&file, &home, "diagnose").unwrap());
+                panic!(
+                    "Task readiness: status={} stdout={} stderr={}; homeIdle={:?}; diagnostic={} stderr={}",
+                    output.status,
+                    bounded(&output.stdout),
+                    bounded(&output.stderr),
+                    windows_task::home_idle(&home),
+                    bounded(&diagnostic.stdout),
+                    bounded(&diagnostic.stderr)
+                );
+            }
+            serde_json::from_slice(&output.stdout).unwrap()
+        };
+        loop {
+            let proof = observe(false).unwrap();
+            assert!(proof.ready(excluded), "Invalid readiness proof: {proof:?}");
+            let Ok(handle) = process_handle::ProcessHandle::try_open(proof.pid) else {
+                continue;
+            };
+            let Some(fresh) = observe(true) else { continue };
+            if proof.retained(&fresh, &handle.created().unwrap(), handle.alive())
+                && !windows_task::home_idle(&home).unwrap()
+            {
+                eprintln!(
+                    "Task ready retained identity: {proof:?}; kernel={}",
+                    handle.snapshot()
+                );
+                return handle;
+            }
+        }
     };
     // Direct CLI install must not race an app-owned daemon when no task
     // exists. Wait for real readiness while its home lock is held.
@@ -914,6 +953,17 @@ fn interrupted_task_install_uninstalls_owned_files_when_the_task_is_absent() {
         }
         line.clear();
     }
+    let desktop_pid = desktop.id();
+    let desktop_record: serde_json::Value =
+        serde_json::from_slice(&fs::read(home.join("runtime/native-running.json")).unwrap())
+            .unwrap();
+    let desktop_handle = process_handle::ProcessHandle::open(desktop_pid);
+    eprintln!(
+        "Desktop fixture readiness: pid={desktop_pid}; record={desktop_record}; kernel={}",
+        desktop_handle.snapshot()
+    );
+    assert!(desktop_handle.alive());
+    assert_eq!(desktop_record["pid"], desktop_pid);
     let refused = service(&home, "install");
     assert!(!refused.status.success());
     assert!(String::from_utf8_lossy(&refused.stderr).contains("Stop the daemon"));
@@ -932,6 +982,15 @@ fn interrupted_task_install_uninstalls_owned_files_when_the_task_is_absent() {
         .write_all(b"HEXBOT_SHUTDOWN_V1\n")
         .unwrap();
     assert_eq!(desktop.wait().unwrap().code(), Some(0));
+    assert!(!desktop_handle.alive());
+    let retained_record: serde_json::Value =
+        serde_json::from_slice(&fs::read(home.join("runtime/native-running.json")).unwrap())
+            .unwrap();
+    assert_eq!(retained_record["pid"], desktop_pid);
+    eprintln!(
+        "Exited desktop retained record control: pid={desktop_pid}; kernel={}",
+        desktop_handle.snapshot()
+    );
     eprintln!("Task recovery stage: initial install; home={home:?} script={file:?}");
     let output = service(&home, "install");
     assert!(
@@ -940,9 +999,9 @@ fn interrupted_task_install_uninstalls_owned_files_when_the_task_is_absent() {
         String::from_utf8_lossy(&output.stderr)
     );
     let _task_cleanup = TaskCleanup(name.clone());
-    let first_pid = ready(0);
+    let first_handle = ready(&[desktop_pid]);
+    let first_pid = first_handle.pid;
     expected_pid.set(first_pid);
-    let first_handle = process_handle::ProcessHandle::open(first_pid);
     let lifetime = |stage: &str, handle: &process_handle::ProcessHandle| {
         let diagnostic = powershell(&windows_task::control(&file, &home, "diagnose").unwrap());
         eprintln!(
@@ -1003,9 +1062,9 @@ fn interrupted_task_install_uninstalls_owned_files_when_the_task_is_absent() {
         first_handle.snapshot()
     );
     first_handle.wait();
-    let first_pid = ready(first_pid);
+    let first_handle = ready(&[desktop_pid, first_pid]);
+    let first_pid = first_handle.pid;
     expected_pid.set(first_pid);
-    let first_handle = process_handle::ProcessHandle::open(first_pid);
     assert!(first_handle.alive());
     fs::remove_file(&file).unwrap();
     lifetime("before-live-definition-replacement", &first_handle);
@@ -1049,7 +1108,8 @@ fn interrupted_task_install_uninstalls_owned_files_when_the_task_is_absent() {
         first_handle.snapshot()
     );
     first_handle.wait();
-    let next_pid = ready(first_pid);
+    let next_handle = ready(&[desktop_pid, first_pid]);
+    let next_pid = next_handle.pid;
     assert_ne!(next_pid, first_pid);
     assert!(powershell(&format!("if(Get-Process -Id {first_pid} -ErrorAction SilentlyContinue){{throw 'Old task daemon survived repair'}}")).status.success());
     assert!(service(&home, "stop").status.success());
@@ -1089,4 +1149,45 @@ fn interrupted_task_install_uninstalls_owned_files_when_the_task_is_absent() {
         String::from_utf8_lossy(&missing.stderr)
     );
     drop(_task_cleanup); // Already-removed owned tasks are an idempotent cleanup.
+}
+
+#[test]
+fn terminal_answer_round_trips_utf8_after_a_legacy_console_code_page() {
+    // Actual System32 Windows PowerShell, actual Console.ReadLine and the
+    // production answer script/decoder. A StringReader supplies deterministic
+    // interactive text without injecting keys into the runner's console.
+    let text = "  中文 José 🦊 ";
+    let prefix = format!(
+        "[Console]::OutputEncoding=[Text.Encoding]::GetEncoding(437);[Console]::SetIn([IO.StringReader]::new('{}'));",
+        text.replace('\'', "''")
+    );
+    let control = powershell(&format!("{prefix}[Console]::ReadLine()"));
+    assert!(control.status.success());
+    assert_ne!(String::from_utf8_lossy(&control.stdout).trim(), text.trim());
+    let output = powershell(&format!("{prefix}{}", windows_terminal::READ_LINE));
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(!output.stdout.starts_with(&[0xef, 0xbb, 0xbf]));
+    assert_eq!(
+        windows_terminal::answer(&output).as_deref(),
+        Some(text.trim())
+    );
+    for (script, expected) in [
+        (
+            "[Console]::SetIn([IO.StringReader]::new(''));".to_owned()
+                + windows_terminal::READ_LINE,
+            Some(String::new()),
+        ),
+        (
+            "[Console]::SetIn([IO.StringReader]::new(('x'*65537)));".to_owned()
+                + windows_terminal::READ_LINE,
+            None,
+        ),
+        ("exit 7".to_owned(), None),
+    ] {
+        assert_eq!(windows_terminal::answer(&powershell(&script)), expected);
+    }
 }
