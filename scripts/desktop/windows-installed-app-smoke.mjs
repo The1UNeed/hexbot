@@ -28,6 +28,12 @@ async function state() {
     void check()
   })
 }
+async function assertStopped(pid) {
+  assert.throws(() => process.kill(pid, 0), { code: 'ESRCH' }, 'Packaged Full left its owned daemon alive')
+  await assert.rejects(readFile(join(home, 'serve-state.json')), { code: 'ENOENT' })
+  const ps = join(process.env.SystemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
+  await promisify(execFile)(ps, ['-NoProfile', '-NonInteractive', '-Command', "$f=[IO.File]::Open((Join-Path $env:HEXBOT_HOME 'native-daemon.lock'),'Open','ReadWrite','ReadWrite,Delete'); try {$f.Lock(0,1);$f.Unlock(0,1)} finally {$f.Dispose()}"], {env: {...process.env, HEXBOT_HOME: home}, windowsHide: true, timeout: 30_000})
+}
 let app, ownedPid
 try {
   app = await electron.launch({ executablePath: executable, timeout: 300_000, env: {
@@ -48,6 +54,16 @@ try {
     assert(selected.endsWith('hexbot.exe'))
     const response = await fetch(`http://127.0.0.1:${running.port}/`, { signal: AbortSignal.timeout(10_000) })
     assert.equal(response.status, 200)
+    const oldPid = ownedPid
+    const stopped = await window.evaluate(() => window.hexbot.daemon.stop())
+    assert.equal(stopped.state, 'stopped')
+    await assertStopped(oldPid)
+    await window.evaluate(() => window.hexbot.daemon.start())
+    const restarted = await state()
+    ownedPid = JSON.parse(await readFile(join(home, 'runtime/native-running.json'), 'utf8')).pid
+    assert.notEqual(ownedPid, oldPid, 'Packaged Full did not start a new owned daemon')
+    assert.equal((await fetch(`http://127.0.0.1:${restarted.port}/`, {signal: AbortSignal.timeout(10_000)})).status, 200)
+    console.log('Packaged Full stop/start waited for cleanup and started a new owned process')
   } else {
     await assert.rejects(readFile(join(home, 'runtime/native-current.json')), { code: 'ENOENT' })
   }
@@ -55,10 +71,7 @@ try {
 } finally {
   if (app) await app.close()
   if (ownedPid) {
-    assert.throws(() => process.kill(ownedPid, 0), { code: 'ESRCH' }, 'Packaged Full quit left its owned daemon alive')
-    await assert.rejects(readFile(join(home, 'serve-state.json')), { code: 'ENOENT' })
-    const ps = join(process.env.SystemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
-    await promisify(execFile)(ps, ['-NoProfile', '-NonInteractive', '-Command', "$f=[IO.File]::Open((Join-Path $env:HEXBOT_HOME 'native-daemon.lock'),'Open','ReadWrite','ReadWrite,Delete'); try {$f.Lock(0,1);$f.Unlock(0,1)} finally {$f.Dispose()}"], {env: {...process.env, HEXBOT_HOME: home}, windowsHide: true, timeout: 30_000})
+    await assertStopped(ownedPid)
     console.log('Packaged Full quit completed graceful cleanup and released its home lock')
   }
 }
