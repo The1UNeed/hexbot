@@ -92,6 +92,14 @@ function rotateLog(path: string): void {
   }
 }
 
+export function requestOwnedShutdown(child: Pick<ChildProcessWithoutNullStreams, 'stdin' | 'kill'>, platform = process.platform): void {
+  if (platform === 'win32') {
+    // EPIPE means the child is already exiting. The caller still waits for exit.
+    child.stdin.once('error', () => undefined)
+    child.stdin.end('HEXBOT_SHUTDOWN_V1\n')
+  } else child.kill('SIGTERM')
+}
+
 export class DaemonManager extends EventEmitter {
   private child?: ChildProcessWithoutNullStreams
   private current: DaemonStatus = { state: 'stopped' }
@@ -148,11 +156,13 @@ export class DaemonManager extends EventEmitter {
     this.setStatus({ state: 'starting', port })
     const child = spawn(hexbotExecutable(), ['serve', '--port', String(port)], {
       cwd: daemonDirectory(),
+      windowsHide: process.platform === 'win32',
       env: {
         ...process.env,
         HEXBOT_HOME: hexbotHome(),
         // Tells the daemon it may ask this app to update it (services.rs).
         HEXBOT_SUPERVISOR: 'desktop',
+        ...(process.platform === 'win32' ? { HEXBOT_DESKTOP_CONTROL: 'stdin-v1' } : {}),
         PATH: [binDir(), process.env.PATH ?? ''].join(delimiter)
       }
     })
@@ -219,22 +229,23 @@ export class DaemonManager extends EventEmitter {
       this.setStatus({ state: 'stopped' })
       return this.status()
     }
-    await new Promise<void>(resolve => {
-      const force = setTimeout(() => {
-        child.kill('SIGKILL')
-        resolve()
-      }, 5_000)
+    await new Promise<void>((resolve, reject) => {
+      // On Windows SIGTERM force-terminates a process. The inherited stdin
+      // pipe belongs only to this child and is never a network stop endpoint.
+      const deadline = setTimeout(() => reject(new Error('Owned daemon did not exit after shutdown')), 10_000)
+      const force = setTimeout(() => { child.kill('SIGKILL') }, 5_000)
       child.once('exit', () => {
         clearTimeout(force)
+        clearTimeout(deadline)
         resolve()
       })
-      child.kill('SIGTERM')
+      requestOwnedShutdown(child)
     })
     this.setStatus({ state: 'stopped' })
     return this.status()
   }
 
   private async stopForQuit(): Promise<void> {
-    if (!(await this.serviceInstalled())) await this.stop()
+    if (process.platform === 'win32' || !(await this.serviceInstalled())) await this.stop()
   }
 }

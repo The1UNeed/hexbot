@@ -14,5 +14,21 @@ pub fn system_program(relative: &str) -> std::io::Result<std::path::PathBuf> {
             "Windows system directory is too long",
         ));
     }
-    Ok(std::path::PathBuf::from(String::from_utf16_lossy(&buffer[..length])).join(relative))
+    // cmd.exe also parses its own argv[0]. Keep its path in native form:
+    // a forward slash in the executable token can be interpreted as a switch.
+    let mut program = std::path::PathBuf::from(String::from_utf16_lossy(&buffer[..length]));
+    for component in relative.split('/') {
+        if component.is_empty()
+            || component == "."
+            || component == ".."
+            || component.contains(['\\', ':'])
+        {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "Invalid system program path",
+            ));
+        }
+        program.push(component);
+    }
+    Ok(program)
 }

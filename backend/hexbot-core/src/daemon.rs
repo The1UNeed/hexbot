@@ -473,6 +473,7 @@ fn shutdown_signal() -> impl std::future::Future<Output = ()> {
 fn shutdown_signal() -> impl std::future::Future<Output = ()> {
     let ctrl_c = tokio::signal::windows::ctrl_c();
     let ctrl_break = tokio::signal::windows::ctrl_break();
+    let parent = desktop_parent_shutdown();
     async move {
         let wait = |signal: std::io::Result<tokio::signal::windows::CtrlC>| async move {
             if let Ok(mut signal) = signal {
@@ -488,9 +489,38 @@ fn shutdown_signal() -> impl std::future::Future<Output = ()> {
                 std::future::pending().await
             }
         };
-        tokio::select! { _ = wait(ctrl_c) => {}, _ = break_wait => {} }
+        tokio::select! { _ = wait(ctrl_c) => {}, _ = break_wait => {}, _ = parent => {} }
     }
 }
+// Only an explicitly owned desktop child listens on its inherited pipe. A
+// detached thread avoids Tokio's uncancellable stdin worker keeping an update
+// exit alive while the parent still holds the write end. Parent EOF also stops
+// the orphaned daemon through the normal worker/tunnel cleanup path.
+#[cfg(windows)]
+fn desktop_parent_shutdown() -> impl std::future::Future<Output = ()> {
+    let enabled = std::env::var("HEXBOT_SUPERVISOR").as_deref() == Ok("desktop")
+        && std::env::var("HEXBOT_DESKTOP_CONTROL").as_deref() == Ok("stdin-v1");
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    if enabled {
+        std::thread::spawn(move || {
+            use std::io::{BufRead, Read};
+            let mut line = Vec::new();
+            let input = std::io::stdin();
+            let mut limited = std::io::BufReader::new(input.lock().take(64));
+            if limited.read_until(b'\n', &mut line).is_ok()
+                && (line.is_empty() || line == b"HEXBOT_SHUTDOWN_V1\n")
+            {
+                let _ = sender.send(());
+            }
+        });
+    }
+    async move {
+        if receiver.await.is_err() {
+            std::future::pending::<()>().await;
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() {
     if let Err(error) = run().await {

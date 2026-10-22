@@ -2,12 +2,13 @@
 //! Exercise the actual generated launchers with Windows PowerShell 5.1.
 use hexbot_core::{system_service, windows_cli};
 use serde_json::json;
+use std::os::windows::process::CommandExt;
 use std::{fs, path::Path, process::Command};
 
 fn powershell(script: &str) -> std::process::Output {
     Command::new(
-        Path::new(&std::env::var_os("SystemRoot").expect("Windows system root"))
-            .join("System32/WindowsPowerShell/v1.0/powershell.exe"),
+        hexbot_core::windows_paths::system_program("WindowsPowerShell/v1.0/powershell.exe")
+            .unwrap(),
     )
     .args(["-NoProfile", "-NonInteractive", "-Command", script])
     .output()
@@ -93,13 +94,14 @@ fn launchers_resolve_unicode_and_junctions_before_executing() {
                     );
                     for (program, arguments) in [
                         (
-                            Path::new(&std::env::var_os("SystemRoot").unwrap())
-                                .join("System32/cmd.exe"),
-                            vec!["/D", "/S", "/C", "hexbot version"],
+                            hexbot_core::windows_paths::system_program("cmd.exe").unwrap(),
+                            vec!["/D", "/S", "/C"],
                         ),
                         (
-                            Path::new(&std::env::var_os("SystemRoot").unwrap())
-                                .join("System32/WindowsPowerShell/v1.0/powershell.exe"),
+                            hexbot_core::windows_paths::system_program(
+                                "WindowsPowerShell/v1.0/powershell.exe",
+                            )
+                            .unwrap(),
                             vec![
                                 "-NoProfile",
                                 "-NonInteractive",
@@ -110,11 +112,23 @@ fn launchers_resolve_unicode_and_junctions_before_executing() {
                             ],
                         ),
                     ] {
-                        let output = Command::new(program)
-                            .args(arguments)
-                            .env("PATH", &path)
-                            .output()
-                            .unwrap();
+                        let mut command = Command::new(&program);
+                        command.args(&arguments).env("PATH", &path);
+                        // cmd.exe has its own command-line grammar. This is a
+                        // fixed trusted command, with no interpolated paths/args.
+                        if program.file_name().unwrap() == "cmd.exe" {
+                            command.raw_arg("hexbot version");
+                        }
+                        eprintln!(
+                            "shell probe program={program:?} args={arguments:?} raw_cmd=hexbot version home={alias:?} selected={selected:?}"
+                        );
+                        let output = command.output().unwrap();
+                        eprintln!(
+                            "shell probe status={} stdout={} stderr={}",
+                            output.status,
+                            String::from_utf8_lossy(&output.stdout),
+                            String::from_utf8_lossy(&output.stderr)
+                        );
                         assert_eq!(
                             output.status.code(),
                             Some(17),
@@ -256,4 +270,50 @@ fn user_path_registration_preserves_existing_entries_and_removes_only_its_own() 
     if before["exists"] == true {
         assert_eq!(after["kind"], before["kind"]);
     }
+}
+
+#[test]
+#[ignore = "requires an isolated Windows CI user with no existing Hexbot task"]
+fn interrupted_task_install_uninstalls_owned_files_when_the_task_is_absent() {
+    assert_eq!(
+        std::env::var("HEXBOT_WINDOWS_SERVICE_PROBE").as_deref(),
+        Ok("1")
+    );
+    let absent = powershell(
+        "$s=New-Object -ComObject 'Schedule.Service'; $s.Connect(); $tasks=@($s.GetFolder('\\').GetTasks(0) | Where-Object {$_.Name -like 'Hexbot-daemon-*'}); if ($tasks.Count) { throw 'Expected an isolated user with no Hexbot task' }",
+    );
+    assert!(
+        absent.status.success(),
+        "{}",
+        String::from_utf8_lossy(&absent.stderr)
+    );
+    let root = tempfile::tempdir().unwrap();
+    let home = root.path().join("Jos\u{e9} state");
+    fs::create_dir_all(&home).unwrap();
+    let file = root.path().join("AppData/Local/Hexbot/daemon.ps1");
+    system_service::write_owned_script(&file, &home, true).unwrap();
+    fs::write(file.with_extension("xml"), "interrupted task creation").unwrap();
+    let run = || {
+        Command::new(env!("CARGO_BIN_EXE_hexbot"))
+            .args(["service", "uninstall"])
+            .env("HEXBOT_HOME", &home)
+            .env("HEXBOT_SERVICE_ROOT", root.path())
+            .env_remove("HEXBOT_SERVICE_NO_LOAD")
+            .output()
+            .unwrap()
+    };
+    let output = run();
+    assert!(
+        output.status.success(),
+        "status={} stderr={}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(!file.exists());
+    assert!(!file.with_extension("xml").exists());
+    // An unrelated script is never removed even when the named task is absent.
+    fs::write(&file, "foreign script").unwrap();
+    let output = run();
+    assert!(!output.status.success());
+    assert_eq!(fs::read_to_string(file).unwrap(), "foreign script");
 }

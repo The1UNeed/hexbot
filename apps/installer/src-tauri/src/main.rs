@@ -362,14 +362,41 @@ async fn open_app(app: AppHandle, path: PathBuf) -> CommandResult<()> {
     blocking(move || {
         let paths = Paths::from_env()?;
         let receipt = read_receipt(&paths.receipt())?.ok_or("Hexbot is not installed.")?;
-        if !receipt.paths.contains(&path) || !is_app(&path) {
-            return Err("That is not an app this installer installed.".into());
-        }
-        platform::open(&path)
+        let executable = app_to_open(&paths, &receipt, &path, Target::detect()?)?;
+        platform::open(&executable)
     })
     .await?;
     app.exit(0);
     Ok(())
+}
+
+fn app_to_open(
+    paths: &Paths,
+    receipt: &hexbot_installer::Receipt,
+    path: &Path,
+    target: Target,
+) -> hexbot_installer::Result<PathBuf> {
+    if receipt.paths.iter().any(|owned| owned == path) {
+        if target.is_windows() {
+            // A receipt records the installed directory. Recheck the packaged
+            // ownership marker, edition, executable and asar before launching.
+            let installed = hexbot_installer::detect_at(paths, target)?;
+            if let Some(app) = installed
+                .apps
+                .iter()
+                .find(|app| app.path == path && app.option == receipt.option)
+            {
+                return Ok(app.path.join(if app.option == InstallOption::Client {
+                    "HexbotClient.exe"
+                } else {
+                    "Hexbot.exe"
+                }));
+            }
+        } else if is_app(path) {
+            return Ok(path.to_owned());
+        }
+    }
+    Err("That is not an app this installer installed.".into())
 }
 
 fn is_app(path: &Path) -> bool {
@@ -546,6 +573,52 @@ mod tests {
             parse_pairing("Pairing code: \nLink: https://example.com"),
             None
         );
+    }
+
+    #[test]
+    fn windows_open_resolves_only_the_recorded_owned_edition() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = Paths {
+            home: root.path().join("home"),
+            hexbot_home: root.path().join("state"),
+            service_root: root.path().join("services"),
+            service_no_load: true,
+            apps_override: Some(root.path().join("apps")),
+            opt_override: None,
+        };
+        let app = root.path().join("apps/app.hexbot.client");
+        std::fs::create_dir_all(app.join("resources")).unwrap();
+        std::fs::write(app.join("HexbotClient.exe"), "fixture").unwrap();
+        std::fs::write(app.join("resources/app.asar"), "fixture").unwrap();
+        let receipt = hexbot_installer::Receipt {
+            option: InstallOption::Client,
+            channel: Track::Stable,
+            version: "0.1.0".into(),
+            paths: vec![app.clone()],
+            installed_at: "fixture".into(),
+        };
+        let resolve = || app_to_open(&paths, &receipt, &app, Target::WindowsX86_64);
+        assert!(resolve().is_err()); // An unrelated exe is never sufficient.
+        std::fs::write(
+            app.join(".hexbot-app.json"),
+            r#"{"appId":"app.hexbot.client"}"#,
+        )
+        .unwrap();
+        assert_eq!(resolve().unwrap(), app.join("HexbotClient.exe"));
+        assert!(
+            app_to_open(
+                &paths,
+                &receipt,
+                &app.join("HexbotClient.exe"),
+                Target::WindowsX86_64
+            )
+            .is_err()
+        );
+        let mut wrong_edition = receipt.clone();
+        wrong_edition.option = InstallOption::Full;
+        assert!(app_to_open(&paths, &wrong_edition, &app, Target::WindowsX86_64).is_err());
+        std::fs::remove_file(app.join("resources/app.asar")).unwrap();
+        assert!(resolve().is_err());
     }
 
     #[test]

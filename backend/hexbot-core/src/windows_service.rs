@@ -133,17 +133,26 @@ async fn schtasks(args: &[&str]) -> Result<String> {
     command.args(args);
     output(command).await
 }
+async fn task_control(name: &str, sid: &str, file: &Path, operation: &str) -> Result<String> {
+    #[cfg(windows)]
+    let executable = crate::windows_paths::system_program("WindowsPowerShell/v1.0/powershell.exe")?;
+    #[cfg(not(windows))]
+    let executable = PathBuf::from("powershell.exe");
+    let arguments = format!(
+        "-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File \"{}\"",
+        file.display()
+    );
+    powershell(&format!("$taskName = {}; $expectedSid = {}; $expectedPowerShell = {}; $expectedArguments = {}; $operation = {};\n{}",
+        quote(name), quote(sid), quote(&executable.to_string_lossy()), quote(&arguments), quote(operation),
+        include_str!("../assets/windows-task-control.ps1"))).await
+}
+
 pub async fn status(home: &Path) -> Result<Value> {
     let file = service_file()?;
     let installed = owned(&file, home);
     let running = if installed && std::env::var("HEXBOT_SERVICE_NO_LOAD").as_deref() != Ok("1") {
-        let (name, _) = task_name().await?;
-        powershell(&format!(
-            "[int](Get-ScheduledTask -TaskName {} -ErrorAction Stop).State",
-            quote(&name)
-        ))
-        .await
-        .is_ok_and(|s| s == "4")
+        let (name, sid) = task_name().await?;
+        task_control(&name, &sid, &file, "state").await? == "4"
     } else {
         false
     };
@@ -151,11 +160,11 @@ pub async fn status(home: &Path) -> Result<Value> {
 }
 // /End acknowledges cancellation before the task job and daemon lock are gone.
 // A restart may launch only after both are stopped, or it races the home lock.
-async fn wait_stopped(home: &Path, name: &str) -> Result<()> {
+async fn wait_stopped(home: &Path, name: &str, sid: &str, file: &Path) -> Result<()> {
     let mut interval = tokio::time::interval(std::time::Duration::from_millis(200));
     let wait = async {
         loop {
-            let state = powershell(&format!("$task = Get-ScheduledTask -TaskName {} -ErrorAction SilentlyContinue; if ($task) {{ [int]$task.State }} else {{ 0 }}", quote(name))).await?;
+            let state = task_control(name, sid, file, "state").await?;
             let available = match fs::OpenOptions::new()
                 .read(true)
                 .write(true)
@@ -248,15 +257,16 @@ pub async fn run(home: &Path, args: &[String]) -> Result<()> {
         }
     } else if owned(&file, home) {
         if !no_load {
-            let (name, _) = task_name().await?;
+            let (name, sid) = task_name().await?;
             if matches!(action, "stop" | "restart" | "uninstall") {
-                let _ = schtasks(&["/End", "/TN", &name]).await;
-                wait_stopped(home, &name).await?;
+                task_control(&name, &sid, &file, "stop").await?;
+                wait_stopped(home, &name, &sid, &file).await?;
             }
             if action == "uninstall" {
-                schtasks(&["/Delete", "/TN", &name, "/F"]).await?;
+                task_control(&name, &sid, &file, "delete").await?;
             }
             if matches!(action, "start" | "restart") {
+                task_control(&name, &sid, &file, "state").await?;
                 schtasks(&["/Run", "/TN", &name]).await?;
             }
         }

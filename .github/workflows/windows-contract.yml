@@ -24,7 +24,8 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: cargo check --locked --manifest-path backend/hexbot-installer/Cargo.toml
       - run: cargo clippy --locked --manifest-path backend/hexbot-installer/Cargo.toml --lib --bins -- -D warnings
-      - run: cargo check --locked --manifest-path apps/installer/src-tauri/Cargo.toml
+      - run: cargo clippy --locked --manifest-path apps/installer/src-tauri/Cargo.toml --all-targets -- -D warnings
+      - run: cargo test --locked --manifest-path apps/installer/src-tauri/Cargo.toml
       - run: pnpm --filter ./apps/desktop run typecheck
       - run: node --test scripts/desktop/windows-contract.test.mjs scripts/desktop/native-build.test.mjs
       - name: Build the real client NSIS without publishing
@@ -63,14 +64,15 @@ jobs:
         shell: pwsh
         env:
           HEXBOT_CI_GIT: C:\Program Files\Git\cmd\git.exe
-          HEXBOT_WINDOWS_SECURITY_SHA: cbf99ccb90e44c6054cd40a30bed18403cc0164a
         run: |
           $source = Join-Path $env:RUNNER_TEMP 'hexbot-windows-contract-probe'
-          $metadata = node scripts/dev/prepare-windows-security.mjs $source '${{ github.sha }}' $env:HEXBOT_WINDOWS_SECURITY_SHA
+          $metadata = node scripts/dev/prepare-windows-security.mjs $source '${{ github.sha }}' '${{ github.sha }}' --current-tree
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           Write-Output $metadata
           $probe = $metadata | ConvertFrom-Json
-          if ($probe.sourceDir -ne $source) { throw 'Unexpected disposable source directory' }
+          $tree = git rev-parse '${{ github.sha }}^{tree}'
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot resolve immutable source tree' }
+          if ($probe.sourceDir -ne $source -or $probe.buildSHA -ne '${{ github.sha }}' -or $probe.securitySHA -ne '${{ github.sha }}' -or $probe.appliedSecurityPatch -or $probe.guardedTree -ne $tree) { throw 'Disposable source does not preserve exact current tree' }
           "HEXBOT_WINDOWS_PROBE_SOURCE=$($probe.sourceDir)" >> $env:GITHUB_ENV
       - run: pnpm install --frozen-lockfile
         working-directory: ${{ env.HEXBOT_WINDOWS_PROBE_SOURCE }}
@@ -80,6 +82,11 @@ jobs:
       - name: Run native Unicode, junction, service logs and security regressions
         working-directory: ${{ env.HEXBOT_WINDOWS_PROBE_SOURCE }}
         run: cargo test --locked --manifest-path backend/hexbot-core/Cargo.toml --test windows_launchers --test windows_contract -- --nocapture
+      - name: Recover an interrupted owned task install without claiming foreign files
+        working-directory: ${{ env.HEXBOT_WINDOWS_PROBE_SOURCE }}
+        env:
+          HEXBOT_WINDOWS_SERVICE_PROBE: '1'
+        run: cargo test --locked --manifest-path backend/hexbot-core/Cargo.toml --test windows_launchers interrupted_task_install -- --ignored --nocapture
       - name: Validate per-user CLI PATH registration on the disposable CI user
         working-directory: ${{ env.HEXBOT_WINDOWS_PROBE_SOURCE }}
         env:

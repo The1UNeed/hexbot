@@ -51,7 +51,7 @@ export async function runChild(
 ): Promise<void> {
   await mkdir(join(hexbotHome(), 'logs'), { recursive: true })
   await new Promise<void>((resolve, reject) => {
-    const child = spawn(command, args, { cwd: options.cwd, env: { ...(options.env ?? process.env), HEXBOT_HOME: hexbotHome() } })
+    const child = spawn(command, args, { windowsHide: process.platform === 'win32', cwd: options.cwd, env: { ...(options.env ?? process.env), HEXBOT_HOME: hexbotHome() } })
     const pending = new Map<NodeJS.ReadableStream, string>()
     const consume = (stream: NodeJS.ReadableStream, chunk: Buffer): void => {
       void appendLog(chunk)

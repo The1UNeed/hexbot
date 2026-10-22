@@ -73,6 +73,8 @@ it('attaches to a service that takes the home lock before a restart', async () =
   try {
     await manager.start()
     expect(spawnDaemon).toHaveBeenCalledTimes(1)
+    expect(spawnDaemon.mock.calls[0]![2].windowsHide).toBe(process.platform === 'win32')
+    expect(spawnDaemon.mock.calls[0]![2].env.HEXBOT_HOME).toBe(home)
     const port = await new Promise<number>(resolve => server.listen(0, '127.0.0.1', () => resolve((server.address() as net.AddressInfo).port)))
     await writeFile(join(home, 'install_id'), 'service-home')
     await writeFile(join(home, 'native-daemon.lock'), String(process.pid))
@@ -156,4 +158,18 @@ d2('parseReadyLine dashboard mode', () => {
   i2('accepts HERMES_DASHBOARD_READY', () => {
     e2(p2('HERMES_DASHBOARD_READY port=9134')).toBe(9134)
   })
+})
+
+it('requests Windows cleanup through the owned pipe, without force termination', async () => {
+  const { requestOwnedShutdown } = await import('./manager')
+  const input = new PassThrough()
+  let received = ''
+  input.on('data', data => { received += data })
+  const kill = vi.fn()
+  requestOwnedShutdown({ stdin: input, kill }, 'win32')
+  expect(received).toBe('HEXBOT_SHUTDOWN_V1\n')
+  expect(input.writableEnded).toBe(true)
+  expect(kill).not.toHaveBeenCalled()
+  requestOwnedShutdown({ stdin: new PassThrough(), kill }, 'linux')
+  expect(kill).toHaveBeenCalledWith('SIGTERM')
 })
