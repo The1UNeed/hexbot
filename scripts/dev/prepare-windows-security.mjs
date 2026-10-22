@@ -57,13 +57,17 @@ function main() {
   const baselineAncestry = [ancestry(baseSHA),ancestry(dependencySquashSHA)];
   if (!currentTree) assert(baselineAncestry.some(base => base.build && base.security), 'Historical combination requires a shared recorded dependency ancestor');
   if (currentTree) validateCurrentTree(path => run(['show',`${buildSHA}:${path}`]));
-  const appliedSecurityPatch = !currentTree && !ancestor(securitySHA,buildSHA);
+  const needsSecurityDelta = !currentTree && !ancestor(securitySHA,buildSHA);
+  let appliedSecurityPatch = false;
   let patchBaseSHA = null;
-  if (appliedSecurityPatch) {
+  if (needsSecurityDelta) {
     const bases = run(['merge-base','--all',buildSHA,securitySHA]).split('\n');
     assert(bases.length === 1 && /^[a-f0-9]{40}$/.test(bases[0]), 'Expected one unambiguous patch merge base');
     patchBaseSHA = bases[0];
     assert(baselineAncestry.some(base => base.present && ancestor(base.sha,patchBaseSHA)), 'Patch base must include a recorded dependency ancestor');
+    // A metadata-only security child may not be an ancestor of the build, but
+    // its empty tree delta must leave that build exactly unchanged.
+    appliedSecurityPatch = run(['rev-parse',`${patchBaseSHA}^{tree}`]) !== run(['rev-parse',`${securitySHA}^{tree}`]);
   }
   const patch = join(tmpdir(),`hexbot-security-${process.pid}-${createHash('sha256').update(destination).digest('hex').slice(0,12)}.patch`);
   let created = false;
@@ -75,7 +79,7 @@ function main() {
       run(['apply','--3way','--index',patch],destination);
     }
     const guardedTree = run(['write-tree'],destination);
-    if (currentTree) assert.equal(guardedTree,run(['rev-parse',`${buildSHA}^{tree}`]),'Current-tree source must remain exactly the pinned commit tree');
+    if (!appliedSecurityPatch) assert.equal(guardedTree,run(['rev-parse',`${buildSHA}^{tree}`]),'Source without a security delta must remain exactly the pinned build tree');
     const source = join(destination,'backend/hexbot-core/src/lib.rs');
     const before = readFileSync(source);
     const after = stripUnsupportedGuard(before);

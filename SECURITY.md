@@ -39,7 +39,11 @@ Auto and Manual refuse local shell commands, Python code, and Pi's file tools
 before approval or execution, including `full_access` and remembered grants.
 Windows metadata scanning and the Unix file-path walker also refuse to run;
 they do not open untrusted Windows files or discover Git through `PATH`.
-Scheduled scripts refuse on Windows in every mode. Bypass retains Pi's Bash
+Scheduled scripts and monitors, their create/update validation, and ACP entry
+points refuse on Windows in every mode. Session settings also refuse before
+resolving workdirs or creating outputs in Auto and Manual. This blocks settings
+refresh, MCP/model changes, approvals and primary/memory/job tools using that
+bridge; Auto chat is not a supported Windows feature. Bypass retains Pi's Bash
 tool, requiring an installed Bash such as Git Bash, and removes containment and
 credential protection. It does not substitute `cmd.exe` for Bash or show a
 Linux bubblewrap approval. The native Windows security workflow tests refusal
@@ -107,6 +111,33 @@ Windows releases. See [the remaining Windows requirements](docs/windows-security
   The primary bot still asks before it deletes a bot, room, or job, changes an
   approval mode or a working folder, changes a setting, skill, or connector,
   or cancels a check-in wake-up.
+
+These protections constrain tool actions through the checked paths and grants.
+They do not protect an installation from a process already running without the
+sandbox as the same user, including Bypass, an approved external tool, or other
+host software. Such a process can change files, links, permissions or ACLs.
+A writable hard-link alias names the same inode as its protected runtime path;
+canonical paths and a read-only bind of that original path do not protect the
+alias. Linux mode `0444` alone is insufficient: the owning user can
+[change its mode](https://man7.org/linux/man-pages/man2/chmod.2.html). ACLs and
+filesystem-specific permissions also need consideration. Hexbot does not add per-command chmod/ACL mutations
+or a read-only-install requirement.
+
+Before shell/code layout creation, a separate snapshot checks managed roots and
+declared workspace/output roots, with a total budget of 100,000 entries. Matching
+managed-file inodes in those grants, scan errors and exhaustion refuse the
+command. Legitimate uv cache hard links outside the declared grants remain valid.
+Remove an unsafe alias or replace it with an independent copy; use smaller
+folders if the scan exceeds its budget. Repair damaged runtime bytes from a
+trusted installer, rather than changing permissions on unknown legacy bytes.
+This scan is not a race-safe boundary. It excludes implicit temporary roots and
+arbitrary paths opened by a full-access command, and cannot stop an unconfined
+same-user process inserting an alias after validation or changing permissions.
+The reported shell/code hard-link class is not fully closed. Pi write/edit and
+native file callbacks atomically replace the output directory entry instead of
+truncating its inode, so those writes preserve other hard-link names, including
+an alias inserted after the file gate. They do not establish whole-process or
+whole-filesystem containment. See the [Linux hard-link semantics](https://man7.org/linux/man-pages/man2/link.2.html).
 
 macOS also matches `.git` paths and secret filenames created during a command. It
 blocks renaming protected files and browser stores, and pins the scanned

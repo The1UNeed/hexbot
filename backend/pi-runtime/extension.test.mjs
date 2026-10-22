@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {mkdtempSync, mkdirSync, writeFileSync, readFileSync, symlinkSync, rmSync, realpathSync, existsSync} from 'node:fs';
+import {mkdtempSync, mkdirSync, writeFileSync, readFileSync, symlinkSync, rmSync, realpathSync, existsSync, linkSync, unlinkSync, statSync} from 'node:fs';
 import {createServer} from 'node:net';
 import {once} from 'node:events';
 import {tmpdir, homedir} from 'node:os';
@@ -95,6 +95,25 @@ test('managed runtime paths never become file-tool output exceptions', t => {
     mkdirSync(join(path,'..'),{recursive:true});
     writeFileSync(path,'keep');
     assert.equal(protectedPath(path,f.home,[join(path,'..')]),true,local);
+  }
+});
+test('Pi write and edit replace hardlink entries, including links inserted after approval', async t => {
+  for (const tool of ['write','edit']) for (const late of [false,true]) for (const local of ['runtime/native-current.json','runtime/native/build/hexbot.exe']) {
+    const f = fixture(t,'smart',['file']);
+    const output = join(f.home,'profiles/owl/artifacts'), source = join(f.home,local), alias = join(output,'result');
+    mkdirSync(output,{recursive:true}); mkdirSync(join(source,'..'),{recursive:true});
+    writeFileSync(source,'keep');
+    if (late) writeFileSync(alias,'keep'); else linkSync(source,alias);
+    f.settings.outputDirs = [output];
+    const args = tool === 'write' ? {path:alias,content:'changed'} : {path:alias,edits:[{oldText:'keep',newText:'changed'}]};
+    const id = 'hardlink';
+    assert.equal(await f.gate(tool,args,id),undefined);
+    if (late) { unlinkSync(alias); linkSync(source,alias); }
+    await f.tools[tool].execute(id,args,undefined,undefined,f.ctx);
+    assert.equal(readFileSync(source,'utf8'),'keep',`${tool} late=${late} ${local}`);
+    assert.equal(readFileSync(alias,'utf8'),'changed');
+    assert.notEqual(statSync(alias).ino,statSync(source).ino);
+    assert.equal(f.choices.length,0,'ordinary artifact writes need no approval');
   }
 });
 test('managed roots pointing into outputs refuse writes and command layouts, while reads stay allowed', t => {

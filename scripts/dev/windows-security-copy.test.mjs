@@ -52,3 +52,48 @@ test('current-tree preserves a squash source exactly without historical dependen
   assert.equal(readFileSync(join(destination,'backend/hexbot-core/src/lib.rs'),'utf8'),'//! preserve\n\nmod preserve;\n');
   run(['worktree','remove','--force',destination]);
 });
+
+test('historical metadata-only security child preserves an already-combined build tree', t => {
+  // A real object graph: reviewed dependency -> S -> B and S -> Smeta. Only
+  // the test fixture's dependency constant is substituted, not merge/apply logic.
+  const root = mkdtempSync(join(tmpdir(),'hexbot-metadata-copy-'));
+  t.after(() => rmSync(root,{recursive:true,force:true}));
+  const repo = join(root,'repo'), destination = join(root,'copy');
+  mkdirSync(join(repo,'scripts/dev'),{recursive:true});
+  mkdirSync(join(repo,'backend/hexbot-core/src'),{recursive:true});
+  const git = process.env.HEXBOT_CI_GIT ?? '/usr/bin/git';
+  const run = args => execFileSync(git,args,{cwd:repo,encoding:'utf8',stdio:['ignore','pipe','pipe']}).trim();
+  const commit = message => { run(['add','.']); run(['-c','user.name=Hexbot test','-c','user.email=test@invalid','commit','--allow-empty','-qm',message]); return run(['rev-parse','HEAD']); };
+  run(['init','-q']);
+  writeFileSync(join(repo,'backend/hexbot-core/src/lib.rs'),guard+'\nmod keep;\n');
+  const dependency = commit('reviewed dependency');
+  writeFileSync(join(repo,'security'),'S');
+  const security = commit('security source');
+  writeFileSync(join(repo,'build'),'B');
+  const build = commit('combined build');
+  run(['checkout','--detach',security]);
+  const metadata = commit(`Metadata only\n\nHexbot-Windows-Build: ${build}`);
+  assert.equal(run(['rev-parse',`${security}^{tree}`]),run(['rev-parse',`${metadata}^{tree}`]));
+  const helper = join(repo,'scripts/dev/prepare-windows-security.mjs');
+  writeFileSync(helper,readFileSync(new URL('./prepare-windows-security.mjs',import.meta.url),'utf8').replace("74250404820380490678f7ebc6507a492801c411",dependency));
+  const record = JSON.parse(execFileSync(process.execPath,[helper,destination,build,metadata],{cwd:repo,encoding:'utf8',env:{...process.env,HEXBOT_CI_GIT:git},stdio:['ignore','pipe','pipe']}));
+  assert.equal(record.guardedTree,run(['rev-parse',`${build}^{tree}`]));
+  assert.equal(record.appliedSecurityPatch,false);
+  assert.equal(record.patchBaseSHA,security);
+  assert.equal(readFileSync(join(destination,'build'),'utf8'),'B');
+  assert.equal(readFileSync(join(destination,'security'),'utf8'),'S');
+  assert.equal(readFileSync(join(destination,'backend/hexbot-core/src/lib.rs'),'utf8'),'\nmod keep;\n');
+  assert.equal(readFileSync(join(repo,'backend/hexbot-core/src/lib.rs'),'utf8'),guard+'\nmod keep;\n');
+  run(['worktree','remove','--force',destination]);
+  // A real source change must still be applied; empty metadata is the only
+  // exception, never a reason to discard a nonempty security delta.
+  writeFileSync(join(repo,'security'),'security changed');
+  const changed = commit('nonempty security delta');
+  const updated = JSON.parse(execFileSync(process.execPath,[helper,destination,build,changed],{cwd:repo,encoding:'utf8',env:{...process.env,HEXBOT_CI_GIT:git},stdio:['ignore','pipe','pipe']}));
+  assert.equal(updated.appliedSecurityPatch,true);
+  assert.equal(updated.patchBaseSHA,security);
+  assert.notEqual(updated.guardedTree,record.guardedTree);
+  assert.equal(readFileSync(join(destination,'build'),'utf8'),'B');
+  assert.equal(readFileSync(join(destination,'security'),'utf8'),'security changed');
+  run(['worktree','remove','--force',destination]);
+});

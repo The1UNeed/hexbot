@@ -8,11 +8,20 @@ Auto and Manual refuse local commands, Python code and Pi's read, write,
 edit, grep, find and ls tools. Refusal happens before approval, shell discovery,
 workspace scanning, file access or process creation. `full_access`, a user
 approval, an Auto model review and an Allow for now grant cannot override it.
-Unattended scripts refuse in every mode. The lower-level Windows Git metadata
+Unattended scripts and monitors, including job create/update validation, refuse
+in every mode. The lower-level Windows Git metadata
 reader and Unix path walker also refuse instead of using incomplete path checks
 or a blocking file open followed by a metadata check.
 Copilot ACP, including its reviewer and Bypass paths, refuses before workspace,
 environment-file or executable resolution. Its base isolation remains mandatory.
+
+Session-settings refresh also refuses in Auto and Manual before resolving a
+stored workdir or creating outputs. This disables settings refresh, MCP/model
+changes, approval requests and primary/memory/job tools using that bridge. This
+is a refusal foundation, not working Windows Auto chat. Other daemon paths,
+including native media-path existence checks and other workdir consumers, are
+outside this local shell/code/file refusal claim. This is not a final Windows
+containment signoff.
 
 Bypass removes approval and containment. Its shell is upstream Pi Bash, such
 as Git Bash, with Bash syntax and Pi's normal error if Bash is absent. It does
@@ -49,6 +58,19 @@ including a root pointing into an artifact output or a missing target. Aliases
 of the home remain valid. This rejects a mutable runtime topology instead of
 treating an output grant as permission to replace installed code. Unix runtime
 reads remain allowed by the ordinary read policy.
+
+These path rules do not promise inode integrity against an already-unconfined
+same-user process. Shell/code layouts reject existing managed-file hard links
+found in declared workspace/output grants with a bounded snapshot; uv cache
+links outside those grants remain valid. Scan errors and exhaustion refuse with
+a repair explanation. The scan is not race-safe and does not cover implicit
+shared temporary roots or arbitrary outside paths used by full-access commands.
+An external process can insert an alias afterward or change permissions/ACLs.
+Linux `0444` alone does not fix this. No per-command permission/ACL edits or
+whole-product read-only-install contract are introduced. Pi write/edit and native
+file helpers use atomic entry replacement, which preserves other hard-link names;
+shell/code writes through a late alias remain a limitation. See the exact
+[tool-isolation assumptions](../SECURITY.md#tool-isolation).
 
 Runtime reads the effective approval policy before resolving live workdirs or
 creating outputs. Native file callbacks recheck policy and destination after an
@@ -93,10 +115,15 @@ UNC and alternate stream path inputs are refused before the Unix path walker.
 No command starts, so these refusals allocate no AppContainer profile, ACL
 grant or process tree to clean up. These tests do not exercise a sandbox.
 
-The combined job pins the build commit and checks out the security commit. A
+The combined job reads immutable inputs from the event commit. A complete
+combined tree uses that exact commit for both inputs. A security-only commit
+requires exactly one literal commit-message trailer,
+`Hexbot-Windows-Build: <40 lowercase full SHA>`, identifying the build commit.
+The same validated trailer must survive a security squash merge. A
 shared preparation helper creates a detached worktree, applies the security
 diff, and records both inputs and the combined Git tree. If the build already
-contains the security commit, it keeps that tree unchanged. It requires exactly
+contains the security commit, or the security delta is exactly empty because
+only commit metadata changed, it keeps the build tree unchanged. It requires exactly
 one occurrence of the exact unsupported-platform guard bytes, and removes only
 those bytes in the disposable source. It logs the guard diff and before/after
 hashes. Production source retains its guard, with no feature or compile option

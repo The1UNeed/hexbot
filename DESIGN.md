@@ -257,7 +257,9 @@ more freedom and more capability than a hosted product can offer.
   host. It does not change the tool to `cmd.exe`. Native refusal tests are a
   prerequisite for further work, not evidence of a working sandbox. Windows
   support and publishing require the containment tests in
-  [the Windows security contract](docs/windows-security.md).
+  [the Windows security contract](docs/windows-security.md). Auto/Manual
+  session-settings refusal also prevents normal chat settings/tool refresh; this
+  foundation does not provide working Windows Auto chat.
 - Connected tools use Pi's built-in MCP through codemode. A section freezes
   server namespaces and tool declarations; a bot's chat takes changed ones at
   its next message, rebuilt once without the cache. Manual asks for every

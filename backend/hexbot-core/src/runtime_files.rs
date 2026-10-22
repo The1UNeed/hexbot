@@ -124,6 +124,26 @@ impl FileAccess {
 mod tests {
     use super::*;
     #[test]
+    fn atomic_file_callback_preserves_other_hardlink_names_even_after_open() {
+        for late in [false, true] {
+            let temp = tempfile::tempdir().unwrap();
+            let root = temp.path().canonicalize().unwrap();
+            let source = root.join("native-current.json");
+            let output = root.join("artifact");
+            std::fs::write(&source, "keep").unwrap();
+            if !late {
+                std::fs::hard_link(&source, &output).unwrap();
+            }
+            let access = FileAccess::open(&output, true).unwrap();
+            if late {
+                std::fs::hard_link(&source, &output).unwrap();
+            }
+            access.write(b"ordinary output").unwrap();
+            assert_eq!(std::fs::read_to_string(&source).unwrap(), "keep");
+            assert_eq!(access.read().unwrap(), "ordinary output");
+        }
+    }
+    #[test]
     fn parent_swap_cannot_redirect_an_open_file_callback() {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().canonicalize().unwrap();
