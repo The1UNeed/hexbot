@@ -2,7 +2,7 @@ import { createFileRoute } from '@tanstack/react-router'
 import { useEffect } from 'react'
 
 import { AppShell } from '../app/app-shell'
-import { useBots } from '../stores/bots'
+import { botMissing, useBots } from '../stores/bots'
 import { useConnection } from '../stores/connection'
 import { uiActions } from '../stores/ui'
 
@@ -11,7 +11,7 @@ export const Route = createFileRoute('/b/$bot/s/$section')({ component: BotSecti
 function BotSection() {
   const { bot, section } = Route.useParams()
   const daemon = useConnection(state => state.daemon?.install_id ?? undefined)
-  const gone = useBots(state => state.loaded && !state.byName[bot])
+  const gone = useBots(state => botMissing(state, bot))
 
   // `/` comes back here, unless the bot was deleted (here or on another device).
   useEffect(() => {

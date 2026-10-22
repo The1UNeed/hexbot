@@ -230,7 +230,7 @@ export interface TranscriptsState {
     sessionId: string,
     sectionId: string,
     messages: Message[],
-    hydration?: { reports: string[] },
+    hydration?: { reports: string[]; inputsAtRead?: string[] },
     snapshot?: OpenSnapshot
   ) => void
   reasoningDelta: (sessionId: string, text: string) => void
@@ -696,7 +696,12 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
         const existing = shown && snapshot ? reconcile(shown, snapshot) : shown
 
         if (existing && hydration) {
-          const restored = hydrateHistory(existing, messages, new Set(hydration.reports))
+          const restored = hydrateHistory(
+            existing,
+            messages,
+            new Set(hydration.reports),
+            hydration.inputsAtRead ? new Set(hydration.inputsAtRead) : undefined
+          )
 
           return {
             bySession: {

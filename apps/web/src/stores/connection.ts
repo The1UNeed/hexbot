@@ -154,3 +154,20 @@ export const useConnection = create<ConnectionState>(set => ({
 export function connectionActions(): ConnectionState {
   return useConnection.getState()
 }
+
+/** Guards personal-data RPCs against a stopped, revoked or replaced connection. */
+let readGeneration = 0
+
+export function invalidateConnectionReads(): void {
+  readGeneration++
+}
+
+export function connectionRead(): () => boolean {
+  const mine = readGeneration
+  const { target, epoch } = useConnection.getState()
+
+  return () =>
+    mine === readGeneration &&
+    target === useConnection.getState().target &&
+    epoch === useConnection.getState().epoch
+}

@@ -31,7 +31,7 @@ import { useCheckins } from '../stores/checkins'
 import { useConnectors } from '../stores/connectors'
 import { useMe } from '../stores/me'
 import { useRooms } from '../stores/rooms'
-import { useSections } from '../stores/sections'
+import { keepHistory, useSections } from '../stores/sections'
 import { useSettings } from '../stores/settings'
 import type {
   ApprovalRequestPayload,
@@ -407,6 +407,14 @@ export function routeEvent(event: GatewayEvent, deps: EventRouterDeps = {}): voi
         usage: (payload.usage as undefined | Usage) ?? undefined
       })
       useSections.getState().finished(sessionId)
+
+      {
+        const section = useTranscripts.getState().bySession[sessionId]?.sectionId
+
+        if (section && !section.startsWith('room:')) {
+          keepHistory(section, sessionId)
+        }
+      }
 
       return
 
