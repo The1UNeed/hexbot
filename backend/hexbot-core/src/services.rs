@@ -1720,13 +1720,18 @@ fn publish_native_inner(
             .ok()
             .and_then(|executable| fs::read(executable.with_file_name("manifest.json")).ok())
             .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok());
-        #[cfg(windows)]
-        let selected = selected.or_else(|| {
-            fs::read(runtime.join("native-current.json"))
-                .ok()
-                .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
-        });
-        let selected = selected.unwrap_or_else(|| json!({}));
+        // Metadata survives a missing or damaged selected manifest. Neither
+        // source may lower the chronology floor recorded by the other.
+        let recorded = fs::read(runtime.join("native-current.json"))
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok());
+        let floor = selected
+            .iter()
+            .chain(recorded.iter())
+            .filter_map(|manifest| manifest["builtAt"].as_u64())
+            .max()
+            .unwrap_or(0);
+        let selected = json!({"builtAt": floor});
         if !allow_equal
             || requested["builtAt"].as_u64().unwrap_or(0)
                 != selected["builtAt"].as_u64().unwrap_or(0)
@@ -1799,6 +1804,64 @@ fn activate_native_locked(native: &Path, version: &str, executable: &Path) -> Re
         eprintln!("Runtime cleanup: {error}");
     }
     Ok(())
+}
+
+// Shared by the portable unit suite and the real native Windows integration
+// probe. Exercise the publisher and its actual lock, not a model of the check.
+#[cfg(any(test, all(debug_assertions, windows)))]
+fn assert_publication_floor_contract() {
+    for damaged in [
+        json!({}),
+        json!({"builtAt":"invalid"}),
+        json!({"builtAt":100}),
+        json!({"builtAt":300}),
+    ] {
+        let home = tempfile::tempdir().unwrap();
+        let native = native_directory(home.path()).unwrap();
+        let selected = native.join("selected");
+        fs::create_dir(&selected).unwrap();
+        let entrypoint = if cfg!(windows) {
+            "hexbot.exe"
+        } else {
+            "hexbot"
+        };
+        fs::write(selected.join(entrypoint), "old").unwrap();
+        fs::write(
+            selected.join("manifest.json"),
+            json!({"version":"old", "builtAt":200}).to_string(),
+        )
+        .unwrap();
+        {
+            let _lock = activation_lock(native.parent().unwrap()).unwrap();
+            activate_native_locked(&native, "old", &selected.join(entrypoint)).unwrap();
+        }
+        fs::write(selected.join("manifest.json"), damaged.to_string()).unwrap();
+        let floor = damaged["builtAt"].as_u64().unwrap_or(0).max(200);
+        for allow_equal in [false, true] {
+            let staging = tempfile::tempdir_in(&native).unwrap();
+            fs::write(staging.path().join(entrypoint), "new").unwrap();
+            // Calls the actual publisher, which takes activate.lock before
+            // rereading both sources. A parseable empty manifest is damage too.
+            assert_eq!(
+                publish_native_inner(
+                    &native,
+                    "repair",
+                    staging.path(),
+                    entrypoint,
+                    Some(&json!({"builtAt":floor-1})),
+                    allow_equal
+                )
+                .unwrap_err()
+                .code,
+                4212
+            );
+            assert_eq!(
+                selected_native_executable(home.path()).unwrap(),
+                selected.join(entrypoint)
+            );
+            assert!(staging.path().is_dir());
+        }
+    }
 }
 
 #[cfg(all(test, unix))]
@@ -1875,6 +1938,11 @@ mod activation_tests {
         publish_native(&native, "9.8.9", newer.path(), "hexbot", Some(&requested)).unwrap();
         let active = runtime.join("native-executable").canonicalize().unwrap();
         assert_eq!(fs::read_to_string(active).unwrap(), "9.8.9");
+    }
+
+    #[test]
+    fn publication_keeps_the_highest_manifest_or_metadata_floor_during_repair() {
+        assert_publication_floor_contract();
     }
 
     #[test]
@@ -2654,6 +2722,9 @@ mod native_version_tests {
 #[doc(hidden)]
 pub mod windows_contract_tests {
     use super::*;
+    pub fn publication_floor() {
+        assert_publication_floor_contract();
+    }
     pub async fn windows_contract_signed_zip_update_and_connect_executable() {
         use axum::{
             Router, body::Body, extract::Path as RoutePath, http::StatusCode, response::Response,

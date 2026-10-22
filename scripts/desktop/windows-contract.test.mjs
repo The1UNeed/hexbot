@@ -44,12 +44,40 @@ test('Windows tool archives have pinned digests and the actual executable member
   assert.equal(toolAsset('uv', 'win32', 'x64').member, 'uv.exe')
 })
 
-test('Windows CI cannot publish or bypass the daemon platform guard', async () => {
+test('Windows CI keeps the production guard and never publishes disposable probes', async () => {
   const ci = await readFile('.github/workflows/windows-contract.yml', 'utf8')
   for (const line of ci.split('\n').filter(line => line.includes('uses:')))
     assert.match(line, /@[a-f0-9]{40}(?:\s|$)/)
   assert(!/secrets\.|contents:\s*write|release.yml|--publish\s+always/.test(ci.replace(/^#.*$/gm, '')))
-  assert(ci.includes('Native daemon compile gate'))
+  assert(ci.includes('check-windows-unsupported.mjs'))
+  assert(ci.includes('prepare-windows-security.mjs'))
+  assert(ci.includes('--test windows_contract -- --ignored'))
+  assert(ci.includes('--test windows_launchers --test windows_security'))
+  assert(!ci.includes('--example windows_contract'))
+  assert(!ci.slice(ci.indexOf('  native-runtime:')).includes('upload-artifact'))
   const release = await readFile('.github/workflows/release.yml', 'utf8')
   assert(!release.includes('windows-latest'))
+})
+
+test('Tauri Windows resource icon reproduces the existing installer art', async () => {
+  const { installerIco } = await import('./make-installer-windows-icon.mjs')
+  const base = 'apps/installer/src-tauri/'
+  const png = await readFile(`${base}icons/128x128@2x.png`)
+  const ico = await readFile(`${base}icons/icon.ico`)
+  assert.deepEqual(ico, installerIco(png))
+  assert.equal(ico.readUInt16LE(2), 1)
+  assert.equal(ico.readUInt16LE(4), 1)
+  assert.equal(ico.readUInt32LE(18), 22)
+  assert.deepEqual(ico.subarray(22), png)
+  assert(JSON.parse(await readFile(`${base}tauri.conf.json`, 'utf8')).bundle.icon.includes('icons/icon.ico'))
+})
+
+test('Windows packages own their app before the outer installer commits a receipt', async t => {
+  const afterPack = (await import('./after-pack.cjs')).default.default
+  const root = await mkdtemp(join(tmpdir(), 'hexbot packaged ownership '))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  for (const id of ['app.hexbot.client', 'app.hexbot.desktop.nightly']) {
+    await afterPack({ electronPlatformName: 'win32', appOutDir: root, packager: { appInfo: { id } } })
+    assert.deepEqual(JSON.parse(await readFile(join(root, '.hexbot-app.json'), 'utf8')), { appId: id })
+  }
 })

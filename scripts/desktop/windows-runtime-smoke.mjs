@@ -12,7 +12,7 @@ assert.equal(process.platform, 'win32', 'This probe must run on native Windows')
 const bundle = resolve('apps/desktop/resources/hexbot-native')
 const root = await mkdtemp(join(tmpdir(), 'hexbot Windows runtime '))
 const home = join(root, 'state'); await mkdir(home)
-const env = { ...process.env, HEXBOT_HOME: home, HOME: root, USERPROFILE: root, HEXBOT_SERVICE_ROOT: root }
+const env = { ...process.env, HEXBOT_HOME: home, HOME: root, USERPROFILE: root, HEXBOT_SERVICE_ROOT: root, HEXBOT_CLI_NO_PATH: '1' }
 const run = (exe, args) => exec(exe, args, { env, timeout: 300_000, windowsHide: true })
 let daemon, selected
 async function waitForFile(path, timeout = 30_000) {

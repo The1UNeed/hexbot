@@ -162,3 +162,27 @@ it('only reports the Linux service for this home, decoding systemd escapes', asy
     await rm(root, { recursive: true, force: true })
   }
 })
+
+it('Windows setup services pass the exact app home to every native child', async () => {
+  const paths = await import('./backend/paths')
+  const { installService, uninstallService, serviceStatus } = await import('./service')
+  const previous = { ...process.env }
+  const executable = vi.spyOn(paths, 'hexbotExecutable').mockReturnValue('/trusted/hexbot.exe')
+  process.env.HEXBOT_HOME = '/chosen/José state with spaces'
+  process.env.HOME = '/different/git-bash-home'
+  process.env.USERPROFILE = '/windows/profile'
+  const calls: { args: string[]; options?: { env?: NodeJS.ProcessEnv; windowsHide?: boolean } }[] = []
+  const run = async (_command: string, args: string[], options?: { env?: NodeJS.ProcessEnv; windowsHide?: boolean }): Promise<unknown> => {
+    calls.push({ args, options }); return { stdout: '{"installed":true,"running":false}' }
+  }
+  try {
+    await installService('win32', run)
+    await serviceStatus('', 'win32', run)
+    await uninstallService('', 'win32', run)
+    expect(calls.map(call => call.args)).toEqual([['service', 'install'], ['service', 'status', '--json'], ['service', 'uninstall']])
+    for (const call of calls) {
+      expect(call.options?.env?.HEXBOT_HOME).toBe(process.env.HEXBOT_HOME)
+      expect(call.options?.windowsHide).toBe(true)
+    }
+  } finally { process.env = previous; executable.mockRestore() }
+})

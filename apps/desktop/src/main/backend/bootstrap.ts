@@ -12,7 +12,7 @@ import voiceRequirements from '../../../../../backend/hexbot-core/assets/edge-tt
 import { lockedDaemonPid } from './manager'
 import { downloadTool, installTool } from './tools'
 
-import { binDir, hexbotHome, nativeDir, nativeServiceExecutable, runtimeDir } from './paths'
+import { binDir, canonicalRuntimePath, hexbotHome, nativeDir, nativeServiceExecutable, runtimeDir } from './paths'
 
 export type BootstrapStage = 'uv' | 'python' | 'runtime' | 'dependencies' | 'done'
 export interface BootstrapProgress {
@@ -51,7 +51,7 @@ export async function runChild(
 ): Promise<void> {
   await mkdir(join(hexbotHome(), 'logs'), { recursive: true })
   await new Promise<void>((resolve, reject) => {
-    const child = spawn(command, args, { cwd: options.cwd, env: options.env ?? process.env })
+    const child = spawn(command, args, { cwd: options.cwd, env: { ...(options.env ?? process.env), HEXBOT_HOME: hexbotHome() } })
     const pending = new Map<NodeJS.ReadableStream, string>()
     const consume = (stream: NodeJS.ReadableStream, chunk: Buffer): void => {
       void appendLog(chunk)
@@ -101,7 +101,7 @@ async function verifyNativeRuntime(
   const manifest = await readManifest(directory)
   if (manifest.version !== deps.appVersion || manifest.target !== `${deps.platform}-${deps.arch}`)
     throw new Error('Native runtime version or architecture does not match this app')
-  const required = [...(deps.platform === 'win32' ? ['hexbot.exe', 'node.exe', 'pi/launch.mjs', 'pi/search-tools.mjs', 'bin/rg.exe', 'bin/fd.exe', 'web/index.html'] : ['hexbot', 'hexbot-core', 'node', 'pi/hexbot-pi']), 'pi/package-lock.json',
+  const required = [...(deps.platform === 'win32' ? ['hexbot.exe', 'hexbot-cli.exe', 'node.exe', 'pi/launch.mjs', 'pi/search-tools.mjs', 'bin/rg.exe', 'bin/fd.exe', 'web/index.html'] : ['hexbot', 'hexbot-core', 'node', 'pi/hexbot-pi']), 'pi/package-lock.json',
     'pi/node_modules/@earendil-works/pi-coding-agent/dist/cli.js']
   if (!manifest.files || required.some(file => !manifest.files[file]))
     throw new Error('Native runtime manifest is incomplete')
@@ -212,9 +212,9 @@ async function selectedRuntime(deps: BootstrapDeps): Promise<SelectedRuntime | u
     const selected = JSON.parse(await readFile(join(runtimeDir(), 'native-current.json'), 'utf8')) as {
       version: string; executable: string; previous?: string; files?: Record<string, string>
     }
-    const executable = await realpath(nativeServiceExecutable(deps.platform))
-    const nativeRoot = await realpath(join(runtimeDir(), 'native'))
-    if (executable !== await realpath(selected.executable) || relative(nativeRoot, executable).startsWith('..') || isAbsolute(relative(nativeRoot, executable))) return undefined
+    const executable = canonicalRuntimePath(nativeServiceExecutable(deps.platform))
+    const nativeRoot = canonicalRuntimePath(join(runtimeDir(), 'native'))
+    if (executable !== canonicalRuntimePath(selected.executable) || relative(nativeRoot, executable).startsWith('..') || isAbsolute(relative(nativeRoot, executable))) return undefined
     const directory = dirname(executable)
     const manifest = await readManifest(directory)
     await verifyNativeRuntime(directory, { ...deps, appVersion: selected.version }, selected.files ?? manifest.files)
@@ -285,7 +285,8 @@ async function installNativeRuntime(deps: BootstrapDeps): Promise<void> {
     // Rust owns Windows setup and atomic selection for both Full and Headless.
     const executable = selected && selected.builtAt >= builtAt ? selected.executable : join(source, 'hexbot.exe')
     await probe(deps, join(dirname(executable), 'node.exe'), [join(dirname(executable), 'pi/launch.mjs'), '--version'])
-    await deps.run(executable, ['setup', ...(selected && selected.builtAt >= builtAt ? [] : ['--activate']), '--json'])
+    await deps.run(executable, ['setup', ...(selected && selected.builtAt >= builtAt ? [] : ['--activate']), '--json'], { env: { ...process.env, HEXBOT_HOME: hexbotHome() } })
+    deps.emit({ stage: 'done', message: 'Hexbot runtime is ready', percent: 100 })
     return
   }
   // The newest build wins whichever app or updater installed it, so Stable and

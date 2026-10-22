@@ -18,6 +18,8 @@ mod types;
 mod update_path;
 #[path = "../../hexbot-core/src/update_signature.rs"]
 pub mod update_signature;
+#[path = "../../hexbot-core/src/windows_cli.rs"]
+pub mod windows_cli;
 #[path = "../../hexbot-core/src/windows_paths.rs"]
 mod windows_paths;
 mod windows_service;
@@ -325,7 +327,7 @@ impl Installer {
         // `hexbot setup` marks the wrapper it writes; leave anyone else's `hexbot`.
         let wrapper = self.paths.cli_wrapper(self.target);
         let wrapper_owned = if self.target.is_windows() {
-            windows_service::wrapper_owned(&wrapper, &self.paths.hexbot_home)
+            windows_cli::owned(&wrapper, &self.paths.hexbot_home)
         } else {
             #[cfg(unix)]
             {
@@ -337,7 +339,14 @@ impl Installer {
             }
         };
         if wrapper_owned {
+            #[cfg(windows)]
+            if self.target.is_windows() {
+                windows_cli::unregister_path(&wrapper)?;
+            }
             self.remove_owned_path(&wrapper)?;
+            if self.target.is_windows() {
+                self.remove_owned_path(&wrapper.with_extension("json"))?;
+            }
         }
         self.remove_owned_path(&self.paths.receipt())?;
         if remove_data {
@@ -775,10 +784,9 @@ impl Installer {
             if !executable.is_file() || !destination.join("resources/app.asar").is_file() {
                 return fail("NSIS finished without installing the expected app.");
             }
-            archive::write_atomic(
-                &destination.join(".hexbot-app.json"),
-                serde_json::json!({"appId":id}).to_string().as_bytes(),
-            )?;
+            if detect::windows_app_id(&destination).as_deref() != Some(id) {
+                return fail("NSIS finished without the packaged app ownership marker.");
+            }
             Ok(vec![destination])
         }
     }

@@ -1,6 +1,6 @@
 import { existsSync, readFileSync, realpathSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path'
+import { basename, dirname, isAbsolute, join, relative, resolve, toNamespacedPath } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { app } from 'electron'
@@ -11,11 +11,16 @@ export function hexbotHome(): string {
 
 export const runtimeDir = (): string => join(hexbotHome(), 'runtime')
 export const nativeDir = (version = app.getVersion()): string => join(runtimeDir(), 'native', version)
+// realpath.native expands junctions, SUBST drives and short names. Namespace
+// both operands consistently: Rust canonical paths carry the verbatim prefix.
+export function canonicalRuntimePath(path: string): string {
+  return process.platform === 'win32' ? toNamespacedPath(realpathSync.native(path)) : realpathSync(path)
+}
 export function nativeServiceExecutable(platform = process.platform): string {
   if (platform !== 'win32') return join(runtimeDir(), 'native-executable')
   const selected = JSON.parse(readFileSync(join(runtimeDir(), 'native-current.json'), 'utf8')) as { executable: string }
-  const executable = realpathSync(selected.executable)
-  const root = realpathSync(join(runtimeDir(), 'native'))
+  const executable = canonicalRuntimePath(selected.executable)
+  const root = canonicalRuntimePath(join(runtimeDir(), 'native'))
   const relativePath = relative(root, executable)
   if (relativePath.startsWith('..') || isAbsolute(relativePath) || basename(executable) !== 'hexbot.exe')
     throw new Error('Invalid Windows runtime selection')

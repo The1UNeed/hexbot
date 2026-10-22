@@ -36,11 +36,11 @@ pub fn check_service(path: &Path, home: &Path) -> io::Result<()> {
 }
 pub fn foreign_wrapper_owner(path: &Path, home: &Path) -> io::Result<Option<PathBuf>> {
     if matches!(fs::symlink_metadata(path), Err(e) if e.kind() == io::ErrorKind::NotFound)
-        || wrapper_owned(path, home)
+        || crate::windows_cli::owned(path, home)
     {
         return Ok(None);
     }
-    Ok(Some(owner(path).ok_or_else(|| {
+    Ok(Some(crate::windows_cli::owner(path).ok_or_else(|| {
         io::Error::other("Unrecognized Windows CLI wrapper; left it alone")
     })?))
 }

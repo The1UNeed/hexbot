@@ -31,7 +31,9 @@ are used directly, rather than copying a Python EXE away from its libraries.
 
 Full NSIS artifacts begin with `Hexbot-`; Client artifacts begin with
 `HexbotClient-`. The installer runs NSIS, waits for it, and checks the expected
-app EXE and `resources/app.asar` before writing its receipt. Repair runs NSIS
+app EXE, `resources/app.asar` and the ownership marker included in the signed
+NSIS payload before writing its receipt. That marker survives interruption
+between NSIS completion and receipt publication. Unmarked apps are not owned. Repair runs NSIS
 again. Uninstall runs the installed NSIS uninstaller before removing leftovers.
 
 Native updates use a ZIP whose entrypoint is `hexbot.exe`. The daemon verifies
@@ -49,18 +51,27 @@ and `InteractiveToken`. Task state is read numerically, without localized
 status text. A hidden PowerShell wrapper reads the selected EXE for each run
 and waits for the old daemon to exit before starting an updated one. The new
 daemon stays inside the task's job. No breakaway child races the home lock.
-The CLI forwarding script is `.local/bin/hexbot.ps1`.
+The CLI forwarding script is `.local/bin/hexbot.ps1`. Both launchers read JSON
+as UTF-8 and use Windows final paths from open handles for the containment
+check. An outside build junction is rejected; a home junction is resolved on
+both sides. `service logs [-f]` reads both streams and follows file creation,
+truncation and rotation, including Windows PowerShell's UTF-16 log encoding.
 
 ## Verification and remaining gates
 
 `windows-contract.yml` publishes nothing and uses commit-pinned actions. Its
 Client job builds real NSIS and tests installation, repair and uninstall with
-a signed local manifest. The separate native job first compiles the daemon;
-it intentionally fails until the Windows platform guard and credential
-compile dependency are resolved by the security work. Later steps stage real
-Node/Pi, run Full bootstrap and Headless setup in temporary state, exercise
+a signed local manifest. The native job checks unchanged production source
+and requires Cargo's only error to be the exact unsupported-platform guard.
+Any other compiler error fails the job. The security stage's shared helper
+then prepares a disposable worktree from explicit immutable build and security
+SHAs, records both source trees and guard hashes, and removes only the exact
+guard there. No disposable binary is uploaded. The production guard remains.
+The disposable steps stage real Node/Pi, run Full bootstrap and Headless setup in temporary state, exercise
 Pi RPC, Python, web serving and task lifecycle, install Full NSIS, and validate
-a signed native ZIP update plus the pinned cloudflared executable.
+a signed native ZIP update plus the pinned cloudflared executable. Native
+regressions also exercise Unicode and junction homes, outside junction refusal,
+the activation-lock rollback floor and both service log streams.
 
 A cross-compile on macOS is only a compile check. It cannot establish native
 NSIS, task, Electron GUI, job lifetime, console or standard-user behavior.

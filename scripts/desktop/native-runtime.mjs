@@ -159,6 +159,7 @@ export async function stageNativeRuntime({
     const afterBytes = await directoryBytes(pi)
     console.log(`Runtime dependencies: ${beforeBytes} -> ${afterBytes} bytes`)
     await cp(join(repository, 'backend/hexbot-core/target', triple, windows ? 'release/hexbot.exe' : 'release/hexbot'), join(staging, daemonName))
+    if (windows) await cp(join(repository, 'backend/hexbot-core/target', triple, 'release/hexbot-cli.exe'), join(staging, 'hexbot-cli.exe'))
     if (nodeExecutable) await cp(nodeExecutable, join(staging, nodeName), { dereference: true })
     else {
       const download = await mkdtemp(`${destination}.node-`)
@@ -175,7 +176,7 @@ export async function stageNativeRuntime({
     }
     await cp(join(root, 'scripts/desktop/pi-launch.mjs'), join(pi, 'launch.mjs'))
     const files = {}
-    for (const file of [...(windows ? ['hexbot.exe', 'node.exe', 'pi/launch.mjs'] : ['hexbot', 'hexbot-core', 'node', 'pi/hexbot-pi']), 'pi/package-lock.json', 'pi/node_modules/@earendil-works/pi-coding-agent/dist/cli.js', 'web/index.html', `bin/rg${windows ? '.exe' : ''}`, `bin/fd${windows ? '.exe' : ''}`, 'pi/search-tools.mjs'])
+    for (const file of [...(windows ? ['hexbot.exe', 'hexbot-cli.exe', 'node.exe', 'pi/launch.mjs'] : ['hexbot', 'hexbot-core', 'node', 'pi/hexbot-pi']), 'pi/package-lock.json', 'pi/node_modules/@earendil-works/pi-coding-agent/dist/cli.js', 'web/index.html', `bin/rg${windows ? '.exe' : ''}`, `bin/fd${windows ? '.exe' : ''}`, 'pi/search-tools.mjs'])
       files[file] = createHash('sha256').update(await readFile(join(staging, file))).digest('hex')
     // The app keeps whichever installed runtime was built from newer source,
     // across Stable and Nightly (apps/desktop/src/main/backend/bootstrap.ts).

@@ -8,6 +8,9 @@ use std::{
 };
 use tokio::process::Command;
 
+#[path = "windows_service_logs.rs"]
+mod service_logs;
+
 const MARKER: &str = "# Hexbot owned home: ";
 fn quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "''"))
@@ -17,15 +20,21 @@ fn script(home: &Path, service: bool) -> Result<String> {
         .to_str()
         .ok_or_else(|| Error::new(4200, "Invalid home path"))?;
     let marker = serde_json::to_string(text).map_err(|e| Error::new(4200, e.to_string()))?;
+    let command = if service {
+        r#"$env:HEXBOT_SUPERVISOR = 'service'
+do {
+    $exe = Select-HexbotRuntime
+    $ErrorActionPreference = 'Continue'
+    & $exe serve >> (Join-Path $env:HEXBOT_HOME 'logs/service.log') 2>> (Join-Path $env:HEXBOT_HOME 'logs/service-error.log')
+    $ErrorActionPreference = 'Stop'
+} while ($LASTEXITCODE -eq 0)"#
+    } else {
+        "$exe = Select-HexbotRuntime\n$ErrorActionPreference = 'Continue'\n& $exe @args"
+    };
     Ok(format!(
-        "{MARKER}{marker}\r\n$ErrorActionPreference = 'Stop'\r\nfunction Normalize-HexbotPath($p) {{ $v = [IO.Path]::GetFullPath($p); $prefix = [string][char]92 + [char]92 + '?' + [char]92; if ($v.StartsWith($prefix + 'UNC' + [char]92)) {{ return ([string][char]92 + [char]92 + $v.Substring(8)) }}; if ($v.StartsWith($prefix)) {{ return $v.Substring(4) }}; return $v }}\r\n$env:HEXBOT_HOME = {}\r\n$root = (Normalize-HexbotPath (Join-Path $env:HEXBOT_HOME 'runtime/native')) + [IO.Path]::DirectorySeparatorChar\r\n$current = Get-Content -LiteralPath (Join-Path $env:HEXBOT_HOME 'runtime/native-current.json') -Raw | ConvertFrom-Json\r\n$exe = Normalize-HexbotPath $current.executable\r\nif (!$exe.StartsWith($root, [StringComparison]::OrdinalIgnoreCase) -or [IO.Path]::GetFileName($exe) -ne 'hexbot.exe' -or !(Test-Path -LiteralPath $exe -PathType Leaf)) {{ throw 'Invalid native runtime selection' }}\r\n{}\r\nexit $LASTEXITCODE\r\n",
-        quote(text),
-        if service {
-            "$env:HEXBOT_SUPERVISOR = 'service'\r\ndo {\r\n$current = Get-Content -LiteralPath (Join-Path $env:HEXBOT_HOME 'runtime/native-current.json') -Raw | ConvertFrom-Json\r\n$exe = Normalize-HexbotPath $current.executable\r\nif (!$exe.StartsWith($root, [StringComparison]::OrdinalIgnoreCase) -or [IO.Path]::GetFileName($exe) -ne 'hexbot.exe') { throw 'Invalid native runtime selection' }\r\n$ErrorActionPreference = 'Continue'\r\n& $exe serve >> (Join-Path $env:HEXBOT_HOME 'logs/service.log') 2>> (Join-Path $env:HEXBOT_HOME 'logs/service-error.log')\r\n$ErrorActionPreference = 'Stop'\r\n} while ($LASTEXITCODE -eq 0)"
-        } else {
-            "$ErrorActionPreference = 'Continue'\r\n& $exe @args"
-        }
-    ))
+        "{MARKER}{marker}\n$ErrorActionPreference = 'Stop'\n$env:HEXBOT_HOME = {}\n{}\n{command}\nexit $LASTEXITCODE\n",
+        quote(text), include_str!("../assets/windows-runtime-selection.ps1")
+    ).replace('\n', "\r\n"))
 }
 pub fn owned(path: &Path, home: &Path) -> bool {
     fs::symlink_metadata(path).is_ok_and(|m| m.is_file())
@@ -140,6 +149,37 @@ pub async fn status(home: &Path) -> Result<Value> {
     };
     Ok(json!({"installed":installed,"running":running,"file":file}))
 }
+// /End acknowledges cancellation before the task job and daemon lock are gone.
+// A restart may launch only after both are stopped, or it races the home lock.
+async fn wait_stopped(home: &Path, name: &str) -> Result<()> {
+    let mut interval = tokio::time::interval(std::time::Duration::from_millis(200));
+    let wait = async {
+        loop {
+            let state = powershell(&format!("$task = Get-ScheduledTask -TaskName {} -ErrorAction SilentlyContinue; if ($task) {{ [int]$task.State }} else {{ 0 }}", quote(name))).await?;
+            let available = match fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(home.join("native-daemon.lock"))
+            {
+                Ok(file) => file.try_lock().is_ok(),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => true,
+                Err(error) => return Err(error.into()),
+            };
+            if state != "4" && available {
+                return Ok(());
+            }
+            interval.tick().await;
+        }
+    };
+    tokio::time::timeout(std::time::Duration::from_secs(30), wait)
+        .await
+        .map_err(|_| {
+            Error::new(
+                5244,
+                "Windows task did not stop and release the daemon lock",
+            )
+        })?
+}
 pub async fn run(home: &Path, args: &[String]) -> Result<()> {
     let action = args.first().map(String::as_str).unwrap_or("status");
     if !matches!(
@@ -148,16 +188,25 @@ pub async fn run(home: &Path, args: &[String]) -> Result<()> {
     ) {
         return Err(Error::new(4200, "Unknown service action"));
     }
-    if action == "status" {
-        println!("{}", status(home).await?);
-        return Ok(());
-    }
-    if action == "logs" {
-        print!(
-            "{}",
-            fs::read_to_string(home.join("logs/service.log")).unwrap_or_default()
-        );
-        return Ok(());
+    match args
+        .iter()
+        .map(String::as_str)
+        .collect::<Vec<_>>()
+        .as_slice()
+    {
+        [] | ["status"] | ["status", "--json"] => {
+            println!("{}", status(home).await?);
+            return Ok(());
+        }
+        ["logs"] => return service_logs::logs(home, false).await,
+        ["logs", "-f"] => return service_logs::logs(home, true).await,
+        ["install" | "uninstall" | "start" | "stop" | "restart"] => {}
+        _ => {
+            return Err(Error::new(
+                4200,
+                "service expects install, uninstall, start, stop, restart, status [--json] or logs [-f]",
+            ));
+        }
     }
     let file = service_file()?;
     if fs::symlink_metadata(&file).is_ok() && !owned(&file, home) {
@@ -202,6 +251,7 @@ pub async fn run(home: &Path, args: &[String]) -> Result<()> {
             let (name, _) = task_name().await?;
             if matches!(action, "stop" | "restart" | "uninstall") {
                 let _ = schtasks(&["/End", "/TN", &name]).await;
+                wait_stopped(home, &name).await?;
             }
             if action == "uninstall" {
                 schtasks(&["/Delete", "/TN", &name, "/F"]).await?;

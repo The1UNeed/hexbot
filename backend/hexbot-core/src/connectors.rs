@@ -1022,7 +1022,7 @@ impl Drop for SseReader {
 }
 enum McpTransport {
     Stdio {
-        _child: Child,
+        _child: Box<Child>,
         input: ChildStdin,
         output: BufReader<ChildStdout>,
     },
@@ -1250,7 +1250,7 @@ impl McpSession {
             let input = child.stdin.take().unwrap();
             let output = BufReader::new(child.stdout.take().unwrap());
             McpTransport::Stdio {
-                _child: child,
+                _child: Box::new(child),
                 input,
                 output,
             }

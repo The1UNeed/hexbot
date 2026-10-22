@@ -29,6 +29,7 @@ use std::os::unix::fs::PermissionsExt;
 #[cfg(windows)]
 const REQUIRED_FILES: &[&str] = &[
     "hexbot.exe",
+    "hexbot-cli.exe",
     "node.exe",
     "pi/launch.mjs",
     "pi/search-tools.mjs",
@@ -852,9 +853,26 @@ async fn install_code_runtime(home: &Path, emit: &impl Fn(&str, &str)) -> Result
 }
 #[cfg(windows)]
 fn link_cli(home: &Path, user_home: &Path, emit: &impl Fn(&str, &str)) -> Result<()> {
-    services::selected_native_executable(home)?;
-    let path = user_home.join(".local/bin/hexbot.ps1");
-    crate::windows_service::write_owned_script(&path, home, false)?;
-    emit("link", &format!("CLI installed at {}", path.display()));
+    let selected = services::selected_native_executable(home)?;
+    let bin = user_home.join(".local/bin");
+    let cli = crate::windows_cli::install(&selected.with_file_name("hexbot-cli.exe"), home, &bin)?;
+    crate::windows_cli::register_path(&cli)?;
+    let legacy = bin.join("hexbot.ps1");
+    if legacy.exists() {
+        if !crate::windows_service::owned(&legacy, home) {
+            return Err(Error::new(
+                4208,
+                "An unrelated hexbot.ps1 shadows the native CLI; left it alone",
+            ));
+        }
+        fs::remove_file(legacy)?;
+    }
+    emit(
+        "link",
+        &format!(
+            "CLI installed at {}. New terminals can run hexbot from PATH.",
+            cli.display()
+        ),
+    );
     Ok(())
 }

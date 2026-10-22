@@ -2,17 +2,14 @@
 //! they do not provide confinement or enable a supported Windows product.
 use std::{fs::File, io, path::PathBuf};
 
-/// Preserve the daemon's HOME lookup, including an explicitly empty value.
+/// Windows follows the OS profile, even when Git Bash sets a different HOME.
+/// Unix keeps the existing HOME lookup, including an explicitly empty value.
 pub fn user_home() -> Option<PathBuf> {
-    std::env::var_os("HOME")
-        .or_else(|| {
-            if cfg!(windows) {
-                std::env::var_os("USERPROFILE")
-            } else {
-                None
-            }
-        })
-        .map(PathBuf::from)
+    #[cfg(windows)]
+    let value = std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME"));
+    #[cfg(not(windows))]
+    let value = std::env::var_os("HOME");
+    value.map(PathBuf::from)
 }
 
 /// Blocking exclusive lock, retrying interrupted waits like the activation lock.

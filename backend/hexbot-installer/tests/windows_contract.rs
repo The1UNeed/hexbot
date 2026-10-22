@@ -110,6 +110,34 @@ fn real_nsis_install_repair_and_uninstall() {
         assert!(app.join("resources/hexbot-native/hexbot.exe").is_file());
     }
     assert_eq!(installer.detect().unwrap().apps.len(), 1);
+    if let Some(probe) = std::env::var_os("HEXBOT_WINDOWS_GUI_PROBE") {
+        let output = std::process::Command::new(
+            std::env::var_os("HEXBOT_WINDOWS_GUI_NODE").expect("trusted absolute CI Node"),
+        )
+        .arg(probe)
+        .arg(app.join(if client {
+            "HexbotClient.exe"
+        } else {
+            "Hexbot.exe"
+        }))
+        .arg(if client { "client" } else { "full" })
+        .arg(root.path().join("isolated app session"))
+        .output()
+        .unwrap();
+        assert!(
+            output.status.success(),
+            "Installed app probe failed:\n{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        println!("{}", String::from_utf8_lossy(&output.stdout));
+    }
+    // Simulate interruption after NSIS succeeded but before the outer receipt
+    // commit. Ownership is already in the signed NSIS payload, so discovery,
+    // reinstall and uninstall remain available without trusting arbitrary exes.
+    fs::remove_file(installer.paths.receipt()).unwrap();
+    assert_eq!(installer.detect().unwrap().apps[0].app_id, id);
+    installer.apply(option, Track::Stable, &mut |_| {}).unwrap();
     installer.repair(&mut |_| {}).unwrap();
     installer.uninstall(false, &mut |_| {}).unwrap();
     assert!(!app.exists());

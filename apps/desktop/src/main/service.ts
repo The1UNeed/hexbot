@@ -8,6 +8,10 @@ import { binDir, hexbotExecutable, hexbotHome } from './backend/paths'
 import { launchdPlist, systemdUnit, type ServiceFileOptions } from './service-files'
 
 const exec = promisify(execFile)
+type Run = (command: string, args: string[], options?: { env?: NodeJS.ProcessEnv; windowsHide?: boolean }) => Promise<unknown>
+const windowsOptions = (): { env: NodeJS.ProcessEnv; windowsHide: boolean } => ({
+  windowsHide: true, env: { ...process.env, HEXBOT_HOME: hexbotHome(), HEXBOT_SERVICE_ROOT: homedir() }
+})
 const servicePath = (): string =>
   process.platform === 'darwin'
     ? join(homedir(), 'Library', 'LaunchAgents', 'app.hexbot.daemon.plist')
@@ -19,9 +23,9 @@ const options = (): ServiceFileOptions => ({
   logDir: join(hexbotHome(), 'logs')
 })
 
-export async function installService(): Promise<void> {
-  if (process.platform === 'win32') {
-    await exec(hexbotExecutable(), ['service', 'install'], { windowsHide: true })
+export async function installService(targetPlatform = process.platform, run: Run = exec): Promise<void> {
+  if (targetPlatform === 'win32') {
+    await run(hexbotExecutable(), ['service', 'install'], windowsOptions())
     return
   }
   const file = servicePath()
@@ -45,10 +49,10 @@ const launchdDomains = (): string[] => [`gui/${process.getuid!()}`, `user/${proc
 
 export async function uninstallService(
   file = servicePath(), targetPlatform = process.platform,
-  run: (command: string, args: string[]) => Promise<unknown> = exec
+  run: Run = exec
 ): Promise<void> {
   if (targetPlatform === 'win32') {
-    await run(hexbotExecutable(), ['service', 'uninstall'])
+    await run(hexbotExecutable(), ['service', 'uninstall'], windowsOptions())
     return
   }
   if (targetPlatform === 'darwin') {
@@ -73,11 +77,11 @@ export async function uninstallService(
 
 export async function serviceStatus(
   file = servicePath(), targetPlatform = process.platform,
-  run: (command: string, args: string[]) => Promise<unknown> = exec
+  run: Run = exec
 ): Promise<{ installed: boolean; running: boolean }> {
   if (targetPlatform === 'win32') {
     try {
-      const output = await run(hexbotExecutable(), ['service', 'status', '--json']) as { stdout: string }
+      const output = await run(hexbotExecutable(), ['service', 'status', '--json'], windowsOptions()) as { stdout: string }
       const status = JSON.parse(output.stdout) as { installed: boolean; running: boolean }
       return { installed: status.installed, running: status.running }
     } catch { return { installed: false, running: false } }
@@ -127,7 +131,7 @@ async function removeLegacyRuntime(home: string): Promise<void> {
 // Rewrite only the service for this home, once the native bundle is verified.
 export async function migrateLegacyService(
   file = servicePath(), targetPlatform = process.platform,
-  config = options(), run: (command: string, args: string[]) => Promise<unknown> = exec
+  config = options(), run: Run = exec
 ): Promise<void> {
   const old = await readFile(file, 'utf8').catch((error: NodeJS.ErrnoException) => {
     if (error.code === 'ENOENT') return ''
