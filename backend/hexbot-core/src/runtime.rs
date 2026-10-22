@@ -6574,6 +6574,15 @@ fn guarded_file_path(
     mode: &str,
     writable: &[PathBuf],
 ) -> Result<(PathBuf, bool, Option<String>)> {
+    if mode != "off" {
+        crate::credentials::require_supported_execution()?;
+        if write && crate::credentials::managed_runtime_path(home, path) {
+            return Err(Error::new(
+                4302,
+                "Managed runtimes and runtime selection are read-only.",
+            ));
+        }
+    }
     fn resolve(path: &Path) -> Result<PathBuf> {
         let mut resolved = PathBuf::new();
         for component in path.components() {
@@ -6603,6 +6612,19 @@ fn guarded_file_path(
     if mode == "off" {
         return Ok((target, false, None));
     }
+    let root = resolve(home)?;
+    if write
+        && [home, root.as_path()].iter().any(|home| {
+            [path, target.as_path()]
+                .iter()
+                .any(|path| crate::credentials::managed_runtime_path(home, path))
+        })
+    {
+        return Err(Error::new(
+            4302,
+            "Managed runtimes and runtime selection are read-only.",
+        ));
+    }
     let git_check = if write {
         crate::credentials::git_write_protected(&target, writable)
     } else {
@@ -6615,7 +6637,6 @@ fn guarded_file_path(
             "Git metadata is read-only. Use an approved full_access command.",
         ));
     }
-    let root = resolve(home)?;
     // Manual asks before every change, Auto before one outside the workspace.
     let mut ask = write
         && (reason.is_some()
@@ -6672,6 +6693,69 @@ fn guarded_file_path(
 #[cfg(test)]
 mod file_bridge_tests {
     use super::*;
+    #[cfg(unix)]
+    #[test]
+    fn native_file_bridge_never_writes_managed_runtimes_through_output_links() {
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path().canonicalize().unwrap().join("home");
+        fs::create_dir_all(home.join("profiles/owl")).unwrap();
+        let files = [
+            "runtime/native-current.json",
+            "runtime/native/build/hexbot.exe",
+            "runtime/tools/code-python/Scripts/python.exe",
+        ];
+        for local in files {
+            let path = home.join(local);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, "keep").unwrap();
+        }
+        let home_alias = temp.path().join("home-alias");
+        std::os::unix::fs::symlink(&home, &home_alias).unwrap();
+        let output = home.join("profiles/owl/artifacts");
+        for (destination, relative) in [
+            (home.join("runtime"), "native-current.json"),
+            (home.join("runtime/native/build"), "hexbot.exe"),
+            (home.join("runtime/tools/code-python/Scripts"), "python.exe"),
+        ] {
+            std::os::unix::fs::symlink(&destination, &output).unwrap();
+            for mode in ["manual", "smart"] {
+                for root in [&home, &home_alias] {
+                    let target = root.join("profiles/owl/artifacts").join(relative);
+                    let result = guarded_file_path(
+                        root,
+                        &target,
+                        true,
+                        mode,
+                        &[output.clone(), home.join("runtime")],
+                    )
+                    .and_then(|(target, _, _)| common::atomic_write(&target, b"changed"));
+                    assert!(
+                        result.is_err(),
+                        "{target:?} must be denied, even after approval"
+                    );
+                    assert_eq!(
+                        fs::read_to_string(destination.join(relative)).unwrap(),
+                        "keep"
+                    );
+                }
+            }
+            // Bypass deliberately skips this policy. Verify the same target is
+            // writable so a filesystem permission failure cannot hide a weak guard.
+            let (target, ask, _) = guarded_file_path(
+                &home,
+                &output.join(relative),
+                true,
+                "off",
+                std::slice::from_ref(&output),
+            )
+            .unwrap();
+            assert!(!ask);
+            common::atomic_write(&target, b"bypass").unwrap();
+            assert_eq!(fs::read_to_string(&target).unwrap(), "bypass");
+            fs::write(target, "keep").unwrap();
+            fs::remove_file(&output).unwrap();
+        }
+    }
     #[test]
     fn file_bridge_protects_linked_and_bare_git_metadata() {
         let temp = tempfile::tempdir().unwrap();

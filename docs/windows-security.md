@@ -48,7 +48,10 @@ standard user. The test verifies that the account has no administrator token.
 The workflow grants access only to a disposable test directory and publishes
 nothing.
 
-The probes cover Auto, Manual, unknown modes, approved `full_access` attempts,
+The extension probes start before import and tool registration, with hostile
+UNC `HOME` and `USERPROFILE` values. Only trusted module loading and the explicit
+session config may access the filesystem. The probes cover Auto, Manual,
+unknown modes, approved `full_access` attempts,
 parallel calls, direct execution without a gate grant, the user-command hook,
 and a Bypass grant invalidated by a mode change. Filesystem and process entry
 points throw if reached during these probes. A second pass uses real OS entry
@@ -58,12 +61,29 @@ UNC and alternate stream path inputs are refused before the Unix path walker.
 No command starts, so these refusals allocate no AppContainer profile, ACL
 grant or process tree to clean up. These tests do not exercise a sandbox.
 
-Other platforms run the same gate probes with a simulated Windows platform.
+The combined job pins the build commit and checks out the security commit. A
+shared preparation helper creates a detached worktree, applies the security
+diff, and records both inputs and the combined Git tree. If the build already
+contains the security commit, it keeps that tree unchanged. It requires exactly
+one occurrence of the exact unsupported-platform guard bytes, and removes only
+those bytes in the disposable source. It logs the guard diff and before/after
+hashes. Production source retains its guard, with no feature or compile option
+that bypasses it. The workflow uploads no executable or artifact.
+
+The compiled integration probe invokes the actual Rust Runtime through a trusted
+Pi transport fixture. It verifies code refusal before approval in Auto and
+Manual, refusal at every isolated-command level, and rejection of stored script
+and monitor paths before workspace revalidation or script access in every mode.
+It checks runtime/selection integrity and owned-fixture shutdown. The separate
+extension probes use the production Pi implementation. These are refusal tests,
+not successful sandbox execution or a complete daemon feature test.
+
+Other platforms run the extension gate probes with a simulated Windows platform.
 That checks gate logic only. It cannot validate Windows paths, Windows security
-APIs, ACL behavior or native containment. The whole-daemon native test
-`cargo test --locked --test windows_security` must run after combining this
-layer with the Windows compile ports. A standalone extension pass does not
-establish that the combined daemon builds or enforces every entry point.
+APIs, ACL behavior or native containment. The compiled native test runs only in
+the disposable combined source and requires `HEXBOT_WINDOWS_NODE` pointing to a
+trusted absolute Node executable. A standalone extension pass does not establish
+that the combined daemon builds or enforces every entry point.
 
 ## Requirements before enabling isolation
 

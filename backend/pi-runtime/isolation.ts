@@ -99,6 +99,7 @@ function deniedWrites(): string[] {
 // read them.
 const readCache = new Map<string, {at: number, paths: string[]}>();
 export function readDenied(): string[] {
+  requireSupportedExecution();
   const home = JSON.stringify(userHomes()), cached = readCache.get(home);
   if (cached && Date.now() - cached.at < 5000) return cached.paths;
   const denied: string[] = [];

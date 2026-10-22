@@ -194,6 +194,15 @@ fn policy_roots(entry: &str) -> Vec<PathBuf> {
         user_homes().iter().map(|user| user.join(entry)).collect()
     }
 }
+/// A managed runtime or selection path, including a parent that could replace
+/// one. Callers check both lexical and resolved paths and homes. Output grants
+/// never override this write denial; Bypass deliberately skips it.
+pub(crate) fn managed_runtime_path(home: &Path, path: &Path) -> bool {
+    policy().managed_runtime.iter().any(|local| {
+        let managed = home.join(local);
+        under(path, &managed) || under(&managed, path)
+    })
+}
 /// The file tools' tier for a host path.
 pub fn host_write_tier(path: &Path) -> Option<WriteTier> {
     let write = &policy().write;
@@ -1410,14 +1419,7 @@ fn layout_scanned(
         .iter()
         .filter_map(|p| std::fs::canonicalize(p).ok())
         .filter(|p| roots.iter().any(|root| p != root && p.starts_with(root)))
-        .filter(|p| {
-            !roots.iter().any(|root| {
-                policy().managed_runtime.iter().any(|local| {
-                    let managed = root.join(local);
-                    under(p, &managed) || under(&managed, p)
-                })
-            })
-        })
+        .filter(|p| !roots.iter().any(|root| managed_runtime_path(root, p)))
         .collect();
     Ok(Layout {
         roots,

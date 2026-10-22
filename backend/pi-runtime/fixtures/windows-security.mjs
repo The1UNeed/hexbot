@@ -6,9 +6,10 @@ import fsPromises from 'node:fs/promises';
 import childProcess from 'node:child_process';
 import {syncBuiltinESMExports} from 'node:module';
 import {tmpdir} from 'node:os';
-import {join, delimiter} from 'node:path';
-import hexbot, {canonicalPath} from '../extension.ts';
-import {isolatedCommand, workspaceProtected, WINDOWS_ISOLATION_UNAVAILABLE} from '../isolation.ts';
+import {join, delimiter, resolve} from 'node:path';
+import {fileURLToPath} from 'node:url';
+const trustedModuleRoot = fileURLToPath(new URL('../',import.meta.url));
+const trustedRoots = [resolve(trustedModuleRoot),fs.realpathSync(trustedModuleRoot)];
 
 const simulated = process.argv.includes('--simulate-windows');
 if (simulated) Object.defineProperty(process, 'platform', {value:'win32'});
@@ -51,8 +52,8 @@ try {
     },
     select:async title => { approvals.push(title); return 'session'; },
   }};
-  hexbot({on:(name, handler) => handlers[name] = handler, registerTool:tool => tools[tool.name] = tool, registerProvider() {}});
-  assert.match(tools.bash.description, /Bash syntax, not cmd.exe or PowerShell/);
+  process.env.HOME = String.raw`\\hexbot-hostile.invalid\home`;
+  process.env.USERPROFILE = String.raw`\\hexbot-hostile.invalid\profile`;
   const nativePath = join(home, 'runtime/native-current.json');
   const calls = [
     ['bash', {command:'printf "%s\\n" "quoted value"'}],
@@ -63,20 +64,40 @@ try {
     ['edit',{path:nativePath,oldText:'private',newText:'changed'}],
     ...['grep','find','ls'].map(tool => [tool,{path:cwd,pattern:'private'}]),
   ];
-  // Intercept actual OS-entry functions after session registration. A gate must
-  // refuse even when every filesystem operation errors and every spawn fails.
-  // No fixture simulates successful sandboxed execution.
+  // Intercept before importing or registering the extension. Only trusted
+  // module reads and the explicit session config may reach the real filesystem.
+  // Hostile HOME/USERPROFILE and every tool target must remain untouched.
   const originals = [], accesses = [];
   for (const [object, names] of [
     [fs, ['openSync','readFileSync','writeFileSync','readdirSync','opendirSync','lstatSync','statSync','realpathSync','accessSync','existsSync']],
     [fsPromises, ['open','readFile','writeFile','readdir','opendir','lstat','stat','realpath','access']],
     [childProcess, ['spawn','spawnSync','exec','execSync','execFile','execFileSync']],
   ]) for (const name of names) {
-    originals.push([object,name,object[name]]);
-    object[name] = (...args) => { accesses.push([name,String(args[0])]); throw new Error('OS probe must not be reached'); };
+    const original = object[name];
+    originals.push([object,name,original]);
+    const intercept = fn => (...args) => {
+      let path = args[0];
+      try { if (path instanceof URL) path = fileURLToPath(path); } catch {}
+      const target = typeof path === 'string' ? resolve(path) : '';
+      const read = object !== childProcess && !['writeFile','writeFileSync'].includes(name);
+      if (read && (target === configPath || trustedRoots.some(root => target === root || target.startsWith(root + '/') || target.startsWith(root + '\\')))) return fn(...args);
+      accesses.push([name,String(path)]);
+      throw new Error('Untrusted OS access must not be reached');
+    };
+    object[name] = intercept(original);
+    if (typeof original.native === 'function') object[name].native = intercept(original.native);
   }
   syncBuiltinESMExports();
+  let WINDOWS_ISOLATION_UNAVAILABLE;
   try {
+    const extension = await import('../extension.ts');
+    const isolation = await import('../isolation.ts');
+    const {isolatedCommand,workspaceProtected} = isolation;
+    const {canonicalPath} = extension;
+    WINDOWS_ISOLATION_UNAVAILABLE = isolation.WINDOWS_ISOLATION_UNAVAILABLE;
+    extension.default({on:(name, handler) => handlers[name] = handler, registerTool:tool => tools[tool.name] = tool, registerProvider() {}});
+    assert.match(tools.bash.description, /Bash syntax, not cmd.exe or PowerShell/);
+    assert.deepEqual(accesses,[], 'registration must not resolve hostile homes');
     for (const mode of ['smart','manual','unknown']) {
       settings.approvalMode = mode;
       await Promise.all(calls.map(async ([toolName,input], index) => {

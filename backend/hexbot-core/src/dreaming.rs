@@ -1834,6 +1834,9 @@ impl Dreaming {
         Ok(json!({"success":true,"job":job,"status":"running"}))
     }
     async fn script(&self, bot: &str, script: &str, workdir: Option<&str>) -> Result<String> {
+        // Refuse before resolving untrusted UNC/device paths or touching the
+        // workspace, artifacts or database. Approval modes cannot override it.
+        crate::credentials::require_supported_execution()?;
         let supplied = PathBuf::from(script);
         if !supplied.is_absolute()
             && supplied
@@ -1978,6 +1981,12 @@ impl Dreaming {
         job: &mut Value,
         extra: Option<String>,
     ) -> Result<Option<String>> {
+        if ["script", "monitor_script"]
+            .iter()
+            .any(|key| job[key].as_str().is_some_and(|value| !value.is_empty()))
+        {
+            crate::credentials::require_supported_execution()?;
+        }
         validate_job(&self.home, job)?;
         let cwd = job["workdir"]
             .as_str()

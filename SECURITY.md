@@ -54,7 +54,9 @@ Windows releases. See [the remaining Windows requirements](docs/windows-security
   attachment folders, and temporary folders. On macOS these include shared `/tmp`.
   Runtime selection (`runtime/native-current.json`) and managed executables in
   `runtime/native`, `runtime/tools`, `runtime/bin`, `bin`, and `python` never
-  become writable output exceptions inside the Hexbot home.
+  become writable output exceptions inside the Hexbot home. Native code file
+  helpers enforce the same write denial, including output-folder symlinks and
+  aliases of the home, before approval and writing.
   Existing Git metadata (`.git`, linked `gitdir`/`commondir` targets and bare
   `*.git` repositories with `HEAD` and `objects`, plus `core.hooksPath`
   directories set by the repository or your own Git config) stays read-only within the scan limits below. A bot
