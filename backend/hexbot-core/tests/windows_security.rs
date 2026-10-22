@@ -226,6 +226,62 @@ async fn windows_security_runtime_refuses_code_before_approval() {
                 .execute("UPDATE bots SET workdir=?", [work.to_str().unwrap()])
                 .unwrap();
         }
+        for mode in ["smart", "manual", "off"] {
+            db::open(&home)
+                .unwrap()
+                .execute(
+                    "UPDATE bots SET approval_mode=?,workdir=?",
+                    rusqlite::params![mode, work.to_str().unwrap()],
+                )
+                .unwrap();
+            let opened = runtime
+                .call("alice", "hexbot.sections.open", &json!({"id":"first"}))
+                .await
+                .unwrap()
+                .unwrap();
+            let live = opened["section"]["live_session_id"].as_str().unwrap();
+            db::open(&home)
+                .unwrap()
+                .execute(
+                    "UPDATE bots SET workdir=?",
+                    [r"\\hexbot-hostile.invalid\share\private-file-workdir"],
+                )
+                .unwrap();
+            for operation in ["write", "edit_open", "edit_commit"] {
+                let absent_output = home.join("runtime/sessions/first/attachments");
+                if absent_output.exists() {
+                    fs::remove_dir(&absent_output).unwrap();
+                }
+                fs::write(fixture.join("code.json"),json!({"tool":"hexbot_pi_file","args":{"operation":operation,"path":r"\\.\pipe\hexbot-private-file","callId":"private-file","snapshot":{"approvalMode":mode,"fileEpoch":0},"content":"eA==","parent":["0","0"]}}).to_string()).unwrap();
+                let mut events = hub.subscribe();
+                runtime
+                    .call(
+                        "alice",
+                        "prompt.submit",
+                        &json!({"session_id":live,"text":"private file preaccess probe"}),
+                    )
+                    .await
+                    .unwrap()
+                    .unwrap();
+                let reply = native_reply(&mut events).await;
+                assert!(
+                    reply["error"]
+                        .as_str()
+                        .unwrap()
+                        .contains("Windows tool isolation is not implemented"),
+                    "{reply}"
+                );
+                assert!(
+                    !absent_output.exists(),
+                    "private file bridge created outputs before refusal"
+                );
+            }
+            fs::remove_file(fixture.join("code.json")).unwrap();
+            db::open(&home)
+                .unwrap()
+                .execute("UPDATE bots SET workdir=?", [work.to_str().unwrap()])
+                .unwrap();
+        }
         for mode in ["smart", "manual"] {
             // Real Python starts under Bypass. Change its live policy while it
             // waits on a socket, then exercise that same worker's native bridge.

@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {execFileSync, spawnSync} from 'node:child_process';
-import {mkdtempSync, mkdirSync, copyFileSync, readFileSync, existsSync, rmSync} from 'node:fs';
+import {mkdtempSync, mkdirSync, copyFileSync, readFileSync, existsSync, rmSync, writeFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 
@@ -38,6 +38,14 @@ test('trusted loader diagnostics never create Runtime lifecycle evidence', t => 
   const output = execFileSync(process.execPath,[f.launcher,'--hexbot-fixture-diagnose'],{encoding:'utf8',timeout:5000});
   assert.equal(JSON.parse(output).fixture,'loaded');
   assert.equal(existsSync(join(f.root,'fixture.events.jsonl')),false);
+});
+test('private file transport fixture starts its tool call before requesting the bridge', t => {
+  const f=fixture(t);
+  writeFileSync(join(f.root,'code.json'),JSON.stringify({tool:'hexbot_pi_file',args:{operation:'edit_open',callId:'file'}}));
+  const output=execFileSync(process.execPath,[f.launcher],{input:JSON.stringify({id:'prompt',type:'prompt',message:'fixture only'})+'\n',encoding:'utf8',timeout:5000}).trim().split('\n').map(JSON.parse);
+  const start=output.findIndex(event=>event.type==='tool_execution_start');
+  const request=output.findIndex(event=>event.type==='extension_ui_request'&&event.title?.includes('hexbot_pi_file'));
+  assert(start>=0&&request>start);assert.equal(output[start].toolCallId,'file');assert.equal(output[start].toolName,'edit');
 });
 
 test('fixture protocol failure records exception type and nonzero exit without input data', t => {

@@ -41,6 +41,8 @@ use identity::with_fields;
 #[cfg(unix)]
 #[path = "runtime_files.rs"]
 mod files;
+#[path = "runtime_pi_files.rs"]
+mod pi_files;
 
 #[cfg(test)]
 #[path = "runtime_lifecycle_tests.rs"]
@@ -80,7 +82,7 @@ struct State {
     landing: usize,
     /// The bot-to-bot chain this turn belongs to; a fresh turn starts a fresh one.
     chain: Chain,
-    tool_started: HashMap<String, std::time::Instant>,
+    tool_started: HashMap<String, (std::time::Instant, String)>,
     /// Argument previews by tool call id, kept until the tool result row is written.
     tool_context: HashMap<String, String>,
     unsaved: VecDeque<(Value, Option<String>, Option<Value>)>,
@@ -3447,7 +3449,10 @@ impl Runtime {
             &[saved["workdirOverride"].as_str(), bot_workdir.as_deref()],
             &settings,
         );
-        saved["cwd"] = json!(common::resolve_workdir(&self.home, configured)?);
+        let cwd = common::resolve_workdir(&self.home, configured)?;
+        saved["fileWorkdir"] = json!(configured);
+        saved["fileEpoch"] = json!(s.state.lock().unwrap().stop_epoch);
+        saved["cwd"] = json!(cwd);
         saved["home"] = json!(self.home);
         // Hash expanded entries, not just YAML: credential edits revoke old clients too.
         if let Some(names) = own["mcpServers"].as_array() {
@@ -3869,6 +3874,111 @@ impl Runtime {
         block.push_str(&format!("\n\n{}", crate::team::REPLY_GUIDANCE));
         Ok(block)
     }
+    /// Only the trusted Pi UI route can call this. Pi owns completed approvals;
+    /// no public tool argument can assert approval or acquire this authority.
+    fn pi_file(&self, s: &Live, event: &Value, args: &Value) -> Result<Value> {
+        let request = pi_files::parse(event, args)?;
+        let _gate = s.event_gate.lock().unwrap();
+        {
+            let state = s.state.lock().unwrap();
+            if state.dialogs_cancelled() || s.replaced.load(Ordering::Acquire) {
+                return Err(Error::new(4302, "The file action was interrupted."));
+            }
+            if args["snapshot"]["fileEpoch"] != json!(state.stop_epoch) {
+                return Err(Error::new(
+                    4302,
+                    "The file action belongs to an earlier run. Try again.",
+                ));
+            }
+            let call = required(args, "callId")?;
+            if !state
+                .tool_started
+                .get(call)
+                .is_some_and(|(_, tool)| tool == request.tool)
+            {
+                return Err(Error::new(4302, "The file tool call is no longer running."));
+            }
+        }
+        store::check_deleted(&store::open(&self.home)?, &s.stored)?;
+        let (policy, settings, bot_workdir, own) = self.session_policy(s)?;
+        require_builtin_capability(&own, "file", request.tool)?;
+        crate::credentials::require_supported_execution()?;
+        let snapshot = &args["snapshot"];
+        let configured = common::configured_workdir(
+            &[policy["workdirOverride"].as_str(), bot_workdir.as_deref()],
+            &settings,
+        );
+        common::identifier(&s.stored)?;
+        let outputs = json!([
+            self.home.join("profiles").join(&s.bot).join("artifacts"),
+            self.home
+                .join("runtime/sessions")
+                .join(&s.stored)
+                .join("attachments"),
+        ]);
+        if policy["approvalMode"] == "off"
+            || policy["approvalMode"] != snapshot["approvalMode"]
+            || snapshot["fileWorkdir"] != configured
+            || snapshot["outputDirs"] != outputs
+        {
+            return Err(Error::new(
+                4302,
+                "File policy changed before this action ran. Try again.",
+            ));
+        }
+        // No resolve_workdir/session_settings here: neither an invalid request
+        // nor a stale snapshot may create its workspace/output directories.
+        let cwd = fs::canonicalize(common::check_workdir(&self.home, configured)?)?;
+        if snapshot["cwd"] != json!(cwd) {
+            return Err(Error::new(
+                4302,
+                "File policy changed before this action ran. Try again.",
+            ));
+        }
+        #[cfg(unix)]
+        {
+            let path = &request.path;
+            let home = fs::canonicalize(&self.home)?;
+            let output = outputs
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter_map(|v| v.as_str())
+                .map(|path| crate::credentials::real_root(Path::new(path)).map_err(Error::from))
+                .collect::<Result<Vec<_>>>()?;
+            if crate::credentials::managed_runtime_path(&self.home, path)?
+                || crate::credentials::credential_name(&self.home, path)
+                || matches!(
+                    crate::credentials::host_write_tier(path),
+                    Some(crate::credentials::WriteTier::Deny)
+                )
+                || (crate::credentials::under(path, &home)
+                    && !output
+                        .iter()
+                        .any(|root| crate::credentials::under(path, root)))
+                || path.components().any(|c| {
+                    c.as_os_str().to_str().is_some_and(|name| {
+                        crate::credentials::secret_file_name(name)
+                            || [".git", "node_modules", ".ssh"].contains(
+                                &if crate::credentials::FOLD_CASE {
+                                    name.to_lowercase()
+                                } else {
+                                    name.to_owned()
+                                }
+                                .as_str(),
+                            )
+                    })
+                })
+            {
+                return Err(Error::new(4302, "This file path is protected."));
+            }
+            // Synchronous through rename: cancel_dialogs aborts and joins this
+            // request task before acknowledging Stop. No detached write exists.
+            pi_files::perform(&request, event["id"].as_str().unwrap_or(""))
+        }
+        #[cfg(not(unix))]
+        Err(Error::new(4302, "Unix file handles are unavailable"))
+    }
     fn register_worker_bridge(&self, s: &Arc<Live>) {
         let runtime = self.weak.clone();
         let session = Arc::downgrade(s);
@@ -3893,11 +4003,6 @@ impl Runtime {
                     )?;
                     let options: Value = serde_json::from_str(&saved)
                         .map_err(|e| Error::new(5200, e.to_string()))?;
-                    let enabled = options["enabledToolsets"]
-                        .as_array()
-                        .cloned()
-                        .unwrap_or_default();
-                    let allowed = options["restricted"].as_array();
                     let capability = match name.as_str() {
                         "terminal" => Some(("terminal", "bash")),
                         "read_file" => Some(("file", "read")),
@@ -3906,12 +4011,7 @@ impl Runtime {
                         _ => None,
                     };
                     if let Some((toolset, tool)) = capability {
-                        if !allowed.map_or_else(
-                            || enabled.iter().any(|v| v == toolset),
-                            |a| a.iter().any(|v| v == tool),
-                        ) {
-                            return Err(Error::new(4210, "tool is disabled for this session"));
-                        }
+                        require_builtin_capability(&options, toolset, tool)?;
                         if name == "terminal" {
                             return Self::command(&session, json!({"type":"bash","command":required(&args,"command")?,"excludeFromContext":true})).await;
                         }
@@ -4023,6 +4123,12 @@ impl Runtime {
         );
     }
     async fn tool(&self, s: &Arc<Live>, name: &str, args: &Value) -> Result<Value> {
+        if name == "hexbot_pi_file" {
+            return Err(Error::new(
+                4302,
+                "The private file bridge requires Pi's UI transport.",
+            ));
+        }
         common::bot_owner(&self.home, &s.owner, &s.bot)?;
         store::check_deleted(&store::open(&self.home)?, &s.stored)?;
         if matches!(name, "cronjob_manage" | "hexbot_jobs") {
@@ -4728,9 +4834,13 @@ impl Runtime {
                 {
                     let mut state = s.state.lock().unwrap();
                     let id = event["toolCallId"].as_str().unwrap_or("");
-                    state
-                        .tool_started
-                        .insert(id.into(), std::time::Instant::now());
+                    state.tool_started.insert(
+                        id.into(),
+                        (
+                            std::time::Instant::now(),
+                            event["toolName"].as_str().unwrap_or("").to_owned(),
+                        ),
+                    );
                     state.tool_context.insert(id.into(), context.clone());
                 }
                 self.emit(s, "tool.start", with_fields(json!({"tool_id":event["toolCallId"],"name":name,"context":context,"args":event["args"],"parent_tool_call_id":event["parentToolCallId"]}), &observed.fields));
@@ -4755,7 +4865,7 @@ impl Runtime {
                     .unwrap()
                     .tool_started
                     .remove(event["toolCallId"].as_str().unwrap_or(""))
-                    .map_or(0., |start| start.elapsed().as_secs_f64());
+                    .map_or(0., |(start, _)| start.elapsed().as_secs_f64());
                 self.emit(
                     s,
                     "tool.complete",
@@ -4890,6 +5000,7 @@ impl Runtime {
                         .ok_or_else(|| Error::new(5201, "daemon is stopping"))?;
                     let source = s.clone();
                     let id = id.to_owned();
+                    let file_event = (request["name"] == "hexbot_pi_file").then(|| event.clone());
                     let mut tasks = s.requests.lock().unwrap();
                     while tasks.try_join_next().is_some() {}
                     let interrupted = {
@@ -4902,14 +5013,18 @@ impl Runtime {
                         return Ok(());
                     }
                     tasks.spawn(async move {
-                        let response = match runtime
-                            .tool(
-                                &source,
-                                request["name"].as_str().unwrap_or(""),
-                                &request["args"],
-                            )
-                            .await
-                        {
+                        let result = if let Some(file_event) = file_event {
+                            runtime.pi_file(&source, &file_event, &request["args"])
+                        } else {
+                            runtime
+                                .tool(
+                                    &source,
+                                    request["name"].as_str().unwrap_or(""),
+                                    &request["args"],
+                                )
+                                .await
+                        };
+                        let response = match result {
                             Ok(result) => json!({"result":result}),
                             Err(error) => json!({"error":error.message}),
                         };
@@ -6687,6 +6802,20 @@ mod code_environment_tests {
 /// The checked target and whether a write needs approval: every write in Manual;
 /// in Auto, writes outside `writable` and host configuration files from
 /// credential-policy.json. Bypass checks nothing.
+fn require_builtin_capability(options: &Value, toolset: &str, tool: &str) -> Result<()> {
+    let allowed = options["restricted"].as_array();
+    if !allowed.map_or_else(
+        || {
+            options["enabledToolsets"]
+                .as_array()
+                .is_some_and(|a| a.iter().any(|v| v == toolset))
+        },
+        |a| a.iter().any(|v| v == tool),
+    ) {
+        return Err(Error::new(4210, "tool is disabled for this session"));
+    }
+    Ok(())
+}
 fn guarded_file_path(
     home: &Path,
     path: &Path,

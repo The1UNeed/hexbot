@@ -2818,3 +2818,103 @@ async fn bot_delete_removes_owned_session_links_without_touching_their_targets()
     );
     app.shutdown().await;
 }
+
+#[cfg(unix)]
+#[tokio::test]
+#[ignore = "requires HEXBOT_TEST_PI to the pinned Pi executable"]
+async fn actual_pi_write_and_edit_use_the_private_anchored_bridge() {
+    use axum::{Json, Router, extract::State, routing::post};
+    use std::sync::{Arc, Mutex};
+    #[derive(Clone)]
+    struct Model {
+        requests: Arc<Mutex<Vec<Value>>>,
+        path: PathBuf,
+    }
+    async fn complete(
+        State(model): State<Model>,
+        Json(body): Json<Value>,
+    ) -> ([(&'static str, &'static str); 1], String) {
+        let mut requests = model.requests.lock().unwrap();
+        let number = requests.len();
+        requests.push(body);
+        let operation = match number {
+            0 => Some(("write", json!({"path":model.path,"content":"hello\r\n"}))),
+            1 => Some((
+                "edit",
+                json!({"path":model.path,"edits":[{"oldText":"hello","newText":"changed"}]}),
+            )),
+            _ => None,
+        };
+        let delta = if let Some((name, args)) = operation {
+            json!({"role":"assistant","tool_calls":[{"index":0,"id":format!("file-{number}"),"type":"function","function":{"name":name,"arguments":args.to_string()}}]})
+        } else {
+            json!({"role":"assistant","content":"Finished."})
+        };
+        let first = json!({"id":"files","object":"chat.completion.chunk","created":1,"model":"test-model","choices":[{"index":0,"delta":delta,"finish_reason":null}]});
+        let end = json!({"id":"files","object":"chat.completion.chunk","created":1,"model":"test-model","choices":[{"index":0,"delta":{},"finish_reason":if number<2{"tool_calls"}else{"stop"}}]});
+        (
+            [("content-type", "text/event-stream")],
+            format!("data: {first}\n\ndata: {end}\n\ndata: [DONE]\n\n"),
+        )
+    }
+    let home = setup();
+    let requests = Arc::new(Mutex::new(vec![]));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let path = home.workspace().join("nested/file.txt");
+    let app = Router::new()
+        .route("/v1/chat/completions", post(complete))
+        .with_state(Model {
+            requests: requests.clone(),
+            path: path.clone(),
+        });
+    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    fs::write(home.path().join("profiles/owl/config.yaml"),format!("model:\n  provider: lmstudio\n  default: test-model\n  api_key: test-key\n  base_url: http://{address}/v1\ntools:\n  enabled_toolsets: [file]\n")).unwrap();
+    let executable = PathBuf::from(std::env::var_os("HEXBOT_TEST_PI").unwrap());
+    let runtime = Runtime::new(home.path().into(), EventHub::new(), executable).unwrap();
+    let result = tokio::time::timeout(
+        Duration::from_secs(30),
+        runtime.run_hidden(
+            "alice",
+            "owl",
+            "section-a",
+            "Write and then edit the fixture file.",
+        ),
+    )
+    .await;
+    runtime.shutdown().await;
+    server.abort();
+    assert_eq!(result.unwrap().unwrap(), "Finished.");
+    assert_eq!(fs::read(&path).unwrap(), b"changed\r\n");
+    use std::os::unix::fs::PermissionsExt;
+    assert_eq!(fs::metadata(path).unwrap().permissions().mode() & 0o077, 0);
+    let requests = requests.lock().unwrap();
+    assert_eq!(requests.len(), 3);
+    for request in requests.iter() {
+        assert_eq!(
+            request["tools"], requests[0]["tools"],
+            "frozen tool definitions are unchanged"
+        );
+        assert_eq!(
+            request["messages"][0], requests[0]["messages"][0],
+            "cached system prefix is unchanged"
+        );
+        assert!(
+            !request["tools"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|tool| tool["function"]["name"] == "hexbot_pi_file")
+        );
+    }
+    assert!(
+        requests[2]["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|m| m["role"] == "tool")
+            .all(|m| m["content"]
+                .as_str()
+                .is_some_and(|s| s.contains("Successfully")))
+    );
+}

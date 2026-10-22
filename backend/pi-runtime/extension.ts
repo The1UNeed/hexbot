@@ -1,8 +1,6 @@
 /** Hexbot's frozen session tools and approval bridge. Pi owns the agent loop. */
 import { createHash, randomUUID } from 'node:crypto';
 import { readFileSync, realpathSync, lstatSync, readlinkSync, statSync, existsSync } from 'node:fs';
-import { open, rename, unlink, mkdir, readFile, access, stat } from 'node:fs/promises';
-import { constants } from 'node:fs';
 import { resolve, dirname, basename, relative, sep, join } from 'node:path';
 import { homedir, tmpdir } from 'node:os';
 import { createBashTool, createReadTool, createWriteTool, createEditTool, createGrepTool, createFindTool, createLsTool } from '@earendil-works/pi-coding-agent';
@@ -11,27 +9,54 @@ import { registerAcp } from './acp.ts';
 import { lazyStream } from '@earendil-works/pi-ai';
 import { builtinProviders } from '@earendil-works/pi-ai/providers/all';
 
-// Replacing the directory entry does not truncate other hard links to its inode.
-// This is used only by restricted file tools; Bypass retains upstream behavior.
-async function atomicWrite(path: string, content: string): Promise<void> {
-  const mode = await stat(path).then(info => info.mode & 0o777, error => {
-    if (error.code !== 'ENOENT') throw error;
-    return null;
-  });
-  if (mode !== null) await access(path, constants.W_OK);
-  const temporary = join(dirname(path), `.hexbot-write-${randomUUID()}`);
-  const file = await open(temporary, 'wx', 0o600);
-  try {
-    await file.writeFile(content, 'utf8');
-    // Creation applies umask; restore only an existing file's ordinary bits.
-    if (mode !== null) await file.chmod(mode);
-    await file.sync();
-    await file.close();
-    await rename(temporary, path);
-  } finally {
-    await file.close();
-    await unlink(temporary).catch(error => { if (error.code !== 'ENOENT') throw error; });
-  }
+export const FILE_TRANSPORT_LIMIT = 1024 * 1024;
+const FILE_SIZE_ERROR = 'Restricted write/edit exceeds the 1 MiB transport limit (about 767 KiB of file data). Use a command for larger files.';
+export function fileRequestTitle(args: any): string {
+  const title = '__HEXBOT_TOOL__' + JSON.stringify({name:'hexbot_pi_file', args});
+  // Exactly rpc-mode.js's input record; undefined placeholder/timeout disappear.
+  const record = {type:'extension_ui_request', id:randomUUID(), method:'input', title};
+  if (Buffer.byteLength(JSON.stringify(record),'utf8') > FILE_TRANSPORT_LIMIT) throw new Error(FILE_SIZE_ERROR);
+  return title;
+}
+function fileOperations(ctx: any, callId: string, tool: string, target: string, snapshot: any) {
+  let opened: {bytes: Buffer, parent: string[]} | undefined;
+  const checked = (path: string) => { if (path !== target) throw new Error('The file changed after it was checked. Try again.'); };
+  const request = async (operation: string, extra: any = {}) => {
+    const title = fileRequestTitle({operation, path:target, callId, snapshot, ...extra});
+    // Do not forward AbortSignal: RPC must settle before Pi releases its file
+    // mutation queue. Its pinned tools check cancellation after every await.
+    const raw = await ctx.ui.input(title);
+    if (!raw) throw new Error('File action interrupted');
+    const reply = JSON.parse(raw);
+    if (reply.error) throw new Error(reply.error);
+    if (!reply.result) throw new Error('The private file bridge is unavailable.');
+    return reply.result;
+  };
+  return {
+    // Parent creation belongs inside the single anchored Rust transaction.
+    mkdir: async () => {},
+    access: async (path: string) => {
+      checked(path);
+      const result = await request('edit_open');
+      if (typeof result.content !== 'string' || !Array.isArray(result.parent) || result.parent.length !== 2 || !result.parent.every((value: any) => typeof value === 'string' && /^\d+$/.test(value))) throw new Error('Invalid private file reply');
+      const bytes = Buffer.from(result.content,'base64');
+      if (bytes.toString('base64') !== result.content) throw new Error('Invalid private file reply');
+      opened = {bytes, parent:result.parent};
+    },
+    readFile: async (path: string) => {
+      checked(path);
+      if (!opened) throw new Error('The private file bridge is unavailable.');
+      return opened.bytes;
+    },
+    writeFile: async (path: string, content: string) => {
+      checked(path);
+      if (tool === 'edit' && !opened) throw new Error('The private file bridge is unavailable.');
+      const parent = opened?.parent;
+      opened = undefined;
+      const result = await request(tool === 'edit' ? 'edit_commit' : 'write', {content:Buffer.from(content,'utf8').toString('base64'), ...(parent ? {parent} : {})});
+      if (result.success !== true) throw new Error('Invalid private file reply');
+    },
+  };
 }
 
 export default function hexbot(pi: any) {
@@ -317,8 +342,6 @@ export default function hexbot(pi: any) {
     wrapped.add(name);
     const bypass = () => live.approvalMode === 'off';
     const options = (level: Level = 'confined', denied?: string[]) => name === 'bash' ? {spawnHook: (c: any) => level === 'none' ? c : {...c, command: spawnFor(level, c.command), env: shellEnvironment(c.env)}} :
-      name === 'write' && !bypass() ? {operations: {writeFile: atomicWrite, mkdir: (path: string) => mkdir(path, {recursive:true}).then(() => {})}} :
-      name === 'edit' && !bypass() ? {operations: {writeFile: atomicWrite, readFile, access: (path: string) => access(path, constants.R_OK | constants.W_OK)}} :
       name === 'grep' && !bypass() ? {operations: {isDirectory: (path: string) => statSync(path).isDirectory(), readFile: (path: string) => credentialPath(path, live.home, denied) ? '' : readFileSync(path, 'utf8')}} : {};
     const tool = factory(config.cwd, options());
     const definition = name === 'bash' ? {
@@ -369,7 +392,10 @@ export default function hexbot(pi: any) {
       // Reuse the same read-deny roots for every candidate and the output filter.
       const denied = readDenied();
       // Avoid streaming unfiltered search output.
-      const result = await factory(cwd, options('confined', denied)).execute(id, args, signal, ['grep', 'find', 'ls'].includes(name) ? undefined : update);
+      const operations = ['write','edit'].includes(name) ? {operations:fileOperations(ctx, id, name, path, {
+        approvalMode:live.approvalMode, cwd, outputDirs:live.outputDirs ?? [], fileWorkdir:live.fileWorkdir, fileEpoch:live.fileEpoch,
+      })} : options('confined', denied);
+      const result = await factory(cwd, operations).execute(id, args, signal, ['grep', 'find', 'ls'].includes(name) ? undefined : update);
       if (['grep', 'find', 'ls'].includes(name)) {
         const base = statSync(path).isDirectory() ? path : dirname(path);
         return sanitizeSearchResult(result, name, base, live.home, denied);

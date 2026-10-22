@@ -8,6 +8,9 @@ mod stop_tests;
 
 #[path = "runtime_admission_tests.rs"]
 mod admission_tests;
+#[cfg(unix)]
+#[path = "runtime_pi_file_tests.rs"]
+mod pi_file_tests;
 
 fn setup() -> (common::TestHome, Arc<Runtime>, EventHub) {
     let home = common::TestHome::new();
@@ -2203,38 +2206,41 @@ async fn one_shot_socket_closed(socket: &mut tokio::io::BufReader<tokio::net::Tc
 
 #[tokio::test]
 async fn reviewer_denies_tool_bridges_and_counts_failed_calls() {
-    let (home, runtime, _) = setup();
-    let script = home.path().join("pi.cjs");
-    let source = fs::read_to_string(&script).unwrap().replace(
+    for forbidden_tool in ["memory", "hexbot_pi_file"] {
+        let (home, runtime, _) = setup();
+        let script = home.path().join("pi.cjs");
+        let source = fs::read_to_string(&script).unwrap().replace(
         "const fs=require('node:fs')",
         r#"if(process.argv.includes('--no-session')){const rl=require('node:readline').createInterface({input:process.stdin});const emit=v=>process.stdout.write(JSON.stringify(v)+'\n');rl.on('line',line=>{const c=JSON.parse(line);if(c.type==='extension_ui_response'){const reply=JSON.parse(c.value);if(!reply.error?.includes('cannot use tools'))process.exit(2);emit({type:'message_end',message:{role:'assistant',content:[{type:'text',text:'{"decision":"allow","risk":"low"}'}],usage:{input:7,output:3,cost:{total:.02}},stopReason:'stop'}});emit({type:'agent_settled'});return;}emit({type:'response',id:c.id,command:c.type,success:true,data:{}});if(c.type==='prompt')emit({type:'extension_ui_request',id:'forbidden',method:'input',title:'__HEXBOT_TOOL__'+JSON.stringify({name:'memory',args:{action:'add',text:'untrusted reviewer'}})});});return;}
 const fs=require('node:fs')"#,
     );
-    fs::write(&script, source).unwrap();
-    open(&runtime).await;
-    let s = runtime.sessions.lock().unwrap()["first"].clone();
-    let saved = json!({"provider":"openai","model":"fixture"});
-    let (_, failed) = runtime
-        .one_shot(
-            "owl",
-            &saved,
-            Some(&s),
-            review::PROMPT,
-            &json!({}),
-            Duration::from_secs(5),
-        )
-        .await
-        .unwrap();
-    assert!(failed);
-    let usage = store::usage(home.path(), "first").unwrap();
-    assert_eq!(usage["total_tokens"], 10);
-    assert_eq!(usage["cost"], 0.02);
-    assert!(store::history(home.path(), "first").unwrap().is_empty());
-    assert!(!home.path().join("profiles/owl/memories/MEMORY.md").exists());
-    // Reconciliation must neither lose the separate usage nor count it twice.
-    store::reconcile(home.path(), "owl", "first", "alice").unwrap();
-    assert_eq!(store::usage(home.path(), "first").unwrap(), usage);
-    runtime.shutdown().await;
+        let source = source.replace("name:'memory'", &format!("name:{}", json!(forbidden_tool)));
+        fs::write(&script, source).unwrap();
+        open(&runtime).await;
+        let s = runtime.sessions.lock().unwrap()["first"].clone();
+        let saved = json!({"provider":"openai","model":"fixture"});
+        let (_, failed) = runtime
+            .one_shot(
+                "owl",
+                &saved,
+                Some(&s),
+                review::PROMPT,
+                &json!({}),
+                Duration::from_secs(5),
+            )
+            .await
+            .unwrap();
+        assert!(failed);
+        let usage = store::usage(home.path(), "first").unwrap();
+        assert_eq!(usage["total_tokens"], 10);
+        assert_eq!(usage["cost"], 0.02);
+        assert!(store::history(home.path(), "first").unwrap().is_empty());
+        assert!(!home.path().join("profiles/owl/memories/MEMORY.md").exists());
+        // Reconciliation must neither lose the separate usage nor count it twice.
+        store::reconcile(home.path(), "owl", "first", "alice").unwrap();
+        assert_eq!(store::usage(home.path(), "first").unwrap(), usage);
+        runtime.shutdown().await;
+    }
 }
 
 #[tokio::test]
