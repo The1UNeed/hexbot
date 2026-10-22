@@ -315,6 +315,52 @@ export function forgetHistory(scope: null | string, id: string): Promise<void> {
   })
 }
 
+/** Prune disk-only histories too, preserving IDs superseding the list request. */
+export function pruneHistories(
+  scope: null | string,
+  keepIds: string[],
+  removable: (id: string) => boolean
+): Promise<void> {
+  if (!scope) {return Promise.resolve()}
+  const access = cacheAccess(scope)
+  const keep = new Set(keepIds)
+  const current = () => cacheCurrent(access)
+  const removed = (id: string) => !keep.has(id) && removable(id)
+
+  return queue(async () => {
+    await run(
+      'readwrite',
+      store => {
+        const recent = store.get([scope, RECENT_KEY])
+
+        recent.onsuccess = () => {
+          if (current())
+            {store.put(
+              ((recent.result ?? []) as string[]).filter(id => !removed(id)),
+              [scope, RECENT_KEY]
+            )}
+        }
+
+        const request = store.openKeyCursor(
+          IDBKeyRange.bound([scope, 'section:'], [scope, 'section:\uffff'])
+        )
+
+        request.onsuccess = () => {
+          const cursor = request.result
+
+          if (cursor && current()) {
+            const id = (cursor.key as string[])[1]!.slice('section:'.length)
+
+            if (removed(id)) {store.delete(cursor.key)}
+            cursor.continue()
+          }
+        }
+      },
+      current
+    )
+  })
+}
+
 /** A complete read/fetch/commit is serialized per authorized daemon and chat. */
 const syncing = new Map<string, Promise<unknown>>()
 

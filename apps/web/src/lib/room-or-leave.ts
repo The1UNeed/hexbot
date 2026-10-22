@@ -9,43 +9,25 @@ import type { Room } from './types'
 /**
  * A room, loaded on mount, and a trip home once the daemon says it is gone.
  * `open` loads the room with its log
- * for the conversation. `refresh` fetches only a room the list does not have,
+ * for the conversation. `refresh` fetches membership,
  * and again on reconnect. While the daemon cannot be reached nothing leaves.
  */
 export function useRoomOrLeave(roomId: string, load: 'open' | 'refresh'): Room | undefined {
   const navigate = useNavigate()
   const room = useRooms(state => state.byId[roomId])
   const retry = useConnection(state => state.status)
+  const answer = useRooms(state => state.answers[roomId])
   const [loaded, setLoaded] = useState<null | { id: string; current: () => boolean }>(null)
   useEffect(() => {
     const rooms = useRooms.getState()
     const currentRead = connectionRead()
 
-    const answered =
-      load === 'open'
-        ? rooms.open(roomId).then(
-            () => true,
-            () => false
-          )
-        : rooms.byId[roomId]
-          ? Promise.resolve(true)
-          : rooms.refreshOne(roomId)
-
-    let current = true
-    setLoaded(null)
-    // A read queued before startup can be discarded when gateway.ready adopts
-    // the epoch. That says nothing about membership; retry on connection.
-    void answered.then(done => {
-      if (current && currentRead() && done) {
-        setLoaded({ id: roomId, current: currentRead })
-      }
-    })
-
-    return () => {
-      current = false
-    }
+    setLoaded({ id: roomId, current: currentRead })
+    // Cache and discarded reads never answer membership. Observe the current
+    // network outcome, including a newer lookup or list that supersedes ours.
+    void (load === 'open' ? rooms.open(roomId) : rooms.refreshOne(roomId)).catch(() => undefined)
   }, [load, retry, roomId])
-  const gone = loaded?.id === roomId && loaded.current() && !room
+  const gone = loaded?.id === roomId && loaded.current() && answer === 'gone'
   useEffect(() => {
     if (gone) {
       void navigate({ to: '/' })

@@ -40,7 +40,7 @@ import type {
   BotStatus,
   ClarifyRequest
 } from '../../lib/types'
-import { useBot, useBots } from '../../stores/bots'
+import { botMissing, useBot, useBots } from '../../stores/bots'
 import { useConnection } from '../../stores/connection'
 import { connectorsActions } from '../../stores/connectors'
 import { draftsActions } from '../../stores/drafts'
@@ -1177,7 +1177,7 @@ function BotConversation() {
 
   const [resolved, setResolved] = useState<{ entry: typeof entry; peer: boolean } | null>(null)
   const bot = useBot(params.bot ?? null)
-  const botsLoaded = useBots(state => state.loaded)
+  const missingBot = useBots(state => Boolean(params.bot && botMissing(state, params.bot)))
   const section = useSection(params.section ?? null)
 
   const cached = useSections(state =>
@@ -1625,7 +1625,7 @@ function BotConversation() {
   }
 
   // The bot was deleted, here or on another device: no face, prompts, or composer for it.
-  if (botsLoaded && !bot) {
+  if (missingBot) {
     return (
       <div className="hex-rise grid h-full place-content-center gap-1 bg-background p-8 text-center">
         <h2 className="text-[length:var(--text-title)] font-semibold">This bot no longer exists</h2>

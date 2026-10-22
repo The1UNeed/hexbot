@@ -19,12 +19,14 @@ import {
 } from '../lib/api'
 import type { HistoryRow } from '../lib/api'
 import { KICKOFF_MARKER } from '../lib/bot-kickoff'
+import { CatalogAuthority } from '../lib/catalog-authority'
 import {
   activeCacheScope,
   cacheAccess,
   cacheCurrent,
   cachedHistory,
   forgetHistory,
+  pruneHistories,
   rememberHistory,
   syncHistory
 } from '../lib/device-cache'
@@ -111,6 +113,8 @@ export interface SectionsState {
   idsByBot: Record<string, string[]>
   liveSessionId: Record<string, string>
   loading: boolean
+  loaded: boolean
+  reset: () => void
   /**
    * The user just sent `text`: list the section now, ahead of the daemon's count, and
    * title an unnamed one after it the way the daemon will.
@@ -218,14 +222,24 @@ function withoutKey<T>(items: Record<string, T>, id: string): Record<string, T> 
   return next
 }
 
+const authority = new CatalogAuthority()
+
+export function sectionCacheRead(): (id: string) => boolean {
+  const connected = connectionRead()
+  const current = authority.cacheRead()
+
+  return id => connected() && current(id)
+}
+
 /** Removal invalidates reads even if the same ID is subsequently listed again. */
 const removals = new Map<string, number>()
 
 function sectionRead(id: string): () => boolean {
   const generation = removals.get(id)
   const connected = connectionRead()
+  const same = authority.session()
 
-  return () => connected() && removals.get(id) === generation
+  return () => connected() && same() && removals.get(id) === generation
 }
 
 /** Update only chats this device already keeps, after a completed turn. */
@@ -406,11 +420,29 @@ export const useSections = create<SectionsState>((set, get) => ({
   idsByBot: {},
   liveSessionId: {},
   loading: false,
+  loaded: false,
   sendingTitles: {},
+
+  reset() {
+    authority.reset()
+    removals.clear()
+    opening.clear()
+    get().clearLive()
+    set({
+      byId: {},
+      cachedMessages: {},
+      idsByBot: {},
+      sendingTitles: {},
+      loading: false,
+      loaded: false,
+      error: null
+    })
+  },
 
   async refresh(options = {}) {
     const current = connectionRead()
     const scope = activeCacheScope()
+    const request = authority.listRead()
     set({ error: null, loading: true })
 
     try {
@@ -420,22 +452,49 @@ export const useSections = create<SectionsState>((set, get) => ({
         return
       }
 
-      if (!options.bot) {
-        const listed = new Set((result.sections ?? []).map(section => section.id))
+      const state = get()
+      const rows = result.sections ?? []
 
-        for (const id of Object.keys(get().byId)) {
-          if (!listed.has(id)) {
-            removals.set(id, (removals.get(id) ?? 0) + 1)
-            void forgetHistory(scope, id)
-            set(state => ({ cachedMessages: withoutKey(state.cachedMessages, id) }))
-          }
+      const inScope = (id: string) =>
+        !options.bot ||
+        state.byId[id]?.bot === options.bot ||
+        rows.some(section => section.id === id)
+
+      const listed = authority.list(
+        request,
+        rows,
+        state.byId,
+        section => section.id,
+        inScope,
+        !options.bot
+      )
+
+      if (!listed) {return}
+
+      for (const id of new Set([...Object.keys(state.byId), ...opening.keys()])) {
+        if (authority.current(id, request) && authority.outcome(id) === 'gone') {
+          removals.set(id, (removals.get(id) ?? 0) + 1)
+          void forgetHistory(scope, id)
+          set(state => ({
+            cachedMessages: withoutKey(state.cachedMessages, id),
+            liveSessionId: withoutKey(state.liveSessionId, id)
+          }))
         }
       }
 
       set(state => ({
-        ...indexSections(result.sections ?? [], state.sendingTitles),
-        loading: false
+        ...indexSections(listed, state.sendingTitles),
+        loading: false,
+        loaded: state.loaded || !options.bot
       }))
+
+      if (!options.bot) {
+        await pruneHistories(
+          scope,
+          rows.map(section => section.id),
+          id => current() && authority.owns(request, id) && authority.outcome(id) === 'gone'
+        )
+      }
     } catch (error) {
       if (!current()) {
         return
@@ -452,6 +511,7 @@ export const useSections = create<SectionsState>((set, get) => ({
       return pending
     }
 
+    let ticket = authority.read(id)
     const { target, epoch, daemon } = useConnection.getState()
     const installation = daemon?.install_id
     const activeRead = sectionRead(id)
@@ -508,6 +568,14 @@ export const useSections = create<SectionsState>((set, get) => ({
         }
 
         if (current() && (error as { code?: number } | null)?.code === 4204) {
+          if (!authority.current(id, ticket)) {
+            ticket = authority.read(id)
+
+            return read()
+          }
+
+          authority.finish(id, ticket, 'gone')
+          removals.set(id, (removals.get(id) ?? 0) + 1)
           set(state => ({ cachedMessages: withoutKey(state.cachedMessages, id) }))
           await forgetHistory(scope, id)
         }
@@ -593,8 +661,9 @@ export const useSections = create<SectionsState>((set, get) => ({
 
       // Only a history read establishes a loaded chat. Catalog live IDs are
       // metadata; a list refresh or canonical lookup cannot restore its transcript.
+      const catalogCurrent = authority.finish(id, ticket, 'present')
       set(state => ({
-        ...mergeSection(state, section),
+        ...(catalogCurrent ? mergeSection(state, section) : {}),
         cachedMessages: withoutKey(state.cachedMessages, id),
         liveSessionId: live ? { ...state.liveSessionId, [id]: live } : state.liveSessionId
       }))
@@ -721,6 +790,7 @@ export const useSections = create<SectionsState>((set, get) => ({
       return null
     }
 
+    authority.touch(section.id, 'present')
     set(state => mergeSection(state, section))
 
     return section
@@ -767,7 +837,7 @@ export const useSections = create<SectionsState>((set, get) => ({
     const pending = straddling.get(sessionId)
     straddling.delete(sessionId)
 
-    if (pending?.current() && get().byId[pending.id]?.live_session_id === sessionId) {
+    if (pending?.current() && get().liveSessionId[pending.id] === sessionId) {
       const { id } = pending
       get().forgetLive(id)
       // Coalesce with a mounted view or an already pending read. A failure
@@ -800,6 +870,7 @@ useConnection.subscribe((next, previous) => {
   }
 
   if (changed) {
+    authority.reset()
     removals.clear()
     opening.clear()
 

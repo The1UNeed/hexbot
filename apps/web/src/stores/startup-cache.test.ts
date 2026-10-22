@@ -7,6 +7,7 @@ import {
   roomsList,
   roomsLog,
   roomsMarkRead,
+  sectionsCreate,
   sectionsList,
   sectionsOpen,
   sessionHistory
@@ -55,6 +56,7 @@ vi.mock('../lib/api', async original => ({
   roomsList: vi.fn(),
   roomsLog: vi.fn(),
   roomsMarkRead: vi.fn(),
+  sectionsCreate: vi.fn(),
   sectionsList: vi.fn(),
   sectionsOpen: vi.fn(),
   sessionHistory: vi.fn()
@@ -1108,7 +1110,7 @@ it('a cached room can fill a pending lookup without superseding its missing-room
   await restoreRoster(scope)
   expect(useRooms.getState().byId.r).toBeDefined()
   held.reject(Object.assign(new Error('Missing room'), { code: 4230 }))
-  expect(await pending).toBe(true)
+  expect(await pending).toBe('gone')
   expect(useRooms.getState().byId.r).toBeUndefined()
 })
 
@@ -1126,7 +1128,58 @@ it('a superseded cold lookup joins the newer authority instead of claiming an em
   await first.promise.catch(() => undefined)
   expect(settled).toBe(false)
   second.resolve({ room })
-  expect(await latest).toBe(true)
-  expect(await old).toBe(true)
+  expect(await latest).toBe('present')
+  expect(await old).toBe('present')
   expect(useRooms.getState().byId.r).toEqual(room)
+})
+
+it('an old section list cannot invalidate a newly created chat and its open', async () => {
+  useConnection.setState({ daemon: { install_id: 'daemon', one_chat: true } as DaemonInfo })
+  const held = deferred<Awaited<ReturnType<typeof sectionsList>>>()
+  const history = deferred<Awaited<ReturnType<typeof sectionsOpen>>>()
+  vi.mocked(sectionsList).mockReturnValueOnce(held.promise)
+  const listing = useSections.getState().refresh()
+  vi.mocked(sectionsCreate).mockResolvedValueOnce({ section })
+  expect(await useSections.getState().chat('writer')).toEqual(section)
+  vi.mocked(sectionsOpen).mockReturnValueOnce(history.promise)
+  const opening = useSections.getState().open('s')
+  void opening.catch(() => undefined)
+  await vi.waitFor(() => expect(sectionsOpen).toHaveBeenCalledOnce())
+  held.resolve({ sections: [] })
+  await listing
+  history.resolve({ section, messages: [row('new chat')] })
+  await expect(opening).resolves.toMatchObject({ section })
+  expect(useSections.getState().byId.s).toBeDefined()
+  expect((await cachedHistory(scope, 's'))?.rows).toEqual([row('new chat')])
+})
+
+it('a cached bot list is display data rather than authoritative absence', async () => {
+  await writeCache(scope, 'roster', {
+    daemon: 'daemon',
+    bots: [{ name: 'cached' }],
+    me: null,
+    rooms: [],
+    sections: []
+  })
+  await restoreRoster(scope)
+  expect(useBots.getState().order).toEqual(['cached'])
+  expect(useBots.getState().loaded).toBe(false)
+})
+
+it('a fresh section list prunes a deleted disk-only history even when another chat prevented metadata restoration', async () => {
+  await writeCache(scope, 'roster', {
+    daemon: 'daemon',
+    bots: [],
+    me: null,
+    rooms: [],
+    sections: [{ ...section, id: 'deleted' }]
+  })
+  await rememberHistory(scope, 'deleted', { rows: [row('removed private chat')] })
+  useSections.setState({ byId: { s: section } })
+  await restoreRoster(scope)
+  vi.mocked(sectionsList).mockResolvedValueOnce({ sections: [section] })
+  await useSections.getState().refresh()
+  await writeCache(scope, 'barrier', true)
+  expect(await cachedHistory(scope, 'deleted')).toBeUndefined()
+  expect(await readCache(scope, 'sections:recent')).not.toContain('deleted')
 })

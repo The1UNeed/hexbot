@@ -1,4 +1,4 @@
-import { act, renderHook, waitFor } from '@testing-library/react'
+import { act, render, renderHook, waitFor } from '@testing-library/react'
 
 import { invalidateConnectionReads, useConnection } from '../stores/connection'
 import { useRooms } from '../stores/rooms'
@@ -146,5 +146,59 @@ it('keeps valid cold settings when the authoritative list supersedes a stale gon
     reject(Object.assign(new Error('Obsolete gone lookup'), { code: 4230 }))
   })
   expect(result.current).toEqual(room)
+  expect(navigate).not.toHaveBeenCalled()
+})
+
+it('concurrent settings hooks do not turn a superseded open into missing membership', async () => {
+  let first!: (value: { room: Room }) => void
+  let second!: (value: { room: Room }) => void
+
+  const old = new Promise<{ room: Room }>(yes => {
+    first = yes
+  })
+
+  const latest = new Promise<{ room: Room }>(yes => {
+    second = yes
+  })
+
+  let gets = 0
+  setActiveRpc({
+    call: vi.fn((method: string) =>
+      method === 'hexbot.rooms.get'
+        ? ++gets === 1
+          ? old
+          : latest
+        : Promise.resolve({ events: [] })
+    )
+  } as never)
+  useConnection.setState({ status: 'connected', epoch: 'ready' })
+
+  function Shell() {
+    useRoomOrLeave('r', 'open')
+
+    return null
+  }
+
+  function Settings() {
+    useRoomOrLeave('r', 'refresh')
+
+    return <Shell />
+  }
+
+  render(<Settings />)
+  await waitFor(() => expect(gets).toBe(2))
+
+  try {
+    await act(async () => {
+      first({ room })
+    })
+    expect(navigate).not.toHaveBeenCalled()
+  } finally {
+    await act(async () => {
+      second({ room })
+    })
+  }
+
+  await waitFor(() => expect(useRooms.getState().byId.r).toEqual(room))
   expect(navigate).not.toHaveBeenCalled()
 })

@@ -1,8 +1,8 @@
 /** The authorized daemon's roster and recent room logs. Never restored before auth. */
-import { selectBotList, useBots } from '../stores/bots'
+import { botCacheRead, selectBotList, useBots } from '../stores/bots'
 import { useMe } from '../stores/me'
 import { applyLog, LOG_PAGE, recentRooms, roomCacheRead, useRooms } from '../stores/rooms'
-import { useSections } from '../stores/sections'
+import { sectionCacheRead, useSections } from '../stores/sections'
 import { useTranscripts } from '../stores/transcripts'
 
 import {
@@ -38,16 +38,8 @@ const restingBot = (bot: Bot): Bot => ({
 const restingRoom = (room: Room): Room => ({ ...room, turns: [] })
 
 export function clearPersonalState(): void {
-  useBots.setState({ byName: {}, loaded: false, order: [], loading: false, error: null })
-  useSections.getState().clearLive()
-  useSections.setState({
-    byId: {},
-    cachedMessages: {},
-    idsByBot: {},
-    sendingTitles: {},
-    loading: false,
-    error: null
-  })
+  useBots.getState().reset()
+  useSections.getState().reset()
   useRooms.getState().reset()
   useMe.setState({ me: null })
   useTranscripts.getState().dropAll()
@@ -61,6 +53,8 @@ export async function restoreRoster(scope: null | string): Promise<void> {
   }
 
   const currentRoom = roomCacheRead()
+  const currentSection = sectionCacheRead()
+  const currentBot = botCacheRead()
   const snapshot = await readCache<RosterSnapshot>(scope, SNAPSHOT_KEY)
 
   if (!cacheCurrent(access) || !snapshot || snapshot.daemon !== access?.daemon) {
@@ -77,18 +71,34 @@ export async function restoreRoster(scope: null | string): Promise<void> {
     return
   }
 
-  // Only fill empty stores. A current live response always wins.
-  if (!useBots.getState().loaded) {
-    const bots = snapshot.bots.map(restingBot)
+  // Cache projects display rows, never network readiness or authoritative absence.
+  const bots = useBots.getState()
+  const restoredBots = snapshot.bots.filter(bot => currentBot(bot.name)).map(restingBot)
+
+  if (restoredBots.length) {
+    const byName = {
+      ...Object.fromEntries(restoredBots.map(bot => [bot.name, bot])),
+      ...bots.byName
+    }
+
     useBots.setState({
-      byName: Object.fromEntries(bots.map(bot => [bot.name, bot])),
-      loaded: true,
-      order: bots.map(bot => bot.name)
+      byName,
+      order: [...new Set([...restoredBots.map(bot => bot.name), ...bots.order])]
     })
   }
 
-  if (!Object.keys(useSections.getState().byId).length) {
-    useSections.getState().restore(snapshot.sections.map(restingSection))
+  const sections = useSections.getState()
+
+  const restoredSections = snapshot.sections
+    .filter(section => currentSection(section.id))
+    .map(restingSection)
+
+  if (restoredSections.length) {
+    sections.restore([
+      ...new Map(
+        [...restoredSections, ...Object.values(sections.byId)].map(section => [section.id, section])
+      ).values()
+    ])
   }
 
   if (!useMe.getState().me) {
@@ -171,6 +181,14 @@ export function keepRoster(scope: null | string): void {
     const current = () =>
       cacheCurrent(access) && useRooms.getState().byId === rooms.byId && useRooms.getState().loaded
 
+    const bots = useBots.getState()
+    const sections = useSections.getState()
+
+    const snapshotCurrent = () =>
+      current() &&
+      useBots.getState().byName === bots.byName &&
+      useSections.getState().byId === sections.byId
+
     void writeCache(
       scope,
       SNAPSHOT_KEY,
@@ -184,7 +202,7 @@ export function keepRoster(scope: null | string): void {
           .map(restingRoom),
         sections: Object.values(useSections.getState().byId).map(restingSection)
       } satisfies RosterSnapshot,
-      current
+      snapshotCurrent
     )
 
     const kept = recentRooms(Object.values(rooms.byId)).map(room => room.id)

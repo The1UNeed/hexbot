@@ -13,6 +13,7 @@ import {
   roomsUpdate
 } from '../lib/api'
 import type { RoomCreateInput } from '../lib/api'
+import { CatalogAuthority, type ReadOutcome } from '../lib/catalog-authority'
 import type { BotStatus, Room, RoomEvent, RoomTurn } from '../lib/types'
 
 import { connectionRead } from './connection'
@@ -21,6 +22,7 @@ import { useTranscripts } from './transcripts'
 export interface RoomsState {
   addMember: (id: string, bot: string) => Promise<void>
   byId: Record<string, Room>
+  answers: Record<string, ReadOutcome>
   create: (input: RoomCreateInput) => Promise<Room>
   /** Forget a room the daemon deleted. */
   drop: (id: string) => void
@@ -40,11 +42,11 @@ export interface RoomsState {
   /** Best effort: failures are swallowed, and a room that is gone is dropped. */
   markRead: (id: string, seq: number) => Promise<void>
   /** Resolves once loaded, or once the room turned out to be gone and was dropped. */
-  open: (id: string) => Promise<void>
+  open: (id: string) => Promise<ReadOutcome>
   order: string[]
   refresh: () => Promise<void>
-  /** Resolves true once the daemon answered: the room loaded, or it is gone and was dropped. */
-  refreshOne: (id: string) => Promise<boolean>
+  /** A discarded response never establishes membership or absence. */
+  refreshOne: (id: string) => Promise<ReadOutcome>
   remove: (id: string) => Promise<void>
   /** Rooms and logs this device kept from the last time, drawn before the daemon answers. */
   restore: (
@@ -64,39 +66,22 @@ function roomGone(error: unknown): boolean {
   return code === 4230 || code === 4302
 }
 
-/** Room metadata can change while lists, lookups, or optional logs are in flight. */
-const roomChanges = new Map<string, number>()
-let rosterRead = 0
-let roomIdentity = {}
-const looking = new Map<string, Promise<boolean>>()
-const knownRooms = new Set<string>()
+const authority = new CatalogAuthority()
+const looking = new Map<string, Promise<ReadOutcome>>()
+const opening = new Map<string, { request: Promise<ReadOutcome>; current: () => boolean }>()
 
-/** Capture before any cache read; cached membership never supersedes network authority. */
 export function roomCacheRead(): (id: string) => boolean {
   const connected = connectionRead()
-  const identity = roomIdentity
-  const revision = useRooms.getState().rosterRevision
-  const changes = new Map(roomChanges)
+  const current = authority.cacheRead()
 
-  return id =>
-    connected() &&
-    identity === roomIdentity &&
-    !useRooms.getState().loaded &&
-    revision === useRooms.getState().rosterRevision &&
-    !knownRooms.has(id) &&
-    roomChanges.get(id) === changes.get(id)
-}
-
-function bumpRoom(id: string): void {
-  roomChanges.set(id, (roomChanges.get(id) ?? 0) + 1)
+  return id => connected() && current(id)
 }
 
 function roomRead(id: string): () => boolean {
   const connected = connectionRead()
-  const revision = roomChanges.get(id)
-  const identity = roomIdentity
+  const current = authority.capture(id)
 
-  return () => connected() && identity === roomIdentity && roomChanges.get(id) === revision
+  return () => connected() && current()
 }
 
 /** Counts turn changes per room, so a refresh keeps turns that moved while it loaded. */
@@ -209,18 +194,14 @@ function indexRooms(rooms: Room[]): Pick<RoomsState, 'byId' | 'order'> {
 }
 
 function mergeRoom(state: RoomsState, room: Room): Partial<RoomsState> {
-  bumpRoom(room.id)
-  knownRooms.add(room.id)
-
   return {
+    answers: authority.outcomes(),
     byId: { ...state.byId, [room.id]: room },
     order: state.order.includes(room.id) ? state.order : [room.id, ...state.order]
   }
 }
 
 function dropRoom(state: RoomsState, id: string): Partial<RoomsState> {
-  bumpRoom(id)
-  knownRooms.add(id)
   const byId = { ...state.byId }
   const eventsByRoom = { ...state.eventsByRoom }
   const liveTurnsByRoom = { ...state.liveTurnsByRoom }
@@ -231,6 +212,7 @@ function dropRoom(state: RoomsState, id: string): Partial<RoomsState> {
   delete liveTurnsByRoom[id]
 
   return {
+    answers: authority.outcomes(),
     byId,
     eventsByRoom,
     liveTurnsByRoom,
@@ -241,6 +223,7 @@ function dropRoom(state: RoomsState, id: string): Partial<RoomsState> {
 
 export const useRooms = create<RoomsState>((set, get) => ({
   byId: {},
+  answers: {},
   error: null,
   eventsByRoom: {},
   logBaseline: {},
@@ -251,14 +234,13 @@ export const useRooms = create<RoomsState>((set, get) => ({
   order: [],
 
   reset() {
-    roomIdentity = {}
-    roomChanges.clear()
-    knownRooms.clear()
+    authority.reset()
     looking.clear()
+    opening.clear()
     turnChanges.clear()
-    rosterRead++
     set({
       byId: {},
+      answers: {},
       order: [],
       eventsByRoom: {},
       logBaseline: {},
@@ -272,9 +254,8 @@ export const useRooms = create<RoomsState>((set, get) => ({
 
   async refresh() {
     const connected = connectionRead()
-    const request = ++rosterRead
-    const currentRead = () => connected() && request === rosterRead
-    const revisions = new Map(roomChanges)
+    const request = authority.listRead()
+    const currentRead = () => connected() && authority.same(request)
     set({ error: null, loading: true })
     const changes = new Map(turnChanges)
     const readAt = Date.now()
@@ -287,24 +268,10 @@ export const useRooms = create<RoomsState>((set, get) => ({
       }
 
       const state = get()
-      const snapshot = rooms ?? []
-      const changed = (id: string) => roomChanges.get(id) !== revisions.get(id)
-      const seen = new Set(snapshot.map(room => room.id))
+      const listed = authority.list(request, rooms ?? [], state.byId, room => room.id)
 
-      // A room changed since the list request. Keep its current metadata, or
-      // its absence, including rooms added or removed while the list loaded.
-      const listed = snapshot.flatMap(room =>
-        changed(room.id) ? (state.byId[room.id] ? [state.byId[room.id]!] : []) : [room]
-      )
-
-      listed.push(
-        ...Object.values(state.byId).filter(room => !seen.has(room.id) && changed(room.id))
-      )
-
-      for (const id of new Set([...Object.keys(state.byId), ...seen])) {
-        if (!changed(id)) {
-          bumpRoom(id)
-        }
+      if (!listed) {
+        return
       }
 
       const active = listed.filter(room => !room.archived_at)
@@ -354,6 +321,7 @@ export const useRooms = create<RoomsState>((set, get) => ({
       // Publish membership and prune old state before any optional log reads.
       set(state => ({
         ...indexRooms(listed),
+        answers: authority.outcomes(),
         logBaseline: Object.fromEntries(
           Object.entries(state.logBaseline).filter(([id]) => activeIds.has(id))
         ),
@@ -397,6 +365,7 @@ export const useRooms = create<RoomsState>((set, get) => ({
           } catch (error) {
             // A failed optional log cannot suppress the roster or other logs.
             if (valid() && roomGone(error)) {
+              authority.touch(room.id, 'gone')
               set(state => dropRoom(state, room.id))
             }
           }
@@ -412,48 +381,47 @@ export const useRooms = create<RoomsState>((set, get) => ({
   },
 
   refreshOne(id) {
-    // A changed event invalidates older work before the lookup answers.
-    bumpRoom(id)
     const connected = connectionRead()
-    const identity = roomIdentity
-    const currentRead = roomRead(id)
-    let request: Promise<boolean>
+    const ticket = authority.read(id)
+    set({ answers: authority.outcomes() })
+    let request: Promise<ReadOutcome>
 
-    const superseded = (): boolean | Promise<boolean> => {
-      if (!connected() || identity !== roomIdentity) {
-        return false
+    const superseded = (): ReadOutcome | Promise<ReadOutcome> => {
+      if (!connected() || !authority.same(ticket)) {
+        return 'discarded'
       }
 
       const newer = looking.get(id)
 
-      return newer && newer !== request ? newer : knownRooms.has(id) || get().loaded
+      return newer && newer !== request ? newer : authority.outcome(id)
     }
 
-    const read = async (): Promise<boolean> => {
+    const read = async (): Promise<ReadOutcome> => {
       try {
         const { room } = await roomsGet(id)
 
-        if (!currentRead()) {
+        if (!connected() || !authority.finish(id, ticket, 'present')) {
           return superseded()
         }
 
         set(state => mergeRoom(state, room))
 
-        return true
+        return 'present'
       } catch (error) {
-        if (!currentRead()) {
+        if (!connected() || !authority.current(id, ticket)) {
           return superseded()
         }
 
         if (roomGone(error)) {
+          authority.finish(id, ticket, 'gone')
           set(state => dropRoom(state, id))
 
-          return true
+          return 'gone'
         }
 
         await get().refresh()
 
-        return connected() && identity === roomIdentity && get().loaded
+        return superseded()
       }
     }
 
@@ -467,56 +435,103 @@ export const useRooms = create<RoomsState>((set, get) => ({
     return request
   },
 
-  async open(id) {
+  open(id) {
+    const pending = opening.get(id)
+
+    if (pending?.current()) {
+      return pending.request
+    }
+
     const connected = connectionRead()
-    const currentRead = roomRead(id)
-    let loaded: [{ room: Room }, LogUpdate]
 
-    try {
-      loaded = await Promise.all([
-        roomsGet(id),
-        fetchLog(id, get().eventsByRoom[id] ?? [], get().logBaseline[id])
-      ])
-    } catch (error) {
-      if (!currentRead()) {
-        return
+    const read = async (): Promise<ReadOutcome> => {
+      const ticket = authority.read(id)
+      set({ answers: authority.outcomes() })
+
+      const superseded = async (): Promise<ReadOutcome> => {
+        if (!connected() || !authority.same(ticket)) {
+          return 'discarded'
+        }
+
+        const lookup = looking.get(id)
+
+        if (lookup) {
+          await lookup
+        }
+
+        if (!connected() || !authority.same(ticket)) {
+          return 'discarded'
+        }
+
+        const outcome = authority.outcome(id)
+
+        // Retry internally, not through the shared open promise itself.
+        return outcome === 'present' ? read() : outcome
       }
 
-      if (!roomGone(error)) {
-        throw error
+      let loaded: [{ room: Room }, LogUpdate]
+
+      try {
+        loaded = await Promise.all([
+          roomsGet(id),
+          fetchLog(id, get().eventsByRoom[id] ?? [], get().logBaseline[id])
+        ])
+      } catch (error) {
+        if (!connected() || !authority.current(id, ticket)) {
+          return superseded()
+        }
+
+        if (!roomGone(error)) {
+          throw error
+        }
+
+        authority.finish(id, ticket, 'gone')
+        set(state => dropRoom(state, id))
+
+        return 'gone'
       }
 
-      set(state => dropRoom(state, id))
-
-      return
-    }
-
-    if (!currentRead()) {
-      if (connected() && get().byId[id] && !get().byId[id]!.archived_at) {
-        return get().open(id)
+      if (!connected() || !authority.finish(id, ticket, 'present')) {
+        return superseded()
       }
 
-      return
+      const [{ room }, update] = loaded
+      set(state => ({
+        ...mergeRoom(state, room),
+        logBaseline: {
+          ...state.logBaseline,
+          [id]: update.latest ? (update.events[0]?.seq ?? 0) : (state.logBaseline[id] ?? 0)
+        },
+        eventsByRoom: {
+          ...state.eventsByRoom,
+          [id]: applyLog(state.eventsByRoom[id] ?? [], update)
+        }
+      }))
+      const seq = messageSeq(get().eventsByRoom[id] ?? [])
+
+      if (seq) {
+        await get().markRead(id, seq)
+      }
+
+      return 'present'
     }
 
-    const [{ room }, update] = loaded
-    set(state => ({
-      ...mergeRoom(state, room),
-      logBaseline: {
-        ...state.logBaseline,
-        [id]: update.latest ? (update.events[0]?.seq ?? 0) : (state.logBaseline[id] ?? 0)
-      },
-      eventsByRoom: { ...state.eventsByRoom, [id]: applyLog(state.eventsByRoom[id] ?? [], update) }
-    }))
-    const seq = messageSeq(get().eventsByRoom[id] ?? [])
+    const request = read().finally(() => {
+      if (opening.get(id)?.request === request) {
+        opening.delete(id)
+      }
+    })
 
-    if (seq) {
-      await get().markRead(id, seq)
-    }
+    opening.set(id, { request, current: connected })
+
+    return request
   },
 
   async markRead(id, seq) {
-    const currentRead = roomRead(id)
+    const connected = connectionRead()
+    const ticket = authority.read(id)
+    const currentRead = () => connected() && authority.current(id, ticket)
+    set({ answers: authority.outcomes() })
 
     try {
       const { room } = await roomsMarkRead(id, seq)
@@ -525,6 +540,7 @@ export const useRooms = create<RoomsState>((set, get) => ({
         return
       }
 
+      authority.finish(id, ticket, 'present')
       set(state => mergeRoom(state, room))
     } catch (error) {
       if (!currentRead()) {
@@ -533,38 +549,56 @@ export const useRooms = create<RoomsState>((set, get) => ({
 
       // Read marks are best effort; a room you were taken out of goes away.
       if (roomGone(error)) {
+        authority.touch(id, 'gone')
         set(state => dropRoom(state, id))
       }
     }
   },
 
   async create(input) {
+    const connected = connectionRead()
+    const same = authority.session()
     const { room } = await roomsCreate(input)
+
+    if (!connected() || !same()) {return room}
+    authority.touch(room.id, 'present')
     set(state => mergeRoom(state, room))
 
     return room
   },
 
   async addMember(id, bot) {
+    const connected = connectionRead()
+    const same = authority.session()
     const { room } = await roomsAddMember(id, bot)
+
+    if (!connected() || !same()) {return}
+    authority.touch(room.id, 'present')
     set(state => mergeRoom(state, room))
   },
 
   async removeMember(id, bot, keepRoom) {
+    const connected = connectionRead()
+    const same = authority.session()
     const { room } = await roomsRemoveMember(id, bot, keepRoom)
 
+    if (!connected() || !same()) {return false}
+
     if ((room as Room & { deleted?: boolean }).deleted) {
+      authority.touch(id, 'gone')
       set(state => dropRoom(state, id))
 
       return true
     }
 
+    authority.touch(id, 'present')
     set(state => mergeRoom(state, room))
 
     return false
   },
 
   drop(id) {
+    authority.touch(id, 'gone')
     set(state => dropRoom(state, id))
   },
 
@@ -585,12 +619,22 @@ export const useRooms = create<RoomsState>((set, get) => ({
   },
 
   async update(id, patch) {
+    const connected = connectionRead()
+    const same = authority.session()
     const { room } = await roomsUpdate(id, patch)
+
+    if (!connected() || !same()) {return}
+    authority.touch(room.id, 'present')
     set(state => mergeRoom(state, room))
   },
 
   async remove(id) {
+    const connected = connectionRead()
+    const same = authority.session()
     await roomsDelete(id)
+
+    if (!connected() || !same()) {return}
+    authority.touch(id, 'gone')
     set(state => dropRoom(state, id))
   },
 
