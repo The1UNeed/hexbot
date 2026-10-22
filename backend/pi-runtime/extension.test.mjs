@@ -1,11 +1,12 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {mkdtempSync, mkdirSync, writeFileSync, readFileSync, symlinkSync, rmSync, realpathSync, existsSync, linkSync, unlinkSync, statSync} from 'node:fs';
+import {mkdtempSync, mkdirSync, writeFileSync, readFileSync, symlinkSync, rmSync, realpathSync, existsSync, linkSync, unlinkSync, statSync, chmodSync} from 'node:fs';
 import {createServer} from 'node:net';
 import {once} from 'node:events';
 import {tmpdir, homedir} from 'node:os';
 import {join} from 'node:path';
 import {execFileSync} from 'node:child_process';
+import {fileURLToPath} from 'node:url';
 import hexbot, {canonicalPath, credentialPath, protectedPath, shellEnvironment, sanitizeSearchResult, hostWriteTier, escapeMcpValues} from './extension.ts';
 
 // Scans read the user's own Git configuration. These tests use none, so the
@@ -115,6 +116,52 @@ test('Pi write and edit replace hardlink entries, including links inserted after
     assert.notEqual(statSync(alias).ino,statSync(source).ino);
     assert.equal(f.choices.length,0,'ordinary artifact writes need no approval');
   }
+});
+test('restricted Pi write and edit preserve existing modes independently of umask', {skip: process.platform === 'win32'}, async t => {
+  const mask = process.env.HEXBOT_TEST_FILE_UMASK;
+  if (mask === undefined) {
+    const environment = {...process.env}; delete environment.NODE_TEST_CONTEXT;
+    for (const value of ['0022','0077','0200']) {
+      await t.test(`isolated umask=${value}`, () => {
+        execFileSync(process.execPath, ['--test', '--test-name-pattern=^restricted Pi write and edit preserve existing modes independently of umask$', fileURLToPath(import.meta.url)], {
+          env:{...environment, HEXBOT_TEST_FILE_UMASK:value}, encoding:'utf8',
+        });
+      });
+    }
+    return;
+  }
+  assert.ok(['0022','0077','0200'].includes(mask));
+  const runWithMask = async run => {
+    const previous = process.umask(Number.parseInt(mask,8));
+    try { return await run(); } finally { process.umask(previous); }
+  };
+  for (const tool of ['write','edit']) for (const mode of [0o664,0o660,0o755,0o4664]) {
+    await t.test(`${tool} mode=${mode.toString(8)} umask=${mask}`, async t => {
+      const f = fixture(t,'smart',['file']);
+      const output = join(f.home,'profiles/owl/artifacts'), source = join(f.home,'runtime/tools/voice.txt'), alias = join(output,'result');
+      mkdirSync(output,{recursive:true}); mkdirSync(join(source,'..'),{recursive:true});
+      writeFileSync(source,'keep'); chmodSync(source,mode); linkSync(source,alias);
+      const original = statSync(source);
+      f.settings.outputDirs = [output];
+      const args = tool === 'write' ? {path:alias,content:'changed'} : {path:alias,edits:[{oldText:'keep',newText:'changed'}]};
+      await runWithMask(() => f.run(tool,args));
+      assert.equal(statSync(alias).mode & 0o7777,mode & 0o777,'replacement preserves ordinary bits without setuid');
+      assert.equal(readFileSync(alias,'utf8'),'changed');
+      assert.notEqual(statSync(alias).ino,original.ino,'tool replaces the alias entry');
+      assert.equal(statSync(source).ino,original.ino);
+      assert.equal(statSync(source).mode,original.mode,'managed hardlink mode is untouched');
+      assert.equal(readFileSync(source,'utf8'),'keep','managed hardlink bytes are untouched');
+      assert.equal(f.choices.length,0);
+    });
+  }
+  await t.test(`new file keeps private creation default under umask=${mask}`, async t => {
+    const f = fixture(t,'smart',['file']);
+    const output = join(f.home,'profiles/owl/artifacts'), path = join(output,'new.txt');
+    mkdirSync(output,{recursive:true}); f.settings.outputDirs = [output];
+    await runWithMask(() => f.run('write',{path,content:'new'}));
+    assert.equal(statSync(path).mode & 0o7777,0o600 & ~Number.parseInt(mask,8));
+    assert.equal(readFileSync(path,'utf8'),'new');
+  });
 });
 test('managed roots pointing into outputs refuse writes and command layouts, while reads stay allowed', t => {
   const f = fixture(t);
