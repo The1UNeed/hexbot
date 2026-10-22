@@ -529,6 +529,11 @@ it('keeps every owner input closed while explicit peer metadata is unresolved', 
   expect(screen.queryByRole('textbox', { name: 'Message' })).toBeNull()
 })
 it('retains ordinary chat input, attachments and message retry', async () => {
+  call.mockImplementation((method: string, input: Record<string, unknown>) =>
+    method === 'prompt.submit'
+      ? Promise.reject(new JsonRpcGatewayError('Prompt rejected', { code: 5201 }))
+      : reply(method, input)
+  )
   const view = await mount('/b/owl/s/canonical')
   expect(await screen.findByText('canonical history')).toBeVisible()
   expect(screen.getByRole('textbox', { name: 'Message' })).toBeEnabled()
@@ -538,7 +543,7 @@ it('retains ordinary chat input, attachments and message retry', async () => {
   fireEvent.change(composer, { target: { value: 'Healthy owner reply' } })
   fireEvent.keyDown(composer, { key: 'Enter' })
   await waitFor(() => expect(calls('prompt.submit')).toHaveLength(1))
-  fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
+  fireEvent.click(await screen.findByRole('button', { name: 'Retry' }))
   await waitFor(() => expect(calls('prompt.submit')).toHaveLength(2))
   expect(
     calls('prompt.submit').every(

@@ -199,6 +199,9 @@ the roster slides in as a drawer.
   message that asked it.
 - Errors: a Stopped card with the message and a retry action; one card per
   failure, even when the gateway and the daemon both report it.
+  A failed send or upload leaves any running answer, tools and Stop available,
+  including with an older daemon. An unknown send outcome offers no Retry;
+  the draft stays available while the user checks whether the message arrived.
 
 ### Status colours
 

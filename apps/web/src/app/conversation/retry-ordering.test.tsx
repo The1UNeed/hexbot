@@ -1107,7 +1107,10 @@ it('sends only the uploads of the files still selected after an upload fails', a
   await waitFor(() => expect(screen.queryByRole('button', { name: 'Remove plan.txt' })).toBeNull())
 })
 
-it('keeps a newer stream and Stop when an older daemon refuses a Retry late', async () => {
+it.each([
+  new JsonRpcGatewayError('session is already working', { code: 4002 }),
+  new Error('Transport failed')
+])('keeps a newer stream and Stop after a legacy Retry fails: %s', async failure => {
   useConnection.setState({ daemon: { one_chat: true, install_id: 'home' } as DaemonInfo })
   const view = await mount()
   await send(view)
@@ -1121,19 +1124,96 @@ it('keeps a newer stream and Stop when an older daemon refuses a Retry late', as
     } as GatewayEvent)
   })
   const card = await screen.findByTestId('stopped-card')
-  answers = [new JsonRpcGatewayError('session is already working', { code: 4002 })]
+  answers = [failure]
   gate = deferred()
   fireEvent.click(retryOn(card)!)
   await waitFor(() => expect(submits()).toHaveLength(2))
   const unchanged = runTurn(false)
   await act(async () => gate!.resolve())
-  const refusal = await screen.findByText('session is already working')
+  const refusal = await screen.findByText(failure.message)
   unchanged()
   expect(submits()[1]).toEqual({ session_id: 'chat', text: 'Read my plan' })
-  // The turn's own card keeps its Retry; the refusal adds no second one.
+  // The failed request cannot leave an older card resending the last input.
   expect(retryOn(refusal.closest<HTMLElement>('[data-testid=stopped-card]')!)).toBeNull()
-  expect(retryOn(card)).toBeVisible()
+  expect(retryOn(card)).toBeNull()
+  expect(retries()).toHaveLength(0)
 })
+
+it.each([
+  new JsonRpcGatewayError('session is already working', { code: 4002 }),
+  refused(),
+  new JsonRpcGatewayError('Title save failed', { code: 5200 }),
+  new Error('Transport failed')
+])('keeps the active legacy turn after a follow-up Enter fails: %s', async failure => {
+  useConnection.setState({ daemon: { one_chat: true, install_id: 'home' } as DaemonInfo })
+  answers = [failure]
+  const view = await mount()
+  expect(await screen.findByText('Earlier reply')).toBeVisible()
+  const unchanged = runTurn(false)
+  await sendNow(view, 'A follow-up', ['notes.txt'])
+  const card = await screen.findByText(failure.message, { exact: false })
+  unchanged()
+  expect(retryOn(card.closest<HTMLElement>('[data-testid=stopped-card]')!)).toBeNull()
+  expect(retries()).toHaveLength(0)
+  expect(submits()).toEqual([{ session_id: 'chat', text: 'A follow-up' }])
+  expect(delivered).toHaveLength(0)
+  expect(staged.has('srv-1')).toBe(true)
+  expect(userRows().map(row => row.text)).toEqual(['A follow-up'])
+  expect(screen.getByRole('textbox', { name: 'Message' })).toHaveValue('A follow-up')
+  expect(useDrafts.getState().byId.chat).toBe('A follow-up')
+  expect(screen.getByRole('button', { name: 'Remove notes.txt' })).toBeVisible()
+  // The failure notice must not consume subsequent turn events either.
+  act(() =>
+    routeEvent({
+      type: 'message.delta',
+      session_id: 'chat',
+      payload: { text: ', continuing' }
+    } as GatewayEvent)
+  )
+  const transcript = useTranscripts.getState().bySession.chat!
+  expect(transcript.messages.find(row => row.id === transcript.streamingMessageId)?.text).toBe(
+    'Still working, continuing'
+  )
+})
+
+it.each([4002, 4200, 4202, 5201])(
+  'keeps explicit legacy refusal Retry when no turn runs: %s',
+  async code => {
+    useConnection.setState({ daemon: { one_chat: true, install_id: 'home' } as DaemonInfo })
+    answers = [new JsonRpcGatewayError('Explicit refusal', { code })]
+    const view = await mount()
+    await send(view, [])
+    const card = await screen.findByTestId('stopped-card')
+    expect(retryOn(card)).toBeVisible()
+    expect(screen.getByRole('textbox', { name: 'Message' })).toHaveValue('Read my plan')
+    fireEvent.click(retryOn(card)!)
+    await waitFor(() => expect(delivered).toHaveLength(1))
+    expect(submits()).toEqual([
+      { session_id: 'chat', text: 'Read my plan' },
+      { session_id: 'chat', text: 'Read my plan' }
+    ])
+  }
+)
+
+it.each([
+  new JsonRpcGatewayError('Title save failed', { code: 5200 }),
+  new Error('Transport failed')
+])(
+  'withholds legacy Retry and attachment replay for an idle unknown outcome: %s',
+  async failure => {
+    useConnection.setState({ daemon: { one_chat: true, install_id: 'home' } as DaemonInfo })
+    answers = [failure]
+    const view = await mount()
+    await send(view)
+    expect(await screen.findByTestId('stopped-card')).toHaveTextContent(failure.message)
+    expect(retries()).toHaveLength(0)
+    expect(submits()).toHaveLength(1)
+    expect(delivered).toHaveLength(0)
+    expect(staged.has('srv-1')).toBe(true)
+    expect(screen.getByRole('textbox', { name: 'Message' })).toHaveValue('Read my plan')
+    expect(screen.getByRole('button', { name: 'Remove plan.txt' })).toBeVisible()
+  }
+)
 
 it.each(['message.complete', 'error'] as const)(
   'offers Retry for an accepted failure in an open chat after one history read: %s',
@@ -1659,6 +1739,45 @@ it('offers no Retry for an empty-text refusal, which the same send cannot pass',
   expect(staged.has('srv-1')).toBe(true)
   expect(screen.getByRole('button', { name: 'Remove plan.txt' })).toBeVisible()
 })
+
+it.each(['accepted', 'unknown', 'refused'] as const)(
+  'revokes an earlier legacy Retry while a newer submission is pending and then %s',
+  async outcome => {
+    useConnection.setState({ daemon: { one_chat: true, install_id: 'home' } as DaemonInfo })
+    answers = [refused()]
+    const view = await mount()
+    await send(view, [])
+    const card = await screen.findByTestId('stopped-card')
+    expect(retryOn(card)).toBeVisible()
+    answers =
+      outcome === 'unknown'
+        ? [new Error('Transport failed')]
+        : outcome === 'refused'
+          ? [new JsonRpcGatewayError('New input refused', { code: 4002 })]
+          : []
+    gate = deferred()
+    await sendNow(view, 'A newer question', [])
+    await waitFor(() => expect(submits()).toHaveLength(2))
+    expect(retryOn(card)).toBeNull()
+    expect(retries()).toHaveLength(0)
+    await act(async () => gate!.resolve())
+    expect(retryOn(card)).toBeNull()
+
+    if (outcome === 'refused') {
+      const latest = screen
+        .getByText('New input refused')
+        .closest<HTMLElement>('[data-testid=stopped-card]')!
+      expect(retryOn(latest)).toBeVisible()
+      fireEvent.click(retryOn(latest)!)
+      await waitFor(() => expect(delivered).toHaveLength(1))
+      expect(submits()[2]).toEqual({ session_id: 'chat', text: 'A newer question' })
+      expect(retryOn(card)).toBeNull()
+    } else {
+      expect(retries()).toHaveLength(0)
+      expect(submits()).toHaveLength(2)
+    }
+  }
+)
 
 it('asks for no files when a text-only send cannot reach its chat', async () => {
   answers = [

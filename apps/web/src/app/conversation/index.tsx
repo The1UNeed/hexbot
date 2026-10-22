@@ -830,34 +830,30 @@ async function submitOrReopen(
     ) {
       const message = failure instanceof Error ? failure.message : String(failure)
 
+      // 5201 is Pi's refusal. 5200 can be a bot lost before it answered or a
+      // title-save error after acceptance. Transport failures and arbitrary
+      // error objects also prove nothing about whether Pi took input.
+      const rejected =
+        failure instanceof JsonRpcGatewayError &&
+        [4002, 4200, 4202, 5201].includes(failure.code ?? 0)
+
+      const unavailable =
+        staged === null ||
+        (failure instanceof JsonRpcGatewayError && [4001, 4204].includes(failure.code ?? 0))
+
+      const status = unavailable ? 'unavailable' : rejected ? 'rejected' : 'unknown'
+
+      // Sending the same empty text again would be refused the same way.
+      const retryable = !(failure instanceof JsonRpcGatewayError && failure.code === 4200 && !text)
+
+      const detail =
+        status === 'unknown'
+          ? `${message}. It may not have been sent. Check the chat before sending again.`
+          : status === 'unavailable' && (files.length || uploads.length)
+            ? `${message}. Attach the files again before sending.`
+            : message
+
       if (identified) {
-        // 5201 is Pi's refusal. 5200 can be a bot lost before it answered or a
-        // title-save error after acceptance. Transport failures and arbitrary
-        // error objects also prove nothing about whether Pi took input.
-        const rejected =
-          failure instanceof JsonRpcGatewayError &&
-          [4002, 4200, 4202, 5201].includes(failure.code ?? 0)
-
-        const unavailable =
-          staged === null ||
-          (failure instanceof JsonRpcGatewayError && [4001, 4204].includes(failure.code ?? 0))
-
-        const status = unavailable ? 'unavailable' : rejected ? 'rejected' : 'unknown'
-
-        // Sending the same empty text again would be refused the same way.
-        const retryable = !(
-          failure instanceof JsonRpcGatewayError &&
-          failure.code === 4200 &&
-          !text
-        )
-
-        const detail =
-          status === 'unknown'
-            ? `${message}. It may not have been sent. Check the chat before sending again.`
-            : status === 'unavailable' && (files.length || uploads.length)
-              ? `${message}. Attach the files again before sending.`
-              : message
-
         transcriptActions().inputSettled(
           active,
           pending.submission?.row ?? pending.id,
@@ -867,7 +863,20 @@ async function submitOrReopen(
           current() ? detail : undefined
         )
       } else if (current()) {
-        transcriptActions().errorEvent(active, message)
+        const transcript = useTranscripts.getState().bySession[active]
+
+        // An older daemon cannot bind a refusal to an operation. Keep its
+        // original Retry only for an explicit refusal with no turn running.
+        if (
+          status === 'rejected' &&
+          retryable &&
+          !transcript?.turnActive &&
+          !transcript?.streamingMessageId
+        ) {
+          transcriptActions().errorEvent(active, detail)
+        } else {
+          transcriptActions().requestFailed(active, detail)
+        }
       }
     }
   }
@@ -1530,15 +1539,29 @@ function BotConversation() {
       return undefined
     }
 
-    // Older daemons keep their original RPC shape and retry behavior. A card
-    // for a request, such as an upload that failed, has nothing to send again.
+    // Older daemons keep their original RPC shape. Only their latest failure
+    // can resend the last input; a newer input or request notice revokes it.
     if (!identified) {
-      if (card.request || messages.some(message => message.submission)) {
+      const latest = messages.findLast(message => message.role === 'user' || message.error)
+
+      if (
+        card.request ||
+        messages.some(message => message.submission) ||
+        (messages.includes(card) && latest !== card)
+      ) {
         return undefined
       }
 
       return () => {
-        if (canPrompt() && liveId) {
+        if (
+          canPrompt() &&
+          liveId &&
+          useTranscripts
+            .getState()
+            .bySession[liveId]?.messages.findLast(
+              message => message.role === 'user' || message.error
+            )?.id === latest?.id
+        ) {
           const last = messages.findLast(message => message.role === 'user')
 
           if (last) {

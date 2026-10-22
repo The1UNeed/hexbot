@@ -213,11 +213,11 @@ it.each(['reopen', 'retry'])('shows the actual %s failure and stops retrying', a
 
   render(<ConversationColumn />)
   await send()
-  await waitFor(() =>
-    expect(useTranscripts.getState().bySession['durable-id']?.error).toBe(
-      phase === 'reopen' ? 'Reopen unavailable' : 'session not found'
-    )
+  expect(await screen.findByTestId('stopped-card')).toHaveTextContent(
+    phase === 'reopen' ? 'Reopen unavailable' : 'session not found'
   )
+  expect(useTranscripts.getState().bySession['durable-id']?.error).toBeNull()
+  expect(screen.queryByRole('button', { name: 'Retry' })).toBeNull()
   expect(accepted).toHaveLength(0)
   expect(opens).toBe(2)
   expect(submits).toBe(phase === 'reopen' ? 1 : 2)
@@ -229,13 +229,16 @@ it.each([
   new Error('Network disconnected: session not found'),
   new JsonRpcGatewayError('Provider session not found', { code: 5201 }),
   new JsonRpcGatewayError('session not found', { code: 5200 })
-])('never retries a response with unknown acceptance: %s', async error => {
+])('never automatically reopens for other errors: %s', async error => {
   firstError = error
   render(<ConversationColumn />)
   await send()
-  await waitFor(() =>
-    expect(useTranscripts.getState().bySession['durable-id']?.error).toBe(error.message)
-  )
+  expect(await screen.findByTestId('stopped-card')).toHaveTextContent(error.message)
+
+  if (!(error instanceof JsonRpcGatewayError) || error.code !== 5201) {
+    expect(useTranscripts.getState().bySession['durable-id']?.error).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Retry' })).toBeNull()
+  }
   expect(opens).toBe(1)
   expect(submits).toBe(1)
 })
@@ -273,9 +276,9 @@ it('keeps text and files available when the single retry fails', async () => {
     target: { files: [new File(['keep me'], 'plan.txt', { type: 'text/plain' })] }
   })
   await send()
-  await waitFor(() =>
-    expect(useTranscripts.getState().bySession['durable-id']?.error).toBe('Retry refused')
-  )
+  expect(await screen.findByTestId('stopped-card')).toHaveTextContent('Retry refused')
+  expect(useTranscripts.getState().bySession['durable-id']?.error).toBeNull()
+  expect(screen.queryByRole('button', { name: 'Retry' })).toBeNull()
   expect(screen.getByRole('textbox', { name: 'Message' })).toHaveValue('Read my plan')
   expect(screen.getByRole('button', { name: 'Remove plan.txt' })).toBeVisible()
   expect(submits).toBe(2)
