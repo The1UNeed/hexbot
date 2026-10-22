@@ -1203,70 +1203,108 @@ it.each(['message.complete', 'error'] as const)(
   }
 )
 
-it('binds the card that history adopts into the stored message of its turn', async () => {
-  const view = await mount()
-  await send(view)
-  await waitFor(() => expect(delivered).toHaveLength(1))
-  const inputId = userRows()[0]!.inputId!
-  persistTurn(inputId, 'own-run')
-  // Pi stored the message before the tool; the request after it failed.
-  rows.splice(
-    rows.length - 1,
-    1,
-    {
-      role: 'assistant',
-      row_id: 'stored-fragment',
-      text: 'Let me check',
-      turn_id: 'own-run',
-      tool_calls: [
-        { id: 'own-tool', type: 'function', function: { name: 'read_file', arguments: '{}' } }
-      ]
-    },
-    { role: 'tool', tool_call_id: 'own-tool', name: 'read_file', text: 'plan', turn_id: 'own-run' }
-  )
-  act(() => {
-    for (const [type, payload] of [
-      ['message.start', { turn_id: 'own-run', message_id: 'stored-fragment' }],
-      [
-        'message.delta',
-        { turn_id: 'own-run', message_id: 'stored-fragment', text: 'Let me check' }
-      ],
-      [
-        'tool.start',
-        {
-          turn_id: 'own-run',
-          message_id: 'stored-fragment',
-          tool_id: 'own-tool',
-          name: 'read_file'
-        }
-      ],
-      [
-        'tool.complete',
-        {
-          turn_id: 'own-run',
-          message_id: 'stored-fragment',
-          tool_id: 'own-tool',
-          name: 'read_file',
-          result: 'plan'
-        }
-      ]
-    ] as const) {
-      routeEvent({ type, session_id: 'chat', payload } as GatewayEvent)
+it.each(['Retry', 'a later submission'] as const)(
+  'binds the card that history adopts across reads and reopening before %s',
+  async next => {
+    const view = await mount()
+    await send(view)
+    await waitFor(() => expect(delivered).toHaveLength(1))
+    const inputId = userRows()[0]!.inputId!
+    persistTurn(inputId, 'own-run')
+    // Pi stored the message before the tool; the request after it failed.
+    rows.splice(
+      rows.length - 1,
+      1,
+      {
+        role: 'assistant',
+        row_id: 'stored-fragment',
+        text: 'Let me check',
+        turn_id: 'own-run',
+        tool_calls: [
+          { id: 'own-tool', type: 'function', function: { name: 'read_file', arguments: '{}' } }
+        ]
+      },
+      {
+        role: 'tool',
+        tool_call_id: 'own-tool',
+        name: 'read_file',
+        text: 'plan',
+        turn_id: 'own-run'
+      }
+    )
+    act(() => {
+      for (const [type, payload] of [
+        ['message.start', { turn_id: 'own-run', message_id: 'stored-fragment' }],
+        [
+          'message.delta',
+          { turn_id: 'own-run', message_id: 'stored-fragment', text: 'Let me check' }
+        ],
+        [
+          'tool.start',
+          {
+            turn_id: 'own-run',
+            message_id: 'stored-fragment',
+            tool_id: 'own-tool',
+            name: 'read_file'
+          }
+        ],
+        [
+          'tool.complete',
+          {
+            turn_id: 'own-run',
+            message_id: 'stored-fragment',
+            tool_id: 'own-tool',
+            name: 'read_file',
+            result: 'plan'
+          }
+        ]
+      ] as const) {
+        routeEvent({ type, session_id: 'chat', payload } as GatewayEvent)
+      }
+    })
+    failTurn('own-run', 'Rate limited')
+    await historyRead()
+    const transcript = useTranscripts.getState().bySession.chat!
+    const card = transcript.messages.find(row => row.error === 'Rate limited' && !row.errorDetail)!
+    expect(card.id).toBe('stored-fragment')
+    expect(card.retryRow).toBe(
+      transcript.messages.find(row => row.inputId === inputId)!.submission?.row
+    )
+    expect(cards().filter(item => retryOn(item))).toHaveLength(1)
+    await reload()
+    expect(cards().filter(item => retryOn(item))).toHaveLength(1)
+    await act(async () => view.router.navigate({ to: '/r/$room', params: { room: 'garden' } }))
+    expect(screen.queryByTestId('stopped-card')).toBeNull()
+    const before = opens()
+    await act(async () =>
+      view.router.navigate({ to: '/b/$bot/s/$section', params: { bot: 'owl', section: 'chat' } })
+    )
+    await waitFor(() => expect(opens()).toBe(before + 1))
+    expect(cards().filter(item => retryOn(item))).toHaveLength(1)
+    await reload()
+    expect(cards().filter(item => retryOn(item))).toHaveLength(1)
+
+    if (next === 'Retry') {
+      fireEvent.click(retries()[0]!)
+    } else {
+      await sendNow(view, 'A new question', [])
     }
-  })
-  failTurn('own-run', 'Rate limited')
-  await historyRead()
-  const transcript = useTranscripts.getState().bySession.chat!
-  const card = transcript.messages.find(row => row.error === 'Rate limited' && !row.errorDetail)!
-  expect(card.id).toBe('stored-fragment')
-  expect(card.retryRow).toBe(
-    transcript.messages.find(row => row.inputId === inputId)!.submission?.row
-  )
-  expect(cards().filter(item => retryOn(item))).toHaveLength(1)
-  fireEvent.click(retries()[0]!)
-  await waitFor(() => expect(delivered).toHaveLength(2))
-  expect(submits()[1]).toMatchObject({ text: 'Read my plan', attachments: [] })
-})
+
+    await waitFor(() => expect(delivered).toHaveLength(2))
+    expect(submits()[1]).toMatchObject({
+      text: next === 'Retry' ? 'Read my plan' : 'A new question',
+      attachments: []
+    })
+    expect(submits()[1]!.input_id).not.toBe(inputId)
+    expect(retries()).toHaveLength(0)
+    await reload()
+    const after = useTranscripts.getState().bySession.chat!
+    // The failed card survives, but a later submission revokes its Retry.
+    expect(after.messages.find(row => row.id === card.id)?.retryRow).toBe(card.retryRow)
+    expect(after.messages.find(row => row.inputId === inputId)?.submission?.card).toBeUndefined()
+    expect(retries()).toHaveLength(0)
+  }
+)
 
 it('keeps a newer run that starts before the read, and binds the failed card', async () => {
   const view = await mount()

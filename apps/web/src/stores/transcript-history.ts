@@ -172,6 +172,8 @@ export function hydrateHistory(
 
     return {
       ...message,
+      // Exact durable row identity preserves the card's proven Retry binding.
+      retryRow: live?.retryRow,
       // An exact durable input proves acceptance even if its RPC later failed.
       submission: submission
         ? {
