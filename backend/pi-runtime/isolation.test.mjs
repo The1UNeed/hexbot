@@ -37,6 +37,27 @@ test('layouts reject existing managed hardlink aliases before launch', t => {
     assert.equal(readFileSync(source,'utf8'),'keep');
   }
 });
+test('hardlink snapshots skip nested links but check declared root and file aliases', t => {
+  const root = mkdtempSync(join(tmpdir(),'hexbot-snapshot-links-'));
+  t.after(() => rmSync(root,{recursive:true,force:true}));
+  const managed = join(root,'managed'), output = join(root,'output'), large = join(root,'large-external-tree');
+  for (const path of [managed,output,large]) mkdirSync(path);
+  const source = join(managed,'package.py');
+  writeFileSync(source,'keep'); linkSync(source,join(root,'uv-cache-package'));
+  for (let index = 0; index < 100; index++) writeFileSync(join(large,String(index)),'outside');
+  symlinkSync(large,join(output,'large-link'));
+  symlinkSync('cycle-b',join(output,'cycle-a')); symlinkSync('cycle-a',join(output,'cycle-b'));
+  symlinkSync(large,join(managed,'venv-link'));
+  const outputAlias = join(root,'declared-output-alias'); symlinkSync(output,outputAlias);
+  rejectManagedHardlinks([managed],[outputAlias],30);
+  writeFileSync(join(output,'ordinary-result'),'ordinary output');
+  rejectManagedHardlinks([managed],[outputAlias],30);
+  const unsafeFile = join(output,'runtime-alias'); linkSync(source,unsafeFile);
+  assert.throws(() => rejectManagedHardlinks([managed],[outputAlias],30),/hard-link topology/);
+  const fileAlias = join(root,'declared-file-alias'); symlinkSync(unsafeFile,fileAlias);
+  assert.throws(() => rejectManagedHardlinks([managed],[fileAlias],30),/hard-link topology/);
+  assert.equal(readFileSync(source,'utf8'),'keep');
+});
 test('hardlink snapshots allow uv cache links but refuse errors and exhaustion', t => {
   const home = mkdtempSync(join(tmpdir(),'hexbot-managed-cache-'));
   t.after(() => rmSync(home,{recursive:true,force:true}));
@@ -54,7 +75,7 @@ test('hardlink snapshots allow uv cache links but refuse errors and exhaustion',
   }
   assert.throws(() => rejectManagedHardlinks([managed],[output],1),/hard-link topology/);
   symlinkSync('loop',join(output,'loop'));
-  assert.throws(() => rejectManagedHardlinks([managed],[output]),/hard-link topology/);
+  assert.throws(() => rejectManagedHardlinks([managed],[join(output,'loop')]),/hard-link topology/);
   assert.equal(readFileSync(source,'utf8'),'trusted package');
 });
 

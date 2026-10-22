@@ -458,13 +458,18 @@ export function rejectManagedHardlinks(managed: string[], grants: string[], budg
     for (const [roots, index] of [[managed, true], [grants, false]] as const) {
       if (!index && !linked.size) break;
       const visited = new Set<string>();
-      const pending = roots.map(path => ({path, root:true}));
+      const pending: string[] = [];
+      // Resolve declared aliases once, then never follow nested symlink targets.
+      for (const root of roots) {
+        if (--budget < 0) throw new Error(reason);
+        try { pending.push(realpathSync(root)); }
+        catch (error: any) { if (error.code !== 'ENOENT') throw error; }
+      }
       while (pending.length) {
         if (--budget < 0) throw new Error(reason);
-        const {path, root} = pending.pop()!;
-        let info;
-        try { info = statSync(path, {bigint:true}); }
-        catch (error: any) { if (error.code === 'ENOENT' && (root || lstatSync(path).isSymbolicLink())) continue; throw error; }
+        const path = pending.pop()!;
+        const info = lstatSync(path, {bigint:true});
+        if (info.isSymbolicLink()) continue;
         const id = `${info.dev}:${info.ino}`;
         if (info.isDirectory() && !visited.has(id)) {
           visited.add(id);
@@ -472,7 +477,7 @@ export function rejectManagedHardlinks(managed: string[], grants: string[], budg
           try {
             for (let entry; (entry = directory.readSync());) {
               if (pending.length >= budget) throw new Error(reason);
-              pending.push({path:join(path,entry.name),root:false});
+              pending.push(join(path,entry.name));
             }
           } finally { directory.closeSync(); }
         } else if (info.isFile() && info.nlink > 1n) {

@@ -9,7 +9,10 @@ edit, grep, find and ls tools. Refusal happens before approval, shell discovery,
 workspace scanning, file access or process creation. `full_access`, a user
 approval, an Auto model review and an Allow for now grant cannot override it.
 Unattended scripts and monitors, including job create/update validation, refuse
-in every mode. The lower-level Windows Git metadata
+in every mode. Existing jobs can still be paused, listed or removed through the
+owner-scoped scheduler without resolving script/workdir paths. Pause persists
+only disabled/paused metadata; update, resume and execution retain their refusal.
+The lower-level Windows Git metadata
 reader and Unix path walker also refuse instead of using incomplete path checks
 or a blocking file open followed by a metadata check.
 Copilot ACP, including its reviewer and Bypass paths, refuses before workspace,
@@ -62,9 +65,13 @@ reads remain allowed by the ordinary read policy.
 These path rules do not promise inode integrity against an already-unconfined
 same-user process. Shell/code layouts reject existing managed-file hard links
 found in declared workspace/output grants with a bounded snapshot; uv cache
-links outside those grants remain valid. Scan errors and exhaustion refuse with
-a repair explanation. The scan is not race-safe and does not cover implicit
-shared temporary roots or arbitrary outside paths used by full-access commands.
+links outside those grants remain valid. Declared roots resolve once; nested
+symlink targets are excluded, including directory links to large/network trees
+and link cycles. Direct regular-file aliases are still checked, including roots
+named through a symlink. Scan errors and exhaustion refuse with a repair
+explanation. The entry budget is not a time bound on root resolution or an
+individual filesystem operation. The scan is not race-safe and does not cover
+implicit shared temporary roots or arbitrary outside paths used by full-access commands.
 An external process can insert an alias afterward or change permissions/ACLs.
 Linux `0444` alone does not fix this. No per-command permission/ACL edits or
 whole-product read-only-install contract are introduced. Pi write/edit and native
