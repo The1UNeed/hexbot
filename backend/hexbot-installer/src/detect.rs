@@ -207,22 +207,21 @@ pub fn detect_at(paths: &Paths, target: Target) -> Result<Installed> {
         service: if target.is_windows() {
             crate::windows_service::installed(&paths.service_file(target), &paths.hexbot_home)
                 .unwrap_or(false)
-        } else if paths.service_file(target).exists() {
+        } else {
             #[cfg(unix)]
             {
-                install_ownership::check_service(
-                    &paths.service_file(target),
-                    &paths.hexbot_home,
-                    target.is_macos(),
-                )
-                .is_ok()
+                paths.service_file(target).exists()
+                    && install_ownership::check_service(
+                        &paths.service_file(target),
+                        &paths.hexbot_home,
+                        target.is_macos(),
+                    )
+                    .is_ok()
             }
             #[cfg(not(unix))]
             {
                 false
             }
-        } else {
-            false
         },
         wrapper: if target.is_windows() {
             crate::windows_cli::removable(&paths.cli_wrapper(target), &paths.hexbot_home)
