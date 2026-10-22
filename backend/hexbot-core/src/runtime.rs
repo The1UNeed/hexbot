@@ -4155,6 +4155,8 @@ impl Runtime {
         // Code runs in the sandbox the section's commands get: read-only in
         // Manual, the workspace in Auto, none in Bypass. Auto runs it without
         // asking; Manual asks first, and so does Auto when there is no sandbox.
+        // Windows has no sandbox at all, so there a confined run is refused
+        // before an approval card could promise it full access.
         let mut code_sandbox = None;
         if name == "execute_code" {
             crate::credentials::check_code(args["code"].as_str().unwrap_or(""))?;
@@ -4201,11 +4203,10 @@ impl Runtime {
             });
             code_sandbox = Some((
                 (
-                    match mode.as_str() {
-                        Some("off") => None,
-                        Some("manual") => Some(crate::credentials::Confine::ReadOnly),
-                        _ => Some(crate::credentials::Confine::Workspace),
-                    },
+                    code_confinement(
+                        mode.as_str().unwrap_or(""),
+                        crate::credentials::platform(),
+                    )?,
                     PathBuf::from(live["cwd"].as_str().unwrap_or(".")),
                 ),
                 revalidate,
@@ -5443,6 +5444,30 @@ fn shows_visuals(home: &Path, stored: &str) -> Result<bool> {
         [stored],
         |r| r.get(0),
     )?)
+}
+
+/// The confinement an execute_code run gets in this approval mode, or the
+/// refusal that stops it first: a Windows daemon never has OS isolation in
+/// this build, so a run that would be confined there is refused before its
+/// approval card can promise it full access. Bypass runs unsandboxed anywhere.
+/// The require_supported_execution gates above refuse first on Windows; this
+/// keeps the same rule with the confinement it protects, testable anywhere.
+fn code_confinement(
+    mode: &str,
+    platform: crate::credentials::Platform,
+) -> Result<Option<crate::credentials::Confine>> {
+    let confine = match mode {
+        "off" => None,
+        "manual" => Some(crate::credentials::Confine::ReadOnly),
+        _ => Some(crate::credentials::Confine::Workspace),
+    };
+    if confine.is_some() && platform == crate::credentials::Platform::Windows {
+        return Err(Error::new(
+            5240,
+            crate::credentials::confined_refusal(crate::credentials::Platform::Windows),
+        ));
+    }
+    Ok(confine)
 }
 
 /// A visual lives in the call's own arguments, which the section keeps with
@@ -7357,5 +7382,41 @@ mod show_html_tests {
         ] {
             assert!(show_html(home.path(), "first", &bad).is_err());
         }
+    }
+}
+
+#[cfg(test)]
+mod code_confinement_tests {
+    use super::*;
+
+    #[test]
+    fn windows_refuses_confined_code_runs_before_any_approval() {
+        // A confined run on Windows cannot follow an approval card promising
+        // it full access, so it is refused first, with the confined refusal.
+        for mode in ["smart", "manual", "anything-else"] {
+            let error = code_confinement(mode, crate::credentials::Platform::Windows).unwrap_err();
+            assert_eq!(error.code, 5240);
+            assert_eq!(
+                error.message,
+                crate::credentials::confined_refusal(crate::credentials::Platform::Windows)
+            );
+        }
+        // Bypass still runs without a sandbox, and Unix keeps its confinement.
+        assert_eq!(
+            code_confinement("off", crate::credentials::Platform::Windows).unwrap(),
+            None
+        );
+        assert_eq!(
+            code_confinement("smart", crate::credentials::Platform::Unix).unwrap(),
+            Some(crate::credentials::Confine::Workspace)
+        );
+        assert_eq!(
+            code_confinement("manual", crate::credentials::Platform::Unix).unwrap(),
+            Some(crate::credentials::Confine::ReadOnly)
+        );
+        assert_eq!(
+            code_confinement("off", crate::credentials::Platform::Unix).unwrap(),
+            None
+        );
     }
 }

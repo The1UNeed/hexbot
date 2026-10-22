@@ -1184,7 +1184,7 @@ export function ApprovalsSettings(): React.JSX.Element {
       {info?.approvals === 'sandbox' && info.sandbox === null ? (
         <Notice role="status">
           {info.platform === 'windows'
-            ? 'The Windows sandbox is unavailable, so Auto and Manual refuse local commands, code runs, and file tools, and scheduled scripts do not run.'
+            ? 'The Windows sandbox is unavailable, so Auto and Manual refuse local commands, code runs, and file tools, including approved full access, and scheduled scripts do not run. Bypass has no sandbox or credential protection.'
             : 'No OS sandbox is available, so Manual and Auto ask before every shell command and code run. Install bubblewrap on the computer running the daemon, then restart the daemon to restore isolation.'}
         </Notice>
       ) : null}

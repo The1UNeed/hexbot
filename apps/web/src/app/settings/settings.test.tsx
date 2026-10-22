@@ -325,7 +325,7 @@ describe('settings', () => {
     render(<ApprovalsSettings />)
     const notice = await screen.findByRole('status')
     expect(notice).toHaveTextContent(
-      'The Windows sandbox is unavailable, so Auto and Manual refuse local commands, code runs, and file tools, and scheduled scripts do not run.'
+      'The Windows sandbox is unavailable, so Auto and Manual refuse local commands, code runs, and file tools, including approved full access, and scheduled scripts do not run. Bypass has no sandbox or credential protection.'
     )
     expect(notice).not.toHaveTextContent(/bubblewrap/i)
   })
