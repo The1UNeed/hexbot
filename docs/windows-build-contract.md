@@ -145,7 +145,12 @@ reports that case as unproved.
 A cross-compile on macOS is only a compile check. It cannot establish native
 NSIS, task, Electron GUI, job lifetime, console or standard-user behavior.
 Windows CI must pass on the combined implementation and security changes.
-The native matrix includes actual installed Client/Full GUI activation and a
+The native matrix includes actual installed Client/Full GUI activation. Its
+Rust probe requires the GUI harness, validates absolute regular files, and logs
+bounded program/argv diagnostics. The harness passes its own running Node
+`process.execPath`, rather than converting command-discovery output into an
+environment path. A native preflight checks ordinary/verbatim Node paths and
+Unicode/space/metacharacter argv before the GUI launch. It also includes a
 version-changing signed ZIP update between two debug fixture daemons, followed
 by task stop and process/home-lock assertions. The same two versions also
 exercise the installer engine’s Headless update and repair path, checking that

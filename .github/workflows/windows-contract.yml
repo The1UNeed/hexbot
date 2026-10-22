@@ -35,7 +35,10 @@ jobs:
         run: |
           $version = (Get-Content apps/desktop/package.json -Encoding UTF8 -Raw | ConvertFrom-Json).version
           $env:HEXBOT_WINDOWS_NSIS = (Resolve-Path "apps/desktop/release/HexbotClient-$version-win-x64.exe").Path
-          $env:HEXBOT_WINDOWS_GUI_NODE = (Get-Command node -CommandType Application).Source
+          $lookup = (Get-Command node -CommandType Application).Source
+          $lookupValues = @($lookup)
+          $lookupText = [string]$lookup
+          Write-Host ('Node lookup diagnostic: ' + (@{ type=$(if ($null -eq $lookup) { 'null' } else { $lookup.GetType().FullName }); count=$lookupValues.Count; environmentSpelling=$lookupText.Substring(0, [Math]::Min(1024, $lookupText.Length)); paths=@($lookupValues | Select-Object -First 4 | ForEach-Object { $text=[string]$_; $text.Substring(0, [Math]::Min(512, $text.Length)) }) } | ConvertTo-Json -Compress))
           $env:HEXBOT_WINDOWS_GUI_PROBE = (Resolve-Path scripts/desktop/windows-installed-app-smoke.mjs).Path
           node scripts/dev/run-one-rust-test.mjs backend/hexbot-installer/Cargo.toml windows_contract real_nsis_install_repair_and_uninstall
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
@@ -123,7 +126,10 @@ jobs:
           $version = (Get-Content apps/desktop/package.json -Encoding UTF8 -Raw | ConvertFrom-Json).version
           $env:HEXBOT_WINDOWS_NSIS = (Resolve-Path "apps/desktop/release/Hexbot-$version-win-x64.exe").Path
           $env:HEXBOT_WINDOWS_EDITION = 'full'
-          $env:HEXBOT_WINDOWS_GUI_NODE = (Get-Command node -CommandType Application).Source
+          $lookup = (Get-Command node -CommandType Application).Source
+          $lookupValues = @($lookup)
+          $lookupText = [string]$lookup
+          Write-Host ('Node lookup diagnostic: ' + (@{ type=$(if ($null -eq $lookup) { 'null' } else { $lookup.GetType().FullName }); count=$lookupValues.Count; environmentSpelling=$lookupText.Substring(0, [Math]::Min(1024, $lookupText.Length)); paths=@($lookupValues | Select-Object -First 4 | ForEach-Object { $text=[string]$_; $text.Substring(0, [Math]::Min(512, $text.Length)) }) } | ConvertTo-Json -Compress))
           $env:HEXBOT_WINDOWS_GUI_PROBE = (Resolve-Path scripts/desktop/windows-installed-app-smoke.mjs).Path
           node scripts/dev/run-one-rust-test.mjs backend/hexbot-installer/Cargo.toml windows_contract real_nsis_install_repair_and_uninstall
       - name: Probe signed Headless ZIP update and pinned Connect executable

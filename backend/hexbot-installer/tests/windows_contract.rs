@@ -15,8 +15,71 @@ use std::{
     thread,
 };
 
+fn regular_file(path: &std::path::Path) -> std::io::Result<std::path::PathBuf> {
+    if !path.is_absolute() {
+        return Err(std::io::Error::other("Expected an absolute path"));
+    }
+    let canonical = path.canonicalize()?;
+    if !fs::symlink_metadata(&canonical)?.is_file() {
+        return Err(std::io::Error::other("Expected a regular file"));
+    }
+    Ok(canonical)
+}
+fn path_diagnostic(label: &str, path: &std::path::Path) -> serde_json::Value {
+    use std::os::windows::ffi::OsStrExt;
+    let metadata = fs::symlink_metadata(path);
+    json!({"label":label,"type":"Windows OsString path","value":path.to_string_lossy().chars().take(1024).collect::<String>(),
+        "utf16Units":path.as_os_str().encode_wide().count(),"absolute":path.is_absolute(),
+        "regularFile":metadata.as_ref().is_ok_and(|m|m.is_file()),"metadataError":metadata.err().and_then(|e|e.raw_os_error())})
+}
+fn spawn_gui_probe(node: &std::path::Path, args: &[std::ffi::OsString]) -> std::process::Output {
+    use std::os::windows::process::CommandExt;
+    eprintln!(
+        "Native GUI spawn: {}",
+        json!({"program":path_diagnostic("Node",node),
+        "argv":args.iter().map(|a|a.to_string_lossy().chars().take(1024).collect::<String>()).collect::<Vec<_>>() })
+    );
+    std::process::Command::new(node)
+        .args(args)
+        .creation_flags(0x08000000)
+        .output()
+        .unwrap_or_else(|error| panic!("Native GUI spawn failed after path validation: {error}"))
+}
+fn node_preflight(node: &std::path::Path, root: &std::path::Path) {
+    let canonical = regular_file(node).expect("trusted absolute regular Node executable");
+    assert!(regular_file(std::path::Path::new("node.exe")).is_err());
+    assert!(regular_file(root).is_err());
+    let joined = format!("{} {}", node.display(), node.display());
+    assert!(
+        regular_file(std::path::Path::new(&joined)).is_err(),
+        "A joined discovery list is not one program"
+    );
+    let fixture = root.join("Node argv \u{3c0} check.mjs");
+    fs::write(&fixture,"process.stdout.write(JSON.stringify({execPath:process.execPath,argv:process.argv.slice(2)}))").unwrap();
+    let values = ["with spaces", "a&b", "literal\"quote", "\u{3c0}"];
+    for program in [node, canonical.as_path()] {
+        let mut args = vec![fixture.canonicalize().unwrap().into_os_string()];
+        args.extend(values.iter().map(std::ffi::OsString::from));
+        let output = spawn_gui_probe(program, &args);
+        assert!(
+            output.status.success(),
+            "Node preflight status={} stderr={}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(result["argv"], json!(values));
+        assert_eq!(
+            std::path::Path::new(result["execPath"].as_str().unwrap())
+                .canonicalize()
+                .unwrap(),
+            canonical
+        );
+    }
+}
+
 #[test]
-#[ignore = "requires HEXBOT_WINDOWS_NSIS pointing to a real locally built package"]
+#[ignore = "requires real NSIS and the mandatory trusted Node/installed GUI probe"]
 fn real_nsis_install_repair_and_uninstall() {
     let package = std::env::var("HEXBOT_WINDOWS_NSIS").expect("NSIS package required");
     let client = std::env::var("HEXBOT_WINDOWS_EDITION").as_deref() != Ok("full");
@@ -72,6 +135,22 @@ fn real_nsis_install_repair_and_uninstall() {
         }
     });
     let root = tempfile::tempdir().unwrap();
+    let node = std::path::PathBuf::from(
+        std::env::var_os("HEXBOT_WINDOWS_GUI_NODE").expect("mandatory trusted CI Node"),
+    );
+    let probe = std::path::PathBuf::from(
+        std::env::var_os("HEXBOT_WINDOWS_GUI_PROBE").expect("mandatory installed GUI probe"),
+    );
+    eprintln!(
+        "Native GUI inputs: {}",
+        json!([
+            path_diagnostic("Node env", &node),
+            path_diagnostic("probe env", &probe)
+        ])
+    );
+    regular_file(&node).expect("GUI Node must name one absolute regular executable");
+    regular_file(&probe).expect("GUI probe must name one absolute regular source file");
+    node_preflight(&node, root.path());
     let user = root.path().join("user with spaces");
     fs::create_dir_all(&user).unwrap();
     let installer = Installer {
@@ -110,28 +189,26 @@ fn real_nsis_install_repair_and_uninstall() {
         assert!(app.join("resources/hexbot-native/hexbot.exe").is_file());
     }
     assert_eq!(installer.detect().unwrap().apps.len(), 1);
-    if let Some(probe) = std::env::var_os("HEXBOT_WINDOWS_GUI_PROBE") {
-        let output = std::process::Command::new(
-            std::env::var_os("HEXBOT_WINDOWS_GUI_NODE").expect("trusted absolute CI Node"),
-        )
-        .arg(probe)
-        .arg(app.join(if client {
+    let args = [
+        probe.into_os_string(),
+        app.join(if client {
             "HexbotClient.exe"
         } else {
             "Hexbot.exe"
-        }))
-        .arg(if client { "client" } else { "full" })
-        .arg(root.path().join("isolated app session"))
-        .output()
-        .unwrap();
-        assert!(
-            output.status.success(),
-            "Installed app probe failed:\n{}\n{}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        );
-        println!("{}", String::from_utf8_lossy(&output.stdout));
-    }
+        })
+        .into_os_string(),
+        std::ffi::OsString::from(if client { "client" } else { "full" }),
+        root.path().join("isolated app session").into_os_string(),
+    ];
+    let output = spawn_gui_probe(&node, &args);
+    assert!(
+        output.status.success(),
+        "Installed app probe status={}:\n{}\n{}",
+        output.status,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    println!("{}", String::from_utf8_lossy(&output.stdout));
     // Simulate interruption after NSIS succeeded but before the outer receipt
     // commit. Ownership is already in the signed NSIS payload, so discovery,
     // reinstall and uninstall remain available without trusting arbitrary exes.
