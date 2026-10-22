@@ -258,6 +258,30 @@ try {
     .toBeGreaterThan(before)
   await expect(page.getByTestId('bot-message').filter({ hasText: 'Cache reply.' })).toHaveCount(2)
 
+  const staleRooms = []
+  for (const name of ['Deleted offline', 'Archived offline']) {
+    const { room } = await rpc('hexbot.rooms.create', { name, members: ['owl'], main_bot: 'owl' })
+    staleRooms.push(room.id)
+    await rpc('hexbot.rooms.send', { id: room.id, text: `Private log for ${name}` })
+    await expect
+      .poll(async () =>
+        (await rpc('hexbot.rooms.log', { id: room.id })).events.some(
+          event => event.kind === 'message.bot'
+        )
+      )
+      .toBe(true)
+    // Open once so the log has a verified baseline before it is persisted.
+    await page.goto(`${base}/r/${room.id}`)
+    await expect(
+      page.getByTestId('room-event').filter({ hasText: `Private log for ${name}` })
+    ).toBeVisible()
+    await expect
+      .poll(async () => (await cache()).some(entry => entry.key[1] === `room:${room.id}`))
+      .toBe(true)
+  }
+  await page.goto(`${base}/b/owl/s/${section.id}`)
+  await expect(composer).toBeEnabled()
+
   // Cold offline reload: serve static assets, but authorization cannot complete.
   await page.route('**/api/auth/ws-ticket', route => route.abort('internetdisconnected'))
   await page.reload()
@@ -272,9 +296,41 @@ try {
     'Offline gating retains disk data for a later authorized connection'
   )
   await page.screenshot({ path: path.join(artifacts, 'offline-gated.png') })
+  await rpc('hexbot.rooms.delete', { id: staleRooms[0] })
+  await rpc('hexbot.rooms.archive', { id: staleRooms[1] })
   await page.unroute('**/api/auth/ws-ticket')
   await page.reload()
   await expect(page.getByTestId('bot-message').filter({ hasText: 'Cache reply.' })).toHaveCount(2)
+  await expect
+    .poll(
+      async () =>
+        (await cache()).filter(entry => staleRooms.some(id => entry.key[1] === `room:${id}`)).length
+    )
+    .toBe(0)
+
+  // An interrupted kickoff can be a plain durable user row. Store that shape
+  // through the real daemon, then hold the proving read during cached reload.
+  const hiddenPrompt = 'You were just created and named Owl. Internal kickoff fixture.'
+  const kickoffLive = (await rpc('hexbot.sections.open', { id: section.id })).section
+    .live_session_id
+  await rpc('prompt.submit', { session_id: kickoffLive, text: hiddenPrompt })
+  await expect
+    .poll(async () =>
+      (await cache())
+        .find(entry => entry.key[1] === `section:${section.id}`)
+        ?.value.rows.some(row => row.text === hiddenPrompt)
+    )
+    .toBe(true)
+  hold = true
+  await page.reload()
+  await expect.poll(() => Boolean(held)).toBe(true)
+  await expect(page.getByTestId('bot-message').filter({ hasText: 'Cache reply.' })).toHaveCount(3)
+  await expect(page.getByTestId('user-message').filter({ hasText: hiddenPrompt })).toHaveCount(0)
+  await expect(composer).toBeDisabled()
+  held()
+  held = undefined
+  await expect(composer).toBeEnabled()
+  await expect(page.getByTestId('user-message').filter({ hasText: hiddenPrompt })).toHaveCount(0)
 
   // A real oversized durable input must not turn every cached write into a multi-MB copy.
   const live = (await rpc('hexbot.sections.open', { id: section.id })).section.live_session_id
@@ -326,6 +382,8 @@ try {
           'repeated input during real history read',
           'reconnect proving read',
           'offline reload authorization gate',
+          'offline deletion and archive prune persisted room logs',
+          'cached kickoff filtering while real history is pending',
           'bounded storage after a 600 KiB durable input',
           'real device revocation and cache deletion'
         ],

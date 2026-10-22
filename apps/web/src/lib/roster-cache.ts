@@ -9,7 +9,7 @@ import {
   boundedHistory,
   cacheAccess,
   cacheCurrent,
-  deleteCache,
+  pruneRoomLogs,
   readCache,
   writeCache
 } from './device-cache'
@@ -171,9 +171,13 @@ export function keepRoster(scope: null | string): void {
     for (const id of written.keys()) {
       if (!(id in rooms.eventsByRoom)) {
         written.delete(id)
-        void deleteCache(scope, `room:${id}`)
       }
     }
+
+    void pruneRoomLogs(
+      scope,
+      rooms.order.filter(id => rooms.byId[id] && !rooms.byId[id]!.archived_at)
+    )
   }
 
   const schedule = () => {

@@ -1,7 +1,7 @@
 import { useNavigate } from '@tanstack/react-router'
 import { useEffect, useState } from 'react'
 
-import { useConnection } from '../stores/connection'
+import { connectionRead, useConnection } from '../stores/connection'
 import { useRooms } from '../stores/rooms'
 
 import type { Room } from './types'
@@ -15,10 +15,11 @@ import type { Room } from './types'
 export function useRoomOrLeave(roomId: string, load: 'open' | 'refresh'): Room | undefined {
   const navigate = useNavigate()
   const room = useRooms(state => state.byId[roomId])
-  const retry = useConnection(state => (load === 'refresh' ? state.status : null))
-  const [loadedId, setLoadedId] = useState<null | string>(null)
+  const retry = useConnection(state => state.status)
+  const [loaded, setLoaded] = useState<null | { id: string; current: () => boolean }>(null)
   useEffect(() => {
     const rooms = useRooms.getState()
+    const currentRead = connectionRead()
 
     const answered =
       load === 'open'
@@ -31,14 +32,20 @@ export function useRoomOrLeave(roomId: string, load: 'open' | 'refresh'): Room |
           : rooms.refreshOne(roomId)
 
     let current = true
-    setLoadedId(null)
-    void answered.then(done => current && done && setLoadedId(roomId))
+    setLoaded(null)
+    // A read queued before startup can be discarded when gateway.ready adopts
+    // the epoch. That says nothing about membership; retry on connection.
+    void answered.then(done => {
+      if (current && currentRead() && done) {
+        setLoaded({ id: roomId, current: currentRead })
+      }
+    })
 
     return () => {
       current = false
     }
   }, [load, retry, roomId])
-  const gone = loadedId === roomId && !room
+  const gone = loaded?.id === roomId && loaded.current() && !room
   useEffect(() => {
     if (gone) {
       void navigate({ to: '/' })

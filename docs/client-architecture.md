@@ -72,6 +72,7 @@ canonical chat, and every open performs its normal history read and pending-card
 reconciliation. The cache fills the wait after authorization, then the network
 snapshot replaces it using the existing input and fragment identities. Inputs
 submitted during a read cannot be matched to older occurrences by text alone.
+Cached and fresh history use the same projection to hide interrupted kickoff prompts.
 
 Each cached history keeps a recent suffix of at most 500 raw rows and 512 KiB
 of JSON, with an oversized row omitted. Older history remains on the daemon.
@@ -81,6 +82,13 @@ alone would allow a slow old response to replace a newer snapshot. This client
 uses full-history reads, so it also works with daemons without history cursors.
 Room logs resume only from a verified contiguous baseline; a live event alone
 never establishes one. Their retained tail is bounded by the same row/byte caps.
+Each roster write prunes persisted logs for deleted, departed, and archived rooms,
+including rooms removed while the client was offline. Cleanup uses the active
+authorization generation, just like other cache writes.
+
+A discarded startup room read is not evidence that the room is gone. Room views
+retry when the connection opens, and only a current connection's completed read
+can send a missing room back home.
 
 Teardown invalidates pending cache work and stops roster subscriptions. A ticket
 401, gateway revocation, or rejected device key also clears cached data and

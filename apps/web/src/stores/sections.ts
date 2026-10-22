@@ -33,6 +33,13 @@ import type { Bot, BotStatus, DaemonInfo, Message, Section } from '../lib/types'
 import { connectionRead, useConnection } from './connection'
 import { releaseCheckinMessages, useTranscripts } from './transcripts'
 
+/** Interrupted hidden kickoffs must stay hidden in cached and fresh history. */
+function chatMessages(rows: HistoryRow[]) {
+  return messagesFromHistory(rows).filter(
+    message => !(message.role === 'user' && message.text.includes(KICKOFF_MARKER))
+  )
+}
+
 /**
  * A thread: the private conversation in which `peer_bot` asks `bot` for help.
  * The daemon leaves threads out of its lists; this guards every other path a
@@ -360,7 +367,7 @@ export const useSections = create<SectionsState>((set, get) => ({
 
         if (cached && cacheCurrent(access) && opening.has(id) && !get().liveSessionId[id]) {
           set(state => ({
-            cachedMessages: { ...state.cachedMessages, [id]: messagesFromHistory(cached.rows) }
+            cachedMessages: { ...state.cachedMessages, [id]: chatMessages(cached.rows) }
           }))
         }
       })
@@ -465,7 +472,7 @@ export const useSections = create<SectionsState>((set, get) => ({
 
       if (cached && !get().liveSessionId[id]) {
         set(state => ({
-          cachedMessages: { ...state.cachedMessages, [id]: messagesFromHistory(cached.rows) }
+          cachedMessages: { ...state.cachedMessages, [id]: chatMessages(cached.rows) }
         }))
       }
 
@@ -521,9 +528,7 @@ export const useSections = create<SectionsState>((set, get) => ({
         useTranscripts.getState().open(
           live,
           id,
-          messagesFromHistory(messages ?? []).filter(
-            message => !(message.role === 'user' && message.text.includes(KICKOFF_MARKER))
-          ),
+          chatMessages(messages ?? []),
           identified
             ? {
                 inputsAtRead,

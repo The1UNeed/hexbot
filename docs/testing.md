@@ -5,16 +5,23 @@
 `pnpm --filter ./apps/web run test --run src/stores/startup-cache.test.ts` covers
 repeated inputs during hydration, verified room baselines, overlapping history
 reads, revocation and obsolete writes, install identity, stripped live IDs, and
-row/byte/recency limits.
+row/byte/recency limits, hidden kickoff projection, and persisted room-log cleanup.
+`src/lib/room-or-leave.test.tsx` covers queued startup reads and reconnects without
+treating discarded reads as room deletion.
 
 After building the daemon and web bundle and installing pinned Pi dependencies,
 run `node scripts/dev/startup-cache-smoke.mjs`. It uses a temporary daemon home,
 real Pi, a local streaming model, and the production browser bundle. It holds a
 real history reply to exercise cached hydration and a repeated prompt, reconnects
 the socket to check the proving read, blocks authorization on an offline reload,
-then revokes the browser's actual device and checks disk and rendered state.
+deletes and archives rooms while offline, and checks that their persisted logs
+are removed. A held history reply also checks hidden kickoff projection. Finally
+it revokes the browser's actual device and checks disk and rendered state.
 Screenshots remain in the printed temporary artifacts directory. It publishes
 nothing and stops only its own processes.
+The browser and both Electron editions in `scripts/dev/native-ui-smoke.mjs`
+also exercise cold room deep links, reloads, and warm room navigation, with the
+route and composer checked before continuing.
 
 ## Native product suites
 

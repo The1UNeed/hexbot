@@ -9,6 +9,7 @@ import {
   sectionsOpen,
   sessionHistory
 } from '../lib/api'
+import { KICKOFF_MARKER } from '../lib/bot-kickoff'
 import {
   authorizeCache,
   boundedHistory,
@@ -18,6 +19,7 @@ import {
   forgetHistory,
   HISTORY_BYTES,
   HISTORY_ROWS,
+  pruneRoomLogs,
   readCache,
   rememberHistory,
   resetDeviceCacheForTests,
@@ -219,6 +221,80 @@ it('fills an open started by canonical lookup before cache authorization finishe
 
 it('keeps a live event arriving while an empty latest-page read is in flight', () => {
   expect(applyLog([event(200)], { events: [], latest: true })).toEqual([event(200)])
+})
+
+it.each(['open', 'restoreHistory'] as const)(
+  'hides an interrupted kickoff in %s while network history is pending',
+  async source => {
+    const rows = [row(`${KICKOFF_MARKER} Writer. Internal instructions.`), row('Visible prompt')]
+    await rememberHistory(scope, 's', { rows })
+    const held = deferred<Awaited<ReturnType<typeof sectionsOpen>>>()
+    vi.mocked(sectionsOpen).mockReturnValueOnce(held.promise)
+
+    if (source === 'restoreHistory') {
+      suspendCache()
+    }
+
+    const pending = useSections.getState().open('s')
+    await vi.waitFor(() => expect(sectionsOpen).toHaveBeenCalledOnce())
+
+    if (source === 'restoreHistory') {
+      await authorizeCache(scope, 'daemon', () => true)
+      await useSections.getState().restoreHistory()
+    }
+
+    expect(useSections.getState().cachedMessages.s?.map(message => message.text)).toEqual([
+      'Visible prompt'
+    ])
+    held.resolve({ section, messages: rows })
+    await pending
+    expect(useTranscripts.getState().bySession.live?.messages.map(message => message.text)).toEqual(
+      ['Visible prompt']
+    )
+  }
+)
+
+it.each(['deleted', 'left', 'archived'] as const)(
+  'prunes a %s room log from a prior run after the fresh roster replaces the restored one',
+  async change => {
+    await writeCache(scope, 'roster', {
+      daemon: 'daemon',
+      bots: [],
+      me: null,
+      rooms: [room],
+      sections: []
+    })
+    await writeCache(scope, 'room:r', [event(1)])
+    // Repair an orphan left by a previous version too, even without a roster row.
+    await writeCache(scope, 'room:orphan', [event(2)])
+    suspendCache()
+    clearPersonalState()
+    await authorizeCache(scope, 'daemon', () => true)
+    await restoreRoster(scope)
+    expect(useRooms.getState().eventsByRoom.r).toHaveLength(1)
+    // This is the state after rooms.refresh, before keepRoster subscribes.
+    useRooms.getState().restore(change === 'archived' ? [{ ...room, archived_at: 1 }] : [], {})
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    keepRoster(scope)
+    await vi.advanceTimersByTimeAsync(500)
+    vi.useRealTimers()
+    await vi.waitFor(async () => {
+      expect(await readCache(scope, 'room:r')).toBeUndefined()
+      expect(await readCache(scope, 'room:orphan')).toBeUndefined()
+    })
+  }
+)
+
+it('does not let an old connection prune room logs under the next authorization', async () => {
+  await writeCache(scope, 'room:r', [event(1)])
+  const pruning = pruneRoomLogs(scope, [])
+  const authorizing = authorizeCache(scope, 'daemon', () => true)
+  await Promise.all([pruning, authorizing])
+  expect(await readCache(scope, 'room:r')).toEqual([event(1)])
+  await writeCache(scope, 'room:other', [event(2)])
+  await pruneRoomLogs(scope, ['r'])
+  expect(await readCache(scope, 'room:r')).toEqual([event(1)])
+  expect(await readCache(scope, 'room:other')).toBeUndefined()
 })
 
 it('an empty verified room cannot turn a later lone event into a restored baseline', async () => {

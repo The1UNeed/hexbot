@@ -176,17 +176,35 @@ export function writeCache(scope: null | string, key: string, value: unknown): P
   })
 }
 
-export function deleteCache(scope: null | string, key: string): Promise<void> {
+/** Prune persisted IDs too, including rooms removed while this client was offline. */
+export function pruneRoomLogs(scope: null | string, roomIds: string[]): Promise<void> {
   if (!scope) {
     return Promise.resolve()
   }
 
   const access = cacheAccess(scope)
+  const keep = new Set(roomIds.map(id => `room:${id}`))
 
   return queue(async () => {
     await run(
       'readwrite',
-      store => void store.delete([scope, key]),
+      store => {
+        const request = store.openKeyCursor(
+          IDBKeyRange.bound([scope, 'room:'], [scope, 'room:\uffff'])
+        )
+
+        request.onsuccess = () => {
+          const cursor = request.result
+
+          if (cursor) {
+            if (!keep.has((cursor.key as string[])[1]!)) {
+              store.delete(cursor.key)
+            }
+
+            cursor.continue()
+          }
+        }
+      },
       () => cacheCurrent(access)
     )
   })
