@@ -65,7 +65,7 @@ Each night's [dream](/docs/dreaming/) report appears in the chat as a message fr
 
 Use **Stop** to interrupt a running answer. The chat stays available, and you can send another message once the bot is idle. Queued background results run before your next message. A result accepted just after Stop finishes can start the next answer itself. A background result arriving while the answer stops waits until it has stopped, then continues the chat. The new answer can ask questions and request approvals. A question or approval the bot was waiting on goes away in every app.
 
-When an answer fails, the bot shows Stopped with a Retry. Retry, or any new message you send in that chat, shows it as Working as soon as the answer starts, in every app. Work the bot starts on its own, such as a background result, leaves Stopped while it runs; any answer that finishes cleanly clears it. A room's failure stays until a room turn finishes.
+When an answer fails, the bot shows Stopped. In the web and desktop apps, Retry is available when the daemon can identify the input that failed. Older daemons offer no Retry for failed sends or answers. A failed send keeps its draft for you to check and send manually. Retry, or any new message you send in that chat, shows it as Working as soon as the answer starts, in every app. Work the bot starts on its own, such as a background result, leaves Stopped while it runs; any answer that finishes cleanly clears it. A room's failure stays until a room turn finishes.
 
 A failed send or upload keeps the bot's current answer and Stop available, including with an older daemon. If the app cannot confirm whether your message was sent, it keeps your draft and offers no Retry. Check the chat before sending again.
 

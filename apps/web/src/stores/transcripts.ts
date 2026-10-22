@@ -1498,6 +1498,7 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
         // drawing a second one.
         const recent = messages.findLastIndex(
           item =>
+            !item.request &&
             Boolean(item.error) &&
             !item.errorDetail?.incidentId &&
             Date.now() - toMillis(item.createdAt) < INCIDENT_MERGE_MS

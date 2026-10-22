@@ -239,6 +239,7 @@ it.each([
     expect(useTranscripts.getState().bySession['durable-id']?.error).toBeNull()
     expect(screen.queryByRole('button', { name: 'Retry' })).toBeNull()
   }
+
   expect(opens).toBe(1)
   expect(submits).toBe(1)
 })

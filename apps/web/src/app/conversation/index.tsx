@@ -863,20 +863,9 @@ async function submitOrReopen(
           current() ? detail : undefined
         )
       } else if (current()) {
-        const transcript = useTranscripts.getState().bySession[active]
-
-        // An older daemon cannot bind a refusal to an operation. Keep its
-        // original Retry only for an explicit refusal with no turn running.
-        if (
-          status === 'rejected' &&
-          retryable &&
-          !transcript?.turnActive &&
-          !transcript?.streamingMessageId
-        ) {
-          transcriptActions().errorEvent(active, detail)
-        } else {
-          transcriptActions().requestFailed(active, detail)
-        }
+        // Legacy events cannot prove which input failed. Keep the draft for
+        // manual resend without changing an answer already running.
+        transcriptActions().requestFailed(active, detail)
       }
     }
   }
@@ -1535,47 +1524,10 @@ function BotConversation() {
     installation === useConnection.getState().daemon?.install_id
 
   const retryFor = (card: TranscriptMessage): (() => void) | undefined => {
-    if (!ownerInput) {
+    // Retry requires durable input ownership. Legacy bubble order and error
+    // timing cannot establish it, even after a history read or a later send.
+    if (!ownerInput || !identified) {
       return undefined
-    }
-
-    // Older daemons keep their original RPC shape. Only their latest failure
-    // can resend the last input; a newer input or request notice revokes it.
-    if (!identified) {
-      const latest = messages.findLast(message => message.role === 'user' || message.error)
-
-      if (
-        card.request ||
-        messages.some(message => message.submission) ||
-        (messages.includes(card) && latest !== card)
-      ) {
-        return undefined
-      }
-
-      return () => {
-        if (
-          canPrompt() &&
-          liveId &&
-          useTranscripts
-            .getState()
-            .bySession[liveId]?.messages.findLast(
-              message => message.role === 'user' || message.error
-            )?.id === latest?.id
-        ) {
-          const last = messages.findLast(message => message.role === 'user')
-
-          if (last) {
-            void promptSubmit(liveId, last.text).catch(error => {
-              if (canPrompt()) {
-                transcriptActions().requestFailed(
-                  liveId,
-                  error instanceof Error ? error.message : String(error)
-                )
-              }
-            })
-          }
-        }
-      }
     }
 
     const input = messages.find(message => message.submission?.row === card.retryRow)

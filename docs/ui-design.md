@@ -198,7 +198,9 @@ the roster slides in as a drawer.
   and answered cards come back from the section's history, each under the
   message that asked it.
 - Errors: a Stopped card with the message and a retry action; one card per
-  failure, even when the gateway and the daemon both report it.
+  failure, even when the gateway and the daemon both report it. Retry requires
+  durable input ownership. Older daemons offer no Retry for failed sends or
+  answers; failed sends retain their draft for manual resend.
   A failed send or upload leaves any running answer, tools and Stop available,
   including with an older daemon. An unknown send outcome offers no Retry;
   the draft stays available while the user checks whether the message arrived.

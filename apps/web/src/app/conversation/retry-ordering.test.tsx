@@ -1110,7 +1110,7 @@ it('sends only the uploads of the files still selected after an upload fails', a
 it.each([
   new JsonRpcGatewayError('session is already working', { code: 4002 }),
   new Error('Transport failed')
-])('keeps a newer stream and Stop after a legacy Retry fails: %s', async failure => {
+])('keeps a newer stream and Stop after a manual legacy resend fails: %s', async failure => {
   useConnection.setState({ daemon: { one_chat: true, install_id: 'home' } as DaemonInfo })
   const view = await mount()
   await send(view)
@@ -1126,13 +1126,14 @@ it.each([
   const card = await screen.findByTestId('stopped-card')
   answers = [failure]
   gate = deferred()
-  fireEvent.click(retryOn(card)!)
+  expect(retryOn(card)).toBeNull()
+  await sendNow(view, 'Manually checked question', [])
   await waitFor(() => expect(submits()).toHaveLength(2))
   const unchanged = runTurn(false)
   await act(async () => gate!.resolve())
-  const refusal = await screen.findByText(failure.message)
+  const refusal = await screen.findByText(failure.message, { exact: false })
   unchanged()
-  expect(submits()[1]).toEqual({ session_id: 'chat', text: 'Read my plan' })
+  expect(submits()[1]).toEqual({ session_id: 'chat', text: 'Manually checked question' })
   // The failed request cannot leave an older card resending the last input.
   expect(retryOn(refusal.closest<HTMLElement>('[data-testid=stopped-card]')!)).toBeNull()
   expect(retryOn(card)).toBeNull()
@@ -1177,21 +1178,20 @@ it.each([
 })
 
 it.each([4002, 4200, 4202, 5201])(
-  'keeps explicit legacy refusal Retry when no turn runs: %s',
+  'keeps an idle legacy refusal in the draft for manual resend: %s',
   async code => {
     useConnection.setState({ daemon: { one_chat: true, install_id: 'home' } as DaemonInfo })
     answers = [new JsonRpcGatewayError('Explicit refusal', { code })]
     const view = await mount()
-    await send(view, [])
+    await send(view)
     const card = await screen.findByTestId('stopped-card')
-    expect(retryOn(card)).toBeVisible()
+    expect(retryOn(card)).toBeNull()
     expect(screen.getByRole('textbox', { name: 'Message' })).toHaveValue('Read my plan')
-    fireEvent.click(retryOn(card)!)
-    await waitFor(() => expect(delivered).toHaveLength(1))
-    expect(submits()).toEqual([
-      { session_id: 'chat', text: 'Read my plan' },
-      { session_id: 'chat', text: 'Read my plan' }
-    ])
+    expect(useDrafts.getState().byId.chat).toBe('Read my plan')
+    expect(screen.getByRole('button', { name: 'Remove plan.txt' })).toBeVisible()
+    expect(submits()).toEqual([{ session_id: 'chat', text: 'Read my plan' }])
+    expect(delivered).toHaveLength(0)
+    expect(staged.has('srv-1')).toBe(true)
   }
 )
 
@@ -1741,14 +1741,14 @@ it('offers no Retry for an empty-text refusal, which the same send cannot pass',
 })
 
 it.each(['accepted', 'unknown', 'refused'] as const)(
-  'revokes an earlier legacy Retry while a newer submission is pending and then %s',
+  'never enables legacy Retry across a newer pending submission and then %s',
   async outcome => {
     useConnection.setState({ daemon: { one_chat: true, install_id: 'home' } as DaemonInfo })
     answers = [refused()]
     const view = await mount()
     await send(view, [])
     const card = await screen.findByTestId('stopped-card')
-    expect(retryOn(card)).toBeVisible()
+    expect(retryOn(card)).toBeNull()
     answers =
       outcome === 'unknown'
         ? [new Error('Transport failed')]
@@ -1767,15 +1767,26 @@ it.each(['accepted', 'unknown', 'refused'] as const)(
       const latest = screen
         .getByText('New input refused')
         .closest<HTMLElement>('[data-testid=stopped-card]')!
-      expect(retryOn(latest)).toBeVisible()
-      fireEvent.click(retryOn(latest)!)
-      await waitFor(() => expect(delivered).toHaveLength(1))
-      expect(submits()[2]).toEqual({ session_id: 'chat', text: 'A newer question' })
+
+      expect(retryOn(latest)).toBeNull()
+      expect(screen.getByRole('textbox', { name: 'Message' })).toHaveValue('A newer question')
       expect(retryOn(card)).toBeNull()
     } else {
       expect(retries()).toHaveLength(0)
       expect(submits()).toHaveLength(2)
     }
+
+    act(() => {
+      routeEvent({ type: 'message.start', session_id: 'chat', payload: {} } as GatewayEvent)
+      routeEvent({
+        type: 'message.complete',
+        session_id: 'chat',
+        payload: { error: 'A later answer failed', status: 'error', text: '' }
+      } as GatewayEvent)
+    })
+    await reload()
+    expect(retries()).toHaveLength(0)
+    expect(submits()).toHaveLength(2)
   }
 )
 
@@ -1792,3 +1803,93 @@ it('asks for no files when a text-only send cannot reach its chat', async () => 
   expect(card).not.toHaveTextContent('Attach the files again')
   expect(retries()).toHaveLength(0)
 })
+
+it.each([
+  ['unknown', 'error'],
+  ['unknown', 'message.complete'],
+  ['refused', 'error'],
+  ['refused', 'message.complete']
+] as const)(
+  'never retries a legacy %s follow-up after approval splits an earlier answer, %s first',
+  async (outcome, firstTerminal) => {
+    useConnection.setState({ daemon: { one_chat: true, install_id: 'home' } as DaemonInfo })
+    rows.push({ role: 'user', row_id: 'original-user', text: 'Original running question' })
+    const view = await mount()
+    expect(await screen.findByText('Earlier reply')).toBeVisible()
+    runTurn(false)
+    answers = [
+      outcome === 'unknown'
+        ? new Error('Unknown follow-up outcome')
+        : new JsonRpcGatewayError('Follow-up refused', { code: 4002 })
+    ]
+    await sendNow(view, 'Follow-up that was not confirmed', ['follow-up.txt'])
+    expect(
+      await screen.findByText(
+        outcome === 'unknown' ? /Unknown follow-up outcome/ : 'Follow-up refused'
+      )
+    ).toBeVisible()
+    expect(retries()).toHaveLength(0)
+
+    act(() => {
+      routeEvent({
+        type: 'approval.request',
+        session_id: 'chat',
+        payload: { request_id: 'later-approval', choices: ['once'], command: 'read another file' }
+      } as GatewayEvent)
+      routeEvent({
+        type: 'approval.resolved',
+        session_id: 'chat',
+        payload: { request_id: 'later-approval', choice: 'once' }
+      } as GatewayEvent)
+      routeEvent({
+        type: 'message.delta',
+        session_id: 'chat',
+        payload: { text: 'Continuing original answer in a new bubble' }
+      } as GatewayEvent)
+    })
+
+    const terminal = (type: 'error' | 'message.complete') =>
+      routeEvent({
+        type,
+        session_id: 'chat',
+        payload:
+          type === 'error'
+            ? { message: 'Original running answer failed' }
+            : { error: 'Original running answer failed', status: 'error', text: '' }
+      } as GatewayEvent)
+
+    act(() => terminal(firstTerminal))
+    expect(await screen.findByText('Original running answer failed')).toBeVisible()
+
+    // Exercise any offered callback before checking payloads, so the original
+    // regression fails on the duplicate send, not just the button's presence.
+    for (const button of retries()) {
+      fireEvent.click(button)
+    }
+
+    expect(submits()).toEqual([{ session_id: 'chat', text: 'Follow-up that was not confirmed' }])
+    expect(delivered).toHaveLength(0)
+    expect([...staged.values()].map(upload => upload.name)).toEqual(['follow-up.txt'])
+    expect(retries()).toHaveLength(0)
+    act(() => terminal(firstTerminal === 'error' ? 'message.complete' : 'error'))
+    await reload()
+    act(() => {
+      routeEvent({ type: 'message.start', session_id: 'chat', payload: {} } as GatewayEvent)
+      routeEvent({
+        type: 'message.delta',
+        session_id: 'chat',
+        payload: { text: 'A newer unowned bubble' }
+      } as GatewayEvent)
+      terminal('message.complete')
+      terminal('error')
+    })
+    await reload()
+    expect(retries()).toHaveLength(0)
+    expect(submits()).toEqual([{ session_id: 'chat', text: 'Follow-up that was not confirmed' }])
+    expect(screen.getByRole('textbox', { name: 'Message' })).toHaveValue(
+      'Follow-up that was not confirmed'
+    )
+    expect(useDrafts.getState().byId.chat).toBe('Follow-up that was not confirmed')
+    expect(screen.getByRole('button', { name: 'Remove follow-up.txt' })).toBeVisible()
+  }
+)
