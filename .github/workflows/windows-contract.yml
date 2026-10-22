@@ -34,8 +34,8 @@ jobs:
           $root = Join-Path $env:RUNNER_TEMP 'hexbot-corepack-probe'
           npm install --prefix $root --ignore-scripts --no-audit --no-fund corepack@0.36.0
           if ($LASTEXITCODE -ne 0) { throw 'Corepack provisioning failed' }
-          $lock = Get-Content (Join-Path $root 'package-lock.json') -Raw -Encoding UTF8 | ConvertFrom-Json
-          $integrity = $lock.packages.'node_modules/corepack'.integrity
+          $lock = Get-Content (Join-Path $root 'package-lock.json') -Raw -Encoding UTF8 | ConvertFrom-Json -AsHashtable
+          $integrity = $lock['packages']['node_modules/corepack']['integrity']
           if ($integrity -cne 'sha512-SiiJsBhZqdBiPHTEl6OT3sASrRrKIcYTQMsVGXx6EE/gM8WFMwYjeIX8Tt8RiU4Iv2J6LbT8KpGfCOsBpRWB/w==') { throw 'Unexpected Corepack package integrity' }
           "HEXBOT_TEST_COREPACK_ROOT=$root" >> $env:GITHUB_ENV
       - run: node --test scripts/desktop/pnpm-command.test.mjs scripts/desktop/windows-task-stop.test.mjs scripts/desktop/voice-lock.test.mjs scripts/desktop/windows-contract.test.mjs scripts/desktop/windows-node-path.test.mjs scripts/desktop/native-build.test.mjs scripts/desktop/native-runtime.test.mjs scripts/desktop/workspace-hooks.test.mjs scripts/dev/run-one-rust-test.test.mjs
