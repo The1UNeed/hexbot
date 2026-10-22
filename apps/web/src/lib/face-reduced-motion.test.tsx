@@ -2,7 +2,7 @@ import { act, cleanup, render } from '@testing-library/react'
 
 import type { LiveFace as LiveFaceComponent } from '../components/ui/avatar'
 
-import type { MorphBotElement } from './face'
+import type { HexbotFaceElement } from './face'
 
 let LiveFace: typeof LiveFaceComponent
 
@@ -43,7 +43,7 @@ it('redraws changed look and still props at their full pose, then stays still', 
   )
 
   const { container, rerender } = render(face('right', false))
-  const bot = container.querySelector('morph-bot')!
+  const bot = container.querySelector('hexbot-face')!
   const head = bot.shadowRoot!.querySelector('#bot-transform')!
   draw()
   expect(head.getAttribute('transform')).toContain('translate(116.27 114.27) rotate(10.00)')
@@ -67,7 +67,7 @@ it('snaps every spring and renders the target eye openness and head transform', 
   const { container } = render(<LiveFace color="#ec2f8a" eyes="#ffffff" shape="round" />)
   type Spring = { target: number; v: number; x: number }
 
-  const bot = container.querySelector('morph-bot')! as MorphBotElement & {
+  const bot = container.querySelector('hexbot-face')! as HexbotFaceElement & {
     _engine: Record<string, unknown>
   }
 

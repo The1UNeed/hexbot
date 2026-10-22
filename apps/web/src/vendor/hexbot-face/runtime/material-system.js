@@ -67,7 +67,7 @@ function softSpotTransform(spot, rotation) {
 }
 
 export class MaterialSystem {
-  constructor(svg, { head, transformGroup, idPrefix = "morph-bot" }) {
+  constructor(svg, { head, transformGroup, idPrefix = "hexbot-face" }) {
     this.svg = svg;
     this.head = head;
     this.signature = "";

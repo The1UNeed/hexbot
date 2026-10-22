@@ -1,7 +1,7 @@
 # Hexbot mobile
 
 An Expo React Native client for iOS and Android. The UI design was produced with
-Claude Opus 5.5 from the supplied Grokbot reference. iOS 26 uses native Liquid
+Claude Opus 5.5 from the supplied visual reference. iOS 26 uses native Liquid
 Glass on floating controls; older iOS uses system blur. Android and Reduce
 Transparency use solid controls. Lists and messages use solid backgrounds.
 

@@ -329,10 +329,8 @@ more freedom and more capability than a hosted product can offer.
   No middle server.
 - The same bundle is served to LAN browsers by the daemon with a cookie
   session.
-- Grok Bot's layout and interactions are reproduced as patterns with
-  Hexbot's own colours, type and icons. Milestone 1 panels: roster, chat,
-  right profile panel. Attachment parity with Grok Bot: text, links, images,
-  local files, with previews.
+- Hexbot's client uses a roster, chat and right profile panel. Attachments
+  include text, links, images and local files, with previews.
 - Light and dark themes following the system. Voice dictation as the core
   implements it. One daemon connection at a time (several in the Connect
   milestone).

@@ -1,7 +1,7 @@
 /**
  * Bot faces: a shape and a colour with two eyes, the same set the web app
  * draws (apps/web/src/lib/avatar-builder.ts). Keep the two in step so a bot
- * looks the same on every client. The web face is alive, the morph-bot
+ * looks the same on every client. The web face is alive, the hexbot-face
  * component's; this app draws the pose each mood rests in, from the data
  * generated beside it (`face-rest.ts`).
  */

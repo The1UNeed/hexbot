@@ -436,7 +436,7 @@ body {
 }
 
 /*
- * The morph-bot component animates the eyes and head for each mood.
+ * The hexbot-face component animates the eyes and head for each mood.
  * CSS keeps only the acts' body motion (hexbot-act.tsx).
  */
 @keyframes hex-bob {
@@ -943,7 +943,7 @@ body {
   animation: hex-rise var(--hex-motion-enter) var(--hex-ease-out) both;
 }
 /* The live face fills the box it is given; the component's own size is for pages without CSS. */
-morph-bot {
+hexbot-face {
   display: block;
   width: 100%;
   height: 100%;

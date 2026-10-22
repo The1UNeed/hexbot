@@ -1,5 +1,5 @@
 /**
- * Writes the still faces: where the morph-bot component rests each Hexbot
+ * Writes the still faces: where the hexbot-face component rests each Hexbot
  * shape's eyes, for the pictures the web app draws (`src/lib/face-rest.ts`)
  * and the faces the mobile app draws (`apps/mobile/src/ui/face-rest.ts`).
  * It runs the component's own eye placement on its own data, so a still
@@ -13,7 +13,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const here = dirname(fileURLToPath(import.meta.url))
-const vendor = join(here, '../src/vendor/morph-bot')
+const vendor = join(here, '../src/vendor/hexbot-face')
 const { EXPRESSIONS, ORIGINAL_STATE_DATA, SHAPES } = await import(join(vendor, 'original-data.js'))
 const { renderEyes } = await import(join(vendor, 'runtime/svg-renderer.js'))
 
@@ -97,8 +97,8 @@ const json = (value) => JSON.stringify(value, null, 2).replace(/"([a-z]+)":/g, '
 
 writeFileSync(
   join(here, '../src/lib/face-rest.ts'),
-  `${header('The still face of each Hexbot shape: the morph-bot component\'s idle rest, in its head frame.')}
-import type { MorphBotShape } from '../vendor/morph-bot/morph-bot.js'
+  `${header('The still face of each Hexbot shape: the hexbot-face component\'s idle rest, in its head frame.')}
+import type { HexbotFaceShape } from '../vendor/hexbot-face/hexbot-face.js'
 
 export interface RestEye {
   cx: number
@@ -113,7 +113,7 @@ export interface FaceRest {
   head: string
   label: string
   /** The component shape the Hexbot shape is drawn as. */
-  shape: MorphBotShape
+  shape: HexbotFaceShape
 }
 
 export const FACE_REST: Record<string, FaceRest> = ${json(web)}
@@ -122,7 +122,7 @@ export const FACE_REST: Record<string, FaceRest> = ${json(web)}
 
 writeFileSync(
   join(here, '../../mobile/src/ui/face-rest.ts'),
-  `${header('The faces the web app draws, at rest, in the morph-bot head frame.')}
+  `${header('The faces the web app draws, at rest, in the hexbot-face head frame.')}
 export const FACE_SHAPES: { id: string; label: string; path: string }[] = ${json(mobileShapes)}
 
 /** The eyes a mood rests in, as path data in the head frame; placed per shape by \`EYE_PLACES\`. */

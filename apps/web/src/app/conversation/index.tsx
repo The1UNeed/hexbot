@@ -167,7 +167,7 @@ export function BubbleActions({
 
 /**
  * Soft grey for bots, washed with the bot's face colour (`botBubbleStyle`).
- * Humans get the inverse (`userBubbleClass`), like Grok Bot. A message that
+ * Humans get the inverse (`userBubbleClass`). A message that
  * arrives while the chat is open springs in whole from its corner
  * (`hex-message`), like a text; history is drawn where it is.
  */

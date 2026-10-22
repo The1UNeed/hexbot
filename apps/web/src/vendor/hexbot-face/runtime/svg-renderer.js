@@ -250,9 +250,9 @@ export function createMorphLayer(effect) {
   });
   const layer = {
     group,
-    heads: create("path", "grok-bot-mark__head morph-head", 2),
+    heads: create("path", "hexbot-face-mark__head morph-head", 2),
     rings: create("circle", "morph-ring", 5),
-    parts: create("circle", "grok-bot-mark__head morph-part", 5),
+    parts: create("circle", "hexbot-face-mark__head morph-part", 5),
     glyphs: create("path", "morph-glyph", 3),
   };
   this.svg.insertBefore(group, this.transformGroup);

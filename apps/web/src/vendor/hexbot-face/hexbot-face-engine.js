@@ -17,7 +17,7 @@ const REDUCE_MOTION = typeof globalThis.matchMedia === "function"
   ? globalThis.matchMedia("(prefers-reduced-motion: reduce)")
   : { matches: false };
 
-export class GrokBotEngine {
+export class HexbotFaceEngine {
   constructor(svg, getConfig) {
     this.svg = svg;
     this.getConfig = getConfig;
@@ -40,13 +40,13 @@ export class GrokBotEngine {
     this.materials = new MaterialSystem(svg, {
       head: this.head,
       transformGroup: this.transformGroup,
-      idPrefix: svg.id || "grok-bot",
+      idPrefix: svg.id || "hexbot-face",
     });
     this.badge = svg.querySelector("#notify-badge");
     this.currentBeltRadius = SHAPES.blob.beltRadius;
     this.particleSpinAngle = 0;
     this.particles = new ParticleSystem(svg.querySelector("#particles-back"), svg.querySelector("#particles-front"), {
-      idPrefix: `${svg.id || "grok-bot"}-`,
+      idPrefix: `${svg.id || "hexbot-face"}-`,
       reduceMotion: () => REDUCE_MOTION.matches,
       radius: () => this.currentBeltRadius,
     });

@@ -1,5 +1,5 @@
 /**
- * Generated bot faces: a shape and a colour with two eyes, the morph-bot
+ * Generated bot faces: a shape and a colour with two eyes, the hexbot-face
  * component's (`face.ts`) at rest. Drawn as SVG in the UI and rasterised to
  * PNG for the profile asset (the daemon accepts png, jpeg or webp only). Bots
  * without an uploaded avatar get a face derived from their name so every bot

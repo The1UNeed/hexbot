@@ -15,7 +15,7 @@ import {
   type FaceMood,
   facePreset,
   faceShape,
-  type MorphBotElement
+  type HexbotFaceElement
 } from '../../lib/face'
 
 import { ActProps, type HexbotActName, useAct } from './hexbot-act'
@@ -70,7 +70,7 @@ function useReducedMotion(): boolean {
 }
 
 /**
- * A face brought to life: the `<morph-bot>` component wearing the mood, look
+ * A face brought to life: the `<hexbot-face>` component wearing the mood, look
  * and shape it is given. The component runs its own clock and pauses off
  * screen; this hands it the attributes and, for a look or a held head, a
  * preset over every state. The component only softens motion for reduced
@@ -87,7 +87,7 @@ export function LiveFace({
   shape = 'hexagon',
   still = false
 }: LiveFaceProps) {
-  const element = useRef<MorphBotElement>(null)
+  const element = useRef<HexbotFaceElement>(null)
   const tuned = useRef(false)
   const reduced = useReducedMotion()
 
@@ -116,7 +116,7 @@ export function LiveFace({
   }, [color, eyes, look, mood, reduced, shape, still])
 
   return (
-    <morph-bot
+    <hexbot-face
       className={cn('block size-full', className)}
       color={color}
       decorative=""

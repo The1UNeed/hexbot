@@ -1,7 +1,7 @@
 # Hexbot client UI design
 
-Milestone 1 scope. Grok Bot's layout and interactions as patterns, Hexbot's
-own visual identity. Read `CLAUDE.md` for the words.
+Milestone 1 scope. Hexbot's layout, interactions and visual identity.
+Read `CLAUDE.md` for the words.
 
 ## Principles
 
@@ -43,12 +43,13 @@ own visual identity. Read `CLAUDE.md` for the words.
   show pictures. A bot whose face was saved before that keeps only the
   picture: the web app reads it back into a live face (old outlines
   included), and mobile shows the picture. Other uploaded images replace the
-  face; otherwise it is derived from the bot's name. Faces live as the Grok
-  bot's (x.ai/bot): the web app runs the `<morph-bot>` Web Component from
-  the open reconstruction, copied as it is (`src/vendor/morph-bot/`, its
-  NOTICE.md says what was left out and that its data carries no licence) and
-  loaded by `lib/face.ts` alone. Hexbot's eight shapes are drawn as the
-  component shapes nearest to them (round as blob, square as cylinder, pill
+  face; otherwise it is derived from the bot's name. Hexbot faces use the
+  `<hexbot-face>` Web Component, adapted from Morph Bot
+  in iduu/grokbot-animation. `src/vendor/hexbot-face/NOTICE.md` records the
+  upstream source, local patches and unresolved license grants for the engine
+  and reference-derived data. `lib/face.ts` loads the component. Hexbot's eight
+  shapes are drawn as the component shapes nearest to them (round as blob,
+  square as cylinder, pill
   as tablet, triangle as wedge, hexagon as hex, drop as teardrop) and the
   still faces, on the web and on mobile, are the component's own first
   frame, generated into `lib/face-rest.ts` by `apps/web/scripts/face-rest.mjs`.
@@ -99,8 +100,8 @@ own visual identity. Read `CLAUDE.md` for the words.
   `ease-out` settles, `ease-in-out` is for things leaving, `ease-spring` is
   for small controls that snap into place (the switch knob). Only what
   arrives while the chat is open animates: history is drawn still. The one
-  continuous motion is the bot faces, which sway, blink and glance as the
-  Grok bot does. Respect prefers-reduced-motion.
+  continuous motion is the Hexbot faces, which sway, blink and glance.
+  Respect prefers-reduced-motion.
 - Focus: the accent ring, 2 px outside the shape (`hex-focus`), on every
   rounded control, including the glass pills.
 

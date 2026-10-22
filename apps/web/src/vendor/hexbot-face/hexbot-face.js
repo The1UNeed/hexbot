@@ -1,4 +1,4 @@
-import { GrokBotEngine } from "./grok-bot-engine.js";
+import { HexbotFaceEngine } from "./hexbot-face-engine.js";
 import { ORIGINAL_STATE_DATA } from "./original-data.js";
 import { MORPH_BY_STATE, MORPH_IDS, SHAPE_IDS, STATE_IDS } from "./catalog.js";
 import {
@@ -10,13 +10,13 @@ import {
   resolveMaterial,
 } from "./materials.js";
 
-export const MORPH_BOT_STATES = STATE_IDS;
-export const MORPH_BOT_SHAPES = SHAPE_IDS;
-export const MORPH_BOT_EFFECTS = MORPH_IDS;
-export const MORPH_BOT_MATERIALS = MATERIAL_IDS;
-export const MORPH_BOT_SOLID_PRESETS = SOLID_PRESETS;
-export const MORPH_BOT_GRADIENT_PRESETS = GRADIENT_PRESETS;
-export const MORPH_BOT_GLASS_PRESETS = GLASS_PRESETS;
+export const HEXBOT_FACE_STATES = STATE_IDS;
+export const HEXBOT_FACE_SHAPES = SHAPE_IDS;
+export const HEXBOT_FACE_EFFECTS = MORPH_IDS;
+export const HEXBOT_FACE_MATERIALS = MATERIAL_IDS;
+export const HEXBOT_FACE_SOLID_PRESETS = SOLID_PRESETS;
+export const HEXBOT_FACE_GRADIENT_PRESETS = GRADIENT_PRESETS;
+export const HEXBOT_FACE_GLASS_PRESETS = GLASS_PRESETS;
 export { MORPH_BY_STATE };
 
 const DEFAULT_CHARACTER = Object.freeze({
@@ -34,7 +34,7 @@ const HTMLElementBase = globalThis.HTMLElement || class {};
 let componentCounter = 0;
 
 function defaultState(state) {
-  const id = MORPH_BOT_STATES.includes(state) ? state : "idle";
+  const id = HEXBOT_FACE_STATES.includes(state) ? state : "idle";
   const blink = ORIGINAL_STATE_DATA.BLINK_CADENCE[id];
   return {
     expressionPool: [...ORIGINAL_STATE_DATA.EXPRESSION_POOLS[id]],
@@ -75,10 +75,10 @@ function svgTemplate(id) {
   return `
     <style>
       :host {
-        --morph-bot-size: 96px;
+        --hexbot-face-size: 96px;
         display: inline-grid;
-        width: var(--morph-bot-size);
-        height: var(--morph-bot-size);
+        width: var(--hexbot-face-size);
+        height: var(--hexbot-face-size);
         place-items: center;
         contain: layout style;
         vertical-align: middle;
@@ -91,9 +91,9 @@ function svgTemplate(id) {
         height: 100%;
         overflow: visible;
       }
-      .grok-bot-mark__head,
+      .hexbot-face-mark__head,
       .morph-part { fill: var(--fg); }
-      .grok-bot-mark__eye { fill: var(--bg); }
+      .hexbot-face-mark__eye { fill: var(--bg); }
       .eye-path { transform-origin: 0 0; }
       .morph-ring { fill: none; stroke: var(--fg); }
       .morph-glyph { fill: var(--fg); }
@@ -102,19 +102,19 @@ function svgTemplate(id) {
         svg { transition: none; }
       }
     </style>
-    <svg id="${id}" class="grok-bot-mark" data-state="idle" viewBox="-15 -15 259 259" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+    <svg id="${id}" class="hexbot-face-mark" data-state="idle" viewBox="-15 -15 259 259" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
       <defs><clipPath id="${clipId}"><path id="head-clip-path"></path></clipPath></defs>
       <g id="particles-back" aria-hidden="true"></g>
-      <path class="grok-bot-mark__head morph-head" hidden></path>
-      <path class="grok-bot-mark__head morph-head" hidden></path>
+      <path class="hexbot-face-mark__head morph-head" hidden></path>
+      <path class="hexbot-face-mark__head morph-head" hidden></path>
       ${Array.from({ length: 5 }, () => '<circle class="morph-ring" cx="114.2705" cy="114.2705" r="0" hidden></circle>').join("")}
-      ${Array.from({ length: 5 }, () => '<circle class="grok-bot-mark__head morph-part" cx="114.2705" cy="114.2705" r="0" hidden></circle>').join("")}
+      ${Array.from({ length: 5 }, () => '<circle class="hexbot-face-mark__head morph-part" cx="114.2705" cy="114.2705" r="0" hidden></circle>').join("")}
       ${Array.from({ length: 3 }, () => '<path class="morph-glyph" hidden></path>').join("")}
       <g id="bot-transform">
-        <path id="head-path" class="grok-bot-mark__head"></path>
+        <path id="head-path" class="hexbot-face-mark__head"></path>
         <g clip-path="url(#${clipId})">
-          <path class="grok-bot-mark__eye eye-path"></path>
-          <path class="grok-bot-mark__eye eye-path"></path>
+          <path class="hexbot-face-mark__eye eye-path"></path>
+          <path class="hexbot-face-mark__eye eye-path"></path>
         </g>
         <circle id="notify-badge" cx="114.2705" cy="114.2705" r="0" hidden></circle>
       </g>
@@ -122,7 +122,7 @@ function svgTemplate(id) {
     </svg>`;
 }
 
-export class MorphBotElement extends HTMLElementBase {
+export class HexbotFaceElement extends HTMLElementBase {
   static get observedAttributes() {
     return [
       "state", "shape", "size", "color", "eye-color", "speed", "follow-pointer", "flip", "paused", "decorative", "label",
@@ -138,7 +138,7 @@ export class MorphBotElement extends HTMLElementBase {
     this._intersectionObserver = null;
     this._morphMonitor = 0;
     this._sequenceToken = 0;
-    this._componentId = `morph-bot-${++componentCounter}`;
+    this._componentId = `hexbot-face-${++componentCounter}`;
     if (this.attachShadow) this.attachShadow({ mode: "open" });
   }
 
@@ -149,7 +149,7 @@ export class MorphBotElement extends HTMLElementBase {
     this._syncAccessibility();
     if (!this._engine) {
       const svg = this.shadowRoot.querySelector("svg");
-      this._engine = new GrokBotEngine(svg, () => this._engineConfig());
+      this._engine = new HexbotFaceEngine(svg, () => this._engineConfig());
       this._engine.setPlaybackRate(this.speed);
       this._engine.setPaused(this.paused);
       this._engine.setState(this.state, true);
@@ -191,21 +191,21 @@ export class MorphBotElement extends HTMLElementBase {
 
   get state() {
     const value = this.getAttribute("state") || "idle";
-    return MORPH_BOT_STATES.includes(value) ? value : "idle";
+    return HEXBOT_FACE_STATES.includes(value) ? value : "idle";
   }
 
   set state(value) {
-    this.setAttribute("state", MORPH_BOT_STATES.includes(value) ? value : "idle");
+    this.setAttribute("state", HEXBOT_FACE_STATES.includes(value) ? value : "idle");
   }
 
   get shape() {
-    const fallback = MORPH_BOT_SHAPES.includes(this._preset?.shape) ? this._preset.shape : "blob";
+    const fallback = HEXBOT_FACE_SHAPES.includes(this._preset?.shape) ? this._preset.shape : "blob";
     const value = this.getAttribute("shape") || fallback;
-    return MORPH_BOT_SHAPES.includes(value) ? value : fallback;
+    return HEXBOT_FACE_SHAPES.includes(value) ? value : fallback;
   }
 
   set shape(value) {
-    this.setAttribute("shape", MORPH_BOT_SHAPES.includes(value) ? value : "blob");
+    this.setAttribute("shape", HEXBOT_FACE_SHAPES.includes(value) ? value : "blob");
   }
 
   get material() {
@@ -249,20 +249,20 @@ export class MorphBotElement extends HTMLElementBase {
   }
 
   setState(state, { replay = false } = {}) {
-    if (!MORPH_BOT_STATES.includes(state)) throw new RangeError(`Unknown morph-bot state: ${state}`);
+    if (!HEXBOT_FACE_STATES.includes(state)) throw new RangeError(`Unknown hexbot-face state: ${state}`);
     if (state === this.state && replay) this._engine?.setState(state, true);
     else this.state = state;
     return this;
   }
 
   setShape(shape) {
-    if (!MORPH_BOT_SHAPES.includes(shape)) throw new RangeError(`Unknown morph-bot shape: ${shape}`);
+    if (!HEXBOT_FACE_SHAPES.includes(shape)) throw new RangeError(`Unknown hexbot-face shape: ${shape}`);
     this.shape = shape;
     return this;
   }
 
   setMaterial(material, options = {}) {
-    if (!MATERIAL_IDS.includes(material)) throw new RangeError(`Unknown morph-bot material: ${material}`);
+    if (!MATERIAL_IDS.includes(material)) throw new RangeError(`Unknown hexbot-face material: ${material}`);
     this.material = material;
     if (material === "solid" && options.color) this.setAttribute("color", options.color);
     if (material === "gradient") {
@@ -298,8 +298,8 @@ export class MorphBotElement extends HTMLElementBase {
   }
 
   playMorph(effect, { hold = 2500, restore = null } = {}) {
-    if (!MORPH_BOT_EFFECTS.includes(effect)) return Promise.reject(new RangeError(`Unknown morph effect: ${effect}`));
-    if (!this._engine) return Promise.reject(new Error("morph-bot is not connected"));
+    if (!HEXBOT_FACE_EFFECTS.includes(effect)) return Promise.reject(new RangeError(`Unknown morph effect: ${effect}`));
+    if (!this._engine) return Promise.reject(new Error("hexbot-face is not connected"));
     const token = ++this._morphMonitor;
     this._engine.triggerMorphPreview(effect, hold);
     this.dispatchEvent(new CustomEvent("morphstart", { detail: { effect, hold } }));
@@ -309,7 +309,7 @@ export class MorphBotElement extends HTMLElementBase {
         if (this._engine.getSnapshot().morphPhase === "DONE") {
           this.dispatchEvent(new CustomEvent("morphend", { detail: { effect } }));
           if (restore === "default") this._engine.clearMorphPreview();
-          else if (MORPH_BOT_STATES.includes(restore)) this.state = restore;
+          else if (HEXBOT_FACE_STATES.includes(restore)) this.state = restore;
           resolve({ effect, restored: restore });
           return;
         }
@@ -321,11 +321,11 @@ export class MorphBotElement extends HTMLElementBase {
 
   async playSequence(steps, { loop = false } = {}) {
     if (!Array.isArray(steps) || steps.length === 0) throw new TypeError("Morph sequence requires at least one step");
-    if (!this._engine) throw new Error("morph-bot is not connected");
+    if (!this._engine) throw new Error("hexbot-face is not connected");
     const sequence = steps.map((step, index) => {
-      if (!step || !MORPH_BOT_STATES.includes(step.state)) throw new RangeError(`Unknown state at sequence step ${index + 1}`);
+      if (!step || !HEXBOT_FACE_STATES.includes(step.state)) throw new RangeError(`Unknown state at sequence step ${index + 1}`);
       const morph = step.morph === undefined || step.morph === null || step.morph === "none" ? null : step.morph;
-      if (morph && !MORPH_BOT_EFFECTS.includes(morph)) throw new RangeError(`Unknown morph effect at sequence step ${index + 1}: ${morph}`);
+      if (morph && !HEXBOT_FACE_EFFECTS.includes(morph)) throw new RangeError(`Unknown morph effect at sequence step ${index + 1}: ${morph}`);
       const hold = Number(step.hold ?? 1000);
       const morphHold = Number(step.morphHold ?? 1200);
       if (!Number.isFinite(hold) || hold < 0) throw new RangeError(`Invalid hold at sequence step ${index + 1}`);
@@ -444,7 +444,7 @@ export class MorphBotElement extends HTMLElementBase {
   }
 
   _syncSize() {
-    this.style?.setProperty("--morph-bot-size", `${this.size}px`);
+    this.style?.setProperty("--hexbot-face-size", `${this.size}px`);
   }
 
   _syncPaused() {
@@ -459,12 +459,12 @@ export class MorphBotElement extends HTMLElementBase {
     }
     this.removeAttribute("aria-hidden");
     if (!this.hasAttribute("role")) this.setAttribute("role", ["loading", "progress", "spawning"].includes(this.state) ? "status" : "img");
-    if (!this.hasAttribute("aria-label")) this.setAttribute("aria-label", this.getAttribute("label") || `Animated bot: ${this.state}`);
+    if (!this.hasAttribute("aria-label")) this.setAttribute("aria-label", this.getAttribute("label") || `Hexbot: ${this.state}`);
   }
 }
 
-if (globalThis.customElements && !customElements.get("morph-bot")) {
-  customElements.define("morph-bot", MorphBotElement);
+if (globalThis.customElements && !customElements.get("hexbot-face")) {
+  customElements.define("hexbot-face", HexbotFaceElement);
 }
 
-export default MorphBotElement;
+export default HexbotFaceElement;

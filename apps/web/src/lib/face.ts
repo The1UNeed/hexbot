@@ -1,6 +1,6 @@
 /**
- * The live bot face: the `<morph-bot>` Web Component from the open Grok bot
- * reconstruction (`src/vendor/morph-bot/`, see its NOTICE.md), as it is. This
+ * The live Hexbot face, adapted from Morph Bot
+ * (`src/vendor/hexbot-face/`, see its NOTICE.md for provenance and patches). This
  * module is the one place that loads it, and it gives the app the words it
  * uses for a face: a mood is one of the component's 39 states, a shape is
  * one of Hexbot's eight, drawn as the component shape nearest to it
@@ -8,31 +8,31 @@
  */
 
 import {
-  MORPH_BOT_STATES,
-  type MorphBotElement,
-  type MorphBotProject,
-  type MorphBotShape,
-  type MorphBotState
-} from '../vendor/morph-bot/morph-bot.js'
+  HEXBOT_FACE_STATES,
+  type HexbotFaceElement,
+  type HexbotFaceProject,
+  type HexbotFaceShape,
+  type HexbotFaceState
+} from '../vendor/hexbot-face/hexbot-face.js'
 
 import { FACE_REST } from './face-rest'
 
-export type { MorphBotElement, MorphBotShape }
+export type { HexbotFaceElement, HexbotFaceShape }
 
 /** What a face is doing: one of the component's states. */
-export type FaceMood = MorphBotState
+export type FaceMood = HexbotFaceState
 
 /** Turned toward a neighbour, as the two faces of an ask are. */
 export type FaceLook = 'left' | 'right'
 
 /** Every mood, idle first. */
-export const FACE_MOODS: readonly FaceMood[] = MORPH_BOT_STATES
+export const FACE_MOODS: readonly FaceMood[] = HEXBOT_FACE_STATES
 
 /** The component's view box: a 228-unit head with room around it for its parts. */
 export const FACE_VIEWBOX = '-15 -15 259 259'
 
 /** The component shape a Hexbot shape is drawn as; the first shape for an unknown id. */
-export function faceShape(shapeId: string): MorphBotShape {
+export function faceShape(shapeId: string): HexbotFaceShape {
   return (FACE_REST[shapeId] ?? FACE_REST.round!).shape
 }
 
@@ -45,7 +45,7 @@ const LOOK_SHIFT = 2
  * over every state. `null` when neither applies, so the component keeps its
  * own defaults.
  */
-export function facePreset(look: FaceLook | null, still: boolean): MorphBotProject | null {
+export function facePreset(look: FaceLook | null, still: boolean): HexbotFaceProject | null {
   if (!look && !still) {
     return null
   }
@@ -80,16 +80,16 @@ export function moodForStatus(status?: null | string): FaceMood {
 declare module 'react' {
   namespace JSX {
     interface IntrinsicElements {
-      'morph-bot': React.DetailedHTMLProps<
-        React.HTMLAttributes<MorphBotElement>,
-        MorphBotElement
+      'hexbot-face': React.DetailedHTMLProps<
+        React.HTMLAttributes<HexbotFaceElement>,
+        HexbotFaceElement
       > & {
         color?: string
         decorative?: string
         'eye-color'?: string
         'follow-pointer'?: string
         paused?: boolean
-        shape?: MorphBotShape
+        shape?: HexbotFaceShape
         size?: number
         state?: FaceMood
       }

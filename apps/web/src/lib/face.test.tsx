@@ -3,14 +3,14 @@ import { act, render } from '@testing-library/react'
 import { Avatar, LiveFace } from '../components/ui/avatar'
 import { HexbotMark } from '../components/ui/wordmark'
 
-import { FACE_MOODS, facePreset, faceShape, moodForStatus, type MorphBotElement } from './face'
+import { FACE_MOODS, facePreset, faceShape, type HexbotFaceElement, moodForStatus } from './face'
 import { FACE_REST } from './face-rest'
 
 const frame = () => new Promise(resolve => requestAnimationFrame(resolve))
 
 describe('the live face', () => {
-  it('is the morph-bot component, defined once the face module loads', () => {
-    expect(customElements.get('morph-bot')).toBeDefined()
+  it('is the hexbot-face component, defined once the face module loads', () => {
+    expect(customElements.get('hexbot-face')).toBeDefined()
     expect(FACE_MOODS[0]).toBe('idle')
     expect(FACE_MOODS).toHaveLength(39)
   })
@@ -28,7 +28,7 @@ describe('the live face', () => {
       <LiveFace color="#ec2f8a" eyes="#ffffff" mood="thinking" shape="hexagon" />
     )
 
-    const bot = container.querySelector('morph-bot')!
+    const bot = container.querySelector('hexbot-face')!
     expect(bot).toHaveAttribute('state', 'thinking')
     expect(bot).toHaveAttribute('shape', 'hex')
     expect(bot).toHaveAttribute('color', '#ec2f8a')
@@ -46,7 +46,7 @@ describe('the live face', () => {
       <LiveFace color="#ec2f8a" eyes="#ffffff" mood="idle" shape="round" />
     )
 
-    const bot = container.querySelector('morph-bot')!
+    const bot = container.querySelector('hexbot-face')!
 
     await act(async () => {
       await frame()
@@ -78,7 +78,7 @@ describe('the live face', () => {
         <LiveFace color="#ec2f8a" eyes="#ffffff" mood="idle" shape="round" />
       )
 
-      const bot = container.querySelector('morph-bot')!
+      const bot = container.querySelector('hexbot-face')!
       expect(bot).toHaveAttribute('paused')
 
       await act(async () => {
@@ -132,7 +132,7 @@ describe('the live face', () => {
       <LiveFace color="#ec2f8a" eyes="#ffffff" mood="working" shape="hexagon" />
     )
 
-    const bot = container.querySelector('morph-bot') as unknown as {
+    const bot = container.querySelector('hexbot-face') as unknown as {
       _engine: { gesture: unknown; spinSpring: unknown; startSpin(): boolean }
     }
 
@@ -187,7 +187,7 @@ describe('the live face', () => {
     try {
       const row = container.querySelector('li')!
 
-      const bot = row.querySelector('morph-bot')! as MorphBotElement & {
+      const bot = row.querySelector('hexbot-face')! as HexbotFaceElement & {
         _engine: {
           particles: { burst(count: number): void }
           spinSpring: unknown
@@ -213,7 +213,7 @@ describe('the live face', () => {
       // reconnecting its custom element while keeping the same SVG.
       rerender(roster(['Builder', 'Scout']))
       expect(container.querySelector('li:last-child')).toBe(row)
-      expect(row.querySelector('morph-bot')).toBe(bot)
+      expect(row.querySelector('hexbot-face')).toBe(bot)
       expect(bot.shadowRoot!.querySelector('svg')).toBe(svg)
       expect(bot._engine).not.toBe(engine)
       expect(oldParticles.every(node => !node.isConnected)).toBe(true)
@@ -265,7 +265,7 @@ describe('the live face', () => {
       />
     )
 
-    const bot = container.querySelector('morph-bot')!
+    const bot = container.querySelector('hexbot-face')!
     expect(bot.snapshot()?.state).toBe('listening')
 
     const configure = vi.spyOn(bot, 'configure')
@@ -283,7 +283,7 @@ describe('the live face', () => {
 
   it('draws the mark in the text colour with eyes cut from the background', () => {
     const { container } = render(<HexbotMark mood="loading" />)
-    const bot = container.querySelector('morph-bot')!
+    const bot = container.querySelector('hexbot-face')!
 
     expect(bot).toHaveAttribute('color', 'currentColor')
     expect(bot).toHaveAttribute('eye-color', 'var(--hex-background)')

@@ -36,7 +36,7 @@ describe('UI components', () => {
   it('renders a generated face when there is no image', () => {
     const { container } = render(<Avatar name="Ada Lovelace" />)
     expect(screen.getByRole('img', { name: 'Ada Lovelace' })).toBeVisible()
-    expect(container.querySelector('morph-bot')).toHaveAttribute('state', 'idle')
+    expect(container.querySelector('hexbot-face')).toHaveAttribute('state', 'idle')
   })
   it('wears the mood it is given, and turns toward a neighbour', () => {
     const { rerender } = render(<Avatar mood="idle" name="Ada" />)
