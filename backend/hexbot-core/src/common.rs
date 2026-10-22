@@ -428,7 +428,10 @@ pub fn managed_python(home: &Path) -> std::path::PathBuf {
 
 /// Expand a leading `~` or `~/` to the user's home directory.
 pub fn expand_home(path: &str) -> Result<std::path::PathBuf> {
-    expand_home_in(path, std::env::var_os("HOME"))
+    expand_home_in(
+        path,
+        crate::osutil::user_home().map(|path| path.into_os_string()),
+    )
 }
 fn expand_home_in(path: &str, home: Option<std::ffi::OsString>) -> Result<std::path::PathBuf> {
     if path == "~" || path.starts_with("~/") {
