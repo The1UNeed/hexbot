@@ -8,7 +8,30 @@ fn metadata(path: &Path) -> io::Result<serde_json::Value> {
     if !fs::symlink_metadata(path.with_extension("json"))?.is_file() {
         return Err(io::Error::other("CLI configuration is not a regular file"));
     }
-    serde_json::from_slice(&fs::read(path.with_extension("json"))?).map_err(io::Error::other)
+    let value: serde_json::Value = serde_json::from_slice(&fs::read(path.with_extension("json"))?)
+        .map_err(io::Error::other)?;
+    let valid_hashes = value["hashes"].as_array().is_some_and(|hashes| {
+        !hashes.is_empty()
+            && hashes.len() <= 2
+            && hashes.iter().all(|hash| {
+                hash.as_str().is_some_and(|hash| {
+                    hash.len() == 64
+                        && hash
+                            .bytes()
+                            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+                })
+            })
+    });
+    if value["schema"] != 1
+        || !valid_hashes
+        || !value["home"]
+            .as_str()
+            .is_some_and(|home| Path::new(home).is_absolute())
+        || !value["pathAdded"].is_boolean()
+    {
+        return Err(io::Error::other("Invalid CLI ownership configuration"));
+    }
+    Ok(value)
 }
 pub fn owner(path: &Path) -> Option<PathBuf> {
     if !fs::symlink_metadata(path).ok()?.is_file() {
@@ -26,14 +49,28 @@ pub fn owner(path: &Path) -> Option<PathBuf> {
     }
     Some(PathBuf::from(value["home"].as_str()?))
 }
+fn same_home(owner: &Path, home: &Path) -> bool {
+    owner
+        .canonicalize()
+        .ok()
+        .zip(home.canonicalize().ok())
+        .is_some_and(|(a, b)| a == b)
+}
 pub fn owned(path: &Path, home: &Path) -> bool {
-    owner(path).is_some_and(|owner| {
-        owner
-            .canonicalize()
+    owner(path).is_some_and(|owner| same_home(&owner, home))
+}
+/// An absent EXE can be the interrupted first install or a partial uninstall.
+/// Its strictly validated sidecar owns only metadata/PATH cleanup, never an
+/// existing unverified EXE, directory, link or unreadable path.
+pub fn removable(path: &Path, home: &Path) -> bool {
+    match fs::symlink_metadata(path) {
+        Ok(_) => owned(path, home),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => metadata(path)
             .ok()
-            .zip(home.canonicalize().ok())
-            .is_some_and(|(a, b)| a == b)
-    })
+            .and_then(|value| value["home"].as_str().map(PathBuf::from))
+            .is_some_and(|owner| same_home(&owner, home)),
+        Err(_) => false,
+    }
 }
 #[cfg(windows)]
 pub fn install(source: &Path, home: &Path, bin: &Path) -> io::Result<PathBuf> {
@@ -41,7 +78,7 @@ pub fn install(source: &Path, home: &Path, bin: &Path) -> io::Result<PathBuf> {
     fs::create_dir_all(bin)?;
     let _lock = lock(bin)?;
     let path = bin.join("hexbot.exe");
-    if path.exists() && !owned(&path, home) {
+    if fs::symlink_metadata(&path).is_ok() && !owned(&path, home) {
         return Err(io::Error::other(
             "Existing CLI belongs to another installation",
         ));
@@ -57,18 +94,10 @@ pub fn install(source: &Path, home: &Path, bin: &Path) -> io::Result<PathBuf> {
         hashes.push(hash);
     }
     let config = path.with_extension("json");
-    if !path.exists() && config.exists() {
-        let previous = metadata(&path)?;
-        if previous["home"]
-            .as_str()
-            .map(Path::new)
-            .and_then(|p| p.canonicalize().ok())
-            != Some(home.canonicalize()?)
-        {
-            return Err(io::Error::other(
-                "Existing CLI configuration belongs to another installation",
-            ));
-        }
+    if !path.exists() && fs::symlink_metadata(&config).is_ok() && !removable(&path, home) {
+        return Err(io::Error::other(
+            "Existing CLI configuration belongs to another installation",
+        ));
     }
     // Commit ownership first, accepting both the previous and new trusted hash.
     // Interruption before or after the EXE rename remains recoverable.
@@ -171,17 +200,43 @@ pub fn remove(path: &Path, home: &Path) -> io::Result<()> {
         path.parent()
             .ok_or_else(|| io::Error::other("Missing CLI directory"))?,
     )?;
-    if !owned(path, home) {
+    if !removable(path, home) {
         return Err(io::Error::other("CLI belongs to another installation"));
     }
     unregister_path(path)?;
-    fs::remove_file(path)?;
+    match fs::remove_file(path) {
+        Ok(()) => {}
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
+    }
     fs::remove_file(path.with_extension("json"))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn a_valid_config_only_interruption_is_removable_but_foreign_bytes_are_not() {
+        let root = tempfile::tempdir().unwrap();
+        let home = root.path().join("state");
+        fs::create_dir(&home).unwrap();
+        let file = root.path().join("hexbot.exe");
+        let valid = serde_json::json!({"schema":1,"home":home,"hashes":[format!("{:x}", Sha256::digest(b"trusted"))],"pathAdded":true});
+        fs::write(file.with_extension("json"), valid.to_string()).unwrap();
+        assert!(removable(&file, &home));
+        assert!(!removable(&file, root.path()));
+        fs::write(&file, b"foreign executable").unwrap();
+        assert!(!removable(&file, &home));
+        fs::remove_file(&file).unwrap();
+        for bad in [
+            serde_json::json!({"home":home}),
+            serde_json::json!({"schema":1,"home":home,"hashes":[]}),
+            serde_json::json!({"schema":1,"home":home,"hashes":["invalid"],"pathAdded":true}),
+        ] {
+            fs::write(file.with_extension("json"), bad.to_string()).unwrap();
+            assert!(!removable(&file, &home));
+        }
+    }
     #[test]
     fn only_the_recorded_home_and_trusted_forwarder_hash_are_owned() {
         let root = tempfile::tempdir().unwrap();
@@ -193,7 +248,7 @@ mod tests {
         let hash = format!("{:x}", Sha256::digest(b"trusted forwarder"));
         fs::write(
             file.with_extension("json"),
-            serde_json::json!({"schema":1,"home":home,"hashes":[hash,"pending new build hash"]})
+            serde_json::json!({"schema":1,"home":home,"hashes":[hash,format!("{:x}", Sha256::digest(b"new build"))],"pathAdded":false})
                 .to_string(),
         )
         .unwrap();

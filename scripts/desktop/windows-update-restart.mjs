@@ -117,6 +117,44 @@ try {
   assert.equal(alive(upgraded.pid), false, 'updated daemon must remain in the task job ended by /End')
   assert.equal(JSON.parse((await run(selected, ['service', 'status', '--json'])).stdout).running, false)
   await run(selected, ['service', 'uninstall'])
+
+  // Exercise the installer engine's actual Headless update path, which calls
+  // service install rather than service restart. Reuse the two verified
+  // versions in a fresh state, preserving the self-update evidence above.
+  const installHome = join(user, 'installer update state')
+  await mkdir(installHome)
+  env.HEXBOT_HOME = installHome
+  env.HEXBOT_UPDATE_URL = base
+  await run(join(initial, 'hexbot.exe'), ['setup', '--activate', '--json'])
+  selected = JSON.parse(await readFile(join(installHome, 'runtime/native-current.json'), 'utf8')).executable
+  await run(selected, ['service', 'install'])
+  const installerRunning = join(installHome, 'runtime/native-running.json')
+  const old = await waitJson(installerRunning, value => value.pid)
+  assert.equal((await run(selected, ['version'])).stdout.trim(), originalManifest.version)
+  const installManifest = Buffer.from(JSON.stringify({ schema: 1, channel: 'stable', version: nextVersion, minInstaller: '0.1.5-0',
+    targets: { 'windows-x86_64': { headless: { url: `${base}/${update.manifest.path}`, path: update.manifest.path,
+      sha256: update.manifest.sha256, size: update.manifest.size, format: 'zip', manifest: manifestPath } } } }))
+  files.set('install/stable.json', installManifest)
+  files.set('install/stable.json.sig', Buffer.from(signature(testKey(), installManifest)))
+  await exec('cargo', ['build', '--locked', '--manifest-path', 'backend/hexbot-installer/Cargo.toml', '--bin', 'hexbot-install'], { timeout: 300_000, maxBuffer: 16 * 1024 * 1024, windowsHide: true })
+  const installOutput = await run(resolve('backend/hexbot-installer/target/debug/hexbot-install.exe'), ['--headless', '--stable', '--yes', '--json'])
+  console.log(installOutput.stdout)
+  const installed = await waitJson(installerRunning, value => value.pid !== old.pid)
+  assert.equal(alive(old.pid), false, 'Headless installer update must stop the previous owned task instance')
+  selected = JSON.parse(await readFile(join(installHome, 'runtime/native-current.json'), 'utf8')).executable
+  assert.equal((await run(selected, ['version'])).stdout.trim(), nextVersion)
+  assert.equal(installed.executable, selected)
+  assert.equal(await lockState(), 'held')
+  const repairOutput = await run(resolve('backend/hexbot-installer/target/debug/hexbot-install.exe'), ['--repair', '--yes', '--json'])
+  console.log(repairOutput.stdout)
+  const repaired = await waitJson(installerRunning, value => value.pid !== installed.pid)
+  assert.equal(alive(installed.pid), false, 'Headless repair must replace the running owned task instance')
+  assert.equal(repaired.executable, selected)
+  await run(selected, ['service', 'stop'])
+  assert.equal(alive(repaired.pid), false)
+  assert.equal(await lockState(), 'free')
+  await run(selected, ['service', 'uninstall'])
+  console.log('Real Headless installer version update and repair changed PID and reaped the old task instance')
   console.log('Real version-changing signed ZIP update, old-process exit, task restart and updated job termination passed')
 } finally {
   socket?.close()

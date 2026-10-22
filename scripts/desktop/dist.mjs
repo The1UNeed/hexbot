@@ -88,8 +88,9 @@ if (process.platform === 'win32') {
   }
 }
 await run(pnpm, [...pnpmPrefix, 'run', client ? 'build:client' : 'build'])
-// Through pnpm so electron-builder detects pnpm and the workspace root; the
-// lockfile is at the repository root, not next to apps/desktop/package.json.
+// Through pnpm so electron-builder detects pnpm. Its Windows fallback finds
+// the root package.json workspaces field when its Unix `pwd` probe cannot run.
+// Keep that declaration in sync with pnpm-workspace.yaml.
 await run(pnpm, [
   ...pnpmPrefix,
   'exec',

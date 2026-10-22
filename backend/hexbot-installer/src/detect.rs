@@ -227,7 +227,7 @@ pub fn detect_at(paths: &Paths, target: Target) -> Result<Installed> {
                 }
             },
         wrapper: if target.is_windows() {
-            crate::windows_cli::owned(&paths.cli_wrapper(target), &paths.hexbot_home)
+            crate::windows_cli::removable(&paths.cli_wrapper(target), &paths.hexbot_home)
         } else {
             #[cfg(unix)]
             {

@@ -38,7 +38,10 @@ app EXE, `resources/app.asar` and the ownership marker packaged inside NSIS
 before writing its receipt. The download remains verified against the signed
 install manifest. That marker survives interruption
 between NSIS completion and receipt publication. Unmarked apps are not owned. Repair runs NSIS
-again. Uninstall runs the installed NSIS uninstaller before removing leftovers.
+again. The completion screen uses the receipt’s owned Windows app directory
+for its location and Open Hexbot action; the Tauri launcher validates ownership
+and the matching Full or Client executable again. Uninstall runs the installed
+NSIS uninstaller before removing leftovers.
 
 Native updates use a ZIP whose entrypoint is `hexbot.exe`. The daemon verifies
 the release signature and archive digest, rejects unsafe ZIP paths, links,
@@ -55,7 +58,9 @@ and `InteractiveToken`. Task state is read numerically, without localized
 status text. A hidden PowerShell wrapper reads the selected EXE for each run
 and waits for the old daemon to exit before starting an updated one. The new
 daemon stays inside the task's job. No breakaway child races the home lock. Stop/restart waits for both task state
-and the daemon home lock. Uninstall treats only the numeric task-not-found
+and the daemon home lock. Install and repair also stop an owned existing task
+and wait for that lock before replacing its script/XML and starting the selected
+runtime; updating a task definition alone would keep its old instance. Uninstall treats only the numeric task-not-found
 error as absent; foreign task actions/principals and permission errors fail.
 An interrupted owned script/XML install can therefore be removed even when
 task creation never finished.
@@ -63,7 +68,10 @@ A separate native forwarding component is installed as `.local/bin/hexbot.exe`,
 with a hash-bound home record in `hexbot.json`. It passes argv directly to the
 canonical selected daemon. It works from cmd and Restricted PowerShell without
 copying a stable daemon or requiring symlinks. Setup adds that directory to the
-user PATH; uninstall removes only an entry setup added. Existing terminals need
+user PATH; uninstall removes only an entry setup added. If an interrupted
+install or uninstall leaves only the validated home/hash sidecar, cleanup still
+removes that metadata and its recorded PATH entry. Foreign or malformed sidecars
+and unverified existing EXEs are left alone. Existing terminals need
 to reopen. A verified previous compatible forwarder can remain temporarily
 when Windows locks it during its own setup child; direct installer/Full setup
 refreshes it after that invocation exits. The old owned `.ps1` CLI is removed.
@@ -83,7 +91,8 @@ Pi and tunnel children use hidden-console spawn options.
 ## Verification and remaining gates
 
 `windows-contract.yml` publishes nothing and uses commit-pinned actions. Its
-Client job builds real NSIS and tests installation, repair and uninstall with
+Client job checks the pinned builder’s package-metadata workspace fallback
+and hook containment for both editions, then builds real NSIS and tests installation, repair and uninstall with
 a signed local manifest. The native job checks unchanged production source
 and requires Cargo's only error to be the exact unsupported-platform guard.
 Any other compiler error fails the job. The security stage's shared helper
@@ -124,7 +133,11 @@ NSIS, task, Electron GUI, job lifetime, console or standard-user behavior.
 Windows CI must pass on the combined implementation and security changes.
 The native matrix includes actual installed Client/Full GUI activation and a
 version-changing signed ZIP update between two debug fixture daemons, followed
-by task stop and process/home-lock assertions. The existing public test key
+by task stop and process/home-lock assertions. The same two versions also
+exercise the installer engine’s Headless update and repair path, checking that
+each replaces the old task PID and runs the selected version. Separate native
+installer probes cover config-only CLI cleanup and PATH retention for foreign
+or malformed sidecars. The existing public test key
 stays confined to debug builds; fixture versions use the version tool only in
 the disposable source and restore the original bytes. These checks and the
 security stage's standard-user probes must pass before any availability claim.

@@ -145,3 +145,107 @@ fn real_nsis_install_repair_and_uninstall() {
     let _ = TcpStream::connect(address);
     server.join().unwrap();
 }
+
+#[test]
+#[ignore = "changes PATH only on an explicitly disposable native CI user"]
+fn interrupted_cli_install_and_uninstall_clean_only_owned_metadata_and_path() {
+    use hexbot_installer::windows_cli;
+    use sha2::Sha256;
+    assert_eq!(
+        std::env::var("HEXBOT_WINDOWS_PATH_PROBE").as_deref(),
+        Ok("1")
+    );
+    assert_ne!(std::env::var("HEXBOT_CLI_NO_PATH").as_deref(), Ok("1"));
+    fn ps(script: &str) -> std::process::Output {
+        let output = std::process::Command::new(
+            std::path::Path::new(&std::env::var_os("SystemRoot").unwrap())
+                .join("System32/WindowsPowerShell/v1.0/powershell.exe"),
+        )
+        .args(["-NoProfile", "-NonInteractive", "-Command", script])
+        .output()
+        .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        output
+    }
+    let query = r#"[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false);$k=[Microsoft.Win32.Registry]::CurrentUser.CreateSubKey('Environment');try{@{value=[string]$k.GetValue('Path','',[Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames);exists=($k.GetValueNames() -contains 'Path');kind=$(if($k.GetValueNames() -contains 'Path'){[int]$k.GetValueKind('Path')}else{2})}|ConvertTo-Json -Compress}finally{$k.Dispose()}"#;
+    let before: serde_json::Value = serde_json::from_slice(&ps(query).stdout).unwrap();
+    struct Restore(serde_json::Value);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            let value = self.0.to_string().replace('\'', "''");
+            ps(&format!(
+                "$v='{value}'|ConvertFrom-Json;$k=[Microsoft.Win32.Registry]::CurrentUser.CreateSubKey('Environment');try{{if($v.exists){{$k.SetValue('Path',[string]$v.value,[Microsoft.Win32.RegistryValueKind][int]$v.kind)}}else{{$k.DeleteValue('Path',$false)}}}}finally{{$k.Dispose()}}"
+            ));
+        }
+    }
+    let _restore = Restore(before.clone());
+    let root = tempfile::tempdir().unwrap();
+    let user = root.path().join("Jos\u{e9} CLI owner");
+    let home = user.join("state");
+    fs::create_dir_all(&home).unwrap();
+    let installer = Installer {
+        paths: Paths {
+            home: user.clone(),
+            hexbot_home: home.clone(),
+            apps_override: Some(root.path().join("apps")),
+            opt_override: None,
+            service_root: user.clone(),
+            service_no_load: true,
+        },
+        target: Target::WindowsX86_64,
+        base_url: "http://127.0.0.1:1".into(),
+    };
+    let cli = installer.paths.cli_wrapper(Target::WindowsX86_64);
+    fs::create_dir_all(cli.parent().unwrap()).unwrap();
+    let record = cli.with_extension("json");
+    let valid = json!({"schema":1,"home":home.canonicalize().unwrap(),"hashes":[format!("{:x}",Sha256::digest(b"trusted forwarder"))],"pathAdded":false});
+    // First install interrupted after ownership commit, before EXE/PATH.
+    fs::write(&record, valid.to_string()).unwrap();
+    installer.uninstall(false, &mut |_| {}).unwrap();
+    assert!(!record.exists());
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&ps(query).stdout).unwrap()["value"],
+        before["value"]
+    );
+    // Partial uninstall after EXE removal must still remove its recorded PATH.
+    let source = root.path().join("forwarder fixture");
+    fs::write(&source, b"trusted forwarder").unwrap();
+    windows_cli::install(&source, &home, cli.parent().unwrap()).unwrap();
+    windows_cli::register_path(&cli).unwrap();
+    fs::remove_file(&cli).unwrap();
+    assert!(windows_cli::removable(&cli, &home));
+    installer.uninstall(false, &mut |_| {}).unwrap();
+    assert!(!record.exists());
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&ps(query).stdout).unwrap()["value"],
+        before["value"]
+    );
+    // Another home can now install. It cannot be removed by the previous home.
+    let other_home = user.join("other state");
+    fs::create_dir(&other_home).unwrap();
+    windows_cli::install(&source, &other_home, cli.parent().unwrap()).unwrap();
+    fs::remove_file(&cli).unwrap();
+    let foreign = fs::read(&record).unwrap();
+    installer.uninstall(false, &mut |_| {}).unwrap();
+    assert_eq!(fs::read(&record).unwrap(), foreign);
+    windows_cli::remove(&cli, &other_home).unwrap();
+    for bad in [
+        b"not JSON".to_vec(),
+        json!({"schema":1,"home":home,"hashes":[],"pathAdded":true})
+            .to_string()
+            .into_bytes(),
+    ] {
+        fs::write(&record, &bad).unwrap();
+        installer.uninstall(false, &mut |_| {}).unwrap();
+        assert_eq!(fs::read(&record).unwrap(), bad);
+        assert!(!cli.exists());
+    }
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&ps(query).stdout).unwrap()["value"],
+        before["value"]
+    );
+}

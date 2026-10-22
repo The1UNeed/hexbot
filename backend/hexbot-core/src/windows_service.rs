@@ -236,6 +236,14 @@ pub async fn run(home: &Path, args: &[String]) -> Result<()> {
                     "Existing Windows task has no owned script; left it alone",
                 ));
             }
+            // Updating the task definition does not stop its current instance.
+            // IgnoreNew would otherwise retain the old selected runtime after
+            // setup/repair reports success. Validate and stop before replacing
+            // any owned script/XML, then wait for the daemon's home lock too.
+            if state != "missing" {
+                task_control(&name, &sid, &file, "stop").await?;
+                wait_stopped(home, &name, &sid, &file).await?;
+            }
         }
         fs::create_dir_all(home.join("logs"))?;
         write_owned_script(&file, home, true)?;

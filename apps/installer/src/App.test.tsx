@@ -2,7 +2,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-libra
 
 import type { Detection, InstallerApi, InstallResult, OnProgress } from './api'
 import { App } from './App'
-import { HeadlessDone } from './done'
+import { AppDone, HeadlessDone } from './done'
 
 vi.mock('@tauri-apps/api/core', () => ({
   Channel: class {},
@@ -567,4 +567,34 @@ it.each(['nightly', 'stable'] as const)('the Nightly toggle overrides the %s def
   click('Install Headless')
   await screen.findByText('Hexbot Headless is running')
   expect(api.apply).toHaveBeenCalledWith('headless', other, expect.any(Function))
+})
+
+
+it.each([['full', 'stable'], ['full', 'nightly'], ['client', 'stable'], ['client', 'nightly']] as const)('Windows %s %s completion opens only the matching receipt directory', async (option, channel) => {
+  const home = 'C:\\Users\\José User'
+  const apps = `${home}\\AppData\\Local\\Programs`
+  const id = `app.hexbot.${option === 'client' ? 'client' : 'desktop'}${channel === 'nightly' ? '.nightly' : ''}`
+  const app = `${apps}\\${id}`
+
+  const detection = { ...fresh, target: 'windows-x86_64', platform: 'windows/x86_64',
+    locations: { home, apps, cli: `${home}\\.local\\bin\\hexbot.exe`, hexbotHome: `${home}\\.hexbot` } }
+
+  const api = fakeApi(detection)
+
+  const result = { ...headlessResult(), receipt: { ...headlessResult().receipt, option, channel,
+    paths: [`${home}\\.hexbot\\runtime`, app] } }
+
+  render(<AppDone api={api} detection={detection} job={{ kind: 'repair', option }} notes={[]} result={result} />)
+  expect(screen.getByText(app)).toBeInTheDocument()
+  click('Open Hexbot')
+  await waitFor(() => expect(api.openApp).toHaveBeenCalledWith(app))
+  cleanup()
+
+  // A wrong edition, sibling directory or arbitrary EXE is not an app result.
+  for (const path of [`${apps}\\app.unrelated`, `${app}-other`, `${app}\\Hexbot.exe`]) {
+    render(<AppDone api={api} detection={detection} job={{ kind: 'repair', option }} notes={[]}
+      result={{ ...result, receipt: { ...result.receipt, paths: [path] } }} />)
+    expect(screen.queryByRole('button', { name: 'Open Hexbot' })).not.toBeInTheDocument()
+    cleanup()
+  }
 })

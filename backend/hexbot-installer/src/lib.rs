@@ -327,7 +327,7 @@ impl Installer {
         // `hexbot setup` marks the wrapper it writes; leave anyone else's `hexbot`.
         let wrapper = self.paths.cli_wrapper(self.target);
         let wrapper_owned = if self.target.is_windows() {
-            windows_cli::owned(&wrapper, &self.paths.hexbot_home)
+            windows_cli::removable(&wrapper, &self.paths.hexbot_home)
         } else {
             #[cfg(unix)]
             {
