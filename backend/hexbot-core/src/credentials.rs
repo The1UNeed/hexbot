@@ -383,7 +383,9 @@ pub fn platform() -> Platform {
 /// and on Unix a command whose processes cannot be capped does not run.
 pub const fn confined_refusal(platform: Platform) -> &'static str {
     match platform {
-        Platform::Windows => "The Windows sandbox is unavailable, so this command cannot run inside it. Retry with full_access and a reason.",
+        Platform::Windows => {
+            "The Windows sandbox is unavailable, so this command cannot run inside it. Retry with full_access and a reason."
+        }
         Platform::Unix => "Hexbot could not cap processes for the sandbox.",
     }
 }
