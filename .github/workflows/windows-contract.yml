@@ -86,13 +86,13 @@ jobs:
         working-directory: ${{ env.HEXBOT_WINDOWS_PROBE_SOURCE }}
         env:
           HEXBOT_WINDOWS_SERVICE_PROBE: '1'
-        run: cargo test --locked --manifest-path backend/hexbot-core/Cargo.toml --test windows_launchers interrupted_task_install -- --ignored --nocapture
+        run: node scripts/dev/run-one-rust-test.mjs backend/hexbot-core/Cargo.toml windows_launchers interrupted_task_install_uninstalls_owned_files_when_the_task_is_absent
       - name: Validate per-user CLI PATH registration on the disposable CI user
         working-directory: ${{ env.HEXBOT_WINDOWS_PROBE_SOURCE }}
         env:
           HEXBOT_CLI_NO_PATH: '0'
           HEXBOT_WINDOWS_PATH_PROBE: '1'
-        run: cargo test --locked --manifest-path backend/hexbot-core/Cargo.toml --test windows_launchers user_path_registration -- --ignored --nocapture
+        run: node scripts/dev/run-one-rust-test.mjs backend/hexbot-core/Cargo.toml windows_launchers user_path_registration_preserves_existing_entries_and_removes_only_its_own
       - name: Recover interrupted CLI metadata and PATH through the installer engine
         working-directory: ${{ env.HEXBOT_WINDOWS_PROBE_SOURCE }}
         env:
@@ -109,7 +109,9 @@ jobs:
           $env:HEXBOT_NATIVE_TEST_BUNDLE = (Resolve-Path apps/desktop/resources/hexbot-native).Path
           pnpm --filter ./apps/desktop run test --run src/main/backend/windows-bootstrap.test.ts src/main/backend/windows-paths.test.ts
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          cargo test --locked --manifest-path backend/hexbot-core/Cargo.toml --test windows_pi --test windows_shutdown -- --ignored --nocapture
+          node scripts/dev/run-one-rust-test.mjs backend/hexbot-core/Cargo.toml windows_pi real_pi_process_uses_absolute_node_launcher_and_windows_environment
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node scripts/dev/run-one-rust-test.mjs backend/hexbot-core/Cargo.toml windows_shutdown owned_desktop_pipe_quit_and_restart_clean_up_real_pi_and_home_lock
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           node scripts/desktop/windows-runtime-smoke.mjs
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

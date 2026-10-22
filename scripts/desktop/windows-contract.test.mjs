@@ -61,7 +61,7 @@ test('Windows CI keeps the production guard and never publishes disposable probe
   assert(ci.includes('windows-update-restart.mjs'))
   assert(ci.includes('windows-installed-app-smoke.mjs'))
   assert(ci.includes('windows-paths.test.ts'))
-  assert(ci.includes('--test windows_pi --test windows_shutdown -- --ignored'))
+  for (const name of ['real_pi_process_uses_absolute_node_launcher_and_windows_environment', 'owned_desktop_pipe_quit_and_restart_clean_up_real_pi_and_home_lock', 'user_path_registration_preserves_existing_entries_and_removes_only_its_own', 'interrupted_task_install_uninstalls_owned_files_when_the_task_is_absent']) assert(ci.includes(name))
   assert(!ci.slice(ci.indexOf('  native-runtime:')).includes('upload-artifact'))
   const release = await readFile('.github/workflows/release.yml', 'utf8')
   assert(!release.includes('windows-latest'))
