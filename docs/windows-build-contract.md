@@ -34,8 +34,9 @@ race-free hard-link boundary or change permissions on legacy Python files.
 
 Full NSIS artifacts begin with `Hexbot-`; Client artifacts begin with
 `HexbotClient-`. The installer runs NSIS, waits for it, and checks the expected
-app EXE, `resources/app.asar` and the ownership marker included in the signed
-NSIS payload before writing its receipt. That marker survives interruption
+app EXE, `resources/app.asar` and the ownership marker packaged inside NSIS
+before writing its receipt. The download remains verified against the signed
+install manifest. That marker survives interruption
 between NSIS completion and receipt publication. Unmarked apps are not owned. Repair runs NSIS
 again. Uninstall runs the installed NSIS uninstaller before removing leftovers.
 
