@@ -451,10 +451,7 @@ fn user_path_registration_preserves_existing_entries_and_removes_only_its_own() 
         fs::create_dir_all(&native).unwrap();
         fs::create_dir_all(&bin).unwrap();
         fs::copy(env!("CARGO_BIN_EXE_hexbot"), native.join("hexbot.exe")).unwrap();
-        let node = std::path::PathBuf::from(
-            std::env::var_os("HEXBOT_WINDOWS_SERVICE_NODE").expect("trusted running CI Node"),
-        );
-        assert!(node.is_absolute() && node.is_file());
+
         fs::copy(&node, native.join("node.exe")).unwrap();
         let pi = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../pi-runtime/node_modules/@earendil-works/pi-coding-agent/dist/cli.js")
@@ -837,6 +834,11 @@ fn interrupted_task_install_uninstalls_owned_files_when_the_task_is_absent() {
     let native = home.join("runtime/native/build");
     fs::create_dir_all(&native).unwrap();
     fs::copy(env!("CARGO_BIN_EXE_hexbot"), native.join("hexbot.exe")).unwrap();
+    let node = std::path::PathBuf::from(
+        std::env::var_os("HEXBOT_WINDOWS_SERVICE_NODE").expect("trusted running CI Node"),
+    );
+    assert!(node.is_absolute() && node.is_file());
+
     fs::write(
         home.join("runtime/native-current.json"),
         json!({"executable":native.join("hexbot.exe")}).to_string(),
