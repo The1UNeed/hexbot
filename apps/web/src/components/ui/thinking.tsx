@@ -7,7 +7,8 @@ export interface ThinkingProps {
 /**
  * The live capsule for a bot whose turn has started but sent nothing yet,
  * as rooms show it before the first event. Same shape as the chat's live
- * status; the face beside the row bobs (`hex-think`), the capsule does not.
+ * status; the face beside the row wears its working mood, the capsule does
+ * not move.
  */
 export function Thinking({ label, name }: ThinkingProps) {
   return (

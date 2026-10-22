@@ -30,6 +30,7 @@ import {
 import { botFace } from '../../lib/avatar-builder'
 import { getBridge } from '../../lib/bridge'
 import { cn } from '../../lib/cn'
+import { moodForStatus } from '../../lib/face'
 import { NotConnectedError } from '../../lib/rpc'
 import { toMillis } from '../../lib/time'
 import type {
@@ -67,6 +68,7 @@ import { composerFieldClass, ComposerShell } from './composer'
 import { ContextMeter } from './context-meter'
 import { MemoryMarks } from './memory-marks'
 import { RoomConversation } from './room'
+import { liveMood } from './steps'
 import { visualsOf } from './visual'
 import { Visuals } from './visual-frame'
 import { WaitingBanner } from './waiting-banner'
@@ -540,9 +542,9 @@ export function MessageRow({
         showFace &&
         (bubbles.length > 0 || visuals.length > 0 || message.streaming) ? (
           <Avatar
-            className={cn('mt-1', message.streaming && 'hex-think')}
+            className="mt-1"
             {...botFace(bot)}
-            mood={message.streaming ? 'working' : undefined}
+            mood={liveMood(message)}
             name={name}
             size="sm"
           />
@@ -564,13 +566,7 @@ export function MessageRow({
               computer={!showFace}
               face={
                 showFace ? undefined : (
-                  <Avatar
-                    className="hex-think"
-                    {...botFace(bot)}
-                    mood="working"
-                    name={name}
-                    size="sm"
-                  />
+                  <Avatar {...botFace(bot)} mood={liveMood(message)} name={name} size="sm" />
                 )
               }
               message={message}
@@ -604,9 +600,7 @@ export function CheckingRow({ bot, transcript }: { bot?: Bot; transcript?: Trans
     <div className="flex pt-1">
       <LiveStatus
         computer
-        face={
-          <Avatar className="hex-think" {...botFace(bot)} mood="working" name={name} size="sm" />
-        }
+        face={<Avatar {...botFace(bot)} mood="working" name={name} size="sm" />}
         message={{ ...message, checking }}
         name={name}
       />
@@ -1777,13 +1771,7 @@ function BotConversation() {
           type="button"
         >
           <span className="relative shrink-0">
-            <Avatar
-              className={cn(status === 'working' && 'hex-think')}
-              {...botFace(bot)}
-              mood={status === 'working' ? 'working' : undefined}
-              name={name}
-              size="sm"
-            />
+            <Avatar {...botFace(bot)} mood={moodForStatus(status)} name={name} size="sm" />
             <StatusDot size="sm" status={status} />
           </span>
           <span className="shrink-0 truncate text-[length:var(--text-secondary)] font-semibold">
