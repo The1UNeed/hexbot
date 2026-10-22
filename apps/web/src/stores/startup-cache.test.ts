@@ -1,15 +1,18 @@
-import { IDBFactory, IDBKeyRange } from 'fake-indexeddb'
+import { IDBDatabase, IDBFactory, IDBKeyRange } from 'fake-indexeddb'
 
 import type * as api from '../lib/api'
 import {
   messagesFromHistory,
   roomsGet,
+  roomsList,
   roomsLog,
   roomsMarkRead,
+  sectionsList,
   sectionsOpen,
   sessionHistory
 } from '../lib/api'
 import { KICKOFF_MARKER } from '../lib/bot-kickoff'
+import * as deviceCache from '../lib/device-cache'
 import {
   authorizeCache,
   boundedHistory,
@@ -25,8 +28,10 @@ import {
   resetDeviceCacheForTests,
   revokeCache,
   suspendCache,
+  syncHistory,
   writeCache
 } from '../lib/device-cache'
+import { routeEvent } from '../lib/events'
 import {
   clearPersonalState,
   keepRoster,
@@ -45,8 +50,10 @@ import { resetTranscriptEffects, setTranscriptEffects, useTranscripts } from './
 vi.mock('../lib/api', async original => ({
   ...(await original<typeof api>()),
   roomsGet: vi.fn(),
+  roomsList: vi.fn(),
   roomsLog: vi.fn(),
   roomsMarkRead: vi.fn(),
+  sectionsList: vi.fn(),
   sectionsOpen: vi.fn(),
   sessionHistory: vi.fn()
 }))
@@ -91,6 +98,7 @@ beforeEach(async () => {
 })
 afterEach(async () => {
   vi.useRealTimers()
+  vi.restoreAllMocks()
   stopRosterWrites()
   resetTranscriptEffects()
   await resetDeviceCacheForTests()
@@ -384,3 +392,231 @@ it('persists only verified room history and strips process IDs from the whole ro
   expect(snapshot?.bots[0]?.sections_recent?.[0]?.live_session_id).toBeNull()
   expect(snapshot?.bots[0]?.status).toBeUndefined()
 })
+
+it('bounds startup room log fetches, restores and persisted entries across a large roster', async () => {
+  const rooms = Array.from({ length: 45 }, (_, i) => ({
+    ...room,
+    id: `r${i}`,
+    last_activity_at: i,
+    updated_at: i
+  }))
+
+  await writeCache(scope, 'roster', { daemon: 'daemon', bots: [], me: null, sections: [], rooms })
+
+  for (const room of rooms) {
+    await writeCache(scope, `room:${room.id}`, [{ ...event(1), room_id: room.id }])
+  }
+
+  await restoreRoster(scope)
+  expect(Object.keys(useRooms.getState().eventsByRoom)).toHaveLength(20)
+  expect(Object.keys(useRooms.getState().logBaseline)).toHaveLength(20)
+
+  vi.mocked(roomsList).mockResolvedValue({ rooms })
+  vi.mocked(roomsLog).mockImplementation(async id => ({ events: [{ ...event(1), room_id: id }] }))
+  await useRooms.getState().refresh()
+  expect(useRooms.getState().order).toHaveLength(45)
+  expect(roomsLog).toHaveBeenCalledTimes(20)
+  expect(vi.mocked(roomsLog).mock.calls.map(([id]) => id)).toEqual(
+    rooms
+      .slice(-20)
+      .reverse()
+      .map(room => room.id)
+  )
+
+  // Repair old, unbounded caches and skip logs outside the recent set.
+
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+  keepRoster(scope)
+  await vi.advanceTimersByTimeAsync(500)
+  vi.useRealTimers()
+  await vi.waitFor(async () => expect(await readCache(scope, 'room:r0')).toBeUndefined())
+  stopRosterWrites()
+  clearPersonalState()
+  await restoreRoster(scope)
+  expect(useRooms.getState().order).toHaveLength(45)
+  expect(
+    Object.values(useRooms.getState().eventsByRoom).filter(events => events.length)
+  ).toHaveLength(20)
+  expect(Object.keys(useRooms.getState().logBaseline)).toHaveLength(20)
+  // An older room remains navigable and obtains its own verified baseline on demand.
+  vi.mocked(roomsGet).mockResolvedValueOnce({ room: rooms[0]! })
+  vi.mocked(roomsMarkRead).mockResolvedValueOnce({ room: rooms[0]! })
+  await useRooms.getState().open('r0')
+  expect(roomsLog).toHaveBeenLastCalledWith('r0', {
+    before_seq: Number.MAX_SAFE_INTEGER,
+    limit: 1000
+  })
+  expect(useRooms.getState().eventsByRoom.r0).toHaveLength(1)
+  expect(useRooms.getState().logBaseline.r0).toBe(1)
+})
+
+it.each([
+  ['commit', 'terminal'],
+  ['recency read', 'terminal'],
+  ['queued write', 'terminal'],
+  ['commit', 'reload'],
+  ['recency read', 'reload'],
+  ['queued write', 'reload']
+] as const)('rereads a snapshot invalidated during its %s by a %s', async (phase, reason) => {
+  useSections.setState({ byId: { s: section }, liveSessionId: { s: 'live' } })
+  useTranscripts.getState().open('live', 's', [])
+
+  const send = (type: string, text?: string) =>
+    routeEvent({
+      type,
+      session_id: 'live',
+      payload: { turn_id: 'turn', message_id: 'answer', text, status: 'complete' }
+    } as never)
+
+  send('message.start')
+  send('message.delta', 'Partial')
+  const transact = IDBDatabase.prototype.transaction
+  let terminalSent = false
+  let readonly = 0
+
+  const spy = vi.spyOn(IDBDatabase.prototype, 'transaction').mockImplementation(function (
+    this: IDBDatabase,
+    ...args
+  ) {
+    const tx = transact.apply(this, args)
+
+    if (args[1] === 'readonly') {
+      readonly++
+    }
+
+    const trigger = phase === 'recency read' ? readonly === 2 : args[1] === 'readwrite'
+
+    if (!terminalSent && trigger) {
+      tx.addEventListener(
+        'complete',
+        () => {
+          terminalSent = true
+
+          if (reason === 'terminal') {
+            send('message.complete', 'Final answer')
+            expect(useTranscripts.getState().bySession.live?.messages.at(-1)?.text).toBe(
+              'Final answer'
+            )
+          } else {
+            useSections.getState().forgetLive('s')
+          }
+        },
+        { once: true }
+      )
+    }
+
+    return tx
+  })
+
+  if (phase === 'queued write') {
+    const remember = deviceCache.rememberHistory
+    vi.spyOn(deviceCache, 'rememberHistory').mockImplementationOnce((...args) => {
+      // Put a real transaction ahead of the snapshot on the global write queue.
+      void writeCache(scope, 'blocker', true)
+
+      return remember(...args)
+    })
+  }
+
+  vi.mocked(sectionsOpen).mockResolvedValueOnce({
+    section,
+    busy: true,
+    messages: [row('question')]
+  })
+  vi.mocked(sectionsOpen).mockImplementationOnce(async () => {
+    if (phase !== 'commit') {
+      // Invalidation before the write transaction must skip the old snapshot entirely.
+      expect(await cachedHistory(scope, 's')).toBeUndefined()
+      expect(await readCache(scope, 'sections:recent')).toBeUndefined()
+    }
+
+    return {
+      section,
+      busy: false,
+      messages: [
+        row('question'),
+        {
+          role: 'assistant',
+          row_id: 'answer',
+          turn_id: 'turn',
+          text: 'Final answer'
+        }
+      ]
+    }
+  })
+  await useSections.getState().open('s')
+  spy.mockRestore()
+  expect(terminalSent).toBe(true)
+  expect(sectionsOpen).toHaveBeenCalledTimes(2)
+  expect(useTranscripts.getState().bySession.live?.messages.map(m => m.text)).toEqual([
+    'question',
+    'Final answer'
+  ])
+  expect((await cachedHistory<api.HistoryRow>(scope, 's'))?.rows.at(-1)?.text).toBe('Final answer')
+})
+
+it.each(['fetch', 'queued write', 'open'] as const)(
+  'does not resurrect a removed section from a late %s, even if listed again',
+  async phase => {
+    await rememberHistory(scope, 's', { rows: [row('private deleted chat')] })
+    useSections.setState({ byId: { s: section } })
+    const held = deferred<Awaited<ReturnType<typeof sessionHistory>>>()
+    const commit = deferred<void>()
+    const reachedCommit = deferred<void>()
+    const remember = deviceCache.rememberHistory
+
+    if (phase === 'queued write') {
+      vi.spyOn(deviceCache, 'rememberHistory').mockImplementationOnce(async (...args) => {
+        reachedCommit.resolve()
+        await commit.promise
+        await remember(...args)
+      })
+    }
+
+    let pending: Promise<unknown> | undefined
+
+    if (phase === 'open') {
+      vi.mocked(sectionsOpen).mockImplementationOnce(async () => {
+        await held.promise
+
+        return { section, messages: [row('private deleted chat')] }
+      })
+      pending = useSections.getState().open('s')
+      void pending.catch(() => undefined)
+      await vi.waitFor(() => expect(sectionsOpen).toHaveBeenCalledOnce())
+    } else {
+      vi.mocked(sessionHistory).mockReturnValueOnce(held.promise)
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+      keepHistory('s', 'live')
+      await vi.advanceTimersByTimeAsync(2000)
+      vi.useRealTimers()
+      await vi.waitFor(() => expect(sessionHistory).toHaveBeenCalledOnce())
+    }
+
+    if (phase === 'queued write') {
+      held.resolve({ messages: [row('private deleted chat')] })
+      await reachedCommit.promise
+    }
+
+    vi.mocked(sectionsList).mockResolvedValueOnce({ sections: [] })
+    await useSections.getState().refresh()
+    // Wait for the deletion, then make sure membership alone cannot revalidate old work.
+    await forgetHistory(scope, 's')
+    expect(await cachedHistory(scope, 's')).toBeUndefined()
+    vi.mocked(sectionsList).mockResolvedValueOnce({ sections: [section] })
+    await useSections.getState().refresh()
+    held.resolve({ messages: [row('private deleted chat')] })
+    commit.resolve()
+
+    if (pending) {
+      await expect(pending).rejects.toThrow()
+    }
+
+    // Join the complete serialized fetch/commit, including a skipped write.
+    await syncHistory(cacheAccess(), 's', async () => {})
+    expect(await cachedHistory(scope, 's')).toBeUndefined()
+    expect(await readCache(scope, 'sections:recent')).not.toContain('s')
+    expect(useSections.getState().liveSessionId.s).toBeUndefined()
+    expect(useTranscripts.getState().bySession.live).toBeUndefined()
+  }
+)

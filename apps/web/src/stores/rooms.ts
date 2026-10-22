@@ -86,6 +86,18 @@ function messageSeq(events: RoomEvent[]): number {
 }
 
 export const LOG_PAGE = 1000
+export const CACHED_ROOMS = 20
+
+/** Only recent active rooms need startup logs; opening any room still reads it. */
+export function recentRooms(rooms: Room[]): Room[] {
+  return rooms
+    .filter(room => !room.archived_at)
+    .sort(
+      (a, b) =>
+        (b.last_activity_at ?? b.updated_at ?? 0) - (a.last_activity_at ?? a.updated_at ?? 0)
+    )
+    .slice(0, CACHED_ROOMS)
+}
 
 /**
  * The last seq a log holds without a gap. A room's seqs count up by one and are
@@ -202,8 +214,10 @@ export const useRooms = create<RoomsState>((set, get) => ({
       const listed = rooms ?? []
       const active = listed.filter(room => !room.archived_at)
 
+      const hydrated = recentRooms(active)
+
       const logs = await Promise.all(
-        active.map(room =>
+        hydrated.map(room =>
           fetchLog(room.id, get().eventsByRoom[room.id] ?? [], get().logBaseline[room.id])
         )
       )
@@ -259,21 +273,32 @@ export const useRooms = create<RoomsState>((set, get) => ({
         }
       }
 
+      const updates = new Map(hydrated.map((room, index) => [room.id, logs[index]!]))
+
       set(state => ({
         ...indexRooms(listed),
         logBaseline: Object.fromEntries(
-          active.map((room, index) => [
-            room.id,
-            logs[index]!.latest
-              ? (logs[index]!.events[0]?.seq ?? 0)
-              : (state.logBaseline[room.id] ?? 0)
-          ])
+          active.flatMap(room => {
+            const update = updates.get(room.id)
+
+            const baseline = update?.latest
+              ? (update.events[0]?.seq ?? 0)
+              : state.logBaseline[room.id]
+
+            return baseline === undefined ? [] : [[room.id, baseline]]
+          })
         ),
         eventsByRoom: Object.fromEntries(
-          active.map((room, index) => [
-            room.id,
-            applyLog(state.eventsByRoom[room.id] ?? [], logs[index]!)
-          ])
+          active.flatMap(room => {
+            const update = updates.get(room.id)
+            const events = state.eventsByRoom[room.id]
+
+            return update
+              ? [[room.id, applyLog(events ?? [], update)]]
+              : events
+                ? [[room.id, events]]
+                : []
+          })
         ),
         liveTurnsByRoom,
         loading: false

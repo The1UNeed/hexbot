@@ -70,18 +70,24 @@ Cached sections and bot recents carry no live session IDs. Running turns, cards
 and activity are always read from the daemon. Chat routes still resolve the
 canonical chat, and every open performs its normal history read and pending-card
 reconciliation. The cache fills the wait after authorization, then the network
-snapshot replaces it using the existing input and fragment identities. Inputs
-submitted during a read cannot be matched to older occurrences by text alone.
+snapshot replaces it using the existing input and fragment identities. A retained
+transcript takes precedence over cached rows during reloads. Inputs submitted
+during a read cannot be matched to older occurrences by text alone.
 Cached and fresh history use the same projection to hide interrupted kickoff prompts.
 
 Each cached history keeps a recent suffix of at most 500 raw rows and 512 KiB
 of JSON, with an oversized row omitted. Older history remains on the daemon.
 Completed turns refresh kept histories after a two-second debounce. Whole
 read/fetch/write operations are serialized per connection and chat; cache writes
-alone would allow a slow old response to replace a newer snapshot. This client
-uses full-history reads, so it also works with daemons without history cursors.
+alone would allow a slow old response to replace a newer snapshot. Invalidation
+is checked again after persistence, and queued writes check it before committing.
+Removing a section invalidates its pending reads and writes, even if listed again.
+This client uses full-history reads, so it also works with daemons without history
+cursors.
 Room logs resume only from a verified contiguous baseline; a live event alone
-never establishes one. Their retained tail is bounded by the same row/byte caps.
+never establishes one. Startup fetches and restores logs for at most 20 recently
+active rooms; opening another room reads its log on demand. Persistence keeps only
+those 20 logs, with each retained tail bounded by the same row/byte caps.
 Each roster write prunes persisted logs for deleted, departed, and archived rooms,
 including rooms removed while the client was offline. Cleanup uses the active
 authorization generation, just like other cache writes.

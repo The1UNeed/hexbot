@@ -218,6 +218,16 @@ function withoutKey<T>(items: Record<string, T>, id: string): Record<string, T> 
   return next
 }
 
+/** Removal invalidates reads even if the same ID is subsequently listed again. */
+const removals = new Map<string, number>()
+
+function sectionRead(id: string): () => boolean {
+  const generation = removals.get(id)
+  const connected = connectionRead()
+
+  return () => connected() && removals.get(id) === generation
+}
+
 /** Update only chats this device already keeps, after a completed turn. */
 const keeping = new Map<string, ReturnType<typeof setTimeout>>()
 
@@ -227,6 +237,11 @@ export function keepHistory(sectionId: string, sessionId: string): void {
   if (!access) {
     return
   }
+
+  const activeSection = sectionRead(sectionId)
+
+  const current = () =>
+    cacheCurrent(access) && activeSection() && Boolean(useSections.getState().byId[sectionId])
 
   const key = JSON.stringify([access.scope, sectionId])
   clearTimeout(keeping.get(key))
@@ -240,21 +255,19 @@ export function keepHistory(sectionId: string, sessionId: string): void {
         .catch(() => undefined)
         .then(() =>
           syncHistory(access, sectionId, async () => {
-            if (!cacheCurrent(access)) {
+            if (!current()) {
               return
             }
 
             const cached = await cachedHistory(access.scope, sectionId)
 
-            if (!cached || !cacheCurrent(access)) {
+            if (!cached || !current()) {
               return
             }
 
             const { messages } = await sessionHistory(sessionId)
 
-            if (cacheCurrent(access)) {
-              await rememberHistory(access.scope, sectionId, { rows: messages ?? [] })
-            }
+            await rememberHistory(access.scope, sectionId, { rows: messages ?? [] }, current)
           })
         )
         .catch(() => undefined)
@@ -363,9 +376,16 @@ export const useSections = create<SectionsState>((set, get) => ({
 
     await Promise.all(
       [...opening.keys()].map(async id => {
+        const current = sectionRead(id)
         const cached = await cachedHistory<HistoryRow>(access.scope, id)
 
-        if (cached && cacheCurrent(access) && opening.has(id) && !get().liveSessionId[id]) {
+        if (
+          cached &&
+          current() &&
+          cacheCurrent(access) &&
+          opening.has(id) &&
+          !get().liveSessionId[id]
+        ) {
           set(state => ({
             cachedMessages: { ...state.cachedMessages, [id]: chatMessages(cached.rows) }
           }))
@@ -405,6 +425,7 @@ export const useSections = create<SectionsState>((set, get) => ({
 
         for (const id of Object.keys(get().byId)) {
           if (!listed.has(id)) {
+            removals.set(id, (removals.get(id) ?? 0) + 1)
             void forgetHistory(scope, id)
             set(state => ({ cachedMessages: withoutKey(state.cachedMessages, id) }))
           }
@@ -433,7 +454,7 @@ export const useSections = create<SectionsState>((set, get) => ({
 
     const { target, epoch, daemon } = useConnection.getState()
     const installation = daemon?.install_id
-    const activeRead = connectionRead()
+    const activeRead = sectionRead(id)
     const access = cacheAccess()
     const scope = access?.scope ?? null
 
@@ -498,25 +519,32 @@ export const useSections = create<SectionsState>((set, get) => ({
         throw new Error('The selected daemon changed. Open this chat again.')
       }
 
-      if ((reloads.get(id) ?? 0) !== asked) {
-        return read()
-      }
-
       const { busy, context, messages, pending_clarify, pending_requests, section } = result
       const live = section.live_session_id
 
-      if (live && terminals.get(live) !== completed.get(live)) {
+      const snapshotCurrent = () =>
+        current() &&
+        (reloads.get(id) ?? 0) === asked &&
+        (!live || terminals.get(live) === completed.get(live))
+
+      if (!snapshotCurrent()) {
         return read()
       }
 
       const authorized = cacheAccess()
 
       if (cacheCurrent(authorized)) {
-        await rememberHistory(authorized!.scope, id, { rows: messages ?? [] })
+        await rememberHistory(authorized!.scope, id, { rows: messages ?? [] }, snapshotCurrent)
       }
 
       if (!current()) {
         throw new Error('The selected daemon changed. Open this chat again.')
+      }
+
+      // Persistence can wait behind other writes or a transaction. Events
+      // crossing either await invalidate hydration just like the network read.
+      if (!snapshotCurrent()) {
+        return read()
       }
 
       if (live) {
@@ -772,6 +800,7 @@ useConnection.subscribe((next, previous) => {
   }
 
   if (changed) {
+    removals.clear()
     opening.clear()
 
     if (next.target !== previous.target) {

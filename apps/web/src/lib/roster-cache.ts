@@ -1,7 +1,7 @@
 /** The authorized daemon's roster and recent room logs. Never restored before auth. */
 import { selectBotList, useBots } from '../stores/bots'
 import { useMe } from '../stores/me'
-import { applyLog, LOG_PAGE, useRooms } from '../stores/rooms'
+import { applyLog, LOG_PAGE, recentRooms, useRooms } from '../stores/rooms'
 import { useSections } from '../stores/sections'
 import { useTranscripts } from '../stores/transcripts'
 
@@ -66,8 +66,10 @@ export async function restoreRoster(scope: null | string): Promise<void> {
     return
   }
 
+  const recent = recentRooms(snapshot.rooms)
+
   const logs = await Promise.all(
-    snapshot.rooms.map(room => readCache<RoomEvent[]>(scope, `room:${room.id}`))
+    recent.map(room => readCache<RoomEvent[]>(scope, `room:${room.id}`))
   )
 
   if (!cacheCurrent(access)) {
@@ -96,7 +98,7 @@ export async function restoreRoster(scope: null | string): Promise<void> {
     useRooms.getState().restore(
       snapshot.rooms.map(restingRoom),
       Object.fromEntries(
-        snapshot.rooms.map((room, i) => [
+        recent.map((room, i) => [
           room.id,
           applyLog(logs[i] ?? [], {
             events: useRooms.getState().eventsByRoom[room.id] ?? [],
@@ -105,7 +107,7 @@ export async function restoreRoster(scope: null | string): Promise<void> {
         ])
       ),
       Object.fromEntries(
-        snapshot.rooms.flatMap((room, i) => (logs[i]?.length ? [[room.id, logs[i]![0]!.seq]] : []))
+        recent.flatMap((room, i) => (logs[i]?.length ? [[room.id, logs[i]![0]!.seq]] : []))
       )
     )
   }
@@ -149,8 +151,12 @@ export function keepRoster(scope: null | string): void {
       sections: Object.values(useSections.getState().byId).map(restingSection)
     } satisfies RosterSnapshot)
 
-    for (const [id, events] of Object.entries(rooms.eventsByRoom)) {
-      if (written.get(id) !== events && rooms.logBaseline[id] !== undefined) {
+    const kept = recentRooms(Object.values(rooms.byId)).map(room => room.id)
+
+    for (const id of kept) {
+      const events = rooms.eventsByRoom[id]
+
+      if (events && written.get(id) !== events && rooms.logBaseline[id] !== undefined) {
         written.set(id, events)
         // Persist only the verified contiguous tail, never a lone live event.
         const start = rooms.logBaseline[id]!
@@ -169,15 +175,12 @@ export function keepRoster(scope: null | string): void {
     }
 
     for (const id of written.keys()) {
-      if (!(id in rooms.eventsByRoom)) {
+      if (!kept.includes(id)) {
         written.delete(id)
       }
     }
 
-    void pruneRoomLogs(
-      scope,
-      rooms.order.filter(id => rooms.byId[id] && !rooms.byId[id]!.archived_at)
-    )
+    void pruneRoomLogs(scope, kept)
   }
 
   const schedule = () => {

@@ -1255,7 +1255,7 @@ function BotConversation() {
   }
 
   const messages = useMemo<TranscriptMessage[]>(
-    () => (ready || kept ? [...(cached ?? []), ...(transcript?.messages ?? [])] : []),
+    () => (ready || kept ? (transcript?.messages ?? cached ?? []) : []),
     [ready, kept, cached, transcript?.messages]
   )
 

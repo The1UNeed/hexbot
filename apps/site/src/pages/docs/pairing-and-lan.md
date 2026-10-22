@@ -48,7 +48,9 @@ The daemon owner can view paired devices in settings and revoke any device. Revo
 The app and browser keep the roster and a bounded recent history on this device
 to shorten the wait when opening a conversation. They show it only after a new
 connection signs in and verifies the daemon. A fresh offline launch waits for
-that check. Older messages remain on the daemon and load when it answers.
+that check. It keeps up to 50 chat histories and logs for the 20 most recently
+active rooms, each capped at 500 rows and 512 KiB. Other room logs and older
+messages remain on the daemon and load when you open the conversation.
 
 When this device learns that its access was revoked, it clears the kept roster,
 user details, room logs, and chat history. Pair it again to restore access.

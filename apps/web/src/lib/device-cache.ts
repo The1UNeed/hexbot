@@ -240,7 +240,8 @@ export function boundedHistory<Row>(rows: Row[]): Row[] {
 export function rememberHistory(
   scope: null | string,
   id: string,
-  history: CachedHistory
+  history: CachedHistory,
+  valid: () => boolean = () => true
 ): Promise<void> {
   if (!scope) {
     return Promise.resolve()
@@ -251,7 +252,7 @@ export function rememberHistory(
   const rows = boundedHistory(history.rows)
 
   return queue(async () => {
-    const current = () => cacheCurrent(access)
+    const current = () => cacheCurrent(access) && valid()
     const read = await run<string[]>('readonly', store => store.get([scope, RECENT_KEY]), current)
 
     if (!current()) {
