@@ -81,7 +81,7 @@ jobs:
         run: cargo clippy --locked --manifest-path backend/hexbot-core/Cargo.toml --lib --bins -- -D warnings
       - name: Run native Unicode, junction, service logs and security regressions
         working-directory: ${{ env.HEXBOT_WINDOWS_PROBE_SOURCE }}
-        run: cargo test --locked --manifest-path backend/hexbot-core/Cargo.toml --test windows_launchers --test windows_contract -- --nocapture
+        run: cargo test --locked --manifest-path backend/hexbot-core/Cargo.toml --test windows_launchers --test windows_contract --test windows_shutdown -- --nocapture
       - name: Recover an interrupted owned task install without claiming foreign files
         working-directory: ${{ env.HEXBOT_WINDOWS_PROBE_SOURCE }}
         env:

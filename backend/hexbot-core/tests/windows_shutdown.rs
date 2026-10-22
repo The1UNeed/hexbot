@@ -177,3 +177,48 @@ impl Drop for ProcessHandle {
         }
     }
 }
+
+#[tokio::test]
+async fn native_tunnel_worker_cleanup_reaps_and_can_restart_its_metrics_process() {
+    let root = tempfile::tempdir().unwrap();
+    let binary = root.path().join("trusted tunnel fixture.exe");
+    let record = root.path().join("tunnel.pid");
+    let source = format!(
+        r#"public class Tunnel {{ public static void Main(string[] args) {{
+int at = System.Array.IndexOf(args, "--metrics"); int port = int.Parse(args[at+1].Split(':')[1]);
+System.IO.File.WriteAllText(@"{}", System.Diagnostics.Process.GetCurrentProcess().Id.ToString());
+var listener = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, port); listener.Start();
+while (true) {{ using (var client = listener.AcceptTcpClient()) {{
+client.ReceiveTimeout = 15000; var stream = client.GetStream(); string request = "";
+while (request.Length < 8192 && !request.EndsWith("\r\n\r\n")) {{ int value = stream.ReadByte(); if (value < 0) break; request += (char)value; }}
+var bytes = System.Text.Encoding.ASCII.GetBytes("HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"); stream.Write(bytes, 0, bytes.Length); }} }}
+}} }}"#,
+        record.to_string_lossy().replace('"', "\"\"")
+    );
+    let quote = |value: &str| format!("'{}'", value.replace('\'', "''"));
+    let compile = Command::new(
+        windows_paths::system_program("WindowsPowerShell/v1.0/powershell.exe").unwrap(),
+    )
+    .args([
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        &format!(
+            "Add-Type -TypeDefinition {} -OutputAssembly {} -OutputType ConsoleApplication",
+            quote(&source),
+            quote(&binary.to_string_lossy())
+        ),
+    ])
+    .output()
+    .await
+    .unwrap();
+    assert!(
+        compile.status.success(),
+        "{}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+    let home = root.path().join("state");
+    fs::create_dir(&home).unwrap();
+    hexbot_core::services::windows_contract_tests::tunnel_worker_cleanup(&home, &binary, &record)
+        .await;
+}

@@ -113,7 +113,9 @@ the activation-lock rollback floor and both service log streams. Dedicated
 probes also cover Restricted PowerShell/CMD argument propagation, real 8.3
 aliases where the volume supplies them, interrupted task cleanup, foreign
 actions, Tauri app detachment, and owned Full quit/EOF/force cleanup with a real
-Runtime-owned Pi child and a descendant. A volume without distinct 8.3 names
+Runtime-owned Pi child and a descendant. A separate native supervisor probe
+starts/stops a local tunnel metrics fixture twice through real services cleanup.
+It does not prove live Cloudflare enrollment. A volume without distinct 8.3 names
 reports that case as unproved.
 
 A cross-compile on macOS is only a compile check. It cannot establish native

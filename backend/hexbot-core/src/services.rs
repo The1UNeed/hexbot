@@ -2731,6 +2731,65 @@ pub mod windows_contract_tests {
     pub fn publication_floor() {
         assert_publication_floor_contract();
     }
+    // Native-only worker-lifetime fixture. It uses the real supervisor/cleanup
+    // with a local metrics EXE and loopback Connect, never a real registration.
+    pub async fn tunnel_worker_cleanup(home: &Path, binary: &Path, pid_file: &Path) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let router = axum::Router::new().fallback(|| async { axum::Json(json!({})) });
+        let server = tokio::spawn(async move {
+            axum::serve(listener, router).await.unwrap();
+        });
+        let config: ConnectConfig = serde_json::from_value(json!({"api_base":format!("http://{address}"),"daemon_id":"fixture","daemon_token":"fixture","owner_id":"local","issuer":format!("http://{address}"),"keys":[{}]})).unwrap();
+        let service = service(home).await.unwrap();
+        for _ in 0..2 {
+            let mut changed = service.changed.subscribe();
+            run_tunnel(
+                home,
+                9119,
+                service.clone(),
+                config.clone(),
+                binary.to_owned(),
+                TunnelTiming {
+                    poll: Duration::from_millis(50),
+                    ready_timeout: Duration::from_secs(60),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+            let ready = tokio::time::timeout(Duration::from_secs(60), async {
+                loop {
+                    if service.data.lock().await.running {
+                        break;
+                    }
+                    changed.changed().await.unwrap();
+                }
+            })
+            .await;
+            let pid = fs::read_to_string(pid_file)
+                .ok()
+                .and_then(|value| value.parse::<u32>().ok());
+            let was_alive = pid.is_some_and(crate::osutil::process_alive);
+            shutdown(home).await.unwrap();
+            assert!(ready.is_ok(), "Native tunnel fixture did not become ready");
+            assert!(was_alive, "No actual supervised tunnel fixture process");
+            assert!(
+                !crate::osutil::process_alive(pid.unwrap()),
+                "Tunnel survived services::shutdown"
+            );
+            // Windows cannot rename an open child log with these sharing flags.
+            let log = home.join("logs/cloudflared.log");
+            let old = home.join("logs/closed-cloudflared.log");
+            if old.exists() {
+                fs::remove_file(&old).unwrap();
+            }
+            fs::rename(log, old).unwrap();
+        }
+        server.abort();
+        let _ = server.await;
+    }
+
     pub async fn windows_contract_signed_zip_update_and_connect_executable() {
         use axum::{
             Router, body::Body, extract::Path as RoutePath, http::StatusCode, response::Response,

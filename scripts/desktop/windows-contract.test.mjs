@@ -52,7 +52,7 @@ test('Windows CI keeps the production guard and never publishes disposable probe
   assert(ci.includes('check-windows-unsupported.mjs'))
   assert(ci.includes('prepare-windows-security.mjs'))
   assert(ci.includes('--test windows_contract -- --ignored'))
-  assert(ci.includes('--test windows_launchers --test windows_contract'))
+  assert(ci.includes('--test windows_launchers --test windows_contract --test windows_shutdown'))
   assert(ci.includes('--test windows_security --no-run --message-format=json'))
   assert(ci.includes('windows-security-standard-user.ps1'))
   assert(!ci.includes('--example windows_contract'))
