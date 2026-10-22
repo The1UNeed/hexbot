@@ -844,10 +844,17 @@ async function submitOrReopen(
 
         const status = unavailable ? 'unavailable' : rejected ? 'rejected' : 'unknown'
 
+        // Sending the same empty text again would be refused the same way.
+        const retryable = !(
+          failure instanceof JsonRpcGatewayError &&
+          failure.code === 4200 &&
+          !text
+        )
+
         const detail =
           status === 'unknown'
-            ? `${message}. Could not confirm acceptance. Check the chat before sending again.`
-            : status === 'unavailable'
+            ? `${message}. It may not have been sent. Check the chat before sending again.`
+            : status === 'unavailable' && (files.length || uploads.length)
               ? `${message}. Attach the files again before sending.`
               : message
 
@@ -856,7 +863,7 @@ async function submitOrReopen(
           pending.submission?.row ?? pending.id,
           pending.inputId,
           status,
-          status === 'rejected' ? staged : null,
+          status === 'rejected' && retryable ? staged : null,
           current() ? detail : undefined
         )
       } else if (current()) {
@@ -979,12 +986,12 @@ function Composer({
         draftsActions().clear(sectionId)
       }
     } catch (error) {
+      // An upload failed, so nothing was sent. The files stay in the composer,
+      // and a turn already running keeps its stream and Stop.
       if (current()) {
-        transcriptActions().errorEvent(
+        transcriptActions().requestFailed(
           sessionId,
-          `${error instanceof Error ? error.message : String(error)}. Attach the files again before sending.`,
-          undefined,
-          null
+          error instanceof Error ? error.message : String(error)
         )
       }
     } finally {
@@ -1523,9 +1530,10 @@ function BotConversation() {
       return undefined
     }
 
-    // Older daemons keep their original RPC shape and retry behavior.
+    // Older daemons keep their original RPC shape and retry behavior. A card
+    // for a request, such as an upload that failed, has nothing to send again.
     if (!identified) {
-      if (messages.some(message => message.submission)) {
+      if (card.request || messages.some(message => message.submission)) {
         return undefined
       }
 
@@ -1536,7 +1544,10 @@ function BotConversation() {
           if (last) {
             void promptSubmit(liveId, last.text).catch(error => {
               if (canPrompt()) {
-                transcriptActions().errorEvent(liveId, String(error))
+                transcriptActions().requestFailed(
+                  liveId,
+                  error instanceof Error ? error.message : String(error)
+                )
               }
             })
           }

@@ -597,7 +597,7 @@ it.each([
   const view = await mount()
   await send(view)
   const card = await screen.findByTestId('stopped-card')
-  expect(card).toHaveTextContent('Could not confirm acceptance')
+  expect(card).toHaveTextContent('It may not have been sent')
   expect(retries()).toHaveLength(0)
   expect(delivered[0]!.files).toEqual(['plan.txt'])
   expect(staged.size).toBe(0)
@@ -613,9 +613,7 @@ it('does not trust a code property on an arbitrary transport error', async () =>
   answers = [Object.assign(new Error('Transport failed'), { code: 5201 })]
   const view = await mount()
   await send(view)
-  expect(await screen.findByTestId('stopped-card')).toHaveTextContent(
-    'Could not confirm acceptance'
-  )
+  expect(await screen.findByTestId('stopped-card')).toHaveTextContent('It may not have been sent')
   expect(retries()).toHaveLength(0)
   expect(submits()).toHaveLength(1)
 })
