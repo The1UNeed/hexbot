@@ -314,6 +314,22 @@ describe('settings', () => {
     expect(await screen.findByRole('status')).toHaveTextContent(/older than the app/)
   })
 
+  it('shows the Windows notice when the daemon runs on Windows without a sandbox', async () => {
+    useSettings.setState({ refresh: vi.fn().mockResolvedValue(undefined) })
+    vi.mocked(daemonInfo).mockResolvedValueOnce({
+      approvals: 'sandbox',
+      platform: 'windows',
+      sandbox: null,
+      version: '0.1.5'
+    } as DaemonInfo)
+    render(<ApprovalsSettings />)
+    const notice = await screen.findByRole('status')
+    expect(notice).toHaveTextContent(
+      'The Windows sandbox is unavailable, so Auto and Manual refuse local commands, code runs, and file tools, and scheduled scripts do not run.'
+    )
+    expect(notice).not.toHaveTextContent(/bubblewrap/i)
+  })
+
   it('applies a selected theme to the document', () => {
     render(<AppearanceSettings />)
     fireEvent.click(screen.getByRole('radio', { name: 'dark' }))
