@@ -232,6 +232,19 @@ async fn cards_settle_for_every_client_and_reads_list_what_still_waits() {
     let opened = open(&runtime, "alice").await;
     assert_eq!(opened["busy"], true);
     assert_eq!(opened["pending_requests"], json!(["approval-1"]));
+    let delta = runtime
+        .call(
+            "alice",
+            "hexbot.sections.open",
+            &json!({"id":"section-a","history_cursor":opened["history_cursor"]}),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(delta["history_delta"], true);
+    assert_eq!(delta["messages"], json!([]));
+    assert_eq!(delta["busy"], true);
+    assert_eq!(delta["pending_requests"], json!(["approval-1"]));
     call(
         "approval.respond",
         json!({"request_id":"approval-1","choice":"once"}),
