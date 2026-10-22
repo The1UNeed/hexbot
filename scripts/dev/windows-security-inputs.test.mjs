@@ -1,9 +1,10 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {execFileSync} from 'node:child_process';
-import {mkdtempSync, mkdirSync, writeFileSync, rmSync} from 'node:fs';
+import {mkdtempSync, mkdirSync, writeFileSync, rmSync, symlinkSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
+import {fileURLToPath} from 'node:url';
 import {selectInputs} from './windows-security-inputs.mjs';
 
 test('immutable routing supports security-only, combined, and squash trees without stale pins', () => {
@@ -25,5 +26,12 @@ test('immutable routing supports security-only, combined, and squash trees witho
     const selected = selectInputs(repo, squash, missing, git);
     assert.equal(selected.buildSHA, squash); assert.equal(selected.securitySHA, squash);
     assert.equal(selected.guardedTree, run(['rev-parse', `${squash}^{tree}`]));
+    // Invoke the real CLI through an alias, as /var vs /private/var does on macOS.
+    const alias = join(repo, 'source-alias');
+    symlinkSync(fileURLToPath(new URL('.', import.meta.url)), alias, process.platform === 'win32' ? 'junction' : 'dir');
+    const stdout = execFileSync(process.execPath, [join(alias, 'windows-security-inputs.mjs'), repo, squash, missing], {
+      encoding: 'utf8', env: {...process.env, HEXBOT_CI_GIT: git},
+    });
+    assert.deepEqual(JSON.parse(stdout), selected);
   } finally {rmSync(repo, {recursive: true, force: true});}
 });
