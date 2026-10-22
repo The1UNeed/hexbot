@@ -421,7 +421,7 @@ export function RoomConversation() {
                 {message ? <AskingRow message={message} sender={turn.bot} /> : null}
                 {clarifies.map(clarify => (
                   <CardRow bot={bot} key={clarify.requestId}>
-                    <ClarifyCard clarify={clarify} />
+                    <ClarifyCard bot={bot} clarify={clarify} />
                   </CardRow>
                 ))}
                 {approvals.map(approval => (

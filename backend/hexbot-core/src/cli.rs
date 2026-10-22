@@ -114,24 +114,20 @@ fn offline_lock(home: &Path) -> Result<std::fs::File> {
         options.mode(0o600);
     }
     let file = options.open(home.join("native-daemon.lock"))?;
-    #[cfg(unix)]
-    {
-        use std::os::fd::AsRawFd;
-        // A daemon holds the lock a moment before it answers, and so does a child process
-        // forked while the lock was open. Give either a second to settle.
-        for attempt in 0..20 {
-            if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
-                return Ok(file);
-            }
-            if attempt < 19 {
-                std::thread::sleep(Duration::from_millis(50));
-            }
+    // A daemon holds the lock a moment before it answers, and so does a child process
+    // forked while the lock was open. Give either a second to settle.
+    for attempt in 0..20 {
+        if file.try_lock().is_ok() {
+            return Ok(file);
         }
-        Err(Error::new(
-            4208,
-            "A daemon owns this home but its API is unreachable. Retry after it finishes starting or restarting.",
-        ))
+        if attempt < 19 {
+            std::thread::sleep(Duration::from_millis(50));
+        }
     }
+    Err(Error::new(
+        4208,
+        "A daemon owns this home but its API is unreachable. Retry after it finishes starting or restarting.",
+    ))
 }
 async fn socket(home: &Path) -> Result<Option<Socket>> {
     let state = match std::fs::read(home.join("serve-state.json")) {

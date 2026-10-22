@@ -28,7 +28,9 @@ data model. The native transport and event projection live in
   `session.steer` steers a healthy busy run. During Stop or manual compaction
   it waits before staging input; when idle it starts a fresh run. Close or
   process exit rejects a waiting steer with a session error.
-- History: `session.history {session_id}`, `session.events.since` on reconnect.
+- History: `session.history {session_id, history_cursor?}` → `{messages,
+  history_cursor: string, history_delta: boolean}`, using the same cursor
+  rules as `hexbot.sections.open`; `session.events.since` on reconnect.
 - Attachments: `image.attach_bytes {session_id, content_base64, filename}`,
   `file.attach {session_id, data_url, name}`, `pdf.attach {session_id, content_base64}`.
   `attachments.clear {session_id}` clears all unsubmitted attachments and removes
@@ -488,7 +490,8 @@ returned by `open`.
   another message. Cancelled or obsolete lookups do not save a choice.
 - `hexbot.sections.thread {bot, peer}` → `{section: Section | null}`: the
   caller's thread on `bot` whose sender is `peer`. It never creates one.
-- `hexbot.sections.open {id}` → `{section: Section, messages: [Message],
+- `hexbot.sections.open {id, history_cursor?}` → `{section: Section,
+  messages: [Message], history_cursor: string, history_delta: boolean,
   context: Context, pending_clarify?, busy, pending_requests}` (resumes the
   stored session on the bot's profile; idempotent if live). If the bot is waiting on an approval,
   the daemon sends its `approval.request` event again so a reloaded client
@@ -507,6 +510,21 @@ returned by `open`.
   the selected route and offer Retry, including when canonical resolution
   returns the same ID. Late replies from an obsolete route or daemon do not
   redirect the current view.
+
+Both history methods always return an opaque `history_cursor`. Keep it with
+exactly the displayed snapshot for that conversation on that daemon, then send
+it with the next read. If `history_delta` is true, append `messages` in order;
+an unchanged conversation returns an empty array. If false, replace the entire
+snapshot with `messages`. A read without a cursor returns the full history.
+The rows and returned cursor come from one database snapshot. The cursor
+survives a daemon restart. Edits, deletions, backfills, reordering and journal
+changes that hide or reveal messages invalidate it, so the next read returns
+full history. Malformed, unsupported, out-of-range or different-conversation
+cursors also return full history rather than an error. The cursor format is
+private; clients must not construct or interpret it. After a canonical chat
+replacement, resolve and open the new ID as above; an old conversation's cursor
+cannot make that replacement return a delta, even when message IDs were copied.
+Older daemons omit both cursor fields and always return full history.
 
 `Context = {tokens, window, compact_at, compacting, recounting, seq}` is how
 full the section's context is: Pi's own estimate of the tokens the next

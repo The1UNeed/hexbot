@@ -576,6 +576,29 @@ function receive(request) {
 
 #[cfg(unix)]
 #[tokio::test]
+async fn shutdown_allows_sigterm_cleanup_before_reaping() {
+    let fixture = Fixture::new(
+        "process.on('SIGTERM', () => { require('fs').writeFileSync('stopped', 'clean'); process.exit(0); }); function receive(request) { reply(request, {pid:process.pid}); }",
+    );
+    let (process, _events) = fixture.spawn();
+    let pid = process
+        .request(json!({"type":"ready"}), DEADLINE)
+        .await
+        .unwrap()
+        .data
+        .unwrap()["pid"]
+        .as_u64()
+        .unwrap();
+    process.shutdown().await.unwrap();
+    assert_eq!(
+        fs::read_to_string(fixture.options.working_dir.join("stopped")).unwrap(),
+        "clean"
+    );
+    assert_dead(pid).await;
+}
+
+#[cfg(unix)]
+#[tokio::test]
 async fn ignored_sigterm_is_forced_and_reaped_after_bounded_grace() {
     let fixture = Fixture::new(
         "process.on('SIGTERM', () => {}); setInterval(() => {}, 1000); function receive(request) { reply(request, {pid:process.pid}); }",

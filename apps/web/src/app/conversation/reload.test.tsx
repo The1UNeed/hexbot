@@ -105,13 +105,51 @@ beforeEach(() => {
 afterEach(() => {
   setActiveRpc(null)
   resetTranscriptEffects()
+  vi.unstubAllGlobals()
+})
+
+it('requests one background-only native reply notification even when Chromium reports visible', async () => {
+  const notify = vi.fn()
+  vi.stubGlobal('hexbot', { notify })
+  expect(document.hidden).toBe(false)
+  await useSections.getState().open('chat')
+  render(<ConversationColumn />)
+  expect(await screen.findByText('Previous conversation')).toBeVisible()
+  act(() => {
+    useTranscripts.setState(state => ({
+      bySession: {
+        ...state.bySession,
+        chat: { ...state.bySession.chat!, streamingMessageId: 'reply' }
+      }
+    }))
+  })
+  act(() => {
+    useTranscripts.setState(state => ({
+      bySession: {
+        ...state.bySession,
+        chat: { ...state.bySession.chat!, streamingMessageId: null }
+      }
+    }))
+  })
+  await waitFor(() =>
+    expect(notify).toHaveBeenCalledExactlyOnceWith({
+      backgroundOnly: true,
+      body: 'Previous conversation',
+      sectionId: 'chat',
+      title: 'Owl'
+    })
+  )
+  act(() =>
+    useBots.setState({ byName: { owl: { name: 'owl', display_name: 'Owl renamed' } as Bot } })
+  )
+  expect(notify).toHaveBeenCalledOnce()
 })
 
 it.each([false, true])(
   'loads the report after catalog refresh, mounted=%s, reusing the durable live ID',
   async mounted => {
     await useSections.getState().open('chat')
-    const view = render(<ConversationColumn />)
+    const view = await act(async () => render(<ConversationColumn />))
     expect(await screen.findByText('Previous conversation')).toBeVisible()
 
     if (!mounted) {
@@ -143,6 +181,35 @@ it('does not treat an initial catalog live ID as loaded chat history', async () 
   render(<ConversationColumn />)
   expect(await screen.findByText('Previous conversation')).toBeVisible()
   expect(opens()).toHaveLength(1)
+})
+
+it('rereads invalidated pending history before remounting without duplicating content', async () => {
+  const held = deferred()
+  let reads = 0
+  call.mockImplementation((method: string) =>
+    method === 'hexbot.sections.open' && ++reads === 2 ? held.promise : reply(method)
+  )
+  await useSections.getState().open('chat')
+  const view = render(<ConversationColumn />)
+  // Cached content is visible while the view's own read is still pending.
+  expect(await screen.findByText('Previous conversation')).toBeVisible()
+  await waitFor(() => expect(opens()).toHaveLength(2))
+  const pendingMount = useSections.getState().open('chat')
+  view.unmount()
+  texts.push('Dream report')
+  await act(async () => {
+    reload()
+    await useSections.getState().refresh()
+    await useSections.getState().chat('owl')
+    held.resolve(history(['Previous conversation']))
+    await pendingMount
+  })
+  // The invalidated pending read was followed by a fresh read for the report.
+  expect(opens()).toHaveLength(3)
+  await act(async () => render(<ConversationColumn />))
+  expect(opens()).toHaveLength(4)
+  expect(screen.getAllByText('Previous conversation')).toHaveLength(1)
+  expect(screen.getAllByText('Dream report')).toHaveLength(1)
 })
 
 it.each([false, true])(

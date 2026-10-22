@@ -113,22 +113,8 @@ fn mint(
         json!({"device_token": token, "device_id": id, "owner_id":owner, "daemon_name":daemon_name()}),
     )
 }
-fn hostname(bytes: &[u8]) -> Option<String> {
-    let length = bytes.iter().position(|b| *b == 0).unwrap_or(bytes.len());
-    (length > 0).then(|| String::from_utf8_lossy(&bytes[..length]).into_owned())
-}
 pub fn daemon_name() -> String {
-    let mut bytes = [0u8; 256];
-    // The buffer is valid for its entire length and is read only after gethostname returns.
-    if unsafe { libc::gethostname(bytes.as_mut_ptr().cast(), bytes.len()) } == 0
-        && let Some(name) = hostname(&bytes)
-    {
-        return name;
-    }
-    std::env::var("HOSTNAME")
-        .ok()
-        .filter(|name| !name.is_empty())
-        .unwrap_or_else(|| "Hexbot".into())
+    crate::osutil::hostname().unwrap_or_else(|| "Hexbot".into())
 }
 /// Main maps the pinned cloud owner to the daemon's owner. Spend and mint atomically.
 pub fn redeem_verified_grant(
@@ -373,10 +359,7 @@ pub fn call(home: &Path, caller: &str, method: &str, p: &Value) -> Option<Result
 mod hostname_tests {
     use super::*;
     #[test]
-    fn hostname_ignores_empty_results_and_stops_at_nul() {
-        assert_eq!(hostname(&[0; 256]), None);
-        assert_eq!(hostname(b"owl\0ignored"), Some("owl".into()));
-        assert_eq!(hostname(b"fox"), Some("fox".into()));
+    fn daemon_name_is_never_empty() {
         assert!(!daemon_name().is_empty());
     }
 }

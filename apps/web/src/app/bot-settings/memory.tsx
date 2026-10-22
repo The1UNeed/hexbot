@@ -2,6 +2,7 @@ import { Link, useNavigate } from '@tanstack/react-router'
 import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { Button } from '../../components/ui/button'
+import { confirm } from '../../components/ui/confirm'
 import { SkeletonLines } from '../../components/ui/skeleton'
 import { Switch } from '../../components/ui/switch'
 import { Textarea } from '../../components/ui/textarea'
@@ -406,7 +407,7 @@ function BotNotesBlock({ bot }: { bot: string }) {
   }
 
   const remove = async (date: string, expected: string) => {
-    if (pending.current || !window.confirm(deleteNotesQuestion(date, today))) {
+    if (pending.current || !(await confirm({ title: deleteNotesQuestion(date, today) }))) {
       return
     }
 
@@ -587,17 +588,18 @@ function DreamEntry({
               ))}
               <div className="sm:col-span-2">
                 <Button
-                  onClick={() => {
-                    if (
-                      window.confirm(
-                        'Restore the memory from before this dream? The current memory is kept in the log, so you can come back to it.'
-                      )
-                    ) {
-                      void dreamingRestore(dream.id)
-                        .then(result => onRestored(result.memory_md))
-                        .catch(cause => setError(errorText(cause)))
-                    }
-                  }}
+                  onClick={() =>
+                    void confirm({
+                      detail: 'The current memory is kept in the log, so you can come back to it.',
+                      title: 'Restore the memory from before this dream?'
+                    }).then(yes => {
+                      if (yes) {
+                        void dreamingRestore(dream.id)
+                          .then(result => onRestored(result.memory_md))
+                          .catch(cause => setError(errorText(cause)))
+                      }
+                    })
+                  }
                   size="sm"
                   variant="secondary"
                 >

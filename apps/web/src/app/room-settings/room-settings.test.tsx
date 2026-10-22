@@ -1,9 +1,10 @@
 import { JsonRpcGatewayError } from '@hermes/shared'
 import { act, fireEvent, render, renderHook, screen, waitFor, within } from '@testing-library/react'
 
+import { ConfirmHost } from '../../components/ui/confirm'
 import { useRoomOrLeave } from '../../lib/room-or-leave'
 import { setActiveRpc } from '../../lib/rpc'
-import type { Bot, Room } from '../../lib/types'
+import type { Bot, Room, RoomEvent } from '../../lib/types'
 import { useBots } from '../../stores/bots'
 import { useConnection } from '../../stores/connection'
 import { useMe } from '../../stores/me'
@@ -71,19 +72,156 @@ describe('room settings', () => {
     )
 
     setActiveRpc({ call } as never)
-    render(<RoomSettingsPanel room={two} />)
+    render(
+      <>
+        <RoomSettingsPanel room={two} />
+        <ConfirmHost />
+      </>
+    )
     expect(screen.getAllByTestId('room-member')).toHaveLength(2)
     fireEvent.click(screen.getAllByRole('button', { name: 'Remove' })[1]!)
     expect(call).not.toHaveBeenCalled()
-    const confirm = screen.getByRole('alertdialog')
+    const confirm = await screen.findByRole('alertdialog')
     expect(confirm).toHaveTextContent('Remove Writer from this room?')
-    fireEvent.click(within(confirm).getByRole('button', { name: 'Remove' }))
+    expect(confirm).toHaveTextContent('Its memory of the room stays with the bot.')
+    fireEvent.click(within(confirm).getByRole('button', { name: 'No' }))
+    await waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull())
+    expect(call).not.toHaveBeenCalled()
+    fireEvent.click(screen.getAllByRole('button', { name: 'Remove' })[1]!)
+    fireEvent.click(
+      within(await screen.findByRole('alertdialog')).getByRole('button', { name: 'Yes' })
+    )
 
     await waitFor(() =>
-      expect(call).toHaveBeenCalledWith('hexbot.rooms.remove_member', { bot: 'writer', id: 'r1' })
+      expect(call).toHaveBeenCalledWith('hexbot.rooms.remove_member', {
+        bot: 'writer',
+        id: 'r1',
+        keep_room: true
+      })
     )
     expect(navigate).not.toHaveBeenCalled()
   })
+
+  it.each(['before confirmation', 'during the RPC'])(
+    'preserves the room when another client removes a bot %s',
+    async timing => {
+      const two = room(['scout', 'writer'])
+      let current = two
+
+      const transcript: RoomEvent[] = [
+        {
+          actor_id: 'local',
+          actor_kind: 'human',
+          created_at: 0,
+          kind: 'message.user',
+          payload: { text: 'Keep this history' },
+          room_id: 'r1',
+          seq: 1
+        }
+      ]
+
+      useRooms.setState({
+        byId: { r1: two },
+        eventsByRoom: { r1: transcript },
+        liveTurnsByRoom: {},
+        order: ['r1']
+      })
+      let finishRemoval!: () => void
+
+      const call = vi.fn((method: string, params: { keep_room?: boolean }) => {
+        if (method === 'hexbot.rooms.get') {
+          return Promise.resolve({ room: current })
+        }
+
+        if (method === 'hexbot.rooms.remove_member') {
+          return new Promise((resolve, reject) => {
+            finishRemoval = () =>
+              params.keep_room
+                ? reject(
+                    new JsonRpcGatewayError('Removing the last bot deletes the room.', {
+                      code: 4216
+                    })
+                  )
+                : resolve({ room: { ...current, deleted: true } })
+          })
+        }
+
+        return Promise.reject(new Error(`unexpected ${method}`))
+      })
+
+      setActiveRpc({ call } as never)
+
+      function Settings() {
+        const currentRoom = useRooms(state => state.byId.r1)
+
+        return currentRoom ? <RoomSettingsPanel room={currentRoom} /> : null
+      }
+
+      render(
+        <>
+          <Settings />
+          <ConfirmHost />
+        </>
+      )
+      fireEvent.click(screen.getAllByRole('button', { name: 'Remove' })[1]!)
+      const confirmation = await screen.findByRole('alertdialog')
+      expect(confirmation).toHaveTextContent('Remove Writer from this room?')
+      expect(confirmation).not.toHaveTextContent('delete this room')
+
+      if (timing === 'before confirmation') {
+        current = room(['writer'])
+        act(() => useRooms.setState({ byId: { r1: current } }))
+      }
+
+      fireEvent.click(within(confirmation).getByRole('button', { name: 'Yes' }))
+      await waitFor(() =>
+        expect(call).toHaveBeenCalledWith('hexbot.rooms.remove_member', {
+          bot: 'writer',
+          id: 'r1',
+          keep_room: true
+        })
+      )
+      // The daemon sees the change even when this client has not received it.
+      current = room(['writer'])
+      await act(async () => finishRemoval())
+      expect(call).toHaveBeenCalledWith('hexbot.rooms.get', { id: 'r1' })
+      expect(screen.getByRole('alert')).toHaveTextContent('Removing the last bot deletes the room.')
+      expect(screen.getByText('1 bot and you.')).toBeVisible()
+      expect(useRooms.getState().byId.r1).toEqual(current)
+      expect(useRooms.getState().eventsByRoom.r1).toEqual(transcript)
+      expect(navigate).not.toHaveBeenCalled()
+      expect(screen.queryByRole('alertdialog')).toBeNull()
+
+      fireEvent.click(screen.getByRole('button', { name: 'Remove' }))
+      const deletion = await screen.findByRole('alertdialog')
+      expect(deletion).toHaveTextContent('Remove Writer and delete this room?')
+      expect(deletion).toHaveTextContent(
+        'The room, its transcript and the memory made from it go with it.'
+      )
+      fireEvent.click(within(deletion).getByRole('button', { name: 'No' }))
+      await waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull())
+      expect(
+        call.mock.calls.filter(([method]) => method === 'hexbot.rooms.remove_member')
+      ).toHaveLength(1)
+      expect(useRooms.getState().eventsByRoom.r1).toEqual(transcript)
+
+      fireEvent.click(screen.getByRole('button', { name: 'Remove' }))
+      fireEvent.click(
+        within(await screen.findByRole('alertdialog')).getByRole('button', { name: 'Yes' })
+      )
+      await waitFor(() =>
+        expect(call).toHaveBeenCalledWith('hexbot.rooms.remove_member', {
+          bot: 'writer',
+          id: 'r1',
+          keep_room: false
+        })
+      )
+      await act(async () => finishRemoval())
+      expect(navigate).toHaveBeenCalledWith({ to: '/' })
+      expect(useRooms.getState().byId.r1).toBeUndefined()
+      expect(useRooms.getState().eventsByRoom.r1).toBeUndefined()
+    }
+  )
 
   it('warns that removing the last bot deletes the room, then leaves it', async () => {
     const one = room(['scout'])
@@ -93,11 +231,17 @@ describe('room settings', () => {
       call: vi.fn(() => Promise.resolve({ room: { ...one, deleted: true } }))
     } as never)
 
-    render(<RoomSettingsPanel room={one} />)
+    render(
+      <>
+        <RoomSettingsPanel room={one} />
+        <ConfirmHost />
+      </>
+    )
     fireEvent.click(screen.getByRole('button', { name: 'Remove' }))
-    expect(screen.getByRole('alertdialog')).toHaveTextContent('deletes this room')
-    expect(screen.getByRole('alertdialog')).toHaveTextContent('The bot itself stays')
-    fireEvent.click(screen.getByRole('button', { name: 'Remove and delete room' }))
+    const confirm = await screen.findByRole('alertdialog')
+    expect(confirm).toHaveTextContent('Remove Scout and delete this room?')
+    expect(confirm).toHaveTextContent('The bot itself stays')
+    fireEvent.click(within(confirm).getByRole('button', { name: 'Yes' }))
 
     await waitFor(() => expect(navigate).toHaveBeenCalledWith({ to: '/' }))
     expect(useRooms.getState().byId.r1).toBeUndefined()
@@ -130,7 +274,12 @@ describe('room settings', () => {
     useRooms.setState({ byId: { r1: legacy }, order: ['r1'] })
     const call = vi.fn().mockResolvedValue({ left: true })
     setActiveRpc({ call } as never)
-    render(<RoomSettingsPanel room={legacy} />)
+    render(
+      <>
+        <RoomSettingsPanel room={legacy} />
+        <ConfirmHost />
+      </>
+    )
     expect(screen.queryByLabelText('Room name')).toBeNull()
     expect(screen.queryByText('Approval mode')).toBeNull()
 
@@ -141,15 +290,16 @@ describe('room settings', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Leave' }))
     expect(call).not.toHaveBeenCalled()
     expect(navigate).not.toHaveBeenCalled()
-    const confirmation = screen.getByRole('alertdialog')
-    expect(confirmation).toHaveTextContent('Leave this room? You can no longer read or post in it.')
-    fireEvent.click(within(confirmation).getByRole('button', { name: 'Cancel' }))
-    expect(screen.queryByRole('alertdialog')).toBeNull()
+    const confirmation = await screen.findByRole('alertdialog')
+    expect(confirmation).toHaveTextContent('Leave this room?')
+    expect(confirmation).toHaveTextContent('You can no longer read or post in it.')
+    fireEvent.click(within(confirmation).getByRole('button', { name: 'No' }))
+    await waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull())
     expect(call).not.toHaveBeenCalled()
     fireEvent.click(screen.getByRole('button', { name: 'Leave' }))
-    const leave = within(screen.getByRole('alertdialog')).getByRole('button', { name: 'Leave' })
-    expect(leave).toHaveClass('bg-danger')
-    fireEvent.click(leave)
+    fireEvent.click(
+      within(await screen.findByRole('alertdialog')).getByRole('button', { name: 'Yes' })
+    )
     await waitFor(() => expect(navigate).toHaveBeenCalledWith({ to: '/' }))
     expect(call).toHaveBeenCalledWith('hexbot.rooms.remove_member', { id: 'r1', user: 'bob' })
     expect(useRooms.getState().byId.r1).toBeUndefined()
@@ -160,18 +310,21 @@ describe('room settings', () => {
     ['member', 'off', true],
     ['admin', 'smart', true],
     [undefined, 'smart', true]
-  ] as const)('room approvals for role %s, mode %s offer Bypass: %s', async (role, approval_mode, bypass) => {
-    useMe.setState({ me: { display_name: 'Alex', id: 'local', role } })
-    render(<RoomSettingsPanel room={{ ...room(['scout']), approval_mode }} />)
-    const picker = screen.getByRole('combobox', { name: 'Room approval mode' })
-    fireEvent.click(picker)
-    expect(await screen.findByRole('option', { name: 'Auto' })).toBeVisible()
-    expect(screen.queryByRole('option', { name: 'Bypass' }) !== null).toBe(bypass)
+  ] as const)(
+    'room approvals for role %s, mode %s offer Bypass: %s',
+    async (role, approval_mode, bypass) => {
+      useMe.setState({ me: { display_name: 'Alex', id: 'local', role } })
+      render(<RoomSettingsPanel room={{ ...room(['scout']), approval_mode }} />)
+      const picker = screen.getByRole('combobox', { name: 'Room approval mode' })
+      fireEvent.click(picker)
+      expect(await screen.findByRole('option', { name: 'Auto' })).toBeVisible()
+      expect(screen.queryByRole('option', { name: 'Bypass' }) !== null).toBe(bypass)
 
-    if (approval_mode === 'off') {
-      expect(picker).toHaveTextContent('Bypass')
+      if (approval_mode === 'off') {
+        expect(picker).toHaveTextContent('Bypass')
+      }
     }
-  })
+  )
 
   it('deletes the room only after the name is typed back', async () => {
     const one = room(['scout'])

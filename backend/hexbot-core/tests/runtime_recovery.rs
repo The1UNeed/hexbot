@@ -431,6 +431,7 @@ fn latest_leaf_selects_branch_without_erasing_compacted_history_or_billed_calls(
     file(home.path(), &entries);
     reconcile(home.path());
     assert_eq!(texts(home.path()).len(), 4);
+    let (_, cursor, _) = store::history_since(home.path(), "chat", None).unwrap();
     assert_eq!(store::summarised_before(home.path(), "chat").unwrap(), None);
     entries.push(entry("new-u", Some("a"), user("new question", 5000)));
     entries.push(entry("new-a", Some("new-u"), assistant("new answer", 6000)));
@@ -457,6 +458,10 @@ fn latest_leaf_selects_branch_without_erasing_compacted_history_or_billed_calls(
         )
         .unwrap();
     assert_eq!(all, 6);
+    let (history, cursor, delta) =
+        store::history_since(home.path(), "chat", Some(&cursor)).unwrap();
+    assert!(!delta);
+    assert_eq!(history, store::history(home.path(), "chat").unwrap());
     entries.push(entry(
         "back",
         Some("old-a"),
@@ -474,6 +479,14 @@ fn latest_leaf_selects_branch_without_erasing_compacted_history_or_billed_calls(
             "returned to old branch"
         ]
     );
+    let (history, cursor, delta) =
+        store::history_since(home.path(), "chat", Some(&cursor)).unwrap();
+    assert!(!delta);
+    assert_eq!(history, store::history(home.path(), "chat").unwrap());
+    reconcile(home.path());
+    let (history, _, delta) = store::history_since(home.path(), "chat", Some(&cursor)).unwrap();
+    assert!(delta);
+    assert!(history.is_empty());
 }
 
 #[test]
