@@ -1,5 +1,6 @@
 import { strict as assert } from 'node:assert'
-import { execFile } from 'node:child_process'
+import { execFile, spawn } from 'node:child_process'
+import { once } from 'node:events'
 import { chmod, mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -200,4 +201,30 @@ test('failed publication keeps the verified staging tree and never publishes par
     assert.equal(await readFile(join(destination, 'manifest.json'), 'utf8'), 'verified')
     await assert.rejects(stat(staging), { code: 'ENOENT' })
   } finally { await rm(root, {recursive:true,force:true}) }
+})
+
+test('Windows publication refuses a live staging cwd and succeeds after its owned process exits', { skip: process.platform !== 'win32', timeout: 20000 }, async t => {
+  const root = await mkdtemp(join(tmpdir(), 'hexbot staging lock π '))
+  const staging = join(root, 'staging'); const destination = join(root, 'native')
+  await mkdir(staging); await writeFile(join(staging, 'manifest.json'), 'verified bytes')
+  const child = spawn(process.execPath, ['-e', "process.send('ready');process.on('message',()=>process.exit(0))"], { cwd: staging, windowsHide: true, signal: t.signal, stdio: ['ignore', 'ignore', 'inherit', 'ipc'] })
+  const closed = once(child, 'close')
+  try {
+    const ready = await Promise.race([once(child, 'message'), closed.then(status => { throw new Error(`Lock fixture exited before readiness: ${status}`) })])
+    assert.equal(ready[0], 'ready')
+    const errors = []; t.mock.method(console, 'error', (...args) => errors.push(args))
+    await assert.rejects(publishNativeRuntime(staging, destination), error => ['EPERM', 'EBUSY'].includes(error.code))
+    assert.equal(await readFile(join(staging, 'manifest.json'), 'utf8'), 'verified bytes')
+    await assert.rejects(stat(destination), { code: 'ENOENT' })
+    assert.equal(JSON.parse(errors[0][1]).staged.directory, true)
+    child.send('release')
+    assert.deepEqual(await closed, [0, null])
+    // A distinct operation after an explicit kernel/process event, no retry.
+    await publishNativeRuntime(staging, destination)
+    assert.equal(await readFile(join(destination, 'manifest.json'), 'utf8'), 'verified bytes')
+  } finally {
+    if (child.exitCode === null) child.kill()
+    await closed
+    await rm(root, {recursive:true,force:true})
+  }
 })
