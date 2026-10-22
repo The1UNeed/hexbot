@@ -22,11 +22,24 @@ describe('confirm', () => {
 
     expect(dialog).toHaveTextContent('Delete “General”?')
     expect(dialog).toHaveTextContent('Its history goes with it.')
+    expect(dialog).toHaveAccessibleName('Delete “General”?')
+    expect(dialog).toHaveAccessibleDescription('Its history goes with it.')
     const buttons = within(dialog).getAllByRole('button')
     expect(buttons.map(button => button.textContent)).toEqual(['No', 'Yes'])
     fireEvent.click(within(dialog).getByRole('button', { name: 'Yes' }))
     await expect(answer).resolves.toBe(true)
     await waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull())
+  })
+
+  it('focuses No first and keeps outside clicks from confirming', async () => {
+    render(<ConfirmHost />)
+    const { answer, dialog } = await ask({ title: 'Delete the notes?' })
+
+    await waitFor(() => expect(within(dialog).getByRole('button', { name: 'No' })).toHaveFocus())
+    fireEvent.click(document.body)
+    expect(dialog).toBeInTheDocument()
+    fireEvent.keyDown(document.activeElement!, { key: 'Escape' })
+    await expect(answer).resolves.toBe(false)
   })
 
   it('answers No for No, Escape, and a newer question', async () => {

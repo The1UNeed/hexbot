@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react'
+import { type ReactNode, useEffect } from 'react'
 import { create } from 'zustand'
 
 import { Button } from './button'
@@ -25,14 +25,12 @@ export function ConfirmDialog({
     <Dialog
       alert
       className="w-[min(26rem,92vw)]"
+      description={detail}
       onOpenChange={value => !value && onAnswer(false)}
       open={open}
       title={title}
     >
       <div className="space-y-4 px-6 pt-3 pb-5">
-        {detail ? (
-          <p className="text-[length:var(--text-secondary)] text-muted">{detail}</p>
-        ) : null}
         <div className="flex justify-end gap-2">
           <Button onClick={() => onAnswer(false)} variant="ghost">
             No
@@ -73,15 +71,36 @@ export function confirm(request: ConfirmRequest): Promise<boolean> {
   })
 }
 
+/** Answers No when the page or daemon that asked the question changes. */
+export function cancelConfirm(): void {
+  const { open, pending } = useConfirmStore.getState()
+
+  if (open) {
+    useConfirmStore.setState({ open: false })
+    pending?.resolve(false)
+  }
+}
+
 /** Shows the question `confirm` asked. Mounted once, at the root. */
-export function ConfirmHost() {
+export function ConfirmHost({ blocked = false }: { blocked?: boolean }) {
   const { open, pending } = useConfirmStore()
+
+  useEffect(() => {
+    if (blocked && open) {
+      cancelConfirm()
+    }
+  }, [blocked, open, pending])
+
+  // Unmount the portal immediately: its focus trap escapes the app's inert wrapper.
+  if (blocked) {
+    return null
+  }
 
   return (
     <ConfirmDialog
       detail={pending?.detail}
       onAnswer={yes => {
-        if (useConfirmStore.getState().open) {
+        if (useConfirmStore.getState().open && useConfirmStore.getState().pending === pending) {
           useConfirmStore.setState({ open: false })
           pending?.resolve(yes)
         }

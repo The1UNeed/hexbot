@@ -166,7 +166,9 @@ describe('room settings', () => {
     await waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull())
     expect(call).not.toHaveBeenCalled()
     fireEvent.click(screen.getByRole('button', { name: 'Leave' }))
-    fireEvent.click(within(await screen.findByRole('alertdialog')).getByRole('button', { name: 'Yes' }))
+    fireEvent.click(
+      within(await screen.findByRole('alertdialog')).getByRole('button', { name: 'Yes' })
+    )
     await waitFor(() => expect(navigate).toHaveBeenCalledWith({ to: '/' }))
     expect(call).toHaveBeenCalledWith('hexbot.rooms.remove_member', { id: 'r1', user: 'bob' })
     expect(useRooms.getState().byId.r1).toBeUndefined()
@@ -177,18 +179,21 @@ describe('room settings', () => {
     ['member', 'off', true],
     ['admin', 'smart', true],
     [undefined, 'smart', true]
-  ] as const)('room approvals for role %s, mode %s offer Bypass: %s', async (role, approval_mode, bypass) => {
-    useMe.setState({ me: { display_name: 'Alex', id: 'local', role } })
-    render(<RoomSettingsPanel room={{ ...room(['scout']), approval_mode }} />)
-    const picker = screen.getByRole('combobox', { name: 'Room approval mode' })
-    fireEvent.click(picker)
-    expect(await screen.findByRole('option', { name: 'Auto' })).toBeVisible()
-    expect(screen.queryByRole('option', { name: 'Bypass' }) !== null).toBe(bypass)
+  ] as const)(
+    'room approvals for role %s, mode %s offer Bypass: %s',
+    async (role, approval_mode, bypass) => {
+      useMe.setState({ me: { display_name: 'Alex', id: 'local', role } })
+      render(<RoomSettingsPanel room={{ ...room(['scout']), approval_mode }} />)
+      const picker = screen.getByRole('combobox', { name: 'Room approval mode' })
+      fireEvent.click(picker)
+      expect(await screen.findByRole('option', { name: 'Auto' })).toBeVisible()
+      expect(screen.queryByRole('option', { name: 'Bypass' }) !== null).toBe(bypass)
 
-    if (approval_mode === 'off') {
-      expect(picker).toHaveTextContent('Bypass')
+      if (approval_mode === 'off') {
+        expect(picker).toHaveTextContent('Bypass')
+      }
     }
-  })
+  )
 
   it('deletes the room only after the name is typed back', async () => {
     const one = room(['scout'])

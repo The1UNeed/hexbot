@@ -161,13 +161,20 @@ describe('notes conflicts', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Delete' }))
     await waitFor(() => expect(reads).toBe(2))
     await waitFor(() => expect(screen.getByRole('button', { name: 'Delete' })).toBeEnabled())
-    expect(screen.getByRole('button', { name: /Yesterday/ })).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.getByRole('button', { name: /Yesterday/ })).toHaveAttribute(
+      'aria-pressed',
+      'true'
+    )
     expect(screen.getByRole('textbox')).toHaveValue('My draft')
     expect(screen.getByRole('button', { name: /Yesterday/ })).toHaveTextContent('2 notes')
     fireEvent.click(screen.getByRole('button', { name: 'Delete' }))
-    await waitFor(() => expect(call).toHaveBeenLastCalledWith('hexbot.memory.notes.delete', {
-      bot: 'scout', date: yesterday, expected: 'Plan\nBot note'
-    }))
+    await waitFor(() =>
+      expect(call).toHaveBeenLastCalledWith('hexbot.memory.notes.delete', {
+        bot: 'scout',
+        date: yesterday,
+        expected: 'Plan\nBot note'
+      })
+    )
     await waitFor(() => expect(screen.getByRole('textbox')).toHaveValue('Today'))
   })
 
@@ -220,7 +227,10 @@ describe('notes conflicts', () => {
     expect(text).toBe(merged)
     expect(screen.queryByText(/since you started editing/)).toBeNull()
     expect(call).toHaveBeenCalledWith('hexbot.memory.notes.set', {
-      bot: 'scout', date: today, expected: 'Plan', text: draft
+      bot: 'scout',
+      date: today,
+      expected: 'Plan',
+      text: draft
     })
   })
 
@@ -253,7 +263,7 @@ describe('notes conflicts', () => {
         return { date: today, text }
       })
 
-        render(<NotesBlock bot="scout" />)
+      render(<NotesBlock bot="scout" />)
       fireEvent.change(await screen.findByRole('textbox'), { target: { value: draft } })
       fireEvent.click(screen.getByRole('button', { name: 'Delete' }))
       await waitFor(() => expect(reads).toBe(2))
@@ -273,7 +283,9 @@ describe('notes conflicts', () => {
   )
 
   it('shows retention errors and keeps an expired day draft', async () => {
-    const message = 'Notes older than 30 days cannot be saved. Copy your draft to a more recent day.'
+    const message =
+      'Notes older than 30 days cannot be saved. Copy your draft to a more recent day.'
+
     rpc(method => {
       if (method.endsWith('.list')) {
         return listed('Plan')
@@ -306,7 +318,9 @@ describe('notes conflicts', () => {
 
 describe('notes bot switches', () => {
   it('replaces the loading skeleton with a list error', async () => {
-    rpc(() => { throw new Error('Unavailable') })
+    rpc(() => {
+      throw new Error('Unavailable')
+    })
     render(<NotesBlock bot="scout" />)
     expect(await screen.findByRole('alert')).toHaveTextContent('Unavailable')
     expect(screen.queryByRole('status', { name: 'Loading notes' })).toBeNull()
@@ -352,7 +366,7 @@ describe('notes bot switches', () => {
         return pending.promise
       })
 
-        const view = render(<NotesBlock bot="scout" />)
+      const view = render(<NotesBlock bot="scout" />)
       await screen.findByRole('textbox')
 
       if (action.startsWith('delete')) {
@@ -372,7 +386,9 @@ describe('notes bot switches', () => {
           pending.reject(conflict())
         } else {
           pending.resolve(
-            action.endsWith('reload') ? listed('Plan\nBot note') : { deleted: true, text: 'My plan' }
+            action.endsWith('reload')
+              ? listed('Plan\nBot note')
+              : { deleted: true, text: 'My plan' }
           )
         }
       })

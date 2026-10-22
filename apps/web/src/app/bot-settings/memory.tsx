@@ -590,8 +590,7 @@ function DreamEntry({
                 <Button
                   onClick={() =>
                     void confirm({
-                      detail:
-                        'The current memory is kept in the log, so you can come back to it.',
+                      detail: 'The current memory is kept in the log, so you can come back to it.',
                       title: 'Restore the memory from before this dream?'
                     }).then(yes => {
                       if (yes) {

@@ -357,15 +357,17 @@ export function RoomSettingsPanel({ room }: { room: Room }): React.JSX.Element {
                   void confirm({
                     detail: 'You can no longer read or post in it.',
                     title: 'Leave this room?'
-                  }).then(async yes => {
-                    if (!yes) {
-                      return
-                    }
+                  })
+                    .then(async yes => {
+                      if (!yes) {
+                        return
+                      }
 
-                    await roomsLeave(room.id, me.id)
-                    rooms().drop(room.id)
-                    await navigate({ to: '/' })
-                  }).catch(cause => setError(errorOf(cause)))
+                      await roomsLeave(room.id, me.id)
+                      rooms().drop(room.id)
+                      await navigate({ to: '/' })
+                    })
+                    .catch(cause => setError(errorOf(cause)))
                 }
                 size="sm"
                 variant="danger"
