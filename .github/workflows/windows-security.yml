@@ -63,7 +63,7 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $env:HEXBOT_CI_GIT = (Get-Command git.exe).Source
           $root = Join-Path $env:RUNNER_TEMP 'hexbot-native-refusal-source'
-          $routing = node scripts/dev/windows-security-inputs.mjs '${{ github.workspace }}' '${{ github.event.pull_request.head.sha || github.sha }}' 3b8aa2f8c3072e14fb1239dc301c0964ccaf525a
+          $routing = node scripts/dev/windows-security-inputs.mjs '${{ github.workspace }}' '${{ github.event.pull_request.head.sha || github.sha }}'
           if ($LASTEXITCODE -ne 0) { throw 'Cannot select immutable native inputs' }
           $plan = $routing | ConvertFrom-Json
           $arguments = @($root, $plan.buildSHA, $plan.securitySHA)
