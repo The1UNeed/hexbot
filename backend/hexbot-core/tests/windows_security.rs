@@ -5,6 +5,31 @@
 use hexbot_core::credentials::{self, Confine};
 
 #[test]
+fn windows_security_child_environment_preserves_only_allowed_locations() {
+    for name in [
+        "SystemRoot",
+        "windir",
+        "UserProfile",
+        "appdata",
+        "LocalAppData",
+    ] {
+        assert!(credentials::inherited_environment(name), "{name}");
+    }
+    for name in [
+        "OPENAI_API_KEY",
+        "AWS_SECRET_ACCESS_KEY",
+        "ARBITRARY_CONNECTOR",
+        "NODE_OPTIONS",
+        "BASH_ENV",
+        "PYTHONPATH",
+        "COMSPEC",
+        "PATHEXT",
+    ] {
+        assert!(!credentials::inherited_environment(name), "{name}");
+    }
+}
+
+#[test]
 fn windows_security_all_isolation_levels_refuse_before_launch_or_scan() {
     // A missing home and device paths must get the same explicit refusal. No
     // scanner, shell lookup, Python runtime or process limit probe may run first.
@@ -40,6 +65,10 @@ async fn windows_security_runtime_refuses_code_before_approval() {
     let node =
         PathBuf::from(std::env::var_os("HEXBOT_WINDOWS_NODE").expect("absolute Node executable"));
     assert!(node.is_absolute() && node.is_file());
+    let python = PathBuf::from(
+        std::env::var_os("HEXBOT_WINDOWS_PYTHON").expect("absolute trusted Python executable"),
+    );
+    assert!(python.is_absolute() && python.is_file());
     let scratch = tempfile::tempdir().unwrap();
     let root = fs::canonicalize(scratch.path()).unwrap();
     let home = root.join("home");
@@ -112,7 +141,7 @@ async fn windows_security_runtime_refuses_code_before_approval() {
             [json!(work).to_string()],
         )
         .unwrap();
-    fs::write(home.join("profiles/owl/config.yaml"), "model:\n  provider: openai\n  default: fixture\ntools:\n  enabled_toolsets: [code_execution]\n").unwrap();
+    fs::write(home.join("profiles/owl/config.yaml"), json!({"model":{"provider":"openai","default":"fixture"},"tools":{"enabled_toolsets":["code_execution","file"]},"code_execution":{"python":python}}).to_string()).unwrap();
     let hub = EventHub::new();
     let runtime = Runtime::new(home.clone(), hub.clone(), fixture.join("node.exe")).unwrap();
     let scheduler =
@@ -139,41 +168,79 @@ async fn windows_security_runtime_refuses_code_before_approval() {
                 .await
                 .unwrap()
                 .unwrap();
-            tokio::time::timeout(Duration::from_secs(15), async {
+            let reply = native_reply(&mut events).await;
+            assert!(
+                reply["error"]
+                    .as_str()
+                    .unwrap()
+                    .contains("Windows tool isolation is not implemented")
+            );
+        }
+        for mode in ["smart", "manual"] {
+            // Real Python starts under Bypass. Change its live policy while it
+            // waits on a socket, then exercise that same worker's native bridge.
+            db::open(&home)
+                .unwrap()
+                .execute("UPDATE bots SET approval_mode='off'", [])
+                .unwrap();
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let port = listener.local_addr().unwrap().port();
+            let target = home.join("runtime/native-current.json");
+            let code = format!(
+                r#"import socket, hermes_tools
+s=socket.create_connection(('127.0.0.1', {port}))
+s.recv(1)
+for name, args in [('write_file', {{'path':{target},'content':'changed'}}), ('patch', {{'path':{target},'old_string':'keep','new_string':'changed'}}), ('read_file', {{'path':r'\\.\pipe\hexbot-security-untrusted'}}), ('read_file', {{'path':r'\\hexbot-hostile.invalid\share\secret'}})]:
+    try:
+        print(getattr(hermes_tools,name)(**args))
+    except RuntimeError as error:
+        print('bridge-denied:'+str(error))
+s.close()
+"#,
+                target = json!(target)
+            );
+            fs::write(fixture.join("code.json"), json!({"code":code}).to_string()).unwrap();
+            let opened = runtime
+                .call("alice", "hexbot.sections.open", &json!({"id":"first"}))
+                .await
+                .unwrap()
+                .unwrap();
+            let live = opened["section"]["live_session_id"].as_str().unwrap();
+            let mut events = hub.subscribe();
+            runtime
+                .call(
+                    "alice",
+                    "prompt.submit",
+                    &json!({"session_id":live,"text":json!({"code":code}).to_string()}),
+                )
+                .await
+                .unwrap()
+                .unwrap();
+            let (mut socket,_) = tokio::time::timeout(Duration::from_secs(15), async {
                 loop {
-                    let event = events.recv().await.unwrap();
-                    let kind = event.frame["params"]["type"].as_str().unwrap_or("");
-                    assert_ne!(
-                        kind, "approval.request",
-                        "Windows code must refuse before approval"
-                    );
-                    if let Some(text) = event.frame["params"]["payload"]["text"].as_str()
-                        && let Some(reply) = text.strip_prefix("native-boundary:")
-                    {
-                        let reply: serde_json::Value = serde_json::from_str(reply).unwrap();
-                        assert!(
-                            reply["error"]
-                                .as_str()
-                                .unwrap()
-                                .contains("Windows tool isolation is not implemented")
-                        );
-                        break;
+                    tokio::select! {
+                        connection = listener.accept() => break connection.unwrap(),
+                        event = events.recv() => assert_ne!(event.unwrap().frame["params"]["type"], "approval.request", "Bypass must not ask for missing bubblewrap"),
                     }
                 }
-            })
-            .await
-            .expect("native code refusal reply");
-            // Wait for the same turn's settlement, rather than sleeping between probes.
-            tokio::time::timeout(Duration::from_secs(15), async {
-                loop {
-                    let event = events.recv().await.unwrap();
-                    if event.frame["params"]["type"] == "message.complete" {
-                        break;
-                    }
-                }
-            })
-            .await
-            .expect("fixture settled after refusal");
+            }).await.expect("Bypass Python connected");
+            db::open(&home)
+                .unwrap()
+                .execute("UPDATE bots SET approval_mode=?", [mode])
+                .unwrap();
+            use tokio::io::AsyncWriteExt;
+            socket.write_all(b"x").await.unwrap();
+            let reply = native_reply(&mut events).await;
+            assert_eq!(reply["result"]["success"], true, "{reply}");
+            let output = reply["result"]["output"].as_str().unwrap();
+            assert_eq!(
+                output
+                    .matches("bridge-denied:Windows tool isolation is not implemented")
+                    .count(),
+                4,
+                "{reply}"
+            );
+            assert_eq!(fs::read_to_string(target).unwrap(), "keep");
         }
         for mode in ["smart", "manual", "off"] {
             db::open(&home)
@@ -250,4 +317,58 @@ async fn windows_security_runtime_refuses_code_before_approval() {
     );
     result.unwrap();
     println!("Native Rust daemon refusal probes passed");
+}
+
+async fn native_reply(
+    events: &mut tokio::sync::broadcast::Receiver<hexbot_core::events::Event>,
+) -> serde_json::Value {
+    tokio::time::timeout(std::time::Duration::from_secs(15), async {
+        let mut reply = None;
+        loop {
+            let event = events.recv().await.unwrap();
+            let kind = &event.frame["params"]["type"];
+            assert_ne!(
+                kind, "approval.request",
+                "the bridge must refuse before approval"
+            );
+            if let Some(text) = event.frame["params"]["payload"]["text"].as_str()
+                && let Some(value) = text.strip_prefix("native-boundary:")
+            {
+                reply = Some(serde_json::from_str(value).unwrap());
+            }
+            if kind == "message.complete" {
+                return reply.expect("native bridge reply before settlement");
+            }
+        }
+    })
+    .await
+    .expect("native bridge settled without blocking on paths or approval")
+}
+
+#[tokio::test]
+async fn windows_security_acp_refuses_before_path_or_command_resolution() {
+    for home in [
+        r"\\.\pipe\hexbot-security-untrusted",
+        r"\\hexbot-hostile.invalid\share",
+        r"Z:\missing",
+    ] {
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            hexbot_core::provider_acp::complete(
+                std::path::Path::new(home),
+                "owl",
+                "first",
+                &serde_json::json!({}),
+            ),
+        )
+        .await
+        .expect("ACP must refuse immediately");
+        let error = result.unwrap_err();
+        assert_eq!(error.code, 4302);
+        assert!(
+            error
+                .message
+                .contains("Windows tool isolation is not implemented")
+        );
+    }
 }

@@ -91,6 +91,7 @@ try {
   let WINDOWS_ISOLATION_UNAVAILABLE;
   try {
     const extension = await import('../extension.ts');
+    assert.deepEqual(extension.shellEnvironment({SystemRoot:'os',windir:'os',UserProfile:'profile',appdata:'roaming',LocalAppData:'local',NODE_OPTIONS:'bad',PYTHONPATH:'bad',BASH_ENV:'bad',OPENAI_API_KEY:'secret',ARBITRARY_CONNECTOR:'secret',COMSPEC:'bad',PATHEXT:'bad'}), {SystemRoot:'os',windir:'os',UserProfile:'profile',appdata:'roaming',LocalAppData:'local'});
     const isolation = await import('../isolation.ts');
     const {isolatedCommand,workspaceProtected} = isolation;
     const {canonicalPath} = extension;
@@ -137,6 +138,24 @@ try {
   assert.equal(fs.existsSync(marker),false);
   assert.equal(fs.existsSync(join(cwd,'ordinary.txt')),false);
   assert.equal(fs.readFileSync(nativePath,'utf8'),'private');
+  if (!simulated) {
+    // Bypass is explicitly uncontained. Exercise Pi's actual Bash dialect and
+    // its honest missing-shell failure, after restoring safe fixture homes.
+    const user = join(root,'bypass-home'); fs.mkdirSync(user);
+    process.env.HOME = user; process.env.USERPROFILE = user;
+    settings.approvalMode = 'off';
+    const command = `printf '%s' 'a "quoted" value'`;
+    assert.equal(await handlers.tool_call({toolName:'bash',input:{command},toolCallId:'quoted'},ctx),undefined);
+    const result = await tools.bash.execute('quoted',{command,timeout:10},undefined,undefined,ctx);
+    assert.equal(result.isError,undefined);
+    assert.equal(result.structuredContent.output, 'a "quoted" value');
+    process.env.ProgramFiles = join(root,'no-programs');
+    process.env['ProgramFiles(x86)'] = join(root,'no-programs-x86');
+    process.env.PATH = malicious;
+    assert.equal(await handlers.tool_call({toolName:'bash',input:{command:'echo x'},toolCallId:'missing-bash'},ctx),undefined);
+    await assert.rejects(tools.bash.execute('missing-bash',{command:'echo x',timeout:10},undefined,undefined,ctx), /No bash shell found/);
+    assert.deepEqual(approvals,[]);
+  }
   console.log('Windows fail-closed probes passed');
 } finally {
   process.chdir(originalCwd);

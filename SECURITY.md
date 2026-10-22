@@ -103,6 +103,7 @@ Windows releases. See [the remaining Windows requirements](docs/windows-security
   `--stdio`, missing auth or incompatible isolation flags make review
   unavailable and produce a user card.
 - Bypass removes prompts and sandboxing and is available only to the admin.
+  Missing Linux bubblewrap does not add an approval to a Bypass code run.
   The primary bot still asks before it deletes a bot, room, or job, changes an
   approval mode or a working folder, changes a setting, skill, or connector,
   or cancels a check-in wake-up.

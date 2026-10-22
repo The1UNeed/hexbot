@@ -12,6 +12,11 @@ try {
   New-Item -ItemType Directory -Path $root | Out-Null
   Copy-Item -LiteralPath $Runtime -Destination (Join-Path $root 'runtime') -Recurse
   Copy-Item -LiteralPath (Get-Command node.exe).Source -Destination (Join-Path $root 'node.exe')
+  if ($Probe) {
+    # The native bridge probe deliberately starts trusted Python in Bypass,
+    # then changes the live mode before it asks the daemon to touch a path.
+    (Get-Command python.exe).Source | Set-Content -LiteralPath (Join-Path $root 'python-path')
+  }
   if ($Probe) { Copy-Item -LiteralPath $Probe -Destination (Join-Path $root 'native-test.exe') }
   New-Item -ItemType Directory -Path (Join-Path $root 'temp') | Out-Null
   @'
@@ -29,6 +34,7 @@ try {
   & $env:HEXBOT_WINDOWS_NODE --test (Join-Path $root 'runtime/windows-security.test.mjs')
   $result = $LASTEXITCODE
   if (Test-Path (Join-Path $root 'native-test.exe')) {
+    $env:HEXBOT_WINDOWS_PYTHON = (Get-Content (Join-Path $root 'python-path')).Trim()
     & (Join-Path $root 'native-test.exe') --test-threads=1 --nocapture
     if ($LASTEXITCODE -ne 0) { $result = $LASTEXITCODE }
   }

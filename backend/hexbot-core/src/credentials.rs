@@ -32,6 +32,9 @@ struct Policy {
     read_deny: Vec<String>,
     write: WritePolicy,
     environment: Vec<String>,
+    #[cfg(windows)]
+    #[serde(rename = "windowsEnvironment")]
+    windows_environment: Vec<String>,
     #[serde(rename = "displayEnvironment")]
     display_environment: Vec<String>,
 }
@@ -1828,6 +1831,16 @@ pub(crate) fn isolated_command_with_outputs(
 /// Variables every child may inherit. Provider keys, connector secrets, and runtime
 /// injection variables (NODE_OPTIONS, BASH_ENV) are never on the list.
 pub fn inherited_environment(name: &str) -> bool {
+    // Windows children need OS and profile locations even with env_clear().
+    // This extends only the location allowlist, never provider/injection keys.
+    #[cfg(windows)]
+    if policy()
+        .windows_environment
+        .iter()
+        .any(|allowed| allowed.eq_ignore_ascii_case(name))
+    {
+        return true;
+    }
     name.to_ascii_uppercase().starts_with("LC_")
         || policy()
             .environment
@@ -1977,6 +1990,9 @@ mod tests {
             "OPENAI_API_KEY",
             "SystemRoot",
             "WINDIR",
+            "USERPROFILE",
+            "APPDATA",
+            "LOCALAPPDATA",
             "PATHEXT",
             "COMSPEC",
             "DISPLAY",

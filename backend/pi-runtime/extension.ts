@@ -598,6 +598,7 @@ export function shellEnvironment(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   // variables (BASH_ENV, NODE_OPTIONS, etc.) from reaching code children. The
   // daemon applies the same list from credential-policy.json to its children.
   const inherited = new Set((credentialPolicy.environment as string[]).map(name => name.toUpperCase()));
+  if (process.platform === 'win32') for (const name of credentialPolicy.windowsEnvironment) inherited.add(name.toUpperCase());
   return Object.fromEntries(Object.entries(env).filter(([name]) => inherited.has(name.toUpperCase()) || /^LC_/i.test(name)));
 }
 

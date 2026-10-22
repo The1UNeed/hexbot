@@ -11,6 +11,8 @@ approval, an Auto model review and an Allow for now grant cannot override it.
 Unattended scripts refuse in every mode. The lower-level Windows Git metadata
 reader and Unix path walker also refuse instead of using incomplete path checks
 or a blocking file open followed by a metadata check.
+Copilot ACP, including its reviewer and Bypass paths, refuses before workspace,
+environment-file or executable resolution. Its base isolation remains mandatory.
 
 Bypass removes approval and containment. Its shell is upstream Pi Bash, such
 as Git Bash, with Bash syntax and Pi's normal error if Bash is absent. It does
@@ -26,6 +28,14 @@ The daemon is a direct `hexbot.exe`. A validated selection in
 `node.exe`, launched with the sibling `pi/launch.mjs`. Neither a `.cmd` daemon
 nor a symlink supplies this contract. Managed Python lives under
 `runtime/tools/code-python/Scripts/python.exe`.
+
+Children inherit only the shared credential policy's explicit environment list.
+Windows adds the OS/profile location names `SystemRoot`, `WINDIR`, `USERPROFILE`,
+`APPDATA` and `LOCALAPPDATA`, matched case-insensitively. Provider keys and runtime
+injection variables remain excluded. These locations support Windows runtime and
+profile discovery; they grant no filesystem permission. See Microsoft's
+[environment block contract](https://learn.microsoft.com/en-us/windows/win32/procthread/changing-environment-variables)
+and Node's [Windows home-directory lookup](https://nodejs.org/api/os.html#oshomedir).
 
 The base home-write restriction protects selection and installed runtimes.
 Output exceptions must not overlap `runtime/native-current.json`,
@@ -77,6 +87,9 @@ and monitor paths before workspace revalidation or script access in every mode.
 It checks runtime/selection integrity and owned-fixture shutdown. The separate
 extension probes use the production Pi implementation. These are refusal tests,
 not successful sandbox execution or a complete daemon feature test.
+The native bridge probe starts trusted runner Python in Bypass, synchronizes over
+a socket, then changes the live mode to Auto or Manual. That same worker's
+read/write/patch callbacks must refuse before approval or path resolution.
 
 Other platforms run the extension gate probes with a simulated Windows platform.
 That checks gate logic only. It cannot validate Windows paths, Windows security
