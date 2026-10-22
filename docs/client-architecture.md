@@ -87,7 +87,11 @@ cursors.
 Room logs resume only from a verified contiguous baseline; a live event alone
 never establishes one. Startup fetches and restores logs for at most 20 recently
 active rooms; opening another room reads its log on demand. Persistence keeps only
-those 20 logs, with each retained tail bounded by the same row/byte caps.
+those 20 logs, with each retained tail bounded by the same row/byte caps. The
+fresh roster is published before optional log reads; each log succeeds or fails
+independently. Per-room revisions preserve intervening changes during list and
+log reads, so delayed replies cannot undo deletion, departure, archival, or
+membership updates.
 Each roster write prunes persisted logs for deleted, departed, and archived rooms,
 including rooms removed while the client was offline. Cleanup uses the active
 authorization generation, just like other cache writes.

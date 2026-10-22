@@ -74,12 +74,14 @@ const event = (seq: number): RoomEvent => ({
 
 function deferred<T>() {
   let resolve!: (value: T) => void
+  let reject!: (error: Error) => void
 
-  const promise = new Promise<T>(yes => {
+  const promise = new Promise<T>((yes, no) => {
     resolve = yes
+    reject = no
   })
 
-  return { promise, resolve }
+  return { promise, resolve, reject }
 }
 
 beforeEach(async () => {
@@ -94,7 +96,7 @@ beforeEach(async () => {
   clearPersonalState()
   await authorizeCache(scope, 'daemon', () => true)
   setTranscriptEffects({ ackApproval: vi.fn(), notify: vi.fn(), touchSection: vi.fn() })
-  vi.clearAllMocks()
+  vi.resetAllMocks()
 })
 afterEach(async () => {
   vi.useRealTimers()
@@ -618,5 +620,182 @@ it.each(['fetch', 'queued write', 'open'] as const)(
     expect(await readCache(scope, 'sections:recent')).not.toContain('s')
     expect(useSections.getState().liveSessionId.s).toBeUndefined()
     expect(useTranscripts.getState().bySession.live).toBeUndefined()
+  }
+)
+
+it.each([4230, 4302, 5000])(
+  'publishes the roster and other logs despite an optional log error %s',
+  async code => {
+    const removed = { ...room, id: 'removed-offline' }
+    const failed = { ...room, id: 'failed' }
+    const survivor = { ...room, id: 'survivor' }
+    useRooms.getState().restore([removed, survivor], { 'removed-offline': [event(1)] })
+    vi.mocked(roomsList).mockResolvedValue({ rooms: [survivor, failed] })
+    vi.mocked(roomsLog).mockImplementation(async id => {
+      if (id === 'failed') {
+        throw Object.assign(new Error('Log unavailable'), { code })
+      }
+
+      return { events: [{ ...event(1), room_id: id }] }
+    })
+    await useRooms.getState().refresh()
+    expect(useRooms.getState().order).not.toContain('removed-offline')
+    expect(useRooms.getState().eventsByRoom['removed-offline']).toBeUndefined()
+    expect(useRooms.getState().eventsByRoom.survivor).toHaveLength(1)
+    expect(useRooms.getState().logBaseline.survivor).toBe(1)
+    expect(useRooms.getState().error).toBeNull()
+    expect(Boolean(useRooms.getState().byId.failed)).toBe(code === 5000)
+  }
+)
+
+it('publishes newly discovered rooms and ready logs while another log is held', async () => {
+  const slow = { ...room, id: 'slow', last_activity_at: 5 }
+  const unseen = { ...room, id: 'unseen', last_activity_at: 1 }
+  const held = deferred<{ events: RoomEvent[] }>()
+  vi.mocked(roomsList).mockResolvedValue({ rooms: [slow, unseen] })
+  vi.mocked(roomsLog).mockImplementation(id =>
+    id === 'slow' ? held.promise : Promise.resolve({ events: [{ ...event(1), room_id: id }] })
+  )
+  const refreshing = useRooms.getState().refresh()
+  await vi.waitFor(() => expect(useRooms.getState().eventsByRoom.unseen).toHaveLength(1))
+  expect(useRooms.getState().order).toEqual(['slow', 'unseen'])
+  expect(useRooms.getState().loading).toBe(false)
+  expect(useRooms.getState().logBaseline.slow).toBeUndefined()
+  held.resolve({ events: [] })
+  await refreshing
+})
+
+it.each([
+  ['list', 'deleted'],
+  ['log', 'deleted'],
+  ['list', 'left'],
+  ['log', 'left'],
+  ['list', 'archived'],
+  ['log', 'archived'],
+  ['list', 'members'],
+  ['log', 'members']
+] as const)(
+  'keeps a live %s read from undoing a room that was %s meanwhile',
+  async (phase, change) => {
+    useRooms.getState().restore([room], {})
+    await writeCache(scope, 'room:r', [event(1)])
+    const list = deferred<Awaited<ReturnType<typeof roomsList>>>()
+    const log = deferred<{ events: RoomEvent[] }>()
+    vi.mocked(roomsList).mockReturnValueOnce(list.promise)
+    vi.mocked(roomsLog).mockReturnValueOnce(log.promise)
+    const refreshing = useRooms.getState().refresh()
+
+    if (phase === 'log') {
+      list.resolve({ rooms: [room] })
+      await vi.waitFor(() => expect(roomsLog).toHaveBeenCalledOnce())
+    }
+
+    const updated = {
+      ...room,
+      name: 'Updated room',
+      archived_at: change === 'archived' ? 1 : null,
+      members: [{ member_id: 'new-bot', member_kind: 'bot', left_at: null }]
+    } as Room
+
+    if (change === 'left') {
+      vi.mocked(roomsGet).mockRejectedValueOnce(
+        Object.assign(new Error('No longer a member'), { code: 4302 })
+      )
+    } else if (change !== 'deleted') {
+      vi.mocked(roomsGet).mockResolvedValueOnce({ room: updated })
+    }
+
+    routeEvent({
+      type: 'hexbot.rooms.changed',
+      payload: { id: 'r', deleted: change === 'deleted' }
+    } as never)
+    await vi.waitFor(() => {
+      if (change === 'deleted' || change === 'left') {
+        expect(useRooms.getState().byId.r).toBeUndefined()
+      } else {
+        expect(useRooms.getState().byId.r).toEqual(updated)
+      }
+    })
+    list.resolve({ rooms: [room] })
+    // A late success or gone reply must not change the newer room metadata.
+    log.resolve({ events: [event(2)] })
+    await refreshing
+
+    if (change === 'deleted' || change === 'left') {
+      expect(useRooms.getState().order).not.toContain('r')
+      expect(useRooms.getState().eventsByRoom.r).toBeUndefined()
+      expect(useRooms.getState().logBaseline.r).toBeUndefined()
+    } else {
+      expect(useRooms.getState().byId.r).toEqual(updated)
+
+      if (phase === 'log') {
+        expect(useRooms.getState().logBaseline.r).toBeUndefined()
+      }
+    }
+
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    keepRoster(scope)
+    await vi.advanceTimersByTimeAsync(500)
+    vi.useRealTimers()
+    await writeCache(scope, 'barrier', true)
+    const saved = await readCache<{ rooms: Room[] }>(scope, 'roster')
+    expect(saved?.rooms).toEqual(
+      change === 'deleted' || change === 'left' ? [] : [{ ...updated, turns: [] }]
+    )
+
+    if (change !== 'members') {
+      expect(await readCache(scope, 'room:r')).toBeUndefined()
+    } else if (phase === 'log') {
+      expect(await readCache(scope, 'room:r')).toEqual([event(1)])
+    }
+  }
+)
+
+it('ignores an obsolete gone log after a newer room lookup succeeds', async () => {
+  const held = deferred<{ events: RoomEvent[] }>()
+  vi.mocked(roomsList).mockResolvedValueOnce({ rooms: [room] })
+  vi.mocked(roomsLog).mockReturnValueOnce(held.promise)
+  const refreshing = useRooms.getState().refresh()
+  await vi.waitFor(() => expect(roomsLog).toHaveBeenCalledOnce())
+  const updated = { ...room, name: 'New membership' }
+  vi.mocked(roomsGet).mockResolvedValueOnce({ room: updated })
+  await useRooms.getState().refreshOne('r')
+  held.reject(Object.assign(new Error('Old permission failure'), { code: 4302 }))
+  await refreshing
+  expect(useRooms.getState().byId.r).toEqual(updated)
+})
+
+it('keeps the newer roster when overlapping list replies arrive in reverse order', async () => {
+  const held = deferred<Awaited<ReturnType<typeof roomsList>>>()
+  vi.mocked(roomsList)
+    .mockReturnValueOnce(held.promise)
+    .mockResolvedValueOnce({ rooms: [room] })
+  vi.mocked(roomsLog).mockResolvedValue({ events: [] })
+  const old = useRooms.getState().refresh()
+  await useRooms.getState().refresh()
+  held.resolve({ rooms: [{ ...room, id: 'obsolete-discovery' }] })
+  await old
+  expect(useRooms.getState().order).toEqual(['r'])
+  expect(roomsLog).toHaveBeenCalledTimes(1)
+})
+
+it.each(['open', 'markRead'] as const)(
+  'does not resurrect a deleted room from a late %s reply',
+  async action => {
+    useRooms.getState().restore([room], {})
+    const held = deferred<{ room: Room }>()
+    vi.mocked(roomsGet).mockReturnValueOnce(held.promise)
+    vi.mocked(roomsMarkRead).mockReturnValueOnce(held.promise)
+    vi.mocked(roomsLog).mockResolvedValueOnce({ events: [event(1)] })
+
+    const pending =
+      action === 'open' ? useRooms.getState().open('r') : useRooms.getState().markRead('r', 1)
+
+    routeEvent({ type: 'hexbot.rooms.changed', payload: { id: 'r', deleted: true } } as never)
+    held.resolve({ room })
+    await pending
+    expect(useRooms.getState().byId.r).toBeUndefined()
+    expect(useRooms.getState().eventsByRoom.r).toBeUndefined()
+    expect(useRooms.getState().logBaseline.r).toBeUndefined()
   }
 )

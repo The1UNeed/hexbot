@@ -59,6 +59,21 @@ function roomGone(error: unknown): boolean {
   return code === 4230 || code === 4302
 }
 
+/** Room metadata can change while lists, lookups, or optional logs are in flight. */
+const roomChanges = new Map<string, number>()
+let rosterRead = 0
+
+function bumpRoom(id: string): void {
+  roomChanges.set(id, (roomChanges.get(id) ?? 0) + 1)
+}
+
+function roomRead(id: string): () => boolean {
+  const connected = connectionRead()
+  const revision = roomChanges.get(id)
+
+  return () => connected() && roomChanges.get(id) === revision
+}
+
 /** Counts turn changes per room, so a refresh keeps turns that moved while it loaded. */
 const turnChanges = new Map<string, number>()
 
@@ -169,6 +184,8 @@ function indexRooms(rooms: Room[]): Pick<RoomsState, 'byId' | 'order'> {
 }
 
 function mergeRoom(state: RoomsState, room: Room): Partial<RoomsState> {
+  bumpRoom(room.id)
+
   return {
     byId: { ...state.byId, [room.id]: room },
     order: state.order.includes(room.id) ? state.order : [room.id, ...state.order]
@@ -176,6 +193,7 @@ function mergeRoom(state: RoomsState, room: Room): Partial<RoomsState> {
 }
 
 function dropRoom(state: RoomsState, id: string): Partial<RoomsState> {
+  bumpRoom(id)
   const byId = { ...state.byId }
   const eventsByRoom = { ...state.eventsByRoom }
   const liveTurnsByRoom = { ...state.liveTurnsByRoom }
@@ -204,40 +222,53 @@ export const useRooms = create<RoomsState>((set, get) => ({
   order: [],
 
   async refresh() {
-    const currentRead = connectionRead()
+    const connected = connectionRead()
+    const request = ++rosterRead
+    const currentRead = () => connected() && request === rosterRead
+    const revisions = new Map(roomChanges)
     set({ error: null, loading: true })
     const changes = new Map(turnChanges)
     const readAt = Date.now()
 
     try {
       const { rooms } = await roomsList(true)
-      const listed = rooms ?? []
-      const active = listed.filter(room => !room.archived_at)
-
-      const hydrated = recentRooms(active)
-
-      const logs = await Promise.all(
-        hydrated.map(room =>
-          fetchLog(room.id, get().eventsByRoom[room.id] ?? [], get().logBaseline[room.id])
-        )
-      )
 
       if (!currentRead()) {
         return
       }
 
-      // Turn events are not replayed, so whatever ended while this client was
-      // away would stay "working"; the daemon's running turns replace them,
-      // except in rooms whose turns changed after the list was read.
-      const current = get().liveTurnsByRoom
+      const state = get()
+      const snapshot = rooms ?? []
+      const changed = (id: string) => roomChanges.get(id) !== revisions.get(id)
+      const seen = new Set(snapshot.map(room => room.id))
 
-      // A daemon without `turns` cannot say, so those rooms keep what they had.
+      // A room changed since the list request. Keep its current metadata, or
+      // its absence, including rooms added or removed while the list loaded.
+      const listed = snapshot.flatMap(room =>
+        changed(room.id) ? (state.byId[room.id] ? [state.byId[room.id]!] : []) : [room]
+      )
+
+      listed.push(
+        ...Object.values(state.byId).filter(room => !seen.has(room.id) && changed(room.id))
+      )
+
+      for (const id of new Set([...Object.keys(state.byId), ...seen])) {
+        if (!changed(id)) {
+          bumpRoom(id)
+        }
+      }
+
+      const active = listed.filter(room => !room.archived_at)
+      const activeIds = new Set(active.map(room => room.id))
+      // Turn events are not replayed. Rebuild from the reconciled metadata,
+      // keeping turns that changed after the list request.
+      const current = state.liveTurnsByRoom
       const read = runningTurns(active)
 
       const liveTurnsByRoom = Object.fromEntries(
         Object.entries(read).map(([id, turns]) => [
           id,
-          turnChanges.get(id) === changes.get(id) && rooms?.find(room => room.id === id)?.turns
+          turnChanges.get(id) === changes.get(id) && listed.find(room => room.id === id)?.turns
             ? turns
             : (current[id] ?? {})
         ])
@@ -257,8 +288,6 @@ export const useRooms = create<RoomsState>((set, get) => ({
 
       for (const [id, turns] of Object.entries(liveTurnsByRoom)) {
         for (const turn of Object.values(turns)) {
-          // Cards the turn no longer waits on were settled while this was away.
-          // Only this read's list says so; a kept turn's older list does not.
           const pending = turns === read[id] ? turn.pending_requests : undefined
 
           if (turn.live_session_id) {
@@ -273,36 +302,55 @@ export const useRooms = create<RoomsState>((set, get) => ({
         }
       }
 
-      const updates = new Map(hydrated.map((room, index) => [room.id, logs[index]!]))
-
+      // Publish membership and prune old state before any optional log reads.
       set(state => ({
         ...indexRooms(listed),
         logBaseline: Object.fromEntries(
-          active.flatMap(room => {
-            const update = updates.get(room.id)
-
-            const baseline = update?.latest
-              ? (update.events[0]?.seq ?? 0)
-              : state.logBaseline[room.id]
-
-            return baseline === undefined ? [] : [[room.id, baseline]]
-          })
+          Object.entries(state.logBaseline).filter(([id]) => activeIds.has(id))
         ),
         eventsByRoom: Object.fromEntries(
-          active.flatMap(room => {
-            const update = updates.get(room.id)
-            const events = state.eventsByRoom[room.id]
-
-            return update
-              ? [[room.id, applyLog(events ?? [], update)]]
-              : events
-                ? [[room.id, events]]
-                : []
-          })
+          Object.entries(state.eventsByRoom).filter(([id]) => activeIds.has(id))
         ),
         liveTurnsByRoom,
         loading: false
       }))
+
+      await Promise.all(
+        recentRooms(active).map(async room => {
+          const currentRoom = roomRead(room.id)
+          const valid = () => currentRead() && currentRoom() && Boolean(get().byId[room.id])
+
+          try {
+            const update = await fetchLog(
+              room.id,
+              get().eventsByRoom[room.id] ?? [],
+              get().logBaseline[room.id]
+            )
+
+            if (!valid()) {
+              return
+            }
+
+            set(state => ({
+              logBaseline: {
+                ...state.logBaseline,
+                [room.id]: update.latest
+                  ? (update.events[0]?.seq ?? 0)
+                  : (state.logBaseline[room.id] ?? 0)
+              },
+              eventsByRoom: {
+                ...state.eventsByRoom,
+                [room.id]: applyLog(state.eventsByRoom[room.id] ?? [], update)
+              }
+            }))
+          } catch (error) {
+            // A failed optional log cannot suppress the roster or other logs.
+            if (valid() && roomGone(error)) {
+              set(state => dropRoom(state, room.id))
+            }
+          }
+        })
+      )
     } catch (error) {
       if (!currentRead()) {
         return
@@ -313,7 +361,9 @@ export const useRooms = create<RoomsState>((set, get) => ({
   },
 
   async refreshOne(id) {
-    const currentRead = connectionRead()
+    // A changed event invalidates older work before the lookup answers.
+    bumpRoom(id)
+    const currentRead = roomRead(id)
 
     try {
       const { room } = await roomsGet(id)
@@ -343,7 +393,8 @@ export const useRooms = create<RoomsState>((set, get) => ({
   },
 
   async open(id) {
-    const currentRead = connectionRead()
+    const connected = connectionRead()
+    const currentRead = roomRead(id)
     let loaded: [{ room: Room }, LogUpdate]
 
     try {
@@ -366,6 +417,10 @@ export const useRooms = create<RoomsState>((set, get) => ({
     }
 
     if (!currentRead()) {
+      if (connected() && get().byId[id] && !get().byId[id]!.archived_at) {
+        return get().open(id)
+      }
+
       return
     }
 
@@ -386,7 +441,7 @@ export const useRooms = create<RoomsState>((set, get) => ({
   },
 
   async markRead(id, seq) {
-    const currentRead = connectionRead()
+    const currentRead = roomRead(id)
 
     try {
       const { room } = await roomsMarkRead(id, seq)
@@ -439,6 +494,10 @@ export const useRooms = create<RoomsState>((set, get) => ({
   },
 
   restore(rooms, eventsByRoom, baseline) {
+    for (const id of new Set([...Object.keys(get().byId), ...rooms.map(room => room.id)])) {
+      bumpRoom(id)
+    }
+
     set({
       ...indexRooms(rooms),
       eventsByRoom,

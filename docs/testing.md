@@ -9,6 +9,8 @@ row/byte/recency limits, hidden kickoff projection, and persisted room-log clean
 Transaction-completion hooks cover terminal and reload invalidation during cache
 reads, queued writes, and commits. Held fetches cover section deletion and
 re-listing; a 45-room roster checks the 20-log startup and persistence limit.
+Held list, log, and lookup replies cover prompt roster publication, isolated log
+failures, overlapping refreshes, and preservation of intervening room changes.
 `src/app/conversation/reload.test.tsx` also holds network reads after a dream
 reload or turn completion to check that cached and retained rows appear once.
 `src/lib/room-or-leave.test.tsx` covers queued startup reads and reconnects without
