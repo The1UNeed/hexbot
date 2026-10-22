@@ -62,21 +62,17 @@ of the home remain valid. This rejects a mutable runtime topology instead of
 treating an output grant as permission to replace installed code. Unix runtime
 reads remain allowed by the ordinary read policy.
 
-These path rules do not promise inode integrity against an already-unconfined
-same-user process. Shell/code layouts reject existing managed-file hard links
-found in declared workspace/output grants with a bounded snapshot; uv cache
-links outside those grants remain valid. Declared roots resolve once; nested
-symlink targets are excluded, including directory links to large/network trees
-and link cycles. Direct regular-file aliases are still checked, including roots
-named through a symlink. Scan errors and exhaustion refuse with a repair
-explanation. The entry budget is not a time bound on root resolution or an
-individual filesystem operation. The scan is not race-safe and does not cover
-implicit shared temporary roots or arbitrary outside paths used by full-access commands.
-An external process can insert an alias afterward or change permissions/ACLs.
-Linux `0444` alone does not fix this. No per-command permission/ACL edits or
-whole-product read-only-install contract are introduced. Pi write/edit and native
-file helpers use atomic entry replacement, which preserves other hard-link names;
-shell/code writes through a late alias remain a limitation. See the exact
+These path rules do not contain shell/code writes through hard-link aliases.
+Preexisting aliases in writable workspace/output folders can modify the inode of
+a managed runtime file despite protection of its original path. Aliases inserted
+later by an unconfined same-user process have the same limitation. There is no
+managed-inode/workspace scan: legitimate uv cache hard links and large dependency
+trees do not require reinstalling packages or making installed files read-only.
+Linux `0444` alone is insufficient, and an unconfined process can change
+permissions/ACLs. This foundation adds no per-command permission mutations,
+read-only-install contract or kernel policy. Pi write/edit and native file
+helpers atomically replace entries and preserve other hard-link names; the
+shell/code class remains open. See the exact
 [tool-isolation assumptions](../SECURITY.md#tool-isolation).
 
 Runtime reads the effective approval policy before resolving live workdirs or
@@ -124,9 +120,17 @@ grant or process tree to clean up. These tests do not exercise a sandbox.
 
 The combined job reads immutable inputs from the event commit. A complete
 combined tree uses that exact commit for both inputs. A security-only commit
-requires exactly one literal commit-message trailer,
-`Hexbot-Windows-Build: <40 lowercase full SHA>`, identifying the build commit.
-The same validated trailer must survive a security squash merge. A
+requires an immutable recorded pin. It uses the nearest recorded trailer along
+the source commit's first-parent history, including the current commit. The
+trailer is exactly `Hexbot-Windows-Build: <40 lowercase full SHA>` and identifies
+the build commit.
+A malformed/duplicate first recorded trailer, missing pin object or invalid
+build interface refuses; routing never searches past bad metadata or follows a
+second parent. Without any recorded first-parent pin, a security-only source
+refuses. Routing logs the exact pin metadata commit SHA separately from the
+source/build SHAs. The same validated trailer must survive a security squash
+merge so ordinary subsequent core/Pi commits can inherit it. Combined build
+markers still select the exact current tree without a historical pin. A
 shared preparation helper creates a detached worktree, applies the security
 diff, and records both inputs and the combined Git tree. If the build already
 contains the security commit, or the security delta is exactly empty because

@@ -1433,67 +1433,6 @@ fn store_ancestors(denied: &[PathBuf]) -> Vec<PathBuf> {
 fn layout(home: &Path, writable: &[PathBuf], workspace: Option<&[PathBuf]>) -> Result<Layout> {
     layout_scanned(home, writable, workspace, workspace.unwrap_or_default())
 }
-// A bounded snapshot check, not protection against an unconfined process
-// inserting a new alias after validation. Cache links are valid unless the same
-// inode is also reachable through a declared workspace/output grant.
-#[cfg(unix)]
-fn reject_managed_hardlinks(managed: &[PathBuf], grants: &[PathBuf], budget: usize) -> Result<()> {
-    use std::os::unix::fs::MetadataExt;
-    const REASON: &str = "Managed runtime hard-link topology could not be validated. Remove artifact/workspace hard links to installed files, use independent copies, and retry with smaller folders. Repair damaged runtimes from a trusted installer.";
-    let check = || -> std::io::Result<bool> {
-        let mut remaining = budget;
-        let mut linked = HashSet::new();
-        for (roots, index) in [(managed, true), (grants, false)] {
-            if !index && linked.is_empty() {
-                break;
-            }
-            let mut visited = HashSet::new();
-            let mut pending = Vec::new();
-            // Resolve each declared root once. Nested entries are inspected
-            // without following links into unrelated trees or network mounts.
-            for root in roots {
-                remaining = remaining
-                    .checked_sub(1)
-                    .ok_or_else(|| std::io::Error::other("entry budget"))?;
-                match std::fs::canonicalize(root) {
-                    Ok(path) => pending.push(path),
-                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                    Err(error) => return Err(error),
-                }
-            }
-            while let Some(path) = pending.pop() {
-                remaining = remaining
-                    .checked_sub(1)
-                    .ok_or_else(|| std::io::Error::other("entry budget"))?;
-                let meta = std::fs::symlink_metadata(&path)?;
-                if meta.file_type().is_symlink() {
-                    continue;
-                }
-                let id = (meta.dev(), meta.ino());
-                if meta.is_dir() && visited.insert(id) {
-                    for entry in std::fs::read_dir(path)? {
-                        // Bound queued entries too, including very wide directories.
-                        if pending.len() >= remaining {
-                            return Err(std::io::Error::other("entry budget"));
-                        }
-                        pending.push(entry?.path());
-                    }
-                } else if meta.is_file() && meta.nlink() > 1 {
-                    if index {
-                        linked.insert(id);
-                    } else if linked.contains(&id) {
-                        return Ok(false);
-                    }
-                }
-            }
-        }
-        Ok(true)
-    };
-    if !check().unwrap_or(false) {
-        return Err(Error::new(4302, REASON));
-    }
-    Ok(())
-}
 #[cfg(unix)]
 fn layout_scanned(
     home: &Path,
@@ -1504,10 +1443,6 @@ fn layout_scanned(
     let mut roots = vec![home.to_owned(), std::fs::canonicalize(home)?];
     roots.dedup();
     let managed = managed_runtime_roots(home)?;
-    // Implicit shared temporary directories are deliberately not scanned. This
-    // only validates aliases already in the declared workspace/output roots.
-    let grants: Vec<_> = writable.iter().chain(search).cloned().collect();
-    reject_managed_hardlinks(&managed, &grants, 100_000)?;
     let writable = writable
         .iter()
         .filter_map(|p| std::fs::canonicalize(p).ok())
@@ -1995,134 +1930,62 @@ pub fn check_code(code: &str) -> Result<()> {
 mod tests {
     use super::*;
     #[test]
-    fn layouts_reject_existing_managed_hardlink_aliases_before_launch() {
-        for local in &policy().managed_runtime {
-            let temp = tempfile::tempdir().unwrap();
-            let home = temp.path().canonicalize().unwrap();
-            let output = home.join("profiles/owl/artifacts");
-            let source = if local.ends_with(".json") {
-                home.join(local)
-            } else {
-                home.join(local).join("probe")
-            };
-            std::fs::create_dir_all(source.parent().unwrap()).unwrap();
-            std::fs::create_dir_all(&output).unwrap();
-            std::fs::write(&source, "keep").unwrap();
-            std::fs::hard_link(&source, output.join("alias")).unwrap();
-            for level in [Confine::No, Confine::Workspace, Confine::ReadOnly] {
-                for program in ["/bin/sh", "/usr/bin/python3"] {
-                    let result = isolated_command_with_outputs(
-                        &home,
-                        program,
-                        std::slice::from_ref(&output),
-                        level,
-                        std::slice::from_ref(&output),
-                    );
-                    assert!(
-                        matches!(result, Err(error) if error.message.contains("hard-link topology")),
-                        "{local} {level:?} {program}"
-                    );
-                }
-            }
-            assert_eq!(std::fs::read_to_string(source).unwrap(), "keep");
-        }
-    }
-    #[test]
-    fn hardlink_snapshot_skips_nested_links_but_checks_declared_aliases() {
-        use std::os::unix::fs::symlink;
+    fn uv_cache_hardlinks_do_not_require_dependency_tree_walks_to_launch() {
+        use std::os::unix::fs::PermissionsExt;
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().canonicalize().unwrap();
-        let managed = root.join("managed");
-        let output = root.join("output");
-        let large = root.join("large-external-tree");
-        for path in [&managed, &output, &large] {
-            std::fs::create_dir(path).unwrap();
-        }
-        let source = managed.join("package.py");
-        std::fs::write(&source, "keep").unwrap();
-        std::fs::hard_link(&source, root.join("uv-cache-package")).unwrap();
-        for index in 0..100 {
-            std::fs::write(large.join(index.to_string()), "outside").unwrap();
-        }
-        symlink(&large, output.join("large-link")).unwrap();
-        symlink("cycle-b", output.join("cycle-a")).unwrap();
-        symlink("cycle-a", output.join("cycle-b")).unwrap();
-        // A venv-like tree may contain interpreter/directory links. Their
-        // targets must not expand the snapshot into unrelated trees.
-        symlink(&large, managed.join("venv-link")).unwrap();
-        let output_alias = root.join("declared-output-alias");
-        symlink(&output, &output_alias).unwrap();
-        reject_managed_hardlinks(
-            std::slice::from_ref(&managed),
-            std::slice::from_ref(&output_alias),
-            30,
-        )
-        .unwrap();
-        std::fs::write(output.join("ordinary-result"), "ordinary output").unwrap();
-        reject_managed_hardlinks(
-            std::slice::from_ref(&managed),
-            std::slice::from_ref(&output_alias),
-            30,
-        )
-        .unwrap();
-        // Links do not disable checks on actual regular files in the grant.
-        let unsafe_file = output.join("runtime-alias");
-        std::fs::hard_link(&source, &unsafe_file).unwrap();
-        assert!(
-            reject_managed_hardlinks(
-                std::slice::from_ref(&managed),
-                std::slice::from_ref(&output_alias),
-                30
-            )
-            .is_err()
-        );
-        let file_alias = root.join("declared-file-alias");
-        symlink(&unsafe_file, &file_alias).unwrap();
-        assert!(
-            reject_managed_hardlinks(std::slice::from_ref(&managed), &[file_alias], 30).is_err()
-        );
-        assert_eq!(std::fs::read_to_string(source).unwrap(), "keep");
-    }
-    #[test]
-    fn hardlink_snapshot_allows_cache_links_and_refuses_errors_and_exhaustion() {
-        let temp = tempfile::tempdir().unwrap();
-        let home = temp.path().canonicalize().unwrap();
-        let managed = home.join("runtime/tools/code-python");
+        let home = root.join("home");
+        let work = root.join("work");
         let output = home.join("profiles/owl/artifacts");
-        std::fs::create_dir_all(&managed).unwrap();
-        std::fs::create_dir_all(&output).unwrap();
-        let source = managed.join("package.py");
-        std::fs::write(&source, "trusted package").unwrap();
-        std::fs::hard_link(&source, home.join("uv-cache-package")).unwrap();
-        // Legitimate uv cache hard links are not themselves an unsafe output.
-        let roots = [managed.clone()];
-        let grants = [output.clone()];
-        reject_managed_hardlinks(&roots, &grants, 100).unwrap();
-        std::fs::write(output.join("result"), "ordinary output").unwrap();
-        std::os::unix::fs::symlink("absent", output.join("dangling")).unwrap();
-        reject_managed_hardlinks(&roots, &grants, 100).unwrap();
-        if isolation_available() {
-            let mut command =
-                isolated_command(&home, "/bin/sh", &grants, Confine::Workspace).unwrap();
-            assert!(
-                command
-                    .as_std_mut()
-                    .args(["-c", "cat \"$1\" > \"$2\"", "probe"])
-                    .arg(&source)
-                    .arg(output.join("result"))
-                    .status()
-                    .unwrap()
-                    .success()
-            );
-            assert_eq!(
-                std::fs::read_to_string(output.join("result")).unwrap(),
-                "trusted package"
-            );
+        let package = home.join("runtime/tools/code-python/site-packages/voice.py");
+        let cache = home.join("runtime/uv-cache/voice.py");
+        let ignored = work.join("node_modules");
+        for path in [
+            package.parent().unwrap(),
+            cache.parent().unwrap(),
+            &output,
+            &ignored,
+        ] {
+            std::fs::create_dir_all(path).unwrap();
         }
-        assert!(reject_managed_hardlinks(&roots, &grants, 1).is_err());
-        std::os::unix::fs::symlink("loop", output.join("loop")).unwrap();
-        assert!(reject_managed_hardlinks(&roots, &[output.join("loop")], 100).is_err());
-        assert_eq!(std::fs::read_to_string(source).unwrap(), "trusted package");
+        std::fs::write(&package, "trusted package").unwrap();
+        std::fs::hard_link(&package, &cache).unwrap();
+        // A stand-in for a dependency tree whose contents are not needed to
+        // launch a command. The Git scan already excludes node_modules.
+        std::fs::set_permissions(&ignored, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let grants = [work, output.clone()];
+        let mut commands = vec![];
+        for mode in [Confine::No, Confine::Workspace, Confine::ReadOnly] {
+            for program in ["/bin/sh", "/usr/bin/python3"] {
+                commands.push((
+                    program,
+                    isolated_command_with_outputs(
+                        &home,
+                        program,
+                        &grants,
+                        mode,
+                        std::slice::from_ref(&output),
+                    ),
+                ));
+            }
+        }
+        std::fs::set_permissions(&ignored, std::fs::Permissions::from_mode(0o755)).unwrap();
+        for (program, command) in commands {
+            let mut command = command.unwrap();
+            command.arg("-c").arg(if program.ends_with("python3") {
+                "print('launched')"
+            } else {
+                "printf launched"
+            });
+            let result = command.as_std_mut().output().unwrap();
+            assert!(
+                result.status.success(),
+                "{}",
+                String::from_utf8_lossy(&result.stderr)
+            );
+            assert!(String::from_utf8_lossy(&result.stdout).contains("launched"));
+        }
+        assert_eq!(std::fs::read_to_string(package).unwrap(), "trusted package");
     }
     #[tokio::test]
     async fn managed_runtime_outputs_never_reopen_runtime_or_selection() {

@@ -1,11 +1,11 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {spawn, execFileSync} from 'node:child_process';
-import {mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, linkSync, symlinkSync} from 'node:fs';
+import {mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, linkSync, symlinkSync, chmodSync} from 'node:fs';
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
 import {createInterface} from 'node:readline';
-import {isolatedCommand, probeIsolation, sandboxProfile, bwrapArguments, rejectManagedHardlinks} from './isolation.ts';
+import {isolatedCommand, probeIsolation, sandboxProfile, bwrapArguments} from './isolation.ts';
 
 // Scans read the user's own Git configuration. These tests use none, so the
 // developer's ~/.gitconfig and system config cannot change their results.
@@ -24,61 +24,24 @@ const gitConfig = (dir, key, value) => execFileSync('/usr/bin/git', ['-C', dir, 
 const bubblewrap = process.platform === 'linux' && !!probeIsolation();
 const needsBubblewrap = {skip: !bubblewrap && 'needs a working bubblewrap on Linux'};
 
-test('layouts reject existing managed hardlink aliases before launch', t => {
-  for (const local of ['runtime/native-current.json','runtime/native/build/hexbot.exe','runtime/tools/code-python/python','runtime/bin/rg','bin/uv','python/bin/python']) {
-    const root = mkdtempSync(join(tmpdir(),'hexbot-managed-hardlinks-'));
-    t.after(() => rmSync(root,{recursive:true,force:true}));
-    const home = join(root,'home'), source = join(home,local), output = join(home,'profiles/owl/artifacts'), alias = join(output,'alias');
-    mkdirSync(join(source,'..'),{recursive:true}); mkdirSync(output,{recursive:true});
-    writeFileSync(source,'keep'); linkSync(source,alias);
-    for (const workspace of [undefined,[output],[]]) for (const layout of [sandboxProfile,bwrapArguments]) {
-      assert.throws(() => layout(home,[output],workspace,[output]),/hard-link topology/,local);
-    }
-    assert.equal(readFileSync(source,'utf8'),'keep');
-  }
-});
-test('hardlink snapshots skip nested links but check declared root and file aliases', t => {
-  const root = mkdtempSync(join(tmpdir(),'hexbot-snapshot-links-'));
+test('uv cache hardlinks do not require dependency tree walks to launch', t => {
+  const root = mkdtempSync(join(tmpdir(),'hexbot-uv-workspace-'));
   t.after(() => rmSync(root,{recursive:true,force:true}));
-  const managed = join(root,'managed'), output = join(root,'output'), large = join(root,'large-external-tree');
-  for (const path of [managed,output,large]) mkdirSync(path);
-  const source = join(managed,'package.py');
-  writeFileSync(source,'keep'); linkSync(source,join(root,'uv-cache-package'));
-  for (let index = 0; index < 100; index++) writeFileSync(join(large,String(index)),'outside');
-  symlinkSync(large,join(output,'large-link'));
-  symlinkSync('cycle-b',join(output,'cycle-a')); symlinkSync('cycle-a',join(output,'cycle-b'));
-  symlinkSync(large,join(managed,'venv-link'));
-  const outputAlias = join(root,'declared-output-alias'); symlinkSync(output,outputAlias);
-  rejectManagedHardlinks([managed],[outputAlias],30);
-  writeFileSync(join(output,'ordinary-result'),'ordinary output');
-  rejectManagedHardlinks([managed],[outputAlias],30);
-  const unsafeFile = join(output,'runtime-alias'); linkSync(source,unsafeFile);
-  assert.throws(() => rejectManagedHardlinks([managed],[outputAlias],30),/hard-link topology/);
-  const fileAlias = join(root,'declared-file-alias'); symlinkSync(unsafeFile,fileAlias);
-  assert.throws(() => rejectManagedHardlinks([managed],[fileAlias],30),/hard-link topology/);
-  assert.equal(readFileSync(source,'utf8'),'keep');
+  const home = join(root,'home'), work = join(root,'work'), output = join(home,'profiles/owl/artifacts');
+  const packagePath = join(home,'runtime/tools/code-python/site-packages/voice.py'), cache = join(home,'runtime/uv-cache/voice.py'), ignored = join(work,'node_modules');
+  for (const path of [join(packagePath,'..'),join(cache,'..'),output,ignored]) mkdirSync(path,{recursive:true});
+  writeFileSync(packagePath,'trusted package'); linkSync(packagePath,cache);
+  chmodSync(ignored,0o000);
+  const commands = [];
+  try {
+    for (const workspace of [undefined,[work,output],[]]) {
+      for (const layout of [sandboxProfile,bwrapArguments]) layout(home,[output],workspace,[work,output]);
+      commands.push(isolatedCommand('printf launched',home,[output],workspace,[work,output]));
+    }
+  } finally { chmodSync(ignored,0o755); }
+  for (const command of commands) assert.match(execFileSync('/bin/bash',['-c',command],{encoding:'utf8'}),/launched/);
+  assert.equal(readFileSync(packagePath,'utf8'),'trusted package');
 });
-test('hardlink snapshots allow uv cache links but refuse errors and exhaustion', t => {
-  const home = mkdtempSync(join(tmpdir(),'hexbot-managed-cache-'));
-  t.after(() => rmSync(home,{recursive:true,force:true}));
-  const managed = join(home,'runtime/tools/code-python'), output = join(home,'profiles/owl/artifacts');
-  mkdirSync(managed,{recursive:true}); mkdirSync(output,{recursive:true});
-  const source = join(managed,'package.py');
-  writeFileSync(source,'trusted package'); linkSync(source,join(home,'uv-cache-package'));
-  rejectManagedHardlinks([managed],[output]);
-  writeFileSync(join(output,'result'),'ordinary output');
-  symlinkSync('absent',join(output,'dangling'));
-  rejectManagedHardlinks([managed],[output]);
-  if (process.platform === 'darwin' || bubblewrap) {
-    execFileSync('/bin/bash',['-c',isolatedCommand(`cat '${source}' > '${output}/result'`,home,[output],[output])]);
-    assert.equal(readFileSync(join(output,'result'),'utf8'),'trusted package');
-  }
-  assert.throws(() => rejectManagedHardlinks([managed],[output],1),/hard-link topology/);
-  symlinkSync('loop',join(output,'loop'));
-  assert.throws(() => rejectManagedHardlinks([managed],[join(output,'loop')]),/hard-link topology/);
-  assert.equal(readFileSync(source,'utf8'),'trusted package');
-});
-
 test('managed runtime output exceptions cannot reopen executables or selection', {skip:process.platform !== 'darwin' && !bubblewrap}, t => {
   const base = mkdtempSync(join(tmpdir(),'hexbot-managed-runtimes-'));
   t.after(() => rmSync(base,{recursive:true,force:true}));

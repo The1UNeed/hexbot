@@ -65,6 +65,7 @@ jobs:
           $root = Join-Path $env:RUNNER_TEMP 'hexbot-native-refusal-source'
           $routing = node scripts/dev/windows-security-inputs.mjs '${{ github.workspace }}' '${{ github.event.pull_request.head.sha || github.sha }}'
           if ($LASTEXITCODE -ne 0) { throw 'Cannot select immutable native inputs' }
+          Write-Host "Immutable native source routing: $routing"
           $plan = $routing | ConvertFrom-Json
           $arguments = @($root, $plan.buildSHA, $plan.securitySHA)
           if ($plan.currentTree) { $arguments += '--current-tree' }
