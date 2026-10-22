@@ -124,6 +124,15 @@ fn forward(channel: Channel<Progress>) -> impl FnMut(Progress) {
     }
 }
 
+fn locations(paths: &Paths, target: Target) -> hexbot_installer::Result<Locations> {
+    Ok(Locations {
+        home: paths.home.clone(),
+        hexbot_home: paths.hexbot_home.clone(),
+        apps: paths.planned_apps_dir(target)?,
+        cli: paths.cli_wrapper(target),
+    })
+}
+
 fn detection() -> hexbot_installer::Result<Detection> {
     let platform = format!("{}/{}", std::env::consts::OS, std::env::consts::ARCH);
     let Ok(target) = Target::detect() else {
@@ -143,12 +152,7 @@ fn detection() -> hexbot_installer::Result<Detection> {
         installer_version: hexbot_installer::version(),
         platform,
         target: Some(target),
-        locations: Some(Locations {
-            home: paths.home.clone(),
-            hexbot_home: paths.hexbot_home.clone(),
-            apps: paths.planned_apps_dir(target)?,
-            cli: paths.wrapper(),
-        }),
+        locations: Some(locations(paths, target)?),
         daemon_files: installed.runtime,
         installed: installed.option().map(|option| InstalledView {
             option,
@@ -454,6 +458,36 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn serialized_cli_location_matches_each_platform_installation() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = Paths {
+            home: root.path().join("user"),
+            hexbot_home: root.path().join("state"),
+            apps_override: Some(root.path().join("apps")),
+            opt_override: None,
+            service_root: root.path().join("services"),
+            service_no_load: true,
+        };
+        for (target, name) in [
+            (Target::WindowsX86_64, "hexbot.exe"),
+            (Target::LinuxX86_64, "hexbot"),
+            (Target::MacosAarch64, "hexbot"),
+            (Target::MacosX86_64, "hexbot"),
+        ] {
+            let serialized = serde_json::to_value(locations(&paths, target).unwrap()).unwrap();
+            assert_eq!(
+                serialized["cli"],
+                paths
+                    .home
+                    .join(".local/bin")
+                    .join(name)
+                    .to_string_lossy()
+                    .as_ref()
+            );
+        }
+    }
 
     #[test]
     fn initial_track_follows_the_installer_version_or_the_probe() {

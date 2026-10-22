@@ -32,6 +32,11 @@ export function renderLock(pins, records) {
     return `${name}==${version} \\\n    ` + [...new Set(record.hashes)].map(hash => `--hash=sha256:${hash}`).join(' \\\n    ')
   }).join('\n') + '\n'
 }
+// Accept checkout CRLF only. Every pin, digest, ordering and other byte stays
+// part of the exact comparison; generated files always use canonical LF.
+export function verifyLock(pins, records, text) {
+  assert.equal(renderLock(pins, records), text.replaceAll('\r\n', '\n'), 'Voice wheel hashes differ from the generated lock')
+}
 async function main() {
   const mode = process.argv[2]
   assert(['--check', '--write'].includes(mode) && process.argv.length === 3, 'Use --check or --write')
@@ -61,8 +66,8 @@ async function main() {
   if (mode === '--write') {
     await writeFile(path, generated); await writeFile(audit, manifest)
   } else {
-    assert.equal(generated, text, 'Windows wheel hashes are missing from the voice lock')
-    assert.equal(await readFile(audit, 'utf8'), manifest, 'Windows wheel audit differs from PyPI')
+    verifyLock(pins, records, text)
+    assert.equal((await readFile(audit, 'utf8')).replaceAll('\r\n', '\n'), manifest, 'Windows wheel audit differs from PyPI')
   }
   console.log(`Verified ${records.length} Windows 3.11 wheels against PyPI metadata and downloaded bytes`)
 }

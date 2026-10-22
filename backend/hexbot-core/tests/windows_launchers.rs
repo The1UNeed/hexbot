@@ -605,6 +605,22 @@ fn interrupted_task_install_uninstalls_owned_files_when_the_task_is_absent() {
         !output.status.success(),
         "Uninstall claimed a foreign task action"
     );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let diagnostic = stderr
+        .lines()
+        .find_map(|line| line.strip_prefix("Hexbot task ownership diagnostic: "))
+        .unwrap_or_else(|| panic!("Missing bounded ownership diagnostic: {stderr}"));
+    let diagnostic: serde_json::Value = serde_json::from_str(diagnostic).unwrap();
+    assert_eq!(diagnostic["reason"], "principal/action mismatch");
+    assert_eq!(diagnostic["program"]["matches"], false);
+    assert_eq!(diagnostic["arguments"]["actual"]["value"], "/D /C exit 0");
+    assert_eq!(diagnostic["principal"]["expected"]["value"], sid);
+    for field in ["program", "arguments", "principal", "home"] {
+        for side in ["actual", "expected"] {
+            assert!(diagnostic[field][side]["value"].as_str().unwrap().len() <= 2048);
+            assert!(diagnostic[field][side]["type"].is_string());
+        }
+    }
     assert!(system_service::owned(&file, &home));
     let query = powershell(&format!(
         "$s=New-Object -ComObject 'Schedule.Service';$s.Connect();$s.GetFolder('\\').GetTask('{name}') | Out-Null"
@@ -658,6 +674,7 @@ fn interrupted_task_install_uninstalls_owned_files_when_the_task_is_absent() {
             .parse()
             .unwrap()
     };
+    eprintln!("Task recovery stage: initial install; home={home:?} script={file:?}");
     let output = service(&home, "install");
     assert!(
         output.status.success(),
@@ -666,7 +683,9 @@ fn interrupted_task_install_uninstalls_owned_files_when_the_task_is_absent() {
     );
     let _task_cleanup = TaskCleanup(name.clone());
     let first_pid = ready(0);
+    eprintln!("Task recovery stage: initial daemon ready pid={first_pid}; removing owned script");
     fs::remove_file(&file).unwrap();
+    eprintln!("Task recovery stage: status after script removal");
     let status = service(&home, "status");
     assert!(
         status.status.success(),

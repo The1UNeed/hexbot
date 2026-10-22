@@ -31,3 +31,6 @@ pnpm-lock.yaml linguist-generated=true
 *.html  text eol=lf
 *.svg   text eol=lf
 *.ps1   text eol=crlf
+
+# Managed voice requirements are embedded in receipts and generated as LF.
+backend/hexbot-core/assets/edge-tts.requirements.* text eol=lf
