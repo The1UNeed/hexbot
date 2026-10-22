@@ -1,0 +1,86 @@
+# Refusal tests only. This does not enable or publish Windows packages.
+name: Windows security boundary
+
+on:
+  push:
+    branches: ['**']
+    paths:
+      - 'backend/pi-runtime/**'
+      - 'backend/hexbot-core/src/credentials.rs'
+      - 'backend/hexbot-core/src/windows_sandbox.rs'
+      - 'backend/hexbot-core/src/runtime.rs'
+      - '.github/workflows/windows-security.yml'
+  pull_request:
+    paths:
+      - 'backend/pi-runtime/**'
+      - 'backend/hexbot-core/src/credentials.rs'
+      - 'backend/hexbot-core/src/windows_sandbox.rs'
+      - 'backend/hexbot-core/src/runtime.rs'
+      - '.github/workflows/windows-security.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  refusal:
+    name: Native refusal under a standard Windows user
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '26.5.0'
+      - run: npm ci --prefix backend/pi-runtime --ignore-scripts --no-audit --no-fund
+      - name: Exercise the real Pi extension without an administrator token
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $name = 'hexbot-security'
+          $password = ConvertTo-SecureString ([Guid]::NewGuid().ToString() + 'aA1!') -AsPlainText -Force
+          $user = New-LocalUser -Name $name -Password $password -AccountNeverExpires
+          Add-LocalGroupMember -SID 'S-1-5-32-545' -Member $user
+          $root = Join-Path $env:SystemDrive ('hexbot-security-' + [Guid]::NewGuid().ToString('N'))
+          New-Item -ItemType Directory -Path $root | Out-Null
+          try {
+            Copy-Item -LiteralPath backend/pi-runtime -Destination (Join-Path $root 'runtime') -Recurse
+            Copy-Item -LiteralPath (Get-Command node.exe).Source -Destination (Join-Path $root 'node.exe')
+            New-Item -ItemType Directory -Path (Join-Path $root 'temp') | Out-Null
+            @'
+          $ErrorActionPreference = 'Stop'
+          $root = $PSScriptRoot
+          try {
+            $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+            $principal = [Security.Principal.WindowsPrincipal]::new($identity)
+            if ($principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+              throw 'Security tests must run without an administrator token'
+            }
+            $env:TEMP = Join-Path $root 'temp'
+            $env:TMP = $env:TEMP
+            & (Join-Path $root 'node.exe') --test (Join-Path $root 'runtime/windows-security.test.mjs')
+            $result = $LASTEXITCODE
+          } catch {
+            Write-Error $_ -ErrorAction Continue
+            $result = 1
+          }
+          Set-Content -LiteralPath (Join-Path $root 'exit-code') -Value $result
+          exit $result
+          '@ | Set-Content -LiteralPath (Join-Path $root 'run.ps1')
+            # Grant only the disposable test directory, never a real user home.
+            & icacls.exe $root /grant "*$($user.SID.Value):(OI)(CI)M" /T /Q
+            if ($LASTEXITCODE -ne 0) { throw 'Cannot grant the test directory' }
+            $credential = [PSCredential]::new("$env:COMPUTERNAME\$name", $password)
+            $powershell = Join-Path $env:SystemRoot 'System32/WindowsPowerShell/v1.0/powershell.exe'
+            $process = Start-Process -FilePath $powershell -ArgumentList @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $root 'run.ps1')) -Credential $credential -LoadUserProfile -WorkingDirectory $root -PassThru -RedirectStandardOutput (Join-Path $root 'stdout') -RedirectStandardError (Join-Path $root 'stderr')
+            if (-not $process.WaitForExit(90000)) {
+              & (Join-Path $env:SystemRoot 'System32/taskkill.exe') /PID $process.Id /T /F
+              throw 'Standard-user probes timed out'
+            }
+            Get-Content -LiteralPath (Join-Path $root 'stdout')
+            Get-Content -LiteralPath (Join-Path $root 'stderr')
+            if (-not (Test-Path (Join-Path $root 'exit-code'))) { throw 'Standard-user probes did not finish' }
+            if ([int](Get-Content (Join-Path $root 'exit-code')) -ne 0) { throw 'Standard-user probes failed' }
+          } finally {
+            Remove-LocalUser -Name $name
+            Remove-Item -LiteralPath $root -Recurse -Force
+          }

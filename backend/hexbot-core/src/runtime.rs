@@ -3977,6 +3977,9 @@ impl Runtime {
             crate::credentials::check_code(args["code"].as_str().unwrap_or(""))?;
             let live = self.session_settings(s)?;
             let mode = live["approvalMode"].clone();
+            if mode != "off" {
+                crate::credentials::require_supported_execution()?;
+            }
             code_sandbox = Some((
                 match mode.as_str() {
                     Some("off") => None,
@@ -3993,7 +3996,9 @@ impl Runtime {
             } else {
                 crate::credentials::UNSANDBOXED_REASON
             });
-            if (mode == "manual" || !sandboxed) && !self.native_approval(s, request).await? {
+            if (mode == "manual" || (mode != "off" && !sandboxed))
+                && !self.native_approval(s, request).await?
+            {
                 return Err(Error::new(4302, "The user denied this action."));
             }
         }

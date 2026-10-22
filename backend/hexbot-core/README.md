@@ -312,6 +312,15 @@ existing `flock` holders on both platforms. Activation waits still retry interru
 calls, and inherited activation descriptors still require the same device/inode
 and lock checks. The daemon remains unsupported on Windows.
 
+Windows compile and installation work must preserve the fail-closed boundary
+in `credentials.rs` and `windows_sandbox.rs`. Auto and Manual local execution
+refuses before approval, scanning or process creation; Pi also refuses its file
+tools. Scheduled scripts require isolation in every mode. Bypass uses upstream
+Pi Bash and has no containment. The focused Windows workflow exercises the
+real Pi extension under a standard user. Once the build ports and this layer
+are combined, also run `cargo test --locked --test windows_security` natively.
+Neither check establishes sandbox support. See [Windows security](../../docs/windows-security.md).
+
 ## Skills
 
 One resolver in `skills.rs` supplies prompts, tools, RPCs, scheduled jobs and

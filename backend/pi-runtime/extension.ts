@@ -4,7 +4,7 @@ import { readFileSync, realpathSync, lstatSync, readlinkSync, statSync, existsSy
 import { resolve, dirname, basename, relative, sep, join } from 'node:path';
 import { homedir, tmpdir } from 'node:os';
 import { createBashTool, createReadTool, createWriteTool, createEditTool, createGrepTool, createFindTool, createLsTool } from '@earendil-works/pi-coding-agent';
-import {credentialPolicy, fold, isolatedCommand, isolationAvailable, policyRegex, policyRoot, privateKeyName, probeIsolation, readDenied, secretFileName, gitDirectory, SCAN_REASON, SCAN_FILE_REASON, within, workspaceProtected, lockedGit, scanFailureReason} from './isolation.ts';
+import {credentialPolicy, fold, isolatedCommand, isolationAvailable, policyRegex, policyRoots, userHomes, requireSupportedExecution, WINDOWS_ISOLATION_UNAVAILABLE, privateKeyName, probeIsolation, readDenied, secretFileName, gitDirectory, SCAN_REASON, SCAN_FILE_REASON, within, workspaceProtected, lockedGit, scanFailureReason} from './isolation.ts';
 import { registerAcp } from './acp.ts';
 import { lazyStream } from '@earendil-works/pi-ai';
 import { builtinProviders } from '@earendil-works/pi-ai/providers/all';
@@ -185,6 +185,10 @@ export default function hexbot(pi: any) {
         if (reason) return {block: true, reason};
       }
       if (live.approvalMode === 'off') return;
+      if (process.platform === 'win32' && ['bash', 'read', 'grep', 'find', 'ls', 'write', 'edit'].includes(event.toolName)) {
+        // No approvals or remembered grants can bypass an unavailable boundary.
+        return {block: true, reason: WINDOWS_ISOLATION_UNAVAILABLE};
+      }
       const cwd = live.cwd ?? config.cwd;
       // `once` approvals cannot be remembered for the section.
       let ask: {key: string, command: string, reason: string, once?: boolean} | undefined;
@@ -291,7 +295,9 @@ export default function hexbot(pi: any) {
       name === 'grep' && !bypass() ? {operations: {isDirectory: (path: string) => statSync(path).isDirectory(), readFile: (path: string) => credentialPath(path, live.home, denied) ? '' : readFileSync(path, 'utf8')}} : {};
     const tool = factory(config.cwd, options());
     const definition = name === 'bash' ? {
-      description: tool.description + ' Commands may run in a sandbox that blocks internet access and writes outside the workspace. When a command needs either, set full_access and give a reason.',
+      description: tool.description + (process.platform === 'win32'
+        ? ' Windows is unsupported: Auto and Manual refuse local tools, including full_access. In Bypass this is Pi\'s Bash shell, such as Git Bash, with no sandbox. Use Bash syntax, not cmd.exe or PowerShell syntax.'
+        : ' Commands may run in a sandbox that blocks internet access and writes outside the workspace. When a command needs either, set full_access and give a reason.'),
       parameters: {type: 'object', properties: {
         command: {type: 'string', description: 'Shell command to execute'},
         timeout: {type: 'number', description: 'Timeout in seconds (optional, no default timeout)'},
@@ -306,6 +312,8 @@ export default function hexbot(pi: any) {
       if (!allowed || allowed.mode !== live.approvalMode) throw new Error('The approval mode changed before this ran. Try again.');
       if (allowed.cwd !== (live.cwd ?? config.cwd)) throw new Error('The working directory changed before this ran. Try again.');
       const cwd = live.cwd ?? config.cwd;
+      // Recheck at execution too, before a factory can touch files or launch.
+      if (!bypass()) requireSupportedExecution();
       if (name === 'bash') {
         const level = allowed.level;
         try {
@@ -345,7 +353,11 @@ export default function hexbot(pi: any) {
     const denial = await gate({toolName: 'bash', input: {command: event.command}}, ctx);
     if (denial) return {result: {output: denial.reason, exitCode: 1, cancelled: false, truncated: false}};
     const level = levelFor({});
+    const approvedCwd = live.cwd ?? config.cwd;
     return {operations: {exec: async (command: string, cwd: string, opts: any) => {
+      await refresh(ctx);
+      if (level !== levelFor({}) || approvedCwd !== (live.cwd ?? config.cwd)) throw new Error('The approval mode or working directory changed before this ran. Try again.');
+      if (level !== 'none') requireSupportedExecution();
       const {createLocalBashOperations} = await import('@earendil-works/pi-coding-agent');
       if (level === 'none') return createLocalBashOperations().exec(command, live.cwd ?? cwd, opts);
       return createLocalBashOperations().exec(spawnFor(level, command), live.cwd ?? cwd, {...opts, env: shellEnvironment(opts.env ?? process.env)});
@@ -486,6 +498,9 @@ export function expandHome(path: string): string {
 }
 // realpathSync.native returns the on-disk case; comparisons fold it (isolation.ts).
 export function canonicalPath(path: string, cwd: string, depth = 0): string {
+  // The Unix component walker is not a Windows handle-based file boundary.
+  // Refuse drive-relative, UNC, device, ADS and reparse paths alike until one exists.
+  requireSupportedExecution();
   if (depth > 40) throw new Error("Too many symbolic links");
   const expanded = expandHome(path);
   // Resolve each component before '..', including a symlink followed by a parent.
@@ -511,16 +526,15 @@ export function credentialPath(path: string, home: string, denied = readDenied()
   return credentialName(path, home, denied);
 }
 function credentialName(path: string, home: string, denied: string[]): boolean {
-  for (const ssh of [join(homedir(), '.ssh'), canonicalPath(join(homedir(), '.ssh'), process.cwd())]) {
+  for (const ssh of userHomes().flatMap(user => [join(user, '.ssh'), canonicalPath(join(user, '.ssh'), process.cwd())])) {
     if (under(path, ssh) && (fold(dirname(path)) !== fold(ssh) || privateKeyName(basename(path)))) return true;
   }
-  if (credentialPolicy.user.some((local: string) => {
-    const secret = join(homedir(), local);
+  if (userHomes().some(user => credentialPolicy.user.some((local: string) => {
+    const secret = join(user, local);
     return under(path, secret) || under(path, canonicalPath(secret, process.cwd()));
-  })) return true;
+  }))) return true;
   // Credential stores such as ~/.aws and ~/.netrc are private to reads too.
-  if ((credentialPolicy.write.deny as string[]).some(entry => {
-    const store = policyRoot(entry);
+  if ((credentialPolicy.write.deny as string[]).flatMap(policyRoots).some(store => {
     return under(path, store) || under(path, canonicalPath(store, process.cwd()));
   })) return true;
   if (denied.some(store => under(path, store))) return true;
@@ -544,8 +558,7 @@ export function hostWriteTier(input: string, cwd: string, fileTool = false): 'de
   const targets = [resolve(cwd, expandHome(input)), canonicalPath(input, cwd)];
   const tiers = [['deny', 'deny'], [fileTool ? 'deny' : 'ask', 'fileDeny'], ['ask', 'ask']] as const;
   for (const [tier, list] of tiers) {
-    for (const entry of credentialPolicy.write[list] as string[]) {
-      const root = policyRoot(entry);
+    for (const root of (credentialPolicy.write[list] as string[]).flatMap(policyRoots)) {
       if (targets.some(target => under(target, root) || under(target, canonicalPath(root, cwd)))) return tier;
     }
   }
@@ -569,6 +582,8 @@ export function writeDenial(input: string, cwd: string, home: string, outputs: s
 function protectedHomePath(path: string, home: string, writable: string[]): boolean {
   const root = canonicalPath(home, process.cwd());
   path = canonicalPath(path, process.cwd());
+  // Runtime selection and immutable builds must never become an output exception.
+  if ((credentialPolicy.managedRuntime as string[]).some(local => under(path, join(root, local)))) return true;
   return under(path, root) && !writable.some(p => {
     const allowed = canonicalPath(p, process.cwd());
     return allowed !== root && under(allowed, root) && under(path, allowed);

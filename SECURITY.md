@@ -34,12 +34,27 @@ The operating-system sandbox is the containment boundary for untrusted shell
 commands and code execution. Prompt instructions, approval text, output
 redaction, and pattern checks do not provide equivalent containment.
 
+Windows remains unsupported. Its build work does not implement a sandbox.
+Auto and Manual refuse local shell commands, Python code, and Pi's file tools
+before approval or execution, including `full_access` and remembered grants.
+Windows metadata scanning and the Unix file-path walker also refuse to run;
+they do not open untrusted Windows files or discover Git through `PATH`.
+Scheduled scripts refuse on Windows in every mode. Bypass retains Pi's Bash
+tool, requiring an installed Bash such as Git Bash, and removes containment and
+credential protection. It does not substitute `cmd.exe` for Bash or show a
+Linux bubblewrap approval. The native Windows security workflow tests refusal
+under a standard user; it does not prove confinement parity or authorize
+Windows releases. See [the remaining Windows requirements](docs/windows-security.md).
+
 - Auto runs shell commands and Python code in a workspace sandbox. macOS uses
   `sandbox-exec` to deny inbound and outbound network access, writes outside
   the workspace, and reads of protected credential paths. Linux uses bubblewrap
   with private network and process namespaces and masked credential paths.
   Writable roots include the working directory, daemon-selected artifact and
   attachment folders, and temporary folders. On macOS these include shared `/tmp`.
+  Runtime selection (`runtime/native-current.json`) and managed executables in
+  `runtime/native`, `runtime/tools`, `runtime/bin`, `bin`, and `python` never
+  become writable output exceptions inside the Hexbot home.
   Existing Git metadata (`.git`, linked `gitdir`/`commondir` targets and bare
   `*.git` repositories with `HEAD` and `objects`, plus `core.hooksPath`
   directories set by the repository or your own Git config) stays read-only within the scan limits below. A bot

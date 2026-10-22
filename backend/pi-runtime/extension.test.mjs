@@ -88,6 +88,15 @@ test('symlinks and parent components cannot bypass file guards', t => {
   assert.equal(protectedPath(join(f.home,'../project/.env.production'),f.home),true);
   assert.equal(protectedPath(join(f.home,'../project/node_modules/a'),f.home),true);
 });
+test('managed runtime paths never become file-tool output exceptions', t => {
+  const f = fixture(t);
+  for (const local of ['runtime/native-current.json','runtime/native/build/hexbot.exe','runtime/tools/code-python/Scripts/python.exe','runtime/bin/rg.exe','bin/uv.exe','python/bin/python']) {
+    const path = join(f.home,local);
+    mkdirSync(join(path,'..'),{recursive:true});
+    writeFileSync(path,'keep');
+    assert.equal(protectedPath(path,f.home,[join(path,'..')]),true,local);
+  }
+});
 test('bash children cannot inherit provider or connector credentials', async t => {
   const f=fixture(t,'smart',['terminal']);
   const previous=process.env.OPENAI_API_KEY;process.env.OPENAI_API_KEY='test-provider-secret';

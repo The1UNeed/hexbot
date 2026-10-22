@@ -24,6 +24,18 @@ const gitConfig = (dir, key, value) => execFileSync('/usr/bin/git', ['-C', dir, 
 const bubblewrap = process.platform === 'linux' && !!probeIsolation();
 const needsBubblewrap = {skip: !bubblewrap && 'needs a working bubblewrap on Linux'};
 
+test('managed runtime output exceptions cannot reopen executables or selection', {skip:process.platform !== 'darwin' && !bubblewrap}, t => {
+  const base = mkdtempSync(join(tmpdir(),'hexbot-managed-runtimes-'));
+  t.after(() => rmSync(base,{recursive:true,force:true}));
+  const home = join(base,'home'); mkdirSync(home);
+  const files = ['runtime/native-current.json','runtime/native/build/hexbot.exe','runtime/tools/code-python/Scripts/python.exe','runtime/bin/rg.exe','bin/uv.exe','python/bin/python'].map(local => join(home,local));
+  for (const path of files) { mkdirSync(join(path,'..'),{recursive:true}); writeFileSync(path,'keep'); }
+  const outputs = files.map(path => join(path,'..'));
+  const command = files.map(path => `if (echo changed > '${path}') 2>/dev/null; then exit 23; fi`).join('; ');
+  execFileSync('/bin/bash',['-c',isolatedCommand(command,home,outputs)],{cwd:base});
+  for (const path of files) assert.equal(readFileSync(path,'utf8'),'keep');
+});
+
 test('sandbox protects newly created secrets and home writes but permits output folders and unrelated files', {skip:process.platform !== 'darwin'}, async t => {
   const base = mkdtempSync(join(tmpdir(), 'hexbot-isolation-'));
   t.after(() => rmSync(base, {recursive:true, force:true}));
