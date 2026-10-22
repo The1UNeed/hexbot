@@ -46,7 +46,7 @@ function MemberRow({
   last?: boolean
   name: string
   onMakeMain: () => Promise<void>
-  onRemove: () => Promise<void>
+  onRemove: (keepRoom: boolean) => Promise<void>
 }) {
   const [busy, setBusy] = useState(false)
   const label = bot?.display_name ?? name
@@ -97,7 +97,7 @@ function MemberRow({
                     detail: 'Its memory of the room stays with the bot.',
                     title: `Remove ${label} from this room?`
                   }
-            ).then(yes => (yes ? run(onRemove) : undefined))
+            ).then(yes => (yes ? run(() => onRemove(!last)) : undefined))
           }
           size="sm"
         >
@@ -195,15 +195,21 @@ export function RoomSettingsPanel({ room }: { room: Room }): React.JSX.Element {
     }
   }
 
-  const remove = async (bot: string) => {
+  const remove = async (bot: string, keepRoom: boolean) => {
     try {
       setError(null)
-      const deleted = await rooms().removeMember(room.id, bot)
+      const deleted = await rooms().removeMember(room.id, bot, keepRoom)
 
       if (deleted) {
         await navigate({ to: '/' })
       }
     } catch (cause) {
+      if ((cause as { code?: number } | null)?.code === 4216) {
+        // Membership changed after the question. Refresh before asking again;
+        // ordinary removal never grants permission to delete the room.
+        await rooms().refreshOne(room.id)
+      }
+
       setError(errorOf(cause))
     }
   }
@@ -256,7 +262,7 @@ export function RoomSettingsPanel({ room }: { room: Room }): React.JSX.Element {
                 last={members.length === 1}
                 name={member.display_name ?? member.member_id}
                 onMakeMain={() => save({ main_bot: member.member_id })}
-                onRemove={() => remove(member.member_id)}
+                onRemove={keepRoom => remove(member.member_id, keepRoom)}
               />
             ))}
             <div className="flex min-h-[48px] items-center justify-between gap-3 px-4 py-2">
