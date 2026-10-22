@@ -165,7 +165,12 @@ the activation-lock rollback floor and both service log streams. Dedicated
 probes also cover Restricted PowerShell/CMD argument propagation, real 8.3
 aliases where the volume supplies them, interrupted task cleanup, foreign
 actions, Tauri app detachment, and owned Full quit/EOF/force cleanup with a real
-Runtime-owned Pi child and a descendant. A separate native supervisor probe
+Runtime-owned Pi child and a descendant.
+The shutdown fixture binds each run to a fresh mode/nonce, waits for descendant
+startup and a real Pi RPC response, and retains kernel process handles before
+Pi can reply or exit. Lifecycle/CIM/exit-code diagnostics distinguish startup
+failure from cleanup; no production Pi stderr is captured or relaxed.
+A separate native supervisor probe
 starts/stops a local tunnel metrics fixture twice through real services cleanup.
 It does not prove live Cloudflare enrollment. A volume without distinct 8.3 names
 reports that case as unproved.

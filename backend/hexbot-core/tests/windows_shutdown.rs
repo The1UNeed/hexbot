@@ -1,13 +1,13 @@
 #![cfg(windows)]
 //! Owned desktop pipe shutdown must reach App/Pi cleanup and release the home.
-use futures_util::{SinkExt, StreamExt};
+use futures_util::{FutureExt, SinkExt, StreamExt};
 #[path = "../src/windows_paths.rs"]
 mod windows_paths;
 use hexbot_core::{auth, db, osutil};
 use serde_json::{Value, json};
 use std::{fs, path::PathBuf, process::Stdio, time::Duration};
 use tokio::{
-    io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
+    io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
     process::Command,
 };
 use tokio_tungstenite::{connect_async, tungstenite::Message};
@@ -33,16 +33,24 @@ async fn owned_desktop_pipe_quit_and_restart_clean_up_real_pi_and_home_lock() {
     let fixture = root.path().join("trusted launch wrapper");
     fs::create_dir_all(fixture.join("pi")).unwrap();
     fs::copy(bundle.join("node.exe"), fixture.join("node.exe")).unwrap();
-    let descendants = fixture.join("descendants.json");
-    fs::write(fixture.join("pi/launch.mjs"), format!(r#"import {{spawn}} from 'node:child_process';
-import {{writeFileSync}} from 'node:fs';
-// Deliberately keep a descendant alive after Pi itself is killed. The daemon
-// lifetime job must reap it even in the force fallback; no containment claim.
-const child = spawn(process.execPath, ['-e', 'setInterval(() => {{}}, 1000)'], {{stdio:'ignore', windowsHide:true}});
-writeFileSync({}, JSON.stringify([process.pid, child.pid]));
-await import({});
-"#, json!(descendants), json!(url::Url::from_file_path(bundle.join("pi/launch.mjs")).unwrap().as_str()))).unwrap();
+    let module = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../pi-runtime/fixtures/windows-shutdown-pi.mjs");
+    let module = url::Url::from_file_path(&module).unwrap();
+    let launcher = url::Url::from_file_path(bundle.join("pi/launch.mjs")).unwrap();
     for mode in ["command", "eof", "force"] {
+        let nonce = hexbot_core::common::id();
+        let evidence = fixture.join(format!("{mode}-{nonce}"));
+        fs::create_dir(&evidence).unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let config = json!({"directory":evidence,"mode":mode,"nonce":nonce,"launcher":launcher.as_str(),"monitor":listener.local_addr().unwrap().port()});
+        fs::write(
+            fixture.join("pi/launch.mjs"),
+            format!(
+                "import {{runShutdownFixture}} from {module};await runShutdownFixture({config});\n",
+                module = json!(module.as_str())
+            ),
+        )
+        .unwrap();
         let mut child = Command::new(env!("CARGO_BIN_EXE_hexbot"))
             .args(["serve", "--host", "127.0.0.1", "--port", "0"])
             .env("HEXBOT_HOME", &home)
@@ -57,114 +65,163 @@ await import({});
             .spawn()
             .unwrap();
         let daemon_pid = child.id().unwrap();
-        let mut output = BufReader::new(child.stdout.take().unwrap()).lines();
-        let port: u16 = tokio::time::timeout(Duration::from_secs(45), async {
-            while let Some(line) = output.next_line().await.unwrap() {
-                if let Some(port) = line.strip_prefix("HERMES_BACKEND_READY port=") {
-                    return port.parse().unwrap();
+        let mut handles = Vec::new();
+        let result = std::panic::AssertUnwindSafe(async {
+            let mut output = BufReader::new(child.stdout.take().unwrap()).lines();
+            let port: u16 = tokio::time::timeout(Duration::from_secs(45), async {
+                while let Some(line) = output.next_line().await.unwrap() {
+                    if let Some(port) = line.strip_prefix("HERMES_BACKEND_READY port=") { return port.parse().unwrap(); }
                 }
+                panic!("{mode}: daemon exited before readiness");
+            }).await.unwrap();
+            let (mut socket, _) = connect_async(format!("ws://127.0.0.1:{port}/api/ws?token={token}")).await.unwrap();
+            socket.send(Message::Text(json!({"jsonrpc":"2.0","id":"open-pi","method":"hexbot.sections.open","params":{"id":"first"}}).to_string().into())).await.unwrap();
+            // A fixture-only loopback barrier captures kernel handles before
+            // real Pi imports or replies. No PID polling or daemon endpoint.
+            let mut monitor = tokio::time::timeout(Duration::from_secs(45), async {
+                loop {
+                    tokio::select! {
+                        accepted = listener.accept() => return accepted.unwrap().0,
+                        frame = socket.next() => {
+                            let frame = frame.expect("socket closed before tracking").unwrap();
+                            if frame.is_text() {
+                                let value: Value = serde_json::from_str(frame.to_text().unwrap()).unwrap();
+                                if value["id"] == "open-pi" { panic!("{mode}: Pi replied before fixture tracking: {value}"); }
+                            }
+                        }
+                    }
+                }
+            }).await.expect("Pi fixture did not identify its processes");
+            let mut line = String::new();
+            tokio::time::timeout(Duration::from_secs(15),
+                BufReader::new((&mut monitor).take(4097)).read_line(&mut line)).await.unwrap().unwrap();
+            assert!(line.len() <= 4096 && line.ends_with('\n'));
+            let tracked: Value = serde_json::from_str(&line).unwrap();
+            assert_eq!(tracked["mode"], mode); assert_eq!(tracked["nonce"], nonce);
+            assert_eq!(tracked["ppid"], daemon_pid);
+            let pi_pid = u32::try_from(tracked["pid"].as_u64().unwrap()).unwrap();
+            let descendant = u32::try_from(tracked["child"].as_u64().unwrap()).unwrap();
+            assert_ne!(pi_pid, descendant);
+            handles.extend([ProcessHandle::open(pi_pid), ProcessHandle::open(descendant)]);
+            assert!(handles.iter().all(ProcessHandle::alive), "Startup process already exited");
+            monitor.write_all(b"tracked\n").await.unwrap();
+            drop(monitor);
+            tokio::time::timeout(Duration::from_secs(90), async {
+                while let Some(frame) = socket.next().await {
+                    let frame = frame.unwrap();
+                    if !frame.is_text() { continue; }
+                    let value: Value = serde_json::from_str(frame.to_text().unwrap()).unwrap();
+                    if value["id"] == "open-pi" {
+                        assert!(value.get("error").is_none(), "{mode}: Actual Pi open failed: {value}");
+                        return;
+                    }
+                }
+                panic!("{mode}: socket closed before Pi open reply");
+            }).await.unwrap();
+            let ready: Value = serde_json::from_slice(&fs::read(evidence.join("ready.json")).unwrap()).unwrap();
+            assert_eq!(ready, tracked, "Current Pi RPC readiness must match this run's tracked processes");
+            let query = format!("[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false);ConvertTo-Json -Compress -InputObject @(Get-CimInstance Win32_Process -Filter 'ParentProcessId = {daemon_pid} OR ProcessId = {descendant}' | Where-Object Name -eq 'node.exe' | Select-Object ProcessId,ParentProcessId,ExecutablePath,CreationDate)");
+            let children = Command::new(windows_paths::system_program("WindowsPowerShell/v1.0/powershell.exe").unwrap())
+                .args(["-NoProfile", "-NonInteractive", "-Command", &query]).output().await.unwrap();
+            assert!(children.status.success(), "{}", String::from_utf8_lossy(&children.stderr));
+            let rows: Vec<Value> = serde_json::from_slice(&children.stdout).unwrap();
+            eprintln!("Shutdown {mode}/{nonce}: daemon={daemon_pid}, tracked={tracked}, CIM={rows:?}, handles={:?}", handles.iter().map(ProcessHandle::snapshot).collect::<Vec<_>>());
+            for (pid, parent) in [(pi_pid, daemon_pid), (descendant, pi_pid)] {
+                let row = rows.iter().find(|r| r["ProcessId"] == pid).expect("Tracked process missing from CIM");
+                assert_eq!(row["ParentProcessId"], parent);
+                assert_eq!(PathBuf::from(row["ExecutablePath"].as_str().unwrap()).canonicalize().unwrap(), fixture.join("node.exe").canonicalize().unwrap());
             }
-            panic!("daemon exited before readiness");
-        })
-        .await
-        .unwrap();
-        let (mut socket, _) = connect_async(format!("ws://127.0.0.1:{port}/api/ws?token={token}"))
-            .await
-            .unwrap();
-        socket.send(Message::Text(json!({"jsonrpc":"2.0","id":"open-pi","method":"hexbot.sections.open","params":{"id":"first"}}).to_string().into())).await.unwrap();
-        tokio::time::timeout(Duration::from_secs(90), async {
-            while let Some(frame) = socket.next().await {
-                let frame = frame.unwrap();
-                if !frame.is_text() {
-                    continue;
-                }
-                let value: Value = serde_json::from_str(frame.to_text().unwrap()).unwrap();
-                if value["id"] == "open-pi" {
-                    assert!(
-                        value.get("error").is_none(),
-                        "Actual Pi open failed: {value}"
-                    );
-                    return;
-                }
+            // Also retain any other live Runtime-owned Node identity. Never
+            // silently reinterpret a replacement or stale PID as cleanup proof.
+            for row in rows {
+                let pid = u32::try_from(row["ProcessId"].as_u64().unwrap()).unwrap();
+                if !handles.iter().any(|handle| handle.pid == pid) { handles.push(ProcessHandle::open(pid)); }
             }
-            panic!("socket closed before Pi open reply");
-        })
-        .await
-        .unwrap();
-        let children = Command::new(windows_paths::system_program("WindowsPowerShell/v1.0/powershell.exe").unwrap())
-            .args(["-NoProfile", "-NonInteractive", "-Command", &format!("ConvertTo-Json -Compress -InputObject @(Get-CimInstance Win32_Process -Filter 'ParentProcessId = {daemon_pid}' | Where-Object Name -eq 'node.exe' | ForEach-Object ProcessId)")])
-            .output().await.unwrap();
-        assert!(
-            children.status.success(),
-            "{}",
-            String::from_utf8_lossy(&children.stderr)
-        );
-        let mut pi_pids: Vec<u32> = serde_json::from_slice(&children.stdout).unwrap();
-        let descendants: Vec<u32> =
-            serde_json::from_slice(&fs::read(&descendants).unwrap()).unwrap();
-        pi_pids.extend(descendants);
-        assert!(!pi_pids.is_empty(), "No actual Runtime-owned Pi child");
-        assert!(pi_pids.iter().all(|pid| osutil::process_alive(*pid)));
-        let handles = pi_pids
-            .iter()
-            .map(|pid| ProcessHandle::open(*pid))
-            .collect::<Vec<_>>();
-        let mut input = child.stdin.take().unwrap();
-        if mode == "command" {
-            input.write_all(b"HEXBOT_SHUTDOWN_V1\n").await.unwrap();
+            let pi_pids = handles.iter().map(|handle| handle.pid).collect::<Vec<_>>();
+            assert!(pi_pids.iter().all(|pid| osutil::process_alive(*pid)) && handles.iter().all(ProcessHandle::alive),
+                "{mode}: A current Pi/descendant died BEFORE shutdown: {:?}", handles.iter().map(ProcessHandle::snapshot).collect::<Vec<_>>());
+            let mut input = child.stdin.take().unwrap();
+            if mode == "command" { input.write_all(b"HEXBOT_SHUTDOWN_V1\n").await.unwrap(); }
+            if mode == "force" { child.start_kill().unwrap(); }
+            drop(input);
+            let status = tokio::time::timeout(Duration::from_secs(15), child.wait()).await.unwrap().unwrap();
+            if mode != "force" { assert_eq!(status.code(), Some(0), "{mode}: daemon normal exit must be zero"); }
+            for process in &handles { process.wait(); }
+            assert!(handles.iter().all(|p| !p.alive()), "{mode}: Pi survived owned shutdown");
+            eprintln!("Shutdown {mode}/{nonce}: daemon exit={status}, descendants={:?}", handles.iter().map(ProcessHandle::snapshot).collect::<Vec<_>>());
+            if mode != "force" { assert!(!home.join("serve-state.json").exists()); }
+            let lock = fs::OpenOptions::new().read(true).write(true).open(home.join("native-daemon.lock")).unwrap();
+            lock.try_lock().expect("Home lock was not released before restart");
+        }).catch_unwind().await;
+        for entry in fs::read_dir(&evidence).unwrap().take(8) {
+            let path = entry.unwrap().path();
+            if path.extension().is_some_and(|e| e == "jsonl") {
+                let bytes = fs::read(&path).unwrap();
+                eprintln!(
+                    "Shutdown {mode}/{nonce} lifecycle {}: {}",
+                    path.file_name().unwrap().to_string_lossy(),
+                    String::from_utf8_lossy(&bytes[..bytes.len().min(8192)])
+                );
+            }
         }
-        if mode == "force" {
-            child.start_kill().unwrap();
-        }
-        drop(input); // EOF also cleans up if the owning app exits unexpectedly.
-        let status = tokio::time::timeout(Duration::from_secs(15), child.wait())
-            .await
-            .unwrap()
-            .unwrap();
-        if mode != "force" {
-            assert!(
-                status.success(),
-                "Owned daemon did not shut down normally: {status}"
+        if let Err(error) = result {
+            eprintln!(
+                "Shutdown {mode}/{nonce} FAILED before cleanup: daemon={:?}, processes={:?}",
+                child.try_wait(),
+                handles
+                    .iter()
+                    .map(ProcessHandle::snapshot)
+                    .collect::<Vec<_>>()
             );
+            if child.id().is_some() {
+                if let Err(error) = child.start_kill() {
+                    eprintln!("Owned fixture kill: {error}");
+                }
+                if let Err(error) =
+                    tokio::time::timeout(Duration::from_secs(15), child.wait()).await
+                {
+                    eprintln!("Owned fixture reap: {error}");
+                }
+            }
+            std::panic::resume_unwind(error);
         }
-        for process in handles {
-            process.wait();
-        }
-        assert!(
-            pi_pids.iter().all(|pid| !osutil::process_alive(*pid)),
-            "Pi survived owned daemon shutdown: {pi_pids:?}"
-        );
-        if mode != "force" {
-            assert!(!home.join("serve-state.json").exists());
-        }
-        let lock = fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open(home.join("native-daemon.lock"))
-            .unwrap();
-        lock.try_lock()
-            .expect("Home lock was not released before restart");
     }
 }
 
 // Capture handles before shutdown, then wait on kernel exit events. PIDs alone
 // cannot prove all descendants have finished when the daemon wait completes.
-struct ProcessHandle(*mut std::ffi::c_void);
+struct ProcessHandle {
+    handle: *mut std::ffi::c_void,
+    pid: u32,
+}
 #[link(name = "kernel32")]
 unsafe extern "system" {
     fn OpenProcess(access: u32, inherit: i32, pid: u32) -> *mut std::ffi::c_void;
     fn WaitForSingleObject(handle: *mut std::ffi::c_void, milliseconds: u32) -> u32;
+    fn GetExitCodeProcess(handle: *mut std::ffi::c_void, code: *mut u32) -> i32;
     fn CloseHandle(handle: *mut std::ffi::c_void) -> i32;
 }
 impl ProcessHandle {
     fn open(pid: u32) -> Self {
-        let handle = unsafe { OpenProcess(0x00100000, 0, pid) };
-        assert!(!handle.is_null(), "Cannot own fixture process {pid}");
-        Self(handle)
+        let handle = unsafe { OpenProcess(0x00101000, 0, pid) };
+        assert!(
+            !handle.is_null(),
+            "Cannot own fixture process {pid}: {}",
+            std::io::Error::last_os_error()
+        );
+        Self { handle, pid }
+    }
+    fn alive(&self) -> bool {
+        (unsafe { WaitForSingleObject(self.handle, 0) }) == 258
+    }
+    fn snapshot(&self) -> Value {
+        let mut code = 0;
+        let queried = unsafe { GetExitCodeProcess(self.handle, &mut code) };
+        json!({"pid":self.pid,"wait":unsafe { WaitForSingleObject(self.handle,0) },"exitCode":if queried != 0 {Some(code)} else {None}})
     }
     fn wait(&self) {
         assert_eq!(
-            unsafe { WaitForSingleObject(self.0, 15000) },
+            unsafe { WaitForSingleObject(self.handle, 15000) },
             0,
             "Descendant did not exit"
         );
@@ -173,7 +230,7 @@ impl ProcessHandle {
 impl Drop for ProcessHandle {
     fn drop(&mut self) {
         unsafe {
-            CloseHandle(self.0);
+            CloseHandle(self.handle);
         }
     }
 }
