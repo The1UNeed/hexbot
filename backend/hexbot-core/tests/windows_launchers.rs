@@ -704,6 +704,22 @@ fn interrupted_task_install_uninstalls_owned_files_when_the_task_is_absent() {
         "$s=New-Object -ComObject 'Schedule.Service';$s.Connect();$s.GetFolder('\\').GetTask('{name}') | Out-Null"
     ));
     assert!(query.status.success(), "Foreign task was deleted");
+    let refused_installer =
+        Command::new(std::env::var_os("HEXBOT_WINDOWS_INSTALLER").expect("native installer"))
+            .args(["--uninstall", "--yes", "--json"])
+            .env("HEXBOT_HOME", &home)
+            .env("HOME", root.path())
+            .env("USERPROFILE", root.path())
+            .env("HEXBOT_SERVICE_ROOT", root.path())
+            .env_remove("HEXBOT_SERVICE_NO_LOAD")
+            .output()
+            .unwrap();
+    assert!(
+        !refused_installer.status.success(),
+        "Installer removed a foreign task"
+    );
+    assert!(system_service::owned(&file, &home));
+
     drop(cleanup);
     assert!(run().status.success());
     assert!(!file.exists());

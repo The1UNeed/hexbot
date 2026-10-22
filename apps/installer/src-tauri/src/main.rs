@@ -266,18 +266,25 @@ async fn repair(
     blocking(move || {
         let engine = Installer::from_env()?;
         let mut progress = forward(on_progress);
-        let installed = engine.detect()?;
-        if installed.receipt.is_some() || engine.target.is_windows() {
-            return engine.repair(&mut progress);
-        }
-        let option = installed.option().ok_or("Hexbot is not installed.")?;
-        let track = match installed.track() {
-            Some(track) => track,
-            None => hexbot_installer::default_track(&engine.base_url)?,
-        };
-        engine.apply(option, track, &mut progress)
+        repair_detected(&engine, &mut progress)
     })
     .await
+}
+
+fn repair_detected(
+    engine: &Installer,
+    progress: &mut hexbot_installer::ProgressCallback<'_>,
+) -> hexbot_installer::Result<InstallResult> {
+    let installed = engine.detect()?;
+    if installed.receipt.is_some() || engine.target.is_windows() {
+        return engine.repair(progress);
+    }
+    let option = installed.option().ok_or("Hexbot is not installed.")?;
+    let track = match installed.track() {
+        Some(track) => track,
+        None => hexbot_installer::default_track(&engine.base_url)?,
+    };
+    engine.apply(option, track, progress)
 }
 
 #[tauri::command]
@@ -458,6 +465,113 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn gui_receiptless_repair_uses_packaged_track_and_refuses_ambiguity() {
+        use std::{
+            fs,
+            io::{BufRead, BufReader, Write},
+            net::TcpListener,
+        };
+        for (id, version, expected) in [
+            (
+                "app.hexbot.client",
+                "1.2.3-nightly.20261023.1",
+                Track::Nightly,
+            ),
+            ("app.hexbot.desktop.nightly", "1.2.3", Track::Stable),
+        ] {
+            let root = tempfile::tempdir().unwrap();
+            let paths = Paths {
+                home: root.path().join("user"),
+                hexbot_home: root.path().join("state"),
+                apps_override: Some(root.path().join("apps")),
+                opt_override: None,
+                service_root: root.path().join("services"),
+                service_no_load: true,
+            };
+            fs::create_dir_all(&paths.home).unwrap();
+            let app = paths.apps_override.as_ref().unwrap().join(id);
+            fs::create_dir_all(app.join("resources")).unwrap();
+            fs::write(
+                app.join(".hexbot-app.json"),
+                serde_json::json!({"appId":id}).to_string(),
+            )
+            .unwrap();
+            fs::write(
+                app.join(if id.contains("client") {
+                    "HexbotClient.exe"
+                } else {
+                    "Hexbot.exe"
+                }),
+                "owned fixture",
+            )
+            .unwrap();
+            let package = serde_json::to_vec(&serde_json::json!({"version":version})).unwrap();
+            let header = serde_json::to_vec(
+                &serde_json::json!({"files":{"package.json":{"offset":"0","size":package.len()}}}),
+            )
+            .unwrap();
+            let size = (header.len() + 11) & !3;
+            let mut bytes = Vec::new();
+            for word in [4, size as u32, (size - 4) as u32, header.len() as u32] {
+                bytes.extend(word.to_le_bytes());
+            }
+            bytes.extend(header);
+            bytes.resize(size + 8, 0);
+            bytes.extend(package);
+            fs::write(app.join("resources/app.asar"), bytes).unwrap();
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let mut engine = Installer {
+                paths,
+                target: Target::WindowsX86_64,
+                base_url: format!("http://{}", listener.local_addr().unwrap()),
+            };
+            let server = std::thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut request = String::new();
+                BufReader::new(&stream).read_line(&mut request).unwrap();
+                let request = request.trim_end().to_owned();
+                stream
+                    .write_all(
+                        b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                    )
+                    .unwrap();
+                request
+            });
+            assert_eq!(engine.detect().unwrap().track(), Some(expected));
+            assert!(repair_detected(&engine, &mut |_| {}).is_err());
+            assert_eq!(
+                server.join().unwrap(),
+                format!("GET /install/{expected}.json HTTP/1.1")
+            );
+            // A second otherwise valid install must not silently pick an edition.
+            let second = engine
+                .paths
+                .apps_override
+                .as_ref()
+                .unwrap()
+                .join("app.hexbot.desktop");
+            fs::create_dir_all(second.join("resources")).unwrap();
+            fs::copy(
+                app.join("resources/app.asar"),
+                second.join("resources/app.asar"),
+            )
+            .unwrap();
+            fs::write(
+                second.join(".hexbot-app.json"),
+                br#"{"appId":"app.hexbot.desktop"}"#,
+            )
+            .unwrap();
+            fs::write(second.join("Hexbot.exe"), "owned fixture").unwrap();
+            engine.base_url = "file:///must-not-fetch".into();
+            let error = repair_detected(&engine, &mut |_| {}).unwrap_err();
+            assert!(
+                error.to_string().contains("one installed Windows app"),
+                "{error}"
+            );
+        }
+    }
 
     #[test]
     fn serialized_cli_location_matches_each_platform_installation() {

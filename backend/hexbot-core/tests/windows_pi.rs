@@ -196,7 +196,7 @@ async fn stopping_one_pi_reaps_its_real_bash_tree_and_preserves_another_pi() {
             .unwrap()
             .success
     );
-    // A fresh instance can start after cleanup, while the second stays alive.
+    // The unaffected instance still shuts down through its own job.
     processes[1].shutdown().await.unwrap();
     assert!(!nodes[1].alive());
 }
