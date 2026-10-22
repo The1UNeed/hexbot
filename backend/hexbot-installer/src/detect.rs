@@ -143,6 +143,13 @@ impl Paths {
 
     pub(crate) fn command(&self, executable: impl AsRef<std::ffi::OsStr>) -> Command {
         let mut command = Command::new(executable);
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            command
+                .creation_flags(0x08000000)
+                .env("USERPROFILE", &self.home);
+        }
         command
             .env("HOME", &self.home)
             .env("HEXBOT_HOME", &self.hexbot_home)
@@ -703,6 +710,26 @@ exit 1
 #[cfg(test)]
 mod windows_ownership_tests {
     use super::*;
+    #[test]
+    fn child_commands_keep_setup_and_cli_in_the_selected_user_profile() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = Paths {
+            home: root.path().join("Jos\u{e9} profile"),
+            hexbot_home: root.path().join("selected state"),
+            service_root: root.path().join("services"),
+            service_no_load: true,
+            apps_override: None,
+            opt_override: None,
+        };
+        let command = paths.command("hexbot.exe");
+        let env: std::collections::BTreeMap<_, _> = command.get_envs().collect();
+        let value = |key: &str| env.get(std::ffi::OsStr::new(key)).copied().flatten();
+        assert_eq!(value("HOME"), Some(paths.home.as_os_str()));
+        assert_eq!(value("HEXBOT_HOME"), Some(paths.hexbot_home.as_os_str()));
+        #[cfg(windows)]
+        assert_eq!(value("USERPROFILE"), Some(paths.home.as_os_str()));
+    }
+
     #[test]
     fn packaged_ownership_survives_an_absent_receipt_without_claiming_unrelated_apps() {
         let root = tempfile::tempdir().unwrap();

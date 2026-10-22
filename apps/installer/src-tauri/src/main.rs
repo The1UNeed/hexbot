@@ -303,6 +303,13 @@ fn daemon(paths: &Paths, args: &[&str]) -> hexbot_installer::Result<String> {
 
 fn daemon_command(paths: &Paths, args: &[&str]) -> std::process::Command {
     let mut command = std::process::Command::new(paths.executable());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command
+            .creation_flags(0x08000000)
+            .env("USERPROFILE", &paths.home);
+    }
     command
         .args(args)
         .env("HOME", &paths.home)
@@ -463,6 +470,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn daemon_commands_clean_the_appimage_environment() {
         // Put the inherited environment in a subprocess, not the parallel test runner.
         const CHILD: &str = "HEXBOT_TEST_APPIMAGE_CHILD";
@@ -509,6 +517,8 @@ mod tests {
                 Some(std::ffi::OsStr::new("/usr/lib"))
             );
             assert_eq!(value("HOME"), Some(paths.home.as_os_str()));
+            #[cfg(windows)]
+            assert_eq!(value("USERPROFILE"), Some(paths.home.as_os_str()));
             assert_eq!(value("HEXBOT_HOME"), Some(paths.hexbot_home.as_os_str()));
             assert_eq!(
                 value("HEXBOT_SERVICE_ROOT"),
@@ -522,6 +532,33 @@ mod tests {
             assert_eq!(command.get_args().collect::<Vec<_>>(), args);
         }
         assert_eq!(std::env::var("APPDIR").unwrap(), "/tmp/installer-appimage");
+    }
+
+    #[test]
+    fn daemon_commands_use_the_exact_selected_profile_and_state() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = Paths {
+            home: root.path().join("Jos\u{e9} profile"),
+            hexbot_home: root.path().join("selected state"),
+            service_root: root.path().join("services"),
+            service_no_load: true,
+            apps_override: None,
+            opt_override: None,
+        };
+        for args in [&["status", "--json"][..], &["pair"][..]] {
+            let command = daemon_command(&paths, args);
+            let env: std::collections::BTreeMap<_, _> = command.get_envs().collect();
+            let value = |key: &str| env.get(std::ffi::OsStr::new(key)).copied().flatten();
+            assert_eq!(value("HOME"), Some(paths.home.as_os_str()));
+            assert_eq!(value("HEXBOT_HOME"), Some(paths.hexbot_home.as_os_str()));
+            assert_eq!(
+                value("HEXBOT_SERVICE_ROOT"),
+                Some(paths.service_root.as_os_str())
+            );
+            #[cfg(windows)]
+            assert_eq!(value("USERPROFILE"), Some(paths.home.as_os_str()));
+            assert_eq!(command.get_program(), paths.executable());
+        }
     }
 
     #[test]
