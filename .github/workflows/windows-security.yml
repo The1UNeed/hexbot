@@ -63,7 +63,7 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $env:HEXBOT_CI_GIT = (Get-Command git.exe).Source
           $root = Join-Path $env:RUNNER_TEMP 'hexbot-native-refusal-source'
-          $record = node scripts/dev/prepare-windows-security.mjs $root e9bcb7d3377c95ab1c946bb109a82b6de19ceceb
+          $record = node scripts/dev/prepare-windows-security.mjs $root a3cc87e7f5488c58adab17a1911fff9052150008
           if ($LASTEXITCODE -ne 0) { throw 'Cannot prepare exact combined source' }
           $inputs = $record | ConvertFrom-Json
           if ($inputs.sourceDir -ne $root) { throw 'Unexpected source destination' }

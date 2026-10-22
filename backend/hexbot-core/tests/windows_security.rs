@@ -82,7 +82,7 @@ async fn windows_security_runtime_refuses_code_before_approval() {
     ] {
         fs::create_dir_all(dir).unwrap();
     }
-    fs::copy(node, fixture.join("node.exe")).unwrap();
+    fs::copy(&node, fixture.join("node.exe")).unwrap();
     fs::write(
         fixture.join("pi/launch.mjs"),
         include_str!("../../pi-runtime/fixtures/windows-daemon-pi.mjs"),
@@ -155,7 +155,7 @@ async fn windows_security_runtime_refuses_code_before_approval() {
             let opened = runtime
                 .call("alice", "hexbot.sections.open", &json!({"id":"first"}))
                 .await
-                .unwrap()
+                .unwrap_or_else(|error| panic!("Runtime open in {mode} before refusal: {error:?}"))
                 .unwrap();
             let live = opened["section"]["live_session_id"].as_str().unwrap();
             let mut events = hub.subscribe();
@@ -307,15 +307,67 @@ s.close()
     let result = std::panic::AssertUnwindSafe(result).catch_unwind().await;
     scheduler.shutdown().await;
     runtime.shutdown().await;
-    let pid: u32 = fs::read_to_string(fixture.join("fixture.pid"))
-        .unwrap()
-        .parse()
-        .unwrap();
-    assert!(
-        !hexbot_core::osutil::process_alive(pid),
-        "owned Pi fixture must exit during shutdown"
-    );
-    result.unwrap();
+    // Report cleanup separately, then resume the original panic. A missing
+    // startup record must not replace the error that explains why startup failed.
+    let records_path = fixture.join("fixture.events.jsonl");
+    let cleanup = (|| -> Result<(), String> {
+        let records = fs::read_to_string(&records_path)
+            .map_err(|error| format!("{}: {error}", records_path.display()))?;
+        let mut started = 0;
+        for line in records.lines() {
+            let record: serde_json::Value = serde_json::from_str(line)
+                .map_err(|error| format!("{}: {error}", records_path.display()))?;
+            eprintln!("Trusted Pi fixture lifecycle: {record}");
+            if record["event"] == "start" {
+                let pid = record["pid"].as_u64().ok_or("fixture start without PID")?;
+                let pid = u32::try_from(pid).map_err(|error| error.to_string())?;
+                started += 1;
+                if hexbot_core::osutil::process_alive(pid) {
+                    return Err(format!("owned Pi fixture {pid} survived shutdown"));
+                }
+            }
+        }
+        if started == 0 {
+            return Err("no Runtime-owned Pi fixture started".into());
+        }
+        Ok(())
+    })();
+    if result.is_err() || cleanup.is_err() {
+        eprintln!(
+            "Trusted probe paths: node={}, launcher={}, python={}, home={}",
+            fixture.join("node.exe").display(),
+            fixture.join("pi/launch.mjs").display(),
+            python.display(),
+            home.display()
+        );
+        if let Err(error) = &cleanup {
+            eprintln!("Fixture cleanup diagnostic: {error}");
+        }
+        // Production Pi deliberately discards stderr, which may contain secrets.
+        // Only this fixed, trusted fixture is rerun with bounded capture. It
+        // receives no prompt, provider settings or credential environment.
+        let mut command = tokio::process::Command::new(&node);
+        credentials::shell_environment(&mut command);
+        command
+            .arg(scratch.path().join("fixture/pi/launch.mjs"))
+            .arg("--hexbot-fixture-diagnose")
+            .current_dir(&work)
+            .kill_on_drop(true);
+        match tokio::time::timeout(Duration::from_secs(5), command.output()).await {
+            Ok(Ok(output)) => eprintln!(
+                "Trusted fixture loader: status={}, stdout={}, stderr={}",
+                output.status,
+                String::from_utf8_lossy(&output.stdout[..output.stdout.len().min(8192)]),
+                String::from_utf8_lossy(&output.stderr[..output.stderr.len().min(8192)])
+            ),
+            Ok(Err(error)) => eprintln!("Trusted fixture loader could not spawn: {error}"),
+            Err(_) => eprintln!("Trusted fixture loader timed out"),
+        }
+    }
+    if let Err(error) = result {
+        std::panic::resume_unwind(error);
+    }
+    assert!(cleanup.is_ok(), "{cleanup:?}");
     println!("Native Rust daemon refusal probes passed");
 }
 
