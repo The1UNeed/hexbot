@@ -11,6 +11,7 @@ import { migrateLegacyService } from '../service'
 import voiceRequirements from '../../../../../backend/hexbot-core/assets/edge-tts.requirements.txt?raw'
 import { lockedDaemonPid } from './manager'
 import { downloadTool, installTool } from './tools'
+import { nodePath } from './node-path'
 
 import { binDir, canonicalRuntimePath, hexbotHome, nativeDir, nativeServiceExecutable, runtimeDir } from './paths'
 
@@ -285,7 +286,8 @@ async function installNativeRuntime(deps: BootstrapDeps): Promise<void> {
     const selected = await selectedRuntime(deps)
     // Rust owns Windows setup and atomic selection for both Full and Headless.
     const executable = selected && selected.builtAt >= builtAt ? selected.executable : join(source, 'hexbot.exe')
-    await probe(deps, join(dirname(executable), 'node.exe'), [join(dirname(executable), 'pi/launch.mjs'), '--version'])
+    const launcher = nodePath(canonicalRuntimePath(join(dirname(executable), 'pi/launch.mjs')))
+    await probe(deps, join(dirname(executable), 'node.exe'), [launcher, '--version'])
     await deps.run(executable, ['setup', ...(selected && selected.builtAt >= builtAt ? [] : ['--activate']), '--json'], { env: { ...process.env, HEXBOT_HOME: hexbotHome() } })
     deps.emit({ stage: 'done', message: 'Hexbot runtime is ready', percent: 100 })
     return

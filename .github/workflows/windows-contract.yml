@@ -24,10 +24,11 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: cargo check --locked --manifest-path backend/hexbot-installer/Cargo.toml
       - run: cargo clippy --locked --manifest-path backend/hexbot-installer/Cargo.toml --lib --bins -- -D warnings
+      - run: cargo test --locked --manifest-path backend/hexbot-installer/Cargo.toml --test windows_repair
       - run: cargo clippy --locked --manifest-path apps/installer/src-tauri/Cargo.toml --all-targets -- -D warnings
       - run: cargo test --locked --manifest-path apps/installer/src-tauri/Cargo.toml
       - run: pnpm --filter ./apps/desktop run typecheck
-      - run: node --test scripts/desktop/windows-contract.test.mjs scripts/desktop/native-build.test.mjs scripts/desktop/workspace-hooks.test.mjs scripts/dev/run-one-rust-test.test.mjs
+      - run: node --test scripts/desktop/windows-contract.test.mjs scripts/desktop/windows-node-path.test.mjs scripts/desktop/native-build.test.mjs scripts/desktop/workspace-hooks.test.mjs scripts/dev/run-one-rust-test.test.mjs
       - name: Build the real client NSIS without publishing
         run: node scripts/desktop/dist.mjs --win --x64 --client --channel stable
       - name: Verify installer engine runs NSIS, repairs and uninstalls the client

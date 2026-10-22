@@ -3,10 +3,11 @@ import assert from 'node:assert/strict'
 import { execFile, spawn } from 'node:child_process'
 import { once } from 'node:events'
 import { mkdtemp, mkdir, readFile, rm } from 'node:fs/promises'
-import { watch } from 'node:fs'
+import { realpathSync, watch } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { promisify } from 'node:util'
+import { nodePath } from '../../apps/desktop/src/main/backend/node-path.ts'
 const exec = promisify(execFile)
 assert.equal(process.platform, 'win32', 'This probe must run on native Windows')
 const bundle = resolve('apps/desktop/resources/hexbot-native')
@@ -29,9 +30,10 @@ try {
   assert(selected.endsWith('hexbot.exe'))
   assert.equal((await run(selected, ['version'])).stdout.trim(), JSON.parse(await readFile(join(bundle, 'manifest.json'))).version)
   const directory = dirname(selected)
-  assert.equal((await run(join(directory, 'node.exe'), [join(directory, 'pi/launch.mjs'), '--version'])).stdout.trim(), '1.0.1')
+  const launcher = nodePath(realpathSync.native(join(directory, 'pi/launch.mjs')))
+  assert.equal((await run(join(directory, 'node.exe'), [launcher, '--version'])).stdout.trim(), '1.0.1')
   const agent = join(root, 'pi-agent'); await mkdir(agent)
-  const pi = spawn(join(directory, 'node.exe'), [join(directory, 'pi/launch.mjs'), '--mode', 'rpc', '--no-approve'], { env: { ...env, PI_CODING_AGENT_DIR: agent }, cwd: root, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] })
+  const pi = spawn(join(directory, 'node.exe'), [launcher, '--mode', 'rpc', '--no-approve'], { env: { ...env, PI_CODING_AGENT_DIR: agent }, cwd: root, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] })
   const reply = new Promise((done, reject) => {
     const timer = setTimeout(() => { pi.kill(); reject(new Error('Pi RPC timed out')) }, 30_000)
     let output = ''

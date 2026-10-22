@@ -322,7 +322,7 @@ async fn run_uv(home: &Path, uv: &Path, args: &[&str]) -> Result<String> {
         .env("UV_PYTHON_INSTALL_DIR", home.join("python"))
         .env("UV_PYTHON_BIN_DIR", home.join("bin"))
         .env("UV_CACHE_DIR", home.join("runtime/uv-cache"))
-        // Managed executables/packages must not share writable cache inodes.
+        // Copy newly provisioned packages instead of linking them to uv's cache.
         .env("UV_LINK_MODE", "copy")
         .stdin(std::process::Stdio::null())
         .kill_on_drop(true)

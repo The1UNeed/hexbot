@@ -201,6 +201,14 @@ pub struct Installer {
     pub base_url: String,
 }
 
+#[derive(PartialEq, Eq)]
+struct WindowsRepair {
+    option: InstallOption,
+    track: Track,
+    path: PathBuf,
+    version: semver::Version,
+}
+
 impl Installer {
     pub fn from_env() -> Result<Self> {
         Ok(Self {
@@ -221,16 +229,50 @@ impl Installer {
         progress: &mut ProgressCallback<'_>,
     ) -> Result<InstallResult> {
         let manifest = fetch_manifest(&self.base_url, track)?;
-        let (result, _install_lock) = self.install(option, &manifest, progress)?;
+        let (result, _install_lock) = self.install(option, &manifest, None, progress)?;
         self.write_receipt(&result.receipt)?;
         progress(Progress::new("done", done_message(option)));
         Ok(result)
     }
 
     pub fn repair(&self, progress: &mut ProgressCallback<'_>) -> Result<InstallResult> {
-        let receipt = read_receipt(&self.paths.receipt())?
-            .ok_or("No install receipt was found. Choose an option to install.")?;
-        self.apply(receipt.option, receipt.channel, progress)
+        if let Some(receipt) = read_receipt(&self.paths.receipt())? {
+            return self.apply(receipt.option, receipt.channel, progress);
+        }
+        let recovered = self.receiptless_windows_repair()?;
+        let manifest = fetch_manifest(&self.base_url, recovered.track)?;
+        let (result, _install_lock) =
+            self.install(recovered.option, &manifest, Some(&recovered), progress)?;
+        self.write_receipt(&result.receipt)?;
+        progress(Progress::new("done", done_message(recovered.option)));
+        Ok(result)
+    }
+
+    fn receiptless_windows_repair(&self) -> Result<WindowsRepair> {
+        const CHOOSE: &str = "Could not identify one installed Windows app to repair. Choose the option and track to install.";
+        if !self.target.is_windows() {
+            return fail("No install receipt was found. Choose an option to install.");
+        }
+        let installed = self.detect()?;
+        if installed.receipt.is_some() || installed.apps.len() != 1 {
+            return fail(CHOOSE);
+        }
+        let app = &installed.apps[0];
+        if app.app_id.ends_with(".dev")
+            || app.path != self.paths.planned_apps_dir(self.target)?.join(&app.app_id)
+        {
+            return fail(CHOOSE);
+        }
+        // The app updater can change tracks without changing the original
+        // app id. Read the installed package, never infer its current track
+        // from a directory name or execute the app to discover it.
+        let version = self.app_version(app)?.ok_or(CHOOSE)?;
+        Ok(WindowsRepair {
+            option: app.option,
+            track: installed_version::track(&version),
+            path: app.path.clone(),
+            version,
+        })
     }
 
     pub fn change(
@@ -254,7 +296,7 @@ impl Installer {
             return fail("Change cancelled.");
         }
         let manifest = fetch_manifest(&self.base_url, track)?;
-        let (mut result, _install_lock) = self.install(to, &manifest, progress)?;
+        let (mut result, _install_lock) = self.install(to, &manifest, None, progress)?;
         // Another installer may have changed the old option during the download.
         let installed = self.detect()?;
         let old_apps: Vec<_> = installed.apps.iter().filter(|a| a.option == from).collect();
@@ -413,6 +455,7 @@ impl Installer {
         &self,
         option: InstallOption,
         manifest: &Manifest,
+        recovery: Option<&WindowsRepair>,
         progress: &mut ProgressCallback<'_>,
     ) -> Result<(InstallResult, fs::File)> {
         self.paths.validate()?;
@@ -436,6 +479,11 @@ impl Installer {
         // Downloads can overlap. Replacement and receipt publication cannot.
         // Return the lock so apply/change retain it until the receipt is written.
         let install_lock = self.lock_installation(progress)?;
+        if let Some(expected) = recovery
+            && self.receiptless_windows_repair()? != *expected
+        {
+            return fail("The detected app changed during repair. Run the installer again.");
+        }
         if self.target.is_macos()
             && let Some((id, name)) = identity
         {

@@ -4,6 +4,8 @@ use base64::{Engine, engine::general_purpose::STANDARD};
 use hexbot_installer::{InstallOption, Installer, Paths, Target, Track};
 use serde_json::json;
 use sha2::{Digest, Sha512};
+#[path = "../../hexbot-core/src/windows_node_path.rs"]
+mod windows_node_path;
 use std::{
     fs,
     io::{Read, Write},
@@ -32,6 +34,26 @@ fn path_diagnostic(label: &str, path: &std::path::Path) -> serde_json::Value {
         "utf16Units":path.as_os_str().encode_wide().count(),"absolute":path.is_absolute(),
         "regularFile":metadata.as_ref().is_ok_and(|m|m.is_file()),"metadataError":metadata.err().and_then(|e|e.raw_os_error())})
 }
+// Keep canonical paths for containment/identity checks. Only the Node CLI's
+// script operand uses DOS/UNC spelling, as in the production PiProcess.
+fn node_script(path: &std::path::Path, root: &std::path::Path) -> std::path::PathBuf {
+    let canonical = regular_file(path).expect("trusted absolute regular Node script");
+    assert!(
+        canonical.starts_with(root.canonicalize().unwrap()),
+        "Node script escaped its trusted root"
+    );
+    let operand = windows_node_path::node_path(&canonical).expect("supported Node script path");
+    assert_eq!(
+        regular_file(&operand).unwrap(),
+        canonical,
+        "Node script identity changed after normalization"
+    );
+    eprintln!(
+        "Native Node script: {}",
+        json!({"input":path_diagnostic("script input",path),"operand":path_diagnostic("Node operand",&operand)})
+    );
+    operand
+}
 fn spawn_gui_probe(node: &std::path::Path, args: &[std::ffi::OsString]) -> std::process::Output {
     use std::os::windows::process::CommandExt;
     eprintln!(
@@ -57,8 +79,11 @@ fn node_preflight(node: &std::path::Path, root: &std::path::Path) {
     let fixture = root.join("Node argv \u{3c0} check.mjs");
     fs::write(&fixture,"process.stdout.write(JSON.stringify({execPath:process.execPath,argv:process.argv.slice(2)}))").unwrap();
     let values = ["with spaces", "a&b", "literal\"quote", "\u{3c0}"];
-    for program in [node, canonical.as_path()] {
-        let mut args = vec![fixture.canonicalize().unwrap().into_os_string()];
+    let canonical_fixture = fixture.canonicalize().unwrap();
+    for (program, script) in [node, canonical.as_path()].into_iter().flat_map(|program| {
+        [fixture.as_path(), canonical_fixture.as_path()].map(|script| (program, script))
+    }) {
+        let mut args = vec![node_script(script, root).into_os_string()];
         args.extend(values.iter().map(std::ffi::OsString::from));
         let output = spawn_gui_probe(program, &args);
         assert!(
@@ -190,7 +215,11 @@ fn real_nsis_install_repair_and_uninstall() {
     }
     assert_eq!(installer.detect().unwrap().apps.len(), 1);
     let args = [
-        probe.into_os_string(),
+        node_script(
+            &probe,
+            &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts/desktop"),
+        )
+        .into_os_string(),
         app.join(if client {
             "HexbotClient.exe"
         } else {
@@ -214,8 +243,17 @@ fn real_nsis_install_repair_and_uninstall() {
     // reinstall and uninstall remain available without trusting arbitrary exes.
     fs::remove_file(installer.paths.receipt()).unwrap();
     assert_eq!(installer.detect().unwrap().apps[0].app_id, id);
-    installer.apply(option, Track::Stable, &mut |_| {}).unwrap();
-    installer.repair(&mut |_| {}).unwrap();
+    let repaired = installer.repair(&mut |_| {}).unwrap();
+    assert_eq!(repaired.receipt.option, option);
+    assert_eq!(repaired.receipt.channel, Track::Stable);
+    let recorded = hexbot_installer::read_receipt(&installer.paths.receipt())
+        .unwrap()
+        .unwrap();
+    assert_eq!(recorded.option, option);
+    assert_eq!(recorded.channel, Track::Stable);
+    installer.repair(&mut |_| {}).unwrap(); // The normal receipt path still works.
+    // The packaged ownership also supports a partial uninstall without a receipt.
+    fs::remove_file(installer.paths.receipt()).unwrap();
     installer.uninstall(false, &mut |_| {}).unwrap();
     assert!(!app.exists());
     stopped.store(true, Ordering::SeqCst);
