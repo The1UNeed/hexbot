@@ -30,7 +30,7 @@ fn launchers_resolve_unicode_and_junctions_before_executing() {
     let fixture = outside.join("hexbot.exe");
     let marker = root.path().join("executed.txt");
     let source = format!(
-        r#"public class Probe {{ public static int Main(string[] args) {{ System.IO.File.WriteAllText(@"{}", String.Join("\n", args)); return 17; }} }}"#,
+        r#"public class Probe {{ public static int Main(string[] args) {{ System.IO.File.WriteAllText(@"{}", System.String.Join("\n", args)); return 17; }} }}"#,
         marker.display().to_string().replace('"', "\"\"")
     );
     let compile = powershell(&format!(
@@ -205,4 +205,55 @@ async fn logs_follow_both_streams_after_append_creation_and_rotation() {
             .unwrap()
             .success()
     );
+}
+
+#[test]
+#[ignore = "changes PATH only on an explicitly disposable native CI user"]
+fn user_path_registration_preserves_existing_entries_and_removes_only_its_own() {
+    assert_eq!(
+        std::env::var("HEXBOT_WINDOWS_PATH_PROBE").as_deref(),
+        Ok("1")
+    );
+    assert_ne!(std::env::var("HEXBOT_CLI_NO_PATH").as_deref(), Ok("1"));
+    let query = r#"[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false); $k = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey('Environment'); try { @{value=[string]$k.GetValue('Path','',[Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames); exists=($k.GetValueNames() -contains 'Path'); kind=$(if ($k.GetValueNames() -contains 'Path') { [int]$k.GetValueKind('Path') } else { 2 })} | ConvertTo-Json -Compress } finally { $k.Dispose() }"#;
+    let output = powershell(query);
+    assert!(output.status.success());
+    let before: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    struct Restore(serde_json::Value);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            let text = self.0.to_string().replace('\'', "''");
+            let output = powershell(&format!(
+                "$v = '{text}' | ConvertFrom-Json; $k = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey('Environment'); try {{ if ($v.exists) {{ $k.SetValue('Path', [string]$v.value, [Microsoft.Win32.RegistryValueKind][int]$v.kind) }} else {{ $k.DeleteValue('Path', $false) }} }} finally {{ $k.Dispose() }}"
+            ));
+            assert!(output.status.success());
+        }
+    }
+    let _restore = Restore(before.clone());
+    let root = tempfile::tempdir().unwrap();
+    let home = root.path().join("state");
+    fs::create_dir(&home).unwrap();
+    let bin = root.path().join("Jos\u{e9} CLI with spaces");
+    let cli =
+        windows_cli::install(Path::new(env!("CARGO_BIN_EXE_hexbot-cli")), &home, &bin).unwrap();
+    windows_cli::register_path(&cli).unwrap();
+    let added: serde_json::Value = serde_json::from_slice(&powershell(query).stdout).unwrap();
+    assert!(
+        added["value"]
+            .as_str()
+            .unwrap()
+            .split(';')
+            .any(|p| p == bin.to_str().unwrap())
+    );
+    windows_cli::register_path(&cli).unwrap();
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&powershell(query).stdout).unwrap(),
+        added
+    );
+    windows_cli::remove(&cli, &home).unwrap();
+    let after: serde_json::Value = serde_json::from_slice(&powershell(query).stdout).unwrap();
+    assert_eq!(after["value"], before["value"]);
+    if before["exists"] == true {
+        assert_eq!(after["kind"], before["kind"]);
+    }
 }

@@ -5,6 +5,9 @@ use std::{
     path::{Path, PathBuf},
 };
 fn metadata(path: &Path) -> io::Result<serde_json::Value> {
+    if !fs::symlink_metadata(path.with_extension("json"))?.is_file() {
+        return Err(io::Error::other("CLI configuration is not a regular file"));
+    }
     serde_json::from_slice(&fs::read(path.with_extension("json"))?).map_err(io::Error::other)
 }
 pub fn owner(path: &Path) -> Option<PathBuf> {
@@ -36,6 +39,7 @@ pub fn owned(path: &Path, home: &Path) -> bool {
 pub fn install(source: &Path, home: &Path, bin: &Path) -> io::Result<PathBuf> {
     use std::io::Write;
     fs::create_dir_all(bin)?;
+    let _lock = lock(bin)?;
     let path = bin.join("hexbot.exe");
     if path.exists() && !owned(&path, home) {
         return Err(io::Error::other(
@@ -119,6 +123,10 @@ fn change_path(bin: &Path, add: bool) -> io::Result<bool> {
 #[cfg(windows)]
 pub fn register_path(path: &Path) -> io::Result<()> {
     use std::io::Write;
+    let _lock = lock(
+        path.parent()
+            .ok_or_else(|| io::Error::other("Missing CLI directory"))?,
+    )?;
     if change_path(
         path.parent()
             .ok_or_else(|| io::Error::other("Missing CLI directory"))?,
@@ -136,7 +144,7 @@ pub fn register_path(path: &Path) -> io::Result<()> {
     Ok(())
 }
 #[cfg(windows)]
-pub fn unregister_path(path: &Path) -> io::Result<()> {
+fn unregister_path(path: &Path) -> io::Result<()> {
     if metadata(path)?["pathAdded"] == true {
         change_path(
             path.parent()
@@ -145,4 +153,53 @@ pub fn unregister_path(path: &Path) -> io::Result<()> {
         )?;
     }
     Ok(())
+}
+
+#[cfg(windows)]
+fn lock(bin: &Path) -> io::Result<fs::File> {
+    let file = fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(bin.join(".hexbot-cli.lock"))?;
+    file.lock()?;
+    Ok(file)
+}
+#[cfg(windows)]
+pub fn remove(path: &Path, home: &Path) -> io::Result<()> {
+    let _lock = lock(
+        path.parent()
+            .ok_or_else(|| io::Error::other("Missing CLI directory"))?,
+    )?;
+    if !owned(path, home) {
+        return Err(io::Error::other("CLI belongs to another installation"));
+    }
+    unregister_path(path)?;
+    fs::remove_file(path)?;
+    fs::remove_file(path.with_extension("json"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn only_the_recorded_home_and_trusted_forwarder_hash_are_owned() {
+        let root = tempfile::tempdir().unwrap();
+        let home = root.path().join("state");
+        fs::create_dir(&home).unwrap();
+        let file = root.path().join("hexbot.exe");
+        fs::write(&file, b"trusted forwarder").unwrap();
+        assert!(!owned(&file, &home));
+        let hash = format!("{:x}", Sha256::digest(b"trusted forwarder"));
+        fs::write(
+            file.with_extension("json"),
+            serde_json::json!({"schema":1,"home":home,"hashes":[hash,"pending new build hash"]})
+                .to_string(),
+        )
+        .unwrap();
+        assert!(owned(&file, &home));
+        assert!(!owned(&file, root.path()));
+        fs::write(&file, b"unrelated executable").unwrap();
+        assert!(!owned(&file, &home));
+    }
 }

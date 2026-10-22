@@ -140,7 +140,7 @@ export async function stageNativeRuntime({
   const nodeVersion = nodeExecutable ? (await run(nodeExecutable, ['-p', 'process.versions.node'])).stdout.trim() : NODE_VERSION
   const [major, minor] = nodeVersion.split('.').map(Number)
   if (major < 22 || (major === 22 && minor < 19)) throw new Error('Pi needs Node 22.19 or later')
-  await run('cargo', ['build', '--release', '--locked', '--target', triple, '--manifest-path', join(repository, 'backend/hexbot-core/Cargo.toml')], { cwd: repository })
+  await run('cargo', ['build', '--release', '--locked', '--bin', 'hexbot', ...(windows ? ['--bin', 'hexbot-cli'] : []), '--target', triple, '--manifest-path', join(repository, 'backend/hexbot-core/Cargo.toml')], { cwd: repository })
   await mkdir(dirname(destination), { recursive: true })
   const staging = await mkdtemp(`${destination}.staging-`)
   try {

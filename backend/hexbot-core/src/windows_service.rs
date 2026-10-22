@@ -34,7 +34,7 @@ do {
     Ok(format!(
         "{MARKER}{marker}\n$ErrorActionPreference = 'Stop'\n$env:HEXBOT_HOME = {}\n{}\n{command}\nexit $LASTEXITCODE\n",
         quote(text), include_str!("../assets/windows-runtime-selection.ps1")
-    ).replace('\n', "\r\n"))
+    ).replace("\r\n", "\n").replace('\n', "\r\n"))
 }
 pub fn owned(path: &Path, home: &Path) -> bool {
     fs::symlink_metadata(path).is_ok_and(|m| m.is_file())

@@ -14,6 +14,7 @@ pnpm-lock.yaml linguist-generated=true
 # at check-in; `eol=lf` also checks out as LF so the working tree matches
 # the index on every platform. PowerShell files are the deliberate
 # exception (PS 5.1 tooling expects CRLF).
+*.rs    text eol=lf
 *.py    text eol=lf
 *.ts    text eol=lf
 *.tsx   text eol=lf

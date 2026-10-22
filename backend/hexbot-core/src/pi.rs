@@ -292,15 +292,15 @@ impl PiProcess {
             .file_name()
             .is_some_and(|name| name == "node.exe")
         {
-            options.executable = crate::windows_paths::node_path(&options.executable)
+            options.executable = crate::windows_node_path::node_path(&options.executable)
                 .map_err(|_| PiError::Configuration("unsupported Node path"))?;
-            options.working_dir = crate::windows_paths::node_path(&options.working_dir)
+            options.working_dir = crate::windows_node_path::node_path(&options.working_dir)
                 .map_err(|_| PiError::Configuration("unsupported working directory"))?;
-            options.agent_dir = crate::windows_paths::node_path(&options.agent_dir)
+            options.agent_dir = crate::windows_node_path::node_path(&options.agent_dir)
                 .map_err(|_| PiError::Configuration("unsupported agent directory"))?;
             for argument in &mut options.args {
                 if argument.starts_with(r"\\?\") {
-                    *argument = crate::windows_paths::node_path(std::path::Path::new(argument))
+                    *argument = crate::windows_node_path::node_path(std::path::Path::new(argument))
                         .map_err(|_| PiError::Configuration("unsupported Pi argument path"))?
                         .into_os_string()
                         .into_string()

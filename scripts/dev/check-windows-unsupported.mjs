@@ -33,7 +33,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const lib = join(source, 'backend/hexbot-core/src/lib.rs')
   const before = readFileSync(lib)
   const result = spawnSync('cargo', ['check', '--locked', '--manifest-path', 'backend/hexbot-core/Cargo.toml', '--lib', '--bin', 'hexbot', '--message-format=json'], {
-    cwd: source, encoding: 'utf8', maxBuffer: 128 * 1024 * 1024, windowsHide: true,
+    cwd: source, env: { ...process.env, CARGO_TERM_COLOR: 'never' }, encoding: 'utf8', maxBuffer: 128 * 1024 * 1024, windowsHide: true,
   })
   process.stderr.write(result.stderr ?? '')
   for (const line of (result.stdout ?? '').trim().split('\n')) {

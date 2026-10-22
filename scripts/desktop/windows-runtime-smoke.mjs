@@ -50,7 +50,12 @@ try {
   const page = await fetch(`http://127.0.0.1:${state.port}/`, { signal: AbortSignal.timeout(10_000) })
   assert.equal(page.status, 200)
   assert.equal(JSON.parse((await run(selected, ['service', 'status', '--json'])).stdout).running, true)
+  const running = JSON.parse(await readFile(join(home, 'runtime/native-running.json'), 'utf8'))
   await run(selected, ['service', 'stop'])
+  assert.equal(JSON.parse((await run(selected, ['service', 'status', '--json'])).stdout).running, false)
+  assert.throws(() => process.kill(running.pid, 0), { code: 'ESRCH' }, 'stop must terminate the daemon in the task job')
+  const powershell = join(process.env.SystemRoot, 'System32/WindowsPowerShell/v1.0/powershell.exe')
+  await run(powershell, ['-NoProfile', '-NonInteractive', '-Command', "$f = [IO.File]::Open((Join-Path $env:HEXBOT_HOME 'native-daemon.lock'), 'Open', 'ReadWrite', 'ReadWrite,Delete'); try { $f.Lock(0,1); $f.Unlock(0,1) } finally { $f.Dispose() }"])
   await run(selected, ['service', 'uninstall'])
   console.log('Windows standalone setup, real Node/Pi RPC, Python, web and user task passed')
 } finally {

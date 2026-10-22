@@ -8,7 +8,7 @@ are required before merge or shipping, together with native validation.
 
 ## Runtime layout
 
-Windows x64 uses `hexbot.exe`, `node.exe`, `pi/launch.mjs`, the locked Pi
+Windows x64 uses `hexbot.exe`, `hexbot-cli.exe`, `node.exe`, `pi/launch.mjs`, the locked Pi
 installation, `pi/search-tools.mjs`, `bin/rg.exe`, `bin/fd.exe`, `web/` and
 `skills/`. `manifest.json` records the `win32-x64` target and SHA-256 hashes.
 There is no command-shell daemon launcher. Rust invokes the bundled Node with
@@ -51,9 +51,16 @@ and `InteractiveToken`. Task state is read numerically, without localized
 status text. A hidden PowerShell wrapper reads the selected EXE for each run
 and waits for the old daemon to exit before starting an updated one. The new
 daemon stays inside the task's job. No breakaway child races the home lock.
-The CLI forwarding script is `.local/bin/hexbot.ps1`. Both launchers read JSON
-as UTF-8 and use Windows final paths from open handles for the containment
-check. An outside build junction is rejected; a home junction is resolved on
+A separate native forwarding component is installed as `.local/bin/hexbot.exe`,
+with a hash-bound home record in `hexbot.json`. It passes argv directly to the
+canonical selected daemon. It works from cmd and Restricted PowerShell without
+copying a stable daemon or requiring symlinks. Setup adds that directory to the
+user PATH; uninstall removes only an entry setup added. Existing terminals need
+to reopen. A verified previous compatible forwarder can remain temporarily
+when Windows locks it during its own setup child; direct installer/Full setup
+refreshes it after that invocation exits. The old owned `.ps1` CLI is removed.
+The task launcher reads JSON explicitly as UTF-8 and resolves Windows final
+paths through open handles for the containment check. An outside build junction is rejected; a home junction is resolved on
 both sides. `service logs [-f]` reads both streams and follows file creation,
 truncation and rotation, including Windows PowerShell's UTF-16 log encoding.
 
@@ -76,9 +83,12 @@ the activation-lock rollback floor and both service log streams.
 A cross-compile on macOS is only a compile check. It cannot establish native
 NSIS, task, Electron GUI, job lifetime, console or standard-user behavior.
 Windows CI must pass on the combined implementation and security changes.
-Native task restart during an actual version-changing update, packaged app
-GUI activation, and the security stage's standard-user adversarial probes
-remain required before any Windows availability claim.
+The native matrix includes actual installed Client/Full GUI activation and a
+version-changing signed ZIP update between two debug fixture daemons, followed
+by task stop and process/home-lock assertions. The existing public test key
+stays confined to debug builds; fixture versions use the version tool only in
+the disposable source and restore the original bytes. These checks and the
+security stage's standard-user probes must pass before any availability claim.
 
 ## Upstream tool pins
 

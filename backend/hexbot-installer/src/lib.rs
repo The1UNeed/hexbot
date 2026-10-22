@@ -339,13 +339,11 @@ impl Installer {
             }
         };
         if wrapper_owned {
-            #[cfg(windows)]
             if self.target.is_windows() {
-                windows_cli::unregister_path(&wrapper)?;
-            }
-            self.remove_owned_path(&wrapper)?;
-            if self.target.is_windows() {
-                self.remove_owned_path(&wrapper.with_extension("json"))?;
+                #[cfg(windows)]
+                windows_cli::remove(&wrapper, &self.paths.hexbot_home)?;
+            } else {
+                self.remove_owned_path(&wrapper)?;
             }
         }
         self.remove_owned_path(&self.paths.receipt())?;

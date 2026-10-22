@@ -79,7 +79,13 @@ jobs:
         run: cargo clippy --locked --manifest-path backend/hexbot-core/Cargo.toml --lib --bins -- -D warnings
       - name: Run native Unicode, junction, service logs and security regressions
         working-directory: ${{ env.HEXBOT_WINDOWS_PROBE_SOURCE }}
-        run: cargo test --locked --manifest-path backend/hexbot-core/Cargo.toml --test windows_launchers --test windows_security --test windows_contract -- --nocapture
+        run: cargo test --locked --manifest-path backend/hexbot-core/Cargo.toml --test windows_launchers --test windows_contract -- --nocapture
+      - name: Validate per-user CLI PATH registration on the disposable CI user
+        working-directory: ${{ env.HEXBOT_WINDOWS_PROBE_SOURCE }}
+        env:
+          HEXBOT_CLI_NO_PATH: '0'
+          HEXBOT_WINDOWS_PATH_PROBE: '1'
+        run: cargo test --locked --manifest-path backend/hexbot-core/Cargo.toml --test windows_launchers user_path_registration -- --ignored --nocapture
       - name: Build Full and its real Node/Pi runtime without publishing
         working-directory: ${{ env.HEXBOT_WINDOWS_PROBE_SOURCE }}
         run: node scripts/desktop/dist.mjs --win --x64 --channel stable
@@ -88,10 +94,13 @@ jobs:
         shell: pwsh
         run: |
           $env:HEXBOT_NATIVE_TEST_BUNDLE = (Resolve-Path apps/desktop/resources/hexbot-native).Path
-          pnpm --filter ./apps/desktop run test --run src/main/backend/windows-bootstrap.test.ts
+          pnpm --filter ./apps/desktop run test --run src/main/backend/windows-bootstrap.test.ts src/main/backend/windows-paths.test.ts
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cargo test --locked --manifest-path backend/hexbot-core/Cargo.toml --test windows_pi -- --ignored --nocapture
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           node scripts/desktop/windows-runtime-smoke.mjs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node scripts/desktop/windows-update-restart.mjs
       - name: Probe Full NSIS installation, repair and uninstall
         working-directory: ${{ env.HEXBOT_WINDOWS_PROBE_SOURCE }}
         shell: pwsh
@@ -107,6 +116,10 @@ jobs:
         shell: pwsh
         run: |
           node scripts/desktop/make-native-update.mjs apps/desktop/resources/hexbot-native windows-updates
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $env:HEXBOT_WINDOWS_UPDATE_ROOT = (Resolve-Path windows-updates).Path
           cargo test --locked --manifest-path backend/hexbot-core/Cargo.toml --test windows_contract -- --ignored --nocapture
+      - name: Run the combined native Runtime refusal regression
+        working-directory: ${{ env.HEXBOT_WINDOWS_PROBE_SOURCE }}
+        run: cargo test --locked --manifest-path backend/hexbot-core/Cargo.toml --test windows_security -- --nocapture
       # Disposable guard-removed binaries are never uploaded or published.
