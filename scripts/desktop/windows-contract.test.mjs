@@ -51,8 +51,9 @@ test('Windows CI keeps the production guard and never publishes disposable probe
   assert(!/secrets\.|contents:\s*write|release.yml|--publish\s+always/.test(ci.replace(/^#.*$/gm, '')))
   assert(ci.includes('check-windows-unsupported.mjs'))
   assert(ci.includes('prepare-windows-security.mjs'))
-  assert(ci.includes('--test windows_contract real_nsis -- --ignored'))
-  assert(ci.includes('--test windows_contract interrupted_cli -- --ignored'))
+  assert.equal(ci.split('windows_contract real_nsis_install_repair_and_uninstall').length - 1, 2)
+  assert(ci.includes('backend/hexbot-core/Cargo.toml windows_contract signed_zip_update_and_connect_executable'))
+  assert(ci.includes('windows_contract interrupted_cli_install_and_uninstall_clean_only_owned_metadata_and_path'))
   assert(ci.includes('--test windows_launchers --test windows_contract --test windows_shutdown'))
   assert(ci.includes('--test windows_security --no-run --message-format=json'))
   assert(ci.includes('windows-security-standard-user.ps1'))
@@ -80,7 +81,7 @@ test('Tauri Windows resource icon reproduces the existing installer art', async 
 })
 
 test('Windows packages own their app before the outer installer commits a receipt', async t => {
-  const afterPack = (await import('./after-pack.cjs')).default.default
+  const afterPack = (await import('../../apps/desktop/scripts/after-pack.cjs')).default.default
   const root = await mkdtemp(join(tmpdir(), 'hexbot packaged ownership '))
   t.after(() => rm(root, { recursive: true, force: true }))
   for (const id of ['app.hexbot.client', 'app.hexbot.desktop.nightly']) {

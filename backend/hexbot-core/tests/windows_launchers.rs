@@ -363,6 +363,96 @@ fn user_path_registration_preserves_existing_entries_and_removes_only_its_own() 
     if before["exists"] == true {
         assert_eq!(after["kind"], before["kind"]);
     }
+    // Exercise the real metadata/registry interruption boundaries, followed by
+    // either a repair (including the CLI reinstall step) or direct uninstall.
+    for boundary in [
+        "before-intent",
+        "after-intent",
+        "after-registry",
+        "after-commit",
+    ] {
+        for repair in [false, true] {
+            let bin = root.path().join(format!("Jos\u{e9} {boundary} {repair}"));
+            let source = Path::new(env!("CARGO_BIN_EXE_hexbot-cli"));
+            let cli = windows_cli::install(source, &home, &bin).unwrap();
+            assert!(windows_cli::register_path_interruption_probe(&cli, boundary).is_err());
+            assert!(
+                windows_cli::remove(&cli, root.path()).is_err(),
+                "foreign home claimed CLI"
+            );
+            if repair {
+                windows_cli::install(source, &home, &bin).unwrap();
+                windows_cli::register_path(&cli).unwrap();
+                let ownership: serde_json::Value =
+                    serde_json::from_slice(&fs::read(cli.with_extension("json")).unwrap()).unwrap();
+                assert_eq!(ownership["pathAdded"], true);
+            } else if boundary == "after-registry" {
+                fs::remove_file(&cli).unwrap(); // partial uninstall still recovers the journal
+            }
+            windows_cli::remove(&cli, &home).unwrap();
+            assert!(!cli.with_extension("json").exists());
+            let restored: serde_json::Value =
+                serde_json::from_slice(&powershell(query).stdout).unwrap();
+            assert_eq!(
+                restored["value"], before["value"],
+                "{boundary} repair={repair}"
+            );
+            assert_eq!(restored["exists"], before["exists"]);
+        }
+    }
+    // An entry present before registration belongs to the user, even when the
+    // entry was installed by another tool. Never claim/delete it.
+    let bin = root.path().join("preexisting user CLI");
+    let cli =
+        windows_cli::install(Path::new(env!("CARGO_BIN_EXE_hexbot-cli")), &home, &bin).unwrap();
+    let mut preexisting = before.clone();
+    preexisting["value"] = serde_json::json!(if before["value"].as_str().unwrap().is_empty() {
+        bin.display().to_string()
+    } else {
+        format!("{};{}", before["value"].as_str().unwrap(), bin.display())
+    });
+    preexisting["exists"] = serde_json::json!(true);
+    let text = preexisting.to_string().replace('\'', "''");
+    let output = powershell(&format!(
+        "$v='{text}'|ConvertFrom-Json;$k=[Microsoft.Win32.Registry]::CurrentUser.CreateSubKey('Environment');try{{$k.SetValue('Path',[string]$v.value,[Microsoft.Win32.RegistryValueKind][int]$v.kind)}}finally{{$k.Dispose()}}"
+    ));
+    assert!(output.status.success());
+    windows_cli::register_path(&cli).unwrap();
+    let ownership: serde_json::Value =
+        serde_json::from_slice(&fs::read(cli.with_extension("json")).unwrap()).unwrap();
+    assert_eq!(ownership["pathAdded"], false);
+    assert!(ownership["pathIntent"].is_null());
+    windows_cli::remove(&cli, &home).unwrap();
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&powershell(query).stdout).unwrap(),
+        preexisting
+    );
+    // A concurrent edit to a pending snapshot is ambiguous. Preserve both
+    // user PATH and the journal instead of attributing the edit to Hexbot.
+    let bin = root.path().join("pending concurrent edit");
+    let cli =
+        windows_cli::install(Path::new(env!("CARGO_BIN_EXE_hexbot-cli")), &home, &bin).unwrap();
+    assert!(windows_cli::register_path_interruption_probe(&cli, "after-intent").is_err());
+    let pending = fs::read(cli.with_extension("json")).unwrap();
+    let mut changed = preexisting.clone();
+    changed["value"] = serde_json::json!(format!(
+        "{};unrelated-user-entry",
+        changed["value"].as_str().unwrap()
+    ));
+    for value in [&changed, &preexisting] {
+        let text = value.to_string().replace('\'', "''");
+        assert!(powershell(&format!("$v='{text}'|ConvertFrom-Json;$k=[Microsoft.Win32.Registry]::CurrentUser.CreateSubKey('Environment');try{{$k.SetValue('Path',[string]$v.value,[Microsoft.Win32.RegistryValueKind][int]$v.kind)}}finally{{$k.Dispose()}}")).status.success());
+        if value == &changed {
+            assert!(windows_cli::register_path(&cli).is_err());
+            assert!(windows_cli::remove(&cli, &home).is_err());
+            assert_eq!(fs::read(cli.with_extension("json")).unwrap(), pending);
+            assert_eq!(
+                serde_json::from_slice::<serde_json::Value>(&powershell(query).stdout).unwrap(),
+                changed
+            );
+        }
+    }
+    windows_cli::remove(&cli, &home).unwrap();
 }
 
 #[test]

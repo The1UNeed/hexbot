@@ -28,7 +28,7 @@ mac:
   hardenedRuntime: true
   entitlements: entitlements.mac.plist
   entitlementsInherit: entitlements.mac.plist
-  sign: ../../scripts/desktop/mac-sign.cjs
+  sign: ./scripts/mac-sign.cjs
   # electron-builder notarizes only when APPLE_API_KEY, APPLE_API_KEY_ID,
   # and APPLE_API_ISSUER are all present in the release environment.
 linux:
@@ -73,4 +73,6 @@ publish:
 # scripts/desktop/make-update-feed.mjs pick the file (docs/channels.md).
 detectUpdateChannel: false
 
-afterPack: ../../scripts/desktop/after-pack.cjs
+# Source hooks live inside projectDir so containment also holds when package
+# manager discovery does not identify the monorepo root.
+afterPack: ./scripts/after-pack.cjs

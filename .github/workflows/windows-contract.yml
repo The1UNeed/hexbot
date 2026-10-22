@@ -27,7 +27,7 @@ jobs:
       - run: cargo clippy --locked --manifest-path apps/installer/src-tauri/Cargo.toml --all-targets -- -D warnings
       - run: cargo test --locked --manifest-path apps/installer/src-tauri/Cargo.toml
       - run: pnpm --filter ./apps/desktop run typecheck
-      - run: node --test scripts/desktop/windows-contract.test.mjs scripts/desktop/native-build.test.mjs scripts/desktop/workspace-hooks.test.mjs
+      - run: node --test scripts/desktop/windows-contract.test.mjs scripts/desktop/native-build.test.mjs scripts/desktop/workspace-hooks.test.mjs scripts/dev/run-one-rust-test.test.mjs
       - name: Build the real client NSIS without publishing
         run: node scripts/desktop/dist.mjs --win --x64 --client --channel stable
       - name: Verify installer engine runs NSIS, repairs and uninstalls the client
@@ -37,7 +37,7 @@ jobs:
           $env:HEXBOT_WINDOWS_NSIS = (Resolve-Path "apps/desktop/release/HexbotClient-$version-win-x64.exe").Path
           $env:HEXBOT_WINDOWS_GUI_NODE = (Get-Command node -CommandType Application).Source
           $env:HEXBOT_WINDOWS_GUI_PROBE = (Resolve-Path scripts/desktop/windows-installed-app-smoke.mjs).Path
-          cargo test --locked --manifest-path backend/hexbot-installer/Cargo.toml --test windows_contract real_nsis -- --ignored --nocapture
+          node scripts/dev/run-one-rust-test.mjs backend/hexbot-installer/Cargo.toml windows_contract real_nsis_install_repair_and_uninstall
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: windows-client-contract
@@ -98,7 +98,7 @@ jobs:
         env:
           HEXBOT_CLI_NO_PATH: '0'
           HEXBOT_WINDOWS_PATH_PROBE: '1'
-        run: cargo test --locked --manifest-path backend/hexbot-installer/Cargo.toml --test windows_contract interrupted_cli -- --ignored --nocapture
+        run: node scripts/dev/run-one-rust-test.mjs backend/hexbot-installer/Cargo.toml windows_contract interrupted_cli_install_and_uninstall_clean_only_owned_metadata_and_path
       - name: Build Full and its real Node/Pi runtime without publishing
         working-directory: ${{ env.HEXBOT_WINDOWS_PROBE_SOURCE }}
         run: node scripts/desktop/dist.mjs --win --x64 --channel stable
@@ -123,7 +123,7 @@ jobs:
           $env:HEXBOT_WINDOWS_EDITION = 'full'
           $env:HEXBOT_WINDOWS_GUI_NODE = (Get-Command node -CommandType Application).Source
           $env:HEXBOT_WINDOWS_GUI_PROBE = (Resolve-Path scripts/desktop/windows-installed-app-smoke.mjs).Path
-          cargo test --locked --manifest-path backend/hexbot-installer/Cargo.toml --test windows_contract real_nsis -- --ignored --nocapture
+          node scripts/dev/run-one-rust-test.mjs backend/hexbot-installer/Cargo.toml windows_contract real_nsis_install_repair_and_uninstall
       - name: Probe signed Headless ZIP update and pinned Connect executable
         working-directory: ${{ env.HEXBOT_WINDOWS_PROBE_SOURCE }}
         shell: pwsh
@@ -131,7 +131,7 @@ jobs:
           node scripts/desktop/make-native-update.mjs apps/desktop/resources/hexbot-native windows-updates
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $env:HEXBOT_WINDOWS_UPDATE_ROOT = (Resolve-Path windows-updates).Path
-          cargo test --locked --manifest-path backend/hexbot-core/Cargo.toml --test windows_contract real_nsis -- --ignored --nocapture
+          node scripts/dev/run-one-rust-test.mjs backend/hexbot-core/Cargo.toml windows_contract signed_zip_update_and_connect_executable
       - name: Run the combined native Runtime refusal regression under a standard user
         working-directory: ${{ env.HEXBOT_WINDOWS_PROBE_SOURCE }}
         shell: pwsh

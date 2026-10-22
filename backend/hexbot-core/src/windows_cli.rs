@@ -28,6 +28,11 @@ fn metadata(path: &Path) -> io::Result<serde_json::Value> {
             .as_str()
             .is_some_and(|home| Path::new(home).is_absolute())
         || !value["pathAdded"].is_boolean()
+        || (!value["pathIntent"].is_null()
+            && !(value["pathIntent"]["exists"].is_boolean()
+                && value["pathIntent"]["value"].is_string()
+                && matches!(value["pathIntent"]["kind"].as_u64(), Some(1 | 2))
+                && (value["pathIntent"]["exists"] == true || value["pathIntent"]["value"] == "")))
     {
         return Err(io::Error::other("Invalid CLI ownership configuration"));
     }
@@ -83,7 +88,7 @@ pub fn install(source: &Path, home: &Path, bin: &Path) -> io::Result<PathBuf> {
             "Existing CLI belongs to another installation",
         ));
     }
-    let path_added = metadata(&path).ok().is_some_and(|v| v["pathAdded"] == true);
+    let mut ownership = metadata(&path).unwrap_or_else(|_| serde_json::json!({"pathAdded":false}));
     let mut hashes = Vec::new();
     if path.exists() {
         hashes.push(format!("{:x}", Sha256::digest(fs::read(&path)?)));
@@ -101,10 +106,10 @@ pub fn install(source: &Path, home: &Path, bin: &Path) -> io::Result<PathBuf> {
     }
     // Commit ownership first, accepting both the previous and new trusted hash.
     // Interruption before or after the EXE rename remains recoverable.
-    let mut record = tempfile::NamedTempFile::new_in(bin)?;
-    record.write_all(serde_json::json!({"schema":1,"home":home.canonicalize()?,"hashes":hashes,"pathAdded":path_added}).to_string().as_bytes())?;
-    record.as_file().sync_all()?;
-    record.persist(&config).map_err(|e| e.error)?;
+    ownership["schema"] = serde_json::json!(1);
+    ownership["home"] = serde_json::json!(home.canonicalize()?);
+    ownership["hashes"] = serde_json::json!(hashes);
+    write_record(&path, &ownership)?;
     if fs::read(&path).ok().as_deref() != Some(bytes.as_slice()) {
         let mut staged = tempfile::NamedTempFile::new_in(bin)?;
         staged.write_all(&bytes)?;
@@ -126,11 +131,23 @@ pub fn install(source: &Path, home: &Path, bin: &Path) -> io::Result<PathBuf> {
 }
 
 #[cfg(windows)]
-fn change_path(bin: &Path, add: bool) -> io::Result<bool> {
+fn write_record(path: &Path, record: &serde_json::Value) -> io::Result<()> {
+    use std::io::Write;
+    let mut staged = tempfile::NamedTempFile::new_in(path.parent().unwrap())?;
+    staged.write_all(record.to_string().as_bytes())?;
+    staged.as_file().sync_all()?;
+    staged
+        .persist(path.with_extension("json"))
+        .map_err(|e| e.error)?;
+    Ok(())
+}
+#[cfg(windows)]
+fn path_operation(
+    bin: &Path,
+    operation: &str,
+    intent: &serde_json::Value,
+) -> io::Result<serde_json::Value> {
     use std::os::windows::process::CommandExt;
-    if std::env::var("HEXBOT_CLI_NO_PATH").as_deref() == Ok("1") {
-        return Ok(false);
-    }
     let output = std::process::Command::new(crate::windows_paths::system_program(
         "WindowsPowerShell/v1.0/powershell.exe",
     )?)
@@ -141,46 +158,90 @@ fn change_path(bin: &Path, add: bool) -> io::Result<bool> {
         include_str!("../assets/windows-cli-path.ps1"),
     ])
     .env("HEXBOT_CLI_BIN", bin)
-    .env("HEXBOT_CLI_PATH_ACTION", if add { "add" } else { "remove" })
+    .env("HEXBOT_CLI_PATH_ACTION", operation)
+    .env(
+        "HEXBOT_CLI_PATH_INTENT",
+        if intent.is_null() {
+            String::new()
+        } else {
+            intent.to_string()
+        },
+    )
     .creation_flags(0x08000000)
     .output()?;
     if !output.status.success() {
         return Err(io::Error::other(String::from_utf8_lossy(&output.stderr)));
     }
-    Ok(String::from_utf8_lossy(&output.stdout).trim() == "changed")
+    serde_json::from_slice(&output.stdout).map_err(io::Error::other)
 }
 #[cfg(windows)]
 pub fn register_path(path: &Path) -> io::Result<()> {
-    use std::io::Write;
-    let _lock = lock(
-        path.parent()
-            .ok_or_else(|| io::Error::other("Missing CLI directory"))?,
-    )?;
-    if change_path(
-        path.parent()
-            .ok_or_else(|| io::Error::other("Missing CLI directory"))?,
-        true,
-    )? {
-        let mut record = metadata(path)?;
-        record["pathAdded"] = serde_json::json!(true);
-        let mut staged = tempfile::NamedTempFile::new_in(path.parent().unwrap())?;
-        staged.write_all(record.to_string().as_bytes())?;
-        staged.as_file().sync_all()?;
-        staged
-            .persist(path.with_extension("json"))
-            .map_err(|e| e.error)?;
+    register_path_with(path, &|_| Ok(()))
+}
+#[cfg(windows)]
+fn register_path_with(path: &Path, checkpoint: &impl Fn(&str) -> io::Result<()>) -> io::Result<()> {
+    if std::env::var("HEXBOT_CLI_NO_PATH").as_deref() == Ok("1") {
+        return Ok(());
     }
-    Ok(())
+    let bin = path
+        .parent()
+        .ok_or_else(|| io::Error::other("Missing CLI directory"))?;
+    let _lock = lock(bin)?;
+    if owner(path).is_none() {
+        return Err(io::Error::other("Unverified CLI cannot register PATH"));
+    }
+    let mut record = metadata(path)?;
+    if record["pathIntent"].is_null() || record["pathAdded"] == true {
+        let before = path_operation(bin, "inspect", &serde_json::Value::Null)?;
+        if before["present"] == true {
+            return Ok(());
+        } // Never claim an existing user entry.
+        checkpoint("before-intent")?;
+        record["pathIntent"] = before;
+        record["pathAdded"] = serde_json::json!(false);
+        write_record(path, &record)?;
+    }
+    checkpoint("after-intent")?;
+    path_operation(bin, "apply", &record["pathIntent"])?;
+    checkpoint("after-registry")?;
+    record["pathAdded"] = serde_json::json!(true);
+    write_record(path, &record)?;
+    checkpoint("after-commit")
+}
+// Native disposable-user tests inject failures at the real persistence
+// boundaries. This is not a CLI option, Cargo feature or production bypass.
+#[cfg(all(windows, debug_assertions))]
+pub fn register_path_interruption_probe(path: &Path, boundary: &str) -> io::Result<()> {
+    register_path_with(path, &|stage| {
+        if stage == boundary {
+            Err(io::Error::other(format!(
+                "Injected PATH interruption at {stage}"
+            )))
+        } else {
+            Ok(())
+        }
+    })
 }
 #[cfg(windows)]
 fn unregister_path(path: &Path) -> io::Result<()> {
-    if metadata(path)?["pathAdded"] == true {
-        change_path(
-            path.parent()
-                .ok_or_else(|| io::Error::other("Missing CLI directory"))?,
-            false,
-        )?;
+    if std::env::var("HEXBOT_CLI_NO_PATH").as_deref() == Ok("1") {
+        return Ok(());
     }
+    let record = metadata(path)?;
+    let intent = &record["pathIntent"];
+    let operation = if record["pathAdded"] == true {
+        "remove"
+    } else if !intent.is_null() {
+        "undo"
+    } else {
+        return Ok(());
+    };
+    path_operation(
+        path.parent()
+            .ok_or_else(|| io::Error::other("Missing CLI directory"))?,
+        operation,
+        intent,
+    )?;
     Ok(())
 }
 
@@ -232,6 +293,8 @@ mod tests {
             serde_json::json!({"home":home}),
             serde_json::json!({"schema":1,"home":home,"hashes":[]}),
             serde_json::json!({"schema":1,"home":home,"hashes":["invalid"],"pathAdded":true}),
+            serde_json::json!({"schema":1,"home":home,"hashes":[format!("{:x}", Sha256::digest(b"trusted"))],"pathAdded":false,"pathIntent":{"exists":false,"value":"user entry","kind":2}}),
+            serde_json::json!({"schema":1,"home":home,"hashes":[format!("{:x}", Sha256::digest(b"trusted"))],"pathAdded":false,"pathIntent":{"exists":true,"value":"user entry","kind":4}}),
         ] {
             fs::write(file.with_extension("json"), bad.to_string()).unwrap();
             assert!(!removable(&file, &home));

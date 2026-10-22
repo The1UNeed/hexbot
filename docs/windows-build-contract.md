@@ -68,7 +68,12 @@ A separate native forwarding component is installed as `.local/bin/hexbot.exe`,
 with a hash-bound home record in `hexbot.json`. It passes argv directly to the
 canonical selected daemon. It works from cmd and Restricted PowerShell without
 copying a stable daemon or requiring symlinks. Setup adds that directory to the
-user PATH; uninstall removes only an entry setup added. If an interrupted
+user PATH; uninstall removes only an entry setup added. Registration persists
+an intent containing the absent-entry registry snapshot before adding PATH, then
+commits ownership. Repair and uninstall recognize the exact before/after images
+after interruption. Preexisting entries remain unowned. A concurrent edit while
+an intent is pending refuses recovery and retains the journal, rather than
+guessing whether the changed entry belongs to the user. If an interrupted
 install or uninstall leaves only the validated home/hash sidecar, cleanup still
 removes that metadata and its recorded PATH entry. Foreign or malformed sidecars
 and unverified existing EXEs are left alone. Existing terminals need
@@ -91,8 +96,13 @@ Pi and tunnel children use hidden-console spawn options.
 ## Verification and remaining gates
 
 `windows-contract.yml` publishes nothing and uses commit-pinned actions. Its
-Client job checks the pinned builder’s package-metadata workspace fallback
-and hook containment for both editions, then builds real NSIS and tests installation, repair and uninstall with
+Client job runs the pinned electron-builder CLI through the same pnpm
+entrypoint, cwd and inherited environment as `dist.mjs`, for both editions.
+Its startup probe records dependency paths, argv, package-manager discovery
+and raw workspace-command output, resolves hooks within the desktop project
+and executes the Windows ownership hook. Source hooks live inside that project;
+they do not depend on the builder discovering the monorepo root. The startup
+probe deliberately stops before packaging. The job then builds real NSIS and tests installation, repair and uninstall with
 a signed local manifest. The native job checks unchanged production source
 and requires Cargo's only error to be the exact unsupported-platform guard.
 Any other compiler error fails the job. The security stage's shared helper
@@ -117,7 +127,11 @@ preserved in the security squash message. This avoids replaying full build
 diffs onto stale source and avoids a self-referential workflow pin.
 The disposable steps stage real Node/Pi, run Full bootstrap and Headless setup in temporary state, exercise
 Pi RPC, Python, web serving and task lifecycle, install Full NSIS, and validate
-a signed native ZIP update plus the pinned cloudflared executable. Native
+a signed native ZIP update plus the pinned cloudflared executable. Exact ignored
+NSIS and ZIP/Connect selections require one executed, passed test; zero matches
+or an ignored result fail the job. Native UV repair also exercises the actual
+installer replacing ordinary existing bytes with missing, malformed or stale
+receipts. This does not claim replacement of a running or read-only executable. Native
 regressions also exercise Unicode and junction homes, outside junction refusal,
 the activation-lock rollback floor and both service log streams. Dedicated
 probes also cover Restricted PowerShell/CMD argument propagation, real 8.3

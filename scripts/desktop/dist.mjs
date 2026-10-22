@@ -4,11 +4,11 @@
 //   --channel <name>     stable | nightly | dev (default dev). See docs/channels.md.
 // Remaining arguments go to electron-builder.
 import { execFile, spawn } from 'node:child_process'
-import { existsSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
-import { dirname, join, resolve } from 'node:path'
+import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
+import { pnpmCommand } from './pnpm-command.mjs'
 import { nativeBuildEnvironment } from './native-build.mjs'
 import { appId, productName } from './release-version.mjs'
 import { iconOptions, parseBuildArgs } from './build-config.mjs'
@@ -70,28 +70,11 @@ function run(command, commandArgs) {
   })
 }
 
-// Execute pnpm's JS entrypoint on Windows so product names containing spaces
-// stay single arguments. cmd.exe would expand and split the builder options.
-let pnpm = 'pnpm'
-let pnpmPrefix = []
-if (process.platform === 'win32') {
-  const { stdout } = await promisify(execFile)('where.exe', ['pnpm'])
-  const paths = stdout.trim().split(/\r?\n/)
-  const executable = paths.find(path => path.toLowerCase().endsWith('.exe'))
-  if (executable) pnpm = executable
-  else {
-    const candidates = paths.flatMap(path => [join(dirname(path), '../pnpm/bin/pnpm.cjs'), join(dirname(path), 'node_modules/pnpm/bin/pnpm.cjs')])
-    const entrypoint = candidates.find(existsSync)
-    if (!entrypoint) throw new Error('Cannot locate the pnpm JavaScript entrypoint. Install pnpm with npm or pnpm/action-setup.')
-    pnpm = process.execPath
-    pnpmPrefix = [entrypoint]
-  }
-}
+const { command: pnpm, prefix: pnpmPrefix } = await pnpmCommand()
 await run(pnpm, [...pnpmPrefix, 'run', client ? 'build:client' : 'build'])
-// Through pnpm so electron-builder detects pnpm. Its Windows fallback finds
-// the root package.json workspaces field when its Unix `pwd` probe cannot run.
-// Keep that declaration in sync with pnpm-workspace.yaml.
-await run(pnpm, [
+// Keep hooks inside the desktop project. Package-manager workspace discovery
+// may return no root on Windows; hook containment must still hold there.
+const packageArgs = [
   ...pnpmPrefix,
   'exec',
   'electron-builder',
@@ -101,7 +84,9 @@ await run(pnpm, [
   ...(client ? ['--config', 'electron-builder.client.yml'] : []),
   '--publish',
   'never'
-]).catch(error => {
+]
+console.log('Desktop packaging invocation:', JSON.stringify({ command: pnpm, args: packageArgs, cwd: desktopRoot }))
+await run(pnpm, packageArgs).catch(error => {
   console.error(error.message)
   process.exitCode = 1
 })

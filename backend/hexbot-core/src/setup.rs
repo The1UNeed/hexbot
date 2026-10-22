@@ -232,6 +232,27 @@ fn tool_asset(tool: &str, target: &str) -> Result<Asset> {
         sha256: sha256.clone(),
     })
 }
+// Native CI calls the actual private installer with a local verified ZIP.
+#[cfg(all(windows, debug_assertions))]
+pub async fn windows_contract_install_uv(home: &Path, archive: &Path) -> Result<PathBuf> {
+    let asset = Asset {
+        version: "native-contract".into(),
+        directory: String::new(),
+        url: "local-contract".into(),
+        sha256: services::file_sha256(archive)?,
+    };
+    install_tool(
+        home,
+        "uv",
+        &asset,
+        |_, destination| async move {
+            fs::copy(archive, destination)?;
+            Ok(())
+        },
+        &|_, _| {},
+    )
+    .await
+}
 async fn download_tool(url: String, destination: PathBuf) -> Result<()> {
     services::download(&url, &destination, 256 * 1024 * 1024, true).await
 }
