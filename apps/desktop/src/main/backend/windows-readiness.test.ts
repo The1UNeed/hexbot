@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { promisify } from 'node:util'
 import { expect, it, vi } from 'vitest'
-import { windowsDaemon } from './windows-readiness'
+import { windowsDaemon, windowsReadinessScript } from './windows-readiness'
 import { runningDaemonPort, selectedDaemon, lockedDaemonPid, DaemonManager } from './manager'
 import { reconcileWindowsService } from '../service'
 vi.mock('electron', () => ({ app: { on: () => undefined, isPackaged: true } }))
@@ -17,10 +17,12 @@ it.skipIf(process.platform !== 'win32' || !process.env.HEXBOT_NATIVE_TEST_BUNDLE
   const previous = { ...process.env }
   process.env.HEXBOT_HOME = home
   process.env.HEXBOT_CLI_NO_PATH = '1'
+  let failed = false
   let child: ChildProcess | undefined
   let exit: Promise<[number | null, NodeJS.Signals | null]> | undefined
   const stop = async (): Promise<void> => {
     if (!child) return
+    child.stdin!.once('error', error => console.error('Isolated readiness shutdown pipe:', error.message.slice(0, 512)))
     child.stdin!.end('HEXBOT_SHUTDOWN_V1\n')
     const deadline = setTimeout(() => child?.kill('SIGKILL'), 10_000)
     try { expect(await exit).toEqual([0, null]) }
@@ -118,9 +120,23 @@ it.skipIf(process.platform !== 'win32' || !process.env.HEXBOT_NATIVE_TEST_BUNDLE
     expect((await windowsDaemon(home))?.pid).toBe(child!.pid)
     expect(child!.pid).not.toBe(pid)
     await stop()
+  } catch (error) {
+    failed = true
+    // Only this isolated fixture emits bounded process/metadata diagnostics.
+    // Production readiness keeps raw PowerShell stderr out of the UI.
+    const ps = join(process.env.SystemRoot!, 'System32/WindowsPowerShell/v1.0/powershell.exe')
+    const result = await exec(ps, ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(windowsReadinessScript, 'utf16le').toString('base64')],
+      { env: { ...process.env, HEXBOT_READINESS_HOME: home }, windowsHide: true, timeout: 10_000, maxBuffer: 16_384 }).catch(value => value as { stdout?: string; stderr?: string; code?: unknown })
+    console.error('Isolated Windows readiness failure:', JSON.stringify({ pid: child?.pid, exitCode: child?.exitCode,
+      stdout: result.stdout?.slice(-4096), stderr: 'stderr' in result ? result.stderr?.slice(-4096) : undefined, status: 'code' in result ? result.code : 0 }))
+    throw error
   } finally {
-    await stop()
-    process.env = previous
-    await rm(root, { recursive: true, force: true })
+    try { await stop() } catch (cleanup) {
+      if (!failed) throw cleanup
+      console.error('Isolated readiness cleanup also failed:', String(cleanup).slice(0, 1024))
+    } finally {
+      process.env = previous
+      await rm(root, { recursive: true, force: true })
+    }
   }
 }, 300_000)

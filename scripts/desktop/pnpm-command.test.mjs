@@ -7,6 +7,11 @@ import test from 'node:test'
 import { promisify } from 'node:util'
 import { windowsPnpmCommand } from './pnpm-command.mjs'
 
+test('rejects empty or relative discovery results', () => {
+  assert.throws(() => windowsPnpmCommand([]), /Cannot locate/)
+  assert.throws(() => windowsPnpmCommand(['pnpm.cmd']), /Cannot locate/)
+})
+
 for (const layout of ['../pnpm/bin/pnpm.cjs', 'node_modules/pnpm/bin/pnpm.cjs', 'node_modules/corepack/dist/pnpm.js', 'pnpm.exe']) {
   test(`resolves the explicit ${layout} layout without reading a command shim`, async t => {
     const root = await mkdtemp(join(tmpdir(), 'hexbot-pnpm-π '))
@@ -28,7 +33,8 @@ for (const layout of ['../pnpm/bin/pnpm.cjs', 'node_modules/pnpm/bin/pnpm.cjs', 
 test('real Corepack launches the project-pinned pnpm with literal argv', { skip: !process.env.HEXBOT_TEST_COREPACK_ROOT && process.platform !== 'win32' }, async t => {
   assert(process.env.HEXBOT_TEST_COREPACK_ROOT, 'Windows CI must provision isolated real Corepack')
   const root = resolve(process.env.HEXBOT_TEST_COREPACK_ROOT)
-  const exec = promisify(execFile)
+  const run = promisify(execFile)
+  const exec = (command, args) => run(command, args, { env: { ...process.env, COREPACK_HOME: join(root, 'cache'), COREPACK_ENABLE_DOWNLOAD_PROMPT: '0' } })
   await exec(process.execPath, [join(root, 'node_modules/corepack/dist/corepack.js'), 'enable', '--install-directory', root, 'pnpm'])
   assert((await stat(join(root, process.platform === 'win32' ? 'pnpm.cmd' : 'pnpm'))).isFile())
   const shim = join(root, 'pnpm.cmd')

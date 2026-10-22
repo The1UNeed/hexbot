@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process'
 import { statSync } from 'node:fs'
-import { dirname, join } from 'node:path'
+import { dirname, isAbsolute, join } from 'node:path'
 import { promisify } from 'node:util'
 
 // Invoke pnpm without cmd.exe re-parsing product names or CLI arguments.
@@ -11,6 +11,7 @@ export async function pnpmCommand() {
 }
 
 export function windowsPnpmCommand(paths, node = process.execPath) {
+  paths = paths.filter(isAbsolute)
   const regular = path => { try { return statSync(path).isFile() } catch { return false } }
   const executable = paths.find(path => path.toLowerCase().endsWith('.exe') && regular(path))
   if (executable) return { command: executable, prefix: [] }

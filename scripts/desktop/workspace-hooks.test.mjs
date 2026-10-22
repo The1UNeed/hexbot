@@ -72,7 +72,7 @@ for (const corepack of [false, ...(process.env.HEXBOT_TEST_COREPACK_ROOT ? [true
     const version = JSON.parse(await readFile(join(desktop, 'package.json'), 'utf8')).version
     const name = productName('stable', version, client)
     const args = [...prefix, 'exec', 'electron-builder', '--win', '--x64', `-c.productName=${name}`, `-c.extraMetadata.productName=${name}`, '--config', config, '--publish', 'never']
-    const env = { ...process.env, HEXBOT_EDITION: client ? 'client' : 'full', HEXBOT_CHANNEL: 'stable' }
+    const env = { ...process.env, ...(corepack ? { COREPACK_HOME: join(process.env.HEXBOT_TEST_COREPACK_ROOT, 'cache'), COREPACK_ENABLE_DOWNLOAD_PROMPT: '0' } : {}), HEXBOT_EDITION: client ? 'client' : 'full', HEXBOT_CHANNEL: 'stable' }
     if (!client && process.platform === 'win32') Object.assign(env, { HEXBOT_BUILD_PLATFORM: 'win32', HEXBOT_BUILD_ARCH: 'x64' })
     if (!env.CSC_LINK && !env.CSC_NAME) env.CSC_IDENTITY_AUTO_DISCOVERY = 'false'
     const result = await exec(command, args, { cwd: desktop, env, timeout: 60_000 }).catch(error => error)
