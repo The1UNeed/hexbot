@@ -94,7 +94,7 @@ Setup then asks about you (your name, your work, and how bots should speak to yo
 
 Setup finishes by creating HexBot, your primary bot, and opening your chat with it. [Quick start](/docs/quick-start/) walks through each step. Model providers and optional tool services bill your own accounts.
 
-The daemon must keep running and the computer must stay awake for remote devices and scheduled work. Closing the window keeps Full running your bots and Client receiving notifications. On macOS the window hides; on Linux it minimizes, so you can reopen it from the desktop even without a tray icon. Launching the app again also brings it back.
+The daemon must keep running and the computer must stay awake for remote devices and scheduled work. Closing the window keeps Full running your bots and Client receiving notifications. On macOS the window hides; on Linux it minimizes, so you can restore it from the dock or task switcher even without a tray icon. Launching the app again can also restore it, depending on your Linux desktop's activation support. GNOME Wayland has not been verified.
 
 To exit, choose **Quit** from the app menu on macOS, **File > Quit** on Linux, or **Quit** from the tray menu. Quitting stops an app-owned daemon unless "Start the daemon at login" is on in Settings, Network. Logging out or shutting down still exits the app. Closing or quitting Client does not stop the daemon on another computer. For a daemon without the app, install [Headless](#headless). For a second device, turn on **Allow other devices** in Settings, Network and follow [Pairing and LAN](/docs/pairing-and-lan/).
 

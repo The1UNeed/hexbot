@@ -159,7 +159,13 @@
   replies stay silent. It calls the actual native API and records its delivery
   events in `notifications.json`. Set `HEXBOT_SMOKE_NATIVE_NOTIFICATIONS=1` on
   a host with notification permissions to require the OS `show` events too.
-  On headless Linux run these Electron checks through `xvfb-run -a`.
+  On headless Linux install `openbox dbus-x11 xvfb`, then run each edition with
+  a window manager so native minimization works:
+
+  ```sh
+  dbus-run-session -- xvfb-run -a -s '-screen 0 1600x1200x24' sh -c 'openbox >/dev/null 2>&1 & node scripts/dev/native-ui-smoke.mjs --desktop --edition=full'
+  dbus-run-session -- xvfb-run -a -s '-screen 0 1600x1200x24' sh -c 'openbox >/dev/null 2>&1 & node scripts/dev/native-ui-smoke.mjs --desktop --edition=client'
+  ```
 - Web bundle: `pnpm --filter ./apps/web run typecheck && pnpm --filter ./apps/web run test --run && pnpm --filter ./apps/web run lint && pnpm --filter ./apps/web run build`.
 - Desktop: `pnpm --filter ./apps/desktop run typecheck && pnpm --filter ./apps/desktop run test --run && pnpm --filter ./apps/desktop run build`.
   After building the web bundle, `pnpm --filter ./apps/desktop run e2e:lifecycle`

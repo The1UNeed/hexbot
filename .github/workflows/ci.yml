@@ -128,12 +128,14 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm --filter ./apps/web run build
       - run: pnpm --filter ./apps/desktop exec playwright install --with-deps chromium
+      - name: Install a Linux window manager, with no tray host
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends openbox dbus-x11 xvfb
       - name: Unchanged browser app against Rust and Pi
         run: node scripts/dev/native-ui-smoke.mjs
       - name: Electron full edition against Rust and Pi
-        run: xvfb-run -a node scripts/dev/native-ui-smoke.mjs --desktop --edition=full
+        run: dbus-run-session -- xvfb-run -a -s '-screen 0 1600x1200x24' sh -c 'openbox >/dev/null 2>&1 & node scripts/dev/native-ui-smoke.mjs --desktop --edition=full'
       - name: Electron client-only edition against Rust and Pi
-        run: xvfb-run -a node scripts/dev/native-ui-smoke.mjs --desktop --edition=client
+        run: dbus-run-session -- xvfb-run -a -s '-screen 0 1600x1200x24' sh -c 'openbox >/dev/null 2>&1 & node scripts/dev/native-ui-smoke.mjs --desktop --edition=client'
 
   desktop-lifecycle:
     name: Electron lifecycle (${{ matrix.os }})

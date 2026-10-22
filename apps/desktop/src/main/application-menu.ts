@@ -11,7 +11,7 @@ export function applicationMenuTemplate(
   appName = 'Hexbot',
   platform = process.platform
 ): MenuItemConstructorOptions[] {
-  return [
+  const menu: MenuItemConstructorOptions[] = [
     {
       label: platform === 'darwin' ? appName : 'File',
       submenu: [
@@ -26,4 +26,21 @@ export function applicationMenuTemplate(
     { role: 'editMenu' },
     { role: 'windowMenu' }
   ]
+  if (platform !== 'darwin') {
+    menu.splice(2, 0, {
+      label: 'View',
+      submenu: [
+        { role: 'reload' },
+        { role: 'forceReload' },
+        { role: 'toggleDevTools' },
+        { type: 'separator' },
+        { role: 'resetZoom' },
+        { role: 'zoomIn' },
+        { role: 'zoomOut' },
+        { type: 'separator' },
+        { role: 'togglefullscreen' }
+      ]
+    })
+  }
+  return menu
 }

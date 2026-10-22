@@ -133,8 +133,11 @@ time. Browser reply notifications use the page's visibility.
 macOS hides the window as before. Windows hides it to the tray, or minimizes
 if tray setup fails. Linux always minimizes, because a tray object does not
 prove that the desktop displays an icon, including on GNOME without a tray
-extension. Launching the app again, activating it, or using the tray reopens
-the same page. Windows and Linux have File > Quit as well as tray Quit.
+extension. Use the dock or task switcher to restore the same page. The app
+also restores it when it receives an activation or second-launch event, or
+when you use the tray. Delivery of activation and second-launch events on
+Linux depends on the desktop; GNOME Wayland has not been verified.
+Windows and Linux have File > Quit as well as tray Quit.
 Explicit quit, updater installation, Windows session end, and macOS/Linux
 shutdown bypass close interception. The app never delays OS session events.
 Desktop state patches are serialized per file so concurrent bounds and

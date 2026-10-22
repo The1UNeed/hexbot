@@ -11,6 +11,38 @@ describe('applicationMenuTemplate', () => {
     expect(items.find(item => item.role === 'quit')!.click).toBe(actions.quit)
   })
 
+  it.each(['win32', 'linux'] as const)(
+    'keeps the native View roles and their default keyboard shortcuts on %s',
+    platform => {
+      const menu = applicationMenuTemplate(
+        { checkForUpdates: vi.fn(), openSettings: vi.fn(), quit: vi.fn() },
+        'Hexbot',
+        platform
+      )
+      const items = menu.find(item => item.label === 'View')!
+        .submenu as import('electron').MenuItemConstructorOptions[]
+      // Electron supplies Ctrl+R, Ctrl+Shift+R, Ctrl+Shift+I, Ctrl+0/+/- and F11
+      // from these roles. Leave their native handlers and accelerators intact.
+      expect(items).toEqual([
+        { role: 'reload' },
+        { role: 'forceReload' },
+        { role: 'toggleDevTools' },
+        { type: 'separator' },
+        { role: 'resetZoom' },
+        { role: 'zoomIn' },
+        { role: 'zoomOut' },
+        { type: 'separator' },
+        { role: 'togglefullscreen' }
+      ])
+      expect(menu.map(item => item.label ?? item.role)).toEqual([
+        'File',
+        'editMenu',
+        'View',
+        'windowMenu'
+      ])
+    }
+  )
+
   it('has the native macOS application, edit, and window menus', () => {
     const template = applicationMenuTemplate(
       {
