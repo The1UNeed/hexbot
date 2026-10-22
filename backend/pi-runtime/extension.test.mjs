@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {mkdtempSync, mkdirSync, writeFileSync, readFileSync, symlinkSync, rmSync, realpathSync, existsSync, linkSync, unlinkSync, statSync, chmodSync} from 'node:fs';
+import {mkdtempSync, mkdirSync, writeFileSync, readFileSync, symlinkSync, rmSync, realpathSync, existsSync, linkSync, unlinkSync, statSync, chmodSync, openSync, closeSync, readdirSync} from 'node:fs';
 import {createServer} from 'node:net';
 import {once} from 'node:events';
 import {tmpdir, homedir} from 'node:os';
@@ -123,9 +123,12 @@ test('restricted Pi write and edit preserve existing modes independently of umas
     const environment = {...process.env}; delete environment.NODE_TEST_CONTEXT;
     for (const value of ['0022','0077','0200']) {
       await t.test(`isolated umask=${value}`, () => {
-        execFileSync(process.execPath, ['--test', '--test-name-pattern=^restricted Pi write and edit preserve existing modes independently of umask$', fileURLToPath(import.meta.url)], {
+        const output = execFileSync(process.execPath, ['--test', '--test-reporter=tap', '--test-name-pattern=^restricted Pi write and edit preserve existing modes independently of umask$', fileURLToPath(import.meta.url)], {
           env:{...environment, HEXBOT_TEST_FILE_UMASK:value}, encoding:'utf8',
         });
+        assert.match(output,/^# tests 10$/m,'child executes all nine cases plus its parent');
+        assert.match(output,/^# pass 10$/m);
+        assert.match(output,/^# skipped 0$/m);
       });
     }
     return;
@@ -162,6 +165,30 @@ test('restricted Pi write and edit preserve existing modes independently of umas
     assert.equal(statSync(path).mode & 0o7777,0o600 & ~Number.parseInt(mask,8));
     assert.equal(readFileSync(path,'utf8'),'new');
   });
+});
+test('restricted Pi write and edit cannot overwrite an OS-nonwritable file even after approval', {
+  skip: process.platform === 'win32' || process.geteuid?.() === 0 ? 'requires Unix non-root access semantics' : false,
+}, async t => {
+  for (const mode of ['smart','manual']) for (const permissions of [0o444,0o000]) for (const tool of ['write','edit']) {
+    await t.test(`${mode} ${tool} mode=${permissions.toString(8)}`, async t => {
+      const f = fixture(t,mode,['file']);
+      const output = join(f.home,'profiles/owl/artifacts'), path = join(output,'result');
+      mkdirSync(output,{recursive:true}); f.settings.outputDirs = [output]; f.ctx.choice = 'once';
+      writeFileSync(path,'keep');
+      const readable = openSync(path,'r');
+      t.after(() => closeSync(readable));
+      chmodSync(path,permissions);
+      const original = statSync(path);
+      assert.throws(() => writeFileSync(path,'changed'), {code:'EACCES'},'OS in-place write refuses too');
+      const args = tool === 'write' ? {path,content:'changed'} : {path,edits:[{oldText:'keep',newText:'changed'}]};
+      await assert.rejects(f.run(tool,args),/EACCES/);
+      assert.equal(f.choices.length,mode === 'manual' ? 1 : 0,'execution reached the normal approval path');
+      assert.equal(statSync(path).ino,original.ino,'refusal preserves the original directory entry');
+      assert.equal(statSync(path).mode,original.mode);
+      assert.equal(readFileSync(readable,'utf8'),'keep');
+      assert.deepEqual(readdirSync(output),['result'],'refusal leaves no temporary file');
+    });
+  }
 });
 test('managed roots pointing into outputs refuse writes and command layouts, while reads stay allowed', t => {
   const f = fixture(t);

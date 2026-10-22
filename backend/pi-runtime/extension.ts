@@ -18,6 +18,7 @@ async function atomicWrite(path: string, content: string): Promise<void> {
     if (error.code !== 'ENOENT') throw error;
     return null;
   });
+  if (mode !== null) await access(path, constants.W_OK);
   const temporary = join(dirname(path), `.hexbot-write-${randomUUID()}`);
   const file = await open(temporary, 'wx', 0o600);
   try {
