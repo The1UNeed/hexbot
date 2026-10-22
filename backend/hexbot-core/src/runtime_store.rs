@@ -13,6 +13,10 @@ use std::{
     time::Duration,
 };
 
+#[cfg(test)]
+#[path = "runtime_history_store_tests.rs"]
+mod history_tests;
+
 /// One boundary per store, including every delegated source. Product work is
 /// synchronous and shares the read side; tombstoning waits for it to finish.
 /// Take this before any database transaction or skills/config/todo lock. Never
@@ -91,7 +95,14 @@ pub fn open(home: &Path) -> Result<Connection> {
       CREATE TRIGGER IF NOT EXISTS history_message_delete AFTER DELETE ON native_messages BEGIN INSERT INTO native_history_versions VALUES(OLD.session_id,1) ON CONFLICT(session_id) DO UPDATE SET version=version+1; END;
       CREATE TRIGGER IF NOT EXISTS history_journal_insert AFTER INSERT ON native_pi_journal WHEN NEW.projection_seq IS NOT NULL BEGIN INSERT INTO native_history_versions VALUES(NEW.session_id,1) ON CONFLICT(session_id) DO UPDATE SET version=version+1; END;
       CREATE TRIGGER IF NOT EXISTS history_journal_update AFTER UPDATE OF active,projection_seq ON native_pi_journal WHEN OLD.active IS NOT NEW.active OR OLD.projection_seq IS NOT NEW.projection_seq BEGIN INSERT INTO native_history_versions VALUES(NEW.session_id,1) ON CONFLICT(session_id) DO UPDATE SET version=version+1; END;
-      CREATE TRIGGER IF NOT EXISTS history_journal_delete AFTER DELETE ON native_pi_journal WHEN OLD.projection_seq IS NOT NULL BEGIN INSERT INTO native_history_versions VALUES(OLD.session_id,1) ON CONFLICT(session_id) DO UPDATE SET version=version+1; END;",
+      CREATE TRIGGER IF NOT EXISTS history_journal_delete AFTER DELETE ON native_pi_journal WHEN OLD.projection_seq IS NOT NULL BEGIN INSERT INTO native_history_versions VALUES(OLD.session_id,1) ON CONFLICT(session_id) DO UPDATE SET version=version+1; END;
+      CREATE TABLE IF NOT EXISTS native_history_rewrites(session_id TEXT PRIMARY KEY, count INTEGER NOT NULL);
+      CREATE TRIGGER IF NOT EXISTS rewrite_message_insert AFTER INSERT ON native_messages WHEN EXISTS(SELECT 1 FROM native_messages WHERE session_id=NEW.session_id AND seq>NEW.seq) BEGIN INSERT INTO native_history_rewrites VALUES(NEW.session_id,1) ON CONFLICT(session_id) DO UPDATE SET count=count+1; END;
+      CREATE TRIGGER IF NOT EXISTS rewrite_message_update AFTER UPDATE ON native_messages BEGIN INSERT INTO native_history_rewrites VALUES(NEW.session_id,1) ON CONFLICT(session_id) DO UPDATE SET count=count+1; END;
+      CREATE TRIGGER IF NOT EXISTS rewrite_message_delete AFTER DELETE ON native_messages BEGIN INSERT INTO native_history_rewrites VALUES(OLD.session_id,1) ON CONFLICT(session_id) DO UPDATE SET count=count+1; END;
+      CREATE TRIGGER IF NOT EXISTS rewrite_journal_insert AFTER INSERT ON native_pi_journal WHEN NEW.projection_seq IS NOT NULL AND (NEW.active IS NOT 1 OR EXISTS(SELECT 1 FROM native_pi_journal WHERE session_id=NEW.session_id AND projection_seq=NEW.projection_seq AND journal_id<>NEW.journal_id)) BEGIN INSERT INTO native_history_rewrites VALUES(NEW.session_id,1) ON CONFLICT(session_id) DO UPDATE SET count=count+1; END;
+      CREATE TRIGGER IF NOT EXISTS rewrite_journal_update AFTER UPDATE OF active,projection_seq ON native_pi_journal WHEN OLD.active IS NOT NEW.active OR OLD.projection_seq IS NOT NEW.projection_seq BEGIN INSERT INTO native_history_rewrites VALUES(NEW.session_id,1) ON CONFLICT(session_id) DO UPDATE SET count=count+1; END;
+      CREATE TRIGGER IF NOT EXISTS rewrite_journal_delete AFTER DELETE ON native_pi_journal WHEN OLD.projection_seq IS NOT NULL BEGIN INSERT INTO native_history_rewrites VALUES(OLD.session_id,1) ON CONFLICT(session_id) DO UPDATE SET count=count+1; END;",
     )?;
     crate::db::migrate_runtime(&conn)?;
     Ok(conn)
@@ -135,6 +146,55 @@ pub(crate) fn history_with_conn(conn: &Connection, stored: &str) -> Result<Vec<V
         serde_json::from_str(&s).map_err(|e| crate::Error::new(5200, e.to_string()))
     })
     .collect()
+}
+/// Return appended display rows and an opaque cursor from the same snapshot.
+/// Edits, deletions and branch changes invalidate the cursor and return all rows.
+/// Binding it to the stored conversation also invalidates it after a chat fork.
+pub fn history_since(
+    home: &Path,
+    stored: &str,
+    cursor: Option<&str>,
+) -> Result<(Vec<Value>, String, bool)> {
+    let conn = open(home)?;
+    // One read transaction, so the rows and the cursor describe the same moment.
+    let tx = conn.unchecked_transaction()?;
+    let rewrites: i64 = tx
+        .query_row(
+            "SELECT count FROM native_history_rewrites WHERE session_id=?",
+            [stored],
+            |r| r.get(0),
+        )
+        .optional()?
+        .unwrap_or(0);
+    let last: i64 = tx.query_row(
+        "SELECT COALESCE(MAX(seq),0) FROM native_messages WHERE session_id=?",
+        [stored],
+        |r| r.get(0),
+    )?;
+    let after = cursor
+        .and_then(|cursor| cursor.strip_prefix(&format!("v1:{stored}:")))
+        .and_then(|cursor| cursor.split_once(':'))
+        .and_then(|(count, seq)| Some((count.parse::<i64>().ok()?, seq.parse::<i64>().ok()?)))
+        .filter(|(count, seq)| *count == rewrites && *seq >= 0 && *seq <= last)
+        .map(|(_, seq)| seq);
+    let rows = {
+        let mut stmt = tx.prepare(
+            "SELECT m.message_json FROM native_messages m LEFT JOIN native_pi_journal p ON p.session_id=m.session_id AND p.projection_seq=m.seq WHERE m.session_id=? AND m.seq>? AND (p.active IS NULL OR p.active=1) ORDER BY m.seq",
+        )?;
+        let rows = stmt.query_map(params![stored, after.unwrap_or(0)], |r| {
+            r.get::<_, String>(0)
+        })?;
+        rows.map(|r| {
+            let s = r?;
+            serde_json::from_str(&s).map_err(|e| crate::Error::new(5200, e.to_string()))
+        })
+        .collect::<Result<Vec<Value>>>()?
+    };
+    Ok((
+        rows,
+        format!("v1:{stored}:{rewrites}:{last}"),
+        after.is_some(),
+    ))
 }
 /// Stream visible owner evidence, newest first. Stops before allocating an
 /// oversized row, or when the caller's serialized request is full; either way
@@ -999,6 +1059,10 @@ fn delete_native(home: &Path, stored: &str) -> Result<()> {
         "DELETE FROM native_history_versions WHERE session_id=?",
         [stored],
     )?;
+    tx.execute(
+        "DELETE FROM native_history_rewrites WHERE session_id=?",
+        [stored],
+    )?;
     tx.execute("DELETE FROM native_sessions WHERE stored_id=?", [stored])?;
     tx.commit()?;
     Ok(())
@@ -1132,6 +1196,7 @@ pub(crate) fn prepare_chat_fork(
         ("native_prompt_intents", "session_id"),
         ("native_summaries", "session_id"),
         ("native_history_versions", "session_id"),
+        ("native_history_rewrites", "session_id"),
         ("native_quarantine", "session_id"),
         ("native_unrecovered", "session_id"),
     ] {

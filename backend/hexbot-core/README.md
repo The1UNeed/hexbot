@@ -141,7 +141,14 @@ it also installs over SSH when nobody is signed in at the screen.
   replaying an already recorded message does not duplicate it or its cost.
   `native_history_versions` counts, by trigger, every change to a session's
   displayed history: a message row, or the journal link that orders it or
-  hides it on another branch. History search (`session_search`) keeps an
+  hides it on another branch. `native_history_rewrites` counts changes that
+  are not appends, including edits, deletions, reordered rows and journal links
+  that hide or reveal messages. `hexbot.sections.open` and `session.history`
+  return a conversation-bound `history_cursor` and `history_delta`, so clients
+  can request appended rows until a rewrite requires a full snapshot. Purging
+  history removes both counters after the delete triggers finish. Chat fork
+  reservations refuse targets containing either counter. History search
+  (`session_search`) keeps an
   in-memory FTS5 index per bot, owner, and role filter, shared by every
   section of the bot. Refresh skips the asking section until another section
   searches. For a full-text query, a savepoint temporarily deletes the asking
