@@ -105,7 +105,7 @@ try {
         const denial = await handlers.tool_call({toolName,input,toolCallId:`${mode}-${index}`},ctx);
         assert.deepEqual(denial,{block:true,reason:WINDOWS_ISOLATION_UNAVAILABLE});
         // No gate grant exists. Calling execute directly must still refuse.
-        await assert.rejects(tools[toolName].execute(`${mode}-${index}`,input,undefined,undefined,ctx));
+        await assert.rejects(tools[toolName].execute(`${mode}-${index}`,input,undefined,undefined,ctx), /Windows tool isolation is not implemented/);
       }));
       const result = await handlers.user_bash({command:'echo bypass'},ctx);
       assert.equal(result.result.exitCode,1);
@@ -123,7 +123,7 @@ try {
     const user = await handlers.user_bash({command:'echo x'},ctx);
     assert.equal(typeof user.operations.exec,'function');
     settings.approvalMode = 'smart';
-    await assert.rejects(tools.bash.execute('bypass',{command:'echo x'},undefined,undefined,ctx), /approval mode changed/);
+    await assert.rejects(tools.bash.execute('bypass',{command:'echo x'},undefined,undefined,ctx), /Windows tool isolation is not implemented/);
     await assert.rejects(user.operations.exec('echo x',cwd,{}), /approval mode or working directory changed/);
     assert.deepEqual(approvals,[]);
     assert.deepEqual(accesses,[]);

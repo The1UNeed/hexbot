@@ -38,6 +38,10 @@ mod stop;
 use crate::dreaming::checkins;
 use identity::with_fields;
 
+#[cfg(unix)]
+#[path = "runtime_files.rs"]
+mod files;
+
 #[cfg(test)]
 #[path = "runtime_lifecycle_tests.rs"]
 mod lifecycle_tests;
@@ -3372,7 +3376,9 @@ impl Runtime {
         Ok(())
     }
 
-    fn session_settings(&self, s: &Live) -> Result<Value> {
+    // Read effective policy and stored metadata without resolving workdirs or
+    // creating output directories. Windows gates must precede those operations.
+    fn session_policy(&self, s: &Live) -> Result<(Value, Value, Option<String>, Value)> {
         let conn = store::open(&self.home)?;
         let mut stored = s.stored.clone();
         let mut seen = std::collections::HashSet::new();
@@ -3414,6 +3420,16 @@ impl Runtime {
         saved["model"] = own["model"].clone();
         saved["provider"] = own["provider"].clone();
         saved["workdirOverride"] = own["workdirOverride"].clone();
+        saved["approvalMode"] = json!(mode);
+        Ok((saved, settings, bot_workdir, own))
+    }
+
+    fn session_settings(&self, s: &Live) -> Result<Value> {
+        let (mut saved, settings, bot_workdir, own) = self.session_policy(s)?;
+        if saved["approvalMode"] != "off" {
+            crate::credentials::require_supported_execution()?;
+        }
+        let db = db::open(&self.home)?;
         let output_dirs = [
             self.home.join("profiles").join(&s.bot).join("artifacts"),
             store::session_dir(&self.home, &s.stored)?.join("attachments"),
@@ -3422,7 +3438,6 @@ impl Runtime {
             fs::create_dir_all(path)?;
         }
         saved["outputDirs"] = json!(output_dirs);
-        saved["approvalMode"] = json!(mode);
         saved["fallback"] = settings["fallback_model"]
             .as_str()
             .and_then(|s| s.split_once('/'))
@@ -3900,48 +3915,92 @@ impl Runtime {
                         if name == "terminal" {
                             return Self::command(&session, json!({"type":"bash","command":required(&args,"command")?,"excludeFromContext":true})).await;
                         }
+                        let policy = runtime.session_policy(&session)?.0;
+                        if policy["approvalMode"] != "off" {
+                            crate::credentials::require_supported_execution()?;
+                        }
                         let live = runtime.session_settings(&session)?;
                         let raw = PathBuf::from(required(&args, "path")?);
-                        let path = if raw.is_absolute() {
+                        let lexical = if raw.is_absolute() {
                             raw
                         } else {
                             PathBuf::from(live["cwd"].as_str().unwrap_or(".")).join(raw)
                         };
-                        let (path, ask, reason) = guarded_file_path(
-                            &runtime.home,
-                            &path,
-                            name != "read_file",
-                            live["approvalMode"].as_str().unwrap_or("manual"),
-                            &std::iter::once(&live["cwd"])
-                                .chain(live["outputDirs"].as_array().into_iter().flatten())
-                                .filter_map(|v| v.as_str().map(PathBuf::from))
-                                .collect::<Vec<_>>(),
-                        )?;
-                        if ask && !runtime.native_approval(&session, json!({"tool":name,"toolCall":{"title":path.to_string_lossy()},"input":args,"reason":reason})).await? {
+                        let check = |settings: &Value| {
+                            guarded_file_path(
+                                &runtime.home,
+                                &lexical,
+                                name != "read_file",
+                                settings["approvalMode"].as_str().unwrap_or("manual"),
+                                &std::iter::once(&settings["cwd"])
+                                    .chain(settings["outputDirs"].as_array().into_iter().flatten())
+                                    .filter_map(|v| v.as_str().map(PathBuf::from))
+                                    .collect::<Vec<_>>(),
+                            )
+                        };
+                        let checked = check(&live)?;
+                        if checked.1 && !runtime.native_approval(&session, json!({"tool":name,"toolCall":{"title":checked.0.to_string_lossy()},"input":args,"reason":checked.2})).await? {
                             return Err(Error::new(4302, "The user denied this action."));
                         }
+                        // Approval does not authorize a different mode, working
+                        // folder or destination when this callback resumes.
+                        let current = runtime.session_settings(&session)?;
+                        if ["approvalMode", "cwd", "outputDirs"]
+                            .iter()
+                            .any(|key| current[key] != live[key])
+                        {
+                            return Err(Error::new(
+                                4302,
+                                "File policy changed before this action ran. Try again.",
+                            ));
+                        }
+                        let fresh = check(&current)?;
+                        if fresh != checked {
+                            return Err(Error::new(
+                                4302,
+                                "File destination or policy changed before this action ran. Try again.",
+                            ));
+                        }
+                        let path = fresh.0;
+                        #[cfg(unix)]
+                        let access = if current["approvalMode"] != "off" {
+                            Some(files::FileAccess::open(&path, name == "write_file")?)
+                        } else {
+                            None
+                        };
+                        let read = || -> Result<String> {
+                            #[cfg(unix)]
+                            if let Some(access) = &access {
+                                return access.read();
+                            }
+                            common::read_regular_text(&path, 256 * 1024)
+                        };
+                        let write = |bytes: &[u8]| -> Result<()> {
+                            #[cfg(unix)]
+                            if let Some(access) = &access {
+                                return access.write(bytes);
+                            }
+                            common::atomic_write(&path, bytes)
+                        };
                         return match name.as_str() {
                             "read_file" => {
-                                let text = common::read_regular_text(&path, 256 * 1024)?;
+                                let text = read()?;
                                 Ok(
                                     json!({"content":text.chars().take(256*1024).collect::<String>()}),
                                 )
                             }
                             "write_file" => {
-                                common::atomic_write(
-                                    &path,
-                                    required(&args, "content")?.as_bytes(),
-                                )?;
+                                write(required(&args, "content")?.as_bytes())?;
                                 Ok(json!({"success":true}))
                             }
                             "patch" => {
                                 let old = required(&args, "old_string")?;
                                 let new = args["new_string"].as_str().unwrap_or("");
-                                let text = common::read_regular_text(&path, 256 * 1024)?;
+                                let text = read()?;
                                 if text.matches(old).count() != 1 {
                                     return Err(Error::new(4202, "patch must match exactly once"));
                                 }
-                                common::atomic_write(&path, text.replacen(old, new, 1).as_bytes())?;
+                                write(text.replacen(old, new, 1).as_bytes())?;
                                 Ok(json!({"success":true}))
                             }
                             _ => unreachable!(),
@@ -3966,6 +4025,15 @@ impl Runtime {
     async fn tool(&self, s: &Arc<Live>, name: &str, args: &Value) -> Result<Value> {
         common::bot_owner(&self.home, &s.owner, &s.bot)?;
         store::check_deleted(&store::open(&self.home)?, &s.stored)?;
+        if matches!(name, "cronjob_manage" | "hexbot_jobs") {
+            let bot = if name == "hexbot_jobs" {
+                required(args, "bot")?
+            } else {
+                &s.bot
+            };
+            common::bot_owner(&self.home, &s.owner, bot)?;
+            crate::dreaming::require_supported_job_request(&self.home, &s.owner, bot, args)?;
+        }
         // Check-in tools are filtered when frozen; refuse here too.
         if s.stored.starts_with("checkin-")
             && s.tools.iter().any(|t| t["name"] == name)
@@ -3984,18 +4052,57 @@ impl Runtime {
         let mut code_sandbox = None;
         if name == "execute_code" {
             crate::credentials::check_code(args["code"].as_str().unwrap_or(""))?;
+            let policy = self.session_policy(s)?.0;
+            if policy["approvalMode"] != "off" {
+                crate::credentials::require_supported_execution()?;
+            }
             let live = self.session_settings(s)?;
             let mode = live["approvalMode"].clone();
             if mode != "off" {
                 crate::credentials::require_supported_execution()?;
             }
+            let snapshot = live.clone();
+            let runtime = self.weak.clone();
+            let session = Arc::downgrade(s);
+            let revalidate: crate::native_tools::CodeRevalidate = Arc::new(move || {
+                let runtime = runtime
+                    .upgrade()
+                    .ok_or_else(|| Error::new(5201, "daemon stopped"))?;
+                let session = session
+                    .upgrade()
+                    .ok_or_else(|| Error::new(5201, "session closed"))?;
+                let policy = runtime.session_policy(&session)?.0;
+                if policy["approvalMode"] != "off" {
+                    crate::credentials::require_supported_execution()?;
+                }
+                if !crate::connectors::toolsets(&runtime.home, &session.bot)?
+                    .iter()
+                    .any(|name| name == "code_execution")
+                {
+                    return Err(Error::new(4302, "tool is disabled: execute_code"));
+                }
+                let current = runtime.session_settings(&session)?;
+                if ["approvalMode", "cwd", "outputDirs"]
+                    .iter()
+                    .any(|key| current[key] != snapshot[key])
+                {
+                    return Err(Error::new(
+                        4302,
+                        "Execution policy changed before this code ran. Try again.",
+                    ));
+                }
+                Ok(())
+            });
             code_sandbox = Some((
-                match mode.as_str() {
-                    Some("off") => None,
-                    Some("manual") => Some(crate::credentials::Confine::ReadOnly),
-                    _ => Some(crate::credentials::Confine::Workspace),
-                },
-                PathBuf::from(live["cwd"].as_str().unwrap_or(".")),
+                (
+                    match mode.as_str() {
+                        Some("off") => None,
+                        Some("manual") => Some(crate::credentials::Confine::ReadOnly),
+                        _ => Some(crate::credentials::Confine::Workspace),
+                    },
+                    PathBuf::from(live["cwd"].as_str().unwrap_or(".")),
+                ),
+                revalidate,
             ));
             let sandboxed = crate::credentials::isolation_available();
             let mut request =
@@ -4373,9 +4480,13 @@ impl Runtime {
                 let call =
                     crate::native_tools::call(&self.home, &s.owner, &s.bot, &s.stored, name, args);
                 let result = match code_sandbox {
-                    Some(sandbox) => {
-                        crate::native_tools::CODE_SANDBOX
-                            .scope(sandbox, call)
+                    Some((sandbox, revalidate)) => {
+                        revalidate()?;
+                        crate::native_tools::CODE_REVALIDATE
+                            .scope(
+                                revalidate,
+                                crate::native_tools::CODE_SANDBOX.scope(sandbox, call),
+                            )
                             .await?
                     }
                     None => call.await?,
@@ -6585,7 +6696,7 @@ fn guarded_file_path(
 ) -> Result<(PathBuf, bool, Option<String>)> {
     if mode != "off" {
         crate::credentials::require_supported_execution()?;
-        if write && crate::credentials::managed_runtime_path(home, path) {
+        if write && crate::credentials::managed_runtime_path(home, path)? {
             return Err(Error::new(
                 4302,
                 "Managed runtimes and runtime selection are read-only.",
@@ -6623,11 +6734,8 @@ fn guarded_file_path(
     }
     let root = resolve(home)?;
     if write
-        && [home, root.as_path()].iter().any(|home| {
-            [path, target.as_path()]
-                .iter()
-                .any(|path| crate::credentials::managed_runtime_path(home, path))
-        })
+        && (crate::credentials::managed_runtime_path(home, path)?
+            || crate::credentials::managed_runtime_path(&root, &target)?)
     {
         return Err(Error::new(
             4302,

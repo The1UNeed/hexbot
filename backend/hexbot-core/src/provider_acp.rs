@@ -60,7 +60,7 @@ pub async fn complete(home: &Path, bot: &str, stored: &str, args: &Value) -> Res
 
 /// One-shot reviewers use an empty directory and a separate lease, never the
 /// section's workspace or its active ACP request. Native tools remain denied.
-pub(crate) async fn complete_reviewer(
+pub async fn complete_reviewer(
     home: &Path,
     bot: &str,
     stored: &str,

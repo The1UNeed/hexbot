@@ -4,7 +4,7 @@ import { readFileSync, realpathSync, lstatSync, readlinkSync, statSync, existsSy
 import { resolve, dirname, basename, relative, sep, join } from 'node:path';
 import { homedir, tmpdir } from 'node:os';
 import { createBashTool, createReadTool, createWriteTool, createEditTool, createGrepTool, createFindTool, createLsTool } from '@earendil-works/pi-coding-agent';
-import {credentialPolicy, fold, isolatedCommand, isolationAvailable, policyRegex, policyRoots, userHomes, requireSupportedExecution, WINDOWS_ISOLATION_UNAVAILABLE, privateKeyName, probeIsolation, readDenied, secretFileName, gitDirectory, SCAN_REASON, SCAN_FILE_REASON, within, workspaceProtected, lockedGit, scanFailureReason} from './isolation.ts';
+import {credentialPolicy, fold, isolatedCommand, isolationAvailable, policyRegex, policyRoots, userHomes, managedRuntimeRoots, requireSupportedExecution, WINDOWS_ISOLATION_UNAVAILABLE, privateKeyName, probeIsolation, readDenied, secretFileName, gitDirectory, SCAN_REASON, SCAN_FILE_REASON, within, workspaceProtected, lockedGit, scanFailureReason} from './isolation.ts';
 import { registerAcp } from './acp.ts';
 import { lazyStream } from '@earendil-works/pi-ai';
 import { builtinProviders } from '@earendil-works/pi-ai/providers/all';
@@ -309,6 +309,7 @@ export default function hexbot(pi: any) {
       const allowed = allowedCalls.get(id);
       allowedCalls.delete(id);
       if (ctx) await refresh(ctx);
+      if (!bypass()) requireSupportedExecution();
       if (!allowed || allowed.mode !== live.approvalMode) throw new Error('The approval mode changed before this ran. Try again.');
       if (allowed.cwd !== (live.cwd ?? config.cwd)) throw new Error('The working directory changed before this ran. Try again.');
       const cwd = live.cwd ?? config.cwd;
@@ -583,7 +584,7 @@ function protectedHomePath(path: string, home: string, writable: string[]): bool
   const root = canonicalPath(home, process.cwd());
   path = canonicalPath(path, process.cwd());
   // Runtime selection and immutable builds must never become an output exception.
-  if ((credentialPolicy.managedRuntime as string[]).some(local => under(path, join(root, local)))) return true;
+  if (managedRuntimeRoots(home).some(managed => under(path, managed) || under(managed, path))) return true;
   return under(path, root) && !writable.some(p => {
     const allowed = canonicalPath(p, process.cwd());
     return allowed !== root && under(allowed, root) && under(path, allowed);

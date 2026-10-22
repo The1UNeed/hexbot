@@ -200,11 +200,35 @@ fn policy_roots(entry: &str) -> Vec<PathBuf> {
 /// A managed runtime or selection path, including a parent that could replace
 /// one. Callers check both lexical and resolved paths and homes. Output grants
 /// never override this write denial; Bypass deliberately skips it.
-pub(crate) fn managed_runtime_path(home: &Path, path: &Path) -> bool {
-    policy().managed_runtime.iter().any(|local| {
-        let managed = home.join(local);
-        under(path, &managed) || under(&managed, path)
-    })
+pub(crate) fn managed_runtime_roots(home: &Path) -> Result<Vec<PathBuf>> {
+    require_supported_execution()?;
+    let real_home = real_root(home)?;
+    let mut roots = Vec::new();
+    for local in &policy().managed_runtime {
+        let path = home.join(local);
+        let real = real_root(&path)?;
+        // A managed root must not point into a writable output or workspace.
+        // Reject this topology instead of trying to maintain dynamic sandbox
+        // deny rules for mutable root aliases. An alias of the home is fine.
+        if folded(&real) != folded(&real_home.join(local)) {
+            return Err(Error::new(
+                4302,
+                "Managed runtime roots must not be symlinked.",
+            ));
+        }
+        for root in [path, real] {
+            if !roots.contains(&root) {
+                roots.push(root);
+            }
+        }
+    }
+    Ok(roots)
+}
+pub(crate) fn managed_runtime_path(home: &Path, path: &Path) -> Result<bool> {
+    let roots = managed_runtime_roots(home)?;
+    Ok(roots
+        .iter()
+        .any(|managed| under(path, managed) || under(managed, path)))
 }
 /// The file tools' tier for a host path.
 pub fn host_write_tier(path: &Path) -> Option<WriteTier> {
@@ -1418,11 +1442,12 @@ fn layout_scanned(
 ) -> Result<Layout> {
     let mut roots = vec![home.to_owned(), std::fs::canonicalize(home)?];
     roots.dedup();
+    let managed = managed_runtime_roots(home)?;
     let writable = writable
         .iter()
         .filter_map(|p| std::fs::canonicalize(p).ok())
         .filter(|p| roots.iter().any(|root| p != root && p.starts_with(root)))
-        .filter(|p| !roots.iter().any(|root| managed_runtime_path(root, p)))
+        .filter(|p| !managed.iter().any(|root| under(p, root) || under(root, p)))
         .collect();
     Ok(Layout {
         roots,

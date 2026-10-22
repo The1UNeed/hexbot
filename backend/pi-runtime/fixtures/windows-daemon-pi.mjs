@@ -28,10 +28,10 @@ createInterface({input:process.stdin}).on('line', line => {
   if (command.type === 'prompt') {
     emit({type:'agent_start'});
     emit({type:'message_end',message:{role:'user',content:command.message}});
-    let code = 'print("untrusted command must not run")';
     const request = new URL('../code.json',import.meta.url);
-    if (existsSync(request)) code = JSON.parse(readFileSync(request,'utf8')).code;
-    emit({type:'extension_ui_request',id:`native-code-${++next}`,method:'input',title:'__HEXBOT_TOOL__' + JSON.stringify({name:'execute_code',args:{code,full_access:true,reason:'probe'}})});
+    const spec = existsSync(request) ? JSON.parse(readFileSync(request,'utf8')) : {};
+    const call = spec.tool ? {name:spec.tool,args:spec.args ?? {}} : {name:'execute_code',args:{code:spec.code ?? 'print("untrusted command must not run")',full_access:true,reason:'probe'}};
+    emit({type:'extension_ui_request',id:`native-code-${++next}`,method:'input',title:'__HEXBOT_TOOL__' + JSON.stringify(call)});
   }
   if (command.type === 'abort') emit({type:'agent_settled'});
 });

@@ -43,6 +43,21 @@ Output exceptions must not overlap `runtime/native-current.json`,
 Windows boundary must enforce this on handles and child processes too. A
 validated launcher path alone does not contain agent code.
 
+Managed roots themselves must retain their ordinary location beneath the resolved
+home. Restricted file writes and command layouts reject symlinked runtime roots,
+including a root pointing into an artifact output or a missing target. Aliases
+of the home remain valid. This rejects a mutable runtime topology instead of
+treating an output grant as permission to replace installed code. Unix runtime
+reads remain allowed by the ordinary read policy.
+
+Runtime reads the effective approval policy before resolving live workdirs or
+creating outputs. Native file callbacks recheck policy and destination after an
+approval. On Unix their final reads and atomic replacements use directory
+handles opened without following symlinks, so swapping a parent cannot redirect
+the operation. Python submissions recheck current policy after acquiring the
+worker slot; a queued Bypass request cannot retain that permission after a mode
+change. A changed policy refuses the request and requires a fresh invocation.
+
 The Windows CLI contract also installs a separate native argument forwarder at
 `<user-profile>/.local/bin/hexbot.exe`, with a `hexbot.json` home/hash ownership
 sidecar. It selects the immutable daemon through `native-current.json`; it is
@@ -86,6 +101,11 @@ one occurrence of the exact unsupported-platform guard bytes, and removes only
 those bytes in the disposable source. It logs the guard diff and before/after
 hashes. Production source retains its guard, with no feature or compile option
 that bypasses it. The workflow uploads no executable or artifact.
+Explicit `--current-tree` mode verifies both build and refusal interfaces and
+preserves the exact pinned source tree. It records original dependency ancestry
+without requiring history removed by squash merges. Two-source preparation uses
+one verified merge base and a shared reviewed dependency ancestor, either the
+original #132 commit or its main squash. Conflicting patches abort.
 
 The compiled integration probe invokes the actual Rust Runtime through a trusted
 Pi transport fixture. It verifies code refusal before approval in Auto and
@@ -97,6 +117,11 @@ not successful sandbox execution or a complete daemon feature test.
 The native bridge probe starts trusted runner Python in Bypass, synchronizes over
 a socket, then changes the live mode to Auto or Manual. That same worker's
 read/write/patch callbacks must refuse before approval or path resolution.
+The trusted fixture records command names, process exits and exception types
+without recording prompts, tool arguments or environment values. On failure the
+probe preserves the original error and reports cleanup separately. A bounded
+loader-only diagnostic captures stderr from the fixed fixture; production Pi
+continues to discard stderr that could contain credentials.
 
 Other platforms run the extension gate probes with a simulated Windows platform.
 That checks gate logic only. It cannot validate Windows paths, Windows security
