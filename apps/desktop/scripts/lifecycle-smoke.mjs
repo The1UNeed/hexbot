@@ -3,6 +3,7 @@
 import assert from 'node:assert/strict'
 import { execFile, spawn } from 'node:child_process'
 import { once } from 'node:events'
+import { appendFileSync } from 'node:fs'
 import { cp, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
@@ -24,6 +25,24 @@ const environment = { ...process.env, HEXBOT_WEB_DEV_URL: 'http://127.0.0.1:1' }
 delete environment.ELECTRON_RUN_AS_NODE
 const results = []
 let currentApp
+let currentProcess
+const processes = new WeakMap()
+
+function recordProcess(child, name) {
+  const file = join(artifacts, `${name}-process.log`)
+  const record = message => appendFileSync(file, message)
+  record(`pid=${child.pid}\n`)
+  child.stdout?.on('data', record)
+  child.stderr?.on('data', record)
+  child.on('exit', (code, signal) => record(`\nexit=${JSON.stringify({ code, signal })}\n`))
+}
+
+function launchArgs(directory) {
+  return [
+    ...(process.platform === 'linux' && process.env.CI ? ['--no-sandbox'] : []),
+    ...(process.env.HEXBOT_LIFECYCLE_APP ? [] : [directory])
+  ]
+}
 
 async function prepare(edition) {
   const directory = join(root, edition)
@@ -61,25 +80,45 @@ async function launch(directory, name) {
   await mkdir(home)
   currentApp = await electron.launch({
     executablePath,
-    args: [
-      ...(process.platform === 'linux' && process.env.CI ? ['--no-sandbox'] : []),
-      ...(process.env.HEXBOT_LIFECYCLE_APP ? [] : [directory])
-    ],
+    args: launchArgs(directory),
     env: { ...environment, HEXBOT_HOME: home },
     timeout: 30_000
   })
+  // Playwright disposes its process accessor when the Electron connection closes.
+  currentProcess = currentApp.process()
+  processes.set(currentApp, currentProcess)
+  recordProcess(currentProcess, name)
   return currentApp
 }
-async function quit(app, fromTray = false) {
-  const closed = app.waitForEvent('close', { timeout: 15_000 })
-  await app.evaluate(({ app }, fromTray) => {
-    setImmediate(() => {
-      if (fromTray)
-        globalThis.lifecycleFixture.trayMenu.items.find(item => item.label === 'Quit').click()
-      else app.quit()
+async function quit(app, source = 'app') {
+  const child = processes.get(app)
+  // Register both rejection handlers before triggering exit. Native Quit can
+  // dispose the debug connection before evaluate returns on Windows/Linux.
+  const closed = app.waitForEvent('close', { timeout: 15_000 }).catch(error => error)
+  const actionError = await app
+    .evaluate(({ app, Menu }, source) => {
+      setImmediate(() => {
+        if (source === 'tray')
+          globalThis.lifecycleFixture.trayMenu.items.find(item => item.label === 'Quit').click()
+        else if (source === 'menu')
+          Menu.getApplicationMenu()
+            .items[0].submenu.items.find(item => item.role === 'quit')
+            .click()
+        else app.quit()
+      })
+    }, source)
+    .then(
+      () => undefined,
+      error => error
+    )
+  const closeError = await closed
+  if (closeError) throw actionError || closeError
+  await expect
+    .poll(() => child.exitCode)
+    .toBe(0)
+    .catch(error => {
+      throw actionError || error
     })
-  }, fromTray)
-  await closed
   currentApp = undefined
 }
 
@@ -131,14 +170,14 @@ try {
       home: process.env.HEXBOT_HOME,
       executable: process.execPath
     }))
-    const second = spawn(env.executable, process.env.HEXBOT_LIFECYCLE_APP ? [] : [directory], {
+    const second = spawn(env.executable, launchArgs(directory), {
       env: { ...environment, HEXBOT_HOME: env.home },
-      stdio: 'ignore'
+      stdio: ['ignore', 'pipe', 'pipe']
     })
+    recordProcess(second, `${edition}-second`)
     const timer = setTimeout(() => second.kill(), 15_000)
-    const [code] = await once(second, 'exit')
-    clearTimeout(timer)
-    assert.equal(code, 0, 'Second launch must hand off and exit')
+    const [code, signal] = await once(second, 'close').finally(() => clearTimeout(timer))
+    assert.equal(code, 0, `Second launch must hand off and exit (signal=${signal})`)
     await expect
       .poll(() =>
         app.evaluate(({ BrowserWindow }) => {
@@ -173,19 +212,12 @@ try {
     }
     // Quit while backgrounded through the same native menu action users have.
     await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].close())
-    const closed = app.waitForEvent('close', { timeout: 15_000 })
-    await app.evaluate(({ Menu }) => {
-      const item = Menu.getApplicationMenu().items[0].submenu.items.find(
-        item => item.role === 'quit'
-      )
-      if (!item) throw new Error('Missing native Quit menu')
-      setImmediate(() => item.click())
-    })
-    await closed
-    currentApp = undefined
+    await quit(app, 'menu')
     results.push({ edition, closeReopenSecondLaunchQuit: 'passed' })
     const endingApp = await launch(directory, `${edition}-session`)
-    await endingApp.firstWindow()
+    const endingProcess = processes.get(endingApp)
+    const endingPage = await endingApp.firstWindow()
+    await endingPage.waitForLoadState()
     await expect
       .poll(() => endingApp.evaluate(({ powerMonitor }) => powerMonitor.listenerCount('shutdown')))
       .toBeGreaterThan(0)
@@ -212,9 +244,17 @@ try {
         win.close()
         return !prevented
       })
-      .catch(error => {
+      .catch(async error => {
         // On Windows/Linux window-all-closed quits the process immediately.
-        if (endingApp.process().exitCode === 0) return true
+        // The debug connection can close before Node receives the process exit.
+        if (process.platform !== 'darwin') {
+          try {
+            await expect.poll(() => endingProcess.exitCode).toBe(0)
+            return true
+          } catch {
+            /* Preserve the evaluation failure if native exit failed. */
+          }
+        }
         throw error
       })
     assert(session, 'OS session end must allow native close')
@@ -223,7 +263,7 @@ try {
         .poll(() => endingApp.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().length))
         .toBe(0)
       await quit(endingApp)
-    } else await expect.poll(() => endingApp.process().exitCode).toBe(0)
+    } else await expect.poll(() => endingProcess.exitCode).toBe(0)
     currentApp = undefined
     results.push({ edition, osEventClose: 'passed' })
   }
@@ -267,7 +307,6 @@ try {
         if (mode === 'tray-absent') tray.destroy()
         window.close()
         const retained = !window.isDestroyed()
-        const minimized = retained && window.isMinimized()
         if (mode === 'update') {
           lifecycle.setInstalling(true)
           lifecycle.setInstalling(false)
@@ -287,7 +326,7 @@ try {
             window.once('closed', resolve)
             window.close()
           })
-        return { retained, minimized, opens, calls, destroyed: window.isDestroyed() }
+        return { retained, opens, calls, destroyed: window.isDestroyed() }
       }, mode)
       assert(state.retained)
       assert.equal(state.opens, process.platform === 'darwin' ? 1 : 2)
@@ -295,8 +334,12 @@ try {
       assert.equal(state.calls.opens, state.opens + 1)
       if (mode !== 'tray-absent') assert(state.destroyed)
       else if (process.platform !== 'darwin')
-        assert(state.minimized, 'No tray must keep a taskbar entry')
-      await quit(app, true)
+        await expect
+          .poll(() => app.evaluate(() => globalThis.lifecycleFixture.window.isMinimized()), {
+            message: 'No tray must keep a taskbar entry'
+          })
+          .toBe(true)
+      await quit(app, 'tray')
       results.push({ fixture: mode, passed: true })
     }
   }
@@ -305,7 +348,16 @@ try {
     JSON.stringify({ platform: process.platform, results }, null, 2)
   )
   console.log(JSON.stringify({ platform: process.platform, results, artifacts }, null, 2))
+} catch (error) {
+  console.error(error)
+  await writeFile(join(artifacts, 'failure.txt'), String(error.stack || error)).catch(console.error)
+  throw error
 } finally {
-  if (currentApp) await quit(currentApp).catch(() => currentApp.process().kill())
-  await rm(root, { recursive: true, force: true })
+  if (currentApp && currentProcess.exitCode === null && currentProcess.signalCode === null)
+    await quit(currentApp).catch(error => {
+      console.error('Lifecycle cleanup:', error)
+      if (currentProcess.exitCode === null && currentProcess.signalCode === null)
+        currentProcess.kill()
+    })
+  await rm(root, { recursive: true, force: true }).catch(console.error)
 }

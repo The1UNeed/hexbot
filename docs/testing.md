@@ -163,7 +163,9 @@
   while backgrounded, and injected OS session-end/shutdown events. Native
   fixtures exercise the production tray, update close/failure handling, and
   tray destruction fallback. CI runs it on macOS, Windows, and Linux with
-  Openbox and no tray host. Screenshots and results are uploaded as
+  Openbox and no tray host. Both launches use the same Linux CI sandbox flags;
+  a second launch must exit with code zero and reopen the retained renderer.
+  Screenshots, process output and exit signals, failures, and results are uploaded as
   `desktop-lifecycle-*`. Linux needs `dbus-run-session -- xvfb-run -a` and a
   window manager. This does not perform actual logoff, shutdown, or update
   installation, and does not validate GNOME or Wayland integration. Windows
