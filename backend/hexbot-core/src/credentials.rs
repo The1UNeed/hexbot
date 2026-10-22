@@ -505,7 +505,7 @@ fn confine(workspace: &[PathBuf], search: &[PathBuf]) -> Result<Confinement> {
 /// A path that does not exist yet resolves through its existing parent, and a
 /// dangling link to where its target would be. Matches isolation.ts.
 const LINK_HOPS: usize = 40;
-fn real_root(path: &Path) -> std::io::Result<PathBuf> {
+pub(crate) fn real_root(path: &Path) -> std::io::Result<PathBuf> {
     real_root_after(path, 0)
 }
 fn real_root_after(path: &Path, hops: usize) -> std::io::Result<PathBuf> {

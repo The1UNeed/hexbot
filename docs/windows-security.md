@@ -71,8 +71,8 @@ later by an unconfined same-user process have the same limitation. There is no
 managed-inode/workspace scan: legitimate uv cache hard links and large dependency
 trees do not require reinstalling packages or making installed files read-only.
 Linux `0444` alone is insufficient, and an unconfined process can change
-permissions/ACLs. This foundation adds no per-command permission mutations,
-read-only-install contract or kernel policy. Pi write/edit and native file
+permissions/ACLs. This foundation adds no per-command permission mutations of
+installed files, read-only-install contract or kernel policy. Pi write/edit and native file
 helpers atomically replace entries and preserve other hard-link names; the
 shell/code class remains open. See the exact
 [tool-isolation assumptions](../SECURITY.md#tool-isolation).
@@ -84,6 +84,29 @@ handles opened without following symlinks, so swapping a parent cannot redirect
 the operation. Python submissions recheck current policy after acquiring the
 worker slot; a queued Bypass request cannot retain that permission after a mode
 change. A changed policy refuses the request and requires a fresh invocation.
+
+On Unix, restricted Pi write/edit also use Rust's directory-relative operations
+through the private extension UI bridge. Write creates parents and replaces the
+file in one transaction. Edit carries raw bytes and parent device/inode identity
+in its own call closure; commit opens the parent again without following links
+and refuses a replacement folder. There are no server-side handle leases. The
+bridge is not available to model tools or native-code callbacks. Its current
+mode, frozen file capability and running tool-call identity are checked before
+filesystem access; no approval flag from public arguments is accepted. Stop
+joins its request tasks before acknowledging cancellation; a completed rename
+cannot be undone. Pi waits for file RPC completion even after local abort, so
+its file mutation queue is not released while Rust can still write.
+
+The private bridge limits each encoded request/reply to 1 MiB. Restricted
+write/edit therefore handle about 767 KiB of file data, with the exact write
+budget depending on path and policy metadata. Edit reads are capped at 785,664
+raw bytes and never truncated. Oversize/invalid requests refuse before parent
+creation or mutation and suggest a command for larger files. This cap does not
+change the attachment transport or native callbacks. Existing ordinary file
+modes survive replacement independently of umask, with OS writability enforced;
+new files retain the private `0600 & ~umask` default. Owner/group, ACL and xattr
+preservation is outside this ordinary-mode guarantee. Windows still refuses
+before any of these Unix operations, with no pathname fallback.
 
 The Windows CLI contract also installs a separate native argument forwarder at
 `<user-profile>/.local/bin/hexbot.exe`, with a `hexbot.json` home/hash ownership
