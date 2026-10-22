@@ -2,7 +2,7 @@
 import { execFile } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { createHash } from 'node:crypto'
-import { chmod, cp, mkdir, mkdtemp, readFile, readdir, stat, rename, rm, writeFile } from 'node:fs/promises'
+import { chmod, cp, mkdir, mkdtemp, readFile, readdir, lstat, stat, rename, rm, writeFile } from 'node:fs/promises'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
@@ -143,6 +143,7 @@ export async function stageNativeRuntime({
   await run('cargo', ['build', '--release', '--locked', '--bin', 'hexbot', ...(windows ? ['--bin', 'hexbot-cli'] : []), '--target', triple, '--manifest-path', join(repository, 'backend/hexbot-core/Cargo.toml')], { cwd: repository })
   await mkdir(dirname(destination), { recursive: true })
   const staging = await mkdtemp(`${destination}.staging-`)
+  let failure
   try {
     const pi = join(staging, 'pi')
     await mkdir(pi)
@@ -184,13 +185,37 @@ export async function stageNativeRuntime({
     const builtAt = Number(commit.stdout.trim()) || Math.floor(Date.now() / 1000)
     await writeFile(join(staging, 'manifest.json'), `${JSON.stringify({ version: metadata.version, target, piVersion, nodeVersion, builtAt, files }, null, 2)}\n`)
     await run(join(staging, nodeName), [join(pi, 'node_modules/@earendil-works/pi-coding-agent/dist/cli.js'), '--version'], { cwd: staging })
-    await rm(destination, { recursive: true, force: true })
-    await rename(staging, destination)
+    await publishNativeRuntime(staging, destination)
     return { destination, version: metadata.version, target, piVersion, beforeBytes, afterBytes }
+  } catch (error) {
+    failure = error
+    throw error
   } finally {
-    await rm(staging, { recursive: true, force: true })
+    try { await rm(staging, { recursive: true, force: true }) }
+    catch (cleanup) {
+      if (failure) throw new AggregateError([failure, cleanup], 'Native runtime staging and cleanup failed', { cause: failure })
+      throw cleanup
+    }
   }
 }
+// Keep the unverified tree private. A failed rename never leaves a partial
+// destination; report only filesystem/process metadata, never child env/stdout.
+export async function publishNativeRuntime(staging, destination) {
+  await rm(destination, { recursive: true, force: true })
+  try { await rename(staging, destination) }
+  catch (error) {
+    const describe = async path => {
+      try {
+        const m = await lstat(path)
+        return { exists: true, directory: m.isDirectory(), symlink: m.isSymbolicLink(), mode: m.mode, entries: m.isDirectory() ? (await readdir(path)).slice(0, 24) : undefined }
+      } catch (e) { return { error: e.code } }
+    }
+    const details = { operation: 'publish native runtime', pid: process.pid, platform: process.platform, node: process.versions.node, staging, destination, staged: await describe(staging), target: await describe(destination) }
+    console.error('Native runtime publication failed:', JSON.stringify(details))
+    throw error
+  }
+}
+
 export function updateTarget(platformTarget) {
   const [platform, arch] = platformTarget.split('-')
   nativeTarget(platform, arch)

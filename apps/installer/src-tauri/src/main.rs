@@ -267,7 +267,7 @@ async fn repair(
         let engine = Installer::from_env()?;
         let mut progress = forward(on_progress);
         let installed = engine.detect()?;
-        if installed.receipt.is_some() {
+        if installed.receipt.is_some() || engine.target.is_windows() {
             return engine.repair(&mut progress);
         }
         let option = installed.option().ok_or("Hexbot is not installed.")?;

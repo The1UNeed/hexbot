@@ -3,6 +3,10 @@
 use hexbot_core::pi::{PiOptions, PiProcess};
 use serde_json::json;
 use std::{fs, path::PathBuf, time::Duration};
+#[path = "support/windows_process_handle.rs"]
+mod process_handle;
+#[path = "../src/windows_node_path.rs"]
+mod windows_node_path;
 
 #[tokio::test]
 #[ignore = "requires HEXBOT_NATIVE_TEST_BUNDLE with the real locked Node/Pi bundle"]
@@ -63,4 +67,136 @@ export default async function () {{
     );
     assert!(env["systemRoot"].as_str().is_some_and(|s| !s.is_empty()));
     assert_eq!(env["network"], "network works");
+}
+
+#[tokio::test]
+#[ignore = "requires the real locked Node/Pi bundle and native Windows Git Bash"]
+async fn stopping_one_pi_reaps_its_real_bash_tree_and_preserves_another_pi() {
+    use process_handle::ProcessHandle;
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+    let bundle =
+        PathBuf::from(std::env::var_os("HEXBOT_NATIVE_TEST_BUNDLE").expect("native bundle"));
+    let root = tempfile::tempdir().unwrap();
+    let mut processes = Vec::new();
+    let mut nodes = Vec::new();
+    let mut event_streams = Vec::new();
+    for name in ["first", "second"] {
+        let dir = root.path().join(name);
+        fs::create_dir(&dir).unwrap();
+        let record = dir.join("identity.json");
+        let extension = dir.join("identity.mjs");
+        fs::write(&extension,format!("import {{writeFileSync}} from 'node:fs';export default function(){{writeFileSync({},JSON.stringify({{pid:process.pid,parent:process.ppid}}));}}",json!(record))).unwrap();
+        let mut options = PiOptions::new(bundle.join("node.exe"), &dir, dir.join("agent"));
+        options.args = vec![
+            "--mode".into(),
+            "rpc".into(),
+            "--no-session".into(),
+            "--no-approve".into(),
+            "--extension".into(),
+            extension.to_string_lossy().into_owned(),
+        ];
+        let (pi, events) = PiProcess::spawn(options).unwrap();
+        assert!(
+            pi.request(json!({"type":"get_state"}), Duration::from_secs(45))
+                .await
+                .unwrap()
+                .success
+        );
+        let value: serde_json::Value = serde_json::from_slice(&fs::read(record).unwrap()).unwrap();
+        nodes.push(ProcessHandle::open(value["pid"].as_u64().unwrap() as u32));
+        processes.push(pi);
+        event_streams.push(events);
+    }
+    // Request Pi's real built-in user bash path. The shell stays alive waiting
+    // for an actual long-lived Node tool child; readiness is an IPC event.
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let script = root.path().join("long lived tool.mjs");
+    fs::write(&script,format!("import net from 'node:net';const s=net.connect({},'127.0.0.1',()=>s.write(JSON.stringify({{pid:process.pid,parent:process.ppid}})+'\\n'));s.on('data',()=>{{setInterval(()=>{{}},60000);s.end();}});",listener.local_addr().unwrap().port())).unwrap();
+    let quote = |path: &std::path::Path| {
+        format!(
+            "'{}'",
+            windows_node_path::node_path(path)
+                .unwrap()
+                .to_string_lossy()
+                .replace('\\', "/")
+                .replace('\'', "'\\''")
+        )
+    };
+    let command = format!(
+        "{} {}; exit $?",
+        quote(&bundle.join("node.exe")),
+        quote(&script)
+    );
+    let owner = processes[0].clone();
+    let mut pending = tokio::spawn(async move {
+        owner
+            .request(
+                json!({"type":"bash","command":command}),
+                Duration::from_secs(90),
+            )
+            .await
+    });
+    let (mut socket, _) = tokio::time::timeout(Duration::from_secs(45), async {
+        tokio::select! {
+            accepted=listener.accept()=>accepted.unwrap(),
+            result=&mut pending=>panic!("Actual Pi bash exited before tool readiness: {result:?}"),
+        }
+    })
+    .await
+    .unwrap();
+    let mut line = String::new();
+    tokio::time::timeout(
+        Duration::from_secs(15),
+        BufReader::new(&mut socket).read_line(&mut line),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let tool: serde_json::Value = serde_json::from_str(&line).unwrap();
+    let descendants = [
+        ProcessHandle::open(tool["parent"].as_u64().unwrap() as u32),
+        ProcessHandle::open(tool["pid"].as_u64().unwrap() as u32),
+    ];
+    assert!(
+        nodes
+            .iter()
+            .chain(descendants.iter())
+            .all(ProcessHandle::alive)
+    );
+    assert_ne!(
+        descendants[0].pid, nodes[0].pid,
+        "Actual bash must stay alive as tool parent"
+    );
+    socket.write_all(b"tracked\n").await.unwrap();
+    processes[0].shutdown().await.unwrap();
+    assert!(
+        nodes[..1]
+            .iter()
+            .chain(descendants.iter())
+            .all(|p| !p.alive()),
+        "Cleanup replied before kernel exit: {:?}",
+        nodes[..1]
+            .iter()
+            .chain(descendants.iter())
+            .map(ProcessHandle::snapshot)
+            .collect::<Vec<_>>()
+    );
+    for p in &descendants {
+        p.wait();
+    }
+    assert!(pending.await.unwrap().is_err());
+    assert!(
+        nodes[1].alive(),
+        "Stopping one Pi killed a different section"
+    );
+    assert!(
+        processes[1]
+            .request(json!({"type":"get_state"}), Duration::from_secs(15))
+            .await
+            .unwrap()
+            .success
+    );
+    // A fresh instance can start after cleanup, while the second stays alive.
+    processes[1].shutdown().await.unwrap();
+    assert!(!nodes[1].alive());
 }

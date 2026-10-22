@@ -270,6 +270,23 @@ fn real_nsis_install_repair_and_uninstall() {
     assert_eq!(recorded.option, option);
     assert_eq!(recorded.channel, Track::Stable);
     installer.repair(&mut |_| {}).unwrap(); // The normal receipt path still works.
+    // Detect -> Uninstall must retain exact receipt-backed ownership even
+    // after damage, rather than dropping the receipt and stranding NSIS files.
+    for payload in [
+        if client {
+            "HexbotClient.exe"
+        } else {
+            "Hexbot.exe"
+        },
+        "resources/app.asar",
+    ] {
+        fs::remove_file(app.join(payload)).unwrap();
+        assert_eq!(installer.detect().unwrap().apps.len(), 1);
+        installer.uninstall(false, &mut |_| {}).unwrap();
+        assert!(!app.exists());
+        assert!(!installer.paths.receipt().exists());
+        installer.apply(option, Track::Stable, &mut |_| {}).unwrap();
+    }
     // The packaged ownership also supports a partial uninstall without a receipt.
     fs::remove_file(installer.paths.receipt()).unwrap();
     installer.uninstall(false, &mut |_| {}).unwrap();

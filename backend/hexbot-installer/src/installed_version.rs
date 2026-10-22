@@ -228,7 +228,7 @@ fn appimage_version(path: &Path) -> Result<Option<semver::Version>> {
 }
 
 /// Read only package.json from an installed Electron ASAR, without launching it.
-fn asar_version(path: &Path) -> Option<semver::Version> {
+pub(crate) fn asar_version(path: &Path) -> Option<semver::Version> {
     let mut file = fs::File::open(path).ok()?;
     let mut prefix = [0; 16];
     file.read_exact(&mut prefix).ok()?;

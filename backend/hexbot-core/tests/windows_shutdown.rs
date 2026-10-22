@@ -37,7 +37,7 @@ async fn owned_desktop_pipe_quit_and_restart_clean_up_real_pi_and_home_lock() {
         .join("../pi-runtime/fixtures/windows-shutdown-pi.mjs");
     let module = url::Url::from_file_path(&module).unwrap();
     let launcher = url::Url::from_file_path(bundle.join("pi/launch.mjs")).unwrap();
-    for mode in ["command", "eof", "force"] {
+    for mode in ["section", "command", "eof", "force"] {
         let nonce = hexbot_core::common::id();
         let evidence = fixture.join(format!("{mode}-{nonce}"));
         fs::create_dir(&evidence).unwrap();
@@ -140,8 +140,29 @@ async fn owned_desktop_pipe_quit_and_restart_clean_up_real_pi_and_home_lock() {
             let pi_pids = handles.iter().map(|handle| handle.pid).collect::<Vec<_>>();
             assert!(pi_pids.iter().all(|pid| osutil::process_alive(*pid)) && handles.iter().all(ProcessHandle::alive),
                 "{mode}: A current Pi/descendant died BEFORE shutdown: {:?}", handles.iter().map(ProcessHandle::snapshot).collect::<Vec<_>>());
+            if mode == "section" {
+                // Subsequent Pi instances run the original pinned launcher.
+                // Keep a second section live throughout closing/rebuilding first.
+                fs::write(fixture.join("pi/launch.mjs"),format!("await import({});\n",json!(launcher.as_str()))).unwrap();
+                db::open(&home).unwrap().execute("INSERT INTO sections(id,bot,owner_id,title) VALUES('second','owl','local','Second')",[]).unwrap();
+                let second = rpc(&mut socket,"second-open","hexbot.sections.open",json!({"id":"second"})).await;
+                assert!(second.get("error").is_none(),"{second}");
+                let second_id=second["result"]["section"]["live_session_id"].as_str().expect("live second session").to_owned();
+                let close=rpc(&mut socket,"close-first","hexbot.sections.close",json!({"id":"first"})).await;
+                assert!(close.get("error").is_none(),"{close}");
+                // Cleanup completion must mean kernel exit, without waiting
+                // on our own handles to turn an early reply into success.
+                assert!(handles[..2].iter().all(|p| !p.alive()),"Section close left its Pi tree alive: {:?}",handles[..2].iter().map(ProcessHandle::snapshot).collect::<Vec<_>>());
+                assert!(child.try_wait().unwrap().is_none(),"Section close killed daemon");
+                let second_status=rpc(&mut socket,"second-status","session.status",json!({"session_id":second_id})).await;
+                assert!(second_status.get("error").is_none(),"{second_status}");
+                let rebuilt=rpc(&mut socket,"rebuild-first","hexbot.sections.open",json!({"id":"first"})).await;
+                assert!(rebuilt.get("error").is_none(),"{rebuilt}");
+                let lock=fs::OpenOptions::new().read(true).write(true).open(home.join("native-daemon.lock")).unwrap();
+                assert!(lock.try_lock().is_err(),"Live daemon lost its home lock");
+            }
             let mut input = child.stdin.take().unwrap();
-            if mode == "command" { input.write_all(b"HEXBOT_SHUTDOWN_V1\n").await.unwrap(); }
+            if matches!(mode,"command"|"section") { input.write_all(b"HEXBOT_SHUTDOWN_V1\n").await.unwrap(); }
             if mode == "force" { child.start_kill().unwrap(); }
             drop(input);
             let status = tokio::time::timeout(Duration::from_secs(15), child.wait()).await.unwrap().unwrap();
@@ -188,52 +209,9 @@ async fn owned_desktop_pipe_quit_and_restart_clean_up_real_pi_and_home_lock() {
     }
 }
 
-// Capture handles before shutdown, then wait on kernel exit events. PIDs alone
-// cannot prove all descendants have finished when the daemon wait completes.
-struct ProcessHandle {
-    handle: *mut std::ffi::c_void,
-    pid: u32,
-}
-#[link(name = "kernel32")]
-unsafe extern "system" {
-    fn OpenProcess(access: u32, inherit: i32, pid: u32) -> *mut std::ffi::c_void;
-    fn WaitForSingleObject(handle: *mut std::ffi::c_void, milliseconds: u32) -> u32;
-    fn GetExitCodeProcess(handle: *mut std::ffi::c_void, code: *mut u32) -> i32;
-    fn CloseHandle(handle: *mut std::ffi::c_void) -> i32;
-}
-impl ProcessHandle {
-    fn open(pid: u32) -> Self {
-        let handle = unsafe { OpenProcess(0x00101000, 0, pid) };
-        assert!(
-            !handle.is_null(),
-            "Cannot own fixture process {pid}: {}",
-            std::io::Error::last_os_error()
-        );
-        Self { handle, pid }
-    }
-    fn alive(&self) -> bool {
-        (unsafe { WaitForSingleObject(self.handle, 0) }) == 258
-    }
-    fn snapshot(&self) -> Value {
-        let mut code = 0;
-        let queried = unsafe { GetExitCodeProcess(self.handle, &mut code) };
-        json!({"pid":self.pid,"wait":unsafe { WaitForSingleObject(self.handle,0) },"exitCode":if queried != 0 {Some(code)} else {None}})
-    }
-    fn wait(&self) {
-        assert_eq!(
-            unsafe { WaitForSingleObject(self.handle, 15000) },
-            0,
-            "Descendant did not exit"
-        );
-    }
-}
-impl Drop for ProcessHandle {
-    fn drop(&mut self) {
-        unsafe {
-            CloseHandle(self.handle);
-        }
-    }
-}
+#[path = "support/windows_process_handle.rs"]
+mod process_handle;
+use process_handle::ProcessHandle;
 
 #[tokio::test]
 async fn native_tunnel_worker_cleanup_reaps_and_can_restart_its_metrics_process() {
@@ -278,4 +256,36 @@ var bytes = System.Text.Encoding.ASCII.GetBytes("HTTP/1.1 200 OK\r\nContent-Leng
     fs::create_dir(&home).unwrap();
     hexbot_core::services::windows_contract_tests::tunnel_worker_cleanup(&home, &binary, &record)
         .await;
+}
+
+async fn rpc(
+    socket: &mut tokio_tungstenite::WebSocketStream<
+        tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+    >,
+    id: &str,
+    method: &str,
+    params: Value,
+) -> Value {
+    socket
+        .send(Message::Text(
+            json!({"jsonrpc":"2.0","id":id,"method":method,"params":params})
+                .to_string()
+                .into(),
+        ))
+        .await
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(90), async {
+        while let Some(frame) = socket.next().await {
+            let frame = frame.unwrap();
+            if frame.is_text() {
+                let v: Value = serde_json::from_str(frame.to_text().unwrap()).unwrap();
+                if v["id"] == id {
+                    return v;
+                }
+            }
+        }
+        panic!("Daemon socket closed waiting for {id}");
+    })
+    .await
+    .unwrap()
 }

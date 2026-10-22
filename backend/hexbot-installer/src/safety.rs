@@ -283,13 +283,21 @@ impl Installer {
             if !crate::windows_service::installed(&file, &self.paths.hexbot_home)? {
                 return Ok(());
             }
-            // Let the same CLI which creates the task stop and unregister it.
-            let binary = self.paths.executable();
-            if !binary.is_file() {
-                return fail("Repair the native runtime before removing its Windows task.");
+            // Authenticate and remove via the same scheduler contract even if
+            // runtime selection or the daemon binary is damaged.
+            #[cfg(windows)]
+            crate::windows_service::remove(
+                &file,
+                &self.paths.hexbot_home,
+                self.paths.service_no_load,
+            )?;
+            #[cfg(windows)]
+            {
+                progress(Progress::new("service", "Daemon service removed."));
+                return Ok(());
             }
-            self.run(&binary, &["service", "uninstall"], false, progress)?;
-            return Ok(());
+            #[cfg(not(windows))]
+            return fail("Windows tasks must be removed on Windows.");
         }
         #[cfg(not(unix))]
         {

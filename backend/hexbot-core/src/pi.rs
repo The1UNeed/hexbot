@@ -15,6 +15,10 @@ use std::{
     time::Duration,
 };
 
+#[cfg(windows)]
+#[path = "windows_pi_job.rs"]
+mod windows_pi_job;
+
 use serde::Deserialize;
 use serde_json::Value;
 use tokio::{
@@ -314,9 +318,11 @@ impl PiProcess {
                     .insert(0, launcher.to_string_lossy().into_owned());
             }
         }
+        #[cfg(windows)]
+        let job = windows_pi_job::PiJob::new().map_err(|_| PiError::Io("create Pi job"))?;
         let mut command = Command::new(&options.executable);
         #[cfg(windows)]
-        command.creation_flags(0x08000000); // CREATE_NO_WINDOW for GUI-owned Pi
+        command.creation_flags(0x08000004); // CREATE_NO_WINDOW | CREATE_SUSPENDED
         let mut child = command
             .args(&options.args)
             .env_clear()
@@ -330,6 +336,13 @@ impl PiProcess {
             .kill_on_drop(true)
             .spawn()
             .map_err(|_| PiError::Io("spawn"))?;
+        #[cfg(windows)]
+        if job.assign_and_resume(&child).is_err() {
+            let _ = child.start_kill();
+            // Closing the job also kills any partially assigned process. The
+            // child remains kill_on_drop even when assignment itself failed.
+            return Err(PiError::Io("assign/resume Pi job"));
+        }
         let stdin = child.stdin.take().ok_or(PiError::Io("stdin"))?;
         let stdout = child.stdout.take().ok_or(PiError::Io("stdout"))?;
         let (requests, request_rx) = mpsc::channel(options.request_capacity);
@@ -339,7 +352,16 @@ impl PiProcess {
         let max_record_bytes = options.max_record_bytes;
         let admission = Arc::new(Semaphore::new(options.request_capacity));
         tokio::spawn(supervise(
-            child, stdin, stdout, request_rx, event_tx, stop_rx, done_tx, options,
+            child,
+            stdin,
+            stdout,
+            request_rx,
+            event_tx,
+            stop_rx,
+            done_tx,
+            options,
+            #[cfg(windows)]
+            job,
         ));
         Ok((
             Self {
@@ -727,6 +749,7 @@ async fn supervise(
     mut stop: watch::Receiver<Option<PiError>>,
     done: watch::Sender<Option<PiError>>,
     options: PiOptions,
+    #[cfg(windows)] job: windows_pi_job::PiJob,
 ) {
     // At most request_capacity commands remain pending until Pi reads them,
     // and extension admission permits one response until its write completes.
@@ -842,6 +865,11 @@ async fn supervise(
         && terminate(&mut child, graceful, options.stop_grace)
             .await
             .is_err();
+    #[cfg(windows)]
+    let cleanup_failed = cleanup_failed
+        | tokio::task::spawn_blocking(move || job.terminate_and_wait())
+            .await
+            .map_or(true, |r| r.is_err());
     if !writer_finished {
         writer.abort();
         let _ = writer.await;

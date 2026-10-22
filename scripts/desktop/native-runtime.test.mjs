@@ -1,12 +1,12 @@
 import { strict as assert } from 'node:assert'
 import { execFile } from 'node:child_process'
-import { chmod, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises'
+import { chmod, mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
 import { promisify } from 'node:util'
 import { toolAsset } from '../../apps/desktop/src/main/backend/tools.ts'
-import { createNativeArchive, launchers, nativeTarget, stageNativeRuntime, rustTarget, pruneRuntimeDependencies, directoryBytes, standaloneNode, NODE_VERSION, NODE_SHA256 } from './native-runtime.mjs'
+import { publishNativeRuntime, createNativeArchive, launchers, nativeTarget, stageNativeRuntime, rustTarget, pruneRuntimeDependencies, directoryBytes, standaloneNode, NODE_VERSION, NODE_SHA256 } from './native-runtime.mjs'
 const exec = promisify(execFile)
 test('target supports both desktop architectures and Linux arm64', () => {
   for (const os of ['darwin', 'linux']) for (const arch of ['x64', 'arm64']) assert.equal(nativeTarget(os, arch), `${os}-${arch}`)
@@ -43,8 +43,10 @@ test('stage builds locked dependencies, validates Pi and emits artifact checksum
     await writeFile(join(root, `backend/hexbot-core/target/${rustTarget(process.platform, process.arch)}/release/hexbot`), 'daemon')
     const node = join(root, 'node'); await writeFile(node, 'node')
     const calls = []
-    const result = await stageNativeRuntime({ repository: root, nodeExecutable: node, download: async url => ['rg', 'fd'].map(tool => toolAsset(tool, process.platform, process.arch)).find(asset => asset.url === url).sha256, run: async (command, args, options) => {
+    let failProbe = false
+    const options = { repository: root, nodeExecutable: node, download: async url => ['rg', 'fd'].map(tool => toolAsset(tool, process.platform, process.arch)).find(asset => asset.url === url).sha256, run: async (command, args, options) => {
       calls.push({ command, args })
+      if (failProbe && args.at(-1) === '--version') throw new Error('Deliberately failing staged Node/Pi probe')
       if (command === 'tar') {
         const file = join(args[args.indexOf('-C') + 1], args.at(-1))
         await mkdir(join(file, '..'), { recursive: true }); await writeFile(file, 'verified tool')
@@ -54,7 +56,8 @@ test('stage builds locked dependencies, validates Pi and emits artifact checksum
         await mkdir(cli, { recursive: true }); await writeFile(join(cli, 'cli.js'), '// pi')
       }
       return { stdout: '22.20.0' }
-    } })
+    } }
+    const result = await stageNativeRuntime(options)
     assert.equal(await readFile(join(result.destination, 'skills/.history.json'), 'utf8'), '{}\n')
     const manifest = JSON.parse(await readFile(join(result.destination, 'manifest.json'), 'utf8'))
     assert.equal(manifest.piVersion, '1.0.1'); assert.equal(manifest.version, '1.2.3')
@@ -68,6 +71,11 @@ test('stage builds locked dependencies, validates Pi and emits artifact checksum
     assert(calls.find(c => c.command === 'npm').args.includes(`--os=${process.platform}`))
     assert(calls.find(c => c.command === 'npm').args.includes('--ignore-scripts'))
     assert.deepEqual(calls.at(-1).args.slice(-1), ['--version'])
+    const committed = await readFile(join(result.destination, 'manifest.json'), 'utf8')
+    failProbe = true
+    await assert.rejects(stageNativeRuntime(options), /Deliberately failing staged/)
+    assert.equal(await readFile(join(result.destination, 'manifest.json'), 'utf8'), committed)
+    assert.deepEqual(await readdir(join(root, 'apps/desktop/resources')), ['hexbot-native'])
   } finally { await rm(root, { recursive: true, force: true }) }
 })
 
@@ -174,4 +182,22 @@ test('Windows ZIP advertises the actual daemon and contains the verified entrypo
     await rm(join(bundle, 'hexbot.exe'))
     await assert.rejects(createNativeArchive(bundle, file))
   } finally { await rm(root, { recursive: true, force: true }) }
+})
+
+test('failed publication keeps the verified staging tree and never publishes partial bytes', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'hexbot publish failure '))
+  try {
+    const staging = join(root, 'staging'); const destination = join(root, 'missing-parent', 'native')
+    await mkdir(staging); await writeFile(join(staging, 'manifest.json'), 'verified')
+    const errors = []; t.mock.method(console, 'error', (...args) => errors.push(args))
+    await assert.rejects(publishNativeRuntime(staging, destination), { code: 'ENOENT' })
+    assert.equal(await readFile(join(staging, 'manifest.json'), 'utf8'), 'verified')
+    await assert.rejects(stat(destination), { code: 'ENOENT' })
+    const details = JSON.parse(errors[0][1]); assert.equal(details.staged.directory, true)
+    assert.equal(details.target.error, 'ENOENT')
+    await mkdir(join(root, 'missing-parent'))
+    await publishNativeRuntime(staging, destination)
+    assert.equal(await readFile(join(destination, 'manifest.json'), 'utf8'), 'verified')
+    await assert.rejects(stat(staging), { code: 'ENOENT' })
+  } finally { await rm(root, {recursive:true,force:true}) }
 })

@@ -86,7 +86,10 @@ and wait for that lock before replacing its script/XML and starting the selected
 runtime; updating a task definition alone would keep its old instance. Uninstall treats only the numeric task-not-found
 error as absent; foreign task actions/principals and permission errors fail.
 An interrupted owned script/XML install can therefore be removed even when
-task creation never finished.
+task creation never finished. The installer uses the verified scheduler definition
+to remove a task even when its selected binary is missing or selection JSON is
+damaged. A direct CLI install refuses an occupied home before script/XML/task
+writes; the app uses its explicit ownership handoff first.
 Full's service-install IPC first stops its owned daemon, then waits for the
 task daemon's home lock and identity endpoint before reporting success. Failed
 installation restores app ownership or attaches to an already started service.
@@ -118,8 +121,20 @@ normal App/Pi and tunnel cleanup. The app waits for process exit before reuse
 of its home and has a bounded force fallback. A Windows daemon retains a
 non-inheritable lifetime job until process teardown, without job breakaway,
 so remaining ordinary child processes are reaped on exit. This is process
-lifetime management, not Windows tool confinement. GUI-owned setup, daemon,
+lifetime management, not Windows tool confinement. Each Pi also has its own
+kill-on-close job: it starts suspended, joins that job before running, and its
+cleanup waits for the job to have no active processes. Closing one section does
+not terminate the daemon or another section. Native probes exercise real Pi
+Bash descendants and section close/rebuild; new results are required before
+counting this behavior as validated. GUI-owned setup, daemon,
 Pi and tunnel children use hidden-console spawn options.
+
+Windows discovery reads the owned app's packaged version for its current track,
+including track switches that retain the original app ID. GUI and terminal
+receiptless repair share the same unique complete-app recovery path. An exact
+receipt and matching packaged marker also retain ownership when EXE/ASAR bytes
+are missing, so detection, repair and uninstall agree. Receiptless incomplete,
+foreign, linked and ambiguous apps remain refused.
 
 ## Verification and remaining gates
 
@@ -204,3 +219,11 @@ GitHub release metadata for [uv 0.12.18](https://github.com/astral-sh/uv/release
 Node uses the Windows x64 ZIP digest from
 [Node 22.23.3 SHASUMS256](https://nodejs.org/dist/v22.23.3/SHASUMS256.txt).
 The uv ZIP is flat; rg and fd have a top-level release directory.
+
+The 49f native run checked merge `0b6cb125` with the exact 49f source tree. It
+passed the initial MSVC and task/PATH/CLI checks, then failed the final staging
+directory rename with EPERM, before bootstrap or the new Pi fixture ran.
+Publication now reports bounded directory metadata on failure and still throws
+the original error; there is no retry or success fallback. The locking source is
+not established. Staging publication, bootstrap, installed GUI, signed ZIP,
+Connect, update/restart and lifecycle still need a successful native run.

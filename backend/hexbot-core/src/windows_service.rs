@@ -166,6 +166,26 @@ async fn wait_stopped(home: &Path, file: &Path) -> Result<()> {
             )
         })?
 }
+fn idle_home(home: &Path) -> Result<fs::File> {
+    match fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(home.join("native-daemon.lock"))
+    {
+        Ok(file) => {
+            file.try_lock().map_err(|_| {
+                Error::new(
+                    5244,
+                    "Stop the daemon before installing its Windows service",
+                )
+            })?;
+            Ok(file)
+        }
+        Err(e) => Err(e.into()),
+    }
+}
 pub async fn run(home: &Path, args: &[String]) -> Result<()> {
     let action = args.first().map(String::as_str).unwrap_or("status");
     if !matches!(
@@ -199,6 +219,7 @@ pub async fn run(home: &Path, args: &[String]) -> Result<()> {
     let no_load = std::env::var("HEXBOT_SERVICE_NO_LOAD").as_deref() == Ok("1");
     if action == "install" {
         services::selected_native_executable(home)?;
+        let mut home_lock = None;
         if !no_load {
             let state = task_control(home, &file, "state").await?;
             // Updating the task definition does not stop its current instance.
@@ -209,6 +230,7 @@ pub async fn run(home: &Path, args: &[String]) -> Result<()> {
                 task_control(home, &file, "stop").await?;
                 wait_stopped(home, &file).await?;
             }
+            home_lock = Some(idle_home(home)?);
         }
         fs::create_dir_all(home.join("logs"))?;
         write_owned_script(&file, home, true)?;
@@ -236,6 +258,7 @@ pub async fn run(home: &Path, args: &[String]) -> Result<()> {
                 "/F",
             ])
             .await?;
+            drop(home_lock);
             schtasks(&["/Run", "/TN", &name]).await?;
         }
     } else if status(home).await?["installed"] == true {

@@ -800,34 +800,15 @@ impl Installer {
         option: InstallOption,
         track: Track,
     ) -> Result<bool> {
-        if detect::windows_app_id(destination).as_deref() == Some(id) {
-            return Ok(true);
-        }
-        if detect::windows_marker_id(destination).as_deref() != Some(id) {
-            return Ok(false);
-        }
-        // A missing payload can be restored; an existing link or wrong file
-        // type must never redirect NSIS outside this owned directory.
-        let exe = if option == InstallOption::Client {
-            "HexbotClient.exe"
-        } else {
-            "Hexbot.exe"
-        };
-        for name in ["resources", "resources/app.asar", exe] {
-            match fs::symlink_metadata(destination.join(name)) {
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                Ok(m)
-                    if (name == "resources" && m.is_dir())
-                        || (name != "resources" && m.is_file()) => {}
-                Err(e) => return Err(e.into()),
-                _ => return Ok(false),
-            }
-        }
-        Ok(read_receipt(&self.paths.receipt())?.is_some_and(|receipt| {
-            receipt.option == option
-                && receipt.channel == track
-                && receipt.paths.iter().any(|path| path == destination)
-        }))
+        let receipt = read_receipt(&self.paths.receipt())?;
+        Ok(detect::windows_owned_id(
+            destination,
+            receipt
+                .as_ref()
+                .filter(|r| r.channel == track && r.option == option),
+        )
+        .as_deref()
+            == Some(id))
     }
     fn install_windows(
         &self,
@@ -1046,7 +1027,10 @@ impl Installer {
                         path.file_name()
                             .and_then(|s| s.to_str())
                             .is_some_and(|name| {
-                                name.starts_with("Uninstall ") && name.ends_with(".exe")
+                                name.starts_with("Uninstall ")
+                                    && name.ends_with(".exe")
+                                    && fs::symlink_metadata(path)
+                                        .is_ok_and(|m| detect::ordinary(&m) && m.is_file())
                             })
                     })
                     .collect::<Vec<_>>();

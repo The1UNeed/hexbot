@@ -752,6 +752,46 @@ fn interrupted_task_install_uninstalls_owned_files_when_the_task_is_absent() {
             .parse()
             .unwrap()
     };
+    // Direct CLI install must not race an app-owned daemon when no task
+    // exists. Wait for real readiness while its home lock is held.
+    use std::io::{BufRead, BufReader, Write};
+    let mut desktop = Command::new(env!("CARGO_BIN_EXE_hexbot"))
+        .args(["serve", "--host", "127.0.0.1", "--port", "0"])
+        .env("HEXBOT_HOME", &home)
+        .env("HEXBOT_SUPERVISOR", "desktop")
+        .env("HEXBOT_DESKTOP_CONTROL", "stdin-v1")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::inherit())
+        .spawn()
+        .unwrap();
+    let mut lines = BufReader::new(desktop.stdout.take().unwrap());
+    let mut line = String::new();
+    loop {
+        assert!(lines.read_line(&mut line).unwrap() > 0);
+        if line.starts_with("HERMES_BACKEND_READY") {
+            break;
+        }
+        line.clear();
+    }
+    let refused = service(&home, "install");
+    assert!(!refused.status.success());
+    assert!(String::from_utf8_lossy(&refused.stderr).contains("Stop the daemon"));
+    assert!(!file.exists());
+    assert!(!file.with_extension("xml").exists());
+    let status = service(&home, "status");
+    assert!(status.status.success());
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&status.stdout).unwrap()["installed"],
+        false
+    );
+    desktop
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(b"HEXBOT_SHUTDOWN_V1\n")
+        .unwrap();
+    assert_eq!(desktop.wait().unwrap().code(), Some(0));
     eprintln!("Task recovery stage: initial install; home={home:?} script={file:?}");
     let output = service(&home, "install");
     assert!(
@@ -806,6 +846,14 @@ fn interrupted_task_install_uninstalls_owned_files_when_the_task_is_absent() {
     assert!(powershell(&format!("if(Get-Process -Id {first_pid} -ErrorAction SilentlyContinue){{throw 'Old task daemon survived repair'}}")).status.success());
     assert!(service(&home, "stop").status.success());
     fs::remove_file(&file).unwrap();
+    // Removal authenticates the task independently of runtime selection.
+    // Quarantine the binary and corrupt the pointer; no repair/network is needed.
+    fs::rename(native.join("hexbot.exe"), native.join("quarantined.exe")).unwrap();
+    fs::write(
+        home.join("runtime/native-current.json"),
+        "{ damaged selection",
+    )
+    .unwrap();
     let installer =
         std::env::var_os("HEXBOT_WINDOWS_INSTALLER").expect("native installer engine executable");
     let removed = Command::new(installer)

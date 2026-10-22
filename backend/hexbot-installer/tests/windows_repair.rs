@@ -139,6 +139,9 @@ fn direct_receiptless_repair_uses_the_owned_edition_and_current_packaged_track()
                     if original_nightly { ".nightly" } else { "" }
                 );
                 let app = owned_app(&engine, &id, version);
+                let detected = engine.detect().unwrap();
+                assert_eq!(detected.apps[0].version.as_deref(), Some(version));
+                assert_eq!(detected.track(), Some(track));
                 let server = Server::new(|_| BTreeMap::new());
                 engine.base_url = server.base.clone();
                 // A deliberately unpublished update stops before NSIS. Getting
@@ -398,6 +401,14 @@ fn damaged_payload_repair_requires_matching_receipt_marker_and_exact_path() {
                         ])
                     });
                     engine.base_url = server.base.clone();
+                    assert_eq!(
+                        engine.detect().unwrap().apps.len(),
+                        usize::from(matches!(
+                            control,
+                            "matching" | "wrong-track" | "swapped-marker"
+                        )),
+                        "damaged discovery {option:?}/{missing}/{control}"
+                    );
                     let mut admitted = false;
                     // Explicit apply selects the same app/track; valid-receipt
                     // repair follows this exact install path. Invalid fixtures
@@ -420,6 +431,52 @@ fn damaged_payload_repair_requires_matching_receipt_marker_and_exact_path() {
                     assert_eq!(app.join(payload).is_dir(), control == "payload-directory");
                 }
             }
+        }
+    }
+}
+
+#[test]
+fn damaged_receipted_app_is_detected_for_uninstall() {
+    for option in [InstallOption::Client, InstallOption::Full] {
+        for payload in ["exe", "resources/app.asar"] {
+            let root = tempfile::tempdir().unwrap();
+            let engine = engine(root.path());
+            let id = if option == InstallOption::Client {
+                "app.hexbot.client"
+            } else {
+                "app.hexbot.desktop"
+            };
+            let app = owned_app(&engine, id, "1.2.3");
+            fs::remove_file(app.join(if payload == "exe" {
+                if option == InstallOption::Client {
+                    "HexbotClient.exe"
+                } else {
+                    "Hexbot.exe"
+                }
+            } else {
+                payload
+            }))
+            .unwrap();
+            let receipt = Receipt {
+                option,
+                channel: Track::Stable,
+                version: "1.2.3".into(),
+                paths: vec![app.clone()],
+                installed_at: "fixture".into(),
+            };
+            fs::create_dir_all(engine.paths.receipt().parent().unwrap()).unwrap();
+            fs::write(
+                engine.paths.receipt(),
+                serde_json::to_vec(&receipt).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(
+                engine.detect().unwrap().apps.len(),
+                1,
+                "{option:?}/{payload}"
+            );
+            fs::remove_file(engine.paths.receipt()).unwrap();
+            assert!(engine.detect().unwrap().apps.is_empty());
         }
     }
 }

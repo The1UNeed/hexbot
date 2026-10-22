@@ -28,7 +28,7 @@ jobs:
       - run: cargo clippy --locked --manifest-path apps/installer/src-tauri/Cargo.toml --all-targets -- -D warnings
       - run: cargo test --locked --manifest-path apps/installer/src-tauri/Cargo.toml
       - run: pnpm --filter ./apps/desktop run typecheck
-      - run: node --test scripts/desktop/voice-lock.test.mjs scripts/desktop/windows-contract.test.mjs scripts/desktop/windows-node-path.test.mjs scripts/desktop/native-build.test.mjs scripts/desktop/workspace-hooks.test.mjs scripts/dev/run-one-rust-test.test.mjs
+      - run: node --test scripts/desktop/voice-lock.test.mjs scripts/desktop/windows-contract.test.mjs scripts/desktop/windows-node-path.test.mjs scripts/desktop/native-build.test.mjs scripts/desktop/native-runtime.test.mjs scripts/desktop/workspace-hooks.test.mjs scripts/dev/run-one-rust-test.test.mjs
       - name: Build the real client NSIS without publishing
         run: node scripts/desktop/dist.mjs --win --x64 --client --channel stable
       - name: Verify installer engine runs NSIS, repairs and uninstalls the client
@@ -119,6 +119,8 @@ jobs:
           pnpm --filter ./apps/desktop run test --run src/main/backend/windows-bootstrap.test.ts src/main/backend/windows-paths.test.ts
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           node scripts/dev/run-one-rust-test.mjs backend/hexbot-core/Cargo.toml windows_pi real_pi_process_uses_absolute_node_launcher_and_windows_environment
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node scripts/dev/run-one-rust-test.mjs backend/hexbot-core/Cargo.toml windows_pi stopping_one_pi_reaps_its_real_bash_tree_and_preserves_another_pi
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           node scripts/dev/run-one-rust-test.mjs backend/hexbot-core/Cargo.toml windows_shutdown owned_desktop_pipe_quit_and_restart_clean_up_real_pi_and_home_lock
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

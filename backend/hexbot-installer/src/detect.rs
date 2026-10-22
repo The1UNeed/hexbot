@@ -203,6 +203,7 @@ pub fn detect() -> Result<Installed> {
 pub fn detect_at(paths: &Paths, target: Target) -> Result<Installed> {
     paths.validate()?;
     let mut installed = Installed {
+        windows: target.is_windows(),
         receipt: read_receipt(&paths.receipt())?,
         service: if target.is_windows() {
             crate::windows_service::installed(&paths.service_file(target), &paths.hexbot_home)
@@ -262,12 +263,15 @@ pub fn detect_at(paths: &Paths, target: Target) -> Result<Installed> {
                     });
                 }
             } else if target.is_windows() {
-                if let Some(id) = windows_app_id(&path) {
+                if let Some(id) = windows_owned_id(&path, installed.receipt.as_ref()) {
                     installed.apps.push(InstalledApp {
                         option: app_option(&id).expect("known app id"),
                         app_id: id,
+                        version: crate::installed_version::asar_version(
+                            &path.join("resources/app.asar"),
+                        )
+                        .map(|v| v.to_string()),
                         path,
-                        version: None,
                         managed_by_dpkg: false,
                     });
                 }
@@ -461,27 +465,67 @@ pub(crate) fn windows_app_id(path: &Path) -> Option<String> {
     } else {
         "Hexbot.exe"
     };
-    ["resources", "resources/app.asar", exe]
-        .iter()
-        .all(|name| {
-            fs::symlink_metadata(path.join(name)).is_ok_and(|m| {
-                if *name == "resources" {
-                    m.is_dir()
-                } else {
-                    m.is_file()
-                }
-            })
-        })
-        .then_some(id)
+    windows_payload(path, exe, false).then_some(id)
+}
+
+fn windows_payload(path: &Path, exe: &str, allow_missing: bool) -> bool {
+    ["resources", "resources/app.asar", exe].iter().all(|name| {
+        match fs::symlink_metadata(path.join(name)) {
+            Err(e) => allow_missing && e.kind() == std::io::ErrorKind::NotFound,
+            Ok(m) => {
+                ordinary(&m)
+                    && if *name == "resources" {
+                        m.is_dir()
+                    } else {
+                        m.is_file()
+                    }
+            }
+        }
+    })
+}
+pub(crate) fn ordinary(metadata: &fs::Metadata) -> bool {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        metadata.file_attributes() & 0x400 == 0
+    }
+    #[cfg(not(windows))]
+    {
+        !metadata.file_type().is_symlink()
+    }
+}
+/// Complete payloads identify themselves. Missing payloads also need the
+/// installer's exact receipt; a marker alone cannot authorize their removal.
+pub(crate) fn windows_owned_id(path: &Path, receipt: Option<&Receipt>) -> Option<String> {
+    if let Some(id) = windows_app_id(path) {
+        return Some(id);
+    }
+    let id = windows_marker_id(path)?;
+    let option = app_option(&id)?;
+    let receipt = receipt?;
+    let exe = if option == InstallOption::Client {
+        "HexbotClient.exe"
+    } else {
+        "Hexbot.exe"
+    };
+    (receipt.option == option
+        && receipt.paths.iter().any(|p| p == path)
+        && windows_payload(path, exe, true))
+    .then_some(id)
 }
 
 // Ownership survives payload damage only when corroborated by an exact
 // install receipt. Receiptless discovery still requires the complete app.
 pub(crate) fn windows_marker_id(path: &Path) -> Option<String> {
-    if !fs::symlink_metadata(path).ok()?.is_dir() {
+    if !fs::symlink_metadata(path)
+        .ok()
+        .is_some_and(|m| ordinary(&m) && m.is_dir())
+    {
         return None;
     }
-    if !fs::symlink_metadata(path.join(".hexbot-app.json")).is_ok_and(|m| m.is_file()) {
+    if !fs::symlink_metadata(path.join(".hexbot-app.json"))
+        .is_ok_and(|m| ordinary(&m) && m.is_file())
+    {
         return None;
     }
     let value: serde_json::Value =

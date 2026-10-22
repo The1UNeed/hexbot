@@ -199,6 +199,8 @@ pub struct InstalledApp {
 
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct Installed {
+    #[serde(skip)]
+    pub(crate) windows: bool,
     pub receipt: Option<Receipt>,
     pub apps: Vec<InstalledApp>,
     pub service: bool,
@@ -226,6 +228,11 @@ impl Installed {
             self.apps.first().and_then(|a| {
                 if a.app_id.ends_with(".dev") {
                     None
+                } else if self.windows {
+                    a.version
+                        .as_deref()
+                        .and_then(|v| semver::Version::parse(v).ok())
+                        .map(|v| crate::installed_version::track(&v))
                 } else if a.app_id.ends_with(".nightly") {
                     Some(Track::Nightly)
                 } else {

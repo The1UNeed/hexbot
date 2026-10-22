@@ -45,3 +45,60 @@ async fn scheduler_status_fixture() {
     assert_eq!(status["installed"], true);
     assert_eq!(status["running"], false);
 }
+
+#[test]
+fn missing_task_install_refuses_a_live_home_before_any_writes() {
+    let root = tempfile::tempdir().unwrap();
+    let home = root.path().join("state");
+    fs::create_dir(&home).unwrap();
+    let bin = root.path().join("bin");
+    fs::create_dir(&bin).unwrap();
+    let ps = bin.join("powershell.exe");
+    fs::write(&ps, "#!/bin/sh\nprintf 'missing\\n'\n").unwrap();
+    fs::set_permissions(&ps, fs::Permissions::from_mode(0o755)).unwrap();
+    let lock = fs::File::create(home.join("native-daemon.lock")).unwrap();
+    lock.lock().unwrap();
+    let path = std::env::join_paths(std::iter::once(bin).chain(std::env::split_paths(
+        &std::env::var_os("PATH").unwrap_or_default(),
+    )))
+    .unwrap();
+    let output = Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--ignored",
+            "--exact",
+            "scheduler_install_fixture",
+            "--nocapture",
+        ])
+        .env("PATH", path)
+        .env("HEXBOT_SERVICE_ROOT", root.path())
+        .env("HEXBOT_TEST_RECOVERY_HOME", &home)
+        .env_remove("HEXBOT_SERVICE_NO_LOAD")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(!root.path().join("AppData/Local/Hexbot/daemon.ps1").exists());
+    assert!(!home.join("logs").exists());
+}
+#[tokio::test]
+#[ignore = "isolated scheduler response subprocess"]
+async fn scheduler_install_fixture() {
+    let home = std::path::PathBuf::from(std::env::var_os("HEXBOT_TEST_RECOVERY_HOME").unwrap());
+    // A selected fixture allows the real install path to reach the ownership
+    // gate without executing a daemon or contacting any download server.
+    std::fs::create_dir_all(home.join("runtime/native/build")).unwrap();
+    std::fs::write(home.join("runtime/native/build/hexbot"), "fixture").unwrap();
+    std::os::unix::fs::symlink(
+        home.join("runtime/native/build/hexbot"),
+        home.join("runtime/native-executable"),
+    )
+    .unwrap();
+    let error = hexbot_core::windows_service::run(&home, &["install".into()])
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("Stop the daemon"), "{error}");
+}
