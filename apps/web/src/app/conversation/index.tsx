@@ -1714,7 +1714,7 @@ function BotConversation() {
               if (item.kind === 'clarify') {
                 return (
                   <CardRow key={item.clarify.requestId}>
-                    <ClarifyCard clarify={item.clarify} />
+                    <ClarifyCard bot={bot} clarify={item.clarify} />
                   </CardRow>
                 )
               }

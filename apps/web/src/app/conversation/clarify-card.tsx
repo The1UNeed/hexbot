@@ -1,11 +1,14 @@
 import { Check } from 'lucide-react'
 import { useState } from 'react'
 
+import { useFaceColor } from '../../components/ui/avatar'
 import { Button } from '../../components/ui/button'
 import { clarifyAnswered, clarifyRespond } from '../../lib/api'
 import { cn } from '../../lib/cn'
-import type { ClarifyQuestion, ClarifyRequest } from '../../lib/types'
+import type { Bot, ClarifyQuestion, ClarifyRequest } from '../../lib/types'
 import { transcriptActions } from '../../stores/transcripts'
+
+import { botBubbleStyle } from './index'
 
 const LETTERS = 'ABCDEFGH'
 
@@ -153,13 +156,14 @@ function Question({
 }
 
 /**
- * A question the bot is waiting on, drawn like a message with options
- * A/B/C… and a field for your own answer. Answered questions collapse to
+ * A question the bot is waiting on, drawn like its messages (washed with its
+ * face colour) with options A/B/C… and a field for your own answer. Answered questions collapse to
  * the chosen line; a batch keeps asking until every question is locked.
  */
-export function ClarifyCard({ clarify }: { clarify: ClarifyRequest }) {
+export function ClarifyCard({ bot, clarify }: { bot?: Bot; clarify: ClarifyRequest }) {
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
+  const color = useFaceColor(bot, bot ? bot.display_name : null)
 
   const answer = async (question: ClarifyQuestion, value: string) => {
     if (busy) {
@@ -183,6 +187,7 @@ export function ClarifyCard({ clarify }: { clarify: ClarifyRequest }) {
     <div
       className="hex-bubble grid min-w-0 max-w-[min(85%,40rem)] flex-1 gap-4 rounded-[20px] bg-bubble px-4 py-3"
       data-testid="clarify-card"
+      style={botBubbleStyle(color)}
     >
       {clarify.questions.map(question => {
         const key = question.questionId ?? clarify.requestId
