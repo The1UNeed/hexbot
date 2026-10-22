@@ -8,6 +8,7 @@ export type UpdateChannel = 'stable' | 'nightly'
 export interface DesktopState {
   crashReports?: boolean
   height?: number
+  backgroundExplained?: boolean
   updateChannel?: UpdateChannel
   width?: number
   x?: number
@@ -29,12 +30,23 @@ export async function readDesktopState(file = desktopStateFile()): Promise<Deskt
   }
 }
 
-export async function updateDesktopState(
+// Bounds, update track, and the background notice can change together.
+const writes = new Map<string, Promise<void>>()
+
+export function updateDesktopState(
   patch: Partial<DesktopState>,
   file = desktopStateFile()
 ): Promise<void> {
-  await mkdir(dirname(file), { recursive: true })
-  await writeFile(file, `${JSON.stringify({ ...(await readDesktopState(file)), ...patch })}\n`)
+  const next = (writes.get(file) ?? Promise.resolve())
+    .catch(() => undefined)
+    .then(async () => {
+      await mkdir(dirname(file), { recursive: true })
+      await writeFile(file, `${JSON.stringify({ ...(await readDesktopState(file)), ...patch })}\n`)
+    })
+  writes.set(file, next)
+  return next.finally(() => {
+    if (writes.get(file) === next) writes.delete(file)
+  })
 }
 
 export async function readUpdateChannel(

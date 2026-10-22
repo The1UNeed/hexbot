@@ -36,6 +36,8 @@ const requests = []
 const errors = []
 let daemon, browser, page, socket, electronApp, desktopHome, desktopBuild
 let daemonLog = ''
+let releaseBackgroundReply
+const backgroundReply = new Promise(resolve => { releaseBackgroundReply = resolve })
 
 function textOf(value) {
   return typeof value === 'string' ? value : Array.isArray(value) ? value.map(block => block.text || '').join('\n') : ''
@@ -56,6 +58,7 @@ const model = http.createServer(async (req, res) => {
     const body = JSON.parse(Buffer.concat(chunks).toString())
     requests.push(body)
     const prompt = textOf(body.messages?.findLast(message => message.role === 'user')?.content)
+    if (prompt === 'Desktop background chat') await backgroundReply
     const isRoom = prompt.startsWith('Room: ')
     const answer = isRoom
       ? prompt.includes('You are @fox.') ? 'Fox checked the details.'
@@ -199,8 +202,18 @@ try {
   }
   await visit(`/b/owl/s/${section}`)
   const composer = page.locator('#conversation-composer')
-  await composer.fill('Native browser chat')
+  await composer.fill(desktop ? 'Desktop background chat' : 'Native browser chat')
   await composer.press('Enter')
+  if (desktop) {
+    // Hold the local model until close: the actual Pi reply must finish while
+    // the app window is hidden/minimized, with its original connection alive.
+    await expect.poll(() => requests.some(request => textOf(request.messages?.findLast(message => message.role === 'user')?.content) === 'Desktop background chat')).toBe(true)
+    await electronApp.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].close())
+    assert.equal(await electronApp.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().length), 1)
+    releaseBackgroundReply()
+    await expect(page.getByTestId('bot-message').filter({ hasText: 'Native browser reply.' })).toHaveCount(1)
+    await electronApp.evaluate(({ app }) => app.emit('activate'))
+  }
   await expect(page.getByTestId('bot-message').filter({ hasText: 'Native browser reply.' })).toBeVisible({ timeout: 30_000 })
   await page.screenshot({ path: path.join(artifacts, 'chat.png') })
   await visit(`/r/${room}`)
@@ -256,6 +269,7 @@ try {
   console.error(`Artifacts: ${artifacts}\nDaemon: ${daemonLog.slice(-3000)}`)
   throw error
 } finally {
+  releaseBackgroundReply()
   socket?.close()
   await electronApp?.close()
   await browser?.close()

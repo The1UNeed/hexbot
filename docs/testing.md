@@ -157,6 +157,17 @@
   On headless Linux run these Electron checks through `xvfb-run -a`.
 - Web bundle: `pnpm --filter ./apps/web run typecheck && pnpm --filter ./apps/web run test --run && pnpm --filter ./apps/web run lint && pnpm --filter ./apps/web run build`.
 - Desktop: `pnpm --filter ./apps/desktop run typecheck && pnpm --filter ./apps/desktop run test --run && pnpm --filter ./apps/desktop run build`.
+  After building the web bundle, `pnpm --filter ./apps/desktop run e2e:lifecycle`
+  builds and launches both desktop editions in disposable homes. It checks
+  native close/reopen, renderer retention, a real second launch, menu Quit
+  while backgrounded, and injected OS session-end/shutdown events. Native
+  fixtures exercise the production tray, update close/failure handling, and
+  tray destruction fallback. CI runs it on macOS, Windows, and Linux with
+  Openbox and no tray host. Screenshots and results are uploaded as
+  `desktop-lifecycle-*`. Linux needs `dbus-run-session -- xvfb-run -a` and a
+  window manager. This does not perform actual logoff, shutdown, or update
+  installation, and does not validate GNOME or Wayland integration. Windows
+  remains a lifecycle test target, not a distributed package.
 - Packaging and release scripts: `node --test scripts/desktop/*.test.mjs scripts/dev/*.test.mjs && node scripts/desktop/release-smoke.mjs`.
 - Site: `pnpm --filter ./apps/site run check`.
 - Connect: `pnpm --filter ./apps/connect run typecheck && pnpm --filter ./apps/connect run test --run && pnpm --filter ./apps/connect run lint`.

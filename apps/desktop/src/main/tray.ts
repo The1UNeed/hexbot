@@ -44,6 +44,7 @@ export function createTray(manager: DaemonManager, openWindow: () => void): Tray
       process.platform === 'darwin' ? 'tray-16.png' : 'tray-32.png'
     )
   )
+  if (icon.isEmpty()) throw new Error('Tray icon is missing')
   if (process.platform === 'darwin') icon.setTemplateImage(true)
   tray = new Tray(icon)
   const actions: TrayMenuActions = {
@@ -57,5 +58,6 @@ export function createTray(manager: DaemonManager, openWindow: () => void): Tray
   rebuild(manager.status())
   manager.on('status', rebuild)
   tray.on('double-click', openWindow)
+  if (process.platform !== 'darwin') tray.on('click', openWindow)
   return tray
 }

@@ -124,6 +124,19 @@ name}` (other files) or `pdf.attach`. Stop: `session.interrupt`.
 
 ## Electron bridge (`window.hexbot`)
 
+Closing the app window keeps its page and daemon connection alive in both
+editions. Full keeps an app-owned daemon running; Client keeps receiving
+notifications from its remote daemon. Background timer throttling is off.
+macOS hides the window as before. Windows hides it to the tray, or minimizes
+if tray setup fails. Linux always minimizes, because a tray object does not
+prove that the desktop displays an icon, including on GNOME without a tray
+extension. Launching the app again, activating it, or using the tray reopens
+the same page. Windows and Linux have File > Quit as well as tray Quit.
+Explicit quit, updater installation, Windows session end, and macOS/Linux
+shutdown bypass close interception. The app never delays OS session events.
+Desktop state patches are serialized per file so concurrent bounds and
+settings changes preserve one another.
+
 Exposed by the preload with contextIsolation on:
 
 - `platform`, `version`, `isPackaged`.

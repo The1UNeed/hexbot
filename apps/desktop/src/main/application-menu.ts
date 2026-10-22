@@ -8,11 +8,12 @@ export interface ApplicationMenuActions {
 
 export function applicationMenuTemplate(
   actions: ApplicationMenuActions,
-  appName = 'Hexbot'
+  appName = 'Hexbot',
+  platform = process.platform
 ): MenuItemConstructorOptions[] {
   return [
     {
-      label: appName,
+      label: platform === 'darwin' ? appName : 'File',
       submenu: [
         { role: 'about' },
         { type: 'separator' },
