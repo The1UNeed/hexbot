@@ -3,7 +3,7 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 
 import { routeEvent } from '../../lib/events'
 import { setActiveRpc } from '../../lib/rpc'
-import type { ClarifyRequest } from '../../lib/types'
+import type { Bot, ClarifyRequest } from '../../lib/types'
 import {
   emptyTranscript,
   resetTranscriptEffects,
@@ -117,6 +117,14 @@ describe('clarify card', () => {
     expect(encodeAnswer(question, ['A'], 'mine')).toBe('["A","mine"]')
     expect(encodeAnswer({ ...question, multiSelect: false }, ['A'], 'mine')).toBe('mine')
     expect(encodeAnswer({ ...question, multiSelect: false }, ['A'], '')).toBe('A')
+  })
+
+  it('is washed with the bot colour, like its messages', () => {
+    const bot = { display_name: 'HexBot', face: { color: 'orange', shape: 'pill' } } as Bot
+    render(<ClarifyCard bot={bot} clarify={clarify()} />)
+    expect(screen.getByTestId('clarify-card').getAttribute('style')).toContain(
+      'color-mix(in srgb, #f97316 var(--hex-bot-wash), var(--hex-bubble))'
+    )
   })
 
   it('takes no input once the bot stopped waiting', () => {
