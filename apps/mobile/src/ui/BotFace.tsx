@@ -4,6 +4,7 @@ import Svg, { G, Path, Rect } from 'react-native-svg'
 import {
   ballTransform,
   eyeRects,
+  facePose,
   type FaceMood,
   type FaceStyle,
   faceForName,
@@ -83,9 +84,11 @@ export function FaceDrawing({
     <Svg height={size} viewBox="0 0 100 100" width={size}>
       <Path d={shape.path} fill={color.value} />
       <G transform={ballTransform(shape.ball)}>
-        {eyeRects(mood).map((eye, index) => (
-          <Rect fill={eyes} key={index} {...eye} />
-        ))}
+        <G transform={facePose(mood)}>
+          {eyeRects(mood).map((eye, index) => (
+            <Rect fill={eyes} key={index} {...eye} />
+          ))}
+        </G>
       </G>
     </Svg>
   )

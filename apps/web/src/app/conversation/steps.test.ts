@@ -5,6 +5,7 @@ import { useConnectors } from '../../stores/connectors'
 
 import {
   activityLabel,
+  liveMood,
   liveStatus,
   runningLabel,
   toolLabel,
@@ -207,7 +208,19 @@ describe('liveStatus', () => {
 
     expect(running.label).toBe('Scout is searching the web')
     expect(running.call?.name).toBe('web_search')
-    expect(liveStatus(message({}), 'Scout')).toEqual({ label: 'Scout is working' })
+    expect(liveStatus(message({}), 'Scout')).toEqual({
+      label: 'Scout is working',
+      mood: 'thinking'
+    })
+    expect(
+      liveStatus(message({ toolCalls: [call({ name: 'terminal', status: 'ok' })] }), 'Scout').mood
+    ).toBe('working')
+    expect(
+      liveStatus(
+        message({ toolCalls: [call({ name: 'x_search', status: 'running', summary: 'x' })] }),
+        'Scout'
+      ).mood
+    ).toBe('searching')
     expect(
       liveStatus(
         message({
@@ -221,5 +234,36 @@ describe('liveStatus', () => {
     expect(liveStatus(message({ text: 'Sure', thinking: 'Hmm.' }), 'Scout').label).toBe(
       'Scout is writing'
     )
+  })
+})
+
+describe('liveMood', () => {
+  it('follows a whole turn and returns to idle once streaming ends', () => {
+    const turn = message({})
+    expect(liveMood(turn)).toBe('thinking')
+    expect(
+      liveMood({ ...turn, toolCalls: [call({ name: 'web_search', status: 'running' })] })
+    ).toBe('searching')
+    expect(liveMood({ ...turn, toolCalls: [call({ name: 'web_search', status: 'ok' })] })).toBe(
+      'working'
+    )
+    expect(liveMood({ ...turn, text: 'Here is the result.' })).toBe('writing')
+    expect(liveMood({ ...turn, text: 'Here is the result.', streaming: false })).toBeUndefined()
+  })
+
+  it('shows work during approval checking, provider waits and delegation', () => {
+    expect(liveMood(message({ checking: 'Checking this step' }))).toBe('working')
+    expect(liveMood(message({ activity: 'Waiting on the provider' }))).toBe('working')
+    expect(liveMood(message({ toolCalls: [call({ name: 'ask_bot', status: 'running' })] }))).toBe(
+      'working'
+    )
+    expect(
+      liveMood(
+        message({
+          toolCalls: [call({ name: 'terminal', status: 'running' })],
+          text: 'Earlier text'
+        })
+      )
+    ).toBe('working')
   })
 })

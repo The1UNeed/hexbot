@@ -584,6 +584,12 @@ it('renders queued users, identified replies and an answered card in their actua
       request_id: 'queued-card',
       command: 'read first.txt'
     })
+  })
+  expect(
+    screen.getAllByRole('img', { name: 'Owl' }).some(face => face.dataset.mood === 'listening')
+  ).toBe(true)
+
+  await act(async () => {
     useTranscripts.getState().resolveApproval('chat', 'queued-card', 'once')
     event('tool.complete', {
       message_id: 'first-fragment',
@@ -592,6 +598,9 @@ it('renders queued users, identified replies and an answered card in their actua
     })
     event('message.delta', { message_id: 'second-fragment', text: 'Second queued reply' })
   })
+  expect(
+    screen.getAllByRole('img', { name: 'Owl' }).some(face => face.dataset.mood === 'writing')
+  ).toBe(true)
 
   const rows = [
     { role: 'assistant', row_id: 0, text: 'Previous conversation' },
@@ -663,6 +672,9 @@ it('renders queued users, identified replies and an answered card in their actua
   })
   expect(screen.getAllByText('First queued reply')).toHaveLength(1)
   expect(screen.getAllByText('Second queued reply')).toHaveLength(1)
+  expect(
+    screen.getAllByRole('img', { name: 'Owl' }).every(face => face.dataset.mood === 'idle')
+  ).toBe(true)
   expect(
     before(screen.getByText('read first.txt'), screen.getByText('Second queued question'))
   ).toBe(true)

@@ -15,10 +15,13 @@ import {
   styleForName
 } from '../../lib/avatar-builder'
 import { cn } from '../../lib/cn'
+import { FACE_VIEWBOX, type FaceLook, facePose } from '../../lib/face'
+import { useFaceVisibility } from '../../lib/face-visibility'
 
 import { ActProps, type HexbotActName, useAct } from './hexbot-act'
 
 export type { FaceMood }
+export type { FaceLook } from '../../lib/face'
 
 const avatarVariants = cva('relative inline-flex shrink-0 items-center justify-center', {
   defaultVariants: { size: 'md' },
@@ -43,19 +46,23 @@ const HEXAGON_BALL = AVATAR_SHAPES.find(shape => shape.id === 'hexagon')!.ball
 export function FaceEyes({
   ball = HEXAGON_BALL,
   fill = '#ffffff',
-  mood = 'idle'
+  mood = 'idle',
+  look
 }: {
   ball?: Ball
   fill?: string
   mood?: FaceMood
+  look?: FaceLook | null
 }) {
   return (
     <g transform={ballTransform(ball)}>
-      <g className="hex-gaze">
-        <g className="hex-eyes" data-mood={mood}>
-          {eyeRects(mood).map((eye, index) => (
-            <rect fill={fill} key={index} {...eye} />
-          ))}
+      <g transform={facePose(mood, look)}>
+        <g className="hex-gaze">
+          <g className="hex-eyes" data-mood={mood}>
+            {eyeRects(mood).map((eye, index) => (
+              <rect fill={fill} key={index} {...eye} />
+            ))}
+          </g>
         </g>
       </g>
     </g>
@@ -68,30 +75,59 @@ export interface AvatarProps extends VariantProps<typeof avatarVariants> {
   className?: string
   /** Data URL or `data:<mime>;base64,...` from the bot's profile asset. */
   image?: null | string
+  look?: FaceLook | null
   mood?: FaceMood
   name: string
   /** Face to draw when there is no image; defaults to one derived from the name. */
   style?: AvatarStyle
 }
 
-/** A bot face drawn inline so the eyes can blink, wander, and change mood. */
-export function Face({
-  className,
-  mood,
-  style
-}: {
+export interface LiveFaceProps {
   className?: string
+  color: string
+  eyes: string
+  look?: FaceLook | null
   mood?: FaceMood
-  style: AvatarStyle
-}) {
-  const { color, eyes, shape } = resolveStyle(style)
+  shape?: string
+  /** Hold the eyes while an act moves the body. */
+  still?: boolean
+}
+
+/** Original SVG, with CSS motion only while a visible bot is active. */
+export function LiveFace({
+  className,
+  color,
+  eyes,
+  look,
+  mood = 'idle',
+  shape = 'hexagon',
+  still = false
+}: LiveFaceProps) {
+  const outline = AVATAR_SHAPES.find(item => item.id === shape) ?? AVATAR_SHAPES[0]!
+  const { ref, visible } = useFaceVisibility<SVGSVGElement>()
 
   return (
-    <svg aria-hidden className={cn('size-full', className)} viewBox="0 0 100 100">
-      <path d={shape.path} fill={color.value} />
-      <FaceEyes ball={shape.ball} fill={eyes} mood={mood} />
+    <svg
+      aria-hidden
+      className={cn('hex-live-face size-full', className)}
+      data-mood={mood}
+      data-moving={visible && !still}
+      ref={ref}
+      viewBox={FACE_VIEWBOX}
+    >
+      <path d={outline.path} fill={color} />
+      <FaceEyes ball={outline.ball} fill={eyes} look={look} mood={mood} />
     </svg>
   )
+}
+
+export function Face({
+  style,
+  ...props
+}: Omit<LiveFaceProps, 'color' | 'eyes' | 'shape'> & { style: AvatarStyle }) {
+  const { color, eyes, shape } = resolveStyle(style)
+
+  return <LiveFace {...props} color={color.value} eyes={eyes} shape={shape.id} />
 }
 
 /** The face drawn in a bot's picture once read, `null` for a photo, `undefined` while reading. */
@@ -147,24 +183,30 @@ export function useFaceColor(
  * The generated face, live, whether the bot has none saved or saved one this
  * app drew; any other uploaded picture as it is.
  */
-export function Avatar({ act, className, image, mood, name, size, style }: AvatarProps) {
+export function Avatar({ act, className, image, look, mood, name, size, style }: AvatarProps) {
   const playing = useAct(act)
+  const { ref, visible } = useFaceVisibility<HTMLSpanElement>()
   const read = useFaceRead(image)
   const face = read ?? style ?? styleForName(name)
   const picture = image && !read ? image : null
+  const shownMood = playing.act?.mood ?? mood ?? 'idle'
 
   return (
     <span
       aria-label={name}
       className={cn(avatarVariants({ size }), 'hex-face', className)}
+      data-look={look ?? undefined}
+      data-mood={picture ? undefined : shownMood}
+      data-visible={visible}
       onClick={playing.play}
+      ref={ref}
       role="img"
     >
       <span className={cn('size-full', playing.act?.body)}>
         {picture ? (
           <img alt="" className="size-full rounded-full object-cover" src={picture} />
         ) : (
-          <Face mood={playing.act?.mood ?? mood} style={face} />
+          <Face look={look} mood={shownMood} still={Boolean(playing.act)} style={face} />
         )}
       </span>
       {playing.name ? (

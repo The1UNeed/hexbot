@@ -334,3 +334,14 @@ fixture. Set `HEXBOT_SMOKE_ARTIFACTS` to choose where its screenshots and proof
 files go. It checks daemon-owned cwd, revocation after removal and disable,
 credential changes in an open section, Manual approval for read-only tools, and
 nested steps before and after reload in light and dark themes.
+
+### Original bot faces
+
+`node apps/web/scripts/face-rest.mjs --check` checks that mobile uses the
+web's original geometry. `node apps/web/scripts/face-smoke.mjs` launches a
+temporary Vite entry and Chromium, then removes the entry and closes both.
+It checks all 176 old/new PNG shape and colour roundtrips, quiet idle faces,
+settled reduced-motion expressions and all acts, offscreen pause/resume,
+keyed reorder/unmount cleanup, and 24 active faces under 4× CPU throttling.
+`HEXBOT_FACE_ARTIFACTS` selects the screenshot directory. It uses the desktop
+workspace's Playwright installation and needs its Chromium browser.
