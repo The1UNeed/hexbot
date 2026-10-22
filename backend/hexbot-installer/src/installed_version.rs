@@ -157,7 +157,7 @@ impl Installer {
         if app.managed_by_dpkg {
             return Ok(asar_version(&app.path.join("resources/app.asar")));
         }
-        if self.target.is_macos() {
+        if !self.target.is_linux() {
             return Ok(None);
         }
         appimage_version(&app.path)

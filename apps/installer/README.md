@@ -2,7 +2,9 @@
 
 The windowed installer: a small Tauri app (`.dmg` on macOS, AppImage on
 Linux) that installs Hexbot **Headless**, **Client**, or **Full** and fetches
-only the chosen option's files. Run again, it offers Update or repair,
+only the chosen option's files. The windowed bundle is still macOS and Linux.
+The terminal installer engine also understands `windows-x86_64`; Windows
+installs use the NSIS package, not this Tauri bundle and not `install.sh`. Run again, it offers Update or repair,
 Change, or Uninstall. It drives the same engine as the terminal installer,
 `backend/hexbot-installer`; the screens are React and Tailwind with the app's
 tokens and the site's display face.

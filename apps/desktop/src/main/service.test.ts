@@ -162,3 +162,40 @@ it('only reports the Linux service for this home, decoding systemd escapes', asy
     await rm(root, { recursive: true, force: true })
   }
 })
+
+it('installs, queries, and removes a Windows logon task without calling schtasks for real', async () => {
+  const { installService, serviceStatus, uninstallService, servicePath } = await import('./service')
+  const { windowsServiceScript } = await import('./service-files')
+  const root = await mkdtemp(join(tmpdir(), 'hexbot-win-service-'))
+  const home = join(root, 'home')
+  const file = servicePath('win32', home)
+  const executable = join(home, 'runtime', 'native-executable.exe')
+  const path = `${join(home, 'bin')};C:\\Windows`
+  const calls: string[][] = []
+  vi.stubEnv('HEXBOT_HOME', home)
+  try {
+    await installService(file, 'win32', { home, executable, path, logDir: join(home, 'logs') }, async (command, args) => {
+      calls.push([command, ...args])
+    })
+    expect(await readFile(file, 'utf8')).toBe(windowsServiceScript({ home, executable, path }))
+    expect(calls).toEqual([
+      ['schtasks', '/Create', '/TN', 'Hexbot', '/XML', file.replace(/\.cmd$/, '.xml'), '/F'],
+      ['schtasks', '/Run', '/TN', 'Hexbot']
+    ])
+    const xml = await readFile(file.replace(/\.cmd$/, '.xml'))
+    expect(xml.subarray(0, 2)).toEqual(Buffer.from([0xff, 0xfe]))
+    const text = xml.subarray(2).toString('utf16le')
+    expect(text).toContain('<LogonTrigger>')
+    expect(text).toContain('<RunLevel>LeastPrivilege</RunLevel>')
+    expect(text).toContain('<RestartOnFailure>')
+    expect(text).toContain(`<Command>${file}</Command>`)
+    expect(await serviceStatus(file, 'win32', async () => ({ stdout: 'Status: Running\n' }))).toEqual({ installed: true, running: true })
+    expect(await serviceStatus(file, 'win32', async () => ({ stdout: 'Status: Ready\n' }))).toEqual({ installed: true, running: false })
+    await uninstallService(file, 'win32', async () => undefined)
+    expect(existsSync(file)).toBe(false)
+    expect(existsSync(file.replace(/\.cmd$/, '.xml'))).toBe(false)
+  } finally {
+    vi.unstubAllEnvs()
+    await rm(root, { recursive: true, force: true })
+  }
+})

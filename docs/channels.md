@@ -249,8 +249,9 @@ Different on purpose:
   self-hosted; switching to `provider: github` is a one-line change in
   `electron-builder.base.yml` if that ever makes sense.
 - Nightlies run once a day, not every 30 minutes with a six-hour gap.
-- Two editions (full and client) instead of one app, and no Windows build
-  yet.
+- Two editions (full and client) instead of one app. Windows 10 or later,
+  64-bit, is a target. Linux ARM and Windows ARM are not provided. The
+  windowed installer is still macOS and Linux; Windows uses the NSIS package.
 - No npm package to publish: the daemon ships inside the full package and the
   app updates it on launch.
 - Old nightlies are pruned to the last 14 on GitHub.

@@ -297,6 +297,8 @@ fn bwrap() -> Option<&'static Path> {
 pub fn sandbox() -> Option<&'static str> {
     if cfg!(target_os = "macos") {
         Some("sandbox-exec")
+    } else if cfg!(windows) {
+        Some("appcontainer")
     } else {
         bwrap().map(|_| "bubblewrap")
     }
@@ -568,19 +570,16 @@ const GIT_SCAN_INCLUDES: usize = 256;
 const GIT_CONFIG_STEPS: usize = 10000;
 fn regular_file(path: &Path) -> Result<Option<Vec<u8>>> {
     use std::io::Read;
-    use std::os::unix::fs::OpenOptionsExt;
-    let file = match std::fs::OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NONBLOCK)
-        .open(path)
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
     {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NONBLOCK);
+    }
+    let file = match options.open(path) {
         Ok(file) => file,
-        Err(error)
-            if error.kind() == std::io::ErrorKind::NotFound
-                || [Some(libc::ENOTDIR), Some(libc::ENXIO)].contains(&error.raw_os_error()) =>
-        {
-            return Ok(None);
-        }
+        Err(error) if crate::osutil::absent_path(&error) => return Ok(None),
         Err(error) => return Err(error.into()),
     };
     let metadata = file.metadata()?;
@@ -624,7 +623,8 @@ fn config_entries(text: &[u8]) -> Result<Vec<(String, String)>> {
     // system Git, never a workspace executable from PATH, and give it the bytes
     // already read: with --no-includes it opens no file, so includes are
     // followed here. It is killed at the deadline.
-    let mut child = std::process::Command::new("/usr/bin/git")
+    let git = if cfg!(windows) { "git" } else { "/usr/bin/git" };
+    let mut child = std::process::Command::new(git)
         .args([
             "config",
             "--no-includes",
@@ -643,7 +643,7 @@ fn config_entries(text: &[u8]) -> Result<Vec<(String, String)>> {
         .stderr(std::process::Stdio::piped())
         .spawn()
         .map_err(|_| unreadable())?;
-    let pid = child.id() as libc::pid_t;
+    let pid = child.id();
     let mut stdin = child.stdin.take().ok_or_else(unreadable)?;
     let input = text.to_vec();
     let (sender, receiver) = std::sync::mpsc::channel();
@@ -656,8 +656,8 @@ fn config_entries(text: &[u8]) -> Result<Vec<(String, String)>> {
     let output = match receiver.recv_timeout(GIT_TIMEOUT) {
         Ok(output) => output.map_err(|_| unreadable())?,
         Err(_) => {
-            // SAFETY: the waiting thread has not reaped the child, so the pid is still ours.
-            unsafe { libc::kill(pid, libc::SIGKILL) };
+            // The waiting thread has not reaped the child, so the pid is still ours.
+            crate::osutil::terminate(pid);
             let _ = receiver.recv();
             return Err(unreadable());
         }
@@ -1615,27 +1615,36 @@ fn bwrap_arguments(layout: &Layout) -> Result<Vec<OsString>> {
 /// most this many more processes than the user already runs.
 const PROCESS_HEADROOM: usize = 512;
 fn process_limit() -> Option<usize> {
-    // SAFETY: getuid has no preconditions and cannot fail.
-    let uid = unsafe { libc::getuid() };
-    // Linux charges the limit per thread, macOS per process.
-    let threads: &[&str] = if cfg!(target_os = "linux") {
-        &["-L"]
-    } else {
-        &[]
-    };
-    let listed = std::process::Command::new("ps")
-        .args(threads)
-        .args(["-U", &uid.to_string(), "-o", "pid="])
-        .output()
-        .ok()
-        .filter(|o| o.status.success())?;
-    Some(
-        String::from_utf8_lossy(&listed.stdout)
-            .lines()
-            .filter(|l| !l.trim().is_empty())
-            .count()
-            + PROCESS_HEADROOM,
-    )
+    #[cfg(windows)]
+    {
+        // ActiveProcessLimit counts the sandboxed job only. The Unix cap is
+        // every process this user already has, plus the same headroom.
+        return crate::osutil::windows_process_count().map(|_| PROCESS_HEADROOM);
+    }
+    #[cfg(unix)]
+    {
+        // SAFETY: getuid has no preconditions and cannot fail.
+        let uid = unsafe { libc::getuid() };
+        // Linux charges the limit per thread, macOS per process.
+        let threads: &[&str] = if cfg!(target_os = "linux") {
+            &["-L"]
+        } else {
+            &[]
+        };
+        let listed = std::process::Command::new("ps")
+            .args(threads)
+            .args(["-U", &uid.to_string(), "-o", "pid="])
+            .output()
+            .ok()
+            .filter(|o| o.status.success())?;
+        Some(
+            String::from_utf8_lossy(&listed.stdout)
+                .lines()
+                .filter(|l| !l.trim().is_empty())
+                .count()
+                + PROCESS_HEADROOM,
+        )
+    }
 }
 /// Which sandbox a program gets on top of the base layer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1684,6 +1693,11 @@ pub(crate) fn isolated_command_with_outputs(
         (confine != Confine::No).then_some(workspace.as_slice()),
         writable,
     )?;
+    #[cfg(windows)]
+    {
+        return windows_launch(home, program, confine, &layout);
+    }
+    #[cfg(unix)]
     let mut command = if cfg!(target_os = "macos") {
         let mut command = tokio::process::Command::new("/usr/bin/sandbox-exec");
         command.args(["-p", &sandbox_profile(&layout), program]);
@@ -1699,6 +1713,7 @@ pub(crate) fn isolated_command_with_outputs(
         warn_unavailable_isolation();
         tokio::process::Command::new(program)
     };
+    #[cfg(unix)]
     if confine != Confine::No {
         // The child applies the cap before it starts the sandbox, which keeps it;
         // a program that cannot be capped does not start.
@@ -1720,11 +1735,136 @@ pub(crate) fn isolated_command_with_outputs(
             });
         }
     }
+    #[cfg(unix)]
+    return Ok(command);
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = (home, program, confine, layout);
+        Err(Error::new(5240, "Hexbot could not create the sandbox."))
+    }
+}
+
+/// The plan the Windows helper applies. The helper rebuilds it from the home
+/// and the writable roots, so a plan file on disk cannot widen the sandbox.
+#[cfg(any(windows, test))]
+pub(crate) fn confinement_plan(
+    home: &Path,
+    confine: Confine,
+    writable: &[PathBuf],
+) -> Result<crate::windows_sandbox::Plan> {
+    let workspace: Vec<PathBuf> = match confine {
+        Confine::No => vec![],
+        Confine::Workspace => writable
+            .iter()
+            .cloned()
+            .chain([std::env::temp_dir(), PathBuf::from("/tmp")])
+            .collect(),
+        Confine::ReadOnly => writable
+            .iter()
+            .filter(|path| under(path, home))
+            .cloned()
+            .collect(),
+    };
+    let layout = layout_scanned(
+        home,
+        writable,
+        (confine != Confine::No).then_some(workspace.as_slice()),
+        writable,
+    )?;
+    let must_cap = confine != Confine::No;
+    let user = crate::osutil::user_home().unwrap_or_else(|| home.to_owned());
+    let (mut allow_write, mut readable): (Vec<PathBuf>, Vec<PathBuf>) =
+        if let Some(confinement) = &layout.confine {
+            (
+                confinement.writable.clone(),
+                confinement
+                    .readable
+                    .iter()
+                    .chain(&confinement.config)
+                    .cloned()
+                    .collect(),
+            )
+        } else {
+            (vec![user.clone(), std::env::temp_dir()], vec![user])
+        };
+    allow_write.retain(|path| path.is_absolute());
+    readable.retain(|path| path.is_absolute());
+    let mut deny = layout.paths.clone();
+    deny.extend(layout.denied.clone());
+    let limit = if must_cap {
+        process_limit().and_then(|count| u32::try_from(count).ok())
+    } else {
+        None
+    };
+    crate::windows_sandbox::prepare(
+        confine == Confine::No,
+        limit,
+        must_cap,
+        &allow_write,
+        &readable,
+        &deny,
+        FOLD_CASE,
+    )
+}
+
+#[cfg(windows)]
+fn windows_launch(
+    home: &Path,
+    program: &str,
+    confine: Confine,
+    layout: &Layout,
+) -> Result<tokio::process::Command> {
+    let executable =
+        std::env::current_exe().map_err(|error| Error::new(5240, error.to_string()))?;
+    let mode = match confine {
+        Confine::No => "base",
+        Confine::Workspace => "workspace",
+        Confine::ReadOnly => "readonly",
+    };
+    let mut command = tokio::process::Command::new(executable);
+    // The helper is not the sandboxed command. Drop the daemon's secrets here.
+    // It copies this environment into the AppContainer process, so a caller
+    // may add provider auth afterwards and must not put secrets back.
+    command
+        .env_clear()
+        .envs(std::env::vars().filter(|(name, _)| inherited_environment(name)))
+        .arg("sandbox")
+        .arg("--home")
+        .arg(home)
+        .arg("--confine")
+        .arg(mode);
+    if let Some(confinement) = &layout.confine {
+        for path in &confinement.writable {
+            if path.is_absolute() {
+                command.arg("--write").arg(path);
+            }
+        }
+    }
+    command.arg("--").arg(program);
     Ok(command)
 }
 /// Variables every child may inherit. Provider keys, connector secrets, and runtime
 /// injection variables (NODE_OPTIONS, BASH_ENV) are never on the list.
+/// Winsock and `CreateProcess` need these. They are not credentials. AppContainer
+/// still cannot read the profile paths the plan denies.
+const WINDOWS_ESSENTIAL: &[&str] = &[
+    "SYSTEMROOT",
+    "WINDIR",
+    "COMSPEC",
+    "PATHEXT",
+    "USERPROFILE",
+    "HOMEDRIVE",
+    "HOMEPATH",
+    "SYSTEMDRIVE",
+];
 pub fn inherited_environment(name: &str) -> bool {
+    if cfg!(windows)
+        && WINDOWS_ESSENTIAL
+            .iter()
+            .any(|allowed| allowed.eq_ignore_ascii_case(name))
+    {
+        return true;
+    }
     name.to_ascii_uppercase().starts_with("LC_")
         || policy()
             .environment
@@ -1828,17 +1968,11 @@ mod tests {
         ] {
             assert!(inherited_environment(name), "{name}");
         }
-        for name in [
-            "NODE_OPTIONS",
-            "BASH_ENV",
-            "OPENAI_API_KEY",
-            "SystemRoot",
-            "WINDIR",
-            "PATHEXT",
-            "COMSPEC",
-            "DISPLAY",
-        ] {
+        for name in ["NODE_OPTIONS", "BASH_ENV", "OPENAI_API_KEY", "DISPLAY"] {
             assert!(!inherited_environment(name), "{name}");
+        }
+        for name in ["SystemRoot", "WINDIR", "PATHEXT", "COMSPEC", "USERPROFILE"] {
+            assert_eq!(inherited_environment(name), cfg!(windows), "{name}");
         }
         assert!(display_environment("DISPLAY") && display_environment("WAYLAND_DISPLAY"));
         assert!(!display_environment("LOCALAPPDATA"));
@@ -1869,6 +2003,29 @@ mod tests {
         for binary in ["/usr/bin/open", "/bin/launchctl", "/usr/bin/osascript"] {
             assert!(profile.contains(&format!("(literal {})", quoted(binary))));
         }
+    }
+    #[test]
+    fn windows_workspace_plan_is_offline_and_denies_secrets() {
+        let home = tempfile::tempdir().unwrap();
+        let home = home.path().canonicalize().unwrap();
+        let work = home.join("work");
+        std::fs::create_dir_all(&work).unwrap();
+        let secret = home.join("connect.json");
+        std::fs::write(&secret, "secret").unwrap();
+        let plan =
+            confinement_plan(&home, Confine::Workspace, std::slice::from_ref(&work)).unwrap();
+        assert!(!plan.network);
+        assert!(plan.process_limit > 0);
+        assert!(
+            plan.allow
+                .iter()
+                .any(|grant| grant.write && grant.path == work.canonicalize().unwrap())
+        );
+        assert!(plan.deny.iter().any(|path| path == &secret));
+        assert!(!plan.allow.iter().any(|grant| grant.path == secret));
+        let open = confinement_plan(&home, Confine::No, &[]).unwrap();
+        assert!(open.network);
+        assert_eq!(open.process_limit, 0);
     }
     #[test]
     fn policy_is_scoped_and_walk_skips_heavy_trees() {

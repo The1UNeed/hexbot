@@ -1,7 +1,7 @@
 ---
 layout: ../../layouts/Docs.astro
 title: Install
-description: Install Hexbot on macOS or Linux as Full, Client, or Headless.
+description: Install Hexbot on macOS, Linux, or 64-bit Windows as Full, Client, or Headless.
 ---
 
 Hexbot has two parts: the **daemon**, which runs your bots, rooms, and memory, and the **app** you talk to them in. Install one of three options on each computer:
@@ -14,7 +14,7 @@ Full and Client install side by side and update independently. One daemon is eno
 
 Options and tracks are separate choices: Full, Client, and Headless describe what is installed; Stable and Nightly describe which builds you receive. Stable and Nightly share the same `~/.hexbot` data, so back it up before trying a nightly.
 
-Hexbot runs on macOS 12 or later (Apple Silicon or Intel) and on x86-64 Linux with glibc 2.35 or later, such as Ubuntu 22.04 or Debian 12. If the daemon cannot run on your system, the installer or first launch says so.
+Hexbot runs on macOS 12 or later (Apple Silicon or Intel), on x86-64 Linux with glibc 2.35 or later, such as Ubuntu 22.04 or Debian 12, and on Windows 10 or later, 64-bit only. Linux ARM and Windows ARM are not provided. If the daemon cannot run on your system, the installer or first launch says so.
 
 ## Two ways to install
 
@@ -22,7 +22,7 @@ Both ways offer the same three options and download only the files for the optio
 
 ### Hexbot Installer
 
-The [download page](/download/) offers the Hexbot Installer for your computer: a .dmg for macOS, an AppImage for Linux. Open it, choose Full, Client, or Headless, and install. On Linux, make the AppImage executable first (right-click it, or `chmod +x` it).
+The [download page](/download/) offers the Hexbot Installer for your computer: a .dmg for macOS, an AppImage for Linux, and an NSIS .exe for Windows 10 or later, 64-bit. The windowed installer app itself is still the macOS and Linux bundle. On Windows, run the NSIS package. On Linux, make the AppImage executable first (right-click it, or `chmod +x` it).
 
 ### Terminal
 
@@ -30,7 +30,7 @@ The [download page](/download/) offers the Hexbot Installer for your computer: a
 curl -fsSL https://hexbot.app/install.sh | sh
 ```
 
-This works over SSH. The script picks the build for your computer, downloads the terminal installer, checks its SHA-256 checksum, and asks which option to install. To skip the question, name the option:
+This works over SSH on macOS and Linux. It does not run in `cmd.exe`. Windows uses the NSIS installer, not `install.sh`. The script picks the build for your computer, downloads the terminal installer, checks its SHA-256 checksum, and asks which option to install. To skip the question, name the option:
 
 ```sh
 curl -fsSL https://hexbot.app/install.sh | sh -s -- --headless
@@ -66,6 +66,7 @@ One installer changes Hexbot at a time. A second one, terminal or windowed, wait
 
 - **macOS**: Full and Client go to `/Applications`, or to `~/Applications` when `/Applications` is not writable.
 - **Linux**: Full and Client are AppImages in `~/.local/share/hexbot`, with a desktop entry, an icon, and a handler for `hexbot://` pairing links. The installer never uses `sudo`. If you installed a deb package yourself, remove it with your package manager before you change or uninstall with the installer.
+- **Windows**: Full and Client are installed for the current user from the NSIS package. Windows 10 or later, 64-bit only.
 - **Headless**: see [What Headless sets up](#what-headless-sets-up).
 
 The installer records what it installed in `~/.hexbot/install.json`.
@@ -79,7 +80,7 @@ The Full and Client packages are still on the [download page](/download/#all) un
 - AppImage for a portable Linux app
 - deb for Debian, Ubuntu, and related distributions
 
-Windows and Linux ARM packages are not provided.
+Linux ARM and Windows ARM packages are not provided. Windows is 64-bit only.
 
 ## First launch
 
@@ -110,8 +111,10 @@ Or open the Hexbot Installer and choose Headless. When it finishes, the installe
 
 - The daemon runtime in `~/.hexbot/runtime`, checked against its SHA-256 checksum.
 - Python 3.11 for code tools and the voice tools, inside `~/.hexbot`, each checked against a pinned checksum, as Full does on first launch.
-- A user service that starts the daemon at login and restarts it if it stops: `~/Library/LaunchAgents/app.hexbot.daemon.plist` on macOS, `~/.config/systemd/user/hexbot.service` on Linux. On Linux the installer also enables lingering (`loginctl enable-linger`), so the daemon keeps running after you log out and starts at boot; if that fails it says so.
-- The `hexbot` command in `~/.local/bin`. If that directory is not on your `PATH`, setup prints the line to add to your shell profile.
+- A user service that starts the daemon at login and restarts it if it stops: `~/Library/LaunchAgents/app.hexbot.daemon.plist` on macOS, `~/.config/systemd/user/hexbot.service` on Linux, and a per-user logon scheduled task on Windows. The Windows task runs `%USERPROFILE%\AppData\Local\Hexbot\hexbot-service.cmd`. On Linux the installer also enables lingering (`loginctl enable-linger`), so the daemon keeps running after you log out and starts at boot; if that fails it says so.
+- The `hexbot` command in `~/.local/bin` (`%USERPROFILE%\.local\bin\hexbot.cmd` on Windows). If that directory is not on your `PATH`, setup prints the line to add to your shell profile.
+
+On Windows the sandbox is an AppContainer with no network in Auto and Manual.
 
 On Linux, install bubblewrap for the sandbox; see [Linux](#linux). The installer reminds you when it is missing.
 

@@ -41,9 +41,12 @@ pub fn paths(root: &Path) -> Paths {
 }
 
 pub fn executable(path: &Path, bytes: &[u8]) {
-    use std::os::unix::fs::PermissionsExt;
     fs::write(path, bytes).unwrap();
-    fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+    }
 }
 
 pub fn bundle(path: &Path, id: &str) {

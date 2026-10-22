@@ -15,8 +15,26 @@ export const MIN_INSTALLER = '0.1.5-0'
 const targets = [
   ['macos-aarch64', 'mac', 'arm64'],
   ['macos-x86_64', 'mac', 'x64'],
-  ['linux-x86_64', 'linux', 'x64']
+  ['linux-x86_64', 'linux', 'x64'],
+  // Optional: a tree with no Windows artifacts still publishes the other three.
+  ['windows-x86_64', 'win', 'x64']
 ]
+
+function packageFormat(os) {
+  if (os === 'mac') return 'zip'
+  if (os === 'win') return 'exe'
+  return 'AppImage'
+}
+
+function nativeArchiveFormat(os) {
+  return os === 'win' ? 'zip' : 'tar.gz'
+}
+
+function installerAppFilename(os, arch) {
+  if (os === 'mac') return `mac-${arch}.dmg`
+  if (os === 'win') return 'windows-x86_64.exe'
+  return 'linux-x86_64.AppImage'
+}
 
 async function exists(path) {
   try { return (await stat(path)).isFile() } catch (error) {
@@ -75,6 +93,17 @@ export async function makeInstallManifest(root, { channel, version, baseUrl = 'h
     if (await digest(file, algorithm, encoding) !== hash) throw new Error(`Artifact checksum mismatch: ${path}`)
   }
   for (const [target, os, arch] of targets) {
+    const nativeFormat = nativeArchiveFormat(os)
+    const appName = installerAppFilename(os, arch)
+    if (os === 'win') {
+      const markers = [
+        ...['full', 'client'].map(edition => `${edition}/${os}/${arch}/${feedMetadataName(channel, os)}`),
+        `daemon/native/${version}/${target}/manifest.json`,
+        `install/${version}/hexbot-install-${version}-${target}`,
+        `install/${version}/HexbotInstaller-${version}-${appName}`
+      ]
+      if (!(await Promise.all(markers.map(path => exists(join(root, path))))).some(Boolean)) continue
+    }
     const options = {}
     for (const edition of ['full', 'client']) {
       const directory = `${edition}/${os}/${arch}`
@@ -86,7 +115,7 @@ export async function makeInstallManifest(root, { channel, version, baseUrl = 'h
         if (!file.url || /[/\\]/.test(file.url) || file.url === '..') throw new Error(`Invalid artifact URL: ${feedPath}`)
         if (!(await exists(join(root, directory, file.url)))) throw new Error(`Referenced file is missing: ${directory}/${file.url}`)
       }
-      const format = os === 'mac' ? 'zip' : 'AppImage'
+      const format = packageFormat(os)
       const file = feed.files.find(file => file.url.endsWith(`.${format}`))
       if (!file) {
         if (allowMissing) continue
@@ -101,15 +130,14 @@ export async function makeInstallManifest(root, { channel, version, baseUrl = 'h
     const native = `daemon/native/${version}/${target}`
     if (await optional(`${native}/manifest.json`)) {
       const metadata = JSON.parse(await readFile(join(root, native, 'manifest.json'), 'utf8'))
-      const path = `${native}/hexbot-native-${version}-${target}.tar.gz`
-      if (metadata.version !== version || metadata.target !== target || metadata.format !== 'tar.gz')
+      const path = `${native}/hexbot-native-${version}-${target}.${nativeFormat}`
+      if (metadata.version !== version || metadata.target !== target || metadata.format !== nativeFormat)
         throw new Error(`Invalid native manifest: ${native}/manifest.json`)
       if (new URL(metadata.path ?? metadata.url, base).pathname !== new URL(path, base).pathname) throw new Error(`Invalid native archive URL: ${metadata.url}`)
       await verify(path, metadata.sha256, 'sha256', 'hex', metadata.size)
       options.headless = { url: url(path), path, sha256: metadata.sha256, size: metadata.size,
-        format: 'tar.gz', manifest: `${native}/manifest.json` }
+        format: nativeFormat, manifest: `${native}/manifest.json` }
     }
-    const appName = os === 'mac' ? `mac-${arch}.dmg` : 'linux-x86_64.AppImage'
     for (const [option, filename] of [
       ['installer', `hexbot-install-${version}-${target}`],
       ['installerApp', `HexbotInstaller-${version}-${appName}`]

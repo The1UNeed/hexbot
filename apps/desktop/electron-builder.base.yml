@@ -42,6 +42,16 @@ linux:
   category: Utility
   executableName: hexbot
   artifactName: Hexbot-${version}-linux-${arch}.${ext}
+win:
+  # x64 only. No certificate is required for a local build: dist.mjs turns off
+  # CSC identity discovery when CSC_LINK and CSC_NAME are unset, and signing
+  # the executable is off here so electron-builder does not look for a cert.
+  target:
+    - target: nsis
+      arch:
+        - x64
+  artifactName: Hexbot-${version}-windows-${arch}.${ext}
+  signAndEditExecutable: false
 deb:
   depends:
     - libgtk-3-0

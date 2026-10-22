@@ -21,6 +21,7 @@ export const targets = [
   { key: 'mac-x64', os: 'mac', name: 'Mac (Intel)', pill: 'Intel (.dmg)' },
   { key: 'linux', os: 'linux', name: 'Linux', pill: 'AppImage' },
   { key: 'linux-deb', os: 'linux', name: 'Linux', pill: 'deb package' },
+  { key: 'windows', os: 'windows', name: 'Windows', pill: 'Windows 10 or later, 64-bit (.exe)' },
 ] as const
 
 let cached: Promise<Downloads | null> | undefined

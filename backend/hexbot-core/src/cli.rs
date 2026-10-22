@@ -114,24 +114,20 @@ fn offline_lock(home: &Path) -> Result<std::fs::File> {
         options.mode(0o600);
     }
     let file = options.open(home.join("native-daemon.lock"))?;
-    #[cfg(unix)]
-    {
-        use std::os::fd::AsRawFd;
-        // A daemon holds the lock a moment before it answers, and so does a child process
-        // forked while the lock was open. Give either a second to settle.
-        for attempt in 0..20 {
-            if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
-                return Ok(file);
-            }
-            if attempt < 19 {
-                std::thread::sleep(Duration::from_millis(50));
-            }
+    // A daemon holds the lock a moment before it answers, and so does a child process
+    // forked while the lock was open. Give either a second to settle.
+    for attempt in 0..20 {
+        if crate::osutil::try_lock_exclusive(&file).is_ok() {
+            return Ok(file);
         }
-        Err(Error::new(
-            4208,
-            "A daemon owns this home but its API is unreachable. Retry after it finishes starting or restarting.",
-        ))
+        if attempt < 19 {
+            std::thread::sleep(Duration::from_millis(50));
+        }
     }
+    Err(Error::new(
+        4208,
+        "A daemon owns this home but its API is unreachable. Retry after it finishes starting or restarting.",
+    ))
 }
 async fn socket(home: &Path) -> Result<Option<Socket>> {
     let state = match std::fs::read(home.join("serve-state.json")) {
@@ -294,6 +290,22 @@ async fn input(prompt: String) -> Result<String> {
             Ok(String::from_utf8_lossy(&bytes).trim().to_owned())
         };
         tokio::select! {result=read=>result,_=interrupt.recv()=>Err(Error::new(5200,"Command interrupted"))}
+    }
+    #[cfg(windows)]
+    {
+        let read = tokio::task::spawn_blocking(|| {
+            use std::io::BufRead;
+            let mut line = String::new();
+            std::io::stdin().lock().read_line(&mut line)?;
+            if line.len() > 65536 {
+                return Err(Error::new(4200, "Terminal answer exceeds 64 KiB"));
+            }
+            Ok(line.trim().to_owned())
+        });
+        tokio::select! {
+            result = read => result.map_err(|error| Error::new(5200, error.to_string()))?,
+            result = tokio::signal::ctrl_c() => result.map_err(|error| Error::new(5200, error.to_string())).and(Err(Error::new(5200, "Command interrupted"))),
+        }
     }
 }
 async fn remote(socket: &mut Socket, method: &str, p: Value) -> Result<Value> {

@@ -47,6 +47,24 @@ describe('nightlyDownloads', () => {
     })
   })
 
+  it('adds a published Windows exe and ignores a missing Windows feed', async () => {
+    const withWindows = async (url: string) => {
+      if (url.includes('/win/')) {
+        const prefix = url.includes('/client/') ? 'HexbotClient' : 'Hexbot'
+        return `version: ${version}\nfiles:\n  - url: ${prefix}-${version}-windows-x64.exe\n    sha512: c\n    size: 9\n`
+      }
+      return server(url)
+    }
+    const downloads = await nightlyDownloads(withWindows)
+    expect(downloads?.full.at(-1)?.url).toBe(`https://updates.hexbot.app/full/win/x64/Hexbot-${version}-windows-x64.exe`)
+    expect(downloads?.full).toHaveLength(5)
+    const skewed = async (url: string) => url.includes('/win/')
+      ? `version: 0.1.5-nightly.20260912.1\nfiles:\n  - url: Hexbot-${version}-windows-x64.exe\n    size: 9\n`
+      : server(url)
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    expect(await nightlyDownloads(skewed)).toBeNull()
+  })
+
   it('returns null when a feed is missing or the feeds disagree', async () => {
     vi.spyOn(console, 'warn').mockImplementation(() => {})
     expect(await nightlyDownloads(async () => { throw new Error('404') })).toBeNull()

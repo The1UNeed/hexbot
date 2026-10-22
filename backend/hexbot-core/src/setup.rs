@@ -8,7 +8,6 @@ use std::{
     fs,
     future::Future,
     io::Write,
-    os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
 };
 use tokio::process::Command;
@@ -210,7 +209,11 @@ where
     fs::create_dir(&extracted)?;
     services::extract_archive(&archive, &extracted, 512 * 1024 * 1024)?;
     let source = extracted.join(&asset.directory).join(tool);
-    fs::set_permissions(&source, fs::Permissions::from_mode(0o755))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&source, fs::Permissions::from_mode(0o755))?;
+    }
     fs::rename(source, &executable)?;
     common::atomic_write(
         &receipt,
@@ -249,6 +252,34 @@ async fn run_uv(home: &Path, uv: &Path, args: &[&str]) -> Result<String> {
     }
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
+fn point_at(target: &Path, link: &Path) -> Result<()> {
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(target, link)?;
+    }
+    #[cfg(windows)]
+    {
+        // Symlinks need a privilege. A hard link stays on the same volume as uv's interpreter.
+        if let Err(error) = fs::hard_link(target, link) {
+            fs::copy(target, link).map_err(|_| error)?;
+        }
+    }
+    Ok(())
+}
+fn venv_python(environment: &Path) -> PathBuf {
+    if cfg!(windows) {
+        environment.join("Scripts/python.exe")
+    } else {
+        environment.join("bin/python")
+    }
+}
+fn venv_tool(environment: &Path, name: &str) -> PathBuf {
+    if cfg!(windows) {
+        environment.join(format!("Scripts/{name}.exe"))
+    } else {
+        environment.join(format!("bin/{name}"))
+    }
+}
 fn remove_file(path: &Path) -> Result<()> {
     match fs::remove_file(path) {
         Ok(()) => Ok(()),
@@ -257,7 +288,12 @@ fn remove_file(path: &Path) -> Result<()> {
     }
 }
 fn voice_current(home: &Path) -> bool {
-    home.join("bin/edge-tts").exists()
+    home.join(if cfg!(windows) {
+        "bin/edge-tts.exe"
+    } else {
+        "bin/edge-tts"
+    })
+    .exists()
         && fs::read_to_string(home.join("runtime/tools/edge-tts.requirements.txt"))
             .is_ok_and(|text| text == VOICE_REQUIREMENTS)
 }
@@ -268,7 +304,11 @@ async fn install_code_runtime(home: &Path, emit: &impl Fn(&str, &str)) -> Result
     let _lock = tokio::task::spawn_blocking(move || services::activation_lock(&runtime))
         .await
         .map_err(|e| Error::new(5243, e.to_string()))??;
-    let python = home.join("bin/python3.11");
+    let python = if cfg!(windows) {
+        home.join("bin/python.exe")
+    } else {
+        home.join("bin/python3.11")
+    };
     let current = voice_current(home);
     if python.exists() && current {
         return Ok(());
@@ -292,11 +332,11 @@ async fn install_code_runtime(home: &Path, emit: &impl Fn(&str, &str)) -> Result
         .await?;
         let executable = output
             .lines()
-            .rfind(|line| line.starts_with('/'))
-            .ok_or_else(|| Error::new(5243, "Managed code interpreter was not found"))?
-            .trim();
+            .map(str::trim)
+            .rfind(|line| Path::new(line).is_absolute())
+            .ok_or_else(|| Error::new(5243, "Managed code interpreter was not found"))?;
         remove_file(&python)?;
-        std::os::unix::fs::symlink(executable, &python)?;
+        point_at(Path::new(executable), &python)?;
     }
     if !current {
         emit("voice", "Installing voice tools");
@@ -329,7 +369,7 @@ async fn install_code_runtime(home: &Path, emit: &impl Fn(&str, &str)) -> Result
                 "pip",
                 "install",
                 "--python",
-                &environment.join("bin/python").to_string_lossy(),
+                &venv_python(&environment).to_string_lossy(),
                 "--require-hashes",
                 "--no-deps",
                 "--no-build",
@@ -338,9 +378,13 @@ async fn install_code_runtime(home: &Path, emit: &impl Fn(&str, &str)) -> Result
             ],
         )
         .await?;
-        let voice = home.join("bin/edge-tts");
+        let voice = home.join(if cfg!(windows) {
+            "bin/edge-tts.exe"
+        } else {
+            "bin/edge-tts"
+        });
         remove_file(&voice)?;
-        std::os::unix::fs::symlink(environment.join("bin/edge-tts"), voice)?;
+        point_at(&venv_tool(&environment, "edge-tts"), &voice)?;
         common::atomic_write(&receipt, VOICE_REQUIREMENTS.as_bytes())?;
     }
     Ok(())
@@ -356,7 +400,12 @@ fn link_cli(home: &Path, user_home: &Path, emit: &impl Fn(&str, &str)) -> Result
     let bin = user_home.join(".local/bin");
     fs::create_dir_all(&bin)?;
     // Replace only a wrapper this command wrote; another `hexbot` stays put.
-    let wrapper_path = bin.join("hexbot");
+    let wrapper_name = if cfg!(windows) {
+        "hexbot.cmd"
+    } else {
+        "hexbot"
+    };
+    let wrapper_path = bin.join(wrapper_name);
     if !matches!(fs::symlink_metadata(&wrapper_path), Err(e) if e.kind() == std::io::ErrorKind::NotFound)
         && !crate::install_ownership::wrapper_owned(&wrapper_path, home)
     {
@@ -370,18 +419,38 @@ fn link_cli(home: &Path, user_home: &Path, emit: &impl Fn(&str, &str)) -> Result
         );
         return Ok(());
     }
-    let wrapper = format!(
-        "#!/bin/sh\n{WRAPPER_MARKER}\nexport HEXBOT_HOME={}\nexec {} \"$@\"\n",
-        shell_quote(&home.to_string_lossy()),
-        shell_quote(&executable.to_string_lossy())
-    );
+    let wrapper = if cfg!(windows) {
+        for value in [home.to_string_lossy(), executable.to_string_lossy()] {
+            if value.chars().any(|ch| matches!(ch, '"' | '\r' | '\n')) {
+                return Err(Error::new(
+                    5243,
+                    "The CLI path contains a character the command file cannot quote.",
+                ));
+            }
+        }
+        format!(
+            "@echo off\r\nrem HEXBOT_CLI\r\nset \"HEXBOT_HOME={}\"\r\n\"{}\" %*\r\n",
+            home.display(),
+            executable.display()
+        )
+    } else {
+        format!(
+            "#!/bin/sh\n{WRAPPER_MARKER}\nexport HEXBOT_HOME={}\nexec {} \"$@\"\n",
+            shell_quote(&home.to_string_lossy()),
+            shell_quote(&executable.to_string_lossy())
+        )
+    };
     let staged = tempfile::NamedTempFile::new_in(&bin)?;
     fs::write(staged.path(), wrapper)?;
-    fs::set_permissions(staged.path(), fs::Permissions::from_mode(0o755))?;
-    fs::rename(staged.path(), bin.join("hexbot"))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(staged.path(), fs::Permissions::from_mode(0o755))?;
+    }
+    fs::rename(staged.path(), &wrapper_path)?;
     emit(
         "link",
-        &format!("CLI installed at {}", bin.join("hexbot").display()),
+        &format!("CLI installed at {}", wrapper_path.display()),
     );
     if !std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()).any(|p| p == bin) {
         emit(
@@ -410,9 +479,8 @@ pub async fn run(home: &Path, args: &[String]) -> Result<()> {
             println!("{message}");
         }
     };
-    let user_home = PathBuf::from(
-        std::env::var_os("HOME").ok_or_else(|| Error::new(4200, "HOME is required"))?,
-    );
+    let user_home =
+        crate::osutil::user_home().ok_or_else(|| Error::new(4200, "HOME is required"))?;
     fs::create_dir_all(home)?;
     let home = home.canonicalize()?;
     if args.iter().any(|a| a == "--activate") {
@@ -433,6 +501,8 @@ pub async fn run(home: &Path, args: &[String]) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
     fn runtime(root: &Path) {
         let mut files = BTreeMap::new();
         for file in REQUIRED_FILES {

@@ -10,12 +10,14 @@ import re
 import shlex
 import shutil
 import socket
+import stat
 import subprocess
 import sys
 import tarfile
 import tempfile
 import urllib.parse
 import urllib.request
+import zipfile
 from pathlib import Path, PurePosixPath
 
 from . import update_signature
@@ -39,15 +41,52 @@ def _download(url: str, destination: Path, limit: int) -> None:
             output.write(chunk)
 
 
+def _stable_pointer_name() -> str:
+    return "native-executable.exe" if platform.system() == "Windows" else "native-executable"
+
+
+def _reject_windows_text(value: str) -> str:
+    if any(character in value for character in '"\r\n'):
+        raise ValueError("Windows paths cannot contain quotes or line breaks")
+    return value
+
+
+def _runtime_target() -> str:
+    system = platform.system()
+    machine = platform.machine()
+    if system == "Windows":
+        if machine not in {"AMD64", "x86_64"}:
+            raise ValueError("Unsupported native runtime platform")
+        return "windows-x86_64"
+    os_name = {"Darwin": "macos", "Linux": "linux"}.get(system)
+    arch = {"arm64": "aarch64", "aarch64": "aarch64", "x86_64": "x86_64", "AMD64": "x86_64"}.get(machine)
+    if not os_name or not arch:
+        raise ValueError("Unsupported native runtime platform")
+    return f"{os_name}-{arch}"
+
+
+def _expected_archive(system: str) -> set[tuple[str, str]]:
+    # A Windows runtime is a zip whose entrypoint is the PE image. A tar archive
+    # named hexbot is the Unix layout and must not activate on Windows.
+    if system == "Windows":
+        return {("zip", "hexbot.exe")}
+    return {("tar.gz", "hexbot")}
+
+
+def _unsafe_archive_path(name: str) -> bool:
+    path = PurePosixPath(name)
+    return path.is_absolute() or ".." in path.parts or "\\" in name or "\x00" in name
+
+
 def _extract(archive: Path, destination: Path) -> None:
     total = 0
     with tarfile.open(archive, "r:gz") as bundle:
         for count, member in enumerate(bundle, 1):
             if count > MAX_ENTRIES:
                 raise ValueError("Native archive has too many entries")
-            path = PurePosixPath(member.name)
-            if path.is_absolute() or ".." in path.parts or "\\" in member.name:
+            if _unsafe_archive_path(member.name):
                 raise ValueError("Unsafe native archive path")
+            path = PurePosixPath(member.name)
             if not member.isdir() and not member.isfile():
                 raise ValueError("Native archive links and special files are forbidden")
             total += member.size
@@ -61,6 +100,34 @@ def _extract(archive: Path, destination: Path) -> None:
                 with bundle.extractfile(member) as source, target.open("xb") as output:
                     shutil.copyfileobj(source, output)
                 target.chmod(member.mode & 0o777)
+
+
+def _extract_zip(archive: Path, destination: Path) -> None:
+    total = 0
+    with zipfile.ZipFile(archive) as bundle:
+        infos = bundle.infolist()
+        if len(infos) > MAX_ENTRIES:
+            raise ValueError("Native archive has too many entries")
+        for info in infos:
+            if _unsafe_archive_path(info.filename):
+                raise ValueError("Unsafe native archive path")
+            mode = info.external_attr >> 16
+            if stat.S_ISLNK(mode) or stat.S_ISCHR(mode) or stat.S_ISBLK(mode) or stat.S_ISFIFO(mode):
+                raise ValueError("Native archive links and special files are forbidden")
+            total += info.file_size
+            if total > MAX_UNPACKED:
+                raise ValueError("Native archive exceeds size limit")
+            path = PurePosixPath(info.filename)
+            target = destination.joinpath(*path.parts)
+            if info.is_dir() or info.filename.endswith("/"):
+                target.mkdir(parents=True, exist_ok=True)
+                continue
+            target.parent.mkdir(parents=True, exist_ok=True)
+            with bundle.open(info) as source, target.open("xb") as output:
+                shutil.copyfileobj(source, output)
+            # Match the tar extractor: keep the unix mode, and never the setuid bit.
+            # A zip written on Windows often has no unix mode; leave it non-executable.
+            target.chmod((mode & 0o777) or 0o644)
 
 
 def _atomic(path: Path, content: str, mode: int = 0o600) -> None:
@@ -93,18 +160,15 @@ def install(home: Path, version: str, *, download=_download, keys=update_signatu
     """Validate a complete bundle before changing the service's selected executable."""
     if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+(?:-[A-Za-z0-9.-]+)?", version):
         raise ValueError("Invalid native version")
-    os_name = {"Darwin": "macos", "Linux": "linux"}.get(platform.system())
-    arch = {"arm64": "aarch64", "aarch64": "aarch64", "x86_64": "x86_64", "AMD64": "x86_64"}.get(platform.machine())
-    if not os_name or not arch:
-        raise ValueError("Unsupported native runtime platform")
-    target = f"{os_name}-{arch}"
+    target = _runtime_target()
+    pointer = _stable_pointer_name()
     runtime = home / "runtime"
     native = runtime / "native"
     for directory in (home, runtime, native):
         if directory.is_symlink():
             raise ValueError("Runtime directories cannot be symbolic links")
         directory.mkdir(parents=True, exist_ok=True)
-    if (runtime / "native-executable").is_dir():
+    if (runtime / pointer).is_dir():
         raise ValueError("Native executable pointer cannot be a directory")
     base = os.environ.get("HEXBOT_UPDATE_URL", "https://updates.hexbot.app").rstrip("/")
     origin = urllib.parse.urlparse(base)
@@ -121,9 +185,10 @@ def install(home: Path, version: str, *, download=_download, keys=update_signatu
         if not update_signature.verify(manifest_path.read_bytes(), signature_path.read_bytes(), keys):
             raise ValueError("Native manifest is not signed by the Hexbot release key")
         manifest = json.loads(manifest_path.read_text())
-        if not isinstance(manifest, dict) or any(manifest.get(key) != value for key, value in {
-            "version": version, "target": target, "format": "tar.gz", "entrypoint": "hexbot"
-        }.items()):
+        archive_format = manifest.get("format") if isinstance(manifest, dict) else None
+        entrypoint = manifest.get("entrypoint") if isinstance(manifest, dict) else None
+        if (not isinstance(manifest, dict) or manifest.get("version") != version or manifest.get("target") != target
+                or (archive_format, entrypoint) not in _expected_archive(platform.system())):
             raise ValueError("Native manifest does not match requested runtime")
         if "path" in manifest:
             path = manifest["path"]
@@ -140,7 +205,7 @@ def install(home: Path, version: str, *, download=_download, keys=update_signatu
         if (parsed.scheme != "https" or parsed.netloc != origin.netloc
                 or parsed.username or parsed.password or parsed.query or parsed.fragment):
             raise ValueError("Native archive must use the update server origin")
-        archive = staging / "bundle.tar.gz"
+        archive = staging / ("bundle.zip" if archive_format == "zip" else "bundle.tar.gz")
         download(url, archive, MAX_ARCHIVE)
         digest = hashlib.sha256()
         with archive.open("rb") as downloaded:
@@ -150,31 +215,49 @@ def install(home: Path, version: str, *, download=_download, keys=update_signatu
             raise ValueError("Native archive checksum mismatch")
         bundle = staging / "bundle"
         bundle.mkdir()
-        _extract(archive, bundle)
-        executable = bundle / "hexbot"
+        if archive_format == "zip":
+            _extract_zip(archive, bundle)
+        else:
+            _extract(archive, bundle)
+        executable = bundle / str(entrypoint)
         checked = subprocess.run([str(executable), "version"], check=True, capture_output=True, text=True, timeout=30)
         if checked.stdout.strip() != version:
             raise ValueError("Native runtime version mismatch")
         destination = native / f"{version}-{staging.name.removeprefix('.transition-')}"
         os.replace(bundle, destination)
         _sync_directory(native)
-    executable = destination / "hexbot"
-    stable = runtime / "native-executable"
+    executable = destination / str(entrypoint)
+    stable = runtime / pointer
     previous = str(stable.resolve()) if stable.is_file() else None
     _atomic(runtime / "native-current.json", json.dumps({"version": version, "executable": str(executable), "previous": previous}))
-    link = runtime / f".native-executable-{destination.name}"
+    link = runtime / f".{pointer}-{destination.name}"
     try:
-        link.symlink_to(executable)
-        os.replace(link, runtime / "native-executable")
+        # A Windows symlink needs a privilege this account may not have.
+        if os.name == "nt":
+            try:
+                os.link(executable, link)
+            except OSError:
+                shutil.copy2(executable, link)
+        else:
+            link.symlink_to(executable)
+        os.replace(link, stable)
         _sync_directory(runtime)
     finally:
         link.unlink(missing_ok=True)
     # Existing launchd/systemd definitions already point here. Keep that path stable.
-    launcher = runtime / "venv/bin/hexbot"
-    if launcher.is_file() and not launcher.is_symlink():
-        script = ("#!/bin/sh\nset -eu\n"
-                  f'exec {shlex.quote(str(runtime / "native-executable"))} "$@"\n')
-        _atomic(launcher, script, 0o755)
+    if platform.system() == "Windows":
+        launcher = runtime / "venv/Scripts/hexbot.cmd"
+        if launcher.is_file() and not launcher.is_symlink():
+            script = ("@echo off\r\nrem HEXBOT_CLI\r\n"
+                      f'set "HEXBOT_HOME={_reject_windows_text(str(home))}"\r\n'
+                      f'"{_reject_windows_text(str(stable))}" %*\r\n')
+            _atomic(launcher, script)
+    else:
+        launcher = runtime / "venv/bin/hexbot"
+        if launcher.is_file() and not launcher.is_symlink():
+            script = ("#!/bin/sh\nset -eu\n"
+                      f'exec {shlex.quote(str(runtime / "native-executable"))} "$@"\n')
+            _atomic(launcher, script, 0o755)
     _atomic(runtime / "native-transition-pending", "1")
     return executable
 
@@ -202,10 +285,41 @@ def _refuse_running_daemon(home: Path) -> None:
     raise RuntimeError("Stop the existing Hexbot daemon before starting the native daemon")
 
 
+def _migrate_windows_service(home: Path, user_home: Path) -> None:
+    """Rewrite the logon-task script. The caller does not register the task."""
+    file = user_home / "AppData/Local/Hexbot/hexbot-service.cmd"
+    if not file.is_file():
+        return
+    native = _reject_windows_text(str(home / "runtime" / _stable_pointer_name()))
+    home_text = _reject_windows_text(str(home))
+    old = file.read_text()
+    updated_lines = []
+    saw_home = False
+    saw_executable = False
+    for line in old.splitlines():
+        if line.startswith('set "HEXBOT_HOME='):
+            updated_lines.append(f'set "HEXBOT_HOME={home_text}"')
+            saw_home = True
+        elif line.startswith('"') and line.endswith(" serve"):
+            updated_lines.append(f'"{native}" serve')
+            saw_executable = True
+        else:
+            updated_lines.append(line)
+    if not saw_home or not saw_executable:
+        return
+    newline = "\r\n" if "\r\n" in old else "\n"
+    updated = newline.join(updated_lines) + (newline if old.endswith(("\n", "\r\n")) else "")
+    if updated != old:
+        _atomic(file, updated)
+
+
 def _migrate_service(home: Path, user_home: Path | None = None) -> None:
     """Update persistent service definitions; the current restart uses exec."""
     import html
     user_home = user_home or Path.home()
+    if platform.system() == "Windows":
+        _migrate_windows_service(home, user_home)
+        return
     legacy = str(home / "runtime/venv/bin/hexbot")
     native = str(home / "runtime/native-executable")
     for file, encode in [
@@ -301,7 +415,7 @@ def handoff(argv=None) -> None:
         # install() records the pointer before it swaps the stable link; a crash
         # between the two leaves a pointer the service path does not reach.
         if (selected["version"] == version and candidate.resolve().is_relative_to(home / "runtime/native")
-                and candidate.is_file() and (home / "runtime/native-executable").resolve() == candidate.resolve()):
+                and candidate.is_file() and (home / "runtime" / _stable_pointer_name()).resolve() == candidate.resolve()):
             executable = candidate
     except (OSError, KeyError, ValueError):
         pass

@@ -1,3 +1,4 @@
+#![cfg(unix)]
 mod common;
 use hexbot_installer::Target;
 use sha2::{Digest, Sha256};

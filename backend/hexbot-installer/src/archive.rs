@@ -44,6 +44,59 @@ pub fn extract_native(archive: &Path, root: &Path) -> Result<()> {
     extract_native_limited(archive, root, 4 * 1024 * 1024 * 1024)
 }
 
+/// Same jail as [`extract_native`]: no absolute paths, no `..`, no links.
+pub fn extract_zip(archive: &Path, root: &Path) -> Result<()> {
+    extract_zip_limited(archive, root, 4 * 1024 * 1024 * 1024)
+}
+
+fn extract_zip_limited(archive: &Path, root: &Path, limit: u64) -> Result<()> {
+    let parent = root.parent().ok_or("Missing extraction parent.")?;
+    std::fs::create_dir_all(parent)?;
+    let staging = tempfile::tempdir_in(parent)?;
+    let mut total = 0u64;
+    let mut zip = zip::ZipArchive::new(File::open(archive)?)?;
+    for index in 0..zip.len() {
+        let mut entry = zip.by_index(index)?;
+        let name = entry.name().to_string();
+        if unsafe_zip_name(&name) {
+            return fail("The native archive contains an unsafe path.");
+        }
+        if entry.is_symlink() {
+            return fail("The native archive contains a link or unsupported file type.");
+        }
+        total = total
+            .checked_add(entry.size())
+            .filter(|size| *size <= limit)
+            .ok_or("The native archive exceeds the 4 GiB expanded-size limit.")?;
+        let relative = Path::new(name.trim_end_matches('/'));
+        let dest = staging.path().join(relative);
+        if entry.is_dir() || name.ends_with('/') {
+            std::fs::create_dir_all(&dest)?;
+            continue;
+        }
+        if let Some(parent) = dest.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let mut file = File::create(&dest)?;
+        std::io::copy(&mut entry, &mut file)?;
+    }
+    std::fs::rename(staging.path(), root)?;
+    Ok(())
+}
+
+fn unsafe_zip_name(name: &str) -> bool {
+    name.is_empty()
+        || name.contains(['\\', '\0'])
+        || name.starts_with('/')
+        || name.as_bytes().get(1) == Some(&b':')
+        || Path::new(name).components().any(|component| {
+            matches!(
+                component,
+                Component::ParentDir | Component::Prefix(_) | Component::RootDir
+            )
+        })
+}
+
 fn extract_native_limited(archive: &Path, root: &Path, limit: u64) -> Result<()> {
     let parent = root.parent().ok_or("Missing extraction parent.")?;
     std::fs::create_dir_all(parent)?;
@@ -143,5 +196,58 @@ mod tests {
                 .contains("expanded-size limit")
         );
         assert_eq!(std::fs::read_dir(temp.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn zip_jail_rejects_parent_segments_absolute_paths_and_links() {
+        let temp = tempfile::tempdir().unwrap();
+        let good = temp.path().join("good.zip");
+        write_zip(&good, |zip| {
+            zip.start_file("hexbot.exe", zip::write::SimpleFileOptions::default())
+                .unwrap();
+            zip.write_all(b"MZ").unwrap();
+        });
+        let root = temp.path().join("out");
+        extract_zip(&good, &root).unwrap();
+        assert_eq!(std::fs::read(root.join("hexbot.exe")).unwrap(), b"MZ");
+
+        for (name, write) in [
+            ("parent.zip", ".." as &str),
+            ("nested.zip", "foo/../../etc/passwd"),
+            ("absolute.zip", "/etc/passwd"),
+            ("slash.zip", "dir\\hexbot.exe"),
+        ] {
+            let path = temp.path().join(name);
+            write_zip(&path, |zip| {
+                zip.start_file(write, zip::write::SimpleFileOptions::default())
+                    .unwrap();
+                zip.write_all(b"no").unwrap();
+            });
+            let err = extract_zip(&path, &temp.path().join(format!("bad-{name}")))
+                .unwrap_err()
+                .to_string();
+            assert!(err.contains("unsafe path"), "{name}: {err}");
+        }
+
+        let link = temp.path().join("link.zip");
+        write_zip(&link, |zip| {
+            zip.add_symlink(
+                "escape",
+                "../outside",
+                zip::write::SimpleFileOptions::default(),
+            )
+            .unwrap();
+        });
+        let err = extract_zip(&link, &temp.path().join("linked"))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("link"), "{err}");
+    }
+
+    fn write_zip(path: &Path, fill: impl FnOnce(&mut zip::ZipWriter<File>)) {
+        let file = File::create(path).unwrap();
+        let mut zip = zip::ZipWriter::new(file);
+        fill(&mut zip);
+        zip.finish().unwrap();
     }
 }

@@ -146,6 +146,49 @@ test('new manifests satisfy the published installer absolute-URL validation', as
   }
 })
 
+test('a complete windows-x86_64 tree is published as exe and zip, and a missing one is omitted', async t => {
+  const { root, options } = await fixture(t)
+  const without = await makeInstallManifest(root, options)
+  assert.equal(without.targets['windows-x86_64'], undefined)
+  assert.deepEqual(Object.keys(without.targets), targets.map(([target]) => target))
+
+  const version = options.version
+  const channel = options.channel
+  const target = 'windows-x86_64'
+  const put = async (path, contents) => {
+    await mkdir(join(root, path, '..'), { recursive: true })
+    await writeFile(join(root, path), contents)
+  }
+  for (const edition of ['full', 'client']) {
+    const prefix = edition === 'full' ? 'Hexbot' : 'HexbotClient'
+    const name = `${prefix}-${version}-windows-x64.exe`
+    const path = `${edition}/win/x64`
+    const content = `${edition} ${target}`
+    await put(`${path}/${name}`, content)
+    await put(`${path}/${feedMetadataName(channel, 'win')}`, `version: '${version}'\nfiles:\n  - url: "${name}"\n    sha512: ${hash(content, 'sha512', 'base64')}\n    size: ${content.length}\npath: ${name}\n`)
+  }
+  const native = `daemon/native/${version}/${target}`
+  const filename = `hexbot-native-${version}-${target}.zip`
+  await put(`${native}/${filename}`, target)
+  await put(`${native}/manifest.json`, JSON.stringify({ version, target, format: 'zip', size: target.length,
+    sha256: hash(target, 'sha256', 'hex'), url: `https://updates.hexbot.app/${native}/${filename}` }))
+  await put(`install/${version}/hexbot-install-${version}-${target}`, target)
+  await put(`install/${version}/HexbotInstaller-${version}-windows-x86_64.exe`, target)
+
+  const manifest = await makeInstallManifest(root, options)
+  const entry = manifest.targets[target]
+  assert.equal(entry.full.format, 'exe')
+  assert.equal(entry.client.format, 'exe')
+  assert.equal(entry.headless.format, 'zip')
+  assert.equal(entry.headless.path, `${native}/${filename}`)
+  assert.ok(entry.installerApp.url.endsWith('windows-x86_64.exe'))
+  assert.equal(entry.full.sha512, hash(`full ${target}`, 'sha512', 'base64'))
+
+  const tampered = join(root, `full/win/x64/Hexbot-${version}-windows-x64.exe`)
+  await writeFile(tampered, 'x'.repeat(`full ${target}`.length))
+  await assert.rejects(makeInstallManifest(root, options), /checksum mismatch/)
+})
+
 test('native path takes precedence when preparing a mirror install manifest', async t => {
   const { root, options } = await fixture(t)
   for (const [target] of targets) {

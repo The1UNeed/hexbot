@@ -5,13 +5,15 @@ import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 
 import { binDir, hexbotExecutable, hexbotHome } from './backend/paths'
-import { launchdPlist, systemdUnit, type ServiceFileOptions } from './service-files'
+import { launchdPlist, systemdUnit, windowsServiceScript, windowsTaskXmlBytes, type ServiceFileOptions } from './service-files'
 
 const exec = promisify(execFile)
-const servicePath = (): string =>
-  process.platform === 'darwin'
-    ? join(homedir(), 'Library', 'LaunchAgents', 'app.hexbot.daemon.plist')
-    : join(homedir(), '.config', 'systemd', 'user', 'hexbot.service')
+export const servicePath = (targetPlatform = process.platform, home = homedir()): string => {
+  if (targetPlatform === 'darwin') return join(home, 'Library', 'LaunchAgents', 'app.hexbot.daemon.plist')
+  if (targetPlatform === 'win32') return join(home, 'AppData', 'Local', 'Hexbot', 'hexbot-service.cmd')
+  return join(home, '.config', 'systemd', 'user', 'hexbot.service')
+}
+const taskXmlPath = (file: string): string => file.replace(/\.cmd$/i, '.xml')
 const options = (): ServiceFileOptions => ({
   executable: hexbotExecutable(),
   home: hexbotHome(),
@@ -19,22 +21,30 @@ const options = (): ServiceFileOptions => ({
   logDir: join(hexbotHome(), 'logs')
 })
 
-export async function installService(): Promise<void> {
-  const file = servicePath()
+export async function installService(
+  file = servicePath(), targetPlatform = process.platform,
+  config = options(), run: (command: string, args: string[]) => Promise<unknown> = exec
+): Promise<void> {
   await mkdir(dirname(file), { recursive: true })
-  await mkdir(join(hexbotHome(), 'logs'), { recursive: true })
-  if (process.platform === 'darwin') {
-    await writeFile(file, launchdPlist(options()))
+  await mkdir(join(config.home, 'logs'), { recursive: true })
+  if (targetPlatform === 'darwin') {
+    await writeFile(file, launchdPlist(config))
     try {
-      await exec('launchctl', ['bootstrap', `gui/${process.getuid!()}`, file])
+      await run('launchctl', ['bootstrap', `gui/${process.getuid!()}`, file])
     } catch {
-      await exec('launchctl', ['load', '-w', file])
+      await run('launchctl', ['load', '-w', file])
     }
-  } else if (process.platform === 'linux') {
-    await writeFile(file, systemdUnit(options()))
-    await exec('systemctl', ['--user', 'daemon-reload'])
-    await exec('systemctl', ['--user', 'enable', '--now', 'hexbot'])
-  } else throw new Error(`Services are unsupported on ${process.platform}`)
+  } else if (targetPlatform === 'linux') {
+    await writeFile(file, systemdUnit(config))
+    await run('systemctl', ['--user', 'daemon-reload'])
+    await run('systemctl', ['--user', 'enable', '--now', 'hexbot'])
+  } else if (targetPlatform === 'win32') {
+    await writeFile(file, windowsServiceScript(config))
+    const xml = taskXmlPath(file)
+    await writeFile(xml, windowsTaskXmlBytes(file))
+    await run('schtasks', ['/Create', '/TN', 'Hexbot', '/XML', xml, '/F'])
+    await run('schtasks', ['/Run', '/TN', 'Hexbot'])
+  } else throw new Error(`Services are unsupported on ${targetPlatform}`)
 }
 
 const launchdDomains = (): string[] => [`gui/${process.getuid!()}`, `user/${process.getuid!()}`]
@@ -59,6 +69,10 @@ export async function uninstallService(
       await run('systemctl', ['--user', 'disable', '--now', 'hexbot'])
     } catch {}
     await run('systemctl', ['--user', 'daemon-reload'])
+  } else if (targetPlatform === 'win32') {
+    try { await run('schtasks', ['/End', '/TN', 'Hexbot']) } catch {}
+    try { await run('schtasks', ['/Delete', '/TN', 'Hexbot', '/F']) } catch {}
+    await rm(taskXmlPath(file), { force: true })
   }
   await rm(file, { force: true })
 }
@@ -90,6 +104,17 @@ export async function serviceStatus(
       await run('systemctl', ['--user', 'is-active', 'hexbot'])
       return { installed: true, running: true }
     } catch {}
+  } else if (targetPlatform === 'win32') {
+    const content = await readFile(file, 'utf8').catch(() => '')
+    const homes = [...content.matchAll(/^set "HEXBOT_HOME=(.*)"$/gm)]
+    if (!content.includes('rem HEXBOT_SERVICE_SCRIPT') || homes.length !== 1 || homes[0]?.[1] !== hexbotHome())
+      return { installed: false, running: false }
+    try {
+      const output = await run('schtasks', ['/Query', '/TN', 'Hexbot', '/FO', 'LIST', '/V']) as { stdout?: string }
+      return { installed: true, running: /Status:\s+Running/i.test(output?.stdout ?? '') }
+    } catch {
+      return { installed: true, running: false }
+    }
   } else return { installed: false, running: false }
   const { existsSync } = await import('node:fs')
   return { installed: existsSync(file), running: false }
@@ -114,6 +139,7 @@ export async function migrateLegacyService(
   file = servicePath(), targetPlatform = process.platform,
   config = options(), run: (command: string, args: string[]) => Promise<unknown> = exec
 ): Promise<void> {
+  if (targetPlatform === 'win32') return removeLegacyRuntime(config.home)
   const old = await readFile(file, 'utf8').catch((error: NodeJS.ErrnoException) => {
     if (error.code === 'ENOENT') return ''
     throw error

@@ -289,6 +289,10 @@ impl PiProcess {
             .env_clear()
             .envs(std::env::vars().filter(|(name, _)| inherited_environment(name)))
             .envs(&options.env)
+            .env(
+                "HEXBOT_EXECUTABLE",
+                std::env::current_exe().unwrap_or_default(),
+            )
             .current_dir(&options.working_dir)
             .env("PI_CODING_AGENT_DIR", &options.agent_dir)
             .stdin(Stdio::piped())
@@ -829,6 +833,7 @@ async fn supervise(
 }
 
 fn signal_termination(child: &mut tokio::process::Child) -> bool {
+    let _ = child;
     #[cfg(unix)]
     if let Some(pid) = child.id() {
         // The child is still owned and unreaped, so this PID cannot be reused.
