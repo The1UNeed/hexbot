@@ -1,27 +1,46 @@
-// Read-only selection of immutable CI inputs. Guard removal belongs to prepare-windows-security.
+// Read-only CI routing. Source preparation and guard removal have one owner.
 import assert from 'node:assert/strict';
 import {realpathSync} from 'node:fs';
 import {execFileSync} from 'node:child_process';
 import {isAbsolute, resolve} from 'node:path';
 import {fileURLToPath} from 'node:url';
+import {validateCurrentTree} from './prepare-windows-security.mjs';
 
-export function selectInputs(repo, sourceSHA, fallbackBuildSHA, git = process.env.HEXBOT_CI_GIT ?? '/usr/bin/git') {
+export const buildTrailer = 'Hexbot-Windows-Build:';
+export function recordedBuild(message) {
+  const lines = message.split(/\r?\n/).filter(line => line.startsWith(buildTrailer));
+  assert.equal(lines.length, 1, 'Security-only source needs exactly one Hexbot-Windows-Build trailer');
+  const match = /^Hexbot-Windows-Build: ([a-f0-9]{40})$/.exec(lines[0]);
+  assert(match, 'Build trailer must contain exactly one full immutable commit SHA');
+  return match[1];
+}
+export function selectInputs(repo, sourceSHA, git = process.env.HEXBOT_CI_GIT ?? '/usr/bin/git') {
   assert(isAbsolute(repo) && isAbsolute(git), 'Source and trusted Git paths must be absolute');
-  for (const sha of [sourceSHA, fallbackBuildSHA]) assert(/^[a-f0-9]{40}$/.test(sha ?? ''), 'Inputs must be full immutable SHAs');
+  assert(/^[a-f0-9]{40}$/.test(sourceSHA ?? ''), 'Source must be a full immutable SHA');
   const run = args => execFileSync(git, args, {cwd: repo, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe']}).trim();
   assert.equal(run(['rev-parse', 'HEAD']), sourceSHA, 'Checkout differs from event source SHA');
+  const read = (sha, path) => {
+    assert.match(run(['ls-tree', sha, '--', path]), /^100644 blob [a-f0-9]{40}\t/, 'Interface must be a regular source file');
+    return run(['show', `${sha}:${path}`]);
+  };
   const guardedTree = run(['rev-parse', `${sourceSHA}^{tree}`]);
-  const markers = ['native_selection.rs', 'windows_node_path.rs'].map(file => {
-    const entry = run(['ls-tree', sourceSHA, '--', `backend/hexbot-core/src/${file}`]);
-    assert(!entry || /^100644 blob [a-f0-9]{40}\t/.test(entry), 'Build interface must be a regular source file');
-    return Boolean(entry);
-  });
+  const markers = ['native_selection.rs', 'windows_node_path.rs'].map(file => Boolean(run(['ls-tree', sourceSHA, '--', `backend/hexbot-core/src/${file}`])));
   assert(markers.every(Boolean) || markers.every(value => !value), 'Partial Windows build contract');
-  if (markers.every(Boolean)) return {buildSHA: sourceSHA, securitySHA: sourceSHA, guardedTree, currentTree: true};
-  assert.equal(run(['rev-parse', '--verify', `${fallbackBuildSHA}^{commit}`]), fallbackBuildSHA);
-  return {buildSHA: fallbackBuildSHA, securitySHA: sourceSHA, currentTree: false};
+  if (markers.every(Boolean)) {
+    validateCurrentTree(path => read(sourceSHA, path));
+    return {buildSHA: sourceSHA, securitySHA: sourceSHA, guardedTree, currentTree: true};
+  }
+  assert.match(read(sourceSHA, 'backend/hexbot-core/src/windows_sandbox.rs'), /pub const UNAVAILABLE:/);
+  assert.match(read(sourceSHA, 'backend/hexbot-core/src/credentials.rs'), /pub fn require_supported_execution\(/);
+  const buildSHA = recordedBuild(run(['show', '-s', '--format=%B', sourceSHA]));
+  assert.equal(run(['rev-parse', '--verify', `${buildSHA}^{commit}`]), buildSHA);
+  validateCurrentTree(path => read(buildSHA, path));
+  // Historical ancestry, unique merge base, and conflicting deltas are checked
+  // by the shared preparation helper. No branch names or latest defaults.
+  return {buildSHA, securitySHA: sourceSHA, currentTree: false};
 }
 if (process.argv[1] && realpathSync(fileURLToPath(import.meta.url)) === realpathSync(resolve(process.argv[1]))) {
+  assert.equal(process.argv.length, 4, 'Pass exactly the absolute checkout and immutable event SHA');
   if (process.platform === 'win32') assert(process.env.HEXBOT_CI_GIT, 'Windows CI must select trusted absolute Git');
   console.log(JSON.stringify(selectInputs(...process.argv.slice(2))));
 }
