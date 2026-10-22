@@ -6,31 +6,23 @@ on:
     branches: ['**']
     paths:
       - 'backend/pi-runtime/**'
-      - 'backend/hexbot-core/src/credentials.rs'
-      - 'backend/hexbot-core/src/windows_sandbox.rs'
-      - 'backend/hexbot-core/src/runtime.rs'
-      - 'backend/hexbot-core/src/native_tools.rs'
-      - 'backend/hexbot-core/src/runtime_files.rs'
-      - 'backend/hexbot-core/src/runtime_primary.rs'
-      - 'backend/hexbot-core/src/lib.rs'
-      - 'backend/hexbot-core/src/dreaming.rs'
-      - 'backend/hexbot-core/src/provider_acp.rs'
-      - 'backend/hexbot-core/tests/windows_security.rs'
+      - 'backend/hexbot-core/**'
+      # Cargo/rustup discover these from the checkout cwd, not --manifest-path.
+      - 'rust-toolchain.toml'
+      - 'rust-toolchain'
+      - '.cargo/config.toml'
+      - '.cargo/config'
       - 'scripts/dev/*windows-security*'
       - '.github/workflows/windows-security.yml'
   pull_request:
     paths:
       - 'backend/pi-runtime/**'
-      - 'backend/hexbot-core/src/credentials.rs'
-      - 'backend/hexbot-core/src/windows_sandbox.rs'
-      - 'backend/hexbot-core/src/runtime.rs'
-      - 'backend/hexbot-core/src/native_tools.rs'
-      - 'backend/hexbot-core/src/runtime_files.rs'
-      - 'backend/hexbot-core/src/runtime_primary.rs'
-      - 'backend/hexbot-core/src/lib.rs'
-      - 'backend/hexbot-core/src/dreaming.rs'
-      - 'backend/hexbot-core/src/provider_acp.rs'
-      - 'backend/hexbot-core/tests/windows_security.rs'
+      - 'backend/hexbot-core/**'
+      # Cargo/rustup discover these from the checkout cwd, not --manifest-path.
+      - 'rust-toolchain.toml'
+      - 'rust-toolchain'
+      - '.cargo/config.toml'
+      - '.cargo/config'
       - 'scripts/dev/*windows-security*'
       - '.github/workflows/windows-security.yml'
 
