@@ -405,11 +405,24 @@ function withTerminalCard(
   return { ...next, unproven: [...(next.unproven ?? []), { card: cardId, turnId }] }
 }
 
-/** After a read, each waiting card is bound once, with the same exact proof. */
+/** After a read, bind waiting or folded cards with the same exact proof. */
 function withProvenCards(transcript: Transcript): Transcript {
   let next: Transcript = { ...transcript, unproven: undefined }
 
-  for (const { card, turnId } of transcript.unproven ?? []) {
+  const shown = new Set(transcript.messages.map(message => message.id))
+
+  // History can fold an already bound live bubble into a different durable row.
+  // Revocation clears submission.card, so a later read cannot restore it.
+  const folded = transcript.messages.flatMap(message =>
+    message.role === 'user' &&
+    message.turnId &&
+    message.submission?.card &&
+    !shown.has(message.submission.card)
+      ? [{ card: message.submission.card, turnId: message.turnId }]
+      : []
+  )
+
+  for (const { card, turnId } of [...(transcript.unproven ?? []), ...folded]) {
     // History can adopt a failed bubble into its stored row, which keeps the turn.
     const failed = next.messages.filter(message => message.error && message.turnId === turnId)
 

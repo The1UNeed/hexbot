@@ -1203,14 +1203,30 @@ it.each(['message.complete', 'error'] as const)(
   }
 )
 
-it.each(['Retry', 'a later submission'] as const)(
-  'binds the card that history adopts across reads and reopening before %s',
-  async next => {
+it.each([
+  ['immediate', 'Retry', false],
+  ['immediate', 'a later submission', false],
+  ['deferred', 'Retry', false],
+  ['deferred', 'a later submission', false],
+  ['immediate', 'Retry', true],
+  ['immediate', 'a later submission', true],
+  ['deferred', 'Retry', true],
+  ['deferred', 'a later submission', true]
+] as const)(
+  'keeps %s Retry binding across history folds and reopening before %s, newer stream %s',
+  async (binding, next, newer) => {
     const view = await mount()
     await send(view)
     await waitFor(() => expect(delivered).toHaveLength(1))
     const inputId = userRows()[0]!.inputId!
     persistTurn(inputId, 'own-run')
+
+    if (binding === 'immediate') {
+      // Reopening mid-turn proves the input before its terminal arrives.
+      await reload()
+      expect(userRows()[0]!.turnId).toBe('own-run')
+    }
+
     // Pi stored the message before the tool; the request after it failed.
     rows.splice(
       rows.length - 1,
@@ -1262,17 +1278,54 @@ it.each(['Retry', 'a later submission'] as const)(
         routeEvent({ type, session_id: 'chat', payload } as GatewayEvent)
       }
     })
+    const beforeFailure = opens()
     failTurn('own-run', 'Rate limited')
-    await historyRead()
+    const localCard = userRows()[0]!.submission?.card
+    expect(retries()).toHaveLength(binding === 'immediate' ? 1 : 0)
+    expect(opens()).toBe(beforeFailure + (binding === 'immediate' ? 0 : 1))
+
+    if (newer) {
+      startTurn('remote-run', 'Answer for the phone')
+    }
+
+    const running = useTranscripts.getState().bySession.chat!
+    const stream = running.messages.find(row => row.id === running.streamingMessageId)
+
+    const expectStream = () => {
+      if (newer) {
+        const current = useTranscripts.getState().bySession.chat!
+        expect(current.streamingMessageId).toBe(running.streamingMessageId)
+        expect(current.activeTurnId).toBe('remote-run')
+        expect(current.turnActive).toBe(true)
+        expect(current.messages.find(row => row.id === stream!.id)).toEqual(stream)
+        expect(screen.getByRole('button', { name: 'Stop' })).toBeVisible()
+      }
+    }
+
+    if (binding === 'immediate') {
+      await reload()
+    } else {
+      await historyRead()
+    }
+
     const transcript = useTranscripts.getState().bySession.chat!
     const card = transcript.messages.find(row => row.error === 'Rate limited' && !row.errorDetail)!
     expect(card.id).toBe('stored-fragment')
+    expectStream()
+    expect(transcript.messages.find(row => row.inputId === inputId)!.submission?.card).toBe(card.id)
+
+    if (binding === 'immediate') {
+      expect(localCard).toBeDefined()
+      expect(transcript.messages.some(row => row.id === localCard)).toBe(false)
+    }
+
     expect(card.retryRow).toBe(
       transcript.messages.find(row => row.inputId === inputId)!.submission?.row
     )
     expect(cards().filter(item => retryOn(item))).toHaveLength(1)
     await reload()
     expect(cards().filter(item => retryOn(item))).toHaveLength(1)
+    expectStream()
     await act(async () => view.router.navigate({ to: '/r/$room', params: { room: 'garden' } }))
     expect(screen.queryByTestId('stopped-card')).toBeNull()
     const before = opens()
@@ -1283,6 +1336,7 @@ it.each(['Retry', 'a later submission'] as const)(
     expect(cards().filter(item => retryOn(item))).toHaveLength(1)
     await reload()
     expect(cards().filter(item => retryOn(item))).toHaveLength(1)
+    expectStream()
 
     if (next === 'Retry') {
       fireEvent.click(retries()[0]!)
@@ -1303,6 +1357,7 @@ it.each(['Retry', 'a later submission'] as const)(
     expect(after.messages.find(row => row.id === card.id)?.retryRow).toBe(card.retryRow)
     expect(after.messages.find(row => row.inputId === inputId)?.submission?.card).toBeUndefined()
     expect(retries()).toHaveLength(0)
+    expectStream()
   }
 )
 
