@@ -831,37 +831,42 @@ async function submitOrReopen(
     ) {
       const message = failure instanceof Error ? failure.message : String(failure)
 
+      // 5201 is Pi's refusal. 5200 can be a bot lost before it answered or a
+      // title-save error after acceptance. Transport failures and arbitrary
+      // error objects also prove nothing about whether Pi took input.
+      const rejected =
+        failure instanceof JsonRpcGatewayError &&
+        [4002, 4200, 4202, 5201].includes(failure.code ?? 0)
+
+      const unavailable =
+        staged === null ||
+        (failure instanceof JsonRpcGatewayError && [4001, 4204].includes(failure.code ?? 0))
+
+      const status = unavailable ? 'unavailable' : rejected ? 'rejected' : 'unknown'
+
+      // Sending the same empty text again would be refused the same way.
+      const retryable = !(failure instanceof JsonRpcGatewayError && failure.code === 4200 && !text)
+
+      const detail =
+        status === 'unknown'
+          ? `${message}. It may not have been sent. Check the chat before sending again.`
+          : status === 'unavailable' && (files.length || uploads.length)
+            ? `${message}. Attach the files again before sending.`
+            : message
+
       if (identified) {
-        // 5201 is Pi's refusal. 5200 can be a bot lost before it answered or a
-        // title-save error after acceptance. Transport failures and arbitrary
-        // error objects also prove nothing about whether Pi took input.
-        const rejected =
-          failure instanceof JsonRpcGatewayError &&
-          [4002, 4200, 4202, 5201].includes(failure.code ?? 0)
-
-        const unavailable =
-          staged === null ||
-          (failure instanceof JsonRpcGatewayError && [4001, 4204].includes(failure.code ?? 0))
-
-        const status = unavailable ? 'unavailable' : rejected ? 'rejected' : 'unknown'
-
-        const detail =
-          status === 'unknown'
-            ? `${message}. Could not confirm acceptance. Check the chat before sending again.`
-            : status === 'unavailable'
-              ? `${message}. Attach the files again before sending.`
-              : message
-
         transcriptActions().inputSettled(
           active,
           pending.submission?.row ?? pending.id,
           pending.inputId,
           status,
-          status === 'rejected' ? staged : null,
+          status === 'rejected' && retryable ? staged : null,
           current() ? detail : undefined
         )
       } else if (current()) {
-        transcriptActions().errorEvent(active, message)
+        // Legacy events cannot prove which input failed. Keep the draft for
+        // manual resend without changing an answer already running.
+        transcriptActions().requestFailed(active, detail)
       }
     }
   }
@@ -980,12 +985,12 @@ function Composer({
         draftsActions().clear(sectionId)
       }
     } catch (error) {
+      // An upload failed, so nothing was sent. The files stay in the composer,
+      // and a turn already running keeps its stream and Stop.
       if (current()) {
-        transcriptActions().errorEvent(
+        transcriptActions().requestFailed(
           sessionId,
-          `${error instanceof Error ? error.message : String(error)}. Attach the files again before sending.`,
-          undefined,
-          null
+          error instanceof Error ? error.message : String(error)
         )
       }
     } finally {
@@ -1428,14 +1433,18 @@ function BotConversation() {
   }, [approvals.length, atBottom, clarifies, composerHeight, messages])
   const wasStreaming = useRef(streaming)
   useEffect(() => {
-    if (document.hidden && wasStreaming.current && !streaming) {
+    if (wasStreaming.current && !streaming) {
       const body = messages.at(-1)?.text || 'New message'
       const input = { body, sectionId: section?.id, title: bot?.display_name ?? 'Hexbot' }
       const bridge = getBridge()
 
       if (bridge) {
-        bridge.notify(input)
-      } else if ('Notification' in window && Notification.permission === 'granted') {
+        bridge.notify({ ...input, backgroundOnly: true })
+      } else if (
+        document.hidden &&
+        'Notification' in window &&
+        Notification.permission === 'granted'
+      ) {
         new Notification(input.title, { body: input.body })
       }
     }
@@ -1529,29 +1538,10 @@ function BotConversation() {
     installation === useConnection.getState().daemon?.install_id
 
   const retryFor = (card: TranscriptMessage): (() => void) | undefined => {
-    if (!ownerInput) {
+    // Retry requires durable input ownership. Legacy bubble order and error
+    // timing cannot establish it, even after a history read or a later send.
+    if (!ownerInput || !identified) {
       return undefined
-    }
-
-    // Older daemons keep their original RPC shape and retry behavior.
-    if (!identified) {
-      if (messages.some(message => message.submission)) {
-        return undefined
-      }
-
-      return () => {
-        if (canPrompt() && liveId) {
-          const last = messages.findLast(message => message.role === 'user')
-
-          if (last) {
-            void promptSubmit(liveId, last.text).catch(error => {
-              if (canPrompt()) {
-                transcriptActions().errorEvent(liveId, String(error))
-              }
-            })
-          }
-        }
-      }
     }
 
     const input = messages.find(message => message.submission?.row === card.retryRow)

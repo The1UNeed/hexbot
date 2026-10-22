@@ -5,12 +5,15 @@ import { fileURLToPath } from 'node:url'
 import {
   BrowserWindow,
   Menu,
+  Notification,
   app,
   dialog,
   ipcMain,
   nativeTheme,
+  powerMonitor,
   shell,
-  type Rectangle
+  type Rectangle,
+  type Tray
 } from 'electron'
 import { applicationMenuTemplate } from './application-menu'
 import { APP_ORIGIN, frameNavigationAllowed, installAppProtocol, registerAppScheme } from './app-protocol'
@@ -26,6 +29,8 @@ import { installService, serviceStatus, uninstallService } from './service'
 import { createTray } from './tray'
 import { setCrashReports, startCrashReports } from './crash-reports'
 import { readDesktopState, updateDesktopState } from './desktop-state'
+import { errorMessage, log } from './log'
+import { WindowLifecycle } from './window-lifecycle'
 import { handleDaemonUpdateRequest } from './remote-update'
 import { guardWindow, isTrustedSender } from './window-security'
 import {
@@ -52,7 +57,9 @@ registerAppScheme()
 let mainWindow: BrowserWindow | null = null
 let pendingLink = app.isPackaged ? process.argv.find(arg => parseDeepLink(arg) !== null) : undefined
 let daemon: DaemonManager
-let quitting = false
+const lifecycle = new WindowLifecycle()
+let tray: Tray | undefined
+let creatingWindow: Promise<BrowserWindow> | undefined
 
 function validString(value: unknown, name: string, max = 1_000): string {
   if (typeof value !== 'string' || !value.trim() || value.length > max)
@@ -101,8 +108,11 @@ async function saveBounds(window: BrowserWindow): Promise<void> {
   if (window.isDestroyed() || window.isMaximized() || window.isFullScreen()) return
   await updateDesktopState(window.getBounds())
 }
-async function createWindow(): Promise<BrowserWindow> {
-  if (mainWindow && !mainWindow.isDestroyed()) return mainWindow
+function createWindow(): Promise<BrowserWindow> {
+  if (mainWindow && !mainWindow.isDestroyed()) return Promise.resolve(mainWindow)
+  return creatingWindow ??= buildWindow().finally(() => { creatingWindow = undefined })
+}
+async function buildWindow(): Promise<BrowserWindow> {
   const window = new BrowserWindow({
     icon: devIcon,
     width: 1280,
@@ -115,6 +125,7 @@ async function createWindow(): Promise<BrowserWindow> {
     backgroundColor: nativeTheme.shouldUseDarkColors ? '#0e0e0e' : '#ffffff',
     show: false,
     webPreferences: {
+      // Use Chromium's default throttling to pause hidden animation frames.
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
@@ -128,21 +139,14 @@ async function createWindow(): Promise<BrowserWindow> {
   mainWindow = window
   guardWindow(window.webContents, url => shell.openExternal(url), webDevUrl)
   window.once('ready-to-show', () => {
+    if (lifecycle.exiting) return
     window.show()
     if (pendingLink) {
       window.webContents.send('hexbot:navigate', pendingLink)
       pendingLink = undefined
     }
   })
-  // On macOS the app outlives its window, so keep the page: it holds the
-  // connection that brings notifications, such as the primary bot's
-  // check-ins, from a daemon here or elsewhere.
-  window.on('close', event => {
-    if (!quitting && process.platform === 'darwin') {
-      event.preventDefault()
-      window.hide()
-    }
-  })
+  lifecycle.attach(window, () => !!tray && !tray.isDestroyed(), () => void explainBackground())
   window.on('closed', () => {
     mainWindow = null
   })
@@ -166,15 +170,37 @@ async function createWindow(): Promise<BrowserWindow> {
   }
   return window
 }
-/** Brings the window back after the macOS close handler hid it (dock click, tray, deep link). */
-async function showWindow(): Promise<BrowserWindow> {
+let explainingBackground = false
+async function explainBackground(): Promise<void> {
+  if (process.platform === 'darwin' || explainingBackground || !Notification.isSupported()) return
+  explainingBackground = true
+  try {
+    if ((await readDesktopState()).backgroundExplained || lifecycle.exiting) return
+    const notification = new Notification({
+      title: `${app.name} is still running`,
+      body: `${hasRuntime ? 'Your bots keep working.' : 'You still receive notifications.'} Open the app again to return. Choose File > Quit to exit.`,
+      icon: devIcon
+    })
+    notification.on('click', () => void showWindow())
+    notification.show()
+    await updateDesktopState({ backgroundExplained: true })
+  } catch (error) {
+    log.warn(`background notice: ${errorMessage(error)}`)
+  } finally {
+    explainingBackground = false
+  }
+}
+/** Reuse the page and its connection after close, a tray click, or another launch. */
+async function showWindow(): Promise<void> {
+  if (lifecycle.exiting) return
   const window = await createWindow()
+  if (lifecycle.exiting || window.isDestroyed()) return
   if (window.isMinimized()) window.restore()
   window.show()
   window.focus()
-  return window
 }
 function navigate(url: string): void {
+  if (lifecycle.exiting) return
   if (!/^\/settings\/[a-z]+$/.test(url) && !parseDeepLink(url)) return
   if (!app.isReady()) {
     pendingLink = url
@@ -185,7 +211,7 @@ function navigate(url: string): void {
     mainWindow.webContents.send('hexbot:navigate', url)
   } else {
     pendingLink = url
-    void createWindow()
+    void showWindow()
   }
 }
 function sendProgress(progress: BootstrapProgress): void {
@@ -260,6 +286,7 @@ function registerIpc(): void {
     const item = value as Record<string, unknown>
     notify(
       {
+        backgroundOnly: item.backgroundOnly === true,
         title: validString(item.title, 'title', 200),
         body: validString(item.body, 'body', 2_000),
         sectionId: validString(item.sectionId, 'section id', 256)
@@ -304,7 +331,7 @@ else {
   app.on('second-instance', (_event, argv) => {
     const link = argv.find(arg => arg.startsWith('hexbot://'))
     if (link) navigate(link)
-    // Closing keeps the window on macOS; launching again brings it back.
+    // Another launch brings the retained window back on every platform.
     else void showWindow()
   })
   app.on('open-url', (event, url) => {
@@ -312,44 +339,49 @@ else {
     navigate(url)
   })
   void app.whenReady().then(async () => {
+    // Register before the first window can intercept close.
+    powerMonitor.on('shutdown', () => lifecycle.beginQuit())
     if (devIcon && process.platform === 'darwin') app.dock?.setIcon(devIcon)
     installAppProtocol(rendererDirectory, existsSync)
     daemon = new DaemonManager(undefined, async () => (await serviceStatus()).installed)
     registerIpc()
-    if (process.platform === 'darwin')
-      Menu.setApplicationMenu(
-        Menu.buildFromTemplate(
-          applicationMenuTemplate(
-            {
-              openSettings: () => navigate('/settings/providers'),
-              checkForUpdates: () => {
-                navigate('/settings/updates')
-                void checkForUpdates('menu')
-              },
-              quit: () => app.quit()
+    Menu.setApplicationMenu(
+      Menu.buildFromTemplate(
+        applicationMenuTemplate(
+          {
+            openSettings: () => navigate('/settings/providers'),
+            checkForUpdates: () => {
+              navigate('/settings/updates')
+              void checkForUpdates('menu')
             },
-            app.name
-          )
+            quit: () => app.quit()
+          },
+          app.name
         )
       )
+    )
     updaterEvents.on('state', (state: UpdateState) => {
       // quitAndInstall closes the windows before `before-quit`; without this
       // the close handler hides the window instead and the app never restarts.
-      if (state.status === 'installing') quitting = true
-      else if (state.errorContext === 'install') quitting = false
+      if (state.status === 'installing') lifecycle.setInstalling(true)
+      else if (state.errorContext === 'install') lifecycle.setInstalling(false)
       for (const window of BrowserWindow.getAllWindows())
         window.webContents.send('hexbot:updater:status', state)
     })
     daemon.on('update-requested', (version: string) => void handleDaemonUpdateRequest(version))
     await createWindow()
-    createTray(daemon, () => void showWindow())
+    try {
+      tray = createTray(daemon, () => void showWindow())
+    } catch (error) {
+      log.warn(`tray unavailable: ${errorMessage(error)}`)
+    }
     // Starts the startup check and the poller (updater.ts); dev builds stay off.
     void getUpdateState()
     app.on('activate', () => void showWindow())
   })
 }
 app.on('before-quit', () => {
-  quitting = true
+  lifecycle.beginQuit()
 })
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit()

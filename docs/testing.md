@@ -190,9 +190,36 @@ route and composer checked before continuing.
   Rust and the web bundle and installing the locked Pi dependency and Chromium.
   Uses a local streaming model with actual Pi; no provider credentials needed.
   Add `--desktop --edition=full` or `--desktop --edition=client` for Electron.
-  On headless Linux run these Electron checks through `xvfb-run -a`.
+  Desktop mode holds real Pi replies across close and minimize, verifies one
+  native notification per background reply, and checks reopening and foreground
+  replies stay silent. It calls the actual native API and records its delivery
+  events in `notifications.json`. Set `HEXBOT_SMOKE_NATIVE_NOTIFICATIONS=1` on
+  a host with notification permissions to require the OS `show` events too.
+  On headless Linux install `openbox dbus-x11 xvfb`, then run each edition with
+  a window manager so native minimization works:
+
+  ```sh
+  dbus-run-session -- xvfb-run -a -s '-screen 0 1600x1200x24' sh -c 'openbox >/dev/null 2>&1 & node scripts/dev/native-ui-smoke.mjs --desktop --edition=full'
+  dbus-run-session -- xvfb-run -a -s '-screen 0 1600x1200x24' sh -c 'openbox >/dev/null 2>&1 & node scripts/dev/native-ui-smoke.mjs --desktop --edition=client'
+  ```
 - Web bundle: `pnpm --filter ./apps/web run typecheck && pnpm --filter ./apps/web run test --run && pnpm --filter ./apps/web run lint && pnpm --filter ./apps/web run build`.
 - Desktop: `pnpm --filter ./apps/desktop run typecheck && pnpm --filter ./apps/desktop run test --run && pnpm --filter ./apps/desktop run build`.
+  After building the web bundle, `pnpm --filter ./apps/desktop run e2e:lifecycle`
+  builds and launches both desktop editions in disposable homes. It checks
+  native close/reopen, renderer retention, a real second launch, menu Quit
+  while backgrounded, and injected OS session-end/shutdown events. Native
+  fixtures exercise the production tray, update close/failure handling, and
+  tray destruction fallback. CI runs it on macOS, Windows, and Linux with
+  Openbox and no tray host. Both launches use the same Linux CI sandbox flags;
+  a second launch must exit with code zero and reopen the retained renderer.
+  Close waits for native minimization to finish. Reopen waits for rendered
+  frames and nonzero Chromium layout and visual viewports before screenshots;
+  viewport metrics are saved with the evidence.
+  Screenshots, process output and exit signals, failures, and results are uploaded as
+  `desktop-lifecycle-*`. Linux needs `dbus-run-session -- xvfb-run -a` and a
+  window manager. This does not perform actual logoff, shutdown, or update
+  installation, and does not validate GNOME or Wayland integration. Windows
+  remains a lifecycle test target, not a distributed package.
 - Packaging and release scripts: `node --test scripts/desktop/*.test.mjs scripts/dev/*.test.mjs && node scripts/desktop/release-smoke.mjs`.
 - Site: `pnpm --filter ./apps/site run check`.
 - Connect: `pnpm --filter ./apps/connect run typecheck && pnpm --filter ./apps/connect run test --run && pnpm --filter ./apps/connect run lint`.

@@ -13,6 +13,7 @@
     "dist:mac:client": "node ../../scripts/desktop/dist.mjs --client --mac",
     "dist:linux:client": "node ../../scripts/desktop/dist.mjs --client --linux",
     "e2e": "playwright test",
+    "e2e:lifecycle": "node scripts/lifecycle-smoke.mjs",
     "typecheck": "tsc --noEmit",
     "test": "vitest run"
   },

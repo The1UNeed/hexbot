@@ -36,6 +36,7 @@ const requests = []
 const errors = []
 let daemon, browser, page, socket, electronApp, desktopHome, desktopBuild
 let daemonLog = ''
+const heldReplies = new Map()
 
 function textOf(value) {
   return typeof value === 'string' ? value : Array.isArray(value) ? value.map(block => block.text || '').join('\n') : ''
@@ -56,6 +57,7 @@ const model = http.createServer(async (req, res) => {
     const body = JSON.parse(Buffer.concat(chunks).toString())
     requests.push(body)
     const prompt = textOf(body.messages?.findLast(message => message.role === 'user')?.content)
+    if (heldReplies.has(prompt)) await heldReplies.get(prompt).ready
     const isRoom = prompt.startsWith('Room: ')
     const answer = isRoom
       ? prompt.includes('You are @fox.') ? 'Fox checked the details.'
@@ -154,6 +156,23 @@ try {
       executablePath: require('electron'), args: [...(process.env.CI && process.platform === 'linux' ? ['--no-sandbox'] : []), desktopBuild], timeout: 30_000, env: electronEnv
     })
     page = await electronApp.firstWindow()
+    // Let main finish its initial load and register reopen/tray handlers before
+    // navigating the test page or closing it.
+    await expect.poll(() => electronApp.evaluate(({ app }) => app.listenerCount('activate')),
+      { timeout: 30_000 }).toBeGreaterThan(0)
+    // Observe, but still call, the real native API. IPC alone cannot prove the
+    // production notification boundary was reached or the OS accepted it.
+    await electronApp.evaluate(({ Notification }) => {
+      globalThis.smokeNotifications = []
+      const show = Notification.prototype.show
+      Notification.prototype.show = function () {
+        const record = { title: this.title, body: this.body, shown: false }
+        globalThis.smokeNotifications.push(record)
+        this.once('show', () => { record.shown = true })
+        this.once('failed', (_event, error) => { record.error = error })
+        return show.call(this)
+      }
+    })
     await page.setViewportSize({ width: 1360, height: 900 })
     assert.equal(await page.evaluate(() => window.hexbot.edition), edition, 'Edition must be baked into Electron main')
     assert.equal(await page.evaluate(() => window.hexbot.e2eTarget), base)
@@ -209,9 +228,58 @@ try {
   await expectRoom()
   await visit(`/b/owl/s/${section}`)
   const composer = page.locator('#conversation-composer')
-  await composer.fill('Native browser chat')
-  await composer.press('Enter')
-  await expect(page.getByTestId('bot-message').filter({ hasText: 'Native browser reply.' })).toBeVisible({ timeout: 30_000 })
+  if (desktop) {
+    const replies = page.getByTestId('bot-message').filter({ hasText: 'Native browser reply.' })
+    const notifications = () => electronApp.evaluate(() =>
+      globalThis.smokeNotifications.filter(item => item.title === 'Owl' && item.body === 'Native browser reply.')
+    )
+    let completed = 0
+    for (const state of ['closed', 'minimized', 'foreground']) {
+      const prompt = `Desktop ${state} chat`
+      let release
+      heldReplies.set(prompt, { ready: new Promise(resolve => { release = resolve }), release: () => release() })
+      await composer.fill(prompt)
+      await composer.press('Enter')
+      await expect.poll(() => requests.some(request => textOf(request.messages?.findLast(message => message.role === 'user')?.content) === prompt), { timeout: 30_000 }).toBe(true)
+      await expect(page.getByRole('button', { name: 'Stop', exact: true })).toBeVisible()
+      if (state !== 'foreground') {
+        await electronApp.evaluate(({ BrowserWindow }, state) => {
+          const win = BrowserWindow.getAllWindows()[0]
+          if (state === 'closed') win.close()
+          else win.minimize()
+        }, state)
+        await expect.poll(() => electronApp.evaluate(({ BrowserWindow }) => {
+          const win = BrowserWindow.getAllWindows()[0]
+          return !win.isVisible() || win.isMinimized()
+        })).toBe(true)
+      }
+      assert.equal(await electronApp.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().length), 1)
+      heldReplies.get(prompt).release()
+      await expect(replies).toHaveCount(++completed)
+      await expect(page.getByRole('button', { name: 'Stop', exact: true })).toHaveCount(0)
+      if (state !== 'foreground') {
+        await expect.poll(async () => (await notifications()).length).toBe(completed)
+        if (process.env.HEXBOT_SMOKE_NATIVE_NOTIFICATIONS === '1')
+          await expect.poll(async () => (await notifications()).filter(item => item.shown).length).toBe(completed)
+        await electronApp.evaluate(({ app }) => app.emit('activate'))
+        await expect.poll(() => electronApp.evaluate(({ BrowserWindow }) => {
+          const win = BrowserWindow.getAllWindows()[0]
+          return win.isVisible() && !win.isMinimized()
+        })).toBe(true)
+      }
+      // Flush foreground effects, then check reopening and a foreground reply
+      // have not repeated either of the two background notifications.
+      await page.waitForFunction(() => new Promise(resolve => {
+        requestAnimationFrame(() => requestAnimationFrame(() => resolve(true)))
+      }))
+      assert.equal((await notifications()).length, Math.min(completed, 2))
+    }
+    await writeFile(path.join(artifacts, 'notifications.json'), JSON.stringify(await notifications(), null, 2))
+  } else {
+    await composer.fill('Native browser chat')
+    await composer.press('Enter')
+  }
+  await expect(page.getByTestId('bot-message').filter({ hasText: 'Native browser reply.' }).last()).toBeVisible({ timeout: 30_000 })
   await page.screenshot({ path: path.join(artifacts, 'chat.png') })
   // In-app navigation reuses the connection; direct navigation starts it again.
   await page.locator(`[data-roster-id="room:${room}"]`).click()
@@ -247,7 +315,7 @@ try {
   await expectRoom()
   await page.locator('[data-roster-id="bot:owl"]').click()
   await expect(page).toHaveURL(new RegExp(`/b/owl/s/${section}$`))
-  await expect(page.getByTestId('bot-message').filter({ hasText: 'Native browser reply.' })).toBeVisible()
+  await expect(page.getByTestId('bot-message').filter({ hasText: 'Native browser reply.' }).last()).toBeVisible()
   await page.screenshot({ path: path.join(artifacts, 'reopened.png') })
   if (!desktop) {
     // Invalid codes eventually show the distinct rate-limit notice on the real page.
@@ -263,6 +331,9 @@ try {
   assert(requests.length >= 4, 'The real Pi process must call the local streaming model')
   console.log(JSON.stringify({ passed: true, client: desktop ? 'electron' : 'browser', edition: desktop ? edition : undefined, scenarios: ['cold room deep link and reload', 'warm room navigation', 'chat', 'multi-agent room and @user', 'per-bot memory', 'soul editing', 'About you', 'one chat per bot and history'], modelRequests: requests.length, artifacts }, null, 2))
 } catch (error) {
+  await writeFile(path.join(artifacts, 'model-requests.json'), JSON.stringify(requests, null, 2))
+  if (electronApp)
+    await writeFile(path.join(artifacts, 'notifications.json'), JSON.stringify(await electronApp.evaluate(() => globalThis.smokeNotifications), null, 2))
   if (page) {
     await page.screenshot({ path: path.join(artifacts, 'failure.png') }).catch(() => {})
     console.error(`Failure route: ${new URL(page.url()).pathname}`)
@@ -271,6 +342,7 @@ try {
   console.error(`Artifacts: ${artifacts}\nDaemon: ${daemonLog.slice(-3000)}`)
   throw error
 } finally {
+  for (const reply of heldReplies.values()) reply.release()
   socket?.close()
   await electronApp?.close()
   await browser?.close()

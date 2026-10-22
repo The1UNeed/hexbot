@@ -1,5 +1,8 @@
 use super::*;
 
+#[path = "runtime_history_tests.rs"]
+mod history_tests;
+
 #[path = "runtime_stop_tests.rs"]
 mod stop_tests;
 
@@ -5839,6 +5842,10 @@ async fn retained_delete_closes_processes_and_rejects_late_events_and_delegated_
             json!({"role":"user","text":"Keep this"}),
         )
         .unwrap();
+        store::open(home.path()).unwrap().execute(
+            "UPDATE native_messages SET message_json=json_set(message_json,'$.text','Edited') WHERE session_id='first'", [],
+        ).unwrap();
+        let (_, cursor, _) = store::history_since(home.path(), "first", None).unwrap();
         runtime.retire_stored("alice", "first").await.unwrap();
         home.peer_thread("alice", "first");
         crate::catalog::call(
@@ -5850,6 +5857,13 @@ async fn retained_delete_closes_processes_and_rejects_late_events_and_delegated_
         .unwrap()
         .unwrap();
         let before = store::history(home.path(), "first").unwrap();
+        if !purge {
+            let (rows, retained_cursor, delta) =
+                store::history_since(home.path(), "first", Some(&cursor)).unwrap();
+            assert!(delta);
+            assert!(rows.is_empty());
+            assert_eq!(retained_cursor, cursor);
+        }
         runtime
             .event(
                 &parent,

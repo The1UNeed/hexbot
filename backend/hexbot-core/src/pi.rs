@@ -804,7 +804,7 @@ async fn supervise(
     };
     // Keep stdin open throughout graceful shutdown. Closing it immediately
     // after SIGTERM can race Pi's input-EOF handler against tool cleanup.
-    let graceful = !exited && signal_termination(&mut child);
+    let graceful = !exited && crate::osutil::signal_termination(&mut child);
     let cleanup_failed = !exited
         && terminate(&mut child, graceful, options.stop_grace)
             .await
@@ -826,15 +826,6 @@ async fn supervise(
     while let Some(request) = requests.recv().await {
         request.reject(reason.clone());
     }
-}
-
-fn signal_termination(child: &mut tokio::process::Child) -> bool {
-    #[cfg(unix)]
-    if let Some(pid) = child.id() {
-        // The child is still owned and unreaped, so this PID cannot be reused.
-        return unsafe { libc::kill(pid as libc::pid_t, libc::SIGTERM) } == 0;
-    }
-    false
 }
 
 async fn terminate(
