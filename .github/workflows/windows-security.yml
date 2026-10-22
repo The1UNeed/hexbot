@@ -63,10 +63,16 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $env:HEXBOT_CI_GIT = (Get-Command git.exe).Source
           $root = Join-Path $env:RUNNER_TEMP 'hexbot-native-refusal-source'
-          $record = node scripts/dev/prepare-windows-security.mjs $root e9bcb7d3377c95ab1c946bb109a82b6de19ceceb
+          $routing = node scripts/dev/windows-security-inputs.mjs '${{ github.workspace }}' '${{ github.event.pull_request.head.sha || github.sha }}' 3b8aa2f8c3072e14fb1239dc301c0964ccaf525a
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot select immutable native inputs' }
+          $plan = $routing | ConvertFrom-Json
+          $arguments = @($root, $plan.buildSHA, $plan.securitySHA)
+          if ($plan.currentTree) { $arguments += '--current-tree' }
+          $record = node scripts/dev/prepare-windows-security.mjs @arguments
           if ($LASTEXITCODE -ne 0) { throw 'Cannot prepare exact combined source' }
           $inputs = $record | ConvertFrom-Json
-          if ($inputs.sourceDir -ne $root) { throw 'Unexpected source destination' }
+          if ($inputs.sourceDir -ne $root -or $inputs.buildSHA -ne $plan.buildSHA -or $inputs.securitySHA -ne $plan.securitySHA) { throw 'Unexpected native source inputs' }
+          if ($plan.currentTree -and ($inputs.appliedSecurityPatch -or $inputs.guardedTree -ne $plan.guardedTree)) { throw 'Current source tree was not preserved' }
           "HEXBOT_COMBINED_ROOT=$root" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           # The checkout used for production is still guarded and unchanged.
           git diff --exit-code -- backend/hexbot-core/src/lib.rs
