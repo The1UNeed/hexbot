@@ -126,7 +126,16 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $env:HEXBOT_WINDOWS_UPDATE_ROOT = (Resolve-Path windows-updates).Path
           cargo test --locked --manifest-path backend/hexbot-core/Cargo.toml --test windows_contract -- --ignored --nocapture
-      - name: Run the combined native Runtime refusal regression
+      - name: Run the combined native Runtime refusal regression under a standard user
         working-directory: ${{ env.HEXBOT_WINDOWS_PROBE_SOURCE }}
-        run: cargo test --locked --manifest-path backend/hexbot-core/Cargo.toml --test windows_security -- --nocapture
+        shell: pwsh
+        run: |
+          npm ci --prefix backend/pi-runtime --ignore-scripts --no-audit --no-fund
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot provision refusal runtime' }
+          $messages = Join-Path $env:RUNNER_TEMP 'hexbot-contract-refusal-compiler.jsonl'
+          cargo test --locked --manifest-path backend/hexbot-core/Cargo.toml --test windows_security --no-run --message-format=json | Out-File -FilePath $messages -Encoding utf8
+          if ($LASTEXITCODE -ne 0) { throw 'Native refusal probe did not compile' }
+          $artifact = @(Get-Content $messages -Encoding UTF8 | ForEach-Object { $_ | ConvertFrom-Json } | Where-Object { $_.reason -eq 'compiler-artifact' -and $_.target.name -eq 'windows_security' -and $_.executable })
+          if ($artifact.Count -ne 1) { throw 'Expected exactly one native refusal executable' }
+          ./scripts/dev/windows-security-standard-user.ps1 -Runtime (Resolve-Path backend/pi-runtime).Path -Probe $artifact[0].executable
       # Disposable guard-removed binaries are never uploaded or published.

@@ -408,5 +408,48 @@ fn interrupted_task_install_uninstalls_owned_files_when_the_task_is_absent() {
     fs::write(&file, "foreign script").unwrap();
     let output = run();
     assert!(!output.status.success());
-    assert_eq!(fs::read_to_string(file).unwrap(), "foreign script");
+    assert_eq!(fs::read_to_string(&file).unwrap(), "foreign script");
+    fs::remove_file(&file).unwrap();
+    system_service::write_owned_script(&file, &home, true).unwrap();
+    let sid = powershell("[Security.Principal.WindowsIdentity]::GetCurrent().User.Value");
+    assert!(sid.status.success());
+    let sid = String::from_utf8(sid.stdout).unwrap().trim().to_owned();
+    let name = format!("Hexbot-daemon-{sid}");
+    struct TaskCleanup(String);
+    impl Drop for TaskCleanup {
+        fn drop(&mut self) {
+            let output = powershell(&format!(
+                "$s=New-Object -ComObject 'Schedule.Service';$s.Connect();$s.GetFolder('\\').DeleteTask('{}',0)",
+                self.0
+            ));
+            assert!(
+                output.status.success(),
+                "Cannot remove owned foreign-action fixture: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+    }
+    let register = powershell(&format!(
+        "$s=New-Object -ComObject 'Schedule.Service';$s.Connect();$t=$s.NewTask(0);$t.Principal.UserId='{sid}';$t.Principal.LogonType=3;$t.Principal.RunLevel=0;$a=$t.Actions.Create(0);$a.Path={};$a.Arguments='/D /C exit 0';$s.GetFolder('\\').RegisterTaskDefinition('{name}',$t,2,$null,$null,3) | Out-Null",
+        quote(&windows_paths::system_program("cmd.exe").unwrap())
+    ));
+    assert!(
+        register.status.success(),
+        "{}",
+        String::from_utf8_lossy(&register.stderr)
+    );
+    let cleanup = TaskCleanup(name.clone());
+    let output = run();
+    assert!(
+        !output.status.success(),
+        "Uninstall claimed a foreign task action"
+    );
+    assert!(system_service::owned(&file, &home));
+    let query = powershell(&format!(
+        "$s=New-Object -ComObject 'Schedule.Service';$s.Connect();$s.GetFolder('\\').GetTask('{name}') | Out-Null"
+    ));
+    assert!(query.status.success(), "Foreign task was deleted");
+    drop(cleanup);
+    assert!(run().status.success());
+    assert!(!file.exists());
 }

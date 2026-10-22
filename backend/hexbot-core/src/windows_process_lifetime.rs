@@ -1,6 +1,6 @@
 //! Daemon child lifetime only. This is not tool isolation or a sandbox.
 //! Retain one non-inheritable job handle until OS process teardown. Children
-//! inherit membership before their first instruction, including grandchildren.
+//! created with CreateProcess inherit membership, including grandchildren.
 use std::{ffi::c_void, io};
 
 #[repr(C)]

@@ -22,11 +22,11 @@ async fn owned_desktop_pipe_quit_and_restart_clean_up_real_pi_and_home_lock() {
     fs::create_dir_all(home.join("profiles/owl")).unwrap();
     db::migrate(&home).unwrap();
     db::open(&home).unwrap().execute_batch(
-        "INSERT INTO bots(name,owner_id) VALUES('owl','local'); INSERT INTO sections(id,bot,owner_id,title) VALUES('first','owl','local','First');"
+        "INSERT INTO bots(name,owner_id,description) VALUES('owl','local','Owned cleanup fixture'); INSERT INTO sections(id,bot,owner_id,title) VALUES('first','owl','local','First');"
     ).unwrap();
     fs::write(
         home.join("profiles/owl/config.yaml"),
-        "model:\n  provider: openai\n  default: gpt-4o-mini\n",
+        "model:\n  provider: openai\n  default: gpt-4o-mini\ntools:\n  enabled_toolsets: []\n",
     )
     .unwrap();
     let token = auth::local_token(&home).unwrap();

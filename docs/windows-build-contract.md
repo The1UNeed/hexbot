@@ -26,6 +26,9 @@ Cleanup retains the selected, previous and still-running runtimes.
 Python and voice tools share a managed venv under
 `runtime/tools/code-python/Scripts/`. The absolute Python and edge-tts paths
 are used directly, rather than copying a Python EXE away from its libraries.
+Both native and Electron provisioners explicitly set `UV_LINK_MODE=copy`, so
+new package installs do not share uv cache inodes. This does not establish a
+race-free hard-link boundary or change permissions on legacy Python files.
 
 ## Install and update contracts
 
@@ -50,7 +53,11 @@ principal. Its action and principal both use `Owner`, with `LeastPrivilege`
 and `InteractiveToken`. Task state is read numerically, without localized
 status text. A hidden PowerShell wrapper reads the selected EXE for each run
 and waits for the old daemon to exit before starting an updated one. The new
-daemon stays inside the task's job. No breakaway child races the home lock.
+daemon stays inside the task's job. No breakaway child races the home lock. Stop/restart waits for both task state
+and the daemon home lock. Uninstall treats only the numeric task-not-found
+error as absent; foreign task actions/principals and permission errors fail.
+An interrupted owned script/XML install can therefore be removed even when
+task creation never finished.
 A separate native forwarding component is installed as `.local/bin/hexbot.exe`,
 with a hash-bound home record in `hexbot.json`. It passes argv directly to the
 canonical selected daemon. It works from cmd and Restricted PowerShell without
@@ -64,6 +71,14 @@ paths through open handles for the containment check. An outside build junction 
 both sides. `service logs [-f]` reads both streams and follows file creation,
 truncation and rotation, including Windows PowerShell's UTF-16 log encoding.
 
+Full's owned daemon receives quit through its inherited stdin pipe, then runs
+normal App/Pi and tunnel cleanup. The app waits for process exit before reuse
+of its home and has a bounded force fallback. A Windows daemon retains a
+non-inheritable lifetime job until process teardown, without job breakaway,
+so remaining ordinary child processes are reaped on exit. This is process
+lifetime management, not Windows tool confinement. GUI-owned setup, daemon,
+Pi and tunnel children use hidden-console spawn options.
+
 ## Verification and remaining gates
 
 `windows-contract.yml` publishes nothing and uses commit-pinned actions. Its
@@ -74,11 +89,32 @@ Any other compiler error fails the job. The security stage's shared helper
 then prepares a disposable worktree from explicit immutable build and security
 SHAs, records both source trees and guard hashes, and removes only the exact
 guard there. No disposable binary is uploaded. The production guard remains.
+Complete build/security trees select the exact event commit twice with
+`--current-tree`, and the helper must preserve its exact guarded tree. A
+standalone security commit or intermediate security squash instead records
+exactly one trailer in its immutable commit message:
+
+```text
+Hexbot-Windows-Build: <full lowercase 40-character build commit SHA>
+```
+
+The recorded build must contain the build and refusal interfaces. Historical
+combination also requires the reviewed dependency ancestry and a unique merge
+base; any patch conflict fails. The workflow contains no particular build pin.
+After that build exists, a metadata-only security commit can carry the trailer
+without changing the security source tree. The same validated trailer must be
+preserved in the security squash message. This avoids replaying full build
+diffs onto stale source and avoids a self-referential workflow pin.
 The disposable steps stage real Node/Pi, run Full bootstrap and Headless setup in temporary state, exercise
 Pi RPC, Python, web serving and task lifecycle, install Full NSIS, and validate
 a signed native ZIP update plus the pinned cloudflared executable. Native
 regressions also exercise Unicode and junction homes, outside junction refusal,
-the activation-lock rollback floor and both service log streams.
+the activation-lock rollback floor and both service log streams. Dedicated
+probes also cover Restricted PowerShell/CMD argument propagation, real 8.3
+aliases where the volume supplies them, interrupted task cleanup, foreign
+actions, Tauri app detachment, and owned Full quit/EOF/force cleanup with a real
+Runtime-owned Pi child and a descendant. A volume without distinct 8.3 names
+reports that case as unproved.
 
 A cross-compile on macOS is only a compile check. It cannot establish native
 NSIS, task, Electron GUI, job lifetime, console or standard-user behavior.

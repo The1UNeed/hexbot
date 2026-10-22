@@ -282,7 +282,11 @@ pub async fn run(home: &Path, args: &[String]) -> Result<()> {
         }
         if action == "uninstall" {
             fs::remove_file(&file)?;
-            let _ = fs::remove_file(file.with_extension("xml"));
+            match fs::remove_file(file.with_extension("xml")) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error.into()),
+            }
         }
     } else {
         return Err(Error::new(5244, "Windows service is not installed"));

@@ -699,6 +699,7 @@ mod tests {
             &uv,
             r#"#!/bin/sh
 set -eu
+test "$UV_LINK_MODE" = copy
 case "$1" in
     venv) for last do :; done; mkdir -p "$last/bin" ;;
     pip) touch tools/edge-tts/bin/edge-tts ;;
