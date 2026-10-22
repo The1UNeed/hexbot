@@ -1433,6 +1433,62 @@ fn store_ancestors(denied: &[PathBuf]) -> Vec<PathBuf> {
 fn layout(home: &Path, writable: &[PathBuf], workspace: Option<&[PathBuf]>) -> Result<Layout> {
     layout_scanned(home, writable, workspace, workspace.unwrap_or_default())
 }
+// A bounded snapshot check, not protection against an unconfined process
+// inserting a new alias after validation. Cache links are valid unless the same
+// inode is also reachable through a declared workspace/output grant.
+#[cfg(unix)]
+fn reject_managed_hardlinks(managed: &[PathBuf], grants: &[PathBuf], budget: usize) -> Result<()> {
+    use std::os::unix::fs::MetadataExt;
+    const REASON: &str = "Managed runtime hard-link topology could not be validated. Remove artifact/workspace hard links to installed files, use independent copies, and retry with smaller folders. Repair damaged runtimes from a trusted installer.";
+    let check = || -> std::io::Result<bool> {
+        let mut remaining = budget;
+        let mut linked = HashSet::new();
+        for (roots, index) in [(managed, true), (grants, false)] {
+            if !index && linked.is_empty() {
+                break;
+            }
+            let mut visited = HashSet::new();
+            let mut pending: Vec<_> = roots.iter().map(|p| (p.clone(), true)).collect();
+            while let Some((path, root)) = pending.pop() {
+                remaining = remaining
+                    .checked_sub(1)
+                    .ok_or_else(|| std::io::Error::other("entry budget"))?;
+                let meta = match std::fs::metadata(&path) {
+                    Ok(meta) => meta,
+                    Err(error)
+                        if error.kind() == std::io::ErrorKind::NotFound
+                            && (root
+                                || std::fs::symlink_metadata(&path)?.file_type().is_symlink()) =>
+                    {
+                        continue;
+                    }
+                    Err(error) => return Err(error),
+                };
+                let id = (meta.dev(), meta.ino());
+                if meta.is_dir() && visited.insert(id) {
+                    for entry in std::fs::read_dir(path)? {
+                        // Bound queued entries too, including very wide directories.
+                        if pending.len() >= remaining {
+                            return Err(std::io::Error::other("entry budget"));
+                        }
+                        pending.push((entry?.path(), false));
+                    }
+                } else if meta.is_file() && meta.nlink() > 1 {
+                    if index {
+                        linked.insert(id);
+                    } else if linked.contains(&id) {
+                        return Ok(false);
+                    }
+                }
+            }
+        }
+        Ok(true)
+    };
+    if !check().unwrap_or(false) {
+        return Err(Error::new(4302, REASON));
+    }
+    Ok(())
+}
 #[cfg(unix)]
 fn layout_scanned(
     home: &Path,
@@ -1443,6 +1499,10 @@ fn layout_scanned(
     let mut roots = vec![home.to_owned(), std::fs::canonicalize(home)?];
     roots.dedup();
     let managed = managed_runtime_roots(home)?;
+    // Implicit shared temporary directories are deliberately not scanned. This
+    // only validates aliases already in the declared workspace/output roots.
+    let grants: Vec<_> = writable.iter().chain(search).cloned().collect();
+    reject_managed_hardlinks(&managed, &grants, 100_000)?;
     let writable = writable
         .iter()
         .filter_map(|p| std::fs::canonicalize(p).ok())
@@ -1929,6 +1989,80 @@ pub fn check_code(code: &str) -> Result<()> {
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
+    #[test]
+    fn layouts_reject_existing_managed_hardlink_aliases_before_launch() {
+        for local in &policy().managed_runtime {
+            let temp = tempfile::tempdir().unwrap();
+            let home = temp.path().canonicalize().unwrap();
+            let output = home.join("profiles/owl/artifacts");
+            let source = if local.ends_with(".json") {
+                home.join(local)
+            } else {
+                home.join(local).join("probe")
+            };
+            std::fs::create_dir_all(source.parent().unwrap()).unwrap();
+            std::fs::create_dir_all(&output).unwrap();
+            std::fs::write(&source, "keep").unwrap();
+            std::fs::hard_link(&source, output.join("alias")).unwrap();
+            for level in [Confine::No, Confine::Workspace, Confine::ReadOnly] {
+                for program in ["/bin/sh", "/usr/bin/python3"] {
+                    let result = isolated_command_with_outputs(
+                        &home,
+                        program,
+                        std::slice::from_ref(&output),
+                        level,
+                        std::slice::from_ref(&output),
+                    );
+                    assert!(
+                        matches!(result, Err(error) if error.message.contains("hard-link topology")),
+                        "{local} {level:?} {program}"
+                    );
+                }
+            }
+            assert_eq!(std::fs::read_to_string(source).unwrap(), "keep");
+        }
+    }
+    #[test]
+    fn hardlink_snapshot_allows_cache_links_and_refuses_errors_and_exhaustion() {
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path().canonicalize().unwrap();
+        let managed = home.join("runtime/tools/code-python");
+        let output = home.join("profiles/owl/artifacts");
+        std::fs::create_dir_all(&managed).unwrap();
+        std::fs::create_dir_all(&output).unwrap();
+        let source = managed.join("package.py");
+        std::fs::write(&source, "trusted package").unwrap();
+        std::fs::hard_link(&source, home.join("uv-cache-package")).unwrap();
+        // Legitimate uv cache hard links are not themselves an unsafe output.
+        let roots = [managed.clone()];
+        let grants = [output.clone()];
+        reject_managed_hardlinks(&roots, &grants, 100).unwrap();
+        std::fs::write(output.join("result"), "ordinary output").unwrap();
+        std::os::unix::fs::symlink("absent", output.join("dangling")).unwrap();
+        reject_managed_hardlinks(&roots, &grants, 100).unwrap();
+        if isolation_available() {
+            let mut command =
+                isolated_command(&home, "/bin/sh", &grants, Confine::Workspace).unwrap();
+            assert!(
+                command
+                    .as_std_mut()
+                    .args(["-c", "cat \"$1\" > \"$2\"", "probe"])
+                    .arg(&source)
+                    .arg(output.join("result"))
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+            assert_eq!(
+                std::fs::read_to_string(output.join("result")).unwrap(),
+                "trusted package"
+            );
+        }
+        assert!(reject_managed_hardlinks(&roots, &grants, 1).is_err());
+        std::os::unix::fs::symlink("loop", output.join("loop")).unwrap();
+        assert!(reject_managed_hardlinks(&roots, &grants, 100).is_err());
+        assert_eq!(std::fs::read_to_string(source).unwrap(), "trusted package");
+    }
     #[tokio::test]
     async fn managed_runtime_outputs_never_reopen_runtime_or_selection() {
         if !isolation_available() {

@@ -1,6 +1,8 @@
 /** Hexbot's frozen session tools and approval bridge. Pi owns the agent loop. */
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { readFileSync, realpathSync, lstatSync, readlinkSync, statSync, existsSync } from 'node:fs';
+import { open, rename, unlink, mkdir, readFile, access, stat } from 'node:fs/promises';
+import { constants } from 'node:fs';
 import { resolve, dirname, basename, relative, sep, join } from 'node:path';
 import { homedir, tmpdir } from 'node:os';
 import { createBashTool, createReadTool, createWriteTool, createEditTool, createGrepTool, createFindTool, createLsTool } from '@earendil-works/pi-coding-agent';
@@ -8,6 +10,26 @@ import {credentialPolicy, fold, isolatedCommand, isolationAvailable, policyRegex
 import { registerAcp } from './acp.ts';
 import { lazyStream } from '@earendil-works/pi-ai';
 import { builtinProviders } from '@earendil-works/pi-ai/providers/all';
+
+// Replacing the directory entry does not truncate other hard links to its inode.
+// This is used only by restricted file tools; Bypass retains upstream behavior.
+async function atomicWrite(path: string, content: string): Promise<void> {
+  const mode = await stat(path).then(info => info.mode & 0o777, error => {
+    if (error.code !== 'ENOENT') throw error;
+    return 0o600;
+  });
+  const temporary = join(dirname(path), `.hexbot-write-${randomUUID()}`);
+  const file = await open(temporary, 'wx', mode);
+  try {
+    await file.writeFile(content, 'utf8');
+    await file.sync();
+    await file.close();
+    await rename(temporary, path);
+  } finally {
+    await file.close();
+    await unlink(temporary).catch(error => { if (error.code !== 'ENOENT') throw error; });
+  }
+}
 
 export default function hexbot(pi: any) {
   probeIsolation();
@@ -292,6 +314,8 @@ export default function hexbot(pi: any) {
     wrapped.add(name);
     const bypass = () => live.approvalMode === 'off';
     const options = (level: Level = 'confined', denied?: string[]) => name === 'bash' ? {spawnHook: (c: any) => level === 'none' ? c : {...c, command: spawnFor(level, c.command), env: shellEnvironment(c.env)}} :
+      name === 'write' && !bypass() ? {operations: {writeFile: atomicWrite, mkdir: (path: string) => mkdir(path, {recursive:true}).then(() => {})}} :
+      name === 'edit' && !bypass() ? {operations: {writeFile: atomicWrite, readFile, access: (path: string) => access(path, constants.R_OK | constants.W_OK)}} :
       name === 'grep' && !bypass() ? {operations: {isDirectory: (path: string) => statSync(path).isDirectory(), readFile: (path: string) => credentialPath(path, live.home, denied) ? '' : readFileSync(path, 'utf8')}} : {};
     const tool = factory(config.cwd, options());
     const definition = name === 'bash' ? {

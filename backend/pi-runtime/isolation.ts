@@ -448,12 +448,48 @@ export function managedRuntimeRoots(home: string): string[] {
     return [path, real];
   }))];
 }
+// Snapshot only: an already-unconfined process can insert an alias later.
+// uv/cache hard links are valid unless an installed inode is also found in a
+// declared workspace/output grant. No chmod or ACL changes are made.
+export function rejectManagedHardlinks(managed: string[], grants: string[], budget = 100_000): void {
+  const reason = 'Managed runtime hard-link topology could not be validated. Remove artifact/workspace hard links to installed files, use independent copies, and retry with smaller folders. Repair damaged runtimes from a trusted installer.';
+  try {
+    const linked = new Set<string>();
+    for (const [roots, index] of [[managed, true], [grants, false]] as const) {
+      if (!index && !linked.size) break;
+      const visited = new Set<string>();
+      const pending = roots.map(path => ({path, root:true}));
+      while (pending.length) {
+        if (--budget < 0) throw new Error(reason);
+        const {path, root} = pending.pop()!;
+        let info;
+        try { info = statSync(path, {bigint:true}); }
+        catch (error: any) { if (error.code === 'ENOENT' && (root || lstatSync(path).isSymbolicLink())) continue; throw error; }
+        const id = `${info.dev}:${info.ino}`;
+        if (info.isDirectory() && !visited.has(id)) {
+          visited.add(id);
+          const directory = opendirSync(path);
+          try {
+            for (let entry; (entry = directory.readSync());) {
+              if (pending.length >= budget) throw new Error(reason);
+              pending.push({path:join(path,entry.name),root:false});
+            }
+          } finally { directory.closeSync(); }
+        } else if (info.isFile() && info.nlink > 1n) {
+          if (index) linked.add(id);
+          else if (linked.has(id)) throw new Error(reason);
+        }
+      }
+    }
+  } catch { throw new Error(reason); }
+}
 // Only the daemon-chosen output folders are writable inside the home. The
 // session cwd is never one of them: the daemon refuses a workspace there and
 // ignores a saved cwd inside it.
-function layout(home: string, outputs: string[] = []) {
+function layout(home: string, outputs: string[] = [], searchRoots: string[] = []) {
   const roots = [...new Set([resolve(home), realpathSync(home)])];
   const managed = managedRuntimeRoots(home);
+  rejectManagedHardlinks(managed, [...outputs, ...searchRoots]);
   const writable = outputs.filter(p => existsSync(p)).map(p => realpathSync(p))
     .filter(p => roots.some(root => p.startsWith(root + '/')))
     .filter(p => !managed.some(root => within(p, [root]) || within(root, [p])));
@@ -478,7 +514,7 @@ function confined(workspace: string[]) {
   return {writable, config};
 }
 export function sandboxProfile(home: string, outputs: string[] = [], workspace?: string[], searchRoots: string[] = workspace ?? []): string {
-  const {roots, paths, writable, denied} = layout(home, outputs);
+  const {roots, paths, writable, denied} = layout(home, outputs, searchRoots);
   const patterns = roots.flatMap(root => ['^' + regexEscape(root) + '/(.*/)?' + credentialPolicy.basename.slice(1), '^' + regexEscape(root) + '/' + credentialPolicy.home.slice(1)]);
   const ssh = join(homedir(), '.ssh');
   const sshFilters = [...new Set([ssh, existsSync(ssh) ? realpathSync(ssh) : ssh])].map(root => `(require-all (subpath ${JSON.stringify(root)}) (require-not (regex ${JSON.stringify(sandboxRegex('^' + regexEscape(root) + '/' + credentialPolicy.sshPublic.slice(1)))})))`);
@@ -505,7 +541,7 @@ export function sandboxProfile(home: string, outputs: string[] = [], workspace?:
   return `(version 1)(allow default)(deny process-exec (literal "/usr/bin/open") (literal "/bin/launchctl") (literal "/usr/bin/osascript"))(deny appleevent-send)(deny file-write* (require-all ${insideHome} ${exceptWritable}))(deny file-write* ${stores})${ancestors ? `(deny file-write-unlink ${ancestors})` : ''}${confine}(deny file-read* file-write* ${filters.join(' ')})`;
 }
 export function bwrapArguments(home: string, outputs: string[] = [], workspace?: string[], searchRoots: string[] = workspace ?? []): string[] {
-  const {roots, paths, writable, denied} = layout(home, outputs);
+  const {roots, paths, writable, denied} = layout(home, outputs, searchRoots);
   const confine = workspace && confined(workspace);
   const args = confine ? ['--die-with-parent', '--new-session', '--unshare-pid', '--unshare-net', '--ro-bind', '/', '/', '--dev', '/dev', '--proc', '/proc', '--tmpfs', '/run', '--tmpfs', '/tmp'] : ['--die-with-parent', '--unshare-pid', '--bind', '/', '/', '--proc', '/proc'];
   if (confine) for (const path of confine.writable) if (path !== '/tmp') args.push('--bind', path, path);

@@ -1,11 +1,11 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {spawn, execFileSync} from 'node:child_process';
-import {mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync} from 'node:fs';
+import {mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, linkSync, symlinkSync} from 'node:fs';
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
 import {createInterface} from 'node:readline';
-import {isolatedCommand, probeIsolation} from './isolation.ts';
+import {isolatedCommand, probeIsolation, sandboxProfile, bwrapArguments, rejectManagedHardlinks} from './isolation.ts';
 
 // Scans read the user's own Git configuration. These tests use none, so the
 // developer's ~/.gitconfig and system config cannot change their results.
@@ -23,6 +23,40 @@ const gitConfig = (dir, key, value) => execFileSync('/usr/bin/git', ['-C', dir, 
 // CI installs it; Ubuntu 24.04 needs the AppArmor profile from the install docs.
 const bubblewrap = process.platform === 'linux' && !!probeIsolation();
 const needsBubblewrap = {skip: !bubblewrap && 'needs a working bubblewrap on Linux'};
+
+test('layouts reject existing managed hardlink aliases before launch', t => {
+  for (const local of ['runtime/native-current.json','runtime/native/build/hexbot.exe','runtime/tools/code-python/python','runtime/bin/rg','bin/uv','python/bin/python']) {
+    const root = mkdtempSync(join(tmpdir(),'hexbot-managed-hardlinks-'));
+    t.after(() => rmSync(root,{recursive:true,force:true}));
+    const home = join(root,'home'), source = join(home,local), output = join(home,'profiles/owl/artifacts'), alias = join(output,'alias');
+    mkdirSync(join(source,'..'),{recursive:true}); mkdirSync(output,{recursive:true});
+    writeFileSync(source,'keep'); linkSync(source,alias);
+    for (const workspace of [undefined,[output],[]]) for (const layout of [sandboxProfile,bwrapArguments]) {
+      assert.throws(() => layout(home,[output],workspace,[output]),/hard-link topology/,local);
+    }
+    assert.equal(readFileSync(source,'utf8'),'keep');
+  }
+});
+test('hardlink snapshots allow uv cache links but refuse errors and exhaustion', t => {
+  const home = mkdtempSync(join(tmpdir(),'hexbot-managed-cache-'));
+  t.after(() => rmSync(home,{recursive:true,force:true}));
+  const managed = join(home,'runtime/tools/code-python'), output = join(home,'profiles/owl/artifacts');
+  mkdirSync(managed,{recursive:true}); mkdirSync(output,{recursive:true});
+  const source = join(managed,'package.py');
+  writeFileSync(source,'trusted package'); linkSync(source,join(home,'uv-cache-package'));
+  rejectManagedHardlinks([managed],[output]);
+  writeFileSync(join(output,'result'),'ordinary output');
+  symlinkSync('absent',join(output,'dangling'));
+  rejectManagedHardlinks([managed],[output]);
+  if (process.platform === 'darwin' || bubblewrap) {
+    execFileSync('/bin/bash',['-c',isolatedCommand(`cat '${source}' > '${output}/result'`,home,[output],[output])]);
+    assert.equal(readFileSync(join(output,'result'),'utf8'),'trusted package');
+  }
+  assert.throws(() => rejectManagedHardlinks([managed],[output],1),/hard-link topology/);
+  symlinkSync('loop',join(output,'loop'));
+  assert.throws(() => rejectManagedHardlinks([managed],[output]),/hard-link topology/);
+  assert.equal(readFileSync(source,'utf8'),'trusted package');
+});
 
 test('managed runtime output exceptions cannot reopen executables or selection', {skip:process.platform !== 'darwin' && !bubblewrap}, t => {
   const base = mkdtempSync(join(tmpdir(),'hexbot-managed-runtimes-'));
