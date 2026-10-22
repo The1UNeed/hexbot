@@ -1418,14 +1418,18 @@ function BotConversation() {
   }, [approvals.length, atBottom, clarifies, composerHeight, messages])
   const wasStreaming = useRef(streaming)
   useEffect(() => {
-    if (document.hidden && wasStreaming.current && !streaming) {
+    if (wasStreaming.current && !streaming) {
       const body = messages.at(-1)?.text || 'New message'
       const input = { body, sectionId: section?.id, title: bot?.display_name ?? 'Hexbot' }
       const bridge = getBridge()
 
       if (bridge) {
-        bridge.notify(input)
-      } else if ('Notification' in window && Notification.permission === 'granted') {
+        bridge.notify({ ...input, backgroundOnly: true })
+      } else if (
+        document.hidden &&
+        'Notification' in window &&
+        Notification.permission === 'granted'
+      ) {
         new Notification(input.title, { body: input.body })
       }
     }

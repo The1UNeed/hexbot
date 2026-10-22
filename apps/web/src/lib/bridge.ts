@@ -47,7 +47,7 @@ export interface HexbotBridge {
   /** 'full' ships the daemon runtime; 'client' can only connect to one elsewhere. */
   edition: 'client' | 'full'
   isPackaged: boolean
-  notify(input: { body: string; sectionId?: string; title: string }): void
+  notify(input: { backgroundOnly?: boolean; body: string; sectionId?: string; title: string }): void
   openExternal(url: string): Promise<void> | void
   onNavigate?(callback: (url: string) => void): () => void
   pairWithGrant?(input: {

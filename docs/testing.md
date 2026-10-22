@@ -154,6 +154,11 @@
   Rust and the web bundle and installing the locked Pi dependency and Chromium.
   Uses a local streaming model with actual Pi; no provider credentials needed.
   Add `--desktop --edition=full` or `--desktop --edition=client` for Electron.
+  Desktop mode holds real Pi replies across close and minimize, verifies one
+  native notification per background reply, and checks reopening and foreground
+  replies stay silent. It calls the actual native API and records its delivery
+  events in `notifications.json`. Set `HEXBOT_SMOKE_NATIVE_NOTIFICATIONS=1` on
+  a host with notification permissions to require the OS `show` events too.
   On headless Linux run these Electron checks through `xvfb-run -a`.
 - Web bundle: `pnpm --filter ./apps/web run typecheck && pnpm --filter ./apps/web run test --run && pnpm --filter ./apps/web run lint && pnpm --filter ./apps/web run build`.
 - Desktop: `pnpm --filter ./apps/desktop run typecheck && pnpm --filter ./apps/desktop run test --run && pnpm --filter ./apps/desktop run build`.
@@ -165,6 +170,9 @@
   tray destruction fallback. CI runs it on macOS, Windows, and Linux with
   Openbox and no tray host. Both launches use the same Linux CI sandbox flags;
   a second launch must exit with code zero and reopen the retained renderer.
+  Close waits for native minimization to finish. Reopen waits for rendered
+  frames and nonzero Chromium layout and visual viewports before screenshots;
+  viewport metrics are saved with the evidence.
   Screenshots, process output and exit signals, failures, and results are uploaded as
   `desktop-lifecycle-*`. Linux needs `dbus-run-session -- xvfb-run -a` and a
   window manager. This does not perform actual logoff, shutdown, or update

@@ -105,6 +105,44 @@ beforeEach(() => {
 afterEach(() => {
   setActiveRpc(null)
   resetTranscriptEffects()
+  vi.unstubAllGlobals()
+})
+
+it('requests one background-only native reply notification even when Chromium reports visible', async () => {
+  const notify = vi.fn()
+  vi.stubGlobal('hexbot', { notify })
+  expect(document.hidden).toBe(false)
+  await useSections.getState().open('chat')
+  render(<ConversationColumn />)
+  expect(await screen.findByText('Previous conversation')).toBeVisible()
+  act(() => {
+    useTranscripts.setState(state => ({
+      bySession: {
+        ...state.bySession,
+        chat: { ...state.bySession.chat!, streamingMessageId: 'reply' }
+      }
+    }))
+  })
+  act(() => {
+    useTranscripts.setState(state => ({
+      bySession: {
+        ...state.bySession,
+        chat: { ...state.bySession.chat!, streamingMessageId: null }
+      }
+    }))
+  })
+  await waitFor(() =>
+    expect(notify).toHaveBeenCalledExactlyOnceWith({
+      backgroundOnly: true,
+      body: 'Previous conversation',
+      sectionId: 'chat',
+      title: 'Owl'
+    })
+  )
+  act(() =>
+    useBots.setState({ byName: { owl: { name: 'owl', display_name: 'Owl renamed' } as Bot } })
+  )
+  expect(notify).toHaveBeenCalledOnce()
 })
 
 it.each([false, true])(

@@ -125,8 +125,7 @@ async function buildWindow(): Promise<BrowserWindow> {
     backgroundColor: nativeTheme.shouldUseDarkColors ? '#0e0e0e' : '#ffffff',
     show: false,
     webPreferences: {
-      // Keep notifications and reconnects working while the window is hidden.
-      backgroundThrottling: false,
+      // Use Chromium's default throttling to pause hidden animation frames.
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
@@ -287,6 +286,7 @@ function registerIpc(): void {
     const item = value as Record<string, unknown>
     notify(
       {
+        backgroundOnly: item.backgroundOnly === true,
         title: validString(item.title, 'title', 200),
         body: validString(item.body, 'body', 2_000),
         sectionId: validString(item.sectionId, 'section id', 256)

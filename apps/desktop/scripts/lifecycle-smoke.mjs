@@ -122,50 +122,103 @@ async function quit(app, source = 'app') {
   currentApp = undefined
 }
 
+async function background(app) {
+  await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].close())
+  // Minimize is asynchronous on Linux/Windows. Do not race a pending minimize
+  // against activation or a second launch's restore.
+  await expect
+    .poll(
+      () =>
+        app.evaluate(({ BrowserWindow }) => {
+          const win = BrowserWindow.getAllWindows()[0]
+          return process.platform === 'linux' ? win.isMinimized() : !win.isVisible()
+        }),
+      { timeout: 10_000 }
+    )
+    .toBe(true)
+}
+
+async function rendered(app, page) {
+  await expect
+    .poll(
+      () =>
+        app.evaluate(({ BrowserWindow }) => {
+          const win = BrowserWindow.getAllWindows()[0]
+          return win.isVisible() && !win.isMinimized()
+        }),
+      { timeout: 10_000 }
+    )
+    .toBe(true)
+  await page.waitForFunction(() => innerWidth > 0 && innerHeight > 0, undefined, {
+    timeout: 10_000
+  })
+  // Native visibility and font readiness can precede Chromium's restored
+  // viewport. Wait for actual frames and protocol geometry before capture.
+  await page.waitForFunction(
+    () =>
+      new Promise(resolve => {
+        requestAnimationFrame(() => requestAnimationFrame(() => resolve(true)))
+      }),
+    undefined,
+    { timeout: 10_000 }
+  )
+  const session = await page.context().newCDPSession(page)
+  try {
+    let metrics
+    await expect
+      .poll(
+        async () => {
+          metrics = await session.send('Page.getLayoutMetrics')
+          return (
+            [metrics.cssLayoutViewport, metrics.cssVisualViewport].every(
+              viewport => viewport.clientWidth > 0 && viewport.clientHeight > 0
+            ) &&
+            metrics.cssContentSize.width > 0 &&
+            metrics.cssContentSize.height > 0
+          )
+        },
+        { timeout: 10_000, message: 'Restored renderer must have a nonzero viewport' }
+      )
+      .toBe(true)
+    return metrics
+  } finally {
+    await session.detach()
+  }
+}
+
 try {
   for (const edition of process.env.HEXBOT_LIFECYCLE_APP ? ['client'] : ['full', 'client']) {
     const directory = process.env.HEXBOT_LIFECYCLE_APP ? desktop : await prepare(edition)
     const app = await launch(directory, edition)
     const page = await app.firstWindow()
     await page.waitForLoadState('domcontentloaded')
+    await rendered(app, page)
+    await expect
+      .poll(() => app.evaluate(({ app }) => app.listenerCount('activate')), { timeout: 10_000 })
+      .toBeGreaterThan(0)
     assert.equal(await page.evaluate(() => window.hexbot.edition), edition)
     await expect.poll(() => app.evaluate(({ Menu }) => !!Menu.getApplicationMenu())).toBe(true)
     assert.equal(
       await app.evaluate(({ BrowserWindow }) =>
         BrowserWindow.getAllWindows()[0].webContents.getBackgroundThrottling()
       ),
-      false
+      true
     )
     // Set a sentinel in the real renderer: close/reopen must retain this page.
     await page.evaluate(() => {
       window.lifecycleSentinel = 'kept'
     })
     const windowId = await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].id)
-    await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].close())
-    await expect
-      .poll(() =>
-        app.evaluate(({ BrowserWindow }) => {
-          const win = BrowserWindow.getAllWindows()[0]
-          return process.platform === 'linux' ? win.isMinimized() : !win.isVisible()
-        })
-      )
-      .toBe(true)
+    await background(app)
     assert.equal(await page.evaluate(() => window.lifecycleSentinel), 'kept')
     await app.evaluate(({ app }) => app.emit('activate'))
-    await expect
-      .poll(() =>
-        app.evaluate(({ BrowserWindow }) => {
-          const win = BrowserWindow.getAllWindows()[0]
-          return win.isVisible() && !win.isMinimized()
-        })
-      )
-      .toBe(true)
+    await rendered(app, page)
     assert.equal(
       await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].id),
       windowId
     )
     // A real second process must exit and reopen the first instance.
-    await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].close())
+    await background(app)
     const env = await app.evaluate(() => ({
       home: process.env.HEXBOT_HOME,
       executable: process.execPath
@@ -178,14 +231,8 @@ try {
     const timer = setTimeout(() => second.kill(), 15_000)
     const [code, signal] = await once(second, 'close').finally(() => clearTimeout(timer))
     assert.equal(code, 0, `Second launch must hand off and exit (signal=${signal})`)
-    await expect
-      .poll(() =>
-        app.evaluate(({ BrowserWindow }) => {
-          const win = BrowserWindow.getAllWindows()[0]
-          return win.isVisible() && !win.isMinimized()
-        })
-      )
-      .toBe(true)
+    const metrics = await rendered(app, page)
+    await writeFile(join(artifacts, `${edition}-viewport.json`), JSON.stringify(metrics, null, 2))
     assert.equal(await page.evaluate(() => window.lifecycleSentinel), 'kept')
     await page.screenshot({ path: join(artifacts, `${edition}-reopened.png`) })
     // Capture the native File submenu on Windows/Linux, not a rendered mock.
@@ -211,7 +258,7 @@ try {
       await app.evaluate(({ Menu }) => Menu.getApplicationMenu().items[0].submenu.closePopup())
     }
     // Quit while backgrounded through the same native menu action users have.
-    await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].close())
+    await background(app)
     await quit(app, 'menu')
     results.push({ edition, closeReopenSecondLaunchQuit: 'passed' })
     const endingApp = await launch(directory, `${edition}-session`)
