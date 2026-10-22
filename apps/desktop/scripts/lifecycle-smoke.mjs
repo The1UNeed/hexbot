@@ -75,13 +75,17 @@ async function prepare(edition) {
   await cp(join(desktop, '../web/dist'), join(directory, 'out/renderer'), { recursive: true })
   return directory
 }
-async function launch(directory, name) {
+async function launch(directory, name, fixture = false) {
   const home = join(root, `${name}-home`)
   await mkdir(home)
   currentApp = await electron.launch({
     executablePath,
     args: launchArgs(directory),
-    env: { ...environment, HEXBOT_HOME: home },
+    env: {
+      ...environment,
+      HEXBOT_HOME: home,
+      ...(fixture ? { HEXBOT_LIFECYCLE_TRACE: join(artifacts, `${name}-events.jsonl`) } : {})
+    },
     timeout: 30_000
   })
   // Playwright disposes its process accessor when the Electron connection closes.
@@ -98,8 +102,10 @@ async function quit(app, source = 'app') {
   const actionError = await app
     .evaluate(({ app, Menu }, source) => {
       setImmediate(() => {
+        globalThis.lifecycleFixture?.trace('shutdown-request', { source })
         if (source === 'tray')
           globalThis.lifecycleFixture.trayMenu.items.find(item => item.label === 'Quit').click()
+        else if (source === 'window') globalThis.lifecycleFixture.window.close()
         else if (source === 'menu')
           Menu.getApplicationMenu()
             .items[0].submenu.items.find(item => item.role === 'quit')
@@ -117,7 +123,10 @@ async function quit(app, source = 'app') {
     .poll(() => child.exitCode)
     .toBe(0)
     .catch(error => {
-      throw actionError || error
+      throw new Error(
+        `Electron ${source} shutdown failed: ${JSON.stringify({ pid: child.pid, exitCode: child.exitCode, signal: child.signalCode, actionError: actionError?.message })}`,
+        { cause: error }
+      )
     })
   currentApp = undefined
 }
@@ -338,11 +347,11 @@ try {
           formats: ['es'],
           fileName: () => 'fixture.js'
         },
-        rollupOptions: { external: ['electron', 'node:events', 'node:path'] }
+        rollupOptions: { external: ['electron', 'node:events', 'node:fs', 'node:path'] }
       }
     })
-    for (const mode of ['update', 'session-end', 'tray-absent']) {
-      const app = await launch(fixture, mode)
+    for (const mode of ['update', 'session-end', 'tray', 'tray-absent']) {
+      const app = await launch(fixture, mode, true)
       await expect.poll(() => app.evaluate(() => !!globalThis.lifecycleFixture)).toBe(true)
       const state = await app.evaluate(async (_electron, mode) => {
         const { lifecycle, window, tray, trayMenu, calls } = globalThis.lifecycleFixture
@@ -368,25 +377,70 @@ try {
             }
           })
         }
-        if (mode !== 'tray-absent')
-          await new Promise(resolve => {
-            window.once('closed', resolve)
-            window.close()
-          })
         return { retained, opens, calls, destroyed: window.isDestroyed() }
       }, mode)
       assert(state.retained)
       assert.equal(state.opens, process.platform === 'darwin' ? 1 : 2)
       assert.equal(state.calls.stops, 1)
       assert.equal(state.calls.opens, state.opens + 1)
-      if (mode !== 'tray-absent') assert(state.destroyed)
-      else if (process.platform !== 'darwin')
+      assert(!state.destroyed)
+      if (mode === 'tray-absent' && process.platform !== 'darwin')
         await expect
           .poll(() => app.evaluate(() => globalThis.lifecycleFixture.window.isMinimized()), {
             message: 'No tray must keep a taskbar entry'
           })
           .toBe(true)
-      await quit(app, 'tray')
+      if (mode === 'update' || mode === 'session-end') {
+        // Closing the last window starts Quit on Windows/Linux. Do not send a
+        // second Tray Quit into the native shutdown already in progress.
+        if (process.platform !== 'darwin') await quit(app, 'window')
+        else {
+          await app.evaluate(async () => {
+            const { window, trace } = globalThis.lifecycleFixture
+            trace('window-close-request')
+            await new Promise(resolve => {
+              window.once('closed', resolve)
+              window.close()
+            })
+          })
+          await quit(app, 'tray')
+        }
+      } else await quit(app, 'tray')
+      const events = (await readFile(join(artifacts, `${mode}-events.jsonl`), 'utf8'))
+        .trim()
+        .split('\n')
+        .map(line => JSON.parse(line))
+      const named = name => events.filter(item => item.event === name)
+      const closesWindow = ['update', 'session-end'].includes(mode)
+      assert.equal(named('shutdown-request').length, 1, `${mode}: exactly one Quit request`)
+      assert.equal(
+        named('shutdown-request')[0].source,
+        process.platform !== 'darwin' && closesWindow ? 'window' : 'tray'
+      )
+      assert.equal(named('closed').length, 1, `${mode}: native window closed`)
+      // Electron omits window-all-closed when app.quit() initiates the close.
+      assert.equal(
+        named('window-all-closed').length,
+        closesWindow ? 1 : 0,
+        `${mode}: platform close policy`
+      )
+      assert.equal(named('before-quit').length, 1, `${mode}: one native Quit`)
+      assert.equal(named('quit').length, 1, `${mode}: native Quit completed`)
+      assert.equal(named('process-exit').length, 1, `${mode}: process exit recorded`)
+      assert.equal(named('process-exit')[0].code, 0)
+      assert.equal(named('render-process-gone').length, 0, `${mode}: renderer did not crash`)
+      const finalClose = named('close').at(-1)
+      assert.equal(finalClose.prevented, false, `${mode}: final close allowed`)
+      assert.equal(finalClose.exiting, true, `${mode}: lifecycle permits exit`)
+      assert(finalClose.sequence < named('closed')[0].sequence)
+      if (closesWindow) {
+        assert(named('closed')[0].sequence < named('window-all-closed')[0].sequence)
+        assert(named('window-all-closed')[0].sequence < named('before-quit')[0].sequence)
+      } else assert(named('before-quit')[0].sequence < finalClose.sequence)
+      if (mode === 'session-end') {
+        assert.equal(named('session-end').length, 1)
+        assert(named('session-end')[0].sequence < finalClose.sequence)
+      }
       results.push({ fixture: mode, passed: true })
     }
   }

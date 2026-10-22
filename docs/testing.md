@@ -173,7 +173,12 @@
   native close/reopen, renderer retention, a real second launch, menu Quit
   while backgrounded, and injected OS session-end/shutdown events. Native
   fixtures exercise the production tray, update close/failure handling, and
-  tray destruction fallback. CI runs it on macOS, Windows, and Linux with
+  tray destruction fallback. A fixture closing its last window follows the
+  app's platform policy; it must not receive another Quit during shutdown.
+  Separate fixtures test Tray Quit with a retained window. Synchronous JSONL
+  traces record close prevention, session events, native Quit and process exit;
+  every fixture requires one shutdown request and exit code zero.
+  CI runs it on macOS, Windows, and Linux with
   Openbox and no tray host. Both launches use the same Linux CI sandbox flags;
   a second launch must exit with code zero and reopen the retained renderer.
   Close waits for native minimization to finish. Reopen waits for rendered
