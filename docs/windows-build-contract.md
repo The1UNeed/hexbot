@@ -26,6 +26,16 @@ Cleanup retains the selected, previous and still-running runtimes.
 Python and voice tools share a managed venv under
 `runtime/tools/code-python/Scripts/`. The absolute Python and edge-tts paths
 are used directly, rather than copying a Python EXE away from its libraries.
+The voice lock is generated from exact pins in `edge-tts.requirements.in` by
+`node scripts/desktop/voice-lock.mjs --write`. The generator verifies each
+supported CPython 3.11 wheel against primary PyPI metadata and its downloaded
+SHA-256; `--check` audits the committed lock. The Windows wheel audit is in
+`edge-tts.windows-wheels.json`. The aiohttp 3.14.4 Windows wheel is
+`aiohttp-3.14.4-cp311-cp311-win_amd64.whl`, SHA-256
+`2efbdb87e79d596325c4eefaef0f4495d701145e882351310ebc538e854dc7a3`.
+The yarl pin is 1.25.1 to satisfy aiohttp 3.14.4's declared minimum. Native CI
+installs with `--require-hashes`, then imports all 13 pinned dependencies.
+
 Both native and Electron provisioners explicitly set `UV_LINK_MODE=copy`, so
 new package installs do not share uv cache inodes. This does not establish a
 race-free hard-link boundary or change permissions on legacy Python files.
@@ -38,7 +48,9 @@ app EXE, `resources/app.asar` and the ownership marker packaged inside NSIS
 before writing its receipt. The download remains verified against the signed
 install manifest. That marker survives interruption
 between NSIS completion and receipt publication. Unmarked apps are not owned. Repair runs NSIS
-again. The completion screen uses the receipt’s owned Windows app directory
+again. A matching receipt and packaged marker allow NSIS to restore a missing
+EXE or app.asar at that exact destination. Receiptless recovery still requires
+a complete, uniquely identified app and reads its installed track. The completion screen uses the receipt’s owned Windows app directory
 for its location and Open Hexbot action; the Tauri launcher validates ownership
 and the matching Full or Client executable again. Uninstall runs the installed
 NSIS uninstaller before removing leftovers.
@@ -53,7 +65,10 @@ for local test trees and labels the result experimental. Normal release
 manifests continue to exclude Windows.
 
 The per-user scheduled task uses the current user's SID in its name and
-principal. Its action and principal both use `Owner`, with `LeastPrivilege`
+principal. The registered task also records its canonical Hexbot home in the
+Description, so a missing script can be repaired or uninstalled only with a
+matching home, principal and action. A legacy task with neither an owned script
+nor that home binding fails closed. Its action and principal both use `Owner`, with `LeastPrivilege`
 and `InteractiveToken`. Task state is read numerically, without localized
 status text. A hidden PowerShell wrapper reads the selected EXE for each run
 and waits for the old daemon to exit before starting an updated one. The new

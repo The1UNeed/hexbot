@@ -23,6 +23,9 @@ pub mod windows_cli;
 #[path = "../../hexbot-core/src/windows_paths.rs"]
 mod windows_paths;
 mod windows_service;
+#[cfg(windows)]
+#[path = "../../hexbot-core/src/windows_task.rs"]
+mod windows_task;
 
 pub use archive::{extract_native, verify_file};
 pub use detect::{Paths, app_option, detect, detect_at, read_receipt, sanitize_appimage_env};
@@ -569,7 +572,14 @@ impl Installer {
         } else if self.target.is_linux() {
             self.install_linux(&download, artifact, identity.unwrap(), progress)?
         } else if self.target.is_windows() {
-            self.install_windows(&download, artifact, identity.unwrap(), progress)?
+            self.install_windows(
+                &download,
+                artifact,
+                identity.unwrap(),
+                option,
+                manifest.channel,
+                progress,
+            )?
         } else {
             return fail("This installer does not support this computer.");
         };
@@ -783,11 +793,49 @@ impl Installer {
     }
 
     // NSIS must finish and leave a real app before we publish a receipt.
+    fn windows_destination_owned(
+        &self,
+        destination: &Path,
+        id: &str,
+        option: InstallOption,
+        track: Track,
+    ) -> Result<bool> {
+        if detect::windows_app_id(destination).as_deref() == Some(id) {
+            return Ok(true);
+        }
+        if detect::windows_marker_id(destination).as_deref() != Some(id) {
+            return Ok(false);
+        }
+        // A missing payload can be restored; an existing link or wrong file
+        // type must never redirect NSIS outside this owned directory.
+        let exe = if option == InstallOption::Client {
+            "HexbotClient.exe"
+        } else {
+            "Hexbot.exe"
+        };
+        for name in ["resources", "resources/app.asar", exe] {
+            match fs::symlink_metadata(destination.join(name)) {
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Ok(m)
+                    if (name == "resources" && m.is_dir())
+                        || (name != "resources" && m.is_file()) => {}
+                Err(e) => return Err(e.into()),
+                _ => return Ok(false),
+            }
+        }
+        Ok(read_receipt(&self.paths.receipt())?.is_some_and(|receipt| {
+            receipt.option == option
+                && receipt.channel == track
+                && receipt.paths.iter().any(|path| path == destination)
+        }))
+    }
     fn install_windows(
         &self,
         download: &Path,
         artifact: &Artifact,
         (id, _name): (&str, &str),
+        option: InstallOption,
+        track: Track,
         progress: &mut ProgressCallback<'_>,
     ) -> Result<Vec<PathBuf>> {
         if artifact.format.as_deref() != Some("exe") {
@@ -795,7 +843,9 @@ impl Installer {
         }
         let directory = self.paths.install_apps_dir(self.target)?;
         let destination = directory.join(id);
-        if destination.exists() && detect::windows_app_id(&destination).as_deref() != Some(id) {
+        if fs::symlink_metadata(&destination).is_ok()
+            && !self.windows_destination_owned(&destination, id, option, track)?
+        {
             return fail("An unrelated app already uses the install path.");
         }
         self.require_quit(&destination)?;

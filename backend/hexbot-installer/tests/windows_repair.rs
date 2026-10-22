@@ -285,3 +285,141 @@ fn receiptless_repair_rechecks_ownership_under_the_install_lock() {
     );
     assert!(!engine.paths.receipt().exists());
 }
+
+#[test]
+fn damaged_payload_repair_requires_matching_receipt_marker_and_exact_path() {
+    use base64::{Engine, engine::general_purpose::STANDARD};
+    use sha2::{Digest, Sha512};
+    for option in [InstallOption::Client, InstallOption::Full] {
+        for (track, version, suffix) in [
+            (Track::Stable, "1.2.3", ""),
+            (Track::Nightly, "1.2.3-nightly.20261023.1", ".nightly"),
+        ] {
+            for missing in ["exe", "asar"] {
+                let controls = [
+                    "matching",
+                    "no-receipt",
+                    "wrong-option",
+                    "wrong-track",
+                    "wrong-path",
+                    "foreign-marker",
+                    "missing-marker",
+                    "swapped-marker",
+                    "payload-directory",
+                ];
+                #[cfg(unix)]
+                let controls = [controls.as_slice(), &["payload-link"]].concat();
+                for control in controls {
+                    let root = tempfile::tempdir().unwrap();
+                    let mut engine = engine(root.path());
+                    let id = format!(
+                        "app.hexbot.{}{suffix}",
+                        if option == InstallOption::Client {
+                            "client"
+                        } else {
+                            "desktop"
+                        }
+                    );
+                    let app = owned_app(&engine, &id, version);
+                    let payload = if missing == "asar" {
+                        "resources/app.asar"
+                    } else if option == InstallOption::Client {
+                        "HexbotClient.exe"
+                    } else {
+                        "Hexbot.exe"
+                    };
+                    fs::remove_file(app.join(payload)).unwrap();
+                    if control == "payload-directory" {
+                        fs::create_dir(app.join(payload)).unwrap();
+                    }
+                    #[cfg(unix)]
+                    if control == "payload-link" {
+                        let outside = root.path().join("outside-payload");
+                        fs::write(&outside, "foreign bytes").unwrap();
+                        std::os::unix::fs::symlink(&outside, app.join(payload)).unwrap();
+                    }
+                    let receipt = Receipt {
+                        option: if control == "wrong-option" {
+                            InstallOption::Headless
+                        } else {
+                            option
+                        },
+                        channel: if control == "wrong-track" {
+                            if track == Track::Stable {
+                                Track::Nightly
+                            } else {
+                                Track::Stable
+                            }
+                        } else {
+                            track
+                        },
+                        version: version.into(),
+                        paths: vec![if control == "wrong-path" {
+                            root.path().join("foreign")
+                        } else {
+                            app.clone()
+                        }],
+                        installed_at: "fixture".into(),
+                    };
+                    if control != "no-receipt" {
+                        fs::create_dir_all(engine.paths.receipt().parent().unwrap()).unwrap();
+                        fs::write(
+                            engine.paths.receipt(),
+                            serde_json::to_vec(&receipt).unwrap(),
+                        )
+                        .unwrap();
+                    }
+                    if control == "foreign-marker" {
+                        fs::write(
+                            app.join(".hexbot-app.json"),
+                            br#"{"appId":"org.example.foreign"}"#,
+                        )
+                        .unwrap();
+                    }
+                    if control == "missing-marker" {
+                        fs::remove_file(app.join(".hexbot-app.json")).unwrap();
+                    }
+                    let server = Server::new(|base| {
+                        let bytes = b"deliberately invalid NSIS fixture".to_vec();
+                        let key = if option == InstallOption::Client {
+                            "client"
+                        } else {
+                            "full"
+                        };
+                        let manifest = serde_json::to_vec(&json!({"schema":1,"channel":track,"version":version,"minInstaller":"0.0.1","targets":{"windows-x86_64":{key:{"url":format!("{base}/app.exe"),"size":bytes.len(),"sha512":STANDARD.encode(Sha512::digest(&bytes)),"format":"exe","appId":id,"productName":"Hexbot"}}}})).unwrap();
+                        BTreeMap::from([
+                            (format!("/install/{track}.json"), manifest.clone()),
+                            (
+                                format!("/install/{version}/{track}.json.sig"),
+                                hexbot_installer::update_signature::test_signature(&manifest)
+                                    .into_bytes(),
+                            ),
+                            ("/app.exe".into(), bytes),
+                        ])
+                    });
+                    engine.base_url = server.base.clone();
+                    let mut admitted = false;
+                    // Explicit apply selects the same app/track; valid-receipt
+                    // repair follows this exact install path. Invalid fixtures
+                    // stop at the OS boundary and never simulate NSIS success.
+                    let result = engine.apply(option, track, &mut |event| {
+                        if control == "swapped-marker" && event.stage == "verify" {
+                            fs::write(app.join(".hexbot-app.json"), br#"{"appId":"foreign"}"#)
+                                .unwrap();
+                        }
+                        if event.stage == "install" {
+                            admitted = true;
+                        }
+                    });
+                    assert!(result.is_err());
+                    assert_eq!(
+                        admitted,
+                        control == "matching",
+                        "{option:?} missing {missing} control {control}"
+                    );
+                    assert_eq!(app.join(payload).is_dir(), control == "payload-directory");
+                }
+            }
+        }
+    }
+}

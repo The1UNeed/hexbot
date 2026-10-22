@@ -280,7 +280,7 @@ impl Installer {
         let file = self.paths.service_file(self.target);
         if self.target.is_windows() {
             crate::windows_service::check_service(&file, &self.paths.hexbot_home)?;
-            if !file.exists() {
+            if !crate::windows_service::installed(&file, &self.paths.hexbot_home)? {
                 return Ok(());
             }
             // Let the same CLI which creates the task stop and unregister it.

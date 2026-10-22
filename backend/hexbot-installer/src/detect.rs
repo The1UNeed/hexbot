@@ -204,28 +204,26 @@ pub fn detect_at(paths: &Paths, target: Target) -> Result<Installed> {
     paths.validate()?;
     let mut installed = Installed {
         receipt: read_receipt(&paths.receipt())?,
-        service: paths.service_file(target).exists()
-            && if target.is_windows() {
-                crate::windows_service::check_service(
+        service: if target.is_windows() {
+            crate::windows_service::installed(&paths.service_file(target), &paths.hexbot_home)
+                .unwrap_or(false)
+        } else if paths.service_file(target).exists() {
+            #[cfg(unix)]
+            {
+                install_ownership::check_service(
                     &paths.service_file(target),
                     &paths.hexbot_home,
+                    target.is_macos(),
                 )
                 .is_ok()
-            } else {
-                #[cfg(unix)]
-                {
-                    install_ownership::check_service(
-                        &paths.service_file(target),
-                        &paths.hexbot_home,
-                        target.is_macos(),
-                    )
-                    .is_ok()
-                }
-                #[cfg(not(unix))]
-                {
-                    false
-                }
-            },
+            }
+            #[cfg(not(unix))]
+            {
+                false
+            }
+        } else {
+            false
+        },
         wrapper: if target.is_windows() {
             crate::windows_cli::removable(&paths.cli_wrapper(target), &paths.hexbot_home)
         } else {
@@ -458,10 +456,13 @@ pub(crate) fn writable_directory(path: &Path) -> bool {
 }
 
 pub(crate) fn windows_app_id(path: &Path) -> Option<String> {
-    if !fs::symlink_metadata(path).ok()?.is_dir() {
-        return None;
-    }
-    if ![".hexbot-app.json", "resources", "resources/app.asar"]
+    let id = windows_marker_id(path)?;
+    let exe = if id.starts_with("app.hexbot.client") {
+        "HexbotClient.exe"
+    } else {
+        "Hexbot.exe"
+    };
+    ["resources", "resources/app.asar", exe]
         .iter()
         .all(|name| {
             fs::symlink_metadata(path.join(name)).is_ok_and(|m| {
@@ -472,21 +473,22 @@ pub(crate) fn windows_app_id(path: &Path) -> Option<String> {
                 }
             })
         })
-    {
+        .then_some(id)
+}
+
+// Ownership survives payload damage only when corroborated by an exact
+// install receipt. Receiptless discovery still requires the complete app.
+pub(crate) fn windows_marker_id(path: &Path) -> Option<String> {
+    if !fs::symlink_metadata(path).ok()?.is_dir() {
+        return None;
+    }
+    if !fs::symlink_metadata(path.join(".hexbot-app.json")).is_ok_and(|m| m.is_file()) {
         return None;
     }
     let value: serde_json::Value =
         serde_json::from_slice(&fs::read(path.join(".hexbot-app.json")).ok()?).ok()?;
     let id = value["appId"].as_str()?;
-    let exe = if id.starts_with("app.hexbot.client") {
-        "HexbotClient.exe"
-    } else {
-        "Hexbot.exe"
-    };
-    (app_option(id).is_some()
-        && fs::symlink_metadata(path.join(exe)).is_ok_and(|m| m.is_file())
-        && path.join("resources/app.asar").is_file())
-    .then(|| id.to_owned())
+    app_option(id).is_some().then(|| id.to_owned())
 }
 #[cfg(windows)]
 fn native_selected(home: &Path) -> std::io::Result<PathBuf> {

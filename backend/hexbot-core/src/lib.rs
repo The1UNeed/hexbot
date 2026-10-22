@@ -47,6 +47,7 @@ mod windows_node_path;
 mod windows_paths;
 #[cfg(not(windows))]
 pub mod windows_service;
+mod windows_task;
 #[cfg(windows)]
 pub use system_service as windows_service;
 pub mod team;

@@ -9,9 +9,16 @@ try {
     if ($definition.Actions.Count -ne 1 -or $action.Path -ine $expectedPowerShell -or $action.Arguments -cne $expectedArguments -or $definition.Principal.UserId -ine $expectedSid) {
         throw 'Windows task belongs to another installation; left it alone'
     }
+    # A fixed per-user script path/SID alone cannot identify HEXBOT_HOME.
+    # Legacy definitions require their still-owned script; new definitions
+    # retain the home binding even if that script was deleted/interrupted.
+    $owner = [string]$definition.RegistrationInfo.Description
+    if ($owner -cne $expectedOwner -and (-not $allowLegacy -or -not [string]::IsNullOrEmpty($owner))) {
+        throw 'Windows task has no matching home ownership context; left it alone'
+    }
     switch ($operation) {
         'state' { [int]$task.State }
-        'stop' { if ([int]$task.State -eq 4) { $task.Stop(0) } }
+        'stop' { if ([int]$task.State -eq 4 -or [int]$task.State -eq 2) { $task.Stop(0) } }
         'delete' { $folder.DeleteTask($taskName, 0) }
         default { throw 'Unknown task operation' }
     }

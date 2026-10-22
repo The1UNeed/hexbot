@@ -238,6 +238,24 @@ fn real_nsis_install_repair_and_uninstall() {
         String::from_utf8_lossy(&output.stderr)
     );
     println!("{}", String::from_utf8_lossy(&output.stdout));
+    for payload in [
+        if client {
+            "HexbotClient.exe"
+        } else {
+            "Hexbot.exe"
+        },
+        "resources/app.asar",
+    ] {
+        fs::remove_file(app.join(payload)).unwrap();
+        let repaired = installer.repair(&mut |_| {}).unwrap();
+        assert_eq!(repaired.receipt.option, option);
+        assert_eq!(repaired.receipt.channel, Track::Stable);
+        assert!(
+            app.join(payload).is_file(),
+            "NSIS did not restore {payload}"
+        );
+        assert_eq!(installer.detect().unwrap().apps[0].app_id, id);
+    }
     // Simulate interruption after NSIS succeeded but before the outer receipt
     // commit. Ownership is already in the signed NSIS payload, so discovery,
     // reinstall and uninstall remain available without trusting arbitrary exes.

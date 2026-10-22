@@ -37,20 +37,7 @@ do {
     ).replace("\r\n", "\n").replace('\n', "\r\n"))
 }
 pub fn owned(path: &Path, home: &Path) -> bool {
-    fs::symlink_metadata(path).is_ok_and(|m| m.is_file())
-        && fs::read_to_string(path)
-            .ok()
-            .and_then(|s| {
-                s.trim_start_matches('\u{feff}')
-                    .lines()
-                    .next()
-                    .and_then(|s| s.strip_prefix(MARKER))
-                    .and_then(|s| serde_json::from_str::<PathBuf>(s).ok())
-            })
-            .is_some_and(|owner| {
-                crate::install_ownership::resolved(&owner).ok()
-                    == crate::install_ownership::resolved(home).ok()
-            })
+    crate::windows_task::script_owned(path, home)
 }
 pub fn write_owned_script(path: &Path, home: &Path, service: bool) -> Result<()> {
     if fs::symlink_metadata(path).is_ok() && !owned(path, home) {
@@ -80,13 +67,14 @@ fn xml(value: &str) -> String {
         .replace('>', "&gt;")
         .replace('"', "&quot;")
 }
-fn task_xml(file: &Path, sid: &str, powershell: &Path) -> String {
-    format!(
+fn task_xml(file: &Path, sid: &str, powershell: &Path, home: &Path) -> Result<String> {
+    Ok(format!(
         r#"<?xml version="1.0" encoding="UTF-16"?>
-<Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task"><Triggers><LogonTrigger><Enabled>true</Enabled><UserId>{sid}</UserId></LogonTrigger></Triggers><Principals><Principal id="Owner"><UserId>{sid}</UserId><LogonType>InteractiveToken</LogonType><RunLevel>LeastPrivilege</RunLevel></Principal></Principals><Settings><MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy><DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries><StopIfGoingOnBatteries>false</StopIfGoingOnBatteries><ExecutionTimeLimit>PT0S</ExecutionTimeLimit><StartWhenAvailable>true</StartWhenAvailable><RestartOnFailure><Interval>PT1M</Interval><Count>3</Count></RestartOnFailure></Settings><Actions Context="Owner"><Exec><Command>{}</Command><Arguments>-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File &quot;{}&quot;</Arguments></Exec></Actions></Task>"#,
+<Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task"><RegistrationInfo><Description>{}</Description></RegistrationInfo><Triggers><LogonTrigger><Enabled>true</Enabled><UserId>{sid}</UserId></LogonTrigger></Triggers><Principals><Principal id="Owner"><UserId>{sid}</UserId><LogonType>InteractiveToken</LogonType><RunLevel>LeastPrivilege</RunLevel></Principal></Principals><Settings><MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy><DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries><StopIfGoingOnBatteries>false</StopIfGoingOnBatteries><ExecutionTimeLimit>PT0S</ExecutionTimeLimit><StartWhenAvailable>true</StartWhenAvailable><RestartOnFailure><Interval>PT1M</Interval><Count>3</Count></RestartOnFailure></Settings><Actions Context="Owner"><Exec><Command>{}</Command><Arguments>-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File &quot;{}&quot;</Arguments></Exec></Actions></Task>"#,
+        xml(&crate::windows_task::owner(home)?),
         xml(&powershell.to_string_lossy()),
         xml(&file.to_string_lossy())
-    )
+    ))
 }
 async fn powershell(script: &str) -> Result<String> {
     #[cfg(windows)]
@@ -133,38 +121,27 @@ async fn schtasks(args: &[&str]) -> Result<String> {
     command.args(args);
     output(command).await
 }
-async fn task_control(name: &str, sid: &str, file: &Path, operation: &str) -> Result<String> {
-    #[cfg(windows)]
-    let executable = crate::windows_paths::system_program("WindowsPowerShell/v1.0/powershell.exe")?;
-    #[cfg(not(windows))]
-    let executable = PathBuf::from("powershell.exe");
-    let arguments = format!(
-        "-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File \"{}\"",
-        file.display()
-    );
-    powershell(&format!("$taskName = {}; $expectedSid = {}; $expectedPowerShell = {}; $expectedArguments = {}; $operation = {};\n{}",
-        quote(name), quote(sid), quote(&executable.to_string_lossy()), quote(&arguments), quote(operation),
-        include_str!("../assets/windows-task-control.ps1"))).await
+async fn task_control(home: &Path, file: &Path, operation: &str) -> Result<String> {
+    powershell(&crate::windows_task::control(file, home, operation)?).await
 }
 
 pub async fn status(home: &Path) -> Result<Value> {
     let file = service_file()?;
-    let installed = owned(&file, home);
-    let running = if installed && std::env::var("HEXBOT_SERVICE_NO_LOAD").as_deref() != Ok("1") {
-        let (name, sid) = task_name().await?;
-        task_control(&name, &sid, &file, "state").await? == "4"
+    let script_owned = crate::windows_task::check_script(&file, home)?;
+    let state = if std::env::var("HEXBOT_SERVICE_NO_LOAD").as_deref() != Ok("1") {
+        task_control(home, &file, "state").await?
     } else {
-        false
+        "missing".into()
     };
-    Ok(json!({"installed":installed,"running":running,"file":file}))
+    Ok(json!({"installed":script_owned || state != "missing","running":state == "4","file":file}))
 }
 // /End acknowledges cancellation before the task job and daemon lock are gone.
 // A restart may launch only after both are stopped, or it races the home lock.
-async fn wait_stopped(home: &Path, name: &str, sid: &str, file: &Path) -> Result<()> {
+async fn wait_stopped(home: &Path, file: &Path) -> Result<()> {
     let mut interval = tokio::time::interval(std::time::Duration::from_millis(200));
     let wait = async {
         loop {
-            let state = task_control(name, sid, file, "state").await?;
+            let state = task_control(home, file, "state").await?;
             let available = match fs::OpenOptions::new()
                 .read(true)
                 .write(true)
@@ -174,7 +151,7 @@ async fn wait_stopped(home: &Path, name: &str, sid: &str, file: &Path) -> Result
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => true,
                 Err(error) => return Err(error.into()),
             };
-            if state != "4" && available {
+            if !matches!(state.as_str(), "2" | "4") && available {
                 return Ok(());
             }
             interval.tick().await;
@@ -218,31 +195,19 @@ pub async fn run(home: &Path, args: &[String]) -> Result<()> {
         }
     }
     let file = service_file()?;
-    if fs::symlink_metadata(&file).is_ok() && !owned(&file, home) {
-        return Err(Error::new(
-            4208,
-            "Windows service belongs to another installation",
-        ));
-    }
+    crate::windows_task::check_script(&file, home)?;
     let no_load = std::env::var("HEXBOT_SERVICE_NO_LOAD").as_deref() == Ok("1");
     if action == "install" {
         services::selected_native_executable(home)?;
         if !no_load {
-            let (name, sid) = task_name().await?;
-            let state = task_control(&name, &sid, &file, "state").await?;
-            if state != "missing" && !owned(&file, home) {
-                return Err(Error::new(
-                    4208,
-                    "Existing Windows task has no owned script; left it alone",
-                ));
-            }
+            let state = task_control(home, &file, "state").await?;
             // Updating the task definition does not stop its current instance.
             // IgnoreNew would otherwise retain the old selected runtime after
             // setup/repair reports success. Validate and stop before replacing
             // any owned script/XML, then wait for the daemon's home lock too.
             if state != "missing" {
-                task_control(&name, &sid, &file, "stop").await?;
-                wait_stopped(home, &name, &sid, &file).await?;
+                task_control(home, &file, "stop").await?;
+                wait_stopped(home, &file).await?;
             }
         }
         fs::create_dir_all(home.join("logs"))?;
@@ -254,7 +219,7 @@ pub async fn run(home: &Path, args: &[String]) -> Result<()> {
                 crate::windows_paths::system_program("WindowsPowerShell/v1.0/powershell.exe")?;
             #[cfg(not(windows))]
             let powershell = PathBuf::from("powershell.exe");
-            let bytes = task_xml(&file, &sid, &powershell)
+            let bytes = task_xml(&file, &sid, &powershell, home)?
                 .encode_utf16()
                 .flat_map(u16::to_le_bytes)
                 .collect::<Vec<_>>();
@@ -273,23 +238,33 @@ pub async fn run(home: &Path, args: &[String]) -> Result<()> {
             .await?;
             schtasks(&["/Run", "/TN", &name]).await?;
         }
-    } else if owned(&file, home) {
+    } else if status(home).await?["installed"] == true {
+        if matches!(action, "start" | "restart") && !owned(&file, home) {
+            return Err(Error::new(
+                5244,
+                "Repair the Windows service with 'hexbot service install' before starting it",
+            ));
+        }
         if !no_load {
-            let (name, sid) = task_name().await?;
+            let (name, _) = task_name().await?;
             if matches!(action, "stop" | "restart" | "uninstall") {
-                task_control(&name, &sid, &file, "stop").await?;
-                wait_stopped(home, &name, &sid, &file).await?;
+                task_control(home, &file, "stop").await?;
+                wait_stopped(home, &file).await?;
             }
             if action == "uninstall" {
-                task_control(&name, &sid, &file, "delete").await?;
+                task_control(home, &file, "delete").await?;
             }
             if matches!(action, "start" | "restart") {
-                task_control(&name, &sid, &file, "state").await?;
+                task_control(home, &file, "state").await?;
                 schtasks(&["/Run", "/TN", &name]).await?;
             }
         }
         if action == "uninstall" {
-            fs::remove_file(&file)?;
+            match fs::remove_file(&file) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(e.into()),
+            }
             match fs::remove_file(file.with_extension("xml")) {
                 Ok(()) => {}
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
@@ -310,7 +285,9 @@ mod tests {
             Path::new("C:/User & name/daemon.ps1"),
             "S-1-5-21-123",
             Path::new("C:/Windows/System32/WindowsPowerShell/v1.0/powershell.exe"),
-        );
+            tempfile::tempdir().unwrap().path(),
+        )
+        .unwrap();
         assert!(task.contains("Principal id=\"Owner\""));
         assert!(task.contains("Actions Context=\"Owner\""));
         assert_eq!(task.matches("<UserId>S-1-5-21-123</UserId>").count(), 2);

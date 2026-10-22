@@ -59,6 +59,11 @@ describe.skipIf(process.platform !== 'win32' || !process.env.HEXBOT_NATIVE_TEST_
       const { execFile } = await import('node:child_process')
       const { promisify } = await import('node:util')
       expect((await promisify(execFile)(exe, ['version'])).stdout.trim()).toBe(manifest.version)
+      const python = join(chosen, 'runtime/tools/code-python/Scripts/python.exe')
+      const voiceProbe = await promisify(execFile)(python, ['-I', '-c',
+        'import aiohappyeyeballs, aiohttp, aiosignal, attrs, certifi, edge_tts, frozenlist, idna, multidict, propcache, tabulate, typing_extensions, yarl; from importlib.metadata import version; print(version("edge-tts"))'],
+      { windowsHide: true, env: { ...process.env, HEXBOT_HOME: chosen } })
+      expect(voiceProbe.stdout.trim()).toBe('7.2.7')
       await performBootstrap({ run, emit, appIsPackaged: true, appVersion: manifest.version, resourcesPath: dirname(bundle), platform: 'win32', arch: 'x64' })
       expect(nativeServiceExecutable()).toBe(exe)
       await expect(readFile(join(chosen, 'runtime/native-executable.exe'))).rejects.toThrow()
