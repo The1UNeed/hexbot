@@ -29,7 +29,7 @@ import {
 } from '../components/ui/settings-shell'
 import { botFace } from '../lib/avatar-builder'
 import { useChatSelection } from '../lib/use-chat-selection'
-import { useBots } from '../stores/bots'
+import { botMissing, useBots } from '../stores/bots'
 import { sectionsActions } from '../stores/sections'
 import { useSettings } from '../stores/settings'
 import { uiActions } from '../stores/ui'
@@ -85,6 +85,7 @@ function BotSettingsDialog() {
   const navigate = useNavigate()
   const bot = useBots(state => state.byName[botName])
   const loaded = useBots(state => state.loaded)
+  const gone = useBots(state => botMissing(state, botName))
   const refresh = useBots(state => state.refresh)
   const { startSelection } = useChatSelection()
   const [closeError, setCloseError] = useState<string | null>(null)
@@ -101,7 +102,7 @@ function BotSettingsDialog() {
 
   const close = async () => {
     const current = startSelection()
-    const missing = () => useBots.getState().loaded && !useBots.getState().byName[botName]
+    const missing = () => botMissing(useBots.getState(), botName)
 
     const exitMissing = () => {
       if (!current() || !missing()) {
@@ -126,7 +127,7 @@ function BotSettingsDialog() {
 
     // Without a roster this bot may or may not exist: look nothing up and
     // forget nothing. Home restores the remembered chat, which checks itself.
-    if (!useBots.getState().loaded && !useBots.getState().byName[botName]) {
+    if (!useBots.getState().byName[botName] && !missing()) {
       void navigate({ to: '/' })
 
       return
@@ -187,7 +188,7 @@ function BotSettingsDialog() {
         {bot ? (
           <BotSettingsPanel bot={bot} connector={connector} tab={current} />
         ) : (
-          <p className="p-10 text-muted">{loaded ? 'This bot no longer exists.' : 'Loading…'}</p>
+          <p className="p-10 text-muted">{gone ? 'This bot no longer exists.' : 'Loading…'}</p>
         )}
       </SettingsShell>
     </>

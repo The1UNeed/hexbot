@@ -30,9 +30,11 @@ const section = {
 
 const target = (origin: string) => ({ kind: 'local' as const, origin })
 let call: ReturnType<typeof vi.fn>
+const supervisors: ConnectionSupervisor[] = []
 
 function supervisor(info: Promise<unknown>) {
   const supervisor = new ConnectionSupervisor()
+  supervisors.push(supervisor)
 
   // Exercise the actual hydration path with a controlled RPC client, without a socket or credentials.
   const internal = supervisor as unknown as {
@@ -68,8 +70,14 @@ beforeEach(() => {
   vi.spyOn(useBots.getState(), 'refresh').mockResolvedValue()
   vi.spyOn(useRooms.getState(), 'refresh').mockResolvedValue()
   vi.spyOn(useMe.getState(), 'refresh').mockResolvedValue()
+  vi.spyOn(useSections.getState(), 'refresh').mockResolvedValue()
 })
 afterEach(() => {
+  for (const supervisor of supervisors.splice(0)) {
+    ;(supervisor as unknown as { client: null }).client = null
+    supervisor.stop()
+  }
+
   vi.restoreAllMocks()
   setActiveRpc(null)
 })
@@ -158,7 +166,7 @@ it('adopts install identity independently of other hydration RPCs on reconnect',
     lastSection: { bot: 'owl', section: 'other-install-chat', daemon: 'previous-install' }
   })
   await supervisor(Promise.resolve({ install_id: 'new-install', one_chat: false })).hydrate()
-  expect(useUi.getState().lastSection).toBeNull()
+  await vi.waitFor(() => expect(useUi.getState().lastSection).toBeNull())
   expect(useConnection.getState().daemon?.install_id).toBe('new-install')
 })
 

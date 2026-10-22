@@ -3,6 +3,8 @@ import { create } from 'zustand'
 import { usageSummary, usersMe, usersMeSet } from '../lib/api'
 import type { CurrentUser } from '../lib/types'
 
+import { connectionRead } from './connection'
+
 export function unknownMethod(error: unknown): boolean {
   const value = error as { code?: number; message?: string }
 
@@ -24,6 +26,8 @@ export const useMe = create<MeState>(set => ({
   me: null,
   usageSupported: null,
   async refresh() {
+    const current = connectionRead()
+
     try {
       const me = await usersMe()
       let usageSupported = true
@@ -34,8 +38,14 @@ export const useMe = create<MeState>(set => ({
         usageSupported = !unknownMethod(error)
       }
 
-      set({ me, usageSupported })
+      if (current()) {
+        set({ me, usageSupported })
+      }
     } catch (error) {
+      if (!current()) {
+        return
+      }
+
       if (unknownMethod(error)) {
         set({ me: null, usageSupported: false })
       }
