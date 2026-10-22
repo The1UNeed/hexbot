@@ -43,6 +43,13 @@ Output exceptions must not overlap `runtime/native-current.json`,
 Windows boundary must enforce this on handles and child processes too. A
 validated launcher path alone does not contain agent code.
 
+The Windows CLI contract also installs a separate native argument forwarder at
+`<user-profile>/.local/bin/hexbot.exe`, with a `hexbot.json` home/hash ownership
+sidecar. It selects the immutable daemon through `native-current.json`; it is
+not a stable daemon or a command script. Both CLI files must be protected by any
+future Windows confinement policy, including aliases and parent replacement.
+The present Auto/Manual refusal applies before agent writes to either path.
+
 There is no managed trusted Windows Git scanner yet, so metadata scanning
 refuses. Do not fall back to `git` from `PATH`. Rust resolves Windows executable
 names before calling CreateProcess and can search the parent's `PATH` even
