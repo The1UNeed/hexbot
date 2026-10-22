@@ -79,7 +79,16 @@ fn launchers_resolve_unicode_and_junctions_before_executing() {
                     .args(["space arg", "a&b", "quote\"arg", "%PATH%", "!"])
                     .output()
                     .unwrap();
-                assert!(!output.status.success());
+                if allowed {
+                    assert_eq!(
+                        output.status.code(),
+                        Some(17),
+                        "native CLI stderr={}",
+                        String::from_utf8_lossy(&output.stderr)
+                    );
+                } else {
+                    assert!(!output.status.success());
+                }
                 assert_eq!(marker.exists(), allowed, "native CLI containment");
                 if allowed {
                     assert_eq!(
@@ -144,7 +153,16 @@ fn launchers_resolve_unicode_and_junctions_before_executing() {
                 "& {} version; exit $LASTEXITCODE",
                 quote(&launcher)
             ));
-            assert!(!output.status.success()); // fixture returns 17; rejected selection returns 1
+            if allowed {
+                assert_eq!(
+                    output.status.code(),
+                    Some(17),
+                    "service={service}, stderr={}",
+                    String::from_utf8_lossy(&output.stderr)
+                );
+            } else {
+                assert!(!output.status.success());
+            }
             assert_eq!(
                 marker.exists(),
                 allowed,
@@ -155,6 +173,84 @@ fn launchers_resolve_unicode_and_junctions_before_executing() {
                 fs::remove_file(&marker).unwrap();
             }
         }
+    }
+    // Exercise an actual short-name alias where the volume provides one. Some
+    // Windows volumes disable 8.3 creation; report that fact without inventing
+    // an alias or counting it as native short-name evidence.
+    use std::os::windows::ffi::{OsStrExt, OsStringExt};
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn GetShortPathNameW(long: *const u16, short: *mut u16, length: u32) -> u32;
+    }
+    let long: Vec<_> = home.as_os_str().encode_wide().chain(Some(0)).collect();
+    let mut short = vec![0u16; 32768];
+    let length = unsafe { GetShortPathNameW(long.as_ptr(), short.as_mut_ptr(), short.len() as u32) }
+        as usize;
+    assert!(
+        length > 0 && length < short.len(),
+        "{}",
+        std::io::Error::last_os_error()
+    );
+    let short = std::path::PathBuf::from(std::ffi::OsString::from_wide(&short[..length]));
+    if short != home {
+        eprintln!("native 8.3 home alias={short:?}");
+        let short_forwarder = windows_cli::install(
+            Path::new(env!("CARGO_BIN_EXE_hexbot-cli")),
+            &short,
+            &root.path().join("short-bin"),
+        )
+        .unwrap();
+        for service in [false, true] {
+            let launcher = root.path().join(if service {
+                "short-task.ps1"
+            } else {
+                "short-cli.ps1"
+            });
+            system_service::write_owned_script(&launcher, &short, service).unwrap();
+            for (selected, allowed) in [
+                (inside.join("hexbot.exe"), true),
+                (linked.join("hexbot.exe"), false),
+            ] {
+                fs::write(
+                    home.join("runtime/native-current.json"),
+                    json!({"executable": selected}).to_string(),
+                )
+                .unwrap();
+                let output = if service {
+                    powershell(&format!(
+                        "& {} version; exit $LASTEXITCODE",
+                        quote(&launcher)
+                    ))
+                } else {
+                    Command::new(&short_forwarder)
+                        .arg("version")
+                        .output()
+                        .unwrap()
+                };
+                if allowed {
+                    assert_eq!(
+                        output.status.code(),
+                        Some(17),
+                        "8.3 stderr={}",
+                        String::from_utf8_lossy(&output.stderr)
+                    );
+                } else {
+                    assert!(!output.status.success());
+                }
+                assert_eq!(
+                    marker.exists(),
+                    allowed,
+                    "8.3 containment service={service}"
+                );
+                if allowed {
+                    fs::remove_file(&marker).unwrap();
+                }
+            }
+        }
+    } else {
+        eprintln!(
+            "Native volume supplies no distinct 8.3 home alias; short-name launch is unproved on this volume"
+        );
     }
     // Junctions are directory links, never recursively clean their targets.
     fs::remove_dir(&linked).unwrap();

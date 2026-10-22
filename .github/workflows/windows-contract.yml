@@ -103,7 +103,7 @@ jobs:
           $env:HEXBOT_NATIVE_TEST_BUNDLE = (Resolve-Path apps/desktop/resources/hexbot-native).Path
           pnpm --filter ./apps/desktop run test --run src/main/backend/windows-bootstrap.test.ts src/main/backend/windows-paths.test.ts
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          cargo test --locked --manifest-path backend/hexbot-core/Cargo.toml --test windows_pi -- --ignored --nocapture
+          cargo test --locked --manifest-path backend/hexbot-core/Cargo.toml --test windows_pi --test windows_shutdown -- --ignored --nocapture
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           node scripts/desktop/windows-runtime-smoke.mjs
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

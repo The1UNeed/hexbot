@@ -58,7 +58,7 @@ test('Windows CI keeps the production guard and never publishes disposable probe
   assert(ci.includes('windows-update-restart.mjs'))
   assert(ci.includes('windows-installed-app-smoke.mjs'))
   assert(ci.includes('windows-paths.test.ts'))
-  assert(ci.includes('--test windows_pi -- --ignored'))
+  assert(ci.includes('--test windows_pi --test windows_shutdown -- --ignored'))
   assert(!ci.slice(ci.indexOf('  native-runtime:')).includes('upload-artifact'))
   const release = await readFile('.github/workflows/release.yml', 'utf8')
   assert(!release.includes('windows-latest'))

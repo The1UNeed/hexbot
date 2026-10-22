@@ -21,6 +21,6 @@ try {
     # HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND). Other failures, including
     # access denied, must retain the owned script/XML for recovery.
     if ($exception.HResult -eq -2147024894) {
-        if ($operation -eq 'state') { 0 }
+        if ($operation -eq 'state') { 'missing' }
     } else { throw }
 }

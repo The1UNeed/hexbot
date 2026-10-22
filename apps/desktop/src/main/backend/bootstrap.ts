@@ -134,7 +134,8 @@ export async function installCodeRuntime(deps: BootstrapDeps): Promise<void> {
   const options = { cwd: runtimeDir(), env: { ...process.env,
     UV_PYTHON_INSTALL_DIR: join(hexbotHome(), 'python'),
     UV_PYTHON_BIN_DIR: binDir(),
-    UV_CACHE_DIR: join(hexbotHome(), 'runtime', 'uv-cache')
+    UV_CACHE_DIR: join(hexbotHome(), 'runtime', 'uv-cache'),
+    UV_LINK_MODE: 'copy'
   } }
   if (!deps.exists(python)) {
     deps.emit({ stage: 'python', message: 'Installing Python for code tools' })

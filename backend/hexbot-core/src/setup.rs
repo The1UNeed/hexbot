@@ -292,12 +292,17 @@ where
     Ok(executable)
 }
 async fn run_uv(home: &Path, uv: &Path, args: &[&str]) -> Result<String> {
-    let output = Command::new(uv)
+    let mut command = Command::new(uv);
+    #[cfg(windows)]
+    command.creation_flags(0x08000000); // Noninteractive GUI bootstrap child.
+    let output = command
         .args(args)
         .current_dir(home.join("runtime"))
         .env("UV_PYTHON_INSTALL_DIR", home.join("python"))
         .env("UV_PYTHON_BIN_DIR", home.join("bin"))
         .env("UV_CACHE_DIR", home.join("runtime/uv-cache"))
+        // Managed executables/packages must not share writable cache inodes.
+        .env("UV_LINK_MODE", "copy")
         .stdin(std::process::Stdio::null())
         .kill_on_drop(true)
         .output()

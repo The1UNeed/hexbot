@@ -3,6 +3,9 @@ use hexbot_core::{
     server::{self, App},
     services,
 };
+#[cfg(windows)]
+mod windows_process_lifetime;
+
 use std::{
     io::IsTerminal,
     io::Write,
@@ -270,6 +273,8 @@ async fn run() -> Result<()> {
         }
     }
     let _lock = lock_home(&home)?;
+    #[cfg(windows)]
+    windows_process_lifetime::retain_until_process_exit()?;
     let executable = std::env::current_exe()?;
     common::atomic_write(
         &home.join("runtime/native-running.json"),

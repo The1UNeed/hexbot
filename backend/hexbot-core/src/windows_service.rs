@@ -227,6 +227,16 @@ pub async fn run(home: &Path, args: &[String]) -> Result<()> {
     let no_load = std::env::var("HEXBOT_SERVICE_NO_LOAD").as_deref() == Ok("1");
     if action == "install" {
         services::selected_native_executable(home)?;
+        if !no_load {
+            let (name, sid) = task_name().await?;
+            let state = task_control(&name, &sid, &file, "state").await?;
+            if state != "missing" && !owned(&file, home) {
+                return Err(Error::new(
+                    4208,
+                    "Existing Windows task has no owned script; left it alone",
+                ));
+            }
+        }
         fs::create_dir_all(home.join("logs"))?;
         write_owned_script(&file, home, true)?;
         if !no_load {

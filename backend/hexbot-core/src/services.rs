@@ -1014,7 +1014,10 @@ fn spawn_cloudflared(
         .create(true)
         .append(true)
         .open(logs)?;
-    Command::new(binary)
+    let mut command = Command::new(binary);
+    #[cfg(windows)]
+    command.creation_flags(0x08000000); // Logs are piped; never open a GUI-owned console.
+    command
         .arg("tunnel")
         .arg("--config")
         .arg(settings)
@@ -2311,7 +2314,10 @@ async fn native_update(home: &Path, version: &str, service: &Service) -> Result<
         use std::os::unix::fs::PermissionsExt;
         fs::set_permissions(&staged_executable, fs::Permissions::from_mode(0o700))?;
     }
-    let mut child = Command::new(&staged_executable)
+    let mut command = Command::new(&staged_executable);
+    #[cfg(windows)]
+    command.creation_flags(0x08000000);
+    let mut child = command
         .arg("version")
         .env("HEXBOT_HOME", home)
         .stdin(Stdio::null())

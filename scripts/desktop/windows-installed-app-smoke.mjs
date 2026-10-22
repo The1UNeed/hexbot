@@ -1,6 +1,8 @@
 // Run the actual NSIS-installed app before the engine repairs/uninstalls it.
 import assert from 'node:assert/strict'
 import { watch } from 'node:fs'
+import { execFile } from 'node:child_process'
+import { promisify } from 'node:util'
 import { mkdir, readFile, realpath } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { dirname, isAbsolute, join, relative, sep } from 'node:path'
@@ -26,7 +28,7 @@ async function state() {
     void check()
   })
 }
-let app
+let app, ownedPid
 try {
   app = await electron.launch({ executablePath: executable, timeout: 300_000, env: {
     ...process.env, HOME: root, USERPROFILE: root, HEXBOT_HOME: home, HERMES_HOME: home,
@@ -38,6 +40,8 @@ try {
   assert(await window.locator('body').isVisible())
   if (edition === 'full') {
     const running = await state()
+    ownedPid = JSON.parse(await readFile(join(home, 'runtime/native-running.json'), 'utf8')).pid
+    assert(Number.isSafeInteger(ownedPid))
     const selected = JSON.parse(await readFile(join(home, 'runtime/native-current.json'), 'utf8')).executable
     const path = relative(await realpath(join(home, 'runtime/native')), await realpath(selected))
     assert(path && !path.startsWith(`..${sep}`) && !isAbsolute(path))
@@ -50,4 +54,11 @@ try {
   console.log(`Installed ${edition} app opened its real packaged window${edition === 'full' ? ' and activated its verified native daemon' : ''}`)
 } finally {
   if (app) await app.close()
+  if (ownedPid) {
+    assert.throws(() => process.kill(ownedPid, 0), { code: 'ESRCH' }, 'Packaged Full quit left its owned daemon alive')
+    await assert.rejects(readFile(join(home, 'serve-state.json')), { code: 'ENOENT' })
+    const ps = join(process.env.SystemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
+    await promisify(execFile)(ps, ['-NoProfile', '-NonInteractive', '-Command', "$f=[IO.File]::Open((Join-Path $env:HEXBOT_HOME 'native-daemon.lock'),'Open','ReadWrite','ReadWrite,Delete'); try {$f.Lock(0,1);$f.Unlock(0,1)} finally {$f.Dispose()}"], {env: {...process.env, HEXBOT_HOME: home}, windowsHide: true, timeout: 30_000})
+    console.log('Packaged Full quit completed graceful cleanup and released its home lock')
+  }
 }

@@ -314,7 +314,10 @@ impl PiProcess {
                     .insert(0, launcher.to_string_lossy().into_owned());
             }
         }
-        let mut child = Command::new(&options.executable)
+        let mut command = Command::new(&options.executable);
+        #[cfg(windows)]
+        command.creation_flags(0x08000000); // CREATE_NO_WINDOW for GUI-owned Pi
+        let mut child = command
             .args(&options.args)
             .env_clear()
             .envs(std::env::vars().filter(|(name, _)| inherited_environment(name)))
