@@ -1,0 +1,4 @@
+{
+  "note": "iOS entitlements the production provisioning profile stored on EAS supports. Regenerate the profile before changing this list: README.md, iOS capabilities and the provisioning profile.",
+  "entitlements": ["aps-environment"]
+}

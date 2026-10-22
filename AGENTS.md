@@ -139,7 +139,7 @@ HEXBOT_HOME=$(mktemp -d) HEXBOT_WEB_DEV_URL=http://localhost:5173 backend/hexbot
 VITE_HEXBOT_ORIGIN=http://127.0.0.1:9119 pnpm --filter ./apps/web run dev --port 5173 --strictPort
 ```
 
-Three ways to hurt yourself:
+Four ways to hurt yourself:
 
 1. **Writing to the live install.** `~/.hexbot` is the developer's real
    daemon state. Use `pnpm dev`, or run daemons with `HEXBOT_HOME` pointing
@@ -150,6 +150,13 @@ Three ways to hurt yourself:
 3. **Adding daemon work to the handoff package.** Use
    `backend/hexbot-core/` or the private extension in `backend/pi-runtime/`.
    The Python package only transfers existing services to the native daemon.
+4. **Adding an iOS capability without its profile.** A config plugin or
+   `ios.entitlements` entry in `apps/mobile/app.config.ts` that adds an
+   entitlement fails every nightly TestFlight build until the provisioning
+   profile stored on EAS is regenerated: `pnpm --filter @hexbot/mobile run
+   profile`, no Apple sign-in needed. `pnpm mobile:check` refuses the change
+   until `apps/mobile/ios-entitlements.json` is updated; the steps are in
+   `apps/mobile/README.md`, "iOS capabilities and the provisioning profile".
 
 ## Verifying
 

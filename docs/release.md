@@ -40,6 +40,16 @@ of a successful upload, and a workflow cannot guarantee Apple approval.
 Do not retry an already accepted build. Full setup is in
 `apps/mobile/README.md`.
 
+The cloud build uses the stored production provisioning profile as it is and
+never syncs capabilities with Apple. When a change adds an iOS capability (an
+entitlement from `apps/mobile/app.config.ts`, as `expo-notifications` adds
+push), regenerate the profile before the next nightly with `pnpm --filter
+@hexbot/mobile run profile` and record the new list in
+`apps/mobile/ios-entitlements.json`; `pnpm mobile:check` refuses a mismatch,
+and the `testflight` job checks the stored profile against the config before
+it starts the build. Steps: `apps/mobile/README.md`, "iOS capabilities and
+the provisioning profile".
+
 ## What `release.yml` does
 
 - Triggers: a `v*` tag push (stable), the 09:00 UTC schedule (nightly), or a
@@ -453,6 +463,17 @@ On Linux x86_64:
 - `preflight` fails with "does not match": the tag and
   `apps/desktop/package.json` disagree. Delete the tag, fix the version with
   `set-version.mjs`, commit, re-tag.
+- `iOS TestFlight` fails in "Check the stored provisioning profile", or in
+  Xcode with "Provisioning profile ... doesn't include the X capability" or
+  "... entitlement": the profile stored on EAS predates a capability the
+  config now needs. Run `pnpm --filter @hexbot/mobile run profile` from a
+  checkout (`apps/mobile/README.md`, "iOS capabilities and the provisioning
+  profile"), then a manual nightly. Retrying the workflow does not help.
+- `iOS TestFlight` fails before Expo starts with
+  `ERR_PNPM_NO_MATURE_MATCHING_VERSION`: a release job resolved a package
+  on the runner that is younger than the workspace's 14-day release-age
+  rule. Release jobs install everything from the lockfile; `eas-cli` is a
+  locked dev dependency of `apps/mobile` for this reason, never `pnpm dlx`.
 - macOS build unsigned when expected signed: check that all five Apple
   secrets are populated.
 - macOS build fails in `set-key-partition-list` with "SecKeychainUnlock: The

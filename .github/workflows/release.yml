@@ -148,6 +148,13 @@ jobs:
           node-version: 26
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      # The cloud build uses the stored provisioning profile as it is, so a
+      # profile that lacks an entitlement fails 20 minutes later in Xcode.
+      # Fail here instead, with the command that fixes it.
+      - name: Check the stored provisioning profile
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+        run: pnpm --filter @hexbot/mobile run entitlements --eas
       - name: Build and upload iOS through Expo
         env:
           EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}

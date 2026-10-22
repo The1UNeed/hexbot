@@ -194,6 +194,63 @@ choose production, then App Store Connect to assign a valid API key. Retry
 the existing build after fixing credentials. Do not revoke a shared key
 without checking its other uses.
 
+## iOS capabilities and the provisioning profile
+
+EAS stores one production provisioning profile for `app.hexbot.mobile`. A
+profile covers the capabilities Apple had enabled on the App ID when it was
+made. The TestFlight workflow builds non-interactively and uses that profile
+as it is: EAS syncs capabilities with Apple only during a run from a checkout,
+and the cloud-side check asks Apple only whether the profile exists and is
+active, not what it covers. An entitlement the config started to need after
+the profile was made therefore fails the archive in Xcode with "Provisioning
+profile ... doesn't include the X capability", on every nightly, until someone
+regenerates the profile. Retrying does nothing.
+
+Entitlements come from `app.config.ts`: `expo-notifications` adds
+`aps-environment` (Push Notifications); `ios.entitlements` and other config
+plugins can add more. Two checks keep the profile and the config together:
+
+- `ios-entitlements.json` records the list the stored profile supports, and
+  `pnpm mobile:check` (CI, and the workflow before it builds) compares it with
+  what the config resolves to, so a change cannot reach `main` unnoticed.
+- `pnpm --filter @hexbot/mobile run entitlements --eas` downloads the stored
+  profile and checks that it carries every resolved entitlement. The Release
+  workflow runs it before starting the build, with `EXPO_TOKEN`; from a
+  checkout it uses your `eas login` session.
+
+When a change adds or removes an iOS capability:
+
+1. Regenerate the profile without an Apple sign-in. The script uses the team
+   App Store Connect API key EAS already holds for submissions: it enables the
+   missing capabilities on the App ID, then lets `eas credentials:configure-build`
+   create a new profile and store it on EAS, answering its confirmations.
+   Needs `expect`, which macOS has.
+
+   ```sh
+   pnpm --filter @hexbot/mobile run profile          # --check only reports
+   ```
+
+   The same thing by hand, signed in to an Apple account that can edit
+   identifiers and profiles for the team (the password and a two-factor code
+   are asked whenever the saved session has expired):
+
+   ```sh
+   cd apps/mobile
+   EXPO_NO_KEYCHAIN=1 pnpm exec eas credentials:configure-build --platform ios --profile production
+   ```
+
+2. Record the new list and commit `ios-entitlements.json` with the change:
+
+   ```sh
+   pnpm --filter @hexbot/mobile run entitlements --write
+   ```
+
+3. Confirm with `pnpm --filter @hexbot/mobile run entitlements --eas`, then a
+   manual nightly or `pnpm mobile:testflight`.
+
+Sending pushes needs the APNs key on the EAS project as well; the profile
+only lets the app receive them.
+
 ## Verify
 
 ```sh

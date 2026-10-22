@@ -163,7 +163,13 @@
 
 ## Mobile
 
-`pnpm mobile:check` runs the Expo app's TypeScript, lint, protocol and chat-state tests.
+`pnpm mobile:check` runs the Expo app's TypeScript, lint, protocol and chat-state tests,
+and `scripts/ios-entitlements.mjs`, which refuses a change to the iOS
+entitlements until `ios-entitlements.json`, the list the stored provisioning
+profile supports, is updated. The same script with `--eas` checks the profile
+stored on EAS itself; the Release workflow runs it before the TestFlight
+build, and `scripts/ios-profile.mjs` regenerates the profile
+(`apps/mobile/README.md`, "iOS capabilities and the provisioning profile").
 Room regressions cover simultaneous turns, reconnect cleanup, failure and limit
 notices, and former members' names. File tests cover size checks before reads.
 `pnpm --filter @hexbot/mobile run export` bundles iOS, Android and web.
