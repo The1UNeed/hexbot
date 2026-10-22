@@ -2,6 +2,7 @@ import { ChevronDown, Plus, Search } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
 
 import { Button } from '../../components/ui/button'
+import { confirm } from '../../components/ui/confirm'
 import { ConnectorIcon } from '../../components/ui/connector-icon'
 import { Input } from '../../components/ui/input'
 import { SkeletonLines } from '../../components/ui/skeleton'
@@ -315,13 +316,11 @@ function ConnectorRow({
             ) : null}
             {onRemove ? (
               <Button
-                onClick={() => {
-                  if (
-                    window.confirm(`Remove ${connector.name} from connected tools for every bot?`)
-                  ) {
-                    onRemove()
-                  }
-                }}
+                onClick={() =>
+                  void confirm({
+                    title: `Remove ${connector.name} from connected tools for every bot?`
+                  }).then(yes => (yes ? onRemove() : undefined))
+                }
                 size="sm"
                 variant="ghost"
               >

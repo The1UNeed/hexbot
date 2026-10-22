@@ -2,6 +2,7 @@ import { ChevronDown } from 'lucide-react'
 import { useEffect, useState } from 'react'
 
 import { Button } from '../../components/ui/button'
+import { confirm } from '../../components/ui/confirm'
 import { Menu } from '../../components/ui/menu'
 import { Textarea } from '../../components/ui/textarea'
 import { BOT_TEMPLATES } from '../../lib/bot-templates'
@@ -16,7 +17,7 @@ export function PersonaTab({ bot, onSave }: { bot: Bot; onSave: SaveBot }) {
   const [persona, setPersona] = useState(bot.persona)
   useEffect(() => setPersona(bot.persona), [bot.persona])
 
-  const applyTemplate = (id: string) => {
+  const applyTemplate = async (id: string) => {
     const template = BOT_TEMPLATES.find(item => item.id === id)
 
     if (!template) {
@@ -26,7 +27,7 @@ export function PersonaTab({ bot, onSave }: { bot: Bot; onSave: SaveBot }) {
     if (
       persona.trim() &&
       persona !== template.persona &&
-      !window.confirm(`Replace the soul with the ${template.title} template?`)
+      !(await confirm({ title: `Replace the soul with the ${template.title} template?` }))
     ) {
       return
     }
@@ -47,7 +48,7 @@ export function PersonaTab({ bot, onSave }: { bot: Bot; onSave: SaveBot }) {
         <Menu
           items={BOT_TEMPLATES.map(item => ({
             label: item.title,
-            onSelect: () => applyTemplate(item.id)
+            onSelect: () => void applyTemplate(item.id)
           }))}
           trigger={
             <Button icon={<ChevronDown size={14} />} size="sm" variant="ghost">

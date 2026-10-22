@@ -47,7 +47,7 @@ describe('removing the last member', () => {
       )
     } as never)
 
-    await expect(useRooms.getState().removeMember('r', 'scout')).resolves.toBe(true)
+    await expect(useRooms.getState().removeMember('r', 'scout', false)).resolves.toBe(true)
     expect(useRooms.getState().byId.r).toBeUndefined()
     expect(useRooms.getState().order).toEqual([])
     expect(useRooms.getState().eventsByRoom.r).toBeUndefined()
