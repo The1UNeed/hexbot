@@ -9,6 +9,7 @@ import { useShallow } from 'zustand/react/shallow'
 import { botsCreate, botsDelete, botsGet, botsList, botsUpdate } from '../lib/api'
 import type { Bot, BotCreateInput, BotUpdatePatch, Section } from '../lib/types'
 
+import { connectionRead } from './connection'
 import { uiActions } from './ui'
 
 export interface BotsState {
@@ -42,26 +43,40 @@ export const useBots = create<BotsState>((set, get) => ({
   order: [],
 
   async refresh() {
+    const current = connectionRead()
     set({ error: null, loading: true })
 
     try {
       const result = await botsList()
 
+      if (!current()) {
+        return
+      }
+
       set({ ...indexBots(result.bots ?? []), loaded: true, loading: false })
     } catch (error) {
+      if (!current()) {
+        return
+      }
+
       set({ error: error instanceof Error ? error.message : String(error), loading: false })
     }
   },
 
   async refreshOne(name) {
+    const current = connectionRead()
+
     try {
       const { bot } = await botsGet(name)
+
+      if (!current()) {return}
 
       set(state => ({
         byName: { ...state.byName, [bot.name]: bot },
         order: state.order.includes(bot.name) ? state.order : [bot.name, ...state.order]
       }))
     } catch {
+      if (!current()) {return}
       await get().refresh()
     }
   },

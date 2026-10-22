@@ -1,5 +1,21 @@
 # Testing
 
+## Authorized startup cache
+
+`pnpm --filter ./apps/web run test --run src/stores/startup-cache.test.ts` covers
+repeated inputs during hydration, verified room baselines, overlapping history
+reads, revocation and obsolete writes, install identity, stripped live IDs, and
+row/byte/recency limits.
+
+After building the daemon and web bundle and installing pinned Pi dependencies,
+run `node scripts/dev/startup-cache-smoke.mjs`. It uses a temporary daemon home,
+real Pi, a local streaming model, and the production browser bundle. It holds a
+real history reply to exercise cached hydration and a repeated prompt, reconnects
+the socket to check the proving read, blocks authorization on an offline reload,
+then revokes the browser's actual device and checks disk and rendered state.
+Screenshots remain in the printed temporary artifacts directory. It publishes
+nothing and stops only its own processes.
+
 ## Native product suites
 
 - Rust daemon: `cargo test --locked --manifest-path backend/hexbot-core/Cargo.toml`

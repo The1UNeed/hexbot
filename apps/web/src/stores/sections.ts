@@ -14,12 +14,23 @@ import {
   sectionsCreate,
   sectionsList,
   sectionsOpen,
-  sectionsUnarchive
+  sectionsUnarchive,
+  sessionHistory
 } from '../lib/api'
+import type { HistoryRow } from '../lib/api'
 import { KICKOFF_MARKER } from '../lib/bot-kickoff'
+import {
+  activeCacheScope,
+  cacheAccess,
+  cacheCurrent,
+  cachedHistory,
+  forgetHistory,
+  rememberHistory,
+  syncHistory
+} from '../lib/device-cache'
 import type { Bot, BotStatus, DaemonInfo, Message, Section } from '../lib/types'
 
-import { useConnection } from './connection'
+import { connectionRead, useConnection } from './connection'
 import { releaseCheckinMessages, useTranscripts } from './transcripts'
 
 /**
@@ -73,6 +84,9 @@ export interface ChatChoice {
 
 export interface SectionsState {
   byId: Record<string, Section>
+  cachedMessages: Record<string, Message[]>
+  restore: (sections: Section[]) => void
+  restoreHistory: () => Promise<void>
   /**
    * A bot's one chat with you, made on first use. On an older daemon the
    * user may be asked to pick it; null when they pick none.
@@ -190,6 +204,57 @@ function mergeSection(state: SectionsState, section: Section): Partial<SectionsS
   }
 }
 
+function withoutKey<T>(items: Record<string, T>, id: string): Record<string, T> {
+  const next = { ...items }
+  delete next[id]
+
+  return next
+}
+
+/** Update only chats this device already keeps, after a completed turn. */
+const keeping = new Map<string, ReturnType<typeof setTimeout>>()
+
+export function keepHistory(sectionId: string, sessionId: string): void {
+  const access = cacheAccess()
+
+  if (!access) {
+    return
+  }
+
+  const key = JSON.stringify([access.scope, sectionId])
+  clearTimeout(keeping.get(key))
+  keeping.set(
+    key,
+    setTimeout(() => {
+      keeping.delete(key)
+      // An early canonical lookup may have opened before cache authorization.
+      // Join that proving read before starting any background cache fetch.
+      void (opening.get(sectionId) ?? Promise.resolve())
+        .catch(() => undefined)
+        .then(() =>
+          syncHistory(access, sectionId, async () => {
+            if (!cacheCurrent(access)) {
+              return
+            }
+
+            const cached = await cachedHistory(access.scope, sectionId)
+
+            if (!cached || !cacheCurrent(access)) {
+              return
+            }
+
+            const { messages } = await sessionHistory(sessionId)
+
+            if (cacheCurrent(access)) {
+              await rememberHistory(access.scope, sectionId, { rows: messages ?? [] })
+            }
+          })
+        )
+        .catch(() => undefined)
+    }, 2000)
+  )
+}
+
 /** Reloads asked for by section, so an open already under way reads it again. */
 const reloads = new Map<string, number>()
 /** Share history reads so a slower concurrent snapshot cannot replace a newer one. */
@@ -281,6 +346,34 @@ async function olderChat(
 
 export const useSections = create<SectionsState>((set, get) => ({
   byId: {},
+  cachedMessages: {},
+  async restoreHistory() {
+    const access = cacheAccess()
+
+    if (!access) {
+      return
+    }
+
+    await Promise.all(
+      [...opening.keys()].map(async id => {
+        const cached = await cachedHistory<HistoryRow>(access.scope, id)
+
+        if (cached && cacheCurrent(access) && opening.has(id) && !get().liveSessionId[id]) {
+          set(state => ({
+            cachedMessages: { ...state.cachedMessages, [id]: messagesFromHistory(cached.rows) }
+          }))
+        }
+      })
+    )
+  },
+  restore(sections) {
+    set(state =>
+      indexSections(
+        sections.map(section => ({ ...section, live_session_id: null })),
+        state.sendingTitles
+      )
+    )
+  },
   choosing: null,
   error: null,
   idsByBot: {},
@@ -289,16 +382,37 @@ export const useSections = create<SectionsState>((set, get) => ({
   sendingTitles: {},
 
   async refresh(options = {}) {
+    const current = connectionRead()
+    const scope = activeCacheScope()
     set({ error: null, loading: true })
 
     try {
       const result = await sectionsList({ include_archived: true, ...options })
+
+      if (!current()) {
+        return
+      }
+
+      if (!options.bot) {
+        const listed = new Set((result.sections ?? []).map(section => section.id))
+
+        for (const id of Object.keys(get().byId)) {
+          if (!listed.has(id)) {
+            void forgetHistory(scope, id)
+            set(state => ({ cachedMessages: withoutKey(state.cachedMessages, id) }))
+          }
+        }
+      }
 
       set(state => ({
         ...indexSections(result.sections ?? [], state.sendingTitles),
         loading: false
       }))
     } catch (error) {
+      if (!current()) {
+        return
+      }
+
       set({ error: error instanceof Error ? error.message : String(error), loading: false })
     }
   },
@@ -312,11 +426,15 @@ export const useSections = create<SectionsState>((set, get) => ({
 
     const { target, epoch, daemon } = useConnection.getState()
     const installation = daemon?.install_id
+    const activeRead = connectionRead()
+    const access = cacheAccess()
+    const scope = access?.scope ?? null
 
     const current = () => {
       const next = useConnection.getState()
 
       return (
+        activeRead() &&
         target === next.target &&
         epoch === next.epoch &&
         (!installation || !next.daemon?.install_id || installation === next.daemon.install_id)
@@ -324,9 +442,33 @@ export const useSections = create<SectionsState>((set, get) => ({
     }
 
     const read = async (): ReturnType<SectionsState['open']> => {
+      if (!current()) {
+        throw new Error('The selected daemon changed. Open this chat again.')
+      }
+
       const asked = reloads.get(id) ?? 0
       const completed = new Map(terminals)
       const readAt = Date.now()
+      const knownLive = get().liveSessionId[id] ?? get().byId[id]?.live_session_id
+
+      const inputsAtRead =
+        useTranscripts
+          .getState()
+          .bySession[knownLive ?? '']?.messages.filter(message => message.role === 'user')
+          .map(message => message.id) ?? []
+
+      const cached = access ? await cachedHistory<HistoryRow>(scope, id) : undefined
+
+      if (!current()) {
+        throw new Error('The selected daemon changed. Open this chat again.')
+      }
+
+      if (cached && !get().liveSessionId[id]) {
+        set(state => ({
+          cachedMessages: { ...state.cachedMessages, [id]: messagesFromHistory(cached.rows) }
+        }))
+      }
+
       let result
 
       try {
@@ -335,6 +477,11 @@ export const useSections = create<SectionsState>((set, get) => ({
         // A report can supersede a failed read as well as a successful snapshot.
         if (current() && (reloads.get(id) ?? 0) !== asked) {
           return read()
+        }
+
+        if (current() && (error as { code?: number } | null)?.code === 4204) {
+          set(state => ({ cachedMessages: withoutKey(state.cachedMessages, id) }))
+          await forgetHistory(scope, id)
         }
 
         throw error
@@ -355,6 +502,16 @@ export const useSections = create<SectionsState>((set, get) => ({
         return read()
       }
 
+      const authorized = cacheAccess()
+
+      if (cacheCurrent(authorized)) {
+        await rememberHistory(authorized!.scope, id, { rows: messages ?? [] })
+      }
+
+      if (!current()) {
+        throw new Error('The selected daemon changed. Open this chat again.')
+      }
+
       if (live) {
         const wasActive = useTranscripts.getState().bySession[live]?.turnActive
         // Merging local rows into history needs the daemon's input and
@@ -369,6 +526,7 @@ export const useSections = create<SectionsState>((set, get) => ({
           ),
           identified
             ? {
+                inputsAtRead,
                 reports: (messages ?? [])
                   .filter(row => row.dream === true)
                   .map(row => String(row.row_id))
@@ -404,13 +562,14 @@ export const useSections = create<SectionsState>((set, get) => ({
       // metadata; a list refresh or canonical lookup cannot restore its transcript.
       set(state => ({
         ...mergeSection(state, section),
+        cachedMessages: withoutKey(state.cachedMessages, id),
         liveSessionId: live ? { ...state.liveSessionId, [id]: live } : state.liveSessionId
       }))
 
       return { liveSessionId: live, section }
     }
 
-    const request = read().finally(() => {
+    const request = syncHistory(access, id, read).finally(() => {
       if (opening.get(id) === request) {
         opening.delete(id)
       }
@@ -535,7 +694,7 @@ export const useSections = create<SectionsState>((set, get) => ({
   },
 
   clearLive() {
-    set({ liveSessionId: {} })
+    set({ liveSessionId: {}, cachedMessages: {} })
     useTranscripts.getState().dropAll()
     straddling.clear()
     terminals.clear()

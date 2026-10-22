@@ -7,7 +7,8 @@ import type { Transcript, TranscriptMessage } from './transcripts'
 export function hydrateHistory(
   existing: Transcript,
   snapshot: Message[],
-  reports: Set<string>
+  reports: Set<string>,
+  inputsAtRead?: Set<string>
 ): Pick<Transcript, 'messages' | 'durableFragments'> {
   const cardEnds = new Set(
     [...existing.approvals, ...existing.clarifies].flatMap(card =>
@@ -139,6 +140,9 @@ export function hydrateHistory(
   for (const input of [...inputs].reverse()) {
     if (
       adopted.has(input.id) ||
+      // A repeated short prompt sent during this read may follow the snapshot.
+      // Only an exact input ID can cover that occurrence.
+      (inputsAtRead !== undefined && !inputsAtRead.has(input.id)) ||
       input.attachments.length ||
       (input.submission && input.submission.status !== 'accepted')
     ) {

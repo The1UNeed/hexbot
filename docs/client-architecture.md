@@ -57,6 +57,37 @@ The RPC client is `@hermes/shared`'s `JsonRpcGatewayClient` wrapped in
 `src/lib/events.ts` routes them by `params.session_id` to the transcript
 store and by `params.type` for global events (`hexbot.*.changed`).
 
+## Authorized startup cache
+
+IndexedDB keeps a roster, recent room logs, and the last 50 opened chat histories
+per daemon address. A cold launch reads none of this personal data until the
+WebSocket has authenticated and `hexbot.info` has verified the install identity.
+An identity change discards that address's old cache. A cold offline launch stays
+empty until authorization succeeds; an already authorized view can keep its
+messages behind the disconnected overlay.
+
+Cached sections and bot recents carry no live session IDs. Running turns, cards
+and activity are always read from the daemon. Chat routes still resolve the
+canonical chat, and every open performs its normal history read and pending-card
+reconciliation. The cache fills the wait after authorization, then the network
+snapshot replaces it using the existing input and fragment identities. Inputs
+submitted during a read cannot be matched to older occurrences by text alone.
+
+Each cached history keeps a recent suffix of at most 500 raw rows and 512 KiB
+of JSON, with an oversized row omitted. Older history remains on the daemon.
+Completed turns refresh kept histories after a two-second debounce. Whole
+read/fetch/write operations are serialized per connection and chat; cache writes
+alone would allow a slow old response to replace a newer snapshot. This client
+uses full-history reads, so it also works with daemons without history cursors.
+Room logs resume only from a verified contiguous baseline; a live event alone
+never establishes one. Their retained tail is bounded by the same row/byte caps.
+
+Teardown invalidates pending cache work and stops roster subscriptions. A ticket
+401, gateway revocation, or rejected device key also clears cached data and
+personal stores. Queued writes and history replies cannot restore it afterward.
+The cache is best effort: blocked IndexedDB or quota failures leave normal
+network loading in place.
+
 ## Stores (zustand)
 
 - `connection`: target, status (`idle | connecting | connected |

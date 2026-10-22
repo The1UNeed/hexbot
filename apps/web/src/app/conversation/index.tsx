@@ -49,7 +49,8 @@ import {
   sectionsActions,
   sectionStatusOf,
   useLiveSessionId,
-  useSection
+  useSection,
+  useSections
 } from '../../stores/sections'
 import {
   type Transcript,
@@ -1178,6 +1179,11 @@ function BotConversation() {
   const bot = useBot(params.bot ?? null)
   const botsLoaded = useBots(state => state.loaded)
   const section = useSection(params.section ?? null)
+
+  const cached = useSections(state =>
+    params.section ? state.cachedMessages[params.section] : undefined
+  )
+
   const loadedLiveId = useLiveSessionId(params.section ?? null)
   const ready = resolved?.entry === entry
   const ownerInput = ready && !resolved.peer
@@ -1248,7 +1254,11 @@ function BotConversation() {
     }
   }
 
-  const messages = useMemo(() => transcript?.messages ?? [], [transcript?.messages])
+  const messages = useMemo<TranscriptMessage[]>(
+    () => (ready || kept ? [...(cached ?? []), ...(transcript?.messages ?? [])] : []),
+    [ready, kept, cached, transcript?.messages]
+  )
+
   const approvals = useMemo(() => transcript?.approvals ?? [], [transcript?.approvals])
   const clarifies = useMemo(() => transcript?.clarifies ?? [], [transcript?.clarifies])
   const streaming = Boolean(transcript?.streamingMessageId)

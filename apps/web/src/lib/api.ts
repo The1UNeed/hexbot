@@ -324,7 +324,7 @@ export function roomsSend(
 
 export function roomsLog(
   id: string,
-  options: { after_seq?: number; limit?: number } = {}
+  options: { after_seq?: number; before_seq?: number; limit?: number } = {}
 ): Promise<{ events: RoomEvent[] }> {
   return rpcCall<{ events: RoomEvent[] }>('hexbot.rooms.log', { id, ...options })
 }
@@ -477,6 +477,11 @@ export interface SectionOpened {
 
 export function sectionsOpen(id: string): Promise<SectionOpened> {
   return rpcCall<SectionOpened>('hexbot.sections.open', { id })
+}
+
+/** A full durable read; cache synchronization remains compatible with older daemons. */
+export function sessionHistory(sessionId: string): Promise<{ messages: HistoryRow[] }> {
+  return rpcCall('session.history', { session_id: sessionId })
 }
 
 export function sectionsMarkRead(id: string): Promise<{ section: Section }> {

@@ -23,7 +23,7 @@ import {
 
 import { botsActions } from '../stores/bots'
 import { useCheckins } from '../stores/checkins'
-import { connectionActions } from '../stores/connection'
+import { connectionActions, invalidateConnectionReads } from '../stores/connection'
 import { useMe } from '../stores/me'
 import { useRooms } from '../stores/rooms'
 import { sectionsActions } from '../stores/sections'
@@ -32,9 +32,11 @@ import { uiActions } from '../stores/ui'
 
 import { getBridge, type HexbotBridge } from './bridge'
 import { DaemonIdentityError, DaemonUnreachableError } from './daemon-identity'
+import { authorizeCache, cacheScope, revokeCache, suspendCache } from './device-cache'
 import { proofHeaders } from './dpop'
 import { attachEventRouting } from './events'
 import { DEFAULT_DAEMON_PORT } from './pair-link'
+import { clearPersonalState, keepRoster, restoreRoster, stopRosterWrites } from './roster-cache'
 import { HexbotRpcClient, setActiveRpc } from './rpc'
 import type { ConnectionTarget, DaemonInfo } from './types'
 
@@ -342,6 +344,7 @@ export async function pairWithDaemon(
  * the `connection` store.
  */
 export class ConnectionSupervisor {
+  private rosterDaemon: string | null = null
   private attempt = 0
   private client: HexbotRpcClient | null = null
   private connectedAt = 0
@@ -374,6 +377,7 @@ export class ConnectionSupervisor {
     this.attempt = 0
     this.connectedAt = 0
     this.target = target
+    clearPersonalState()
 
     this.starting = this.attemptConnect()
 
@@ -403,6 +407,9 @@ export class ConnectionSupervisor {
   }
 
   private teardown(): void {
+    invalidateConnectionReads()
+    stopRosterWrites()
+    suspendCache()
     this.generation += 1
     this.stopped = true
     this.starting = null
@@ -441,6 +448,7 @@ export class ConnectionSupervisor {
       if (error instanceof DeviceProofError) {
         // A changed key needs pairing; temporary proof failures keep reconnecting.
         if (error.code === 'dpop_key_mismatch') {
+          this.handleUnauthorized(error.message, true)
           store.setStatus('unauthorized', { attempt: 0, proofError: error })
         } else {
           this.scheduleRetry(error)
@@ -552,27 +560,65 @@ export class ConnectionSupervisor {
 
     // Capabilities and install identity do not depend on settings, rooms, or
     // profile hydration. Publish them even if another RPC fails first.
-    const info = (client?.call<DaemonInfo>('hexbot.info') ?? Promise.resolve(null)).then(info => {
+    const info = (client?.call<DaemonInfo>('hexbot.info') ?? Promise.resolve(null)).then(
+      async info => {
+        if (!current()) {
+          return
+        }
+
+        const scope = cacheScope(target)
+
+        if (this.rosterDaemon && info?.install_id !== this.rosterDaemon) {
+          clearPersonalState()
+        }
+
+        this.rosterDaemon = info?.install_id ?? null
+
+        if (await authorizeCache(scope, info?.install_id, current)) {
+          if (!current()) {
+            return
+          }
+
+          await restoreRoster(scope)
+        }
+
+        if (!current()) {
+          return
+        }
+
+        store.setDaemon(info)
+        const last = uiActions().lastSection
+
+        if (last?.daemon && info?.install_id && last.daemon !== info.install_id) {
+          uiActions().setLastSection(null)
+        }
+
+        return info
+      }
+    )
+
+    const roster = info.then(async () => {
       if (!current()) {
         return
       }
 
-      store.setDaemon(info)
-      const last = uiActions().lastSection
+      await Promise.all([
+        botsActions().refresh(),
+        useRooms.getState().refresh(),
+        useMe.getState().refresh(),
+        sectionsActions().refresh()
+      ])
 
-      if (last?.daemon && info?.install_id && last.daemon !== info.install_id) {
-        uiActions().setLastSection(null)
+      if (current()) {
+        keepRoster(cacheScope(target))
       }
     })
 
     try {
       await Promise.all([
         info,
+        roster,
         settingsActions().refresh(),
-        botsActions().refresh(),
-        useRooms.getState().refresh(),
-        useMe.getState().refresh(),
-        // An open Check-ins tab missed the events while disconnected.
         useCheckins.getState().loaded ? useCheckins.getState().refresh() : Promise.resolve()
       ])
     } catch (error) {
@@ -589,6 +635,9 @@ export class ConnectionSupervisor {
       return
     }
 
+    invalidateConnectionReads()
+    stopRosterWrites()
+    suspendCache()
     setActiveRpc(null)
     connectionActions().setDaemon(null)
     this.detach?.()
@@ -609,9 +658,13 @@ export class ConnectionSupervisor {
     this.scheduleRetry()
   }
 
-  private handleUnauthorized(message: string): void {
+  private handleUnauthorized(message: string, preserveTarget = false): void {
+    const scope = cacheScope(this.target)
     this.teardown()
-    connectionActions().clearTarget()
+    void revokeCache(scope)
+    clearPersonalState()
+
+    if (!preserveTarget) {connectionActions().clearTarget()}
     connectionActions().setStatus('unauthorized', { attempt: 0, error: message })
   }
 
