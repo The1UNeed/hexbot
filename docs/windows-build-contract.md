@@ -85,6 +85,8 @@ and the daemon home lock. Install and repair also stop an owned existing task
 and wait for that lock before replacing its script/XML and starting the selected
 runtime; updating a task definition alone would keep its old instance. Uninstall treats only the numeric task-not-found
 error as absent; foreign task actions/principals and permission errors fail.
+Uninstall checks ownership independently of discovery, so an ownership error
+cannot become a successful cleanup of runtime files or the install receipt.
 An interrupted owned script/XML install can therefore be removed even when
 task creation never finished. The installer uses the verified scheduler definition
 to remove a task even when its selected binary is missing or selection JSON is
@@ -227,3 +229,11 @@ Publication now reports bounded directory metadata on failure and still throws
 the original error; there is no retry or success fallback. The locking source is
 not established. Staging publication, bootstrap, installed GUI, signed ZIP,
 Connect, update/restart and lifecycle still need a successful native run.
+
+The next 659 native run passed the initial MSVC/launcher checks, then failed the
+foreign-task installer negative case because uninstall returned zero. That
+assertion alone did not establish task deletion. The native fixture now records
+status/output and the scheduler definition plus script/XML/receipt/runtime state
+before its explicit disposable-task cleanup, then requires nonzero refusal and
+unchanged state. An owned-script/absent-task control must still uninstall. Actual
+native results for this correction and all later probes remain pending.

@@ -331,6 +331,15 @@ impl Installer {
             self.validate_data_removal()?;
         }
         self.preflight_home_removal()?;
+        // Discovery deliberately hides foreign/invalid services from the
+        // installed options. Destructive actions must propagate that ownership
+        // error rather than treating an unmanageable task as absent.
+        if self.target.is_windows() {
+            windows_service::check_service(
+                &self.paths.service_file(self.target),
+                &self.paths.hexbot_home,
+            )?;
+        }
         let installed = self.detect()?;
         self.check_removable(&installed.apps.iter().collect::<Vec<_>>())?;
         // A killed install can leave the previous app in staging, where it

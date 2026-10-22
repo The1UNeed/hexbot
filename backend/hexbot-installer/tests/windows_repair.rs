@@ -480,3 +480,61 @@ fn damaged_receipted_app_is_detected_for_uninstall() {
         }
     }
 }
+
+#[test]
+fn uninstall_refuses_windows_ownership_errors_before_removing_receipt_or_runtime() {
+    for case in ["unrecognized-script", "other-home", "absent"] {
+        let foreign = case != "absent";
+        let root = tempfile::tempdir().unwrap();
+        let engine = engine(root.path());
+        let native = engine
+            .paths
+            .hexbot_home
+            .join("runtime/native/build/hexbot.exe");
+        fs::create_dir_all(native.parent().unwrap()).unwrap();
+        fs::write(&native, "owned runtime sentinel").unwrap();
+        let receipt = Receipt {
+            option: InstallOption::Headless,
+            channel: Track::Stable,
+            version: "1.2.3".into(),
+            paths: vec![native.clone()],
+            installed_at: "fixture".into(),
+        };
+        let receipt_bytes = serde_json::to_vec(&receipt).unwrap();
+        fs::write(engine.paths.receipt(), &receipt_bytes).unwrap();
+        let file = engine.paths.service_file(engine.target);
+        if foreign {
+            fs::create_dir_all(file.parent().unwrap()).unwrap();
+            let text = if case == "other-home" {
+                format!(
+                    "# Hexbot owned home: {}\n",
+                    serde_json::to_string(&root.path().join("another home")).unwrap()
+                )
+            } else {
+                "unrelated service script".into()
+            };
+            fs::write(&file, text).unwrap();
+        }
+        let script = fs::read(&file).ok();
+        let mut done = false;
+        let result = engine.uninstall(false, &mut |p| done |= p.stage == "done");
+        if foreign {
+            assert!(
+                result.is_err(),
+                "Uninstall reported success after an ownership error"
+            );
+            assert!(!done);
+            assert_eq!(fs::read(engine.paths.receipt()).unwrap(), receipt_bytes);
+            assert_eq!(
+                fs::read_to_string(&native).unwrap(),
+                "owned runtime sentinel"
+            );
+            assert_eq!(fs::read(file).ok(), script);
+        } else {
+            result.unwrap();
+            assert!(done);
+            assert!(!engine.paths.receipt().exists());
+            assert!(!native.exists());
+        }
+    }
+}

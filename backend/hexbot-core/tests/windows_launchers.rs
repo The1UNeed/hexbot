@@ -704,7 +704,33 @@ fn interrupted_task_install_uninstalls_owned_files_when_the_task_is_absent() {
         "$s=New-Object -ComObject 'Schedule.Service';$s.Connect();$s.GetFolder('\\').GetTask('{name}') | Out-Null"
     ));
     assert!(query.status.success(), "Foreign task was deleted");
-    let refused_installer =
+    // Inert foreign action and all files must survive the installer call.
+    // Query BEFORE the assertion/Drop, so fixture cleanup cannot masquerade
+    // as an installer deletion. No task Stop/Run occurs in this branch.
+    let bounded =
+        |bytes: &[u8]| String::from_utf8_lossy(&bytes[..bytes.len().min(8192)]).into_owned();
+    let snapshot = || {
+        let output = powershell(&format!(
+            "$ErrorActionPreference='Stop';[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false);$s=New-Object -ComObject 'Schedule.Service';$s.Connect();$t=$s.GetFolder('\\').GetTask('{name}');$d=$t.Definition;$a=$d.Actions.Item(1);@{{name=$t.Name;state=[int]$t.State;count=$d.Actions.Count;program=$a.Path;arguments=$a.Arguments;principal=$d.Principal.UserId;description=$d.RegistrationInfo.Description;xml=$t.Xml}}|ConvertTo-Json -Compress"
+        ));
+        json!({"success":output.status.success(),"status":output.status.code(),"definition":serde_json::from_slice::<serde_json::Value>(&output.stdout).ok(),"stderr":bounded(&output.stderr)})
+    };
+    let task_before = snapshot();
+    assert_eq!(
+        task_before["success"], true,
+        "Initial foreign task snapshot failed: {task_before}"
+    );
+    let script_before = fs::read(&file).unwrap();
+    let xml = file.with_extension("xml");
+    fs::write(&xml, "owned XML sentinel").unwrap();
+    let receipt = home.join("install.json");
+    let receipt_bytes=json!({"option":"headless","channel":"stable","version":"1.2.3","paths":[],"installedAt":"fixture"}).to_string().into_bytes();
+    fs::write(&receipt, &receipt_bytes).unwrap();
+    let uninstall_sentinel = home.join("runtime/native/protected/keep.exe");
+    fs::create_dir_all(uninstall_sentinel.parent().unwrap()).unwrap();
+    fs::write(&uninstall_sentinel, b"owned runtime sentinel").unwrap();
+
+    let run_installer = || {
         Command::new(std::env::var_os("HEXBOT_WINDOWS_INSTALLER").expect("native installer"))
             .args(["--uninstall", "--yes", "--json"])
             .env("HEXBOT_HOME", &home)
@@ -713,16 +739,65 @@ fn interrupted_task_install_uninstalls_owned_files_when_the_task_is_absent() {
             .env("HEXBOT_SERVICE_ROOT", root.path())
             .env_remove("HEXBOT_SERVICE_NO_LOAD")
             .output()
-            .unwrap();
+            .unwrap()
+    };
+    let refused_installer = run_installer();
+    let task_after = snapshot();
+    eprintln!(
+        "Installer foreign task refusal: status={} stdout={} stderr={} taskBefore={} taskAfter={} scriptUnchanged={} xmlUnchanged={} receiptUnchanged={} runtimeUnchanged={}",
+        refused_installer.status,
+        bounded(&refused_installer.stdout),
+        bounded(&refused_installer.stderr),
+        bounded(&serde_json::to_vec(&task_before).unwrap()),
+        bounded(&serde_json::to_vec(&task_after).unwrap()),
+        fs::read(&file).ok().as_ref() == Some(&script_before),
+        fs::read(&xml).ok().as_deref() == Some(b"owned XML sentinel"),
+        fs::read(&receipt).ok().as_ref() == Some(&receipt_bytes),
+        fs::read(&uninstall_sentinel).ok().as_deref() == Some(b"owned runtime sentinel")
+    );
+    assert_eq!(
+        task_after, task_before,
+        "Installer changed the disposable foreign task before fixture cleanup"
+    );
+    assert_eq!(fs::read(&file).unwrap(), script_before);
+    assert_eq!(fs::read(&xml).unwrap(), b"owned XML sentinel");
+    assert_eq!(fs::read(&receipt).unwrap(), receipt_bytes);
+    assert_eq!(
+        fs::read(&uninstall_sentinel).unwrap(),
+        b"owned runtime sentinel"
+    );
     assert!(
         !refused_installer.status.success(),
-        "Installer removed a foreign task"
+        "Installer must report nonzero refusal for a foreign task"
     );
-    assert!(system_service::owned(&file, &home));
+    let events = String::from_utf8(refused_installer.stdout)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+        .collect::<Vec<_>>();
+    assert!(
+        events.iter().any(|event| event["stage"] == "error"
+            && event["message"]
+                .as_str()
+                .is_some_and(|text| text.contains("another installation"))),
+        "Missing JSON ownership refusal: {events:?}"
+    );
+    assert!(!events.iter().any(|event| event["stage"] == "done"));
 
+    // Only this explicit fixture cleanup removes the inert foreign definition.
     drop(cleanup);
-    assert!(run().status.success());
+    let owned_removal = run_installer();
+    eprintln!(
+        "Installer owned-script/no-task removal: status={} stdout={} stderr={}",
+        owned_removal.status,
+        bounded(&owned_removal.stdout),
+        bounded(&owned_removal.stderr)
+    );
+    assert!(owned_removal.status.success());
     assert!(!file.exists());
+    assert!(!xml.exists());
+    assert!(!receipt.exists());
+    assert!(!uninstall_sentinel.exists());
     // A real task keeps its own home binding after its script disappears.
     // Use the actual daemon so install/repair must stop its old process and
     // release the home lock before replacing and running the task again.
