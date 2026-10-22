@@ -3,11 +3,12 @@ import assert from 'node:assert/strict'
 import { execFile, spawn } from 'node:child_process'
 import { once } from 'node:events'
 import { mkdtemp, mkdir, readFile, rm } from 'node:fs/promises'
-import { realpathSync, watch } from 'node:fs'
+import { realpathSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { promisify } from 'node:util'
 import { nodePath } from '../../apps/desktop/src/main/backend/node-path.ts'
+import { waitForRuntimeJson } from './runtime-file.mjs'
 const exec = promisify(execFile)
 assert.equal(process.platform, 'win32', 'This probe must run on native Windows')
 const bundle = resolve('apps/desktop/resources/hexbot-native')
@@ -16,14 +17,7 @@ const home = join(root, 'state'); await mkdir(home)
 const env = { ...process.env, HEXBOT_HOME: home, HOME: root, USERPROFILE: root, HEXBOT_SERVICE_ROOT: root, HEXBOT_CLI_NO_PATH: '1' }
 const run = (exe, args) => exec(exe, args, { env, timeout: 300_000, windowsHide: true })
 let daemon, selected
-async function waitForFile(path, timeout = 30_000) {
-  let watcher
-  await new Promise((done, reject) => {
-    const timer = setTimeout(() => { watcher?.close(); reject(new Error(`Timed out waiting for ${path}`)) }, timeout)
-    const check = () => readFile(path).then(() => { clearTimeout(timer); watcher?.close(); done() }).catch(() => {})
-    watcher = watch(dirname(path), check); check()
-  })
-}
+
 try {
   await run(join(bundle, 'hexbot.exe'), ['setup', '--activate', '--json'])
   selected = JSON.parse(await readFile(join(home, 'runtime/native-current.json'), 'utf8')).executable
@@ -47,8 +41,7 @@ try {
   // Task creation uses the actual user's SID while its files and daemon state
   // are isolated. The hosted runner is disposable, not a standard-user claim.
   await run(selected, ['service', 'install'])
-  await waitForFile(join(home, 'serve-state.json'))
-  const state = JSON.parse(await readFile(join(home, 'serve-state.json'), 'utf8'))
+  const state = await waitForRuntimeJson(join(home, 'serve-state.json'), value => value.port)
   const page = await fetch(`http://127.0.0.1:${state.port}/`, { signal: AbortSignal.timeout(10_000) })
   assert.equal(page.status, 200)
   assert.equal(JSON.parse((await run(selected, ['service', 'status', '--json'])).stdout).running, true)

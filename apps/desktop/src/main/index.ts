@@ -319,7 +319,7 @@ function registerIpc(): void {
   })
   handle('hexbot:service:install', () => {
     requireRuntime('Starting the daemon at login')
-    return installService()
+    return daemon.installService(installService)
   })
   handle('hexbot:service:uninstall', () => uninstallService())
   handle('hexbot:service:status', () => serviceStatus())

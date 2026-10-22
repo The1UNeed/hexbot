@@ -1,5 +1,5 @@
 import { EventEmitter } from 'node:events'
-import { createWriteStream, existsSync, renameSync, statSync } from 'node:fs'
+import { createWriteStream, existsSync, realpathSync, renameSync, statSync, watch } from 'node:fs'
 import { mkdir, readFile } from 'node:fs/promises'
 import net from 'node:net'
 import { join, delimiter } from 'node:path'
@@ -8,6 +8,7 @@ import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import { app } from 'electron'
 
 import { binDir, daemonDirectory, hexbotExecutable, hexbotHome } from './paths'
+import { nodePath } from './node-path'
 
 // 'external': a service or another copy of the app runs the daemon for this
 // home. The app uses it and cannot stop it.
@@ -107,6 +108,8 @@ export class DaemonManager extends EventEmitter {
   private failures: number[] = []
   private restartTimer?: NodeJS.Timeout
   private quitting = false
+  private transition: Promise<unknown> = Promise.resolve()
+  private serviceInstalls = 0
 
   constructor(
     private readonly configuredPort?: number,
@@ -114,7 +117,7 @@ export class DaemonManager extends EventEmitter {
   ) {
     super()
     app.on('before-quit', event => {
-      if (this.quitting || !this.child) return
+      if (this.quitting || (!this.child && !this.serviceInstalls)) return
       event.preventDefault()
       this.quitting = true
       void this.stopForQuit().finally(() => app.exit(0))
@@ -124,12 +127,63 @@ export class DaemonManager extends EventEmitter {
   status(): DaemonStatus {
     return { ...this.current }
   }
+  private serialize<T>(operation: () => Promise<T>): Promise<T> {
+    const result = this.transition.then(operation)
+    this.transition = result.catch(() => undefined)
+    return result
+  }
+  installService(install: () => Promise<void>): Promise<void> {
+    this.serviceInstalls++
+    return this.serialize(async () => {
+      const owned = Boolean(this.child)
+      if (owned) await this.stopOwned()
+      try {
+        await install()
+        const port = await this.waitForService()
+        this.failures = []
+        this.setStatus({ state: 'external', port })
+      } catch (error) {
+        // A partial install may already have started the service. startOwned
+        // verifies that owner first; it never starts a second daemon over it.
+        if (owned) {
+          try { await this.startOwned() }
+          catch (restore) { throw new AggregateError([error, restore], 'Service install and daemon recovery failed') }
+        }
+        throw error
+      }
+    }).finally(() => { this.serviceInstalls-- })
+  }
+  private waitForService(): Promise<number> {
+    return new Promise((resolve, reject) => {
+      const directory = nodePath(realpathSync.native(hexbotHome()))
+      const watcher = watch(directory, () => { void check() })
+      const timer = setTimeout(() => finish(new Error('Installed service did not acquire this home and become ready')), 30_000)
+      let settled = false
+      const finish = (error?: Error, port?: number): void => {
+        if (settled) return
+        settled = true
+        clearTimeout(timer)
+        watcher.close()
+        if (error) reject(error)
+        else resolve(port!)
+      }
+      const check = async (): Promise<void> => {
+        const port = await runningDaemonPort()
+        if (port) finish(undefined, port)
+      }
+      watcher.once('error', finish)
+      void check()
+    })
+  }
   private setStatus(status: DaemonStatus): void {
     this.current = status
     this.emit('status', this.status())
   }
 
-  async start(): Promise<DaemonStatus> {
+  start(): Promise<DaemonStatus> {
+    return this.serialize(() => this.startOwned())
+  }
+  private async startOwned(): Promise<DaemonStatus> {
     if (this.current.state === 'starting' || this.current.state === 'running') return this.status()
     this.intentionalStop = false
     const running = await runningDaemonPort()
@@ -214,7 +268,10 @@ export class DaemonManager extends EventEmitter {
     })
   }
 
-  async stop(): Promise<DaemonStatus> {
+  stop(): Promise<DaemonStatus> {
+    return this.serialize(() => this.stopOwned())
+  }
+  private async stopOwned(): Promise<DaemonStatus> {
     if (this.current.state === 'external') {
       const running = await runningDaemonPort()
       if (running) {
@@ -246,6 +303,7 @@ export class DaemonManager extends EventEmitter {
   }
 
   private async stopForQuit(): Promise<void> {
+    await this.transition
     if (process.platform === 'win32' || !(await this.serviceInstalled())) await this.stop()
   }
 }

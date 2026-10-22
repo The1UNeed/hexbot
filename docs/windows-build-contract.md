@@ -23,6 +23,14 @@ and installation requires no symlink privilege. Source chronology prevents an
 older build replacing the selected build. Repair may select the same build.
 Cleanup retains the selected, previous and still-running runtimes.
 
+On POSIX, selection still commits through `native-executable`. Activation
+metadata records the exact update manifest before that symlink changes. If
+interrupted there, the same verified source may retry while the older runtime
+is still selected. Lower builds, different sources and equal committed updates
+remain refused. Legacy pending metadata without that source identity requires
+repair or a newer update. Windows metadata is itself the committed selection
+and has no pending-symlink retry exception.
+
 Python and voice tools share a managed venv under
 `runtime/tools/code-python/Scripts/`. The absolute Python and edge-tts paths
 are used directly, rather than copying a Python EXE away from its libraries.
@@ -79,6 +87,11 @@ runtime; updating a task definition alone would keep its old instance. Uninstall
 error as absent; foreign task actions/principals and permission errors fail.
 An interrupted owned script/XML install can therefore be removed even when
 task creation never finished.
+Full's service-install IPC first stops its owned daemon, then waits for the
+task daemon's home lock and identity endpoint before reporting success. Failed
+installation restores app ownership or attaches to an already started service.
+Concurrent app start/stop operations wait for that handoff. App stop and Quit
+retain an external task daemon.
 A separate native forwarding component is installed as `.local/bin/hexbot.exe`,
 with a hash-bound home record in `hexbot.json`. It passes argv directly to the
 canonical selected daemon. It works from cmd and Restricted PowerShell without

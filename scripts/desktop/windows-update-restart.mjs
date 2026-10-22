@@ -4,7 +4,6 @@ import assert from 'node:assert/strict'
 import { execFile } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { once } from 'node:events'
-import { watch } from 'node:fs'
 import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
@@ -13,6 +12,7 @@ import { promisify } from 'node:util'
 import { makeNativeUpdate } from './make-native-update.mjs'
 import { setVersion } from './set-version.mjs'
 import { signature, testKey } from './update-signing.mjs'
+import { waitForRuntimeJson as waitJson } from './runtime-file.mjs'
 const exec = promisify(execFile)
 assert.equal(process.platform, 'win32')
 assert.equal(resolve(process.env.HEXBOT_WINDOWS_PROBE_SOURCE ?? ''), process.cwd(), 'Only run in the helper-created disposable worktree')
@@ -35,19 +35,7 @@ const server = createServer((request, response) => {
   response.writeHead(200, { 'Content-Length': bytes.length }); response.end(bytes)
 })
 let selected, socket
-function waitJson(path, predicate, timeout = 120_000) {
-  return new Promise((done, reject) => {
-    const watcher = watch(dirname(path), check)
-    const timer = setTimeout(() => { watcher.close(); reject(new Error(`Timed out waiting for ${path}`)) }, timeout)
-    async function check() {
-      try {
-        const value = JSON.parse(await readFile(path, 'utf8'))
-        if (predicate(value)) { clearTimeout(timer); watcher.close(); done(value) }
-      } catch {}
-    }
-    void check()
-  })
-}
+
 const runningPath = join(home, 'runtime/native-running.json')
 const statePath = join(home, 'serve-state.json')
 const powershell = join(process.env.SystemRoot, 'System32/WindowsPowerShell/v1.0/powershell.exe')

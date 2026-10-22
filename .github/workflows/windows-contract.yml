@@ -122,6 +122,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           node scripts/dev/run-one-rust-test.mjs backend/hexbot-core/Cargo.toml windows_shutdown owned_desktop_pipe_quit_and_restart_clean_up_real_pi_and_home_lock
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node --test scripts/desktop/runtime-file.test.mjs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           node scripts/desktop/windows-runtime-smoke.mjs
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           node scripts/desktop/windows-update-restart.mjs

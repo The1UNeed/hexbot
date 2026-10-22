@@ -1719,8 +1719,9 @@ fn publish_native_inner(
         .ok_or_else(|| Error::new(5243, "Missing runtime directory"))?;
     let _lock = activation_lock(runtime)?;
     if let Some(requested) = newer_than_selected {
-        let selected = selected_native_executable(runtime.parent().unwrap())
-            .ok()
+        let selected_executable = selected_native_executable(runtime.parent().unwrap()).ok();
+        let selected = selected_executable
+            .as_ref()
             .and_then(|executable| fs::read(executable.with_file_name("manifest.json")).ok())
             .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok());
         // Metadata survives a missing or damaged selected manifest. Neither
@@ -1734,8 +1735,29 @@ fn publish_native_inner(
             .filter_map(|manifest| manifest["builtAt"].as_u64())
             .max()
             .unwrap_or(0);
+        // POSIX commits metadata before the symlink. Only the identical signed
+        // source may retry that pending transaction while an older selection
+        // still exists. Windows metadata IS the selection, so never pending.
+        #[cfg(unix)]
+        let pending_retry = recorded.as_ref().is_some_and(|record| {
+            record["updateManifest"] == *requested
+                && record["version"] == version
+                && selected
+                    .as_ref()
+                    .is_some_and(|m| m["builtAt"].as_u64().unwrap_or(0) < floor)
+                && record["executable"]
+                    .as_str()
+                    .and_then(|p| Path::new(p).canonicalize().ok())
+                    .is_some_and(|p| {
+                        p.starts_with(native)
+                            && p.is_file()
+                            && selected_executable.as_ref().is_some_and(|s| s != &p)
+                    })
+        });
+        #[cfg(not(unix))]
+        let pending_retry = false;
         let selected = json!({"builtAt": floor});
-        if !allow_equal
+        if !(allow_equal || pending_retry)
             || requested["builtAt"].as_u64().unwrap_or(0)
                 != selected["builtAt"].as_u64().unwrap_or(0)
         {
@@ -1745,17 +1767,22 @@ fn publish_native_inner(
     let directory = native.join(format!("{version}-{}", common::id()));
     fs::rename(staging, &directory)?;
     let executable = directory.join(entrypoint);
-    activate_native_locked(native, version, &executable)?;
+    activate_native_locked(native, version, &executable, newer_than_selected)?;
     Ok(executable)
 }
 
 #[cfg(test)]
 fn activate_native(native: &Path, version: &str, executable: &Path) -> Result<()> {
     let _lock = activation_lock(native.parent().unwrap())?;
-    activate_native_locked(native, version, executable)
+    activate_native_locked(native, version, executable, None)
 }
 
-fn activate_native_locked(native: &Path, version: &str, executable: &Path) -> Result<()> {
+fn activate_native_locked(
+    native: &Path,
+    version: &str,
+    executable: &Path,
+    update: Option<&Value>,
+) -> Result<()> {
     let runtime = native
         .parent()
         .ok_or_else(|| Error::new(5243, "invalid native runtime directory"))?;
@@ -1783,10 +1810,15 @@ fn activate_native_locked(native: &Path, version: &str, executable: &Path) -> Re
         temporary
     };
     let manifest = native_manifest(&executable, version);
+    let built_at = manifest["builtAt"]
+        .as_u64()
+        .into_iter()
+        .chain(update.and_then(|m| m["builtAt"].as_u64()))
+        .max();
     common::atomic_write(
         &runtime.join("native-current.json"),
         &serde_json::to_vec(
-            &json!({"version":version,"executable":executable,"previous":previous,"files":manifest["files"],"builtAt":manifest["builtAt"]}),
+            &json!({"version":version,"executable":executable,"previous":previous,"files":manifest["files"],"builtAt":built_at,"updateManifest":update}),
         )
         .unwrap(),
     )?;
@@ -1836,7 +1868,7 @@ fn assert_publication_floor_contract() {
         .unwrap();
         {
             let _lock = activation_lock(native.parent().unwrap()).unwrap();
-            activate_native_locked(&native, "old", &selected.join(entrypoint)).unwrap();
+            activate_native_locked(&native, "old", &selected.join(entrypoint), None).unwrap();
         }
         fs::write(selected.join("manifest.json"), damaged.to_string()).unwrap();
         let floor = damaged["builtAt"].as_u64().unwrap_or(0).max(200);
@@ -1930,7 +1962,7 @@ mod activation_tests {
         let (setup, _) = package("9.8.8", 300);
         let selected = native.join("9.8.8");
         fs::rename(setup.path(), &selected).unwrap();
-        activate_native_locked(&native, "9.8.8", &selected.join("hexbot")).unwrap();
+        activate_native_locked(&native, "9.8.8", &selected.join("hexbot"), None).unwrap();
         drop(installer);
         assert_eq!(waiting.join().unwrap().unwrap_err().code, 4212);
         let active = runtime.join("native-executable").canonicalize().unwrap();
@@ -1946,6 +1978,114 @@ mod activation_tests {
     #[test]
     fn publication_keeps_the_highest_manifest_or_metadata_floor_during_repair() {
         assert_publication_floor_contract();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn interrupted_posix_activation_retries_only_the_same_uncommitted_update() {
+        let home = tempfile::tempdir().unwrap();
+        let native = native_directory(home.path()).unwrap();
+        let runtime = native.parent().unwrap();
+        let package = |version: &str, built_at: u64| {
+            let stage = tempfile::tempdir_in(&native).unwrap();
+            fs::write(stage.path().join("hexbot"), version).unwrap();
+            let manifest = json!({"version":version,"builtAt":built_at,"sha256":version});
+            fs::write(stage.path().join("manifest.json"), manifest.to_string()).unwrap();
+            (stage, manifest)
+        };
+        let (first, _) = package("old", 100);
+        let old = publish_native(&native, "old", first.path(), "hexbot", None).unwrap();
+        let (second, requested) = package("new", 200);
+        let pending =
+            publish_native(&native, "new", second.path(), "hexbot", Some(&requested)).unwrap();
+        let metadata = fs::read(runtime.join("native-current.json")).unwrap();
+        // Reconstruct the exact durable state between metadata replacement and
+        // selector rename, using metadata produced by the actual publisher.
+        let restore = runtime.join("old-selector");
+        std::os::unix::fs::symlink(&old, &restore).unwrap();
+        fs::rename(&restore, runtime.join("native-executable")).unwrap();
+        assert_eq!(selected_native_executable(home.path()).unwrap(), old);
+        assert!(pending.is_file());
+        let mut legacy: Value = serde_json::from_slice(&metadata).unwrap();
+        legacy.as_object_mut().unwrap().remove("updateManifest");
+        fs::write(runtime.join("native-current.json"), legacy.to_string()).unwrap();
+        let (unproven, _) = package("new", 200);
+        assert_eq!(
+            publish_native(&native, "new", unproven.path(), "hexbot", Some(&requested))
+                .unwrap_err()
+                .code,
+            4212
+        );
+        fs::write(runtime.join("native-current.json"), &metadata).unwrap();
+        for rejected in [
+            json!({"version":"older","builtAt":199,"sha256":"new"}),
+            json!({"version":"other","builtAt":200,"sha256":"new"}),
+            json!({"version":"new","builtAt":200,"sha256":"different bytes"}),
+        ] {
+            let (stage, _) = package("new", 200);
+            assert_eq!(
+                publish_native(&native, "new", stage.path(), "hexbot", Some(&rejected))
+                    .unwrap_err()
+                    .code,
+                4212
+            );
+            assert!(stage.path().is_dir());
+            assert_eq!(
+                fs::read(runtime.join("native-current.json")).unwrap(),
+                metadata
+            );
+        }
+        let (retry, _) = package("new", 200);
+        let committed =
+            publish_native(&native, "new", retry.path(), "hexbot", Some(&requested)).unwrap();
+        assert_eq!(selected_native_executable(home.path()).unwrap(), committed);
+        let (equal, _) = package("new", 200);
+        assert_eq!(
+            publish_native(&native, "new", equal.path(), "hexbot", Some(&requested))
+                .unwrap_err()
+                .code,
+            4212
+        );
+        // Damaging the committed manifest does not turn it into a pending update.
+        fs::write(committed.with_file_name("manifest.json"), "{}").unwrap();
+        let (damaged, _) = package("new", 200);
+        assert_eq!(
+            publish_native(&native, "new", damaged.path(), "hexbot", Some(&requested))
+                .unwrap_err()
+                .code,
+            4212
+        );
+    }
+
+    #[test]
+    fn signed_chronology_survives_a_legacy_bundle_without_embedded_metadata() {
+        let home = tempfile::tempdir().unwrap();
+        let native = native_directory(home.path()).unwrap();
+        let stage = tempfile::tempdir_in(&native).unwrap();
+        fs::write(stage.path().join("hexbot"), "legacy binary").unwrap();
+        let requested = json!({"version":"new","builtAt":200,"sha256":"verified archive"});
+        publish_native(&native, "new", stage.path(), "hexbot", Some(&requested)).unwrap();
+        let recorded: Value = serde_json::from_slice(
+            &fs::read(native.parent().unwrap().join("native-current.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(recorded["builtAt"], 200);
+        for built_at in [199, 200] {
+            let retry = tempfile::tempdir_in(&native).unwrap();
+            fs::write(retry.path().join("hexbot"), "retry").unwrap();
+            assert_eq!(
+                publish_native(
+                    &native,
+                    "new",
+                    retry.path(),
+                    "hexbot",
+                    Some(&json!({"builtAt":built_at}))
+                )
+                .unwrap_err()
+                .code,
+                4212
+            );
+        }
     }
 
     #[test]

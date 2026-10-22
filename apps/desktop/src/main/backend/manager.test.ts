@@ -42,6 +42,8 @@ describe('a daemon that already owns the home', () => {
       expect(await manager.start()).toEqual({ state: 'external', port })
       expect(await manager.start()).toEqual({ state: 'external', port })
       expect(await manager.stop()).toEqual({ state: 'external', port })
+      await expect(manager.installService(async () => { throw new Error('Foreign task refused') })).rejects.toThrow('Foreign task refused')
+      expect(manager.status()).toEqual({ state: 'external', port })
       expect(spawnDaemon).not.toHaveBeenCalled()
       await writeFile(join(home, 'native-daemon.lock'), '2147483647')
       expect(await runningDaemonPort(home)).toBeUndefined()
@@ -172,4 +174,76 @@ it('requests Windows cleanup through the owned pipe, without force termination',
   expect(kill).not.toHaveBeenCalled()
   requestOwnedShutdown({ stdin: new PassThrough(), kill }, 'linux')
   expect(kill).toHaveBeenCalledWith('SIGTERM')
+})
+
+it('hands off the owned daemon before service install, then retains the external owner on stop', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'hexbot-manager-handoff-'))
+  const previous = process.env.HEXBOT_HOME
+  process.env.HEXBOT_HOME = home
+  const child = Object.assign(new EventEmitter(), {
+    stdout: new PassThrough(), stderr: new PassThrough(), stdin: new PassThrough(), pid: process.pid,
+    kill: vi.fn(() => { child.emit('exit', 0, null); return true })
+  })
+  child.stdin.on('finish', () => child.emit('exit', 0, null))
+  spawnDaemon.mockClear()
+  spawnDaemon.mockReturnValueOnce(child)
+  const server = http.createServer((_request, response) => response.end(JSON.stringify({ install_id: 'handoff', pid: process.pid })))
+  const manager = new DaemonManager(9120)
+  let concurrentStart: ReturnType<DaemonManager['start']> | undefined
+  try {
+    await manager.start()
+    child.stdout.emit('data', Buffer.from('HERMES_BACKEND_READY port=9120\n'))
+    expect(manager.status().state).toBe('running')
+    await manager.installService(async () => {
+      expect(manager.status().state, 'Task must not start against the app-owned lock').toBe('stopped')
+      concurrentStart = manager.start()
+      const port = await new Promise<number>(resolve => server.listen(0, '127.0.0.1', () => resolve((server.address() as net.AddressInfo).port)))
+      await writeFile(join(home, 'install_id'), 'handoff')
+      await writeFile(join(home, 'native-daemon.lock'), String(process.pid))
+      await writeFile(join(home, 'serve-state.json'), JSON.stringify({ port }))
+    })
+    expect(manager.status().state).toBe('external')
+    expect((await concurrentStart)!.state).toBe('external')
+    expect((await manager.stop()).state).toBe('external')
+    expect(spawnDaemon).toHaveBeenCalledTimes(1)
+  } finally {
+    server.closeAllConnections()
+    await new Promise<void>(resolve => server.close(() => resolve()))
+    if (previous === undefined) delete process.env.HEXBOT_HOME
+    else process.env.HEXBOT_HOME = previous
+    await rm(home, { recursive: true, force: true })
+  }
+})
+
+it('restores an owned daemon when service installation fails', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'hexbot-service-rollback-'))
+  const previous = process.env.HEXBOT_HOME
+  process.env.HEXBOT_HOME = home
+  const children = [0, 1].map(() => {
+    const child = Object.assign(new EventEmitter(), {
+      stdout: new PassThrough(), stderr: new PassThrough(), stdin: new PassThrough(), pid: process.pid,
+      kill: vi.fn(() => { child.emit('exit', 0, null); return true })
+    })
+    child.stdin.on('finish', () => child.emit('exit', 0, null))
+    return child
+  })
+  spawnDaemon.mockClear()
+  for (const child of children) spawnDaemon.mockReturnValueOnce(child)
+  const manager = new DaemonManager(9120)
+  try {
+    await manager.start()
+    await expect(manager.installService(async () => {
+      expect(manager.status().state).toBe('stopped')
+      throw new Error('Task registration refused')
+    })).rejects.toThrow('Task registration refused')
+    expect(spawnDaemon).toHaveBeenCalledTimes(2)
+    expect(manager.status().state).toBe('starting')
+    children[1]!.stdout.emit('data', Buffer.from('HERMES_BACKEND_READY port=9120\n'))
+    expect(manager.status().state).toBe('running')
+  } finally {
+    await manager.stop()
+    if (previous === undefined) delete process.env.HEXBOT_HOME
+    else process.env.HEXBOT_HOME = previous
+    await rm(home, { recursive: true, force: true })
+  }
 })

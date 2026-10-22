@@ -59,6 +59,7 @@ test('Windows CI keeps the production guard and never publishes disposable probe
   assert(ci.includes('windows-security-standard-user.ps1'))
   assert(!ci.includes('--example windows_contract'))
   assert(ci.includes('windows-update-restart.mjs'))
+  assert(ci.includes('node --test scripts/desktop/runtime-file.test.mjs'))
   assert(ci.includes('windows-installed-app-smoke.mjs'))
   assert(!ci.includes('$env:HEXBOT_WINDOWS_GUI_NODE ='))
   assert(ci.includes('Node lookup diagnostic:'))
