@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react'
 
 import { Avatar } from '../../components/ui/avatar'
 import { Button } from '../../components/ui/button'
+import { confirm } from '../../components/ui/confirm'
 import { Input } from '../../components/ui/input'
 import { Menu } from '../../components/ui/menu'
 import { activeBots, RoomCluster } from '../../components/ui/room-cluster'
@@ -45,9 +46,8 @@ function MemberRow({
   last?: boolean
   name: string
   onMakeMain: () => Promise<void>
-  onRemove: () => Promise<void>
+  onRemove: (keepRoom: boolean) => Promise<void>
 }) {
-  const [confirming, setConfirming] = useState(false)
   const [busy, setBusy] = useState(false)
   const label = bot?.display_name ?? name
   const detail = bot?.title
@@ -79,41 +79,31 @@ function MemberRow({
             </span>
           ) : null}
         </span>
-        {confirming ? null : (
-          <>
-            {isMain ? null : (
-              <Button
-                disabled={busy}
-                onClick={() => void run(onMakeMain)}
-                size="sm"
-                variant="ghost"
-              >
-                Make main
-              </Button>
-            )}
-            <Button disabled={busy} onClick={() => setConfirming(true)} size="sm">
-              Remove
-            </Button>
-          </>
+        {isMain ? null : (
+          <Button disabled={busy} onClick={() => void run(onMakeMain)} size="sm" variant="ghost">
+            Make main
+          </Button>
         )}
+        <Button
+          busy={busy}
+          onClick={() =>
+            void confirm(
+              last
+                ? {
+                    detail: `${label} is the last bot here. The room, its transcript and the memory made from it go with it. The bot itself stays.`,
+                    title: `Remove ${label} and delete this room?`
+                  }
+                : {
+                    detail: 'Its memory of the room stays with the bot.',
+                    title: `Remove ${label} from this room?`
+                  }
+            ).then(yes => (yes ? run(() => onRemove(!last)) : undefined))
+          }
+          size="sm"
+        >
+          Remove
+        </Button>
       </div>
-      {confirming ? (
-        <div className="hex-fade mt-2 rounded-[12px] bg-foreground/[0.04] p-3" role="alertdialog">
-          <p className="text-[length:var(--text-secondary)]">
-            {last
-              ? `${label} is the last bot here. Removing it deletes this room, its transcript and the memory made from it. The bot itself stays.`
-              : `Remove ${label} from this room? Its memory of the room stays with the bot.`}
-          </p>
-          <div className="mt-2 flex gap-2">
-            <Button busy={busy} onClick={() => void run(onRemove)} size="sm" variant="danger">
-              {last ? 'Remove and delete room' : 'Remove'}
-            </Button>
-            <Button disabled={busy} onClick={() => setConfirming(false)} size="sm" variant="ghost">
-              Cancel
-            </Button>
-          </div>
-        </div>
-      ) : null}
     </div>
   )
 }
@@ -186,7 +176,6 @@ export function RoomSettingsPanel({ room }: { room: Room }): React.JSX.Element {
   const navigate = useNavigate()
   const me = useMe(state => state.me)
   const owned = room.owner_id === me?.id
-  const [leaving, setLeaving] = useState(false)
   const [name, setName] = useState(room.name)
   const [turns, setTurns] = useState(String(room.limits.bot_turns_per_human_turn ?? ''))
   const [budget, setBudget] = useState(String(room.limits.budget_tokens_per_human_turn ?? ''))
@@ -206,15 +195,21 @@ export function RoomSettingsPanel({ room }: { room: Room }): React.JSX.Element {
     }
   }
 
-  const remove = async (bot: string) => {
+  const remove = async (bot: string, keepRoom: boolean) => {
     try {
       setError(null)
-      const deleted = await rooms().removeMember(room.id, bot)
+      const deleted = await rooms().removeMember(room.id, bot, keepRoom)
 
       if (deleted) {
         await navigate({ to: '/' })
       }
     } catch (cause) {
+      if ((cause as { code?: number } | null)?.code === 4216) {
+        // Membership changed after the question. Refresh before asking again;
+        // ordinary removal never grants permission to delete the room.
+        await rooms().refreshOne(room.id)
+      }
+
       setError(errorOf(cause))
     }
   }
@@ -267,7 +262,7 @@ export function RoomSettingsPanel({ room }: { room: Room }): React.JSX.Element {
                 last={members.length === 1}
                 name={member.display_name ?? member.member_id}
                 onMakeMain={() => save({ main_bot: member.member_id })}
-                onRemove={() => remove(member.member_id)}
+                onRemove={keepRoom => remove(member.member_id, keepRoom)}
               />
             ))}
             <div className="flex min-h-[48px] items-center justify-between gap-3 px-4 py-2">
@@ -363,41 +358,32 @@ export function RoomSettingsPanel({ room }: { room: Room }): React.JSX.Element {
         <Group title="Membership">
           <Row
             control={
-              leaving ? undefined : (
-                <Button onClick={() => setLeaving(true)} size="sm" variant="danger">
-                  Leave
-                </Button>
-              )
+              <Button
+                onClick={() =>
+                  void confirm({
+                    detail: 'You can no longer read or post in it.',
+                    title: 'Leave this room?'
+                  })
+                    .then(async yes => {
+                      if (!yes) {
+                        return
+                      }
+
+                      await roomsLeave(room.id, me.id)
+                      rooms().drop(room.id)
+                      await navigate({ to: '/' })
+                    })
+                    .catch(cause => setError(errorOf(cause)))
+                }
+                size="sm"
+                variant="danger"
+              >
+                Leave
+              </Button>
             }
             description="The room and its transcript stay with its owner."
             title="Leave room"
           />
-          {leaving ? (
-            <div className="hex-fade space-y-3 px-4 py-4" role="alertdialog">
-              <p className="text-[length:var(--text-secondary)]">
-                Leave this room? You can no longer read or post in it.
-              </p>
-              <div className="flex gap-2">
-                <Button
-                  onClick={() =>
-                    void roomsLeave(room.id, me.id)
-                      .then(async () => {
-                        rooms().drop(room.id)
-                        await navigate({ to: '/' })
-                      })
-                      .catch(cause => setError(errorOf(cause)))
-                  }
-                  size="sm"
-                  variant="danger"
-                >
-                  Leave
-                </Button>
-                <Button onClick={() => setLeaving(false)} size="sm" variant="ghost">
-                  Cancel
-                </Button>
-              </div>
-            </div>
-          ) : null}
         </Group>
       ) : null}
       {error ? (

@@ -74,6 +74,23 @@ pnpm connect:dev
 
 The website runs on port 4321 and Connect on port 3000. Developing the website does not require a daemon. Connect requires its own service configuration, described in [apps/connect/README.md](https://github.com/The1UNeed/hexbot/blob/main/apps/connect/README.md).
 
+## Read conversation history
+
+For a custom client, `hexbot.sections.open {id}` and `session.history
+{session_id}` return `messages`, an opaque `history_cursor`, and `history_delta`.
+Save the cursor with that conversation's displayed messages on that daemon and
+send it as `history_cursor` on the next read. When `history_delta` is true,
+append the returned messages; an unchanged conversation returns none. When it
+is false, replace the whole snapshot. Reads without a cursor return full history.
+
+Edits, deletions and branch changes require a full snapshot. A cursor from a
+conversation replaced during chat adoption also returns full history when sent
+with the new chat's ID. The old ID still returns `4002`; resolve the bot's chat
+with `hexbot.sections.create {bot}` before opening it. Cursors survive daemon
+restarts, but clients must treat their format as private. Older daemons omit
+both cursor fields and return full history. See the [API guide](https://github.com/The1UNeed/hexbot/blob/main/docs/api.md)
+for the full contract, including pending questions and approvals on open.
+
 ## Check changes
 
 Run the checks for the part you changed:
