@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto'
 import { existsSync } from 'node:fs'
 import { chmod, cp, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, symlink, writeFile } from 'node:fs/promises'
 import { arch, platform } from 'node:os'
-import { basename, dirname, join } from 'node:path'
+import { basename, dirname, isAbsolute, join, relative } from 'node:path'
 import { spawn } from 'node:child_process'
 
 import { app } from 'electron'
@@ -101,7 +101,7 @@ async function verifyNativeRuntime(
   const manifest = await readManifest(directory)
   if (manifest.version !== deps.appVersion || manifest.target !== `${deps.platform}-${deps.arch}`)
     throw new Error('Native runtime version or architecture does not match this app')
-  const required = ['hexbot', 'hexbot-core', 'node', 'pi/hexbot-pi', 'pi/package-lock.json',
+  const required = [...(deps.platform === 'win32' ? ['hexbot.exe', 'node.exe', 'pi/launch.mjs'] : ['hexbot', 'hexbot-core', 'node', 'pi/hexbot-pi']), 'pi/package-lock.json',
     'pi/node_modules/@earendil-works/pi-coding-agent/dist/cli.js']
   if (!manifest.files || required.some(file => !manifest.files[file]))
     throw new Error('Native runtime manifest is incomplete')
@@ -212,9 +212,9 @@ async function selectedRuntime(deps: BootstrapDeps): Promise<SelectedRuntime | u
     const selected = JSON.parse(await readFile(join(runtimeDir(), 'native-current.json'), 'utf8')) as {
       version: string; executable: string; previous?: string; files?: Record<string, string>
     }
-    const executable = await realpath(nativeServiceExecutable())
+    const executable = await realpath(nativeServiceExecutable(deps.platform))
     const nativeRoot = await realpath(join(runtimeDir(), 'native'))
-    if (executable !== selected.executable || !executable.startsWith(`${nativeRoot}/`)) return undefined
+    if (executable !== selected.executable || relative(nativeRoot, executable).startsWith('..') || isAbsolute(relative(nativeRoot, executable))) return undefined
     const directory = dirname(executable)
     const manifest = await readManifest(directory)
     await verifyNativeRuntime(directory, { ...deps, appVersion: selected.version }, selected.files ?? manifest.files)
@@ -280,6 +280,14 @@ async function installNativeRuntime(deps: BootstrapDeps): Promise<void> {
   deps.emit({ stage: 'runtime', message: 'Preparing Hexbot runtime' })
   const signedHashes = await verifyNativeRuntime(source, deps)
   const { builtAt = 0 } = await readManifest(source)
+  if (deps.platform === 'win32') {
+    const selected = await selectedRuntime(deps)
+    // Rust owns Windows setup and atomic selection for both Full and Headless.
+    const executable = selected && selected.builtAt >= builtAt ? selected.executable : join(source, 'hexbot.exe')
+    await probe(deps, join(dirname(executable), 'node.exe'), [join(dirname(executable), 'pi/launch.mjs'), '--version'])
+    await deps.run(executable, ['setup', ...(selected && selected.builtAt >= builtAt ? [] : ['--activate']), '--json'])
+    return
+  }
   // The newest build wins whichever app or updater installed it, so Stable and
   // Nightly apps sharing this home never go back to an older daemon.
   const selected = await selectedRuntime(deps)

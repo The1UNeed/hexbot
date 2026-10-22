@@ -7,6 +7,10 @@ pub fn pi_executable() -> Result<std::path::PathBuf> {
     if let Some(path) = std::env::var_os("HEXBOT_PI_EXECUTABLE").filter(|path| !path.is_empty()) {
         return Ok(path.into());
     }
+    #[cfg(windows)]
+    if let Some(root) = bundled_runtime() {
+        return Ok(root.join("node.exe"));
+    }
     #[cfg(debug_assertions)]
     {
         let candidate = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -418,7 +422,11 @@ pub fn read_regular_text(path: &Path, limit: usize) -> Result<String> {
         .map_err(|_| Error::new(4202, "file is not UTF-8 text"))
 }
 pub fn managed_python(home: &Path) -> std::path::PathBuf {
-    let managed = home.join("bin/python3.11");
+    let managed = home.join(if cfg!(windows) {
+        "runtime/tools/code-python/Scripts/python.exe"
+    } else {
+        "bin/python3.11"
+    });
     if managed.is_file() {
         managed
     } else {
@@ -1146,4 +1154,15 @@ mod tool_safety_tests {
         }
         server.abort();
     }
+}
+
+/// A packaged Windows executable carries its web, skills, and Pi beside it.
+pub fn bundled_runtime() -> Option<std::path::PathBuf> {
+    if !cfg!(windows) {
+        return None;
+    }
+    let executable = std::env::current_exe().ok()?;
+    let root = executable.parent()?;
+    (root.join("manifest.json").is_file() && root.join("pi/launch.mjs").is_file())
+        .then(|| root.to_owned())
 }

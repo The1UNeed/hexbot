@@ -154,10 +154,10 @@ impl Installer {
         if let Some(version) = app.version.as_deref().and_then(parse) {
             return Ok(Some(version));
         }
-        if app.managed_by_dpkg {
+        if app.managed_by_dpkg || self.target.is_windows() {
             return Ok(asar_version(&app.path.join("resources/app.asar")));
         }
-        if self.target.is_macos() {
+        if !self.target.is_linux() {
             return Ok(None);
         }
         appimage_version(&app.path)

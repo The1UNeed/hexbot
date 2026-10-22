@@ -334,3 +334,8 @@ fixture. Set `HEXBOT_SMOKE_ARTIFACTS` to choose where its screenshots and proof
 files go. It checks daemon-owned cwd, revocation after removal and disable,
 credential changes in an open section, Manual approval for read-only tools, and
 nested steps before and after reload in light and dark themes.
+
+Windows build/install probes live in `.github/workflows/windows-contract.yml`.
+They do not publish packages or establish Windows support. See
+[the build contract](windows-build-contract.md) for the runtime layout,
+security dependency and native validation still required.

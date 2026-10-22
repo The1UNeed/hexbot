@@ -824,6 +824,10 @@ fn cloudflared_asset() -> Result<(&'static str, &'static str)> {
             "cloudflared-linux-amd64",
             "14ecae0dd17ba74f8055e22b8f5b5acc3cbb5a9c3be4e7d6507fe1c4eadaea95",
         )),
+        ("windows", "x86_64") => Ok((
+            "cloudflared-windows-amd64.exe",
+            "82781b3ba8cb66c0f8fbc7d34974bc4bd8eb1fcc76f27badb97eb4cc7060f5ad",
+        )),
         _ => Err(Error::new(5242, "unsupported cloudflared platform")),
     }
 }
@@ -899,7 +903,10 @@ async fn ensure_cloudflared_asset(
 ) -> Result<PathBuf> {
     let directory = home.join("bin");
     fs::create_dir_all(&directory)?;
-    let binary = directory.join(format!("cloudflared-{CLOUDFLARED_VERSION}"));
+    let binary = directory.join(format!(
+        "cloudflared-{CLOUDFLARED_VERSION}{}",
+        if cfg!(windows) { ".exe" } else { "" }
+    ));
     let asset = directory.join(format!("{name}-{CLOUDFLARED_VERSION}.asset"));
     let compressed = name.ends_with(".tgz");
     let bytes = match verified_cloudflared(&asset, digest, compressed) {
@@ -1517,7 +1524,13 @@ fn prune_native(
         let entry = entry?;
         let path = entry.path();
         if !entry.file_type()?.is_dir()
-            || !path.join("hexbot").is_file()
+            || !path
+                .join(if cfg!(windows) {
+                    "hexbot.exe"
+                } else {
+                    "hexbot"
+                })
+                .is_file()
             || entry.file_name().to_string_lossy().starts_with('.')
             || entry.file_name().to_string_lossy().contains(".staging-")
         {
@@ -1550,7 +1563,7 @@ pub fn prune_current_native(home: &Path) -> Result<()> {
     };
     let metadata: Value =
         serde_json::from_slice(&metadata).map_err(|error| Error::new(5243, error.to_string()))?;
-    let active = runtime.join("native-executable").canonicalize()?;
+    let active = selected_native_executable(home)?;
     let native = native_directory(home)?;
     if !active.starts_with(&native) {
         return Err(Error::new(5243, "invalid native runtime selection"));
@@ -1607,15 +1620,28 @@ fn recorded_native_runtime(native: &Path) -> Result<Option<PathBuf>> {
     Ok(Some(executable))
 }
 
+pub fn selected_native_executable(home: &Path) -> Result<PathBuf> {
+    #[cfg(windows)]
+    {
+        Ok(crate::native_selection::selected(home)?)
+    }
+    #[cfg(not(windows))]
+    {
+        Ok(home.join("runtime/native-executable").canonicalize()?)
+    }
+}
+
 pub(crate) fn activation_lock(runtime: &Path) -> Result<fs::File> {
     let file = fs::OpenOptions::new()
         .create(true)
         .truncate(false)
         .write(true)
         .open(runtime.join("activate.lock"))?;
+    #[cfg(unix)]
     let inherited = std::env::var("HEXBOT_ACTIVATION_LOCK_FD")
         .ok()
         .and_then(|fd| fd.parse().ok());
+    #[cfg(unix)]
     if let Some(held) = inherited_activation_lock(&file, inherited) {
         return Ok(held);
     }
@@ -1626,6 +1652,7 @@ pub(crate) fn activation_lock(runtime: &Path) -> Result<fs::File> {
 /// The installer holds the activation lock across its version check and
 /// `hexbot setup --activate`, and passes the locked descriptor down. Use it
 /// only if it is this lock file and the lock is already ours to take.
+#[cfg(unix)]
 fn inherited_activation_lock(file: &fs::File, fd: Option<i32>) -> Option<fs::File> {
     use std::os::fd::FromRawFd;
     use std::os::unix::fs::MetadataExt;
@@ -1656,19 +1683,50 @@ pub(crate) fn publish_native(
     entrypoint: &str,
     newer_than_selected: Option<&Value>,
 ) -> Result<PathBuf> {
+    publish_native_inner(
+        native,
+        version,
+        staging,
+        entrypoint,
+        newer_than_selected,
+        false,
+    )
+}
+
+#[cfg(windows)]
+pub(crate) fn publish_setup_native(
+    native: &Path,
+    version: &str,
+    staging: &Path,
+    manifest: &Value,
+) -> Result<PathBuf> {
+    publish_native_inner(native, version, staging, "hexbot.exe", Some(manifest), true)
+}
+
+fn publish_native_inner(
+    native: &Path,
+    version: &str,
+    staging: &Path,
+    entrypoint: &str,
+    newer_than_selected: Option<&Value>,
+    allow_equal: bool,
+) -> Result<PathBuf> {
     let runtime = native
         .parent()
         .ok_or_else(|| Error::new(5243, "Missing runtime directory"))?;
     let _lock = activation_lock(runtime)?;
     if let Some(requested) = newer_than_selected {
-        let selected = runtime
-            .join("native-executable")
-            .canonicalize()
+        let selected = selected_native_executable(runtime.parent().unwrap())
             .ok()
             .and_then(|executable| fs::read(executable.with_file_name("manifest.json")).ok())
             .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
             .unwrap_or_else(|| json!({}));
-        require_newer_native_build(requested, &selected)?;
+        if !allow_equal
+            || requested["builtAt"].as_u64().unwrap_or(0)
+                != selected["builtAt"].as_u64().unwrap_or(0)
+        {
+            require_newer_native_build(requested, &selected)?;
+        }
     }
     let directory = native.join(format!("{version}-{}", common::id()));
     fs::rename(staging, &directory)?;
@@ -1695,7 +1753,7 @@ fn activate_native_locked(native: &Path, version: &str, executable: &Path) -> Re
         ));
     }
     let stable = runtime.join("native-executable");
-    let previous = stable.canonicalize().ok();
+    let previous = selected_native_executable(runtime.parent().unwrap()).ok();
     // Replacing a symlink never follows its previous target. A directory cannot
     // be replaced this way and must be rejected before updating the metadata.
     if fs::symlink_metadata(&stable).is_ok_and(|m| m.file_type().is_dir()) {
@@ -2142,13 +2200,23 @@ async fn native_update(home: &Path, version: &str, service: &Service) -> Result<
         .and_then(Value::as_str)
         .unwrap_or("hexbot");
     common::identifier(entrypoint)?;
-    if manifest["format"] == "tar.gz" {
+    if cfg!(windows) && (manifest["format"] != "zip" || entrypoint != "hexbot.exe") {
+        return Err(Error::new(
+            5243,
+            "Windows updates require a ZIP with hexbot.exe",
+        ));
+    }
+    if manifest["format"] == "zip" {
+        crate::native_zip::extract_zip(tmp.path(), staging.path(), 4 * 1024 * 1024 * 1024)?;
+    } else if manifest["format"] == "tar.gz" {
         extract_archive(tmp.path(), staging.path(), 4 * 1024 * 1024 * 1024)?;
     } else if manifest["format"].is_null() || manifest["format"] == "binary" {
         fs::copy(tmp.path(), staging.path().join(entrypoint))?;
     } else {
         return Err(Error::new(5243, "unsupported native update format"));
     }
+    #[cfg(windows)]
+    crate::setup::verify_runtime_version(staging.path(), version)?;
     let staged_executable = staging.path().join(entrypoint);
     if !staged_executable.is_file() {
         return Err(Error::new(5243, "native update entrypoint missing"));
@@ -2562,5 +2630,92 @@ mod native_version_tests {
             }
         }
         assert!(artifact_url("http://mirror.example", &json!({"path": path})).is_err());
+    }
+}
+
+#[cfg(all(debug_assertions, windows))]
+#[doc(hidden)]
+pub mod windows_contract_tests {
+    use super::*;
+    pub async fn windows_contract_signed_zip_update_and_connect_executable() {
+        use axum::{
+            Router, body::Body, extract::Path as RoutePath, http::StatusCode, response::Response,
+            routing::get,
+        };
+        use std::collections::BTreeMap;
+        let root =
+            PathBuf::from(std::env::var_os("HEXBOT_WINDOWS_UPDATE_ROOT").expect("update root"));
+        let version = crate::version();
+        let path = format!("daemon/native/{version}/windows-x86_64/manifest.json");
+        let manifest = fs::read(root.join(&path)).unwrap();
+        let metadata: Value = serde_json::from_slice(&manifest).unwrap();
+        let archive_path = metadata["path"].as_str().unwrap();
+        let mut files = BTreeMap::new();
+        files.insert(path.clone(), manifest.clone());
+        files.insert(
+            format!("{path}.sig"),
+            crate::update_signature::test_signature(&manifest).into_bytes(),
+        );
+        files.insert(
+            archive_path.to_owned(),
+            fs::read(root.join(archive_path)).unwrap(),
+        );
+        let files = std::sync::Arc::new(files);
+        let router = Router::new().route(
+            "/{*path}",
+            get(move |RoutePath(path): RoutePath<String>| {
+                let files = files.clone();
+                async move {
+                    match files.get(&path) {
+                        Some(bytes) => Response::new(Body::from(bytes.clone())),
+                        None => Response::builder()
+                            .status(StatusCode::NOT_FOUND)
+                            .body(Body::empty())
+                            .unwrap(),
+                    }
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, router).await.unwrap();
+        });
+        let home = tempfile::tempdir().unwrap();
+        fs::write(
+            home.path().join("config.yaml"),
+            format!("updates:\n  base_url: http://{address}\n"),
+        )
+        .unwrap();
+        let service = Service::default();
+        let executable = native_update(home.path(), &version, &service)
+            .await
+            .unwrap();
+        assert_eq!(
+            selected_native_executable(home.path()).unwrap(),
+            executable.canonicalize().unwrap()
+        );
+        assert!(executable.ends_with("hexbot.exe"));
+        assert_eq!(
+            native_update(home.path(), &version, &service)
+                .await
+                .unwrap_err()
+                .code,
+            4212
+        );
+        assert_eq!(
+            selected_native_executable(home.path()).unwrap(),
+            executable.canonicalize().unwrap()
+        );
+        let cloudflared = ensure_cloudflared(home.path()).await.unwrap();
+        let output = Command::new(cloudflared)
+            .arg("--version")
+            .output()
+            .await
+            .unwrap();
+        assert!(output.status.success());
+        assert!(String::from_utf8_lossy(&output.stdout).contains(CLOUDFLARED_VERSION));
+        server.abort();
+        let _ = server.await;
     }
 }

@@ -19,7 +19,11 @@ pub struct Paths {
 
 impl Paths {
     pub fn from_env() -> Result<Self> {
-        let home = PathBuf::from(env::var_os("HOME").ok_or("HOME is not set.")?);
+        let home = PathBuf::from(
+            env::var_os("HOME")
+                .or_else(|| env::var_os("USERPROFILE"))
+                .ok_or("User home is not set.")?,
+        );
         let paths = Self {
             hexbot_home: env::var_os("HEXBOT_HOME")
                 .map(PathBuf::from)
@@ -66,12 +70,24 @@ impl Paths {
         if target.is_macos() {
             self.home
                 .join("Library/Application Support/Hexbot/installer.lock")
+        } else if target.is_windows() {
+            self.home.join("AppData/Local/Hexbot/installer.lock")
         } else {
             self.home.join(".local/state/hexbot/installer.lock")
         }
     }
     pub fn executable(&self) -> PathBuf {
-        self.hexbot_home.join("runtime/native-executable")
+        {
+            #[cfg(windows)]
+            {
+                native_selected(&self.hexbot_home)
+                    .unwrap_or_else(|_| self.hexbot_home.join("runtime/not-installed.exe"))
+            }
+            #[cfg(not(windows))]
+            {
+                self.hexbot_home.join("runtime/native-executable")
+            }
+        }
     }
     pub fn desktop_dir(&self) -> PathBuf {
         self.home.join(".local/share/applications")
@@ -79,8 +95,19 @@ impl Paths {
     pub fn wrapper(&self) -> PathBuf {
         self.home.join(".local/bin/hexbot")
     }
+    /// Windows CLI lives beside the Unix wrapper path, with a `.cmd` suffix.
+    /// macOS and Linux keep [`Self::wrapper`].
+    pub fn cli_wrapper(&self, target: Target) -> PathBuf {
+        if target.is_windows() {
+            self.home.join(".local/bin/hexbot.ps1")
+        } else {
+            self.wrapper()
+        }
+    }
     pub fn service_file(&self, target: Target) -> PathBuf {
-        self.service_root.join(if target.is_macos() {
+        self.service_root.join(if target.is_windows() {
+            "AppData/Local/Hexbot/daemon.ps1"
+        } else if target.is_macos() {
             "Library/LaunchAgents/app.hexbot.daemon.plist"
         } else {
             ".config/systemd/user/hexbot.service"
@@ -96,6 +123,8 @@ impl Paths {
                 PathBuf::from("/Applications"),
                 self.home.join("Applications"),
             ]
+        } else if target.is_windows() {
+            vec![self.home.join("AppData/Local/Hexbot/apps")]
         } else {
             vec![self.home.join(".local/share/hexbot")]
         }
@@ -169,13 +198,25 @@ pub fn detect_at(paths: &Paths, target: Target) -> Result<Installed> {
     let mut installed = Installed {
         receipt: read_receipt(&paths.receipt())?,
         service: paths.service_file(target).exists()
-            && install_ownership::check_service(
-                &paths.service_file(target),
-                &paths.hexbot_home,
-                target.is_macos(),
-            )
-            .is_ok(),
-        wrapper: install_ownership::wrapper_owned(&paths.wrapper(), &paths.hexbot_home),
+            && if target.is_windows() {
+                crate::windows_service::check_service(
+                    &paths.service_file(target),
+                    &paths.hexbot_home,
+                )
+                .is_ok()
+            } else {
+                install_ownership::check_service(
+                    &paths.service_file(target),
+                    &paths.hexbot_home,
+                    target.is_macos(),
+                )
+                .is_ok()
+            },
+        wrapper: if target.is_windows() {
+            crate::windows_service::wrapper_owned(&paths.cli_wrapper(target), &paths.hexbot_home)
+        } else {
+            install_ownership::wrapper_owned(&paths.wrapper(), &paths.hexbot_home)
+        },
         runtime: paths.executable().exists(),
         ..Installed::default()
     };
@@ -202,6 +243,16 @@ pub fn detect_at(paths: &Paths, target: Target) -> Result<Installed> {
                         managed_by_dpkg: false,
                     });
                 }
+            } else if target.is_windows() {
+                if let Some(id) = windows_app_id(&path) {
+                    installed.apps.push(InstalledApp {
+                        option: app_option(&id).expect("known app id"),
+                        app_id: id,
+                        path,
+                        version: None,
+                        managed_by_dpkg: false,
+                    });
+                }
             } else if let Some(id) = appimage_id(&path, installed.receipt.as_ref()) {
                 installed.apps.push(InstalledApp {
                     option: app_option(&id).expect("known app id"),
@@ -214,7 +265,8 @@ pub fn detect_at(paths: &Paths, target: Target) -> Result<Installed> {
         }
     }
     // Explicit paths isolate discovery from the system's package database.
-    if !target.is_macos() && (paths.apps_override.is_none() || paths.opt_override.is_some()) {
+    #[cfg(unix)]
+    if target.is_linux() && (paths.apps_override.is_none() || paths.opt_override.is_some()) {
         let opt = paths.opt_override.as_deref().unwrap_or(Path::new("/opt"));
         installed.apps.extend(dpkg_apps(opt, |path| {
             paths
@@ -228,6 +280,7 @@ pub fn detect_at(paths: &Paths, target: Target) -> Result<Installed> {
     Ok(installed)
 }
 
+#[cfg(unix)]
 fn dpkg_pattern(path: &Path) -> std::ffi::OsString {
     use std::os::unix::ffi::{OsStrExt, OsStringExt};
     let mut pattern = Vec::new();
@@ -240,6 +293,7 @@ fn dpkg_pattern(path: &Path) -> std::ffi::OsString {
     std::ffi::OsString::from_vec(pattern)
 }
 
+#[cfg(unix)]
 fn dpkg_apps(opt: &Path, owned: impl Fn(&Path) -> bool) -> Vec<InstalledApp> {
     fs::read_dir(opt)
         .into_iter()
@@ -362,17 +416,46 @@ fn appimage_id(path: &Path, receipt: Option<&Receipt>) -> Option<String> {
 }
 
 pub(crate) fn writable_directory(path: &Path) -> bool {
-    use std::os::unix::ffi::OsStrExt;
     let Some(existing) = path.ancestors().find(|p| p.exists()) else {
         return false;
     };
     if !existing.is_dir() {
         return false;
     }
-    let Ok(path) = std::ffi::CString::new(existing.as_os_str().as_bytes()) else {
-        return false;
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        let Ok(path) = std::ffi::CString::new(existing.as_os_str().as_bytes()) else {
+            return false;
+        };
+        unsafe { libc::access(path.as_ptr(), libc::W_OK | libc::X_OK) == 0 }
+    }
+    #[cfg(windows)]
+    {
+        tempfile::NamedTempFile::new_in(existing).is_ok()
+    }
+}
+
+pub(crate) fn windows_app_id(path: &Path) -> Option<String> {
+    if !fs::symlink_metadata(path).ok()?.is_dir() {
+        return None;
+    }
+    let value: serde_json::Value =
+        serde_json::from_slice(&fs::read(path.join(".hexbot-app.json")).ok()?).ok()?;
+    let id = value["appId"].as_str()?;
+    let exe = if id.starts_with("app.hexbot.client") {
+        "HexbotClient.exe"
+    } else {
+        "Hexbot.exe"
     };
-    unsafe { libc::access(path.as_ptr(), libc::W_OK | libc::X_OK) == 0 }
+    (app_option(id).is_some()
+        && path.join(exe).is_file()
+        && path.join("resources/app.asar").is_file())
+    .then(|| id.to_owned())
+}
+#[cfg(windows)]
+fn native_selected(home: &Path) -> std::io::Result<PathBuf> {
+    crate::native_selection::selected(home)
 }
 
 fn choose_apps_dir(dirs: Vec<PathBuf>) -> Result<PathBuf> {
@@ -381,7 +464,7 @@ fn choose_apps_dir(dirs: Vec<PathBuf>) -> Result<PathBuf> {
         .ok_or_else(|| "The apps directory is not writable.".into())
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     #[test]

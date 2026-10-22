@@ -1,4 +1,5 @@
 //! Standalone native runtime and managed code tools installation.
+#[cfg(not(windows))]
 use crate::install_ownership::{WRAPPER_MARKER, shell_quote};
 use crate::{Error, Result, common, services};
 use serde::Deserialize;
@@ -8,12 +9,12 @@ use std::{
     fs,
     future::Future,
     io::Write,
-    os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
 };
 use tokio::process::Command;
 
 const VOICE_REQUIREMENTS: &str = include_str!("../assets/edge-tts.requirements.txt");
+#[cfg(not(windows))]
 const REQUIRED_FILES: &[&str] = &[
     "hexbot",
     "hexbot-core",
@@ -23,11 +24,35 @@ const REQUIRED_FILES: &[&str] = &[
     "pi/node_modules/@earendil-works/pi-coding-agent/dist/cli.js",
 ];
 
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
+#[cfg(windows)]
+const REQUIRED_FILES: &[&str] = &[
+    "hexbot.exe",
+    "node.exe",
+    "pi/launch.mjs",
+    "pi/search-tools.mjs",
+    "bin/rg.exe",
+    "bin/fd.exe",
+    "web/index.html",
+    "pi/package-lock.json",
+    "pi/node_modules/@earendil-works/pi-coding-agent/dist/cli.js",
+];
+fn entrypoint() -> &'static str {
+    if cfg!(windows) {
+        "hexbot.exe"
+    } else {
+        "hexbot"
+    }
+}
+
 fn target() -> String {
     format!(
         "{}-{}",
         if cfg!(target_os = "macos") {
             "darwin"
+        } else if cfg!(windows) {
+            "win32"
         } else {
             "linux"
         },
@@ -46,9 +71,16 @@ struct Manifest {
     files: BTreeMap<String, String>,
 }
 fn verify_runtime(directory: &Path) -> Result<Manifest> {
+    verify_runtime_for(directory, &crate::version())
+}
+#[cfg(windows)]
+pub(crate) fn verify_runtime_version(directory: &Path, version: &str) -> Result<()> {
+    verify_runtime_for(directory, version).map(|_| ())
+}
+fn verify_runtime_for(directory: &Path, version: &str) -> Result<Manifest> {
     let manifest: Manifest = serde_json::from_slice(&fs::read(directory.join("manifest.json"))?)
         .map_err(|e| Error::new(5243, format!("Invalid native runtime manifest: {e}")))?;
-    if manifest.version != crate::version() || manifest.target != target() {
+    if manifest.version != version || manifest.target != target() {
         return Err(Error::new(
             5243,
             "Native runtime version or architecture does not match this daemon",
@@ -133,7 +165,13 @@ fn activate(home: &Path, source: &Path, emit: &impl Fn(&str, &str)) -> Result<()
     copy_runtime(&source, staging.path(), &source, &mut Vec::new())?;
     verify_runtime(staging.path())?;
     emit("activate", "Activating the native runtime");
-    services::publish_native(&native, &manifest.version, staging.path(), "hexbot", None)?;
+    services::publish_native(
+        &native,
+        &manifest.version,
+        staging.path(),
+        entrypoint(),
+        None,
+    )?;
     Ok(())
 }
 
@@ -164,7 +202,11 @@ fn tool_asset(tool: &str, target: &str) -> Result<Asset> {
     let directory = format!("{}{triple}", release.name);
     Ok(Asset {
         version: release.version.clone(),
-        url: format!("{}/{directory}.tar.gz", release.url),
+        url: format!(
+            "{}/{directory}.{}",
+            release.url,
+            if cfg!(windows) { "zip" } else { "tar.gz" }
+        ),
         directory,
         sha256: sha256.clone(),
     })
@@ -184,7 +226,7 @@ where
     Fut: Future<Output = Result<()>>,
 {
     let bin = home.join("bin");
-    let executable = bin.join(tool);
+    let executable = bin.join(format!("{tool}{}", if cfg!(windows) { ".exe" } else { "" }));
     let receipt = bin.join(format!("{tool}-version"));
     let recorded: Value = fs::read(&receipt)
         .ok()
@@ -208,8 +250,16 @@ where
     }
     let extracted = staging.path().join("extracted");
     fs::create_dir(&extracted)?;
+    #[cfg(windows)]
+    crate::native_zip::extract_zip(&archive, &extracted, 512 * 1024 * 1024)?;
+    #[cfg(not(windows))]
     services::extract_archive(&archive, &extracted, 512 * 1024 * 1024)?;
-    let source = extracted.join(&asset.directory).join(tool);
+    let source = if cfg!(windows) {
+        extracted.join(format!("{tool}.exe"))
+    } else {
+        extracted.join(&asset.directory).join(tool)
+    };
+    #[cfg(unix)]
     fs::set_permissions(&source, fs::Permissions::from_mode(0o755))?;
     fs::rename(source, &executable)?;
     common::atomic_write(
@@ -249,6 +299,7 @@ async fn run_uv(home: &Path, uv: &Path, args: &[&str]) -> Result<String> {
     }
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
+#[cfg(not(windows))]
 fn remove_file(path: &Path) -> Result<()> {
     match fs::remove_file(path) {
         Ok(()) => Ok(()),
@@ -256,11 +307,13 @@ fn remove_file(path: &Path) -> Result<()> {
         Err(e) => Err(e.into()),
     }
 }
+#[cfg(not(windows))]
 fn voice_current(home: &Path) -> bool {
     home.join("bin/edge-tts").exists()
         && fs::read_to_string(home.join("runtime/tools/edge-tts.requirements.txt"))
             .is_ok_and(|text| text == VOICE_REQUIREMENTS)
 }
+#[cfg(not(windows))]
 async fn install_code_runtime(home: &Path, emit: &impl Fn(&str, &str)) -> Result<()> {
     fs::create_dir_all(home.join("bin"))?;
     fs::create_dir_all(home.join("runtime"))?;
@@ -345,6 +398,7 @@ async fn install_code_runtime(home: &Path, emit: &impl Fn(&str, &str)) -> Result
     }
     Ok(())
 }
+#[cfg(not(windows))]
 fn link_cli(home: &Path, user_home: &Path, emit: &impl Fn(&str, &str)) -> Result<()> {
     let executable = home.join("runtime/native-executable");
     if !executable.is_file() {
@@ -410,9 +464,8 @@ pub async fn run(home: &Path, args: &[String]) -> Result<()> {
             println!("{message}");
         }
     };
-    let user_home = PathBuf::from(
-        std::env::var_os("HOME").ok_or_else(|| Error::new(4200, "HOME is required"))?,
-    );
+    let user_home =
+        crate::osutil::user_home().ok_or_else(|| Error::new(4200, "User home is required"))?;
     fs::create_dir_all(home)?;
     let home = home.canonicalize()?;
     if args.iter().any(|a| a == "--activate") {
@@ -430,7 +483,7 @@ pub async fn run(home: &Path, args: &[String]) -> Result<()> {
     Ok(())
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     fn runtime(root: &Path) {
@@ -714,4 +767,74 @@ esac
             .unwrap();
         assert_eq!(fs::read(executable).unwrap(), content);
     }
+}
+
+#[cfg(windows)]
+async fn install_code_runtime(home: &Path, emit: &impl Fn(&str, &str)) -> Result<()> {
+    fs::create_dir_all(home.join("runtime"))?;
+    let runtime = home.join("runtime");
+    let _lock = tokio::task::spawn_blocking(move || services::activation_lock(&runtime))
+        .await
+        .map_err(|e| Error::new(5243, e.to_string()))??;
+    let uv = install_tool(
+        home,
+        "uv",
+        &tool_asset("uv", &target())?,
+        download_tool,
+        emit,
+    )
+    .await?;
+    let environment = home.join("runtime/tools/code-python");
+    let python = environment.join("Scripts/python.exe");
+    if !python.is_file() {
+        emit("python", "Installing Python for code tools");
+        run_uv(home, &uv, &["python", "install", "--no-bin", "3.11"]).await?;
+        run_uv(
+            home,
+            &uv,
+            &[
+                "venv",
+                "--no-project",
+                "--managed-python",
+                "--python",
+                "3.11",
+                &environment.to_string_lossy(),
+            ],
+        )
+        .await?;
+    }
+    let receipt = home.join("runtime/tools/edge-tts.requirements.txt");
+    if !environment.join("Scripts/edge-tts.exe").is_file()
+        || fs::read_to_string(&receipt).ok().as_deref() != Some(VOICE_REQUIREMENTS)
+    {
+        emit("voice", "Installing voice tools");
+        let requirements = environment.join("requirements.txt");
+        fs::write(&requirements, VOICE_REQUIREMENTS)?;
+        run_uv(
+            home,
+            &uv,
+            &[
+                "pip",
+                "install",
+                "--python",
+                &python.to_string_lossy(),
+                "--require-hashes",
+                "--no-deps",
+                "--no-build",
+                "-r",
+                &requirements.to_string_lossy(),
+            ],
+        )
+        .await?;
+        common::atomic_write(&receipt, VOICE_REQUIREMENTS.as_bytes())?;
+    }
+    Ok(())
+}
+#[cfg(windows)]
+fn link_cli(home: &Path, user_home: &Path, emit: &impl Fn(&str, &str)) -> Result<()> {
+    services::selected_native_executable(home)?;
+    let path = user_home.join(".local/bin/hexbot.ps1");
+    crate::windows_service::write_owned_script(&path, home, false)?;
+    emit("link", &format!("CLI installed at {}", path.display()));
+    Ok(())
 }

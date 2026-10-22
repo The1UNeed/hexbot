@@ -12,13 +12,16 @@ export type Tool = 'uv' | 'rg' | 'fd'
 const releases: Record<Tool, { version: string; url: string; name: string; targets: Record<string, string[]> }> = pins
 
 // The archive holds `<directory>/<tool>`.
-export function toolAsset(tool: Tool, platform: string, arch: string): { version: string; directory: string; url: string; sha256: string } {
+export function toolAsset(tool: Tool, platform: string, arch: string): { version: string; directory: string; url: string; sha256: string; member: string; format: string } {
   const release = releases[tool]
   const asset = release.targets[`${platform}-${arch}`]
   if (!asset) throw new Error(`Unsupported code runtime platform: ${platform}/${arch}`)
   const [target, sha256] = asset as [string, string]
   const directory = `${release.name}${target}`
-  return { version: release.version, directory, sha256, url: `${release.url}/${directory}.tar.gz` }
+  const windows = platform === 'win32'
+  const format = windows ? 'zip' : 'tar.gz'
+  const member = windows && tool === 'uv' ? 'uv.exe' : `${directory}/${tool}${windows ? '.exe' : ''}`
+  return { version: release.version, directory, sha256, member, format, url: `${release.url}/${directory}.${format}` }
 }
 
 export interface ToolInstallDeps {
@@ -60,7 +63,7 @@ export async function downloadTool(
 
 export async function installTool(tool: Tool, deps: ToolInstallDeps, onInstall?: () => void): Promise<string> {
   const asset = toolAsset(tool, deps.platform, deps.arch)
-  const executable = join(deps.binDirectory, tool)
+  const executable = join(deps.binDirectory, `${tool}${deps.platform === 'win32' ? '.exe' : ''}`)
   const receipt = join(deps.binDirectory, `${tool}-version`)
   const hash = async (path: string): Promise<string> => createHash('sha256').update(await readFile(path)).digest('hex')
   const recorded = await readFile(receipt, 'utf8').then(JSON.parse).catch(() => undefined) as { version?: string; sha256?: string } | undefined
@@ -71,12 +74,12 @@ export async function installTool(tool: Tool, deps: ToolInstallDeps, onInstall?:
   await mkdir(deps.stagingDirectory, { recursive: true })
   const staging = await mkdtemp(join(deps.stagingDirectory, `.${tool}-`))
   try {
-    const archive = join(staging, 'archive.tar.gz')
+    const archive = join(staging, `archive.${asset.format}`)
     const digest = await deps.download(asset.url, archive)
     if (digest !== asset.sha256) throw new Error(`${basename(asset.url)} checksum mismatch`)
-    await deps.run('tar', ['-xzf', archive, '-C', staging, `${asset.directory}/${tool}`])
-    const extracted = join(staging, asset.directory, tool)
-    await chmod(extracted, 0o755)
+    await deps.run('tar', [deps.platform === 'win32' ? '-xf' : '-xzf', archive, '-C', staging, asset.member])
+    const extracted = join(staging, asset.member)
+    if (deps.platform !== 'win32') await chmod(extracted, 0o755)
     await rename(extracted, executable)
     await writeFile(receipt, JSON.stringify({ version: asset.version, sha256: await hash(executable) }))
   } finally {

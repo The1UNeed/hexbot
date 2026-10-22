@@ -271,6 +271,8 @@ pub fn provider_environment(name: &str, provider: &str) -> bool {
 
 impl PiProcess {
     pub fn spawn(options: PiOptions) -> Result<(Self, PiEvents), PiError> {
+        #[cfg(windows)]
+        let mut options = options;
         if options.max_record_bytes == 0
             || options.event_capacity == 0
             || options.request_capacity == 0
@@ -284,6 +286,19 @@ impl PiProcess {
         }
         // Diagnostics can contain credentials or model inputs. Discard them at
         // the OS boundary rather than retaining or returning them with errors.
+        #[cfg(windows)]
+        if options
+            .executable
+            .file_name()
+            .is_some_and(|name| name == "node.exe")
+        {
+            let launcher = options.executable.with_file_name("pi").join("launch.mjs");
+            if launcher.is_file() {
+                options
+                    .args
+                    .insert(0, launcher.to_string_lossy().into_owned());
+            }
+        }
         let mut child = Command::new(&options.executable)
             .args(&options.args)
             .env_clear()

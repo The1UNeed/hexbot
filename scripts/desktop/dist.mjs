@@ -1,5 +1,5 @@
 // Build one desktop package.
-//   --mac|--linux        platform (required)
+//   --mac|--linux|--win        platform (required)
 //   --client             the client-only edition (no daemon runtime)
 //   --channel <name>     stable | nightly | dev (default dev). See docs/channels.md.
 // Remaining arguments go to electron-builder.
@@ -34,9 +34,9 @@ const channelArgs = [
   `-c.extraMetadata.productName=${name}`,
   ...(channel === 'stable' ? [] : [`-c.appId=${appId(channel, client)}`])
 ]
-if (!builderArgs.some(arg => arg === '--mac' || arg === '--linux'))
+if (!builderArgs.some(arg => arg === '--mac' || arg === '--linux' || arg === '--win'))
   throw new Error(
-    'Usage: node scripts/desktop/dist.mjs --mac|--linux [--client] [--channel stable|nightly|dev] [electron-builder options]'
+    'Usage: node scripts/desktop/dist.mjs --mac|--linux|--win [--client] [--channel stable|nightly|dev] [electron-builder options]'
   )
 
 const env = { ...process.env, HEXBOT_EDITION: client ? 'client' : 'full', HEXBOT_CHANNEL: channel }
@@ -59,7 +59,7 @@ const iconArgs = iconOptions(channel, await iconComposerAvailable())
 
 function run(command, commandArgs) {
   return new Promise((resolveRun, reject) => {
-    const child = spawn(command, commandArgs, { cwd: desktopRoot, env, stdio: 'inherit' })
+    const child = spawn(command, commandArgs, { cwd: desktopRoot, env, stdio: 'inherit', shell: process.platform === 'win32' })
     child.once('error', reject)
     child.once('exit', code =>
       code === 0

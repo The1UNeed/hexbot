@@ -1,12 +1,11 @@
-use crate::{
-    Installer, Progress, ProgressCallback, Result, check_output, fail, install_ownership,
-    remove_path,
-};
+#[cfg(unix)]
+use crate::check_output;
+use crate::{Installer, Progress, ProgressCallback, Result, fail, install_ownership, remove_path};
+#[cfg(unix)]
+use std::os::unix::fs::MetadataExt;
 use std::{
     fs,
     io::ErrorKind,
-    os::fd::AsRawFd,
-    os::unix::fs::MetadataExt,
     path::{Path, PathBuf},
     time::{Duration, Instant},
 };
@@ -52,48 +51,63 @@ fn check_internal(home: &Path, relative: &str) -> Result<()> {
 }
 
 pub(crate) fn appimage_running(proc: &Path, app: &Path) -> Result<bool> {
-    let entries = match fs::read_dir(proc) {
-        Ok(entries) => entries,
-        Err(e) if e.kind() == ErrorKind::NotFound => return Ok(false),
-        Err(e) => return Err(e.into()),
-    };
-    let app = app.canonicalize().unwrap_or_else(|_| app.to_owned());
-    for entry in entries {
-        let entry = entry?;
-        if entry.file_name().to_string_lossy().parse::<u32>().is_err() {
-            continue;
-        }
-        let Ok(meta) = entry.metadata() else {
-            continue;
+    #[cfg(not(unix))]
+    {
+        let _ = (proc, app);
+        return Ok(false);
+    }
+    #[cfg(unix)]
+    {
+        let entries = match fs::read_dir(proc) {
+            Ok(entries) => entries,
+            Err(e) if e.kind() == ErrorKind::NotFound => return Ok(false),
+            Err(e) => return Err(e.into()),
         };
-        if meta.uid() != unsafe { libc::getuid() } {
-            continue;
-        }
-        let bytes = match fs::read(entry.path().join("environ")) {
-            Ok(bytes) => bytes,
-            // Linux hides the environment of non-dumpable processes (keyrings,
-            // setuid helpers, other namespaces) and of processes that just
-            // exited. A running AppImage is an ordinary, readable process.
-            Err(_) => continue,
-        };
-        for value in bytes
-            .split(|b| *b == 0)
-            .filter_map(|v| v.strip_prefix(b"APPIMAGE="))
-        {
-            use std::os::unix::ffi::OsStrExt;
-            let path = Path::new(std::ffi::OsStr::from_bytes(value));
-            if path.canonicalize().unwrap_or_else(|_| path.to_owned()) == app {
-                return Ok(true);
+        let app = app.canonicalize().unwrap_or_else(|_| app.to_owned());
+        for entry in entries {
+            let entry = entry?;
+            if entry.file_name().to_string_lossy().parse::<u32>().is_err() {
+                continue;
+            }
+            let Ok(meta) = entry.metadata() else {
+                continue;
+            };
+            if meta.uid() != unsafe { libc::getuid() } {
+                continue;
+            }
+            let bytes = match fs::read(entry.path().join("environ")) {
+                Ok(bytes) => bytes,
+                // Linux hides the environment of non-dumpable processes (keyrings,
+                // setuid helpers, other namespaces) and of processes that just
+                // exited. A running AppImage is an ordinary, readable process.
+                Err(_) => continue,
+            };
+            for value in bytes
+                .split(|b| *b == 0)
+                .filter_map(|v| v.strip_prefix(b"APPIMAGE="))
+            {
+                use std::os::unix::ffi::OsStrExt;
+                let path = Path::new(std::ffi::OsStr::from_bytes(value));
+                if path.canonicalize().unwrap_or_else(|_| path.to_owned()) == app {
+                    return Ok(true);
+                }
             }
         }
+        Ok(false)
     }
-    Ok(false)
 }
 
 fn alive(pid: i32) -> bool {
-    unsafe {
-        libc::kill(pid, 0) == 0
-            || std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH)
+    #[cfg(unix)]
+    {
+        unsafe {
+            libc::kill(pid, 0) == 0
+                || std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH)
+        }
+    }
+    #[cfg(windows)]
+    {
+        process_still_active(pid)
     }
 }
 
@@ -114,6 +128,11 @@ fn process_executable(pid: i32) -> Option<PathBuf> {
         use std::os::unix::ffi::OsStringExt;
         Some(PathBuf::from(std::ffi::OsString::from_vec(buffer)))
     }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        let _ = pid;
+        None
+    }
 }
 
 /// Take an exclusive lock, saying what the installer waits for when it is held.
@@ -124,21 +143,30 @@ fn lock_or_wait(
 ) -> Result<fs::File> {
     let mut blocking = false;
     loop {
-        let operation = if blocking {
-            libc::LOCK_EX
-        } else {
-            libc::LOCK_EX | libc::LOCK_NB
-        };
-        if unsafe { libc::flock(file.as_raw_fd(), operation) } == 0 {
-            return Ok(file);
+        match try_lock(&file, blocking) {
+            Ok(()) => return Ok(file),
+            Err(error) if lock_contended(&error) && !blocking => {
+                progress(Progress::new("wait", waiting));
+                blocking = true;
+            }
+            Err(error) if error.kind() == ErrorKind::Interrupted => {}
+            Err(error) => return Err(error.into()),
         }
-        let error = std::io::Error::last_os_error();
-        if error.kind() == ErrorKind::WouldBlock && !blocking {
-            progress(Progress::new("wait", waiting));
-            blocking = true;
-        } else if error.kind() != ErrorKind::Interrupted {
-            return Err(error.into());
-        }
+    }
+}
+
+fn lock_contended(error: &std::io::Error) -> bool {
+    error.kind() == ErrorKind::WouldBlock || error.raw_os_error() == Some(33)
+}
+
+fn try_lock(file: &fs::File, blocking: bool) -> std::io::Result<()> {
+    if blocking {
+        file.lock()
+    } else {
+        file.try_lock().map_err(|e| match e {
+            std::fs::TryLockError::WouldBlock => std::io::Error::from(ErrorKind::WouldBlock),
+            std::fs::TryLockError::Error(error) => error,
+        })
     }
 }
 
@@ -149,18 +177,10 @@ impl Installer {
         &self,
         progress: &mut ProgressCallback<'_>,
     ) -> Result<fs::File> {
-        use std::os::unix::fs::OpenOptionsExt;
         self.paths.validate()?;
         let path = self.paths.installer_lock(self.target);
         fs::create_dir_all(path.parent().ok_or("Invalid installer lock path")?)?;
-        let file = fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .mode(0o600)
-            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
-            .open(path)?;
+        let file = open_lock(&path)?;
         if !file.metadata()?.is_file() {
             return fail("The installer lock must be a regular file.");
         }
@@ -191,6 +211,22 @@ impl Installer {
     }
 
     pub(crate) fn preflight_ownership(&self) -> Result<()> {
+        if self.target.is_windows() {
+            crate::windows_service::check_service(
+                &self.paths.service_file(self.target),
+                &self.paths.hexbot_home,
+            )?;
+            if let Some(owner) = crate::windows_service::foreign_wrapper_owner(
+                &self.paths.cli_wrapper(self.target),
+                &self.paths.hexbot_home,
+            )? {
+                return fail(format!(
+                    "The Hexbot CLI on this computer belongs to {}. Uninstall it from there first.",
+                    owner.display()
+                ));
+            }
+            return Ok(());
+        }
         install_ownership::check_service(
             &self.paths.service_file(self.target),
             &self.paths.hexbot_home,
@@ -235,6 +271,19 @@ impl Installer {
 
     pub(crate) fn remove_service(&self, progress: &mut ProgressCallback<'_>) -> Result<()> {
         let file = self.paths.service_file(self.target);
+        if self.target.is_windows() {
+            crate::windows_service::check_service(&file, &self.paths.hexbot_home)?;
+            if !file.exists() {
+                return Ok(());
+            }
+            // Let the same CLI which creates the task stop and unregister it.
+            let binary = self.paths.executable();
+            if !binary.is_file() {
+                return fail("Repair the native runtime before removing its Windows task.");
+            }
+            self.run(&binary, &["service", "uninstall"], false, progress)?;
+            return Ok(());
+        }
         install_ownership::check_service(&file, &self.paths.hexbot_home, self.target.is_macos())?;
         if !file.exists() {
             return Ok(());
@@ -242,26 +291,31 @@ impl Installer {
         // Do not depend on a working native-executable pointer to uninstall a service.
         if !self.paths.service_no_load {
             if self.target.is_macos() {
-                let uid = unsafe { libc::getuid() };
-                let mut stopped = false;
-                for domain in [format!("gui/{uid}"), format!("user/{uid}")] {
-                    stopped |= self
-                        .paths
-                        .command("launchctl")
-                        .args(["bootout", &domain])
-                        .arg(&file)
-                        .output()?
-                        .status
-                        .success();
-                }
-                if !stopped {
-                    check_output(
-                        self.paths
+                #[cfg(not(unix))]
+                return fail("The macOS service can only be removed on macOS.");
+                #[cfg(unix)]
+                {
+                    let uid = unsafe { libc::getuid() };
+                    let mut stopped = false;
+                    for domain in [format!("gui/{uid}"), format!("user/{uid}")] {
+                        stopped |= self
+                            .paths
                             .command("launchctl")
-                            .args(["unload", "-w"])
+                            .args(["bootout", &domain])
                             .arg(&file)
-                            .output()?,
-                    )?;
+                            .output()?
+                            .status
+                            .success();
+                    }
+                    if !stopped {
+                        check_output(
+                            self.paths
+                                .command("launchctl")
+                                .args(["unload", "-w"])
+                                .arg(&file)
+                                .output()?,
+                        )?;
+                    }
                 }
             } else {
                 let _ = self
@@ -272,7 +326,7 @@ impl Installer {
             }
         }
         self.remove_owned_path(&file)?;
-        if !self.paths.service_no_load && !self.target.is_macos() {
+        if !self.paths.service_no_load && self.target.is_linux() {
             let _ = self
                 .paths
                 .command("systemctl")
@@ -298,9 +352,8 @@ impl Installer {
             Err(e) => return Err(e.into()),
         };
         let try_lock = || {
-            lock.as_ref().is_none_or(|f| unsafe {
-                libc::flock(f.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) == 0
-            })
+            lock.as_ref()
+                .is_none_or(|file| try_lock(file, false).is_ok())
         };
         // A free lock means any running record is stale, even if its PID was reused.
         if try_lock() {
@@ -333,7 +386,7 @@ impl Installer {
             {
                 return fail(STOP);
             }
-            if unsafe { libc::kill(pid, libc::SIGTERM) } != 0 {
+            if !terminate(pid) {
                 return fail(STOP);
             }
             let deadline = Instant::now() + Duration::from_secs(15);
@@ -350,10 +403,74 @@ impl Installer {
     }
 }
 
-#[cfg(test)]
+fn open_lock(path: &Path) -> Result<fs::File> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        Ok(fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+            .open(path)?)
+    }
+    #[cfg(windows)]
+    {
+        Ok(fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(path)?)
+    }
+}
+
+fn terminate(pid: i32) -> bool {
+    #[cfg(unix)]
+    {
+        unsafe { libc::kill(pid, libc::SIGTERM) == 0 }
+    }
+    #[cfg(windows)]
+    {
+        // No signal is sent using a recorded PID on Windows. The owned task
+        // is stopped first; otherwise ask the user to stop the daemon.
+        let _ = pid;
+        false
+    }
+}
+
+#[cfg(windows)]
+fn process_still_active(pid: i32) -> bool {
+    const STILL_ACTIVE: u32 = 259;
+    const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn OpenProcess(access: u32, inherit: i32, pid: u32) -> *mut std::ffi::c_void;
+        fn GetExitCodeProcess(process: *mut std::ffi::c_void, code: *mut u32) -> i32;
+        fn CloseHandle(handle: *mut std::ffi::c_void) -> i32;
+    }
+    if pid <= 0 {
+        return false;
+    }
+    unsafe {
+        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid as u32);
+        if handle.is_null() {
+            return std::io::Error::last_os_error().raw_os_error() != Some(87);
+        }
+        let mut code = 0u32;
+        let ok = GetExitCodeProcess(handle, &mut code) != 0 && code == STILL_ACTIVE;
+        CloseHandle(handle);
+        ok
+    }
+}
+
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use crate::{Paths, Target};
+    use std::os::fd::AsRawFd;
     use std::{
         io::{BufRead, BufReader, Write},
         process::{Command, Stdio},

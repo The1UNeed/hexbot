@@ -20,7 +20,9 @@ mod install_ownership;
 pub mod memory;
 pub mod native_external_tools;
 pub mod native_product_tools;
+pub mod native_selection;
 pub mod native_tools;
+mod native_zip;
 pub mod osutil;
 pub mod pi;
 pub mod provider_acp;
@@ -34,7 +36,15 @@ pub mod services;
 pub mod settings;
 pub mod setup;
 pub mod skills;
+#[cfg(not(windows))]
 pub mod system_service;
+#[cfg(windows)]
+#[path = "windows_service.rs"]
+pub mod system_service;
+#[cfg(not(windows))]
+pub mod windows_service;
+#[cfg(windows)]
+pub use system_service as windows_service;
 pub mod team;
 mod update_path;
 pub mod update_signature;

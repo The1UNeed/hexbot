@@ -13,7 +13,14 @@ it('pins every downloaded tool for each supported target', () => {
     expect(asset.url).toContain(asset.version)
     expect(asset.sha256).toMatch(/^[a-f0-9]{64}$/)
   }
-  expect(() => toolAsset('rg', 'win32', 'x64')).toThrow('Unsupported')
+  for (const tool of ['rg', 'fd', 'uv'] as const) {
+    const asset = toolAsset(tool, 'win32', 'x64')
+    expect(asset.url).toMatch(/windows-msvc\.zip$/)
+    expect(asset.sha256).toMatch(/^[a-f0-9]{64}$/)
+    expect(asset.member).toMatch(/\.exe$/)
+  }
+  expect(toolAsset('uv', 'win32', 'x64').member).toBe('uv.exe')
+  expect(() => toolAsset('rg', 'win32', 'arm64')).toThrow('Unsupported')
 })
 
 it('rejects a bad download checksum before extraction or execution', async () => {

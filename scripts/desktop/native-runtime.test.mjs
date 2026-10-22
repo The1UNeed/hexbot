@@ -10,9 +10,11 @@ import { createNativeArchive, launchers, nativeTarget, stageNativeRuntime, rustT
 const exec = promisify(execFile)
 test('target supports both desktop architectures and Linux arm64', () => {
   for (const os of ['darwin', 'linux']) for (const arch of ['x64', 'arm64']) assert.equal(nativeTarget(os, arch), `${os}-${arch}`)
-  assert.throws(() => nativeTarget('win32', 'x64'), /Unsupported/)
+  assert.equal(nativeTarget('win32', 'x64'), 'win32-x64')
+  assert.equal(rustTarget('win32', 'x64'), 'x86_64-pc-windows-msvc')
+  assert.throws(() => nativeTarget('win32', 'arm64'), /Unsupported/)
 })
-test('launchers preserve arguments and resolve paths containing spaces', async () => {
+test('launchers preserve arguments and resolve paths containing spaces', { skip: process.platform === 'win32' }, async () => {
   const root = await mkdtemp(join(tmpdir(), 'hexbot native '))
   try {
     await mkdir(join(root, 'pi'))
@@ -29,7 +31,7 @@ test('launchers preserve arguments and resolve paths containing spaces', async (
     assert.equal(service.stdout, stdout)
   } finally { await rm(root, { recursive: true, force: true }) }
 })
-test('stage builds locked dependencies, validates Pi and emits artifact checksums', async () => {
+test('stage builds locked dependencies, validates Pi and emits artifact checksums', { skip: process.platform === 'win32' }, async () => {
   const root = await mkdtemp(join(tmpdir(), 'hexbot-stage-'))
   try {
     for (const path of ['apps/desktop', 'apps/web/dist', 'skills', 'backend/pi-runtime', `backend/hexbot-core/target/${rustTarget(process.platform, process.arch)}/release`]) await mkdir(join(root, path), { recursive: true })
@@ -69,7 +71,7 @@ test('stage builds locked dependencies, validates Pi and emits artifact checksum
   } finally { await rm(root, { recursive: true, force: true }) }
 })
 
-test('archive dereferences npm links and records the update format', async () => {
+test('archive dereferences npm links and records the update format', { skip: process.platform === 'win32' }, async () => {
   const root = await mkdtemp(join(tmpdir(), 'hexbot-archive-'))
   try {
     const bundle = join(root, 'bundle'); await mkdir(bundle)
@@ -153,5 +155,23 @@ test('pruning removes foreign nested optional binaries and development files, pr
       assert((await stat(join(modules, file))).isFile())
     for (const file of ['agent/dist/main.js.map', 'agent/dist/main.d.ts', 'agent/docs', 'agent/examples', '@types', '@img/linux', 'agent/node_modules/@esbuild/darwin-x64'])
       await assert.rejects(stat(join(modules, file)), { code: 'ENOENT' })
+  } finally { await rm(root, { recursive: true, force: true }) }
+})
+
+test('Windows ZIP advertises the actual daemon and contains the verified entrypoint', { skip: process.platform === 'linux' }, async () => {
+  const root = await mkdtemp(join(tmpdir(), 'hexbot windows archive '))
+  try {
+    const bundle = join(root, 'bundle'); await mkdir(bundle)
+    await writeFile(join(bundle, 'hexbot.exe'), 'MZ fixture')
+    await writeFile(join(bundle, 'manifest.json'), JSON.stringify({ version: '1.2.3', target: 'win32-x64', files: { 'hexbot.exe': 'pending' } }))
+    const file = join(root, 'native.zip')
+    const manifest = await createNativeArchive(bundle, file)
+    assert.equal(manifest.entrypoint, 'hexbot.exe'); assert.equal(manifest.format, 'zip')
+    assert.equal(manifest.target, 'windows-x86_64')
+    const out = join(root, 'out'); await mkdir(out)
+    await exec('tar', ['-xf', file, '-C', out])
+    assert.equal(await readFile(join(out, 'hexbot.exe'), 'utf8'), 'MZ fixture')
+    await rm(join(bundle, 'hexbot.exe'))
+    await assert.rejects(createNativeArchive(bundle, file))
   } finally { await rm(root, { recursive: true, force: true }) }
 })

@@ -283,6 +283,7 @@ async fn run() -> Result<()> {
     let pi = common::pi_executable()?;
     let dist = std::env::var_os("HEXBOT_WEB_DIST")
         .map(PathBuf::from)
+        .or_else(|| common::bundled_runtime().map(|root| root.join("web")))
         .or_else(|| Some(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../apps/web/dist")))
         .filter(|p| p.join("index.html").is_file());
     let signal = shutdown_signal();
@@ -438,12 +439,20 @@ async fn run() -> Result<()> {
                 use std::os::unix::process::CommandExt;
                 return Err(next.exec().into());
             }
+            #[cfg(windows)]
+            {
+                // The scheduled task wrapper waits for this process to exit,
+                // resolves the new selection, then starts it in the same job.
+                // No child races this process's home lock or escapes the task.
+                return Ok(());
+            }
         }
     }
     Ok(())
 }
 /// Registers the handlers before returning, so a SIGTERM or SIGINT that arrives
 /// between the ready line and the first poll still shuts the daemon down cleanly.
+#[cfg(unix)]
 fn shutdown_signal() -> impl std::future::Future<Output = ()> {
     use tokio::signal::unix::{SignalKind, signal};
     let term = signal(SignalKind::terminate()).ok();
@@ -458,6 +467,28 @@ fn shutdown_signal() -> impl std::future::Future<Output = ()> {
             }
         };
         tokio::select! {_=wait(term)=>{},_=wait(interrupt)=>{}}
+    }
+}
+#[cfg(windows)]
+fn shutdown_signal() -> impl std::future::Future<Output = ()> {
+    let ctrl_c = tokio::signal::windows::ctrl_c();
+    let ctrl_break = tokio::signal::windows::ctrl_break();
+    async move {
+        let wait = |signal: std::io::Result<tokio::signal::windows::CtrlC>| async move {
+            if let Ok(mut signal) = signal {
+                signal.recv().await;
+            } else {
+                std::future::pending().await
+            }
+        };
+        let break_wait = async move {
+            if let Ok(mut signal) = ctrl_break {
+                signal.recv().await;
+            } else {
+                std::future::pending().await
+            }
+        };
+        tokio::select! { _ = wait(ctrl_c) => {}, _ = break_wait => {} }
     }
 }
 #[tokio::main]

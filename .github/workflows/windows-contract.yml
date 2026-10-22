@@ -1,0 +1,84 @@
+# Development validation only. No release dependency, signing secrets or publishing.
+name: Windows build and install contract
+on:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: windows-contract-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+jobs:
+  client-and-installer:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: 26.5.0
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+      - run: rustup show active-toolchain
+      - run: pnpm install --frozen-lockfile
+      - run: cargo check --locked --manifest-path backend/hexbot-installer/Cargo.toml
+      - run: cargo clippy --locked --manifest-path backend/hexbot-installer/Cargo.toml --lib --bins -- -D warnings
+      - run: cargo check --locked --manifest-path apps/installer/src-tauri/Cargo.toml
+      - run: pnpm --filter ./apps/desktop run typecheck
+      - run: node --test scripts/desktop/windows-contract.test.mjs scripts/desktop/native-build.test.mjs
+      - name: Build the real client NSIS without publishing
+        run: node scripts/desktop/dist.mjs --win --x64 --client --channel stable
+      - name: Verify installer engine runs NSIS, repairs and uninstalls the client
+        shell: pwsh
+        run: |
+          $version = (Get-Content apps/desktop/package.json | ConvertFrom-Json).version
+          $env:HEXBOT_WINDOWS_NSIS = (Resolve-Path "apps/desktop/release/HexbotClient-$version-win-x64.exe").Path
+          cargo test --locked --manifest-path backend/hexbot-installer/Cargo.toml --test windows_contract -- --ignored --nocapture
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: windows-client-contract
+          path: apps/desktop/release/HexbotClient-*-win-x64.exe
+          retention-days: 3
+  native-runtime:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: 26.5.0
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+      - run: rustup show active-toolchain
+      - run: pnpm install --frozen-lockfile
+      # This must fail visibly until the separate fail-closed Windows execution
+      # boundary and its compile ports land. Never bypass the platform guard.
+      - name: Native daemon compile gate
+        run: cargo check --locked --manifest-path backend/hexbot-core/Cargo.toml --bin hexbot
+      - run: cargo clippy --locked --manifest-path backend/hexbot-core/Cargo.toml --lib --bins -- -D warnings
+      - name: Build Full and its real Node/Pi runtime without publishing
+        run: node scripts/desktop/dist.mjs --win --x64 --channel stable
+      - name: Probe Full bootstrap and standalone setup with real Node and Pi
+        shell: pwsh
+        run: |
+          $env:HEXBOT_NATIVE_TEST_BUNDLE = (Resolve-Path apps/desktop/resources/hexbot-native).Path
+          pnpm --filter ./apps/desktop run test --run src/main/backend/windows-bootstrap.test.ts
+          node scripts/desktop/windows-runtime-smoke.mjs
+      - name: Probe Full NSIS installation, repair and uninstall
+        shell: pwsh
+        run: |
+          $version = (Get-Content apps/desktop/package.json | ConvertFrom-Json).version
+          $env:HEXBOT_WINDOWS_NSIS = (Resolve-Path "apps/desktop/release/Hexbot-$version-win-x64.exe").Path
+          $env:HEXBOT_WINDOWS_EDITION = 'full'
+          cargo test --locked --manifest-path backend/hexbot-installer/Cargo.toml --test windows_contract -- --ignored --nocapture
+      - name: Probe signed Headless ZIP update and pinned Connect executable
+        shell: pwsh
+        run: |
+          node scripts/desktop/make-native-update.mjs apps/desktop/resources/hexbot-native windows-updates
+          $env:HEXBOT_WINDOWS_UPDATE_ROOT = (Resolve-Path windows-updates).Path
+          cargo run --locked --manifest-path backend/hexbot-core/Cargo.toml --example windows_contract
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: windows-native-contract
+          path: |
+            apps/desktop/release/Hexbot-*-win-x64.exe
+            windows-updates
+          retention-days: 3

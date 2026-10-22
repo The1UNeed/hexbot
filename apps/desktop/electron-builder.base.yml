@@ -53,6 +53,18 @@ deb:
     entry:
       Categories: Utility
       StartupWMClass: Hexbot
+# Local/CI packages only. release.yml deliberately has no Windows job.
+win:
+  target:
+    - target: nsis
+      arch: [x64]
+  executableName: Hexbot
+nsis:
+  oneClick: false
+  perMachine: false
+  allowElevation: false
+  allowToChangeInstallationDirectory: true
+  runAfterFinish: false
 publish:
   provider: generic
   url: https://updates.hexbot.app/full/${os}/${arch}

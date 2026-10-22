@@ -650,3 +650,9 @@ Prefer `HEXBOT_MANAGED_DIR`, `HEXBOT_MAX_TURNS`,
 `HEXBOT_CUA_DRIVER_CMD`, and `HEXBOT_XAI_BASE_URL`. The corresponding old
 `HERMES_*` names remain fallbacks. Managed config defaults to `/etc/hexbot`,
 with `/etc/hermes` as the fallback when the new directory is absent.
+
+Windows build/install preparation is documented in
+[`docs/windows-build-contract.md`](../../docs/windows-build-contract.md).
+It uses an immutable `hexbot.exe` runtime selected by `native-current.json`.
+Windows remains unsupported until the separate fail-closed execution work and
+native validation pass. The public release matrix is unchanged.

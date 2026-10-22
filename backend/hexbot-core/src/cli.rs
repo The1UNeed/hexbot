@@ -291,6 +291,27 @@ async fn input(prompt: String) -> Result<String> {
         };
         tokio::select! {result=read=>result,_=interrupt.recv()=>Err(Error::new(5200,"Command interrupted"))}
     }
+    #[cfg(windows)]
+    {
+        let mut command = tokio::process::Command::new("powershell.exe");
+        command
+            .args([
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "[Console]::ReadLine()",
+            ])
+            .stdin(std::process::Stdio::inherit())
+            .kill_on_drop(true);
+        tokio::select! {
+            result = command.output() => {
+                let output = result?;
+                if !output.status.success() || output.stdout.len() > 65536 { return Err(Error::new(5200, "Terminal answer failed or exceeded 64 KiB")); }
+                Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
+            },
+            _ = tokio::signal::ctrl_c() => Err(Error::new(5200, "Command interrupted"))
+        }
+    }
 }
 async fn remote(socket: &mut Socket, method: &str, p: Value) -> Result<Value> {
     let id = common::id();
