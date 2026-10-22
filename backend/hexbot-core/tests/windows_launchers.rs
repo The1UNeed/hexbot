@@ -18,6 +18,82 @@ fn quote(path: &Path) -> String {
 }
 
 #[test]
+fn task_principal_ownership_uses_exact_resolved_windows_sids() {
+    let output = powershell(&format!(
+        r#"{}
+$ErrorActionPreference='Stop'
+$owner=[Security.Principal.WindowsIdentity]::GetCurrent()
+$sid=$owner.User.Value
+$account=$owner.Name
+foreach($identity in @($sid,$account,[Environment]::UserName)) {{
+    $resolved=Resolve-HexbotTaskSid $identity
+    if($resolved -cne $sid) {{ throw 'Own SID/account representation did not resolve to the exact owner SID' }}
+    [Console]::WriteLine((@{{identity=$identity;resolvedSid=$resolved}}|ConvertTo-Json -Compress))
+}}
+$foreignSid='S-1-5-18'
+if($sid -ceq $foreignSid) {{ throw 'Probe requires a user, not LocalSystem' }}
+$foreignName=[Security.Principal.SecurityIdentifier]::new($foreignSid).Translate([Security.Principal.NTAccount]).Value
+foreach($identity in @($foreignSid,$foreignName,('Hexbot-no-such-user-'+[Guid]::NewGuid().ToString()),'', 'not a valid SID')) {{
+    if((Resolve-HexbotTaskSid $identity) -ceq $sid) {{ throw 'Foreign or unresolvable principal was accepted' }}
+}}
+if($null -ne (Resolve-HexbotTaskSid ('Hexbot-no-such-user-'+[Guid]::NewGuid().ToString()))) {{ throw 'Unresolvable principal must fail closed' }}
+# Run the actual ownership gate with controlled task definitions, without
+# needing permission to register a task for another Windows account.
+$expectedSid=$sid
+$expectedPowerShell=Join-Path ([Environment]::GetFolderPath('System')) 'WindowsPowerShell\v1.0\powershell.exe'
+$expectedArguments='-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File "C:\fixture\daemon.ps1"'
+$expectedOwner='Hexbot owned home: "C:\fixture home"'
+$allowLegacy=$false;$operation='state';$taskName='fixture'
+$control=[ScriptBlock]::Create(@'
+{}
+'@)
+function New-Object([string]$ComObject) {{
+    if($ComObject -cne 'Schedule.Service') {{ throw 'Unexpected fixture COM object' }}
+    return $script:fixtureService
+}}
+foreach($case in @('sid','account','unqualified','foreign','unknown','program','arguments','home','count')) {{
+    $action=[pscustomobject]@{{Path=$expectedPowerShell;Arguments=$expectedArguments}}
+    $actions=[pscustomobject]@{{Count=1;Entry=$action}}
+    $actions|Add-Member ScriptMethod Item {{param($index) $this.Entry}}
+    $definition=[pscustomobject]@{{Actions=$actions;Principal=[pscustomobject]@{{UserId=$sid}};RegistrationInfo=[pscustomobject]@{{Description=$expectedOwner}}}}
+    $script:fixtureTask=[pscustomobject]@{{Definition=$definition;State=3}}
+    $script:fixtureFolder=[pscustomobject]@{{}}
+    $script:fixtureFolder|Add-Member ScriptMethod GetTask {{param($name) $script:fixtureTask}}
+    $script:fixtureService=[pscustomobject]@{{}}
+    $script:fixtureService|Add-Member ScriptMethod Connect {{}}
+    $script:fixtureService|Add-Member ScriptMethod GetFolder {{param($path) $script:fixtureFolder}}
+    switch($case) {{
+        'account' {{$definition.Principal.UserId=$account}}
+        'unqualified' {{$definition.Principal.UserId=[Environment]::UserName}}
+        'foreign' {{$definition.Principal.UserId=$foreignSid}}
+        'unknown' {{$definition.Principal.UserId='Hexbot-no-such-user-'+[Guid]::NewGuid().ToString()}}
+        'program' {{$action.Path='C:\foreign\powershell.exe'}}
+        'arguments' {{$action.Arguments+=' -foreign'}}
+        'home' {{$definition.RegistrationInfo.Description='Hexbot owned home: "C:\another home"'}}
+        'count' {{$actions.Count=2}}
+    }}
+    $accepted=$true
+    try {{$result=& $control}} catch {{
+        $accepted=$false
+        if($_.Exception.Message -notmatch 'another installation|home ownership context') {{throw}}
+    }}
+    if($accepted -ne ($case -in @('sid','account','unqualified'))) {{throw "Incorrect task ownership result for $case"}}
+    if($accepted -and $result -ne 3) {{throw 'Owned task state was not returned'}}
+}}
+[Console]::WriteLine('SID, qualified and unqualified owner names accepted; foreign and unresolved identities refused')
+"#,
+        include_str!("../assets/windows-task-identity.ps1"),
+        include_str!("../assets/windows-task-control.ps1")
+    ));
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    eprintln!("{}", String::from_utf8_lossy(&output.stdout));
+}
+
+#[test]
 fn launchers_resolve_unicode_and_junctions_before_executing() {
     let root = tempfile::tempdir().unwrap();
     let home = root.path().join("Jos\u{e9} state");
@@ -615,6 +691,8 @@ fn interrupted_task_install_uninstalls_owned_files_when_the_task_is_absent() {
     assert_eq!(diagnostic["program"]["matches"], false);
     assert_eq!(diagnostic["arguments"]["actual"]["value"], "/D /C exit 0");
     assert_eq!(diagnostic["principal"]["expected"]["value"], sid);
+    assert_eq!(diagnostic["principal"]["resolved"]["value"], sid);
+    assert_eq!(diagnostic["principal"]["matches"], true);
     for field in ["program", "arguments", "principal", "home"] {
         for side in ["actual", "expected"] {
             assert!(diagnostic[field][side]["value"].as_str().unwrap().len() <= 2048);

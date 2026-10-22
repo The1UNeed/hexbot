@@ -15,7 +15,7 @@ function Write-HexbotTaskDiagnostic($reason) {
         logonType = [int]$definition.Principal.LogonType; runLevel = [int]$definition.Principal.RunLevel
         program = @{ actual = (Describe-HexbotTaskValue $action.Path); expected = (Describe-HexbotTaskValue $expectedPowerShell); matches = ($action.Path -ieq $expectedPowerShell) }
         arguments = @{ actual = (Describe-HexbotTaskValue $action.Arguments); expected = (Describe-HexbotTaskValue $expectedArguments); matches = ($action.Arguments -ceq $expectedArguments) }
-        principal = @{ actual = (Describe-HexbotTaskValue $definition.Principal.UserId); expected = (Describe-HexbotTaskValue $expectedSid); matches = ($definition.Principal.UserId -ieq $expectedSid) }
+        principal = @{ actual = (Describe-HexbotTaskValue $definition.Principal.UserId); expected = (Describe-HexbotTaskValue $expectedSid); resolved = (Describe-HexbotTaskValue $principalSid); matches = ($principalSid -ceq $expectedSid) }
         home = @{ actual = (Describe-HexbotTaskValue $definition.RegistrationInfo.Description); expected = (Describe-HexbotTaskValue $expectedOwner); legacyScriptOwned = $allowLegacy }
     }
     [Console]::Error.WriteLine('Hexbot task ownership diagnostic: ' + ($details | ConvertTo-Json -Depth 5 -Compress))
@@ -27,7 +27,8 @@ try {
     $task = $folder.GetTask($taskName)
     $definition = $task.Definition
     $action = $definition.Actions.Item(1)
-    if ($definition.Actions.Count -ne 1 -or $action.Path -ine $expectedPowerShell -or $action.Arguments -cne $expectedArguments -or $definition.Principal.UserId -ine $expectedSid) {
+    $principalSid = Resolve-HexbotTaskSid $definition.Principal.UserId
+    if ($definition.Actions.Count -ne 1 -or $action.Path -ine $expectedPowerShell -or $action.Arguments -cne $expectedArguments -or $principalSid -cne $expectedSid) {
         Write-HexbotTaskDiagnostic 'principal/action mismatch'
         throw 'Windows task belongs to another installation; left it alone'
     }

@@ -477,15 +477,9 @@ mod tests {
             (Target::MacosX86_64, "hexbot"),
         ] {
             let serialized = serde_json::to_value(locations(&paths, target).unwrap()).unwrap();
-            assert_eq!(
-                serialized["cli"],
-                paths
-                    .home
-                    .join(".local/bin")
-                    .join(name)
-                    .to_string_lossy()
-                    .as_ref()
-            );
+            let cli = Path::new(serialized["cli"].as_str().unwrap());
+            assert_eq!(cli, paths.home.join(".local").join("bin").join(name));
+            assert_eq!(cli.file_name().unwrap(), name);
         }
     }
 

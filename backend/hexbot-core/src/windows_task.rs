@@ -48,12 +48,13 @@ pub fn control(file: &Path, home: &Path, operation: &str) -> io::Result<String> 
         file.display()
     );
     Ok(format!(
-        "$expectedSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value; $taskName = 'Hexbot-daemon-' + $expectedSid; $expectedPowerShell = {}; $expectedArguments = {}; $expectedOwner = {}; $allowLegacy = ${}; $operation = {};\n{}",
+        "$expectedSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value; $taskName = 'Hexbot-daemon-' + $expectedSid; $expectedPowerShell = {}; $expectedArguments = {}; $expectedOwner = {}; $allowLegacy = ${}; $operation = {};\n{}\n{}",
         quote(&executable.to_string_lossy()),
         quote(&arguments),
         quote(&owner(home)?),
         legacy,
         quote(operation),
+        include_str!("../assets/windows-task-identity.ps1"),
         include_str!("../assets/windows-task-control.ps1")
     ))
 }
