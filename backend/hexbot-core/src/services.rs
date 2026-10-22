@@ -924,12 +924,7 @@ async fn ensure_cloudflared_asset(
     Ok(binary)
 }
 async fn terminate(child: &mut Child) {
-    #[cfg(unix)]
-    if let Some(pid) = child.id() {
-        unsafe {
-            libc::kill(pid as i32, libc::SIGTERM);
-        }
-    }
+    crate::osutil::signal_termination(child);
     if tokio::time::timeout(Duration::from_secs(2), child.wait())
         .await
         .is_err()
@@ -1568,7 +1563,6 @@ pub fn prune_current_native(home: &Path) -> Result<()> {
 // Unknown running state defers cleanup. Setup can run from a different bundle
 // than the daemon which still owns this home's lock.
 fn recorded_native_runtime(native: &Path) -> Result<Option<PathBuf>> {
-    use std::os::fd::AsRawFd;
     let runtime = native
         .parent()
         .ok_or_else(|| Error::new(5243, "Missing runtime directory"))?;
@@ -1576,7 +1570,7 @@ fn recorded_native_runtime(native: &Path) -> Result<Option<PathBuf>> {
         .parent()
         .ok_or_else(|| Error::new(5243, "Missing home"))?;
     let locked = match fs::File::open(home.join("native-daemon.lock")) {
-        Ok(file) => unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) != 0 },
+        Ok(file) => file.try_lock().is_err(),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
         Err(e) => return Err(e.into()),
     };
@@ -1591,8 +1585,7 @@ fn recorded_native_runtime(native: &Path) -> Result<Option<PathBuf>> {
         .as_i64()
         .filter(|pid| *pid > 0 && *pid <= i32::MAX as i64)
         .ok_or_else(|| Error::new(5243, "Invalid running daemon PID"))? as i32;
-    let alive = unsafe { libc::kill(pid, 0) } == 0
-        || std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH);
+    let alive = crate::osutil::process_alive(pid as u32);
     if !alive && !locked {
         return Ok(None);
     }
@@ -1615,7 +1608,6 @@ fn recorded_native_runtime(native: &Path) -> Result<Option<PathBuf>> {
 }
 
 pub(crate) fn activation_lock(runtime: &Path) -> Result<fs::File> {
-    use std::os::fd::AsRawFd;
     let file = fs::OpenOptions::new()
         .create(true)
         .truncate(false)
@@ -1627,22 +1619,15 @@ pub(crate) fn activation_lock(runtime: &Path) -> Result<fs::File> {
     if let Some(held) = inherited_activation_lock(&file, inherited) {
         return Ok(held);
     }
-    loop {
-        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) } == 0 {
-            return Ok(file);
-        }
-        let error = std::io::Error::last_os_error();
-        if error.kind() != std::io::ErrorKind::Interrupted {
-            return Err(error.into());
-        }
-    }
+    crate::osutil::lock_exclusive(&file)?;
+    Ok(file)
 }
 
 /// The installer holds the activation lock across its version check and
 /// `hexbot setup --activate`, and passes the locked descriptor down. Use it
 /// only if it is this lock file and the lock is already ours to take.
 fn inherited_activation_lock(file: &fs::File, fd: Option<i32>) -> Option<fs::File> {
-    use std::os::fd::{AsRawFd, FromRawFd};
+    use std::os::fd::FromRawFd;
     use std::os::unix::fs::MetadataExt;
     let fd = fd.filter(|fd| *fd > 2)?;
     // A private copy that processes setup starts do not inherit.
@@ -1657,7 +1642,7 @@ fn inherited_activation_lock(file: &fs::File, fd: Option<i32>) -> Option<fs::Fil
     }
     unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) };
     // Immediate when the inherited file holds the lock; refused while anyone else does.
-    (unsafe { libc::flock(copy.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0).then_some(copy)
+    copy.try_lock().is_ok().then_some(copy)
 }
 
 // Staging directories remain hidden from pruning until the activation lock is held.

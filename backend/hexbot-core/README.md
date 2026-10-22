@@ -304,6 +304,13 @@ clear, close and deletion cleanup apply to retained uploads.
 | `providers`, `provider_acp`, `connectors` | Models, credentials, OAuth, ACP, connector setup/probes, MCP |
 | `native_tools`, `native_external_tools`, `native_product_tools` | Code, browser, computer, media, web, HA, X, skills and history tools |
 | `services` | Connect registration, grants, tunnel lifecycle, native updates |
+| `osutil` | Home, hostname, file errors, process probes and owned-child signals; interrupted lock waits |
+
+`osutil` keeps the existing macOS and Linux behavior behind small helpers.
+Nonblocking file locks use `std::fs::File::try_lock`, which interoperates with
+existing `flock` holders on both platforms. Activation waits still retry interrupted
+calls, and inherited activation descriptors still require the same device/inode
+and lock checks. The daemon remains unsupported on Windows.
 
 ## Skills
 

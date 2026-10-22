@@ -488,7 +488,7 @@ fn safe_path(home: &Path, relative: &Path) -> Result<PathBuf> {
             // it as absent; an attempted read or write still reports the I/O error.
             Err(error)
                 if error.kind() == std::io::ErrorKind::NotFound
-                    || error.raw_os_error() == Some(libc::ENAMETOOLONG) => {}
+                    || crate::osutil::name_too_long(&error) => {}
             Err(error) => return Err(error.into()),
         }
     }

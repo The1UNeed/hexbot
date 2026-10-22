@@ -14,21 +14,18 @@ fn home() -> Result<PathBuf> {
     if let Some(home) = std::env::var_os("HEXBOT_HOME").filter(|value| !value.is_empty()) {
         let mut path = PathBuf::from(home);
         if path.starts_with("~") {
-            path = PathBuf::from(
-                std::env::var_os("HOME")
-                    .ok_or_else(|| Error::new(4200, "HOME is required to expand ~"))?,
-            )
-            .join(path.strip_prefix("~").unwrap());
+            path = hexbot_core::osutil::user_home()
+                .ok_or_else(|| Error::new(4200, "HOME is required to expand ~"))?
+                .join(path.strip_prefix("~").unwrap());
         }
         if path.is_relative() {
             path = std::env::current_dir()?.join(path);
         }
         return Ok(path);
     }
-    Ok(PathBuf::from(
-        std::env::var_os("HOME").ok_or_else(|| Error::new(4200, "HEXBOT_HOME is required"))?,
-    )
-    .join(".hexbot"))
+    Ok(hexbot_core::osutil::user_home()
+        .ok_or_else(|| Error::new(4200, "HEXBOT_HOME is required"))?
+        .join(".hexbot"))
 }
 fn refuse_legacy_listener(home: &Path) -> Result<()> {
     if !home.join("runtime/native-transition-pending").exists() {
@@ -135,12 +132,8 @@ fn lock_home(home: &Path) -> Result<std::fs::File> {
         options.mode(0o600);
     }
     let mut file = options.open(path)?;
-    #[cfg(unix)]
-    {
-        use std::os::fd::AsRawFd;
-        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
-            return Err(Error::new(4208, "a daemon already owns this home"));
-        }
+    if file.try_lock().is_err() {
+        return Err(Error::new(4208, "a daemon already owns this home"));
     }
     refuse_legacy_listener(home)?;
     file.set_len(0)?;
