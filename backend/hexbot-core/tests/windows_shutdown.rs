@@ -38,6 +38,60 @@ async fn owned_desktop_pipe_quit_and_restart_clean_up_real_pi_and_home_lock() {
     let module = url::Url::from_file_path(&module).unwrap();
     let launcher = url::Url::from_file_path(bundle.join("pi/launch.mjs")).unwrap();
     for mode in ["section", "command", "eof", "force"] {
+        let stored = if mode == "section" {
+            "first-section"
+        } else {
+            "first"
+        };
+        if mode == "section" {
+            db::open(&home).unwrap().execute("INSERT INTO sections(id,bot,owner_id,title) VALUES('first-section','owl','local','Lifetime')",[]).unwrap();
+        }
+        let tool_ready = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let script = root.path().join("actual tool child.mjs");
+        fs::write(&script,format!("import net from 'node:net';const s=net.connect({},'127.0.0.1',()=>s.write(JSON.stringify({{pid:process.pid,parent:process.ppid}})+'\\n'));s.on('data',()=>{{setInterval(()=>{{}},60000);s.end();}});",tool_ready.local_addr().unwrap().port())).unwrap();
+        let quote = |path: &std::path::Path| {
+            format!(
+                "'{}'",
+                path.to_string_lossy()
+                    .replace('\\', "/")
+                    .replace('\'', "'\\''")
+            )
+        };
+        let tool_command = format!(
+            "{} {}; exit $?",
+            quote(&bundle.join("node.exe")),
+            quote(&script)
+        );
+        let http = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let model_address = http.local_addr().unwrap();
+        let model = axum::Router::new().route("/v1/chat/completions",axum::routing::post(move || {
+            let command=tool_command.clone(); async move {
+                let first=json!({"id":"lifetime","object":"chat.completion.chunk","created":1,"model":"test-model","choices":[{"index":0,"delta":{"role":"assistant","tool_calls":[{"index":0,"id":"long-child","type":"function","function":{"name":"bash","arguments":json!({"command":command}).to_string()}}]},"finish_reason":null}]});
+                let end=json!({"id":"lifetime","object":"chat.completion.chunk","created":1,"model":"test-model","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]});
+                ([("content-type","text/event-stream")],format!("data: {first}\n\ndata: {end}\n\ndata: [DONE]\n\n"))
+            }
+        }));
+        let provider = tokio::spawn(async move {
+            axum::serve(http, model).await.unwrap();
+        });
+        if mode == "section" {
+            let work = root.path().join("workspace");
+            fs::create_dir_all(&work).unwrap();
+            db::open(&home)
+                .unwrap()
+                .execute(
+                    "UPDATE bots SET approval_mode='off',workdir=?",
+                    [work.to_string_lossy().as_ref()],
+                )
+                .unwrap();
+            fs::write(home.join("profiles/owl/config.yaml"),format!("model:\n  provider: lmstudio\n  default: test-model\n  api_key: test-key\n  base_url: http://{model_address}/v1\ntools:\n  enabled_toolsets: [terminal]\n")).unwrap();
+        } else {
+            db::open(&home)
+                .unwrap()
+                .execute("UPDATE bots SET approval_mode='smart'", [])
+                .unwrap();
+            fs::write(home.join("profiles/owl/config.yaml"),"model:\n  provider: openai\n  default: gpt-4o-mini\ntools:\n  enabled_toolsets: []\n").unwrap();
+        }
         let nonce = hexbot_core::common::id();
         let evidence = fixture.join(format!("{mode}-{nonce}"));
         fs::create_dir(&evidence).unwrap();
@@ -75,7 +129,7 @@ async fn owned_desktop_pipe_quit_and_restart_clean_up_real_pi_and_home_lock() {
                 panic!("{mode}: daemon exited before readiness");
             }).await.unwrap();
             let (mut socket, _) = connect_async(format!("ws://127.0.0.1:{port}/api/ws?token={token}")).await.unwrap();
-            socket.send(Message::Text(json!({"jsonrpc":"2.0","id":"open-pi","method":"hexbot.sections.open","params":{"id":"first"}}).to_string().into())).await.unwrap();
+            socket.send(Message::Text(json!({"jsonrpc":"2.0","id":"open-pi","method":"hexbot.sections.open","params":{"id":stored}}).to_string().into())).await.unwrap();
             // A fixture-only loopback barrier captures kernel handles before
             // real Pi imports or replies. No PID polling or daemon endpoint.
             let mut monitor = tokio::time::timeout(Duration::from_secs(45), async {
@@ -106,14 +160,14 @@ async fn owned_desktop_pipe_quit_and_restart_clean_up_real_pi_and_home_lock() {
             assert!(handles.iter().all(ProcessHandle::alive), "Startup process already exited");
             monitor.write_all(b"tracked\n").await.unwrap();
             drop(monitor);
-            tokio::time::timeout(Duration::from_secs(90), async {
+            let opened = tokio::time::timeout(Duration::from_secs(90), async {
                 while let Some(frame) = socket.next().await {
                     let frame = frame.unwrap();
                     if !frame.is_text() { continue; }
                     let value: Value = serde_json::from_str(frame.to_text().unwrap()).unwrap();
                     if value["id"] == "open-pi" {
                         assert!(value.get("error").is_none(), "{mode}: Actual Pi open failed: {value}");
-                        return;
+                        return value;
                     }
                 }
                 panic!("{mode}: socket closed before Pi open reply");
@@ -141,6 +195,20 @@ async fn owned_desktop_pipe_quit_and_restart_clean_up_real_pi_and_home_lock() {
             assert!(pi_pids.iter().all(|pid| osutil::process_alive(*pid)) && handles.iter().all(ProcessHandle::alive),
                 "{mode}: A current Pi/descendant died BEFORE shutdown: {:?}", handles.iter().map(ProcessHandle::snapshot).collect::<Vec<_>>());
             if mode == "section" {
+                // The model calls the pinned Pi Bash tool, inside this real
+                // daemon section, and blocks with a live shell + tool child.
+                let first_id=opened["result"]["section"]["live_session_id"].as_str().unwrap();
+                let submitted=rpc(&mut socket,"start-tool","prompt.submit",json!({"session_id":first_id,"text":"Run the lifetime fixture"})).await;
+                assert!(submitted.get("error").is_none(),"{submitted}");
+                let (mut tool_socket,_)=tokio::time::timeout(Duration::from_secs(45),tool_ready.accept()).await.unwrap().unwrap();
+                let mut line=String::new();
+                tokio::time::timeout(Duration::from_secs(15),BufReader::new(&mut tool_socket).read_line(&mut line)).await.unwrap().unwrap();
+                let tool:Value=serde_json::from_str(&line).unwrap();
+                let tool_handles=[ProcessHandle::open(tool["parent"].as_u64().unwrap() as u32),ProcessHandle::open(tool["pid"].as_u64().unwrap() as u32)];
+                assert!(tool_handles.iter().all(ProcessHandle::alive));
+                eprintln!("Section lifetime actual tool handles: {:?}",tool_handles.iter().map(ProcessHandle::snapshot).collect::<Vec<_>>());
+                assert_ne!(tool_handles[0].pid,pi_pid,"Actual Bash must remain the tool child's parent");
+                tool_socket.write_all(b"tracked\n").await.unwrap();
                 // Subsequent Pi instances run the original pinned launcher.
                 // Keep a second section live throughout closing/rebuilding first.
                 fs::write(fixture.join("pi/launch.mjs"),format!("await import({});\n",json!(launcher.as_str()))).unwrap();
@@ -148,16 +216,27 @@ async fn owned_desktop_pipe_quit_and_restart_clean_up_real_pi_and_home_lock() {
                 let second = rpc(&mut socket,"second-open","hexbot.sections.open",json!({"id":"second"})).await;
                 assert!(second.get("error").is_none(),"{second}");
                 let second_id=second["result"]["section"]["live_session_id"].as_str().expect("live second session").to_owned();
-                let close=rpc(&mut socket,"close-first","hexbot.sections.close",json!({"id":"first"})).await;
+                let children=Command::new(windows_paths::system_program("WindowsPowerShell/v1.0/powershell.exe").unwrap()).args(["-NoProfile","-NonInteractive","-Command",&query]).output().await.unwrap();
+                assert!(children.status.success());
+                let current:Vec<Value>=serde_json::from_slice(&children.stdout).unwrap();
+                let second_handles=current.iter().filter_map(|row| {
+                    let pid=row["ProcessId"].as_u64().unwrap() as u32;
+                    (!handles.iter().any(|h| h.pid==pid) && pid!=descendant).then(||ProcessHandle::open(pid))
+                }).collect::<Vec<_>>();
+                assert_eq!(second_handles.len(),1,"Expected one newly opened Pi: {current:?}");
+                let close=rpc(&mut socket,"close-first","hexbot.sections.close",json!({"id":stored})).await;
                 assert!(close.get("error").is_none(),"{close}");
                 // Cleanup completion must mean kernel exit, without waiting
                 // on our own handles to turn an early reply into success.
                 assert!(handles[..2].iter().all(|p| !p.alive()),"Section close left its Pi tree alive: {:?}",handles[..2].iter().map(ProcessHandle::snapshot).collect::<Vec<_>>());
+                assert!(tool_handles.iter().all(|p| !p.alive()),"Section close left actual tool processes: {:?}",tool_handles.iter().map(ProcessHandle::snapshot).collect::<Vec<_>>());
+                assert!(second_handles.iter().all(ProcessHandle::alive),"Section close affected another Pi");
                 assert!(child.try_wait().unwrap().is_none(),"Section close killed daemon");
                 let second_status=rpc(&mut socket,"second-status","session.status",json!({"session_id":second_id})).await;
                 assert!(second_status.get("error").is_none(),"{second_status}");
-                let rebuilt=rpc(&mut socket,"rebuild-first","hexbot.sections.open",json!({"id":"first"})).await;
+                let rebuilt=rpc(&mut socket,"rebuild-first","hexbot.sections.open",json!({"id":stored})).await;
                 assert!(rebuilt.get("error").is_none(),"{rebuilt}");
+                assert!(second_handles.iter().all(ProcessHandle::alive),"Rebuild affected another Pi");
                 let lock=fs::OpenOptions::new().read(true).write(true).open(home.join("native-daemon.lock")).unwrap();
                 assert!(lock.try_lock().is_err(),"Live daemon lost its home lock");
             }
@@ -174,6 +253,7 @@ async fn owned_desktop_pipe_quit_and_restart_clean_up_real_pi_and_home_lock() {
             let lock = fs::OpenOptions::new().read(true).write(true).open(home.join("native-daemon.lock")).unwrap();
             lock.try_lock().expect("Home lock was not released before restart");
         }).catch_unwind().await;
+        provider.abort();
         for entry in fs::read_dir(&evidence).unwrap().take(8) {
             let path = entry.unwrap().path();
             if path.extension().is_some_and(|e| e == "jsonl") {
