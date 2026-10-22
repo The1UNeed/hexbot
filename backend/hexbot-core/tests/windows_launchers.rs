@@ -1,5 +1,7 @@
 #![cfg(windows)]
 //! Exercise the actual generated launchers with Windows PowerShell 5.1.
+#[path = "../src/windows_node_path.rs"]
+mod windows_node_path;
 #[path = "../src/windows_paths.rs"]
 mod windows_paths;
 use hexbot_core::{system_service, windows_cli};
@@ -449,6 +451,37 @@ fn user_path_registration_preserves_existing_entries_and_removes_only_its_own() 
         fs::create_dir_all(&native).unwrap();
         fs::create_dir_all(&bin).unwrap();
         fs::copy(env!("CARGO_BIN_EXE_hexbot"), native.join("hexbot.exe")).unwrap();
+        let node = std::path::PathBuf::from(
+            std::env::var_os("HEXBOT_WINDOWS_SERVICE_NODE").expect("trusted running CI Node"),
+        );
+        assert!(node.is_absolute() && node.is_file());
+        fs::copy(&node, native.join("node.exe")).unwrap();
+        let pi = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../pi-runtime/node_modules/@earendil-works/pi-coding-agent/dist/cli.js")
+            .canonicalize()
+            .expect("locked real Pi npm ci");
+        fs::create_dir_all(native.join("pi")).unwrap();
+        let url = url::Url::from_file_path(&pi).unwrap();
+        fs::write(
+            native.join("pi/launch.mjs"),
+            format!("await import({});\n", json!(url.as_str())),
+        )
+        .unwrap();
+        fs::write(native.join("manifest.json"), "{}").unwrap();
+        let pi_version = Command::new(native.join("node.exe"))
+            .arg(windows_node_path::node_path(&native.join("pi/launch.mjs")).unwrap())
+            .arg("--version")
+            .output()
+            .unwrap();
+        assert!(
+            pi_version.status.success(),
+            "Real pinned Pi preflight: status={} stdout={} stderr={}",
+            pi_version.status,
+            bounded(&pi_version.stdout),
+            bounded(&pi_version.stderr)
+        );
+        assert_eq!(String::from_utf8_lossy(&pi_version.stdout).trim(), "1.0.1");
+
         fs::copy(
             env!("CARGO_BIN_EXE_hexbot-cli"),
             native.join("hexbot-cli.exe"),
@@ -846,7 +879,7 @@ fn interrupted_task_install_uninstalls_owned_files_when_the_task_is_absent() {
     // Direct CLI install must not race an app-owned daemon when no task
     // exists. Wait for real readiness while its home lock is held.
     use std::io::{BufRead, BufReader, Write};
-    let mut desktop = Command::new(env!("CARGO_BIN_EXE_hexbot"))
+    let mut desktop = Command::new(native.join("hexbot.exe"))
         .args(["serve", "--host", "127.0.0.1", "--port", "0"])
         .env("HEXBOT_HOME", &home)
         .env("HEXBOT_SUPERVISOR", "desktop")
@@ -859,7 +892,11 @@ fn interrupted_task_install_uninstalls_owned_files_when_the_task_is_absent() {
     let mut lines = BufReader::new(desktop.stdout.take().unwrap());
     let mut line = String::new();
     loop {
-        assert!(lines.read_line(&mut line).unwrap() > 0);
+        assert!(
+            lines.read_line(&mut line).unwrap() > 0,
+            "Occupied-home daemon exited before readiness: {:?}; stderr is inherited above",
+            desktop.try_wait().unwrap()
+        );
         if line.starts_with("HERMES_BACKEND_READY") {
             break;
         }

@@ -78,7 +78,7 @@ struct Manifest {
 fn verify_runtime(directory: &Path) -> Result<Manifest> {
     verify_runtime_for(directory, &crate::version())
 }
-#[cfg(windows)]
+#[cfg(any(windows, test))]
 pub(crate) fn verify_runtime_version(directory: &Path, version: &str) -> Result<()> {
     verify_runtime_for(directory, version).map(|_| ())
 }

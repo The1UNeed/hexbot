@@ -92,6 +92,8 @@ jobs:
           HEXBOT_WINDOWS_SERVICE_PROBE: '1'
         shell: pwsh
         run: |
+          npm ci --prefix backend/pi-runtime --ignore-scripts
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cargo build --locked --manifest-path backend/hexbot-installer/Cargo.toml --bin hexbot-install
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $env:HEXBOT_WINDOWS_INSTALLER = (Resolve-Path backend/hexbot-installer/target/debug/hexbot-install.exe).Path

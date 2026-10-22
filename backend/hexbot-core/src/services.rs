@@ -1696,14 +1696,25 @@ pub(crate) fn publish_native(
     )
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, test))]
 pub(crate) fn publish_setup_native(
     native: &Path,
     version: &str,
     staging: &Path,
     manifest: &Value,
 ) -> Result<PathBuf> {
-    publish_native_inner(native, version, staging, "hexbot.exe", Some(manifest), true)
+    publish_native_inner(
+        native,
+        version,
+        staging,
+        if cfg!(windows) {
+            "hexbot.exe"
+        } else {
+            "hexbot"
+        },
+        Some(manifest),
+        true,
+    )
 }
 
 fn publish_native_inner(
@@ -1756,6 +1767,43 @@ fn publish_native_inner(
         });
         #[cfg(not(unix))]
         let pending_retry = false;
+        // Windows setup may be an older package or may have lost the race
+        // after the installer released its lock. Keep a newer selection only
+        // when the bytes, complete manifest and durable floor all corroborate it.
+        // The automatic updater never takes this repair-only branch.
+        #[cfg(any(windows, test))]
+        if allow_equal && requested["builtAt"].as_u64().unwrap_or(0) < floor {
+            let executable = selected_executable
+                .as_ref()
+                .ok_or_else(|| Error::new(4212, "Newer runtime selection needs repair"))?;
+            let manifest = selected
+                .as_ref()
+                .ok_or_else(|| Error::new(4212, "Newer runtime manifest needs repair"))?;
+            let record = recorded
+                .as_ref()
+                .ok_or_else(|| Error::new(4212, "Newer runtime metadata needs repair"))?;
+            let selected_version = manifest["version"]
+                .as_str()
+                .ok_or_else(|| Error::new(4212, "Newer runtime version is missing"))?;
+            if !executable.starts_with(native)
+                || manifest["builtAt"].as_u64() != Some(floor)
+                || record["builtAt"].as_u64() != Some(floor)
+                || record["version"] != manifest["version"]
+                || record["files"] != manifest["files"]
+                || record["executable"]
+                    .as_str()
+                    .and_then(|p| Path::new(p).canonicalize().ok())
+                    .as_ref()
+                    != Some(executable)
+            {
+                return Err(Error::new(
+                    4212,
+                    "Newer runtime selection is inconsistent; repair it first",
+                ));
+            }
+            crate::setup::verify_runtime_version(executable.parent().unwrap(), selected_version)?;
+            return Ok(executable.to_owned());
+        }
         let selected = json!({"builtAt": floor});
         if !(allow_equal || pending_retry)
             || requested["builtAt"].as_u64().unwrap_or(0)
@@ -1897,6 +1945,133 @@ fn assert_publication_floor_contract() {
             assert!(staging.path().is_dir());
         }
     }
+}
+
+// Exercise Windows setup policy on the host too, using its real verifier and lock.
+#[cfg(any(test, all(debug_assertions, windows)))]
+fn assert_setup_retains_verified_newer_runtime() {
+    fn bundle(native: &Path, version: &str, built_at: u64) -> (tempfile::TempDir, Value) {
+        let directory = tempfile::tempdir_in(native).unwrap();
+        let mut files = serde_json::Map::new();
+        for name in [
+            "hexbot",
+            "hexbot-core",
+            "node",
+            "pi/hexbot-pi",
+            "hexbot.exe",
+            "hexbot-cli.exe",
+            "node.exe",
+            "pi/launch.mjs",
+            "pi/search-tools.mjs",
+            "bin/rg.exe",
+            "bin/fd.exe",
+            "web/index.html",
+            "pi/package-lock.json",
+            "pi/node_modules/@earendil-works/pi-coding-agent/dist/cli.js",
+        ] {
+            let path = directory.path().join(name);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(&path, version).unwrap();
+            files.insert(name.into(), json!(file_sha256(&path).unwrap()));
+        }
+        let os = if cfg!(windows) {
+            "win32"
+        } else if cfg!(target_os = "macos") {
+            "darwin"
+        } else {
+            "linux"
+        };
+        let arch = if cfg!(target_arch = "aarch64") {
+            "arm64"
+        } else {
+            "x64"
+        };
+        let manifest = json!({"version":version,"builtAt":built_at,"target":format!("{os}-{arch}"),"files":files});
+        fs::write(directory.path().join("manifest.json"), manifest.to_string()).unwrap();
+        (directory, manifest)
+    }
+    for (newer, older) in [("1.0.0-nightly.1", "1.0.0"), ("1.0.0", "1.0.0-nightly.1")] {
+        let home = tempfile::tempdir().unwrap();
+        let native = native_directory(home.path()).unwrap();
+        let (first, first_manifest) = bundle(&native, older, 100);
+        publish_setup_native(&native, older, first.path(), &first_manifest).unwrap();
+        let (incoming, incoming_manifest) = bundle(&native, older, 200);
+        // Model the installer's Windows lock release. A concurrent updater
+        // commits while setup waits; the child must revalidate after acquiring it.
+        let lock = activation_lock(native.parent().unwrap()).unwrap();
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let n = native.clone();
+        let version = older.to_owned();
+        let incoming_path = incoming.path().to_owned();
+        let thread = std::thread::spawn(move || {
+            started_tx.send(()).unwrap();
+            publish_setup_native(&n, &version, &incoming_path, &incoming_manifest)
+        });
+        started_rx.recv().unwrap();
+        let (update, update_manifest) = bundle(&native, newer, 300);
+        let executable = update.path().join(if cfg!(windows) {
+            "hexbot.exe"
+        } else {
+            "hexbot"
+        });
+        activate_native_locked(&native, newer, &executable, Some(&update_manifest)).unwrap();
+        drop(lock);
+        assert_eq!(
+            thread.join().unwrap().unwrap(),
+            executable.canonicalize().unwrap()
+        );
+        assert_eq!(
+            selected_native_executable(home.path()).unwrap(),
+            executable.canonicalize().unwrap()
+        );
+        let before = fs::read(native.parent().unwrap().join("native-current.json")).unwrap();
+        for damage in ["none", "bytes", "manifest", "floor", "files"] {
+            fs::write(
+                update.path().join("manifest.json"),
+                update_manifest.to_string(),
+            )
+            .unwrap();
+            fs::write(&executable, newer).unwrap();
+            fs::write(
+                native.parent().unwrap().join("native-current.json"),
+                &before,
+            )
+            .unwrap();
+            let (repair, manifest) = bundle(&native, older, 200);
+            match damage {
+                "bytes" => fs::write(&executable, "corrupted").unwrap(),
+                "manifest" => fs::write(update.path().join("manifest.json"), "{}").unwrap(),
+                "floor" | "files" => {
+                    let mut record: Value = serde_json::from_slice(&before).unwrap();
+                    if damage == "floor" {
+                        record["builtAt"] = json!(400);
+                    } else {
+                        record["files"] = json!({});
+                    }
+                    fs::write(
+                        native.parent().unwrap().join("native-current.json"),
+                        record.to_string(),
+                    )
+                    .unwrap();
+                }
+                _ => (),
+            }
+            let result = publish_setup_native(&native, older, repair.path(), &manifest);
+            assert_eq!(result.is_ok(), damage == "none", "{damage}: {result:?}");
+            // Automatic updates may never use setup's retain/equal repair policy.
+            assert!(
+                publish_native(&native, older, repair.path(), "hexbot", Some(&manifest)).is_err()
+            );
+            let equal = json!({"version": newer,"builtAt":300});
+            assert!(publish_native(&native, newer, repair.path(), "hexbot", Some(&equal)).is_err());
+        }
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn setup_retains_verified_newer_runtime_after_concurrent_activation_and_track_change() {
+    assert_setup_retains_verified_newer_runtime();
 }
 
 #[cfg(all(test, unix))]
@@ -2870,6 +3045,9 @@ pub mod windows_contract_tests {
     use super::*;
     pub fn publication_floor() {
         assert_publication_floor_contract();
+    }
+    pub fn setup_retains_newer() {
+        assert_setup_retains_verified_newer_runtime();
     }
     // Native-only worker-lifetime fixture. It uses the real supervisor/cleanup
     // with a local metrics EXE and loopback Connect, never a real registration.

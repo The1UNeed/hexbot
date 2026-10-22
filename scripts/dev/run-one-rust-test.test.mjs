@@ -27,3 +27,10 @@ test('GUI harness forwards the running Node as one verified path, independent of
   assert.throws(() => nativeTestEnvironment({ HEXBOT_WINDOWS_GUI_PROBE: 'relative.mjs' }))
   assert.throws(() => nativeTestEnvironment({ HEXBOT_WINDOWS_GUI_PROBE: dirname(probe) }))
 })
+
+test('service readiness fixture receives exactly the already-running trusted Node', () => {
+  const env = nativeTestEnvironment({ HEXBOT_WINDOWS_SERVICE_PROBE: '1', HEXBOT_WINDOWS_SERVICE_NODE: 'joined untrusted discovery output' })
+  assert.equal(env.HEXBOT_WINDOWS_SERVICE_NODE, realpathSync(process.execPath))
+  assert.throws(() => nativeTestEnvironment({ HEXBOT_WINDOWS_SERVICE_PROBE: '1' }, 'node'))
+  assert.throws(() => nativeTestEnvironment({ HEXBOT_WINDOWS_SERVICE_PROBE: '1' }, dirname(process.execPath)))
+})

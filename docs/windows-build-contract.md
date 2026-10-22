@@ -138,6 +138,22 @@ receipt and matching packaged marker also retain ownership when EXE/ASAR bytes
 are missing, so detection, repair and uninstall agree. Receiptless incomplete,
 foreign, linked and ambiguous apps remain refused.
 
+Windows setup rechecks selection under its own activation lock. If another
+updater won the installer's lock gap, or the requested track has an older build,
+setup keeps the newer runtime only when its complete manifest, file hashes and
+recorded chronology agree. It still finishes tools and CLI setup; the installer
+then installs the service and writes the requested-track receipt. Damaged or
+inconsistent newer selections refuse repair. Automatic updates still reject
+lower and equal builds. Unix descriptor handoff is unchanged.
+
+Full serializes bootstrap, service toggles, daemon start/stop and quit. Removing
+a task first stops an app-owned daemon, removes only the verified task, then
+starts the app-owned daemon again. A refused operation restores that owned
+process and returns the error. After bootstrap, an owned running task using an
+older executable is restarted and must acquire this home with a new PID and the
+selected executable before startup completes. An already-current task is left
+running. Missing and foreign tasks are not restarted.
+
 ## Verification and remaining gates
 
 `windows-contract.yml` publishes nothing and uses commit-pinned actions. Its
@@ -204,7 +220,12 @@ Unicode/space/metacharacter argv before the GUI launch. It also includes a
 version-changing signed ZIP update between two debug fixture daemons, followed
 by task stop and process/home-lock assertions. The same two versions also
 exercise the installer engine’s Headless update and repair path, checking that
-each replaces the old task PID and runs the selected version. Separate native
+each replaces the old task PID and runs the selected version. Both track
+directions also perform real Full-to-Headless Change and repair while retaining
+a verified newer runtime, checking the task, requested-track receipt and old app
+removal. Installed Full relaunch uses distinct immutable builds of the same
+binary version to check bundled chronology activation and task PID/executable
+handoff; another unchanged launch must retain that PID. Separate native
 installer probes cover config-only CLI cleanup and PATH retention for foreign
 or malformed sidecars. The existing public test key
 stays confined to debug builds; fixture versions use the version tool only in
@@ -230,10 +251,13 @@ the original error; there is no retry or success fallback. The locking source is
 not established. Staging publication, bootstrap, installed GUI, signed ZIP,
 Connect, update/restart and lifecycle still need a successful native run.
 
-The next 659 native run passed the initial MSVC/launcher checks, then failed the
-foreign-task installer negative case because uninstall returned zero. That
-assertion alone did not establish task deletion. The native fixture now records
-status/output and the scheduler definition plus script/XML/receipt/runtime state
-before its explicit disposable-task cleanup, then requires nonzero refusal and
-unchanged state. An owned-script/absent-task control must still uninstall. Actual
-native results for this correction and all later probes remain pending.
+The 659 native run passed initial MSVC/launcher checks, then failed the
+foreign-task installer negative case because uninstall returned zero. The 2ce
+run proved the correction: nonzero JSON refusal, unchanged scheduler definition,
+script/XML/receipt/runtime, and successful owned-script/absent-task cleanup.
+It then stopped before the occupied-home assertion because the fixture daemon
+had no Pi launcher. The early fixture now receives the running CI Node, imports
+the real locked Pi, checks its version and requires actual daemon readiness.
+The new native activation/service, installed GUI, signed ZIP/Connect and later
+lifecycle cases still require a successful run. Local host tests and Windows
+cross-compilation do not establish those results.

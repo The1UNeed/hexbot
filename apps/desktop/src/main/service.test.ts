@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { expect, it, vi } from 'vitest'
 import { hexbotHome } from './backend/paths'
-import { migrateLegacyService } from './service'
+import { migrateLegacyService, reconcileWindowsService } from './service'
 import { launchdPlist, systemdUnit } from './service-files'
 
 for (const platform of ['darwin', 'linux'] as const) {
@@ -185,4 +185,60 @@ it('Windows setup services pass the exact app home to every native child', async
       expect(call.options?.windowsHide).toBe(true)
     }
   } finally { process.env = previous; executable.mockRestore() }
+})
+
+it('restarts only a verified running Windows task whose home daemon uses an older executable', async () => {
+  const http = await import('node:http')
+  const root = await mkdtemp(join(tmpdir(), 'hexbot-task-selection-'))
+  const previous = process.env.HEXBOT_HOME
+  process.env.HEXBOT_HOME = root
+  let identityPid = process.pid
+  const server = http.createServer((_request, response) => response.end(JSON.stringify({ install_id: 'selected-home', pid: identityPid })))
+  const selected = join(root, 'runtime/native-executable')
+  const paths = await import('./backend/paths')
+  const executable = vi.spyOn(paths, 'hexbotExecutable').mockReturnValue(selected)
+  const old = join(root, 'runtime/old-executable')
+  let installed = true, running = true
+  const calls: string[][] = []
+  const run = async (command: string, args: string[]) => {
+    calls.push([command, ...args])
+    if (args.includes('status')) return { stdout: JSON.stringify({ installed, running }) }
+    expect(args).toEqual(['service', 'restart'])
+  }
+  try {
+    await mkdir(join(root, 'runtime'))
+    await writeFile(selected, 'selected')
+    await writeFile(old, 'older')
+    const port = await new Promise<number>(resolve => server.listen(0, '127.0.0.1', () => resolve((server.address() as import('node:net').AddressInfo).port)))
+    await writeFile(join(root, 'install_id'), 'selected-home')
+    await writeFile(join(root, 'native-daemon.lock'), String(process.pid))
+    await writeFile(join(root, 'serve-state.json'), JSON.stringify({ port }))
+    const record = (executable: string, pid = process.pid) => writeFile(join(root, 'runtime/native-running.json'), JSON.stringify({ pid, executable }))
+    await record(old)
+    expect(await reconcileWindowsService('win32', run)).toBe(process.pid)
+    expect(calls.filter(args => args.includes('restart'))).toHaveLength(1)
+    calls.length = 0
+    await record(selected)
+    expect(await reconcileWindowsService('win32', run)).toBeUndefined()
+    expect(calls.some(args => args.includes('restart'))).toBe(false)
+    await record(old)
+    for (const state of [[false, false], [true, false]]) {
+      ;[installed, running] = state as [boolean, boolean]
+      expect(await reconcileWindowsService('win32', run)).toBeUndefined()
+    }
+    installed = running = true
+    identityPid = process.ppid
+    expect(await reconcileWindowsService('win32', run)).toBeUndefined()
+    identityPid = process.pid
+    await record(old, process.ppid)
+    await expect(reconcileWindowsService('win32', run)).rejects.toThrow('Cannot verify')
+    expect(calls.some(args => args.includes('restart'))).toBe(false)
+  } finally {
+    executable.mockRestore()
+    server.closeAllConnections()
+    await new Promise<void>(resolve => server.close(() => resolve()))
+    if (previous === undefined) delete process.env.HEXBOT_HOME
+    else process.env.HEXBOT_HOME = previous
+    await rm(root, { recursive: true, force: true })
+  }
 })

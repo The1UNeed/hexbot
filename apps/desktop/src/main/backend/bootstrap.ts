@@ -9,7 +9,7 @@ import { app } from 'electron'
 
 import { migrateLegacyService } from '../service'
 import voiceRequirements from '../../../../../backend/hexbot-core/assets/edge-tts.requirements.txt?raw'
-import { lockedDaemonPid } from './manager'
+import { lockedDaemonPid, type RuntimeActivation } from './manager'
 import { downloadTool, installTool } from './tools'
 import { nodePath } from './node-path'
 
@@ -35,7 +35,7 @@ export interface BootstrapDeps {
   arch: string
 }
 
-let activeInstall: Promise<void> | undefined
+let activeInstall: Promise<RuntimeActivation | undefined> | undefined
 
 async function appendLog(data: string | Buffer): Promise<void> {
   const { appendFile } = await import('node:fs/promises')
@@ -212,13 +212,16 @@ interface SelectedRuntime { executable: string; previous?: string; builtAt: numb
 async function selectedRuntime(deps: BootstrapDeps): Promise<SelectedRuntime | undefined> {
   try {
     const selected = JSON.parse(await readFile(join(runtimeDir(), 'native-current.json'), 'utf8')) as {
-      version: string; executable: string; previous?: string; files?: Record<string, string>
+      version: string; executable: string; previous?: string; files?: Record<string, string>; builtAt?: number
     }
     const executable = canonicalRuntimePath(nativeServiceExecutable(deps.platform))
     const nativeRoot = canonicalRuntimePath(join(runtimeDir(), 'native'))
     if (executable !== canonicalRuntimePath(selected.executable) || relative(nativeRoot, executable).startsWith('..') || isAbsolute(relative(nativeRoot, executable))) return undefined
     const directory = dirname(executable)
     const manifest = await readManifest(directory)
+    if (deps.platform === 'win32' && (!manifest.builtAt || selected.builtAt !== manifest.builtAt ||
+      !selected.files || Object.keys(selected.files).length !== Object.keys(manifest.files).length ||
+      Object.entries(manifest.files).some(([file, digest]) => selected.files![file] !== digest))) return undefined
     await verifyNativeRuntime(directory, { ...deps, appVersion: selected.version }, selected.files ?? manifest.files)
     return { executable, previous: selected.previous, builtAt: manifest.builtAt ?? 0 }
   } catch {
@@ -277,7 +280,7 @@ async function activateNativeRuntime(destination: string, deps: BootstrapDeps, f
   }
 }
 
-async function installNativeRuntime(deps: BootstrapDeps): Promise<void> {
+async function installNativeRuntime(deps: BootstrapDeps): Promise<RuntimeActivation | undefined> {
   const source = join(deps.resourcesPath, 'hexbot-native')
   deps.emit({ stage: 'runtime', message: 'Preparing Hexbot runtime' })
   const signedHashes = await verifyNativeRuntime(source, deps)
@@ -289,8 +292,10 @@ async function installNativeRuntime(deps: BootstrapDeps): Promise<void> {
     const launcher = nodePath(canonicalRuntimePath(join(dirname(executable), 'pi/launch.mjs')))
     await probe(deps, join(dirname(executable), 'node.exe'), [launcher, '--version'])
     await deps.run(executable, ['setup', ...(selected && selected.builtAt >= builtAt ? [] : ['--activate']), '--json'], { env: { ...process.env, HEXBOT_HOME: hexbotHome() } })
+    const activated = await selectedRuntime(deps)
+    if (!activated) throw new Error('Windows setup did not select a verified runtime')
     deps.emit({ stage: 'done', message: 'Hexbot runtime is ready', percent: 100 })
-    return
+    return { executable: activated.executable }
   }
   // The newest build wins whichever app or updater installed it, so Stable and
   // Nightly apps sharing this home never go back to an older daemon.
@@ -303,7 +308,7 @@ async function installNativeRuntime(deps: BootstrapDeps): Promise<void> {
   deps.emit({ stage: 'done', message: 'Hexbot runtime is ready', percent: 100 })
 }
 
-export async function performBootstrap(overrides: Partial<BootstrapDeps> = {}): Promise<void> {
+export async function performBootstrap(overrides: Partial<BootstrapDeps> = {}): Promise<RuntimeActivation | undefined> {
   const deps: BootstrapDeps = {
     appIsPackaged: app?.isPackaged ?? false,
     appVersion: app?.getVersion?.() ?? '0.0.0',
@@ -324,10 +329,10 @@ export async function performBootstrap(overrides: Partial<BootstrapDeps> = {}): 
   }
   if (!deps.exists(join(deps.resourcesPath, 'hexbot-native', 'manifest.json')))
     throw new Error('This app is missing its Hexbot runtime. Reinstall the full package.')
-  await installNativeRuntime(deps)
+  return installNativeRuntime(deps)
 }
 
-export function bootstrap(emit: ProgressListener): Promise<void> {
+export function bootstrap(emit: ProgressListener): Promise<RuntimeActivation | undefined> {
   activeInstall ??= performBootstrap({ emit }).finally(() => {
     activeInstall = undefined
   })

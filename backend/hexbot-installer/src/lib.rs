@@ -941,6 +941,9 @@ impl Installer {
         }
         #[cfg(windows)]
         {
+            // Setup revalidates under its own lock. If an updater wins this
+            // gap it retains only a fully verified newer selection, then
+            // finishes setup so service/receipt installation can complete.
             lock.unlock()?;
             self.run(executable, args, true, progress)
         }

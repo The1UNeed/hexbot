@@ -71,7 +71,8 @@ describe.skipIf(process.platform !== 'win32' || !process.env.HEXBOT_NATIVE_TEST_
       await cp(bundle, older, { recursive: true })
       const metadata = JSON.parse(await readFile(join(older, 'manifest.json'), 'utf8')) as Record<string, unknown>
       await writeFile(join(older, 'manifest.json'), JSON.stringify({ ...metadata, builtAt: 1 }))
-      await expect(promisify(execFile)(join(older, 'hexbot.exe'), ['setup', '--activate', '--no-code-tools', '--json'], { env: { ...process.env, HEXBOT_HOME: chosen } })).rejects.toThrow()
+      const retained = await promisify(execFile)(join(older, 'hexbot.exe'), ['setup', '--activate', '--no-code-tools', '--json'], { env: { ...process.env, HEXBOT_HOME: chosen } })
+      expect(retained.stdout).toContain('"stage":"done"')
       expect(nativeServiceExecutable()).toBe(exe)
     } catch (error) {
       const selected = await readFile(join(chosen, 'runtime/native-current.json'), 'utf8').then(JSON.parse).catch(() => undefined) as { executable?: string; builtAt?: number } | undefined

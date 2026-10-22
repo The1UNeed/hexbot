@@ -9,6 +9,7 @@ import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { promisify } from 'node:util'
+import { appId, productName } from './release-version.mjs'
 import { makeNativeUpdate } from './make-native-update.mjs'
 import { setVersion } from './set-version.mjs'
 import { signature, testKey } from './update-signing.mjs'
@@ -26,7 +27,7 @@ const packagePath = resolve('apps/desktop/package.json')
 const originalPackage = await readFile(packagePath)
 const bundle = resolve('apps/desktop/resources/hexbot-native')
 const originalManifest = JSON.parse(await readFile(join(bundle, 'manifest.json'), 'utf8'))
-const nextVersion = '999.0.0-windows.contract'
+const nextVersion = '999.0.0-nightly.windows.contract'
 const debugExe = resolve('backend/hexbot-core/target/debug/hexbot.exe')
 const files = new Map()
 const server = createServer((request, response) => {
@@ -109,8 +110,11 @@ try {
   // Exercise the installer engine's actual Headless update path, which calls
   // service install rather than service restart. Reuse the two verified
   // versions in a fresh state, preserving the self-update evidence above.
-  const installHome = join(user, 'installer update state')
+  const installUser = join(root, 'installer user')
+  await mkdir(installUser)
+  const installHome = join(installUser, 'state')
   await mkdir(installHome)
+  env.HOME = env.USERPROFILE = env.HEXBOT_SERVICE_ROOT = installUser
   env.HEXBOT_HOME = installHome
   env.HEXBOT_UPDATE_URL = base
   await run(join(initial, 'hexbot.exe'), ['setup', '--activate', '--json'])
@@ -119,13 +123,13 @@ try {
   const installerRunning = join(installHome, 'runtime/native-running.json')
   const old = await waitJson(installerRunning, value => value.pid)
   assert.equal((await run(selected, ['version'])).stdout.trim(), originalManifest.version)
-  const installManifest = Buffer.from(JSON.stringify({ schema: 1, channel: 'stable', version: nextVersion, minInstaller: '0.1.5-0',
+  const installManifest = Buffer.from(JSON.stringify({ schema: 1, channel: 'nightly', version: nextVersion, minInstaller: '0.1.5-0',
     targets: { 'windows-x86_64': { headless: { url: `${base}/${update.manifest.path}`, path: update.manifest.path,
       sha256: update.manifest.sha256, size: update.manifest.size, format: 'zip', manifest: manifestPath } } } }))
-  files.set('install/stable.json', installManifest)
-  files.set('install/stable.json.sig', Buffer.from(signature(testKey(), installManifest)))
+  files.set('install/nightly.json', installManifest)
+  files.set('install/nightly.json.sig', Buffer.from(signature(testKey(), installManifest)))
   await exec('cargo', ['build', '--locked', '--manifest-path', 'backend/hexbot-installer/Cargo.toml', '--bin', 'hexbot-install'], { timeout: 300_000, maxBuffer: 16 * 1024 * 1024, windowsHide: true })
-  const installOutput = await run(resolve('backend/hexbot-installer/target/debug/hexbot-install.exe'), ['--headless', '--stable', '--yes', '--json'])
+  const installOutput = await run(resolve('backend/hexbot-installer/target/debug/hexbot-install.exe'), ['--headless', '--nightly', '--yes', '--json'])
   console.log(installOutput.stdout)
   const installed = await waitJson(installerRunning, value => value.pid !== old.pid)
   assert.equal(alive(old.pid), false, 'Headless installer update must stop the previous owned task instance')
@@ -143,6 +147,74 @@ try {
   assert.equal(await lockState(), 'free')
   await run(selected, ['service', 'uninstall'])
   console.log('Real Headless installer version update and repair changed PID and reaped the old task instance')
+  // Both cross-track directions retain the verified chronologically newer
+  // runtime while the real installer finishes setup, task and track receipt.
+  const installer = resolve('backend/hexbot-installer/target/debug/hexbot-install.exe')
+  const fullNsis = await readFile(`apps/desktop/release/Hexbot-${originalManifest.version}-win-x64.exe`)
+  files.set('cross-track-full.exe', fullNsis)
+  for (const track of ['stable', 'nightly']) {
+    const changedUser = join(root, `cross-track-${track}`)
+    await mkdir(changedUser)
+    const changedHome = join(changedUser, 'state')
+    await mkdir(changedHome)
+    env.HOME = env.USERPROFILE = env.HEXBOT_SERVICE_ROOT = changedUser
+    env.HEXBOT_HOME = changedHome
+    env.HEXBOT_INSTALL_APPS_DIR = join(changedUser, 'apps')
+    const fullInstall = Buffer.from(JSON.stringify({ schema: 1, channel: 'stable', version: originalManifest.version, minInstaller: '0.1.5-0',
+      targets: { 'windows-x86_64': { full: { path: 'cross-track-full.exe', size: fullNsis.length,
+        sha256: createHash('sha256').update(fullNsis).digest('hex'), format: 'exe', appId: appId('stable'), productName: productName('stable', originalManifest.version) } } } }))
+    files.set('install/stable.json', fullInstall)
+    files.set('install/stable.json.sig', Buffer.from(signature(testKey(), fullInstall)))
+    assert.match((await run(installer, ['--full', '--stable', '--yes', '--json'])).stdout, /"stage":"done"/)
+    const fullReceipt = JSON.parse(await readFile(join(changedHome, 'install.json'), 'utf8'))
+    assert.equal(fullReceipt.option, 'full')
+    assert.equal(fullReceipt.paths.length, 1)
+    const fullDirectory = fullReceipt.paths[0]
+    const offered = join(root, `offered-${track}`)
+    const retained = join(root, `retained-${track}`)
+    await cp(track === 'stable' ? initial : next, offered, { recursive: true })
+    await cp(track === 'stable' ? next : initial, retained, { recursive: true })
+    const offeredManifest = JSON.parse(await readFile(join(offered, 'manifest.json'), 'utf8'))
+    const retainedManifest = JSON.parse(await readFile(join(retained, 'manifest.json'), 'utf8'))
+    offeredManifest.builtAt = firstManifest.builtAt + 10
+    retainedManifest.builtAt = firstManifest.builtAt + 20
+    await writeFile(join(offered, 'manifest.json'), JSON.stringify(offeredManifest))
+    await writeFile(join(retained, 'manifest.json'), JSON.stringify(retainedManifest))
+    await run(join(retained, 'hexbot.exe'), ['setup', '--activate', '--no-code-tools', '--json'])
+    selected = JSON.parse(await readFile(join(changedHome, 'runtime/native-current.json'), 'utf8')).executable
+    const beforeSelection = await readFile(join(changedHome, 'runtime/native-current.json'), 'utf8')
+    const oldArchive = await makeNativeUpdate(offered, join(root, `cross-track-update-${track}`))
+    files.set(oldArchive.manifest.path, await readFile(join(root, `cross-track-update-${track}`, oldArchive.manifest.path)))
+    const offeredInstall = Buffer.from(JSON.stringify({ schema: 1, channel: track, version: offeredManifest.version, minInstaller: '0.1.5-0',
+      targets: { 'windows-x86_64': { headless: { path: oldArchive.manifest.path, size: oldArchive.manifest.size, sha256: oldArchive.manifest.sha256, format: 'zip' } } } }))
+    files.set(`install/${track}.json`, offeredInstall)
+    files.set(`install/${track}.json.sig`, Buffer.from(signature(testKey(), offeredInstall)))
+    const installedOutput = await run(installer, ['--headless', `--${track}`, '--yes', '--json'])
+    assert.match(installedOutput.stdout, /"stage":"done"/)
+    assert.equal(await readFile(join(changedHome, 'runtime/native-current.json'), 'utf8'), beforeSelection)
+    const changedRunning = join(changedHome, 'runtime/native-running.json')
+    const changed = await waitJson(changedRunning, value => value.pid && value.executable === selected)
+    assert.equal((await run(selected, ['version'])).stdout.trim(), retainedManifest.version)
+    let receipt = JSON.parse(await readFile(join(changedHome, 'install.json'), 'utf8'))
+    assert.equal(receipt.option, 'headless')
+    await assert.rejects(readFile(join(fullDirectory, 'resources/app.asar')), { code: 'ENOENT' })
+    assert.equal(receipt.channel, track)
+    assert.equal(receipt.version, offeredManifest.version)
+    const repairedOutput = await run(installer, ['--repair', '--yes', '--json'])
+    assert.match(repairedOutput.stdout, /"stage":"done"/)
+    const repaired = await waitJson(changedRunning, value => value.pid && value.pid !== changed.pid)
+    assert.equal(alive(changed.pid), false)
+    assert.equal(repaired.executable, selected)
+    assert.equal(await readFile(join(changedHome, 'runtime/native-current.json'), 'utf8'), beforeSelection)
+    receipt = JSON.parse(await readFile(join(changedHome, 'install.json'), 'utf8'))
+    assert.equal(receipt.channel, track)
+    assert.equal(receipt.version, offeredManifest.version)
+    await run(selected, ['service', 'uninstall'])
+    assert.equal(alive(repaired.pid), false)
+    assert.equal(await lockState(), 'free')
+    console.log(`Real Full-to-Headless ${track} Change/repair retained ${retainedManifest.version}, completed task and requested-track receipt`)
+  }
+
   console.log('Real version-changing signed ZIP update, old-process exit, task restart and updated job termination passed')
 } finally {
   socket?.close()

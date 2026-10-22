@@ -59,3 +59,8 @@ async fn uv_repair_replaces_ordinary_existing_bytes_and_missing_or_stale_receipt
         assert_eq!(record["sha256"], format!("{:x}", Sha256::digest(expected)));
     }
 }
+
+#[test]
+fn setup_revalidates_a_concurrent_newer_runtime_and_preserves_automatic_update_floor() {
+    hexbot_core::services::windows_contract_tests::setup_retains_newer();
+}

@@ -25,7 +25,7 @@ import { edition, hasRuntime, requireRuntime } from './edition'
 import { parseDeepLink } from './deep-link'
 import { notify } from './notify'
 import { pair, pairingReply, pairWithGrant, type GrantPairOptions, type PairOptions } from './pair'
-import { installService, serviceStatus, uninstallService } from './service'
+import { installService, reconcileWindowsService, serviceStatus, uninstallService } from './service'
 import { createTray } from './tray'
 import { setCrashReports, startCrashReports } from './crash-reports'
 import { readDesktopState, updateDesktopState } from './desktop-state'
@@ -266,8 +266,7 @@ function registerIpc(): void {
   handle('hexbot:daemon:status', () => daemon.status())
   handle('hexbot:daemon:start', async () => {
     requireRuntime('Running a daemon on this machine')
-    await bootstrap(sendProgress)
-    return daemon.start()
+    return daemon.start(() => bootstrap(sendProgress))
   })
   handle('hexbot:daemon:stop', () => daemon.stop())
   handle('hexbot:daemon:local-token', async () => {
@@ -321,7 +320,10 @@ function registerIpc(): void {
     requireRuntime('Starting the daemon at login')
     return daemon.installService(installService)
   })
-  handle('hexbot:service:uninstall', () => uninstallService())
+  handle('hexbot:service:uninstall', () => {
+    requireRuntime('Stopping the daemon at login')
+    return daemon.uninstallService(uninstallService)
+  })
   handle('hexbot:service:status', () => serviceStatus())
 }
 
@@ -343,7 +345,7 @@ else {
     powerMonitor.on('shutdown', () => lifecycle.beginQuit())
     if (devIcon && process.platform === 'darwin') app.dock?.setIcon(devIcon)
     installAppProtocol(rendererDirectory, existsSync)
-    daemon = new DaemonManager(undefined, async () => (await serviceStatus()).installed)
+    daemon = new DaemonManager(undefined, async () => (await serviceStatus()).installed, reconcileWindowsService)
     registerIpc()
     Menu.setApplicationMenu(
       Menu.buildFromTemplate(

@@ -11,6 +11,11 @@ export function requireOneRustTest(output) {
 
 export function nativeTestEnvironment(environment = process.env, executable = process.execPath) {
   const env = { ...environment }
+  if (env.HEXBOT_WINDOWS_SERVICE_PROBE === '1') {
+    assert(isAbsolute(executable), 'Service probe Node must be absolute')
+    env.HEXBOT_WINDOWS_SERVICE_NODE = realpathSync(executable)
+    assert(statSync(env.HEXBOT_WINDOWS_SERVICE_NODE).isFile(), 'Service probe Node must be a regular file')
+  }
   if (env.HEXBOT_WINDOWS_GUI_PROBE) {
     assert(isAbsolute(executable), 'GUI Node must be an absolute executable path')
     const node = realpathSync(executable)

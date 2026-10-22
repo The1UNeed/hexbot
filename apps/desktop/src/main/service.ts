@@ -4,7 +4,8 @@ import { dirname, join, delimiter } from 'node:path'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 
-import { binDir, hexbotExecutable, hexbotHome } from './backend/paths'
+import { binDir, canonicalRuntimePath, hexbotExecutable, hexbotHome } from './backend/paths'
+import { lockedDaemonPid, runningDaemonPort, selectedDaemon } from './backend/manager'
 import { launchdPlist, systemdUnit, type ServiceFileOptions } from './service-files'
 
 const exec = promisify(execFile)
@@ -73,6 +74,23 @@ export async function uninstallService(
     await run('systemctl', ['--user', 'daemon-reload'])
   }
   await rm(file, { force: true })
+}
+
+// CLI status/restart use the same SID, action and home ownership gate as
+// Headless. Never restart an unknown task or an already-current daemon.
+export async function reconcileWindowsService(targetPlatform = process.platform, run: Run = exec): Promise<number | undefined> {
+  if (targetPlatform !== 'win32') return undefined
+  const status = await serviceStatus(undefined, targetPlatform, run)
+  if (!status.installed || !status.running || !await runningDaemonPort()) return undefined
+  if (await selectedDaemon()) return undefined
+  const record = JSON.parse(await readFile(join(hexbotHome(), 'runtime/native-running.json'), 'utf8')) as { pid?: number; executable?: string }
+  if (!record.pid || record.pid !== await lockedDaemonPid() || !record.executable)
+    throw new Error('Cannot verify the running service runtime')
+  // Resolve before changing the task. A damaged/stale record is not proof of
+  // an older process; restart must not guess about its identity.
+  if (canonicalRuntimePath(record.executable) === canonicalRuntimePath(hexbotExecutable())) return undefined
+  await run(hexbotExecutable(), ['service', 'restart'], windowsOptions())
+  return record.pid
 }
 
 export async function serviceStatus(
