@@ -4203,10 +4203,7 @@ impl Runtime {
             });
             code_sandbox = Some((
                 (
-                    code_confinement(
-                        mode.as_str().unwrap_or(""),
-                        crate::credentials::platform(),
-                    )?,
+                    code_confinement(mode.as_str().unwrap_or(""), crate::credentials::platform())?,
                     PathBuf::from(live["cwd"].as_str().unwrap_or(".")),
                 ),
                 revalidate,
@@ -5452,6 +5449,8 @@ fn shows_visuals(home: &Path, stored: &str) -> Result<bool> {
 /// approval card can promise it full access. Bypass runs unsandboxed anywhere.
 /// The require_supported_execution gates above refuse first on Windows; this
 /// keeps the same rule with the confinement it protects, testable anywhere.
+/// The refusal names the escapes execute_code actually has: its own schema has
+/// no full_access, but the terminal tool does, and so does switching to Bypass.
 fn code_confinement(
     mode: &str,
     platform: crate::credentials::Platform,
@@ -5462,10 +5461,7 @@ fn code_confinement(
         _ => Some(crate::credentials::Confine::Workspace),
     };
     if confine.is_some() && platform == crate::credentials::Platform::Windows {
-        return Err(Error::new(
-            5240,
-            crate::credentials::confined_refusal(crate::credentials::Platform::Windows),
-        ));
+        return Err(Error::new(5240, crate::credentials::CODE_CONFINED_REFUSAL));
     }
     Ok(confine)
 }
@@ -7392,15 +7388,22 @@ mod code_confinement_tests {
     #[test]
     fn windows_refuses_confined_code_runs_before_any_approval() {
         // A confined run on Windows cannot follow an approval card promising
-        // it full access, so it is refused first, with the confined refusal.
+        // it full access, so it is refused first. execute_code has no
+        // full_access knob, so the refusal names the escapes that exist.
         for mode in ["smart", "manual", "anything-else"] {
             let error = code_confinement(mode, crate::credentials::Platform::Windows).unwrap_err();
             assert_eq!(error.code, 5240);
-            assert_eq!(
-                error.message,
-                crate::credentials::confined_refusal(crate::credentials::Platform::Windows)
-            );
+            assert_eq!(error.message, crate::credentials::CODE_CONFINED_REFUSAL);
         }
+        assert_eq!(
+            crate::credentials::CODE_CONFINED_REFUSAL,
+            "The Windows sandbox is unavailable, so this code cannot run inside it. Ask the user to switch the approval mode to Bypass to run it without a sandbox."
+        );
+        // The bash refusal keeps its own copy: it can retry with full_access.
+        assert_eq!(
+            crate::credentials::confined_refusal(crate::credentials::Platform::Windows),
+            "The Windows sandbox is unavailable, so this command cannot run inside it. Retry with full_access and a reason."
+        );
         // Bypass still runs without a sandbox, and Unix keeps its confinement.
         assert_eq!(
             code_confinement("off", crate::credentials::Platform::Windows).unwrap(),

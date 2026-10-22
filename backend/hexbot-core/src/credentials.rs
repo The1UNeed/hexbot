@@ -389,6 +389,10 @@ pub const fn confined_refusal(platform: Platform) -> &'static str {
         Platform::Unix => "Hexbot could not cap processes for the sandbox.",
     }
 }
+/// Why confined code cannot run on Windows. execute_code declares only code
+/// and reset, with no full_access knob of its own, so this names the escapes
+/// that do exist: the terminal tool's full_access, or Bypass.
+pub const CODE_CONFINED_REFUSAL: &str = "The Windows sandbox is unavailable, so this code cannot run inside it. Ask the user to switch the approval mode to Bypass to run it without a sandbox.";
 /// Approval card text for code that would run without a sandbox.
 #[cfg(not(windows))]
 pub const UNSANDBOXED_REASON: &str = "Hexbot has no OS sandbox on this system, so this code can read any file you can, including credentials. Install bubblewrap and restart the daemon to restore isolation.";
@@ -1847,8 +1851,7 @@ pub(crate) fn isolated_command_with_outputs(
     if confine != Confine::No {
         // The child applies the cap before it starts the sandbox, which keeps it;
         // a program that cannot be capped does not start.
-        let limit = process_limit()
-            .ok_or_else(|| Error::new(5240, confined_refusal(platform())))?
+        let limit = process_limit().ok_or_else(|| Error::new(5240, confined_refusal(platform())))?
             as libc::rlim_t;
         // SAFETY: setrlimit is async-signal-safe and touches only this child.
         unsafe {
