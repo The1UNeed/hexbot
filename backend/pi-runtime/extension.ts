@@ -16,12 +16,14 @@ import { builtinProviders } from '@earendil-works/pi-ai/providers/all';
 async function atomicWrite(path: string, content: string): Promise<void> {
   const mode = await stat(path).then(info => info.mode & 0o777, error => {
     if (error.code !== 'ENOENT') throw error;
-    return 0o600;
+    return null;
   });
   const temporary = join(dirname(path), `.hexbot-write-${randomUUID()}`);
-  const file = await open(temporary, 'wx', mode);
+  const file = await open(temporary, 'wx', 0o600);
   try {
     await file.writeFile(content, 'utf8');
+    // Creation applies umask; restore only an existing file's ordinary bits.
+    if (mode !== null) await file.chmod(mode);
     await file.sync();
     await file.close();
     await rename(temporary, path);
