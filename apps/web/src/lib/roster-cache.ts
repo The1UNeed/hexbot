@@ -1,7 +1,7 @@
 /** The authorized daemon's roster and recent room logs. Never restored before auth. */
 import { selectBotList, useBots } from '../stores/bots'
 import { useMe } from '../stores/me'
-import { applyLog, LOG_PAGE, recentRooms, useRooms } from '../stores/rooms'
+import { applyLog, LOG_PAGE, recentRooms, roomCacheRead, useRooms } from '../stores/rooms'
 import { useSections } from '../stores/sections'
 import { useTranscripts } from '../stores/transcripts'
 
@@ -48,7 +48,7 @@ export function clearPersonalState(): void {
     loading: false,
     error: null
   })
-  useRooms.getState().restore([], {})
+  useRooms.getState().reset()
   useMe.setState({ me: null })
   useTranscripts.getState().dropAll()
 }
@@ -60,6 +60,7 @@ export async function restoreRoster(scope: null | string): Promise<void> {
     return
   }
 
+  const currentRoom = roomCacheRead()
   const snapshot = await readCache<RosterSnapshot>(scope, SNAPSHOT_KEY)
 
   if (!cacheCurrent(access) || !snapshot || snapshot.daemon !== access?.daemon) {
@@ -94,21 +95,43 @@ export async function restoreRoster(scope: null | string): Promise<void> {
     useMe.setState({ me: snapshot.me })
   }
 
-  if (!useRooms.getState().order.length) {
-    useRooms.getState().restore(
-      snapshot.rooms.map(restingRoom),
-      Object.fromEntries(
-        recent.map((room, i) => [
-          room.id,
-          applyLog(logs[i] ?? [], {
-            events: useRooms.getState().eventsByRoom[room.id] ?? [],
-            latest: false
-          })
-        ])
-      ),
-      Object.fromEntries(
-        recent.flatMap((room, i) => (logs[i]?.length ? [[room.id, logs[i]![0]!.seq]] : []))
-      )
+  const rooms = useRooms.getState()
+  const restored = snapshot.rooms.filter(room => currentRoom(room.id))
+  const restoredIds = new Set(restored.map(room => room.id))
+
+  if (restored.length) {
+    rooms.restore(
+      [
+        ...new Map(
+          [...restored.map(restingRoom), ...Object.values(rooms.byId)].map(room => [room.id, room])
+        ).values()
+      ],
+      {
+        ...rooms.eventsByRoom,
+        ...Object.fromEntries(
+          recent.flatMap((room, i) =>
+            restoredIds.has(room.id)
+              ? [
+                  [
+                    room.id,
+                    applyLog(logs[i] ?? [], {
+                      events: rooms.eventsByRoom[room.id] ?? [],
+                      latest: false
+                    })
+                  ]
+                ]
+              : []
+          )
+        )
+      },
+      {
+        ...Object.fromEntries(
+          recent.flatMap((room, i) =>
+            restoredIds.has(room.id) && logs[i]?.length ? [[room.id, logs[i]![0]!.seq]] : []
+          )
+        ),
+        ...rooms.logBaseline
+      }
     )
   }
 
@@ -120,7 +143,7 @@ export function stopRosterWrites(): void {
   stopWriting = null
 }
 
-/** Call after a full roster refresh, under the same authorization as its reads. */
+/** Subscribe after authorization. Persist rooms only once their network list is ready. */
 export function keepRoster(scope: null | string): void {
   stopRosterWrites()
   const access = cacheAccess(scope)
@@ -140,16 +163,29 @@ export function keepRoster(scope: null | string): void {
     }
 
     const rooms = useRooms.getState()
-    void writeCache(scope, SNAPSHOT_KEY, {
-      bots: selectBotList(useBots.getState()).map(restingBot),
-      daemon: access.daemon,
-      me: useMe.getState().me,
-      rooms: rooms.order
-        .map(id => rooms.byId[id])
-        .filter((room): room is Room => Boolean(room))
-        .map(restingRoom),
-      sections: Object.values(useSections.getState().byId).map(restingSection)
-    } satisfies RosterSnapshot)
+
+    if (!rooms.loaded) {
+      return
+    }
+
+    const current = () =>
+      cacheCurrent(access) && useRooms.getState().byId === rooms.byId && useRooms.getState().loaded
+
+    void writeCache(
+      scope,
+      SNAPSHOT_KEY,
+      {
+        bots: selectBotList(useBots.getState()).map(restingBot),
+        daemon: access.daemon,
+        me: useMe.getState().me,
+        rooms: rooms.order
+          .map(id => rooms.byId[id])
+          .filter((room): room is Room => Boolean(room))
+          .map(restingRoom),
+        sections: Object.values(useSections.getState().byId).map(restingSection)
+      } satisfies RosterSnapshot,
+      current
+    )
 
     const kept = recentRooms(Object.values(rooms.byId)).map(room => room.id)
 
@@ -157,7 +193,7 @@ export function keepRoster(scope: null | string): void {
       const events = rooms.eventsByRoom[id]
 
       if (events && written.get(id) !== events && rooms.logBaseline[id] !== undefined) {
-        written.set(id, events)
+        const currentLog = () => current() && useRooms.getState().eventsByRoom[id] === events
         // Persist only the verified contiguous tail, never a lone live event.
         const start = rooms.logBaseline[id]!
         const verified = start > 0 ? events.filter(event => event.seq >= start) : []
@@ -169,8 +205,13 @@ export function keepRoster(scope: null | string): void {
         void writeCache(
           scope,
           `room:${id}`,
-          boundedHistory((gap < 0 ? verified : verified.slice(0, gap)).slice(-LOG_PAGE))
-        )
+          boundedHistory((gap < 0 ? verified : verified.slice(0, gap)).slice(-LOG_PAGE)),
+          currentLog
+        ).then(() => {
+          if (currentLog()) {
+            written.set(id, events)
+          }
+        })
       }
     }
 
@@ -180,7 +221,7 @@ export function keepRoster(scope: null | string): void {
       }
     }
 
-    void pruneRoomLogs(scope, kept)
+    void pruneRoomLogs(scope, kept, current)
   }
 
   const schedule = () => {

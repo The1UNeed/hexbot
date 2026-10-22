@@ -12,6 +12,7 @@ import {
   sessionHistory
 } from '../lib/api'
 import { KICKOFF_MARKER } from '../lib/bot-kickoff'
+import { ConnectionSupervisor } from '../lib/connection'
 import * as deviceCache from '../lib/device-cache'
 import {
   authorizeCache,
@@ -45,6 +46,7 @@ import { invalidateConnectionReads, useConnection } from './connection'
 import { useMe } from './me'
 import { applyLog, useRooms } from './rooms'
 import { keepHistory, useSections } from './sections'
+import { useSettings } from './settings'
 import { resetTranscriptEffects, setTranscriptEffects, useTranscripts } from './transcripts'
 
 vi.mock('../lib/api', async original => ({
@@ -283,6 +285,7 @@ it.each(['deleted', 'left', 'archived'] as const)(
     await restoreRoster(scope)
     expect(useRooms.getState().eventsByRoom.r).toHaveLength(1)
     // This is the state after rooms.refresh, before keepRoster subscribes.
+    useRooms.setState({ loaded: true })
     useRooms.getState().restore(change === 'archived' ? [{ ...room, archived_at: 1 }] : [], {})
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
     keepRoster(scope)
@@ -313,6 +316,7 @@ it('an empty verified room cannot turn a later lone event into a restored baseli
   vi.mocked(roomsLog).mockResolvedValue({ events: [] })
   await useRooms.getState().open('r')
   useRooms.getState().handleEvent('r', event(200))
+  useRooms.setState({ loaded: true })
   vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
   keepRoster(scope)
   await vi.advanceTimersByTimeAsync(500)
@@ -383,6 +387,7 @@ it('persists only verified room history and strips process IDs from the whole ro
   useSections.setState({ byId: { s: section } })
   useRooms.getState().restore([room], {})
   useRooms.getState().handleEvent('r', event(200))
+  useRooms.setState({ loaded: true })
   vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
   keepRoster(scope)
   await vi.advanceTimersByTimeAsync(500)
@@ -799,3 +804,329 @@ it.each(['open', 'markRead'] as const)(
     expect(useRooms.getState().logBaseline.r).toBeUndefined()
   }
 )
+
+it('a deletion arriving while cached logs restore cannot resurrect room metadata or its log', async () => {
+  await writeCache(scope, 'roster', {
+    daemon: 'daemon',
+    bots: [],
+    me: null,
+    rooms: [room],
+    sections: []
+  })
+  await writeCache(scope, 'room:r', [event(1)])
+  const held = deferred<void>()
+  const reached = deferred<void>()
+  const read = deviceCache.readCache
+  vi.spyOn(deviceCache, 'readCache').mockImplementation(async (...args) => {
+    const result = await read(...args)
+
+    if (args[1] === 'room:r') {
+      reached.resolve()
+      await held.promise
+    }
+
+    return result
+  })
+  const restoring = restoreRoster(scope)
+  await reached.promise
+  routeEvent({ type: 'hexbot.rooms.changed', payload: { id: 'r', deleted: true } } as never)
+  held.resolve()
+  await restoring
+  expect(useRooms.getState().byId.r).toBeUndefined()
+  expect(useRooms.getState().eventsByRoom.r).toBeUndefined()
+})
+
+it('successful empty network roster wins over a delayed cache restoration', async () => {
+  await writeCache(scope, 'roster', {
+    daemon: 'daemon',
+    bots: [],
+    me: null,
+    rooms: [room],
+    sections: []
+  })
+  await writeCache(scope, 'room:r', [event(1)])
+  const held = deferred<void>()
+  const reached = deferred<void>()
+  const read = deviceCache.readCache
+  vi.spyOn(deviceCache, 'readCache').mockImplementation(async (...args) => {
+    const result = await read(...args)
+
+    if (args[1] === 'room:r') {
+      reached.resolve()
+      await held.promise
+    }
+
+    return result
+  })
+  const restoring = restoreRoster(scope)
+  await reached.promise
+  vi.mocked(roomsList).mockResolvedValue({ rooms: [] })
+  await useRooms.getState().refresh()
+  held.resolve()
+  await restoring
+  expect(useRooms.getState().byId.r).toBeUndefined()
+  expect(useRooms.getState().eventsByRoom.r).toBeUndefined()
+})
+
+it('startup cleans deleted cached rooms without waiting for unrelated optional logs', async () => {
+  await writeCache(scope, 'roster', {
+    daemon: 'daemon',
+    bots: [],
+    me: null,
+    rooms: [room],
+    sections: []
+  })
+  await writeCache(scope, 'room:r', [event(1)])
+  suspendCache()
+  clearPersonalState()
+  const held = deferred<{ events: RoomEvent[] }>()
+  vi.mocked(roomsList).mockResolvedValue({ rooms: [{ ...room, id: 'slow' }] })
+  vi.mocked(roomsLog).mockReturnValue(held.promise)
+  vi.spyOn(useBots.getState(), 'refresh').mockResolvedValue()
+  vi.spyOn(useSections.getState(), 'refresh').mockResolvedValue()
+  vi.spyOn(useMe.getState(), 'refresh').mockResolvedValue()
+  vi.spyOn(useSettings.getState(), 'refresh').mockResolvedValue()
+  const supervisor = new ConnectionSupervisor()
+  const internal = supervisor as unknown as { client: unknown; hydrate: () => Promise<void> }
+  internal.client = { call: async () => ({ install_id: 'daemon' }) }
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+  const hydrating = internal.hydrate()
+
+  try {
+    await vi.waitFor(() => expect(useRooms.getState().byId.slow).toBeDefined())
+    expect(useRooms.getState().byId.r).toBeUndefined()
+    await vi.advanceTimersByTimeAsync(1000)
+    vi.useRealTimers()
+    await writeCache(scope, 'barrier', true)
+    expect(await readCache(scope, 'room:r')).toBeUndefined()
+  } finally {
+    held.resolve({ events: [] })
+    await hydrating
+    internal.client = null
+    supervisor.stop()
+  }
+})
+
+it.each([
+  ['roster', 'deleted'],
+  ['room:r', 'deleted'],
+  ['roster', 'left'],
+  ['room:r', 'left'],
+  ['roster', 'archived'],
+  ['room:r', 'archived'],
+  ['roster', 'members'],
+  ['room:r', 'members'],
+  ['roster', 'empty list'],
+  ['room:r', 'empty list'],
+  ['roster', 'relisted'],
+  ['room:r', 'relisted']
+] as const)('preserves room authority when cached %s is held across %s', async (key, change) => {
+  const unaffected = { ...room, id: 'other' }
+  await writeCache(scope, 'roster', {
+    daemon: 'daemon',
+    bots: [],
+    me: null,
+    sections: [],
+    rooms: [room, unaffected]
+  })
+  await writeCache(scope, 'room:r', [event(1)])
+  const held = deferred<void>()
+  const reached = deferred<void>()
+  const read = deviceCache.readCache
+  vi.spyOn(deviceCache, 'readCache').mockImplementation(async (...args) => {
+    const result = await read(...args)
+
+    if (args[1] === key) {
+      reached.resolve()
+      await held.promise
+    }
+
+    return result
+  })
+  const restoring = restoreRoster(scope)
+  await reached.promise
+
+  const updated = {
+    ...room,
+    name: 'New membership',
+    archived_at: change === 'archived' ? 1 : null,
+    members: [{ member_id: 'new-bot' }]
+  } as Room
+
+  if (change === 'empty list') {
+    vi.mocked(roomsList).mockResolvedValueOnce({ rooms: [] })
+    await useRooms.getState().refresh()
+  } else if (change === 'deleted') {
+    useRooms.getState().drop('r')
+  } else {
+    if (change === 'relisted') {
+      useRooms.getState().drop('r')
+    }
+
+    if (change === 'left') {
+      vi.mocked(roomsGet).mockRejectedValueOnce(
+        Object.assign(new Error('No access'), { code: 4302 })
+      )
+    } else {
+      vi.mocked(roomsGet).mockResolvedValueOnce({ room: updated })
+    }
+
+    await useRooms.getState().refreshOne('r')
+  }
+
+  held.resolve()
+  await restoring
+  expect(useRooms.getState().byId.r).toEqual(
+    change === 'archived' || change === 'members' || change === 'relisted' ? updated : undefined
+  )
+  expect(useRooms.getState().eventsByRoom.r).toBeUndefined()
+  expect(useRooms.getState().logBaseline.r).toBeUndefined()
+  expect(useRooms.getState().order).toEqual(
+    change === 'empty list' ? [] : expect.arrayContaining(['other'])
+  )
+})
+
+it.each(['deleted', 'empty list'] as const)(
+  'does not restore cached membership after prior %s authority',
+  async change => {
+    await writeCache(scope, 'roster', {
+      daemon: 'daemon',
+      bots: [],
+      me: null,
+      sections: [],
+      rooms: [room]
+    })
+
+    if (change === 'deleted') {
+      useRooms.getState().drop('r')
+    } else {
+      vi.mocked(roomsList).mockResolvedValueOnce({ rooms: [] })
+      await useRooms.getState().refresh()
+    }
+
+    await restoreRoster(scope)
+    expect(useRooms.getState().byId.r).toBeUndefined()
+    expect(useRooms.getState().order).toEqual([])
+  }
+)
+
+it('repeated cache restoration preserves live events without duplicate rooms or invented baselines', async () => {
+  await writeCache(scope, 'roster', {
+    daemon: 'daemon',
+    bots: [],
+    me: null,
+    sections: [],
+    rooms: [room]
+  })
+  useRooms.getState().handleEvent('r', event(200))
+  await Promise.all([restoreRoster(scope), restoreRoster(scope)])
+  await restoreRoster(scope)
+  expect(useRooms.getState().order).toEqual(['r'])
+  expect(useRooms.getState().eventsByRoom.r).toEqual([event(200)])
+  expect(useRooms.getState().logBaseline.r).toBeUndefined()
+})
+
+it('an identity reset invalidates a held cache restore and clears old room authority', async () => {
+  await writeCache(scope, 'roster', {
+    daemon: 'daemon',
+    bots: [],
+    me: null,
+    sections: [],
+    rooms: [room]
+  })
+  const held = deferred<void>()
+  const reached = deferred<void>()
+  const read = deviceCache.readCache
+
+  const spy = vi.spyOn(deviceCache, 'readCache').mockImplementation(async (...args) => {
+    const result = await read(...args)
+    reached.resolve()
+    await held.promise
+
+    return result
+  })
+
+  const restoring = restoreRoster(scope)
+  await reached.promise
+  useRooms.getState().drop('r')
+  useRooms.getState().reset()
+  held.resolve()
+  await restoring
+  expect(useRooms.getState().byId.r).toBeUndefined()
+  spy.mockRestore()
+  await restoreRoster(scope)
+  expect(useRooms.getState().byId.r).toBeDefined()
+})
+
+it.each(['roster', 'room:r'] as const)(
+  'rejects a queued stale %s write after authoritative deletion and cleanup',
+  async key => {
+    useRooms.getState().restore([room], { r: [event(1)] })
+    useRooms.setState({ loaded: true })
+    const held = deferred<void>()
+    const reached = deferred<void>()
+    const completed = deferred<void>()
+    const write = deviceCache.writeCache
+    let blocked = false
+    vi.spyOn(deviceCache, 'writeCache').mockImplementation(async (...args) => {
+      if (args[1] === key && !blocked) {
+        blocked = true
+        reached.resolve()
+        await held.promise
+        await write(...args)
+        completed.resolve()
+      } else {
+        await write(...args)
+      }
+    })
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    keepRoster(scope)
+    await vi.advanceTimersByTimeAsync(500)
+    await reached.promise
+    useRooms.getState().drop('r')
+    await vi.advanceTimersByTimeAsync(500)
+    held.resolve()
+    await completed.promise
+    vi.useRealTimers()
+    await write(scope, 'barrier', true)
+    expect(await readCache(scope, 'room:r')).toBeUndefined()
+    expect((await readCache<{ rooms: Room[] }>(scope, 'roster'))?.rooms).toEqual([])
+  }
+)
+
+it('a cached room can fill a pending lookup without superseding its missing-room answer', async () => {
+  await writeCache(scope, 'roster', {
+    daemon: 'daemon',
+    bots: [],
+    me: null,
+    sections: [],
+    rooms: [room]
+  })
+  const held = deferred<Awaited<ReturnType<typeof roomsGet>>>()
+  vi.mocked(roomsGet).mockReturnValueOnce(held.promise)
+  const pending = useRooms.getState().refreshOne('r')
+  await restoreRoster(scope)
+  expect(useRooms.getState().byId.r).toBeDefined()
+  held.reject(Object.assign(new Error('Missing room'), { code: 4230 }))
+  expect(await pending).toBe(true)
+  expect(useRooms.getState().byId.r).toBeUndefined()
+})
+
+it('a superseded cold lookup joins the newer authority instead of claiming an empty store is gone', async () => {
+  const first = deferred<Awaited<ReturnType<typeof roomsGet>>>()
+  const second = deferred<Awaited<ReturnType<typeof roomsGet>>>()
+  vi.mocked(roomsGet).mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise)
+  const old = useRooms.getState().refreshOne('r')
+  const latest = useRooms.getState().refreshOne('r')
+  let settled = false
+  void old.then(() => {
+    settled = true
+  })
+  first.reject(Object.assign(new Error('Obsolete missing room'), { code: 4230 }))
+  await first.promise.catch(() => undefined)
+  expect(settled).toBe(false)
+  second.resolve({ room })
+  expect(await latest).toBe(true)
+  expect(await old).toBe(true)
+  expect(useRooms.getState().byId.r).toEqual(room)
+})

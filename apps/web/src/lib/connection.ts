@@ -587,6 +587,8 @@ export class ConnectionSupervisor {
         }
 
         store.setDaemon(info)
+        // Subscribe before network refreshes; room-list readiness gates persistence.
+        keepRoster(scope)
         const last = uiActions().lastSection
 
         if (last?.daemon && info?.install_id && last.daemon !== info.install_id) {
@@ -608,10 +610,6 @@ export class ConnectionSupervisor {
         useMe.getState().refresh(),
         sectionsActions().refresh()
       ])
-
-      if (current()) {
-        keepRoster(cacheScope(target))
-      }
     })
 
     try {
@@ -664,7 +662,10 @@ export class ConnectionSupervisor {
     void revokeCache(scope)
     clearPersonalState()
 
-    if (!preserveTarget) {connectionActions().clearTarget()}
+    if (!preserveTarget) {
+      connectionActions().clearTarget()
+    }
+
     connectionActions().setStatus('unauthorized', { attempt: 0, error: message })
   }
 

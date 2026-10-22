@@ -91,7 +91,15 @@ those 20 logs, with each retained tail bounded by the same row/byte caps. The
 fresh roster is published before optional log reads; each log succeeds or fails
 independently. Per-room revisions preserve intervening changes during list and
 log reads, so delayed replies cannot undo deletion, departure, archival, or
-membership updates.
+membership updates. Cache restoration captures room authority before reading
+IndexedDB and fills only rooms that remain unproven by the network. An empty
+successful list is authoritative too. Cached rows do not invalidate pending
+room lookups; a superseded lookup follows newer authority, so cold room settings
+resolve missing rooms without treating pre-handshake reads as proof of deletion.
+
+Roster subscriptions start after authorization. Persistence waits for the room
+list, independently of optional logs or other startup reads. Queued roster and
+log writes also check the room state they captured before committing.
 Each roster write prunes persisted logs for deleted, departed, and archived rooms,
 including rooms removed while the client was offline. Cleanup uses the active
 authorization generation, just like other cache writes.

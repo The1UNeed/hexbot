@@ -11,6 +11,10 @@ reads, queued writes, and commits. Held fetches cover section deletion and
 re-listing; a 45-room roster checks the 20-log startup and persistence limit.
 Held list, log, and lookup replies cover prompt roster publication, isolated log
 failures, overlapping refreshes, and preservation of intervening room changes.
+Delayed IndexedDB reads cover live tombstones, empty authoritative lists, partial
+restoration, re-listing, and identity resets. Queued stale writes cannot restore
+removed rooms after cleanup. Cold settings tests hold lookups across cache and
+network roster publication, for both missing and valid rooms.
 `src/app/conversation/reload.test.tsx` also holds network reads after a dream
 reload or turn completion to check that cached and retained rows appear once.
 `src/lib/room-or-leave.test.tsx` covers queued startup reads and reconnects without
@@ -22,7 +26,9 @@ real Pi, a local streaming model, and the production browser bundle. It holds a
 real history reply to exercise cached hydration and a repeated prompt, reconnects
 the socket to check the proving read, blocks authorization on an offline reload,
 deletes and archives rooms while offline, and checks that their persisted logs
-are removed. A held history reply also checks hidden kickoff projection. Finally
+are removed while an unrelated optional log reply remains held. Cold settings
+checks hold real missing-room and valid-room lookups across roster publication.
+A held history reply also checks hidden kickoff projection. Finally
 it revokes the browser's actual device and checks disk and rendered state.
 Screenshots remain in the printed temporary artifacts directory. It publishes
 nothing and stops only its own processes.

@@ -32,6 +32,11 @@ export interface RoomsState {
   handleTurn: (turn: RoomTurn) => void
   liveTurnsByRoom: Record<string, Record<string, RoomTurn>>
   loading: boolean
+  /** A successful network list, including an empty one, supersedes cached membership. */
+  loaded: boolean
+  rosterRevision: number
+  /** Clear room state and authority when the selected connection is discarded. */
+  reset: () => void
   /** Best effort: failures are swallowed, and a room that is gone is dropped. */
   markRead: (id: string, seq: number) => Promise<void>
   /** Resolves once loaded, or once the room turned out to be gone and was dropped. */
@@ -62,6 +67,25 @@ function roomGone(error: unknown): boolean {
 /** Room metadata can change while lists, lookups, or optional logs are in flight. */
 const roomChanges = new Map<string, number>()
 let rosterRead = 0
+let roomIdentity = {}
+const looking = new Map<string, Promise<boolean>>()
+const knownRooms = new Set<string>()
+
+/** Capture before any cache read; cached membership never supersedes network authority. */
+export function roomCacheRead(): (id: string) => boolean {
+  const connected = connectionRead()
+  const identity = roomIdentity
+  const revision = useRooms.getState().rosterRevision
+  const changes = new Map(roomChanges)
+
+  return id =>
+    connected() &&
+    identity === roomIdentity &&
+    !useRooms.getState().loaded &&
+    revision === useRooms.getState().rosterRevision &&
+    !knownRooms.has(id) &&
+    roomChanges.get(id) === changes.get(id)
+}
 
 function bumpRoom(id: string): void {
   roomChanges.set(id, (roomChanges.get(id) ?? 0) + 1)
@@ -70,8 +94,9 @@ function bumpRoom(id: string): void {
 function roomRead(id: string): () => boolean {
   const connected = connectionRead()
   const revision = roomChanges.get(id)
+  const identity = roomIdentity
 
-  return () => connected() && roomChanges.get(id) === revision
+  return () => connected() && identity === roomIdentity && roomChanges.get(id) === revision
 }
 
 /** Counts turn changes per room, so a refresh keeps turns that moved while it loaded. */
@@ -185,6 +210,7 @@ function indexRooms(rooms: Room[]): Pick<RoomsState, 'byId' | 'order'> {
 
 function mergeRoom(state: RoomsState, room: Room): Partial<RoomsState> {
   bumpRoom(room.id)
+  knownRooms.add(room.id)
 
   return {
     byId: { ...state.byId, [room.id]: room },
@@ -194,6 +220,7 @@ function mergeRoom(state: RoomsState, room: Room): Partial<RoomsState> {
 
 function dropRoom(state: RoomsState, id: string): Partial<RoomsState> {
   bumpRoom(id)
+  knownRooms.add(id)
   const byId = { ...state.byId }
   const eventsByRoom = { ...state.eventsByRoom }
   const liveTurnsByRoom = { ...state.liveTurnsByRoom }
@@ -219,7 +246,29 @@ export const useRooms = create<RoomsState>((set, get) => ({
   logBaseline: {},
   liveTurnsByRoom: {},
   loading: false,
+  loaded: false,
+  rosterRevision: 0,
   order: [],
+
+  reset() {
+    roomIdentity = {}
+    roomChanges.clear()
+    knownRooms.clear()
+    looking.clear()
+    turnChanges.clear()
+    rosterRead++
+    set({
+      byId: {},
+      order: [],
+      eventsByRoom: {},
+      logBaseline: {},
+      liveTurnsByRoom: {},
+      loaded: false,
+      rosterRevision: 0,
+      loading: false,
+      error: null
+    })
+  },
 
   async refresh() {
     const connected = connectionRead()
@@ -312,7 +361,9 @@ export const useRooms = create<RoomsState>((set, get) => ({
           Object.entries(state.eventsByRoom).filter(([id]) => activeIds.has(id))
         ),
         liveTurnsByRoom,
-        loading: false
+        loading: false,
+        loaded: true,
+        rosterRevision: state.rosterRevision + 1
       }))
 
       await Promise.all(
@@ -360,36 +411,60 @@ export const useRooms = create<RoomsState>((set, get) => ({
     }
   },
 
-  async refreshOne(id) {
+  refreshOne(id) {
     // A changed event invalidates older work before the lookup answers.
     bumpRoom(id)
+    const connected = connectionRead()
+    const identity = roomIdentity
     const currentRead = roomRead(id)
+    let request: Promise<boolean>
 
-    try {
-      const { room } = await roomsGet(id)
-
-      if (!currentRead()) {
+    const superseded = (): boolean | Promise<boolean> => {
+      if (!connected() || identity !== roomIdentity) {
         return false
       }
 
-      set(state => mergeRoom(state, room))
+      const newer = looking.get(id)
 
-      return true
-    } catch (error) {
-      if (!currentRead()) {
-        return false
-      }
+      return newer && newer !== request ? newer : knownRooms.has(id) || get().loaded
+    }
 
-      if (roomGone(error)) {
-        set(state => dropRoom(state, id))
+    const read = async (): Promise<boolean> => {
+      try {
+        const { room } = await roomsGet(id)
+
+        if (!currentRead()) {
+          return superseded()
+        }
+
+        set(state => mergeRoom(state, room))
 
         return true
+      } catch (error) {
+        if (!currentRead()) {
+          return superseded()
+        }
+
+        if (roomGone(error)) {
+          set(state => dropRoom(state, id))
+
+          return true
+        }
+
+        await get().refresh()
+
+        return connected() && identity === roomIdentity && get().loaded
       }
-
-      await get().refresh()
-
-      return false
     }
+
+    request = read().finally(() => {
+      if (looking.get(id) === request) {
+        looking.delete(id)
+      }
+    })
+    looking.set(id, request)
+
+    return request
   },
 
   async open(id) {
@@ -494,10 +569,7 @@ export const useRooms = create<RoomsState>((set, get) => ({
   },
 
   restore(rooms, eventsByRoom, baseline) {
-    for (const id of new Set([...Object.keys(get().byId), ...rooms.map(room => room.id)])) {
-      bumpRoom(id)
-    }
-
+    // Cache is a provisional projection, never an invalidation of network reads.
     set({
       ...indexRooms(rooms),
       eventsByRoom,

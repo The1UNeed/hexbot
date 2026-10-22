@@ -160,7 +160,12 @@ export function readCache<T>(scope: null | string, key: string): Promise<T | und
   )
 }
 
-export function writeCache(scope: null | string, key: string, value: unknown): Promise<void> {
+export function writeCache(
+  scope: null | string,
+  key: string,
+  value: unknown,
+  valid: () => boolean = () => true
+): Promise<void> {
   if (!scope) {
     return Promise.resolve()
   }
@@ -171,13 +176,17 @@ export function writeCache(scope: null | string, key: string, value: unknown): P
     await run(
       'readwrite',
       store => void store.put(value, [scope, key]),
-      () => cacheCurrent(access)
+      () => cacheCurrent(access) && valid()
     )
   })
 }
 
 /** Prune persisted IDs too, including rooms removed while this client was offline. */
-export function pruneRoomLogs(scope: null | string, roomIds: string[]): Promise<void> {
+export function pruneRoomLogs(
+  scope: null | string,
+  roomIds: string[],
+  valid: () => boolean = () => true
+): Promise<void> {
   if (!scope) {
     return Promise.resolve()
   }
@@ -205,7 +214,7 @@ export function pruneRoomLogs(scope: null | string, roomIds: string[]): Promise<
           }
         }
       },
-      () => cacheCurrent(access)
+      () => cacheCurrent(access) && valid()
     )
   })
 }

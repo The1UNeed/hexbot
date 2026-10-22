@@ -15,7 +15,7 @@ const room = { id: 'r', members: [], name: 'Room' } as unknown as Room
 beforeEach(() => {
   navigate.mockReset()
   useConnection.setState({ target: { kind: 'local' }, epoch: null, status: 'connecting' })
-  useRooms.getState().restore([], {})
+  useRooms.getState().reset()
   setActiveRpc(null)
 })
 afterEach(() => setActiveRpc(null))
@@ -86,8 +86,65 @@ it.each(['open', 'refresh'] as const)(
       invalidateConnectionReads()
       setActiveRpc(null)
       useConnection.getState().setStatus('reconnecting')
-      useRooms.getState().restore([], {})
+      useRooms.getState().reset()
     })
     expect(navigate).not.toHaveBeenCalled()
   }
 )
+
+it.each(['cache', 'list'] as const)(
+  'leaves cold settings after a gone lookup crossed a %s restore',
+  async source => {
+    let reject!: (error: Error) => void
+
+    const held = new Promise<{ room: Room }>((_yes, no) => {
+      reject = no
+    })
+
+    const call = vi.fn((method: string): Promise<unknown> =>
+      method === 'hexbot.rooms.get' ? held : Promise.resolve({ rooms: [] })
+    )
+
+    setActiveRpc({ call } as never)
+    useConnection.setState({ status: 'connected', epoch: 'ready' })
+    renderHook(() => useRoomOrLeave('r', 'refresh'))
+    await act(async () => {
+      if (source === 'cache') {
+        useRooms.getState().restore([room], {})
+      } else {
+        call.mockImplementationOnce(() => Promise.resolve({ rooms: [room] }))
+        call.mockImplementationOnce(() => Promise.resolve({ events: [] }))
+        await useRooms.getState().refresh()
+        await useRooms.getState().refresh()
+      }
+
+      reject(Object.assign(new Error('Room gone'), { code: 4230 }))
+    })
+    await waitFor(() => expect(navigate).toHaveBeenCalledWith({ to: '/' }))
+    expect(useRooms.getState().byId.r).toBeUndefined()
+  }
+)
+
+it('keeps valid cold settings when the authoritative list supersedes a stale gone lookup', async () => {
+  let reject!: (error: Error) => void
+
+  const held = new Promise<{ room: Room }>((_yes, no) => {
+    reject = no
+  })
+
+  setActiveRpc({
+    call: vi.fn((method: string) =>
+      method === 'hexbot.rooms.get'
+        ? held
+        : Promise.resolve(method === 'hexbot.rooms.list' ? { rooms: [room] } : { events: [] })
+    )
+  } as never)
+  useConnection.setState({ status: 'connected', epoch: 'ready' })
+  const { result } = renderHook(() => useRoomOrLeave('r', 'refresh'))
+  await act(async () => {
+    await useRooms.getState().refresh()
+    reject(Object.assign(new Error('Obsolete gone lookup'), { code: 4230 }))
+  })
+  expect(result.current).toEqual(room)
+  expect(navigate).not.toHaveBeenCalled()
+})

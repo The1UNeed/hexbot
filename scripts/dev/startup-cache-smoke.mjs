@@ -148,17 +148,24 @@ try {
   page.on('pageerror', error => errors.push(error.message))
   let hold = false,
     held,
-    clientSide
+    clientSide,
+    holdLogRoom,
+    heldRoomLog,
+    holdGetRoom,
+    heldRoomGet
   const requests = []
   await page.routeWebSocket(/\/api\/ws\?/, ws => {
     const server = ws.connectToServer()
     clientSide = ws
     const methods = new Map()
+    const logRooms = new Map()
     ws.onMessage(message => {
       for (const line of String(message).split('\n').filter(Boolean)) {
         const frame = JSON.parse(line)
         if (frame.method) {
           methods.set(frame.id, frame.method)
+          if (frame.method === 'hexbot.rooms.log' || frame.method === 'hexbot.rooms.get')
+            logRooms.set(frame.id, frame.params.id)
           requests.push(frame.method)
         }
       }
@@ -166,7 +173,23 @@ try {
     })
     server.onMessage(message => {
       const frames = String(message).split('\n').filter(Boolean).map(JSON.parse)
-      if (hold && frames.some(frame => methods.get(frame.id) === 'hexbot.sections.open')) {
+      if (
+        holdGetRoom &&
+        frames.some(
+          frame =>
+            methods.get(frame.id) === 'hexbot.rooms.get' && logRooms.get(frame.id) === holdGetRoom
+        )
+      ) {
+        heldRoomGet = () => ws.send(message)
+      } else if (
+        holdLogRoom &&
+        frames.some(
+          frame =>
+            methods.get(frame.id) === 'hexbot.rooms.log' && logRooms.get(frame.id) === holdLogRoom
+        )
+      ) {
+        heldRoomLog = () => ws.send(message)
+      } else if (hold && frames.some(frame => methods.get(frame.id) === 'hexbot.sections.open')) {
         hold = false
         held = () => ws.send(message)
       } else ws.send(message)
@@ -298,15 +321,52 @@ try {
   await page.screenshot({ path: path.join(artifacts, 'offline-gated.png') })
   await rpc('hexbot.rooms.delete', { id: staleRooms[0] })
   await rpc('hexbot.rooms.archive', { id: staleRooms[1] })
+  const { room: slowRoom } = await rpc('hexbot.rooms.create', {
+    name: 'Held optional log',
+    members: ['owl'],
+    main_bot: 'owl'
+  })
+  holdLogRoom = slowRoom.id
   await page.unroute('**/api/auth/ws-ticket')
   await page.reload()
   await expect(page.getByTestId('bot-message').filter({ hasText: 'Cache reply.' })).toHaveCount(2)
+  await expect.poll(() => Boolean(heldRoomLog)).toBe(true)
   await expect
     .poll(
       async () =>
         (await cache()).filter(entry => staleRooms.some(id => entry.key[1] === `room:${id}`)).length
     )
     .toBe(0)
+  assert(heldRoomLog, 'Cleanup completes while the optional log is still held')
+  await page.screenshot({ path: path.join(artifacts, 'held-log-cleanup.png') })
+  holdLogRoom = undefined
+  heldRoomLog()
+  heldRoomLog = undefined
+
+  // Cold settings: a real gone lookup cannot leave Loading after a fresh list.
+  holdGetRoom = staleRooms[0]
+  await page.goto(`${base}/r/${holdGetRoom}/settings`)
+  await expect.poll(() => Boolean(heldRoomGet)).toBe(true)
+  await expect(page.locator(`[data-roster-id="room:${slowRoom.id}"]`)).toBeVisible()
+  holdGetRoom = undefined
+  heldRoomGet()
+  heldRoomGet = undefined
+  await expect(page).toHaveURL(`${base}/b/owl/s/${section.id}`)
+  await expect(composer).toBeEnabled()
+  await page.screenshot({ path: path.join(artifacts, 'cold-gone-room-settings.png') })
+
+  // A valid room remains open across the same list/lookup ordering.
+  holdGetRoom = slowRoom.id
+  await page.goto(`${base}/r/${holdGetRoom}/settings`)
+  await expect.poll(() => Boolean(heldRoomGet)).toBe(true)
+  await expect(page.getByRole('region', { name: 'Room settings' })).toBeVisible()
+  holdGetRoom = undefined
+  heldRoomGet()
+  heldRoomGet = undefined
+  await expect(page).toHaveURL(`${base}/r/${slowRoom.id}/settings`)
+  await page.screenshot({ path: path.join(artifacts, 'cold-room-settings.png') })
+  await page.goto(`${base}/b/owl/s/${section.id}`)
+  await expect(composer).toBeEnabled()
 
   // An interrupted kickoff can be a plain durable user row. Store that shape
   // through the real daemon, then hold the proving read during cached reload.
@@ -382,7 +442,8 @@ try {
           'repeated input during real history read',
           'reconnect proving read',
           'offline reload authorization gate',
-          'offline deletion and archive prune persisted room logs',
+          'offline deletion and archive prune persisted room logs while an optional log is held',
+          'cold settings resolve gone and valid rooms across held lookups',
           'cached kickoff filtering while real history is pending',
           'bounded storage after a 600 KiB durable input',
           'real device revocation and cache deletion'
