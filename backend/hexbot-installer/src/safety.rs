@@ -54,7 +54,7 @@ pub(crate) fn appimage_running(proc: &Path, app: &Path) -> Result<bool> {
     #[cfg(not(unix))]
     {
         let _ = (proc, app);
-        return Ok(false);
+        Ok(false)
     }
     #[cfg(unix)]
     {
@@ -227,21 +227,28 @@ impl Installer {
             }
             return Ok(());
         }
-        install_ownership::check_service(
-            &self.paths.service_file(self.target),
-            &self.paths.hexbot_home,
-            self.target.is_macos(),
-        )?;
-        if let Ok(text) = fs::read_to_string(self.paths.wrapper())
-            && let Some(owner) = install_ownership::wrapper_home(&text)
-            && !install_ownership::wrapper_owned(&self.paths.wrapper(), &self.paths.hexbot_home)
+        #[cfg(not(unix))]
         {
-            return fail(format!(
-                "The Hexbot CLI on this computer belongs to {}. Uninstall it from there first.",
-                owner.display()
-            ));
+            fail("This service target cannot be managed on Windows.")
         }
-        Ok(())
+        #[cfg(unix)]
+        {
+            install_ownership::check_service(
+                &self.paths.service_file(self.target),
+                &self.paths.hexbot_home,
+                self.target.is_macos(),
+            )?;
+            if let Ok(text) = fs::read_to_string(self.paths.wrapper())
+                && let Some(owner) = install_ownership::wrapper_home(&text)
+                && !install_ownership::wrapper_owned(&self.paths.wrapper(), &self.paths.hexbot_home)
+            {
+                return fail(format!(
+                    "The Hexbot CLI on this computer belongs to {}. Uninstall it from there first.",
+                    owner.display()
+                ));
+            }
+            Ok(())
+        }
     }
 
     pub(crate) fn remove_owned_path(&self, path: &Path) -> Result<()> {
@@ -284,57 +291,68 @@ impl Installer {
             self.run(&binary, &["service", "uninstall"], false, progress)?;
             return Ok(());
         }
-        install_ownership::check_service(&file, &self.paths.hexbot_home, self.target.is_macos())?;
-        if !file.exists() {
-            return Ok(());
+        #[cfg(not(unix))]
+        {
+            fail("This service target cannot be managed on Windows.")
         }
-        // Do not depend on a working native-executable pointer to uninstall a service.
-        if !self.paths.service_no_load {
-            if self.target.is_macos() {
-                #[cfg(not(unix))]
-                return fail("The macOS service can only be removed on macOS.");
-                #[cfg(unix)]
-                {
-                    let uid = unsafe { libc::getuid() };
-                    let mut stopped = false;
-                    for domain in [format!("gui/{uid}"), format!("user/{uid}")] {
-                        stopped |= self
-                            .paths
-                            .command("launchctl")
-                            .args(["bootout", &domain])
-                            .arg(&file)
-                            .output()?
-                            .status
-                            .success();
-                    }
-                    if !stopped {
-                        check_output(
-                            self.paths
+        #[cfg(unix)]
+        {
+            install_ownership::check_service(
+                &file,
+                &self.paths.hexbot_home,
+                self.target.is_macos(),
+            )?;
+            if !file.exists() {
+                return Ok(());
+            }
+            // Do not depend on a working native-executable pointer to uninstall a service.
+            if !self.paths.service_no_load {
+                if self.target.is_macos() {
+                    #[cfg(not(unix))]
+                    return fail("The macOS service can only be removed on macOS.");
+                    #[cfg(unix)]
+                    {
+                        let uid = unsafe { libc::getuid() };
+                        let mut stopped = false;
+                        for domain in [format!("gui/{uid}"), format!("user/{uid}")] {
+                            stopped |= self
+                                .paths
                                 .command("launchctl")
-                                .args(["unload", "-w"])
+                                .args(["bootout", &domain])
                                 .arg(&file)
-                                .output()?,
-                        )?;
+                                .output()?
+                                .status
+                                .success();
+                        }
+                        if !stopped {
+                            check_output(
+                                self.paths
+                                    .command("launchctl")
+                                    .args(["unload", "-w"])
+                                    .arg(&file)
+                                    .output()?,
+                            )?;
+                        }
                     }
+                } else {
+                    let _ = self
+                        .paths
+                        .command("systemctl")
+                        .args(["--user", "disable", "--now", "hexbot"])
+                        .output();
                 }
-            } else {
+            }
+            self.remove_owned_path(&file)?;
+            if !self.paths.service_no_load && self.target.is_linux() {
                 let _ = self
                     .paths
                     .command("systemctl")
-                    .args(["--user", "disable", "--now", "hexbot"])
+                    .args(["--user", "daemon-reload"])
                     .output();
             }
+            progress(Progress::new("service", "Daemon service removed."));
+            Ok(())
         }
-        self.remove_owned_path(&file)?;
-        if !self.paths.service_no_load && self.target.is_linux() {
-            let _ = self
-                .paths
-                .command("systemctl")
-                .args(["--user", "daemon-reload"])
-                .output();
-        }
-        progress(Progress::new("service", "Daemon service removed."));
-        Ok(())
     }
 
     // Hold the lock through removal so no daemon can start against files being deleted.

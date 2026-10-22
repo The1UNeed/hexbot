@@ -103,7 +103,7 @@ export async function makeInstallManifest(root, { channel, version, baseUrl = 'h
       const metadata = JSON.parse(await readFile(join(root, native, 'manifest.json'), 'utf8'))
       const format = os === 'win' ? 'zip' : 'tar.gz'
       const path = `${native}/hexbot-native-${version}-${target}.${format}`
-      if (metadata.version !== version || metadata.target !== target || metadata.format !== format)
+      if (metadata.version !== version || metadata.target !== target || metadata.format !== format || (os === 'win' && metadata.entrypoint !== 'hexbot.exe'))
         throw new Error(`Invalid native manifest: ${native}/manifest.json`)
       if (new URL(metadata.path ?? metadata.url, base).pathname !== new URL(path, base).pathname) throw new Error(`Invalid native archive URL: ${metadata.url}`)
       await verify(path, metadata.sha256, 'sha256', 'hex', metadata.size)

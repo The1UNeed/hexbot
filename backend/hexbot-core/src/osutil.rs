@@ -1,5 +1,5 @@
-//! OS utilities for the daemon's supported platforms, macOS and Linux.
-//! Keep platform details here; this module does not add support for other OSes.
+//! Process and home utilities. Windows helpers prepare build/install boundaries;
+//! they do not provide confinement or enable a supported Windows product.
 use std::{fs::File, io, path::PathBuf};
 
 /// Preserve the daemon's HOME lookup, including an explicitly empty value.

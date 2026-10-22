@@ -38,6 +38,7 @@ const REQUIRED_FILES: &[&str] = &[
     "pi/package-lock.json",
     "pi/node_modules/@earendil-works/pi-coding-agent/dist/cli.js",
 ];
+#[cfg(not(windows))]
 fn entrypoint() -> &'static str {
     if cfg!(windows) {
         "hexbot.exe"
@@ -68,6 +69,9 @@ fn target() -> String {
 struct Manifest {
     version: String,
     target: String,
+    #[cfg(windows)]
+    #[serde(rename = "builtAt")]
+    built_at: u64,
     files: BTreeMap<String, String>,
 }
 fn verify_runtime(directory: &Path) -> Result<Manifest> {
@@ -80,6 +84,13 @@ pub(crate) fn verify_runtime_version(directory: &Path, version: &str) -> Result<
 fn verify_runtime_for(directory: &Path, version: &str) -> Result<Manifest> {
     let manifest: Manifest = serde_json::from_slice(&fs::read(directory.join("manifest.json"))?)
         .map_err(|e| Error::new(5243, format!("Invalid native runtime manifest: {e}")))?;
+    #[cfg(windows)]
+    if manifest.built_at == 0 {
+        return Err(Error::new(
+            5243,
+            "Native Windows runtime is missing its source chronology",
+        ));
+    }
     if manifest.version != version || manifest.target != target() {
         return Err(Error::new(
             5243,
@@ -165,12 +176,21 @@ fn activate(home: &Path, source: &Path, emit: &impl Fn(&str, &str)) -> Result<()
     copy_runtime(&source, staging.path(), &source, &mut Vec::new())?;
     verify_runtime(staging.path())?;
     emit("activate", "Activating the native runtime");
+    #[cfg(not(windows))]
     services::publish_native(
         &native,
         &manifest.version,
         staging.path(),
         entrypoint(),
         None,
+    )?;
+    #[cfg(windows)]
+    services::publish_setup_native(
+        &native,
+        &manifest.version,
+        staging.path(),
+        &serde_json::from_slice(&fs::read(staging.path().join("manifest.json"))?)
+            .map_err(|e| Error::new(5243, e.to_string()))?,
     )?;
     Ok(())
 }

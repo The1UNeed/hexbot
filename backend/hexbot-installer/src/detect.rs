@@ -1,6 +1,6 @@
-use crate::{
-    InstallOption, Installed, InstalledApp, Receipt, Result, Target, fail, install_ownership,
-};
+#[cfg(unix)]
+use crate::install_ownership;
+use crate::{InstallOption, Installed, InstalledApp, Receipt, Result, Target, fail};
 use std::{
     env, fs,
     path::{Path, PathBuf},
@@ -205,17 +205,31 @@ pub fn detect_at(paths: &Paths, target: Target) -> Result<Installed> {
                 )
                 .is_ok()
             } else {
-                install_ownership::check_service(
-                    &paths.service_file(target),
-                    &paths.hexbot_home,
-                    target.is_macos(),
-                )
-                .is_ok()
+                #[cfg(unix)]
+                {
+                    install_ownership::check_service(
+                        &paths.service_file(target),
+                        &paths.hexbot_home,
+                        target.is_macos(),
+                    )
+                    .is_ok()
+                }
+                #[cfg(not(unix))]
+                {
+                    false
+                }
             },
         wrapper: if target.is_windows() {
             crate::windows_service::wrapper_owned(&paths.cli_wrapper(target), &paths.hexbot_home)
         } else {
-            install_ownership::wrapper_owned(&paths.wrapper(), &paths.hexbot_home)
+            #[cfg(unix)]
+            {
+                install_ownership::wrapper_owned(&paths.wrapper(), &paths.hexbot_home)
+            }
+            #[cfg(not(unix))]
+            {
+                false
+            }
         },
         runtime: paths.executable().exists(),
         ..Installed::default()

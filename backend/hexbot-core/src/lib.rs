@@ -41,6 +41,7 @@ pub mod system_service;
 #[cfg(windows)]
 #[path = "windows_service.rs"]
 pub mod system_service;
+mod windows_paths;
 #[cfg(not(windows))]
 pub mod windows_service;
 #[cfg(windows)]

@@ -1,6 +1,10 @@
 mod archive;
 mod detect;
+#[cfg(unix)]
 #[path = "../../hexbot-core/src/install_ownership.rs"]
+mod install_ownership;
+#[cfg(windows)]
+#[path = "../../hexbot-core/src/install_paths.rs"]
 mod install_ownership;
 mod installed_version;
 #[cfg(any(windows, test))]
@@ -14,6 +18,8 @@ mod types;
 mod update_path;
 #[path = "../../hexbot-core/src/update_signature.rs"]
 pub mod update_signature;
+#[path = "../../hexbot-core/src/windows_paths.rs"]
+mod windows_paths;
 mod windows_service;
 
 pub use archive::{extract_native, verify_file};
@@ -321,7 +327,14 @@ impl Installer {
         let wrapper_owned = if self.target.is_windows() {
             windows_service::wrapper_owned(&wrapper, &self.paths.hexbot_home)
         } else {
-            install_ownership::wrapper_owned(&self.paths.wrapper(), &self.paths.hexbot_home)
+            #[cfg(unix)]
+            {
+                install_ownership::wrapper_owned(&self.paths.wrapper(), &self.paths.hexbot_home)
+            }
+            #[cfg(not(unix))]
+            {
+                false
+            }
         };
         if wrapper_owned {
             self.remove_owned_path(&wrapper)?;
@@ -977,7 +990,9 @@ impl Installer {
             let script = "$ErrorActionPreference='Stop'; @(Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -and $_.ExecutablePath.StartsWith($env:HEXBOT_APP_PROBE, [StringComparison]::OrdinalIgnoreCase) }).Count";
             let output = self
                 .paths
-                .command("powershell.exe")
+                .command(crate::windows_paths::system_program(
+                    "WindowsPowerShell/v1.0/powershell.exe",
+                )?)
                 .env(
                     "HEXBOT_APP_PROBE",
                     format!("{}{}", app.display(), std::path::MAIN_SEPARATOR),

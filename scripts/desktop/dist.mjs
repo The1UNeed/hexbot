@@ -4,8 +4,9 @@
 //   --channel <name>     stable | nightly | dev (default dev). See docs/channels.md.
 // Remaining arguments go to electron-builder.
 import { execFile, spawn } from 'node:child_process'
+import { existsSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
-import { dirname, resolve } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
 import { nativeBuildEnvironment } from './native-build.mjs'
@@ -59,7 +60,7 @@ const iconArgs = iconOptions(channel, await iconComposerAvailable())
 
 function run(command, commandArgs) {
   return new Promise((resolveRun, reject) => {
-    const child = spawn(command, commandArgs, { cwd: desktopRoot, env, stdio: 'inherit', shell: process.platform === 'win32' })
+    const child = spawn(command, commandArgs, { cwd: desktopRoot, env, stdio: 'inherit' })
     child.once('error', reject)
     child.once('exit', code =>
       code === 0
@@ -69,11 +70,28 @@ function run(command, commandArgs) {
   })
 }
 
-const pnpm = process.platform === 'win32' ? 'pnpm.cmd' : 'pnpm'
-await run(pnpm, ['run', client ? 'build:client' : 'build'])
+// Execute pnpm's JS entrypoint on Windows so product names containing spaces
+// stay single arguments. cmd.exe would expand and split the builder options.
+let pnpm = 'pnpm'
+let pnpmPrefix = []
+if (process.platform === 'win32') {
+  const { stdout } = await promisify(execFile)('where.exe', ['pnpm'])
+  const paths = stdout.trim().split(/\r?\n/)
+  const executable = paths.find(path => path.toLowerCase().endsWith('.exe'))
+  if (executable) pnpm = executable
+  else {
+    const candidates = paths.flatMap(path => [join(dirname(path), '../pnpm/bin/pnpm.cjs'), join(dirname(path), 'node_modules/pnpm/bin/pnpm.cjs')])
+    const entrypoint = candidates.find(existsSync)
+    if (!entrypoint) throw new Error('Cannot locate the pnpm JavaScript entrypoint. Install pnpm with npm or pnpm/action-setup.')
+    pnpm = process.execPath
+    pnpmPrefix = [entrypoint]
+  }
+}
+await run(pnpm, [...pnpmPrefix, 'run', client ? 'build:client' : 'build'])
 // Through pnpm so electron-builder detects pnpm and the workspace root; the
 // lockfile is at the repository root, not next to apps/desktop/package.json.
 await run(pnpm, [
+  ...pnpmPrefix,
   'exec',
   'electron-builder',
   ...builderArgs,

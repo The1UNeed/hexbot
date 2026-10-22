@@ -1719,8 +1719,14 @@ fn publish_native_inner(
         let selected = selected_native_executable(runtime.parent().unwrap())
             .ok()
             .and_then(|executable| fs::read(executable.with_file_name("manifest.json")).ok())
-            .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
-            .unwrap_or_else(|| json!({}));
+            .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok());
+        #[cfg(windows)]
+        let selected = selected.or_else(|| {
+            fs::read(runtime.join("native-current.json"))
+                .ok()
+                .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+        });
+        let selected = selected.unwrap_or_else(|| json!({}));
         if !allow_equal
             || requested["builtAt"].as_u64().unwrap_or(0)
                 != selected["builtAt"].as_u64().unwrap_or(0)
@@ -1772,7 +1778,7 @@ fn activate_native_locked(native: &Path, version: &str, executable: &Path) -> Re
     common::atomic_write(
         &runtime.join("native-current.json"),
         &serde_json::to_vec(
-            &json!({"version":version,"executable":executable,"previous":previous,"files":manifest["files"]}),
+            &json!({"version":version,"executable":executable,"previous":previous,"files":manifest["files"],"builtAt":manifest["builtAt"]}),
         )
         .unwrap(),
     )?;
@@ -2206,7 +2212,7 @@ async fn native_update(home: &Path, version: &str, service: &Service) -> Result<
             "Windows updates require a ZIP with hexbot.exe",
         ));
     }
-    if manifest["format"] == "zip" {
+    if cfg!(windows) && manifest["format"] == "zip" {
         crate::native_zip::extract_zip(tmp.path(), staging.path(), 4 * 1024 * 1024 * 1024)?;
     } else if manifest["format"] == "tar.gz" {
         extract_archive(tmp.path(), staging.path(), 4 * 1024 * 1024 * 1024)?;
@@ -2216,7 +2222,18 @@ async fn native_update(home: &Path, version: &str, service: &Service) -> Result<
         return Err(Error::new(5243, "unsupported native update format"));
     }
     #[cfg(windows)]
-    crate::setup::verify_runtime_version(staging.path(), version)?;
+    {
+        crate::setup::verify_runtime_version(staging.path(), version)?;
+        let embedded: Value =
+            serde_json::from_slice(&fs::read(staging.path().join("manifest.json"))?)
+                .map_err(|e| Error::new(5243, e.to_string()))?;
+        if embedded["builtAt"] != manifest["builtAt"] {
+            return Err(Error::new(
+                5243,
+                "Native update source chronology does not match its runtime",
+            ));
+        }
+    }
     let staged_executable = staging.path().join(entrypoint);
     if !staged_executable.is_file() {
         return Err(Error::new(5243, "native update entrypoint missing"));

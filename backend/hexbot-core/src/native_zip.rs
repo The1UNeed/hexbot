@@ -31,7 +31,15 @@ pub fn extract_zip(source: &Path, root: &Path, limit: u64) -> io::Result<()> {
                 matches!(part, "" | "." | "..")
                     || part.ends_with(['.', ' '])
                     || part.chars().any(|c| c.is_control())
-                    || matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+                    || matches!(
+                        stem.as_str(),
+                        "CON" | "PRN" | "AUX" | "NUL" | "CLOCK$" | "CONIN$" | "CONOUT$"
+                    )
+                    || ["COM", "LPT"].iter().any(|prefix| {
+                        ["¹", "²", "³"]
+                            .iter()
+                            .any(|suffix| stem == format!("{prefix}{suffix}"))
+                    })
                     || (stem.len() == 4
                         && (stem.starts_with("COM") || stem.starts_with("LPT"))
                         && matches!(stem.as_bytes()[3], b'1'..=b'9'))
@@ -110,5 +118,16 @@ mod tests {
         assert!(extract_zip(&source, &temp.path().join("small"), 1).is_err());
         extract_zip(&source, &temp.path().join("out"), 2).unwrap();
         assert_eq!(fs::read(temp.path().join("out/hexbot.exe")).unwrap(), b"42");
+        let link = temp.path().join("link.zip");
+        let mut zip = zip::ZipWriter::new(fs::File::create(&link).unwrap());
+        zip.add_symlink(
+            "escape",
+            "../outside",
+            zip::write::SimpleFileOptions::default(),
+        )
+        .unwrap();
+        zip.finish().unwrap();
+        assert!(extract_zip(&link, &temp.path().join("linked"), 100).is_err());
+        assert!(!temp.path().join("outside").exists());
     }
 }

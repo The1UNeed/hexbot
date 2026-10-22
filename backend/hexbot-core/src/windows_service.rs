@@ -18,12 +18,12 @@ fn script(home: &Path, service: bool) -> Result<String> {
         .ok_or_else(|| Error::new(4200, "Invalid home path"))?;
     let marker = serde_json::to_string(text).map_err(|e| Error::new(4200, e.to_string()))?;
     Ok(format!(
-        "{MARKER}{marker}\r\n$ErrorActionPreference = 'Stop'\r\n$env:HEXBOT_HOME = {}\r\n$root = [IO.Path]::GetFullPath((Join-Path $env:HEXBOT_HOME 'runtime/native')) + [IO.Path]::DirectorySeparatorChar\r\n$current = Get-Content -LiteralPath (Join-Path $env:HEXBOT_HOME 'runtime/native-current.json') -Raw | ConvertFrom-Json\r\n$exe = [IO.Path]::GetFullPath($current.executable)\r\nif (!$exe.StartsWith($root, [StringComparison]::OrdinalIgnoreCase) -or [IO.Path]::GetFileName($exe) -ne 'hexbot.exe' -or !(Test-Path -LiteralPath $exe -PathType Leaf)) {{ throw 'Invalid native runtime selection' }}\r\n{}\r\nexit $LASTEXITCODE\r\n",
+        "{MARKER}{marker}\r\n$ErrorActionPreference = 'Stop'\r\nfunction Normalize-HexbotPath($p) {{ $v = [IO.Path]::GetFullPath($p); $prefix = [string][char]92 + [char]92 + '?' + [char]92; if ($v.StartsWith($prefix + 'UNC' + [char]92)) {{ return ([string][char]92 + [char]92 + $v.Substring(8)) }}; if ($v.StartsWith($prefix)) {{ return $v.Substring(4) }}; return $v }}\r\n$env:HEXBOT_HOME = {}\r\n$root = (Normalize-HexbotPath (Join-Path $env:HEXBOT_HOME 'runtime/native')) + [IO.Path]::DirectorySeparatorChar\r\n$current = Get-Content -LiteralPath (Join-Path $env:HEXBOT_HOME 'runtime/native-current.json') -Raw | ConvertFrom-Json\r\n$exe = Normalize-HexbotPath $current.executable\r\nif (!$exe.StartsWith($root, [StringComparison]::OrdinalIgnoreCase) -or [IO.Path]::GetFileName($exe) -ne 'hexbot.exe' -or !(Test-Path -LiteralPath $exe -PathType Leaf)) {{ throw 'Invalid native runtime selection' }}\r\n{}\r\nexit $LASTEXITCODE\r\n",
         quote(text),
         if service {
-            "$env:HEXBOT_SUPERVISOR = 'service'\r\ndo {\r\n$current = Get-Content -LiteralPath (Join-Path $env:HEXBOT_HOME 'runtime/native-current.json') -Raw | ConvertFrom-Json\r\n$exe = [IO.Path]::GetFullPath($current.executable)\r\nif (!$exe.StartsWith($root, [StringComparison]::OrdinalIgnoreCase) -or [IO.Path]::GetFileName($exe) -ne 'hexbot.exe') { throw 'Invalid native runtime selection' }\r\n& $exe serve >> (Join-Path $env:HEXBOT_HOME 'logs/service.log') 2>> (Join-Path $env:HEXBOT_HOME 'logs/service-error.log')\r\n} while ($LASTEXITCODE -eq 0)"
+            "$env:HEXBOT_SUPERVISOR = 'service'\r\ndo {\r\n$current = Get-Content -LiteralPath (Join-Path $env:HEXBOT_HOME 'runtime/native-current.json') -Raw | ConvertFrom-Json\r\n$exe = Normalize-HexbotPath $current.executable\r\nif (!$exe.StartsWith($root, [StringComparison]::OrdinalIgnoreCase) -or [IO.Path]::GetFileName($exe) -ne 'hexbot.exe') { throw 'Invalid native runtime selection' }\r\n$ErrorActionPreference = 'Continue'\r\n& $exe serve >> (Join-Path $env:HEXBOT_HOME 'logs/service.log') 2>> (Join-Path $env:HEXBOT_HOME 'logs/service-error.log')\r\n$ErrorActionPreference = 'Stop'\r\n} while ($LASTEXITCODE -eq 0)"
         } else {
-            "& $exe @args"
+            "$ErrorActionPreference = 'Continue'\r\n& $exe @args"
         }
     ))
 }
@@ -71,15 +71,20 @@ fn xml(value: &str) -> String {
         .replace('>', "&gt;")
         .replace('"', "&quot;")
 }
-fn task_xml(file: &Path, sid: &str) -> String {
+fn task_xml(file: &Path, sid: &str, powershell: &Path) -> String {
     format!(
         r#"<?xml version="1.0" encoding="UTF-16"?>
-<Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task"><Triggers><LogonTrigger><Enabled>true</Enabled><UserId>{sid}</UserId></LogonTrigger></Triggers><Principals><Principal id="Owner"><UserId>{sid}</UserId><LogonType>InteractiveToken</LogonType><RunLevel>LeastPrivilege</RunLevel></Principal></Principals><Settings><MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy><DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries><StopIfGoingOnBatteries>false</StopIfGoingOnBatteries><ExecutionTimeLimit>PT0S</ExecutionTimeLimit><StartWhenAvailable>true</StartWhenAvailable></Settings><Actions Context="Owner"><Exec><Command>powershell.exe</Command><Arguments>-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File &quot;{}&quot;</Arguments></Exec></Actions></Task>"#,
+<Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task"><Triggers><LogonTrigger><Enabled>true</Enabled><UserId>{sid}</UserId></LogonTrigger></Triggers><Principals><Principal id="Owner"><UserId>{sid}</UserId><LogonType>InteractiveToken</LogonType><RunLevel>LeastPrivilege</RunLevel></Principal></Principals><Settings><MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy><DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries><StopIfGoingOnBatteries>false</StopIfGoingOnBatteries><ExecutionTimeLimit>PT0S</ExecutionTimeLimit><StartWhenAvailable>true</StartWhenAvailable><RestartOnFailure><Interval>PT1M</Interval><Count>3</Count></RestartOnFailure></Settings><Actions Context="Owner"><Exec><Command>{}</Command><Arguments>-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File &quot;{}&quot;</Arguments></Exec></Actions></Task>"#,
+        xml(&powershell.to_string_lossy()),
         xml(&file.to_string_lossy())
     )
 }
 async fn powershell(script: &str) -> Result<String> {
-    let mut command = Command::new("powershell.exe");
+    #[cfg(windows)]
+    let executable = crate::windows_paths::system_program("WindowsPowerShell/v1.0/powershell.exe")?;
+    #[cfg(not(windows))]
+    let executable = PathBuf::from("powershell.exe");
+    let mut command = Command::new(executable);
     command.args(["-NoProfile", "-NonInteractive", "-Command", script]);
     output(command).await
 }
@@ -111,7 +116,11 @@ async fn task_name() -> Result<(String, String)> {
     Ok((format!("Hexbot-daemon-{sid}"), sid))
 }
 async fn schtasks(args: &[&str]) -> Result<String> {
-    let mut command = Command::new("schtasks.exe");
+    #[cfg(windows)]
+    let executable = crate::windows_paths::system_program("schtasks.exe")?;
+    #[cfg(not(windows))]
+    let executable = PathBuf::from("schtasks.exe");
+    let mut command = Command::new(executable);
     command.args(args);
     output(command).await
 }
@@ -164,7 +173,12 @@ pub async fn run(home: &Path, args: &[String]) -> Result<()> {
         write_owned_script(&file, home, true)?;
         if !no_load {
             let (name, sid) = task_name().await?;
-            let bytes = task_xml(&file, &sid)
+            #[cfg(windows)]
+            let powershell =
+                crate::windows_paths::system_program("WindowsPowerShell/v1.0/powershell.exe")?;
+            #[cfg(not(windows))]
+            let powershell = PathBuf::from("powershell.exe");
+            let bytes = task_xml(&file, &sid, &powershell)
                 .encode_utf16()
                 .flat_map(u16::to_le_bytes)
                 .collect::<Vec<_>>();
@@ -210,7 +224,11 @@ mod tests {
     use super::*;
     #[test]
     fn task_principal_and_context_match_and_commands_do_not_embed_the_user_name() {
-        let task = task_xml(Path::new("C:/User & name/daemon.ps1"), "S-1-5-21-123");
+        let task = task_xml(
+            Path::new("C:/User & name/daemon.ps1"),
+            "S-1-5-21-123",
+            Path::new("C:/Windows/System32/WindowsPowerShell/v1.0/powershell.exe"),
+        );
         assert!(task.contains("Principal id=\"Owner\""));
         assert!(task.contains("Actions Context=\"Owner\""));
         assert_eq!(task.matches("<UserId>S-1-5-21-123</UserId>").count(), 2);

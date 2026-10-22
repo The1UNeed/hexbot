@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { cp, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
@@ -22,6 +22,13 @@ describe.skipIf(process.platform !== 'win32' || !process.env.HEXBOT_NATIVE_TEST_
       const { promisify } = await import('node:util')
       expect((await promisify(execFile)(exe, ['version'])).stdout.trim()).toBe(manifest.version)
       await performBootstrap({ appIsPackaged: true, appVersion: manifest.version, resourcesPath: dirname(bundle), platform: 'win32', arch: 'x64' })
+      expect(nativeServiceExecutable()).toBe(exe)
+      await expect(readFile(join(process.env.HEXBOT_HOME!, 'runtime/native-executable.exe'))).rejects.toThrow()
+      const older = join(root, 'older runtime')
+      await cp(bundle, older, { recursive: true })
+      const metadata = JSON.parse(await readFile(join(older, 'manifest.json'), 'utf8')) as Record<string, unknown>
+      await writeFile(join(older, 'manifest.json'), JSON.stringify({ ...metadata, builtAt: 1 }))
+      await expect(promisify(execFile)(join(older, 'hexbot.exe'), ['setup', '--activate', '--no-code-tools', '--json'])).rejects.toThrow()
       expect(nativeServiceExecutable()).toBe(exe)
     } finally {
       if (previous.home === undefined) delete process.env.HEXBOT_HOME; else process.env.HEXBOT_HOME = previous.home

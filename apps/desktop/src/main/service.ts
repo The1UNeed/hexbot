@@ -20,6 +20,10 @@ const options = (): ServiceFileOptions => ({
 })
 
 export async function installService(): Promise<void> {
+  if (process.platform === 'win32') {
+    await exec(hexbotExecutable(), ['service', 'install'], { windowsHide: true })
+    return
+  }
   const file = servicePath()
   await mkdir(dirname(file), { recursive: true })
   await mkdir(join(hexbotHome(), 'logs'), { recursive: true })
@@ -43,6 +47,10 @@ export async function uninstallService(
   file = servicePath(), targetPlatform = process.platform,
   run: (command: string, args: string[]) => Promise<unknown> = exec
 ): Promise<void> {
+  if (targetPlatform === 'win32') {
+    await run(hexbotExecutable(), ['service', 'uninstall'])
+    return
+  }
   if (targetPlatform === 'darwin') {
     let stopped = false
     for (const domain of launchdDomains()) {
@@ -67,6 +75,13 @@ export async function serviceStatus(
   file = servicePath(), targetPlatform = process.platform,
   run: (command: string, args: string[]) => Promise<unknown> = exec
 ): Promise<{ installed: boolean; running: boolean }> {
+  if (targetPlatform === 'win32') {
+    try {
+      const output = await run(hexbotExecutable(), ['service', 'status', '--json']) as { stdout: string }
+      const status = JSON.parse(output.stdout) as { installed: boolean; running: boolean }
+      return { installed: status.installed, running: status.running }
+    } catch { return { installed: false, running: false } }
+  }
   if (targetPlatform === 'darwin') {
     const content = await readFile(file, 'utf8').catch(() => '')
     const homes = [...content.matchAll(/<key>HEXBOT_HOME<\/key>\s*<string>([^<]*)<\/string>/g)]

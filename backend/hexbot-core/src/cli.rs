@@ -293,7 +293,9 @@ async fn input(prompt: String) -> Result<String> {
     }
     #[cfg(windows)]
     {
-        let mut command = tokio::process::Command::new("powershell.exe");
+        let mut command = tokio::process::Command::new(crate::windows_paths::system_program(
+            "WindowsPowerShell/v1.0/powershell.exe",
+        )?);
         command
             .args([
                 "-NoProfile",
