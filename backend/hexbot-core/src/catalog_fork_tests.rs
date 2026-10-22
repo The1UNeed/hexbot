@@ -92,6 +92,7 @@ fn gone(h: &Path, target: &str) {
         ("native_prompt_intents", "session_id"),
         ("native_summaries", "session_id"),
         ("native_history_versions", "session_id"),
+        ("native_history_rewrites", "session_id"),
         ("native_quarantine", "session_id"),
         ("native_unrecovered", "session_id"),
         ("native_pending_chat_forks", "target"),
@@ -512,6 +513,7 @@ fn returned_builder_and_catalog_errors_share_durable_caller_cleanup() {
             ("native_usage", "session_id"),
             ("native_fresh", "session_id"),
             ("native_history_versions", "session_id"),
+            ("native_history_rewrites", "session_id"),
         ] {
             assert_eq!(
                 store::open(h)

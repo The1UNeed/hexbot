@@ -4,6 +4,7 @@ import { useEffect, useRef } from 'react'
 import { ChatChooser } from '../app/chat-chooser'
 import { ConnectionLost, useConnectionLost } from '../app/connection-lost'
 import { UpdateInstalling, useUpdateInstalling } from '../app/update-installing'
+import { cancelConfirm, ConfirmHost } from '../components/ui/confirm'
 import { userMemoryGet } from '../lib/api'
 import { getBridge, hasLocalRuntime } from '../lib/bridge'
 import { getSupervisor, setLocalDaemonPort } from '../lib/connection'
@@ -23,10 +24,14 @@ function RootLayout() {
   const status = useConnection(state => state.status)
   const attempt = useConnection(state => state.attempt)
   const daemon = useConnection(state => state.daemon)
+  const epoch = useConnection(state => state.epoch)
+  const location = useRouterState({ select: state => state.location })
   const theme = useUi(state => state.theme)
   const lost = useConnectionLost()
   const installing = useUpdateInstalling()
 
+  // A question belongs to the page and daemon that opened it.
+  useEffect(() => cancelConfirm, [location, target, epoch])
   useEffect(() => applyTheme(theme), [theme])
   useEffect(() => {
     if (status === 'unauthorized') {
@@ -122,6 +127,7 @@ function RootLayout() {
       <div className="contents" inert={lost || installing}>
         <Outlet />
         <ChatChooser />
+        <ConfirmHost blocked={lost || installing} />
       </div>
       {lost && !installing ? <ConnectionLost /> : null}
       {installing ? <UpdateInstalling /> : null}

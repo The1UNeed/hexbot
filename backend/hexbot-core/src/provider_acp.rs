@@ -53,6 +53,7 @@ pub async fn cancel(home: &Path, stored: &str) {
 /// the child never receives daemon or provider secrets.
 /// Dropping this future also kills the child; cancellation explicitly sends ACP session/cancel.
 pub async fn complete(home: &Path, bot: &str, stored: &str, args: &Value) -> Result<Value> {
+    crate::credentials::require_supported_execution()?;
     let cwd = crate::native_tools::section_workdir(home, bot, stored)?;
     complete_in_dir(home, bot, stored, args, &cwd, false).await
 }
@@ -77,6 +78,7 @@ async fn complete_in_dir(
     cwd: &Path,
     reviewer: bool,
 ) -> Result<Value> {
+    crate::credentials::require_supported_execution()?;
     common::identifier(bot)?;
     common::identifier(stored)?;
     let mut env = common::env_values(home)?;

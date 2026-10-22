@@ -1,5 +1,8 @@
 use super::*;
 
+#[path = "runtime_history_tests.rs"]
+mod history_tests;
+
 #[path = "runtime_stop_tests.rs"]
 mod stop_tests;
 
@@ -4150,6 +4153,63 @@ async fn code_runs_sandboxed_in_auto_asks_in_manual_and_keeps_its_floor() {
     runtime.shutdown().await;
 }
 
+// A fresh process avoids both environment races and the cached sandbox probe.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn bypass_code_without_bubblewrap_does_not_request_approval() {
+    const CHILD: &str = "HEXBOT_TEST_BYPASS_WITHOUT_BWRAP";
+    if std::env::var_os(CHILD).is_none() {
+        let bin = tempfile::tempdir().unwrap();
+        for name in ["node", "python3"] {
+            let executable = common::command_path(name, Path::new("/")).expect(name);
+            std::os::unix::fs::symlink(executable, bin.path().join(name)).unwrap();
+        }
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "runtime::lifecycle_tests::bypass_code_without_bubblewrap_does_not_request_approval", "--nocapture"])
+            .env(CHILD, "1")
+            .env("PATH", bin.path())
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
+        return;
+    }
+    assert!(!crate::credentials::isolation_available());
+    let (home, runtime, hub) = setup();
+    let s = runtime.open_session("alice", "owl", "first").await.unwrap();
+    db::open(home.path())
+        .unwrap()
+        .execute("UPDATE bots SET approval_mode='off'", [])
+        .unwrap();
+    let mut events = hub.subscribe();
+    let result = tokio::time::timeout(
+        Duration::from_secs(5),
+        runtime.tool(
+            &s,
+            "execute_code",
+            &json!({"code":"print('Bypass without OS isolation')"}),
+        ),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert!(
+        result["output"]
+            .as_str()
+            .unwrap()
+            .contains("Bypass without OS isolation")
+    );
+    while let Ok(event) = events.try_recv() {
+        assert_ne!(event.frame["params"]["type"], "approval.request");
+    }
+    runtime.shutdown().await;
+}
+
 #[tokio::test]
 async fn provider_keys_use_auth_file_instead_of_process_environment() {
     let (home, runtime, _) = setup();
@@ -5839,6 +5899,10 @@ async fn retained_delete_closes_processes_and_rejects_late_events_and_delegated_
             json!({"role":"user","text":"Keep this"}),
         )
         .unwrap();
+        store::open(home.path()).unwrap().execute(
+            "UPDATE native_messages SET message_json=json_set(message_json,'$.text','Edited') WHERE session_id='first'", [],
+        ).unwrap();
+        let (_, cursor, _) = store::history_since(home.path(), "first", None).unwrap();
         runtime.retire_stored("alice", "first").await.unwrap();
         home.peer_thread("alice", "first");
         crate::catalog::call(
@@ -5850,6 +5914,13 @@ async fn retained_delete_closes_processes_and_rejects_late_events_and_delegated_
         .unwrap()
         .unwrap();
         let before = store::history(home.path(), "first").unwrap();
+        if !purge {
+            let (rows, retained_cursor, delta) =
+                store::history_since(home.path(), "first", Some(&cursor)).unwrap();
+            assert!(delta);
+            assert!(rows.is_empty());
+            assert_eq!(retained_cursor, cursor);
+        }
         runtime
             .event(
                 &parent,

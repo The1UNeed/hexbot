@@ -306,8 +306,12 @@ export function roomsAddMember(id: string, bot: string): Promise<{ room: Room }>
   return rpcCall<{ room: Room }>('hexbot.rooms.add_member', { bot, id })
 }
 
-export function roomsRemoveMember(id: string, bot: string): Promise<{ room: Room }> {
-  return rpcCall<{ room: Room }>('hexbot.rooms.remove_member', { bot, id })
+export function roomsRemoveMember(
+  id: string,
+  bot: string,
+  keepRoom: boolean
+): Promise<{ room: Room }> {
+  return rpcCall<{ room: Room }>('hexbot.rooms.remove_member', { bot, id, keep_room: keepRoom })
 }
 
 /** Only offered when a legacy daemon returns a room owned by someone else. */

@@ -3,6 +3,9 @@
 //! private extension reads for Pi's bash and file tools; the parity test below keeps
 //! the two sandbox builders identical.
 use crate::{Error, Result};
+#[cfg(windows)]
+#[path = "windows_sandbox.rs"]
+mod windows_sandbox;
 use serde::Deserialize;
 use std::{
     collections::{HashMap, HashSet, VecDeque},
@@ -22,11 +25,16 @@ struct Policy {
     secret_file: String,
     #[serde(rename = "secretFileExample")]
     secret_file_example: String,
+    #[serde(rename = "managedRuntime")]
+    managed_runtime: Vec<String>,
     skip: Vec<String>,
     #[serde(rename = "readDeny")]
     read_deny: Vec<String>,
     write: WritePolicy,
     environment: Vec<String>,
+    #[cfg(windows)]
+    #[serde(rename = "windowsEnvironment")]
+    windows_environment: Vec<String>,
     #[serde(rename = "displayEnvironment")]
     display_environment: Vec<String>,
 }
@@ -90,11 +98,11 @@ fn home_credential_name(home: &Path, path: &Path) -> bool {
     })
 }
 pub fn credential_name(home: &Path, path: &Path) -> bool {
-    if std::env::var_os("HOME").is_some_and(|user| {
-        user_credential_name(Path::new(&user), path)
-            || ssh_credential_name(Path::new(&user), path)
-            || store_credential_name(path)
-    }) {
+    if user_homes()
+        .iter()
+        .any(|user| user_credential_name(user, path) || ssh_credential_name(user, path))
+        || store_credential_name(path)
+    {
         return true;
     }
     if read_denied().iter().any(|store| under(path, store)) {
@@ -127,7 +135,7 @@ fn store_credential_name(path: &Path) -> bool {
         .write
         .deny
         .iter()
-        .filter_map(|entry| policy_root(entry))
+        .flat_map(|entry| policy_roots(entry))
         .any(|store| {
             under(path, &store) || std::fs::canonicalize(&store).is_ok_and(|p| under(path, &p))
         })
@@ -147,6 +155,7 @@ fn ssh_credential_name(user: &Path, path: &Path) -> bool {
                         .is_some_and(private_key))
         })
 }
+#[cfg(unix)]
 fn entries(dir: &Path) -> impl Iterator<Item = std::fs::DirEntry> {
     std::fs::read_dir(dir).into_iter().flatten().flatten()
 }
@@ -162,14 +171,40 @@ pub enum WriteTier {
 }
 pub const NEVER_WRITTEN: &str =
     "Credential and system configuration files are never written by tools.";
-/// A write policy entry is absolute or relative to the user's home; `None`
-/// when it is relative and HOME is unset.
-fn policy_root(entry: &str) -> Option<PathBuf> {
-    if entry.starts_with('/') {
-        Some(PathBuf::from(entry))
+/// Windows programs can use USERPROFILE even when Git Bash sets a different
+/// HOME. Protect both rather than trusting one spelling of the user's home.
+fn user_homes() -> Vec<PathBuf> {
+    let mut homes = vec![];
+    for name in if cfg!(windows) {
+        &["USERPROFILE", "HOME"][..]
     } else {
-        std::env::var_os("HOME").map(|user| PathBuf::from(user).join(entry))
+        &["HOME"][..]
+    } {
+        if let Some(path) = std::env::var_os(name).filter(|path| !path.is_empty()) {
+            let path = PathBuf::from(path);
+            if !homes.contains(&path) {
+                homes.push(path);
+            }
+        }
     }
+    homes
+}
+/// A policy entry is absolute or relative to every applicable user home.
+fn policy_roots(entry: &str) -> Vec<PathBuf> {
+    if Path::new(entry).is_absolute() {
+        vec![PathBuf::from(entry)]
+    } else {
+        user_homes().iter().map(|user| user.join(entry)).collect()
+    }
+}
+/// A managed runtime or selection path, including a parent that could replace
+/// one. Callers check both lexical and resolved paths and homes. Output grants
+/// never override this write denial; Bypass deliberately skips it.
+pub(crate) fn managed_runtime_path(home: &Path, path: &Path) -> bool {
+    policy().managed_runtime.iter().any(|local| {
+        let managed = home.join(local);
+        under(path, &managed) || under(&managed, path)
+    })
 }
 /// The file tools' tier for a host path.
 pub fn host_write_tier(path: &Path) -> Option<WriteTier> {
@@ -180,7 +215,7 @@ pub fn host_write_tier(path: &Path) -> Option<WriteTier> {
         (WriteTier::Ask, &write.ask),
     ];
     for (tier, entries) in tiers {
-        for root in entries.iter().filter_map(|entry| policy_root(entry)) {
+        for root in entries.iter().flat_map(|entry| policy_roots(entry)) {
             if under(path, &root)
                 || std::fs::canonicalize(&root).is_ok_and(|root| under(path, &root))
             {
@@ -190,6 +225,7 @@ pub fn host_write_tier(path: &Path) -> Option<WriteTier> {
     }
     None
 }
+#[cfg(unix)]
 fn secret_paths(home: &Path) -> Vec<PathBuf> {
     type Cache = HashMap<PathBuf, (Instant, Vec<PathBuf>)>;
     static CACHE: OnceLock<Mutex<Cache>> = OnceLock::new();
@@ -232,8 +268,7 @@ fn secret_paths(home: &Path) -> Vec<PathBuf> {
         }
     }
     walk(home, home, &mut paths);
-    if let Some(user) = std::env::var_os("HOME") {
-        let user = PathBuf::from(user);
+    for user in user_homes() {
         walk_ssh(&user.join(".ssh"), &mut paths);
         for local in &policy().user {
             add(user.join(local), &mut paths);
@@ -306,13 +341,29 @@ pub fn isolation_available() -> bool {
     sandbox().is_some()
 }
 /// Approval card text for code that would run without a sandbox.
+#[cfg(not(windows))]
 pub const UNSANDBOXED_REASON: &str = "Hexbot has no OS sandbox on this system, so this code can read any file you can, including credentials. Install bubblewrap and restart the daemon to restore isolation.";
+#[cfg(windows)]
+pub const UNSANDBOXED_REASON: &str = windows_sandbox::UNAVAILABLE;
+
+/// Auto/Manual execution must not turn missing Windows containment into an
+/// approval that runs with the host user's permissions. Bypass callers do not
+/// use this helper or isolated_command.
+pub fn require_supported_execution() -> Result<()> {
+    #[cfg(windows)]
+    return windows_sandbox::require().map_err(|error| Error::new(4302, error.to_string()));
+    #[cfg(not(windows))]
+    Ok(())
+}
 pub fn warn_unavailable_isolation() {
     if isolation_available() {
         return;
     }
     static WARN: std::sync::Once = std::sync::Once::new();
     WARN.call_once(|| {
+        #[cfg(windows)]
+        eprintln!("{}", windows_sandbox::UNAVAILABLE);
+        #[cfg(not(windows))]
         eprintln!(
             "Hexbot has no OS sandbox on this system (bubblewrap is missing or cannot start). Shell commands and scripts can read any file you can. Manual and Auto ask before every shell command and code run, and scheduled scripts refuse to run. Install bubblewrap and restart the daemon to restore isolation."
         )
@@ -320,6 +371,7 @@ pub fn warn_unavailable_isolation() {
 }
 /// Unattended scripts always require OS isolation.
 pub fn require_isolation() -> Result<()> {
+    require_supported_execution()?;
     if isolation_available() {
         return Ok(());
     }
@@ -328,10 +380,12 @@ pub fn require_isolation() -> Result<()> {
         "No OS sandbox is available, so scheduled scripts cannot run. Install bubblewrap and restart the daemon.",
     ))
 }
+#[cfg(unix)]
 fn quoted(path: impl AsRef<str>) -> String {
     serde_json::to_string(path.as_ref()).unwrap()
 }
 /// The extension's escape set, so the profiles compare equal.
+#[cfg(unix)]
 fn regex_escape(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     for c in text.chars() {
@@ -343,6 +397,7 @@ fn regex_escape(text: &str) -> String {
     out
 }
 // Seatbelt regexes use character pairs for the platform's case policy.
+#[cfg(unix)]
 fn sandbox_regex(source: &str) -> String {
     source
         .chars()
@@ -355,6 +410,7 @@ fn sandbox_regex(source: &str) -> String {
         })
         .collect()
 }
+#[cfg(unix)]
 struct Layout {
     roots: Vec<PathBuf>,
     paths: Vec<PathBuf>,
@@ -367,6 +423,7 @@ struct Layout {
 /// workspace (none in Manual) and to a few device files, and shell profiles
 /// and login items read-only even inside it. On Linux /run and /tmp are
 /// private. Matches isolation.ts.
+#[cfg(unix)]
 const DEVICES: [&str; 5] = [
     "/dev/null",
     "/dev/zero",
@@ -374,12 +431,14 @@ const DEVICES: [&str; 5] = [
     "/dev/stderr",
     "/dev/dtracehelper",
 ];
+#[cfg(unix)]
 struct Confinement {
     writable: Vec<PathBuf>,
     config: Vec<PathBuf>,
     protected: WorkspaceProtected,
     readable: Vec<PathBuf>,
 }
+#[cfg(unix)]
 fn confine(workspace: &[PathBuf], search: &[PathBuf]) -> Result<Confinement> {
     let mut writable: Vec<PathBuf> = vec![];
     for path in workspace
@@ -395,7 +454,7 @@ fn confine(workspace: &[PathBuf], search: &[PathBuf]) -> Result<Confinement> {
         .write
         .ask
         .iter()
-        .filter_map(|entry| policy_root(entry))
+        .flat_map(|entry| policy_roots(entry))
     {
         let real = real_root(&root)?;
         for path in [root, real] {
@@ -443,13 +502,14 @@ fn real_root_after(path: &Path, hops: usize) -> std::io::Result<PathBuf> {
     }
 }
 /// Credential stores are read-only for every program a command starts.
+#[cfg(unix)]
 fn denied_writes() -> Result<Vec<PathBuf>> {
     let mut denied: Vec<PathBuf> = vec![];
     for root in policy()
         .write
         .deny
         .iter()
-        .filter_map(|entry| policy_root(entry))
+        .flat_map(|entry| policy_roots(entry))
     {
         let real = real_root(&root)?;
         for path in [root, real] {
@@ -464,9 +524,9 @@ fn denied_writes() -> Result<Vec<PathBuf>> {
 /// Manual and Auto and to the file tools; an approved full-access command may
 /// read them.
 fn read_denied() -> Vec<PathBuf> {
-    type ReadCache = HashMap<OsString, (Instant, Vec<PathBuf>)>;
+    type ReadCache = HashMap<Vec<PathBuf>, (Instant, Vec<PathBuf>)>;
     static CACHE: OnceLock<Mutex<ReadCache>> = OnceLock::new();
-    let user = std::env::var_os("HOME").unwrap_or_default();
+    let user = user_homes();
     let mut cache = CACHE.get_or_init(Default::default).lock().unwrap();
     if let Some((at, paths)) = cache.get(&user)
         && at.elapsed() < Duration::from_secs(5)
@@ -477,7 +537,7 @@ fn read_denied() -> Vec<PathBuf> {
     for root in policy()
         .read_deny
         .iter()
-        .filter_map(|entry| policy_root(entry))
+        .flat_map(|entry| policy_roots(entry))
     {
         let real = real_root(&root).unwrap_or_else(|_| root.clone());
         for path in [root, real] {
@@ -500,9 +560,11 @@ fn read_denied() -> Vec<PathBuf> {
 const WORKSPACE_DEPTH: usize = 3;
 const WORKSPACE_DIRS: usize = 1000;
 const WORKSPACE_ENTRIES: usize = 50;
+#[cfg(unix)]
 fn git_dir_regex() -> String {
     format!("/{}(/|$)", regex_escape(".git"))
 }
+#[cfg(unix)]
 const SCAN_REASON: &str = "The workspace safety scan exceeded its directory budget, so this code cannot run in the sandbox. Choose a smaller workspace.";
 const SCAN_FILE_REASON: &str = "The workspace safety scan reached its directory budget, so Git protection is partial. Approve this file change only if you trust its destination.";
 /// Paths in the order they were found, each once.
@@ -554,7 +616,9 @@ fn within(path: &Path, roots: &[PathBuf]) -> bool {
 /// only when they are small regular files: a FIFO or device would stall the
 /// daemon. Anything else stays locked but unread, which Git cannot load hooks
 /// from either. Matches isolation.ts.
+#[cfg(unix)]
 const GIT_FILE_BYTES: u64 = 1 << 20;
+#[cfg(unix)]
 const GIT_TIMEOUT: Duration = Duration::from_secs(5);
 /// Includes are followed at most this deep. A scan reads each config file once
 /// and visits it once per worktree. Beyond the repository and user configs it
@@ -566,6 +630,13 @@ const GIT_INCLUDE_DEPTH: usize = 10;
 const GIT_INCLUDES: usize = 64;
 const GIT_SCAN_INCLUDES: usize = 256;
 const GIT_CONFIG_STEPS: usize = 10000;
+#[cfg(windows)]
+fn regular_file(_path: &Path) -> Result<Option<Vec<u8>>> {
+    // Opening a named pipe or device can block before metadata is available.
+    // No Windows scan is supported until handle-based disk-only opens exist.
+    Err(Error::new(5240, windows_sandbox::UNAVAILABLE))
+}
+#[cfg(unix)]
 fn regular_file(path: &Path) -> Result<Option<Vec<u8>>> {
     use std::io::Read;
     use std::os::unix::fs::OpenOptionsExt;
@@ -603,7 +674,18 @@ fn regular_file(path: &Path) -> Result<Option<Vec<u8>>> {
 /// Hook settings by a hash of the config contents, so unchanged repositories
 /// cost no Git process. The least recently used entry goes first, and the
 /// cache holds more configs than a scan of the largest workspace reads.
+#[cfg(unix)]
 const GIT_CACHE: usize = 2048;
+#[cfg(windows)]
+fn config_entries(_text: &[u8]) -> Result<Vec<(String, String)>> {
+    // There is no managed, trusted Git on Windows yet. Never fall back to PATH,
+    // including the parent PATH Rust searches after env_clear on Windows.
+    Err(Error::new(
+        5240,
+        "Windows Git safety scanning is unavailable: no trusted Git executable is configured.",
+    ))
+}
+#[cfg(unix)]
 fn config_entries(text: &[u8]) -> Result<Vec<(String, String)>> {
     use sha2::Digest;
     type ConfigCache = (u64, HashMap<[u8; 32], (u64, Vec<(String, String)>)>);
@@ -1088,6 +1170,7 @@ fn because(scan: &WorkspaceProtected) -> String {
         .unwrap_or_default()
 }
 pub(crate) fn git_write_protected(path: &Path, roots: &[PathBuf]) -> Result<bool> {
+    require_supported_execution()?;
     if path.ancestors().any(git_directory) {
         return Ok(true);
     }
@@ -1141,6 +1224,7 @@ pub(crate) fn git_write_protected(path: &Path, roots: &[PathBuf]) -> Result<bool
 /// Git metadata inside a writable root could be replaced, which bubblewrap
 /// cannot prevent, so that stops it too; Seatbelt locks the link itself.
 /// Matches isolation.ts, which asks for an approved full_access retry instead.
+#[cfg(unix)]
 fn missing_git_reason(missing: &[(PathBuf, bool)]) -> String {
     let quote = |path: &PathBuf| crate::install_ownership::shell_quote(&path.to_string_lossy());
     let one = missing.len() == 1;
@@ -1196,6 +1280,7 @@ fn missing_git_reason(missing: &[(PathBuf, bool)]) -> String {
         create.join(" && ")
     )
 }
+#[cfg(unix)]
 fn linked_git_reason(links: &[PathBuf]) -> String {
     let one = links.len() == 1;
     format!(
@@ -1214,6 +1299,7 @@ fn linked_git_reason(links: &[PathBuf]) -> String {
         if one { "it points" } else { "they point" }
     )
 }
+#[cfg(unix)]
 fn locked_git(scan: &WorkspaceProtected, roots: &[PathBuf], pin: bool) -> Result<Vec<PathBuf>> {
     let mut locked = PathSet::default();
     let mut missing: Vec<(PathBuf, bool)> = vec![];
@@ -1283,6 +1369,7 @@ fn locked_git(scan: &WorkspaceProtected, roots: &[PathBuf], pin: bool) -> Result
         })
         .collect())
 }
+#[cfg(unix)]
 fn path_ancestors(paths: &[PathBuf]) -> Vec<PathBuf> {
     let mut ancestors = vec![];
     for path in paths {
@@ -1297,6 +1384,7 @@ fn path_ancestors(paths: &[PathBuf]) -> Vec<PathBuf> {
 /// Renaming an ancestor would carry a nested store (~/.config/gh) out from under
 /// its rule, so the directories between the home and a store cannot be renamed
 /// or removed either; creating siblings inside them stays allowed.
+#[cfg(unix)]
 fn store_ancestors(denied: &[PathBuf]) -> Vec<PathBuf> {
     let Some(user) = std::env::var_os("HOME").map(PathBuf::from) else {
         return vec![];
@@ -1317,10 +1405,11 @@ fn store_ancestors(denied: &[PathBuf]) -> Vec<PathBuf> {
     }
     ancestors
 }
-#[cfg(test)]
+#[cfg(all(test, unix))]
 fn layout(home: &Path, writable: &[PathBuf], workspace: Option<&[PathBuf]>) -> Result<Layout> {
     layout_scanned(home, writable, workspace, workspace.unwrap_or_default())
 }
+#[cfg(unix)]
 fn layout_scanned(
     home: &Path,
     writable: &[PathBuf],
@@ -1333,6 +1422,7 @@ fn layout_scanned(
         .iter()
         .filter_map(|p| std::fs::canonicalize(p).ok())
         .filter(|p| roots.iter().any(|root| p != root && p.starts_with(root)))
+        .filter(|p| !roots.iter().any(|root| managed_runtime_path(root, p)))
         .collect();
     Ok(Layout {
         roots,
@@ -1344,6 +1434,7 @@ fn layout_scanned(
             .transpose()?,
     })
 }
+#[cfg(unix)]
 fn sandbox_profile(layout: &Layout) -> String {
     let mut filters = vec![];
     if let Some(user) = std::env::var_os("HOME") {
@@ -1477,6 +1568,7 @@ fn sandbox_profile(layout: &Layout) -> String {
         filters.join(" ")
     )
 }
+#[cfg(unix)]
 fn bwrap_arguments(layout: &Layout) -> Result<Vec<OsString>> {
     if let Some(confine) = &layout.confine {
         if confine.protected.exhausted {
@@ -1613,7 +1705,9 @@ fn bwrap_arguments(layout: &Layout) -> Result<Vec<OsString>> {
 }
 /// Neither sandbox caps process creation, so a workspace program may start at
 /// most this many more processes than the user already runs.
+#[cfg(unix)]
 const PROCESS_HEADROOM: usize = 512;
+#[cfg(unix)]
 fn process_limit() -> Option<usize> {
     // SAFETY: getuid has no preconditions and cannot fail.
     let uid = unsafe { libc::getuid() };
@@ -1658,6 +1752,7 @@ pub fn isolated_command(
     isolated_command_with_outputs(home, program, writable, confine, &[])
 }
 /// Only approved execute_code calls grant an output exception in Manual mode.
+#[cfg(unix)]
 pub(crate) fn isolated_command_with_outputs(
     home: &Path,
     program: &str,
@@ -1722,9 +1817,30 @@ pub(crate) fn isolated_command_with_outputs(
     }
     Ok(command)
 }
+#[cfg(windows)]
+pub(crate) fn isolated_command_with_outputs(
+    _home: &Path,
+    _program: &str,
+    _writable: &[PathBuf],
+    _confine: Confine,
+    _approved_outputs: &[PathBuf],
+) -> Result<tokio::process::Command> {
+    // Refuse before directory walks, environment processing or process creation.
+    Err(Error::new(4302, windows_sandbox::UNAVAILABLE))
+}
 /// Variables every child may inherit. Provider keys, connector secrets, and runtime
 /// injection variables (NODE_OPTIONS, BASH_ENV) are never on the list.
 pub fn inherited_environment(name: &str) -> bool {
+    // Windows children need OS and profile locations even with env_clear().
+    // This extends only the location allowlist, never provider/injection keys.
+    #[cfg(windows)]
+    if policy()
+        .windows_environment
+        .iter()
+        .any(|allowed| allowed.eq_ignore_ascii_case(name))
+    {
+        return true;
+    }
     name.to_ascii_uppercase().starts_with("LC_")
         || policy()
             .environment
@@ -1785,9 +1901,49 @@ pub fn check_code(code: &str) -> Result<()> {
     }
     Ok(())
 }
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn managed_runtime_outputs_never_reopen_runtime_or_selection() {
+        if !isolation_available() {
+            return;
+        }
+        let home = tempfile::tempdir().unwrap();
+        let mut outputs = vec![];
+        let mut files = vec![];
+        for local in &policy().managed_runtime {
+            let path = if local.ends_with(".json") {
+                home.path().join(local)
+            } else {
+                home.path().join(local).join("probe")
+            };
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, "keep").unwrap();
+            outputs.push(path.parent().unwrap().to_owned());
+            files.push(path);
+        }
+        let script = files
+            .iter()
+            .map(|path| {
+                format!(
+                    "if (echo changed > '{}') 2>/dev/null; then exit 23; fi",
+                    path.display()
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("; ");
+        let output = isolated_command(home.path(), "/bin/sh", &outputs, Confine::No)
+            .unwrap()
+            .args(["-c", &script])
+            .output()
+            .await
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+        for path in files {
+            assert_eq!(std::fs::read_to_string(path).unwrap(), "keep");
+        }
+    }
     /// A repository as `git init` makes it (HEAD, objects, refs, config), with
     /// settings added to its config.
     fn git_init(dir: &Path, settings: &[(&str, &str)]) {
@@ -1834,6 +1990,9 @@ mod tests {
             "OPENAI_API_KEY",
             "SystemRoot",
             "WINDIR",
+            "USERPROFILE",
+            "APPDATA",
+            "LOCALAPPDATA",
             "PATHEXT",
             "COMSPEC",
             "DISPLAY",
