@@ -980,6 +980,14 @@ fn interrupted_task_install_uninstalls_owned_files_when_the_task_is_absent() {
     // Control: missing-script repair with an untouched running definition.
     // It must reap the actual old PID and release the home before replacement.
     lifetime("before-plain-missing-script-repair", &first_handle);
+    assert!(
+        first_handle.alive(),
+        "Plain repair must begin with a live old daemon"
+    );
+    assert!(
+        !windows_task::home_idle(&home).unwrap(),
+        "Plain repair must begin with the old daemon holding its home"
+    );
     let plain = service(&home, "install");
     lifetime("after-plain-missing-script-repair", &first_handle);
     assert!(
@@ -1021,6 +1029,10 @@ fn interrupted_task_install_uninstalls_owned_files_when_the_task_is_absent() {
     assert!(
         first_handle.alive(),
         "Definition replacement itself ended the fixture daemon; not a successful repair"
+    );
+    assert!(
+        !windows_task::home_idle(&home).unwrap(),
+        "Definition repair must begin with the old daemon holding its home"
     );
     let output = service(&home, "install");
     lifetime("after-definition-repair", &first_handle);
