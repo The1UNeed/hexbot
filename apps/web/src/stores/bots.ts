@@ -74,8 +74,9 @@ export const useBots = create<BotsState>((set, get) => ({
 
       const listed = authority.list(ticket, result.bots ?? [], get().byName, bot => bot.name)
 
-      if (listed)
-        {set({ ...indexBots(listed), answers: authority.outcomes(), loaded: true, loading: false })}
+      if (listed) {
+        set({ ...indexBots(listed), answers: authority.outcomes(), loaded: true, loading: false })
+      }
     } catch (error) {
       if (!current()) {
         return
@@ -116,7 +117,10 @@ export const useBots = create<BotsState>((set, get) => ({
     const same = authority.session()
     const result = await botsCreate(input)
 
-    if (!connected() || !same()) {return result}
+    if (!connected() || !same()) {
+      return result
+    }
+
     authority.touch(result.bot.name, 'present')
     set(state => ({
       answers: authority.outcomes(),
@@ -134,7 +138,10 @@ export const useBots = create<BotsState>((set, get) => ({
     const same = authority.session()
     const { bot } = await botsUpdate(name, patch)
 
-    if (!connected() || !same()) {return bot}
+    if (!connected() || !same()) {
+      return bot
+    }
+
     authority.touch(name, 'present')
 
     set(state => ({ answers: authority.outcomes(), byName: { ...state.byName, [bot.name]: bot } }))
@@ -147,7 +154,10 @@ export const useBots = create<BotsState>((set, get) => ({
     const same = authority.session()
     await botsDelete(name)
 
-    if (!connected() || !same()) {return}
+    if (!connected() || !same()) {
+      return
+    }
+
     authority.touch(name, 'gone')
 
     // `/` reopens the last section; one of this bot's would show a bot that is gone.

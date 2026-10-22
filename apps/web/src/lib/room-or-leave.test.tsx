@@ -202,3 +202,62 @@ it('concurrent settings hooks do not turn a superseded open into missing members
   await waitFor(() => expect(useRooms.getState().byId.r).toEqual(room))
   expect(navigate).not.toHaveBeenCalled()
 })
+
+it('settings observes a newer gone open after its own lookup was discarded', async () => {
+  let finish!: (value: { room: Room }) => void
+  let reject!: (error: Error) => void
+
+  const old = new Promise<{ room: Room }>(yes => {
+    finish = yes
+  })
+
+  const latest = new Promise<{ room: Room }>((_yes, no) => {
+    reject = no
+  })
+
+  let gets = 0
+  setActiveRpc({
+    call: (method: string) =>
+      method === 'hexbot.rooms.get'
+        ? ++gets === 1
+          ? old
+          : latest
+        : Promise.resolve({ events: [] })
+  } as never)
+  useConnection.setState({ status: 'connected', epoch: 'ready' })
+  renderHook(() => useRoomOrLeave('r', 'refresh'))
+  let opening!: ReturnType<ReturnType<typeof useRooms.getState>['open']>
+  act(() => {
+    opening = useRooms.getState().open('r')
+  })
+  await act(async () => {
+    finish({ room })
+  })
+  expect(navigate).not.toHaveBeenCalled()
+  await act(async () => {
+    reject(Object.assign(new Error('Gone'), { code: 4230 }))
+    await opening
+  })
+  await waitFor(() => expect(navigate).toHaveBeenCalledWith({ to: '/' }))
+  expect(useRooms.getState().byId.r).toBeUndefined()
+})
+
+it.each(['open', 'refresh'] as const)(
+  'retries a %s when identity changes without a status transition',
+  async load => {
+    setActiveRpc({
+      call: (method: string) =>
+        Promise.resolve(method === 'hexbot.rooms.log' ? { events: [] } : { room })
+    } as never)
+    useConnection.setState({ status: 'connected', epoch: 'first' })
+    const { result } = renderHook(() => useRoomOrLeave('r', load))
+    await waitFor(() => expect(result.current?.id).toBe('r'))
+    await act(async () => {
+      invalidateConnectionReads()
+      useRooms.getState().reset()
+      useConnection.getState().setEpoch('replacement')
+    })
+    await waitFor(() => expect(result.current?.id).toBe('r'))
+    expect(navigate).not.toHaveBeenCalled()
+  }
+)

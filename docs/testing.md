@@ -13,7 +13,10 @@ Held list, log, and lookup replies cover prompt roster publication, isolated log
 failures, overlapping refreshes, and preservation of intervening room changes.
 Delayed IndexedDB reads cover live tombstones, empty authoritative lists, partial
 restoration, re-listing, and identity resets. Queued stale writes cannot restore
-removed rooms after cleanup. Cold settings tests hold lookups across cache and
+removed rooms after cleanup. `src/stores/catalog-races.test.ts` includes cold IDs
+absent from memory and both list/lookup request orders. Deep-link tests cover
+incomplete bot caches; section tests cover pre-creation lists, partial restoration,
+and disk-only history pruning. Cold settings tests hold lookups across cache and
 network roster publication, for both missing and valid rooms.
 `src/app/conversation/reload.test.tsx` also holds network reads after a dream
 reload or turn completion to check that cached and retained rows appear once.
@@ -27,7 +30,10 @@ real history reply to exercise cached hydration and a repeated prompt, reconnect
 the socket to check the proving read, blocks authorization on an offline reload,
 deletes and archives rooms while offline, and checks that their persisted logs
 are removed while an unrelated optional log reply remains held. Cold settings
-checks hold real missing-room and valid-room lookups across roster publication.
+checks hold the child conversation reply before the parent settings lookup and
+hold older successful lookups across a real newer roster after deletion, with the
+deleted event suppressed. A pre-creation section list stays held while a new bot's
+chat opens. A disk-only deleted chat checks history-key and recency cleanup.
 A held history reply also checks hidden kickoff projection. Finally
 it revokes the browser's actual device and checks disk and rendered state.
 Screenshots remain in the printed temporary artifacts directory. It publishes

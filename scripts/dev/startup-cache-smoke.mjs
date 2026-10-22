@@ -152,7 +152,13 @@ try {
     holdLogRoom,
     heldRoomLog,
     holdGetRoom,
-    heldRoomGet
+    heldRoomGet,
+    holdInfo = false,
+    heldInfo,
+    suppressDeletedRoom,
+    holdSectionList = false
+  const heldRoomGets = []
+  const heldSectionLists = []
   const requests = []
   await page.routeWebSocket(/\/api\/ws\?/, ws => {
     const server = ws.connectToServer()
@@ -172,7 +178,33 @@ try {
       server.send(message)
     })
     server.onMessage(message => {
-      const frames = String(message).split('\n').filter(Boolean).map(JSON.parse)
+      const frames = String(message)
+        .split('\n')
+        .filter(Boolean)
+        .map(JSON.parse)
+        .filter(
+          frame =>
+            !(
+              suppressDeletedRoom &&
+              frame.method === 'event' &&
+              frame.params?.type === 'hexbot.rooms.changed' &&
+              frame.params?.payload?.id === suppressDeletedRoom &&
+              frame.params?.payload?.deleted
+            )
+        )
+      if (!frames.length) return
+      message = frames.map(frame => JSON.stringify(frame)).join('\n') + '\n'
+      if (holdInfo && frames.some(frame => methods.get(frame.id) === 'hexbot.info')) {
+        heldInfo = () => ws.send(message)
+        return
+      }
+      if (
+        holdSectionList &&
+        frames.some(frame => methods.get(frame.id) === 'hexbot.sections.list')
+      ) {
+        heldSectionLists.push(() => ws.send(message))
+        return
+      }
       if (
         holdGetRoom &&
         frames.some(
@@ -180,7 +212,10 @@ try {
             methods.get(frame.id) === 'hexbot.rooms.get' && logRooms.get(frame.id) === holdGetRoom
         )
       ) {
-        heldRoomGet = () => ws.send(message)
+        heldRoomGets.push(() => ws.send(message))
+        heldRoomGet = () => {
+          for (const release of heldRoomGets.splice(0)) release()
+        }
       } else if (
         holdLogRoom &&
         frames.some(
@@ -355,16 +390,148 @@ try {
   await expect(composer).toBeEnabled()
   await page.screenshot({ path: path.join(artifacts, 'cold-gone-room-settings.png') })
 
-  // A valid room remains open across the same list/lookup ordering.
+  // Child conversation starts its open before the parent settings lookup.
+  // Hold info too, so no cached/network list can mask the cold empty store.
+  holdInfo = true
   holdGetRoom = slowRoom.id
-  await page.goto(`${base}/r/${holdGetRoom}/settings`)
-  await expect.poll(() => Boolean(heldRoomGet)).toBe(true)
-  await expect(page.getByRole('region', { name: 'Room settings' })).toBeVisible()
+  await page.goto(`${base}/r/${slowRoom.id}/settings`)
+  await expect.poll(() => heldRoomGets.length).toBeGreaterThanOrEqual(2)
+  await expect.poll(() => Boolean(heldInfo)).toBe(true)
+  heldRoomGets.shift()()
+  // Flush browser delivery and React effects while the newer lookup stays held.
+  await page.evaluate(
+    () => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))
+  )
+  await expect(page).toHaveURL(`${base}/r/${slowRoom.id}/settings`)
+  assert(heldRoomGets.length, 'The parent settings lookup must still be held')
   holdGetRoom = undefined
   heldRoomGet()
   heldRoomGet = undefined
-  await expect(page).toHaveURL(`${base}/r/${slowRoom.id}/settings`)
-  await page.screenshot({ path: path.join(artifacts, 'cold-room-settings.png') })
+  holdInfo = false
+  heldInfo()
+  heldInfo = undefined
+  await expect(page.getByRole('region', { name: 'Room settings' })).toBeVisible()
+  await page.screenshot({ path: path.join(artifacts, 'cold-room-settings-effect-order.png') })
+
+  // A real newer roster omits a deleted room while its old successful gets wait.
+  // Suppress the deletion notification so the list alone must invalidate cold IDs.
+  const { room: coldRoom } = await rpc('hexbot.rooms.create', {
+    name: 'Deleted during cold lookup',
+    members: ['owl'],
+    main_bot: 'owl'
+  })
+  suppressDeletedRoom = coldRoom.id
+  holdInfo = true
+  holdGetRoom = coldRoom.id
+  await page.goto(`${base}/r/${coldRoom.id}/settings`)
+  await expect.poll(() => heldRoomGets.length).toBeGreaterThanOrEqual(2)
+  await expect.poll(() => Boolean(heldInfo)).toBe(true)
+  await rpc('hexbot.rooms.delete', { id: coldRoom.id })
+  holdInfo = false
+  heldInfo()
+  heldInfo = undefined
+  await expect
+    .poll(async () =>
+      (await cache()).some(
+        entry =>
+          entry.key[1] === 'roster' && !entry.value.rooms.some(room => room.id === coldRoom.id)
+      )
+    )
+    .toBe(true)
+  holdGetRoom = undefined
+  heldRoomGet()
+  heldRoomGet = undefined
+  await expect(page).toHaveURL(`${base}/b/owl/s/${section.id}`)
+  await expect(composer).toBeEnabled()
+  assert(!(await cache()).some(entry => entry.key[1] === `room:${coldRoom.id}`))
+  await expect
+    .poll(async () =>
+      (await cache())
+        .find(entry => entry.key[1] === 'roster')
+        ?.value.rooms.some(room => room.id === coldRoom.id)
+    )
+    .toBe(false)
+  await page.screenshot({ path: path.join(artifacts, 'cold-success-not-resurrected.png') })
+  suppressDeletedRoom = undefined
+
+  // A section list captured before chat creation cannot delete the new chat.
+  holdSectionList = true
+  await page.reload()
+  await expect.poll(() => heldSectionLists.length).toBeGreaterThan(0)
+  await expect(composer).toBeEnabled()
+  const { section: newChat } = await rpc('hexbot.bots.create', {
+    name: 'finch',
+    display_name: 'New Finch',
+    provider: 'lmstudio',
+    model: 'test-model',
+    persona: 'You are Finch.',
+    tools: []
+  })
+  await expect(page.locator('[data-roster-id="bot:finch"]')).toBeVisible()
+  hold = true
+  await page.locator('[data-roster-id="bot:finch"]').click()
+  await expect.poll(() => Boolean(held)).toBe(true)
+  holdSectionList = false
+  for (const release of heldSectionLists.splice(0)) release()
+  held()
+  held = undefined
+  await expect(page).toHaveURL(`${base}/b/finch/s/${newChat.id}`)
+  await expect(composer).toBeEnabled()
+  await expect(page.getByRole('alert')).toHaveCount(0)
+  await expect
+    .poll(async () => (await cache()).some(entry => entry.key[1] === `section:${newChat.id}`))
+    .toBe(true)
+  await page.screenshot({ path: path.join(artifacts, 'new-chat-stale-list.png') })
+
+  // Seed a disk-only offline history for a real deleted bot. It never appears
+  // in this page's section index; the fresh network list must scan persisted IDs.
+  const { section: offlineChat } = await rpc('hexbot.bots.create', {
+    name: 'offline',
+    display_name: 'Offline',
+    provider: 'lmstudio',
+    model: 'test-model',
+    persona: 'You are Offline.',
+    tools: []
+  })
+  await rpc('hexbot.bots.delete', { name: 'offline' })
+  const cacheScope = (await cache()).find(entry => entry.key[1] === 'roster').key[0]
+  await page.evaluate(
+    async ({ scope, id }) => {
+      const db = await new Promise(resolve => {
+        const request = indexedDB.open('hexbot.cache', 1)
+        request.onsuccess = () => resolve(request.result)
+      })
+      await new Promise(resolve => {
+        const tx = db.transaction('entries', 'readwrite')
+        const store = tx.objectStore('entries')
+        store.put({ rows: [{ role: 'user', text: 'Offline deleted chat', row_id: 1 }] }, [
+          scope,
+          `section:${id}`
+        ])
+        const request = store.get([scope, 'sections:recent'])
+        request.onsuccess = () =>
+          store.put([id, ...(request.result ?? [])], [scope, 'sections:recent'])
+        tx.oncomplete = resolve
+      })
+      db.close()
+    },
+    { scope: cacheScope, id: offlineChat.id }
+  )
+  clientSide.send(
+    JSON.stringify({
+      jsonrpc: '2.0',
+      method: 'event',
+      params: { type: 'hexbot.sections.changed', payload: {} }
+    }) + '\n'
+  )
+  await expect
+    .poll(async () => (await cache()).some(entry => entry.key[1] === `section:${offlineChat.id}`))
+    .toBe(false)
+  assert(
+    !(await cache())
+      .find(entry => entry.key[1] === 'sections:recent')
+      .value.includes(offlineChat.id)
+  )
   await page.goto(`${base}/b/owl/s/${section.id}`)
   await expect(composer).toBeEnabled()
 
@@ -443,7 +610,10 @@ try {
           'reconnect proving read',
           'offline reload authorization gate',
           'offline deletion and archive prune persisted room logs while an optional log is held',
-          'cold settings resolve gone and valid rooms across held lookups',
+          'cold settings child/parent lookup order keeps a valid room',
+          'newer authoritative roster defeats older successful cold lookups',
+          'new chat survives a held pre-creation section list',
+          'disk-only deleted section history and recency are pruned',
           'cached kickoff filtering while real history is pending',
           'bounded storage after a 600 KiB durable input',
           'real device revocation and cache deletion'

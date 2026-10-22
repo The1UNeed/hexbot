@@ -89,20 +89,25 @@ never establishes one. Startup fetches and restores logs for at most 20 recently
 active rooms; opening another room reads its log on demand. Persistence keeps only
 those 20 logs, with each retained tail bounded by the same row/byte caps. The
 fresh roster is published before optional log reads; each log succeeds or fails
-independently. Per-room revisions preserve intervening changes during list and
-log reads, so delayed replies cannot undo deletion, departure, archival, or
-membership updates. Cache restoration captures room authority before reading
-IndexedDB and fills only rooms that remain unproven by the network. An empty
-successful list is authoritative too. Cached rows do not invalidate pending
-room lookups; a superseded lookup follows newer authority, so cold room settings
-resolve missing rooms without treating pre-handshake reads as proof of deletion.
+independently. Room, section, and bot catalogs order authority by request start, with
+successful mutations superseding earlier reads. Lists account for pending IDs
+absent from memory too. Older lists cannot delete a chat created while they
+waited; newer lists invalidate older cold lookups even when the result is empty.
+Cache restoration captures catalog authority before reading IndexedDB and fills
+only IDs still unproven by the network. Cache readiness never establishes absence.
+Room views observe explicit present, gone, or discarded outcomes, so concurrent
+settings and conversation reads cannot mistake a superseded reply for deletion.
+Live deletion, departure, archival, and membership updates invalidate older reads
+and optional logs.
 
 Roster subscriptions start after authorization. Persistence waits for the room
 list, independently of optional logs or other startup reads. Queued roster and
 log writes also check the room state they captured before committing.
 Each roster write prunes persisted logs for deleted, departed, and archived rooms,
-including rooms removed while the client was offline. Cleanup uses the active
-authorization generation, just like other cache writes.
+including rooms removed while the client was offline. Full section lists also
+scan persisted history keys and the recency index, pruning disk-only deleted
+chats while preserving work started after the list request. Cleanup uses the
+active authorization generation, just like other cache writes.
 
 A discarded startup room read is not evidence that the room is gone. Room views
 retry when the connection opens, and only a current connection's completed read

@@ -94,11 +94,7 @@ export async function restoreRoster(scope: null | string): Promise<void> {
     .map(restingSection)
 
   if (restoredSections.length) {
-    sections.restore([
-      ...new Map(
-        [...restoredSections, ...Object.values(sections.byId)].map(section => [section.id, section])
-      ).values()
-    ])
+    sections.restore(restoredSections)
   }
 
   if (!useMe.getState().me) {

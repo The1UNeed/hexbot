@@ -1,4 +1,4 @@
-import { IDBDatabase, IDBFactory, IDBKeyRange } from 'fake-indexeddb'
+import { IDBDatabase, IDBFactory, IDBKeyRange, IDBObjectStore } from 'fake-indexeddb'
 
 import type * as api from '../lib/api'
 import {
@@ -1182,4 +1182,79 @@ it('a fresh section list prunes a deleted disk-only history even when another ch
   await writeCache(scope, 'barrier', true)
   expect(await cachedHistory(scope, 'deleted')).toBeUndefined()
   expect(await readCache(scope, 'sections:recent')).not.toContain('deleted')
+})
+
+it('an old section list cannot prune a new chat already persisted after its request', async () => {
+  useConnection.setState({ daemon: { install_id: 'daemon', one_chat: true } as DaemonInfo })
+  const held = deferred<Awaited<ReturnType<typeof sectionsList>>>()
+  vi.mocked(sectionsList).mockReturnValueOnce(held.promise)
+  const listing = useSections.getState().refresh()
+  vi.mocked(sectionsCreate).mockResolvedValueOnce({ section })
+  await useSections.getState().chat('writer')
+  vi.mocked(sectionsOpen).mockResolvedValueOnce({
+    section,
+    messages: [{ role: 'user', text: 'New chat', row_id: '1' }]
+  })
+  await useSections.getState().open('s')
+  held.resolve({ sections: [] })
+  await listing
+  expect((await cachedHistory(scope, 's'))?.rows).toHaveLength(1)
+  expect(await readCache(scope, 'sections:recent')).toEqual(['s'])
+  expect(useSections.getState().byId.s).toBeDefined()
+})
+
+it('a superseded missing-section answer cannot erase a newer authoritative section', async () => {
+  const held = deferred<Awaited<ReturnType<typeof sectionsOpen>>>()
+  vi.mocked(sectionsOpen)
+    .mockReturnValueOnce(held.promise)
+    .mockResolvedValueOnce({ section, messages: [] })
+  const pending = useSections.getState().open('s')
+  await vi.waitFor(() => expect(sectionsOpen).toHaveBeenCalledOnce())
+  vi.mocked(sectionsList).mockResolvedValueOnce({ sections: [section] })
+  await useSections.getState().refresh()
+  held.reject(Object.assign(new Error('Obsolete missing section'), { code: 4204 }))
+  await expect(pending).resolves.toEqual({ section, liveSessionId: section.live_session_id })
+  expect(useSections.getState().byId.s).toEqual(expect.objectContaining({ id: 's' }))
+  expect(sectionsOpen).toHaveBeenCalledTimes(2)
+})
+
+it('partial cache restoration preserves a chat already proven by a canonical lookup', async () => {
+  await writeCache(scope, 'roster', {
+    daemon: 'daemon',
+    bots: [],
+    me: null,
+    rooms: [],
+    sections: [{ ...section, id: 'cached-other' }]
+  })
+  useConnection.setState({ daemon: { install_id: 'daemon', one_chat: true } as DaemonInfo })
+  vi.mocked(sectionsCreate).mockResolvedValueOnce({ section })
+  await useSections.getState().chat('writer')
+  expect(section.live_session_id).toBeTruthy()
+  await restoreRoster(scope)
+  expect(useSections.getState().byId.s?.live_session_id).toBe(section.live_session_id)
+  expect(useSections.getState().byId['cached-other']?.live_session_id).toBeNull()
+})
+
+it('room pruning rechecks authority when its asynchronous cursor answers', async () => {
+  await writeCache(scope, 'room:r', [event(1)])
+  let current = true
+  const openCursor = IDBObjectStore.prototype.openKeyCursor
+  vi.spyOn(IDBObjectStore.prototype, 'openKeyCursor').mockImplementation(function (
+    this: IDBObjectStore,
+    ...args
+  ) {
+    const request = openCursor.apply(this, args)
+    request.addEventListener(
+      'success',
+      () => {
+        current = false
+      },
+      { once: true }
+    )
+
+    return request
+  })
+  await pruneRoomLogs(scope, [], () => current)
+  expect(current).toBe(false)
+  expect(await readCache(scope, 'room:r')).toEqual([event(1)])
 })

@@ -205,7 +205,7 @@ export function pruneRoomLogs(
         request.onsuccess = () => {
           const cursor = request.result
 
-          if (cursor) {
+          if (cursor && cacheCurrent(access) && valid()) {
             if (!keep.has((cursor.key as string[])[1]!)) {
               store.delete(cursor.key)
             }
@@ -321,7 +321,10 @@ export function pruneHistories(
   keepIds: string[],
   removable: (id: string) => boolean
 ): Promise<void> {
-  if (!scope) {return Promise.resolve()}
+  if (!scope) {
+    return Promise.resolve()
+  }
+
   const access = cacheAccess(scope)
   const keep = new Set(keepIds)
   const current = () => cacheCurrent(access)
@@ -334,11 +337,12 @@ export function pruneHistories(
         const recent = store.get([scope, RECENT_KEY])
 
         recent.onsuccess = () => {
-          if (current())
-            {store.put(
+          if (current()) {
+            store.put(
               ((recent.result ?? []) as string[]).filter(id => !removed(id)),
               [scope, RECENT_KEY]
-            )}
+            )
+          }
         }
 
         const request = store.openKeyCursor(
@@ -351,7 +355,10 @@ export function pruneHistories(
           if (cursor && current()) {
             const id = (cursor.key as string[])[1]!.slice('section:'.length)
 
-            if (removed(id)) {store.delete(cursor.key)}
+            if (removed(id)) {
+              store.delete(cursor.key)
+            }
+
             cursor.continue()
           }
         }

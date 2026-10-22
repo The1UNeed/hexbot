@@ -560,7 +560,10 @@ export const useRooms = create<RoomsState>((set, get) => ({
     const same = authority.session()
     const { room } = await roomsCreate(input)
 
-    if (!connected() || !same()) {return room}
+    if (!connected() || !same()) {
+      return room
+    }
+
     authority.touch(room.id, 'present')
     set(state => mergeRoom(state, room))
 
@@ -572,7 +575,10 @@ export const useRooms = create<RoomsState>((set, get) => ({
     const same = authority.session()
     const { room } = await roomsAddMember(id, bot)
 
-    if (!connected() || !same()) {return}
+    if (!connected() || !same()) {
+      return
+    }
+
     authority.touch(room.id, 'present')
     set(state => mergeRoom(state, room))
   },
@@ -582,7 +588,9 @@ export const useRooms = create<RoomsState>((set, get) => ({
     const same = authority.session()
     const { room } = await roomsRemoveMember(id, bot, keepRoom)
 
-    if (!connected() || !same()) {return false}
+    if (!connected() || !same()) {
+      return false
+    }
 
     if ((room as Room & { deleted?: boolean }).deleted) {
       authority.touch(id, 'gone')
@@ -623,7 +631,10 @@ export const useRooms = create<RoomsState>((set, get) => ({
     const same = authority.session()
     const { room } = await roomsUpdate(id, patch)
 
-    if (!connected() || !same()) {return}
+    if (!connected() || !same()) {
+      return
+    }
+
     authority.touch(room.id, 'present')
     set(state => mergeRoom(state, room))
   },
@@ -633,7 +644,10 @@ export const useRooms = create<RoomsState>((set, get) => ({
     const same = authority.session()
     await roomsDelete(id)
 
-    if (!connected() || !same()) {return}
+    if (!connected() || !same()) {
+      return
+    }
+
     authority.touch(id, 'gone')
     set(state => dropRoom(state, id))
   },

@@ -1,6 +1,9 @@
 import { JsonRpcGatewayError } from '@hermes/shared'
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { IDBFactory, IDBKeyRange } from 'fake-indexeddb'
 
+import { authorizeCache, resetDeviceCacheForTests, writeCache } from '../../lib/device-cache'
+import { restoreRoster } from '../../lib/roster-cache'
 import { setActiveRpc } from '../../lib/rpc'
 import type { Bot, DaemonInfo, Section } from '../../lib/types'
 import { useBots } from '../../stores/bots'
@@ -211,4 +214,46 @@ it('ignores late canonical resolution after navigation', async () => {
   })
   expect(navigate).not.toHaveBeenCalled()
   expect(useUi.getState().lastSection).toEqual(remembered)
+})
+
+it('keeps a deep-linked bot and remembered chat while an incomplete cached roster awaits the network', async () => {
+  await resetDeviceCacheForTests()
+  vi.stubGlobal('indexedDB', new IDBFactory())
+  vi.stubGlobal('IDBKeyRange', IDBKeyRange)
+  const scope = 'local:http://cache.test'
+  const held = deferred()
+  call.mockImplementation((method: string, input: { id?: string }) =>
+    method === 'hexbot.bots.list' ? held.promise : reply(method, input)
+  )
+  useConnection.setState({
+    target: { kind: 'local', origin: 'http://cache.test' },
+    daemon: { install_id: 'daemon', one_chat: true } as DaemonInfo
+  })
+  useBots.getState().reset()
+
+  try {
+    await authorizeCache(scope, 'daemon', () => true)
+    await writeCache(scope, 'roster', {
+      daemon: 'daemon',
+      bots: [{ name: 'other', display_name: 'Other' }],
+      sections: [],
+      rooms: [],
+      me: null
+    })
+    const listing = useBots.getState().refresh()
+    await restoreRoster(scope)
+    render(<ConversationColumn />)
+    await waitFor(() => expect(useSections.getState().liveSessionId.old).toBe('live-old'))
+    expect(screen.queryByText('This bot no longer exists')).toBeNull()
+    expect(useUi.getState().lastSection).toEqual(remembered)
+    await act(async () => {
+      held.resolve({ bots: [{ name: 'owl', display_name: 'Owl' }] })
+      await listing
+    })
+    expect(screen.queryByText('This bot no longer exists')).toBeNull()
+    expect(useBots.getState().byName.owl).toBeDefined()
+  } finally {
+    await resetDeviceCacheForTests()
+    vi.unstubAllGlobals()
+  }
 })

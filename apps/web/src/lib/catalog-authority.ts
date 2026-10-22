@@ -52,7 +52,10 @@ export class CatalogAuthority {
   }
 
   finish(id: string, read: CatalogRead, outcome: ReadOutcome): boolean {
-    if (!this.current(id, read)) {return false}
+    if (!this.current(id, read)) {
+      return false
+    }
+
     this.entries.set(id, { order: read.order, outcome, known: outcome !== 'discarded' })
 
     return true
@@ -97,7 +100,10 @@ export class CatalogAuthority {
     inScope: (id: string) => boolean = () => true,
     full = true
   ): T[] | null {
-    if (!this.same(read) || read.order < this.fullList) {return null}
+    if (!this.same(read) || read.order < this.fullList) {
+      return null
+    }
+
     const returned = new Map(rows.map(row => [key(row), row]))
     const applies = (id: string) => inScope(id) && (this.entries.get(id)?.order ?? 0) <= read.order
     const accepted = new Set<string>()
@@ -117,7 +123,9 @@ export class CatalogAuthority {
       }
     }
 
-    if (full) {this.fullList = read.order}
+    if (full) {
+      this.fullList = read.order
+    }
 
     return [
       ...rows.flatMap(row =>

@@ -412,7 +412,14 @@ export const useSections = create<SectionsState>((set, get) => ({
   restore(sections) {
     set(state =>
       indexSections(
-        sections.map(section => ({ ...section, live_session_id: null })),
+        [
+          ...new Map([
+            ...sections.map(
+              section => [section.id, { ...section, live_session_id: null }] as const
+            ),
+            ...Object.values(state.byId).map(section => [section.id, section] as const)
+          ]).values()
+        ],
         state.sendingTitles
       )
     )
@@ -471,7 +478,9 @@ export const useSections = create<SectionsState>((set, get) => ({
         !options.bot
       )
 
-      if (!listed) {return}
+      if (!listed) {
+        return
+      }
 
       for (const id of new Set([...Object.keys(state.byId), ...opening.keys()])) {
         if (authority.current(id, request) && authority.outcome(id) === 'gone') {
