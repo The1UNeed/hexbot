@@ -3,7 +3,7 @@
 import assert from 'node:assert/strict'
 import { execFile, spawn } from 'node:child_process'
 import { once } from 'node:events'
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { access, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import http from 'node:http'
 import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
@@ -65,6 +65,7 @@ try {
     HEXBOT_PI_EXECUTABLE: pi,
     HEXBOT_WEB_DIST: path.join(root, 'apps/web/dist')
   }
+  await access(path.join(root, 'apps/web/dist/index.html'))
   daemon = spawn(binary, ['serve', '--host', '127.0.0.1', '--port', '0'], {
     cwd: root,
     env,
@@ -156,7 +157,15 @@ try {
     holdInfo = false,
     heldInfo,
     suppressDeletedRoom,
-    holdSectionList = false
+    holdSectionList = false,
+    probeRoom,
+    holdProbeReads = false,
+    holdReadMarks = false,
+    suppressChangedRoom,
+    holdRoomUpdate,
+    heldRoomUpdate
+  const probeReads = []
+  const markRequests = []
   const heldRoomGets = []
   const heldSectionLists = []
   const requests = []
@@ -170,10 +179,25 @@ try {
         const frame = JSON.parse(line)
         if (frame.method) {
           methods.set(frame.id, frame.method)
-          if (frame.method === 'hexbot.rooms.log' || frame.method === 'hexbot.rooms.get')
+          if (
+            ['hexbot.rooms.log', 'hexbot.rooms.get', 'hexbot.rooms.mark_read'].includes(
+              frame.method
+            )
+          )
             logRooms.set(frame.id, frame.params.id)
           requests.push(frame.method)
         }
+      }
+      const marksProbe = String(message)
+        .split('\n')
+        .filter(Boolean)
+        .map(JSON.parse)
+        .some(frame => frame.method === 'hexbot.rooms.mark_read' && frame.params.id === probeRoom)
+      // Hold the request itself: sending it could trigger a rooms.changed
+      // notification that accidentally repairs discarded history via another get.
+      if (holdReadMarks && marksProbe) {
+        markRequests.push(() => server.send(message))
+        return
       }
       server.send(message)
     })
@@ -185,15 +209,31 @@ try {
         .filter(
           frame =>
             !(
-              suppressDeletedRoom &&
+              (suppressDeletedRoom || suppressChangedRoom) &&
               frame.method === 'event' &&
               frame.params?.type === 'hexbot.rooms.changed' &&
-              frame.params?.payload?.id === suppressDeletedRoom &&
-              frame.params?.payload?.deleted
+              (frame.params?.payload?.id === suppressChangedRoom ||
+                (frame.params?.payload?.id === suppressDeletedRoom &&
+                  frame.params?.payload?.deleted))
             )
         )
       if (!frames.length) return
       message = frames.map(frame => JSON.stringify(frame)).join('\n') + '\n'
+      if (
+        holdProbeReads &&
+        frames.some(
+          frame =>
+            logRooms.get(frame.id) === probeRoom &&
+            ['hexbot.rooms.log', 'hexbot.rooms.get'].includes(methods.get(frame.id))
+        )
+      ) {
+        probeReads.push(() => ws.send(message))
+        return
+      }
+      if (holdRoomUpdate && frames.some(frame => methods.get(frame.id) === 'hexbot.rooms.update')) {
+        heldRoomUpdate = () => ws.send(message)
+        return
+      }
       if (holdInfo && frames.some(frame => methods.get(frame.id) === 'hexbot.info')) {
         heldInfo = () => ws.send(message)
         return
@@ -535,6 +575,154 @@ try {
   await page.goto(`${base}/b/owl/s/${section.id}`)
   await expect(composer).toBeEnabled()
 
+  // Cached startup: roster/view logs must publish before any mark_read is sent.
+  const { room: readRoom } = await rpc('hexbot.rooms.create', {
+    name: 'Read acknowledgment history',
+    members: ['owl'],
+    main_bot: 'owl'
+  })
+  probeRoom = readRoom.id
+  await rpc('hexbot.rooms.send', { id: probeRoom, text: 'Old cached room prompt' })
+  await expect
+    .poll(
+      async () =>
+        (await rpc('hexbot.rooms.log', { id: probeRoom })).events.filter(
+          event => event.kind === 'message.bot'
+        ).length
+    )
+    .toBe(1)
+  await page.goto(`${base}/r/${probeRoom}`)
+  await expect(
+    page.getByTestId('room-event').filter({ hasText: 'Old cached room prompt' })
+  ).toBeVisible()
+  await expect
+    .poll(async () => (await cache()).some(entry => entry.key[1] === `room:${probeRoom}`))
+    .toBe(true)
+  await page.route('**/api/auth/ws-ticket', route => route.abort('internetdisconnected'))
+  await page.reload()
+  await expect(page.getByTestId('room-event')).toHaveCount(0)
+  await rpc('hexbot.rooms.send', { id: probeRoom, text: 'New room prompt while offline' })
+  await expect
+    .poll(
+      async () =>
+        (await rpc('hexbot.rooms.log', { id: probeRoom })).events.filter(
+          event => event.kind === 'message.bot'
+        ).length
+    )
+    .toBe(2)
+  holdProbeReads = true
+  holdReadMarks = true
+  await page.unroute('**/api/auth/ws-ticket')
+  await page.goto(`${base}/b/owl/s/${section.id}`)
+  await expect.poll(() => probeReads.length).toBeGreaterThanOrEqual(1)
+  await page.locator(`[data-roster-id="room:${probeRoom}"]`).click()
+  await expect.poll(() => probeReads.length).toBeGreaterThanOrEqual(3)
+  await expect.poll(() => markRequests.length).toBeGreaterThan(0)
+  holdProbeReads = false
+  for (const release of probeReads.splice(0)) release()
+  await expect(
+    page.getByTestId('room-event').filter({ hasText: 'New room prompt while offline' })
+  ).toBeVisible()
+  await expect
+    .poll(async () =>
+      (await cache())
+        .find(entry => entry.key[1] === `room:${probeRoom}`)
+        ?.value.some(event => event.payload.text === 'New room prompt while offline')
+    )
+    .toBe(true)
+  assert(markRequests.length, 'Fresh history and persistence must precede read acknowledgments')
+  await page.screenshot({ path: path.join(artifacts, 'cached-room-held-read-mark.png') })
+  holdReadMarks = false
+  for (const release of markRequests.splice(0)) release()
+
+  // Remove only this cached log, keeping its roster row, then deliver a real
+  // live event while roster and view logs wait. Suppress metadata notifications
+  // for the probe so an incidental lookup cannot mask loss of its history.
+  await page.goto(`${base}/b/owl/s/${section.id}`)
+  await expect(composer).toBeEnabled()
+  await page.evaluate(
+    async ({ scope, id }) => {
+      const db = await new Promise(resolve => {
+        const request = indexedDB.open('hexbot.cache', 1)
+        request.onsuccess = () => resolve(request.result)
+      })
+      await new Promise(resolve => {
+        const tx = db.transaction('entries', 'readwrite')
+        tx.objectStore('entries').delete([scope, `room:${id}`])
+        tx.oncomplete = resolve
+      })
+      db.close()
+    },
+    { scope: cacheScope, id: probeRoom }
+  )
+  holdProbeReads = true
+  holdReadMarks = true
+  suppressChangedRoom = probeRoom
+  await page.reload()
+  await expect.poll(() => probeReads.length).toBeGreaterThanOrEqual(1)
+  await page.locator(`[data-roster-id="room:${probeRoom}"]`).click()
+  await expect.poll(() => probeReads.length).toBeGreaterThanOrEqual(3)
+  await rpc('hexbot.rooms.send', { id: probeRoom, text: 'Live room prompt during open' })
+  await expect(
+    page.getByTestId('room-event').filter({ hasText: 'Live room prompt during open' })
+  ).toBeVisible()
+  await expect.poll(() => markRequests.length).toBeGreaterThan(0)
+  holdProbeReads = false
+  for (const release of probeReads.splice(0)) release()
+  await expect(
+    page.getByTestId('room-event').filter({ hasText: 'Old cached room prompt' })
+  ).toBeVisible()
+  await expect(
+    page.getByTestId('room-event').filter({ hasText: 'Live room prompt during open' })
+  ).toBeVisible()
+  assert(markRequests.length, 'A live read acknowledgment must still be unsent')
+  await page.screenshot({ path: path.join(artifacts, 'live-room-held-read-mark.png') })
+  holdReadMarks = false
+  for (const release of markRequests.splice(0)) release()
+  suppressChangedRoom = undefined
+  probeRoom = undefined
+
+  // A processed rename response held across a live deletion must not bring
+  // the room back, in either the rendered roster or the persisted snapshot.
+  const { room: mutationRoom } = await rpc('hexbot.rooms.create', {
+    name: 'Deleted during rename',
+    members: ['owl'],
+    main_bot: 'owl'
+  })
+  await page.goto(`${base}/r/${mutationRoom.id}/settings`)
+  const roomName = page.getByLabel('Room name', { exact: true })
+  await expect(roomName).toBeVisible()
+  holdRoomUpdate = true
+  await roomName.fill('Obsolete renamed room')
+  await roomName.press('Enter')
+  await expect.poll(() => Boolean(heldRoomUpdate)).toBe(true)
+  await rpc('hexbot.rooms.delete', { id: mutationRoom.id })
+  await expect(page.locator(`[data-roster-id="room:${mutationRoom.id}"]`)).toHaveCount(0)
+  await expect
+    .poll(async () =>
+      (await cache())
+        .find(entry => entry.key[1] === 'roster')
+        ?.value.rooms.some(room => room.id === mutationRoom.id)
+    )
+    .toBe(false)
+  holdRoomUpdate = false
+  heldRoomUpdate()
+  heldRoomUpdate = undefined
+  await expect(page).toHaveURL(`${base}/b/owl/s/${section.id}`)
+  await expect(composer).toBeEnabled()
+  await page.evaluate(
+    () => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))
+  )
+  await expect(page.locator(`[data-roster-id="room:${mutationRoom.id}"]`)).toHaveCount(0)
+  assert(
+    !(await cache())
+      .find(entry => entry.key[1] === 'roster')
+      .value.rooms.some(room => room.id === mutationRoom.id)
+  )
+  await page.screenshot({ path: path.join(artifacts, 'late-rename-not-resurrected.png') })
+  await page.goto(`${base}/b/owl/s/${section.id}`)
+  await expect(composer).toBeEnabled()
+
   // An interrupted kickoff can be a plain durable user row. Store that shape
   // through the real daemon, then hold the proving read during cached reload.
   const hiddenPrompt = 'You were just created and named Owl. Internal kickoff fixture.'
@@ -614,6 +802,9 @@ try {
           'newer authoritative roster defeats older successful cold lookups',
           'new chat survives a held pre-creation section list',
           'disk-only deleted section history and recency are pruned',
+          'cached roster and view history publish while read-mark requests are held',
+          'live room events do not discard pending history when marked read',
+          'late processed rename cannot undo deletion in memory or disk',
           'cached kickoff filtering while real history is pending',
           'bounded storage after a 600 KiB durable input',
           'real device revocation and cache deletion'

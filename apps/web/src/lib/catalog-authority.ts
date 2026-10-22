@@ -32,12 +32,13 @@ export class CatalogAuthority {
     return () => identity === this.identity
   }
 
-  listRead(): CatalogRead {
+  /** Reserve order before a list or mutation RPC, including creates with unknown IDs. */
+  request(): CatalogRead {
     return { identity: this.identity, order: ++this.clock }
   }
 
   read(id: string): CatalogRead {
-    const read = this.listRead()
+    const read = this.request()
     this.entries.set(id, {
       order: read.order,
       outcome: 'discarded',
@@ -53,6 +54,17 @@ export class CatalogAuthority {
 
   finish(id: string, read: CatalogRead, outcome: ReadOutcome): boolean {
     if (!this.current(id, read)) {
+      return false
+    }
+
+    return this.commit(id, read, outcome)
+  }
+
+  /** A reply keeps its request order; it cannot become newer than an intervening read/event. */
+  commit(id: string, read: CatalogRead, outcome: ReadOutcome): boolean {
+    const order = this.entries.get(id)?.order ?? this.fullList
+
+    if (!this.same(read) || order > read.order) {
       return false
     }
 

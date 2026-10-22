@@ -62,7 +62,7 @@ export const useBots = create<BotsState>((set, get) => ({
 
   async refresh() {
     const current = connectionRead()
-    const ticket = authority.listRead()
+    const ticket = authority.request()
     set({ error: null, loading: true })
 
     try {
@@ -114,14 +114,13 @@ export const useBots = create<BotsState>((set, get) => ({
 
   async create(input) {
     const connected = connectionRead()
-    const same = authority.session()
+    const ticket = authority.request()
     const result = await botsCreate(input)
 
-    if (!connected() || !same()) {
+    if (!connected() || !authority.commit(result.bot.name, ticket, 'present')) {
       return result
     }
 
-    authority.touch(result.bot.name, 'present')
     set(state => ({
       answers: authority.outcomes(),
       byName: { ...state.byName, [result.bot.name]: result.bot },
@@ -135,14 +134,12 @@ export const useBots = create<BotsState>((set, get) => ({
 
   async update(name, patch) {
     const connected = connectionRead()
-    const same = authority.session()
+    const ticket = authority.request()
     const { bot } = await botsUpdate(name, patch)
 
-    if (!connected() || !same()) {
+    if (!connected() || !authority.commit(name, ticket, 'present')) {
       return bot
     }
-
-    authority.touch(name, 'present')
 
     set(state => ({ answers: authority.outcomes(), byName: { ...state.byName, [bot.name]: bot } }))
 
@@ -151,14 +148,12 @@ export const useBots = create<BotsState>((set, get) => ({
 
   async remove(name) {
     const connected = connectionRead()
-    const same = authority.session()
+    const ticket = authority.request()
     await botsDelete(name)
 
-    if (!connected() || !same()) {
+    if (!connected() || !authority.commit(name, ticket, 'gone')) {
       return
     }
-
-    authority.touch(name, 'gone')
 
     // `/` reopens the last section; one of this bot's would show a bot that is gone.
     if (uiActions().lastSection?.bot === name) {

@@ -451,7 +451,7 @@ export const useSections = create<SectionsState>((set, get) => ({
   async refresh(options = {}) {
     const current = connectionRead()
     const scope = activeCacheScope()
-    const request = authority.listRead()
+    const request = authority.request()
     set({ error: null, loading: true })
 
     try {
@@ -793,6 +793,8 @@ export const useSections = create<SectionsState>((set, get) => ({
       return null
     }
 
+    const ticket = authority.request()
+
     const section = modern
       ? (await sectionsCreate(bot)).section
       : await olderChat(bot, ask, current)
@@ -801,8 +803,9 @@ export const useSections = create<SectionsState>((set, get) => ({
       return null
     }
 
-    authority.touch(section.id, 'present')
-    set(state => mergeSection(state, section))
+    if (authority.commit(section.id, ticket, 'present')) {
+      set(state => mergeSection(state, section))
+    }
 
     return section
   },

@@ -254,7 +254,7 @@ export const useRooms = create<RoomsState>((set, get) => ({
 
   async refresh() {
     const connected = connectionRead()
-    const request = authority.listRead()
+    const request = authority.request()
     const currentRead = () => connected() && authority.same(request)
     set({ error: null, loading: true })
     const changes = new Map(turnChanges)
@@ -337,6 +337,7 @@ export const useRooms = create<RoomsState>((set, get) => ({
       await Promise.all(
         recentRooms(active).map(async room => {
           const currentRoom = roomRead(room.id)
+          const ticket = authority.request()
           const valid = () => currentRead() && currentRoom() && Boolean(get().byId[room.id])
 
           try {
@@ -364,8 +365,7 @@ export const useRooms = create<RoomsState>((set, get) => ({
             }))
           } catch (error) {
             // A failed optional log cannot suppress the roster or other logs.
-            if (valid() && roomGone(error)) {
-              authority.touch(room.id, 'gone')
+            if (valid() && roomGone(error) && authority.commit(room.id, ticket, 'gone')) {
               set(state => dropRoom(state, room.id))
             }
           }
@@ -510,7 +510,7 @@ export const useRooms = create<RoomsState>((set, get) => ({
       const seq = messageSeq(get().eventsByRoom[id] ?? [])
 
       if (seq) {
-        await get().markRead(id, seq)
+        void get().markRead(id, seq)
       }
 
       return 'present'
@@ -528,10 +528,10 @@ export const useRooms = create<RoomsState>((set, get) => ({
   },
 
   async markRead(id, seq) {
-    const connected = connectionRead()
-    const ticket = authority.read(id)
-    const currentRead = () => connected() && authority.current(id, ticket)
-    set({ answers: authority.outcomes() })
+    // Acknowledging displayed events must not supersede an existence/log read.
+    const currentRead = roomRead(id)
+    const ticket = authority.request()
+    const roomAtRead = get().byId[id]
 
     try {
       const { room } = await roomsMarkRead(id, seq)
@@ -540,16 +540,41 @@ export const useRooms = create<RoomsState>((set, get) => ({
         return
       }
 
-      authority.finish(id, ticket, 'present')
-      set(state => mergeRoom(state, room))
+      set(state => {
+        const current = state.byId[id]
+
+        if (!current) {
+          return state
+        }
+
+        let changed = false
+
+        const members = current.members.map(member => {
+          const marked = room.members.find(
+            item => item.member_kind === member.member_kind && item.member_id === member.member_id
+          )
+
+          const read = Math.max(member.last_read_seq ?? 0, marked?.last_read_seq ?? 0)
+
+          if (read === (member.last_read_seq ?? 0)) {
+            return member
+          }
+
+          changed = true
+
+          return { ...member, last_read_seq: read }
+        })
+
+        // The acknowledgment cannot overwrite membership, archive or turn metadata.
+        return changed ? { byId: { ...state.byId, [id]: { ...current, members } } } : state
+      })
     } catch (error) {
-      if (!currentRead()) {
+      if (!currentRead() || get().byId[id] !== roomAtRead) {
         return
       }
 
-      // Read marks are best effort; a room you were taken out of goes away.
-      if (roomGone(error)) {
-        authority.touch(id, 'gone')
+      // A newer room result supersedes even an earlier read mark's permission error.
+      if (roomGone(error) && authority.commit(id, ticket, 'gone')) {
         set(state => dropRoom(state, id))
       }
     }
@@ -557,14 +582,13 @@ export const useRooms = create<RoomsState>((set, get) => ({
 
   async create(input) {
     const connected = connectionRead()
-    const same = authority.session()
+    const ticket = authority.request()
     const { room } = await roomsCreate(input)
 
-    if (!connected() || !same()) {
+    if (!connected() || !authority.commit(room.id, ticket, 'present')) {
       return room
     }
 
-    authority.touch(room.id, 'present')
     set(state => mergeRoom(state, room))
 
     return room
@@ -572,34 +596,33 @@ export const useRooms = create<RoomsState>((set, get) => ({
 
   async addMember(id, bot) {
     const connected = connectionRead()
-    const same = authority.session()
+    const ticket = authority.request()
     const { room } = await roomsAddMember(id, bot)
 
-    if (!connected() || !same()) {
+    if (!connected() || !authority.commit(room.id, ticket, 'present')) {
       return
     }
 
-    authority.touch(room.id, 'present')
     set(state => mergeRoom(state, room))
   },
 
   async removeMember(id, bot, keepRoom) {
     const connected = connectionRead()
-    const same = authority.session()
+    const ticket = authority.request()
     const { room } = await roomsRemoveMember(id, bot, keepRoom)
 
-    if (!connected() || !same()) {
+    const deleted = Boolean((room as Room & { deleted?: boolean }).deleted)
+
+    if (!connected() || !authority.commit(id, ticket, deleted ? 'gone' : 'present')) {
       return false
     }
 
-    if ((room as Room & { deleted?: boolean }).deleted) {
-      authority.touch(id, 'gone')
+    if (deleted) {
       set(state => dropRoom(state, id))
 
       return true
     }
 
-    authority.touch(id, 'present')
     set(state => mergeRoom(state, room))
 
     return false
@@ -628,27 +651,25 @@ export const useRooms = create<RoomsState>((set, get) => ({
 
   async update(id, patch) {
     const connected = connectionRead()
-    const same = authority.session()
+    const ticket = authority.request()
     const { room } = await roomsUpdate(id, patch)
 
-    if (!connected() || !same()) {
+    if (!connected() || !authority.commit(room.id, ticket, 'present')) {
       return
     }
 
-    authority.touch(room.id, 'present')
     set(state => mergeRoom(state, room))
   },
 
   async remove(id) {
     const connected = connectionRead()
-    const same = authority.session()
+    const ticket = authority.request()
     await roomsDelete(id)
 
-    if (!connected() || !same()) {
+    if (!connected() || !authority.commit(id, ticket, 'gone')) {
       return
     }
 
-    authority.touch(id, 'gone')
     set(state => dropRoom(state, id))
   },
 

@@ -21,7 +21,13 @@ network roster publication, for both missing and valid rooms.
 `src/app/conversation/reload.test.tsx` also holds network reads after a dream
 reload or turn completion to check that cached and retained rows appear once.
 `src/lib/room-or-leave.test.tsx` covers queued startup reads and reconnects without
-treating discarded reads as room deletion.
+treating discarded reads as room deletion. `read-mark-races.test.tsx` holds
+acknowledgments across actual `RoomConversation` log hydration and live events.
+`mutation-races.test.ts` covers delayed mutations across tombstones, lists,
+relisting and newer mutations, including creates with initially unknown IDs.
+The native notification regression explicitly finishes its mounted proving read
+and observes the rendered streaming state before completing the reply; teardown
+unmounts and invalidates pending work before clearing the bridge.
 
 After building the daemon and web bundle and installing pinned Pi dependencies,
 run `node scripts/dev/startup-cache-smoke.mjs`. It uses a temporary daemon home,
@@ -34,7 +40,10 @@ checks hold the child conversation reply before the parent settings lookup and
 hold older successful lookups across a real newer roster after deletion, with the
 deleted event suppressed. A pre-creation section list stays held while a new bot's
 chat opens. A disk-only deleted chat checks history-key and recency cleanup.
-A held history reply also checks hidden kickoff projection. Finally
+Read-mark requests stay unsent while roster/view logs and a live event load;
+the fresh history must render and persist before those requests are released.
+A processed rename response crosses a real deletion without restoring the room
+in the roster or IndexedDB. A held history reply also checks hidden kickoff projection. Finally
 it revokes the browser's actual device and checks disk and rendered state.
 Screenshots remain in the printed temporary artifacts directory. It publishes
 nothing and stops only its own processes.

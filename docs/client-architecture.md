@@ -89,8 +89,9 @@ never establishes one. Startup fetches and restores logs for at most 20 recently
 active rooms; opening another room reads its log on demand. Persistence keeps only
 those 20 logs, with each retained tail bounded by the same row/byte caps. The
 fresh roster is published before optional log reads; each log succeeds or fails
-independently. Room, section, and bot catalogs order authority by request start, with
-successful mutations superseding earlier reads. Lists account for pending IDs
+independently. Room, section, and bot catalogs reserve authority order before
+each request. Mutation replies retain that order, so a held response cannot outrank a newer
+tombstone, list, lookup, or successful mutation. Lists account for pending IDs
 absent from memory too. Older lists cannot delete a chat created while they
 waited; newer lists invalidate older cold lookups even when the result is empty.
 Cache restoration captures catalog authority before reading IndexedDB and fills
@@ -98,7 +99,10 @@ only IDs still unproven by the network. Cache readiness never establishes absenc
 Room views observe explicit present, gone, or discarded outcomes, so concurrent
 settings and conversation reads cannot mistake a superseded reply for deletion.
 Live deletion, departure, archival, and membership updates invalidate older reads
-and optional logs.
+and optional logs. Read acknowledgments only advance existing member read
+positions; they never supersede pending history or overwrite room metadata.
+Opening a room publishes its log without waiting for a best-effort acknowledgment.
+Delayed permission failures also retain their original request order.
 
 Roster subscriptions start after authorization. Persistence waits for the room
 list, independently of optional logs or other startup reads. Queued roster and
