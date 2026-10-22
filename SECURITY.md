@@ -116,33 +116,25 @@ These protections constrain tool actions through the checked paths and grants.
 They do not protect an installation from a process already running without the
 sandbox as the same user, including Bypass, an approved external tool, or other
 host software. Such a process can change files, links, permissions or ACLs.
-A writable hard-link alias names the same inode as its protected runtime path;
-canonical paths and a read-only bind of that original path do not protect the
-alias. Linux mode `0444` alone is insufficient: the owning user can
-[change its mode](https://man7.org/linux/man-pages/man2/chmod.2.html). ACLs and
-filesystem-specific permissions also need consideration. Hexbot does not add per-command chmod/ACL mutations
-or a read-only-install requirement.
+Shell/code hard-link aliases remain uncontained. A preexisting alias in a
+writable workspace/output folder can name the same inode as a protected managed
+runtime file; writing through that alias can modify installed bytes even when
+the original path is read-only. The same limitation applies to aliases inserted
+later by an unconfined same-user process. Canonical path checks and read-only
+binds of the original path do not protect these aliases. Hexbot does not scan
+managed-file inodes or recursively walk workspaces to look for them. Ordinary uv
+cache hard links do not require reprovisioning or prevent command launch.
 
-Before shell/code layout creation, a separate snapshot checks managed roots and
-declared workspace/output roots, with a total budget of 100,000 path entries
-and root resolutions. Declared roots are resolved once; nested entries are
-inspected without following symlinks. Nested symlink targets are outside this
-snapshot, so links to unrelated trees or network mounts do not expand its walk.
-Direct regular-file aliases, including a declared root alias, are still checked.
-Matching managed-file inodes in those grants, scan errors and exhaustion refuse
-the command. This entry budget is not an I/O deadline: resolving an explicitly
-selected root or inspecting a filesystem entry can still block. Legitimate uv
-cache hard links outside the declared grants remain valid.
-Remove an unsafe alias or replace it with an independent copy; use smaller
-folders if the scan exceeds its budget. Repair damaged runtime bytes from a
-trusted installer, rather than changing permissions on unknown legacy bytes.
-This scan is not a race-safe boundary. It excludes implicit temporary roots and
-arbitrary paths opened by a full-access command, and cannot stop an unconfined
-same-user process inserting an alias after validation or changing permissions.
-The reported shell/code hard-link class is not fully closed. Pi write/edit and
-native file callbacks atomically replace the output directory entry instead of
-truncating its inode, so those writes preserve other hard-link names, including
-an alias inserted after the file gate. They do not establish whole-process or
+Linux mode `0444` alone is insufficient: the owning user can
+[change its mode](https://man7.org/linux/man-pages/man2/chmod.2.html). ACLs and
+filesystem-specific permissions also need consideration. This foundation adds
+no per-command chmod/ACL mutations, read-only-install contract or kernel policy
+for inode protection.
+
+Pi write/edit and native file callbacks atomically replace the output directory
+entry instead of truncating its inode. Those writes preserve other hard-link
+names, including preexisting aliases and aliases inserted after the file gate.
+They do not close the shell/code hard-link class or establish whole-process or
 whole-filesystem containment. See the [Linux hard-link semantics](https://man7.org/linux/man-pages/man2/link.2.html).
 
 macOS also matches `.git` paths and secret filenames created during a command. It
