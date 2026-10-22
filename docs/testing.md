@@ -189,6 +189,9 @@ route and composer checked before continuing.
   only existing repositories within the bounded scan; repositories created
   during a command remain unprotected. macOS filename rules cover new `.git`
   metadata directories.
+- Pi file-tool tests build the test-only Rust `pi_file_fixture` example to
+  exercise the actual private protocol and anchored operations. They need the
+  pinned Rust toolchain. Umask tests run in isolated Node children.
 - Live Pi suites: ignored unless `HEXBOT_TEST_PI` names a Pi executable. CI runs
   them with the pinned Pi after the Pi runtime install above, from
   `backend/hexbot-core`:

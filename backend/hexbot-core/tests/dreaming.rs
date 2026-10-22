@@ -752,6 +752,87 @@ fn digest_keeps_private_thread_questions_and_sender_tool_replies() {
 }
 
 #[tokio::test]
+async fn stored_script_jobs_can_be_paused_listed_and_removed_without_workdir_validation() {
+    let home = setup();
+    let events = EventHub::default();
+    let runtime = Runtime::new(
+        home.path().into(),
+        events.clone(),
+        home.path().join("must-not-spawn"),
+    )
+    .unwrap();
+    let scheduler = Dreaming::new(home.path().into(), runtime, events);
+    for key in ["script", "monitor_script"] {
+        let created = scheduler
+            .tool_call(
+                "alice",
+                "owl",
+                &json!({"action":"create","schedule":"1h","prompt":"probe"}),
+            )
+            .await
+            .unwrap();
+        let id = created["job"]["id"].as_str().unwrap();
+        runtime_store::open(home.path())
+            .unwrap()
+            .execute(
+                "UPDATE native_jobs SET job_json=json_set(job_json,'$.workdir',?,?,?) WHERE id=?",
+                rusqlite::params![
+                    home.workspace().join("absent").to_str().unwrap(),
+                    format!("$.{key}"),
+                    "/absent/script.py",
+                    id
+                ],
+            )
+            .unwrap();
+        scheduler
+            .call(
+                "alice",
+                "hexbot.jobs.pause",
+                &json!({"bot":"owl","job_id":id}),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        let listed = scheduler
+            .tool_call(
+                "alice",
+                "owl",
+                &json!({"action":"list","include_disabled":true}),
+            )
+            .await
+            .unwrap();
+        let stored = listed["jobs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|job| job["id"] == id)
+            .unwrap();
+        assert_eq!(stored["enabled"], false);
+        assert_eq!(stored["state"], "paused");
+        assert_eq!(stored[key], "/absent/script.py");
+        assert!(
+            scheduler
+                .tool_call("alice", "owl", &json!({"action":"resume","job_id":id}))
+                .await
+                .is_err()
+        );
+        scheduler
+            .tool_call("alice", "owl", &json!({"action":"remove","job_id":id}))
+            .await
+            .unwrap();
+        let remaining = scheduler
+            .tool_call(
+                "alice",
+                "owl",
+                &json!({"action":"list","include_disabled":true}),
+            )
+            .await
+            .unwrap();
+        assert_eq!(remaining["jobs"], json!([]));
+    }
+}
+
+#[tokio::test]
 async fn paired_clients_manage_jobs_through_the_same_owner_scoped_scheduler() {
     let home = setup();
     let events = EventHub::default();

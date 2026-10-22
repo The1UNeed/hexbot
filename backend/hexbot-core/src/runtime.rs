@@ -38,6 +38,12 @@ mod stop;
 use crate::dreaming::checkins;
 use identity::with_fields;
 
+#[cfg(unix)]
+#[path = "runtime_files.rs"]
+mod files;
+#[path = "runtime_pi_files.rs"]
+mod pi_files;
+
 #[cfg(test)]
 #[path = "runtime_lifecycle_tests.rs"]
 mod lifecycle_tests;
@@ -76,7 +82,7 @@ struct State {
     landing: usize,
     /// The bot-to-bot chain this turn belongs to; a fresh turn starts a fresh one.
     chain: Chain,
-    tool_started: HashMap<String, std::time::Instant>,
+    tool_started: HashMap<String, (std::time::Instant, String)>,
     /// Argument previews by tool call id, kept until the tool result row is written.
     tool_context: HashMap<String, String>,
     unsaved: VecDeque<(Value, Option<String>, Option<Value>)>,
@@ -3372,7 +3378,9 @@ impl Runtime {
         Ok(())
     }
 
-    fn session_settings(&self, s: &Live) -> Result<Value> {
+    // Read effective policy and stored metadata without resolving workdirs or
+    // creating output directories. Windows gates must precede those operations.
+    fn session_policy(&self, s: &Live) -> Result<(Value, Value, Option<String>, Value)> {
         let conn = store::open(&self.home)?;
         let mut stored = s.stored.clone();
         let mut seen = std::collections::HashSet::new();
@@ -3414,6 +3422,16 @@ impl Runtime {
         saved["model"] = own["model"].clone();
         saved["provider"] = own["provider"].clone();
         saved["workdirOverride"] = own["workdirOverride"].clone();
+        saved["approvalMode"] = json!(mode);
+        Ok((saved, settings, bot_workdir, own))
+    }
+
+    fn session_settings(&self, s: &Live) -> Result<Value> {
+        let (mut saved, settings, bot_workdir, own) = self.session_policy(s)?;
+        if saved["approvalMode"] != "off" {
+            crate::credentials::require_supported_execution()?;
+        }
+        let db = db::open(&self.home)?;
         let output_dirs = [
             self.home.join("profiles").join(&s.bot).join("artifacts"),
             store::session_dir(&self.home, &s.stored)?.join("attachments"),
@@ -3422,7 +3440,6 @@ impl Runtime {
             fs::create_dir_all(path)?;
         }
         saved["outputDirs"] = json!(output_dirs);
-        saved["approvalMode"] = json!(mode);
         saved["fallback"] = settings["fallback_model"]
             .as_str()
             .and_then(|s| s.split_once('/'))
@@ -3432,7 +3449,10 @@ impl Runtime {
             &[saved["workdirOverride"].as_str(), bot_workdir.as_deref()],
             &settings,
         );
-        saved["cwd"] = json!(common::resolve_workdir(&self.home, configured)?);
+        let cwd = common::resolve_workdir(&self.home, configured)?;
+        saved["fileWorkdir"] = json!(configured);
+        saved["fileEpoch"] = json!(s.state.lock().unwrap().stop_epoch);
+        saved["cwd"] = json!(cwd);
         saved["home"] = json!(self.home);
         // Hash expanded entries, not just YAML: credential edits revoke old clients too.
         if let Some(names) = own["mcpServers"].as_array() {
@@ -3854,6 +3874,111 @@ impl Runtime {
         block.push_str(&format!("\n\n{}", crate::team::REPLY_GUIDANCE));
         Ok(block)
     }
+    /// Only the trusted Pi UI route can call this. Pi owns completed approvals;
+    /// no public tool argument can assert approval or acquire this authority.
+    fn pi_file(&self, s: &Live, event: &Value, args: &Value) -> Result<Value> {
+        let request = pi_files::parse(event, args)?;
+        let _gate = s.event_gate.lock().unwrap();
+        {
+            let state = s.state.lock().unwrap();
+            if state.dialogs_cancelled() || s.replaced.load(Ordering::Acquire) {
+                return Err(Error::new(4302, "The file action was interrupted."));
+            }
+            if args["snapshot"]["fileEpoch"] != json!(state.stop_epoch) {
+                return Err(Error::new(
+                    4302,
+                    "The file action belongs to an earlier run. Try again.",
+                ));
+            }
+            let call = required(args, "callId")?;
+            if !state
+                .tool_started
+                .get(call)
+                .is_some_and(|(_, tool)| tool == request.tool)
+            {
+                return Err(Error::new(4302, "The file tool call is no longer running."));
+            }
+        }
+        store::check_deleted(&store::open(&self.home)?, &s.stored)?;
+        let (policy, settings, bot_workdir, own) = self.session_policy(s)?;
+        require_builtin_capability(&own, "file", request.tool)?;
+        crate::credentials::require_supported_execution()?;
+        let snapshot = &args["snapshot"];
+        let configured = common::configured_workdir(
+            &[policy["workdirOverride"].as_str(), bot_workdir.as_deref()],
+            &settings,
+        );
+        common::identifier(&s.stored)?;
+        let outputs = json!([
+            self.home.join("profiles").join(&s.bot).join("artifacts"),
+            self.home
+                .join("runtime/sessions")
+                .join(&s.stored)
+                .join("attachments"),
+        ]);
+        if policy["approvalMode"] == "off"
+            || policy["approvalMode"] != snapshot["approvalMode"]
+            || snapshot["fileWorkdir"] != configured
+            || snapshot["outputDirs"] != outputs
+        {
+            return Err(Error::new(
+                4302,
+                "File policy changed before this action ran. Try again.",
+            ));
+        }
+        // No resolve_workdir/session_settings here: neither an invalid request
+        // nor a stale snapshot may create its workspace/output directories.
+        let cwd = fs::canonicalize(common::check_workdir(&self.home, configured)?)?;
+        if snapshot["cwd"] != json!(cwd) {
+            return Err(Error::new(
+                4302,
+                "File policy changed before this action ran. Try again.",
+            ));
+        }
+        #[cfg(unix)]
+        {
+            let path = &request.path;
+            let home = fs::canonicalize(&self.home)?;
+            let output = outputs
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter_map(|v| v.as_str())
+                .map(|path| crate::credentials::real_root(Path::new(path)).map_err(Error::from))
+                .collect::<Result<Vec<_>>>()?;
+            if crate::credentials::managed_runtime_path(&self.home, path)?
+                || crate::credentials::credential_name(&self.home, path)
+                || matches!(
+                    crate::credentials::host_write_tier(path),
+                    Some(crate::credentials::WriteTier::Deny)
+                )
+                || (crate::credentials::under(path, &home)
+                    && !output
+                        .iter()
+                        .any(|root| crate::credentials::under(path, root)))
+                || path.components().any(|c| {
+                    c.as_os_str().to_str().is_some_and(|name| {
+                        crate::credentials::secret_file_name(name)
+                            || [".git", "node_modules", ".ssh"].contains(
+                                &if crate::credentials::FOLD_CASE {
+                                    name.to_lowercase()
+                                } else {
+                                    name.to_owned()
+                                }
+                                .as_str(),
+                            )
+                    })
+                })
+            {
+                return Err(Error::new(4302, "This file path is protected."));
+            }
+            // Synchronous through rename: cancel_dialogs aborts and joins this
+            // request task before acknowledging Stop. No detached write exists.
+            pi_files::perform(&request, event["id"].as_str().unwrap_or(""))
+        }
+        #[cfg(not(unix))]
+        Err(Error::new(4302, "Unix file handles are unavailable"))
+    }
     fn register_worker_bridge(&self, s: &Arc<Live>) {
         let runtime = self.weak.clone();
         let session = Arc::downgrade(s);
@@ -3878,11 +4003,6 @@ impl Runtime {
                     )?;
                     let options: Value = serde_json::from_str(&saved)
                         .map_err(|e| Error::new(5200, e.to_string()))?;
-                    let enabled = options["enabledToolsets"]
-                        .as_array()
-                        .cloned()
-                        .unwrap_or_default();
-                    let allowed = options["restricted"].as_array();
                     let capability = match name.as_str() {
                         "terminal" => Some(("terminal", "bash")),
                         "read_file" => Some(("file", "read")),
@@ -3891,57 +4011,96 @@ impl Runtime {
                         _ => None,
                     };
                     if let Some((toolset, tool)) = capability {
-                        if !allowed.map_or_else(
-                            || enabled.iter().any(|v| v == toolset),
-                            |a| a.iter().any(|v| v == tool),
-                        ) {
-                            return Err(Error::new(4210, "tool is disabled for this session"));
-                        }
+                        require_builtin_capability(&options, toolset, tool)?;
                         if name == "terminal" {
                             return Self::command(&session, json!({"type":"bash","command":required(&args,"command")?,"excludeFromContext":true})).await;
                         }
+                        let policy = runtime.session_policy(&session)?.0;
+                        if policy["approvalMode"] != "off" {
+                            crate::credentials::require_supported_execution()?;
+                        }
                         let live = runtime.session_settings(&session)?;
                         let raw = PathBuf::from(required(&args, "path")?);
-                        let path = if raw.is_absolute() {
+                        let lexical = if raw.is_absolute() {
                             raw
                         } else {
                             PathBuf::from(live["cwd"].as_str().unwrap_or(".")).join(raw)
                         };
-                        let (path, ask, reason) = guarded_file_path(
-                            &runtime.home,
-                            &path,
-                            name != "read_file",
-                            live["approvalMode"].as_str().unwrap_or("manual"),
-                            &std::iter::once(&live["cwd"])
-                                .chain(live["outputDirs"].as_array().into_iter().flatten())
-                                .filter_map(|v| v.as_str().map(PathBuf::from))
-                                .collect::<Vec<_>>(),
-                        )?;
-                        if ask && !runtime.native_approval(&session, json!({"tool":name,"toolCall":{"title":path.to_string_lossy()},"input":args,"reason":reason})).await? {
+                        let check = |settings: &Value| {
+                            guarded_file_path(
+                                &runtime.home,
+                                &lexical,
+                                name != "read_file",
+                                settings["approvalMode"].as_str().unwrap_or("manual"),
+                                &std::iter::once(&settings["cwd"])
+                                    .chain(settings["outputDirs"].as_array().into_iter().flatten())
+                                    .filter_map(|v| v.as_str().map(PathBuf::from))
+                                    .collect::<Vec<_>>(),
+                            )
+                        };
+                        let checked = check(&live)?;
+                        if checked.1 && !runtime.native_approval(&session, json!({"tool":name,"toolCall":{"title":checked.0.to_string_lossy()},"input":args,"reason":checked.2})).await? {
                             return Err(Error::new(4302, "The user denied this action."));
                         }
+                        // Approval does not authorize a different mode, working
+                        // folder or destination when this callback resumes.
+                        let current = runtime.session_settings(&session)?;
+                        if ["approvalMode", "cwd", "outputDirs"]
+                            .iter()
+                            .any(|key| current[key] != live[key])
+                        {
+                            return Err(Error::new(
+                                4302,
+                                "File policy changed before this action ran. Try again.",
+                            ));
+                        }
+                        let fresh = check(&current)?;
+                        if fresh != checked {
+                            return Err(Error::new(
+                                4302,
+                                "File destination or policy changed before this action ran. Try again.",
+                            ));
+                        }
+                        let path = fresh.0;
+                        #[cfg(unix)]
+                        let access = if current["approvalMode"] != "off" {
+                            Some(files::FileAccess::open(&path, name == "write_file")?)
+                        } else {
+                            None
+                        };
+                        let read = || -> Result<String> {
+                            #[cfg(unix)]
+                            if let Some(access) = &access {
+                                return access.read();
+                            }
+                            common::read_regular_text(&path, 256 * 1024)
+                        };
+                        let write = |bytes: &[u8]| -> Result<()> {
+                            #[cfg(unix)]
+                            if let Some(access) = &access {
+                                return access.write(bytes);
+                            }
+                            common::atomic_write(&path, bytes)
+                        };
                         return match name.as_str() {
                             "read_file" => {
-                                let text = common::read_regular_text(&path, 256 * 1024)?;
+                                let text = read()?;
                                 Ok(
                                     json!({"content":text.chars().take(256*1024).collect::<String>()}),
                                 )
                             }
                             "write_file" => {
-                                common::atomic_write(
-                                    &path,
-                                    required(&args, "content")?.as_bytes(),
-                                )?;
+                                write(required(&args, "content")?.as_bytes())?;
                                 Ok(json!({"success":true}))
                             }
                             "patch" => {
                                 let old = required(&args, "old_string")?;
                                 let new = args["new_string"].as_str().unwrap_or("");
-                                let text = common::read_regular_text(&path, 256 * 1024)?;
+                                let text = read()?;
                                 if text.matches(old).count() != 1 {
                                     return Err(Error::new(4202, "patch must match exactly once"));
                                 }
-                                common::atomic_write(&path, text.replacen(old, new, 1).as_bytes())?;
+                                write(text.replacen(old, new, 1).as_bytes())?;
                                 Ok(json!({"success":true}))
                             }
                             _ => unreachable!(),
@@ -3964,8 +4123,23 @@ impl Runtime {
         );
     }
     async fn tool(&self, s: &Arc<Live>, name: &str, args: &Value) -> Result<Value> {
+        if name == "hexbot_pi_file" {
+            return Err(Error::new(
+                4302,
+                "The private file bridge requires Pi's UI transport.",
+            ));
+        }
         common::bot_owner(&self.home, &s.owner, &s.bot)?;
         store::check_deleted(&store::open(&self.home)?, &s.stored)?;
+        if matches!(name, "cronjob_manage" | "hexbot_jobs") {
+            let bot = if name == "hexbot_jobs" {
+                required(args, "bot")?
+            } else {
+                &s.bot
+            };
+            common::bot_owner(&self.home, &s.owner, bot)?;
+            crate::dreaming::require_supported_job_request(&self.home, &s.owner, bot, args)?;
+        }
         // Check-in tools are filtered when frozen; refuse here too.
         if s.stored.starts_with("checkin-")
             && s.tools.iter().any(|t| t["name"] == name)
@@ -3984,15 +4158,57 @@ impl Runtime {
         let mut code_sandbox = None;
         if name == "execute_code" {
             crate::credentials::check_code(args["code"].as_str().unwrap_or(""))?;
+            let policy = self.session_policy(s)?.0;
+            if policy["approvalMode"] != "off" {
+                crate::credentials::require_supported_execution()?;
+            }
             let live = self.session_settings(s)?;
             let mode = live["approvalMode"].clone();
+            if mode != "off" {
+                crate::credentials::require_supported_execution()?;
+            }
+            let snapshot = live.clone();
+            let runtime = self.weak.clone();
+            let session = Arc::downgrade(s);
+            let revalidate: crate::native_tools::CodeRevalidate = Arc::new(move || {
+                let runtime = runtime
+                    .upgrade()
+                    .ok_or_else(|| Error::new(5201, "daemon stopped"))?;
+                let session = session
+                    .upgrade()
+                    .ok_or_else(|| Error::new(5201, "session closed"))?;
+                let policy = runtime.session_policy(&session)?.0;
+                if policy["approvalMode"] != "off" {
+                    crate::credentials::require_supported_execution()?;
+                }
+                if !crate::connectors::toolsets(&runtime.home, &session.bot)?
+                    .iter()
+                    .any(|name| name == "code_execution")
+                {
+                    return Err(Error::new(4302, "tool is disabled: execute_code"));
+                }
+                let current = runtime.session_settings(&session)?;
+                if ["approvalMode", "cwd", "outputDirs"]
+                    .iter()
+                    .any(|key| current[key] != snapshot[key])
+                {
+                    return Err(Error::new(
+                        4302,
+                        "Execution policy changed before this code ran. Try again.",
+                    ));
+                }
+                Ok(())
+            });
             code_sandbox = Some((
-                match mode.as_str() {
-                    Some("off") => None,
-                    Some("manual") => Some(crate::credentials::Confine::ReadOnly),
-                    _ => Some(crate::credentials::Confine::Workspace),
-                },
-                PathBuf::from(live["cwd"].as_str().unwrap_or(".")),
+                (
+                    match mode.as_str() {
+                        Some("off") => None,
+                        Some("manual") => Some(crate::credentials::Confine::ReadOnly),
+                        _ => Some(crate::credentials::Confine::Workspace),
+                    },
+                    PathBuf::from(live["cwd"].as_str().unwrap_or(".")),
+                ),
+                revalidate,
             ));
             let sandboxed = crate::credentials::isolation_available();
             let mut request =
@@ -4002,7 +4218,9 @@ impl Runtime {
             } else {
                 crate::credentials::UNSANDBOXED_REASON
             });
-            if (mode == "manual" || !sandboxed) && !self.native_approval(s, request).await? {
+            if (mode == "manual" || (mode != "off" && !sandboxed))
+                && !self.native_approval(s, request).await?
+            {
                 return Err(Error::new(4302, "The user denied this action."));
             }
         }
@@ -4368,9 +4586,13 @@ impl Runtime {
                 let call =
                     crate::native_tools::call(&self.home, &s.owner, &s.bot, &s.stored, name, args);
                 let result = match code_sandbox {
-                    Some(sandbox) => {
-                        crate::native_tools::CODE_SANDBOX
-                            .scope(sandbox, call)
+                    Some((sandbox, revalidate)) => {
+                        revalidate()?;
+                        crate::native_tools::CODE_REVALIDATE
+                            .scope(
+                                revalidate,
+                                crate::native_tools::CODE_SANDBOX.scope(sandbox, call),
+                            )
                             .await?
                     }
                     None => call.await?,
@@ -4612,9 +4834,13 @@ impl Runtime {
                 {
                     let mut state = s.state.lock().unwrap();
                     let id = event["toolCallId"].as_str().unwrap_or("");
-                    state
-                        .tool_started
-                        .insert(id.into(), std::time::Instant::now());
+                    state.tool_started.insert(
+                        id.into(),
+                        (
+                            std::time::Instant::now(),
+                            event["toolName"].as_str().unwrap_or("").to_owned(),
+                        ),
+                    );
                     state.tool_context.insert(id.into(), context.clone());
                 }
                 self.emit(s, "tool.start", with_fields(json!({"tool_id":event["toolCallId"],"name":name,"context":context,"args":event["args"],"parent_tool_call_id":event["parentToolCallId"]}), &observed.fields));
@@ -4639,7 +4865,7 @@ impl Runtime {
                     .unwrap()
                     .tool_started
                     .remove(event["toolCallId"].as_str().unwrap_or(""))
-                    .map_or(0., |start| start.elapsed().as_secs_f64());
+                    .map_or(0., |(start, _)| start.elapsed().as_secs_f64());
                 self.emit(
                     s,
                     "tool.complete",
@@ -4774,6 +5000,7 @@ impl Runtime {
                         .ok_or_else(|| Error::new(5201, "daemon is stopping"))?;
                     let source = s.clone();
                     let id = id.to_owned();
+                    let file_event = (request["name"] == "hexbot_pi_file").then(|| event.clone());
                     let mut tasks = s.requests.lock().unwrap();
                     while tasks.try_join_next().is_some() {}
                     let interrupted = {
@@ -4786,14 +5013,18 @@ impl Runtime {
                         return Ok(());
                     }
                     tasks.spawn(async move {
-                        let response = match runtime
-                            .tool(
-                                &source,
-                                request["name"].as_str().unwrap_or(""),
-                                &request["args"],
-                            )
-                            .await
-                        {
+                        let result = if let Some(file_event) = file_event {
+                            runtime.pi_file(&source, &file_event, &request["args"])
+                        } else {
+                            runtime
+                                .tool(
+                                    &source,
+                                    request["name"].as_str().unwrap_or(""),
+                                    &request["args"],
+                                )
+                                .await
+                        };
+                        let response = match result {
                             Ok(result) => json!({"result":result}),
                             Err(error) => json!({"error":error.message}),
                         };
@@ -6571,6 +6802,20 @@ mod code_environment_tests {
 /// The checked target and whether a write needs approval: every write in Manual;
 /// in Auto, writes outside `writable` and host configuration files from
 /// credential-policy.json. Bypass checks nothing.
+fn require_builtin_capability(options: &Value, toolset: &str, tool: &str) -> Result<()> {
+    let allowed = options["restricted"].as_array();
+    if !allowed.map_or_else(
+        || {
+            options["enabledToolsets"]
+                .as_array()
+                .is_some_and(|a| a.iter().any(|v| v == toolset))
+        },
+        |a| a.iter().any(|v| v == tool),
+    ) {
+        return Err(Error::new(4210, "tool is disabled for this session"));
+    }
+    Ok(())
+}
 fn guarded_file_path(
     home: &Path,
     path: &Path,
@@ -6578,6 +6823,15 @@ fn guarded_file_path(
     mode: &str,
     writable: &[PathBuf],
 ) -> Result<(PathBuf, bool, Option<String>)> {
+    if mode != "off" {
+        crate::credentials::require_supported_execution()?;
+        if write && crate::credentials::managed_runtime_path(home, path)? {
+            return Err(Error::new(
+                4302,
+                "Managed runtimes and runtime selection are read-only.",
+            ));
+        }
+    }
     fn resolve(path: &Path) -> Result<PathBuf> {
         let mut resolved = PathBuf::new();
         for component in path.components() {
@@ -6607,6 +6861,16 @@ fn guarded_file_path(
     if mode == "off" {
         return Ok((target, false, None));
     }
+    let root = resolve(home)?;
+    if write
+        && (crate::credentials::managed_runtime_path(home, path)?
+            || crate::credentials::managed_runtime_path(&root, &target)?)
+    {
+        return Err(Error::new(
+            4302,
+            "Managed runtimes and runtime selection are read-only.",
+        ));
+    }
     let git_check = if write {
         crate::credentials::git_write_protected(&target, writable)
     } else {
@@ -6619,7 +6883,6 @@ fn guarded_file_path(
             "Git metadata is read-only. Use an approved full_access command.",
         ));
     }
-    let root = resolve(home)?;
     // Manual asks before every change, Auto before one outside the workspace.
     let mut ask = write
         && (reason.is_some()
@@ -6676,6 +6939,69 @@ fn guarded_file_path(
 #[cfg(test)]
 mod file_bridge_tests {
     use super::*;
+    #[cfg(unix)]
+    #[test]
+    fn native_file_bridge_never_writes_managed_runtimes_through_output_links() {
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path().canonicalize().unwrap().join("home");
+        fs::create_dir_all(home.join("profiles/owl")).unwrap();
+        let files = [
+            "runtime/native-current.json",
+            "runtime/native/build/hexbot.exe",
+            "runtime/tools/code-python/Scripts/python.exe",
+        ];
+        for local in files {
+            let path = home.join(local);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, "keep").unwrap();
+        }
+        let home_alias = temp.path().join("home-alias");
+        std::os::unix::fs::symlink(&home, &home_alias).unwrap();
+        let output = home.join("profiles/owl/artifacts");
+        for (destination, relative) in [
+            (home.join("runtime"), "native-current.json"),
+            (home.join("runtime/native/build"), "hexbot.exe"),
+            (home.join("runtime/tools/code-python/Scripts"), "python.exe"),
+        ] {
+            std::os::unix::fs::symlink(&destination, &output).unwrap();
+            for mode in ["manual", "smart"] {
+                for root in [&home, &home_alias] {
+                    let target = root.join("profiles/owl/artifacts").join(relative);
+                    let result = guarded_file_path(
+                        root,
+                        &target,
+                        true,
+                        mode,
+                        &[output.clone(), home.join("runtime")],
+                    )
+                    .and_then(|(target, _, _)| common::atomic_write(&target, b"changed"));
+                    assert!(
+                        result.is_err(),
+                        "{target:?} must be denied, even after approval"
+                    );
+                    assert_eq!(
+                        fs::read_to_string(destination.join(relative)).unwrap(),
+                        "keep"
+                    );
+                }
+            }
+            // Bypass deliberately skips this policy. Verify the same target is
+            // writable so a filesystem permission failure cannot hide a weak guard.
+            let (target, ask, _) = guarded_file_path(
+                &home,
+                &output.join(relative),
+                true,
+                "off",
+                std::slice::from_ref(&output),
+            )
+            .unwrap();
+            assert!(!ask);
+            common::atomic_write(&target, b"bypass").unwrap();
+            assert_eq!(fs::read_to_string(&target).unwrap(), "bypass");
+            fs::write(target, "keep").unwrap();
+            fs::remove_file(&output).unwrap();
+        }
+    }
     #[test]
     fn file_bridge_protects_linked_and_bare_git_metadata() {
         let temp = tempfile::tempdir().unwrap();

@@ -319,6 +319,15 @@ existing `flock` holders on both platforms. Activation waits still retry interru
 calls, and inherited activation descriptors still require the same device/inode
 and lock checks. The daemon remains unsupported on Windows.
 
+Windows compile and installation work must preserve the fail-closed boundary
+in `credentials.rs` and `windows_sandbox.rs`. Auto and Manual local execution
+refuses before approval, scanning or process creation; Pi also refuses its file
+tools. Scheduled scripts require isolation in every mode. Bypass uses upstream
+Pi Bash and has no containment. The focused Windows workflow exercises the
+real Pi extension under a standard user. Its combined job runs the compiled
+`windows_security` integration test in an explicitly disposable source copy;
+the production platform guard stays intact. Neither check establishes sandbox support. See [Windows security](../../docs/windows-security.md).
+
 ## Skills
 
 One resolver in `skills.rs` supplies prompts, tools, RPCs, scheduled jobs and
@@ -398,6 +407,10 @@ cargo test --locked --manifest-path backend/hexbot-core/Cargo.toml
 cargo clippy --locked --manifest-path backend/hexbot-core/Cargo.toml --all-targets -- -D warnings
 node --test backend/pi-runtime/*.test.mjs
 ```
+
+The Pi file-tool tests build the test-only `pi_file_fixture` Cargo example and
+exercise the production directory-handle code through its private protocol.
+They require the pinned Rust toolchain as well as the locked Pi dependencies.
 
 Run real Pi against the local model fixture, including native memory tools and
 provider fallback:

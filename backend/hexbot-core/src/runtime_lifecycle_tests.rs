@@ -8,6 +8,9 @@ mod stop_tests;
 
 #[path = "runtime_admission_tests.rs"]
 mod admission_tests;
+#[cfg(unix)]
+#[path = "runtime_pi_file_tests.rs"]
+mod pi_file_tests;
 
 fn setup() -> (common::TestHome, Arc<Runtime>, EventHub) {
     let home = common::TestHome::new();
@@ -2203,38 +2206,41 @@ async fn one_shot_socket_closed(socket: &mut tokio::io::BufReader<tokio::net::Tc
 
 #[tokio::test]
 async fn reviewer_denies_tool_bridges_and_counts_failed_calls() {
-    let (home, runtime, _) = setup();
-    let script = home.path().join("pi.cjs");
-    let source = fs::read_to_string(&script).unwrap().replace(
+    for forbidden_tool in ["memory", "hexbot_pi_file"] {
+        let (home, runtime, _) = setup();
+        let script = home.path().join("pi.cjs");
+        let source = fs::read_to_string(&script).unwrap().replace(
         "const fs=require('node:fs')",
         r#"if(process.argv.includes('--no-session')){const rl=require('node:readline').createInterface({input:process.stdin});const emit=v=>process.stdout.write(JSON.stringify(v)+'\n');rl.on('line',line=>{const c=JSON.parse(line);if(c.type==='extension_ui_response'){const reply=JSON.parse(c.value);if(!reply.error?.includes('cannot use tools'))process.exit(2);emit({type:'message_end',message:{role:'assistant',content:[{type:'text',text:'{"decision":"allow","risk":"low"}'}],usage:{input:7,output:3,cost:{total:.02}},stopReason:'stop'}});emit({type:'agent_settled'});return;}emit({type:'response',id:c.id,command:c.type,success:true,data:{}});if(c.type==='prompt')emit({type:'extension_ui_request',id:'forbidden',method:'input',title:'__HEXBOT_TOOL__'+JSON.stringify({name:'memory',args:{action:'add',text:'untrusted reviewer'}})});});return;}
 const fs=require('node:fs')"#,
     );
-    fs::write(&script, source).unwrap();
-    open(&runtime).await;
-    let s = runtime.sessions.lock().unwrap()["first"].clone();
-    let saved = json!({"provider":"openai","model":"fixture"});
-    let (_, failed) = runtime
-        .one_shot(
-            "owl",
-            &saved,
-            Some(&s),
-            review::PROMPT,
-            &json!({}),
-            Duration::from_secs(5),
-        )
-        .await
-        .unwrap();
-    assert!(failed);
-    let usage = store::usage(home.path(), "first").unwrap();
-    assert_eq!(usage["total_tokens"], 10);
-    assert_eq!(usage["cost"], 0.02);
-    assert!(store::history(home.path(), "first").unwrap().is_empty());
-    assert!(!home.path().join("profiles/owl/memories/MEMORY.md").exists());
-    // Reconciliation must neither lose the separate usage nor count it twice.
-    store::reconcile(home.path(), "owl", "first", "alice").unwrap();
-    assert_eq!(store::usage(home.path(), "first").unwrap(), usage);
-    runtime.shutdown().await;
+        let source = source.replace("name:'memory'", &format!("name:{}", json!(forbidden_tool)));
+        fs::write(&script, source).unwrap();
+        open(&runtime).await;
+        let s = runtime.sessions.lock().unwrap()["first"].clone();
+        let saved = json!({"provider":"openai","model":"fixture"});
+        let (_, failed) = runtime
+            .one_shot(
+                "owl",
+                &saved,
+                Some(&s),
+                review::PROMPT,
+                &json!({}),
+                Duration::from_secs(5),
+            )
+            .await
+            .unwrap();
+        assert!(failed);
+        let usage = store::usage(home.path(), "first").unwrap();
+        assert_eq!(usage["total_tokens"], 10);
+        assert_eq!(usage["cost"], 0.02);
+        assert!(store::history(home.path(), "first").unwrap().is_empty());
+        assert!(!home.path().join("profiles/owl/memories/MEMORY.md").exists());
+        // Reconciliation must neither lose the separate usage nor count it twice.
+        store::reconcile(home.path(), "owl", "first", "alice").unwrap();
+        assert_eq!(store::usage(home.path(), "first").unwrap(), usage);
+        runtime.shutdown().await;
+    }
 }
 
 #[tokio::test]
@@ -4150,6 +4156,64 @@ async fn code_runs_sandboxed_in_auto_asks_in_manual_and_keeps_its_floor() {
             .message
             .contains("blocked")
     );
+    runtime.shutdown().await;
+}
+
+// A fresh process avoids both environment races and the cached sandbox probe.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn bypass_code_without_bubblewrap_does_not_request_approval() {
+    const CHILD: &str = "HEXBOT_TEST_BYPASS_WITHOUT_BWRAP";
+    if std::env::var_os(CHILD).is_none() {
+        let bin = tempfile::tempdir().unwrap();
+        for name in ["node", "python3"] {
+            let executable = common::command_path(name, Path::new("/")).expect(name);
+            std::os::unix::fs::symlink(executable, bin.path().join(name)).unwrap();
+        }
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "runtime::lifecycle_tests::bypass_code_without_bubblewrap_does_not_request_approval", "--nocapture"])
+            .env(CHILD, "1")
+            .env("PATH", bin.path())
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
+        return;
+    }
+    assert!(!crate::credentials::isolation_available());
+    let (home, runtime, hub) = setup();
+    fs::write(home.path().join("profiles/owl/config.yaml"), "model:\n  provider: openai\n  default: fixture\ntools:\n  enabled_toolsets: [code_execution]\n").unwrap();
+    let s = runtime.open_session("alice", "owl", "first").await.unwrap();
+    db::open(home.path())
+        .unwrap()
+        .execute("UPDATE bots SET approval_mode='off'", [])
+        .unwrap();
+    let mut events = hub.subscribe();
+    let result = tokio::time::timeout(
+        Duration::from_secs(5),
+        runtime.tool(
+            &s,
+            "execute_code",
+            &json!({"code":"print('Bypass without OS isolation')"}),
+        ),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert!(
+        result["output"]
+            .as_str()
+            .unwrap()
+            .contains("Bypass without OS isolation")
+    );
+    while let Ok(event) = events.try_recv() {
+        assert_ne!(event.frame["params"]["type"], "approval.request");
+    }
     runtime.shutdown().await;
 }
 
@@ -6088,4 +6152,229 @@ async fn parked_source_upload_defers_adoption_after_a_failed_process_restart() {
     assert_ne!(target, "first");
     assert_eq!(store::usage(h, &target).unwrap()["total_tokens"], 0);
     runtime.shutdown().await;
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn managed_root_aliases_refuse_native_writes_and_sandbox_launch() {
+    let (home, runtime, _) = setup();
+    fs::write(
+        home.path().join("profiles/owl/config.yaml"),
+        "model:\n  provider: openai\n  default: fixture\ntools:\n  enabled_toolsets: [file]\n",
+    )
+    .unwrap();
+    db::open(home.path())
+        .unwrap()
+        .execute("UPDATE bots SET approval_mode='smart'", [])
+        .unwrap();
+    open(&runtime).await;
+    let source = runtime.sessions.lock().unwrap()["first"].clone();
+    runtime.register_worker_bridge(&source);
+    let bridge = crate::native_tools::dispatcher(home.path(), "first").unwrap();
+    let output = home.path().join("profiles/owl/artifacts");
+    let actual = output.join("actual-runtime");
+    fs::create_dir_all(&actual).unwrap();
+    std::os::unix::fs::symlink(&actual, home.path().join("runtime/native")).unwrap();
+    let target = actual.join("hexbot.exe");
+    assert!(
+        bridge(
+            "write_file".into(),
+            json!({"path":target,"content":"changed"})
+        )
+        .await
+        .is_err()
+    );
+    assert!(!target.exists());
+    fs::write(&target, "keep").unwrap();
+    assert!(
+        bridge(
+            "patch".into(),
+            json!({"path":target,"old_string":"keep","new_string":"changed"})
+        )
+        .await
+        .is_err()
+    );
+    assert_eq!(fs::read_to_string(&target).unwrap(), "keep");
+    let read = bridge("read_file".into(), json!({"path":target}))
+        .await
+        .unwrap();
+    assert_eq!(read["content"], "keep");
+    for mode in ["smart", "manual", "unknown"] {
+        assert!(
+            guarded_file_path(
+                home.path(),
+                &actual.join("absent.exe"),
+                true,
+                mode,
+                std::slice::from_ref(&output)
+            )
+            .is_err()
+        );
+    }
+    assert!(
+        crate::credentials::isolated_command(
+            home.path(),
+            "/bin/sh",
+            std::slice::from_ref(&output),
+            crate::credentials::Confine::Workspace
+        )
+        .is_err()
+    );
+    runtime.shutdown().await;
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn effective_policy_read_does_not_resolve_workdirs_or_create_outputs() {
+    let (home, runtime, _) = setup();
+    fs::write(
+        home.path().join("profiles/owl/config.yaml"),
+        "model:\n  provider: openai\n  default: fixture\ntools:\n  enabled_toolsets: [file]\n",
+    )
+    .unwrap();
+    open(&runtime).await;
+    let source = runtime.sessions.lock().unwrap()["first"].clone();
+    runtime.register_worker_bridge(&source);
+    let output = home.path().join("profiles/owl/artifacts");
+    if output.exists() {
+        fs::remove_dir(&output).unwrap();
+    }
+    let new_workdir = home.workspace().join("stored-untrusted-workdir");
+    db::open(home.path())
+        .unwrap()
+        .execute(
+            "UPDATE bots SET approval_mode='smart', workdir=?",
+            [new_workdir.to_str().unwrap()],
+        )
+        .unwrap();
+    assert!(!new_workdir.exists());
+    let policy = runtime.session_policy(&source).unwrap().0;
+    assert_eq!(policy["approvalMode"], "smart");
+    assert!(!new_workdir.exists());
+    assert!(!output.exists());
+    runtime.shutdown().await;
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn queued_bypass_code_refuses_after_switch_to_a_restricted_mode() {
+    use tokio::io::AsyncWriteExt;
+    for mode in ["manual", "smart"] {
+        let (home, runtime, hub) = setup();
+        fs::write(home.path().join("profiles/owl/config.yaml"), "model:\n  provider: openai\n  default: fixture\ntools:\n  enabled_toolsets: [code_execution]\n").unwrap();
+        db::open(home.path())
+            .unwrap()
+            .execute("UPDATE bots SET approval_mode='off'", [])
+            .unwrap();
+        let s = runtime.open_session("alice", "owl", "first").await.unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let code = format!(
+            "import socket\ns=socket.create_connection(('127.0.0.1', {}))\ns.recv(1)\ns.close()\nprint('first done')",
+            listener.local_addr().unwrap().port()
+        );
+        let first = {
+            let runtime = runtime.clone();
+            let s = s.clone();
+            tokio::spawn(async move {
+                runtime
+                    .tool(&s, "execute_code", &json!({"code":code}))
+                    .await
+            })
+        };
+        let (mut socket, _) = tokio::time::timeout(Duration::from_secs(10), listener.accept())
+            .await
+            .unwrap()
+            .unwrap();
+        let mut events = hub.subscribe();
+        let args = json!({"code":"print('stale Bypass code ran')"});
+        let mut second = Box::pin(runtime.tool(&s, "execute_code", &args));
+        assert!(matches!(
+            futures_util::poll!(second.as_mut()),
+            std::task::Poll::Pending
+        ));
+        db::open(home.path())
+            .unwrap()
+            .execute("UPDATE bots SET approval_mode=?", [mode])
+            .unwrap();
+        assert_eq!(runtime.session_settings(&s).unwrap()["approvalMode"], mode);
+        socket.write_all(b"x").await.unwrap();
+        first.await.unwrap().unwrap();
+        let error = tokio::time::timeout(Duration::from_secs(10), second)
+            .await
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(error.code, 4302);
+        assert!(error.message.contains("Execution policy changed"));
+        while let Ok(event) = events.try_recv() {
+            assert_ne!(event.frame["params"]["type"], "approval.request");
+        }
+        runtime.shutdown().await;
+    }
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn native_approval_parent_swap_never_writes_managed_runtime() {
+    for tool in ["write_file", "patch"] {
+        let (home, runtime, hub) = setup();
+        fs::write(
+            home.path().join("profiles/owl/config.yaml"),
+            "model:\n  provider: openai\n  default: fixture\ntools:\n  enabled_toolsets: [file]\n",
+        )
+        .unwrap();
+        db::open(home.path())
+            .unwrap()
+            .execute("UPDATE bots SET approval_mode='manual'", [])
+            .unwrap();
+        open(&runtime).await;
+        let source = runtime.sessions.lock().unwrap()["first"].clone();
+        runtime.register_worker_bridge(&source);
+        let bridge = crate::native_tools::dispatcher(home.path(), "first").unwrap();
+        let live = runtime.session_settings(&source).unwrap();
+        let artifacts = PathBuf::from(live["outputDirs"][0].as_str().unwrap());
+        let parent = artifacts.join("destination");
+        fs::create_dir_all(&parent).unwrap();
+        let managed = home.path().join("runtime/native/build");
+        fs::create_dir_all(&managed).unwrap();
+        fs::write(managed.join("hexbot.exe"), "keep").unwrap();
+        if tool == "patch" {
+            fs::write(parent.join("hexbot.exe"), "keep").unwrap();
+        }
+        let mut events = hub.subscribe();
+        let task = tokio::spawn(async move {
+            bridge(tool.into(), json!({"path":parent.join("hexbot.exe"),"content":"changed","old_string":"keep","new_string":"changed"})).await
+        });
+        let payload = tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                let event = events.recv().await.unwrap();
+                if event.frame["params"]["type"] == "approval.request" {
+                    break event.frame["params"]["payload"].clone();
+                }
+            }
+        })
+        .await
+        .unwrap();
+        let parent = artifacts.join("destination");
+        if tool == "patch" {
+            fs::remove_file(parent.join("hexbot.exe")).unwrap();
+        }
+        fs::remove_dir(&parent).unwrap();
+        std::os::unix::fs::symlink(&managed, &parent).unwrap();
+        runtime
+            .call(
+                "alice",
+                "approval.respond",
+                &json!({"session_id":source.id,"request_id":payload["request_id"],"choice":"once"}),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        let error = task.await.unwrap().unwrap_err();
+        assert_eq!(error.code, 4302);
+        assert_eq!(
+            fs::read_to_string(managed.join("hexbot.exe")).unwrap(),
+            "keep"
+        );
+        runtime.shutdown().await;
+    }
 }
