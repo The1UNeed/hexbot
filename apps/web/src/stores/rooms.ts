@@ -47,8 +47,8 @@ export interface RoomsState {
     eventsByRoom: Record<string, RoomEvent[]>,
     baseline?: Record<string, number>
   ) => void
-  /** Resolves true when the room was deleted because its last bot left. */
-  removeMember: (id: string, bot: string) => Promise<boolean>
+  /** Only pass false after confirming room deletion. Resolves true if the room was deleted. */
+  removeMember: (id: string, bot: string, keepRoom: boolean) => Promise<boolean>
   update: (id: string, patch: Parameters<typeof roomsUpdate>[1]) => Promise<void>
 }
 
@@ -420,8 +420,8 @@ export const useRooms = create<RoomsState>((set, get) => ({
     set(state => mergeRoom(state, room))
   },
 
-  async removeMember(id, bot) {
-    const { room } = await roomsRemoveMember(id, bot)
+  async removeMember(id, bot, keepRoom) {
+    const { room } = await roomsRemoveMember(id, bot, keepRoom)
 
     if ((room as Room & { deleted?: boolean }).deleted) {
       set(state => dropRoom(state, id))
