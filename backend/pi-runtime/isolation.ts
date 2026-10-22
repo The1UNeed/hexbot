@@ -437,17 +437,26 @@ function storeAncestors(denied: string[]): string[] {
   }
   return ancestors;
 }
+// Reject mutable aliases of managed roots. Resolving only the candidate path
+// misses a runtime root that itself points into a writable artifact directory.
+export function managedRuntimeRoots(home: string): string[] {
+  requireSupportedExecution();
+  const root = resolve(home), realHome = realRoot(root);
+  return [...new Set((credentialPolicy.managedRuntime as string[]).flatMap(local => {
+    const path = join(root, local), real = realRoot(path);
+    if (fold(real) !== fold(join(realHome, local))) throw new Error('Managed runtime roots must not be symlinked.');
+    return [path, real];
+  }))];
+}
 // Only the daemon-chosen output folders are writable inside the home. The
 // session cwd is never one of them: the daemon refuses a workspace there and
 // ignores a saved cwd inside it.
 function layout(home: string, outputs: string[] = []) {
   const roots = [...new Set([resolve(home), realpathSync(home)])];
+  const managed = managedRuntimeRoots(home);
   const writable = outputs.filter(p => existsSync(p)).map(p => realpathSync(p))
     .filter(p => roots.some(root => p.startsWith(root + '/')))
-    .filter(p => !roots.some(root => (credentialPolicy.managedRuntime as string[]).some(local => {
-      const managed = join(root, local);
-      return within(p, [managed]) || within(managed, [p]);
-    })));
+    .filter(p => !managed.some(root => within(p, [root]) || within(root, [p])));
   return {roots, paths: secretPaths(home), writable, denied: deniedWrites()};
 }
 // Codex's workspace sandbox, for a session's own commands in Manual and Auto:

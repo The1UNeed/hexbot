@@ -50,6 +50,39 @@ pub struct Dreaming {
 
 static SCHEDULERS: OnceLock<Mutex<HashMap<PathBuf, Weak<Dreaming>>>> = OnceLock::new();
 
+// The native and primary job tools may ask for approval before dispatching to
+// the scheduler. Read stored job metadata first, without inspecting its workdir.
+pub(crate) fn require_supported_job_request(
+    home: &Path,
+    owner: &str,
+    bot: &str,
+    request: &Value,
+) -> Result<()> {
+    if !cfg!(windows) || !matches!(request["action"].as_str(), Some("create" | "update")) {
+        return Ok(());
+    }
+    let mut job = json!({});
+    if request["action"] == "update"
+        && let Some(id) = request["job_id"].as_str()
+    {
+        let stored: Option<String> = runtime_store::open(home)?.query_row(
+            "SELECT job_json FROM native_jobs WHERE owner=? AND bot=? AND (id=? OR json_extract(job_json,'$.name')=?)",
+            params![owner, bot, id, id], |row| row.get(0)).optional()?;
+        if let Some(stored) = stored {
+            job = serde_json::from_str(&stored)
+                .map_err(|error| Error::new(5200, error.to_string()))?;
+        }
+    }
+    copy_job_options(&mut job, request)?;
+    if ["script", "monitor_script"]
+        .iter()
+        .any(|key| job[key].as_str().is_some_and(|value| !value.is_empty()))
+    {
+        crate::credentials::require_supported_execution()?;
+    }
+    Ok(())
+}
+
 pub async fn tool_call(home: &Path, owner: &str, bot: &str, p: &Value) -> Result<Value> {
     let scheduler = SCHEDULERS
         .get_or_init(Mutex::default)
@@ -2207,6 +2240,7 @@ impl Dreaming {
     }
     pub async fn tool_call(self: &Arc<Self>, owner: &str, bot: &str, p: &Value) -> Result<Value> {
         self.bot(owner, bot)?;
+        require_supported_job_request(&self.home, owner, bot, p)?;
         match common::required(p, "action")? {
             "list" => {
                 let jobs = self
@@ -2334,6 +2368,12 @@ fn copy_job_options(job: &mut Value, p: &Value) -> Result<()> {
     Ok(())
 }
 fn validate_job(home: &Path, job: &Value) -> Result<()> {
+    if ["script", "monitor_script"]
+        .iter()
+        .any(|key| job[key].as_str().is_some_and(|value| !value.is_empty()))
+    {
+        crate::credentials::require_supported_execution()?;
+    }
     if !matches!(job["deliver"].as_str(), None | Some("local" | "")) {
         return Err(Error::new(
             4202,

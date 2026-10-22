@@ -31,7 +31,7 @@ try {
   $env:TEMP = Join-Path $root 'temp'
   $env:TMP = $env:TEMP
   $env:HEXBOT_WINDOWS_NODE = Join-Path $root 'node.exe'
-  & $env:HEXBOT_WINDOWS_NODE --test (Join-Path $root 'runtime/windows-security.test.mjs')
+  & $env:HEXBOT_WINDOWS_NODE --test (Join-Path $root 'runtime/windows-security.test.mjs') (Join-Path $root 'runtime/windows-daemon-pi.test.mjs')
   $result = $LASTEXITCODE
   if (Test-Path (Join-Path $root 'native-test.exe')) {
     $env:HEXBOT_WINDOWS_PYTHON = (Get-Content (Join-Path $root 'python-path')).Trim()

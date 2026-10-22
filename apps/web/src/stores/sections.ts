@@ -196,6 +196,8 @@ const reloads = new Map<string, number>()
 const opening = new Map<string, ReturnType<SectionsState['open']>>()
 const terminals = new Map<string, number>()
 const straddling = new Map<string, { id: string; current: () => boolean }>()
+/** Failed-turn cards a history read was already asked for: one read each. */
+const proving = new WeakSet<object>()
 
 /** Each bot's chat on an older daemon, remembered across its reconnects. */
 const picked = new Map<string, string>()
@@ -574,14 +576,24 @@ export const useSections = create<SectionsState>((set, get) => ({
     terminals.set(sessionId, (terminals.get(sessionId) ?? 0) + 1)
     const pending = straddling.get(sessionId)
     straddling.delete(sessionId)
+    const { sectionId, unproven = [] } = useTranscripts.getState().bySession[sessionId] ?? {}
+    const unread = unproven.filter(entry => !proving.has(entry))
 
     if (pending?.current() && get().byId[pending.id]?.live_session_id === sessionId) {
       const { id } = pending
+      unread.forEach(entry => proving.add(entry))
       get().forgetLive(id)
       // Coalesce with a mounted view or an already pending read. A failure
       // leaves the loaded mapping invalid, so the view retains its Retry path.
       void get()
         .open(id)
+        .catch(() => undefined)
+    } else if (unread.length && sectionId && get().liveSessionId[sectionId] === sessionId) {
+      // A failed turn may be this client's input. The read that names its
+      // durable row binds Retry; without one the card stays as it is.
+      unread.forEach(entry => proving.add(entry))
+      void get()
+        .open(sectionId)
         .catch(() => undefined)
     }
   }

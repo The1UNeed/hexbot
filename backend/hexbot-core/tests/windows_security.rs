@@ -82,7 +82,7 @@ async fn windows_security_runtime_refuses_code_before_approval() {
     ] {
         fs::create_dir_all(dir).unwrap();
     }
-    fs::copy(node, fixture.join("node.exe")).unwrap();
+    fs::copy(&node, fixture.join("node.exe")).unwrap();
     fs::write(
         fixture.join("pi/launch.mjs"),
         include_str!("../../pi-runtime/fixtures/windows-daemon-pi.mjs"),
@@ -155,9 +155,21 @@ async fn windows_security_runtime_refuses_code_before_approval() {
             let opened = runtime
                 .call("alice", "hexbot.sections.open", &json!({"id":"first"}))
                 .await
-                .unwrap()
-                .unwrap();
+                .expect("sections.open is a registered Runtime method")
+                .unwrap_or_else(|error| panic!("Runtime open in {mode} before refusal: {error:?}"));
             let live = opened["section"]["live_session_id"].as_str().unwrap();
+            let absent_workdir = work.join(format!("untrusted-{mode}"));
+            let absent_output = home.join("runtime/sessions/first/attachments");
+            if absent_output.exists() {
+                fs::remove_dir(&absent_output).unwrap();
+            }
+            db::open(&home)
+                .unwrap()
+                .execute(
+                    "UPDATE bots SET workdir=?",
+                    [absent_workdir.to_str().unwrap()],
+                )
+                .unwrap();
             let mut events = hub.subscribe();
             runtime
                 .call(
@@ -175,6 +187,44 @@ async fn windows_security_runtime_refuses_code_before_approval() {
                     .unwrap()
                     .contains("Windows tool isolation is not implemented")
             );
+            assert!(
+                !absent_workdir.exists(),
+                "execute_code resolved the untrusted workdir before refusal"
+            );
+            assert!(
+                !absent_output.exists(),
+                "execute_code created outputs before refusal"
+            );
+            // Pi's settings refresh must use the same preaccess boundary.
+            fs::write(
+                fixture.join("code.json"),
+                json!({"tool":"hexbot_session_settings"}).to_string(),
+            )
+            .unwrap();
+            let mut events = hub.subscribe();
+            runtime
+                .call(
+                    "alice",
+                    "prompt.submit",
+                    &json!({"session_id":live,"text":"settings preaccess probe"}),
+                )
+                .await
+                .unwrap()
+                .unwrap();
+            let reply = native_reply(&mut events).await;
+            assert!(
+                reply["error"]
+                    .as_str()
+                    .unwrap()
+                    .contains("Windows tool isolation is not implemented")
+            );
+            assert!(!absent_workdir.exists());
+            assert!(!absent_output.exists());
+            fs::remove_file(fixture.join("code.json")).unwrap();
+            db::open(&home)
+                .unwrap()
+                .execute("UPDATE bots SET workdir=?", [work.to_str().unwrap()])
+                .unwrap();
         }
         for mode in ["smart", "manual"] {
             // Real Python starts under Bypass. Change its live policy while it
@@ -226,8 +276,15 @@ s.close()
             }).await.expect("Bypass Python connected");
             db::open(&home)
                 .unwrap()
-                .execute("UPDATE bots SET approval_mode=?", [mode])
+                .execute(
+                    "UPDATE bots SET approval_mode=?,workdir=?",
+                    rusqlite::params![mode, r"\\hexbot-hostile.invalid\share\workdir"],
+                )
                 .unwrap();
+            let absent_output = home.join("runtime/sessions/first/attachments");
+            if absent_output.exists() {
+                fs::remove_dir(&absent_output).unwrap();
+            }
             use tokio::io::AsyncWriteExt;
             socket.write_all(b"x").await.unwrap();
             let reply = native_reply(&mut events).await;
@@ -241,6 +298,14 @@ s.close()
                 "{reply}"
             );
             assert_eq!(fs::read_to_string(target).unwrap(), "keep");
+            assert!(
+                !absent_output.exists(),
+                "native callback created outputs before support refusal"
+            );
+            db::open(&home)
+                .unwrap()
+                .execute("UPDATE bots SET workdir=?", [work.to_str().unwrap()])
+                .unwrap();
         }
         for mode in ["smart", "manual", "off"] {
             db::open(&home)
@@ -253,16 +318,64 @@ s.close()
                     r"\\hexbot-hostile.invalid\share\probe.py",
                     r"Z:\missing\probe.py",
                 ] {
-                    let mut request = json!({"action":"create","schedule":"1h","prompt":"probe"});
-                    request[key] = json!(path);
-                    let created = scheduler.tool_call("alice", "owl", &request).await.unwrap();
+                    let input_key = if key == "monitor_script" {
+                        "monitor"
+                    } else {
+                        "script"
+                    };
+                    let mut request =
+                        json!({"action":"create","schedule":"1h","prompt":"probe","workdir":path});
+                    request[input_key] = json!(path);
+                    let error = scheduler
+                        .tool_call("alice", "owl", &request)
+                        .await
+                        .unwrap_err();
+                    assert!(
+                        error
+                            .message
+                            .contains("Windows tool isolation is not implemented"),
+                        "{error:?}"
+                    );
+                    let created = scheduler
+                        .tool_call(
+                            "alice",
+                            "owl",
+                            &json!({"action":"create","schedule":"1h","prompt":"probe"}),
+                        )
+                        .await
+                        .unwrap();
                     let id = created["job"]["id"].as_str().unwrap();
-                    // Simulate a stored job whose workdir became hostile after
-                    // creation. Execution must refuse before revalidation I/O.
+                    request["action"] = json!("update");
+                    request["job_id"] = json!(id);
+                    let error = scheduler
+                        .tool_call("alice", "owl", &request)
+                        .await
+                        .unwrap_err();
+                    assert!(
+                        error
+                            .message
+                            .contains("Windows tool isolation is not implemented"),
+                        "{error:?}"
+                    );
+                    // Stored jobs may predate this guard or change on disk.
                     hexbot_core::runtime_store::open(&home).unwrap().execute(
-                        "UPDATE native_jobs SET job_json=json_set(job_json,'$.workdir',?) WHERE id=?",
-                        rusqlite::params![path, id],
+                        "UPDATE native_jobs SET job_json=json_set(job_json,'$.workdir',?,?,?) WHERE id=?",
+                        rusqlite::params![path, format!("$.{key}"), path, id],
                     ).unwrap();
+                    let error = scheduler
+                        .tool_call(
+                            "alice",
+                            "owl",
+                            &json!({"action":"update","job_id":id,"workdir":path}),
+                        )
+                        .await
+                        .unwrap_err();
+                    assert!(
+                        error
+                            .message
+                            .contains("Windows tool isolation is not implemented"),
+                        "{error:?}"
+                    );
                     let mut events = hub.subscribe();
                     scheduler
                         .tool_call("alice", "owl", &json!({"action":"run","job_id":id}))
@@ -307,15 +420,67 @@ s.close()
     let result = std::panic::AssertUnwindSafe(result).catch_unwind().await;
     scheduler.shutdown().await;
     runtime.shutdown().await;
-    let pid: u32 = fs::read_to_string(fixture.join("fixture.pid"))
-        .unwrap()
-        .parse()
-        .unwrap();
-    assert!(
-        !hexbot_core::osutil::process_alive(pid),
-        "owned Pi fixture must exit during shutdown"
-    );
-    result.unwrap();
+    // Report cleanup separately, then resume the original panic. A missing
+    // startup record must not replace the error that explains why startup failed.
+    let records_path = fixture.join("fixture.events.jsonl");
+    let cleanup = (|| -> Result<(), String> {
+        let records = fs::read_to_string(&records_path)
+            .map_err(|error| format!("{}: {error}", records_path.display()))?;
+        let mut started = 0;
+        for line in records.lines() {
+            let record: serde_json::Value = serde_json::from_str(line)
+                .map_err(|error| format!("{}: {error}", records_path.display()))?;
+            eprintln!("Trusted Pi fixture lifecycle: {record}");
+            if record["event"] == "start" {
+                let pid = record["pid"].as_u64().ok_or("fixture start without PID")?;
+                let pid = u32::try_from(pid).map_err(|error| error.to_string())?;
+                started += 1;
+                if hexbot_core::osutil::process_alive(pid) {
+                    return Err(format!("owned Pi fixture {pid} survived shutdown"));
+                }
+            }
+        }
+        if started == 0 {
+            return Err("no Runtime-owned Pi fixture started".into());
+        }
+        Ok(())
+    })();
+    if result.is_err() || cleanup.is_err() {
+        eprintln!(
+            "Trusted probe paths: node={}, launcher={}, python={}, home={}",
+            fixture.join("node.exe").display(),
+            fixture.join("pi/launch.mjs").display(),
+            python.display(),
+            home.display()
+        );
+        if let Err(error) = &cleanup {
+            eprintln!("Fixture cleanup diagnostic: {error}");
+        }
+        // Production Pi deliberately discards stderr, which may contain secrets.
+        // Only this fixed, trusted fixture is rerun with bounded capture. It
+        // receives no prompt, provider settings or credential environment.
+        let mut command = tokio::process::Command::new(&node);
+        credentials::shell_environment(&mut command);
+        command
+            .arg(scratch.path().join("fixture/pi/launch.mjs"))
+            .arg("--hexbot-fixture-diagnose")
+            .current_dir(&work)
+            .kill_on_drop(true);
+        match tokio::time::timeout(Duration::from_secs(5), command.output()).await {
+            Ok(Ok(output)) => eprintln!(
+                "Trusted fixture loader: status={}, stdout={}, stderr={}",
+                output.status,
+                String::from_utf8_lossy(&output.stdout[..output.stdout.len().min(8192)]),
+                String::from_utf8_lossy(&output.stderr[..output.stderr.len().min(8192)])
+            ),
+            Ok(Err(error)) => eprintln!("Trusted fixture loader could not spawn: {error}"),
+            Err(_) => eprintln!("Trusted fixture loader timed out"),
+        }
+    }
+    if let Err(error) = result {
+        std::panic::resume_unwind(error);
+    }
+    assert!(cleanup.is_ok(), "{cleanup:?}");
     println!("Native Rust daemon refusal probes passed");
 }
 
@@ -352,23 +517,37 @@ async fn windows_security_acp_refuses_before_path_or_command_resolution() {
         r"\\hexbot-hostile.invalid\share",
         r"Z:\missing",
     ] {
-        let result = tokio::time::timeout(
-            std::time::Duration::from_secs(2),
-            hexbot_core::provider_acp::complete(
-                std::path::Path::new(home),
-                "owl",
-                "first",
-                &serde_json::json!({}),
-            ),
-        )
-        .await
-        .expect("ACP must refuse immediately");
-        let error = result.unwrap_err();
-        assert_eq!(error.code, 4302);
-        assert!(
-            error
-                .message
-                .contains("Windows tool isolation is not implemented")
-        );
+        for reviewer in [false, true] {
+            let run = async {
+                if reviewer {
+                    hexbot_core::provider_acp::complete_reviewer(
+                        std::path::Path::new(home),
+                        "owl",
+                        "first",
+                        &serde_json::json!({}),
+                        std::path::Path::new(r"\\.\pipe\untrusted-review-cwd"),
+                    )
+                    .await
+                } else {
+                    hexbot_core::provider_acp::complete(
+                        std::path::Path::new(home),
+                        "owl",
+                        "first",
+                        &serde_json::json!({}),
+                    )
+                    .await
+                }
+            };
+            let result = tokio::time::timeout(std::time::Duration::from_secs(2), run)
+                .await
+                .expect("ACP must refuse immediately");
+            let error = result.unwrap_err();
+            assert_eq!(error.code, 4302);
+            assert!(
+                error
+                    .message
+                    .contains("Windows tool isolation is not implemented")
+            );
+        }
     }
 }

@@ -97,6 +97,19 @@ test('managed runtime paths never become file-tool output exceptions', t => {
     assert.equal(protectedPath(path,f.home,[join(path,'..')]),true,local);
   }
 });
+test('managed roots pointing into outputs refuse writes and command layouts, while reads stay allowed', t => {
+  const f = fixture(t);
+  const output = join(f.home,'profiles/owl/artifacts');
+  const actual = join(output,'actual-runtime');
+  mkdirSync(actual,{recursive:true});
+  mkdirSync(join(f.home,'runtime'),{recursive:true});
+  symlinkSync(actual,join(f.home,'runtime/native'));
+  writeFileSync(join(actual,'hexbot.exe'),'keep');
+  assert.equal(credentialPath(join(actual,'hexbot.exe'),f.home),false);
+  for (const path of [join(actual,'hexbot.exe'),join(actual,'absent.exe')]) {
+    assert.throws(() => protectedPath(path,f.home,[output]),/Managed runtime roots must not be symlinked/);
+  }
+});
 test('bash children cannot inherit provider or connector credentials', async t => {
   const f=fixture(t,'smart',['terminal']);
   const previous=process.env.OPENAI_API_KEY;process.env.OPENAI_API_KEY='test-provider-secret';
