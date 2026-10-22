@@ -73,4 +73,49 @@ describe('room cluster', () => {
     rerender(<RoomCluster bots={bots} room={room(['scout', 'writer'], ['writer'])} />)
     expect(screen.queryByRole('img', { name: 'Writer' })).not.toBeInTheDocument()
   })
+
+  it.each([
+    { members: [] },
+    { members: ['scout'] },
+    { members: ['scout', 'writer', 'owl', 'fox'] }
+  ])('keeps every face in sync with the status for members $members', ({ members }) => {
+    const shared = room(members)
+    const { container, rerender } = render(<RoomCluster bots={bots} room={shared} />)
+
+    for (const [status, mood] of [
+      ['working', 'working'],
+      ['done', 'happy'],
+      ['needs_you', 'listening'],
+      ['stopped', 'idle'],
+      ['idle', 'idle'],
+      [undefined, 'idle']
+    ] as const) {
+      rerender(<RoomCluster bots={bots} room={shared} status={status} />)
+      const faces = container.querySelectorAll('hexbot-face')
+      expect(faces).toHaveLength(Math.max(1, members.length))
+      faces.forEach(face => expect(face).toHaveAttribute('state', mood))
+    }
+  })
+
+  it.each([{ members: ['scout'] }, { members: ['scout', 'writer'] }])(
+    'keeps uploaded pictures static for members $members',
+    ({ members }) => {
+      const image = 'data:image/jpeg;base64,/9j/2Q=='
+
+      const uploaded = {
+        ...bots,
+        scout: { ...bots.scout, avatar: { data: image, mime: 'image/jpeg' } } as Bot
+      }
+
+      const { rerender } = render(<RoomCluster bots={uploaded} room={room(members)} />)
+
+      for (const status of ['working', 'done', 'needs_you', 'idle'] as const) {
+        rerender(<RoomCluster bots={uploaded} room={room(members)} status={status} />)
+        const scout = screen.getByRole('img', { name: 'Scout' })
+        expect(scout.querySelector('img')).toHaveAttribute('src', image)
+        expect(scout.querySelector('hexbot-face')).toBeNull()
+        expect(scout).not.toHaveAttribute('data-mood')
+      }
+    }
+  )
 })
