@@ -1,18 +1,17 @@
 #![cfg(windows)]
 //! Exercise the actual generated launchers with Windows PowerShell 5.1.
+#[path = "../src/windows_paths.rs"]
+mod windows_paths;
 use hexbot_core::{system_service, windows_cli};
 use serde_json::json;
 use std::os::windows::process::CommandExt;
 use std::{fs, path::Path, process::Command};
 
 fn powershell(script: &str) -> std::process::Output {
-    Command::new(
-        hexbot_core::windows_paths::system_program("WindowsPowerShell/v1.0/powershell.exe")
-            .unwrap(),
-    )
-    .args(["-NoProfile", "-NonInteractive", "-Command", script])
-    .output()
-    .unwrap()
+    Command::new(windows_paths::system_program("WindowsPowerShell/v1.0/powershell.exe").unwrap())
+        .args(["-NoProfile", "-NonInteractive", "-Command", script])
+        .output()
+        .unwrap()
 }
 fn quote(path: &Path) -> String {
     format!("'{}'", path.display().to_string().replace('\'', "''"))
@@ -73,7 +72,7 @@ fn launchers_resolve_unicode_and_junctions_before_executing() {
             (inside.join("hexbot.exe"), true),
             (linked.join("hexbot.exe"), false),
         ] {
-            fs::write(home.join("runtime/native-current.json"), json!({"executable":if allowed { selected.canonicalize().unwrap() } else { selected }}).to_string()).unwrap();
+            fs::write(home.join("runtime/native-current.json"), json!({"executable":if allowed { selected.canonicalize().unwrap() } else { selected.clone() }}).to_string()).unwrap();
             if !service {
                 let output = Command::new(&forwarder)
                     .args(["space arg", "a&b", "quote\"arg", "%PATH%", "!"])
@@ -103,14 +102,12 @@ fn launchers_resolve_unicode_and_junctions_before_executing() {
                     );
                     for (program, arguments) in [
                         (
-                            hexbot_core::windows_paths::system_program("cmd.exe").unwrap(),
+                            windows_paths::system_program("cmd.exe").unwrap(),
                             vec!["/D", "/S", "/C"],
                         ),
                         (
-                            hexbot_core::windows_paths::system_program(
-                                "WindowsPowerShell/v1.0/powershell.exe",
-                            )
-                            .unwrap(),
+                            windows_paths::system_program("WindowsPowerShell/v1.0/powershell.exe")
+                                .unwrap(),
                             vec![
                                 "-NoProfile",
                                 "-NonInteractive",

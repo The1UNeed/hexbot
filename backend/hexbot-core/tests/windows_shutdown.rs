@@ -1,7 +1,9 @@
 #![cfg(windows)]
 //! Owned desktop pipe shutdown must reach App/Pi cleanup and release the home.
 use futures_util::{SinkExt, StreamExt};
-use hexbot_core::{auth, db, osutil, windows_paths};
+#[path = "../src/windows_paths.rs"]
+mod windows_paths;
+use hexbot_core::{auth, db, osutil};
 use serde_json::{Value, json};
 use std::{fs, path::PathBuf, process::Stdio, time::Duration};
 use tokio::{
