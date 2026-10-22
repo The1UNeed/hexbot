@@ -1448,22 +1448,27 @@ fn reject_managed_hardlinks(managed: &[PathBuf], grants: &[PathBuf], budget: usi
                 break;
             }
             let mut visited = HashSet::new();
-            let mut pending: Vec<_> = roots.iter().map(|p| (p.clone(), true)).collect();
-            while let Some((path, root)) = pending.pop() {
+            let mut pending = Vec::new();
+            // Resolve each declared root once. Nested entries are inspected
+            // without following links into unrelated trees or network mounts.
+            for root in roots {
                 remaining = remaining
                     .checked_sub(1)
                     .ok_or_else(|| std::io::Error::other("entry budget"))?;
-                let meta = match std::fs::metadata(&path) {
-                    Ok(meta) => meta,
-                    Err(error)
-                        if error.kind() == std::io::ErrorKind::NotFound
-                            && (root
-                                || std::fs::symlink_metadata(&path)?.file_type().is_symlink()) =>
-                    {
-                        continue;
-                    }
+                match std::fs::canonicalize(root) {
+                    Ok(path) => pending.push(path),
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
                     Err(error) => return Err(error),
-                };
+                }
+            }
+            while let Some(path) = pending.pop() {
+                remaining = remaining
+                    .checked_sub(1)
+                    .ok_or_else(|| std::io::Error::other("entry budget"))?;
+                let meta = std::fs::symlink_metadata(&path)?;
+                if meta.file_type().is_symlink() {
+                    continue;
+                }
                 let id = (meta.dev(), meta.ino());
                 if meta.is_dir() && visited.insert(id) {
                     for entry in std::fs::read_dir(path)? {
@@ -1471,7 +1476,7 @@ fn reject_managed_hardlinks(managed: &[PathBuf], grants: &[PathBuf], budget: usi
                         if pending.len() >= remaining {
                             return Err(std::io::Error::other("entry budget"));
                         }
-                        pending.push((entry?.path(), false));
+                        pending.push(entry?.path());
                     }
                 } else if meta.is_file() && meta.nlink() > 1 {
                     if index {
@@ -2023,6 +2028,62 @@ mod tests {
         }
     }
     #[test]
+    fn hardlink_snapshot_skips_nested_links_but_checks_declared_aliases() {
+        use std::os::unix::fs::symlink;
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().canonicalize().unwrap();
+        let managed = root.join("managed");
+        let output = root.join("output");
+        let large = root.join("large-external-tree");
+        for path in [&managed, &output, &large] {
+            std::fs::create_dir(path).unwrap();
+        }
+        let source = managed.join("package.py");
+        std::fs::write(&source, "keep").unwrap();
+        std::fs::hard_link(&source, root.join("uv-cache-package")).unwrap();
+        for index in 0..100 {
+            std::fs::write(large.join(index.to_string()), "outside").unwrap();
+        }
+        symlink(&large, output.join("large-link")).unwrap();
+        symlink("cycle-b", output.join("cycle-a")).unwrap();
+        symlink("cycle-a", output.join("cycle-b")).unwrap();
+        // A venv-like tree may contain interpreter/directory links. Their
+        // targets must not expand the snapshot into unrelated trees.
+        symlink(&large, managed.join("venv-link")).unwrap();
+        let output_alias = root.join("declared-output-alias");
+        symlink(&output, &output_alias).unwrap();
+        reject_managed_hardlinks(
+            std::slice::from_ref(&managed),
+            std::slice::from_ref(&output_alias),
+            30,
+        )
+        .unwrap();
+        std::fs::write(output.join("ordinary-result"), "ordinary output").unwrap();
+        reject_managed_hardlinks(
+            std::slice::from_ref(&managed),
+            std::slice::from_ref(&output_alias),
+            30,
+        )
+        .unwrap();
+        // Links do not disable checks on actual regular files in the grant.
+        let unsafe_file = output.join("runtime-alias");
+        std::fs::hard_link(&source, &unsafe_file).unwrap();
+        assert!(
+            reject_managed_hardlinks(
+                std::slice::from_ref(&managed),
+                std::slice::from_ref(&output_alias),
+                30
+            )
+            .is_err()
+        );
+        let file_alias = root.join("declared-file-alias");
+        symlink(&unsafe_file, &file_alias).unwrap();
+        assert!(
+            reject_managed_hardlinks(std::slice::from_ref(&managed), &[file_alias], 30).is_err()
+        );
+        assert_eq!(std::fs::read_to_string(source).unwrap(), "keep");
+    }
+    #[test]
     fn hardlink_snapshot_allows_cache_links_and_refuses_errors_and_exhaustion() {
         let temp = tempfile::tempdir().unwrap();
         let home = temp.path().canonicalize().unwrap();
@@ -2060,7 +2121,7 @@ mod tests {
         }
         assert!(reject_managed_hardlinks(&roots, &grants, 1).is_err());
         std::os::unix::fs::symlink("loop", output.join("loop")).unwrap();
-        assert!(reject_managed_hardlinks(&roots, &grants, 100).is_err());
+        assert!(reject_managed_hardlinks(&roots, &[output.join("loop")], 100).is_err());
         assert_eq!(std::fs::read_to_string(source).unwrap(), "trusted package");
     }
     #[tokio::test]

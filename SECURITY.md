@@ -124,9 +124,15 @@ filesystem-specific permissions also need consideration. Hexbot does not add per
 or a read-only-install requirement.
 
 Before shell/code layout creation, a separate snapshot checks managed roots and
-declared workspace/output roots, with a total budget of 100,000 entries. Matching
-managed-file inodes in those grants, scan errors and exhaustion refuse the
-command. Legitimate uv cache hard links outside the declared grants remain valid.
+declared workspace/output roots, with a total budget of 100,000 path entries
+and root resolutions. Declared roots are resolved once; nested entries are
+inspected without following symlinks. Nested symlink targets are outside this
+snapshot, so links to unrelated trees or network mounts do not expand its walk.
+Direct regular-file aliases, including a declared root alias, are still checked.
+Matching managed-file inodes in those grants, scan errors and exhaustion refuse
+the command. This entry budget is not an I/O deadline: resolving an explicitly
+selected root or inspecting a filesystem entry can still block. Legitimate uv
+cache hard links outside the declared grants remain valid.
 Remove an unsafe alias or replace it with an independent copy; use smaller
 folders if the scan exceeds its budget. Repair damaged runtime bytes from a
 trusted installer, rather than changing permissions on unknown legacy bytes.

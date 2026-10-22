@@ -551,3 +551,117 @@ async fn windows_security_acp_refuses_before_path_or_command_resolution() {
         }
     }
 }
+
+#[tokio::test]
+async fn windows_security_stored_script_and_monitor_pause_without_path_validation() {
+    use hexbot_core::{db, dreaming::Dreaming, events::EventHub, runtime::Runtime, runtime_store};
+    use serde_json::json;
+    let scratch = tempfile::tempdir().unwrap();
+    let home = scratch.path().join("home");
+    db::migrate(&home).unwrap();
+    db::open(&home).unwrap().execute_batch("INSERT INTO users(id,display_name,role,created_at) VALUES('alice','Alice','admin',0); INSERT INTO bots(name,owner_id) VALUES('owl','alice');").unwrap();
+    let events = EventHub::new();
+    // This path must never be launched: pause/list/remove need no Pi process.
+    let runtime = Runtime::new(
+        home.clone(),
+        events.clone(),
+        home.join("must-not-spawn.exe"),
+    )
+    .unwrap();
+    let scheduler = Dreaming::new(home.clone(), runtime, events);
+    for mode in ["smart", "manual", "off"] {
+        db::open(&home)
+            .unwrap()
+            .execute("UPDATE bots SET approval_mode=?", [mode])
+            .unwrap();
+        for key in ["script", "monitor_script"] {
+            for path in [
+                r"\\hexbot-hostile.invalid\share\untrusted",
+                r"\\.\pipe\hexbot-untrusted",
+            ] {
+                let created = scheduler
+                    .tool_call(
+                        "alice",
+                        "owl",
+                        &json!({"action":"create","schedule":"1h","prompt":"probe"}),
+                    )
+                    .await
+                    .unwrap();
+                let id = created["job"]["id"].as_str().unwrap();
+                runtime_store::open(&home).unwrap().execute(
+                    "UPDATE native_jobs SET job_json=json_set(job_json,'$.workdir',?,?,?) WHERE id=?",
+                    rusqlite::params![path, format!("$.{key}"), path, id],
+                ).unwrap();
+                let paused = scheduler
+                    .call(
+                        "alice",
+                        "hexbot.jobs.pause",
+                        &json!({"bot":"owl","job_id":id}),
+                    )
+                    .await
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(paused["job"]["enabled"], false);
+                assert_eq!(paused["job"]["state"], "paused");
+                let listed = scheduler
+                    .tool_call(
+                        "alice",
+                        "owl",
+                        &json!({"action":"list","include_disabled":true}),
+                    )
+                    .await
+                    .unwrap();
+                let stored = &listed["jobs"][0];
+                assert_eq!(stored["id"], id);
+                assert_eq!(stored["enabled"], false);
+                assert_eq!(stored["state"], "paused");
+                assert_eq!(
+                    stored[key], path,
+                    "pause must not resolve or change a script path"
+                );
+                assert_eq!(stored["workdir"], path);
+                for action in ["update", "resume"] {
+                    let error = scheduler
+                        .tool_call("alice", "owl", &json!({"action":action,"job_id":id}))
+                        .await
+                        .unwrap_err();
+                    assert_eq!(error.code, 4302);
+                    assert!(
+                        error
+                            .message
+                            .contains("Windows tool isolation is not implemented")
+                    );
+                }
+                let still_paused = scheduler
+                    .tool_call(
+                        "alice",
+                        "owl",
+                        &json!({"action":"list","include_disabled":true}),
+                    )
+                    .await
+                    .unwrap();
+                assert_eq!(still_paused["jobs"][0]["enabled"], false);
+                assert_eq!(still_paused["jobs"][0]["state"], "paused");
+                scheduler
+                    .call(
+                        "alice",
+                        "hexbot.jobs.remove",
+                        &json!({"bot":"owl","job_id":id}),
+                    )
+                    .await
+                    .unwrap()
+                    .unwrap();
+                let empty = scheduler
+                    .tool_call(
+                        "alice",
+                        "owl",
+                        &json!({"action":"list","include_disabled":true}),
+                    )
+                    .await
+                    .unwrap();
+                assert_eq!(empty["jobs"], json!([]));
+            }
+        }
+    }
+    scheduler.shutdown().await;
+}

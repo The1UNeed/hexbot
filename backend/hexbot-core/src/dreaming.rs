@@ -2294,6 +2294,15 @@ impl Dreaming {
                     )?;
                     return Ok(json!({"success":true,"removed":true}));
                 }
+                // Pausing only persists metadata. Legacy script paths or a
+                // missing/untrusted workdir must not prevent disabling a job.
+                if action == "pause" {
+                    job["enabled"] = json!(false);
+                    job["state"] = json!("paused");
+                    job["paused_at"] = json!(now_iso(common::now()));
+                    self.save_job(owner, bot, &job)?;
+                    return Ok(json!({"success":true,"job":job}));
+                }
                 if action == "update" {
                     if let Some(schedule) = p["schedule"].as_str() {
                         job["schedule"] = parse_schedule(schedule, common::now())?;
@@ -2309,10 +2318,6 @@ impl Dreaming {
                         job["repeat"]["times"] = repeat.clone();
                     }
                     copy_job_options(&mut job, p)?;
-                } else if action == "pause" {
-                    job["enabled"] = json!(false);
-                    job["state"] = json!("paused");
-                    job["paused_at"] = json!(now_iso(common::now()));
                 } else {
                     job["enabled"] = json!(true);
                     job["state"] = json!("scheduled");
