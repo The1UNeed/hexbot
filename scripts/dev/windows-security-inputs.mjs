@@ -1,8 +1,9 @@
 // Read-only selection of immutable CI inputs. Guard removal belongs to prepare-windows-security.
 import assert from 'node:assert/strict';
+import {realpathSync} from 'node:fs';
 import {execFileSync} from 'node:child_process';
 import {isAbsolute, resolve} from 'node:path';
-import {pathToFileURL} from 'node:url';
+import {fileURLToPath} from 'node:url';
 
 export function selectInputs(repo, sourceSHA, fallbackBuildSHA, git = process.env.HEXBOT_CI_GIT ?? '/usr/bin/git') {
   assert(isAbsolute(repo) && isAbsolute(git), 'Source and trusted Git paths must be absolute');
@@ -20,7 +21,7 @@ export function selectInputs(repo, sourceSHA, fallbackBuildSHA, git = process.en
   assert.equal(run(['rev-parse', '--verify', `${fallbackBuildSHA}^{commit}`]), fallbackBuildSHA);
   return {buildSHA: fallbackBuildSHA, securitySHA: sourceSHA, currentTree: false};
 }
-if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+if (process.argv[1] && realpathSync(fileURLToPath(import.meta.url)) === realpathSync(resolve(process.argv[1]))) {
   if (process.platform === 'win32') assert(process.env.HEXBOT_CI_GIT, 'Windows CI must select trusted absolute Git');
   console.log(JSON.stringify(selectInputs(...process.argv.slice(2))));
 }
