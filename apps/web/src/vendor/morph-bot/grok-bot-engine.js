@@ -151,6 +151,7 @@ export class GrokBotEngine {
     cancelAnimationFrame(this.frameId);
     window.removeEventListener("pointermove", this.pointerMove);
     document.documentElement.removeEventListener("mouseleave", this.pointerLeave);
+    this.particles.clear();
     for (const layer of this.morphLayers.values()) layer.group.remove();
     this.materials.destroy();
   }

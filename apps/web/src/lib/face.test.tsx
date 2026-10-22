@@ -3,7 +3,7 @@ import { act, render } from '@testing-library/react'
 import { Avatar, LiveFace } from '../components/ui/avatar'
 import { HexbotMark } from '../components/ui/wordmark'
 
-import { FACE_MOODS, facePreset, faceShape, moodForStatus } from './face'
+import { FACE_MOODS, facePreset, faceShape, moodForStatus, type MorphBotElement } from './face'
 import { FACE_REST } from './face-rest'
 
 const frame = () => new Promise(resolve => requestAnimationFrame(resolve))
@@ -158,6 +158,84 @@ describe('the live face', () => {
 
     expect(bot._engine.spinSpring).toBeNull()
     expect(bot._engine.gesture).toBeNull()
+  })
+
+  it('clears spin particles when React reorders keyed roster rows and animates again', () => {
+    vi.useFakeTimers({ toFake: ['requestAnimationFrame', 'cancelAnimationFrame', 'performance'] })
+    const random = vi.spyOn(Math, 'random').mockReturnValue(0.5)
+
+    const advance = (frames: number) => {
+      act(() => {
+        for (let index = 0; index < frames; index += 1) {
+          vi.advanceTimersToNextFrame()
+        }
+      })
+    }
+
+    const roster = (names: string[], mood: 'idle' | 'working' = 'working') => (
+      <ul>
+        {names.map(name => (
+          <li key={name}>
+            <Avatar mood={mood} name={name} />
+          </li>
+        ))}
+      </ul>
+    )
+
+    const { container, rerender, unmount } = render(roster(['Scout', 'Builder']))
+
+    try {
+      const row = container.querySelector('li')!
+
+      const bot = row.querySelector('morph-bot')! as MorphBotElement & {
+        _engine: {
+          particles: { burst(count: number): void }
+          spinSpring: unknown
+          startSpin(turns: number, direction: number): boolean
+        }
+      }
+
+      const svg = bot.shadowRoot!.querySelector('svg')!
+      const particles = () => [...svg.querySelectorAll('#particles-back > *, #particles-front > *')]
+      const engine = bot._engine
+
+      expect(engine.startSpin(1, 1)).toBe(true)
+      engine.particles.burst(1)
+      advance(20)
+
+      const oldParticles = particles()
+      expect(engine.spinSpring).not.toBeNull()
+      expect(svg.querySelector('[data-trail]')).not.toBeNull()
+      expect(svg.querySelector('#particles-back > linearGradient')).not.toBeNull()
+      expect(svg.querySelector('#particles-back > rect')).not.toBeNull()
+
+      // Recent activity moves an existing keyed row, disconnecting and
+      // reconnecting its custom element while keeping the same SVG.
+      rerender(roster(['Builder', 'Scout']))
+      expect(container.querySelector('li:last-child')).toBe(row)
+      expect(row.querySelector('morph-bot')).toBe(bot)
+      expect(bot.shadowRoot!.querySelector('svg')).toBe(svg)
+      expect(bot._engine).not.toBe(engine)
+      expect(oldParticles.every(node => !node.isConnected)).toBe(true)
+      expect(particles()).toHaveLength(0)
+
+      expect(bot._engine.startSpin(1, 1)).toBe(true)
+      advance(20)
+      expect(svg.querySelectorAll('[data-trail]').length).toBeGreaterThan(0)
+      const drawn = svg.querySelector('#particles-back')!.innerHTML
+      advance(1)
+      expect(svg.querySelector('#particles-back')!.innerHTML).not.toBe(drawn)
+
+      rerender(roster(['Builder', 'Scout'], 'idle'))
+      advance(100)
+      expect(bot.snapshot()?.state).toBe('idle')
+      expect(bot._engine.spinSpring).toBeNull()
+      expect(particles()).toHaveLength(0)
+    } finally {
+      unmount()
+      random.mockRestore()
+      vi.useRealTimers()
+    }
   })
 
   it('turns toward a neighbour and holds still through a preset over every state', () => {

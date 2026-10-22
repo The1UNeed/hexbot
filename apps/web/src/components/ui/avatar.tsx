@@ -74,8 +74,8 @@ function useReducedMotion(): boolean {
  * and shape it is given. The component runs its own clock and pauses off
  * screen; this hands it the attributes and, for a look or a held head, a
  * preset over every state. The component only softens motion for reduced
- * motion, so here such a face is paused and stepped one frame whenever its
- * mood or shape changes: it holds still, and still says what the bot does.
+ * motion, so here such a face is paused and stepped whenever its appearance
+ * changes: it holds still, and still says what the bot does.
  */
 export function LiveFace({
   className,
@@ -113,7 +113,7 @@ export function LiveFace({
     const next = requestAnimationFrame(() => face?.step())
 
     return () => cancelAnimationFrame(next)
-  }, [color, eyes, mood, reduced, shape])
+  }, [color, eyes, look, mood, reduced, shape, still])
 
   return (
     <morph-bot

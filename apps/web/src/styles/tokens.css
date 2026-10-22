@@ -74,27 +74,8 @@
   /* A sampled spring (damping 0.62) for glass that swells under a press. */
   --hex-motion-glass: 520ms;
   --hex-ease-glass: linear(
-    0,
-    0.113,
-    0.352,
-    0.608,
-    0.819,
-    0.965,
-    1.048,
-    1.08,
-    1.081,
-    1.065,
-    1.043,
-    1.023,
-    1.008,
-    0.999,
-    0.994,
-    0.993,
-    0.994,
-    0.996,
-    0.997,
-    0.999,
-    1
+    0, 0.113, 0.352, 0.608, 0.819, 0.965, 1.048, 1.08, 1.081, 1.065, 1.043, 1.023, 1.008, 0.999,
+    0.994, 0.993, 0.994, 0.996, 0.997, 0.999, 1
   );
 }
 
@@ -131,9 +112,9 @@
     --hex-glass-strong: rgb(24 24 27 / 0.82);
     --hex-glass-glow: rgb(255 255 255 / 0.2);
     --hex-glass-shadow:
-      inset 1px 1px 0 -0.5px rgb(255 255 255 / 0.3),
-      inset -1px -1px 0 -0.5px rgb(255 255 255 / 0.12), inset 0 0 6px rgb(255 255 255 / 0.04),
-      0 0 0 0.5px rgb(255 255 255 / 0.07), 0 4px 16px -4px rgb(0 0 0 / 0.5);
+      inset 1px 1px 0 -0.5px rgb(255 255 255 / 0.3), inset -1px -1px 0 -0.5px rgb(255 255 255 / 0.12),
+      inset 0 0 6px rgb(255 255 255 / 0.04), 0 0 0 0.5px rgb(255 255 255 / 0.07),
+      0 4px 16px -4px rgb(0 0 0 / 0.5);
     --hex-card-shadow: 0 0 0 0.5px rgb(255 255 255 / 0.07), 0 1px 3px rgb(0 0 0 / 0.5);
   }
 }
@@ -455,8 +436,8 @@ body {
 }
 
 /*
- * Bot faces move from face-engine.ts: blinks, glances, and the head's tilt
- * and nod for each mood. CSS keeps only the acts' body motion (hexbot-act.tsx).
+ * The morph-bot component animates the eyes and head for each mood.
+ * CSS keeps only the acts' body motion (hexbot-act.tsx).
  */
 @keyframes hex-bob {
   0%,

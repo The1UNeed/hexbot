@@ -1,6 +1,21 @@
 import { FIXED_STEP, stepSpring } from "./math.js";
 
 export function stepPhysics(delta, reducedMotion = false) {
+  // Hexbot pauses reduced-motion faces after drawing, so every spring must
+  // reach its target in this frame rather than stop partway through easing.
+  if (reducedMotion) {
+    for (const spring of [
+      this.expressionSpring, this.rotation, this.headX, this.headY, this.scaleY,
+      this.eyeOpen, this.eyeScale, this.aimX, this.aimY, this.morph,
+      this.morphBlend, this.shapeBlend, this.turn, this.notify, this.humming,
+      this.spinSpring,
+    ]) {
+      if (!spring) continue;
+      spring.x = spring.target;
+      spring.v = 0;
+    }
+    return;
+  }
   const steps = Math.max(1, Math.ceil(delta / FIXED_STEP));
   const step = delta / steps;
   for (let index = 0; index < steps; index += 1) {
@@ -20,12 +35,5 @@ export function stepPhysics(delta, reducedMotion = false) {
     stepSpring(this.notify, 9, 0.55, step);
     stepSpring(this.humming, 6, 1, step);
     if (this.spinSpring) stepSpring(this.spinSpring, 6.2, 1, step);
-  }
-  if (reducedMotion) {
-    this.expressionSpring.x = 1;
-    this.morph.x = this.morph.target;
-    this.morphBlend.x = this.morphBlend.target;
-    this.shapeBlend.x = this.shapeBlend.target;
-    this.turn.x = this.turn.target;
   }
 }

@@ -17,6 +17,10 @@ Copied as it is, except:
 - `grok-bot-engine.js`: the window pointer listeners are added only when the
   face follows the pointer (`follow-pointer` at connect). Upstream adds them
   to every face.
+- `grok-bot-engine.js`: destroying an engine clears its particles, trails
+  and gradients before a custom element reconnects with the same SVG.
+- `runtime/physics-system.js`: reduced motion snaps every spring to its
+  target and clears its velocity, so a paused face renders its full pose.
 - `runtime/state-behavior-system.js`: a state's `motionScale` also scales
   its impulses and scale pulses, and at 0 the ambient spins, bounces and
   gestures do not start and any already in flight are dropped, so a head

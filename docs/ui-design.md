@@ -64,8 +64,11 @@ own visual identity. Read `CLAUDE.md` for the words.
   two faces of an ask turn toward each other (`look`); the mark sleeps when
   the connection is lost and loads while an update installs. Each face runs
   on the component's own clock and pauses off screen, where it costs nothing.
-  Under reduced motion a face holds still and redraws only when its mood or
-  shape changes. Click any face, or the Hexbot
+  Under reduced motion a face holds still at its target pose and redraws when
+  its mood, shape, colours, look or held-head setting changes. The site logo,
+  favicon and desktop package icons intentionally retain the original static
+  Hexbot mark; the live in-app mark changes expression with activity.
+  Click any face, or the Hexbot
   mark, and it plays a random act for a few seconds: typing with its two
   round hands, juggling, blowing a horn (`components/ui/hexbot-act.tsx`, 21
   acts); the head holds still while the act moves the body. The install
