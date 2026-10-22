@@ -64,7 +64,9 @@ reads remain allowed by the ordinary read policy.
 
 These path rules do not contain shell/code writes through hard-link aliases.
 Preexisting aliases in writable workspace/output folders can modify the inode of
-a managed runtime file despite protection of its original path. Aliases inserted
+a managed runtime file despite protection of its original path. This also covers
+implicit/shared temporary roots such as `/tmp` and per-user `TMPDIR`, and paths
+outside Hexbot home writable by approved `full_access` commands. Aliases inserted
 later by an unconfined same-user process have the same limitation. There is no
 managed-inode/workspace scan: legitimate uv cache hard links and large dependency
 trees do not require reinstalling packages or making installed files read-only.

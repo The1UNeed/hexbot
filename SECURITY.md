@@ -119,7 +119,9 @@ host software. Such a process can change files, links, permissions or ACLs.
 Shell/code hard-link aliases remain uncontained. A preexisting alias in a
 writable workspace/output folder can name the same inode as a protected managed
 runtime file; writing through that alias can modify installed bytes even when
-the original path is read-only. The same limitation applies to aliases inserted
+the original path is read-only. This also covers implicit/shared temporary roots
+such as `/tmp` and per-user `TMPDIR`, and paths outside Hexbot home writable by
+approved `full_access` commands. The same limitation applies to aliases inserted
 later by an unconfined same-user process. Canonical path checks and read-only
 binds of the original path do not protect these aliases. Hexbot does not scan
 managed-file inodes or recursively walk workspaces to look for them. Ordinary uv
