@@ -509,17 +509,19 @@ it('offers no Retry in a teammate thread', async () => {
   expect(submits()).toHaveLength(0)
 })
 
-it('keeps the older request shape for a daemon without transcript identity', async () => {
+it('keeps legacy sends available through the draft without offering Retry', async () => {
   useConnection.setState({ daemon: { one_chat: true } as DaemonInfo })
   answers = [refused()]
   const view = await mount()
-  await send(view)
+  await send(view, [])
   const [card] = await screen.findAllByTestId('stopped-card')
   expect(submits()[0]).toEqual({ session_id: 'chat', text: 'Read my plan' })
-  fireEvent.click(retryOn(card!)!)
+  expect(retryOn(card!)).toBeNull()
+  expect(screen.getByRole('textbox', { name: 'Message' })).toHaveValue('Read my plan')
+  fireEvent.click(screen.getByRole('button', { name: 'Send' }))
   await waitFor(() => expect(delivered).toHaveLength(1))
   expect(submits()[1]).toEqual({ session_id: 'chat', text: 'Read my plan' })
-  expect(delivered[0]!.files).toEqual(['plan.txt'])
+  expect(delivered[0]!.files).toEqual([])
 })
 
 it('keeps identical remote text separate from the explicitly refused local input', async () => {
@@ -597,7 +599,7 @@ it.each([
   const view = await mount()
   await send(view)
   const card = await screen.findByTestId('stopped-card')
-  expect(card).toHaveTextContent('Could not confirm acceptance')
+  expect(card).toHaveTextContent('It may not have been sent')
   expect(retries()).toHaveLength(0)
   expect(delivered[0]!.files).toEqual(['plan.txt'])
   expect(staged.size).toBe(0)
@@ -613,9 +615,7 @@ it('does not trust a code property on an arbitrary transport error', async () =>
   answers = [Object.assign(new Error('Transport failed'), { code: 5201 })]
   const view = await mount()
   await send(view)
-  expect(await screen.findByTestId('stopped-card')).toHaveTextContent(
-    'Could not confirm acceptance'
-  )
+  expect(await screen.findByTestId('stopped-card')).toHaveTextContent('It may not have been sent')
   expect(retries()).toHaveLength(0)
   expect(submits()).toHaveLength(1)
 })
@@ -806,3 +806,73 @@ async function proveAccepted(inputId: string, turnId: string) {
   row.turn_id = turnId
   await reload()
 }
+
+it.each(['send', 'upload'] as const)(
+  'keeps a failed %s request and its Retry ownership separate from nearby turn incidents',
+  async failure => {
+    if (failure === 'send') {
+      answers = [refused()]
+    } else {
+      const original = call.getMockImplementation()!
+      call.mockImplementation((method: string, input: Record<string, unknown>) =>
+        method === 'file.attach'
+          ? Promise.reject(new JsonRpcGatewayError('Upload refused', { code: 4202 }))
+          : original(method, input)
+      )
+    }
+
+    const view = await mount()
+    await send(view)
+    await screen.findByTestId('stopped-card')
+    const transcript = () => useTranscripts.getState().bySession.chat!
+    const request = transcript().messages.find(message => message.request)!
+    const provenance = userRows()[0]?.submission
+    expect(request.error).toBe(failure === 'send' ? 'Prompt rejected' : 'Upload refused')
+    expect(Boolean(request.retryRow)).toBe(failure === 'send')
+
+    const incident = (id: string, text: string) =>
+      routeEvent({
+        type: 'hexbot.bots.incident',
+        payload: {
+          bot: 'owl',
+          section_id: 'chat',
+          session_id: 'chat',
+          incident: { id, text, connector: 'notion' }
+        }
+      } as GatewayEvent)
+
+    act(() => {
+      incident('first-incident', 'The actual turn failed')
+      incident('first-incident', 'Updated first incident')
+      incident('second-incident', 'Another turn incident')
+      incident('second-incident', 'Updated second incident')
+    })
+    expect(transcript().messages.find(message => message.id === request.id)).toBe(request)
+    expect(userRows()[0]?.submission).toBe(provenance)
+    expect(cards()).toHaveLength(3)
+    expect(screen.queryByText('The actual turn failed')).toBeNull()
+    expect(screen.getByText('Updated first incident')).toBeVisible()
+    expect(screen.getByText('Updated second incident')).toBeVisible()
+
+    for (const card of cards().filter(card => !card.textContent?.includes(request.error!))) {
+      expect(retryOn(card)).toBeNull()
+    }
+
+    if (failure === 'send') {
+      const requestCard = screen
+        .getByText('Prompt rejected')
+        .closest<HTMLElement>('[data-testid=stopped-card]')!
+
+      fireEvent.click(retryOn(requestCard)!)
+      await waitFor(() => expect(delivered).toHaveLength(1))
+      expect(submits()[1]).toMatchObject({
+        text: 'Read my plan',
+        attachments: submits()[0]!.attachments
+      })
+      expect(delivered[0]!.files).toEqual(['plan.txt'])
+    } else {
+      expect(retries()).toHaveLength(0)
+      expect(submits()).toHaveLength(0)
+    }
+  }
+)

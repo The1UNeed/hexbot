@@ -124,6 +124,25 @@ name}` (other files) or `pdf.attach`. Stop: `session.interrupt`.
 
 ## Electron bridge (`window.hexbot`)
 
+Closing the app window keeps its page and daemon connection alive in both
+editions. Full keeps an app-owned daemon running; Client keeps receiving
+notifications from its remote daemon. Chromium keeps its default background
+throttling. Reply completions request a background-only native notification;
+the main process checks whether the window is hidden or minimized at delivery
+time. Browser reply notifications use the page's visibility.
+macOS hides the window as before. Windows hides it to the tray, or minimizes
+if tray setup fails. Linux always minimizes, because a tray object does not
+prove that the desktop displays an icon, including on GNOME without a tray
+extension. Use the dock or task switcher to restore the same page. The app
+also restores it when it receives an activation or second-launch event, or
+when you use the tray. Delivery of activation and second-launch events on
+Linux depends on the desktop; GNOME Wayland has not been verified.
+Windows and Linux have File > Quit as well as tray Quit.
+Explicit quit, updater installation, Windows session end, and macOS/Linux
+shutdown bypass close interception. The app never delays OS session events.
+Desktop state patches are serialized per file so concurrent bounds and
+settings changes preserve one another.
+
 Exposed by the preload with contextIsolation on:
 
 - `platform`, `version`, `isPackaged`.
@@ -132,8 +151,9 @@ Exposed by the preload with contextIsolation on:
 - `daemon.localToken()` reads `~/.hexbot/local-device.token`.
 - `pair(host, port, code, deviceName)` performs the password-login from
   the main process and returns the device token.
-- `notify({title, body, sectionId})` shows a native notification; clicking
-  focuses the window and navigates.
+- `notify({title, body, sectionId, backgroundOnly?})` shows a native notification;
+  background-only requests stay silent while the window is visible and not
+  minimized. Clicking focuses the window and navigates.
 - `openExternal(url)`, `pickFiles()`.
 - `updater.state()`, `updater.check()`, `updater.download()`, `updater.install()`,
   `updater.setChannel(track)`, `updater.onStatus(cb)`. `stores/updates.ts`

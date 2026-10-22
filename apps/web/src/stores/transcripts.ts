@@ -62,6 +62,8 @@ export type TranscriptMessage = Message & {
     card?: string
   }
   retryRow?: string
+  /** A card for a request this client made, not for the bot's turn. */
+  request?: true
 }
 
 export interface Transcript {
@@ -99,6 +101,11 @@ export interface Transcript {
   streamingMessageId: null | string
   /** Remains active when a card closes the current bubble. */
   turnActive?: boolean
+  /**
+   * Failed turns that may be this client's input, ended before a read showed
+   * its durable row. The next history read binds each card's Retry once.
+   */
+  unproven?: { card: string; turnId: string }[]
   /**
    * Text of the bubbles a question or approval card closed during this
    * turn. `message.complete` carries the whole turn, so this much is cut
@@ -202,6 +209,11 @@ export interface TranscriptsState {
     uploads: string[] | null,
     error?: string
   ) => void
+  /**
+   * A request from this client failed before the bot took it. The card is the
+   * whole notice: a turn already running keeps its stream, cards and Stop.
+   */
+  requestFailed: (sessionId: string, message: string) => void
   /**
    * A Stopped card from a daemon incident. Unlike `errorEvent` it leaves the
    * streaming message alone: the incident fires mid-turn (a tool refused) and
@@ -359,6 +371,85 @@ function withRetryCard(transcript: Transcript, cardId: string, turnId?: string |
           ? { ...message, retryRow: source.row, turnId }
           : message
     )
+  }
+}
+
+/**
+ * A terminal usually arrives before any read has shown its durable user row.
+ * While an input from this client may own it, the card waits for that read.
+ * An input whose row already names its turn cannot own another one.
+ */
+function withTerminalCard(
+  transcript: Transcript,
+  cardId: string,
+  turnId?: string | null
+): Transcript {
+  const next = withRetryCard(transcript, cardId, turnId)
+
+  if (
+    !turnId ||
+    next.messages.find(message => message.id === cardId)?.retryRow ||
+    next.unproven?.some(entry => entry.turnId === turnId) ||
+    !next.messages.some(
+      message =>
+        message.role === 'user' &&
+        !message.turnId &&
+        message.submission &&
+        !message.submission.card &&
+        ['sending', 'accepted'].includes(message.submission.status)
+    )
+  ) {
+    return next
+  }
+
+  return { ...next, unproven: [...(next.unproven ?? []), { card: cardId, turnId }] }
+}
+
+/** After a read, bind waiting or folded cards with the same exact proof. */
+function withProvenCards(transcript: Transcript): Transcript {
+  let next: Transcript = { ...transcript, unproven: undefined }
+
+  const shown = new Set(transcript.messages.map(message => message.id))
+
+  // History can fold an already bound live bubble into a different durable row.
+  // Revocation clears submission.card, so a later read cannot restore it.
+  const folded = transcript.messages.flatMap(message =>
+    message.role === 'user' &&
+    message.turnId &&
+    message.submission?.card &&
+    !shown.has(message.submission.card)
+      ? [{ card: message.submission.card, turnId: message.turnId }]
+      : []
+  )
+
+  for (const { card, turnId } of [...(transcript.unproven ?? []), ...folded]) {
+    // History can adopt a failed bubble into its stored row, which keeps the turn.
+    const failed = next.messages.filter(message => message.error && message.turnId === turnId)
+
+    const target =
+      next.messages.find(message => message.id === card && message.error) ??
+      (failed.length === 1 ? failed[0] : undefined)
+
+    if (target) {
+      next = withRetryCard(next, target.id, turnId)
+    }
+  }
+
+  return next
+}
+
+function requestCard(error: string, retryRow?: string): TranscriptMessage {
+  return {
+    attachments: [],
+    createdAt: Date.now(),
+    error,
+    id: nextMessageId('e'),
+    request: true,
+    ...(retryRow && { retryRow }),
+    role: 'system',
+    streaming: false,
+    text: '',
+    toolCalls: []
   }
 }
 
@@ -610,12 +701,12 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
           return {
             bySession: {
               ...state.bySession,
-              [sessionId]: {
+              [sessionId]: withProvenCards({
                 ...existing,
                 ...restored,
                 sectionId,
                 clarifies: existing.clarifies.filter(clarifyWaiting)
-              }
+              })
             }
           }
         }
@@ -1011,7 +1102,7 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
         let next = withCurrentAssistant(transcript, finalize)
 
         if (payload.error && next.streamingMessageId) {
-          next = withRetryCard(next, next.streamingMessageId, transcript.identity?.turnId)
+          next = withTerminalCard(next, next.streamingMessageId, transcript.identity?.turnId)
         }
 
         // The turn is over, so no review is left; the daemon's clear may be lost.
@@ -1231,8 +1322,10 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
 
         const row = input.submission?.row ?? input.id
 
+        // A newer request takes Retry from every earlier card, waiting ones too.
         return {
           ...transcript,
+          unproven: undefined,
           messages: transcript.messages.map(message => ({
             ...message,
             ...(message.submission && {
@@ -1280,19 +1373,7 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
       update(sessionId, transcript => {
         // A prompt refusal or unknown RPC outcome says nothing about the
         // operation currently streaming. Its card belongs only to this request.
-        const card: TranscriptMessage | undefined = error
-          ? {
-              attachments: [],
-              createdAt: Date.now(),
-              error,
-              id: nextMessageId('e'),
-              role: 'system',
-              streaming: false,
-              text: '',
-              toolCalls: [],
-              retryRow: row
-            }
-          : undefined
+        const card = error ? requestCard(error, row) : undefined
 
         const messages = transcript.messages.map(message =>
           message.submission?.row === row
@@ -1345,7 +1426,7 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
           })
         }
 
-        return withRetryCard(
+        return withTerminalCard(
           {
             ...transcript,
             error: message,
@@ -1358,6 +1439,13 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
           turnId
         )
       })
+    },
+
+    requestFailed(sessionId, message) {
+      update(sessionId, transcript => ({
+        ...transcript,
+        messages: [...transcript.messages, requestCard(message)]
+      }))
     },
 
     checkinMessage(sessionId, message) {
@@ -1410,6 +1498,7 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
         // drawing a second one.
         const recent = messages.findLastIndex(
           item =>
+            !item.request &&
             Boolean(item.error) &&
             !item.errorDetail?.incidentId &&
             Date.now() - toMillis(item.createdAt) < INCIDENT_MERGE_MS

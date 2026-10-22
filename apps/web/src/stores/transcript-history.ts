@@ -172,6 +172,8 @@ export function hydrateHistory(
 
     return {
       ...message,
+      // Exact durable row identity preserves the card's proven Retry binding.
+      retryRow: live?.retryRow,
       // An exact durable input proves acceptance even if its RPC later failed.
       submission: submission
         ? {
@@ -213,7 +215,12 @@ export function hydrateHistory(
       continue
     }
 
-    if (live.error && !existing.turnActive && !(live.textId && storedParts.has(live.textId))) {
+    // A newer run can start before the read: an earlier turn's failure stays too.
+    const ended =
+      !existing.turnActive ||
+      Boolean(live.turnId && existing.activeTurnId && live.turnId !== existing.activeTurnId)
+
+    if (live.error && ended && !(live.textId && storedParts.has(live.textId))) {
       // An unpersisted failure is a local error card, not another answer.
       messages.push({
         ...live,
@@ -230,10 +237,7 @@ export function hydrateHistory(
     }
 
     // A current read after terminal adopts even an unbound legacy answer.
-    if (
-      !existing.turnActive ||
-      (live.turnId && existing.activeTurnId && live.turnId !== existing.activeTurnId)
-    ) {
+    if (ended) {
       continue
     }
 
