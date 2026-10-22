@@ -155,8 +155,8 @@ async fn windows_security_runtime_refuses_code_before_approval() {
             let opened = runtime
                 .call("alice", "hexbot.sections.open", &json!({"id":"first"}))
                 .await
-                .unwrap_or_else(|error| panic!("Runtime open in {mode} before refusal: {error:?}"))
-                .unwrap();
+                .expect("sections.open is a registered Runtime method")
+                .unwrap_or_else(|error| panic!("Runtime open in {mode} before refusal: {error:?}"));
             let live = opened["section"]["live_session_id"].as_str().unwrap();
             let absent_workdir = work.join(format!("untrusted-{mode}"));
             let absent_output = home.join("runtime/sessions/first/attachments");
