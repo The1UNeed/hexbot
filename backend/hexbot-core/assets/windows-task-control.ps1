@@ -42,7 +42,17 @@ try {
     }
     switch ($operation) {
         'state' { [int]$task.State }
-        'stop' { if ([int]$task.State -eq 4 -or [int]$task.State -eq 2) { $task.Stop(0) } }
+        'stop' {
+            # State is only a snapshot, particularly after definition updates.
+            # Ask the verified scheduler object to stop all of its instances.
+            try { $task.Stop(0) } catch {
+                $stopError = $_.Exception
+                while ($stopError.InnerException) { $stopError = $stopError.InnerException }
+                # SCHED_E_TASK_NOT_RUNNING is the one harmless stop race.
+                if ($stopError.HResult -ne -2147216629) { throw }
+            }
+        }
+        'diagnose' { Get-HexbotTaskDiagnostic }
         'delete' { $folder.DeleteTask($taskName, 0) }
         default { throw 'Unknown task operation' }
     }

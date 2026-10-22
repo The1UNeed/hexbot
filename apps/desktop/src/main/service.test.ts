@@ -187,7 +187,7 @@ it('Windows setup services pass the exact app home to every native child', async
   } finally { process.env = previous; executable.mockRestore() }
 })
 
-it('restarts only a verified running Windows task whose home daemon uses an older executable', async () => {
+it('repairs only a verified running Windows task whose home daemon uses an older executable, including a missing script', async () => {
   const http = await import('node:http')
   const root = await mkdtemp(join(tmpdir(), 'hexbot-task-selection-'))
   const previous = process.env.HEXBOT_HOME
@@ -203,7 +203,7 @@ it('restarts only a verified running Windows task whose home daemon uses an olde
   const run = async (command: string, args: string[]) => {
     calls.push([command, ...args])
     if (args.includes('status')) return { stdout: JSON.stringify({ installed, running }) }
-    expect(args).toEqual(['service', 'restart'])
+    expect(args).toEqual(['service', 'install'])
   }
   try {
     await mkdir(join(root, 'runtime'))
@@ -216,11 +216,11 @@ it('restarts only a verified running Windows task whose home daemon uses an olde
     const record = (executable: string, pid = process.pid) => writeFile(join(root, 'runtime/native-running.json'), JSON.stringify({ pid, executable }))
     await record(old)
     expect(await reconcileWindowsService('win32', run)).toBe(process.pid)
-    expect(calls.filter(args => args.includes('restart'))).toHaveLength(1)
+    expect(calls.filter(args => args.includes('install'))).toHaveLength(1)
     calls.length = 0
     await record(selected)
     expect(await reconcileWindowsService('win32', run)).toBeUndefined()
-    expect(calls.some(args => args.includes('restart'))).toBe(false)
+    expect(calls.some(args => args.includes('install'))).toBe(false)
     await record(old)
     for (const state of [[false, false], [true, false]]) {
       ;[installed, running] = state as [boolean, boolean]
@@ -232,7 +232,7 @@ it('restarts only a verified running Windows task whose home daemon uses an olde
     identityPid = process.pid
     await record(old, process.ppid)
     await expect(reconcileWindowsService('win32', run)).rejects.toThrow('Cannot verify')
-    expect(calls.some(args => args.includes('restart'))).toBe(false)
+    expect(calls.some(args => args.includes('install'))).toBe(false)
   } finally {
     executable.mockRestore()
     server.closeAllConnections()

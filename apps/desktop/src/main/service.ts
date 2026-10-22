@@ -89,7 +89,8 @@ export async function reconcileWindowsService(targetPlatform = process.platform,
   // Resolve before changing the task. A damaged/stale record is not proof of
   // an older process; restart must not guess about its identity.
   if (canonicalRuntimePath(record.executable) === canonicalRuntimePath(hexbotExecutable())) return undefined
-  await run(hexbotExecutable(), ['service', 'restart'], windowsOptions())
+  // Install also repairs a missing script after the scheduler/home/PID checks.
+  await run(hexbotExecutable(), ['service', 'install'], windowsOptions())
   return record.pid
 }
 

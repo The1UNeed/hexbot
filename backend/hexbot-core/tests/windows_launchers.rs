@@ -1,9 +1,15 @@
 #![cfg(windows)]
 //! Exercise the actual generated launchers with Windows PowerShell 5.1.
+#[path = "../src/install_paths.rs"]
+mod install_ownership;
+#[path = "support/windows_process_handle.rs"]
+mod process_handle;
 #[path = "../src/windows_node_path.rs"]
 mod windows_node_path;
 #[path = "../src/windows_paths.rs"]
 mod windows_paths;
+#[path = "../src/windows_task.rs"]
+mod windows_task;
 use hexbot_core::{system_service, windows_cli};
 use serde_json::json;
 use std::os::windows::process::CommandExt;
@@ -843,6 +849,7 @@ fn interrupted_task_install_uninstalls_owned_files_when_the_task_is_absent() {
         json!({"executable":native.join("hexbot.exe")}).to_string(),
     )
     .unwrap();
+    let expected_pid = std::cell::Cell::new(0u32);
     let service = |owner: &Path, action: &str| {
         Command::new(env!("CARGO_BIN_EXE_hexbot"))
             .args(
@@ -855,6 +862,10 @@ fn interrupted_task_install_uninstalls_owned_files_when_the_task_is_absent() {
                 .filter(|s| !s.is_empty()),
             )
             .env("HEXBOT_HOME", owner)
+            .env(
+                "HEXBOT_WINDOWS_EXPECTED_TASK_PID",
+                expected_pid.get().to_string(),
+            )
             .env("HEXBOT_SERVICE_ROOT", root.path())
             .env_remove("HEXBOT_SERVICE_NO_LOAD")
             .output()
@@ -930,6 +941,21 @@ fn interrupted_task_install_uninstalls_owned_files_when_the_task_is_absent() {
     );
     let _task_cleanup = TaskCleanup(name.clone());
     let first_pid = ready(0);
+    expected_pid.set(first_pid);
+    let first_handle = process_handle::ProcessHandle::open(first_pid);
+    let lifetime = |stage: &str, handle: &process_handle::ProcessHandle| {
+        let diagnostic = powershell(&windows_task::control(&file, &home, "diagnose").unwrap());
+        eprintln!(
+            "Task lifetime: {}",
+            json!({"stage":stage,"initialProcess":handle.snapshot(),
+            "rustHomeIdle":format!("{:?}",windows_task::home_idle(&home)),
+            "diagnosticStatus":diagnostic.status.code(),
+            "diagnostic":serde_json::from_slice::<serde_json::Value>(&diagnostic.stdout).ok(),
+            "stderr":bounded(&diagnostic.stderr)})
+        );
+    };
+    lifetime("initial-ready", &first_handle);
+    assert!(first_handle.alive());
     eprintln!("Task recovery stage: initial daemon ready pid={first_pid}; removing owned script");
     fs::remove_file(&file).unwrap();
     eprintln!("Task recovery stage: status after script removal");
@@ -951,6 +977,30 @@ fn interrupted_task_install_uninstalls_owned_files_when_the_task_is_absent() {
             "Another home claimed the missing-script task"
         );
     }
+    // Control: missing-script repair with an untouched running definition.
+    // It must reap the actual old PID and release the home before replacement.
+    lifetime("before-plain-missing-script-repair", &first_handle);
+    let plain = service(&home, "install");
+    lifetime("after-plain-missing-script-repair", &first_handle);
+    assert!(
+        plain.status.success(),
+        "plain missing-script repair: status={} stdout={} stderr={}",
+        plain.status,
+        bounded(&plain.stdout),
+        bounded(&plain.stderr)
+    );
+    assert!(
+        !first_handle.alive(),
+        "Service repair returned before the old daemon exited: {}",
+        first_handle.snapshot()
+    );
+    first_handle.wait();
+    let first_pid = ready(first_pid);
+    expected_pid.set(first_pid);
+    let first_handle = process_handle::ProcessHandle::open(first_pid);
+    assert!(first_handle.alive());
+    fs::remove_file(&file).unwrap();
+    lifetime("before-live-definition-replacement", &first_handle);
     // Losing the description as well loses proof. Exact SID/action/path alone
     // must not authorize either repair or removal. Restore only our fixture.
     let unbound = powershell(&format!(
@@ -964,12 +1014,29 @@ fn interrupted_task_install_uninstalls_owned_files_when_the_task_is_absent() {
         "{}",
         String::from_utf8_lossy(&unbound.stderr)
     );
+    lifetime(
+        "after-live-definition-restoration-before-repair",
+        &first_handle,
+    );
+    assert!(
+        first_handle.alive(),
+        "Definition replacement itself ended the fixture daemon; not a successful repair"
+    );
     let output = service(&home, "install");
+    lifetime("after-definition-repair", &first_handle);
     assert!(
         output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
+        "definition-replacement repair: status={} stdout={} stderr={}",
+        output.status,
+        bounded(&output.stdout),
+        bounded(&output.stderr)
     );
+    assert!(
+        !first_handle.alive(),
+        "Service repair returned before the old daemon exited: {}",
+        first_handle.snapshot()
+    );
+    first_handle.wait();
     let next_pid = ready(first_pid);
     assert_ne!(next_pid, first_pid);
     assert!(powershell(&format!("if(Get-Process -Id {first_pid} -ErrorAction SilentlyContinue){{throw 'Old task daemon survived repair'}}")).status.success());

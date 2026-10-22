@@ -139,6 +139,10 @@ try {
     const oldTask = await waitForRuntimeJson(join(home, 'runtime/native-running.json'), value => value.pid && value.pid !== servicePid)
     servicePid = oldTask.pid
     assert.equal(await realpath(oldTask.executable), await realpath(olderExe))
+    const serviceScript = join(root, 'AppData/Local/Hexbot/daemon.ps1')
+    const expectedScript = await readFile(serviceScript)
+    const { unlink } = await import('node:fs/promises')
+    await unlink(serviceScript)
     window = await openApp()
     await window.evaluate(() => window.hexbot.daemon.start())
     const upgradedTask = await waitForRuntimeJson(join(home, 'runtime/native-running.json'), value => value.pid && value.pid !== oldTask.pid)
@@ -149,6 +153,8 @@ try {
     assert.equal((await native(selected, ['version'], nativeOptions)).stdout.trim(), manifest.version)
     assert.throws(() => process.kill(oldTask.pid, 0), { code: 'ESRCH' })
     assert.equal((await window.evaluate(() => window.hexbot.daemon.status())).state, 'external')
+    assert.deepEqual(await readFile(serviceScript), expectedScript, 'Full did not restore the exact owned service script')
+    assert.deepEqual(await window.evaluate(() => window.hexbot.service.status()), { installed: true, running: true })
     await assertHomeLock('held')
     // A second ordinary launch must attach to the same verified task instance.
     await app.close(); app = undefined

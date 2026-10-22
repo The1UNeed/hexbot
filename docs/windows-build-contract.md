@@ -261,3 +261,24 @@ the real locked Pi, checks its version and requires actual daemon readiness.
 The new native activation/service, installed GUI, signed ZIP/Connect and later
 lifecycle cases still require a successful run. Local host tests and Windows
 cross-compilation do not establish those results.
+
+The e203 run tested merge `302c30e1` with the exact e203 guarded/probe trees
+`7e5a44b8` / `7e199796`. Foreign installer refusal and the absent-task control
+passed, and the real pinned Pi fixture reached occupied-home readiness and
+refusal. The first task became ready; later missing-script repair timed out
+after a live definition replacement. That log does not establish whether the
+scheduler state, task/child lifetime or lock probe caused the timeout. The
+controller now asks the verified scheduler object to stop regardless of a prior
+state snapshot; only the precise not-running HRESULT is harmless. Lock probes
+share error classification rather than treating every I/O error as contention.
+Opt-in CI snapshots record registered/live task instances, definition, current
+process/parent/children/SID, Rust and PowerShell lock observations and retained
+kernel-handle exit codes. A plain missing-script control runs before the live
+re-registration case. Both must prove old-process exit before repair returns;
+the timeout is unchanged. Actual Windows results remain pending.
+
+Full startup uses the same repair-capable service install operation after its
+scheduler/home/PID checks, so a verified task with a deleted script can recover.
+The installed Full relaunch probe deletes that script and requires exact owned
+script restoration, old PID exit and the new selected runtime. Foreign/unbound
+refusals and the unchanged-build PID control remain mandatory.

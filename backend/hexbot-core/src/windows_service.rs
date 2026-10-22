@@ -139,32 +139,39 @@ pub async fn status(home: &Path) -> Result<Value> {
 // A restart may launch only after both are stopped, or it races the home lock.
 async fn wait_stopped(home: &Path, file: &Path) -> Result<()> {
     let mut interval = tokio::time::interval(std::time::Duration::from_millis(200));
+    let mut last = Value::Null;
     let wait = async {
         loop {
             let state = task_control(home, file, "state").await?;
-            let available = match fs::OpenOptions::new()
-                .read(true)
-                .write(true)
-                .open(home.join("native-daemon.lock"))
-            {
-                Ok(file) => file.try_lock().is_ok(),
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => true,
-                Err(error) => return Err(error.into()),
-            };
+            let available = crate::windows_task::home_idle(home)?;
+            last = json!({"taskState":state,"homeLockAvailable":available});
             if !matches!(state.as_str(), "2" | "4") && available {
                 return Ok(());
             }
             interval.tick().await;
         }
     };
-    tokio::time::timeout(std::time::Duration::from_secs(30), wait)
-        .await
-        .map_err(|_| {
-            Error::new(
+    match tokio::time::timeout(std::time::Duration::from_secs(30), wait).await {
+        Ok(result) => result,
+        Err(_) => {
+            if std::env::var("HEXBOT_WINDOWS_SERVICE_PROBE").as_deref() == Ok("1") {
+                let diagnostic = tokio::time::timeout(
+                    std::time::Duration::from_secs(5),
+                    task_control(home, file, "diagnose"),
+                )
+                .await;
+                let diagnostic = format!("{diagnostic:?}")
+                    .chars()
+                    .take(32768)
+                    .collect::<String>();
+                eprintln!("Windows task stop timeout: last={last} diagnostic={diagnostic}");
+            }
+            Err(Error::new(
                 5244,
                 "Windows task did not stop and release the daemon lock",
-            )
-        })?
+            ))
+        }
+    }
 }
 fn idle_home(home: &Path) -> Result<fs::File> {
     match fs::OpenOptions::new()

@@ -89,15 +89,7 @@ pub fn remove(path: &Path, home: &Path, no_load: bool) -> io::Result<()> {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
         loop {
             let state = task_control(path, home, "state")?;
-            let available = match fs::OpenOptions::new()
-                .read(true)
-                .write(true)
-                .open(home.join("native-daemon.lock"))
-            {
-                Ok(file) => file.try_lock().is_ok(),
-                Err(e) if e.kind() == io::ErrorKind::NotFound => true,
-                Err(e) => return Err(e),
-            };
+            let available = crate::windows_task::home_idle(home)?;
             if !matches!(state.as_str(), "2" | "4") && available {
                 break;
             }
