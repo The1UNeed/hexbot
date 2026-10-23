@@ -107,3 +107,51 @@ ConvertTo-Json -Compress -InputObject @($prefix,$proper,$external,$fallback,$cli
   const { stdout } = await promisify(execFile)(powershell, ['-NoProfile', '-NonInteractive', '-Command', script], { windowsHide: true })
   assert.deepEqual(JSON.parse(stdout), [true, false, false, true, false, true])
 })
+
+test('actual registration producer emits literal null for absent values and preserves registry kinds', async t => {
+  const { execFile } = await import('node:child_process')
+  const { promisify } = await import('node:util')
+  const powershell = process.platform === 'win32'
+    ? join(process.env.SystemRoot, 'System32/WindowsPowerShell/v1.0/powershell.exe') : process.env.HEXBOT_TEST_POWERSHELL
+  if (!powershell) return t.skip('requires PowerShell for the actual registration producer')
+  const source = await readFile('backend/hexbot-installer/src/windows-nsis-registration.ps1', 'utf8')
+  const functions = source.slice(source.indexOf('function Read-String'), source.indexOf('$entries=@('))
+  const record = source.split('        @{scope=')[1].split('\n    } finally')[0]
+  assert(functions.startsWith('function Read-String') && record)
+  // Only the registry-key API is substituted. Both functions and the complete
+  // serialized entry expression come from production, as in the native Rust control.
+  const script = `$ErrorActionPreference='Stop'
+[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false,$true)
+${functions}
+function Fixture-Key($kind) {
+    $key=[pscustomobject]@{Kind=$kind;Value='%HEXBOT_LITERAL%'}
+    $key | Add-Member ScriptMethod GetValueNames {if($null -ne $this.Kind){'InstallLocation';'UninstallString'}}
+    $key | Add-Member ScriptMethod GetValueKind {param($name) return [Microsoft.Win32.RegistryValueKind]$this.Kind}
+    $key | Add-Member ScriptMethod GetValue {
+        param($name,$default,$options)
+        if($options -ne [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames){throw 'Expansion was allowed'}
+        return $this.Value
+    }
+    return $key
+}
+$entry={@{scope=${record}}
+$hive=[Microsoft.Win32.RegistryHive]::CurrentUser
+$results=@(foreach($kind in @('AbsentKey','AbsentValue','String','ExpandString','DWord','MultiString')) {
+    $install=$null
+    if($kind -eq 'AbsentValue'){$install=Fixture-Key $null}
+    elseif($kind -ne 'AbsentKey'){$install=Fixture-Key $kind}
+    $uninstall=$install
+    & $entry
+})
+ConvertTo-Json -InputObject $results -Compress`
+  const { stdout } = await promisify(execFile)(powershell, ['-NoProfile', '-NonInteractive', '-Command', script], {
+    windowsHide: true, timeout: 15000, maxBuffer: 65536
+  })
+  const raw = JSON.parse(stdout)
+  assert.deepEqual(raw, [null, null, 'String', 'ExpandString', 'DWord', 'MultiString'].map((kind, index) => ({
+    scope: 'CurrentUser', view: 'Registry64', install: index !== 0, uninstall: index !== 0,
+    location: kind === 'String' ? '%HEXBOT_LITERAL%' : null,
+    command: kind === 'String' ? '%HEXBOT_LITERAL%' : null,
+    locationType: kind, commandType: kind
+  })))
+})

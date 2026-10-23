@@ -11,13 +11,17 @@ function Read-String($key,$name) {
     if($value.Length -gt 32768) {throw 'Oversized NSIS registration value'}
     return $value
 }
+function Read-Kind($key,$name) {
+    if($null -eq $key -or $key.GetValueNames() -notcontains $name) {return $null}
+    return $key.GetValueKind($name).ToString()
+}
 $entries=@(foreach($hive in @([Microsoft.Win32.RegistryHive]::CurrentUser,[Microsoft.Win32.RegistryHive]::LocalMachine)) {
     $root=[Microsoft.Win32.RegistryKey]::OpenBaseKey($hive,[Microsoft.Win32.RegistryView]::Registry64)
     $install=$null; $uninstall=$null
     try {
         $install=$root.OpenSubKey("Software\$guid",$false)
         $uninstall=$root.OpenSubKey("Software\Microsoft\Windows\CurrentVersion\Uninstall\$guid",$false)
-        @{scope=$hive.ToString();view='Registry64';install=($null -ne $install);uninstall=($null -ne $uninstall);location=(Read-String $install 'InstallLocation');command=(Read-String $uninstall 'UninstallString');locationType=$(if($null -ne $install -and $install.GetValueNames() -contains 'InstallLocation'){$install.GetValueKind('InstallLocation').ToString()});commandType=$(if($null -ne $uninstall -and $uninstall.GetValueNames() -contains 'UninstallString'){$uninstall.GetValueKind('UninstallString').ToString()})}
+        @{scope=$hive.ToString();view='Registry64';install=($null -ne $install);uninstall=($null -ne $uninstall);location=(Read-String $install 'InstallLocation');command=(Read-String $uninstall 'UninstallString');locationType=(Read-Kind $install 'InstallLocation');commandType=(Read-Kind $uninstall 'UninstallString')}
     } finally {
         if($null -ne $install){$install.Dispose()};if($null -ne $uninstall){$uninstall.Dispose()};$root.Dispose()
     }
