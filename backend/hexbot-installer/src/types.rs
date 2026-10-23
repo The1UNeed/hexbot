@@ -242,12 +242,16 @@ impl Installed {
                 .is_none_or(|r| r.option != InstallOption::Headless)
         {
             let app = self.windows_repair_app()?;
-            return app
+            let track = crate::detect::windows_app_track(&app.app_id)?;
+            return match app
                 .version
                 .as_deref()
                 .and_then(|v| semver::Version::parse(v).ok())
                 .map(|v| crate::installed_version::track(&v))
-                .or_else(|| self.receipt.as_ref().map(|r| r.channel));
+            {
+                Some(packaged) => (packaged == track).then_some(track),
+                None => self.receipt.as_ref().map(|_| track),
+            };
         }
         self.receipt.as_ref().map(|r| r.channel).or_else(|| {
             self.apps.first().and_then(|a| {

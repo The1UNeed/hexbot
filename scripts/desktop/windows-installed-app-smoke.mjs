@@ -6,9 +6,10 @@ import { cp, mkdir, readFile, realpath, writeFile } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { dirname, isAbsolute, join, relative, sep } from 'node:path'
 import { waitForRuntimeJson } from './runtime-file.mjs'
+import { nodePath } from '../../apps/desktop/src/main/backend/node-path.ts'
 const require = createRequire(new URL('../../apps/desktop/package.json', import.meta.url))
 const { _electron: electron } = require('@playwright/test')
-const [executable, edition, root] = process.argv.slice(2)
+const [executable, edition, root, repairInvocation] = process.argv.slice(2)
 assert.equal(process.platform, 'win32')
 assert(isAbsolute(executable) && isAbsolute(root))
 assert(['client', 'full'].includes(edition))
@@ -42,6 +43,20 @@ async function openApp() {
 }
 try {
   let window = await openApp()
+  const repair = JSON.parse(repairInvocation)
+  assert(isAbsolute(repair.program))
+  const beforeReceipt = await readFile(join(repair.env.HEXBOT_HOME, 'install.json'))
+  await assert.rejects(native(nodePath(repair.program), ['--repair', '--yes', '--json'], {
+    env: { ...process.env, ...repair.env }, windowsHide: true, timeout: 120_000,
+  }), error => {
+    assert.equal(error.code, 1)
+    assert.match(error.stdout, /Quit the Windows app/)
+    assert(!error.stdout.includes('Running the Windows app installer'))
+    return true
+  })
+  assert(beforeReceipt.equals(await readFile(join(repair.env.HEXBOT_HOME, 'install.json'))))
+  assert.equal(await app.evaluate(({ app }) => app.isPackaged), true)
+  console.log('Actual running installed app refused Repair before NSIS; original app and receipt retained')
   if (edition === 'full') {
     const running = await state()
     ownedPid = JSON.parse(await readFile(join(home, 'runtime/native-running.json'), 'utf8')).pid

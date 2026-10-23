@@ -155,7 +155,11 @@ impl Installer {
             return Ok(Some(version));
         }
         if app.managed_by_dpkg || self.target.is_windows() {
-            return Ok(asar_version(&app.path.join("resources/app.asar")));
+            return if self.target.is_windows() {
+                Ok(asar_version_checked(&app.path.join("resources/app.asar"))?)
+            } else {
+                Ok(asar_version(&app.path.join("resources/app.asar")))
+            };
         }
         if !self.target.is_linux() {
             return Ok(None);
@@ -229,32 +233,65 @@ fn appimage_version(path: &Path) -> Result<Option<semver::Version>> {
 
 /// Read only package.json from an installed Electron ASAR, without launching it.
 pub(crate) fn asar_version(path: &Path) -> Option<semver::Version> {
-    let mut file = fs::File::open(path).ok()?;
-    let mut prefix = [0; 16];
-    file.read_exact(&mut prefix).ok()?;
+    asar_version_checked(path).ok().flatten()
+}
+
+// Truncated/invalid package bytes have no version. Access, device and other
+// filesystem errors must not become permission to repair an unreadable path.
+fn asar_version_checked(path: &Path) -> std::io::Result<Option<semver::Version>> {
+    let mut file = match fs::File::open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    fn read(file: &mut fs::File, size: usize) -> std::io::Result<Option<Vec<u8>>> {
+        let mut bytes = vec![0; size];
+        match file.read_exact(&mut bytes) {
+            Ok(()) => Ok(Some(bytes)),
+            Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => Ok(None),
+            Err(error) => Err(error),
+        }
+    }
+    let Some(prefix) = read(&mut file, 16)? else {
+        return Ok(None);
+    };
     let word = |at| u32::from_le_bytes(prefix[at..at + 4].try_into().unwrap()) as u64;
     let header_size = word(4);
     let json_size = word(12);
     if word(0) != 4 || json_size > 16 * 1024 * 1024 || json_size + 8 > header_size {
-        return None;
+        return Ok(None);
     }
-    let mut header = vec![0; json_size as usize];
-    file.read_exact(&mut header).ok()?;
-    let header: serde_json::Value = serde_json::from_slice(&header).ok()?;
+    let Some(header) = read(&mut file, json_size as usize)? else {
+        return Ok(None);
+    };
+    let Ok(header) = serde_json::from_slice::<serde_json::Value>(&header) else {
+        return Ok(None);
+    };
     let package = &header["files"]["package.json"];
-    let offset = package["offset"].as_str()?.parse::<u64>().ok()?;
-    let size = package["size"].as_u64()?;
+    let Some((offset, size)) = package["offset"]
+        .as_str()
+        .and_then(|s| s.parse::<u64>().ok())
+        .zip(package["size"].as_u64())
+    else {
+        return Ok(None);
+    };
+    let Some(offset) = 8u64
+        .checked_add(header_size)
+        .and_then(|n| n.checked_add(offset))
+    else {
+        return Ok(None);
+    };
     if size > 1024 * 1024 {
-        return None;
+        return Ok(None);
     }
-    file.seek(SeekFrom::Start(
-        8u64.checked_add(header_size)?.checked_add(offset)?,
-    ))
-    .ok()?;
-    let mut bytes = vec![0; size as usize];
-    file.read_exact(&mut bytes).ok()?;
-    let package: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
-    package["version"].as_str().and_then(parse)
+    file.seek(SeekFrom::Start(offset))?;
+    let Some(bytes) = read(&mut file, size as usize)? else {
+        return Ok(None);
+    };
+    let Ok(package) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+        return Ok(None);
+    };
+    Ok(package["version"].as_str().and_then(parse))
 }
 
 #[cfg(test)]

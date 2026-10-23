@@ -475,12 +475,12 @@ mod tests {
         };
         for receipted in [false, true] {
             for (id, version, expected) in [
+                ("app.hexbot.client", "1.2.3", Track::Stable),
                 (
-                    "app.hexbot.client",
+                    "app.hexbot.desktop.nightly",
                     "1.2.3-nightly.20261023.1",
                     Track::Nightly,
                 ),
-                ("app.hexbot.desktop.nightly", "1.2.3", Track::Stable),
             ] {
                 let root = tempfile::tempdir().unwrap();
                 let paths = Paths {

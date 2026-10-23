@@ -176,6 +176,15 @@ pub fn app_option(id: &str) -> Option<InstallOption> {
     }
 }
 
+pub(crate) fn windows_app_track(id: &str) -> Option<crate::Track> {
+    app_option(id)?;
+    (!id.ends_with(".dev")).then_some(if id.ends_with(".nightly") {
+        crate::Track::Nightly
+    } else {
+        crate::Track::Stable
+    })
+}
+
 pub(crate) fn plist_value(bundle: &Path, key: &str) -> Option<String> {
     let output = Command::new("/usr/bin/plutil")
         .args(["-extract", key, "raw", "-o", "-"])
