@@ -688,14 +688,16 @@ fn receipted_repair_falls_back_for_missing_or_corrupt_ordinary_package_metadata(
 #[test]
 fn receipted_repair_does_not_mask_package_access_errors() {
     let root = tempfile::tempdir().unwrap();
-    let engine = engine(root.path());
+    let mut engine = engine(root.path());
+    let server = Server::new(|_| BTreeMap::new());
+    engine.base_url = server.base.clone();
     let app = owned_app(&engine, "app.hexbot.client", "1.2.3");
     let asar = app.join("resources/app.asar");
     let receipt = Receipt {
         option: InstallOption::Client,
         channel: Track::Stable,
         version: "1.2.3".into(),
-        paths: vec![app],
+        paths: vec![app.clone()],
         installed_at: "fixture".into(),
     };
     fs::create_dir_all(engine.paths.receipt().parent().unwrap()).unwrap();
@@ -704,6 +706,18 @@ fn receipted_repair_does_not_mask_package_access_errors() {
         serde_json::to_vec(&receipt).unwrap(),
     )
     .unwrap();
+    let unchanged: Vec<_> = [
+        engine.paths.receipt(),
+        asar.clone(),
+        app.join(".hexbot-app.json"),
+        app.join("HexbotClient.exe"),
+    ]
+    .into_iter()
+    .map(|path| {
+        let bytes = fs::read(&path).unwrap();
+        (path, bytes)
+    })
+    .collect();
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -714,7 +728,7 @@ fn receipted_repair_does_not_mask_package_access_errors() {
         fs::set_permissions(&asar, fs::Permissions::from_mode(0o000)).unwrap();
     }
     #[cfg(windows)]
-    let _exclusive = {
+    let exclusive = {
         use std::os::windows::fs::OpenOptionsExt;
         fs::OpenOptions::new()
             .read(true)
@@ -723,24 +737,51 @@ fn receipted_repair_does_not_mask_package_access_errors() {
             .open(&asar)
             .unwrap()
     };
-    let error = engine.repair(&mut |_| {}).unwrap_err();
+    let direct = fs::File::open(&asar).unwrap_err();
+    #[cfg(windows)]
+    {
+        // Rust 1.97.1 leaves ERROR_SHARING_VIOLATION uncategorized; this
+        // exclusive-handle fixture must produce that exact error, not EACCES.
+        assert_eq!(direct.raw_os_error(), Some(32), "{direct:?}");
+        assert_eq!(direct.kind(), std::io::Error::from_raw_os_error(32).kind());
+    }
+    #[cfg(unix)]
+    assert_eq!(direct.kind(), std::io::ErrorKind::PermissionDenied);
+    let mut stages = Vec::new();
+    let error = engine.repair(&mut |p| stages.push(p.stage)).unwrap_err();
+    let repair = error
+        .downcast_ref::<std::io::Error>()
+        .expect("Filesystem error must remain distinguishable");
+    eprintln!(
+        "Package access refusal: direct raw={:?} kind={:?}; repair raw={:?} kind={:?}",
+        direct.raw_os_error(),
+        direct.kind(),
+        repair.raw_os_error(),
+        repair.kind()
+    );
+    assert_eq!(repair.raw_os_error(), direct.raw_os_error());
+    assert_eq!(repair.kind(), direct.kind());
+    assert!(
+        stages.is_empty(),
+        "Repair must refuse before fallback/NSIS: {stages:?}"
+    );
+    assert!(server.requests.lock().unwrap().is_empty());
+    #[cfg(windows)]
+    drop(exclusive);
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         fs::set_permissions(&asar, fs::Permissions::from_mode(0o600)).unwrap();
     }
-    assert_eq!(
-        error
-            .downcast_ref::<std::io::Error>()
-            .expect("Filesystem error must remain distinguishable")
-            .kind(),
-        std::io::ErrorKind::PermissionDenied
-    );
-    assert!(
-        hexbot_installer::read_receipt(&engine.paths.receipt())
-            .unwrap()
-            .is_some()
-    );
+    // Releasing the fixture restores access without a repair or any file writes.
+    for (path, bytes) in unchanged {
+        assert_eq!(
+            fs::read(&path).unwrap(),
+            bytes,
+            "{} changed",
+            path.display()
+        );
+    }
 }
 
 #[test]
