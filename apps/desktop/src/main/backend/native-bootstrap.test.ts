@@ -139,6 +139,28 @@ describe('native runtime bootstrap', () => {
     }
   })
 
+  it('moves to a later build of the same commit and keeps it', async () => {
+    const f = await fixture()
+    try {
+      // Nightly .58 and .59 were both built from one commit, so they share builtAt.
+      await f.bundle('0.1.5-nightly.20261022.58', 200)
+      await performBootstrap(f.options('0.1.5-nightly.20261022.58'))
+      await f.bundle('0.1.5-nightly.20261022.59', 200)
+      await performBootstrap(f.options('0.1.5-nightly.20261022.59'))
+      const later = await realpath(join(f.home, 'runtime/native/0.1.5-nightly.20261022.59'))
+      expect(await f.selected()).toBe(later)
+
+      // Reopening the earlier Nightly, or a Stable app of that commit, keeps it.
+      for (const version of ['0.1.5-nightly.20261022.58', '0.1.5-alpha.1']) {
+        await f.bundle(version, 200)
+        await performBootstrap(f.options(version))
+        expect(await f.selected()).toBe(later)
+      }
+    } finally {
+      await f.close()
+    }
+  })
+
   it('keeps a newer signed service update when an older app opens', async () => {
     const f = await fixture()
     try {

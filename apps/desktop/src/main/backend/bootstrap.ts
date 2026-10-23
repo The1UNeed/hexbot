@@ -6,6 +6,7 @@ import { basename, dirname, join } from 'node:path'
 import { spawn } from 'node:child_process'
 
 import { app } from 'electron'
+import semver from 'semver'
 
 import { migrateLegacyService } from '../service'
 import voiceRequirements from '../../../../../backend/hexbot-core/assets/edge-tts.requirements.txt?raw'
@@ -203,7 +204,7 @@ export async function pruneNativeRuntimes(active: string, previous?: string): Pr
 const logCleanup = (error: unknown): Promise<void> =>
   appendLog(`Runtime cleanup: ${String(error)}\n`).catch(() => undefined)
 
-interface SelectedRuntime { executable: string; previous?: string; builtAt: number }
+interface SelectedRuntime { executable: string; previous?: string; builtAt: number; version: string }
 
 // The runtime native-executable points at, if it is intact. The daemon's own
 // updater also selects runtimes and records their hashes in native-current.json.
@@ -218,11 +219,17 @@ async function selectedRuntime(deps: BootstrapDeps): Promise<SelectedRuntime | u
     const directory = dirname(executable)
     const manifest = await readManifest(directory)
     await verifyNativeRuntime(directory, { ...deps, appVersion: selected.version }, selected.files ?? manifest.files)
-    return { executable, previous: selected.previous, builtAt: manifest.builtAt ?? 0 }
+    if (!semver.valid(selected.version)) return undefined
+    return { executable, previous: selected.previous, builtAt: manifest.builtAt ?? 0, version: selected.version }
   } catch {
     return undefined
   }
 }
+
+// The version the daemon starts on next, as recorded when its runtime was activated.
+export const selectedNativeVersion = (): Promise<string | undefined> =>
+  readFile(join(runtimeDir(), 'native-current.json'), 'utf8')
+    .then(text => (JSON.parse(text) as { version?: string }).version, () => undefined)
 
 // A probe that cannot start usually means this system is older than the runtime supports.
 async function probe(deps: BootstrapDeps, command: string, args: string[]): Promise<void> {
@@ -281,9 +288,11 @@ async function installNativeRuntime(deps: BootstrapDeps): Promise<void> {
   const signedHashes = await verifyNativeRuntime(source, deps)
   const { builtAt = 0 } = await readManifest(source)
   // The newest build wins whichever app or updater installed it, so Stable and
-  // Nightly apps sharing this home never go back to an older daemon.
+  // Nightly apps sharing this home never go back to an older daemon. Builds of
+  // one commit share builtAt; the higher version wins, as in services.rs.
   const selected = await selectedRuntime(deps)
-  const destination = selected && selected.builtAt >= builtAt ? undefined : await copyNativeRuntime(source, deps, signedHashes)
+  const keep = selected && (selected.builtAt - builtAt || semver.compare(selected.version, deps.appVersion)) >= 0
+  const destination = keep ? undefined : await copyNativeRuntime(source, deps, signedHashes)
   await installCodeRuntime(deps)
   if (destination) await activateNativeRuntime(destination, deps, signedHashes)
   else if (selected) await pruneNativeRuntimes(selected.executable, selected.previous).catch(logCleanup)

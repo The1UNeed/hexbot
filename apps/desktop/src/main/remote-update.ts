@@ -1,5 +1,7 @@
 import { mkdir, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
+import { bootstrap, selectedNativeVersion } from './backend/bootstrap'
+import type { DaemonManager } from './backend/manager'
 import { hexbotHome, runtimeDir } from './backend/paths'
 import { errorMessage, log } from './log'
 import { runRemoteUpdate, type UpdateState } from './updater'
@@ -11,6 +13,8 @@ import { runRemoteUpdate, type UpdateState } from './updater'
 // reads back for `hexbot.update.status` (backend/hexbot-core/src/services.rs),
 // because the app has no channel to the daemon of its own. On success the app
 // relaunches and the client sees the daemon come back on the new version.
+// When the app already has that version and only its daemon is behind, the
+// daemon restarts on the app's runtime instead.
 export const updateStatusFile = (): string => join(runtimeDir(), 'update-status.json')
 
 export type RemoteStatus =
@@ -52,7 +56,33 @@ async function writeStatus(
 
 let running = false
 
-export async function handleDaemonUpdateRequest(requested: string): Promise<void> {
+// Prepares the runtime this app ships, which keeps a newer one already in use,
+// and restarts the daemon when that runtime is the requested version. Returns
+// whether it reported an outcome: false when there is nothing to restart on,
+// so the request ends as up to date.
+async function restartOnAppRuntime(
+  requested: string,
+  daemon: Pick<DaemonManager, 'start' | 'stop'>
+): Promise<boolean> {
+  try {
+    await bootstrap(() => undefined)
+  } catch (error) {
+    log.warn(`remote update could not prepare the runtime: ${errorMessage(error)}`)
+    await writeStatus('failed', { message: errorMessage(error) })
+    return true
+  }
+  if ((await selectedNativeVersion()) !== requested) return false
+  log.info(`restarting the daemon on ${requested}`)
+  await writeStatus('installing', { version: requested })
+  await daemon.stop()
+  await daemon.start()
+  return true
+}
+
+export async function handleDaemonUpdateRequest(
+  requested: string,
+  daemon: Pick<DaemonManager, 'start' | 'stop'>
+): Promise<void> {
   if (running) return
   running = true
   log.info(`daemon asked for an app update to ${requested} (home ${hexbotHome()})`)
@@ -67,6 +97,7 @@ export async function handleDaemonUpdateRequest(requested: string): Promise<void
           version: state.downloadedVersion ?? state.availableVersion
         })
     })
+    if (result.outcome === 'up-to-date' && (await restartOnAppRuntime(requested, daemon))) return
     if (result.outcome !== 'installing') {
       log.warn(`remote update ended: ${result.outcome} ${result.message ?? ''}`)
       await writeStatus(result.outcome === 'up-to-date' ? 'up-to-date' : 'failed', {

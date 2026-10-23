@@ -1422,10 +1422,18 @@ fn valid_version(version: &str) -> bool {
         })
 }
 fn require_newer_native_build(requested: &Value, current: &Value) -> Result<()> {
-    // Match desktop bootstrap: source chronology decides across update tracks.
+    // Match desktop bootstrap: source chronology decides across update tracks,
+    // and the higher version decides between builds of the same commit.
     // A runtime predating builtAt has chronology zero.
-    let built_at = |manifest: &Value| manifest["builtAt"].as_u64().unwrap_or(0);
-    if built_at(requested) <= built_at(current) {
+    let order = |manifest: &Value| {
+        (
+            manifest["builtAt"].as_u64().unwrap_or(0),
+            manifest["version"]
+                .as_str()
+                .and_then(|version| semver::Version::parse(version).ok()),
+        )
+    };
+    if order(requested) <= order(current) {
         return Err(Error::new(
             4212,
             "The daemon already runs this build or a newer one.",
@@ -2119,9 +2127,11 @@ async fn native_update(home: &Path, version: &str, service: &Service) -> Result<
             "native update manifest does not match this daemon",
         ));
     }
-    let current = std::env::current_exe()
+    let mut current = std::env::current_exe()
         .map(|executable| native_manifest(&executable, &crate::version()))
         .unwrap_or_else(|_| json!({}));
+    // A daemon without its manifest still knows its version for the tie-break.
+    current["version"] = json!(crate::version());
     require_newer_native_build(&manifest, &current)?;
     let url = artifact_url(&base, &manifest)?;
     let digest = common::required(&manifest, "sha256")?;
@@ -2510,6 +2520,21 @@ mod native_version_tests {
         }
         assert!(require_newer_native_build(&json!({"builtAt": 1}), &json!({})).is_ok());
         assert!(require_newer_native_build(&json!({}), &json!({"builtAt": 1})).is_err());
+    }
+
+    #[test]
+    fn a_later_build_of_the_same_commit_is_newer() {
+        // Nightly .58 and .59 were both built from one commit, so they share builtAt.
+        let earlier = json!({"version": "0.1.5-nightly.20261022.58", "builtAt": 200});
+        let later = json!({"version": "0.1.5-nightly.20261022.59", "builtAt": 200});
+        let stable = json!({"version": "0.1.5-alpha.1", "builtAt": 200});
+        assert!(require_newer_native_build(&later, &earlier).is_ok());
+        for older in [&earlier, &stable, &later] {
+            assert_eq!(
+                require_newer_native_build(older, &later).unwrap_err().code,
+                4212
+            );
+        }
     }
 
     #[test]

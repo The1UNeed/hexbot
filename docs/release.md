@@ -177,7 +177,8 @@ so daemon self-updates carry the same signatures as the full package. Archiving
 recomputes the runtime manifest's file hashes after signing without changing the
 signed app. Activation preserves those hashes for desktop verification. Both the
 app and service updater keep the runtime with the newer manifest `builtAt`,
-including when switching between Stable and Nightly.
+including when switching between Stable and Nightly. Between builds of the same
+commit, which share `builtAt`, the higher version wins.
 
 The September 27 darwin-arm64 staging check reduced dependency files from
 463,982,503 to 86,636,413 bytes, about 81%. The complete bundle contains

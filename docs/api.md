@@ -1098,8 +1098,10 @@ A client newer than the daemon asks the daemon to update itself
   and its SHA-256, activates the runtime, and restarts itself. Errors: 4210
   no capability, 4211 an update is already running, 4212 already on that
   version. Service updates require a newer source build, using manifest
-  `builtAt` across Stable and Nightly. An older or equally old build reports
-  failure before downloading its archive.
+  `builtAt` across Stable and Nightly, or the same `builtAt` and a higher
+  version. Any other build reports failure before downloading its archive.
+  When the app already has the requested version and only its daemon is
+  behind, the app restarts the daemon on the app's runtime instead.
   The manifest must carry a release signature at `manifest.json.sig`
   (docs/release.md, "Update signing"); without a valid one the update fails
   before anything downloads, and the SHA-256 in the signed manifest then pins
