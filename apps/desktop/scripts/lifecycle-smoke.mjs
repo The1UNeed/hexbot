@@ -28,6 +28,7 @@ const results = []
 let currentApp
 let currentProcess
 const processes = new WeakMap()
+const launchBounds = new WeakMap()
 const shutdowns = new WeakMap()
 
 function recordProcess(child, name) {
@@ -81,6 +82,7 @@ async function prepare(edition) {
 async function launch(directory, name, fixture = false) {
   const home = join(root, `${name}-home`)
   await mkdir(home)
+  const notBefore = Date.now()
   currentApp = await electron.launch({
     executablePath,
     args: launchArgs(directory),
@@ -92,6 +94,7 @@ async function launch(directory, name, fixture = false) {
     timeout: 30_000
   })
   // Playwright disposes its process accessor when the Electron connection closes.
+  launchBounds.set(currentApp, { notBefore, notAfter: Date.now() })
   currentProcess = currentApp.process()
   processes.set(currentApp, currentProcess)
   const record = recordProcess(currentProcess, name)
@@ -130,7 +133,10 @@ async function quit(app, source = 'app') {
           const output = await promisify(execFile)(program,
             ['-NoProfile', '-NonInteractive', '-File', resolve(desktop, '../../scripts/desktop/windows-shutdown-diagnostic.ps1')],
             { cwd: tmpdir(), windowsHide: true, timeout: 5000, maxBuffer: 65536,
-              env: { ...environment, HEXBOT_TEST_SHUTDOWN_PID: String(child.pid) } })
+              env: { ...environment, HEXBOT_TEST_SHUTDOWN_PID: String(child.pid),
+                HEXBOT_TEST_SHUTDOWN_IMAGE: executablePath,
+                HEXBOT_TEST_SHUTDOWN_AFTER: String(launchBounds.get(app).notBefore),
+                HEXBOT_TEST_SHUTDOWN_BEFORE: String(launchBounds.get(app).notAfter) } })
           result = { status: 0, ...output }
         } catch (diagnostic) {
           result = { status: diagnostic.code, signal: diagnostic.signal, message: diagnostic.message.slice(0, 2048),

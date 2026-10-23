@@ -7,6 +7,15 @@ $owned=$null
 $threads=@()
 try {
     $owned=[Diagnostics.Process]::GetProcessById([int]$idText)
+    $created=$owned.StartTime.ToUniversalTime()
+    $createdMs=([DateTimeOffset]$created).ToUnixTimeMilliseconds()
+    $image=$owned.MainModule.FileName
+    $expected=[IO.Path]::GetFullPath($env:HEXBOT_TEST_SHUTDOWN_IMAGE).Replace('/','\')
+    # No handles were captured at launch. Check the creation-time interval of
+    # the actual Electron launch and its trusted image before reading threads.
+    $identity=@{pid=$owned.Id;created=$created.ToFileTimeUtc().ToString();image=$image;expectedImage=$expected;createdMs=$createdMs;notBefore=$env:HEXBOT_TEST_SHUTDOWN_AFTER;notAfter=$env:HEXBOT_TEST_SHUTDOWN_BEFORE}
+    $identity.matches=($image.Equals($expected,[StringComparison]::OrdinalIgnoreCase) -and $createdMs -ge [long]$env:HEXBOT_TEST_SHUTDOWN_AFTER -and $createdMs -le [long]$env:HEXBOT_TEST_SHUTDOWN_BEFORE)
+    if(-not $identity.matches){ConvertTo-Json -InputObject @{identity=$identity;note='Owned launch identity could not be corroborated; no thread/child snapshot taken'} -Compress;exit 0}
     $threads=@($owned.Threads)
     $threadRecords=@(foreach($thread in $threads | Select-Object -First 64) {
         try {
@@ -16,7 +25,7 @@ try {
     })
     # The PID is diagnostic only. Creation time/image identify the process seen
     # now; this snapshot cannot prove which native thread held exit earlier.
-    $record=@{pid=$owned.Id;created=$owned.StartTime.ToUniversalTime().ToFileTimeUtc().ToString();image=$owned.MainModule.FileName;responding=$owned.Responding;handleCount=$owned.HandleCount;threads=$threadRecords;threadCount=$threads.Count;threadsComplete=($threads.Count -le 64)}
+    $record=@{identity=$identity;responding=$owned.Responding;handleCount=$owned.HandleCount;threads=$threadRecords;threadCount=$threads.Count;threadsComplete=($threads.Count -le 64)}
     $children=@(Get-CimInstance -ClassName Win32_Process -Filter "ParentProcessId = $idText")
     $record.children=@($children | Select-Object -First 64 | ForEach-Object {@{pid=$_.ProcessId;created=$_.CreationDate.ToUniversalTime().ToString('o');image=$_.ExecutablePath}})
     $record.childCount=$children.Count
