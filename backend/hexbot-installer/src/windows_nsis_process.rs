@@ -310,6 +310,65 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
+    fn direct_wow64_api_buffer_and_binding_controls() {
+        use std::ffi::c_void;
+        type Locate = unsafe extern "system" fn(*mut u16, u32) -> u32;
+        unsafe extern "system" {
+            fn GetSystemWow64DirectoryW(buffer: *mut u16, size: u32) -> u32;
+            fn GetModuleHandleW(name: *const u16) -> *mut c_void;
+            fn GetProcAddress(module: *mut c_void, name: *const u8) -> *mut c_void;
+            fn SetLastError(error: u32);
+        }
+        let module_name: Vec<_> = "kernel32.dll\0".encode_utf16().collect();
+        let module = unsafe { GetModuleHandleW(module_name.as_ptr()) };
+        assert!(!module.is_null());
+        let address =
+            unsafe { GetProcAddress(module, c"GetSystemWow64DirectoryW".as_ptr().cast()) };
+        assert!(!address.is_null());
+        // The trusted fixed Kernel32 export has exactly the SDK UINT/LPWSTR/UINT ABI.
+        let resolved: Locate = unsafe { std::mem::transmute(address) };
+        let inspect = |label, locate: Locate, buffer: &mut [u16]| {
+            buffer.fill(0xa5a5);
+            unsafe { SetLastError(0) };
+            let returned = unsafe { locate(buffer.as_mut_ptr(), buffer.len() as u32) } as usize;
+            let error = std::io::Error::last_os_error().raw_os_error();
+            let first_nul = buffer.iter().position(|unit| *unit == 0);
+            serde_json::json!({"label":label,"capacity":buffer.len(),"returnedLength":returned,
+                "lastError":error,"firstUnits":buffer.iter().copied().take(24).collect::<Vec<_>>(),
+                "firstNul":first_nul,"valid":returned>0 && returned<buffer.len() && first_nul==Some(returned)})
+        };
+        let mut stack = [0u16; 32768];
+        let records = [
+            inspect("import-stack-32768", GetSystemWow64DirectoryW, &mut stack),
+            inspect(
+                "import-heap-32768",
+                GetSystemWow64DirectoryW,
+                &mut vec![0; 32768],
+            ),
+            inspect(
+                "import-heap-32767",
+                GetSystemWow64DirectoryW,
+                &mut vec![0; 32767],
+            ),
+            inspect(
+                "import-heap-260",
+                GetSystemWow64DirectoryW,
+                &mut vec![0; 260],
+            ),
+            inspect("resolved-heap-260", resolved, &mut vec![0; 260]),
+        ];
+        eprintln!(
+            "Direct trusted WOW64 API controls: {}",
+            serde_json::json!({
+                "importAddress":GetSystemWow64DirectoryW as *const () as usize,"resolvedAddress":address as usize,"records":records
+            })
+        );
+        // Do not accept an unwritten/unterminated result or select another host.
+        assert!(records.iter().all(|record| record["valid"] == true));
+    }
+
+    #[cfg(windows)]
+    #[test]
     fn matching_system_hosts_launch_in_the_selected_nsis_architecture() {
         let temp = tempfile::tempdir().unwrap();
         let paths = crate::Paths {
