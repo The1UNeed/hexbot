@@ -57,10 +57,20 @@ async function writeStatus(
 
 let running = false
 
+// Whether a daemon on `version` is current for a client on `requested`, by the
+// client's own rule (daemonBehind in apps/web/src/lib/version-skew.ts): two
+// nightlies compare in full, any other pair by major.minor.patch.
+function satisfies(version: string, requested: string): boolean {
+  const nightly = (value: string) => semver.prerelease(value)?.[0] === 'nightly'
+  if (nightly(version) && nightly(requested)) return semver.gte(version, requested)
+  const release = (value: string) => `${semver.major(value)}.${semver.minor(value)}.${semver.patch(value)}`
+  return semver.gte(release(version), release(requested))
+}
+
 // Prepares the runtime this app ships, which keeps a newer one already in use,
-// and restarts the daemon when that runtime is the requested version or newer.
-// Returns whether it reported an outcome: false when there is nothing to
-// restart on, so the request ends as up to date.
+// and restarts the daemon when that runtime satisfies the request. Returns
+// whether it reported an outcome: false when there is nothing to restart on,
+// so the request ends with the app updater's result.
 async function restartOnAppRuntime(
   requested: string,
   daemon: Pick<DaemonManager, 'start' | 'stop'>
@@ -73,7 +83,7 @@ async function restartOnAppRuntime(
     return true
   }
   const selected = await selectedNativeVersion()
-  if (!semver.valid(selected) || !semver.valid(requested) || semver.lt(selected!, requested)) return false
+  if (!semver.valid(selected) || !semver.valid(requested) || !satisfies(selected!, requested)) return false
   log.info(`restarting the daemon on ${selected}`)
   await writeStatus('installing', { version: selected })
   await daemon.stop()
@@ -99,7 +109,8 @@ export async function handleDaemonUpdateRequest(
           version: state.downloadedVersion ?? state.availableVersion
         })
     })
-    if (result.outcome === 'up-to-date' && (await restartOnAppRuntime(requested, daemon))) return
+    // Also when this app cannot update itself, as on Linux outside the AppImage.
+    if (result.outcome !== 'installing' && (await restartOnAppRuntime(requested, daemon))) return
     if (result.outcome !== 'installing') {
       log.warn(`remote update ended: ${result.outcome} ${result.message ?? ''}`)
       await writeStatus(result.outcome === 'up-to-date' ? 'up-to-date' : 'failed', {

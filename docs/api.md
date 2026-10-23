@@ -1101,9 +1101,11 @@ A client newer than the daemon asks the daemon to update itself
   `builtAt` across Stable and Nightly, or the same `builtAt` and a higher
   version. Any other build reports failure before downloading its archive.
   When that build or a newer one is already selected, as after the app
-  installed it, the daemon restarts into it without downloading. When the app
-  already has the requested version or a newer one and only its daemon is
-  behind, the app restarts the daemon on the app's runtime instead.
+  installed it, the daemon restarts into it without downloading. With
+  `desktop`, when the app's runtime is already current for the requesting
+  client and only its daemon is behind, the app restarts the daemon on that
+  runtime, also where the app cannot update itself (Linux outside the
+  AppImage).
   The manifest must carry a release signature at `manifest.json.sig`
   (docs/release.md, "Update signing"); without a valid one the update fails
   before anything downloads, and the SHA-256 in the signed manifest then pins

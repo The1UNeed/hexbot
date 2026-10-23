@@ -48,8 +48,22 @@ describe('handleDaemonUpdateRequest', () => {
     expect(await status()).toMatchObject({ status: 'installing', version: '0.1.5-nightly.20261023.60' })
   })
 
-  it('reports nothing to install when the runtime is older than requested', async () => {
+  it('restarts the daemon on a Stable runtime of the release a Nightly client asked for', async () => {
+    // The client counts a daemon of the same release on the other track as current.
     runtime.selectedNativeVersion.mockResolvedValue('0.1.5-alpha.2')
+    await handleDaemonUpdateRequest('0.1.5-nightly.20261022.59', daemon)
+    expect(calls).toEqual(['bootstrap', 'stop', 'start'])
+  })
+
+  it('restarts the daemon when this app cannot update itself', async () => {
+    updater.runRemoteUpdate.mockResolvedValue({ outcome: 'failed', message: 'Updates on Linux need the AppImage package.' })
+    runtime.selectedNativeVersion.mockResolvedValue('0.1.5-nightly.20261022.59')
+    await handleDaemonUpdateRequest('0.1.5-nightly.20261022.59', daemon)
+    expect(calls).toEqual(['bootstrap', 'stop', 'start'])
+  })
+
+  it('reports nothing to install when the runtime is older than requested', async () => {
+    runtime.selectedNativeVersion.mockResolvedValue('0.1.4')
     await handleDaemonUpdateRequest('0.1.5-nightly.20261022.59', daemon)
     expect(calls).toEqual(['bootstrap'])
     expect(await status()).toMatchObject({ status: 'up-to-date' })
