@@ -11,6 +11,7 @@ import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
 import { instrumentShutdown, observeShutdown, requestShutdown } from '../../../scripts/desktop/lifecycle-shutdown.mjs'
+import { instrumentationControl } from '../../../scripts/desktop/lifecycle-instrumentation.mjs'
 
 const desktop = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const require = createRequire(join(desktop, 'package.json'))
@@ -219,6 +220,11 @@ async function rendered(app, page) {
 }
 
 try {
+  if (process.platform === 'win32' && !process.env.HEXBOT_LIFECYCLE_APP) {
+    const playwright = createRequire(createRequire(require.resolve('@playwright/test')).resolve('playwright'))
+    const { debug } = playwright(join(dirname(playwright.resolve('playwright-core/package.json')), 'lib/utilsBundle.js'))
+    await instrumentationControl({ electron, debug, executablePath, root, artifacts, environment })
+  }
   for (const edition of process.env.HEXBOT_LIFECYCLE_APP ? ['client'] : ['full', 'client']) {
     const directory = process.env.HEXBOT_LIFECYCLE_APP ? desktop : await prepare(edition)
     const app = await launch(directory, edition)

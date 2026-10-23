@@ -6,7 +6,7 @@ export function instrumentShutdown({ app }, file) {
   const trace = (event, details = {}) => fs.appendFileSync(file,
     JSON.stringify({ event, time: Date.now(), ...details }) + '\n')
   globalThis.hexbotLifecycleTrace = trace
-  trace('instrumented', { electron: process.versions.electron, node: process.versions.node })
+  trace('instrumented', { pid: process.pid, ready: app.isReady?.(), electron: process.versions.electron, node: process.versions.node })
   for (const event of ['window-all-closed', 'before-quit', 'will-quit', 'quit'])
     app.on(event, () => trace(event))
   app.once('will-quit', () => {
