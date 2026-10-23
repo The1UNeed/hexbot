@@ -1,5 +1,56 @@
 # Testing
 
+## Authorized startup cache
+
+`pnpm --filter ./apps/web run test --run src/stores/startup-cache.test.ts` covers
+repeated inputs during hydration, verified room baselines, overlapping history
+reads, revocation and obsolete writes, install identity, stripped live IDs, and
+row/byte/recency limits, hidden kickoff projection, and persisted room-log cleanup.
+Transaction-completion hooks cover terminal and reload invalidation during cache
+reads, queued writes, and commits. Held fetches cover section deletion and
+re-listing; a 45-room roster checks the 20-log startup and persistence limit.
+Held list, log, and lookup replies cover prompt roster publication, isolated log
+failures, overlapping refreshes, and preservation of intervening room changes.
+Delayed IndexedDB reads cover live tombstones, empty authoritative lists, partial
+restoration, re-listing, and identity resets. Queued stale writes cannot restore
+removed rooms after cleanup. `src/stores/catalog-races.test.ts` includes cold IDs
+absent from memory and both list/lookup request orders. Deep-link tests cover
+incomplete bot caches; section tests cover pre-creation lists, partial restoration,
+and disk-only history pruning. Cold settings tests hold lookups across cache and
+network roster publication, for both missing and valid rooms.
+`src/app/conversation/reload.test.tsx` also holds network reads after a dream
+reload or turn completion to check that cached and retained rows appear once.
+`src/lib/room-or-leave.test.tsx` covers queued startup reads and reconnects without
+treating discarded reads as room deletion. `read-mark-races.test.tsx` holds
+acknowledgments across actual `RoomConversation` log hydration and live events.
+`mutation-races.test.ts` covers delayed mutations across tombstones, lists,
+relisting and newer mutations, including creates with initially unknown IDs.
+The native notification regression explicitly finishes its mounted proving read
+and observes the rendered streaming state before completing the reply; teardown
+unmounts and invalidates pending work before clearing the bridge.
+
+After building the daemon and web bundle and installing pinned Pi dependencies,
+run `node scripts/dev/startup-cache-smoke.mjs`. It uses a temporary daemon home,
+real Pi, a local streaming model, and the production browser bundle. It holds a
+real history reply to exercise cached hydration and a repeated prompt, reconnects
+the socket to check the proving read, blocks authorization on an offline reload,
+deletes and archives rooms while offline, and checks that their persisted logs
+are removed while an unrelated optional log reply remains held. Cold settings
+checks hold the child conversation reply before the parent settings lookup and
+hold older successful lookups across a real newer roster after deletion, with the
+deleted event suppressed. A pre-creation section list stays held while a new bot's
+chat opens. A disk-only deleted chat checks history-key and recency cleanup.
+Read-mark requests stay unsent while roster/view logs and a live event load;
+the fresh history must render and persist before those requests are released.
+A processed rename response crosses a real deletion without restoring the room
+in the roster or IndexedDB. A held history reply also checks hidden kickoff projection. Finally
+it revokes the browser's actual device and checks disk and rendered state.
+Screenshots remain in the printed temporary artifacts directory. It publishes
+nothing and stops only its own processes.
+The browser and both Electron editions in `scripts/dev/native-ui-smoke.mjs`
+also exercise cold room deep links, reloads, and warm room navigation, with the
+route and composer checked before continuing.
+
 ## Native product suites
 
 - Rust daemon: `cargo test --locked --manifest-path backend/hexbot-core/Cargo.toml`
@@ -138,6 +189,9 @@
   only existing repositories within the bounded scan; repositories created
   during a command remain unprotected. macOS filename rules cover new `.git`
   metadata directories.
+- Pi file-tool tests build the test-only Rust `pi_file_fixture` example to
+  exercise the actual private protocol and anchored operations. They need the
+  pinned Rust toolchain. Umask tests run in isolated Node children.
 - Live Pi suites: ignored unless `HEXBOT_TEST_PI` names a Pi executable. CI runs
   them with the pinned Pi after the Pi runtime install above, from
   `backend/hexbot-core`:

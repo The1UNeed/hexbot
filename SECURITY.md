@@ -34,12 +34,33 @@ The operating-system sandbox is the containment boundary for untrusted shell
 commands and code execution. Prompt instructions, approval text, output
 redaction, and pattern checks do not provide equivalent containment.
 
+Windows remains unsupported. Its build work does not implement a sandbox.
+Auto and Manual refuse local shell commands, Python code, and Pi's file tools
+before approval or execution, including `full_access` and remembered grants.
+Windows metadata scanning and the Unix file-path walker also refuse to run;
+they do not open untrusted Windows files or discover Git through `PATH`.
+Scheduled scripts and monitors, their create/update validation, and ACP entry
+points refuse on Windows in every mode. Session settings also refuse before
+resolving workdirs or creating outputs in Auto and Manual. This blocks settings
+refresh, MCP/model changes, approvals and primary/memory/job tools using that
+bridge; Auto chat is not a supported Windows feature. Bypass retains Pi's Bash
+tool, requiring an installed Bash such as Git Bash, and removes containment and
+credential protection. It does not substitute `cmd.exe` for Bash or show a
+Linux bubblewrap approval. The native Windows security workflow tests refusal
+under a standard user; it does not prove confinement parity or authorize
+Windows releases. See [the remaining Windows requirements](docs/windows-security.md).
+
 - Auto runs shell commands and Python code in a workspace sandbox. macOS uses
   `sandbox-exec` to deny inbound and outbound network access, writes outside
   the workspace, and reads of protected credential paths. Linux uses bubblewrap
   with private network and process namespaces and masked credential paths.
   Writable roots include the working directory, daemon-selected artifact and
   attachment folders, and temporary folders. On macOS these include shared `/tmp`.
+  Runtime selection (`runtime/native-current.json`) and managed executables in
+  `runtime/native`, `runtime/tools`, `runtime/bin`, `bin`, and `python` never
+  become writable output exceptions inside the Hexbot home. Native code file
+  helpers enforce the same write denial, including output-folder symlinks and
+  aliases of the home, before approval and writing.
   Existing Git metadata (`.git`, linked `gitdir`/`commondir` targets and bare
   `*.git` repositories with `HEAD` and `objects`, plus `core.hooksPath`
   directories set by the repository or your own Git config) stays read-only within the scan limits below. A bot
@@ -86,9 +107,50 @@ redaction, and pattern checks do not provide equivalent containment.
   `--stdio`, missing auth or incompatible isolation flags make review
   unavailable and produce a user card.
 - Bypass removes prompts and sandboxing and is available only to the admin.
+  Missing Linux bubblewrap does not add an approval to a Bypass code run.
   The primary bot still asks before it deletes a bot, room, or job, changes an
   approval mode or a working folder, changes a setting, skill, or connector,
   or cancels a check-in wake-up.
+
+These protections constrain tool actions through the checked paths and grants.
+They do not protect an installation from a process already running without the
+sandbox as the same user, including Bypass, an approved external tool, or other
+host software. Such a process can change files, links, permissions or ACLs.
+Shell/code hard-link aliases remain uncontained. A preexisting alias in a
+writable workspace/output folder can name the same inode as a protected managed
+runtime file; writing through that alias can modify installed bytes even when
+the original path is read-only. This also covers implicit/shared temporary roots
+such as `/tmp` and per-user `TMPDIR`, and paths outside Hexbot home writable by
+approved `full_access` commands. The same limitation applies to aliases inserted
+later by an unconfined same-user process. Canonical path checks and read-only
+binds of the original path do not protect these aliases. Hexbot does not scan
+managed-file inodes or recursively walk workspaces to look for them. Ordinary uv
+cache hard links do not require reprovisioning or prevent command launch.
+
+Linux mode `0444` alone is insufficient: the owning user can
+[change its mode](https://man7.org/linux/man-pages/man2/chmod.2.html). ACLs and
+filesystem-specific permissions also need consideration. This foundation adds
+no per-command chmod/ACL mutations of installed files, read-only-install contract
+or kernel policy for inode protection.
+
+Pi write/edit and native file callbacks atomically replace the output directory
+entry instead of truncating its inode. Those writes preserve other hard-link
+names, including preexisting aliases and aliases inserted after the file gate.
+Restricted Pi write/edit use a private daemon bridge whose final operations are
+relative to nonfollowing directory handles. Edit reads return bytes and the
+parent's device/inode identity; commit opens the parent again and refuses a
+different identity. Pi's existing edit matching, BOM and line-ending handling
+stay in Pi. Existing files must pass the OS writability check, and replacements
+preserve ordinary permission bits without setuid/setgid bits. New files remain
+private (`0600` subject to umask); new directories use `0777` subject to umask.
+Each private request and encoded reply is limited to 1 MiB, about 767 KiB of file
+data after base64 and metadata. Oversized write/edit requests fail before parent
+creation or writing; oversized edit reads fail without truncation. Use a command
+for larger files, under its ordinary approval and sandbox policy. Missing bridge
+support refuses instead of falling back to pathname writes. The native file
+callback's existing 256 KiB UTF-8 read limit and write behavior are unchanged.
+These file operations do not close the shell/code hard-link class or establish whole-process or
+whole-filesystem containment. See the [Linux hard-link semantics](https://man7.org/linux/man-pages/man2/link.2.html).
 
 macOS also matches `.git` paths and secret filenames created during a command. It
 blocks renaming protected files and browser stores, and pins the scanned

@@ -50,6 +50,39 @@ pub struct Dreaming {
 
 static SCHEDULERS: OnceLock<Mutex<HashMap<PathBuf, Weak<Dreaming>>>> = OnceLock::new();
 
+// The native and primary job tools may ask for approval before dispatching to
+// the scheduler. Read stored job metadata first, without inspecting its workdir.
+pub(crate) fn require_supported_job_request(
+    home: &Path,
+    owner: &str,
+    bot: &str,
+    request: &Value,
+) -> Result<()> {
+    if !cfg!(windows) || !matches!(request["action"].as_str(), Some("create" | "update")) {
+        return Ok(());
+    }
+    let mut job = json!({});
+    if request["action"] == "update"
+        && let Some(id) = request["job_id"].as_str()
+    {
+        let stored: Option<String> = runtime_store::open(home)?.query_row(
+            "SELECT job_json FROM native_jobs WHERE owner=? AND bot=? AND (id=? OR json_extract(job_json,'$.name')=?)",
+            params![owner, bot, id, id], |row| row.get(0)).optional()?;
+        if let Some(stored) = stored {
+            job = serde_json::from_str(&stored)
+                .map_err(|error| Error::new(5200, error.to_string()))?;
+        }
+    }
+    copy_job_options(&mut job, request)?;
+    if ["script", "monitor_script"]
+        .iter()
+        .any(|key| job[key].as_str().is_some_and(|value| !value.is_empty()))
+    {
+        crate::credentials::require_supported_execution()?;
+    }
+    Ok(())
+}
+
 pub async fn tool_call(home: &Path, owner: &str, bot: &str, p: &Value) -> Result<Value> {
     let scheduler = SCHEDULERS
         .get_or_init(Mutex::default)
@@ -1834,6 +1867,9 @@ impl Dreaming {
         Ok(json!({"success":true,"job":job,"status":"running"}))
     }
     async fn script(&self, bot: &str, script: &str, workdir: Option<&str>) -> Result<String> {
+        // Refuse before resolving untrusted UNC/device paths or touching the
+        // workspace, artifacts or database. Approval modes cannot override it.
+        crate::credentials::require_supported_execution()?;
         let supplied = PathBuf::from(script);
         if !supplied.is_absolute()
             && supplied
@@ -1978,6 +2014,12 @@ impl Dreaming {
         job: &mut Value,
         extra: Option<String>,
     ) -> Result<Option<String>> {
+        if ["script", "monitor_script"]
+            .iter()
+            .any(|key| job[key].as_str().is_some_and(|value| !value.is_empty()))
+        {
+            crate::credentials::require_supported_execution()?;
+        }
         validate_job(&self.home, job)?;
         let cwd = job["workdir"]
             .as_str()
@@ -2198,6 +2240,7 @@ impl Dreaming {
     }
     pub async fn tool_call(self: &Arc<Self>, owner: &str, bot: &str, p: &Value) -> Result<Value> {
         self.bot(owner, bot)?;
+        require_supported_job_request(&self.home, owner, bot, p)?;
         match common::required(p, "action")? {
             "list" => {
                 let jobs = self
@@ -2251,6 +2294,15 @@ impl Dreaming {
                     )?;
                     return Ok(json!({"success":true,"removed":true}));
                 }
+                // Pausing only persists metadata. Legacy script paths or a
+                // missing/untrusted workdir must not prevent disabling a job.
+                if action == "pause" {
+                    job["enabled"] = json!(false);
+                    job["state"] = json!("paused");
+                    job["paused_at"] = json!(now_iso(common::now()));
+                    self.save_job(owner, bot, &job)?;
+                    return Ok(json!({"success":true,"job":job}));
+                }
                 if action == "update" {
                     if let Some(schedule) = p["schedule"].as_str() {
                         job["schedule"] = parse_schedule(schedule, common::now())?;
@@ -2266,10 +2318,6 @@ impl Dreaming {
                         job["repeat"]["times"] = repeat.clone();
                     }
                     copy_job_options(&mut job, p)?;
-                } else if action == "pause" {
-                    job["enabled"] = json!(false);
-                    job["state"] = json!("paused");
-                    job["paused_at"] = json!(now_iso(common::now()));
                 } else {
                     job["enabled"] = json!(true);
                     job["state"] = json!("scheduled");
@@ -2325,6 +2373,12 @@ fn copy_job_options(job: &mut Value, p: &Value) -> Result<()> {
     Ok(())
 }
 fn validate_job(home: &Path, job: &Value) -> Result<()> {
+    if ["script", "monitor_script"]
+        .iter()
+        .any(|key| job[key].as_str().is_some_and(|value| !value.is_empty()))
+    {
+        crate::credentials::require_supported_execution()?;
+    }
     if !matches!(job["deliver"].as_str(), None | Some("local" | "")) {
         return Err(Error::new(
             4202,

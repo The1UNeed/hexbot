@@ -10,16 +10,16 @@ A bot has a name, face, model, soul, skills, and memory. You have one chat with 
 
 Use Bot settings to configure how it works:
 
-| Setting | What it controls |
-| --- | --- |
-| Profile | Display name, face, and teammate description. |
-| Soul | How the bot behaves and speaks. You and the bot can edit it. |
-| Model | The provider and model this bot uses. |
-| Tools | Local capabilities and the working directory on the daemon computer. |
-| Connectors | Outside services and MCP servers this bot can use. |
-| Skills | Instructions for particular kinds of work. |
-| Approvals | A bot-specific override of the daemon's approval mode. |
-| Memory | Durable notes, dreaming controls, and the dream log. |
+| Setting    | What it controls                                                     |
+| ---------- | -------------------------------------------------------------------- |
+| Profile    | Display name, face, and teammate description.                        |
+| Soul       | How the bot behaves and speaks. You and the bot can edit it.         |
+| Model      | The provider and model this bot uses.                                |
+| Tools      | Local capabilities and the working directory on the daemon computer. |
+| Connectors | Outside services and MCP servers this bot can use.                   |
+| Skills     | Instructions for particular kinds of work.                           |
+| Approvals  | A bot-specific override of the daemon's approval mode.               |
+| Memory     | Durable notes, dreaming controls, and the dream log.                 |
 
 The teammate description tells other bots when to ask this one for help. For example, "Reviews database changes and checks migration safety" is more useful than "Helpful assistant." If you leave it blank, Hexbot derives a description from the soul.
 
@@ -47,11 +47,11 @@ Select a bot in the sidebar to open its chat and carry on where you left off. Cl
 
 Changes reach the chat at different times:
 
-| Change | When the chat has it |
-| --- | --- |
-| Model or reasoning level | From your next message. |
-| Tools, connectors, or MCP servers | From your next message. That one reply rereads the conversation without the provider's prompt cache, so it costs more than usual. |
-| Soul, memory, About you, skills, and teammates | After the chat next summarises older messages, as described below. |
+| Change                                         | When the chat has it                                                                                                              |
+| ---------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| Model or reasoning level                       | From your next message.                                                                                                           |
+| Tools, connectors, or MCP servers              | From your next message. That one reply rereads the conversation without the provider's prompt cache, so it costs more than usual. |
+| Soul, memory, About you, skills, and teammates | After the chat next summarises older messages, as described below.                                                                |
 
 The context meter at the top right of the chat shows how much of the model's context window the conversation fills, as a percentage, with the plain numbers on hover. A tick on its bar marks the summary point: when the conversation exceeds it, Hexbot summarises the older messages so the chat can go on, and the pill reads "Summarising" while that happens. When the meter is high, it says summarising starts soon. If the model's window is too small to keep any messages before that point, the tooltip says older messages are summarised after every reply. After a summary, the meter reads "Context" until the next reply is measured, even after the daemon restarts.
 
@@ -65,7 +65,9 @@ Each night's [dream](/docs/dreaming/) report appears in the chat as a message fr
 
 Use **Stop** to interrupt a running answer. The chat stays available, and you can send another message once the bot is idle. Queued background results run before your next message. A result accepted just after Stop finishes can start the next answer itself. A background result arriving while the answer stops waits until it has stopped, then continues the chat. The new answer can ask questions and request approvals. A question or approval the bot was waiting on goes away in every app.
 
-When an answer fails, the bot shows Stopped with a Retry. Retry, or any new message you send in that chat, shows it as Working as soon as the answer starts, in every app. Work the bot starts on its own, such as a background result, leaves Stopped while it runs; any answer that finishes cleanly clears it. A room's failure stays until a room turn finishes.
+When an answer fails, the bot shows Stopped. In the web and desktop apps, Retry is available when the daemon can identify the input that failed. Older daemons offer no Retry for failed sends or answers. A failed send keeps its draft for you to check and send manually. Retry, or any new message you send in that chat, shows it as Working as soon as the answer starts, in every app. Work the bot starts on its own, such as a background result, leaves Stopped while it runs; any answer that finishes cleanly clears it. A room's failure stays until a room turn finishes.
+
+A failed send or upload keeps the bot's current answer and Stop available, including with an older daemon. If the app cannot confirm whether your message was sent, it keeps your draft and offers no Retry. Check the chat before sending again.
 
 A chat can't be deleted on its own, even from an older app; deleting the bot removes its profile, chat, memory, and scheduled jobs. Stop its active work first, then wait for Stop cleanup and any queued results to finish; deletion is refused until they do. Back up the daemon's data directory before removing a bot you may need again. Private conversations between bots can still be deleted. While a bot is being deleted it can't start new work; if deletion fails, it can work again.
 

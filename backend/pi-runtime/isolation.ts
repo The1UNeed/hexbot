@@ -3,7 +3,7 @@
 // a parity test there compares the two outputs.
 import {readFileSync, readdirSync, readlinkSync, realpathSync, existsSync, statSync, lstatSync, openSync, opendirSync, fstatSync, readSync, closeSync, constants, type Dirent} from 'node:fs';
 import {createHash} from 'node:crypto';
-import {join, relative, resolve, dirname, basename} from 'node:path';
+import {join, relative, resolve, dirname, basename, isAbsolute} from 'node:path';
 import {homedir, tmpdir} from 'node:os';
 import {spawnSync} from 'node:child_process';
 export const credentialPolicy = JSON.parse(readFileSync(new URL('./credential-policy.json', import.meta.url), 'utf8'));
@@ -16,7 +16,15 @@ export const foldCase = process.platform === 'darwin' || process.platform === 'w
 export const fold = (s: string) => foldCase ? s.toLowerCase() : s;
 export const policyRegex = (source: string) => new RegExp(source, foldCase ? 'i' : '');
 // Write policy entries are absolute or relative to the user's home.
-export const policyRoot = (entry: string) => entry.startsWith('/') ? entry : join(homedir(), entry);
+export const userHomes = () => [...new Set(process.platform === 'win32'
+  ? [process.env.USERPROFILE, process.env.HOME, homedir()].filter((path): path is string => !!path)
+  : [homedir()])];
+export const policyRoots = (entry: string) => isAbsolute(entry) ? [entry] : userHomes().map(home => join(home, entry));
+export const policyRoot = (entry: string) => policyRoots(entry)[0];
+export const WINDOWS_ISOLATION_UNAVAILABLE = 'Windows tool isolation is not implemented. Auto and Manual cannot run local commands, code, or file tools on Windows, including approved full_access requests. Windows remains unsupported. Bypass has no sandbox or credential protection.';
+export function requireSupportedExecution(): void {
+  if (process.platform === 'win32') throw new Error(WINDOWS_ISOLATION_UNAVAILABLE);
+}
 // Seatbelt regexes use character pairs rather than JavaScript's i flag.
 const sandboxRegex = (source: string) => foldCase ? source.replace(/[a-z]/gi, c => `[${c.toLowerCase()}${c.toUpperCase()}]`) : source;
 export const privateKeyName = (name: string) => !policyRegex(credentialPolicy.sshPublic).test(name);
@@ -91,11 +99,11 @@ function deniedWrites(): string[] {
 // read them.
 const readCache = new Map<string, {at: number, paths: string[]}>();
 export function readDenied(): string[] {
-  const home = homedir(), cached = readCache.get(home);
+  requireSupportedExecution();
+  const home = JSON.stringify(userHomes()), cached = readCache.get(home);
   if (cached && Date.now() - cached.at < 5000) return cached.paths;
   const denied: string[] = [];
-  for (const entry of credentialPolicy.readDeny as string[]) {
-    const root = policyRoot(entry);
+  for (const root of (credentialPolicy.readDeny as string[]).flatMap(policyRoots)) {
     // A profile path that cannot be resolved (unreadable, a loop) is denied as named.
     let real = root;
     try { real = realRoot(root); } catch { /* Keep the name. */ }
@@ -134,6 +142,9 @@ export const within = (path: string, roots: string[]) => roots.some(root => fold
 // GIT_CONFIG_STEPS settings, so include cycles and fan-out cannot stall it.
 const GIT_FILE_BYTES = 1 << 20, GIT_TIMEOUT = 5000, GIT_INCLUDE_DEPTH = 10, GIT_INCLUDES = 64, GIT_SCAN_INCLUDES = 256, GIT_CONFIG_STEPS = 10000;
 function regularFile(path: string): Buffer | undefined {
+  // Do not open Windows pipes/devices and then try to classify the handle.
+  // No Windows metadata scan is supported yet.
+  requireSupportedExecution();
   let fd: number;
   try { fd = openSync(path, constants.O_RDONLY | constants.O_NONBLOCK); }
   catch (error: any) { if (['ENOENT', 'ENOTDIR', 'ENXIO'].includes(error.code)) return undefined; throw error; }
@@ -154,6 +165,9 @@ function regularFile(path: string): Buffer | undefined {
 const GIT_CACHE = 2048;
 const configCache = new Map<string, [string, string][]>();
 function configEntries(text: Buffer): [string, string][] {
+  // Windows has no managed trusted Git yet. In particular, do not substitute
+  // `git` and search the workspace-controlled PATH outside the sandbox.
+  requireSupportedExecution();
   const key = createHash('sha256').update(text).digest('hex'), cached = configCache.get(key);
   if (cached) {
     configCache.delete(key);
@@ -199,6 +213,7 @@ export function globalGitConfigs(env: NodeJS.ProcessEnv = process.env): string[]
 // when a limit stopped it.
 export type WorkspaceScan = {git: string[], secrets: string[], worktrees: string[], files: string[], links: string[], exhausted: boolean, failure?: string, cause?: string};
 export function workspaceProtected(roots: string[], limit = WORKSPACE_DIRS): WorkspaceScan {
+  requireSupportedExecution();
   let exhausted = false, failure: string | undefined, cause: string | undefined;
   const git = new Set<string>(), secrets = new Set<string>(), worktrees = new Set<string>(), files = new Set<string>(), links = new Set<string>();
   const add = (set: Set<string>, path: string) => { set.add(path); set.add(realRoot(path)); };
@@ -422,12 +437,26 @@ function storeAncestors(denied: string[]): string[] {
   }
   return ancestors;
 }
+// Reject mutable aliases of managed roots. Resolving only the candidate path
+// misses a runtime root that itself points into a writable artifact directory.
+export function managedRuntimeRoots(home: string): string[] {
+  requireSupportedExecution();
+  const root = resolve(home), realHome = realRoot(root);
+  return [...new Set((credentialPolicy.managedRuntime as string[]).flatMap(local => {
+    const path = join(root, local), real = realRoot(path);
+    if (fold(real) !== fold(join(realHome, local))) throw new Error('Managed runtime roots must not be symlinked.');
+    return [path, real];
+  }))];
+}
 // Only the daemon-chosen output folders are writable inside the home. The
 // session cwd is never one of them: the daemon refuses a workspace there and
 // ignores a saved cwd inside it.
 function layout(home: string, outputs: string[] = []) {
   const roots = [...new Set([resolve(home), realpathSync(home)])];
-  const writable = outputs.filter(p => existsSync(p)).map(p => realpathSync(p)).filter(p => roots.some(root => p.startsWith(root + '/')));
+  const managed = managedRuntimeRoots(home);
+  const writable = outputs.filter(p => existsSync(p)).map(p => realpathSync(p))
+    .filter(p => roots.some(root => p.startsWith(root + '/')))
+    .filter(p => !managed.some(root => within(p, [root]) || within(root, [p])));
   return {roots, paths: secretPaths(home), writable, denied: deniedWrites()};
 }
 // Codex's workspace sandbox, for a session's own commands in Manual and Auto:
@@ -513,6 +542,8 @@ export function processLimit(): number | undefined {
   return listed.status === 0 ? listed.stdout.split('\n').filter(Boolean).length + PROCESS_HEADROOM : undefined;
 }
 export function isolatedCommand(command: string, home: string, outputs: string[] = [], workspace?: string[], searchRoots: string[] = workspace ?? []): string {
+  // Approval/full_access cannot turn missing Windows containment into execution.
+  requireSupportedExecution();
   // A command that cannot be capped does not run.
   if (workspace) {
     const limit = processLimit();

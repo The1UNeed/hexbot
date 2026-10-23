@@ -1,11 +1,11 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {spawn, execFileSync} from 'node:child_process';
-import {mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync} from 'node:fs';
+import {mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, linkSync, symlinkSync, chmodSync} from 'node:fs';
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
 import {createInterface} from 'node:readline';
-import {isolatedCommand, probeIsolation} from './isolation.ts';
+import {isolatedCommand, probeIsolation, sandboxProfile, bwrapArguments} from './isolation.ts';
 
 // Scans read the user's own Git configuration. These tests use none, so the
 // developer's ~/.gitconfig and system config cannot change their results.
@@ -23,6 +23,36 @@ const gitConfig = (dir, key, value) => execFileSync('/usr/bin/git', ['-C', dir, 
 // CI installs it; Ubuntu 24.04 needs the AppArmor profile from the install docs.
 const bubblewrap = process.platform === 'linux' && !!probeIsolation();
 const needsBubblewrap = {skip: !bubblewrap && 'needs a working bubblewrap on Linux'};
+
+test('uv cache hardlinks do not require dependency tree walks to launch', t => {
+  const root = mkdtempSync(join(tmpdir(),'hexbot-uv-workspace-'));
+  t.after(() => rmSync(root,{recursive:true,force:true}));
+  const home = join(root,'home'), work = join(root,'work'), output = join(home,'profiles/owl/artifacts');
+  const packagePath = join(home,'runtime/tools/code-python/site-packages/voice.py'), cache = join(home,'runtime/uv-cache/voice.py'), ignored = join(work,'node_modules');
+  for (const path of [join(packagePath,'..'),join(cache,'..'),output,ignored]) mkdirSync(path,{recursive:true});
+  writeFileSync(packagePath,'trusted package'); linkSync(packagePath,cache);
+  chmodSync(ignored,0o000);
+  const commands = [];
+  try {
+    for (const workspace of [undefined,[work,output],[]]) {
+      for (const layout of [sandboxProfile,bwrapArguments]) layout(home,[output],workspace,[work,output]);
+      commands.push(isolatedCommand('printf launched',home,[output],workspace,[work,output]));
+    }
+  } finally { chmodSync(ignored,0o755); }
+  for (const command of commands) assert.match(execFileSync('/bin/bash',['-c',command],{encoding:'utf8'}),/launched/);
+  assert.equal(readFileSync(packagePath,'utf8'),'trusted package');
+});
+test('managed runtime output exceptions cannot reopen executables or selection', {skip:process.platform !== 'darwin' && !bubblewrap}, t => {
+  const base = mkdtempSync(join(tmpdir(),'hexbot-managed-runtimes-'));
+  t.after(() => rmSync(base,{recursive:true,force:true}));
+  const home = join(base,'home'); mkdirSync(home);
+  const files = ['runtime/native-current.json','runtime/native/build/hexbot.exe','runtime/tools/code-python/Scripts/python.exe','runtime/bin/rg.exe','bin/uv.exe','python/bin/python'].map(local => join(home,local));
+  for (const path of files) { mkdirSync(join(path,'..'),{recursive:true}); writeFileSync(path,'keep'); }
+  const outputs = files.map(path => join(path,'..'));
+  const command = files.map(path => `if (echo changed > '${path}') 2>/dev/null; then exit 23; fi`).join('; ');
+  execFileSync('/bin/bash',['-c',isolatedCommand(command,home,outputs)],{cwd:base});
+  for (const path of files) assert.equal(readFileSync(path,'utf8'),'keep');
+});
 
 test('sandbox protects newly created secrets and home writes but permits output folders and unrelated files', {skip:process.platform !== 'darwin'}, async t => {
   const base = mkdtempSync(join(tmpdir(), 'hexbot-isolation-'));

@@ -1,7 +1,9 @@
 import type { GatewayEvent } from '@hermes/shared'
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { IDBFactory, IDBKeyRange } from 'fake-indexeddb'
 
 import { promptSubmit } from '../../lib/api'
+import { activeCacheScope, authorizeCache, resetDeviceCacheForTests } from '../../lib/device-cache'
 import { routeEvent } from '../../lib/events'
 import { setActiveRpc } from '../../lib/rpc'
 import type { Bot, DaemonInfo, Section } from '../../lib/types'
@@ -83,6 +85,7 @@ const reply = (method: string) =>
 
 const opens = () => call.mock.calls.filter(([method]) => method === 'hexbot.sections.open')
 beforeEach(() => {
+  useSections.getState().reset()
   Element.prototype.scrollIntoView = vi.fn()
   useConnection.setState({
     target: { kind: 'local' },
@@ -103,6 +106,8 @@ beforeEach(() => {
   setActiveRpc({ call } as never)
 })
 afterEach(() => {
+  cleanup()
+  useSections.getState().reset()
   setActiveRpc(null)
   resetTranscriptEffects()
   vi.unstubAllGlobals()
@@ -113,23 +118,34 @@ it('requests one background-only native reply notification even when Chromium re
   vi.stubGlobal('hexbot', { notify })
   expect(document.hidden).toBe(false)
   await useSections.getState().open('chat')
+  const mountedRead = deferred()
+  call.mockImplementation((method: string) =>
+    method === 'hexbot.sections.open' ? mountedRead.promise : reply(method)
+  )
   render(<ConversationColumn />)
+  // Retained text can appear before the view's proving read finishes. Finish
+  // that read explicitly before driving the notification's stream transition.
   expect(await screen.findByText('Previous conversation')).toBeVisible()
-  act(() => {
-    useTranscripts.setState(state => ({
-      bySession: {
-        ...state.bySession,
-        chat: { ...state.bySession.chat!, streamingMessageId: 'reply' }
-      }
-    }))
+  await waitFor(() => expect(opens()).toHaveLength(2))
+  await act(async () => {
+    const proving = useSections.getState().open('chat')
+    mountedRead.resolve(history(texts))
+    await proving
   })
+  expect(screen.getByRole('textbox')).toBeEnabled()
   act(() => {
-    useTranscripts.setState(state => ({
-      bySession: {
-        ...state.bySession,
-        chat: { ...state.bySession.chat!, streamingMessageId: null }
-      }
-    }))
+    routeEvent({ type: 'message.start', session_id: 'chat', payload: {} } as GatewayEvent)
+    routeEvent({
+      type: 'message.delta',
+      session_id: 'chat',
+      payload: { text: 'Previous conversation' }
+    } as GatewayEvent)
+  })
+  // Observe the component's committed streaming state, not just a store field.
+  expect(screen.getByRole('button', { name: 'Stop' })).toBeVisible()
+  expect(notify).not.toHaveBeenCalled()
+  act(() => {
+    routeEvent({ type: 'message.complete', session_id: 'chat', payload: {} } as GatewayEvent)
   })
   await waitFor(() =>
     expect(notify).toHaveBeenCalledExactlyOnceWith({
@@ -767,3 +783,46 @@ it('reads the chat again on reconnect, so a card answered on another app meanwhi
     vi.useRealTimers()
   }
 })
+
+it.each(['dream', 'finished'] as const)(
+  'shows retained history once while a cached %s reload is held',
+  async source => {
+    await resetDeviceCacheForTests()
+    vi.stubGlobal('indexedDB', new IDBFactory())
+    vi.stubGlobal('IDBKeyRange', IDBKeyRange)
+    const held = deferred()
+
+    try {
+      await authorizeCache(activeCacheScope(), 'daemon', () => true)
+      await useSections.getState().open('chat')
+      // The view's proving read straddles a turn, so completion invalidates it.
+      routeEvent({ type: 'message.start', session_id: 'chat', payload: {} } as GatewayEvent)
+      render(<ConversationColumn />)
+      await waitFor(() => expect(opens()).toHaveLength(2))
+      await act(async () => {
+        await useSections.getState().open('chat')
+      })
+      await waitFor(() => expect(useSections.getState().liveSessionId.chat).toBe('chat'))
+      expect(screen.getAllByText('Previous conversation')).toHaveLength(1)
+      call.mockImplementation((method: string) =>
+        method === 'hexbot.sections.open' ? held.promise : reply(method)
+      )
+      await act(async () => {
+        if (source === 'dream') {
+          reload()
+        } else {
+          routeEvent({ type: 'message.complete', session_id: 'chat', payload: {} } as GatewayEvent)
+        }
+      })
+      await waitFor(() => expect(useSections.getState().cachedMessages.chat).toHaveLength(1))
+      expect(screen.getAllByText('Previous conversation')).toHaveLength(1)
+    } finally {
+      await act(async () => {
+        held.resolve(history(texts))
+        await useSections.getState().open('chat')
+      })
+      await resetDeviceCacheForTests()
+      vi.unstubAllGlobals()
+    }
+  }
+)

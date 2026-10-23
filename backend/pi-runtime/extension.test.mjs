@@ -1,12 +1,14 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {mkdtempSync, mkdirSync, writeFileSync, readFileSync, symlinkSync, rmSync, realpathSync, existsSync} from 'node:fs';
+import {mkdtempSync, mkdirSync, writeFileSync, readFileSync, symlinkSync, rmSync, realpathSync, existsSync, linkSync, unlinkSync, statSync, chmodSync, openSync, closeSync, readdirSync, renameSync} from 'node:fs';
 import {createServer} from 'node:net';
 import {once} from 'node:events';
 import {tmpdir, homedir} from 'node:os';
 import {join} from 'node:path';
 import {execFileSync} from 'node:child_process';
-import hexbot, {canonicalPath, credentialPath, protectedPath, shellEnvironment, sanitizeSearchResult, hostWriteTier, escapeMcpValues} from './extension.ts';
+import {fileURLToPath} from 'node:url';
+import {fileBridgeReply} from './fixtures/pi-files.mjs';
+import hexbot, {canonicalPath, credentialPath, protectedPath, shellEnvironment, sanitizeSearchResult, hostWriteTier, escapeMcpValues, fileRequestTitle, FILE_TRANSPORT_LIMIT} from './extension.ts';
 
 // Scans read the user's own Git configuration. These tests use none, so the
 // developer's ~/.gitconfig and system config cannot change their results.
@@ -38,8 +40,12 @@ function fixture(t, mode = 'manual', enabledToolsets = [], extra = {}) {
   const handlers = {}, tools = {}, requests = [], choices = [], models = [], registrations = [], notices = [], activeTools = [], sent = [];
   const settings = {...config, approvalMode:mode, mcpState:Object.fromEntries((config.mcpServers ?? []).map(name => [name,{revision:'initial'}]))};
   const ctx = {model:{provider:'test',id:'primary'}, modelRegistry:{find:(provider,id)=>({provider,id})}, ui:{
-    async input(title) {
+    async input(title, ...options) {
       const request = JSON.parse(title.slice('__HEXBOT_TOOL__'.length)); requests.push(request);
+      if (request.name === 'hexbot_pi_file') {
+        assert.deepEqual(options,[],'file RPC must not release the mutation queue early on AbortSignal');
+        return fileBridgeReply(request.args);
+      }
       if (request.name === 'hexbot_mcp_servers') return JSON.stringify({result:(ctx.servers ?? (config.mcpServers ?? []).map(name => ({name,config:{command:'node'}}))).map(server => ({revision:'initial',...server}))});
       if (request.name === 'hexbot_session_settings') return JSON.stringify({result:settings});
       return JSON.stringify({result:{}});
@@ -87,6 +93,235 @@ test('symlinks and parent components cannot bypass file guards', t => {
   assert.equal(credentialPath(join(homedir(),'.ssh/id_ed25519'),f.home),true);
   assert.equal(protectedPath(join(f.home,'../project/.env.production'),f.home),true);
   assert.equal(protectedPath(join(f.home,'../project/node_modules/a'),f.home),true);
+});
+test('managed runtime paths never become file-tool output exceptions', t => {
+  const f = fixture(t);
+  for (const local of ['runtime/native-current.json','runtime/native/build/hexbot.exe','runtime/tools/code-python/Scripts/python.exe','runtime/bin/rg.exe','bin/uv.exe','python/bin/python']) {
+    const path = join(f.home,local);
+    mkdirSync(join(path,'..'),{recursive:true});
+    writeFileSync(path,'keep');
+    assert.equal(protectedPath(path,f.home,[join(path,'..')]),true,local);
+  }
+});
+test('Pi write and edit replace hardlink entries, including links inserted after approval', async t => {
+  for (const tool of ['write','edit']) for (const late of [false,true]) for (const local of ['runtime/native-current.json','runtime/native/build/hexbot.exe']) {
+    const f = fixture(t,'smart',['file']);
+    const output = join(f.home,'profiles/owl/artifacts'), source = join(f.home,local), alias = join(output,'result');
+    mkdirSync(output,{recursive:true}); mkdirSync(join(source,'..'),{recursive:true});
+    writeFileSync(source,'keep');
+    if (late) writeFileSync(alias,'keep'); else linkSync(source,alias);
+    f.settings.outputDirs = [output];
+    const args = tool === 'write' ? {path:alias,content:'changed'} : {path:alias,edits:[{oldText:'keep',newText:'changed'}]};
+    const id = 'hardlink';
+    assert.equal(await f.gate(tool,args,id),undefined);
+    if (late) { unlinkSync(alias); linkSync(source,alias); }
+    await f.tools[tool].execute(id,args,undefined,undefined,f.ctx);
+    assert.equal(readFileSync(source,'utf8'),'keep',`${tool} late=${late} ${local}`);
+    assert.equal(readFileSync(alias,'utf8'),'changed');
+    assert.notEqual(statSync(alias).ino,statSync(source).ino);
+    assert.equal(f.choices.length,0,'ordinary artifact writes need no approval');
+  }
+});
+test('restricted Pi write and edit preserve existing modes independently of umask', {skip: process.platform === 'win32'}, async t => {
+  const mask = process.env.HEXBOT_TEST_FILE_UMASK;
+  if (mask === undefined) {
+    const environment = {...process.env}; delete environment.NODE_TEST_CONTEXT;
+    for (const value of ['0022','0077','0200']) {
+      await t.test(`isolated umask=${value}`, () => {
+        const output = execFileSync(process.execPath, ['--test', '--test-reporter=tap', '--test-name-pattern=^restricted Pi write and edit preserve existing modes independently of umask$', fileURLToPath(import.meta.url)], {
+          env:{...environment, HEXBOT_TEST_FILE_UMASK:value}, encoding:'utf8',
+        });
+        assert.match(output,/^# tests 10$/m,'child executes all nine cases plus its parent');
+        assert.match(output,/^# pass 10$/m);
+        assert.match(output,/^# skipped 0$/m);
+      });
+    }
+    return;
+  }
+  assert.ok(['0022','0077','0200'].includes(mask));
+  const runWithMask = async run => {
+    const previous = process.umask(Number.parseInt(mask,8));
+    try { return await run(); } finally { process.umask(previous); }
+  };
+  for (const tool of ['write','edit']) for (const mode of [0o664,0o660,0o755,0o4664]) {
+    await t.test(`${tool} mode=${mode.toString(8)} umask=${mask}`, async t => {
+      const f = fixture(t,'smart',['file']);
+      const output = join(f.home,'profiles/owl/artifacts'), source = join(f.home,'runtime/tools/voice.txt'), alias = join(output,'result');
+      mkdirSync(output,{recursive:true}); mkdirSync(join(source,'..'),{recursive:true});
+      writeFileSync(source,'keep'); chmodSync(source,mode); linkSync(source,alias);
+      const original = statSync(source);
+      f.settings.outputDirs = [output];
+      const args = tool === 'write' ? {path:alias,content:'changed'} : {path:alias,edits:[{oldText:'keep',newText:'changed'}]};
+      await runWithMask(() => f.run(tool,args));
+      assert.equal(statSync(alias).mode & 0o7777,mode & 0o777,'replacement preserves ordinary bits without setuid');
+      assert.equal(readFileSync(alias,'utf8'),'changed');
+      assert.notEqual(statSync(alias).ino,original.ino,'tool replaces the alias entry');
+      assert.equal(statSync(source).ino,original.ino);
+      assert.equal(statSync(source).mode,original.mode,'managed hardlink mode is untouched');
+      assert.equal(readFileSync(source,'utf8'),'keep','managed hardlink bytes are untouched');
+      assert.equal(f.choices.length,0);
+    });
+  }
+  await t.test(`new file keeps private creation default under umask=${mask}`, async t => {
+    const f = fixture(t,'smart',['file']);
+    const output = join(f.home,'profiles/owl/artifacts'), parent = mask === '0200' ? output : join(output,'new-folder'), path = join(parent,'new.txt');
+    mkdirSync(output,{recursive:true}); f.settings.outputDirs = [output];
+    await runWithMask(() => f.run('write',{path,content:'new'}));
+    assert.equal(statSync(path).mode & 0o7777,0o600 & ~Number.parseInt(mask,8));
+    assert.equal(readFileSync(path,'utf8'),'new');
+    if (parent !== output) assert.equal(statSync(parent).mode & 0o777,0o777 & ~Number.parseInt(mask,8));
+  });
+});
+test('restricted Pi write and edit cannot overwrite an OS-nonwritable file even after approval', {
+  skip: process.platform === 'win32' || process.geteuid?.() === 0 ? 'requires Unix non-root access semantics' : false,
+}, async t => {
+  for (const mode of ['smart','manual']) for (const permissions of [0o444,0o000]) for (const tool of ['write','edit']) {
+    await t.test(`${mode} ${tool} mode=${permissions.toString(8)}`, async t => {
+      const f = fixture(t,mode,['file']);
+      const output = join(f.home,'profiles/owl/artifacts'), path = join(output,'result');
+      mkdirSync(output,{recursive:true}); f.settings.outputDirs = [output]; f.ctx.choice = 'once';
+      writeFileSync(path,'keep');
+      const readable = openSync(path,'r');
+      t.after(() => closeSync(readable));
+      chmodSync(path,permissions);
+      const original = statSync(path);
+      assert.throws(() => writeFileSync(path,'changed'), {code:'EACCES'},'OS in-place write refuses too');
+      const args = tool === 'write' ? {path,content:'changed'} : {path,edits:[{oldText:'keep',newText:'changed'}]};
+      await assert.rejects(f.run(tool,args),/EACCES/);
+      assert.equal(f.choices.length,mode === 'manual' ? 1 : 0,'execution reached the normal approval path');
+      assert.equal(statSync(path).ino,original.ino,'refusal preserves the original directory entry');
+      assert.equal(statSync(path).mode,original.mode);
+      assert.equal(readFileSync(readable,'utf8'),'keep');
+      assert.deepEqual(readdirSync(output),['result'],'refusal leaves no temporary file');
+    });
+  }
+});
+test('private Pi file requests enforce the exact encoded record budget before any mkdir or RPC', async t => {
+  for (const extra of [0,1]) {
+    const f = fixture(t,'smart',['file']);
+    const output = join(f.home,'profiles/owl/artifacts'), path = join(output,'missing/nested/file');
+    mkdirSync(output,{recursive:true}); f.settings.outputDirs = [output]; f.settings.fileWorkdir = '';
+    const content = 'x'.repeat(785000), callId = 'boundary';
+    const args = {operation:'write',path:canonicalPath(path,f.home),callId,snapshot:{approvalMode:'smart',cwd:f.home,outputDirs:[output],fileWorkdir:''},content:Buffer.from(content).toString('base64')};
+    const title = fileRequestTitle(args);
+    const size = Buffer.byteLength(JSON.stringify({type:'extension_ui_request',id:'00000000-0000-0000-0000-000000000000',method:'input',title}));
+    f.settings.fileWorkdir = 'p'.repeat(FILE_TRANSPORT_LIMIT-size+extra);
+    const input = f.ctx.ui.input;
+    f.ctx.ui.input = async (...params) => {
+      if (JSON.parse(params[0].slice('__HEXBOT_TOOL__'.length)).name === 'hexbot_pi_file') {
+        assert.equal(Buffer.byteLength(JSON.stringify({type:'extension_ui_request',id:'00000000-0000-0000-0000-000000000000',method:'input',title:params[0]})),FILE_TRANSPORT_LIMIT);
+        assert.equal(existsSync(join(output,'missing')),false,'Node mkdir is a no-op');
+      }
+      return input(...params);
+    };
+    if (extra) {
+      await assert.rejects(f.run('write',{path,content},callId),/1 MiB/);
+      assert.equal(f.requests.filter(r=>r.name==='hexbot_pi_file').length,0);
+      assert.equal(existsSync(join(output,'missing')),false);
+    } else {
+      await f.run('write',{path,content},callId);
+      assert.equal(readFileSync(path,'utf8'),content);
+      assert.equal(f.requests.filter(r=>r.name==='hexbot_pi_file').length,1);
+    }
+  }
+});
+test('registered Pi edits retain BOM, CRLF and lossy UTF8 through the raw-byte bridge', async t => {
+  for (const [before,after] of [[Buffer.from('\ufeffhello\r\n'),Buffer.from('\ufeffchanged\r\n')],[Buffer.concat([Buffer.from([0xff]),Buffer.from('hello\r\n')]),Buffer.from('\ufffdchanged\r\n')]]) {
+    const f = fixture(t,'smart',['file']);
+    const output=join(f.home,'profiles/owl/artifacts'),path=join(output,'file');
+    mkdirSync(output,{recursive:true});f.settings.outputDirs=[output];writeFileSync(path,before);
+    await f.run('edit',{path,edits:[{oldText:'hello',newText:'changed'}]});
+    assert.deepEqual(readFileSync(path),after);
+    assert.deepEqual(f.requests.filter(r=>r.name==='hexbot_pi_file').map(r=>r.args.operation),['edit_open','edit_commit']);
+  }
+});
+test('parallel Pi edits retain separate per-call buffers and can produce empty files', async t => {
+  const f=fixture(t,'smart',['file']),output=join(f.home,'profiles/owl/artifacts');
+  mkdirSync(output,{recursive:true});f.settings.outputDirs=[output];
+  const paths=['alpha','beta'].map(name=>join(output,name));
+  for(const [index,path] of paths.entries())writeFileSync(path,index===0?'alpha':'beta');
+  let release,opened=0;const ready=new Promise(resolve=>release=resolve),input=f.ctx.ui.input;
+  f.ctx.ui.input=async (...params)=>{
+    const request=JSON.parse(params[0].slice('__HEXBOT_TOOL__'.length)),result=await input(...params);
+    if(request.name==='hexbot_pi_file'&&request.args.operation==='edit_open'){if(++opened===2)release();await ready;}
+    return result;
+  };
+  await Promise.all(paths.map((path,index)=>f.run('edit',{path,edits:[{oldText:index===0?'alpha':'beta',newText:index===0?'changed-alpha':''}]})));
+  assert.equal(readFileSync(paths[0],'utf8'),'changed-alpha');assert.equal(readFileSync(paths[1],'utf8'),'');
+  await f.run('write',{path:join(output,'empty'),content:''});assert.equal(statSync(join(output,'empty')).size,0);
+});
+test('registered Pi file calls refuse parent links and edit folder replacements', async t => {
+  for (const tool of ['write','edit']) for (const link of tool === 'write' ? [true] : [false,true]) {
+    const f=fixture(t,'smart',['file']);
+    const output=join(f.home,'profiles/owl/artifacts'),parent=join(output,'parent'),moved=join(output,'moved'),managed=join(f.home,'runtime/native');
+    mkdirSync(parent,{recursive:true});mkdirSync(managed,{recursive:true});f.settings.outputDirs=[output];
+    const path=join(parent,'file');writeFileSync(path,'keep');writeFileSync(join(managed,'file'),'managed');
+    const input=f.ctx.ui.input;
+    f.ctx.ui.input=async (...params)=>{
+      const request=JSON.parse(params[0].slice('__HEXBOT_TOOL__'.length));
+      if (request.name==='hexbot_pi_file' && request.args.operation===(tool==='write'?'write':'edit_commit')) {
+        renameSync(parent,moved);
+        if(link) symlinkSync(managed,parent); else {mkdirSync(parent);writeFileSync(path,'replacement');}
+      }
+      return input(...params);
+    };
+    await assert.rejects(f.run(tool,tool==='write'?{path,content:'changed'}:{path,edits:[{oldText:'keep',newText:'changed'}]}));
+    assert.equal(readFileSync(join(managed,'file'),'utf8'),'managed');
+    assert.equal(readFileSync(join(moved,'file'),'utf8'),'keep');
+    if(!link) assert.equal(readFileSync(path,'utf8'),'replacement');
+  }
+});
+test('file RPC settlement holds Pi mutation ordering after local AbortSignal', async t => {
+  const f=fixture(t,'smart',['file']),output=join(f.home,'profiles/owl/artifacts'),path=join(output,'file');
+  mkdirSync(output,{recursive:true});f.settings.outputDirs=[output];
+  const input=f.ctx.ui.input;let entered,release;
+  const started=new Promise(resolve=>entered=resolve),held=new Promise(resolve=>release=resolve);const calls=[];
+  f.ctx.ui.input=async (...params)=>{
+    const request=JSON.parse(params[0].slice('__HEXBOT_TOOL__'.length));
+    if(request.name==='hexbot_pi_file') { calls.push(request.args.callId);if(request.args.callId==='first'){entered();await held;} }
+    return input(...params);
+  };
+  const controller=new AbortController(),firstArgs={path,content:'first'},secondArgs={path,content:'second'};
+  assert.equal(await f.gate('write',firstArgs,'first'),undefined);
+  const first=f.tools.write.execute('first',firstArgs,controller.signal,undefined,f.ctx);
+  // Observe rejection immediately so a later release cannot cause an unhandled rejection.
+  const rejected=assert.rejects(first,/aborted/);
+  try {
+    await started;controller.abort();
+    assert.equal(await f.gate('write',secondArgs,'second'),undefined);
+    const second=f.tools.write.execute('second',secondArgs,undefined,undefined,f.ctx);
+    await new Promise(resolve=>setImmediate(resolve));
+    assert.deepEqual(calls,['first']);
+    release();await rejected;await second;
+    assert.deepEqual(calls,['first','second']);assert.equal(readFileSync(path,'utf8'),'second');
+  } finally {release();await rejected;}
+});
+test('an unavailable private file bridge fails without a path fallback or extra approval', async t => {
+  const f=fixture(t,'smart',['file']),output=join(f.home,'profiles/owl/artifacts'),path=join(output,'missing/file');
+  mkdirSync(output,{recursive:true});f.settings.outputDirs=[output];const input=f.ctx.ui.input;
+  f.ctx.ui.input=async (...params)=>JSON.parse(params[0].slice('__HEXBOT_TOOL__'.length)).name==='hexbot_pi_file'?JSON.stringify({error:'Unknown tool: hexbot_pi_file'}):input(...params);
+  await assert.rejects(f.run('write',{path,content:'changed'}),/Unknown tool/);
+  assert.equal(existsSync(join(output,'missing')),false);assert.equal(f.choices.length,0);
+});
+test('Bypass file writes retain upstream behavior without the private bridge', async t => {
+  const f=fixture(t,'off',['file']),path=join(f.home,'ordinary.txt'),alias=join(f.home,'alias.txt');
+  writeFileSync(path,'keep');linkSync(path,alias);const original=statSync(path).ino;
+  await f.run('write',{path:alias,content:'changed'});
+  assert.equal(readFileSync(path,'utf8'),'changed');assert.equal(statSync(alias).ino,original);
+  assert.equal(f.requests.filter(r=>r.name==='hexbot_pi_file').length,0);assert.equal(f.choices.length,0);
+});
+test('managed roots pointing into outputs refuse writes and command layouts, while reads stay allowed', t => {
+  const f = fixture(t);
+  const output = join(f.home,'profiles/owl/artifacts');
+  const actual = join(output,'actual-runtime');
+  mkdirSync(actual,{recursive:true});
+  mkdirSync(join(f.home,'runtime'),{recursive:true});
+  symlinkSync(actual,join(f.home,'runtime/native'));
+  writeFileSync(join(actual,'hexbot.exe'),'keep');
+  assert.equal(credentialPath(join(actual,'hexbot.exe'),f.home),false);
+  for (const path of [join(actual,'hexbot.exe'),join(actual,'absent.exe')]) {
+    assert.throws(() => protectedPath(path,f.home,[output]),/Managed runtime roots must not be symlinked/);
+  }
 });
 test('bash children cannot inherit provider or connector credentials', async t => {
   const f=fixture(t,'smart',['terminal']);

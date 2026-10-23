@@ -79,6 +79,17 @@ tokio::task_local! { static SECTION_CWD: PathBuf; }
 // base layer when the caller does not say; and the live working directory,
 // which a bot or section can change.
 tokio::task_local! { pub(crate) static CODE_SANDBOX: (Option<crate::credentials::Confine>, PathBuf); }
+// Runtime checks current policy again after this call acquires its worker slot.
+// A captured Bypass sandbox is not permission for a later queued submission.
+pub(crate) type CodeRevalidate = Arc<dyn Fn() -> Result<()> + Send + Sync>;
+tokio::task_local! { pub(crate) static CODE_REVALIDATE: CodeRevalidate; }
+fn revalidate_code() -> Result<()> {
+    match CODE_REVALIDATE.try_with(|check| check()) {
+        Ok(result) => result,
+        Err(_) => crate::credentials::require_supported_execution(),
+    }
+}
+
 pub(crate) fn workdir(home: &Path, bot: &str) -> Result<PathBuf> {
     if let Ok(cwd) = SECTION_CWD.try_with(Clone::clone) {
         return Ok(cwd);
@@ -596,6 +607,9 @@ pub async fn call(
     #[cfg(test)]
     deletion_tests::checked(home).await;
     let request = async {
+        if name == "execute_code" {
+            revalidate_code()?;
+        }
         let cwd = section_workdir(home, bot, stored)?;
         SECTION_CWD
             .scope(cwd, async {
@@ -1224,6 +1238,7 @@ async fn execute_code(
         .or_insert_with(|| Arc::new(Mutex::new(None)))
         .clone();
     let mut kernel = kernel.lock().await;
+    revalidate_code()?;
     let sandbox = match CODE_SANDBOX.try_with(Clone::clone) {
         Ok(sandbox) => sandbox,
         Err(_) => (Some(crate::credentials::Confine::No), workdir(home, bot)?),

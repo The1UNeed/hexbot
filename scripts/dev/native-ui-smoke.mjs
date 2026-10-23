@@ -216,6 +216,16 @@ try {
     assert.equal(response.status(), 200, `SPA route ${route}`)
     await expect(page.getByTestId('root-connection-status')).toHaveAttribute('data-connection-state', 'connected', { timeout: 30_000 })
   }
+  const roomComposer = page.getByTestId('room-composer').locator('textarea').first()
+  const expectRoom = async () => {
+    await expect(roomComposer).toBeVisible({ timeout: 20_000 })
+    assert.equal(new URL(page.url()).pathname, `/r/${room}`, 'A discarded startup read must not redirect away from the room')
+  }
+  // A room deep link must survive startup before any chat or cached roster.
+  await visit(`/r/${room}`)
+  await expectRoom()
+  await page.reload({ waitUntil: 'domcontentloaded' })
+  await expectRoom()
   await visit(`/b/owl/s/${section}`)
   const composer = page.locator('#conversation-composer')
   if (desktop) {
@@ -271,8 +281,11 @@ try {
   }
   await expect(page.getByTestId('bot-message').filter({ hasText: 'Native browser reply.' }).last()).toBeVisible({ timeout: 30_000 })
   await page.screenshot({ path: path.join(artifacts, 'chat.png') })
+  // In-app navigation reuses the connection; direct navigation starts it again.
+  await page.locator(`[data-roster-id="room:${room}"]`).click()
+  await expectRoom()
   await visit(`/r/${room}`)
-  const roomComposer = page.getByTestId('room-composer').locator('textarea').first()
+  await expectRoom()
   await roomComposer.fill('Room browser task')
   await roomComposer.press('Enter')
   await expect(page.getByTestId('room-event').filter({ hasText: 'Fox checked the details.' })).toBeVisible({ timeout: 30_000 })
@@ -299,6 +312,7 @@ try {
   // A bot has one chat: asking for another returns it, and the roster row opens it with its history.
   assert.equal((await rpc('hexbot.sections.create', { bot: 'owl' })).section.id, section)
   await visit(`/r/${room}`)
+  await expectRoom()
   await page.locator('[data-roster-id="bot:owl"]').click()
   await expect(page).toHaveURL(new RegExp(`/b/owl/s/${section}$`))
   await expect(page.getByTestId('bot-message').filter({ hasText: 'Native browser reply.' }).last()).toBeVisible()
@@ -315,13 +329,14 @@ try {
   }
   assert.deepEqual(errors, [], 'No uncaught browser or local model errors')
   assert(requests.length >= 4, 'The real Pi process must call the local streaming model')
-  console.log(JSON.stringify({ passed: true, client: desktop ? 'electron' : 'browser', edition: desktop ? edition : undefined, scenarios: ['chat', 'multi-agent room and @user', 'per-bot memory', 'soul editing', 'About you', 'one chat per bot and history'], modelRequests: requests.length, artifacts }, null, 2))
+  console.log(JSON.stringify({ passed: true, client: desktop ? 'electron' : 'browser', edition: desktop ? edition : undefined, scenarios: ['cold room deep link and reload', 'warm room navigation', 'chat', 'multi-agent room and @user', 'per-bot memory', 'soul editing', 'About you', 'one chat per bot and history'], modelRequests: requests.length, artifacts }, null, 2))
 } catch (error) {
   await writeFile(path.join(artifacts, 'model-requests.json'), JSON.stringify(requests, null, 2))
   if (electronApp)
     await writeFile(path.join(artifacts, 'notifications.json'), JSON.stringify(await electronApp.evaluate(() => globalThis.smokeNotifications), null, 2))
   if (page) {
     await page.screenshot({ path: path.join(artifacts, 'failure.png') }).catch(() => {})
+    console.error(`Failure route: ${new URL(page.url()).pathname}`)
     console.error((await page.locator('body').innerText().catch(() => '')).slice(0, 2500))
   }
   console.error(`Artifacts: ${artifacts}\nDaemon: ${daemonLog.slice(-3000)}`)

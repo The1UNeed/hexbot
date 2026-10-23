@@ -57,6 +57,72 @@ The RPC client is `@hermes/shared`'s `JsonRpcGatewayClient` wrapped in
 `src/lib/events.ts` routes them by `params.session_id` to the transcript
 store and by `params.type` for global events (`hexbot.*.changed`).
 
+## Authorized startup cache
+
+IndexedDB keeps a roster, recent room logs, and the last 50 opened chat histories
+per daemon address. A cold launch reads none of this personal data until the
+WebSocket has authenticated and `hexbot.info` has verified the install identity.
+An identity change discards that address's old cache. A cold offline launch stays
+empty until authorization succeeds; an already authorized view can keep its
+messages behind the disconnected overlay.
+
+Cached sections and bot recents carry no live session IDs. Running turns, cards
+and activity are always read from the daemon. Chat routes still resolve the
+canonical chat, and every open performs its normal history read and pending-card
+reconciliation. The cache fills the wait after authorization, then the network
+snapshot replaces it using the existing input and fragment identities. A retained
+transcript takes precedence over cached rows during reloads. Inputs submitted
+during a read cannot be matched to older occurrences by text alone.
+Cached and fresh history use the same projection to hide interrupted kickoff prompts.
+
+Each cached history keeps a recent suffix of at most 500 raw rows and 512 KiB
+of JSON, with an oversized row omitted. Older history remains on the daemon.
+Completed turns refresh kept histories after a two-second debounce. Whole
+read/fetch/write operations are serialized per connection and chat; cache writes
+alone would allow a slow old response to replace a newer snapshot. Invalidation
+is checked again after persistence, and queued writes check it before committing.
+Removing a section invalidates its pending reads and writes, even if listed again.
+This client uses full-history reads, so it also works with daemons without history
+cursors.
+Room logs resume only from a verified contiguous baseline; a live event alone
+never establishes one. Startup fetches and restores logs for at most 20 recently
+active rooms; opening another room reads its log on demand. Persistence keeps only
+those 20 logs, with each retained tail bounded by the same row/byte caps. The
+fresh roster is published before optional log reads; each log succeeds or fails
+independently. Room, section, and bot catalogs reserve authority order before
+each request. Mutation replies retain that order, so a held response cannot outrank a newer
+tombstone, list, lookup, or successful mutation. Lists account for pending IDs
+absent from memory too. Older lists cannot delete a chat created while they
+waited; newer lists invalidate older cold lookups even when the result is empty.
+Cache restoration captures catalog authority before reading IndexedDB and fills
+only IDs still unproven by the network. Cache readiness never establishes absence.
+Room views observe explicit present, gone, or discarded outcomes, so concurrent
+settings and conversation reads cannot mistake a superseded reply for deletion.
+Live deletion, departure, archival, and membership updates invalidate older reads
+and optional logs. Read acknowledgments only advance existing member read
+positions; they never supersede pending history or overwrite room metadata.
+Opening a room publishes its log without waiting for a best-effort acknowledgment.
+Delayed permission failures also retain their original request order.
+
+Roster subscriptions start after authorization. Persistence waits for the room
+list, independently of optional logs or other startup reads. Queued roster and
+log writes also check the room state they captured before committing.
+Each roster write prunes persisted logs for deleted, departed, and archived rooms,
+including rooms removed while the client was offline. Full section lists also
+scan persisted history keys and the recency index, pruning disk-only deleted
+chats while preserving work started after the list request. Cleanup uses the
+active authorization generation, just like other cache writes.
+
+A discarded startup room read is not evidence that the room is gone. Room views
+retry when the connection opens, and only a current connection's completed read
+can send a missing room back home.
+
+Teardown invalidates pending cache work and stops roster subscriptions. A ticket
+401, gateway revocation, or rejected device key also clears cached data and
+personal stores. Queued writes and history replies cannot restore it afterward.
+The cache is best effort: blocked IndexedDB or quota failures leave normal
+network loading in place.
+
 ## Stores (zustand)
 
 - `connection`: target, status (`idle | connecting | connected |
