@@ -1,3 +1,4 @@
+import { channel } from 'node:diagnostics_channel'
 // Stage a native daemon and a pinned Pi runtime for the current build machine.
 import { execFile } from 'node:child_process'
 import { existsSync } from 'node:fs'
@@ -232,6 +233,9 @@ export async function publishNativeRuntime(staging, destination, versionProbe) {
   await rm(destination, { recursive: true, force: true })
   try { await rename(staging, destination) }
   catch (error) {
+    // A test-only prewarmed observer can request read-only evidence before the
+    // slower failure diagnostics start. This never retries or replaces rename.
+    channel('hexbot.native-publication-failed').publish({ staging, destination, versionProbe, error })
     const describe = async path => {
       try {
         const m = await lstat(path)
