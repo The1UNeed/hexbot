@@ -164,8 +164,11 @@ test('Windows dev layout loads real pinned Pi through Node with literal argument
     const env = await prepareDevRuntime(root, join(root, 'hexbot.exe'), pi, {
       platform: 'win32', arch: 'x64',
       download: async url => ['rg', 'fd'].map(tool => toolAsset(tool, 'win32', 'x64')).find(asset => asset.url === url).sha256,
-      run: async (_command, args) => {
-        const extracted = join(args[3], args[4])
+      run: async (_command, args, options) => {
+        assert.equal(args[1], 'archive.zip')
+        assert.equal(args[3], '.')
+        assert(options.cwd.startsWith(join(root, 'runtime')))
+        const extracted = join(options.cwd, args[4])
         await mkdir(join(extracted, '..'), { recursive: true })
         await writeFile(extracted, 'test search tool')
         // search-tools chooses tool names for the actual host in this portable test.

@@ -8,7 +8,7 @@ import { basename, dirname, isAbsolute, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { isDeepStrictEqual, promisify } from 'node:util'
 import { nativeBuildEnvironment } from './native-build.mjs'
-import { downloadTool, installTool } from '../../apps/desktop/src/main/backend/tools.ts'
+import { archiveProgram, downloadTool, extractWindowsArchive, installTool } from '../../apps/desktop/src/main/backend/tools.ts'
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..')
 const execute = promisify(execFile)
@@ -104,22 +104,14 @@ export const NODE_SHA256 = Object.freeze({
 })
 async function archiveTool() {
   if (process.platform !== 'win32') return 'tar'
-  if (!process.env.SystemRoot || !isAbsolute(process.env.SystemRoot)) throw new Error('Windows SystemRoot must be absolute')
-  const program = join(process.env.SystemRoot, 'System32/tar.exe')
-  const file = await lstat(program)
-  if (!file.isFile() || file.isSymbolicLink()) throw new Error('Windows tar must be an ordinary system executable')
+  const program = await archiveProgram()
   const { stdout } = await execute(program, ['--version'], { windowsHide: true })
   console.log('Windows archive tool:', JSON.stringify({ program: await realpath(program), version: stdout.trim().slice(0, 1024) }))
   return program
 }
 export async function extractStandaloneNode(directory, filename, member, windows, run = execute) {
   if (windows) {
-    // Windows bsdtar can narrow Unicode argv through the active code page.
-    // CreateProcessW carries cwd separately: keep all file operands ASCII.
-    if (!/^[\x20-\x7e]+$/.test(filename) || basename(filename) !== filename ||
-        !/^[\x20-\x7e]+$/.test(member) || member.includes('\\') || member.includes(':') || member.split('/').some(p => !p || p === '.' || p === '..'))
-      throw new Error('Invalid standalone Node archive member')
-    await run(await archiveTool(), ['-xf', filename, '-C', '.', member], { cwd: directory, windowsHide: true })
+    await extractWindowsArchive(directory, filename, member, run)
   } else {
     await run('tar', ['-xzf', join(directory, filename), '-C', directory, member])
   }

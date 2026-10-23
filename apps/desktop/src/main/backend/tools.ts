@@ -1,8 +1,8 @@
 import pins from '../../../../../backend/hexbot-core/assets/code-tools.json' with { type: 'json' }
 import { createHash } from 'node:crypto'
 import { createWriteStream } from 'node:fs'
-import { chmod, mkdir, mkdtemp, readFile, rename, rm, writeFile } from 'node:fs/promises'
-import { basename, dirname, join } from 'node:path'
+import { chmod, lstat, mkdir, mkdtemp, readFile, rename, rm, writeFile } from 'node:fs/promises'
+import { basename, dirname, isAbsolute, join } from 'node:path'
 import { Readable } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
 
@@ -13,6 +13,7 @@ const releases: Record<Tool, { version: string; url: string; name: string; targe
 
 // The archive holds `<directory>/<tool>`.
 export function toolAsset(tool: Tool, platform: string, arch: string): { version: string; directory: string; url: string; sha256: string; member: string; format: string } {
+  if (!Object.hasOwn(releases, tool)) throw new Error('Unknown code runtime tool')
   const release = releases[tool]
   const asset = release.targets[`${platform}-${arch}`]
   if (!asset) throw new Error(`Unsupported code runtime platform: ${platform}/${arch}`)
@@ -31,7 +32,25 @@ export interface ToolInstallDeps {
   arch: string
   exists: (path: string) => boolean
   download: typeof downloadTool
-  run: (command: string, args: string[]) => Promise<unknown>
+  run: (command: string, args: string[], options?: { cwd?: string; windowsHide?: boolean }) => Promise<unknown>
+}
+
+export async function archiveProgram(): Promise<string> {
+  if (process.platform !== 'win32') return 'tar'
+  if (!process.env.SystemRoot || !isAbsolute(process.env.SystemRoot)) throw new Error('Windows SystemRoot must be absolute')
+  const program = join(process.env.SystemRoot, 'System32/tar.exe')
+  const file = await lstat(program)
+  if (!file.isFile() || file.isSymbolicLink()) throw new Error('Windows tar must be an ordinary system executable')
+  return program
+}
+
+export async function extractWindowsArchive(directory: string, filename: string, member: string, run: ToolInstallDeps['run']): Promise<void> {
+  // bsdtar can narrow Unicode argv. CreateProcess carries cwd separately, so
+  // only ASCII relative operands cross the archive tool's argument boundary.
+  if (!/^[\x20-\x7e]+$/.test(filename) || basename(filename) !== filename || filename === '.' || filename === '..' ||
+      !/^[\x20-\x7e]+$/.test(member) || member.startsWith('-') || member.includes('\\') || member.includes(':') || member.split('/').some(p => !p || p === '.' || p === '..'))
+    throw new Error('Invalid Windows archive member or filename')
+  await run(await archiveProgram(), ['-xf', filename, '-C', '.', member], { cwd: directory, windowsHide: true })
 }
 
 export async function downloadTool(
@@ -77,7 +96,8 @@ export async function installTool(tool: Tool, deps: ToolInstallDeps, onInstall?:
     const archive = join(staging, `archive.${asset.format}`)
     const digest = await deps.download(asset.url, archive)
     if (digest !== asset.sha256) throw new Error(`${basename(asset.url)} checksum mismatch`)
-    await deps.run('tar', [deps.platform === 'win32' ? '-xf' : '-xzf', archive, '-C', staging, asset.member])
+    if (deps.platform === 'win32') await extractWindowsArchive(staging, basename(archive), asset.member, deps.run)
+    else await deps.run('tar', ['-xzf', archive, '-C', staging, asset.member])
     const extracted = join(staging, asset.member)
     if (deps.platform !== 'win32') await chmod(extracted, 0o755)
     await rename(extracted, executable)

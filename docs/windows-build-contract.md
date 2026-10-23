@@ -445,6 +445,15 @@ not establish the original EPERM blocker or guarantee a fresh tree cannot be
 scanned or locked. A fresh-copy rename failure remains a failure. Unix staging
 keeps its existing symlink behavior and direct publication.
 
+Standalone Node and the shared uv/rg/fd installer use the same Windows archive
+boundary: a validated ordinary System32 tar, ASCII relative archive/member
+operands, and the actual staging directory as cwd. The bootstrap, native build
+and dev run adapters preserve that cwd. Checksums, exact members, receipts and
+extraction cleanup remain required. Unicode invocation controls cover both rg
+and fd; native CI must also download, extract and execute both pinned Windows
+archives. The reviewed absolute-operand exposure did not establish an rg/fd
+extraction failure in the b32 run.
+
 Windows service status distinguishes a registered scheduler task from recoverable
 owned script metadata. A stopped verified task is installed; a script with no task
 is not start-at-login. Repair can recreate it and Uninstall/Change still clean its

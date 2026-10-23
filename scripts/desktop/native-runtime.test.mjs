@@ -2,12 +2,13 @@ import { strict as assert } from 'node:assert'
 import { execFile, spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { once } from 'node:events'
+import { existsSync } from 'node:fs'
 import { chmod, cp, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, stat, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
 import { promisify } from 'node:util'
-import { toolAsset } from '../../apps/desktop/src/main/backend/tools.ts'
+import { archiveProgram, extractWindowsArchive, installTool, toolAsset } from '../../apps/desktop/src/main/backend/tools.ts'
 import { inventoryNativeRuntime, copyNativeRuntime, publishWindowsRuntime, publishNativeRuntime, createNativeArchive, extractStandaloneNode, launchers, nativeTarget, stageNativeRuntime, rustTarget, pruneRuntimeDependencies, directoryBytes, standaloneNode, NODE_VERSION, NODE_SHA256 } from './native-runtime.mjs'
 const exec = promisify(execFile)
 async function captureArchiveCommand(program, argv, cwd) {
@@ -68,6 +69,69 @@ test('Windows Node archive extraction keeps Unicode paths out of tar operands', 
   } finally { await rm(root, { recursive: true, force: true }) }
 })
 
+test('Windows tool archives use ASCII operands and forward their Unicode cwd for both rg and fd', { skip: process.platform === 'linux' }, async () => {
+  const root = await mkdtemp(join(tmpdir(), 'hexbot tool archive π 中文 & '))
+  try {
+    for (const tool of ['rg', 'fd']) {
+      const asset = toolAsset(tool, 'win32', 'x64')
+      const source = join(root, tool, 'source'), archive = join(root, tool, 'fixture.zip')
+      await mkdir(join(source, asset.member, '..'), { recursive: true })
+      await writeFile(join(source, asset.member), `${tool} fixture bytes`)
+      const tar = await archiveProgram()
+      await exec(tar, ['--format', 'zip', '-cf', '../fixture.zip', asset.member], { cwd: source })
+      const binDirectory = join(root, tool, 'bin'), stagingDirectory = join(root, tool, 'runtime')
+      let extracted = 0
+      const deps = { platform: 'win32', arch: 'x64', binDirectory, stagingDirectory, exists: existsSync,
+        // Synthetic archive only: the real pinned download/hash runs natively.
+        download: async (_url, destination) => { await cp(archive, destination); return asset.sha256 },
+        run: (program, args, options) => {
+          extracted++
+          assert.equal(program, tar)
+          assert.deepEqual(args, ['-xf', 'archive.zip', '-C', '.', asset.member])
+          assert(args.every(arg => /^[\x20-\x7e]+$/.test(arg)))
+          assert(options.cwd.startsWith(stagingDirectory))
+          assert(options.cwd.includes('π 中文'))
+          return exec(program, args, options)
+        }
+      }
+      const installed = await installTool(tool, deps)
+      assert.equal(await readFile(installed, 'utf8'), `${tool} fixture bytes`)
+      assert.equal(await installTool(tool, deps), installed)
+      assert.equal(extracted, 1)
+      await writeFile(installed, 'damaged cached bytes')
+      await assert.rejects(installTool(tool, { ...deps, download: async () => 'wrong digest' }), /checksum mismatch/)
+      assert.equal(await readFile(installed, 'utf8'), 'damaged cached bytes')
+      assert.equal(extracted, 1)
+      assert.deepEqual(await readdir(stagingDirectory), [])
+    }
+  } finally { await rm(root, { recursive: true, force: true }) }
+})
+
+test('Windows archive members and tools reject unsupported or escaping operands before extraction', async () => {
+  let ran = false
+  for (const [filename, member] of [['../archive.zip', 'rg.exe'], ['archive.zip', '../rg.exe'], ['archive.zip', 'C:/rg.exe'], ['archive.zip', '-option'], ['archive.zip', 'nested\\rg.exe'], ['archive.zip', 'π.exe']])
+    await assert.rejects(extractWindowsArchive('/unused', filename, member, async () => { ran = true }), /Invalid Windows archive/)
+  assert.equal(ran, false)
+  for (const name of ['other', '__proto__', 'toString']) assert.throws(() => toolAsset(name, 'win32', 'x64'), /Unknown code runtime tool/)
+})
+
+test('Windows archive host refuses missing, relative and nonordinary system tool paths', { skip: process.platform !== 'win32' }, async () => {
+  const root = await mkdtemp(join(tmpdir(), 'hexbot system archive control '))
+  const previous = process.env.SystemRoot
+  try {
+    delete process.env.SystemRoot
+    await assert.rejects(archiveProgram(), /SystemRoot must be absolute/)
+    process.env.SystemRoot = 'relative'
+    await assert.rejects(archiveProgram(), /SystemRoot must be absolute/)
+    process.env.SystemRoot = root
+    await mkdir(join(root, 'System32/tar.exe'), { recursive: true })
+    await assert.rejects(archiveProgram(), /ordinary system executable/)
+  } finally {
+    if (previous === undefined) delete process.env.SystemRoot
+    else process.env.SystemRoot = previous
+    await rm(root, { recursive: true, force: true })
+  }
+})
 test('target supports both desktop architectures and Linux arm64', () => {
   for (const os of ['darwin', 'linux']) for (const arch of ['x64', 'arm64']) assert.equal(nativeTarget(os, arch), `${os}-${arch}`)
   assert.equal(nativeTarget('win32', 'x64'), 'win32-x64')

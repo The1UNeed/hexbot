@@ -16,7 +16,7 @@ import { existsSync } from 'node:fs'
 import { chmod, copyFile, mkdir, mkdtemp, readFile, realpath, rename, rm, stat, writeFile } from 'node:fs/promises'
 import net from 'node:net'
 import { homedir } from 'node:os'
-import { basename, delimiter, dirname, join, resolve } from 'node:path'
+import { delimiter, dirname, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { downloadTool, installTool } from '../../apps/desktop/src/main/backend/tools.ts'
 import { nodePath } from '../../apps/desktop/src/main/backend/node-path.ts'
@@ -46,21 +46,13 @@ export function devPiEntrypoint(directory, platform = process.platform) {
     ? 'node_modules/@earendil-works/pi-coding-agent/dist/cli.js' : 'node_modules/.bin/pi')
 }
 
-// npm.cmd is not an executable, and Windows tar corrupts non-ASCII archive
-// operands. Keep both boundaries on real executables and literal argument arrays.
+// npm.cmd is not an executable. Tool extraction supplies its own system tar,
+// ASCII operands and cwd through the shared installer boundary.
 export async function devExecFile(command, args, options = {}) {
   if (process.platform === 'win32' && command === 'npm') {
     const npm = join(dirname(await realpath(process.execPath)), 'node_modules/npm/bin/npm-cli.js')
     if (!(await stat(npm)).isFile()) throw new Error('Cannot locate the Node installation npm CLI')
     return promisify(execFile)(process.execPath, [nodePath(npm), ...args], options)
-  }
-  if (process.platform === 'win32' && command === 'tar') {
-    const [flag, archive, change, staging, member] = args
-    if (args.length !== 5 || flag !== '-xf' || change !== '-C' || dirname(archive) !== staging)
-      throw new Error('Unexpected dev tool archive extraction')
-    const tar = join(process.env.SystemRoot, 'System32/tar.exe')
-    if (!(await stat(tar)).isFile()) throw new Error('Windows System32 tar is unavailable')
-    return promisify(execFile)(tar, ['-xf', basename(archive), '-C', '.', member], { ...options, cwd: staging })
   }
   return promisify(execFile)(command, args, options)
 }

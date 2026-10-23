@@ -2,12 +2,43 @@ import assert from 'node:assert/strict'
 import { channel } from 'node:diagnostics_channel'
 import { publicationObserver } from './windows-publication-observer.mjs'
 import { execFile } from 'node:child_process'
-import { cp, mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
+import { existsSync } from 'node:fs'
+import { cp, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import test from 'node:test'
 import { getSystemErrorMap, promisify } from 'node:util'
 import { NODE_VERSION, inventoryNativeRuntime, publishWindowsRuntime, publishNativeRuntime, standaloneNode } from './native-runtime.mjs'
+import { downloadTool, installTool, toolAsset } from '../../apps/desktop/src/main/backend/tools.ts'
+
+test('actual pinned Windows rg and fd archives extract with Unicode cwd and ASCII system-tar operands',
+  { skip: process.platform !== 'win32', timeout: 180_000 }, async () => {
+    const root = await mkdtemp(join(tmpdir(), 'hexbot actual search π 中文 & '))
+    try {
+      for (const tool of ['rg', 'fd']) {
+        const asset = toolAsset(tool, 'win32', 'x64')
+        const stagingDirectory = join(root, `${tool} staging`)
+        let extractions = 0
+        const executable = await installTool(tool, {
+          platform: 'win32', arch: 'x64', binDirectory: join(root, 'bin'), stagingDirectory,
+          exists: existsSync, download: downloadTool,
+          run: (program, args, options) => {
+            extractions++
+            assert.equal(program, join(process.env.SystemRoot, 'System32/tar.exe'))
+            assert.deepEqual(args, ['-xf', 'archive.zip', '-C', '.', asset.member])
+            assert(args.every(arg => /^[\x20-\x7e]+$/.test(arg)))
+            assert(options.cwd.includes('π 中文'))
+            console.log('Pinned search archive extraction:', JSON.stringify({ tool, program, args, cwd: options.cwd }))
+            return promisify(execFile)(program, args, { ...options, timeout: 20_000 })
+          }
+        })
+        const { stdout } = await promisify(execFile)(executable, ['--version'], { windowsHide: true, timeout: 20_000 })
+        assert.deepEqual(stdout.trim().split(/\s+/).slice(0, 2), [tool === 'rg' ? 'ripgrep' : 'fd', asset.version])
+        assert.equal(extractions, 1)
+        assert.deepEqual(await readdir(stagingDirectory), [])
+      }
+    } finally { await rm(root, { recursive: true, force: true }) }
+  })
 
 test('pinned Windows Node/Pi validates each original tree before three verified fresh-copy publications',
   { skip: process.platform !== 'win32', timeout: 180_000 }, async () => {
