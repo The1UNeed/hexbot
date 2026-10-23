@@ -204,7 +204,7 @@ mod tests {
 mod native_tests {
     use super::*;
     use serde_json::{Value, json};
-    use std::{path::PathBuf, process::Command};
+    use std::process::Command;
     fn fixture(key: &str, action: &str, command: &str, kind: &str) -> Value {
         let script = r#"$ErrorActionPreference='Stop';[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false)
 $r=[Microsoft.Win32.RegistryKey]::OpenBaseKey([Microsoft.Win32.RegistryHive]::CurrentUser,[Microsoft.Win32.RegistryView]::Registry64)
@@ -303,7 +303,7 @@ try {
         .unwrap_err();
         assert!(!residual.exists());
         assert!(error.to_string().contains("The app was removed"));
-        assert!(!PathBuf::from(&binding.0[0]).exists());
+        assert!(!root.path().join("HexbotClient.exe").exists());
         eprintln!(
             "Native protocol command cleanup controls: {}",
             json!({"exactOwned":true,"missingExe":true,"replacementPreserved":true,"expandStringPreserved":true,"namedValuesAndChildrenPreserved":true,"failedCleanupStillRemovesResidual":true})
