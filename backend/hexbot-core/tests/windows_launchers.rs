@@ -1236,7 +1236,11 @@ fn interrupted_task_install_uninstalls_owned_files_when_the_task_is_absent() {
     let next_pid = next_handle.pid;
     assert_ne!(next_pid, first_pid);
     assert!(powershell(&format!("if(Get-Process -Id {first_pid} -ErrorAction SilentlyContinue){{throw 'Old task daemon survived repair'}}")).status.success());
-    assert!(service(&home, "stop").status.success());
+    let stopped = service(&home, "stop");
+    eprintln!("Explicit stop returned: status={} stdout={} stderr={} kernel={} homeIdle={:?}",
+        stopped.status, bounded(&stopped.stdout), bounded(&stopped.stderr), next_handle.snapshot(), windows_task::home_idle(&home));
+    lifetime("after-explicit-stop", &next_handle);
+    assert!(stopped.status.success());
     assert!(!next_handle.alive());
     assert_eq!(next_handle.snapshot()["exitCode"], 0);
     assert!(windows_task::home_idle(&home).unwrap());
