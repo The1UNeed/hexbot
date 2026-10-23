@@ -1,7 +1,8 @@
 import { strict as assert } from 'node:assert'
 import { execFile, spawn } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import { once } from 'node:events'
-import { chmod, mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from 'node:fs/promises'
+import { chmod, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, stat, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
@@ -9,6 +10,44 @@ import { promisify } from 'node:util'
 import { toolAsset } from '../../apps/desktop/src/main/backend/tools.ts'
 import { publishNativeRuntime, createNativeArchive, extractStandaloneNode, launchers, nativeTarget, stageNativeRuntime, rustTarget, pruneRuntimeDependencies, directoryBytes, standaloneNode, NODE_VERSION, NODE_SHA256 } from './native-runtime.mjs'
 const exec = promisify(execFile)
+async function captureArchiveCommand(program, argv, cwd, input) {
+  const child = spawn(program, argv, { cwd, windowsHide: true, stdio: [input ? 'pipe' : 'ignore', 'pipe', 'pipe'] })
+  const closed = once(child, 'close')
+  const report = { program, argv, cwd, pid: child.pid, stdinError: null }
+  for (const name of ['stdout', 'stderr']) {
+    const chunks = []; let retained = 0
+    report[name] = { bytes: 0, text: '', truncated: false }
+    child[name].on('data', bytes => {
+      report[name].bytes += bytes.length
+      const prefix = bytes.subarray(0, Math.max(0, 8192 - retained))
+      if (prefix.length) chunks.push(prefix)
+      retained += prefix.length
+    })
+    child[name].on('end', () => {
+      report[name].text = Buffer.concat(chunks).toString('utf8')
+      report[name].truncated = report[name].bytes > retained
+    })
+  }
+  if (input) {
+    child.stdin.on('error', error => { report.stdinError = { code: error.code, message: error.message.slice(0, 1024) } })
+    child.stdin.end(input)
+  }
+  try { report.status = await closed } catch (error) {
+    report.spawnError = { code: error.code, message: error.message.slice(0, 1024) }
+    report.status = [null, null]
+  }
+  return report
+}
+test('archive diagnostics drain both streams while retaining bounded output and the original exit status', async () => {
+  const report = await captureArchiveCommand(process.execPath, ['-e',
+    "process.stdout.write('o'.repeat(131072));process.stderr.write('e'.repeat(131072));process.exitCode=7"], tmpdir())
+  assert.deepEqual(report.status, [7, null])
+  for (const name of ['stdout', 'stderr']) {
+    assert.equal(report[name].bytes, 131072)
+    assert.equal(report[name].text.length, 8192)
+    assert.equal(report[name].truncated, true)
+  }
+})
 test('Windows Node archive extraction keeps Unicode paths out of tar operands', { skip: process.platform === 'linux' }, async () => {
   const root = await mkdtemp(join(tmpdir(), 'hexbot extraction π 中文 '))
   try {
@@ -200,14 +239,37 @@ test('Windows ZIP advertises the actual daemon and contains the verified entrypo
     const manifest = await createNativeArchive(bundle, file)
     assert.equal(manifest.entrypoint, 'hexbot.exe'); assert.equal(manifest.format, 'zip')
     assert.equal(manifest.target, 'windows-x86_64')
-    const out = join(root, 'out'); await mkdir(out)
-    // Use Node's Unicode-aware stdin pipe so the test does not send a Unicode
-    // archive path to the same narrow-argv Windows tar boundary.
+    const archive = await readFile(file)
+    const digest = createHash('sha256').update(archive).digest('hex')
+    const header = archive.subarray(0, 32).toString('hex')
     const tar = process.platform === 'win32' ? join(process.env.SystemRoot, 'System32/tar.exe') : 'tar'
-    const extract = spawn(tar, ['-xf', '-', '-C', 'out'], { cwd: root, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] })
-    const closed = once(extract, 'close'); extract.stdin.end(await readFile(file))
-    assert.deepEqual(await closed, [0, null])
-    assert.equal(await readFile(join(out, 'hexbot.exe'), 'utf8'), 'MZ fixture')
+    const version = await exec(tar, ['--version'], { windowsHide: true })
+    const tool = { program: process.platform === 'win32' ? await realpath(tar) : tar, version: `${version.stdout}${version.stderr}`.trim().slice(0, 1024) }
+    const evidence = { tool, file, size: archive.length, header, sha256: digest, manifest }
+    console.log('ZIP roundtrip archive:', JSON.stringify(evidence))
+    assert.equal(archive.subarray(0, 4).toString('hex'), '504b0304')
+    assert.equal(manifest.size, archive.length); assert.equal(manifest.sha256, digest)
+    // A rename keeps the exact production-created Unicode archive bytes while
+    // giving tar ASCII operands, as in the standalone Node extraction boundary.
+    const named = join(root, 'native.zip'); await rename(file, named)
+    assert.deepEqual(await readFile(named), archive)
+    const out = join(root, 'out'); const seekable = join(root, 'out-file')
+    await mkdir(out); await mkdir(seekable)
+    // Distinct input-mode controls, not retries. Run and report both BEFORE
+    // assertions, so a native failure distinguishes stream/seek/path behavior.
+    const results = [
+      { mode: 'filename', out: seekable, report: await captureArchiveCommand(tar, ['-xf', '../native.zip', '-C', '.'], seekable) },
+      { mode: 'stdin', out, report: await captureArchiveCommand(tar, ['-xf', '-', '-C', 'out'], root, archive) },
+    ]
+    for (const { mode, report } of results) console.log('ZIP roundtrip extraction:', JSON.stringify({ ...evidence, mode, ...report }))
+    for (const { mode, out, report } of results) {
+      assert.deepEqual(report.status, [0, null], `${mode}: ${JSON.stringify(report)}`)
+      assert.equal(report.stdinError, null, `${mode}: ${JSON.stringify(report)}`)
+      assert.equal(await readFile(join(out, manifest.entrypoint), 'utf8'), 'MZ fixture')
+      const unpacked = JSON.parse(await readFile(join(out, 'manifest.json'), 'utf8'))
+      assert.equal(unpacked.files['hexbot.exe'], createHash('sha256').update('MZ fixture').digest('hex'))
+      assert.equal(manifest.unpacked_size, await directoryBytes(out))
+    }
     await rm(join(bundle, 'hexbot.exe'))
     await assert.rejects(createNativeArchive(bundle, file))
   } finally { await rm(root, { recursive: true, force: true }) }
