@@ -1,5 +1,7 @@
 import { spawn, execFile, type ChildProcess } from 'node:child_process'
 import { once } from 'node:events'
+import { createServer } from 'node:http'
+import type { AddressInfo } from 'node:net'
 import { readFile, mkdir, mkdtemp, rm, writeFile, rename } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
@@ -73,29 +75,60 @@ it.skipIf(process.platform !== 'win32' || !process.env.HEXBOT_NATIVE_TEST_BUNDLE
     const record = await readFile(runningPath, 'utf8')
     const installPath = join(home, 'install_id')
     const install = await readFile(installPath, 'utf8')
-    const expectHeldRefusal = async (): Promise<void> => {
-      await expect(windowsDaemon(home)).rejects.toThrow()
+    const expectHeldRefusal = async (label: string, reason = 'Cannot verify the daemon holding this home'): Promise<void> => {
+      console.info('Held-home refusal case:', JSON.stringify({ label, pid, realHolderExitCode: child!.exitCode }))
+      await expect(windowsDaemon(home)).rejects.toThrow(reason)
       const challenger = new DaemonManager()
       try {
-        await expect(challenger.start()).rejects.toThrow()
+        await expect(challenger.start()).rejects.toThrow(reason)
         expect(challenger.status().state).toBe('stopped')
       } finally { await challenger.stop().catch(() => undefined) }
       expect(child!.exitCode).toBeNull()
     }
-    for (const value of ['{}', '{', JSON.stringify({ pid: 2147483647, executable: selected }),
-      JSON.stringify({ pid: globalThis.process.pid, executable: selected }),
-      JSON.stringify({ pid, executable: globalThis.process.execPath })]) {
+    for (const [label, value, reason] of [
+      ['empty running record', '{}'], ['malformed running record', '{'],
+      ['dead recorded PID', JSON.stringify({ pid: 2147483647, executable: selected })],
+      ['another live PID', JSON.stringify({ pid: globalThis.process.pid, executable: selected })],
+      ['wrong executable', JSON.stringify({ pid, executable: globalThis.process.execPath }), 'Running daemon is outside this managed runtime']
+    ] as const) {
       await writeFile(runningPath, value)
-      try { await expectHeldRefusal() } finally { await writeFile(runningPath, record) }
+      try { await expectHeldRefusal(label, reason) } finally { await writeFile(runningPath, record) }
     }
-    // Wrong home identity, unreadable metadata and invalid file type must not
-    // grant spawn/stop authority over the live holder, even if PID is live.
-    await writeFile(installPath, 'another-home')
-    try { await expectHeldRefusal() } finally { await writeFile(installPath, install) }
+    // The real daemon rereads install_id on every identity request. Mutating
+    // that file changes both sides of the comparison, not just the claimant.
+    // Keep its lock/process/record and vary only the loopback identity response.
+    const servePath = join(home, 'serve-state.json')
+    const serveState = await readFile(servePath, 'utf8')
+    const requests: string[] = []
+    let claimedInstall = install.trim()
+    const identity = createServer((request, response) => {
+      requests.push(request.url ?? '')
+      response.writeHead(request.url === '/api/daemon/identity' ? 200 : 404, { 'Content-Type': 'application/json', Connection: 'close' })
+      response.end(JSON.stringify({ pid, install_id: claimedInstall }))
+    })
+    try {
+      await new Promise<void>((resolve, reject) => {
+        identity.once('error', reject)
+        identity.listen(0, '127.0.0.1', resolve)
+      })
+      const port = (identity.address() as AddressInfo).port
+      await writeFile(servePath, JSON.stringify({ ...JSON.parse(serveState), port }))
+      expect(await windowsDaemon(home)).toMatchObject({ pid, port })
+      claimedInstall = 'another-home'
+      const before = requests.length
+      await expectHeldRefusal('HTTP install identity differs, same live process and locked home')
+      expect(requests.length - before).toBe(2) // Direct readiness and challenger.
+      expect(requests.every(path => path === '/api/daemon/identity')).toBe(true)
+      expect(await readFile(installPath, 'utf8')).toBe(install)
+    } finally {
+      try { await writeFile(servePath, serveState) } finally {
+        if (identity.listening) await new Promise<void>((resolve, reject) => identity.close(error => error ? reject(error) : resolve()))
+      }
+    }
     const hidden = join(dirname(runningPath), 'saved-record.json')
     await rename(runningPath, hidden)
     await mkdir(runningPath)
-    try { await expectHeldRefusal() } finally { await rm(runningPath, { recursive: true }); await rename(hidden, runningPath) }
+    try { await expectHeldRefusal('running metadata is a directory') } finally { await rm(runningPath, { recursive: true }); await rename(hidden, runningPath) }
     const ps = join(globalThis.process.env.SystemRoot!, 'System32/WindowsPowerShell/v1.0/powershell.exe')
     const deny = spawn(ps, ['-NoProfile', '-NonInteractive', '-Command', "$f=[IO.File]::Open($env:HEXBOT_TEST_RECORD,'Open','ReadWrite','None');try{[Console]::WriteLine('LOCKED');[Console]::ReadLine()|Out-Null}finally{$f.Dispose()}"],
       { env: { ...globalThis.process.env, HEXBOT_TEST_RECORD: runningPath }, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] })
@@ -106,11 +139,11 @@ it.skipIf(process.platform !== 'win32' || !process.env.HEXBOT_NATIVE_TEST_BUNDLE
         deny.stdout.on('data', bytes => { if (bytes.toString().includes('LOCKED')) { clearTimeout(timer); resolve() } })
         deny.once('exit', code => { clearTimeout(timer); reject(new Error(`Metadata deny fixture exit ${code}`)) })
       })
-      await expectHeldRefusal()
+      await expectHeldRefusal('running metadata denies reads')
     } finally { deny.stdin.end('\n'); expect(await denyExit).toEqual([0, null]) }
     const attributes = await exec(ps, ['-NoProfile', '-NonInteractive', '-Command', "[int][IO.File]::GetAttributes($env:HEXBOT_TEST_LOCK)"], { env: { ...globalThis.process.env, HEXBOT_TEST_LOCK: join(home, 'native-daemon.lock') }, windowsHide: true })
     await exec(ps, ['-NoProfile', '-NonInteractive', '-Command', "[IO.File]::SetAttributes($env:HEXBOT_TEST_LOCK,([IO.FileAttributes]::ReadOnly -bor [int]$env:HEXBOT_TEST_ATTRIBUTES))"], { env: { ...globalThis.process.env, HEXBOT_TEST_LOCK: join(home, 'native-daemon.lock'), HEXBOT_TEST_ATTRIBUTES: attributes.stdout.trim() }, windowsHide: true })
-    try { await expectHeldRefusal() } finally {
+    try { await expectHeldRefusal('home lock has read-only attributes') } finally {
       await exec(ps, ['-NoProfile', '-NonInteractive', '-Command', "[IO.File]::SetAttributes($env:HEXBOT_TEST_LOCK,[int]$env:HEXBOT_TEST_ATTRIBUTES)"], { env: { ...globalThis.process.env, HEXBOT_TEST_LOCK: join(home, 'native-daemon.lock'), HEXBOT_TEST_ATTRIBUTES: attributes.stdout.trim() }, windowsHide: true })
     }
     await stop()
