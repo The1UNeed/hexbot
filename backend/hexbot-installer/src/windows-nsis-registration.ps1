@@ -6,7 +6,7 @@ $guid=$env:HEXBOT_NSIS_GUID
 if($guid -notin @('5c6fd00f-bd80-53ff-aeef-f9c3358a4c57','6626f9dd-933a-5e44-9657-6fa079966fb4','05b10340-fa13-50a8-9202-f1b511554ce2','5625bc89-25d6-5b85-9fd5-b4d4fd6cf320')) { throw 'Unknown NSIS identity' }
 function Read-String($key,$name) {
     if($null -eq $key -or $key.GetValueNames() -notcontains $name) {return $null}
-    if($key.GetValueKind($name) -ne [Microsoft.Win32.RegistryValueKind]::String) {throw "Invalid NSIS registration value type [$hive/Registry64]: $name=$($key.GetValueKind($name))"}
+    if($key.GetValueKind($name) -ne [Microsoft.Win32.RegistryValueKind]::String) {return $null}
     $value=$key.GetValue($name,$null,[Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
     if($value.Length -gt 32768) {throw 'Oversized NSIS registration value'}
     return $value

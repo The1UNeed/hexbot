@@ -433,3 +433,61 @@ owned script metadata. A stopped verified task is installed; a script with no ta
 is not start-at-login. Repair can recreate it and Uninstall/Change still clean its
 owned files through the same ownership checks. `HEXBOT_SERVICE_NO_LOAD` reports no
 scheduler installation and marks that the scheduler was not queried.
+
+## Missing Windows app directories and NSIS process checks
+
+If an entire app directory is gone, Repair can restore only the one exact
+managed release directory named by a valid Full or Client receipt. Its version
+must belong to that receipt's Stable or Nightly track. Existing unmarked files,
+directories, links, other paths and I/O errors do not gain ownership from a
+receipt. The terminal's interactive Update or repair action and the windowed
+installer use the same Repair engine. Explicit install options remain Apply.
+
+The absent-directory exception accepts either no registry entry or the exact
+stale HKCU registration for that identity, with both HKLM keys absent. Registry
+paths are compared as bounded ordinary drive spellings, never resolved or
+executed. A recoverable stale entry requires Repair before Apply, Change or
+Uninstall can discard its receipt. Repair checks the absence and registration
+class again under the installation lock after the verified download. A partial,
+foreign or HKLM entry cannot authorize Repair. Uninstall may remove its known
+outer state but leaves that registration unchanged and displays a warning. A
+receiptless missing app with an entry cannot be identified automatically.
+
+Pinned electron-builder 26.16.1's
+`templates/nsis/include/allowOnlyOneInstallerInstance.nsh` uses two distinct
+process predicates. `IS_POWERSHELL_AVAILABLE` probes `Get-CimInstance`, then
+`Get-ExecutionPolicy -Scope Process` with `-NoProfile -NonInteractive`. If
+available, `FIND_PROCESS` and `KILL_PROCESS` use raw
+`Path.StartsWith($INSTDIR, CurrentCultureIgnoreCase)`, without a separator.
+If unavailable or Restricted, the per-user fallback uses `tasklist`/`taskkill`
+with `%USERNAME%` and `${APP_EXECUTABLE_FILENAME}`. Full's `Hexbot.exe` also
+matches the native daemon's `hexbot.exe` on Windows.
+
+Before every outer NSIS invocation, a read-only preflight repeats the two probes
+without changing policy or their inherited environment. A bounded DOS/PE
+machine read from the verified incoming installer, or authenticated known
+uninstaller, selects trusted WOW64 PowerShell for I386 or System32 for AMD64.
+This matters because the pinned NSIS stub/plugins use x86-unicode; changing
+registry view does not disable filesystem redirection. Native diagnostics
+record the actual PE machine and observed probe host architecture/image. They
+do not claim to observe the NSIS child itself. Malformed or unsupported headers
+and nonordinary system executables refuse rather than selecting another host.
+
+In the available branch, the preflight refuses matching raw directory prefixes,
+including sibling names, while preserving an independent daemon outside them.
+In the fallback branch, it verifies process-owner names and SIDs against the
+current identity before matching the edition image. It cannot safely proceed
+beside a matching live app or daemon under that policy and refuses without
+stopping it. Incomplete queries or uncertain ownership refuse. The displayed
+match list is bounded only after complete enumeration; truncation cannot turn
+matches into permission to proceed. Apostrophes, quotes, percent signs, control
+characters and nonstandard drive paths are explicitly unsupported because the
+pinned macro interpolates its directory into a PowerShell command.
+
+The final check runs under the installer lock immediately before NSIS. Earlier
+removal checks also protect Change before replacing another app. Concurrent
+same-user process or policy changes between that check and NSIS remain outside
+a compare-and-swap guarantee. There is no registry cleanup or identity migration
+in this recovery path. Settings can still install another track under Programs,
+outside this installer's discovery, as described above. Windows remains
+unsupported and publishing stays disabled.

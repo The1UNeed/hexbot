@@ -377,10 +377,12 @@ function PairingQr({ link }: { link: string }) {
 
 export function Removed({
   detection,
+  notes,
   onQuit,
   removedData
 }: {
   detection: Detection
+  notes: string[]
   onQuit: () => void
   removedData: boolean
 }) {
@@ -400,6 +402,8 @@ export function Removed({
           : `Your Hexbot data is still in ${tildify(locations.hexbotHome, locations.home)}. Install Hexbot again to pick up where you left off.`
       }
       title="Hexbot is uninstalled"
-    />
+    >
+      <Notes notes={notes} />
+    </Frame>
   )
 }

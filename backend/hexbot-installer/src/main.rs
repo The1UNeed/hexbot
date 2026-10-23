@@ -196,6 +196,14 @@ fn package_manager_notice(installed: &hexbot_installer::Installed) -> Option<&'s
     )
 }
 
+fn update_or_repair(args: &mut Args, option: InstallOption, windows: bool) {
+    if windows {
+        args.repair = true;
+    } else {
+        args.option = Some(option);
+    }
+}
+
 fn run() -> Result<()> {
     let mut args = parse_args()?;
     let interactive = io::stdin().is_terminal() && !args.json;
@@ -222,7 +230,7 @@ fn run() -> Result<()> {
             eprintln!("1) Update or repair\n2) Change to another option\n3) Uninstall");
             match prompt("Choose 1, 2, or 3:")?.as_str() {
                 "1" => {
-                    args.option = Some(option);
+                    update_or_repair(&mut args, option, cfg!(windows));
                 }
                 "2" => {
                     args.option = Some(choose()?);
@@ -246,6 +254,7 @@ fn run() -> Result<()> {
     let mut bar_active = false;
     let mut progress = |event| show_progress(event, args.json, &mut bar_active);
     if args.uninstall {
+        engine.preflight_uninstall()?;
         let message = if args.remove_data {
             "Remove Hexbot and permanently delete its data?"
         } else {
@@ -298,6 +307,22 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn interactive_windows_update_uses_repair_without_overriding_identity() {
+        for option in [
+            InstallOption::Full,
+            InstallOption::Client,
+            InstallOption::Headless,
+        ] {
+            let mut args = Args::default();
+            update_or_repair(&mut args, option, true);
+            assert!(args.repair && args.option.is_none());
+            let mut unix = Args::default();
+            update_or_repair(&mut unix, option, false);
+            assert!(!unix.repair);
+            assert_eq!(unix.option, Some(option));
+        }
+    }
     #[test]
     fn package_managed_apps_replace_the_interactive_menu_with_a_notice() {
         let mut installed = hexbot_installer::Installed::default();

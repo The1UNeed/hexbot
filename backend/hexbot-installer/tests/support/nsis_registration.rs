@@ -40,6 +40,7 @@ $result=@(foreach($scope in @('CurrentUser','LocalMachine')) {
    $record=if($env:HEXBOT_NSIS_ACTION -eq 'restore'){$data.$scope}else{$data}
    $a=$root.CreateSubKey($keys[0]);$b=$root.CreateSubKey($keys[1]);try{$a.SetValue('InstallLocation',[string]$record.location);$b.SetValue('UninstallString',[string]$record.command)}finally{$a.Dispose();$b.Dispose()}
   }
+  if($env:HEXBOT_NSIS_ACTION -eq 'partial' -and $scope -eq 'CurrentUser') {$key=$root.OpenSubKey($keys[0],$true);try{$key.DeleteValue('InstallLocation',$false)}finally{$key.Dispose()}}
   $a=$root.OpenSubKey($keys[0]);$b=$root.OpenSubKey($keys[1]);try{@{scope=$scope;view='Registry64';locationType=$(if($a -and $a.GetValueNames() -contains 'InstallLocation'){$a.GetValueKind('InstallLocation').ToString()});commandType=$(if($b -and $b.GetValueNames() -contains 'UninstallString'){$b.GetValueKind('UninstallString').ToString()});install=($null -ne $a);uninstall=($null -ne $b);location=$(if($a){$a.GetValue('InstallLocation')});command=$(if($b){$b.GetValue('UninstallString')})}}finally{if($a){$a.Dispose()};if($b){$b.Dispose()}}
  } finally {$root.Dispose()}
 });ConvertTo-Json -InputObject $result -Compress
@@ -60,6 +61,12 @@ $result=@(foreach($scope in @('CurrentUser','LocalMachine')) {
             String::from_utf8_lossy(&output.stderr)
         );
         serde_json::from_slice(&output.stdout).unwrap()
+    }
+    pub fn remove_owned_location(&self) {
+        self.run("partial", Value::Null);
+    }
+    pub fn clear_owned_fixture(&self) {
+        self.run("clear", Value::Null);
     }
     pub fn snapshot(&self) -> Value {
         self.run("snapshot", Value::Null)

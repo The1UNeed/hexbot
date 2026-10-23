@@ -57,3 +57,51 @@ test('known NSIS identities match the pinned builder GUIDs and current-user regi
   assert.match(registry, /INSTALL_REGISTRY_KEY "Software\\\$\{APP_GUID\}"/)
   assert.match(registry, /UNINSTALL_REGISTRY_KEY "Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\\$\{UNINSTALL_APP_KEY\}"/)
 })
+
+test('pinned NSIS kill policy is raw prefix or same-user edition image, with unchanged availability probes', async () => {
+  const desktop = createRequire(resolve('apps/desktop/package.json'))
+  const builder = createRequire(desktop.resolve('electron-builder'))
+  const templates = join(dirname(builder.resolve('app-builder-lib/package.json')), 'templates/nsis')
+  const macro = await readFile(join(templates, 'include/allowOnlyOneInstallerInstance.nsh'), 'utf8')
+  const target = await readFile(join(dirname(builder.resolve('app-builder-lib/package.json')), 'out/targets/nsis/NsisTarget.js'), 'utf8')
+  assert.match(target, /const pluginArch = this.isUnicodeEnabled \? "x86-unicode" : "x86-ansi"/)
+  const { readdir } = await import('node:fs/promises')
+  for (const file of await readdir(templates, { recursive: true })) {
+    if (!/\.ns[hi]$/.test(file)) continue
+    assert.doesNotMatch(await readFile(join(templates, file), 'utf8'), /Wow64DisableWow64FsRedirection|DisableX64FSRedirection/i)
+  }
+  const rust = await readFile('backend/hexbot-installer/src/windows_nsis_process.rs', 'utf8')
+  for (const symbol of ['AVAILABLE_PROBE', 'POLICY_PROBE']) {
+    const script = rust.match(new RegExp(`const ${symbol}: &str =\\s*"([^"]+)"`))?.[1]
+    assert(script)
+    assert(macro.includes(script), `${symbol} must mirror pinned NSIS`)
+  }
+  assert.match(macro, /Path\.StartsWith\('\$INSTDIR', 'CurrentCultureIgnoreCase'\)/)
+  assert.match(macro, /FIND_PROCESS "\$\{APP_EXECUTABLE_FILENAME\}"/)
+  assert.match(macro, /USERNAME eq %USERNAME%/)
+  assert.match(macro, /taskkill \$0 \/IM "\$\{_FILE\}"/)
+  assert.match(macro, /\/SD IDOK IDOK doStopProcess/)
+  assert.doesNotMatch(rust, /"-ExecutionPolicy"|PSExecutionPolicyPreference/)
+  const util = await readFile(join(templates, 'include/installUtil.nsh'), 'utf8')
+  assert.match(util, /Uninstall was not successful\. Not able to launch uninstaller![\s\S]*?Return/)
+})
+
+test('actual shared process predicates preserve external daemons and refuse sibling prefixes/fallback aliases', async t => {
+  const { execFile } = await import('node:child_process')
+  const { promisify } = await import('node:util')
+  const powershell = process.platform === 'win32'
+    ? join(process.env.SystemRoot, 'System32/WindowsPowerShell/v1.0/powershell.exe') : process.env.HEXBOT_TEST_POWERSHELL
+  if (!powershell) return t.skip('requires PowerShell for the actual .NET predicates')
+  const policy = await readFile('backend/hexbot-installer/src/windows-nsis-process-policy.ps1', 'utf8')
+  const script = `${policy}
+$d='C:\\apps\\app.hexbot.desktop'
+$prefix=Test-HexbotNsisPrefix ($d+'.nightly\\Hexbot.exe') @($d)
+$proper=($d+'.nightly\\Hexbot.exe').StartsWith($d+'\\','CurrentCultureIgnoreCase')
+$external=Test-HexbotNsisPrefix 'C:\\external\\runtime\\native\\build\\hexbot.exe' @($d)
+$fallback=Test-HexbotNsisImage 'hexbot.exe' 'Hexbot.exe' 'José' 'José' 'S-1-5-21-1' 'S-1-5-21-1' 'S-1-5-21-1'
+$client=Test-HexbotNsisImage 'hexbot.exe' 'HexbotClient.exe' 'José' 'José' 'S-1-5-21-1' 'S-1-5-21-1' 'S-1-5-21-1'
+$uncertain=$false;try {Test-HexbotNsisImage 'Hexbot.exe' 'Hexbot.exe' 'José' 'José' '' '' 'S-1-5-21-1' >$null} catch {$uncertain=$true}
+ConvertTo-Json -Compress -InputObject @($prefix,$proper,$external,$fallback,$client,$uncertain)`
+  const { stdout } = await promisify(execFile)(powershell, ['-NoProfile', '-NonInteractive', '-Command', script], { windowsHide: true })
+  assert.deepEqual(JSON.parse(stdout), [true, false, false, true, false, true])
+})

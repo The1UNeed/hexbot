@@ -201,6 +201,8 @@ pub struct InstalledApp {
 pub struct Installed {
     #[serde(skip)]
     pub(crate) windows: bool,
+    #[serde(skip)]
+    pub(crate) missing_windows_track: Option<Track>,
     pub receipt: Option<Receipt>,
     pub apps: Vec<InstalledApp>,
     pub service: bool,
@@ -246,6 +248,9 @@ impl Installed {
                 .as_ref()
                 .is_none_or(|r| r.option != InstallOption::Headless)
         {
+            if let Some(track) = self.missing_windows_track {
+                return Some(track);
+            }
             let app = self.windows_repair_app()?;
             let track = crate::detect::windows_app_track(&app.app_id)?;
             return match app

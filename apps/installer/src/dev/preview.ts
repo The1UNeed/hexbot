@@ -199,6 +199,11 @@ export function previewApi(params: URLSearchParams): InstallerApi {
         message: `Removing ${detection.installed?.apps[0]?.path ?? 'the daemon'}.`,
         stage: 'remove'
       })
+
+      if (windows && params.has('warn')) {
+        onProgress({ stage: 'warning', message: 'The app folder was already missing. Its Windows entry was not removed because its ownership could not be verified.' })
+      }
+
       await sleep(600)
     }
   }

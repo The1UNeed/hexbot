@@ -314,6 +314,10 @@ pub fn detect_at(paths: &Paths, target: Target) -> Result<Installed> {
                 .is_ok_and(|output| output.status.success())
         }));
     }
+    if target.is_windows() {
+        installed.missing_windows_track =
+            crate::windows_recovery::absent(paths, &installed)?.map(|app| app.track);
+    }
     Ok(installed)
 }
 

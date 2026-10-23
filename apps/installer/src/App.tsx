@@ -159,6 +159,7 @@ export function App({ api }: { api: InstallerApi }) {
         return (
           <Removed
             detection={detection}
+            notes={screen.notes}
             onQuit={quit}
             removedData={screen.job.kind === 'uninstall' && screen.job.removeData}
           />

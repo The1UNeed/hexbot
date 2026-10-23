@@ -22,10 +22,13 @@ pub mod update_signature;
 pub mod windows_cli;
 #[cfg(any(windows, test))]
 mod windows_nsis;
+#[cfg(any(windows, test))]
+mod windows_nsis_process;
 #[path = "../../hexbot-core/src/windows_paths.rs"]
 mod windows_paths;
 #[cfg(any(windows, test))]
 mod windows_protocol;
+mod windows_recovery;
 mod windows_service;
 #[cfg(windows)]
 #[path = "../../hexbot-core/src/windows_task.rs"]
@@ -214,6 +217,7 @@ struct WindowsRepair {
     track: Track,
     path: PathBuf,
     version: Option<semver::Version>,
+    absent: Option<windows_recovery::Registration>,
 }
 
 impl Installer {
@@ -235,6 +239,7 @@ impl Installer {
         track: Track,
         progress: &mut ProgressCallback<'_>,
     ) -> Result<InstallResult> {
+        self.refuse_missing_app_transition()?;
         let manifest = fetch_manifest(&self.base_url, track)?;
         let (result, _install_lock) = self.install(option, &manifest, None, false, progress)?;
         self.write_receipt(&result.receipt)?;
@@ -249,7 +254,15 @@ impl Installer {
             return self.apply(receipt.option, receipt.channel, progress);
         }
         let recovered = self.windows_app_repair()?;
-        if recovered.version.is_none() {
+        if recovered.absent.is_some() {
+            progress(Progress::new(
+                "repair",
+                format!(
+                    "Restoring the missing {} app from its {} build.",
+                    recovered.option, recovered.track
+                ),
+            ));
+        } else if recovered.version.is_none() {
             progress(Progress::new(
                 "repair",
                 format!(
@@ -277,6 +290,20 @@ impl Installer {
             return fail("No install receipt was found. Choose an option to install.");
         }
         let installed = self.detect()?;
+        if let Some((app, registration)) = self.missing_windows_app(&installed)? {
+            if registration == windows_recovery::Registration::Other {
+                return fail(
+                    "The missing app's Windows entry cannot be verified. Its registration was left unchanged.",
+                );
+            }
+            return Ok(WindowsRepair {
+                option: app.option,
+                track: app.track,
+                path: app.path,
+                version: Some(app.version),
+                absent: Some(registration),
+            });
+        }
         let app = installed.windows_repair_app().ok_or(CHOOSE)?;
         if app.app_id.ends_with(".dev")
             || app.path != self.paths.planned_apps_dir(self.target)?.join(&app.app_id)
@@ -302,7 +329,41 @@ impl Installer {
             track,
             path: app.path.clone(),
             version,
+            absent: None,
         })
+    }
+
+    fn missing_windows_app(
+        &self,
+        installed: &Installed,
+    ) -> Result<Option<(windows_recovery::MissingApp, windows_recovery::Registration)>> {
+        if !self.target.is_windows() {
+            return Ok(None);
+        }
+        let Some(app) = windows_recovery::absent(&self.paths, installed)? else {
+            return Ok(None);
+        };
+        #[cfg(windows)]
+        let registration = windows_nsis::missing(&app.path, app.id)?;
+        #[cfg(not(windows))]
+        let registration = windows_recovery::Registration::None;
+        Ok(Some((app, registration)))
+    }
+
+    fn refuse_missing_app_transition(&self) -> Result<()> {
+        self.preflight_uninstall()
+    }
+
+    /// Read-only check shared by the terminal confirmation and destructive actions.
+    pub fn preflight_uninstall(&self) -> Result<()> {
+        if self.target.is_windows()
+            && self
+                .missing_windows_app(&self.detect()?)?
+                .is_some_and(|(_, class)| class == windows_recovery::Registration::ExactStale)
+        {
+            return fail(windows_recovery::REPAIR_FIRST);
+        }
+        Ok(())
     }
 
     pub fn change(
@@ -313,6 +374,7 @@ impl Installer {
         confirm: &mut dyn FnMut(&str) -> bool,
         progress: &mut ProgressCallback<'_>,
     ) -> Result<InstallResult> {
+        self.refuse_missing_app_transition()?;
         if from == to {
             return self.apply(to, track, progress);
         }
@@ -360,13 +422,18 @@ impl Installer {
     }
 
     pub fn uninstall(&self, remove_data: bool, progress: &mut ProgressCallback<'_>) -> Result<()> {
+        self.preflight_uninstall()?;
         let _install_lock = self.lock_installation(progress)?;
+        self.preflight_uninstall()?;
         if remove_data {
             self.validate_data_removal()?;
         }
         self.preflight_home_removal()?;
         self.preflight_service_removal()?;
         let installed = self.detect()?;
+        let unowned_missing_entry = self
+            .missing_windows_app(&installed)?
+            .is_some_and(|(_, class)| class == windows_recovery::Registration::Other);
         self.check_removable(&installed.apps.iter().collect::<Vec<_>>())?;
         // A killed install can leave the previous app in staging, where it
         // would still set the version floor for a fresh install.
@@ -425,6 +492,9 @@ impl Installer {
             } else {
                 self.remove_owned_path(&wrapper)?;
             }
+        }
+        if unowned_missing_entry {
+            progress(Progress::new("warning", windows_recovery::ENTRY_REMAINS));
         }
         self.remove_owned_path(&self.paths.receipt())?;
         if remove_data {
@@ -498,6 +568,9 @@ impl Installer {
         progress: &mut ProgressCallback<'_>,
     ) -> Result<(InstallResult, fs::File)> {
         self.paths.validate()?;
+        if recovery.is_none() {
+            self.refuse_missing_app_transition()?;
+        }
         manifest.validate(&version())?;
         validate_artifacts(&self.base_url, manifest)?;
         self.refuse_downgrade(manifest)?;
@@ -518,6 +591,9 @@ impl Installer {
         // Downloads can overlap. Replacement and receipt publication cannot.
         // Return the lock so apply/change retain it until the receipt is written.
         let install_lock = self.lock_installation(progress)?;
+        if recovery.is_none() {
+            self.refuse_missing_app_transition()?;
+        }
         if removing_service {
             self.preflight_service_removal()?;
         }
@@ -871,7 +947,23 @@ impl Installer {
         }
         self.require_quit(&destination)?;
         #[cfg(windows)]
-        self.check_windows_registration(&destination, id, None)?;
+        if let Some(expected) = recovery.and_then(|r| r.absent) {
+            // Only Repair carries this exception. The leaf must still be absent,
+            // and only the unchanged exact HKCU binding can survive without EXE.
+            self.validate_windows_destination(&destination, id)?;
+            match fs::symlink_metadata(&destination) {
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error.into()),
+                Ok(_) => {
+                    return fail("The missing app changed during repair. Run the installer again.");
+                }
+            }
+            if windows_nsis::missing(&destination, id)? != expected {
+                return fail("The missing app changed during repair. Run the installer again.");
+            }
+        } else {
+            self.check_windows_registration(&destination, id, None)?;
+        }
         let temp = tempfile::tempdir()?;
         let installer = temp.path().join("Hexbot-setup.exe");
         fs::copy(download, &installer)?;
@@ -882,6 +974,7 @@ impl Installer {
         #[cfg(windows)]
         {
             use std::os::windows::process::CommandExt;
+            windows_nsis_process::check(&self.paths, &destination, id, &installer)?;
             // NSIS requires /D last, without quotes even when it contains spaces.
             let mut command = self.paths.command(&installer);
             command
@@ -1050,6 +1143,11 @@ impl Installer {
             #[cfg(windows)]
             if self.target.is_windows() {
                 self.check_windows_registration(&app.path, &app.app_id, None)?;
+                let uninstaller = app.path.join(
+                    windows_nsis::uninstaller_filename(&app.app_id)
+                        .ok_or("Unknown NSIS identity")?,
+                );
+                windows_nsis_process::check(&self.paths, &app.path, &app.app_id, &uninstaller)?;
             }
         }
         if apps.iter().any(|a| a.managed_by_dpkg) {
@@ -1095,6 +1193,7 @@ impl Installer {
                 }
                 self.check_windows_registration(&app.path, &app.app_id, Some(&uninstallers[0]))?;
                 let protocol = windows_protocol::binding(&app.path, &app.app_id);
+                windows_nsis_process::check(&self.paths, &app.path, &app.app_id, &uninstallers[0])?;
                 let mut command = self.paths.command(&uninstallers[0]);
                 command
                     .arg("/S")
@@ -1125,12 +1224,7 @@ impl Installer {
     }
 
     #[cfg(windows)]
-    fn check_windows_registration(
-        &self,
-        destination: &Path,
-        id: &str,
-        uninstaller: Option<&Path>,
-    ) -> Result<bool> {
+    fn validate_windows_destination(&self, destination: &Path, id: &str) -> Result<()> {
         let root = self.paths.planned_apps_dir(self.target)?;
         if destination != root.join(id)
             || destination.parent().map(Path::canonicalize).transpose()?
@@ -1138,6 +1232,21 @@ impl Installer {
         {
             return fail("The Windows app is outside its exact managed identity directory.");
         }
+        let meta = fs::symlink_metadata(root)?;
+        if !detect::ordinary(&meta) || !meta.is_dir() {
+            return fail("The Windows apps root is not an ordinary directory.");
+        }
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    fn check_windows_registration(
+        &self,
+        destination: &Path,
+        id: &str,
+        uninstaller: Option<&Path>,
+    ) -> Result<bool> {
+        self.validate_windows_destination(destination, id)?;
         match fs::symlink_metadata(destination) {
             Ok(metadata) if !detect::ordinary(&metadata) || !metadata.is_dir() => {
                 return fail("The Windows app directory is not an ordinary directory.");

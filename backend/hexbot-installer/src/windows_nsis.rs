@@ -21,7 +21,7 @@ pub(crate) const IDENTITIES: [(&str, &str); 4] = [
 fn invalid() -> io::Error {
     io::Error::other("Windows app registration is incomplete or belongs to another installation.")
 }
-fn uninstaller_filename(id: &str) -> Option<&'static str> {
+pub(crate) fn uninstaller_filename(id: &str) -> Option<&'static str> {
     IDENTITIES.iter().any(|(known, _)| *known == id).then_some(
         if id.starts_with("app.hexbot.client") {
             "Uninstall HexbotClient.exe"
@@ -63,6 +63,22 @@ pub(crate) fn check(
     id: &str,
     uninstaller: Option<&std::path::Path>,
 ) -> io::Result<bool> {
+    let raw = read(id)?;
+    let entries: Vec<Registration> = serde_json::from_value(raw.clone()).map_err(|_| invalid())?;
+    let registered = entries
+        .first()
+        .is_some_and(|entry| entry.install && entry.uninstall);
+    if let Err(error) = check_entries(destination, id, uninstaller, entries) {
+        eprintln!(
+            "NSIS registry binding refused: {}",
+            registration_diagnostic(destination, id, uninstaller, &raw)
+        );
+        return Err(error);
+    }
+    Ok(registered)
+}
+#[cfg(windows)]
+fn read(id: &str) -> io::Result<serde_json::Value> {
     use std::{os::windows::process::CommandExt, process::Command};
     let guid = IDENTITIES
         .iter()
@@ -93,20 +109,71 @@ pub(crate) fn check(
         );
         return Err(invalid());
     }
-    let raw: serde_json::Value = serde_json::from_slice(&output.stdout).map_err(|_| invalid())?;
-    let entries: Vec<Registration> = serde_json::from_value(raw.clone()).map_err(|_| invalid())?;
-    let registered = entries
-        .first()
-        .is_some_and(|entry| entry.install && entry.uninstall);
-    if let Err(error) = check_entries(destination, id, uninstaller, entries) {
-        eprintln!(
-            "NSIS registry binding refused: {}",
-            registration_diagnostic(destination, id, uninstaller, &raw)
-        );
-        return Err(error);
-    }
-    Ok(registered)
+    serde_json::from_slice(&output.stdout).map_err(|_| invalid())
 }
+
+#[cfg(windows)]
+pub(crate) fn missing(
+    destination: &Path,
+    id: &str,
+) -> io::Result<crate::windows_recovery::Registration> {
+    Ok(classify_missing(destination, id, &read(id)?))
+}
+
+fn classify_missing(
+    destination: &Path,
+    id: &str,
+    raw: &serde_json::Value,
+) -> crate::windows_recovery::Registration {
+    use crate::windows_recovery::{Registration as Class, drive_path};
+    let Some(entries) = raw.as_array().filter(|entries| entries.len() == 2) else {
+        return Class::Other;
+    };
+    if entries[0]["scope"] != "CurrentUser"
+        || entries[1]["scope"] != "LocalMachine"
+        || entries.iter().any(|entry| entry["view"] != "Registry64")
+    {
+        return Class::Other;
+    }
+    let empty = |entry: &serde_json::Value| {
+        entry["install"] == false
+            && entry["uninstall"] == false
+            && entry["location"].is_null()
+            && entry["command"].is_null()
+            && entry["locationType"].is_null()
+            && entry["commandType"].is_null()
+    };
+    if !empty(&entries[1]) {
+        return Class::Other;
+    }
+    let user = &entries[0];
+    if empty(user) {
+        return Class::None;
+    }
+    let Some(destination) = destination.to_str().and_then(drive_path) else {
+        return Class::Other;
+    };
+    let Some(filename) = uninstaller_filename(id) else {
+        return Class::Other;
+    };
+    let bound = user["install"] == true
+        && user["uninstall"] == true
+        && user["locationType"] == "String"
+        && user["commandType"] == "String"
+        && user["location"].as_str().and_then(drive_path).as_ref() == Some(&destination)
+        && user["command"]
+            .as_str()
+            .filter(|s| s.len() <= 8192 && !s.chars().any(char::is_control))
+            .and_then(|command| command_file(id, command).ok())
+            .and_then(drive_path)
+            == Some(format!("{destination}\\{}", filename.to_ascii_lowercase()));
+    if bound {
+        Class::ExactStale
+    } else {
+        Class::Other
+    }
+}
+
 #[cfg(any(windows, test))]
 fn registration_diagnostic(
     destination: &Path,
@@ -219,6 +286,72 @@ fn same_path(first: &Path, second: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn absent_registration_exception_is_exact_hkcu_only_and_never_resolves_strings() {
+        use crate::windows_recovery::Registration as Class;
+        use serde_json::json;
+        let empty = json!({"scope":"LocalMachine","view":"Registry64","install":false,"uninstall":false,"location":null,"command":null,"locationType":null,"commandType":null});
+        let mut empty_user = empty.clone();
+        empty_user["scope"] = json!("CurrentUser");
+        for (id, _) in IDENTITIES {
+            let destination = format!(r"C:\José apps\{id}");
+            let file = uninstaller_filename(id).unwrap();
+            let user = json!({"scope":"CurrentUser","view":"Registry64","install":true,"uninstall":true,"location":format!("{destination}/"),
+                "command":format!("\"{destination}\\{file}\" /currentuser"),"locationType":"String","commandType":"String"});
+            assert_eq!(
+                classify_missing(Path::new(&destination), id, &json!([empty_user, empty])),
+                Class::None
+            );
+            assert_eq!(
+                classify_missing(Path::new(&destination), id, &json!([user, empty])),
+                Class::ExactStale
+            );
+            assert_eq!(
+                classify_missing(Path::new(&destination), id, &json!([user, user])),
+                Class::Other
+            );
+            for (field, value) in [
+                ("install", json!(false)),
+                ("uninstall", json!(false)),
+                ("location", json!(null)),
+                ("command", json!(null)),
+                ("locationType", json!("ExpandString")),
+                ("commandType", json!("ExpandString")),
+                ("location", json!(format!("{destination}.nightly"))),
+                ("location", json!(r"\\server\share")),
+                ("location", json!(r"\\?\C:\José apps")),
+                (
+                    "command",
+                    json!(format!("{destination}\\{file} /currentuser")),
+                ),
+                (
+                    "command",
+                    json!(format!("\"{destination}\\{file}\" /allusers")),
+                ),
+                (
+                    "command",
+                    json!(format!("\"{destination}\\{file}\" /currentuser /S")),
+                ),
+                (
+                    "command",
+                    json!(format!("\"{destination}\\unrecognized.exe\" /currentuser")),
+                ),
+            ] {
+                let mut changed = user.clone();
+                changed[field] = value;
+                assert_eq!(
+                    classify_missing(Path::new(&destination), id, &json!([changed, empty])),
+                    Class::Other,
+                    "{id} {field}"
+                );
+            }
+        }
+        assert_eq!(
+            classify_missing(Path::new(r"C:\app"), "org.foreign", &json!([])),
+            Class::Other
+        );
+    }
+
     #[test]
     fn binding_diagnostics_are_bounded_to_known_fields_and_escape_control_text() {
         let raw = serde_json::json!([{"scope":"CurrentUser","view":"Registry64","install":true,"uninstall":true,"location":"x".repeat(4096),"command":"\"C:\\Uninstall HexbotClient.exe\" /currentuser\nextra","locationType":"String","commandType":"String","unrelated":"not collected"}]);

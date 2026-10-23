@@ -1103,3 +1103,224 @@ fn no_load_owned_script_is_recoverable_without_claiming_scheduler_installation()
     );
     assert_eq!(installed.option(), Some(InstallOption::Headless));
 }
+
+#[test]
+fn missing_directory_repair_keeps_the_exact_receipt_identity_and_track() {
+    for option in [InstallOption::Full, InstallOption::Client] {
+        for track in [Track::Stable, Track::Nightly] {
+            let root = tempfile::tempdir().unwrap();
+            let mut installer = engine(root.path());
+            let id = format!(
+                "app.hexbot.{}{}",
+                if option == InstallOption::Full {
+                    "desktop"
+                } else {
+                    "client"
+                },
+                if track == Track::Nightly {
+                    ".nightly"
+                } else {
+                    ""
+                }
+            );
+            let path = installer.paths.apps_override.as_ref().unwrap().join(id);
+            fs::create_dir_all(&installer.paths.hexbot_home).unwrap();
+            let receipt = Receipt {
+                option,
+                channel: track,
+                version: if track == Track::Nightly {
+                    "1.2.3-nightly.1"
+                } else {
+                    "1.2.3"
+                }
+                .into(),
+                paths: vec![path],
+                installed_at: "fixture".into(),
+            };
+            let bytes = serde_json::to_vec(&receipt).unwrap();
+            fs::write(installer.paths.receipt(), &bytes).unwrap();
+            let server = Server::new(|_| BTreeMap::new());
+            installer.base_url = server.base.clone();
+            assert_eq!(installer.detect().unwrap().track(), Some(track));
+            let error = installer.repair(&mut |_| {}).unwrap_err();
+            assert!(error.to_string().contains("404"), "{error}");
+            assert_eq!(
+                *server.requests.lock().unwrap(),
+                vec![format!("/install/{track}.json")]
+            );
+            assert_eq!(fs::read(installer.paths.receipt()).unwrap(), bytes);
+            assert!(!installer.paths.apps_override.as_ref().unwrap().exists());
+        }
+    }
+}
+
+#[test]
+fn absent_receipt_never_claims_existing_foreign_paths_or_a_swapped_download_destination() {
+    use base64::{Engine, engine::general_purpose::STANDARD};
+    use sha2::{Digest, Sha512};
+    for case in [
+        "directory",
+        "file",
+        "wrong-path",
+        "wrong-version-track",
+        "extra-path",
+        "during-download",
+    ] {
+        let root = tempfile::tempdir().unwrap();
+        let mut installer = engine(root.path());
+        let app = installer
+            .paths
+            .apps_override
+            .as_ref()
+            .unwrap()
+            .join("app.hexbot.client.nightly");
+        let receipt = Receipt {
+            option: InstallOption::Client,
+            channel: Track::Nightly,
+            version: "1.2.3-nightly.1".into(),
+            paths: vec![app.clone()],
+            installed_at: "fixture".into(),
+        };
+        let mut receipt = serde_json::to_value(receipt).unwrap();
+        fs::create_dir_all(&installer.paths.hexbot_home).unwrap();
+        match case {
+            "directory" => {
+                fs::create_dir_all(&app).unwrap();
+                fs::write(app.join("foreign"), "retain").unwrap();
+            }
+            "file" => {
+                fs::create_dir_all(app.parent().unwrap()).unwrap();
+                fs::write(&app, "retain").unwrap();
+            }
+            "wrong-path" => receipt["paths"] = json!([root.path().join("foreign")]),
+            "wrong-version-track" => receipt["version"] = json!("1.2.3"),
+            "extra-path" => receipt["paths"] = json!([app, root.path().join("other")]),
+            _ => {}
+        }
+        let receipt_bytes = serde_json::to_vec(&receipt).unwrap();
+        fs::write(installer.paths.receipt(), &receipt_bytes).unwrap();
+        let changed = app.clone();
+        let server = Server::with_request(
+            |base| {
+                let bytes = b"never executed".to_vec();
+                let manifest=serde_json::to_vec(&json!({"schema":1,"channel":"nightly","version":"1.2.3-nightly.1","minInstaller":"0.0.1","targets":{"windows-x86_64":{"client":{"url":format!("{base}/client.exe"),"size":bytes.len(),"sha512":STANDARD.encode(Sha512::digest(&bytes)),"format":"exe","appId":"app.hexbot.client.nightly","productName":"Hexbot Client Nightly"}}}})).unwrap();
+                BTreeMap::from([
+                    ("/install/nightly.json".into(), manifest.clone()),
+                    (
+                        "/install/1.2.3-nightly.1/nightly.json.sig".into(),
+                        hexbot_installer::update_signature::test_signature(&manifest).into_bytes(),
+                    ),
+                    ("/client.exe".into(), bytes),
+                ])
+            },
+            move |path| {
+                if case == "during-download" && path == "/client.exe" {
+                    fs::create_dir_all(&changed).unwrap();
+                    fs::write(changed.join("foreign"), "inserted during download").unwrap();
+                }
+            },
+        );
+        installer.base_url = server.base.clone();
+        let mut stages = Vec::new();
+        assert!(installer.repair(&mut |p| stages.push(p.stage)).is_err());
+        assert!(
+            !stages
+                .iter()
+                .any(|s| matches!(s.as_str(), "install" | "done"))
+        );
+        assert_eq!(fs::read(installer.paths.receipt()).unwrap(), receipt_bytes);
+        if case == "during-download" {
+            assert!(
+                server
+                    .requests
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .any(|p| p == "/client.exe")
+            );
+            assert_eq!(
+                fs::read_to_string(app.join("foreign")).unwrap(),
+                "inserted during download"
+            );
+        } else {
+            assert!(server.requests.lock().unwrap().is_empty(), "{case}");
+        }
+    }
+}
+
+#[test]
+fn another_complete_identity_is_not_ambiguity_for_a_valid_absent_receipt() {
+    let root = tempfile::tempdir().unwrap();
+    let mut installer = engine(root.path());
+    let other = owned_app(&installer, "app.hexbot.desktop", "1.2.3");
+    fs::create_dir_all(&installer.paths.hexbot_home).unwrap();
+    let expected = installer
+        .paths
+        .apps_override
+        .as_ref()
+        .unwrap()
+        .join("app.hexbot.client.nightly");
+    let receipt = Receipt {
+        option: InstallOption::Client,
+        channel: Track::Nightly,
+        version: "1.2.3-nightly.1".into(),
+        paths: vec![expected],
+        installed_at: "fixture".into(),
+    };
+    fs::write(
+        installer.paths.receipt(),
+        serde_json::to_vec(&receipt).unwrap(),
+    )
+    .unwrap();
+    let server = Server::new(|_| BTreeMap::new());
+    installer.base_url = server.base.clone();
+    assert_eq!(installer.detect().unwrap().track(), Some(Track::Nightly));
+    assert!(
+        installer
+            .repair(&mut |_| {})
+            .unwrap_err()
+            .to_string()
+            .contains("404")
+    );
+    assert_eq!(*server.requests.lock().unwrap(), ["/install/nightly.json"]);
+    assert!(other.is_dir());
+}
+
+#[cfg(unix)]
+#[test]
+fn missing_receipt_repair_refuses_linked_root_and_leaf_without_network() {
+    for linked_root in [false, true] {
+        let root = tempfile::tempdir().unwrap();
+        let mut installer = engine(root.path());
+        let apps = installer.paths.apps_override.as_ref().unwrap();
+        let app = apps.join("app.hexbot.client.nightly");
+        let outside = root.path().join("unrelated");
+        fs::create_dir(&outside).unwrap();
+        fs::write(outside.join("retain"), "unchanged").unwrap();
+        if linked_root {
+            std::os::unix::fs::symlink(&outside, apps).unwrap();
+        } else {
+            fs::create_dir_all(apps).unwrap();
+            std::os::unix::fs::symlink(&outside, &app).unwrap();
+        }
+        fs::create_dir_all(&installer.paths.hexbot_home).unwrap();
+        let receipt = serde_json::to_vec(&Receipt {
+            option: InstallOption::Client,
+            channel: Track::Nightly,
+            version: "1.2.3-nightly.1".into(),
+            paths: vec![app],
+            installed_at: "fixture".into(),
+        })
+        .unwrap();
+        fs::write(installer.paths.receipt(), &receipt).unwrap();
+        let server = Server::new(|_| BTreeMap::new());
+        installer.base_url = server.base.clone();
+        assert!(installer.repair(&mut |_| {}).is_err());
+        assert!(server.requests.lock().unwrap().is_empty());
+        assert_eq!(fs::read(installer.paths.receipt()).unwrap(), receipt);
+        assert_eq!(
+            fs::read_to_string(outside.join("retain")).unwrap(),
+            "unchanged"
+        );
+    }
+}

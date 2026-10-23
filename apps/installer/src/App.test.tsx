@@ -598,3 +598,20 @@ it.each([['full', 'stable'], ['full', 'nightly'], ['client', 'stable'], ['client
     cleanup()
   }
 })
+
+it('keeps a Windows registration warning visible after removing outer state', async () => {
+  const message = 'The app folder was already missing. Its Windows entry was not removed because its ownership could not be verified.'
+
+  const api = fakeApi(installedFull, {
+    uninstall: vi.fn(async (_removeData: boolean, progress: OnProgress) => {
+      progress({ stage: 'warning', message })
+    })
+  })
+
+  render(<App api={api} />)
+  await screen.findByText('Hexbot Full is installed')
+  click(/^Uninstall/)
+  click('Uninstall')
+  await screen.findByText('Hexbot is uninstalled')
+  expect(screen.getByRole('note')).toHaveTextContent(message)
+})

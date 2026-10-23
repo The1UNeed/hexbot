@@ -6,6 +6,8 @@ use serde_json::json;
 use sha2::{Digest, Sha512};
 #[path = "support/asar_damage.rs"]
 mod asar_damage;
+#[path = "support/nsis_process.rs"]
+mod nsis_process;
 #[path = "support/nsis_registration.rs"]
 mod nsis_registration;
 #[path = "support/protocol_registration.rs"]
@@ -18,7 +20,7 @@ use std::{
     net::{TcpListener, TcpStream},
     sync::{
         Arc,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     thread,
 };
@@ -199,6 +201,8 @@ fn real_nsis_install_repair_and_uninstall() {
     }
     let manifest = serde_json::to_vec(&json!({"schema":1,"channel":track,"version":package_version,"minInstaller":"0.1.5-0","targets":{"windows-x86_64":artifacts}})).unwrap();
     let signature = hexbot_installer::update_signature::test_signature(&manifest).into_bytes();
+    let request_count = Arc::new(AtomicUsize::new(0));
+    let served_count = request_count.clone();
     let stopped = Arc::new(AtomicBool::new(false));
     let stop = stopped.clone();
     let served_version = package_version.clone();
@@ -212,6 +216,7 @@ fn real_nsis_install_repair_and_uninstall() {
             let count = stream.read(&mut request).unwrap();
             let request = String::from_utf8_lossy(&request[..count]);
             let path = request.split_whitespace().nth(1).unwrap();
+            served_count.fetch_add(1, Ordering::SeqCst);
             let body = if path == "/app.exe" {
                 Some(&bytes)
             } else if path == "/client.exe" {
@@ -657,6 +662,294 @@ fn real_nsis_install_repair_and_uninstall() {
             Some(package_version.as_str())
         );
     }
+    // The exact NSIS prefix predicate also covers a Nightly/sibling directory
+    // which require_quit's proper-descendant check does not consider this app.
+    let holder_dir = app.with_file_name(format!("{id}.prefix-holder"));
+    fs::create_dir(&holder_dir).unwrap();
+    let holder_node = holder_dir.join("node.exe");
+    fs::copy(&node, &holder_node).unwrap();
+    let mut holder_command = std::process::Command::new(&holder_node);
+    holder_command.args(["-e", "console.log('ready');process.stdin.resume()"]);
+    let holder = nsis_process::OwnedChild::start(holder_command, "ready");
+    let holder_before = holder.snapshot();
+    let installed_before = app_snapshot(&app);
+    let receipt_before = fs::read(installer.paths.receipt()).unwrap();
+    let keys_before = registration.snapshot();
+    let option_arg = if client { "--client" } else { "--full" };
+    let track_arg = if track == Track::Nightly {
+        "--nightly"
+    } else {
+        "--stable"
+    };
+    for args in [
+        vec!["--repair", "--json"],
+        vec![option_arg, track_arg, "--yes", "--json"],
+        vec!["--uninstall", "--yes", "--json"],
+        vec!["--headless", track_arg, "--yes", "--json"],
+    ] {
+        let refused = nsis_process::terminal(&installer, &args, Some("RemoteSigned"));
+        assert_eq!(refused.status.code(), Some(1));
+        let text = String::from_utf8_lossy(&refused.stdout);
+        assert!(text.contains("path overlaps"), "{text}");
+        assert!(!text.lines().any(|line| {
+            serde_json::from_str::<serde_json::Value>(line).is_ok_and(|p| p["stage"] == "done")
+        }));
+        assert_eq!(app_snapshot(&app), installed_before);
+        assert_eq!(fs::read(installer.paths.receipt()).unwrap(), receipt_before);
+        assert_eq!(registration.snapshot(), keys_before);
+        assert_eq!(holder.snapshot(), holder_before);
+    }
+    holder.stop(false);
+    fs::remove_dir_all(holder_dir).unwrap();
+
+    // A same-name native daemon OUTSIDE the prefix is safe only in NSIS's CIM
+    // branch. Full uses the actual packaged daemon; Client exercises its own
+    // edition image predicate with an owned literal-argv Node control.
+    let external = root.path().join("independent live process");
+    fs::create_dir(&external).unwrap();
+    let mut external_command;
+    if client {
+        let image = external.join("HexbotClient.exe");
+        fs::copy(&node, &image).unwrap();
+        external_command = std::process::Command::new(image);
+        external_command.args(["-e", "console.log('ready');process.stdin.resume()"]);
+    } else {
+        let bundle = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../apps/desktop/resources/hexbot-native");
+        assert_eq!(
+            Sha512::digest(fs::read(bundle.join("hexbot.exe")).unwrap()),
+            Sha512::digest(fs::read(app.join("resources/hexbot-native/hexbot.exe")).unwrap())
+        );
+        external_command = std::process::Command::new(bundle.join("hexbot.exe"));
+        external_command
+            .args(["serve", "--host", "127.0.0.1", "--port", "0"])
+            .env("HEXBOT_HOME", external.join("state"))
+            .env("HOME", &external)
+            .env("USERPROFILE", &external)
+            .env("HEXBOT_PI_EXECUTABLE", bundle.join("node.exe"))
+            .env("HEXBOT_SUPERVISOR", "desktop")
+            .env("HEXBOT_DESKTOP_CONTROL", "stdin-v1");
+    }
+    let external = nsis_process::OwnedChild::start(
+        external_command,
+        if client {
+            "ready"
+        } else {
+            "HERMES_BACKEND_READY"
+        },
+    );
+    let external_before = external.snapshot();
+    let available =
+        nsis_process::terminal(&installer, &["--repair", "--json"], Some("RemoteSigned"));
+    assert!(
+        available.status.success(),
+        "Available-policy external process must not be a name-only refusal"
+    );
+    assert_eq!(
+        external.snapshot(),
+        external_before,
+        "NSIS changed the independent process identity/lifetime"
+    );
+    let app_before = app_snapshot(&app);
+    let receipt_before = fs::read(installer.paths.receipt()).unwrap();
+    let keys_before = registration.snapshot();
+    for args in [
+        vec!["--repair", "--json"],
+        vec![option_arg, track_arg, "--yes", "--json"],
+        vec!["--uninstall", "--yes", "--json"],
+        vec!["--headless", track_arg, "--yes", "--json"],
+    ] {
+        let refused = nsis_process::terminal(&installer, &args, Some("Restricted"));
+        assert_eq!(refused.status.code(), Some(1));
+        assert!(String::from_utf8_lossy(&refused.stdout).contains("NSIS fallback cannot safely"));
+        assert_eq!(external.snapshot(), external_before);
+        assert_eq!(app_snapshot(&app), app_before);
+        assert_eq!(fs::read(installer.paths.receipt()).unwrap(), receipt_before);
+        assert_eq!(registration.snapshot(), keys_before);
+    }
+    external.stop(!client);
+
+    // Entire-folder loss preserves one receipt/GUID recovery identity. Every
+    // other destructive route must refuse before confirmation or network.
+    let receipt_before = fs::read(installer.paths.receipt()).unwrap();
+    let keys_before = registration.snapshot();
+    fs::remove_dir_all(&app).unwrap();
+    assert_eq!(installer.detect().unwrap().track(), Some(track));
+    let calls_before = request_count.load(Ordering::SeqCst);
+    for action in ["apply-same", "apply-other", "change", "uninstall"] {
+        let mut stages = Vec::new();
+        let mut confirmed = false;
+        let mut progress = |p: hexbot_installer::Progress| stages.push(p.stage);
+        let result = match action {
+            "apply-same" => installer.apply(option, track, &mut progress).map(|_| ()),
+            "apply-other" => installer
+                .apply(InstallOption::Headless, track, &mut progress)
+                .map(|_| ()),
+            "change" => installer
+                .change(
+                    option,
+                    if client {
+                        InstallOption::Full
+                    } else {
+                        InstallOption::Client
+                    },
+                    track,
+                    &mut |_| {
+                        confirmed = true;
+                        true
+                    },
+                    &mut progress,
+                )
+                .map(|_| ()),
+            _ => installer.uninstall(false, &mut progress),
+        };
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("Repair the app before"),
+            "{action}"
+        );
+        assert!(!confirmed);
+        assert!(
+            !stages
+                .iter()
+                .any(|stage| matches!(stage.as_str(), "download" | "install" | "remove" | "done"))
+        );
+        assert_eq!(registration.snapshot(), keys_before);
+        assert_eq!(fs::read(installer.paths.receipt()).unwrap(), receipt_before);
+        assert_eq!(protocol.snapshot(), protocol_before);
+        assert!(!app.exists());
+    }
+    assert_eq!(
+        request_count.load(Ordering::SeqCst),
+        calls_before,
+        "Stale-entry refusal contacted the server"
+    );
+    // Changing either absent registration class after download must not be
+    // accepted as an unchanged Repair snapshot under the install lock.
+    for original in ["none", "exact"] {
+        if original == "none" {
+            registration.clear_owned_fixture();
+        } else {
+            registration.restore(&keys_before);
+        }
+        let mut stages = Vec::new();
+        let result = installer.repair(&mut |p| {
+            if p.stage == "verify" {
+                if original == "none" {
+                    registration.restore(&keys_before);
+                } else {
+                    registration.clear_owned_fixture();
+                }
+            }
+            stages.push(p.stage);
+        });
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("changed during repair")
+        );
+        assert!(
+            !stages
+                .iter()
+                .any(|stage| matches!(stage.as_str(), "install" | "done"))
+        );
+        assert_eq!(fs::read(installer.paths.receipt()).unwrap(), receipt_before);
+        assert!(!app.exists());
+    }
+    registration.restore(&keys_before);
+    // Terminal --repair uses its receipt track, without explicit option/channel.
+    let repaired = nsis_process::terminal(&installer, &["--repair", "--json"], None);
+    assert!(repaired.status.success());
+    let repaired_receipt = hexbot_installer::read_receipt(&installer.paths.receipt())
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        (
+            repaired_receipt.option,
+            repaired_receipt.channel,
+            repaired_receipt.paths
+        ),
+        (option, track, vec![app.clone()])
+    );
+    assert!(
+        app.join(exe).is_file()
+            && app.join("resources/app.asar").is_file()
+            && app.join(".hexbot-app.json").is_file()
+            && uninstaller.is_file()
+    );
+    assert_eq!(registration.snapshot(), keys_before);
+    installer.repair(&mut |_| {}).unwrap();
+    eprintln!(
+        "Real {id} missing-directory terminal Repair restored the same identity and registry; second engine/GUI-shared Repair passed"
+    );
+
+    // Nonrecoverable foreign/partial/HKLM entries never authorize NSIS. Only
+    // outer state may be removed, with a warning; every registry value remains.
+    let receipt_before = fs::read(installer.paths.receipt()).unwrap();
+    fs::remove_dir_all(&app).unwrap();
+    for kind in ["foreign", "partial", "hklm"] {
+        registration.restore(&keys_before);
+        fs::write(installer.paths.receipt(), &receipt_before).unwrap();
+        match kind {
+            "foreign" => registration.edit(
+                "CurrentUser",
+                &other_directory,
+                &format!(
+                    "\"{}\" /currentuser",
+                    other_directory
+                        .join(if client {
+                            "Uninstall HexbotClient.exe"
+                        } else {
+                            "Uninstall Hexbot.exe"
+                        })
+                        .display()
+                ),
+            ),
+            "partial" => registration.remove_owned_location(),
+            _ => registration.edit(
+                "LocalMachine",
+                &app,
+                &format!("\"{}\" /currentuser", uninstaller.display()),
+            ),
+        }
+        let keys = registration.snapshot();
+        assert!(installer.repair(&mut |_| {}).is_err());
+        let mut warnings = Vec::new();
+        installer
+            .uninstall(false, &mut |p| {
+                if p.stage == "warning" {
+                    warnings.push(p.message)
+                }
+            })
+            .unwrap();
+        assert!(
+            warnings
+                .iter()
+                .any(|m| m.contains("Windows entry was not removed")),
+            "{kind}"
+        );
+        assert_eq!(registration.snapshot(), keys);
+        assert!(!installer.paths.receipt().exists());
+    }
+    registration.restore(&keys_before);
+    fs::write(installer.paths.receipt(), receipt_before).unwrap();
+    assert!(
+        nsis_process::terminal(&installer, &["--repair", "--json"], None)
+            .status
+            .success()
+    );
+
+    // Without any registry entry, absent outer state can be uninstalled normally.
+    fs::remove_dir_all(&app).unwrap();
+    registration.clear_owned_fixture();
+    installer.uninstall(false, &mut |_| {}).unwrap();
+    registration.assert_absent();
+    assert!(!installer.paths.receipt().exists());
+    installer.apply(option, track, &mut |_| {}).unwrap();
+
     // Simulate interruption after NSIS succeeded but before the outer receipt
     // commit. Ownership is already in the signed NSIS payload, so discovery,
     // reinstall and uninstall remain available without trusting arbitrary exes.

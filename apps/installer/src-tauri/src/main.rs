@@ -467,6 +467,82 @@ mod tests {
     use super::*;
 
     #[test]
+    fn gui_absent_directory_repair_uses_the_validated_receipt_track_for_all_release_ids() {
+        use std::{
+            fs,
+            io::{BufRead, BufReader, Write},
+            net::TcpListener,
+        };
+        for option in [InstallOption::Full, InstallOption::Client] {
+            for track in [Track::Stable, Track::Nightly] {
+                let root = tempfile::tempdir().unwrap();
+                let paths = Paths {
+                    home: root.path().join("user"),
+                    hexbot_home: root.path().join("state"),
+                    apps_override: Some(root.path().join("apps")),
+                    opt_override: None,
+                    service_root: root.path().join("services"),
+                    service_no_load: true,
+                };
+                fs::create_dir_all(&paths.home).unwrap();
+                fs::create_dir_all(&paths.hexbot_home).unwrap();
+                let id = format!(
+                    "app.hexbot.{}{}",
+                    if option == InstallOption::Full {
+                        "desktop"
+                    } else {
+                        "client"
+                    },
+                    if track == Track::Nightly {
+                        ".nightly"
+                    } else {
+                        ""
+                    }
+                );
+                let receipt = hexbot_installer::Receipt {
+                    option,
+                    channel: track,
+                    version: if track == Track::Nightly {
+                        "1.2.3-nightly.1"
+                    } else {
+                        "1.2.3"
+                    }
+                    .into(),
+                    paths: vec![paths.apps_override.as_ref().unwrap().join(id)],
+                    installed_at: "fixture".into(),
+                };
+                let before = serde_json::to_vec(&receipt).unwrap();
+                fs::write(paths.receipt(), &before).unwrap();
+                let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+                let engine = Installer {
+                    paths,
+                    target: Target::WindowsX86_64,
+                    base_url: format!("http://{}", listener.local_addr().unwrap()),
+                };
+                let server = std::thread::spawn(move || {
+                    let (mut stream, _) = listener.accept().unwrap();
+                    let mut request = String::new();
+                    BufReader::new(&stream).read_line(&mut request).unwrap();
+                    stream.write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
+                    request
+                });
+                assert_eq!(engine.detect().unwrap().track(), Some(track));
+                assert!(
+                    repair_detected(&engine, &mut |_| {})
+                        .unwrap_err()
+                        .to_string()
+                        .contains("404")
+                );
+                assert_eq!(
+                    server.join().unwrap(),
+                    format!("GET /install/{track}.json HTTP/1.1\r\n")
+                );
+                assert_eq!(fs::read(engine.paths.receipt()).unwrap(), before);
+            }
+        }
+    }
+
+    #[test]
     fn gui_repair_uses_packaged_track_and_refuses_ambiguity() {
         use std::{
             fs,
