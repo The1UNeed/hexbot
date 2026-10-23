@@ -97,3 +97,11 @@ mod tests {
         assert!(home_idle(home.path()).is_err());
     }
 }
+
+#[cfg(windows)]
+#[path = "windows_task_stop.rs"]
+mod completion;
+#[cfg(windows)]
+pub fn stop(file: &Path, home: &Path) -> io::Result<()> {
+    completion::stop(file, home)
+}

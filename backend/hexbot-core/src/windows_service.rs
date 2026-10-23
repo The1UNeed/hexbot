@@ -139,42 +139,36 @@ pub async fn status(home: &Path) -> Result<Value> {
         json!({"installed":state != "missing","running":state == "4","recoverable":script_owned && state == "missing","scheduler_checked":std::env::var("HEXBOT_SERVICE_NO_LOAD").as_deref()!=Ok("1"),"file":file}),
     )
 }
-// /End acknowledges cancellation before the task job and daemon lock are gone.
-// A restart may launch only after both are stopped, or it races the home lock.
-async fn wait_stopped(home: &Path, file: &Path) -> Result<()> {
-    let mut interval = tokio::time::interval(std::time::Duration::from_millis(200));
-    let mut last = Value::Null;
-    let wait = async {
-        loop {
-            let state = task_control(home, file, "state").await?;
-            let available = crate::windows_task::home_idle(home)?;
-            last = json!({"taskState":state,"homeLockAvailable":available});
-            if !matches!(state.as_str(), "2" | "4") && available {
-                return Ok(());
+// The shared boundary retains scheduler engine/daemon handles through OS exit.
+async fn stop_task(home: &Path, file: &Path) -> Result<()> {
+    #[cfg(windows)]
+    {
+        let (home, file) = (home.to_owned(), file.to_owned());
+        tokio::task::spawn_blocking(move || crate::windows_task::stop(&file, &home))
+            .await
+            .map_err(|error| Error::new(5244, error.to_string()))??;
+        Ok(())
+    }
+    #[cfg(not(windows))]
+    {
+        task_control(home, file, "stop").await?;
+        tokio::time::timeout(std::time::Duration::from_secs(30), async {
+            let mut interval = tokio::time::interval(std::time::Duration::from_millis(200));
+            loop {
+                let state = task_control(home, file, "state").await?;
+                if !matches!(state.as_str(), "2" | "4") && crate::windows_task::home_idle(home)? {
+                    return Ok(());
+                }
+                interval.tick().await;
             }
-            interval.tick().await;
-        }
-    };
-    match tokio::time::timeout(std::time::Duration::from_secs(30), wait).await {
-        Ok(result) => result,
-        Err(_) => {
-            if std::env::var("HEXBOT_WINDOWS_SERVICE_PROBE").as_deref() == Ok("1") {
-                let diagnostic = tokio::time::timeout(
-                    std::time::Duration::from_secs(5),
-                    task_control(home, file, "diagnose"),
-                )
-                .await;
-                let diagnostic = format!("{diagnostic:?}")
-                    .chars()
-                    .take(32768)
-                    .collect::<String>();
-                eprintln!("Windows task stop timeout: last={last} diagnostic={diagnostic}");
-            }
-            Err(Error::new(
+        })
+        .await
+        .map_err(|_| {
+            Error::new(
                 5244,
                 "Windows task did not stop and release the daemon lock",
-            ))
-        }
+            )
+        })?
     }
 }
 fn idle_home(home: &Path) -> Result<fs::File> {
@@ -238,8 +232,7 @@ pub async fn run(home: &Path, args: &[String]) -> Result<()> {
             // setup/repair reports success. Validate and stop before replacing
             // any owned script/XML, then wait for the daemon's home lock too.
             if state != "missing" {
-                task_control(home, &file, "stop").await?;
-                wait_stopped(home, &file).await?;
+                stop_task(home, &file).await?;
             }
             home_lock = Some(idle_home(home)?);
         }
@@ -284,8 +277,7 @@ pub async fn run(home: &Path, args: &[String]) -> Result<()> {
         if !no_load {
             let (name, _) = task_name().await?;
             if matches!(action, "stop" | "restart" | "uninstall") {
-                task_control(home, &file, "stop").await?;
-                wait_stopped(home, &file).await?;
+                stop_task(home, &file).await?;
             }
             if action == "uninstall" {
                 task_control(home, &file, "delete").await?;

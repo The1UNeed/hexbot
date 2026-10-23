@@ -1305,7 +1305,15 @@ fn interrupted_task_install_uninstalls_owned_files_when_the_task_is_absent() {
             "Native per-launch logs {action}: process={}",
             process.snapshot()
         );
-        assert!(service(&home, "stop").status.success());
+        if action == "start" {
+            // The same shared boundary used by core commands and installer
+            // removal is also exercised directly, with the retained witness.
+            let stopped = windows_task::stop(&file, &home);
+            lifetime("after-shared-stop", &process);
+            assert!(stopped.is_ok(), "Shared Stop failed: {stopped:?}");
+        } else {
+            assert!(service(&home, "stop").status.success());
+        }
         assert!(!process.alive());
         assert_eq!(process.snapshot()["exitCode"], 0);
         assert!(windows_task::home_idle(&home).unwrap());
@@ -1332,7 +1340,7 @@ fn interrupted_task_install_uninstalls_owned_files_when_the_task_is_absent() {
     .unwrap();
     let installer =
         std::env::var_os("HEXBOT_WINDOWS_INSTALLER").expect("native installer engine executable");
-    let removed = Command::new(installer)
+    let removed = Command::new(&installer)
         .args(["--uninstall", "--yes", "--json"])
         .env("HEXBOT_HOME", &home)
         .env("HOME", root.path())
@@ -1356,6 +1364,59 @@ fn interrupted_task_install_uninstalls_owned_files_when_the_task_is_absent() {
         "{}",
         String::from_utf8_lossy(&missing.stderr)
     );
+    // Restore only this fixture's trusted runtime, then exercise the actual
+    // installer against a LIVE task rather than just the stopped damaged case.
+    fs::create_dir_all(native.join("pi")).unwrap();
+    fs::copy(env!("CARGO_BIN_EXE_hexbot"), native.join("hexbot.exe")).unwrap();
+    fs::copy(&node, native.join("node.exe")).unwrap();
+    fs::write(
+        native.join("pi/launch.mjs"),
+        format!("await import({});\n", json!(url.as_str())),
+    )
+    .unwrap();
+    fs::write(native.join("manifest.json"), "{}").unwrap();
+    fs::write(
+        home.join("runtime/native-current.json"),
+        json!({"executable":native.join("hexbot.exe")}).to_string(),
+    )
+    .unwrap();
+    let installed = service(&home, "install");
+    assert!(
+        installed.status.success(),
+        "Live installer control setup: {}",
+        bounded(&installed.stderr)
+    );
+    let live = ready(&[desktop_pid, previous, next_pid]);
+    expected_pid.set(live.pid);
+    assert!(live.alive());
+    assert!(!windows_task::home_idle(&home).unwrap());
+    let removed = Command::new(&installer)
+        .args(["--uninstall", "--yes", "--json"])
+        .env("HEXBOT_HOME", &home)
+        .env("HOME", root.path())
+        .env("USERPROFILE", root.path())
+        .env("HEXBOT_SERVICE_ROOT", root.path())
+        .env_remove("HEXBOT_SERVICE_NO_LOAD")
+        .output()
+        .unwrap();
+    eprintln!(
+        "Live task installer returned: status={} stdout={} stderr={} retainedKernel={} homeIdle={:?}",
+        removed.status,
+        bounded(&removed.stdout),
+        bounded(&removed.stderr),
+        live.snapshot(),
+        windows_task::home_idle(&home)
+    );
+    lifetime("after-live-installer-removal", &live);
+    assert!(removed.status.success());
+    assert!(
+        !live.alive(),
+        "Installer removal returned before daemon OS exit"
+    );
+    assert_eq!(live.snapshot()["exitCode"], 0);
+    assert!(windows_task::home_idle(&home).unwrap());
+    assert!(!file.exists());
+    assert!(!home.join("runtime/native").exists());
     drop(_task_cleanup); // Already-removed owned tasks are an idempotent cleanup.
 }
 

@@ -491,3 +491,24 @@ a compare-and-swap guarantee. There is no registry cleanup or identity migration
 in this recovery path. Settings can still install another track under Programs,
 outside this installer's discovery, as described above. Windows remains
 unsupported and publishing stays disabled.
+
+Windows task Stop now shares one completion boundary between the daemon CLI
+and installer removal. Before asking the verified scheduler to stop, it captures
+bounded running-instance engine IDs and retains handles only after System32
+PowerShell, owner SID and pre-query creation-time checks. Access denied or a new
+or uncertain live engine refuses. It does not need HTTP readiness, the selected
+new build, a running-record PID or readable lock bytes. After retained engines
+exit, two Toolhelp snapshots corroborate direct managed-runtime daemon children;
+their retained handles must also signal before scheduler/home-idle success.
+No witnessed process is terminated. Capture, scheduler calls and completion
+share the existing 30-second deadline. Definitively absent or already-exited
+engines cannot supply a new identity; concurrent scheduler replacement remains
+a race rather than authority to attach to an unrelated process.
+
+The native regression uses events to release a real file lock while its exact
+child handle remains unsignalled. The previous lock/state predicate would finish
+there; the retained-handle predicate must not. The original explicit CLI Stop
+assertions still require OS exit zero at API return, and the missing-log/task
+fixture also calls the shared boundary directly. These new native cases remain
+pending execution. The 6665 snapshot passed the pre-fix assertion, so the earlier
+f1f failure's cause remains inferred rather than proven by that run.

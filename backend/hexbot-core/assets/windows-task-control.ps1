@@ -42,6 +42,19 @@ try {
     }
     switch ($operation) {
         'state' { [int]$task.State }
+        'instances' {
+            $registered = $task.GetInstances(0)
+            if ($registered.Count -gt 16) { throw 'Too many Windows task instances' }
+            $engines = @(for ($index=1; $index -le $registered.Count; $index++) {
+                $instance = $registered.Item($index)
+                if ([int]$instance.State -eq 4) {
+                    $engine = [uint32]$instance.EnginePID
+                    if ($engine -eq 0) { throw 'Running Windows task has no engine identity' }
+                    $engine
+                }
+            })
+            ConvertTo-Json -InputObject @{state=[int]$task.State;engines=$engines} -Compress
+        }
         'stop' {
             # State is only a snapshot, particularly after definition updates.
             # Ask the verified scheduler object to stop all of its instances.
@@ -63,5 +76,6 @@ try {
     # access denied, must retain the owned script/XML for recovery.
     if ($exception.HResult -eq -2147024894) {
         if ($operation -eq 'state') { 'missing' }
+        elseif ($operation -eq 'instances') { '{"state":null,"engines":[]}' }
     } else { throw }
 }

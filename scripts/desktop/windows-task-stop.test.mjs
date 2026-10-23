@@ -45,6 +45,20 @@ foreach($failure in @(-2147216629,-2147024891)) {
   if($script:stops -ne 1 -or $refused -ne ($failure -eq -2147024891)){throw 'Wrong stop HRESULT policy'};$cases++
 }
 $script:stopFailure=0
+$script:fixtureTask|Add-Member ScriptMethod GetInstances {param($flags) if($flags -ne 0){throw 'Invalid instance flags'};$script:collection}
+$operation='instances'
+foreach($kind in @('empty','running','zero','overflow')) {
+  $script:fixtureTask.State=$(if($kind -eq 'empty'){3}else{4})
+  $script:collection=[pscustomobject]@{Count=$(switch($kind){'empty'{0};'overflow'{17};default{2}})}
+  $script:collection|Add-Member ScriptMethod Item {param($index) [pscustomobject]@{State=4;EnginePID=$(if($script:zero){0}else{100+$index})}}
+  $script:zero=$kind -eq 'zero';$script:stops=0;$refused=$false;$result=$null
+  try {$result=(& $control)|ConvertFrom-Json} catch {$refused=$true}
+  if($script:stops -ne 0 -or $refused -ne ($kind -in @('zero','overflow'))){throw 'Wrong readonly instance policy'}
+  if($kind -eq 'empty' -and @($result.engines).Count -ne 0){throw 'Empty task gained engine identities'}
+  if($kind -eq 'running' -and (@($result.engines).Count -ne 2 -or $result.engines[0] -ne 101 -or $result.engines[1] -ne 102)){throw 'Wrong running engine identities'}
+  $cases++
+}
+$operation='stop'
 foreach($foreign in @('principal','program','arguments','home','count')) {
   $definition.Principal.UserId=$expectedSid;$action.Path=$expectedPowerShell;$action.Arguments=$expectedArguments;$definition.RegistrationInfo.Description=$expectedOwner;$actions.Count=1
   switch($foreign){'principal'{$definition.Principal.UserId='S-1-foreign'} 'program'{$action.Path='C:\\foreign.exe'} 'arguments'{$action.Arguments='foreign'} 'home'{$definition.RegistrationInfo.Description='foreign'} 'count'{$actions.Count=2}}
@@ -56,7 +70,7 @@ if($script:stops -ne 0){throw 'Missing task stop mutated state'};$cases++
 @{cases=$cases;passed=$cases}|ConvertTo-Json -Compress
 `
   const output = await promisify(execFile)(executable, ['-NoProfile', '-NonInteractive', '-Command', script], { timeout: 30_000, windowsHide: true })
-  assert.deepEqual(JSON.parse(output.stdout), { cases: 13, passed: 13 })
+  assert.deepEqual(JSON.parse(output.stdout), { cases: 17, passed: 17 })
 })
 
 test('actual PowerShell timeout diagnostics are bounded and observe processes without controlling them', { skip: !executable }, async t => {

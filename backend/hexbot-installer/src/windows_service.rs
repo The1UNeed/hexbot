@@ -97,21 +97,7 @@ fn task_control(path: &Path, home: &Path, operation: &str) -> io::Result<String>
 pub fn remove(path: &Path, home: &Path, no_load: bool) -> io::Result<()> {
     crate::windows_task::check_script(path, home)?;
     if !no_load {
-        task_control(path, home, "stop")?;
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
-        loop {
-            let state = task_control(path, home, "state")?;
-            let available = crate::windows_task::home_idle(home)?;
-            if !matches!(state.as_str(), "2" | "4") && available {
-                break;
-            }
-            if std::time::Instant::now() >= deadline {
-                return Err(io::Error::other(
-                    "Windows task did not stop and release the daemon lock",
-                ));
-            }
-            std::thread::sleep(std::time::Duration::from_millis(200));
-        }
+        crate::windows_task::stop(path, home)?;
         task_control(path, home, "delete")?;
     }
     crate::windows_task::check_script(path, home)?;

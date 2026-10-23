@@ -1,5 +1,7 @@
 #[path = "../src/windows_service_parent_policy.rs"]
 mod policy;
+#[path = "../src/windows_task_stop_policy.rs"]
+mod stop_policy;
 #[test]
 fn acquisition_requires_the_same_live_creator_not_a_reused_or_unverified_pid() {
     let candidate = || policy::Identity {
