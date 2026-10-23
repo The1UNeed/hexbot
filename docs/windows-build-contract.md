@@ -131,9 +131,10 @@ Bash descendants and section close/rebuild; new results are required before
 counting this behavior as validated. GUI-owned setup, daemon,
 Pi and tunnel children use hidden-console spawn options.
 
-Windows discovery reads the owned app's packaged version for its current track,
-including track switches that retain the original app ID. GUI and terminal
-receiptless repair share the same unique complete-app recovery path. An exact
+Windows Repair retains the known packaged marker identity and exact managed
+directory. Valid ASAR metadata must corroborate that identity's track; a mixed
+identity/version is refused before download or NSIS. GUI and terminal Repair
+share this rule and the same unique complete-app recovery path. An exact
 receipt and matching packaged marker also retain ownership when EXE/ASAR bytes
 are missing, so detection, repair and uninstall agree. Receiptless incomplete,
 foreign, linked and ambiguous apps remain refused.
@@ -325,10 +326,43 @@ daemon alive remain required evidence.
 Every service launch validates or creates an ordinary canonical log directory
 before redirection, rejects linked or wrong-type log paths, and opens logs
 without truncation while errors still terminate launch. Windows PowerShell 5.1
-redirection explicitly uses UTF-8. Repair uses the receipt for app ownership and
-option, and the installed package for its current track. If ASAR metadata is
-missing, an exact owned receipt allows an explicitly announced recorded-track
-recovery; corrupt metadata and ambiguous ownership require explicit selection.
-Change still uses the user's chosen track, and signed verification and rollback
-floors are unchanged. The real Stable NSIS probe includes a stale Nightly receipt;
-both track directions also run through terminal and Tauri repair-route fixtures.
+redirection explicitly uses UTF-8. Repair uses the exact receipt for ownership
+and option, and the known marker identity for the track. Ordinary corrupt or
+missing ASAR metadata allows an explicitly announced marker-track repair only
+with that receipt. Access errors, wrong types/reparse points, mixed valid
+identity/version and ambiguous ownership refuse. Explicit Change and signed
+verification/rollback floors are unchanged.
+
+NSIS GUIDs are verified against pinned app-builder-lib 26.16.1. The x64 template
+reads the 64-bit registry view in HKCU/HKLM during initialization. Install and
+uninstall now preflight both scopes read-only, requiring complete registrations
+bound to the canonical exact identity directory and a quoted ordinary known
+uninstaller with only /currentuser. Foreign, partial and machine/allusers
+collisions refuse before NSIS; no keys or old uninstallers are manually removed.
+Both operations pass /currentuser explicitly. Native Stable and Nightly Full and
+Client probes require running-original refusal, registry-collision preservation,
+corrupt-payload restoration, repeat Repair and normal NSIS registration removal.
+These new identity cases remain pending actual native execution.
+
+The earlier stable-marker/nightly-ASAR fixtures modeled a mixed install, not a
+normal updater transition. Pinned electron-updater 6.8.9 only passes /D when
+installDirectory is configured; Hexbot does not set it. A Settings track switch
+can therefore install the other GUID under LocalAppData/Programs while leaving
+the original install/receipt. That Programs install is outside this installer's
+managed discovery and is not migrated or removed by Repair. This remains a
+Windows unsupported-product limitation; no Settings, GUID or channel policy is
+changed here.
+
+Native 35f0 run 39876584756, job 120163547201, proved actual creator exit/kill
+zero cleanup, the distinct watchdog124/acquisition101 controls, both scheduler
+missing-script/re-registration repairs with old process exit before return,
+removed-log-directory launch/restart and CLI/PATH recovery. The later Full
+publication rename still failed with EPERM and an absent destination. Cause is
+unproved. Publication still fails with its original error and no retry/copy
+fallback. Read-only file/process/Restart Manager diagnostics and deterministic
+held-CWD plus real pinned Node/Pi publication probes now run before Full build.
+No fixture-leaf proof is counted as actual Pi/tool cleanup.
+
+The unchanged actual-Pi chat-migration target passed three focused runs each on
+35f0 core source and actual main 4ce with the same pinned Pi. The separate macOS
+CI failure's cause remains unproved; its migration assertions/source are unchanged.

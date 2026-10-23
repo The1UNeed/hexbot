@@ -216,7 +216,11 @@ test('Windows publication refuses a live staging cwd and succeeds after its owne
     await assert.rejects(publishNativeRuntime(staging, destination), error => ['EPERM', 'EBUSY'].includes(error.code))
     assert.equal(await readFile(join(staging, 'manifest.json'), 'utf8'), 'verified bytes')
     await assert.rejects(stat(destination), { code: 'ENOENT' })
-    assert.equal(JSON.parse(errors[0][1]).staged.directory, true)
+    const diagnostic = JSON.parse(errors[0][1])
+    assert.equal(diagnostic.staged.directory, true)
+    assert.equal(diagnostic.windows.directoryDeleteAccess, 32, JSON.stringify(diagnostic))
+    assert.ok(diagnostic.windows.related.some(p => p.pid === child.pid), JSON.stringify(diagnostic))
+    console.log('Held-CWD publication evidence:', JSON.stringify(diagnostic))
     child.send('release')
     assert.deepEqual(await closed, [0, null])
     // A distinct operation after an explicit kernel/process event, no retry.

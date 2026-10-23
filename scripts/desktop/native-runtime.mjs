@@ -2,8 +2,8 @@
 import { execFile } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { createHash } from 'node:crypto'
-import { chmod, cp, mkdir, mkdtemp, readFile, readdir, lstat, stat, rename, rm, writeFile } from 'node:fs/promises'
-import { dirname, join, resolve } from 'node:path'
+import { chmod, cp, mkdir, mkdtemp, readFile, readdir, realpath, lstat, stat, rename, rm, writeFile } from 'node:fs/promises'
+import { dirname, isAbsolute, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
 import { nativeBuildEnvironment } from './native-build.mjs'
@@ -184,8 +184,14 @@ export async function stageNativeRuntime({
     const commit = await execute('git', ['log', '-1', '--format=%ct'], { cwd: repository }).catch(() => ({ stdout: '' }))
     const builtAt = Number(commit.stdout.trim()) || Math.floor(Date.now() / 1000)
     await writeFile(join(staging, 'manifest.json'), `${JSON.stringify({ version: metadata.version, target, piVersion, nodeVersion, builtAt, files }, null, 2)}\n`)
-    await run(join(staging, nodeName), [join(pi, 'node_modules/@earendil-works/pi-coding-agent/dist/cli.js'), '--version'], { cwd: staging })
-    await publishNativeRuntime(staging, destination)
+    const versionProbe = run(join(staging, nodeName), [join(pi, 'node_modules/@earendil-works/pi-coding-agent/dist/cli.js'), '--version'], { cwd: staging })
+    const child = versionProbe.child
+    const lifecycle = { pid: child?.pid, program: join(staging, nodeName), cwd: staging }
+    child?.once('exit', (code, signal) => { lifecycle.exit = { code, signal } })
+    child?.once('close', (code, signal) => { lifecycle.close = { code, signal } })
+    await versionProbe
+    console.log('Staged version probe completed:', JSON.stringify(lifecycle))
+    await publishNativeRuntime(staging, destination, lifecycle)
     return { destination, version: metadata.version, target, piVersion, beforeBytes, afterBytes }
   } catch (error) {
     failure = error
@@ -200,17 +206,33 @@ export async function stageNativeRuntime({
 }
 // Keep the unverified tree private. A failed rename never leaves a partial
 // destination; report only filesystem/process metadata, never child env/stdout.
-export async function publishNativeRuntime(staging, destination) {
+export async function publishNativeRuntime(staging, destination, versionProbe) {
   await rm(destination, { recursive: true, force: true })
   try { await rename(staging, destination) }
   catch (error) {
     const describe = async path => {
       try {
         const m = await lstat(path)
-        return { exists: true, directory: m.isDirectory(), symlink: m.isSymbolicLink(), mode: m.mode, entries: m.isDirectory() ? (await readdir(path)).slice(0, 24) : undefined }
+        return { exists: true, canonical: await realpath(path), directory: m.isDirectory(), symlink: m.isSymbolicLink(), mode: m.mode, entries: m.isDirectory() ? (await readdir(path)).slice(0, 24) : undefined }
       } catch (e) { return { error: e.code } }
     }
-    const details = { operation: 'publish native runtime', pid: process.pid, platform: process.platform, node: process.versions.node, staging, destination, staged: await describe(staging), target: await describe(destination) }
+    let windows
+    if (process.platform === 'win32') {
+      try {
+        const system = process.env.SystemRoot
+        if (!system || !isAbsolute(system)) throw new Error('System directory unavailable')
+        const powershell = join(system, 'System32/WindowsPowerShell/v1.0/powershell.exe')
+        const program = await lstat(powershell)
+        if (!program.isFile() || program.isSymbolicLink()) throw new Error('System PowerShell is not an ordinary file')
+        const { stdout } = await execute(powershell, ['-NoProfile', '-NonInteractive', '-File', join(root, 'scripts/desktop/windows-runtime-locks.ps1')], {
+          windowsHide: true, timeout: 8000, maxBuffer: 32768,
+          env: { ...process.env, HEXBOT_STAGING_DIAGNOSTIC: staging, HEXBOT_STAGING_OWNER: String(process.pid), HEXBOT_STAGING_PROBER: String(versionProbe?.pid ?? 0) },
+        })
+        windows = JSON.parse(stdout)
+      } catch (diagnostic) { windows = { error: diagnostic.code ?? diagnostic.name } }
+    }
+    const details = { operation: 'publish native runtime', pid: process.pid, cwd: process.cwd(), activeResources: process.getActiveResourcesInfo().slice(0, 32), versionProbe,
+      platform: process.platform, node: process.versions.node, staging, destination, staged: await describe(staging), target: await describe(destination), windows }
     console.error('Native runtime publication failed:', JSON.stringify(details))
     throw error
   }

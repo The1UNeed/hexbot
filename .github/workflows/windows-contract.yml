@@ -10,6 +10,8 @@ concurrency:
   cancel-in-progress: true
 jobs:
   client-and-installer:
+    env:
+      HEXBOT_WINDOWS_NSIS_PROBE: '1'
     runs-on: windows-latest
     timeout-minutes: 45
     steps:
@@ -24,7 +26,7 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: cargo check --locked --manifest-path backend/hexbot-installer/Cargo.toml
       - run: cargo clippy --locked --manifest-path backend/hexbot-installer/Cargo.toml --lib --bins -- -D warnings
-      - run: cargo test --locked --manifest-path backend/hexbot-installer/Cargo.toml --test windows_repair
+      - run: cargo test --locked --manifest-path backend/hexbot-installer/Cargo.toml --lib --test windows_repair
       - run: cargo clippy --locked --manifest-path apps/installer/src-tauri/Cargo.toml --all-targets -- -D warnings
       - run: cargo test --locked --manifest-path apps/installer/src-tauri/Cargo.toml
       - run: pnpm --filter ./apps/desktop run typecheck
@@ -38,7 +40,7 @@ jobs:
           $integrity = $lock['packages']['node_modules/corepack']['integrity']
           if ($integrity -cne 'sha512-SiiJsBhZqdBiPHTEl6OT3sASrRrKIcYTQMsVGXx6EE/gM8WFMwYjeIX8Tt8RiU4Iv2J6LbT8KpGfCOsBpRWB/w==') { throw 'Unexpected Corepack package integrity' }
           "HEXBOT_TEST_COREPACK_ROOT=$root" >> $env:GITHUB_ENV
-      - run: node --test scripts/desktop/pnpm-command.test.mjs scripts/desktop/windows-task-stop.test.mjs scripts/desktop/windows-service-logs.test.mjs scripts/desktop/voice-lock.test.mjs scripts/desktop/windows-contract.test.mjs scripts/desktop/windows-node-path.test.mjs scripts/desktop/native-build.test.mjs scripts/desktop/native-runtime.test.mjs scripts/desktop/workspace-hooks.test.mjs scripts/dev/run-one-rust-test.test.mjs
+      - run: node --test scripts/desktop/pnpm-command.test.mjs scripts/desktop/windows-task-stop.test.mjs scripts/desktop/windows-service-logs.test.mjs scripts/desktop/voice-lock.test.mjs scripts/desktop/windows-contract.test.mjs scripts/desktop/windows-nsis.test.mjs scripts/desktop/windows-node-path.test.mjs scripts/desktop/native-build.test.mjs scripts/desktop/native-runtime.test.mjs scripts/desktop/workspace-hooks.test.mjs scripts/dev/run-one-rust-test.test.mjs
       - name: Build the real client NSIS without publishing
         run: node scripts/desktop/dist.mjs --win --x64 --client --channel stable
       - name: Verify installer engine runs NSIS, repairs and uninstalls the client
@@ -52,6 +54,8 @@ jobs:
           Write-Host ('Node lookup diagnostic: ' + (@{ type=$(if ($null -eq $lookup) { 'null' } else { $lookup.GetType().FullName }); count=$lookupValues.Count; environmentSpelling=$lookupText.Substring(0, [Math]::Min(1024, $lookupText.Length)); paths=@($lookupValues | Select-Object -First 4 | ForEach-Object { $text=[string]$_; $text.Substring(0, [Math]::Min(512, $text.Length)) }) } | ConvertTo-Json -Compress))
           $env:HEXBOT_WINDOWS_GUI_PROBE = (Resolve-Path scripts/desktop/windows-installed-app-smoke.mjs).Path
           node scripts/dev/run-one-rust-test.mjs backend/hexbot-installer/Cargo.toml windows_contract real_nsis_install_repair_and_uninstall
+      - name: Verify the real Nightly Client NSIS identity without publishing
+        run: node scripts/desktop/windows-nightly-nsis-probe.mjs client
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: windows-client-contract
@@ -60,6 +64,7 @@ jobs:
   native-runtime:
     env:
       HEXBOT_CLI_NO_PATH: '1'
+      HEXBOT_WINDOWS_NSIS_PROBE: '1'
     runs-on: windows-latest
     timeout-minutes: 60
     steps:
@@ -123,6 +128,9 @@ jobs:
           HEXBOT_CLI_NO_PATH: '0'
           HEXBOT_WINDOWS_PATH_PROBE: '1'
         run: node scripts/dev/run-one-rust-test.mjs backend/hexbot-installer/Cargo.toml windows_contract interrupted_cli_install_and_uninstall_clean_only_owned_metadata_and_path
+      - name: Prove staging publication refusal and release before the Full build
+        working-directory: ${{ env.HEXBOT_WINDOWS_PROBE_SOURCE }}
+        run: node --test scripts/desktop/native-runtime.test.mjs scripts/desktop/windows-nsis.test.mjs scripts/desktop/windows-native-publication.test.mjs
       - name: Build Full and its real Node/Pi runtime without publishing
         working-directory: ${{ env.HEXBOT_WINDOWS_PROBE_SOURCE }}
         run: node scripts/desktop/dist.mjs --win --x64 --channel stable
@@ -178,3 +186,6 @@ jobs:
           if ($artifact.Count -ne 1) { throw 'Expected exactly one native refusal executable' }
           ./scripts/dev/windows-security-standard-user.ps1 -Runtime (Resolve-Path backend/pi-runtime).Path -Probe $artifact[0].executable
       # Disposable guard-removed binaries are never uploaded or published.
+      - name: Verify the real Nightly Full NSIS identity without publishing
+        working-directory: ${{ env.HEXBOT_WINDOWS_PROBE_SOURCE }}
+        run: node scripts/desktop/windows-nightly-nsis-probe.mjs full
