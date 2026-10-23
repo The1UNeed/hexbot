@@ -7,6 +7,12 @@ use std::{fs, path::PathBuf, time::Duration};
 mod process_handle;
 #[path = "../src/windows_node_path.rs"]
 mod windows_node_path;
+#[path = "../src/windows_pi_job.rs"]
+mod windows_pi_job;
+#[path = "../src/windows_pi_ledger.rs"]
+mod windows_pi_ledger;
+#[path = "../src/windows_process_identity.rs"]
+mod windows_process_identity;
 
 #[tokio::test]
 #[ignore = "requires HEXBOT_NATIVE_TEST_BUNDLE with the real locked Node/Pi bundle"]
@@ -77,6 +83,7 @@ async fn stopping_one_pi_reaps_its_real_bash_tree_and_preserves_another_pi() {
     let bundle =
         PathBuf::from(std::env::var_os("HEXBOT_NATIVE_TEST_BUNDLE").expect("native bundle"));
     let root = tempfile::tempdir().unwrap();
+    private_job_event_completion_control(&bundle.join("node.exe"), root.path()).await;
     let mut processes = Vec::new();
     let mut nodes = Vec::new();
     let mut event_streams = Vec::new();
@@ -199,4 +206,78 @@ async fn stopping_one_pi_reaps_its_real_bash_tree_and_preserves_another_pi() {
     // The unaffected instance still shuts down through its own job.
     processes[1].shutdown().await.unwrap();
     assert!(!nodes[1].alive());
+}
+
+async fn private_job_event_completion_control(node: &std::path::Path, cwd: &std::path::Path) {
+    use std::os::windows::io::AsRawHandle;
+    use tokio::io::{AsyncBufReadExt, BufReader};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let leaf = "const s=require('net').createServer();s.listen(0,'127.0.0.1',()=>process.stdout.write('ready\\n'))";
+    let script = format!(
+        r#"const child=require('child_process').spawn(process.execPath,['--eval',{}],{{stdio:['ignore','pipe','ignore']}});child.stdout.once('data',()=>{{const socket=require('net').connect({},'127.0.0.1',()=>socket.write(JSON.stringify({{root:process.pid,leaf:child.pid}})+'\n'));}});"#,
+        json!(leaf),
+        port
+    );
+    let job = windows_pi_job::PiJob::new().unwrap();
+    let mut command = tokio::process::Command::new(node);
+    command.creation_flags(0x08000004);
+    let mut root = command
+        .args(["--eval", &script])
+        .current_dir(cwd)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .kill_on_drop(true)
+        .spawn()
+        .unwrap();
+    job.assign_and_resume(&root).unwrap();
+    let (mut stream,_)=tokio::time::timeout(Duration::from_secs(15),async {
+        tokio::select! { result=listener.accept()=>result.unwrap(), status=root.wait()=>panic!("Job root exited before event readiness: {status:?}") }
+    }).await.unwrap();
+    let mut line = String::new();
+    tokio::time::timeout(
+        Duration::from_secs(15),
+        BufReader::new(&mut stream).read_line(&mut line),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let record: serde_json::Value = serde_json::from_str(&line).unwrap();
+    assert_eq!(record["root"].as_u64(), root.id().map(u64::from));
+    let handles = [
+        process_handle::ProcessHandle::open(record["root"].as_u64().unwrap() as u32),
+        process_handle::ProcessHandle::open(record["leaf"].as_u64().unwrap() as u32),
+    ];
+    assert!(handles.iter().all(process_handle::ProcessHandle::alive));
+    let snapshot = windows_process_identity::snapshot().unwrap();
+    assert!(
+        snapshot
+            .iter()
+            .any(|(pid, parent)| *pid == handles[1].pid && *parent == handles[0].pid)
+    );
+    for handle in &handles {
+        let exact = windows_process_identity::open(handle.pid).unwrap().unwrap();
+        assert!(windows_process_identity::same_owner(exact.as_raw_handle()).unwrap());
+        assert_eq!(
+            windows_process_identity::image(exact.as_raw_handle())
+                .unwrap()
+                .canonicalize()
+                .unwrap(),
+            node.canonicalize().unwrap()
+        );
+    }
+    tokio::task::spawn_blocking(move || job.terminate_and_wait())
+        .await
+        .unwrap()
+        .unwrap();
+    eprintln!(
+        "Private Pi job completion at API return: {:?}",
+        handles
+            .iter()
+            .map(process_handle::ProcessHandle::snapshot)
+            .collect::<Vec<_>>()
+    );
+    assert!(handles.iter().all(|handle| !handle.alive()));
+    assert_eq!(root.wait().await.unwrap().code(), Some(1));
 }

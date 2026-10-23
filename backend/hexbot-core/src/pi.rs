@@ -18,6 +18,9 @@ use std::{
 #[cfg(windows)]
 #[path = "windows_pi_job.rs"]
 mod windows_pi_job;
+#[cfg(any(windows, test))]
+#[path = "windows_pi_ledger.rs"]
+mod windows_pi_ledger;
 
 use serde::Deserialize;
 use serde_json::Value;
