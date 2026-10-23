@@ -1061,6 +1061,11 @@ fn interrupted_task_install_uninstalls_owned_files_when_the_task_is_absent() {
         "Service repair returned before the old daemon exited: {}",
         first_handle.snapshot()
     );
+    assert_eq!(
+        first_handle.snapshot()["exitCode"],
+        0,
+        "Plain service repair did not shut down gracefully"
+    );
     first_handle.wait();
     let first_handle = ready(&[desktop_pid, first_pid]);
     let first_pid = first_handle.pid;
@@ -1107,12 +1112,82 @@ fn interrupted_task_install_uninstalls_owned_files_when_the_task_is_absent() {
         "Service repair returned before the old daemon exited: {}",
         first_handle.snapshot()
     );
+    assert_eq!(
+        first_handle.snapshot()["exitCode"],
+        0,
+        "Definition repair did not shut down gracefully"
+    );
     first_handle.wait();
     let next_handle = ready(&[desktop_pid, first_pid]);
     let next_pid = next_handle.pid;
     assert_ne!(next_pid, first_pid);
     assert!(powershell(&format!("if(Get-Process -Id {first_pid} -ErrorAction SilentlyContinue){{throw 'Old task daemon survived repair'}}")).status.success());
     assert!(service(&home, "stop").status.success());
+    assert!(!next_handle.alive());
+    assert_eq!(next_handle.snapshot()["exitCode"], 0);
+    assert!(windows_task::home_idle(&home).unwrap());
+    fs::remove_dir_all(home.join("logs")).unwrap();
+    fs::write(home.join("logs"), "foreign log path").unwrap();
+    let before_selection = fs::read(home.join("runtime/native-current.json")).unwrap();
+    let mut refused_logs = Command::new(
+        windows_paths::system_program("WindowsPowerShell/v1.0/powershell.exe").unwrap(),
+    )
+    .args([
+        "-NoProfile",
+        "-NonInteractive",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+    ])
+    .arg(&file)
+    .stdout(std::process::Stdio::piped())
+    .stderr(std::process::Stdio::piped())
+    .spawn()
+    .unwrap();
+    let refused_handle = process_handle::ProcessHandle::open(refused_logs.id());
+    if !refused_handle.exits_within(10000) {
+        refused_logs.kill().unwrap();
+        refused_logs.wait().unwrap();
+        panic!("Invalid log path started or blocked the service script");
+    }
+    let refusal = refused_logs.wait_with_output().unwrap();
+    eprintln!(
+        "Native log-path refusal: status={} stderr={}",
+        refusal.status,
+        bounded(&refusal.stderr)
+    );
+    assert!(!refusal.status.success());
+    assert!(String::from_utf8_lossy(&refusal.stderr).contains("ordinary directory/file"));
+    assert_eq!(fs::read(home.join("logs")).unwrap(), b"foreign log path");
+    assert_eq!(
+        fs::read(home.join("runtime/native-current.json")).unwrap(),
+        before_selection
+    );
+    assert!(windows_task::home_idle(&home).unwrap());
+    fs::remove_file(home.join("logs")).unwrap();
+    let mut previous = next_pid;
+    for action in ["start", "restart"] {
+        let output = service(&home, action);
+        assert!(
+            output.status.success(),
+            "{action} after missing logs: {}",
+            bounded(&output.stderr)
+        );
+        let process = ready(&[desktop_pid, previous]);
+        expected_pid.set(process.pid);
+        assert!(home.join("logs/service.log").is_file());
+        assert!(home.join("logs/service-error.log").is_file());
+        eprintln!(
+            "Native per-launch logs {action}: process={}",
+            process.snapshot()
+        );
+        assert!(service(&home, "stop").status.success());
+        assert!(!process.alive());
+        assert_eq!(process.snapshot()["exitCode"], 0);
+        assert!(windows_task::home_idle(&home).unwrap());
+        previous = process.pid;
+        fs::remove_dir_all(home.join("logs")).unwrap();
+    }
     fs::remove_file(&file).unwrap();
     // Removal authenticates the task independently of runtime selection.
     // Quarantine the binary and corrupt the pointer; no repair/network is needed.

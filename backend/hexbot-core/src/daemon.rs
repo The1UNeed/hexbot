@@ -5,6 +5,8 @@ use hexbot_core::{
 };
 #[cfg(windows)]
 mod windows_process_lifetime;
+#[cfg(windows)]
+mod windows_service_parent;
 
 use std::{
     io::IsTerminal,
@@ -290,7 +292,10 @@ async fn run() -> Result<()> {
         .or_else(|| common::bundled_runtime().map(|root| root.join("web")))
         .or_else(|| Some(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../apps/web/dist")))
         .filter(|p| p.join("index.html").is_file());
+    #[cfg(unix)]
     let signal = shutdown_signal();
+    #[cfg(windows)]
+    let signal = shutdown_signal()?;
     tokio::pin!(signal);
     let mut previous: Option<std::sync::Arc<App>> = None;
     loop {
@@ -479,11 +484,12 @@ fn shutdown_signal() -> impl std::future::Future<Output = ()> {
     }
 }
 #[cfg(windows)]
-fn shutdown_signal() -> impl std::future::Future<Output = ()> {
+fn shutdown_signal() -> Result<impl std::future::Future<Output = ()>> {
     let ctrl_c = tokio::signal::windows::ctrl_c();
     let ctrl_break = tokio::signal::windows::ctrl_break();
     let parent = desktop_parent_shutdown();
-    async move {
+    let service_parent = windows_service_parent::shutdown()?;
+    Ok(async move {
         let wait = |signal: std::io::Result<tokio::signal::windows::CtrlC>| async move {
             if let Ok(mut signal) = signal {
                 signal.recv().await;
@@ -498,8 +504,8 @@ fn shutdown_signal() -> impl std::future::Future<Output = ()> {
                 std::future::pending().await
             }
         };
-        tokio::select! { _ = wait(ctrl_c) => {}, _ = break_wait => {}, _ = parent => {} }
-    }
+        tokio::select! { _ = wait(ctrl_c) => {}, _ = break_wait => {}, _ = parent => {}, _ = service_parent => {} }
+    })
 }
 // Only an explicitly owned desktop child listens on its inherited pipe. A
 // detached thread avoids Tokio's uncancellable stdin worker keeping an update

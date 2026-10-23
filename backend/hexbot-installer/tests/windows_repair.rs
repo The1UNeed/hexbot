@@ -214,33 +214,58 @@ fn receiptless_repair_refuses_ambiguous_foreign_incomplete_and_unrecognized_apps
 }
 
 #[test]
-fn an_existing_receipt_keeps_its_option_and_track_even_with_multiple_apps() {
-    let root = tempfile::tempdir().unwrap();
-    let mut engine = engine(root.path());
-    owned_app(&engine, "app.hexbot.client", "1.2.3");
-    owned_app(&engine, "app.hexbot.desktop", "1.2.3");
-    let receipt = Receipt {
-        option: InstallOption::Client,
-        channel: Track::Nightly,
-        version: "1.2.3".into(),
-        paths: Vec::new(),
-        installed_at: "fixture".into(),
-    };
-    fs::create_dir_all(engine.paths.receipt().parent().unwrap()).unwrap();
-    fs::write(
-        engine.paths.receipt(),
-        serde_json::to_vec(&receipt).unwrap(),
-    )
-    .unwrap();
-    let server = Server::new(|_| BTreeMap::new());
-    engine.base_url = server.base.clone();
-    assert!(engine.repair(&mut |_| {}).is_err());
-    assert_eq!(*server.requests.lock().unwrap(), ["/install/nightly.json"]);
-    let unchanged = hexbot_installer::read_receipt(&engine.paths.receipt())
-        .unwrap()
-        .unwrap();
-    assert_eq!(unchanged.option, InstallOption::Client);
-    assert_eq!(unchanged.channel, Track::Nightly);
+fn repair_uses_the_receipted_owned_app_but_its_current_packaged_track() {
+    for option in [InstallOption::Client, InstallOption::Full] {
+        for (id_suffix, version, stale, expected) in [
+            (
+                "",
+                "1.2.3-nightly.20261023.1",
+                Track::Stable,
+                Track::Nightly,
+            ),
+            (".nightly", "1.2.3", Track::Nightly, Track::Stable),
+        ] {
+            let root = tempfile::tempdir().unwrap();
+            let mut engine = engine(root.path());
+            let id = format!(
+                "app.hexbot.{}{id_suffix}",
+                if option == InstallOption::Client {
+                    "client"
+                } else {
+                    "desktop"
+                }
+            );
+            let app = owned_app(&engine, &id, version);
+            owned_app(
+                &engine,
+                if option == InstallOption::Client {
+                    "app.hexbot.desktop"
+                } else {
+                    "app.hexbot.client"
+                },
+                "1.0.0",
+            );
+            let receipt = Receipt {
+                option,
+                channel: stale,
+                version: "1.0.0".into(),
+                paths: vec![app.clone()],
+                installed_at: "fixture".into(),
+            };
+            fs::create_dir_all(engine.paths.receipt().parent().unwrap()).unwrap();
+            let bytes = serde_json::to_vec(&receipt).unwrap();
+            fs::write(engine.paths.receipt(), &bytes).unwrap();
+            let server = Server::new(|_| BTreeMap::new());
+            engine.base_url = server.base.clone();
+            assert!(engine.repair(&mut |_| {}).is_err());
+            assert_eq!(
+                *server.requests.lock().unwrap(),
+                [format!("/install/{expected}.json")]
+            );
+            assert_eq!(engine.detect().unwrap().track(), Some(expected));
+            assert_eq!(fs::read(engine.paths.receipt()).unwrap(), bytes);
+        }
+    }
 }
 
 #[test]
@@ -425,7 +450,7 @@ fn damaged_payload_repair_requires_matching_receipt_marker_and_exact_path() {
                     assert!(result.is_err());
                     assert_eq!(
                         admitted,
-                        control == "matching",
+                        matches!(control, "matching" | "wrong-track"),
                         "{option:?} missing {missing} control {control}"
                     );
                     assert_eq!(app.join(payload).is_dir(), control == "payload-directory");
@@ -535,6 +560,60 @@ fn uninstall_refuses_windows_ownership_errors_before_removing_receipt_or_runtime
             assert!(done);
             assert!(!engine.paths.receipt().exists());
             assert!(!native.exists());
+        }
+    }
+}
+
+#[test]
+fn receipted_repair_only_falls_back_when_owned_package_metadata_is_missing() {
+    for case in ["missing", "corrupt", "foreign", "wrong-path", "ambiguous"] {
+        let root = tempfile::tempdir().unwrap();
+        let mut engine = engine(root.path());
+        let app = owned_app(&engine, "app.hexbot.client", "1.2.3");
+        let receipt = Receipt {
+            option: InstallOption::Client,
+            channel: Track::Nightly,
+            version: "1.0.0".into(),
+            paths: vec![app.clone()],
+            installed_at: "fixture".into(),
+        };
+        fs::create_dir_all(engine.paths.receipt().parent().unwrap()).unwrap();
+        let mut receipt_json = serde_json::to_value(&receipt).unwrap();
+        match case {
+            "missing" => fs::remove_file(app.join("resources/app.asar")).unwrap(),
+            "corrupt" => fs::write(app.join("resources/app.asar"), b"unknown bytes").unwrap(),
+            "foreign" => {
+                fs::write(app.join(".hexbot-app.json"), br#"{"appId":"org.foreign"}"#).unwrap()
+            }
+            "wrong-path" => receipt_json["paths"] = json!([root.path().join("unrelated")]),
+            "ambiguous" => {
+                let second = owned_app(&engine, "app.hexbot.client.nightly", "1.2.3");
+                receipt_json["paths"] = json!([app, second]);
+            }
+            _ => unreachable!(),
+        }
+        fs::write(
+            engine.paths.receipt(),
+            serde_json::to_vec(&receipt_json).unwrap(),
+        )
+        .unwrap();
+        let server = Server::new(|_| BTreeMap::new());
+        engine.base_url = server.base.clone();
+        let mut messages = Vec::new();
+        assert!(
+            engine
+                .repair(&mut |p| messages.push(p.message.clone()))
+                .is_err()
+        );
+        if case == "missing" {
+            assert_eq!(*server.requests.lock().unwrap(), ["/install/nightly.json"]);
+            assert!(
+                messages
+                    .iter()
+                    .any(|m| m.contains("track recorded by this installer"))
+            );
+        } else {
+            assert!(server.requests.lock().unwrap().is_empty(), "{case}");
         }
     }
 }

@@ -302,3 +302,33 @@ backoff; dequeued callbacks must still hold the current retry generation. The
 Windows terminal answer uses BOMless UTF-8 independently of the console code
 page. Build commands recognize Corepack's explicit JavaScript entrypoint and
 invoke it through Node with literal argument arrays, without executing shims.
+
+The ee417 native run tested merge `8ab84b09` with the exact ee417 trees
+`7701033e` / `87b09b82`. It proved desktop PID 2536 exited zero while leaving
+its stale record, then authenticated task daemon 9036 through retained kernel
+creation identity, task instance, SID, canonical image and HTTP home identity.
+Plain missing-script repair stopped PowerShell 3464 but left the same daemon
+9036 alive with its home locked. This establishes a service-creator lifetime
+failure before any definition replacement. Later Full/NSIS/update/Connect
+stages did not run.
+
+A Windows service daemon now retains its actual creator's kernel handle after
+checking canonical System32 PowerShell, owner SID, creation chronology and live
+identity. An unverifiable creator fails startup. Creator exit enters the existing
+App/Pi/tunnel cleanup; a ten-second watchdog can terminate only this daemon
+with exit 124 if cleanup hangs. Normal cleanup must exit zero. The existing
+daemon job reaps remaining owned descendants. Desktop and Unix shutdown paths
+are unchanged. Native creator exit/kill/acquisition-race/watchdog controls,
+actual scheduler missing-script repairs and real Pi/tool cleanup with a second
+daemon alive remain required evidence.
+
+Every service launch validates or creates an ordinary canonical log directory
+before redirection, rejects linked or wrong-type log paths, and opens logs
+without truncation while errors still terminate launch. Windows PowerShell 5.1
+redirection explicitly uses UTF-8. Repair uses the receipt for app ownership and
+option, and the installed package for its current track. If ASAR metadata is
+missing, an exact owned receipt allows an explicitly announced recorded-track
+recovery; corrupt metadata and ambiguous ownership require explicit selection.
+Change still uses the user's chosen track, and signed verification and rollback
+floors are unchanged. The real Stable NSIS probe includes a stale Nightly receipt;
+both track directions also run through terminal and Tauri repair-route fixtures.

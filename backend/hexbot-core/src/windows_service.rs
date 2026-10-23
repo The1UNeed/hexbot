@@ -22,8 +22,10 @@ fn script(home: &Path, service: bool) -> Result<String> {
     let marker = serde_json::to_string(text).map_err(|e| Error::new(4200, e.to_string()))?;
     let command = if service {
         r#"$env:HEXBOT_SUPERVISOR = 'service'
+$PSDefaultParameterValues['Out-File:Encoding'] = 'utf8'
 do {
     $exe = Select-HexbotRuntime
+    Ensure-HexbotServiceLogs
     $ErrorActionPreference = 'Continue'
     & $exe serve >> (Join-Path $env:HEXBOT_HOME 'logs/service.log') 2>> (Join-Path $env:HEXBOT_HOME 'logs/service-error.log')
     $ErrorActionPreference = 'Stop'
@@ -32,8 +34,8 @@ do {
         "$exe = Select-HexbotRuntime\n$ErrorActionPreference = 'Continue'\n& $exe @args"
     };
     Ok(format!(
-        "{MARKER}{marker}\n$ErrorActionPreference = 'Stop'\n$env:HEXBOT_HOME = {}\n{}\n{command}\nexit $LASTEXITCODE\n",
-        quote(text), include_str!("../assets/windows-runtime-selection.ps1")
+        "{MARKER}{marker}\n$ErrorActionPreference = 'Stop'\n$env:HEXBOT_HOME = {}\n{}\n{}\n{command}\nexit $LASTEXITCODE\n",
+        quote(text), include_str!("../assets/windows-runtime-selection.ps1"), if service { include_str!("../assets/windows-service-logs.ps1") } else { "" }
     ).replace("\r\n", "\n").replace('\n', "\r\n"))
 }
 pub fn owned(path: &Path, home: &Path) -> bool {

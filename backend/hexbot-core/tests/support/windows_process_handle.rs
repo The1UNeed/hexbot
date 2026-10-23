@@ -54,12 +54,11 @@ impl ProcessHandle {
         let queried = unsafe { GetExitCodeProcess(self.handle, &mut code) };
         json!({"pid":self.pid,"created":self.created().ok(),"wait":unsafe { WaitForSingleObject(self.handle,0) },"exitCode":if queried != 0 {Some(code)} else {None}})
     }
+    pub fn exits_within(&self, milliseconds: u32) -> bool {
+        (unsafe { WaitForSingleObject(self.handle, milliseconds) }) == 0
+    }
     pub fn wait(&self) {
-        assert_eq!(
-            unsafe { WaitForSingleObject(self.handle, 15000) },
-            0,
-            "Descendant did not exit"
-        );
+        assert!(self.exits_within(15000), "Descendant did not exit");
     }
 }
 impl Drop for ProcessHandle {

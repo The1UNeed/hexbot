@@ -37,7 +37,41 @@ async fn owned_desktop_pipe_quit_and_restart_clean_up_real_pi_and_home_lock() {
         .join("../pi-runtime/fixtures/windows-shutdown-pi.mjs");
     let module = url::Url::from_file_path(&module).unwrap();
     let launcher = url::Url::from_file_path(bundle.join("pi/launch.mjs")).unwrap();
-    for mode in ["section", "command", "eof", "force"] {
+    let peer_home = root.path().join("independent daemon");
+    let mut peer = Command::new(env!("CARGO_BIN_EXE_hexbot"))
+        .args(["serve", "--host", "127.0.0.1", "--port", "0"])
+        .env("HEXBOT_HOME", &peer_home)
+        .env("HEXBOT_PI_EXECUTABLE", bundle.join("node.exe"))
+        .env("HEXBOT_SUPERVISOR", "desktop")
+        .env("HEXBOT_DESKTOP_CONTROL", "stdin-v1")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .creation_flags(0x08000000)
+        .kill_on_drop(true)
+        .spawn()
+        .unwrap();
+    let peer_handle = ProcessHandle::open(peer.id().unwrap());
+    let mut peer_lines = BufReader::new(peer.stdout.take().unwrap()).lines();
+    let peer_port: u16 = tokio::time::timeout(Duration::from_secs(45), async {
+        while let Some(line) = peer_lines.next_line().await.unwrap() {
+            if let Some(port) = line.strip_prefix("HERMES_BACKEND_READY port=") {
+                return port.parse().unwrap();
+            }
+        }
+        panic!("Independent daemon exited before readiness")
+    })
+    .await
+    .unwrap();
+    for mode in [
+        "section",
+        "command",
+        "eof",
+        "force",
+        "service-exit",
+        "service-kill",
+    ] {
+        let service_mode = mode.starts_with("service-");
         let stored = if mode == "section" {
             "first-section"
         } else {
@@ -74,7 +108,7 @@ async fn owned_desktop_pipe_quit_and_restart_clean_up_real_pi_and_home_lock() {
         let provider = tokio::spawn(async move {
             axum::serve(http, model).await.unwrap();
         });
-        if mode == "section" {
+        if mode == "section" || service_mode {
             let work = root.path().join("workspace");
             fs::create_dir_all(&work).unwrap();
             db::open(&home)
@@ -105,12 +139,34 @@ async fn owned_desktop_pipe_quit_and_restart_clean_up_real_pi_and_home_lock() {
             ),
         )
         .unwrap();
-        let mut child = Command::new(env!("CARGO_BIN_EXE_hexbot"))
-            .args(["serve", "--host", "127.0.0.1", "--port", "0"])
+        let mut command = if service_mode {
+            let exe = env!("CARGO_BIN_EXE_hexbot").replace('\'', "''");
+            let script = format!(
+                "$ErrorActionPreference='Stop';$p=[Diagnostics.ProcessStartInfo]::new();$p.FileName='{exe}';$p.Arguments='serve --host 127.0.0.1 --port 0';$p.UseShellExecute=$false;$p.CreateNoWindow=$true;$null=[Diagnostics.Process]::Start($p);$null=[Console]::ReadLine();exit 0"
+            );
+            let mut parent = Command::new(
+                windows_paths::system_program("WindowsPowerShell/v1.0/powershell.exe").unwrap(),
+            );
+            parent.args(["-NoProfile", "-NonInteractive", "-Command", &script]);
+            parent
+        } else {
+            let mut daemon = Command::new(env!("CARGO_BIN_EXE_hexbot"));
+            daemon.args(["serve", "--host", "127.0.0.1", "--port", "0"]);
+            daemon
+        };
+        command
             .env("HEXBOT_HOME", &home)
             .env("HEXBOT_PI_EXECUTABLE", fixture.join("node.exe"))
-            .env("HEXBOT_SUPERVISOR", "desktop")
-            .env("HEXBOT_DESKTOP_CONTROL", "stdin-v1")
+            .env(
+                "HEXBOT_SUPERVISOR",
+                if service_mode { "service" } else { "desktop" },
+            );
+        if service_mode {
+            command.env_remove("HEXBOT_DESKTOP_CONTROL");
+        } else {
+            command.env("HEXBOT_DESKTOP_CONTROL", "stdin-v1");
+        }
+        let mut child = command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
@@ -118,7 +174,8 @@ async fn owned_desktop_pipe_quit_and_restart_clean_up_real_pi_and_home_lock() {
             .kill_on_drop(true)
             .spawn()
             .unwrap();
-        let daemon_pid = child.id().unwrap();
+        let supervisor_pid = child.id().unwrap();
+        let mut daemon_pid = supervisor_pid;
         let mut handles = Vec::new();
         let result = std::panic::AssertUnwindSafe(async {
             let mut output = BufReader::new(child.stdout.take().unwrap()).lines();
@@ -128,6 +185,12 @@ async fn owned_desktop_pipe_quit_and_restart_clean_up_real_pi_and_home_lock() {
                 }
                 panic!("{mode}: daemon exited before readiness");
             }).await.unwrap();
+            let running:Value=serde_json::from_slice(&fs::read(home.join("runtime/native-running.json")).unwrap()).unwrap();
+            daemon_pid=running["pid"].as_u64().unwrap() as u32;
+            let daemon_handle=ProcessHandle::open(daemon_pid);
+            assert!(daemon_handle.alive() && peer_handle.alive());
+            if service_mode {assert_ne!(daemon_pid,supervisor_pid);} else {assert_eq!(daemon_pid,supervisor_pid);}
+            eprintln!("Shutdown {mode}: supervisor={supervisor_pid}; currentDaemon={}; independent={}",daemon_handle.snapshot(),peer_handle.snapshot());
             let (mut socket, _) = connect_async(format!("ws://127.0.0.1:{port}/api/ws?token={token}")).await.unwrap();
             socket.send(Message::Text(json!({"jsonrpc":"2.0","id":"open-pi","method":"hexbot.sections.open","params":{"id":stored}}).to_string().into())).await.unwrap();
             // A fixture-only loopback barrier captures kernel handles before
@@ -194,7 +257,7 @@ async fn owned_desktop_pipe_quit_and_restart_clean_up_real_pi_and_home_lock() {
             let pi_pids = handles.iter().map(|handle| handle.pid).collect::<Vec<_>>();
             assert!(pi_pids.iter().all(|pid| osutil::process_alive(*pid)) && handles.iter().all(ProcessHandle::alive),
                 "{mode}: A current Pi/descendant died BEFORE shutdown: {:?}", handles.iter().map(ProcessHandle::snapshot).collect::<Vec<_>>());
-            if mode == "section" {
+            if mode == "section" || service_mode {
                 // The model calls the pinned Pi Bash tool, inside this real
                 // daemon section, and blocks with a live shell + tool child.
                 let first_id=opened["result"]["section"]["live_session_id"].as_str().unwrap();
@@ -209,6 +272,7 @@ async fn owned_desktop_pipe_quit_and_restart_clean_up_real_pi_and_home_lock() {
                 eprintln!("Section lifetime actual tool handles: {:?}",tool_handles.iter().map(ProcessHandle::snapshot).collect::<Vec<_>>());
                 assert_ne!(tool_handles[0].pid,pi_pid,"Actual Bash must remain the tool child's parent");
                 tool_socket.write_all(b"tracked\n").await.unwrap();
+                if service_mode {handles.extend(tool_handles);} else {
                 // Subsequent Pi instances run the original pinned launcher.
                 // Keep a second section live throughout closing/rebuilding first.
                 fs::write(fixture.join("pi/launch.mjs"),format!("await import({});\n",json!(launcher.as_str()))).unwrap();
@@ -239,19 +303,31 @@ async fn owned_desktop_pipe_quit_and_restart_clean_up_real_pi_and_home_lock() {
                 assert!(second_handles.iter().all(ProcessHandle::alive),"Rebuild affected another Pi");
                 let lock=fs::OpenOptions::new().read(true).write(true).open(home.join("native-daemon.lock")).unwrap();
                 assert!(lock.try_lock().is_err(),"Live daemon lost its home lock");
+                }
             }
             let mut input = child.stdin.take().unwrap();
             if matches!(mode,"command"|"section") { input.write_all(b"HEXBOT_SHUTDOWN_V1\n").await.unwrap(); }
-            if mode == "force" { child.start_kill().unwrap(); }
+            if mode=="service-exit" {input.write_all(b"exit\n").await.unwrap();}
+            if mode == "force" || mode=="service-kill" { child.start_kill().unwrap(); }
             drop(input);
             let status = tokio::time::timeout(Duration::from_secs(15), child.wait()).await.unwrap().unwrap();
-            if mode != "force" { assert_eq!(status.code(), Some(0), "{mode}: daemon normal exit must be zero"); }
+            if mode != "force" && mode!="service-kill" { assert_eq!(status.code(), Some(0), "{mode}: owned supervisor normal exit must be zero"); }
+            daemon_handle.wait();
+            if mode!="force" {
+                assert_eq!(daemon_handle.snapshot()["exitCode"],0,"{mode}: daemon graceful exit must be zero");
+                assert!(handles.iter().all(|p|!p.alive()),"{mode}: graceful daemon exit preceded descendant cleanup: {:?}",handles.iter().map(ProcessHandle::snapshot).collect::<Vec<_>>());
+            }
             for process in &handles { process.wait(); }
             assert!(handles.iter().all(|p| !p.alive()), "{mode}: Pi survived owned shutdown");
             eprintln!("Shutdown {mode}/{nonce}: daemon exit={status}, descendants={:?}", handles.iter().map(ProcessHandle::snapshot).collect::<Vec<_>>());
             if mode != "force" { assert!(!home.join("serve-state.json").exists()); }
             let lock = fs::OpenOptions::new().read(true).write(true).open(home.join("native-daemon.lock")).unwrap();
             lock.try_lock().expect("Home lock was not released before restart");
+            assert!(peer_handle.alive(),"Shutdown affected an independent daemon");
+            let identity:Value=tokio::time::timeout(Duration::from_secs(5),async {reqwest::get(format!("http://127.0.0.1:{peer_port}/api/daemon/identity")).await.unwrap().json().await.unwrap()}).await.unwrap();
+            assert_eq!(identity["pid"],peer_handle.pid);
+            let peer_lock=fs::OpenOptions::new().read(true).write(true).open(peer_home.join("native-daemon.lock")).unwrap();
+            assert!(peer_lock.try_lock().is_err(),"Independent daemon lost its home");
         }).catch_unwind().await;
         provider.abort();
         for entry in fs::read_dir(&evidence).unwrap().take(8) {
@@ -287,6 +363,21 @@ async fn owned_desktop_pipe_quit_and_restart_clean_up_real_pi_and_home_lock() {
             std::panic::resume_unwind(error);
         }
     }
+    peer.stdin
+        .take()
+        .unwrap()
+        .write_all(b"HEXBOT_SHUTDOWN_V1\n")
+        .await
+        .unwrap();
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(15), peer.wait())
+            .await
+            .unwrap()
+            .unwrap()
+            .code(),
+        Some(0)
+    );
+    peer_handle.wait();
 }
 
 #[path = "support/windows_process_handle.rs"]

@@ -209,7 +209,7 @@ struct WindowsRepair {
     option: InstallOption,
     track: Track,
     path: PathBuf,
-    version: semver::Version,
+    version: Option<semver::Version>,
 }
 
 impl Installer {
@@ -239,10 +239,18 @@ impl Installer {
     }
 
     pub fn repair(&self, progress: &mut ProgressCallback<'_>) -> Result<InstallResult> {
-        if let Some(receipt) = read_receipt(&self.paths.receipt())? {
+        if let Some(receipt) = read_receipt(&self.paths.receipt())?
+            && (!self.target.is_windows() || receipt.option == InstallOption::Headless)
+        {
             return self.apply(receipt.option, receipt.channel, progress);
         }
-        let recovered = self.receiptless_windows_repair()?;
+        let recovered = self.windows_app_repair()?;
+        if recovered.version.is_none() {
+            progress(Progress::new(
+                "repair",
+                "The app package is missing. Repairing the track recorded by this installer.",
+            ));
+        }
         let manifest = fetch_manifest(&self.base_url, recovered.track)?;
         let (result, _install_lock) =
             self.install(recovered.option, &manifest, Some(&recovered), progress)?;
@@ -251,16 +259,13 @@ impl Installer {
         Ok(result)
     }
 
-    fn receiptless_windows_repair(&self) -> Result<WindowsRepair> {
+    fn windows_app_repair(&self) -> Result<WindowsRepair> {
         const CHOOSE: &str = "Could not identify one installed Windows app to repair. Choose the option and track to install.";
         if !self.target.is_windows() {
             return fail("No install receipt was found. Choose an option to install.");
         }
         let installed = self.detect()?;
-        if installed.receipt.is_some() || installed.apps.len() != 1 {
-            return fail(CHOOSE);
-        }
-        let app = &installed.apps[0];
+        let app = installed.windows_repair_app().ok_or(CHOOSE)?;
         if app.app_id.ends_with(".dev")
             || app.path != self.paths.planned_apps_dir(self.target)?.join(&app.app_id)
         {
@@ -269,10 +274,17 @@ impl Installer {
         // The app updater can change tracks without changing the original
         // app id. Read the installed package, never infer its current track
         // from a directory name or execute the app to discover it.
-        let version = self.app_version(app)?.ok_or(CHOOSE)?;
+        let version = self.app_version(app)?;
+        let track = match &version {
+            Some(version) => installed_version::track(version),
+            None if matches!(fs::symlink_metadata(app.path.join("resources/app.asar")), Err(e) if e.kind() == std::io::ErrorKind::NotFound) => {
+                installed.receipt.as_ref().ok_or(CHOOSE)?.channel
+            }
+            None => return fail(CHOOSE),
+        };
         Ok(WindowsRepair {
             option: app.option,
-            track: installed_version::track(&version),
+            track,
             path: app.path.clone(),
             version,
         })
@@ -492,7 +504,7 @@ impl Installer {
         // Return the lock so apply/change retain it until the receipt is written.
         let install_lock = self.lock_installation(progress)?;
         if let Some(expected) = recovery
-            && self.receiptless_windows_repair()? != *expected
+            && self.windows_app_repair()? != *expected
         {
             return fail("The detected app changed during repair. Run the installer again.");
         }
@@ -581,14 +593,7 @@ impl Installer {
         } else if self.target.is_linux() {
             self.install_linux(&download, artifact, identity.unwrap(), progress)?
         } else if self.target.is_windows() {
-            self.install_windows(
-                &download,
-                artifact,
-                identity.unwrap(),
-                option,
-                manifest.channel,
-                progress,
-            )?
+            self.install_windows(&download, artifact, identity.unwrap(), option, progress)?
         } else {
             return fail("This installer does not support this computer.");
         };
@@ -807,17 +812,13 @@ impl Installer {
         destination: &Path,
         id: &str,
         option: InstallOption,
-        track: Track,
     ) -> Result<bool> {
         let receipt = read_receipt(&self.paths.receipt())?;
-        Ok(detect::windows_owned_id(
-            destination,
-            receipt
-                .as_ref()
-                .filter(|r| r.channel == track && r.option == option),
+        Ok(
+            detect::windows_owned_id(destination, receipt.as_ref().filter(|r| r.option == option))
+                .as_deref()
+                == Some(id),
         )
-        .as_deref()
-            == Some(id))
     }
     fn install_windows(
         &self,
@@ -825,7 +826,6 @@ impl Installer {
         artifact: &Artifact,
         (id, _name): (&str, &str),
         option: InstallOption,
-        track: Track,
         progress: &mut ProgressCallback<'_>,
     ) -> Result<Vec<PathBuf>> {
         if artifact.format.as_deref() != Some("exe") {
@@ -834,7 +834,7 @@ impl Installer {
         let directory = self.paths.install_apps_dir(self.target)?;
         let destination = directory.join(id);
         if fs::symlink_metadata(&destination).is_ok()
-            && !self.windows_destination_owned(&destination, id, option, track)?
+            && !self.windows_destination_owned(&destination, id, option)?
         {
             return fail("An unrelated app already uses the install path.");
         }

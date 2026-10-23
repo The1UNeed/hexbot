@@ -143,16 +143,25 @@ fn real_nsis_install_repair_and_uninstall() {
             let mut request = [0; 8192];
             let count = stream.read(&mut request).unwrap();
             let request = String::from_utf8_lossy(&request[..count]);
-            let body = if request.starts_with("GET /app.exe ") {
-                &bytes
-            } else if request.lines().next().unwrap_or("").contains(".sig ") {
-                &signature
+            let path = request.split_whitespace().nth(1).unwrap();
+            let body = if path == "/app.exe" {
+                Some(&bytes)
+            } else if path == format!("/install/{}/stable.json.sig", hexbot_installer::version()) {
+                Some(&signature)
+            } else if path == "/install/stable.json" {
+                Some(&manifest)
             } else {
-                &manifest
+                None
             };
+            let status = if body.is_some() {
+                "200 OK"
+            } else {
+                "404 Not Found"
+            };
+            let body = body.map(Vec::as_slice).unwrap_or_default();
             write!(
                 stream,
-                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
                 body.len()
             )
             .unwrap();
@@ -238,6 +247,23 @@ fn real_nsis_install_repair_and_uninstall() {
         String::from_utf8_lossy(&output.stderr)
     );
     println!("{}", String::from_utf8_lossy(&output.stdout));
+    // Model the outer install receipt left stale by an app-level track
+    // switch: real Stable NSIS payload, recorded Nightly track. The server
+    // publishes only Stable, so the old receipt-first Repair cannot pass.
+    let mut stale = hexbot_installer::read_receipt(&installer.paths.receipt())
+        .unwrap()
+        .unwrap();
+    stale.channel = Track::Nightly;
+    fs::write(
+        installer.paths.receipt(),
+        serde_json::to_vec(&stale).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(installer.detect().unwrap().track(), Some(Track::Stable));
+    let repaired = installer.repair(&mut |_| {}).unwrap();
+    assert_eq!(repaired.receipt.option, option);
+    assert_eq!(repaired.receipt.channel, Track::Stable);
+    eprintln!("Real NSIS repair used packaged Stable despite stale Nightly receipt");
     for payload in [
         if client {
             "HexbotClient.exe"

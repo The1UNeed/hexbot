@@ -223,16 +223,36 @@ impl Installed {
             .or_else(|| (self.service || self.wrapper).then_some(InstallOption::Headless))
     }
 
+    pub(crate) fn windows_repair_app(&self) -> Option<&InstalledApp> {
+        let mut apps = self.apps.iter().filter(|app| {
+            !app.app_id.ends_with(".dev")
+                && self
+                    .receipt
+                    .as_ref()
+                    .is_none_or(|r| r.option == app.option && r.paths.contains(&app.path))
+        });
+        let app = apps.next()?;
+        apps.next().is_none().then_some(app)
+    }
     pub fn track(&self) -> Option<Track> {
+        if self.windows
+            && self
+                .receipt
+                .as_ref()
+                .is_none_or(|r| r.option != InstallOption::Headless)
+        {
+            let app = self.windows_repair_app()?;
+            return app
+                .version
+                .as_deref()
+                .and_then(|v| semver::Version::parse(v).ok())
+                .map(|v| crate::installed_version::track(&v))
+                .or_else(|| self.receipt.as_ref().map(|r| r.channel));
+        }
         self.receipt.as_ref().map(|r| r.channel).or_else(|| {
             self.apps.first().and_then(|a| {
                 if a.app_id.ends_with(".dev") {
                     None
-                } else if self.windows {
-                    a.version
-                        .as_deref()
-                        .and_then(|v| semver::Version::parse(v).ok())
-                        .map(|v| crate::installed_version::track(&v))
                 } else if a.app_id.ends_with(".nightly") {
                     Some(Track::Nightly)
                 } else {
