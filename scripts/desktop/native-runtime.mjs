@@ -136,9 +136,11 @@ export async function standaloneNode(directory, platform, arch, version = NODE_V
 
 // Windows publication compares the complete layout, not only manifest.files.
 // lstat rejects junctions/symlinks before traversal; Unix npm links are unchanged.
-export async function inventoryNativeRuntime(directory) {
+export async function inventoryNativeRuntime(directory, signal) {
+  signal?.throwIfAborted()
   const entries = []
   async function visit(path, key) {
+    signal?.throwIfAborted()
     const meta = await lstat(path)
     if (meta.isSymbolicLink()) throw new Error(`Linked native runtime entry: ${key}`)
     if (meta.isDirectory()) {
@@ -146,22 +148,25 @@ export async function inventoryNativeRuntime(directory) {
       for (const name of (await readdir(path)).sort())
         await visit(join(path, name), key ? `${key}/${name}` : name)
     } else if (key && meta.isFile()) {
-      const bytes = await readFile(path)
+      const bytes = await readFile(path, signal ? { signal } : undefined)
       if (bytes.length !== meta.size) throw new Error(`Native runtime entry changed: ${key}`)
       entries.push({ path: key, type: 'file', size: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex') })
     } else throw new Error(`Nonordinary native runtime entry: ${key}`)
   }
   await visit(directory, '')
+  signal?.throwIfAborted()
   return entries.sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0)
 }
 
-async function probePiVersion(staging, nodeName, piVersion, run) {
+async function probePiVersion(staging, nodeName, piVersion, run, signal) {
+  signal?.throwIfAborted()
   const program = join(staging, nodeName)
-  const probe = run(program, [join(staging, 'pi/node_modules/@earendil-works/pi-coding-agent/dist/cli.js'), '--version'], { cwd: staging })
+  const probe = run(program, [join(staging, 'pi/node_modules/@earendil-works/pi-coding-agent/dist/cli.js'), '--version'], { cwd: staging, ...(signal ? { signal } : {}) })
   const lifecycle = { pid: probe.child?.pid, program, cwd: staging }
   probe.child?.once('exit', (code, signal) => { lifecycle.exit = { code, signal } })
   probe.child?.once('close', (code, signal) => { lifecycle.close = { code, signal } })
   const { stdout } = await probe
+  signal?.throwIfAborted()
   if (stdout.trim() !== piVersion) throw new Error('The staged Pi version does not match the pinned version')
   console.log('Staged version probe completed:', JSON.stringify(lifecycle))
   return lifecycle
@@ -174,19 +179,24 @@ export async function copyNativeRuntime(source, destination, options) {
     await cp(join(source, name), join(destination, name), options)
 }
 
-export async function publishWindowsRuntime(staging, destination, piVersion, { run = execute, copy = copyNativeRuntime } = {}) {
+export async function publishWindowsRuntime(staging, destination, piVersion, { run = execute, copy = copyNativeRuntime, signal } = {}) {
+  signal?.throwIfAborted()
   let fresh, failure, published = false
   try {
-    const inventory = await inventoryNativeRuntime(staging)
-    const lifecycle = await probePiVersion(staging, 'node.exe', piVersion, run)
+    const inventory = await inventoryNativeRuntime(staging, signal)
+    const lifecycle = await probePiVersion(staging, 'node.exe', piVersion, run, signal)
+    signal?.throwIfAborted()
     // This sibling has never been executed or used as a child cwd. Retain the
     // original layout for the probe, then materialize exactly its verified bytes.
     fresh = await mkdtemp(`${destination}.staging-`)
     await copy(staging, fresh, { recursive: true, errorOnExist: true, force: false, preserveTimestamps: true, verbatimSymlinks: true })
-    if (!isDeepStrictEqual(await inventoryNativeRuntime(fresh), inventory))
+    signal?.throwIfAborted()
+    if (!isDeepStrictEqual(await inventoryNativeRuntime(fresh, signal), inventory))
       throw new Error('The native runtime copy does not match the pre-probe inventory')
+    signal?.throwIfAborted()
     await publishNativeRuntime(fresh, destination, lifecycle)
     published = true
+    signal?.throwIfAborted()
     return { inventory, lifecycle }
   } catch (error) {
     failure = error

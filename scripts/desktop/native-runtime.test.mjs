@@ -313,6 +313,73 @@ test('prepublication failures preserve the old destination and clean both owned 
   }
 })
 
+test('pre-aborted runtime inventory and probe perform no filesystem or child work', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'hexbot cancelled publication '))
+  try {
+    const { staging, destination } = await publicationFixture(root)
+    const before = await inventoryNativeRuntime(root)
+    const controller = new AbortController(), cancelled = new Error('test publication cancelled')
+    controller.abort(cancelled)
+    let calls = 0
+    await assert.rejects(inventoryNativeRuntime(join(root, 'not-present'), controller.signal), error => error === cancelled)
+    await assert.rejects(publishWindowsRuntime(staging, destination, '1.0.1', {
+      signal: controller.signal,
+      run: () => { calls++; throw new Error('pre-aborted probe ran') },
+      copy: () => { calls++; throw new Error('pre-aborted copy ran') }
+    }), error => error === cancelled)
+    assert.equal(calls, 0)
+    assert.deepEqual(await inventoryNativeRuntime(root), before)
+  } finally { await rm(root, { recursive: true, force: true }) }
+})
+
+test('aborting an in-flight copy prevents publication and any later round or probe', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'hexbot copy cancelled '))
+  const entered = Promise.withResolvers(), release = Promise.withResolvers()
+  let completion
+  try {
+    const { staging, destination } = await publicationFixture(root)
+    const before = await inventoryNativeRuntime(destination)
+    const controller = new AbortController(), cancelled = new Error('deadline during copy')
+    let probes = 0, copies = 0, successes = 0, probeSignal
+    completion = (async () => {
+      for (let round = 0; round < 3; round++) {
+        controller.signal.throwIfAborted()
+        await publishWindowsRuntime(staging, destination, '1.0.1', {
+          signal: controller.signal,
+          run: async (_program, _args, options) => {
+            probeSignal = options.signal
+            probes++
+            return { stdout: '1.0.1' }
+          },
+          copy: async (source, target, options) => {
+            copies++
+            entered.resolve()
+            await release.promise
+            // fs.cp itself has no cancellation API. Finish that exact copy;
+            // the production phase check must prevent the following rename.
+            await copyNativeRuntime(source, target, options)
+          }
+        })
+        controller.signal.throwIfAborted()
+        successes++
+      }
+    })()
+    const rejected = assert.rejects(completion, error => error === cancelled)
+    await entered.promise
+    controller.abort(cancelled)
+    release.resolve()
+    await rejected
+    assert.deepEqual({ probes, copies, successes }, { probes: 1, copies: 1, successes: 0 })
+    assert.deepEqual(await inventoryNativeRuntime(destination), before)
+    assert.equal(probeSignal, controller.signal)
+    assert.deepEqual(await readdir(root), ['published'])
+  } finally {
+    release.resolve()
+    await completion?.catch(() => {})
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
 test('archive dereferences npm links and records the update format', { skip: process.platform === 'win32' }, async () => {
   const root = await mkdtemp(join(tmpdir(), 'hexbot-archive-'))
   try {

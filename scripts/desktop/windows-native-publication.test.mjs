@@ -41,7 +41,12 @@ test('actual pinned Windows rg and fd archives extract with Unicode cwd and ASCI
   })
 
 test('pinned Windows Node/Pi validates each original tree before three verified fresh-copy publications',
-  { skip: process.platform !== 'win32', timeout: 180_000 }, async () => {
+  // c189 completed the full 16484-entry/three-round workload in about 240s.
+  // Keep the entire workload with a finite 50% runner margin, not child retries.
+  { skip: process.platform !== 'win32', timeout: 360_000 }, async context => {
+    const { signal } = context
+    signal.throwIfAborted()
+    const started = performance.now()
     const root = await mkdtemp(join(tmpdir(), 'hexbot real publication π '))
     let observer, observed, primary
     const failed = ({ staging, destination, versionProbe, error }) => {
@@ -51,10 +56,13 @@ test('pinned Windows Node/Pi validates each original tree before three verified 
     }
     const failures = channel('hexbot.native-publication-failed')
     try {
+      signal.throwIfAborted()
       observer = await publicationObserver()
+      signal.throwIfAborted()
       console.log('Publication observer ready:', JSON.stringify(observer.ready))
       failures.subscribe(failed)
       const node = await standaloneNode(root, 'win32', 'x64')
+      signal.throwIfAborted()
       const staging = join(root, 'staged')
       await mkdir(staging)
       await cp(node, join(staging, 'node.exe'))
@@ -66,27 +74,36 @@ test('pinned Windows Node/Pi validates each original tree before three verified 
       await writeFile(join(staging, 'manifest.json'), marker)
       const user = join(root, 'isolated user')
       await mkdir(user)
+      signal.throwIfAborted()
+      console.log('Real publication setup:', JSON.stringify({ elapsedMs: performance.now() - started }))
       let current = staging
       // Each round is a distinct publication after an explicit successful child
       // close, not a retry of a failed rename. Any failure ends the test.
       for (let round = 0; round < 3; round++) {
-        const before = await inventoryNativeRuntime(current)
+        signal.throwIfAborted()
+        const roundStart = performance.now()
+        const before = await inventoryNativeRuntime(current, signal)
+        const sourceScanned = performance.now()
         const destination = join(root, `published-${round}`)
         const { lifecycle, inventory } = await publishWindowsRuntime(current, destination, expected, {
+          signal,
           run: (program, args, options) => promisify(execFile)(program, args,
             { ...options, windowsHide: true, timeout: 20_000, env: { ...process.env,
             HOME: user, USERPROFILE: user, APPDATA: user, LOCALAPPDATA: user, PI_CODING_AGENT_DIR: join(user, 'pi'),
             } })
         })
+        signal.throwIfAborted()
+        const published = performance.now()
         assert.deepEqual(lifecycle.exit, { code: 0, signal: null })
         assert.deepEqual(lifecycle.close, { code: 0, signal: null })
         assert.equal(lifecycle.cwd, current)
         assert.equal(lifecycle.program, join(current, 'node.exe'))
         assert.deepEqual(inventory, before)
-        assert.deepEqual(await inventoryNativeRuntime(destination), before)
+        assert.deepEqual(await inventoryNativeRuntime(destination, signal), before)
         await assert.rejects(stat(current), { code: 'ENOENT' })
-        console.log('Real fresh-copy publication:', JSON.stringify({ ...lifecycle, round, node: NODE_VERSION, destination, entries: inventory.length }))
         assert.equal(await readFile(join(destination, 'manifest.json'), 'utf8'), marker)
+        signal.throwIfAborted()
+        console.log('Real fresh-copy publication:', JSON.stringify({ ...lifecycle, round, node: NODE_VERSION, destination, entries: inventory.length, timingsMs: { sourceInventory: sourceScanned - roundStart, productionFlow: published - sourceScanned, verification: performance.now() - published, total: performance.now() - started } }))
         current = destination
       }
     } catch (error) {
