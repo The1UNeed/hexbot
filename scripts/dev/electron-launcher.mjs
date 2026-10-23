@@ -1,5 +1,7 @@
 // Like T3 Code's electron-launcher.mjs, brand a private copy of Electron so
 // macOS uses the development name and icon in the Dock and app switcher.
+// The copy is ad-hoc signed: from Electron 42, macOS shows notifications only
+// from a signed app, and the downloaded Electron.app does not verify.
 import { execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { copyFile, cp, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
@@ -10,13 +12,13 @@ import { productName } from '../desktop/release-version.mjs'
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..')
 
-export async function prepareDevElectron(repositoryRoot = root) {
+export async function prepareDevElectron(repositoryRoot = root, edition = process.env.HEXBOT_EDITION) {
   const desktop = join(repositoryRoot, 'apps/desktop')
   const require = createRequire(join(desktop, 'package.json'))
   const electron = require('electron')
   if (process.platform !== 'darwin') return electron
 
-  const client = process.env.HEXBOT_EDITION === 'client'
+  const client = edition === 'client'
   const name = productName('dev', '', client)
   const checkoutId = createHash('sha256').update(repositoryRoot).digest('hex').slice(0, 12)
   const bundleId = `app.hexbot.${client ? 'client' : 'desktop'}.dev.${checkoutId}`
