@@ -1,6 +1,8 @@
 // Run the actual NSIS-installed app before the engine repairs/uninstalls it.
 import assert from 'node:assert/strict'
-import { execFile } from 'node:child_process'
+import { execFile, spawn } from 'node:child_process'
+import { once } from 'node:events'
+import { createInterface } from 'node:readline'
 import { promisify } from 'node:util'
 import { cp, mkdir, readFile, realpath, writeFile } from 'node:fs/promises'
 import { createRequire } from 'node:module'
@@ -30,6 +32,57 @@ async function assertHomeLock(expected) {
 let app, ownedPid, servicePid, selected, serviceAttempted = false
 const native = promisify(execFile)
 const nativeOptions = { env: { ...process.env, HEXBOT_HOME: home, USERPROFILE: root, HOME: root, HEXBOT_SERVICE_ROOT: root }, windowsHide: true, timeout: 30_000 }
+// Test-only observer retains the actual Process.Handle before Quit. It only
+// waits/queries that handle; it never terminates a daemon by a recorded PID.
+async function retainDaemon(pid, executable) {
+  const ps = join(process.env.SystemRoot, 'System32/WindowsPowerShell/v1.0/powershell.exe')
+  const script = `$ErrorActionPreference='Stop';[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false)
+$p=[Diagnostics.Process]::GetProcessById([int]$env:HEXBOT_TEST_WAIT_PID)
+try {
+  $null=$p.Handle
+  $identity=@{pid=$p.Id;created=$p.StartTime.ToUniversalTime().Ticks.ToString();executable=$p.MainModule.FileName;alive=(-not $p.WaitForExit(0))}
+  [Console]::WriteLine((ConvertTo-Json -Compress -InputObject $identity));[Console]::Out.Flush()
+  $null=[Console]::ReadLine()
+  $done=$p.WaitForExit(0)
+  $record=@{pid=$identity.pid;created=$identity.created;signalled=$done}
+  if($done){$record.exitCode=$p.ExitCode}
+  [Console]::WriteLine((ConvertTo-Json -Compress -InputObject $record))
+} finally {$p.Dispose()}`
+  const child = spawn(ps, ['-NoProfile', '-NonInteractive', '-Command', script], {
+    ...nativeOptions, env: { ...nativeOptions.env, HEXBOT_TEST_WAIT_PID: String(pid) }, stdio: ['pipe', 'pipe', 'pipe']
+  })
+  const completed = once(child, 'close')
+  let stderr = ''
+  child.stderr.on('data', bytes => { stderr = (stderr + bytes).slice(-4096) })
+  const lines = createInterface({ input: child.stdout })[Symbol.asyncIterator]()
+  let identity
+  try {
+    const first = await lines.next()
+    assert(!first.done, stderr)
+    identity = JSON.parse(first.value)
+    console.log('Quit handoff retained daemon:', JSON.stringify(identity))
+    assert.equal(identity.pid, pid)
+    assert.equal(identity.alive, true)
+    assert.equal(await realpath(identity.executable), await realpath(executable))
+  } catch (error) {
+    child.stdin.end()
+    await completed.catch(() => undefined)
+    throw error
+  }
+  return async () => {
+    child.stdin.end('inspect\n')
+    const last = await lines.next()
+    const status = await completed
+    assert(!last.done, stderr)
+    const record = JSON.parse(last.value)
+    console.log('Quit handoff kernel completion:', JSON.stringify({ record, status, stderr }))
+    assert.deepEqual(status, [0, null])
+    assert.equal(record.created, identity.created)
+    assert.equal(record.signalled, true, 'Quit returned before its actual retained daemon handle signalled')
+    assert.equal(record.exitCode, 0)
+  }
+}
+
 async function openApp() {
   app = await electron.launch({ executablePath: executable, timeout: 300_000, env: {
     ...process.env, HOME: root, USERPROFILE: root, HEXBOT_HOME: home, HERMES_HOME: home,
@@ -135,6 +188,43 @@ try {
     servicePid = (await waitForRuntimeJson(join(home, 'runtime/native-running.json'), value => value.pid && value.pid !== ownedPid)).pid
     assert.throws(() => process.kill(ownedPid, 0), { code: 'ESRCH' })
     ownedPid = undefined
+
+    // A task remains enabled while stopped or after its script is lost. Full
+    // temporarily owns the daemon, then Quit must repair/start the same task.
+    for (const missingScript of [false, true]) {
+      await native(selected, ['service', 'stop'], nativeOptions)
+      await assertStopped(servicePid)
+      servicePid = undefined
+      const serviceScript = join(root, 'AppData/Local/Hexbot/daemon.ps1')
+      const script = await readFile(serviceScript)
+      if (missingScript) await (await import('node:fs/promises')).unlink(serviceScript)
+      await window.evaluate(() => window.hexbot.daemon.start())
+      ownedPid = (await waitForRuntimeJson(join(home, 'runtime/native-running.json'), value => value.pid)).pid
+      assert.equal((await window.evaluate(() => window.hexbot.daemon.status())).state, 'running')
+      const completed = await retainDaemon(ownedPid, selected)
+      const appExit = once(app.process(), 'exit')
+      let quitError
+      try {
+        await app.close(); app = undefined
+        assert.deepEqual(await appExit, [0, null])
+      } catch (error) { quitError = error }
+      try { await completed() }
+      catch (error) { if (quitError) throw new AggregateError([quitError, error], 'Quit and retained-handle check failed'); throw error }
+      if (quitError) throw quitError
+      const beforeQuit = ownedPid
+      ownedPid = undefined
+      const newTask = await waitForRuntimeJson(join(home, 'runtime/native-running.json'), value => value.pid && value.pid !== beforeQuit)
+      servicePid = newTask.pid
+      assert.equal(await realpath(newTask.executable), await realpath(selected))
+      assert.equal(JSON.parse((await native(selected, ['service', 'status', '--json'], nativeOptions)).stdout).running, true)
+      assert.equal((await fetch(`http://127.0.0.1:${(await state()).port}/api/daemon/identity`).then(response => response.json())).pid, servicePid)
+      await assertHomeLock('held')
+      assert.deepEqual(await readFile(serviceScript), script)
+      window = await openApp()
+      await window.evaluate(() => window.hexbot.daemon.start())
+      assert.equal(JSON.parse(await readFile(join(home, 'runtime/native-running.json'), 'utf8')).pid, servicePid)
+      console.log('Packaged Full Quit handed owned daemon to installed task:', JSON.stringify({ beforeQuit, servicePid, missingScript }))
+    }
 
     // Real installed Full relaunch: the task starts a distinct immutable older
     // build of the same binary version. Bundled chronology advances selection;

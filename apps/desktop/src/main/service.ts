@@ -90,15 +90,33 @@ export async function reconcileWindowsService(targetPlatform = process.platform,
   return record.pid
 }
 
+async function windowsServiceStatus(run: Run): Promise<{ installed: boolean; running: boolean }> {
+  const output = await run(hexbotExecutable(), ['service', 'status', '--json'], windowsOptions()) as { stdout: string }
+  const status = JSON.parse(output.stdout) as { installed: boolean; running: boolean }
+  if (typeof status.installed !== 'boolean' || typeof status.running !== 'boolean' || (status.running && !status.installed))
+    throw new Error('Windows service ownership status is invalid')
+  return { installed: status.installed, running: status.running }
+}
+
+// Called only for the manager's owned intent, inside its transition queue.
+// Status is strict here: read-only UI fallback must never authorize a handoff.
+export async function handoffWindowsService(stopOwned: () => Promise<void>, run: Run = exec): Promise<boolean> {
+  const before = await windowsServiceStatus(run)
+  await stopOwned()
+  if (!before.installed) return false
+  const after = await windowsServiceStatus(run)
+  if (!after.installed) return false
+  if (!after.running) await installService('win32', run)
+  return true
+}
+
 export async function serviceStatus(
   file = servicePath(), targetPlatform = process.platform,
   run: Run = exec
 ): Promise<{ installed: boolean; running: boolean }> {
   if (targetPlatform === 'win32') {
     try {
-      const output = await run(hexbotExecutable(), ['service', 'status', '--json'], windowsOptions()) as { stdout: string }
-      const status = JSON.parse(output.stdout) as { installed: boolean; running: boolean }
-      return { installed: status.installed, running: status.running }
+      return await windowsServiceStatus(run)
     } catch { return { installed: false, running: false } }
   }
   if (targetPlatform === 'darwin') {

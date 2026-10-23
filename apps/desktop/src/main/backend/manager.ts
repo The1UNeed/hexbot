@@ -138,7 +138,8 @@ export class DaemonManager extends EventEmitter {
   constructor(
     private readonly configuredPort?: number,
     private readonly serviceInstalled: () => Promise<boolean> = async () => false,
-    private readonly reconcileService: () => Promise<number | undefined> = async () => undefined
+    private readonly reconcileService: () => Promise<number | undefined> = async () => undefined,
+    private readonly handoffService?: (stopOwned: () => Promise<void>) => Promise<boolean>
   ) {
     super()
     app.on('before-quit', event => {
@@ -146,7 +147,10 @@ export class DaemonManager extends EventEmitter {
       event.preventDefault()
       this.quitting = true
       this.revokeRetry()
-      void this.stopForQuit().finally(() => app.exit(0))
+      void this.stopForQuit().then(() => app.exit(0), error => {
+        console.error('Daemon quit handoff failed:', error)
+        app.exit(1)
+      })
     })
   }
 
@@ -171,6 +175,7 @@ export class DaemonManager extends EventEmitter {
     this.restartTimer = undefined
   }
   private changeService(operation: () => Promise<void>, installed: boolean): Promise<void> {
+    if (this.quitting) return Promise.reject(new Error('The app is quitting'))
     // Revoke synchronously, before an already queued retry can enter the
     // transition queue. Intent survives the gap between a crash and its retry.
     const requestedOwned = this.ownedIntent || Boolean(this.child)
@@ -278,7 +283,7 @@ export class DaemonManager extends EventEmitter {
         if (activation && !this.child) {
           const previousPid = await this.reconcileService()
           if (previousPid !== undefined) {
-            const port = await this.waitForService(previousPid)
+            const port = await this.waitForService(previousPid ?? 0)
             this.setStatus({ state: 'external', port })
           }
         }
@@ -432,8 +437,32 @@ export class DaemonManager extends EventEmitter {
     return this.status()
   }
 
-  private async stopForQuit(): Promise<void> {
-    await this.transition
-    if (process.platform === 'win32' || !(await this.serviceInstalled())) await this.stop()
+  private stopForQuit(platform = process.platform): Promise<void> {
+    this.quitting = true
+    this.revokeRetry()
+    return this.serialize(async () => {
+      if (platform !== 'win32') {
+        if (!(await this.serviceInstalled())) await this.stopOwned()
+        return
+      }
+      const owned = this.ownedIntent || Boolean(this.child)
+      const previousPid = this.child?.pid
+      try {
+        if (owned && this.handoffService) {
+          if (await this.handoffService(async () => { await this.stopOwned() })) {
+            const port = await this.waitForService(previousPid ?? 0)
+            this.setStatus({ state: 'external', port })
+          }
+        } else await this.stopOwned()
+      } catch (error) {
+        // A failed ownership query must not leave our child running on Quit.
+        // Only the retained child is stopped; no external task is controlled.
+        if (this.child) {
+          try { await this.stopOwned() }
+          catch (cleanup) { throw new AggregateError([error, cleanup], 'Quit handoff and owned daemon cleanup failed') }
+        }
+        throw error
+      }
+    })
   }
 }

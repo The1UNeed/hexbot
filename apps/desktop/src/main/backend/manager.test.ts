@@ -425,3 +425,92 @@ it(`revokes a backoff retry before service ${installed ? 'install' : 'remove'}, 
     await rm(home, { recursive: true, force: true })
   }
 })
+
+it('Windows quit hands owned intent to a verified installed service after child completion', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'hexbot-quit-handoff-'))
+  const previous = process.env.HEXBOT_HOME
+  process.env.HEXBOT_HOME = home
+  const child = Object.assign(new EventEmitter(), {
+    stdout: new PassThrough(), stderr: new PassThrough(), stdin: new PassThrough(), pid: process.pid,
+    kill: vi.fn()
+  })
+  let requested!: () => void
+  const shutdown = new Promise<void>(resolve => { requested = resolve })
+  child.stdin.on('finish', requested)
+  child.kill.mockImplementation(() => { requested(); return true })
+  spawnDaemon.mockClear()
+  spawnDaemon.mockReturnValueOnce(child)
+  const calls: string[] = []
+  const manager = new DaemonManager(9120, undefined, undefined, async stop => {
+    calls.push('verified-task')
+    await stop()
+    calls.push('child-exited')
+    // A concurrently disabled task must remain disabled after the recheck.
+    return false
+  })
+  try {
+    await manager.start()
+    child.stdout.emit('data', Buffer.from('HERMES_BACKEND_READY port=9120\n'))
+    const quit = (manager as unknown as { stopForQuit(platform: NodeJS.Platform): Promise<void> }).stopForQuit('win32')
+    await shutdown
+    expect(calls).toEqual(['verified-task'])
+    child.emit('exit', 0, null)
+    await quit
+    expect(calls).toEqual(['verified-task', 'child-exited'])
+    expect(manager.status().state).toBe('stopped')
+    await manager.start()
+    expect(spawnDaemon).toHaveBeenCalledTimes(1)
+  } finally {
+    if (previous === undefined) delete process.env.HEXBOT_HOME
+    else process.env.HEXBOT_HOME = previous
+    await rm(home, { recursive: true, force: true })
+  }
+})
+
+for (const mode of ['foreign', 'failed-start', 'disable-race'] as const) it(`Windows Quit keeps serialized owned authority: ${mode}`, async () => {
+  const home = await mkdtemp(join(tmpdir(), 'hexbot-quit-authority-'))
+  const previous = process.env.HEXBOT_HOME
+  process.env.HEXBOT_HOME = home
+  const child = Object.assign(new EventEmitter(), {
+    stdout: new PassThrough(), stderr: new PassThrough(), stdin: new PassThrough(), pid: process.pid,
+    kill: vi.fn(() => { child.emit('exit', 0, null); return true })
+  })
+  child.stdin.on('finish', () => child.emit('exit', 0, null))
+  spawnDaemon.mockClear()
+  spawnDaemon.mockReturnValueOnce(child)
+  const handoff = vi.fn(async (stop: () => Promise<void>) => {
+    if (mode === 'failed-start') await stop()
+    throw new Error(mode === 'foreign' ? 'Foreign task refused' : 'Task start failed')
+  })
+  const manager = new DaemonManager(9120, undefined, undefined, handoff)
+  let release!: () => void
+  const gate = new Promise<void>(resolve => { release = resolve })
+  let entered!: () => void
+  const removing = new Promise<void>(resolve => { entered = resolve })
+  try {
+    await manager.start()
+    let disabled: Promise<void> | undefined
+    if (mode === 'disable-race') {
+      disabled = manager.uninstallService(async () => { entered(); await gate })
+      await removing
+    }
+    const quit = (manager as unknown as { stopForQuit(platform: NodeJS.Platform): Promise<void> }).stopForQuit('win32')
+    if (mode === 'disable-race') {
+      release()
+      await disabled
+      await quit
+      expect(handoff).not.toHaveBeenCalled()
+    } else await expect(quit).rejects.toThrow(mode === 'foreign' ? 'Foreign task refused' : 'Task start failed')
+    expect(manager.status().state).toBe('stopped')
+    const later = vi.fn(async () => undefined)
+    await expect(manager.installService(later)).rejects.toThrow('quitting')
+    expect(later).not.toHaveBeenCalled()
+    expect(spawnDaemon).toHaveBeenCalledTimes(1)
+    expect(child.kill.mock.calls.length + Number(child.stdin.writableEnded)).toBe(1)
+  } finally {
+    release()
+    if (previous === undefined) delete process.env.HEXBOT_HOME
+    else process.env.HEXBOT_HOME = previous
+    await rm(home, { recursive: true, force: true })
+  }
+})

@@ -247,3 +247,40 @@ it('repairs only a verified running Windows task whose home daemon uses an older
     await rm(root, { recursive: true, force: true })
   }
 })
+
+for (const state of ['stopped', 'missing-script', 'running', 'disabled', 'removed', 'foreign-before', 'foreign-after', 'install-failed', 'malformed'] as const) {
+  it(`Windows quit handoff preserves ownership and rechecks the task: ${state}`, async () => {
+    const { handoffWindowsService } = await import('./service')
+    const paths = await import('./backend/paths')
+    const executable = vi.spyOn(paths, 'hexbotExecutable').mockReturnValue('/trusted/hexbot.exe')
+    try {
+    const calls: string[] = []
+    let queries = 0
+    const run = async (_command: string, args: string[]): Promise<unknown> => {
+      calls.push(args[1]!)
+      if (args[1] === 'install') {
+        expect(calls).toEqual(['status', 'stop-owned', 'status', 'install'])
+        if (state === 'install-failed') throw new Error('Task installation refused')
+        return
+      }
+      expect(args).toEqual(['service', 'status', '--json'])
+      queries++
+      if ((state === 'foreign-before' && queries === 1) || (state === 'foreign-after' && queries === 2)) throw new Error('Foreign task refused')
+      return { stdout: JSON.stringify({
+        installed: state === 'malformed' ? 'unknown' : state !== 'disabled' && !(state === 'removed' && queries === 2),
+        running: state === 'running', recoverable: state === 'missing-script'
+      }) }
+    }
+    const pending = handoffWindowsService(async () => { calls.push('stop-owned') }, run)
+    if (state.startsWith('foreign') || state === 'malformed' || state === 'install-failed') {
+      await expect(pending).rejects.toThrow(/refused|invalid/)
+      expect(calls.filter(call => call === 'install')).toHaveLength(state === 'install-failed' ? 1 : 0)
+    } else {
+      expect(await pending).toBe(!['disabled', 'removed'].includes(state))
+      expect(calls.filter(call => call === 'install')).toHaveLength(['stopped', 'missing-script'].includes(state) ? 1 : 0)
+    }
+    if (state === 'foreign-before' || state === 'malformed') expect(calls).toEqual(['status'])
+    if (state === 'disabled') expect(calls).toEqual(['status', 'stop-owned'])
+    } finally { executable.mockRestore() }
+  })
+}
