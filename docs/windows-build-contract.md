@@ -397,3 +397,11 @@ remain pending.
 The unchanged actual-Pi chat-migration target passed three focused runs each on
 35f0 core source and actual main 4ce with the same pinned Pi. The separate macOS
 CI failure's cause remains unproved; its migration assertions/source are unchanged.
+
+The dev runner also uses real Node plus an owned JavaScript launcher on Windows,
+with the locked Pi CLI and verified search tools. It does not execute npm or pnpm
+command shims. The production daemon support guard still applies to source builds;
+the nonpublishing native probe uses the existing disposable source preparation.
+Native installer tests retain both file locks while checking Windows delete sharing,
+then exercise terminal Uninstall with and without data removal and a live foreign
+lock. These tests do not relax daemon exclusion to remove data.

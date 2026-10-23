@@ -13,12 +13,14 @@ import { createHash } from 'node:crypto'
 import { execFile, spawn } from 'node:child_process'
 import { promisify } from 'node:util'
 import { existsSync } from 'node:fs'
-import { chmod, mkdir, readFile, writeFile } from 'node:fs/promises'
+import { chmod, copyFile, mkdir, mkdtemp, readFile, realpath, rename, rm, stat, writeFile } from 'node:fs/promises'
 import net from 'node:net'
 import { homedir } from 'node:os'
-import { delimiter, dirname, resolve } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { basename, delimiter, dirname, join, resolve } from 'node:path'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { downloadTool, installTool } from '../../apps/desktop/src/main/backend/tools.ts'
+import { nodePath } from '../../apps/desktop/src/main/backend/node-path.ts'
+import { pnpmCommand } from '../desktop/pnpm-command.mjs'
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..')
 const args = process.argv.slice(2)
@@ -39,10 +41,34 @@ export function derivePorts(path) {
   return { daemon: base, web: base + 1000 }
 }
 
-export async function ensurePiRuntime(directory, run = promisify(execFile)) {
+export function devPiEntrypoint(directory, platform = process.platform) {
+  return resolve(directory, platform === 'win32'
+    ? 'node_modules/@earendil-works/pi-coding-agent/dist/cli.js' : 'node_modules/.bin/pi')
+}
+
+// npm.cmd is not an executable, and Windows tar corrupts non-ASCII archive
+// operands. Keep both boundaries on real executables and literal argument arrays.
+export async function devExecFile(command, args, options = {}) {
+  if (process.platform === 'win32' && command === 'npm') {
+    const npm = join(dirname(await realpath(process.execPath)), 'node_modules/npm/bin/npm-cli.js')
+    if (!(await stat(npm)).isFile()) throw new Error('Cannot locate the Node installation npm CLI')
+    return promisify(execFile)(process.execPath, [nodePath(npm), ...args], options)
+  }
+  if (process.platform === 'win32' && command === 'tar') {
+    const [flag, archive, change, staging, member] = args
+    if (args.length !== 5 || flag !== '-xf' || change !== '-C' || dirname(archive) !== staging)
+      throw new Error('Unexpected dev tool archive extraction')
+    const tar = join(process.env.SystemRoot, 'System32/tar.exe')
+    if (!(await stat(tar)).isFile()) throw new Error('Windows System32 tar is unavailable')
+    return promisify(execFile)(tar, ['-xf', basename(archive), '-C', '.', member], { ...options, cwd: staging })
+  }
+  return promisify(execFile)(command, args, options)
+}
+
+export async function ensurePiRuntime(directory, run = devExecFile, platform = process.platform) {
   const digest = createHash('sha256').update(await readFile(resolve(directory, 'package-lock.json'))).digest('hex')
   const marker = resolve(directory, 'node_modules/.hexbot-lock-sha256')
-  if (existsSync(resolve(directory, 'node_modules/.bin/pi')) &&
+  if (await stat(devPiEntrypoint(directory, platform)).then(info => info.isFile(), () => false) &&
       await readFile(marker, 'utf8').catch(() => '') === digest) return
   await run('npm', ['ci', '--ignore-scripts', '--no-audit', '--no-fund'], { cwd: directory, maxBuffer: 32 * 1024 * 1024 })
   await writeFile(marker, digest)
@@ -53,10 +79,35 @@ export async function prepareDevRuntime(home, hexbot, pi, overrides = {}) {
   const deps = {
     binDirectory, stagingDirectory: resolve(home, 'runtime'),
     platform: process.platform, arch: process.arch,
-    exists: existsSync, download: downloadTool, run: promisify(execFile),
+    exists: existsSync, download: downloadTool, run: devExecFile,
     ...overrides
   }
   for (const tool of ['rg', 'fd']) await installTool(tool, deps)
+  if (deps.platform === 'win32') {
+    // PiProcess already supports this Node + sibling pi/launch.mjs layout.
+    // Copy the running Node instead of interpreting a shim or requiring symlinks.
+    const root = resolve(home, 'runtime/dev-pi')
+    const source = await realpath(process.execPath)
+    const executable = join(root, 'node.exe')
+    await mkdir(join(root, 'pi'), { recursive: true })
+    const digest = bytes => createHash('sha256').update(bytes).digest('hex')
+    const sourceHash = digest(await readFile(source))
+    if (await readFile(executable).then(bytes => digest(bytes), () => '') !== sourceHash) {
+      const staging = await mkdtemp(join(root, '.node-'))
+      try {
+        await copyFile(source, join(staging, 'node.exe'))
+        await rename(join(staging, 'node.exe'), executable)
+      } finally { await rm(staging, { recursive: true, force: true }) }
+    }
+    const cli = pathToFileURL(nodePath(await realpath(pi))).href
+    const search = new URL('../desktop/search-tools.mjs', import.meta.url).href
+    await writeFile(join(root, 'pi/launch.mjs'),
+      `import { prepareSearchTools } from ${JSON.stringify(search)};\n` +
+      `await prepareSearchTools(${JSON.stringify(binDirectory)}, process.env.PI_CODING_AGENT_DIR);\n` +
+      `await import(${JSON.stringify(cli)});\n`)
+    return { HEXBOT_HOME: home, HEXBOT_EXECUTABLE: hexbot, HEXBOT_PI_EXECUTABLE: executable,
+      PATH: [binDirectory, process.env.PATH ?? ''].join(';') }
+  }
   const quote = value => "'" + value.replaceAll("'", "'\"'\"'") + "'"
   const launcher = resolve(home, 'runtime/hexbot-pi')
   await writeFile(launcher, '#!/bin/sh\nset -eu\n' +
@@ -167,10 +218,10 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     if (home === resolve(homedir(), '.hexbot'))
       throw new Error('Refusing to run a dev daemon against ~/.hexbot, the live install')
     await mkdir(home, { recursive: true })
-    const hexbot = resolve(repositoryRoot, 'backend/hexbot-core/target/debug/hexbot')
-    const pi = resolve(repositoryRoot, 'backend/pi-runtime/node_modules/.bin/pi')
+    const hexbot = resolve(repositoryRoot, `backend/hexbot-core/target/debug/hexbot${process.platform === 'win32' ? '.exe' : ''}`)
+    const pi = devPiEntrypoint(resolve(repositoryRoot, 'backend/pi-runtime'))
     console.log('[dev] building the Rust daemon')
-    const run = promisify(execFile)
+    const run = devExecFile
     await run('cargo', ['build', '--locked', '--manifest-path', resolve(repositoryRoot, 'backend/hexbot-core/Cargo.toml'), '--bin', 'hexbot'], { cwd: repositoryRoot, maxBuffer: 32 * 1024 * 1024 })
     await ensurePiRuntime(resolve(repositoryRoot, 'backend/pi-runtime'), run)
     const runtimeEnv = await prepareDevRuntime(home, hexbot, pi)
@@ -178,12 +229,12 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     const derived = derivePorts(repositoryRoot)
     const daemonPort = Number(option('--port') ?? (await freePortFrom(derived.daemon)))
     const webPort = await freePortFrom(derived.web)
-    const pnpm = process.platform === 'win32' ? 'pnpm.cmd' : 'pnpm'
+    const pnpm = await pnpmCommand()
 
     console.log(`[dev] home ${home}`)
     if (desktop) {
       // The Electron app starts and owns its daemon; it needs the web dev server.
-      start('web', pnpm, [
+      start('web', pnpm.command, [...pnpm.prefix,
         '--filter',
         './apps/web',
         'run',
@@ -194,7 +245,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
       ])
       await waitForPort(webPort, 'web bundle')
       console.log(`[dev] web http://localhost:${webPort}`)
-      start('desktop', pnpm, ['--filter', './apps/desktop', 'run', 'dev'], {
+      start('desktop', pnpm.command, [...pnpm.prefix, '--filter', './apps/desktop', 'run', 'dev'], {
         ...runtimeEnv,
         HEXBOT_WEB_DEV_URL: `http://localhost:${webPort}`
       })
@@ -207,8 +258,8 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
       console.log(`[dev] daemon http://127.0.0.1:${daemonPort}`)
       start(
         'web',
-        pnpm,
-        ['--filter', './apps/web', 'run', 'dev', '--port', String(webPort), '--strictPort'],
+        pnpm.command,
+        [...pnpm.prefix, '--filter', './apps/web', 'run', 'dev', '--port', String(webPort), '--strictPort'],
         {
           VITE_HEXBOT_ORIGIN: `http://127.0.0.1:${daemonPort}`
         }

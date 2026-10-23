@@ -1,12 +1,15 @@
 import assert from 'node:assert/strict'
-import { execFile } from 'node:child_process'
+import { execFile, spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import test from 'node:test'
 import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { delimiter, join } from 'node:path'
 import { promisify } from 'node:util'
-import { derivePorts, printsSignInLink, validateDevArgs, ensurePiRuntime, prepareDevRuntime, pairingCode } from './run.mjs'
+import { createInterface } from 'node:readline'
+import { once } from 'node:events'
+import { fileURLToPath } from 'node:url'
+import { derivePorts, printsSignInLink, validateDevArgs, ensurePiRuntime, prepareDevRuntime, devPiEntrypoint, pairingCode } from './run.mjs'
 import { downloadTool, toolAsset } from '../../apps/desktop/src/main/backend/tools.ts'
 
 test('dev ports derive from the checkout path and stay apart per worktree', () => {
@@ -149,4 +152,81 @@ test('dev prints a sign-in link only to an unsupervised terminal', () => {
   assert.equal(printsSignInLink(true, {XPC_SERVICE_NAME:'0'}), true)
   assert.equal(printsSignInLink(false, {}), false)
   for (const env of [{HEXBOT_SUPERVISOR:'dev'}, {INVOCATION_ID:'systemd'}, {XPC_SERVICE_NAME:'app.hexbot.daemon'}]) assert.equal(printsSignInLink(true, env), false)
+})
+
+// Exercise the Windows layout on every host. Native Windows additionally runs
+// this exact prepared entrypoint through Rust PiProcess, not a shell/shim.
+test('Windows dev layout loads real pinned Pi through Node with literal arguments', { timeout: 60000 }, async () => {
+  const root = await mkdtemp(join(tmpdir(), 'hexbot dev π & '))
+  let child
+  try {
+    const pi = devPiEntrypoint(fileURLToPath(new URL('../../backend/pi-runtime', import.meta.url)), 'win32')
+    const env = await prepareDevRuntime(root, join(root, 'hexbot.exe'), pi, {
+      platform: 'win32', arch: 'x64',
+      download: async url => ['rg', 'fd'].map(tool => toolAsset(tool, 'win32', 'x64')).find(asset => asset.url === url).sha256,
+      run: async (_command, args) => {
+        const extracted = join(args[3], args[4])
+        await mkdir(join(extracted, '..'), { recursive: true })
+        await writeFile(extracted, 'test search tool')
+        // search-tools chooses tool names for the actual host in this portable test.
+        if (process.platform !== 'win32') await writeFile(join(root, 'bin', args[4].endsWith('rg.exe') ? 'rg' : 'fd'), 'test search tool')
+      }
+    })
+    assert.equal(env.HEXBOT_PI_EXECUTABLE, join(root, 'runtime/dev-pi/node.exe'))
+    assert.equal(createHash('sha256').update(await readFile(env.HEXBOT_PI_EXECUTABLE)).digest('hex'),
+      createHash('sha256').update(await readFile(process.execPath)).digest('hex'))
+    const agent = join(root, 'agent π &')
+    const extension = join(root, 'literal " π &.mjs')
+    // A quote is illegal in Windows filenames. Keep it in the literal CLI
+    // option value instead, and exercise spaces/Unicode/& in the file operand.
+    const extensionPath = process.platform === 'win32' ? join(root, 'literal π &.mjs') : extension
+    const record = join(root, 'argv.json')
+    await writeFile(extensionPath, `import {writeFileSync} from 'node:fs';export default function(pi){pi.registerFlag('literal',{type:'string',default:''});writeFileSync(${JSON.stringify(record)},JSON.stringify(process.argv));}`)
+    const literal = 'spaces π 中文 & "quote"'
+    const cliArgs = ['--mode', 'rpc', '--no-session', '--extension', extensionPath, '--literal', literal]
+    child = spawn(process.platform === 'win32' ? env.HEXBOT_PI_EXECUTABLE : process.execPath,
+      [join(root, 'runtime/dev-pi/pi/launch.mjs'), ...cliArgs], {
+        env: { ...process.env, ...env, PI_CODING_AGENT_DIR: agent }, stdio: ['pipe', 'pipe', 'pipe']
+      })
+    let stderr = ''
+    child.stderr.on('data', chunk => { stderr = (stderr + chunk).slice(-8192) })
+    const closed = once(child, 'close')
+    const lines = createInterface({ input: child.stdout })
+    const response = new Promise((done, reject) => {
+      lines.on('line', line => { const value = JSON.parse(line); if (value.id === 'dev-state') done(value) })
+      child.once('close', code => reject(new Error(`Pi exited before handshake: ${code} ${stderr}`)))
+    })
+    child.stdin.write(JSON.stringify({ type: 'get_state', id: 'dev-state' }) + '\n')
+    assert.equal((await response).success, true, stderr)
+    assert.deepEqual(JSON.parse(await readFile(record, 'utf8')).slice(2), cliArgs)
+    child.stdin.end()
+    assert.deepEqual(await closed, [0, null], stderr)
+    for (const tool of process.platform === 'win32' ? ['rg.exe', 'fd.exe'] : ['rg', 'fd'])
+      assert.equal(await readFile(join(agent, 'bin', tool), 'utf8'), 'test search tool')
+  } finally {
+    if (child && child.exitCode === null) child.kill()
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('Windows Pi cache requires the real JS CLI, not an npm .cmd shim', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'hexbot dev cache π '))
+  try {
+    await writeFile(join(root, 'package-lock.json'), 'locked')
+    await mkdir(join(root, 'node_modules/.bin'), { recursive: true })
+    await writeFile(join(root, 'node_modules/.bin/pi.cmd'), 'untrusted shim')
+    let installs = 0
+    const install = async () => {
+      installs++
+      const cli = devPiEntrypoint(root, 'win32')
+      await mkdir(join(cli, '..'), { recursive: true })
+      await writeFile(cli, 'real CLI')
+    }
+    await ensurePiRuntime(root, install, 'win32')
+    await ensurePiRuntime(root, install, 'win32')
+    assert.equal(installs, 1)
+    await rm(devPiEntrypoint(root, 'win32'))
+    await ensurePiRuntime(root, install, 'win32')
+    assert.equal(installs, 2)
+  } finally { await rm(root, { recursive: true, force: true }) }
 })

@@ -26,7 +26,7 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: cargo check --locked --manifest-path backend/hexbot-installer/Cargo.toml
       - run: cargo clippy --locked --manifest-path backend/hexbot-installer/Cargo.toml --lib --bins -- -D warnings
-      - run: cargo test --locked --manifest-path backend/hexbot-installer/Cargo.toml --lib --test windows_repair
+      - run: cargo test --locked --manifest-path backend/hexbot-installer/Cargo.toml --lib --test windows_repair --test windows_data_removal
       - run: cargo clippy --locked --manifest-path apps/installer/src-tauri/Cargo.toml --all-targets -- -D warnings
       - run: cargo test --locked --manifest-path apps/installer/src-tauri/Cargo.toml
       - run: pnpm --filter ./apps/desktop run typecheck
@@ -116,6 +116,11 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $env:HEXBOT_WINDOWS_INSTALLER = (Resolve-Path backend/hexbot-installer/target/debug/hexbot-install.exe).Path
           node scripts/dev/run-one-rust-test.mjs backend/hexbot-core/Cargo.toml windows_launchers interrupted_task_install_uninstalls_owned_files_when_the_task_is_absent
+      - name: Run the real dev provisioner through PiProcess without command shims
+        working-directory: ${{ env.HEXBOT_WINDOWS_PROBE_SOURCE }}
+        env:
+          HEXBOT_WINDOWS_SERVICE_PROBE: '1'
+        run: node scripts/dev/run-one-rust-test.mjs backend/hexbot-core/Cargo.toml windows_dev prepared_dev_node_runs_real_pi_for_daemon_and_desktop
       - name: Validate per-user CLI PATH registration on the disposable CI user
         working-directory: ${{ env.HEXBOT_WINDOWS_PROBE_SOURCE }}
         env:
