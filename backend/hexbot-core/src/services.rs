@@ -1653,6 +1653,18 @@ fn inherited_activation_lock(file: &fs::File, fd: Option<i32>) -> Option<fs::Fil
     copy.try_lock().is_ok().then_some(copy)
 }
 
+// The runtime native-executable points at, with its manifest.
+fn selected_native(native: &Path) -> Option<(PathBuf, Value)> {
+    let executable = native
+        .parent()?
+        .join("native-executable")
+        .canonicalize()
+        .ok()
+        .filter(|executable| executable.starts_with(native))?;
+    let manifest = fs::read(executable.with_file_name("manifest.json")).ok()?;
+    Some((executable, serde_json::from_slice(&manifest).ok()?))
+}
+
 // Staging directories remain hidden from pruning until the activation lock is held.
 // `newer_than_selected` is the daemon updater's manifest: setup or the installer
 // may have selected a newer build while the update downloaded, so chronology is
@@ -1669,13 +1681,7 @@ pub(crate) fn publish_native(
         .ok_or_else(|| Error::new(5243, "Missing runtime directory"))?;
     let _lock = activation_lock(runtime)?;
     if let Some(requested) = newer_than_selected {
-        let selected = runtime
-            .join("native-executable")
-            .canonicalize()
-            .ok()
-            .and_then(|executable| fs::read(executable.with_file_name("manifest.json")).ok())
-            .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
-            .unwrap_or_else(|| json!({}));
+        let selected = selected_native(native).map_or_else(|| json!({}), |(_, manifest)| manifest);
         require_newer_native_build(requested, &selected)?;
     }
     let directory = native.join(format!("{version}-{}", common::id()));
@@ -2133,12 +2139,19 @@ async fn native_update(home: &Path, version: &str, service: &Service) -> Result<
     // A daemon without its manifest still knows its version for the tie-break.
     current["version"] = json!(crate::version());
     require_newer_native_build(&manifest, &current)?;
+    let native = native_directory(home)?;
+    // The app or setup may already have selected this build or a newer one
+    // while this daemon kept running; restart into it instead.
+    if let Some((executable, selected)) = selected_native(&native)
+        && require_newer_native_build(&manifest, &selected).is_err()
+    {
+        return Ok(executable);
+    }
     let url = artifact_url(&base, &manifest)?;
     let digest = common::required(&manifest, "sha256")?;
     if digest.len() != 64 || !digest.bytes().all(|b| b.is_ascii_hexdigit()) {
         return Err(Error::new(5243, "invalid native update checksum"));
     }
-    let native = native_directory(home)?;
     let staging = tempfile::tempdir_in(&native)?;
     let tmp = tempfile::NamedTempFile::new_in(&native)?;
     update_state(service, "downloading", None, None).await;

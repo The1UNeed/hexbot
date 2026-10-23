@@ -1,5 +1,6 @@
 import { mkdir, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
+import semver from 'semver'
 import { bootstrap, selectedNativeVersion } from './backend/bootstrap'
 import type { DaemonManager } from './backend/manager'
 import { hexbotHome, runtimeDir } from './backend/paths'
@@ -57,9 +58,9 @@ async function writeStatus(
 let running = false
 
 // Prepares the runtime this app ships, which keeps a newer one already in use,
-// and restarts the daemon when that runtime is the requested version. Returns
-// whether it reported an outcome: false when there is nothing to restart on,
-// so the request ends as up to date.
+// and restarts the daemon when that runtime is the requested version or newer.
+// Returns whether it reported an outcome: false when there is nothing to
+// restart on, so the request ends as up to date.
 async function restartOnAppRuntime(
   requested: string,
   daemon: Pick<DaemonManager, 'start' | 'stop'>
@@ -71,9 +72,10 @@ async function restartOnAppRuntime(
     await writeStatus('failed', { message: errorMessage(error) })
     return true
   }
-  if ((await selectedNativeVersion()) !== requested) return false
-  log.info(`restarting the daemon on ${requested}`)
-  await writeStatus('installing', { version: requested })
+  const selected = await selectedNativeVersion()
+  if (!semver.valid(selected) || !semver.valid(requested) || semver.lt(selected!, requested)) return false
+  log.info(`restarting the daemon on ${selected}`)
+  await writeStatus('installing', { version: selected })
   await daemon.stop()
   await daemon.start()
   return true

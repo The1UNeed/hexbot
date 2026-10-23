@@ -319,6 +319,49 @@ async fn native_archive_child() {
             )
             .unwrap();
             assert_eq!(selected["files"], files);
+
+            // A daemon still on its old build restarts into a runtime the app
+            // already selected, without downloading it again.
+            let other = tempfile::tempdir().unwrap();
+            db::migrate(other.path()).unwrap();
+            mock.configure(other.path());
+            let selected = other.path().join("runtime/native/9.8.7-app");
+            fs::create_dir_all(&selected).unwrap();
+            fs::write(selected.join("hexbot"), binary).unwrap();
+            fs::write(selected.join("manifest.json"), &metadata).unwrap();
+            std::os::unix::fs::symlink(
+                selected.join("hexbot"),
+                other.path().join("runtime/native-executable"),
+            )
+            .unwrap();
+            *mock.data.binary.lock().await = b"not the archive".to_vec();
+            services::call(
+                other.path(),
+                "local",
+                "hexbot.update.request",
+                &json!({"version":"9.8.7"}),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+            let again = tokio::time::timeout(Duration::from_secs(10), async {
+                loop {
+                    let status =
+                        services::call(other.path(), "local", "hexbot.update.status", &json!({}))
+                            .await
+                            .unwrap()
+                            .unwrap();
+                    assert_ne!(status["status"], "failed", "{status}");
+                    if let Some(path) = services::take_restart(other.path()).await.unwrap() {
+                        break path;
+                    }
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .unwrap();
+            assert_eq!(again, selected.join("hexbot").canonicalize().unwrap());
+            services::shutdown(other.path()).await.unwrap();
         }
         services::shutdown(home.path()).await.unwrap();
     }
