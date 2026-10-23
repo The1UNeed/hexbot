@@ -5,6 +5,7 @@
   "type": "module",
   "main": "out/main/index.js",
   "scripts": {
+    "postinstall": "install-electron",
     "dev": "node ../../scripts/dev/desktop.mjs dev",
     "build": "pnpm --filter @hexbot/web run build && node ../../scripts/desktop/stage-runtime.mjs && electron-vite build && node scripts/copy-web.mjs",
     "build:client": "pnpm --filter @hexbot/web run build && HEXBOT_EDITION=client electron-vite build && node scripts/copy-web.mjs",
