@@ -123,6 +123,18 @@ fn owned_app(engine: &Installer, id: &str, version: &str) -> PathBuf {
     bytes.resize(size + 8, 0);
     bytes.extend(package);
     fs::write(path.join("resources/app.asar"), bytes).unwrap();
+    #[cfg(windows)]
+    {
+        // These tests stop at a missing manifest or the explicit ownership
+        // recheck. Supply an ordinary real PE for the earlier read-only NSIS
+        // host/process preflight; this copy is never executed as an uninstaller.
+        let name = if id.starts_with("app.hexbot.client") {
+            "Uninstall HexbotClient.exe"
+        } else {
+            "Uninstall Hexbot.exe"
+        };
+        fs::copy(std::env::current_exe().unwrap(), path.join(name)).unwrap();
+    }
     path
 }
 
@@ -673,7 +685,11 @@ fn change_to_client_refuses_hidden_service_ownership_errors_before_download() {
                 );
             } else {
                 // An unpublished manifest stops the valid/absent controls before NSIS.
-                assert_eq!(*server.requests.lock().unwrap(), ["/install/stable.json"]);
+                assert_eq!(
+                    *server.requests.lock().unwrap(),
+                    ["/install/stable.json"],
+                    "{from:?}/{case}: {error}"
+                );
             }
             assert!(stages.is_empty());
             for (p, bytes) in before {
@@ -1222,7 +1238,11 @@ fn absent_receipt_never_claims_existing_foreign_paths_or_a_swapped_download_dest
         );
         installer.base_url = server.base.clone();
         let mut stages = Vec::new();
-        assert!(installer.repair(&mut |p| stages.push(p.stage)).is_err());
+        let error = installer.repair(&mut |p| stages.push(p.stage)).unwrap_err();
+        eprintln!(
+            "Absent receipt case {case}: error={error}; stages={stages:?}; requests={:?}",
+            server.requests.lock().unwrap()
+        );
         assert!(
             !stages
                 .iter()
@@ -1275,12 +1295,10 @@ fn another_complete_identity_is_not_ambiguity_for_a_valid_absent_receipt() {
     let server = Server::new(|_| BTreeMap::new());
     installer.base_url = server.base.clone();
     assert_eq!(installer.detect().unwrap().track(), Some(Track::Nightly));
+    let error = installer.repair(&mut |_| {}).unwrap_err();
     assert!(
-        installer
-            .repair(&mut |_| {})
-            .unwrap_err()
-            .to_string()
-            .contains("404")
+        error.to_string().contains("404"),
+        "Absent receipt beside another complete identity: {error}"
     );
     assert_eq!(*server.requests.lock().unwrap(), ["/install/nightly.json"]);
     assert!(other.is_dir());

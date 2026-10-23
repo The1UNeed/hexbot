@@ -117,7 +117,15 @@ pub(crate) fn missing(
     destination: &Path,
     id: &str,
 ) -> io::Result<crate::windows_recovery::Registration> {
-    Ok(classify_missing(destination, id, &read(id)?))
+    let raw = read(id)?;
+    let class = classify_missing(destination, id, &raw);
+    if class == crate::windows_recovery::Registration::Other {
+        eprintln!(
+            "Missing app NSIS registration classification refused: {}",
+            registration_diagnostic(destination, id, None, &raw)
+        );
+    }
+    Ok(class)
 }
 
 fn classify_missing(
