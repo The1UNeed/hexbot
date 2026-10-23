@@ -47,7 +47,9 @@ fn host(machine: Machine) -> crate::Result<std::path::PathBuf> {
         unsafe extern "system" {
             fn GetSystemWow64DirectoryW(buffer: *mut u16, size: u32) -> u32;
         }
-        let mut buffer = [0u16; 32768];
+        // 32768 returned an unwritten buffer on the native Windows control.
+        // Keep the same API below that observed capacity boundary.
+        let mut buffer = [0u16; 32767];
         let length =
             unsafe { GetSystemWow64DirectoryW(buffer.as_mut_ptr(), buffer.len() as u32) } as usize;
         if length == 0 {
@@ -65,10 +67,7 @@ fn host(machine: Machine) -> crate::Result<std::path::PathBuf> {
                 serde_json::json!({"returnedLength":length,"capacity":buffer.len(),"schema":schema})
             );
         }
-        if !schema["firstNul"].is_null() {
-            return crate::fail("The OS-reported WOW64 directory contains an embedded NUL.");
-        }
-        std::path::PathBuf::from(String::from_utf16(&buffer[..length])?)
+        std::path::PathBuf::from(checked_directory(&buffer, length)?)
             .join("WindowsPowerShell/v1.0/powershell.exe")
     };
     let schema = os_schema(program.as_os_str());
@@ -87,6 +86,24 @@ fn host(machine: Machine) -> crate::Result<std::path::PathBuf> {
         );
     }
     Ok(program)
+}
+
+#[cfg(any(windows, test))]
+fn checked_directory(buffer: &[u16], returned: usize) -> std::io::Result<String> {
+    // The API length excludes its terminator. Never accept an unwritten,
+    // embedded-NUL or unterminated result as a system path.
+    if returned == 0
+        || returned >= buffer.len()
+        || buffer[returned] != 0
+        || buffer[..returned].contains(&0)
+    {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "The OS-reported WOW64 directory is unwritten or not correctly terminated.",
+        ));
+    }
+    String::from_utf16(&buffer[..returned])
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))
 }
 
 #[cfg(any(windows, test))]
@@ -308,6 +325,33 @@ mod tests {
         );
     }
 
+    #[test]
+    fn directory_results_require_the_exact_api_terminator() {
+        let mut valid: Vec<u16> = r"C:\Windows\SysWOW64".encode_utf16().collect();
+        let length = valid.len();
+        valid.extend([0, 0xa5a5]);
+        assert_eq!(
+            checked_directory(&valid, length).unwrap(),
+            r"C:\Windows\SysWOW64"
+        );
+        for (buffer, returned) in [
+            (vec![], 0),
+            (vec![0; 32], 0),
+            (vec![0; 32], 20),
+            (vec![0xa5a5; 32], 20),
+            (vec![65, 0, 66, 0], 3),
+            (vec![65, 66], 1),
+            (vec![65, 0], 2),
+            (vec![65, 0], 3),
+            (vec![0xd800, 0], 1),
+        ] {
+            assert!(
+                checked_directory(&buffer, returned).is_err(),
+                "{buffer:?}, {returned}"
+            );
+        }
+    }
+
     #[cfg(windows)]
     #[test]
     fn direct_wow64_api_buffer_and_binding_controls() {
@@ -333,9 +377,13 @@ mod tests {
             let returned = unsafe { locate(buffer.as_mut_ptr(), buffer.len() as u32) } as usize;
             let error = std::io::Error::last_os_error().raw_os_error();
             let first_nul = buffer.iter().position(|unit| *unit == 0);
-            serde_json::json!({"label":label,"capacity":buffer.len(),"returnedLength":returned,
+            let decoded = checked_directory(buffer, returned);
+            (
+                serde_json::json!({"label":label,"capacity":buffer.len(),"returnedLength":returned,
                 "lastError":error,"firstUnits":buffer.iter().copied().take(24).collect::<Vec<_>>(),
-                "firstNul":first_nul,"valid":returned>0 && returned<buffer.len() && first_nul==Some(returned)})
+                "firstNul":first_nul,"valid":decoded.is_ok()}),
+                decoded,
+            )
         };
         let mut stack = [0u16; 32768];
         let records = [
@@ -360,11 +408,35 @@ mod tests {
         eprintln!(
             "Direct trusted WOW64 API controls: {}",
             serde_json::json!({
-                "importAddress":GetSystemWow64DirectoryW as *const () as usize,"resolvedAddress":address as usize,"records":records
+                "importAddress":GetSystemWow64DirectoryW as *const () as usize,"resolvedAddress":address as usize,"records":records.iter().map(|(record, _)| record).collect::<Vec<_>>()
             })
         );
         // Do not accept an unwritten/unterminated result or select another host.
-        assert!(records.iter().all(|record| record["valid"] == true));
+        let expected = records[2].1.as_ref().unwrap();
+        assert!(!expected.is_empty());
+        for (record, decoded) in &records[2..] {
+            assert_eq!(decoded.as_ref().unwrap(), expected, "{record}");
+            assert_eq!(record["firstNul"], record["returnedLength"]);
+        }
+        for (record, decoded) in &records[..2] {
+            assert!(
+                decoded.is_err(),
+                "unsupported capacity was accepted: {record}"
+            );
+            assert_eq!(record["lastError"], 0);
+            assert_eq!(
+                record["returnedLength"],
+                expected.encode_utf16().count() + 1
+            );
+            assert!(record["firstNul"].is_null());
+            assert!(
+                record["firstUnits"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .all(|unit| unit == 0xa5a5)
+            );
+        }
     }
 
     #[cfg(windows)]
