@@ -56,16 +56,75 @@ fn host(machine: Machine) -> crate::Result<std::path::PathBuf> {
         if length >= buffer.len() {
             return crate::fail("The Windows WOW64 system directory is too long.");
         }
+        let schema = wide_schema(buffer[..length].iter().copied());
+        if std::env::var("HEXBOT_WINDOWS_NSIS_PROBE").as_deref() == Ok("1")
+            || !schema["firstNul"].is_null()
+        {
+            eprintln!(
+                "NSIS WOW64 directory: {}",
+                serde_json::json!({"returnedLength":length,"capacity":buffer.len(),"schema":schema})
+            );
+        }
+        if !schema["firstNul"].is_null() {
+            return crate::fail("The OS-reported WOW64 directory contains an embedded NUL.");
+        }
         std::path::PathBuf::from(String::from_utf16(&buffer[..length])?)
             .join("WindowsPowerShell/v1.0/powershell.exe")
     };
-    let meta = std::fs::symlink_metadata(&program)?;
+    let schema = os_schema(program.as_os_str());
+    if std::env::var("HEXBOT_WINDOWS_NSIS_PROBE").as_deref() == Ok("1") {
+        eprintln!(
+            "NSIS host locator: {}",
+            serde_json::json!({"machine":format!("{machine:?}"),"program":program.to_string_lossy().chars().take(1024).collect::<String>(),"schema":schema})
+        );
+    }
+    let meta = std::fs::symlink_metadata(&program).inspect_err(|error| {
+        eprintln!("NSIS host metadata failed: machine={machine:?}; error={error}; schema={schema}");
+    })?;
     if !program.is_absolute() || !meta.is_file() || !crate::detect::ordinary(&meta) {
         return crate::fail(
             "The matching Windows system PowerShell host is not an ordinary absolute executable.",
         );
     }
     Ok(program)
+}
+
+#[cfg(any(windows, test))]
+fn wide_schema(units: impl IntoIterator<Item = u16>) -> serde_json::Value {
+    let mut count = 0;
+    let mut first_nul = None;
+    for unit in units {
+        if unit == 0 && first_nul.is_none() {
+            first_nul = Some(count);
+        }
+        count += 1;
+    }
+    serde_json::json!({"utf16Units":count,"firstNul":first_nul})
+}
+
+#[cfg(windows)]
+fn os_schema(value: &std::ffi::OsStr) -> serde_json::Value {
+    use std::os::windows::ffi::OsStrExt;
+    wide_schema(value.encode_wide())
+}
+
+#[cfg(windows)]
+fn command_schema(command: &std::process::Command) -> serde_json::Value {
+    // Describe only explicit fields. Never dump inherited environment values or
+    // script/argument contents, and never rewrite an invalid Win32 operand.
+    serde_json::json!({
+        "program":os_schema(command.get_program()),
+        "arguments":command.get_args().take(8).map(os_schema).collect::<Vec<_>>(),
+        "argumentCount":command.get_args().count(),
+        "environment":command.get_envs().take(16).map(|(key,value)| serde_json::json!({
+            "name":key.to_str().filter(|name|matches!(*name,
+                "HOME"|"USERPROFILE"|"HEXBOT_HOME"|"HEXBOT_SERVICE_ROOT"|"HEXBOT_SERVICE_NO_LOAD"|"HEXBOT_NSIS_DESTINATIONS"|"HEXBOT_NSIS_IMAGE"|"HEXBOT_NSIS_AVAILABLE"
+            )).unwrap_or("[other]"),
+            "key":os_schema(key),"value":value.map(os_schema)
+        })).collect::<Vec<_>>(),
+        "environmentCount":command.get_envs().count(),
+        "cwd":command.get_current_dir().map(|path|os_schema(path.as_os_str()))
+    })
 }
 
 fn inputs(destination: &Path, id: &str) -> crate::Result<(Vec<String>, &'static str)> {
@@ -195,12 +254,20 @@ fn output(mut command: std::process::Command) -> crate::Result<std::process::Out
     }
     let mut stdout = tempfile::tempfile()?;
     let mut stderr = tempfile::tempfile()?;
-    let mut child = command
+    command
         .creation_flags(0x08000000)
         .stdin(Stdio::null())
         .stdout(stdout.try_clone()?)
-        .stderr(stderr.try_clone()?)
-        .spawn()?;
+        .stderr(stderr.try_clone()?);
+    if std::env::var("HEXBOT_WINDOWS_NSIS_PROBE").as_deref() == Ok("1") {
+        eprintln!("NSIS process inputs: {}", command_schema(&command));
+    }
+    let mut child = command.spawn().inspect_err(|error| {
+        eprintln!(
+            "NSIS process spawn failed: error={error}; fields={}",
+            command_schema(&command)
+        );
+    })?;
     // Bounded event wait on this exact child, not polling or a PID lookup.
     if unsafe { WaitForSingleObject(child.as_raw_handle(), 30_000) } != 0 {
         let _ = child.kill();
@@ -229,6 +296,70 @@ fn output(mut command: std::process::Command) -> crate::Result<std::process::Out
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn nul_diagnostics_count_utf16_and_distinguish_literal_backslash_sequences() {
+        assert_eq!(
+            wide_schema("π 😀\\x00".encode_utf16()),
+            serde_json::json!({"utf16Units":8,"firstNul":null})
+        );
+        assert_eq!(
+            wide_schema("π 😀\0tail\0".encode_utf16()),
+            serde_json::json!({"utf16Units":10,"firstNul":4})
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn matching_system_hosts_launch_in_the_selected_nsis_architecture() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = crate::Paths {
+            home: temp.path().join("José user"),
+            hexbot_home: temp.path().join("state"),
+            service_root: temp.path().join("service"),
+            apps_override: None,
+            opt_override: None,
+            service_no_load: true,
+        };
+        for machine in [Machine::I386, Machine::Amd64] {
+            let program = host(machine).unwrap();
+            eprintln!(
+                "NSIS native host control: machine={machine:?}; program={program:?}; schema={}",
+                os_schema(program.as_os_str())
+            );
+            assert_eq!(
+                os_schema(program.as_os_str())["firstNul"],
+                serde_json::Value::Null
+            );
+            for mut command in [
+                std::process::Command::new(&program),
+                paths.command(&program),
+            ] {
+                command.args([
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-C",
+                    "[Environment]::Is64BitProcess",
+                ]);
+                eprintln!("NSIS native host inputs: {}", command_schema(&command));
+                let result = output(command).unwrap();
+                assert!(
+                    result.status.success(),
+                    "{machine:?}: status={} stderr={}",
+                    result.status,
+                    String::from_utf8_lossy(&result.stderr)
+                );
+                assert_eq!(
+                    String::from_utf8(result.stdout).unwrap().trim(),
+                    if machine == Machine::Amd64 {
+                        "True"
+                    } else {
+                        "False"
+                    }
+                );
+            }
+        }
+    }
+
     #[test]
     fn pe_machine_parser_has_fixed_reads_and_a_bounded_dos_offset() {
         let header = |machine: u16| {
