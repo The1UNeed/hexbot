@@ -1,7 +1,7 @@
 //! Scheduler Stop plus completion of retained, authenticated kernel processes.
 //! No process is terminated here and no PID from home metadata is authority.
 #[path = "windows_process_identity.rs"]
-mod identity;
+pub(crate) mod identity;
 #[path = "windows_task_stop_policy.rs"]
 mod policy;
 use std::{

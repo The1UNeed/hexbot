@@ -16,6 +16,8 @@ use std::{
 };
 
 #[cfg(windows)]
+use crate::windows_task::completion::identity as windows_process_identity;
+#[cfg(windows)]
 #[path = "windows_pi_job.rs"]
 mod windows_pi_job;
 #[cfg(any(windows, test))]

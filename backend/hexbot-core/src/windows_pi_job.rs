@@ -2,7 +2,7 @@
 //! suspended and cannot create descendants until assignment succeeds. Nested
 //! membership retains the daemon/Task Scheduler job as well; no breakaway.
 use super::windows_pi_ledger::{LIMIT, Ledger, process_ids};
-use crate::windows_process_identity as identity;
+use super::windows_process_identity as identity;
 use std::{
     collections::BTreeMap,
     ffi::c_void,
