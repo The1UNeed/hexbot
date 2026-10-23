@@ -111,6 +111,10 @@ menus, Dock, and app switcher use this name and the blue icon from the
 On macOS, `scripts/dev/electron-launcher.mjs` creates an ad-hoc signed copy
 of Electron under `apps/desktop/.electron-runtime/` with a bundle id unique
 to the checkout and edition. The installed Electron dependency stays unchanged.
+From Electron 42, macOS shows notifications only from a signed app, so Dev
+notifications need this copy: the downloaded `Electron.app` in
+`node_modules` does not pass `codesign --verify`, and the OS rejects its
+notifications. The first one may ask for permission for `Hexbot (dev)`.
 See `README.md`, "Develop", and
 `scripts/dev/run.mjs`. Or open the repository in the dev container.
 

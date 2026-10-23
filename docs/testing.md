@@ -213,6 +213,10 @@ route and composer checked before continuing.
   replies stay silent. It calls the actual native API and records its delivery
   events in `notifications.json`. Set `HEXBOT_SMOKE_NATIVE_NOTIFICATIONS=1` on
   a host with notification permissions to require the OS `show` events too.
+  On macOS it launches the ad-hoc signed `Hexbot (dev)` copy that
+  `pnpm dev --desktop` uses (`scripts/dev/electron-launcher.mjs`); macOS
+  rejects notifications from the Electron in `node_modules`, whose signature
+  does not verify.
   On headless Linux install `openbox dbus-x11 xvfb`, then run each edition with
   a window manager so native minimization works:
 
@@ -222,6 +226,11 @@ route and composer checked before continuing.
   ```
 - Web bundle: `pnpm --filter ./apps/web run typecheck && pnpm --filter ./apps/web run test --run && pnpm --filter ./apps/web run lint && pnpm --filter ./apps/web run build`.
 - Desktop: `pnpm --filter ./apps/desktop run typecheck && pnpm --filter ./apps/desktop run test --run && pnpm --filter ./apps/desktop run build`.
+  `pnpm install` downloads the Electron binary once, through the desktop
+  `postinstall`. Electron 42 otherwise downloads it on first use, and
+  parallel test workers would extract it over each other. After an install
+  with `--ignore-scripts`, run `pnpm --filter ./apps/desktop exec install-electron`
+  before any test.
   After building the web bundle, `pnpm --filter ./apps/desktop run e2e:lifecycle`
   builds and launches both desktop editions in disposable homes. It checks
   native close/reopen, renderer retention, a real second launch, menu Quit
