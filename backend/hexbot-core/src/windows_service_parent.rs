@@ -3,7 +3,7 @@
 #[path = "windows_service_parent_policy.rs"]
 mod policy;
 #[path = "windows_paths.rs"]
-mod trusted_paths;
+pub(crate) mod trusted_paths;
 use std::{
     ffi::c_void,
     io,

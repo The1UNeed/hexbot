@@ -7,10 +7,9 @@ mod process_handle;
 mod process_lifetime;
 #[path = "../src/windows_service_parent.rs"]
 mod service_parent;
-#[path = "../src/windows_paths.rs"]
-mod windows_paths;
 use process_handle::ProcessHandle;
 use serde_json::{Value, json};
+use service_parent::trusted_paths as windows_paths;
 use std::{
     fs,
     process::Stdio,
