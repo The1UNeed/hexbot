@@ -405,3 +405,31 @@ the nonpublishing native probe uses the existing disposable source preparation.
 Native installer tests retain both file locks while checking Windows delete sharing,
 then exercise terminal Uninstall with and without data removal and a live foreign
 lock. These tests do not relax daemon exclusion to remove data.
+
+The outer Windows installer clears only the HKCU Registry64
+`Software\Classes\hexbot\shell\open\command` default value when it is still
+an exact `REG_SZ` command for the app it just successfully uninstalled.
+Candidates come from the authenticated app directory before NSIS runs, including
+its supported canonical drive spelling; a missing app EXE does not require reopening
+that file. Other editions, tracks, commands, value types and named values stay.
+Unsupported path spellings are left alone. Cleanup does not run during Repair or
+before a failed/canceled uninstall. If it fails after NSIS, owned residual-file
+removal still runs and the installer reports the partial result.
+
+Empty registration keys and protocol marker values remain. Windows Settings or a
+direct NSIS uninstall does not invoke this outer-installer cleanup. Comparing and
+deleting a command value is not atomic against an unrelated same-user registry
+writer. A handler replaced before cleanup is preserved; no race-free registry
+transaction is claimed. The command format follows [pinned Electron 41.10.7](https://github.com/electron/electron/blob/v41.10.7/shell/browser/browser_win.cc#L430-L536).
+
+The native three-round real-Pi publication probe retains strict exit/close and
+atomic directory-rename assertions. Its prewarmed test-only observer requests
+read-only Win32 information after a failed rename, without holding a staged-file
+or child-process handle before failure. These post-failure observations cannot
+recover the original Win32 error or prove which handle blocked that earlier call.
+
+Windows service status distinguishes a registered scheduler task from recoverable
+owned script metadata. A stopped verified task is installed; a script with no task
+is not start-at-login. Repair can recreate it and Uninstall/Change still clean its
+owned files through the same ownership checks. `HEXBOT_SERVICE_NO_LOAD` reports no
+scheduler installation and marks that the scheduler was not queried.

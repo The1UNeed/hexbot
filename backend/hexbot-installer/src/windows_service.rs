@@ -25,7 +25,12 @@ pub fn wrapper_owned(path: &Path, home: &Path) -> bool {
             .is_some_and(|(a, b)| a == b)
     })
 }
-pub fn installed(path: &Path, home: &Path) -> io::Result<bool> {
+#[derive(Default)]
+pub struct ServiceState {
+    pub installed: bool,
+    pub recoverable: bool,
+}
+pub fn inspect(path: &Path, home: &Path) -> io::Result<ServiceState> {
     match fs::symlink_metadata(path) {
         Ok(_) if !wrapper_owned(path, home) => {
             return Err(io::Error::other(
@@ -39,12 +44,19 @@ pub fn installed(path: &Path, home: &Path) -> io::Result<bool> {
     #[cfg(windows)]
     if std::env::var("HEXBOT_SERVICE_NO_LOAD").as_deref() != Ok("1") {
         let state = task_control(path, home, "state")?;
-        return Ok(owned || state != "missing");
+        return Ok(ServiceState {
+            installed: state != "missing",
+            recoverable: owned && state == "missing",
+        });
     }
-    Ok(owned)
+    // NO_LOAD validates owned metadata but makes no scheduler claim.
+    Ok(ServiceState {
+        installed: false,
+        recoverable: owned,
+    })
 }
 pub fn check_service(path: &Path, home: &Path) -> io::Result<()> {
-    installed(path, home).map(|_| ())
+    inspect(path, home).map(|_| ())
 }
 pub fn foreign_wrapper_owner(path: &Path, home: &Path) -> io::Result<Option<PathBuf>> {
     if matches!(fs::symlink_metadata(path), Err(e) if e.kind() == io::ErrorKind::NotFound)

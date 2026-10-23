@@ -24,6 +24,8 @@ pub mod windows_cli;
 mod windows_nsis;
 #[path = "../../hexbot-core/src/windows_paths.rs"]
 mod windows_paths;
+#[cfg(any(windows, test))]
+mod windows_protocol;
 mod windows_service;
 #[cfg(windows)]
 #[path = "../../hexbot-core/src/windows_task.rs"]
@@ -337,7 +339,7 @@ impl Installer {
         let old_apps: Vec<_> = installed.apps.iter().filter(|a| a.option == from).collect();
         self.check_removable(&old_apps)?;
         self.preflight_home_removal()?;
-        if to == InstallOption::Client && installed.service {
+        if to == InstallOption::Client && (installed.service || installed.service_recoverable) {
             self.remove_service(progress)?;
         }
         let _daemon_lock = if to == InstallOption::Client {
@@ -372,7 +374,7 @@ impl Installer {
         for app in &stranded {
             self.require_quit(&app.app)?;
         }
-        if installed.service {
+        if installed.service || installed.service_recoverable {
             self.remove_service(progress)?;
         }
         let _daemon_lock = self.stop_daemon()?;
@@ -1092,12 +1094,15 @@ impl Installer {
                     );
                 }
                 self.check_windows_registration(&app.path, &app.app_id, Some(&uninstallers[0]))?;
+                let protocol = windows_protocol::binding(&app.path, &app.app_id);
                 let mut command = self.paths.command(&uninstallers[0]);
                 command
                     .arg("/S")
                     .arg("/currentuser")
                     .raw_arg(format!("_?={}", app.path.display()));
                 check_output(command.output()?)?;
+                let cleanup = windows_protocol::cleanup(&protocol);
+                return windows_protocol::finish(cleanup, || self.remove_owned_path(&app.path));
             }
         }
         self.remove_owned_path(&app.path)?;

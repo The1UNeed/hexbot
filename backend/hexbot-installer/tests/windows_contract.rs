@@ -4,8 +4,12 @@ use base64::{Engine, engine::general_purpose::STANDARD};
 use hexbot_installer::{InstallOption, Installer, Paths, Target, Track};
 use serde_json::json;
 use sha2::{Digest, Sha512};
+#[path = "support/asar_damage.rs"]
+mod asar_damage;
 #[path = "support/nsis_registration.rs"]
 mod nsis_registration;
+#[path = "support/protocol_registration.rs"]
+mod protocol_registration;
 #[path = "../../hexbot-core/src/windows_node_path.rs"]
 mod windows_node_path;
 use std::{
@@ -133,6 +137,7 @@ fn real_nsis_install_repair_and_uninstall() {
     );
     let id = identity.as_str();
     let registration = nsis_registration::Registration::new(id);
+    let protocol = protocol_registration::Protocol::new();
     let name = match (client, track) {
         (true, Track::Nightly) => "Hexbot Client Nightly",
         (false, Track::Nightly) => "Hexbot Nightly",
@@ -455,6 +460,80 @@ fn real_nsis_install_repair_and_uninstall() {
         String::from_utf8_lossy(&output.stderr)
     );
     println!("{}", String::from_utf8_lossy(&output.stdout));
+    let actual_protocol = protocol
+        .command()
+        .expect("real packaged Electron protocol command");
+    let exe = if client {
+        "HexbotClient.exe"
+    } else {
+        "Hexbot.exe"
+    };
+    let lexical = app.join(exe).to_string_lossy().replace('/', "\\");
+    let canonical = app
+        .canonicalize()
+        .unwrap()
+        .join(exe)
+        .to_string_lossy()
+        .trim_start_matches(r"\\?\")
+        .to_owned();
+    eprintln!(
+        "Actual packaged Electron protocol: {}",
+        json!({"command":actual_protocol,"expectedLexical":lexical,"expectedCanonical":canonical})
+    );
+    assert!(
+        [lexical, canonical]
+            .into_iter()
+            .any(|path| actual_protocol.eq_ignore_ascii_case(&format!("\"{path}\" \"%1\"")))
+    );
+    protocol.assert_other_values();
+    let protocol_before = protocol.snapshot();
+    let canceled = std::process::Command::new(env!("CARGO_BIN_EXE_hexbot-install"))
+        .args(["--uninstall", "--json"])
+        .env("HEXBOT_HOME", &installer.paths.hexbot_home)
+        .env("HOME", &installer.paths.home)
+        .env("USERPROFILE", &installer.paths.home)
+        .env(
+            "HEXBOT_INSTALL_APPS_DIR",
+            installer.paths.apps_override.as_ref().unwrap(),
+        )
+        .env("HEXBOT_SERVICE_ROOT", &installer.paths.service_root)
+        .env("HEXBOT_SERVICE_NO_LOAD", "1")
+        .output()
+        .unwrap();
+    assert!(!canceled.status.success());
+    assert!(String::from_utf8_lossy(&canceled.stderr).contains("Uninstall cancelled"));
+    assert_eq!(protocol.snapshot(), protocol_before);
+    let uninstaller = app.join(if client {
+        "Uninstall HexbotClient.exe"
+    } else {
+        "Uninstall Hexbot.exe"
+    });
+    let saved = fs::read(&uninstaller).unwrap();
+    struct RestoreUninstaller(std::path::PathBuf, Vec<u8>);
+    impl Drop for RestoreUninstaller {
+        fn drop(&mut self) {
+            fs::write(&self.0, &self.1).unwrap();
+        }
+    }
+    let refusal = {
+        let _restore = RestoreUninstaller(uninstaller.clone(), saved);
+        fs::write(
+            &uninstaller,
+            "not a Windows executable: owned launch-failure control",
+        )
+        .unwrap();
+        installer.uninstall(false, &mut |_| {})
+    };
+    assert!(
+        refusal.is_err(),
+        "Invalid NSIS launch must not report success"
+    );
+    assert_eq!(
+        protocol.snapshot(),
+        protocol_before,
+        "Failed NSIS launch must retain the handler"
+    );
+    assert!(app.exists() && installer.paths.receipt().exists());
     // A stale outer receipt cannot override this actual NSIS identity.
     // The server publishes only the marker identity track.
     let mut stale = hexbot_installer::read_receipt(&installer.paths.receipt())
@@ -475,6 +554,11 @@ fn real_nsis_install_repair_and_uninstall() {
     assert_eq!(repaired.receipt.option, option);
     assert_eq!(repaired.receipt.channel, track);
     eprintln!("Real NSIS repair retained {track} identity despite stale receipt");
+    assert_eq!(
+        protocol.command().as_deref(),
+        Some(actual_protocol.as_str()),
+        "Repair must retain the current handler"
+    );
     for payload in [
         if client {
             "HexbotClient.exe"
@@ -499,20 +583,8 @@ fn real_nsis_install_repair_and_uninstall() {
         if damage == "header" {
             bytes[0] = 0;
         } else {
-            // Change only the top-level package version, preserving its length
-            // and the real ASAR offsets. The archive remains an ordinary file.
-            let from = format!("\"version\":\"{}\"", package_version).into_bytes();
-            let word = |at| u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap()) as usize;
-            let header: serde_json::Value =
-                serde_json::from_slice(&bytes[16..16 + word(12)]).unwrap();
-            let entry = &header["files"]["package.json"];
-            let start = 8 + word(4) + entry["offset"].as_str().unwrap().parse::<usize>().unwrap();
-            let end = start + entry["size"].as_u64().unwrap() as usize;
-            let at = bytes[start..end]
-                .windows(from.len())
-                .position(|b| b == from)
-                .expect("top-level packaged version");
-            bytes[start + at + 11] = b'!';
+            let diagnostic = asar_damage::corrupt_package_version(&mut bytes, &package_version);
+            eprintln!("Real NSIS corrupt-version fixture: {diagnostic}");
         }
         fs::write(&asar, &bytes).unwrap();
         let mut messages = Vec::new();
@@ -573,14 +645,29 @@ fn real_nsis_install_repair_and_uninstall() {
     ] {
         fs::remove_file(app.join(payload)).unwrap();
         assert_eq!(installer.detect().unwrap().apps.len(), 1);
+        protocol.set(&actual_protocol);
         installer.uninstall(false, &mut |_| {}).unwrap();
+        assert_eq!(
+            protocol.command(),
+            None,
+            "Owned handler must be cleared even with a missing EXE"
+        );
+        protocol.assert_other_values();
         assert!(!app.exists());
         assert!(!installer.paths.receipt().exists());
         installer.apply(option, track, &mut |_| {}).unwrap();
     }
     // The packaged ownership also supports a partial uninstall without a receipt.
     fs::remove_file(installer.paths.receipt()).unwrap();
+    let sibling = format!("\"{}\" \"%1\"", other_directory.join(exe).display());
+    protocol.set(&sibling);
+    let protocol_before = protocol.snapshot();
     installer.uninstall(false, &mut |_| {}).unwrap();
+    assert_eq!(
+        protocol.snapshot(),
+        protocol_before,
+        "Another track handler must survive"
+    );
     assert!(!app.exists());
     registration.assert_absent();
     assert_eq!(
@@ -634,7 +721,13 @@ fn real_nsis_install_repair_and_uninstall() {
         )
         .unwrap();
         fs::write(script.with_extension("xml"), "owned XML fixture").unwrap();
-        assert!(installer.detect().unwrap().service);
+        let detected = installer.detect().unwrap();
+        assert!(!detected.service, "NO_LOAD must not claim a scheduler task");
+        assert!(detected.service_recoverable);
+        if from == InstallOption::Full {
+            protocol.set(&actual_protocol);
+        }
+        let protocol_before = protocol.snapshot();
         let changed = installer
             .change(
                 from,
@@ -654,6 +747,16 @@ fn real_nsis_install_repair_and_uninstall() {
             .as_ref()
             .unwrap()
             .join(&client_id);
+        if from == InstallOption::Full {
+            assert_eq!(
+                protocol.command(),
+                None,
+                "Change must remove the old Full command before Client is launched"
+            );
+        } else {
+            assert_eq!(protocol.snapshot(), protocol_before);
+        }
+        protocol.assert_other_values();
         assert_eq!(changed.receipt.option, InstallOption::Client);
         assert_eq!(changed.receipt.channel, track);
         assert_eq!(changed.receipt.paths, vec![destination.clone()]);

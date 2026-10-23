@@ -1080,3 +1080,26 @@ fn mixed_identity_repair_never_downloads_or_reaches_a_sibling_nsis_destination()
         }
     }
 }
+
+#[test]
+fn no_load_owned_script_is_recoverable_without_claiming_scheduler_installation() {
+    let root = tempfile::tempdir().unwrap();
+    let engine = engine(root.path());
+    fs::create_dir_all(&engine.paths.hexbot_home).unwrap();
+    let script = engine.paths.service_file(engine.target);
+    fs::create_dir_all(script.parent().unwrap()).unwrap();
+    fs::write(
+        &script,
+        format!(
+            "# Hexbot owned home: {}\n",
+            serde_json::to_string(&engine.paths.hexbot_home).unwrap()
+        ),
+    )
+    .unwrap();
+    let installed = engine.detect().unwrap();
+    assert!(
+        !installed.service,
+        "Owned metadata alone is not a registered scheduler task"
+    );
+    assert_eq!(installed.option(), Some(InstallOption::Headless));
+}

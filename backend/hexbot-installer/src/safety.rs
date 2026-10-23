@@ -292,7 +292,8 @@ impl Installer {
         let file = self.paths.service_file(self.target);
         if self.target.is_windows() {
             crate::windows_service::check_service(&file, &self.paths.hexbot_home)?;
-            if !crate::windows_service::installed(&file, &self.paths.hexbot_home)? {
+            let service = crate::windows_service::inspect(&file, &self.paths.hexbot_home)?;
+            if !service.installed && !service.recoverable {
                 return Ok(());
             }
             // Authenticate and remove via the same scheduler contract even if

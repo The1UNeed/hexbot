@@ -636,6 +636,24 @@ fn interrupted_task_install_uninstalls_owned_files_when_the_task_is_absent() {
     let file = root.path().join("AppData/Local/Hexbot/daemon.ps1");
     system_service::write_owned_script(&file, &home, true).unwrap();
     fs::write(file.with_extension("xml"), "interrupted task creation").unwrap();
+    let orphan = Command::new(env!("CARGO_BIN_EXE_hexbot"))
+        .args(["service", "status", "--json"])
+        .env("HEXBOT_HOME", &home)
+        .env("HEXBOT_SERVICE_ROOT", root.path())
+        .env_remove("HEXBOT_SERVICE_NO_LOAD")
+        .output()
+        .unwrap();
+    assert!(
+        orphan.status.success(),
+        "{}",
+        String::from_utf8_lossy(&orphan.stderr)
+    );
+    let status: serde_json::Value = serde_json::from_slice(&orphan.stdout).unwrap();
+    eprintln!("Actual orphan script service status before cleanup: {status}");
+    assert_eq!(status["installed"], false);
+    assert_eq!(status["running"], false);
+    assert_eq!(status["recoverable"], true);
+    assert_eq!(status["scheduler_checked"], true);
     let run = || {
         Command::new(env!("CARGO_BIN_EXE_hexbot"))
             .args(["service", "uninstall"])
@@ -1079,7 +1097,15 @@ fn interrupted_task_install_uninstalls_owned_files_when_the_task_is_absent() {
         "Exited desktop retained record control: pid={desktop_pid}; kernel={}",
         desktop_handle.snapshot()
     );
-    eprintln!("Task recovery stage: initial install; home={home:?} script={file:?}");
+    system_service::write_owned_script(&file, &home, true).unwrap();
+    let orphan = service(&home, "status");
+    assert!(orphan.status.success());
+    let orphan: serde_json::Value = serde_json::from_slice(&orphan.stdout).unwrap();
+    assert_eq!(orphan["installed"], false);
+    assert_eq!(orphan["recoverable"], true);
+    eprintln!(
+        "Task recovery stage: initial install from recoverable script; home={home:?} script={file:?}"
+    );
     let output = service(&home, "install");
     assert!(
         output.status.success(),
@@ -1273,6 +1299,15 @@ fn interrupted_task_install_uninstalls_owned_files_when_the_task_is_absent() {
         assert!(!process.alive());
         assert_eq!(process.snapshot()["exitCode"], 0);
         assert!(windows_task::home_idle(&home).unwrap());
+        let stopped = service(&home, "status");
+        assert!(stopped.status.success());
+        let stopped: serde_json::Value = serde_json::from_slice(&stopped.stdout).unwrap();
+        assert_eq!(
+            stopped["installed"], true,
+            "A valid stopped task is installed"
+        );
+        assert_eq!(stopped["running"], false);
+        assert_eq!(stopped["recoverable"], false);
         previous = process.pid;
         fs::remove_dir_all(home.join("logs")).unwrap();
     }

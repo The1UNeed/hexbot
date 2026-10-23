@@ -222,6 +222,11 @@ it('repairs only a verified running Windows task whose home daemon uses an older
     expect(await reconcileWindowsService('win32', run)).toBeUndefined()
     expect(calls.some(args => args.includes('install'))).toBe(false)
     await record(old)
+    const orphan = async (_command: string, args: string[]) => {
+      expect(args).toEqual(['service', 'status', '--json'])
+      return { stdout: JSON.stringify({ installed: false, running: false, recoverable: true, scheduler_checked: true }) }
+    }
+    expect(await reconcileWindowsService('win32', orphan)).toBeUndefined()
     for (const state of [[false, false], [true, false]]) {
       ;[installed, running] = state as [boolean, boolean]
       expect(await reconcileWindowsService('win32', run)).toBeUndefined()

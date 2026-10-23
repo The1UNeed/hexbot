@@ -204,6 +204,8 @@ pub struct Installed {
     pub receipt: Option<Receipt>,
     pub apps: Vec<InstalledApp>,
     pub service: bool,
+    /// Owned script metadata exists, but a scheduler task was not found/queried.
+    pub service_recoverable: bool,
     pub runtime: bool,
     pub wrapper: bool,
 }
@@ -220,7 +222,10 @@ impl Installed {
                     .map(|a| a.option)
             })
             .or_else(|| self.apps.first().map(|a| a.option))
-            .or_else(|| (self.service || self.wrapper).then_some(InstallOption::Headless))
+            .or_else(|| {
+                (self.service || self.service_recoverable || self.wrapper)
+                    .then_some(InstallOption::Headless)
+            })
     }
 
     pub(crate) fn windows_repair_app(&self) -> Option<&InstalledApp> {

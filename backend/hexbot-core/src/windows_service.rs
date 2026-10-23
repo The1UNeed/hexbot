@@ -135,7 +135,9 @@ pub async fn status(home: &Path) -> Result<Value> {
     } else {
         "missing".into()
     };
-    Ok(json!({"installed":script_owned || state != "missing","running":state == "4","file":file}))
+    Ok(
+        json!({"installed":state != "missing","running":state == "4","recoverable":script_owned && state == "missing","scheduler_checked":std::env::var("HEXBOT_SERVICE_NO_LOAD").as_deref()!=Ok("1"),"file":file}),
+    )
 }
 // /End acknowledges cancellation before the task job and daemon lock are gone.
 // A restart may launch only after both are stopped, or it races the home lock.
@@ -270,7 +272,9 @@ pub async fn run(home: &Path, args: &[String]) -> Result<()> {
             drop(home_lock);
             schtasks(&["/Run", "/TN", &name]).await?;
         }
-    } else if status(home).await?["installed"] == true {
+    } else if status(home).await?["installed"] == true
+        || (action == "uninstall" && owned(&file, home))
+    {
         if matches!(action, "start" | "restart") && !owned(&file, home) {
             return Err(Error::new(
                 5244,

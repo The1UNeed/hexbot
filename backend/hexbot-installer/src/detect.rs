@@ -211,12 +211,17 @@ pub fn detect() -> Result<Installed> {
 
 pub fn detect_at(paths: &Paths, target: Target) -> Result<Installed> {
     paths.validate()?;
+    let windows_service = if target.is_windows() {
+        crate::windows_service::inspect(&paths.service_file(target), &paths.hexbot_home)
+            .unwrap_or_default()
+    } else {
+        Default::default()
+    };
     let mut installed = Installed {
         windows: target.is_windows(),
         receipt: read_receipt(&paths.receipt())?,
         service: if target.is_windows() {
-            crate::windows_service::installed(&paths.service_file(target), &paths.hexbot_home)
-                .unwrap_or(false)
+            windows_service.installed
         } else {
             #[cfg(unix)]
             {
@@ -233,6 +238,7 @@ pub fn detect_at(paths: &Paths, target: Target) -> Result<Installed> {
                 false
             }
         },
+        service_recoverable: windows_service.recoverable,
         wrapper: if target.is_windows() {
             crate::windows_cli::removable(&paths.cli_wrapper(target), &paths.hexbot_home)
         } else {

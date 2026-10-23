@@ -26,7 +26,7 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: cargo check --locked --manifest-path backend/hexbot-installer/Cargo.toml
       - run: cargo clippy --locked --manifest-path backend/hexbot-installer/Cargo.toml --lib --bins -- -D warnings
-      - run: cargo test --locked --manifest-path backend/hexbot-installer/Cargo.toml --lib --test windows_repair --test windows_data_removal
+      - run: cargo test --locked --manifest-path backend/hexbot-installer/Cargo.toml --lib --test windows_repair --test windows_data_removal --test asar_damage
       - run: cargo clippy --locked --manifest-path apps/installer/src-tauri/Cargo.toml --all-targets -- -D warnings
       - run: cargo test --locked --manifest-path apps/installer/src-tauri/Cargo.toml
       - run: pnpm --filter ./apps/desktop run typecheck
@@ -40,7 +40,7 @@ jobs:
           $integrity = $lock['packages']['node_modules/corepack']['integrity']
           if ($integrity -cne 'sha512-SiiJsBhZqdBiPHTEl6OT3sASrRrKIcYTQMsVGXx6EE/gM8WFMwYjeIX8Tt8RiU4Iv2J6LbT8KpGfCOsBpRWB/w==') { throw 'Unexpected Corepack package integrity' }
           "HEXBOT_TEST_COREPACK_ROOT=$root" >> $env:GITHUB_ENV
-      - run: node --test scripts/desktop/pnpm-command.test.mjs scripts/desktop/windows-task-stop.test.mjs scripts/desktop/windows-service-logs.test.mjs scripts/desktop/voice-lock.test.mjs scripts/desktop/windows-contract.test.mjs scripts/desktop/windows-nsis.test.mjs scripts/desktop/windows-node-path.test.mjs scripts/desktop/native-build.test.mjs scripts/desktop/native-runtime.test.mjs scripts/desktop/workspace-hooks.test.mjs scripts/dev/run-one-rust-test.test.mjs
+      - run: node --test scripts/desktop/pnpm-command.test.mjs scripts/desktop/windows-task-stop.test.mjs scripts/desktop/windows-service-logs.test.mjs scripts/desktop/voice-lock.test.mjs scripts/desktop/windows-contract.test.mjs scripts/desktop/windows-nsis.test.mjs scripts/desktop/windows-protocol.test.mjs scripts/desktop/windows-node-path.test.mjs scripts/desktop/native-build.test.mjs scripts/desktop/native-runtime.test.mjs scripts/desktop/workspace-hooks.test.mjs scripts/dev/run-one-rust-test.test.mjs
       - name: Build the real client NSIS without publishing
         run: node scripts/desktop/dist.mjs --win --x64 --client --channel stable
       - name: Verify installer engine runs NSIS, repairs and uninstalls the client
@@ -135,7 +135,7 @@ jobs:
         run: node scripts/dev/run-one-rust-test.mjs backend/hexbot-installer/Cargo.toml windows_contract interrupted_cli_install_and_uninstall_clean_only_owned_metadata_and_path
       - name: Prove staging publication refusal and release before the Full build
         working-directory: ${{ env.HEXBOT_WINDOWS_PROBE_SOURCE }}
-        run: node --test scripts/desktop/native-runtime.test.mjs scripts/desktop/windows-nsis.test.mjs scripts/desktop/windows-native-publication.test.mjs
+        run: node --test scripts/desktop/native-runtime.test.mjs scripts/desktop/windows-nsis.test.mjs scripts/desktop/windows-protocol.test.mjs scripts/desktop/windows-native-publication.test.mjs
       - name: Build Full and its real Node/Pi runtime without publishing
         working-directory: ${{ env.HEXBOT_WINDOWS_PROBE_SOURCE }}
         run: node scripts/desktop/dist.mjs --win --x64 --channel stable
