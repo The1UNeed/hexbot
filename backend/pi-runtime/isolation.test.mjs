@@ -194,23 +194,6 @@ test('an unusable bubblewrap is probed once and commands fall back to approval g
   assert.equal(readFileSync(counter,'utf8'),'probe\n');
 });
 
-test('Windows refuses confined commands with the sandbox-unavailable reason instead of capping them', async t => {
-  const {execFileSync} = await import('node:child_process');
-  const home=mkdtempSync(join(tmpdir(),'hexbot-win32-refusal-'));
-  t.after(()=>rmSync(home,{recursive:true,force:true}));
-  const moduleUrl=new URL('./isolation.ts',import.meta.url).href;
-  const script=`Object.defineProperty(process,'platform',{value:'win32'}); const {isolatedCommand,processLimit,confinedRefusal,WINDOWS_ISOLATION_UNAVAILABLE}=await import(${JSON.stringify(moduleUrl)}); if(processLimit()!==undefined) throw Error('Windows caps processes'); const refuse=command=>{try{return {ran:isolatedCommand(command,${JSON.stringify(home)},[],[${JSON.stringify(join(home,'workspace'))}])}}catch(error){return {refusal:error.message}}}; console.log(JSON.stringify({confined:refuse('echo runs'),fullAccess:refuse('echo escapes'),copy:confinedRefusal(),unix:confinedRefusal('darwin'),boundary:WINDOWS_ISOLATION_UNAVAILABLE}));`;
-  const result=JSON.parse(execFileSync(process.execPath,['--input-type=module','-e',script],{encoding:'utf8'}));
-  // Every run is refused before a command is built, and the cap probe never runs.
-  assert.equal(result.confined.refusal,result.boundary);
-  assert.equal(result.fullAccess.refusal,result.boundary);
-  assert.ok(result.confined.ran===undefined&&result.fullAccess.ran===undefined);
-  // The confined-refusal copy keeps the bash advice, and Unix keeps its own.
-  assert.equal(result.copy,'The Windows sandbox is unavailable, so this command cannot run inside it. Retry with full_access and a reason.');
-  assert.doesNotMatch(result.copy,/could not cap processes/);
-  assert.equal(result.unix,'Hexbot could not cap processes for the sandbox.');
-});
-
 test('bubblewrap binds the home read-only and only reopens the requested output directories', async t => {
   const {execFileSync} = await import('node:child_process');
   const {realpathSync} = await import('node:fs');

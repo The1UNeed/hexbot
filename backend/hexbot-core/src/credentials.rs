@@ -364,35 +364,6 @@ pub fn sandbox() -> Option<&'static str> {
 pub fn isolation_available() -> bool {
     sandbox().is_some()
 }
-/// The platform sandbox messages and refusals are selected for. Windows has
-/// no OS sandbox in this build; Unix picks between sandbox-exec and bubblewrap.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Platform {
-    Unix,
-    Windows,
-}
-/// The platform this daemon runs on.
-pub fn platform() -> Platform {
-    if cfg!(windows) {
-        Platform::Windows
-    } else {
-        Platform::Unix
-    }
-}
-/// Why a confined command cannot run: Windows has no sandbox to confine it in,
-/// and on Unix a command whose processes cannot be capped does not run.
-pub const fn confined_refusal(platform: Platform) -> &'static str {
-    match platform {
-        Platform::Windows => {
-            "The Windows sandbox is unavailable, so this command cannot run inside it. Retry with full_access and a reason."
-        }
-        Platform::Unix => "Hexbot could not cap processes for the sandbox.",
-    }
-}
-/// Why confined code cannot run on Windows. execute_code declares only code
-/// and reset, with no full_access knob of its own, so this names the escapes
-/// that do exist: the terminal tool's full_access, or Bypass.
-pub const CODE_CONFINED_REFUSAL: &str = "The Windows sandbox is unavailable, so this code cannot run inside it. Ask the user to switch the approval mode to Bypass to run it without a sandbox.";
 /// Approval card text for code that would run without a sandbox.
 #[cfg(not(windows))]
 pub const UNSANDBOXED_REASON: &str = "Hexbot has no OS sandbox on this system, so this code can read any file you can, including credentials. Install bubblewrap and restart the daemon to restore isolation.";
@@ -1851,7 +1822,8 @@ pub(crate) fn isolated_command_with_outputs(
     if confine != Confine::No {
         // The child applies the cap before it starts the sandbox, which keeps it;
         // a program that cannot be capped does not start.
-        let limit = process_limit().ok_or_else(|| Error::new(5240, confined_refusal(platform())))?
+        let limit = process_limit()
+            .ok_or_else(|| Error::new(5240, "Hexbot could not cap processes for the sandbox."))?
             as libc::rlim_t;
         // SAFETY: setrlimit is async-signal-safe and touches only this child.
         unsafe {
@@ -3649,29 +3621,6 @@ mod tests {
     #[test]
     fn scheduled_scripts_always_need_a_sandbox() {
         assert_eq!(require_isolation().is_ok(), isolation_available());
-    }
-    #[test]
-    fn sandbox_messages_are_selected_per_platform() {
-        // Windows refuses confinement outright; Unix caps processes instead.
-        assert_eq!(
-            confined_refusal(Platform::Windows),
-            "The Windows sandbox is unavailable, so this command cannot run inside it. Retry with full_access and a reason."
-        );
-        assert_eq!(
-            confined_refusal(Platform::Unix),
-            "Hexbot could not cap processes for the sandbox."
-        );
-        // Windows copy never recommends the Unix escape.
-        assert!(!confined_refusal(Platform::Windows).contains("bubblewrap"));
-        // The daemon selects for the platform it runs on.
-        assert_eq!(
-            platform(),
-            if cfg!(windows) {
-                Platform::Windows
-            } else {
-                Platform::Unix
-            }
-        );
     }
     #[cfg(target_os = "macos")]
     #[tokio::test]

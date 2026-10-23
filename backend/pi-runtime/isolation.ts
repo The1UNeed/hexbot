@@ -537,26 +537,17 @@ export function bwrapArguments(home: string, outputs: string[] = [], workspace?:
 // most this many more processes than you already run: a fork bomb stops there.
 export const PROCESS_HEADROOM = 512;
 export function processLimit(): number | undefined {
-  // The cap is a Unix tool; Windows has no ps, and confined commands there are
-  // refused by isolatedCommand instead of run.
-  if (process.platform !== 'darwin' && process.platform !== 'linux') return undefined;
   // Linux charges the limit per thread, macOS per process.
   const listed = spawnSync('ps', [...process.platform === 'linux' ? ['-L'] : [], '-U', String(process.getuid?.() ?? ''), '-o', 'pid='], {encoding: 'utf8', timeout: 5000});
   return listed.status === 0 ? listed.stdout.split('\n').filter(Boolean).length + PROCESS_HEADROOM : undefined;
 }
-// Why a confined command cannot run: Windows has no sandbox to confine it in,
-// and on Unix a command whose processes cannot be capped does not run.
-export function confinedRefusal(platform: NodeJS.Platform = process.platform): string {
-  return platform === 'win32' ? 'The Windows sandbox is unavailable, so this command cannot run inside it. Retry with full_access and a reason.' : 'Hexbot could not cap processes for the sandbox.';
-}
 export function isolatedCommand(command: string, home: string, outputs: string[] = [], workspace?: string[], searchRoots: string[] = workspace ?? []): string {
-  // Approval/full_access cannot turn missing Windows containment into
-  // execution, and a command that cannot be capped does not run: both refuse
-  // with the reason above.
+  // Approval/full_access cannot turn missing Windows containment into execution.
   requireSupportedExecution();
+  // A command that cannot be capped does not run.
   if (workspace) {
     const limit = processLimit();
-    command = limit ? `ulimit -u ${limit} || exit 126\n${command}` : `echo ${quote(confinedRefusal())} >&2; exit 126`;
+    command = limit ? `ulimit -u ${limit} || exit 126\n${command}` : "echo 'Hexbot could not cap processes for the sandbox.' >&2; exit 126";
   }
   if (process.platform === 'darwin') return `/usr/bin/sandbox-exec -p ${quote(sandboxProfile(home, outputs, workspace, searchRoots))} /bin/bash --noprofile --norc -c ${quote(command)}`;
   const executable = probeIsolation();
