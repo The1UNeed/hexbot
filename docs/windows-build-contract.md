@@ -370,6 +370,30 @@ fallback. Read-only file/process/Restart Manager diagnostics and deterministic
 held-CWD plus real pinned Node/Pi publication probes now run before Full build.
 No fixture-leaf proof is counted as actual Pi/tool cleanup.
 
+Native 5e985 tested merge `2a951db24f6583481b7edd9ca1d8a404174dde4a` with
+its exact source/probe trees. Client job 120201571138 used libarchive 3.8.9;
+runtime job 120201570931 used 3.8.4. In each job, the same 646-byte ZIP and
+digest passed ASCII-filename extraction with Unicode cwd, exit zero, exact
+entrypoint bytes, manifest hash and unpacked size. The diagnostic stdin ZIP
+mode exited one with no write error and only `tar.exe: (null)` plus a delayed
+error message. The third-party cause remains unproved; no stdin fix is claimed.
+
+The required ZIP roundtrip follows product consumers: standalone Node and
+desktop tool installs pass archive filenames; setup, installer and native
+self-update use the shared Rust `ZipArchive` reader over a file. The separate
+skill-history stdin call consumes Git TAR output, not ZIP. No product ZIP
+consumer uses tar stdin, so that diagnostic mode is outside the required build contract.
+The filename roundtrip retains Unicode, exit-zero, digest/bytes/size and
+missing-entrypoint checks, along with bounded command capture. The real signed
+native ZIP/update probe remains mandatory.
+
+The 5e985 runtime job also passed all three real pinned Node/Pi version-process
+publication rounds: PIDs 720, 6984 and 400 exited/closed zero before each verified
+publication. That does not identify or resolve the earlier production Full
+EPERM. The sole stdin assertion blocked Full build/bootstrap, actual Pi
+descendants, NSIS, signed ZIP/Connect, private-route and Nightly stages; those
+remain pending.
+
 The unchanged actual-Pi chat-migration target passed three focused runs each on
 35f0 core source and actual main 4ce with the same pinned Pi. The separate macOS
 CI failure's cause remains unproved; its migration assertions/source are unchanged.
