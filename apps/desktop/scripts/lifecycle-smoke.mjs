@@ -11,7 +11,7 @@ import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
 import { instrumentShutdown, observeShutdown, requestShutdown } from '../../../scripts/desktop/lifecycle-shutdown.mjs'
-import { instrumentationControl } from '../../../scripts/desktop/lifecycle-instrumentation.mjs'
+import { instrumentationControl, withProtocolTrace } from '../../../scripts/desktop/lifecycle-instrumentation.mjs'
 
 const desktop = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const require = createRequire(join(desktop, 'package.json'))
@@ -27,6 +27,7 @@ const environment = { ...process.env, HEXBOT_WEB_DEV_URL: 'http://127.0.0.1:1' }
 delete environment.ELECTRON_RUN_AS_NODE
 const results = []
 let currentApp
+let protocolDebug
 let currentProcess
 const processes = new WeakMap()
 const launchBounds = new WeakMap()
@@ -83,25 +84,33 @@ async function prepare(edition) {
 async function launch(directory, name, fixture = false) {
   const home = join(root, `${name}-home`)
   await mkdir(home)
-  const notBefore = Date.now()
-  currentApp = await electron.launch({
-    executablePath,
-    args: launchArgs(directory),
-    env: {
-      ...environment,
-      HEXBOT_HOME: home,
-      ...(fixture ? { HEXBOT_LIFECYCLE_TRACE: join(artifacts, `${name}-events.jsonl`) } : {})
-    },
-    timeout: 30_000
-  })
-  // Playwright disposes its process accessor when the Electron connection closes.
-  launchBounds.set(currentApp, { notBefore, notAfter: Date.now() })
-  currentProcess = currentApp.process()
-  processes.set(currentApp, currentProcess)
-  const record = recordProcess(currentProcess, name)
-  shutdowns.set(currentApp, observeShutdown(currentApp, currentProcess, record))
-  await currentApp.evaluate(instrumentShutdown, join(artifacts, `${name}-shutdown.jsonl`))
-  return currentApp
+  const perform = async trace => {
+    const notBefore = Date.now()
+    trace('launch-request')
+    currentApp = await electron.launch({
+      executablePath,
+      args: launchArgs(directory),
+      env: {
+        ...environment,
+        HEXBOT_HOME: home,
+        ...(fixture ? { HEXBOT_LIFECYCLE_TRACE: join(artifacts, `${name}-events.jsonl`) } : {})
+      },
+      timeout: 30_000
+    })
+    // Playwright disposes its process accessor when the Electron connection closes.
+    launchBounds.set(currentApp, { notBefore, notAfter: Date.now() })
+    currentProcess = currentApp.process()
+    processes.set(currentApp, currentProcess)
+    const record = recordProcess(currentProcess, name)
+    shutdowns.set(currentApp, observeShutdown(currentApp, currentProcess, record))
+    trace('instrumentation-request', { trackedPid: currentProcess.pid })
+    await currentApp.evaluate(instrumentShutdown, join(artifacts, `${name}-shutdown.jsonl`))
+    trace('instrumentation-acknowledged')
+    return currentApp
+  }
+  return protocolDebug
+    ? withProtocolTrace(protocolDebug, join(artifacts, `${name}-instrumentation-protocol.jsonl`), () => name, perform)
+    : perform(() => {})
 }
 async function quit(app, source = 'app') {
   try {
@@ -224,6 +233,7 @@ try {
     const playwright = createRequire(createRequire(require.resolve('@playwright/test')).resolve('playwright'))
     const { debug } = playwright(join(dirname(playwright.resolve('playwright-core/package.json')), 'lib/utilsBundle.js'))
     await instrumentationControl({ electron, debug, executablePath, root, artifacts, environment })
+    protocolDebug = debug
   }
   for (const edition of process.env.HEXBOT_LIFECYCLE_APP ? ['client'] : ['full', 'client']) {
     const directory = process.env.HEXBOT_LIFECYCLE_APP ? desktop : await prepare(edition)

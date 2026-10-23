@@ -18,20 +18,20 @@ export function protocolSummary(message, direction) {
     uniqueId: context?.uniqueId?.slice(0, 128),
     objectId: message.params?.objectId?.slice(0, 128),
     awaitPromise: message.params?.awaitPromise, returnByValue: message.params?.returnByValue,
+    resultObjectId: message.result?.result?.objectId?.slice(0, 128),
     resultType: message.result?.result?.type, resultSubtype: message.result?.result?.subtype,
     error: message.error && { code: message.error.code, message: message.error.message?.slice(0, 512) },
     exception: message.result?.exceptionDetails?.text?.slice(0, 512)
   }
 }
 
-export async function instrumentationControl({ electron, debug, executablePath, root, artifacts, environment }) {
-  const file = join(artifacts, 'instrumentation-control.jsonl')
-  let phase = 'setup', count = 0, dropped = 0, records = 0, omitted = 0
+export async function withProtocolTrace(debug, file, phase, action) {
+  let count = 0, dropped = 0, records = 0, omitted = 0
   let recordingError
   const pending = new Set()
   const record = (event, details = {}) => {
     try {
-      if (records++ < 512 || event === 'protocol-summary') appendFileSync(file, JSON.stringify({ time: Date.now(), phase, event, ...details }) + '\n')
+      if (records++ < 512 || event === 'protocol-summary') appendFileSync(file, JSON.stringify({ time: Date.now(), phase: phase(), event, ...details }) + '\n')
       else omitted++
     } catch (error) { recordingError ??= error }
   }
@@ -54,8 +54,26 @@ export async function instrumentationControl({ electron, debug, executablePath, 
       else dropped++
     } catch { record('unparsed-protocol', { bytes: Buffer.byteLength(text) }) }
   }
-  const failures = []
-  try {
+  let primary
+  try { return await action(record) }
+  catch (error) {
+    primary = error
+    record('action-failure', { message: String(error).slice(0, 1024) })
+    throw error
+  }
+  finally {
+    record('protocol-summary', { count, dropped, omitted })
+    debug.log = oldLog
+    debug.enable(namespaces)
+    // A logging failure must not replace the original protocol/application error.
+    if (recordingError && !primary) throw recordingError
+  }
+}
+
+export async function instrumentationControl({ electron, debug, executablePath, root, artifacts, environment }) {
+  let phase = 'setup'
+  return withProtocolTrace(debug, join(artifacts, 'instrumentation-control.jsonl'), () => phase, async record => {
+    const failures = []
     // Fixed module/phase controls, each with one instrumentation call. Full uses
     // ESM; CJS is the baseline. The ready case is not a retry or a workaround.
     for (const { esm, ready } of [{ esm: false, ready: false }, { esm: true, ready: false }, { esm: true, ready: true }]) {
@@ -115,11 +133,6 @@ app.whenReady().then(()=>{const window=new BrowserWindow({show:false});trace('wi
         }
       }
     }
-  } finally {
-    record('protocol-summary', { count, dropped, omitted })
-    debug.log = oldLog
-    debug.enable(namespaces)
-  }
-  if (recordingError) failures.push(recordingError)
-  if (failures.length) throw new AggregateError(failures, 'Windows instrumentation controls failed', { cause: failures[0] })
+    if (failures.length) throw new AggregateError(failures, 'Windows instrumentation controls failed', { cause: failures[0] })
+  })
 }
