@@ -34,7 +34,7 @@ ConvertTo-Json -InputObject $result -Compress`
 
 test('pinned Electron registers at app startup while pinned NSIS has no protocol cleanup hook', async () => {
   const desktop = createRequire(resolve('apps/desktop/package.json'))
-  assert.equal(desktop('electron/package.json').version, '41.10.7')
+  assert.equal(desktop('electron/package.json').version, '42.11.3')
   const builder = createRequire(desktop.resolve('electron-builder'))
   const root = dirname(builder.resolve('app-builder-lib/package.json'))
   const nsis = await readFile(join(root, 'out/targets/nsis/NsisTarget.js'), 'utf8')

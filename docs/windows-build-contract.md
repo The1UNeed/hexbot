@@ -420,7 +420,7 @@ Empty registration keys and protocol marker values remain. Windows Settings or a
 direct NSIS uninstall does not invoke this outer-installer cleanup. Comparing and
 deleting a command value is not atomic against an unrelated same-user registry
 writer. A handler replaced before cleanup is preserved; no race-free registry
-transaction is claimed. The command format follows [pinned Electron 41.10.7](https://github.com/electron/electron/blob/v41.10.7/shell/browser/browser_win.cc#L430-L536).
+transaction is claimed. The command format follows [pinned Electron 42.11.3](https://github.com/electron/electron/blob/v42.11.3/shell/browser/browser_win.cc#L429-L535).
 
 The native three-round real-Pi publication probe retains strict exit/close and
 atomic directory-rename assertions. Its prewarmed test-only observer requests
