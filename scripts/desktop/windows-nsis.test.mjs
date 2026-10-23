@@ -155,3 +155,87 @@ ConvertTo-Json -InputObject $results -Compress`
     locationType: kind, commandType: kind
   })))
 })
+
+test('composed CIM query uses the schema executable path even without a Path alias', async t => {
+  const { execFile } = await import('node:child_process')
+  const { promisify } = await import('node:util')
+  const powershell = process.platform === 'win32'
+    ? join(process.env.SystemRoot, 'System32/WindowsPowerShell/v1.0/powershell.exe') : process.env.HEXBOT_TEST_POWERSHELL
+  if (!powershell) return t.skip('requires PowerShell for the composed CIM query')
+  const policy = await readFile('backend/hexbot-installer/src/windows-nsis-process-policy.ps1', 'utf8')
+  const query = await readFile('backend/hexbot-installer/src/windows-nsis-process-query.ps1', 'utf8')
+  // Only CIM enumeration is substituted. No Path alias exists on the first
+  // record; a misleading alias on the external record must not create a match.
+  const script = `${policy}
+function Get-CimInstance {
+    [pscustomobject]@{ProcessId=101;ExecutablePath='C:\\apps\\stable.nightly\\worker.exe';CreationDate=[DateTime]::UtcNow}
+    [pscustomobject]@{ProcessId=102;ExecutablePath='C:\\external\\hexbot.exe';Path='C:\\apps\\stable\\false.exe';CreationDate=[DateTime]::UtcNow}
+}
+${query}`
+  const { stdout } = await promisify(execFile)(powershell, ['-NoProfile', '-NonInteractive', '-C', script], {
+    env: { ...process.env, HEXBOT_NSIS_DESTINATIONS: JSON.stringify(['C:\\apps\\stable']), HEXBOT_NSIS_IMAGE: 'Hexbot.exe', HEXBOT_NSIS_AVAILABLE: '1' },
+    windowsHide: true, timeout: 15000, maxBuffer: 32768
+  })
+  const result = JSON.parse(stdout)
+  assert.equal(result.complete, true)
+  assert.equal(result.branch, 'prefix')
+  assert.equal(result.enumerated, 2)
+  assert.equal(result.matchCount, 1)
+  assert.deepEqual(result.shown.map(({ pid, path }) => ({ pid, path })), [{ pid: 101, path: 'C:\\apps\\stable.nightly\\worker.exe' }])
+})
+
+test('native CIM prefix preflight finds an owned non-app executable and preserves external processes', { skip: process.platform !== 'win32', timeout: 60000 }, async () => {
+  const { spawn, execFile } = await import('node:child_process')
+  const { promisify } = await import('node:util')
+  const { cp, mkdir, mkdtemp, realpath, rm } = await import('node:fs/promises')
+  const { tmpdir } = await import('node:os')
+  const { once } = await import('node:events')
+  const root = await mkdtemp(join(tmpdir(), 'hexbot-cim-π-'))
+  let child, exited
+  try {
+    const destination = join(root, 'stable')
+    const sibling = `${destination}.nightly`
+    await mkdir(sibling)
+    const program = join(sibling, 'owned-worker.exe')
+    await cp(process.execPath, program)
+    child = spawn(program, ['-e', "process.stdin.resume();process.stdin.on('end',()=>process.exit(0));process.stdout.write('ready\\n')"], { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true })
+    exited = once(child, 'exit')
+    child.stderr.resume()
+    // Capture completion before any request. Readiness is emitted by this exact
+    // child; there is no PID discovery or name-based cleanup authority.
+    const first = await once(child.stdout, 'data', { signal: AbortSignal.timeout(10000) })
+    assert.equal(first[0].toString(), 'ready\n')
+    const policy = await readFile('backend/hexbot-installer/src/windows-nsis-process-policy.ps1', 'utf8')
+    const query = await readFile('backend/hexbot-installer/src/windows-nsis-process-query.ps1', 'utf8')
+    for (const directory of ['System32', 'SysWOW64']) {
+      const powershell = join(process.env.SystemRoot, directory, 'WindowsPowerShell/v1.0/powershell.exe')
+      const invoke = script => promisify(execFile)(powershell, ['-NoProfile', '-NonInteractive', '-C', script], {
+        env: { ...process.env, HEXBOT_NSIS_DESTINATIONS: JSON.stringify([destination]), HEXBOT_NSIS_IMAGE: 'Hexbot.exe', HEXBOT_NSIS_AVAILABLE: '1', HEXBOT_CIM_FIXTURE_PID: String(child.pid) },
+        windowsHide: true, timeout: 15000, maxBuffer: 32768
+      })
+      // Observe the real host's alias separately. Production reads only the
+      // documented schema field; this diagnostic makes no alias assumption.
+      const properties = JSON.parse((await invoke(`$ErrorActionPreference='Stop';[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false);$p=Get-CimInstance -ClassName Win32_Process -Filter ('ProcessId='+$env:HEXBOT_CIM_FIXTURE_PID);if(!$p){throw 'Owned child disappeared'};ConvertTo-Json -Compress -InputObject @{pid=$p.ProcessId;created=$p.CreationDate.ToUniversalTime().ToString('o');executable=$p.ExecutablePath;path=$p.Path;pathMemberType=[string]$p.PSObject.Properties['Path'].MemberType}`)).stdout)
+      const result = JSON.parse((await invoke(`${policy}\n${query}`)).stdout)
+      console.log('Native CIM schema/prefix control:', JSON.stringify({ directory, properties, result }))
+      assert.equal(properties.pid, child.pid)
+      assert.equal((await realpath(properties.executable)).toLowerCase(), (await realpath(program)).toLowerCase())
+      assert.equal(result.complete, true)
+      assert.equal(result.branch, 'prefix')
+      assert.equal(result.matchCount, 1)
+      assert.equal(result.shown[0].pid, child.pid)
+      assert.equal((await realpath(result.shown[0].path)).toLowerCase(), (await realpath(program)).toLowerCase())
+      assert(!result.shown.some(item => item.pid === process.pid), 'external test process must be untouched')
+      assert.equal(child.exitCode, null)
+      process.kill(process.pid, 0)
+    }
+    child.stdin.end()
+    assert.deepEqual(await exited, [0, null])
+  } finally {
+    if (child && child.exitCode === null && child.signalCode === null) {
+      child.kill()
+      await exited
+    }
+    await rm(root, { recursive: true, force: true })
+  }
+})

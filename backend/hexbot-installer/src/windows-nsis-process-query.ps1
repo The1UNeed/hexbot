@@ -9,12 +9,13 @@ $available=$env:HEXBOT_NSIS_AVAILABLE -eq '1'
 $affected=[Collections.Generic.List[object]]::new()
 $count=0
 if($available) {
-    # Same CIM property and predicate as FIND_PROCESS, without name filtering.
+    # Use the CIM schema field explicitly, independent of the host Path alias.
+    # Keep FIND_PROCESS's raw prefix predicate and no name filtering.
     $processes=@(Get-CimInstance -ClassName Win32_Process -OperationTimeoutSec 10 -ErrorAction Stop)
     foreach($process in $processes) {
         $count++
-        if(Test-HexbotNsisPrefix $process.Path $destinations) {
-            $affected.Add(@{pid=$process.ProcessId;path=$process.Path;created=$process.CreationDate.ToUniversalTime().ToString('o')})
+        if(Test-HexbotNsisPrefix $process.ExecutablePath $destinations) {
+            $affected.Add(@{pid=$process.ProcessId;path=$process.ExecutablePath;created=$process.CreationDate.ToUniversalTime().ToString('o')})
         }
     }
 } else {
