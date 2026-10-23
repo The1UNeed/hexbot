@@ -1,9 +1,9 @@
-import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { cp, lstat, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { dirname, isAbsolute, join, relative } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import { performBootstrap, runChild } from './bootstrap'
-import { hexbotHome, nativeServiceExecutable } from './paths'
+import { canonicalRuntimePath, hexbotHome, nativeServiceExecutable } from './paths'
 vi.mock('../service', () => ({ migrateLegacyService: async () => undefined }))
 
 describe.skipIf(process.platform !== 'win32' || !process.env.HEXBOT_NATIVE_TEST_BUNDLE)('real Windows Full bootstrap', () => {
@@ -66,6 +66,7 @@ describe.skipIf(process.platform !== 'win32' || !process.env.HEXBOT_NATIVE_TEST_
       expect(voiceProbe.stdout.trim()).toBe('7.2.7')
       await performBootstrap({ run, emit, appIsPackaged: true, appVersion: manifest.version, resourcesPath: dirname(bundle), platform: 'win32', arch: 'x64' })
       expect(nativeServiceExecutable()).toBe(exe)
+      await provePinnedUvRepair(chosen, exe, redact)
       await expect(readFile(join(chosen, 'runtime/native-executable.exe'))).rejects.toThrow()
       const older = join(root, 'older runtime')
       await cp(bundle, older, { recursive: true })
@@ -89,3 +90,77 @@ describe.skipIf(process.platform !== 'win32' || !process.env.HEXBOT_NATIVE_TEST_
     }
   }, 300_000)
 })
+
+// Capability evidence for the proposed repair commands, not a production
+// repair implementation. Every mutation belongs to the fresh test home.
+async function provePinnedUvRepair(home: string, daemon: string, redact: (text: string) => string): Promise<void> {
+  const { execFile } = await import('node:child_process')
+  const { promisify } = await import('node:util')
+  const environment = join(home, 'runtime/tools/code-python')
+  const python = join(environment, 'Scripts/python.exe')
+  const uv = join(home, 'runtime/tools/uv.exe')
+  const env: NodeJS.ProcessEnv = Object.fromEntries(Object.entries(process.env)
+    .filter(([name]) => !/^(?:UV_|PYTHON|VIRTUAL_ENV$)/i.test(name)))
+  Object.assign(env, { HEXBOT_HOME: home,
+    UV_PYTHON_INSTALL_DIR: join(home, 'python'), UV_PYTHON_BIN_DIR: join(home, 'bin'),
+    UV_CACHE_DIR: join(home, 'runtime/uv-cache'), UV_LINK_MODE: 'copy', UV_PYTHON_NO_REGISTRY: '1' })
+  const run = async (program: string, args: string[]): Promise<string> => {
+    const pending = promisify(execFile)(program, args, { cwd: home, env, windowsHide: true, timeout: 60_000, maxBuffer: 32768 })
+    pending.child.stdin?.end()
+    try { return (await pending).stdout.trim() }
+    catch (error) {
+      const failure = error as Error & { code?: string | number; stdout?: string; stderr?: string }
+      console.error('Pinned uv capability command failed:', JSON.stringify({ program, args, code: failure.code,
+        message: redact(failure.message).slice(-1024), stdout: redact(failure.stdout ?? '').slice(-2048), stderr: redact(failure.stderr ?? '').slice(-2048) }))
+      throw error
+    }
+  }
+  expect(await run(uv, ['--version'])).toMatch(/^uv 0\.12\.18(?:\s|$)/)
+  const script = 'import json,platform,sys; import aiohappyeyeballs,aiohttp,aiosignal,attrs,certifi,edge_tts,frozenlist,idna,multidict,propcache,tabulate,typing_extensions,yarl; from importlib.metadata import version; print(json.dumps({"patch":platform.python_version(),"implementation":platform.python_implementation(),"prefix":sys.prefix,"base":sys.base_prefix,"voice":version("edge-tts")}))'
+  type Identity = { patch: string; implementation: string; prefix: string; base: string; voice: string }
+  const identity = JSON.parse(await run(python, ['-I', '-c', script])) as Identity
+  expect(identity.implementation).toBe('CPython')
+  expect(identity.patch).toMatch(/^3\.11\.\d+$/)
+  expect(identity.voice).toBe('7.2.7')
+  expect(canonicalRuntimePath(identity.prefix)).toBe(canonicalRuntimePath(environment))
+  const base = canonicalRuntimePath(identity.base)
+  const location = relative(canonicalRuntimePath(join(home, 'python')), base)
+  expect(location.length).toBeGreaterThan(0)
+  expect(location.startsWith('..') || isAbsolute(location) || /[\/]/.test(location)).toBe(false)
+  const key = `cpython-${identity.patch}-windows-x86_64-none`
+  expect(location.toLowerCase()).toBe(key)
+  const config = Object.fromEntries((await readFile(join(environment, 'pyvenv.cfg'), 'utf8'))
+    .split(/\r?\n/).map(line => line.split(/\s*=\s*/, 2)).filter(([name, value]) => typeof name === 'string' && value !== undefined && ['home', 'implementation', 'uv', 'version_info'].includes(name)))
+  console.log('Pinned uv owned capability input:', JSON.stringify({ patch: identity.patch, base, environment, config, key }))
+  const check = async (stage: string): Promise<void> => {
+    const current = JSON.parse(await run(python, ['-I', '-c', script])) as Identity
+    expect({ patch: current.patch, implementation: current.implementation, voice: current.voice })
+      .toEqual({ patch: identity.patch, implementation: identity.implementation, voice: identity.voice })
+    expect(canonicalRuntimePath(current.prefix)).toBe(canonicalRuntimePath(environment))
+    expect(canonicalRuntimePath(current.base)).toBe(base)
+    expect(await run(join(environment, 'Scripts/edge-tts.exe'), ['--version'])).toMatch(/^edge-tts 7\.2\.7$/)
+    console.log('Pinned uv owned capability passed:', JSON.stringify({ stage, patch: identity.patch, base, environment }))
+  }
+  await check('healthy')
+  await writeFile(python, 'ordinary truncated redirector')
+  expect((await lstat(python)).isFile()).toBe(true)
+  await expect(run(python, ['-I', '-c', script])).rejects.toThrow()
+  // The exact known base path, never global discovery or a broad minor selector.
+  await run(uv, ['--no-config', 'venv', '--allow-existing', '--no-project', '--managed-python', '--python', join(base, 'python.exe'), environment])
+  await check('truncated redirector restored with allow-existing')
+  const dll = join(base, 'python311.dll')
+  expect((await lstat(dll)).isFile()).toBe(true)
+  await rm(dll)
+  await run(uv, ['--no-config', 'python', 'install', '--no-bin', '--reinstall', key])
+  expect((await lstat(dll)).isFile()).toBe(true)
+  await check('same exact patch base DLL restored')
+  await rm(join(environment, 'Lib/site-packages/edge_tts/communicate.py'))
+  await rm(join(environment, 'Scripts/edge-tts.exe'))
+  await expect(run(python, ['-I', '-c', script])).rejects.toThrow()
+  const requirements = join(environment, 'requirements.txt')
+  await run(uv, ['--no-config', 'pip', 'install', '--python', python, '--reinstall', '--require-hashes', '--no-deps', '--no-build', '-r', requirements])
+  await check('required module and edge entrypoint restored with unchanged hashes')
+  // The direct Headless setup surface stays on this same verified home/base.
+  expect(await run(daemon, ['setup', '--json'])).toContain('"stage":"done"')
+  await check('healthy direct setup')
+}
