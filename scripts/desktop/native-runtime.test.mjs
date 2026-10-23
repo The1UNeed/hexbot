@@ -2,13 +2,13 @@ import { strict as assert } from 'node:assert'
 import { execFile, spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { once } from 'node:events'
-import { chmod, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, stat, symlink, writeFile } from 'node:fs/promises'
+import { chmod, cp, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, stat, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
 import { promisify } from 'node:util'
 import { toolAsset } from '../../apps/desktop/src/main/backend/tools.ts'
-import { publishNativeRuntime, createNativeArchive, extractStandaloneNode, launchers, nativeTarget, stageNativeRuntime, rustTarget, pruneRuntimeDependencies, directoryBytes, standaloneNode, NODE_VERSION, NODE_SHA256 } from './native-runtime.mjs'
+import { inventoryNativeRuntime, copyNativeRuntime, publishWindowsRuntime, publishNativeRuntime, createNativeArchive, extractStandaloneNode, launchers, nativeTarget, stageNativeRuntime, rustTarget, pruneRuntimeDependencies, directoryBytes, standaloneNode, NODE_VERSION, NODE_SHA256 } from './native-runtime.mjs'
 const exec = promisify(execFile)
 async function captureArchiveCommand(program, argv, cwd) {
   const child = spawn(program, argv, { cwd, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] })
@@ -67,6 +67,7 @@ test('Windows Node archive extraction keeps Unicode paths out of tar operands', 
     await assert.rejects(extractStandaloneNode(root, 'node.zip', '../outside.exe', true), /Invalid/)
   } finally { await rm(root, { recursive: true, force: true }) }
 })
+
 test('target supports both desktop architectures and Linux arm64', () => {
   for (const os of ['darwin', 'linux']) for (const arch of ['x64', 'arm64']) assert.equal(nativeTarget(os, arch), `${os}-${arch}`)
   assert.equal(nativeTarget('win32', 'x64'), 'win32-x64')
@@ -104,7 +105,7 @@ test('stage builds locked dependencies, validates Pi and emits artifact checksum
     const calls = []
     let failProbe = false
     const options = { repository: root, nodeExecutable: node, download: async url => ['rg', 'fd'].map(tool => toolAsset(tool, process.platform, process.arch)).find(asset => asset.url === url).sha256, run: async (command, args, options) => {
-      calls.push({ command, args })
+      calls.push({ command, args, cwd: options?.cwd })
       if (failProbe && args.at(-1) === '--version') throw new Error('Deliberately failing staged Node/Pi probe')
       if (command === 'tar') {
         const file = join(args[args.indexOf('-C') + 1], args.at(-1))
@@ -114,7 +115,7 @@ test('stage builds locked dependencies, validates Pi and emits artifact checksum
         const cli = join(options.cwd, 'node_modules/@earendil-works/pi-coding-agent/dist')
         await mkdir(cli, { recursive: true }); await writeFile(join(cli, 'cli.js'), '// pi')
       }
-      return { stdout: '22.20.0' }
+      return { stdout: args.at(-1) === '--version' ? '1.0.1' : '22.20.0' }
     } }
     const result = await stageNativeRuntime(options)
     assert.equal(await readFile(join(result.destination, 'skills/.history.json'), 'utf8'), '{}\n')
@@ -130,12 +131,122 @@ test('stage builds locked dependencies, validates Pi and emits artifact checksum
     assert(calls.find(c => c.command === 'npm').args.includes(`--os=${process.platform}`))
     assert(calls.find(c => c.command === 'npm').args.includes('--ignore-scripts'))
     assert.deepEqual(calls.at(-1).args.slice(-1), ['--version'])
+    const probe = calls.at(-1)
+    assert.equal(probe.command, join(probe.cwd, 'node'))
+    assert.equal(probe.args[0], join(probe.cwd, 'pi/node_modules/@earendil-works/pi-coding-agent/dist/cli.js'))
+    assert(probe.cwd.startsWith(`${result.destination}.staging-`))
     const committed = await readFile(join(result.destination, 'manifest.json'), 'utf8')
     failProbe = true
     await assert.rejects(stageNativeRuntime(options), /Deliberately failing staged/)
     assert.equal(await readFile(join(result.destination, 'manifest.json'), 'utf8'), committed)
     assert.deepEqual(await readdir(join(root, 'apps/desktop/resources')), ['hexbot-native'])
   } finally { await rm(root, { recursive: true, force: true }) }
+})
+
+async function publicationFixture(root) {
+  const staging = join(root, 'executed'), destination = join(root, 'published')
+  await mkdir(join(staging, 'pi/node_modules/native'), { recursive: true })
+  await mkdir(join(staging, 'pi/theme/empty'), { recursive: true })
+  await mkdir(join(staging, 'pi/node_modules/@earendil-works/pi-coding-agent/dist'), { recursive: true })
+  for (const [path, bytes] of Object.entries({
+    'node.exe': 'node bytes', 'manifest.json': '{"verified":true}',
+    'pi/node_modules/native/binding.node': 'native module', 'pi/theme/default.json': 'relative asset',
+    'pi/node_modules/@earendil-works/pi-coding-agent/dist/cli.js': 'real entrypoint location'
+  })) await writeFile(join(staging, path), bytes)
+  await mkdir(destination)
+  await writeFile(join(destination, 'manifest.json'), 'old destination')
+  return { staging, destination }
+}
+
+test('complete runtime inventory includes sorted layout, empty directories and exact ordinary file hashes', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'hexbot inventory π '))
+  try {
+    const { staging } = await publicationFixture(root)
+    const inventory = await inventoryNativeRuntime(staging)
+    assert.deepEqual(inventory.map(entry => entry.path), inventory.map(entry => entry.path).sort())
+    assert.deepEqual(inventory[0], { path: '', type: 'directory' })
+    assert(inventory.some(entry => entry.path === 'pi/theme/empty' && entry.type === 'directory'))
+    assert.deepEqual(inventory.find(entry => entry.path === 'pi/node_modules/native/binding.node'), {
+      path: 'pi/node_modules/native/binding.node', type: 'file', size: 13,
+      sha256: createHash('sha256').update('native module').digest('hex')
+    })
+    const copied = join(root, 'copy')
+    await cp(staging, copied, { recursive: true })
+    assert.deepEqual(await inventoryNativeRuntime(copied), inventory)
+    for (const linked of [join(root, 'root-link'), join(staging, 'nested-link')]) {
+      await symlink(join(staging, 'pi/theme'), linked, process.platform === 'win32' ? 'junction' : 'dir')
+      await assert.rejects(inventoryNativeRuntime(linked === join(root, 'root-link') ? linked : staging), /Linked native runtime entry/)
+      await rm(linked, { recursive: true, force: true })
+    }
+    await assert.rejects(inventoryNativeRuntime(join(staging, 'node.exe')), /Nonordinary native runtime entry/)
+  } finally { await rm(root, { recursive: true, force: true }) }
+})
+
+test('Windows finalization probes the original tree then publishes only an identical fresh sibling', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'hexbot fresh publication π '))
+  try {
+    const { staging, destination } = await publicationFixture(root)
+    const expected = await inventoryNativeRuntime(staging)
+    let probed = false, fresh
+    const result = await publishWindowsRuntime(staging, destination, '1.0.1', {
+      run: async (program, args, options) => {
+        assert.equal(program, join(staging, 'node.exe'))
+        assert.deepEqual(args, [join(staging, 'pi/node_modules/@earendil-works/pi-coding-agent/dist/cli.js'), '--version'])
+        assert.equal(options.cwd, staging)
+        assert.equal(await readFile(join(options.cwd, 'pi/theme/default.json'), 'utf8'), 'relative asset')
+        probed = true
+        return { stdout: '1.0.1\r\n' }
+      },
+      copy: async (source, target, options) => {
+        assert(probed)
+        assert.equal(source, staging)
+        assert(target.startsWith(`${destination}.staging-`))
+        assert.notEqual(target, staging)
+        assert.deepEqual(options, { recursive: true, errorOnExist: true, force: false, preserveTimestamps: true, verbatimSymlinks: true })
+        fresh = target
+        await copyNativeRuntime(source, target, options)
+      }
+    })
+    assert.deepEqual(result.inventory, expected)
+    assert.deepEqual(await inventoryNativeRuntime(destination), expected)
+    for (const path of [staging, fresh]) await assert.rejects(stat(path), { code: 'ENOENT' })
+    assert.deepEqual(await readdir(root), ['published'])
+  } finally { await rm(root, { recursive: true, force: true }) }
+})
+
+test('prepublication failures preserve the old destination and clean both owned staging trees', async t => {
+  for (const fault of ['probe mutation', 'dropped native import', 'missing relative asset', 'missing empty directory', 'corrupt byte', 'copy error', 'preexisting copy file', 'wrong version']) {
+    await t.test(fault, async () => {
+      const root = await mkdtemp(join(tmpdir(), 'hexbot publication failure '))
+      try {
+        const { staging, destination } = await publicationFixture(root)
+        const old = await inventoryNativeRuntime(destination)
+        const copyError = new Error('injected copy error')
+        let copies = 0
+        await assert.rejects(publishWindowsRuntime(staging, destination, '1.0.1', {
+          run: async () => {
+            if (fault === 'probe mutation') await writeFile(join(staging, 'probe-added-file'), 'unexpected')
+            return { stdout: fault === 'wrong version' ? '9.9.9' : '1.0.1' }
+          },
+          copy: async (source, target, options) => {
+            copies++
+            if (fault === 'copy error') throw copyError
+            if (fault === 'preexisting copy file') await writeFile(join(target, 'node.exe'), 'must not overwrite')
+            await copyNativeRuntime(source, target, options)
+            if (fault === 'dropped native import') await rm(join(target, 'pi/node_modules/native/binding.node'))
+            if (fault === 'missing relative asset') await rm(join(target, 'pi/theme/default.json'))
+            if (fault === 'missing empty directory') await rm(join(target, 'pi/theme/empty'), { recursive: true })
+            if (fault === 'corrupt byte') await writeFile(join(target, 'node.exe'), 'Node bytes')
+          }
+        }), error => fault === 'copy error' ? error === copyError
+          : fault === 'preexisting copy file' ? error.code === 'ERR_FS_CP_EEXIST'
+            : error.message.includes(fault === 'wrong version' ? 'pinned version' : 'pre-probe inventory'))
+        assert.equal(copies, fault === 'wrong version' ? 0 : 1)
+        assert.deepEqual(await inventoryNativeRuntime(destination), old)
+        assert.deepEqual(await readdir(root), ['published'])
+      } finally { await rm(root, { recursive: true, force: true }) }
+    })
+  }
 })
 
 test('archive dereferences npm links and records the update format', { skip: process.platform === 'win32' }, async () => {

@@ -428,6 +428,23 @@ read-only Win32 information after a failed rename, without holding a staged-file
 or child-process handle before failure. These post-failure observations cannot
 recover the original Win32 error or prove which handle blocked that earlier call.
 
+Windows finalization now inventories the complete original staging tree before
+its real Node/Pi version probe. The sequential inventory includes directories,
+empty directories, and every ordinary file's size and SHA256; links, junctions
+and other types refuse. The original tree keeps its existing npm and Pi cwd and
+relative imports. The version must match the pinned Pi version.
+
+After that probe, one copy goes into a fresh `hexbot-native.staging-*` sibling.
+Its complete inventory must match the pre-probe inventory before the unchanged
+single-rename publisher runs. Nothing has executed in the fresh tree or used it
+as cwd. Probe mutations and incomplete or corrupt copies refuse before touching
+the old destination. Both owned staging trees must be removed; cleanup failure
+after the rename still fails the build and says publication already completed.
+There is no retry, copy-publication fallback or permission workaround. This does
+not establish the original EPERM blocker or guarantee a fresh tree cannot be
+scanned or locked. A fresh-copy rename failure remains a failure. Unix staging
+keeps its existing symlink behavior and direct publication.
+
 Windows service status distinguishes a registered scheduler task from recoverable
 owned script metadata. A stopped verified task is installed; a script with no task
 is not start-at-login. Repair can recreate it and Uninstall/Change still clean its

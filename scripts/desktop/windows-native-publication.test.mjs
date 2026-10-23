@@ -2,14 +2,14 @@ import assert from 'node:assert/strict'
 import { channel } from 'node:diagnostics_channel'
 import { publicationObserver } from './windows-publication-observer.mjs'
 import { execFile } from 'node:child_process'
-import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { cp, mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import test from 'node:test'
 import { getSystemErrorMap, promisify } from 'node:util'
-import { NODE_VERSION, publishNativeRuntime, standaloneNode } from './native-runtime.mjs'
+import { NODE_VERSION, inventoryNativeRuntime, publishWindowsRuntime, publishNativeRuntime, standaloneNode } from './native-runtime.mjs'
 
-test('pinned Windows Node/Pi version-process exit permits verified directory publication',
+test('pinned Windows Node/Pi validates each original tree before three verified fresh-copy publications',
   { skip: process.platform !== 'win32', timeout: 180_000 }, async () => {
     const root = await mkdtemp(join(tmpdir(), 'hexbot real publication π '))
     let observer, observed, primary
@@ -39,22 +39,22 @@ test('pinned Windows Node/Pi version-process exit permits verified directory pub
       // Each round is a distinct publication after an explicit successful child
       // close, not a retry of a failed rename. Any failure ends the test.
       for (let round = 0; round < 3; round++) {
-        const promise = promisify(execFile)(join(current, 'node.exe'),
-          [join(current, 'pi/node_modules/@earendil-works/pi-coding-agent/dist/cli.js'), '--version'],
-          { cwd: current, windowsHide: true, timeout: 20_000, env: { ...process.env,
+        const before = await inventoryNativeRuntime(current)
+        const destination = join(root, `published-${round}`)
+        const { lifecycle, inventory } = await publishWindowsRuntime(current, destination, expected, {
+          run: (program, args, options) => promisify(execFile)(program, args,
+            { ...options, windowsHide: true, timeout: 20_000, env: { ...process.env,
             HOME: user, USERPROFILE: user, APPDATA: user, LOCALAPPDATA: user, PI_CODING_AGENT_DIR: join(user, 'pi'),
-          } })
-        const child = promise.child
-        const lifecycle = { pid: child.pid, cwd: current, round, node: NODE_VERSION }
-        child.once('exit', (code, signal) => { lifecycle.exit = { code, signal } })
-        child.once('close', (code, signal) => { lifecycle.close = { code, signal } })
-        const { stdout } = await promise
-        assert.equal(stdout.trim(), expected)
+            } })
+        })
         assert.deepEqual(lifecycle.exit, { code: 0, signal: null })
         assert.deepEqual(lifecycle.close, { code: 0, signal: null })
-        console.log('Real staged version process:', JSON.stringify(lifecycle))
-        const destination = join(root, `published-${round}`)
-        await publishNativeRuntime(current, destination, lifecycle)
+        assert.equal(lifecycle.cwd, current)
+        assert.equal(lifecycle.program, join(current, 'node.exe'))
+        assert.deepEqual(inventory, before)
+        assert.deepEqual(await inventoryNativeRuntime(destination), before)
+        await assert.rejects(stat(current), { code: 'ENOENT' })
+        console.log('Real fresh-copy publication:', JSON.stringify({ ...lifecycle, round, node: NODE_VERSION, destination, entries: inventory.length }))
         assert.equal(await readFile(join(destination, 'manifest.json'), 'utf8'), marker)
         current = destination
       }
@@ -68,6 +68,51 @@ test('pinned Windows Node/Pi version-process exit permits verified directory pub
       catch (error) { if (!primary) throw error; console.error('Observer cleanup failed:', error.message) }
       try { await rm(root, { recursive: true, force: true }) }
       catch (error) { if (!primary) throw error; console.error('Staging cleanup failed:', error.code, root) }
+    }
+  })
+
+test('fresh-copy publication succeeds beside an owned source cwd but cleanup still fails the build',
+  { skip: process.platform !== 'win32', timeout: 30_000 }, async () => {
+    const { spawn } = await import('node:child_process')
+    const { once } = await import('node:events')
+    const root = await mkdtemp(join(tmpdir(), 'hexbot executed cwd π '))
+    let child, closed, primary
+    try {
+      const staging = join(root, 'executed'), destination = join(root, 'published')
+      const cli = join(staging, 'pi/node_modules/@earendil-works/pi-coding-agent/dist/cli.js')
+      await mkdir(join(cli, '..'), { recursive: true })
+      await cp(process.execPath, join(staging, 'node.exe'))
+      await writeFile(cli, "process.stdout.write('1.0.1')")
+      await writeFile(join(staging, 'manifest.json'), 'verified marker')
+      const expected = await inventoryNativeRuntime(staging)
+      child = spawn(process.execPath, ['-e', "process.stdout.write('ready');process.stdin.resume()"], {
+        cwd: staging, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe']
+      })
+      closed = once(child, 'close')
+      closed.catch(() => {})
+      let stderr = ''
+      child.stderr.on('data', bytes => { stderr = (stderr + bytes).slice(-4096) })
+      await once(child.stdout, 'data', { signal: AbortSignal.timeout(5000) })
+      let failure
+      try { await publishWindowsRuntime(staging, destination, '1.0.1', {
+        run: (program, args, options) => promisify(execFile)(program, args, { ...options, windowsHide: true, timeout: 20_000 })
+      }) }
+      catch (error) { failure = error }
+      console.log('Executed-source cleanup result:', JSON.stringify({ pid: child.pid, exitCode: child.exitCode,
+        message: failure?.message, cleanupCodes: failure?.errors?.map(error => error.code), destination }))
+      assert(failure instanceof AggregateError)
+      assert.equal(failure.message, 'Native runtime publication completed, but staging cleanup failed')
+      assert(failure.errors.length > 0)
+      for (const error of failure.errors) assert(['EBUSY', 'EPERM'].includes(error.code), error.message)
+      assert.equal(child.exitCode, null)
+      assert.deepEqual(await inventoryNativeRuntime(destination), expected)
+      child.stdin.end()
+      assert.deepEqual(await closed, [0, null], stderr)
+    } catch (error) { primary = error; throw error }
+    finally {
+      if (child?.exitCode === null) { child.kill(); await closed.catch(() => {}) }
+      try { await rm(root, { recursive: true, force: true }) }
+      catch (error) { if (!primary) throw error; console.error('Cleanup fixture removal failed:', error.code) }
     }
   })
 

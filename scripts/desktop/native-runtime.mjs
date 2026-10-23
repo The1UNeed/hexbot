@@ -6,7 +6,7 @@ import { createHash } from 'node:crypto'
 import { chmod, cp, mkdir, mkdtemp, readFile, readdir, realpath, lstat, stat, rename, rm, writeFile } from 'node:fs/promises'
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { promisify } from 'node:util'
+import { isDeepStrictEqual, promisify } from 'node:util'
 import { nativeBuildEnvironment } from './native-build.mjs'
 import { downloadTool, installTool } from '../../apps/desktop/src/main/backend/tools.ts'
 
@@ -141,6 +141,79 @@ export async function standaloneNode(directory, platform, arch, version = NODE_V
   await extractStandaloneNode(directory, filename, member, windows)
   return join(directory, member)
 }
+
+// Windows publication compares the complete layout, not only manifest.files.
+// lstat rejects junctions/symlinks before traversal; Unix npm links are unchanged.
+export async function inventoryNativeRuntime(directory) {
+  const entries = []
+  async function visit(path, key) {
+    const meta = await lstat(path)
+    if (meta.isSymbolicLink()) throw new Error(`Linked native runtime entry: ${key}`)
+    if (meta.isDirectory()) {
+      entries.push({ path: key, type: 'directory' })
+      for (const name of (await readdir(path)).sort())
+        await visit(join(path, name), key ? `${key}/${name}` : name)
+    } else if (key && meta.isFile()) {
+      const bytes = await readFile(path)
+      if (bytes.length !== meta.size) throw new Error(`Native runtime entry changed: ${key}`)
+      entries.push({ path: key, type: 'file', size: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex') })
+    } else throw new Error(`Nonordinary native runtime entry: ${key}`)
+  }
+  await visit(directory, '')
+  return entries.sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0)
+}
+
+async function probePiVersion(staging, nodeName, piVersion, run) {
+  const program = join(staging, nodeName)
+  const probe = run(program, [join(staging, 'pi/node_modules/@earendil-works/pi-coding-agent/dist/cli.js'), '--version'], { cwd: staging })
+  const lifecycle = { pid: probe.child?.pid, program, cwd: staging }
+  probe.child?.once('exit', (code, signal) => { lifecycle.exit = { code, signal } })
+  probe.child?.once('close', (code, signal) => { lifecycle.close = { code, signal } })
+  const { stdout } = await probe
+  if (stdout.trim() !== piVersion) throw new Error('The staged Pi version does not match the pinned version')
+  console.log('Staged version probe completed:', JSON.stringify(lifecycle))
+  return lifecycle
+}
+
+export async function copyNativeRuntime(source, destination, options) {
+  // errorOnExist also rejects an existing directory root. Keep our mkdtemp
+  // root owned and copy each child once into an absent destination instead.
+  for (const name of (await readdir(source)).sort())
+    await cp(join(source, name), join(destination, name), options)
+}
+
+export async function publishWindowsRuntime(staging, destination, piVersion, { run = execute, copy = copyNativeRuntime } = {}) {
+  let fresh, failure, published = false
+  try {
+    const inventory = await inventoryNativeRuntime(staging)
+    const lifecycle = await probePiVersion(staging, 'node.exe', piVersion, run)
+    // This sibling has never been executed or used as a child cwd. Retain the
+    // original layout for the probe, then materialize exactly its verified bytes.
+    fresh = await mkdtemp(`${destination}.staging-`)
+    await copy(staging, fresh, { recursive: true, errorOnExist: true, force: false, preserveTimestamps: true, verbatimSymlinks: true })
+    if (!isDeepStrictEqual(await inventoryNativeRuntime(fresh), inventory))
+      throw new Error('The native runtime copy does not match the pre-probe inventory')
+    await publishNativeRuntime(fresh, destination, lifecycle)
+    published = true
+    return { inventory, lifecycle }
+  } catch (error) {
+    failure = error
+    throw error
+  } finally {
+    const errors = []
+    for (const path of [fresh, staging].filter(Boolean)) {
+      try { await rm(path, { recursive: true, force: true }) }
+      catch (error) { errors.push(error) }
+    }
+    if (errors.length) {
+      const message = published
+        ? 'Native runtime publication completed, but staging cleanup failed'
+        : 'Native runtime staging and cleanup failed'
+      throw new AggregateError(failure ? [failure, ...errors] : errors, message, { cause: failure ?? errors[0] })
+    }
+  }
+}
+
 export async function stageNativeRuntime({
   repository = root,
   destination = join(repository, 'apps/desktop/resources/hexbot-native'),
@@ -148,6 +221,7 @@ export async function stageNativeRuntime({
   arch = process.env.HEXBOT_BUILD_ARCH || process.arch,
   nodeExecutable,
   download = downloadTool,
+  copy = copyNativeRuntime,
   run = (command, args, options) => execute(command, args, { ...options, maxBuffer: 32 * 1024 * 1024 })
 } = {}) {
   const target = nativeTarget(platform, arch)
@@ -166,7 +240,7 @@ export async function stageNativeRuntime({
   await run('cargo', ['build', '--release', '--locked', '--bin', 'hexbot', ...(windows ? ['--bin', 'hexbot-cli'] : []), '--target', triple, '--manifest-path', join(repository, 'backend/hexbot-core/Cargo.toml')], { cwd: repository })
   await mkdir(dirname(destination), { recursive: true })
   const staging = await mkdtemp(`${destination}.staging-`)
-  let failure
+  let failure, cleanupStaging = true
   try {
     const pi = join(staging, 'pi')
     await mkdir(pi)
@@ -207,20 +281,19 @@ export async function stageNativeRuntime({
     const commit = await execute('git', ['log', '-1', '--format=%ct'], { cwd: repository }).catch(() => ({ stdout: '' }))
     const builtAt = Number(commit.stdout.trim()) || Math.floor(Date.now() / 1000)
     await writeFile(join(staging, 'manifest.json'), `${JSON.stringify({ version: metadata.version, target, piVersion, nodeVersion, builtAt, files }, null, 2)}\n`)
-    const versionProbe = run(join(staging, nodeName), [join(pi, 'node_modules/@earendil-works/pi-coding-agent/dist/cli.js'), '--version'], { cwd: staging })
-    const child = versionProbe.child
-    const lifecycle = { pid: child?.pid, program: join(staging, nodeName), cwd: staging }
-    child?.once('exit', (code, signal) => { lifecycle.exit = { code, signal } })
-    child?.once('close', (code, signal) => { lifecycle.close = { code, signal } })
-    await versionProbe
-    console.log('Staged version probe completed:', JSON.stringify(lifecycle))
-    await publishNativeRuntime(staging, destination, lifecycle)
+    if (windows) {
+      cleanupStaging = false // The finalizer owns both original and fresh trees.
+      await publishWindowsRuntime(staging, destination, piVersion, { run, copy })
+    } else {
+      const lifecycle = await probePiVersion(staging, nodeName, piVersion, run)
+      await publishNativeRuntime(staging, destination, lifecycle)
+    }
     return { destination, version: metadata.version, target, piVersion, beforeBytes, afterBytes }
   } catch (error) {
     failure = error
     throw error
   } finally {
-    try { await rm(staging, { recursive: true, force: true }) }
+    try { if (cleanupStaging) await rm(staging, { recursive: true, force: true }) }
     catch (cleanup) {
       if (failure) throw new AggregateError([failure, cleanup], 'Native runtime staging and cleanup failed', { cause: failure })
       throw cleanup
