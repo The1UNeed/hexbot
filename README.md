@@ -180,5 +180,5 @@ the current nightly and says stable is coming soon.
 
 ## License
 
-AGPL-3.0. See `LICENSE` and `NOTICE`. Hermes Agent is MIT licensed; its
+Apache-2.0. See `LICENSE` and `NOTICE`. Hermes Agent is MIT licensed; its
 license is in `docs/upstream/HERMES_LICENSE.txt`.

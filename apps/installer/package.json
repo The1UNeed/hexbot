@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "type": "module",
   "description": "Hexbot Installer: installs Hexbot Headless, Client, or Full on this computer.",
-  "license": "AGPL-3.0-only",
+  "license": "Apache-2.0",
   "scripts": {
     "dev": "vite",
     "dev:fake": "node scripts/dev-fake.mjs",

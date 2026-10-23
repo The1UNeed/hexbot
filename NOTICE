@@ -1,7 +1,7 @@
 Hexbot
 Copyright (c) 2026 Hexbot contributors
 
-Licensed under the GNU Affero General Public License v3.0 (see LICENSE).
+Licensed under the Apache License, Version 2.0 (see LICENSE).
 
 This product is a hard fork of Hermes Agent by Nous Research, imported at
 upstream commit 32fe1293244f186c75e82090ed06fe416739f146 (v0.21.0). The

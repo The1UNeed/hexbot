@@ -21,7 +21,7 @@ Three parts:
 1. **Connect service**, `apps/connect`: Next.js on Vercel, Clerk for
    identity, Postgres (Neon) for state, the Cloudflare API for tunnels,
    PostHog for product analytics (consent-gated, shared project with the
-   site). AGPL like the rest of the repo. Free during beta.
+   site). Apache-2.0 like the rest of the repo. Free during beta.
 2. **Daemon side**, `backend/hexbot-core/src/services.rs` and the
    `hexbot connect` CLI: registers the daemon, heartbeats, supervises
    `cloudflared`, and verifies grants. `server.rs` accepts grants through

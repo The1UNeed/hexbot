@@ -76,7 +76,7 @@ Connect never receives your conversations, bot memory, provider keys, files, too
 
 ## Self-host Connect
 
-The Connect service is AGPL software in `apps/connect`. Running your own instance requires a Clerk application, a Postgres database such as Neon, a Cloudflare account with a tunnel zone of its own, a Cloudflare API token scoped to tunnels and that zone's DNS, a service signing key, and a Vercel deployment or compatible Next.js host. PostHog is optional.
+The Connect service is Apache-2.0 software in `apps/connect`. Running your own instance requires a Clerk application, a Postgres database such as Neon, a Cloudflare account with a tunnel zone of its own, a Cloudflare API token scoped to tunnels and that zone's DNS, a service signing key, and a Vercel deployment or compatible Next.js host. PostHog is optional.
 
 Point a daemon at your instance with the `HEXBOT_CONNECT_URL` environment variable before running `hexbot connect` and `hexbot serve`. Point the app at it by setting `hexbot.connect.url` in the web bundle's local storage, or `VITE_HEXBOT_CONNECT_URL` when building the bundle. Self-hosting the daemon alone does not require any of these services.
 
