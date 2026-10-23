@@ -22,6 +22,7 @@ const run = (args, env = process.env) => new Promise((done, reject) => {
 try {
   await setVersion(nightly)
   await run(['scripts/desktop/dist.mjs', '--win', '--x64', ...(edition === 'client' ? ['--client'] : []), '--channel', 'nightly', '-c.directories.output=release/nightly-probe'])
+  if (edition === 'full') await run(['scripts/desktop/dist.mjs', '--win', '--x64', '--client', '--channel', 'nightly', '-c.directories.output=release/nightly-probe'])
 } finally {
   await writeFile(packageFile, original)
   assert(original.equals(await readFile(packageFile)), 'Disposable source version was not restored')
@@ -29,6 +30,7 @@ try {
 const nsis = resolve(`apps/desktop/release/nightly-probe/${edition === 'client' ? 'HexbotClient' : 'Hexbot'}-${nightly}-win-x64.exe`)
 await run(['scripts/dev/run-one-rust-test.mjs', 'backend/hexbot-installer/Cargo.toml', 'windows_contract', 'real_nsis_install_repair_and_uninstall'], {
   ...process.env, HEXBOT_WINDOWS_NSIS: nsis, HEXBOT_WINDOWS_EDITION: edition,
+  ...(edition === 'full' ? { HEXBOT_WINDOWS_CLIENT_NSIS: resolve(`apps/desktop/release/nightly-probe/HexbotClient-${nightly}-win-x64.exe`) } : {}),
   HEXBOT_WINDOWS_TRACK: 'nightly', HEXBOT_WINDOWS_PACKAGE_VERSION: nightly,
   HEXBOT_WINDOWS_GUI_PROBE: resolve('scripts/desktop/windows-installed-app-smoke.mjs'),
 })

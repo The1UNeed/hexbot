@@ -797,6 +797,94 @@ fn interrupted_task_install_uninstalls_owned_files_when_the_task_is_absent() {
     );
     assert!(!events.iter().any(|event| event["stage"] == "done"));
 
+    // Change uses the same destructive-action gate as Uninstall. Discovery
+    // deliberately hides this stopped foreign definition; that cannot authorize
+    // a Client replacement, a network request, or an implicit task removal.
+    let app = root.path().join("installer apps/app.hexbot.desktop");
+    fs::create_dir_all(app.join("resources")).unwrap();
+    fs::write(app.join("Hexbot.exe"), "owned Full fixture").unwrap();
+    fs::write(app.join("resources/app.asar"), "damaged ordinary package").unwrap();
+    fs::write(
+        app.join(".hexbot-app.json"),
+        br#"{"appId":"app.hexbot.desktop"}"#,
+    )
+    .unwrap();
+    for from in ["headless", "full"] {
+        let source_receipt = json!({"option":from,"channel":"stable","version":"1.2.3","paths":[if from=="full" { &app } else { &uninstall_sentinel }],"installedAt":"fixture"}).to_string().into_bytes();
+        fs::write(&receipt, &source_receipt).unwrap();
+        let output =
+            Command::new(std::env::var_os("HEXBOT_WINDOWS_INSTALLER").expect("native installer"))
+                .args(["--client", "--stable", "--yes", "--json"])
+                .env("HEXBOT_HOME", &home)
+                .env("HOME", root.path())
+                .env("USERPROFILE", root.path())
+                .env("HEXBOT_SERVICE_ROOT", root.path())
+                .env(
+                    "HEXBOT_INSTALL_APPS_DIR",
+                    root.path().join("installer apps"),
+                )
+                .env("HEXBOT_UPDATE_URL", "http://127.0.0.1:1")
+                .env_remove("HEXBOT_SERVICE_NO_LOAD")
+                .output()
+                .unwrap();
+        let after = snapshot();
+        eprintln!(
+            "Installer {from}->Client foreign task refusal: status={} stdout={} stderr={} taskBefore={} taskAfter={}",
+            output.status,
+            bounded(&output.stdout),
+            bounded(&output.stderr),
+            bounded(&serde_json::to_vec(&task_before).unwrap()),
+            bounded(&serde_json::to_vec(&after).unwrap())
+        );
+        assert_eq!(
+            after, task_before,
+            "Change modified the stopped foreign task"
+        );
+        assert!(
+            !output.status.success(),
+            "Change reported success for a foreign task"
+        );
+        let events = String::from_utf8(output.stdout)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+            .collect::<Vec<_>>();
+        assert!(
+            events.iter().any(|p| p["stage"] == "error"
+                && p["message"]
+                    .as_str()
+                    .is_some_and(|m| m.contains("another installation"))),
+            "{events:?}"
+        );
+        assert!(!events.iter().any(|p| matches!(
+            p["stage"].as_str(),
+            Some("download" | "install" | "remove" | "done")
+        )));
+        assert_eq!(fs::read(&receipt).unwrap(), source_receipt);
+        assert_eq!(fs::read(&file).unwrap(), script_before);
+        assert_eq!(fs::read(&xml).unwrap(), b"owned XML sentinel");
+        assert_eq!(
+            fs::read(&uninstall_sentinel).unwrap(),
+            b"owned runtime sentinel"
+        );
+        assert_eq!(
+            fs::read(app.join("Hexbot.exe")).unwrap(),
+            b"owned Full fixture"
+        );
+        assert_eq!(
+            fs::read(app.join("resources/app.asar")).unwrap(),
+            b"damaged ordinary package"
+        );
+        assert_eq!(
+            fs::read(app.join(".hexbot-app.json")).unwrap(),
+            br#"{"appId":"app.hexbot.desktop"}"#
+        );
+    }
+    // Remove only our synthetic Full payload before the original Headless
+    // Uninstall control; foreign-refusal assertions above precede this cleanup.
+    fs::remove_dir_all(&app).unwrap();
+    fs::write(&receipt, &receipt_bytes).unwrap();
+
     // Only this explicit fixture cleanup removes the inert foreign definition.
     drop(cleanup);
     let owned_removal = run_installer();

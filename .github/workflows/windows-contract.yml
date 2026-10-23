@@ -159,6 +159,9 @@ jobs:
           $version = (Get-Content apps/desktop/package.json -Encoding UTF8 -Raw | ConvertFrom-Json).version
           $env:HEXBOT_WINDOWS_NSIS = (Resolve-Path "apps/desktop/release/Hexbot-$version-win-x64.exe").Path
           $env:HEXBOT_WINDOWS_EDITION = 'full'
+          node scripts/desktop/dist.mjs --win --x64 --client --channel stable
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $env:HEXBOT_WINDOWS_CLIENT_NSIS = (Resolve-Path "apps/desktop/release/HexbotClient-$version-win-x64.exe").Path
           $lookup = (Get-Command node -CommandType Application).Source
           $lookupValues = @($lookup)
           $lookupText = [string]$lookup

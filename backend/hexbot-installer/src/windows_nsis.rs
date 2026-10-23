@@ -19,25 +19,21 @@ pub(crate) const IDENTITIES: [(&str, &str); 4] = [
     ),
 ];
 fn invalid() -> io::Error {
-    io::Error::other(
-        "Windows app registration is incomplete or belongs to another installation. Nothing was changed.",
+    io::Error::other("Windows app registration is incomplete or belongs to another installation.")
+}
+fn uninstaller_filename(id: &str) -> Option<&'static str> {
+    IDENTITIES.iter().any(|(known, _)| *known == id).then_some(
+        if id.starts_with("app.hexbot.client") {
+            "Uninstall HexbotClient.exe"
+        } else {
+            "Uninstall Hexbot.exe"
+        },
     )
 }
 pub(crate) fn uninstaller_name(id: &str, name: &str) -> bool {
-    if !IDENTITIES.iter().any(|(known, _)| *known == id) {
-        return false;
-    }
-    let base = if id.starts_with("app.hexbot.client") {
-        "Hexbot Client"
-    } else {
-        "Hexbot"
-    };
-    if id.ends_with(".nightly") {
-        name.eq_ignore_ascii_case(&format!("Uninstall {base} Nightly.exe"))
-    } else {
-        name.eq_ignore_ascii_case(&format!("Uninstall {base}.exe"))
-            || name.eq_ignore_ascii_case(&format!("Uninstall {base} [alpha].exe"))
-    }
+    // Pinned NSIS uses PRODUCT_FILENAME, which AppInfo derives from the
+    // configured Windows executableName, not the channel's productName.
+    uninstaller_filename(id).is_some_and(|expected| name.eq_ignore_ascii_case(expected))
 }
 fn command_file<'a>(id: &str, command: &'a str) -> io::Result<&'a str> {
     let (file, arguments) = command
@@ -86,15 +82,80 @@ pub(crate) fn check(
     .creation_flags(0x08000000)
     .output()?;
     if !output.status.success() || output.stdout.len() > 32768 {
+        eprintln!(
+            "NSIS registry read failed: status={}; stderr={:?}; stdoutBytes={}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+                .chars()
+                .take(2048)
+                .collect::<String>(),
+            output.stdout.len()
+        );
         return Err(invalid());
     }
-    let entries: Vec<Registration> =
-        serde_json::from_slice(&output.stdout).map_err(|_| invalid())?;
+    let raw: serde_json::Value = serde_json::from_slice(&output.stdout).map_err(|_| invalid())?;
+    let entries: Vec<Registration> = serde_json::from_value(raw.clone()).map_err(|_| invalid())?;
     let registered = entries
         .first()
         .is_some_and(|entry| entry.install && entry.uninstall);
-    check_entries(destination, id, uninstaller, entries)?;
+    if let Err(error) = check_entries(destination, id, uninstaller, entries) {
+        eprintln!(
+            "NSIS registry binding refused: {}",
+            registration_diagnostic(destination, id, uninstaller, &raw)
+        );
+        return Err(error);
+    }
     Ok(registered)
+}
+#[cfg(any(windows, test))]
+fn registration_diagnostic(
+    destination: &Path,
+    id: &str,
+    uninstaller: Option<&Path>,
+    raw: &serde_json::Value,
+) -> serde_json::Value {
+    use serde_json::json;
+    // Only fixed fields from the two known registry keys, bounded and JSON
+    // escaped. Never enumerate unrelated registry data or execute its strings.
+    let entries: Vec<_> = raw
+        .as_array()
+        .into_iter()
+        .flatten()
+        .take(2)
+        .map(|entry| {
+            let mut bounded = serde_json::Map::new();
+            for key in [
+                "scope",
+                "view",
+                "install",
+                "uninstall",
+                "location",
+                "locationType",
+                "command",
+                "commandType",
+            ] {
+                let value = &entry[key];
+                bounded.insert(
+                    key.into(),
+                    if let Some(text) = value.as_str() {
+                        json!(text.chars().take(1024).collect::<String>())
+                    } else if value.is_boolean() {
+                        value.clone()
+                    } else {
+                        serde_json::Value::Null
+                    },
+                );
+            }
+            serde_json::Value::Object(bounded)
+        })
+        .collect();
+    let bounded_path = |path: &Path| {
+        path.to_string_lossy()
+            .chars()
+            .take(1024)
+            .collect::<String>()
+    };
+    json!({"appId":id,"destination":bounded_path(destination),"expectedFilename":uninstaller_filename(id),"expectedArguments":"/currentuser","expectedUninstaller":uninstaller.map(bounded_path),"entries":entries})
 }
 fn check_entries(
     destination: &Path,
@@ -159,21 +220,46 @@ fn same_path(first: &Path, second: &Path) -> bool {
 mod tests {
     use super::*;
     #[test]
+    fn binding_diagnostics_are_bounded_to_known_fields_and_escape_control_text() {
+        let raw = serde_json::json!([{"scope":"CurrentUser","view":"Registry64","install":true,"uninstall":true,"location":"x".repeat(4096),"command":"\"C:\\Uninstall HexbotClient.exe\" /currentuser\nextra","locationType":"String","commandType":"String","unrelated":"not collected"}]);
+        let diagnostic =
+            registration_diagnostic(Path::new("expected app"), "app.hexbot.client", None, &raw);
+        assert_eq!(diagnostic["expectedFilename"], "Uninstall HexbotClient.exe");
+        assert_eq!(
+            diagnostic["entries"][0]["location"].as_str().unwrap().len(),
+            1024
+        );
+        assert_eq!(diagnostic["entries"][0]["commandType"], "String");
+        assert!(diagnostic["entries"][0].get("unrelated").is_none());
+        assert!(!diagnostic.to_string().contains('\n'));
+    }
+    #[test]
+    fn executable_based_nsis_names_are_bound_to_the_known_edition() {
+        for (id, _) in IDENTITIES {
+            let filename = if id.starts_with("app.hexbot.client") {
+                "Uninstall HexbotClient.exe"
+            } else {
+                "Uninstall Hexbot.exe"
+            };
+            let command = format!("\"C:\\José state\\{id}\\{filename}\" /currentuser");
+            assert!(command_file(id, &command).is_ok(), "{id}: {command}");
+            for foreign in [
+                if id.starts_with("app.hexbot.client") {
+                    "Uninstall Hexbot.exe"
+                } else {
+                    "Uninstall HexbotClient.exe"
+                },
+                "Uninstall Hexbot Client [alpha].exe",
+                "Uninstall Hexbot Nightly.exe",
+            ] {
+                assert!(!uninstaller_name(id, foreign), "{id}: {foreign}");
+            }
+        }
+    }
+    #[test]
     fn only_known_identity_and_exact_quoted_current_user_uninstallers_are_executable() {
         for (id, _) in IDENTITIES {
-            let base = if id.starts_with("app.hexbot.client") {
-                "Hexbot Client"
-            } else {
-                "Hexbot"
-            };
-            let name = format!(
-                "Uninstall {base}{}.exe",
-                if id.ends_with(".nightly") {
-                    " Nightly"
-                } else {
-                    " [alpha]"
-                }
-            );
+            let name = uninstaller_filename(id).unwrap();
             let path = format!("C:\\José state\\{id}\\{name}");
             assert_eq!(
                 command_file(id, &format!("\"{path}\" /currentuser")).unwrap(),
@@ -201,7 +287,7 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let destination = root.path().join("José app");
         fs::create_dir(&destination).unwrap();
-        let file = destination.join("Uninstall Hexbot Client [alpha].exe");
+        let file = destination.join("Uninstall HexbotClient.exe");
         fs::write(&file, "not executed").unwrap();
         let absent = Registration {
             install: false,
@@ -256,9 +342,7 @@ mod tests {
                 "foreign-command" => {
                     entry.command = Some(format!(
                         "\"{}\" /currentuser",
-                        root.path()
-                            .join("Uninstall Hexbot Client [alpha].exe")
-                            .display()
+                        root.path().join("Uninstall HexbotClient.exe").display()
                     ))
                 }
                 _ => entry.command = Some(format!("\"{}\" /currentuser garbage", file.display())),
@@ -268,7 +352,7 @@ mod tests {
                 "{case}"
             );
         }
-        let other = destination.join("Uninstall Hexbot Client.exe");
+        let other = destination.join("Uninstall Hexbot.exe");
         fs::write(&other, "different").unwrap();
         assert!(
             check_entries(

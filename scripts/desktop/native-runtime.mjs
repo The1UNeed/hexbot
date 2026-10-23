@@ -3,7 +3,7 @@ import { execFile } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { createHash } from 'node:crypto'
 import { chmod, cp, mkdir, mkdtemp, readFile, readdir, realpath, lstat, stat, rename, rm, writeFile } from 'node:fs/promises'
-import { dirname, isAbsolute, join, resolve } from 'node:path'
+import { basename, dirname, isAbsolute, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
 import { nativeBuildEnvironment } from './native-build.mjs'
@@ -101,6 +101,28 @@ export const NODE_SHA256 = Object.freeze({
   'linux-x64': '1084aa36196bba4c3a5e69a1ee388a6e4ff729dad09445fbcd434b28fe3c24af',
   'win32-x64': '2b0ff57b049cda1bbcea2240eec20467018713c1efe1f7360c2681859b90ed71'
 })
+async function archiveTool() {
+  if (process.platform !== 'win32') return 'tar'
+  if (!process.env.SystemRoot || !isAbsolute(process.env.SystemRoot)) throw new Error('Windows SystemRoot must be absolute')
+  const program = join(process.env.SystemRoot, 'System32/tar.exe')
+  const file = await lstat(program)
+  if (!file.isFile() || file.isSymbolicLink()) throw new Error('Windows tar must be an ordinary system executable')
+  const { stdout } = await execute(program, ['--version'], { windowsHide: true })
+  console.log('Windows archive tool:', JSON.stringify({ program: await realpath(program), version: stdout.trim().slice(0, 1024) }))
+  return program
+}
+export async function extractStandaloneNode(directory, filename, member, windows, run = execute) {
+  if (windows) {
+    // Windows bsdtar can narrow Unicode argv through the active code page.
+    // CreateProcessW carries cwd separately: keep all file operands ASCII.
+    if (!/^[\x20-\x7e]+$/.test(filename) || basename(filename) !== filename ||
+        !/^[\x20-\x7e]+$/.test(member) || member.includes('\\') || member.includes(':') || member.split('/').some(p => !p || p === '.' || p === '..'))
+      throw new Error('Invalid standalone Node archive member')
+    await run(await archiveTool(), ['-xf', filename, '-C', '.', member], { cwd: directory, windowsHide: true })
+  } else {
+    await run('tar', ['-xzf', join(directory, filename), '-C', directory, member])
+  }
+}
 export async function standaloneNode(directory, platform, arch, version = NODE_VERSION) {
   const digest = NODE_SHA256[nativeTarget(platform, arch)]
   if (version !== NODE_VERSION || !digest) throw new Error('Standalone Node checksum is not pinned')
@@ -115,7 +137,7 @@ export async function standaloneNode(directory, platform, arch, version = NODE_V
   const path = join(directory, filename)
   await writeFile(path, archive)
   const member = windows ? `${name}/node.exe` : `${name}/bin/node`
-  await execute('tar', [windows ? '-xf' : '-xzf', path, '-C', directory, member])
+  await extractStandaloneNode(directory, filename, member, windows)
   return join(directory, member)
 }
 export async function stageNativeRuntime({
@@ -247,6 +269,7 @@ export async function createNativeArchive(directory, destination) {
   // Materialize npm links as independent files. tar -h alone can emit hardlinks,
   // which the updater deliberately rejects along with symbolic links.
   const staging = await mkdtemp(join(dirname(destination), 'hexbot-native.archive-'))
+  const temporaryZip = `${staging}.zip`
   let unpackedSize
   try {
     await cp(directory, staging, { recursive: true, dereference: true })
@@ -260,12 +283,22 @@ export async function createNativeArchive(directory, destination) {
     }
     await writeFile(join(staging, 'manifest.json'), `${JSON.stringify(metadata, null, 2)}\n`)
     unpackedSize = await directoryBytes(staging)
-    await execute('tar', [
-      ...(metadata.target === 'win32-x64' ? ['--format', 'zip'] : []),
-      ...(process.platform === 'darwin' ? ['--no-mac-metadata', '--no-xattrs'] : []),
-      metadata.target === 'win32-x64' ? '-cf' : '-czf', destination, '-C', staging, '.'
-    ], { env: { ...process.env, COPYFILE_DISABLE: '1' } })
-  } finally { await rm(staging, { recursive: true, force: true }) }
+    if (metadata.target === 'win32-x64') {
+      // Both temporary names are ASCII even if their parent or the final
+      // archive name is Unicode. Publish only after tar has closed successfully.
+      await execute(await archiveTool(), ['--format', 'zip', '-cf', basename(temporaryZip), '-C', basename(staging), '.'],
+        { cwd: dirname(staging), windowsHide: true, env: { ...process.env, COPYFILE_DISABLE: '1' } })
+      await rename(temporaryZip, destination)
+    } else {
+      await execute('tar', [
+        ...(process.platform === 'darwin' ? ['--no-mac-metadata', '--no-xattrs'] : []),
+        '-czf', destination, '-C', staging, '.'
+      ], { env: { ...process.env, COPYFILE_DISABLE: '1' } })
+    }
+  } finally {
+    await rm(temporaryZip, { force: true })
+    await rm(staging, { recursive: true, force: true })
+  }
   const manifest = JSON.parse(await readFile(join(directory, 'manifest.json'), 'utf8'))
   const windows = manifest.target === 'win32-x64'
   const entrypoint = windows ? 'hexbot.exe' : 'hexbot'

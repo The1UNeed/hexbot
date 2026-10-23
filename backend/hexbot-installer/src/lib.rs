@@ -234,7 +234,7 @@ impl Installer {
         progress: &mut ProgressCallback<'_>,
     ) -> Result<InstallResult> {
         let manifest = fetch_manifest(&self.base_url, track)?;
-        let (result, _install_lock) = self.install(option, &manifest, None, progress)?;
+        let (result, _install_lock) = self.install(option, &manifest, None, false, progress)?;
         self.write_receipt(&result.receipt)?;
         progress(Progress::new("done", done_message(option)));
         Ok(result)
@@ -257,8 +257,13 @@ impl Installer {
             ));
         }
         let manifest = fetch_manifest(&self.base_url, recovered.track)?;
-        let (result, _install_lock) =
-            self.install(recovered.option, &manifest, Some(&recovered), progress)?;
+        let (result, _install_lock) = self.install(
+            recovered.option,
+            &manifest,
+            Some(&recovered),
+            false,
+            progress,
+        )?;
         self.write_receipt(&result.receipt)?;
         progress(Progress::new("done", done_message(recovered.option)));
         Ok(result)
@@ -309,6 +314,9 @@ impl Installer {
         if from == to {
             return self.apply(to, track, progress);
         }
+        if to == InstallOption::Client {
+            self.preflight_service_removal()?;
+        }
         let installed = self.detect()?;
         let old_apps: Vec<_> = installed.apps.iter().filter(|a| a.option == from).collect();
         self.check_removable(&old_apps)?;
@@ -319,8 +327,12 @@ impl Installer {
             return fail("Change cancelled.");
         }
         let manifest = fetch_manifest(&self.base_url, track)?;
-        let (mut result, _install_lock) = self.install(to, &manifest, None, progress)?;
+        let (mut result, _install_lock) =
+            self.install(to, &manifest, None, to == InstallOption::Client, progress)?;
         // Another installer may have changed the old option during the download.
+        if to == InstallOption::Client {
+            self.preflight_service_removal()?;
+        }
         let installed = self.detect()?;
         let old_apps: Vec<_> = installed.apps.iter().filter(|a| a.option == from).collect();
         self.check_removable(&old_apps)?;
@@ -351,15 +363,7 @@ impl Installer {
             self.validate_data_removal()?;
         }
         self.preflight_home_removal()?;
-        // Discovery deliberately hides foreign/invalid services from the
-        // installed options. Destructive actions must propagate that ownership
-        // error rather than treating an unmanageable task as absent.
-        if self.target.is_windows() {
-            windows_service::check_service(
-                &self.paths.service_file(self.target),
-                &self.paths.hexbot_home,
-            )?;
-        }
+        self.preflight_service_removal()?;
         let installed = self.detect()?;
         self.check_removable(&installed.apps.iter().collect::<Vec<_>>())?;
         // A killed install can leave the previous app in staging, where it
@@ -488,6 +492,7 @@ impl Installer {
         option: InstallOption,
         manifest: &Manifest,
         recovery: Option<&WindowsRepair>,
+        removing_service: bool,
         progress: &mut ProgressCallback<'_>,
     ) -> Result<(InstallResult, fs::File)> {
         self.paths.validate()?;
@@ -511,6 +516,9 @@ impl Installer {
         // Downloads can overlap. Replacement and receipt publication cannot.
         // Return the lock so apply/change retain it until the receipt is written.
         let install_lock = self.lock_installation(progress)?;
+        if removing_service {
+            self.preflight_service_removal()?;
+        }
         if let Some(expected) = recovery
             && self.windows_app_repair()? != *expected
         {
@@ -897,7 +905,9 @@ impl Installer {
             if detect::windows_app_id(&destination).as_deref() != Some(id) {
                 return fail("NSIS finished without the packaged app ownership marker.");
             }
-            if !self.check_windows_registration(&destination, id, None)? {
+            if !self.check_windows_registration(&destination, id, None).map_err(|error| {
+                format!("NSIS ran, but its app registration could not be verified. The app may already be installed; no rollback was performed. {error}")
+            })? {
                 return fail("NSIS finished without a bound per-user app registration.");
             }
             Ok(vec![destination])

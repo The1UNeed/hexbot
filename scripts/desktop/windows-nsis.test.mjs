@@ -3,6 +3,36 @@ import { readFile } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { dirname, join, resolve } from 'node:path'
 import test from 'node:test'
+import { appId, productName } from './release-version.mjs'
+
+test('actual pinned AppInfo and NSIS use executable-based uninstall names for all four release identities', async () => {
+  const desktop = createRequire(resolve('apps/desktop/package.json'))
+  const builder = createRequire(desktop.resolve('electron-builder'))
+  const packager = createRequire(builder.resolve('app-builder-lib/out/packager.js'))
+  const { AppInfo } = packager('./appInfo.js')
+  const { load } = packager('js-yaml')
+  const base = load(await readFile('apps/desktop/electron-builder.base.yml', 'utf8'))
+  const clientConfig = load(await readFile('apps/desktop/electron-builder.client.yml', 'utf8'))
+  const metadata = JSON.parse(await readFile('apps/desktop/package.json', 'utf8'))
+  const rust = await readFile('backend/hexbot-installer/src/windows_nsis.rs', 'utf8')
+  const names = [...rust.split('fn uninstaller_filename')[1].split('pub(crate) fn uninstaller_name')[0].matchAll(/"(Uninstall [^"\n]+\.exe)"/g)].map(match => match[1])
+  assert.equal(names.length, 2)
+  for (const client of [false, true]) for (const channel of ['stable', 'nightly']) {
+    const version = channel === 'stable' ? metadata.version : '0.1.5-nightly.20990101.1'
+    const edition = client ? clientConfig : {}
+    const info = new AppInfo({ metadata: { ...metadata, version }, config: {
+      ...base, ...edition, appId: appId(channel, client), productName: productName(channel, version, client)
+    } }, null, { ...base.win, ...edition.win })
+    assert.equal(`Uninstall ${info.productFilename}.exe`, names[client ? 0 : 1], info.id)
+  }
+  const templates = join(dirname(builder.resolve('app-builder-lib/package.json')), 'templates/nsis')
+  const common = await readFile(join(templates, 'common.nsh'), 'utf8')
+  const registry = await readFile(join(templates, 'include/installer.nsh'), 'utf8')
+  assert.match(common, /!define UNINSTALL_FILENAME "Uninstall \$\{PRODUCT_FILENAME\}\.exe"/)
+  assert.match(registry, /StrCpy \$2 "\$INSTDIR\\\$\{UNINSTALL_FILENAME\}"/)
+  assert.match(registry, /WriteRegStr SHELL_CONTEXT "\$\{UNINSTALL_REGISTRY_KEY\}" UninstallString '"\$2" \$0'/)
+  assert.match(registry, /StrCpy \$0 "\/currentuser"/)
+})
 
 test('known NSIS identities match the pinned builder GUIDs and current-user registry semantics', async () => {
   const desktop = createRequire(resolve('apps/desktop/package.json'))

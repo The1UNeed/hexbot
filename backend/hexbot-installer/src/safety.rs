@@ -276,6 +276,18 @@ impl Installer {
         Ok(())
     }
 
+    pub(crate) fn preflight_service_removal(&self) -> Result<()> {
+        // Discovery hides foreign/invalid tasks. A destructive action must
+        // distinguish them from absence even when no working daemon exists.
+        if self.target.is_windows() {
+            crate::windows_service::check_service(
+                &self.paths.service_file(self.target),
+                &self.paths.hexbot_home,
+            )?;
+        }
+        Ok(())
+    }
+
     pub(crate) fn remove_service(&self, progress: &mut ProgressCallback<'_>) -> Result<()> {
         let file = self.paths.service_file(self.target);
         if self.target.is_windows() {

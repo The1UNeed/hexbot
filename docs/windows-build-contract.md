@@ -50,8 +50,15 @@ race-free hard-link boundary or change permissions on legacy Python files.
 
 ## Install and update contracts
 
+Change to Client explicitly checks service ownership before downloading and again
+under the installation lock before replacement. Read-only discovery hiding an
+invalid task cannot authorize that destructive action.
+
 Full NSIS artifacts begin with `Hexbot-`; Client artifacts begin with
-`HexbotClient-`. The installer runs NSIS, waits for it, and checks the expected
+`HexbotClient-`. The pinned builder names uninstallers from `win.executableName`:
+`Uninstall Hexbot.exe` and `Uninstall HexbotClient.exe`, including Nightly under
+its separate GUID. Product display names do not select executable filenames.
+The installer runs NSIS, waits for it, and checks the expected
 app EXE, `resources/app.asar` and the ownership marker packaged inside NSIS
 before writing its receipt. The download remains verified against the signed
 install manifest. That marker survives interruption

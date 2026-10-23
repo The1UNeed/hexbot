@@ -22,6 +22,12 @@ struct Server {
 }
 impl Server {
     fn new(files: impl FnOnce(&str) -> BTreeMap<String, Vec<u8>>) -> Self {
+        Self::with_request(files, |_| {})
+    }
+    fn with_request(
+        files: impl FnOnce(&str) -> BTreeMap<String, Vec<u8>>,
+        mut on_request: impl FnMut(&str) + Send + 'static,
+    ) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let base = format!("http://{}", listener.local_addr().unwrap());
         let files = files(&base);
@@ -39,6 +45,7 @@ impl Server {
                 let request = String::from_utf8_lossy(&bytes[..size]);
                 let path = request.split_whitespace().nth(1).unwrap().to_owned();
                 record.lock().unwrap().push(path.clone());
+                on_request(&path);
                 let body = files.get(&path);
                 let status = if body.is_some() {
                     "200 OK"
@@ -573,6 +580,227 @@ fn uninstall_refuses_windows_ownership_errors_before_removing_receipt_or_runtime
             assert!(!engine.paths.receipt().exists());
             assert!(!native.exists());
         }
+    }
+}
+
+#[test]
+fn change_to_client_refuses_hidden_service_ownership_errors_before_download() {
+    for from in [InstallOption::Full, InstallOption::Headless] {
+        for case in ["unrecognized-script", "other-home", "absent", "owned"] {
+            let root = tempfile::tempdir().unwrap();
+            let mut engine = engine(root.path());
+            let app = owned_app(&engine, "app.hexbot.desktop", "1.2.3");
+            let native = engine
+                .paths
+                .hexbot_home
+                .join("runtime/native/build/hexbot.exe");
+            fs::create_dir_all(native.parent().unwrap()).unwrap();
+            fs::write(&native, "runtime sentinel").unwrap();
+            let receipt = Receipt {
+                option: from,
+                channel: Track::Stable,
+                version: "1.2.3".into(),
+                paths: vec![if from == InstallOption::Full {
+                    app.clone()
+                } else {
+                    native.clone()
+                }],
+                installed_at: "fixture".into(),
+            };
+            fs::write(
+                engine.paths.receipt(),
+                serde_json::to_vec(&receipt).unwrap(),
+            )
+            .unwrap();
+            let file = engine.paths.service_file(engine.target);
+            fs::create_dir_all(file.parent().unwrap()).unwrap();
+            if case != "absent" {
+                let owner = if case == "other-home" {
+                    root.path().join("other home")
+                } else {
+                    engine.paths.hexbot_home.clone()
+                };
+                fs::write(
+                    &file,
+                    if case == "unrecognized-script" {
+                        "unrelated script".into()
+                    } else {
+                        format!(
+                            "# Hexbot owned home: {}\n",
+                            serde_json::to_string(&owner).unwrap()
+                        )
+                    },
+                )
+                .unwrap();
+            }
+            let xml = file.with_extension("xml");
+            fs::write(&xml, "XML sentinel").unwrap();
+            let before: Vec<_> = [
+                engine.paths.receipt(),
+                native,
+                app.join("Hexbot.exe"),
+                app.join("resources/app.asar"),
+                app.join(".hexbot-app.json"),
+                file,
+                xml,
+            ]
+            .into_iter()
+            .map(|p| {
+                let bytes = fs::read(&p).ok();
+                (p, bytes)
+            })
+            .collect();
+            let server = Server::new(|_| BTreeMap::new());
+            engine.base_url = server.base.clone();
+            let mut stages = Vec::new();
+            let error = engine
+                .change(
+                    from,
+                    InstallOption::Client,
+                    Track::Stable,
+                    &mut |_| true,
+                    &mut |p| stages.push(p.stage),
+                )
+                .unwrap_err();
+            if matches!(case, "unrecognized-script" | "other-home") {
+                assert!(
+                    error.to_string().contains("another installation"),
+                    "{from:?}/{case}: {error}"
+                );
+                assert!(
+                    server.requests.lock().unwrap().is_empty(),
+                    "{from:?}/{case}"
+                );
+            } else {
+                // An unpublished manifest stops the valid/absent controls before NSIS.
+                assert_eq!(*server.requests.lock().unwrap(), ["/install/stable.json"]);
+            }
+            assert!(stages.is_empty());
+            for (p, bytes) in before {
+                assert_eq!(fs::read(&p).ok(), bytes, "{} changed", p.display());
+            }
+        }
+    }
+}
+
+#[test]
+fn change_rechecks_service_ownership_after_download_under_the_install_lock() {
+    use base64::{Engine, engine::general_purpose::STANDARD};
+    use sha2::{Digest, Sha512};
+    for from in [InstallOption::Full, InstallOption::Headless] {
+        let root = tempfile::tempdir().unwrap();
+        let mut engine = engine(root.path());
+        let app = owned_app(&engine, "app.hexbot.desktop", "1.2.3");
+        let native = engine
+            .paths
+            .hexbot_home
+            .join("runtime/native/build/hexbot.exe");
+        fs::create_dir_all(native.parent().unwrap()).unwrap();
+        fs::write(&native, "runtime sentinel").unwrap();
+        let receipt = Receipt {
+            option: from,
+            channel: Track::Stable,
+            version: "1.2.3".into(),
+            paths: vec![if from == InstallOption::Full {
+                app.clone()
+            } else {
+                native.clone()
+            }],
+            installed_at: "fixture".into(),
+        };
+        let receipt_bytes = serde_json::to_vec(&receipt).unwrap();
+        fs::write(engine.paths.receipt(), &receipt_bytes).unwrap();
+        let file = engine.paths.service_file(engine.target);
+        fs::create_dir_all(file.parent().unwrap()).unwrap();
+        let marker = format!(
+            "# Hexbot owned home: {}\n",
+            serde_json::to_string(&engine.paths.hexbot_home).unwrap()
+        );
+        fs::write(&file, marker).unwrap();
+        let xml = file.with_extension("xml");
+        fs::write(&xml, "XML sentinel").unwrap();
+        let before: Vec<_> = [
+            engine.paths.receipt(),
+            native,
+            app.join("Hexbot.exe"),
+            app.join("resources/app.asar"),
+            app.join(".hexbot-app.json"),
+            xml,
+        ]
+        .into_iter()
+        .map(|p| {
+            let b = fs::read(&p).unwrap();
+            (p, b)
+        })
+        .collect();
+        let changed = file.clone();
+        let server = Server::with_request(
+            |url| {
+                let bytes = b"verified NSIS boundary fixture".to_vec();
+                let manifest=serde_json::to_vec(&json!({"schema":1,"channel":"stable","version":"1.2.3","minInstaller":"0.0.1","targets":{"windows-x86_64":{"client":{"url":format!("{url}/app.exe"),"size":bytes.len(),"sha512":STANDARD.encode(Sha512::digest(&bytes)),"format":"exe","appId":"app.hexbot.client","productName":"Hexbot Client"}}}})).unwrap();
+                BTreeMap::from([
+                    ("/install/stable.json".into(), manifest.clone()),
+                    (
+                        "/install/1.2.3/stable.json.sig".into(),
+                        hexbot_installer::update_signature::test_signature(&manifest).into_bytes(),
+                    ),
+                    ("/app.exe".into(), bytes),
+                ])
+            },
+            move |path| {
+                // The response body cannot finish before this ownership swap. The
+                // installer must reacquire/validate ownership after that boundary.
+                if path == "/app.exe" {
+                    fs::write(&changed, "foreign service inserted during download").unwrap();
+                }
+            },
+        );
+        engine.base_url = server.base.clone();
+        let mut stages = Vec::new();
+        let error = engine
+            .change(
+                from,
+                InstallOption::Client,
+                Track::Stable,
+                &mut |_| true,
+                &mut |p| stages.push(p.stage),
+            )
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("another installation"),
+            "{from:?}: {error}"
+        );
+        assert!(
+            server
+                .requests
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|p| p == "/app.exe")
+        );
+        assert!(stages.iter().any(|s| s == "verify"));
+        assert!(
+            !stages
+                .iter()
+                .any(|s| matches!(s.as_str(), "install" | "remove" | "done")),
+            "{stages:?}"
+        );
+        assert_eq!(
+            fs::read_to_string(&file).unwrap(),
+            "foreign service inserted during download"
+        );
+        for (p, b) in before {
+            assert_eq!(fs::read(&p).unwrap(), b, "{} changed", p.display());
+        }
+        assert!(
+            !engine
+                .paths
+                .apps_override
+                .as_ref()
+                .unwrap()
+                .join("app.hexbot.client")
+                .exists()
+        );
     }
 }
 

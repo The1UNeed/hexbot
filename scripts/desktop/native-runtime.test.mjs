@@ -7,8 +7,31 @@ import { join } from 'node:path'
 import { test } from 'node:test'
 import { promisify } from 'node:util'
 import { toolAsset } from '../../apps/desktop/src/main/backend/tools.ts'
-import { publishNativeRuntime, createNativeArchive, launchers, nativeTarget, stageNativeRuntime, rustTarget, pruneRuntimeDependencies, directoryBytes, standaloneNode, NODE_VERSION, NODE_SHA256 } from './native-runtime.mjs'
+import { publishNativeRuntime, createNativeArchive, extractStandaloneNode, launchers, nativeTarget, stageNativeRuntime, rustTarget, pruneRuntimeDependencies, directoryBytes, standaloneNode, NODE_VERSION, NODE_SHA256 } from './native-runtime.mjs'
 const exec = promisify(execFile)
+test('Windows Node archive extraction keeps Unicode paths out of tar operands', { skip: process.platform === 'linux' }, async () => {
+  const root = await mkdtemp(join(tmpdir(), 'hexbot extraction π 中文 '))
+  try {
+    const member = `node-v${NODE_VERSION}-win-x64/node.exe`
+    const bundle = join(root, 'bundle'); await mkdir(join(bundle, member, '..'), { recursive: true })
+    await writeFile(join(bundle, member), 'member bytes')
+    // The native runner uses this same system tar for the actual pinned Node
+    // publication test; the portable fixture exercises the full extraction.
+    const tar = process.platform === 'win32' ? join(process.env.SystemRoot, 'System32/tar.exe') : 'tar'
+    await exec(tar, ['--format', 'zip', '-cf', '../node.zip', member], { cwd: bundle })
+    const calls = []
+    await extractStandaloneNode(root, 'node.zip', member, true, async (program, args, options) => {
+      calls.push({ program, args, cwd: options.cwd })
+      assert.ok(args.every(arg => /^[\x20-\x7e]+$/.test(arg)), JSON.stringify(args))
+      return exec(program, args, options)
+    })
+    assert.equal(calls.length, 1)
+    assert.equal(calls[0].cwd, root)
+    assert.equal(await readFile(join(root, member), 'utf8'), 'member bytes')
+    await assert.rejects(extractStandaloneNode(root, '../node.zip', member, true), /Invalid/)
+    await assert.rejects(extractStandaloneNode(root, 'node.zip', '../outside.exe', true), /Invalid/)
+  } finally { await rm(root, { recursive: true, force: true }) }
+})
 test('target supports both desktop architectures and Linux arm64', () => {
   for (const os of ['darwin', 'linux']) for (const arch of ['x64', 'arm64']) assert.equal(nativeTarget(os, arch), `${os}-${arch}`)
   assert.equal(nativeTarget('win32', 'x64'), 'win32-x64')
@@ -168,17 +191,22 @@ test('pruning removes foreign nested optional binaries and development files, pr
 })
 
 test('Windows ZIP advertises the actual daemon and contains the verified entrypoint', { skip: process.platform === 'linux' }, async () => {
-  const root = await mkdtemp(join(tmpdir(), 'hexbot windows archive '))
+  const root = await mkdtemp(join(tmpdir(), 'hexbot windows archive π 中文 '))
   try {
     const bundle = join(root, 'bundle'); await mkdir(bundle)
     await writeFile(join(bundle, 'hexbot.exe'), 'MZ fixture')
     await writeFile(join(bundle, 'manifest.json'), JSON.stringify({ version: '1.2.3', target: 'win32-x64', files: { 'hexbot.exe': 'pending' } }))
-    const file = join(root, 'native.zip')
+    const file = join(root, 'native π.zip')
     const manifest = await createNativeArchive(bundle, file)
     assert.equal(manifest.entrypoint, 'hexbot.exe'); assert.equal(manifest.format, 'zip')
     assert.equal(manifest.target, 'windows-x86_64')
     const out = join(root, 'out'); await mkdir(out)
-    await exec('tar', ['-xf', file, '-C', out])
+    // Use Node's Unicode-aware stdin pipe so the test does not send a Unicode
+    // archive path to the same narrow-argv Windows tar boundary.
+    const tar = process.platform === 'win32' ? join(process.env.SystemRoot, 'System32/tar.exe') : 'tar'
+    const extract = spawn(tar, ['-xf', '-', '-C', 'out'], { cwd: root, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] })
+    const closed = once(extract, 'close'); extract.stdin.end(await readFile(file))
+    assert.deepEqual(await closed, [0, null])
     assert.equal(await readFile(join(out, 'hexbot.exe'), 'utf8'), 'MZ fixture')
     await rm(join(bundle, 'hexbot.exe'))
     await assert.rejects(createNativeArchive(bundle, file))

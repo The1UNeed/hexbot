@@ -140,12 +140,31 @@ fn real_nsis_install_repair_and_uninstall() {
         (false, _) => "Hexbot [alpha]",
     };
     let bytes = fs::read(package).unwrap();
+    let client_id = format!(
+        "app.hexbot.client{}",
+        if track == Track::Nightly {
+            ".nightly"
+        } else {
+            ""
+        }
+    );
+    let client_bytes = (!client).then(|| {
+        fs::read(
+            std::env::var_os("HEXBOT_WINDOWS_CLIENT_NSIS")
+                .expect("Full Change control requires real same-track Client NSIS"),
+        )
+        .unwrap()
+    });
+    let client_registration = (!client).then(|| nsis_registration::Registration::new(&client_id));
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let address = listener.local_addr().unwrap();
     let base = format!("http://{address}");
     let artifact = json!({"url":format!("{base}/app.exe"),"path":"app.exe","size":bytes.len(),"sha512":STANDARD.encode(Sha512::digest(&bytes)),"format":"exe","appId":id,"productName":name});
     let mut artifacts = serde_json::Map::new();
     artifacts.insert(if client { "client" } else { "full" }.into(), artifact);
+    if let Some(bytes) = &client_bytes {
+        artifacts.insert("client".into(), json!({"url":format!("{base}/client.exe"),"size":bytes.len(),"sha512":STANDARD.encode(Sha512::digest(bytes)),"format":"exe","appId":client_id,"productName":"Hexbot Client"}));
+    }
     let manifest = serde_json::to_vec(&json!({"schema":1,"channel":track,"version":package_version,"minInstaller":"0.1.5-0","targets":{"windows-x86_64":artifacts}})).unwrap();
     let signature = hexbot_installer::update_signature::test_signature(&manifest).into_bytes();
     let stopped = Arc::new(AtomicBool::new(false));
@@ -163,6 +182,8 @@ fn real_nsis_install_repair_and_uninstall() {
             let path = request.split_whitespace().nth(1).unwrap();
             let body = if path == "/app.exe" {
                 Some(&bytes)
+            } else if path == "/client.exe" {
+                client_bytes.as_ref()
             } else if path == format!("/install/{served_version}/{track}.json.sig") {
                 Some(&signature)
             } else if path == format!("/install/{track}.json") {
@@ -218,7 +239,11 @@ fn real_nsis_install_repair_and_uninstall() {
     };
     let foreign = root.path().join("foreign NSIS sibling");
     fs::create_dir(&foreign).unwrap();
-    let foreign_uninstaller = foreign.join(format!("Uninstall {name}.exe"));
+    let foreign_uninstaller = foreign.join(if client {
+        "Uninstall HexbotClient.exe"
+    } else {
+        "Uninstall Hexbot.exe"
+    });
     fs::write(&foreign_uninstaller, "foreign bytes: never execute").unwrap();
     let absent = registration.snapshot();
     registration.edit(
@@ -241,9 +266,18 @@ fn real_nsis_install_repair_and_uninstall() {
         "foreign bytes: never execute"
     );
     registration.restore(&absent);
+    assert_eq!(
+        registration.snapshot(),
+        absent,
+        "Foreign collision fixture must be fully restored before real NSIS"
+    );
     let result = installer.apply(option, track, &mut |event| println!("{}", event.message));
     // Stop the server even on a failed install, before reporting the failure.
     if let Err(error) = &result {
+        eprintln!(
+            "Actual NSIS failure registration: {}",
+            registration.snapshot()
+        );
         stopped.store(true, Ordering::SeqCst);
         let _ = TcpStream::connect(address);
         server.join().unwrap();
@@ -279,15 +313,11 @@ fn real_nsis_install_repair_and_uninstall() {
     let other_registration = nsis_registration::Registration::new(&other_id);
     let other_directory = root.path().join("Programs").join(&other_id);
     fs::create_dir_all(&other_directory).unwrap();
-    let other_name = format!(
-        "Uninstall {}{}.exe",
-        if client { "Hexbot Client" } else { "Hexbot" },
-        if track == Track::Stable {
-            " Nightly"
-        } else {
-            " [alpha]"
-        }
-    );
+    let other_name = if client {
+        "Uninstall HexbotClient.exe"
+    } else {
+        "Uninstall Hexbot.exe"
+    };
     let other_uninstaller = other_directory.join(other_name);
     fs::write(
         &other_uninstaller,
@@ -566,6 +596,84 @@ fn real_nsis_install_repair_and_uninstall() {
         fs::read_to_string(&foreign_uninstaller).unwrap(),
         "foreign bytes: never execute"
     );
+    // Successful Change uses the same public engine route, real same-track
+    // Client NSIS, and an owned service marker. Scheduler load is disabled only
+    // in this isolated NSIS fixture; the native task fixture tests live refusal.
+    for from in if client {
+        vec![InstallOption::Headless]
+    } else {
+        vec![InstallOption::Full, InstallOption::Headless]
+    } {
+        if from == InstallOption::Full {
+            installer
+                .apply(InstallOption::Full, track, &mut |_| {})
+                .unwrap();
+        } else {
+            let receipt = hexbot_installer::Receipt {
+                option: from,
+                channel: track,
+                version: package_version.clone(),
+                paths: vec![],
+                installed_at: "Headless Change fixture".into(),
+            };
+            fs::write(
+                installer.paths.receipt(),
+                serde_json::to_vec(&receipt).unwrap(),
+            )
+            .unwrap();
+        }
+        let script = installer.paths.service_file(installer.target);
+        fs::create_dir_all(script.parent().unwrap()).unwrap();
+        fs::write(
+            &script,
+            format!(
+                "# Hexbot owned home: {}\n",
+                serde_json::to_string(&installer.paths.hexbot_home.canonicalize().unwrap())
+                    .unwrap()
+            ),
+        )
+        .unwrap();
+        fs::write(script.with_extension("xml"), "owned XML fixture").unwrap();
+        assert!(installer.detect().unwrap().service);
+        let changed = installer
+            .change(
+                from,
+                InstallOption::Client,
+                track,
+                &mut |_| true,
+                &mut |_| {},
+            )
+            .unwrap();
+        eprintln!(
+            "Real same-track NSIS Change {from:?}->Client completed: {}",
+            serde_json::to_string(&changed.receipt).unwrap()
+        );
+        let destination = installer
+            .paths
+            .apps_override
+            .as_ref()
+            .unwrap()
+            .join(&client_id);
+        assert_eq!(changed.receipt.option, InstallOption::Client);
+        assert_eq!(changed.receipt.channel, track);
+        assert_eq!(changed.receipt.paths, vec![destination.clone()]);
+        assert!(destination.join("HexbotClient.exe").is_file());
+        assert!(!script.exists());
+        assert!(!script.with_extension("xml").exists());
+        assert_eq!(installer.detect().unwrap().apps.len(), 1);
+        if !client {
+            assert!(!app.exists());
+            registration.assert_absent();
+        }
+        installer.uninstall(false, &mut |_| {}).unwrap();
+        assert!(!destination.exists());
+        if let Some(reg) = &client_registration {
+            reg.assert_absent();
+        } else {
+            registration.assert_absent();
+        }
+        assert_eq!(other_registration.snapshot(), other_before);
+    }
     stopped.store(true, Ordering::SeqCst);
     let _ = TcpStream::connect(address);
     server.join().unwrap();
