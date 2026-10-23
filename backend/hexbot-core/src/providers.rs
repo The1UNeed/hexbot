@@ -2651,7 +2651,7 @@ mod migration_tests {
     #[cfg(unix)]
     #[test]
     fn github_cli_fallback_reads_only_a_successful_supported_token() {
-        use std::os::unix::fs::PermissionsExt;
+        use std::io::Write;
         let home = tempfile::tempdir().unwrap();
         let program = home.path().join("gh");
         for (script, expected) in [
@@ -2662,8 +2662,22 @@ mod migration_tests {
             ("#!/bin/sh\nprintf ghp_unsupported", None),
             ("#!/bin/sh\nprintf ghu_test; exit 1", None),
         ] {
-            fs::write(&program, script).unwrap();
-            fs::set_permissions(&program, fs::Permissions::from_mode(0o700)).unwrap();
+            // Write it from a child. Another test's fork inherits this process's
+            // descriptors until its exec closes them, even with CLOEXEC; while
+            // it holds one open for writing, Linux refuses to exec the script.
+            let mut writer = std::process::Command::new("/bin/sh")
+                .args(["-c", "cat > \"$1\" && chmod 700 \"$1\"", "sh"])
+                .arg(&program)
+                .stdin(std::process::Stdio::piped())
+                .spawn()
+                .unwrap();
+            writer
+                .stdin
+                .take()
+                .unwrap()
+                .write_all(script.as_bytes())
+                .unwrap();
+            assert!(writer.wait().unwrap().success());
             assert_eq!(github_cli_token(&program).as_deref(), expected);
         }
     }
