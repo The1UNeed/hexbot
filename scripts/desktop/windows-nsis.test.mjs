@@ -13,6 +13,8 @@ test('actual pinned AppInfo and NSIS use executable-based uninstall names for al
   const { load } = packager('js-yaml')
   const base = load(await readFile('apps/desktop/electron-builder.base.yml', 'utf8'))
   const clientConfig = load(await readFile('apps/desktop/electron-builder.client.yml', 'utf8'))
+  assert.equal(base.nsis.perMachine, false, 'process fallback contract is per-user')
+  assert.equal(base.nsis.allowElevation, false, 'outer install must not silently elevate')
   const metadata = JSON.parse(await readFile('apps/desktop/package.json', 'utf8'))
   const rust = await readFile('backend/hexbot-installer/src/windows_nsis.rs', 'utf8')
   const names = [...rust.split('fn uninstaller_filename')[1].split('pub(crate) fn uninstaller_name')[0].matchAll(/"(Uninstall [^"\n]+\.exe)"/g)].map(match => match[1])

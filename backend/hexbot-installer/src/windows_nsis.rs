@@ -133,15 +133,46 @@ fn classify_missing(
     id: &str,
     raw: &serde_json::Value,
 ) -> crate::windows_recovery::Registration {
+    missing_classification(destination, id, raw)
+        .unwrap_or(crate::windows_recovery::Registration::Other)
+}
+fn missing_classification(
+    destination: &Path,
+    id: &str,
+    raw: &serde_json::Value,
+) -> Result<crate::windows_recovery::Registration, &'static str> {
     use crate::windows_recovery::{Registration as Class, drive_path};
-    let Some(entries) = raw.as_array().filter(|entries| entries.len() == 2) else {
-        return Class::Other;
-    };
+    let filename = uninstaller_filename(id).ok_or("unknown release identity")?;
+    let entries = raw
+        .as_array()
+        .filter(|entries| entries.len() == 2)
+        .ok_or("outer value must be exactly two entries")?;
     if entries[0]["scope"] != "CurrentUser"
         || entries[1]["scope"] != "LocalMachine"
         || entries.iter().any(|entry| entry["view"] != "Registry64")
     {
-        return Class::Other;
+        return Err("scope order or registry view differs from the fixed schema");
+    }
+    for entry in entries {
+        if !entry.as_object().is_some_and(|fields| {
+            [
+                "scope",
+                "view",
+                "install",
+                "uninstall",
+                "location",
+                "command",
+                "locationType",
+                "commandType",
+            ]
+            .iter()
+            .all(|key| fields.contains_key(*key))
+        }) {
+            return Err("a known registration field is missing");
+        }
+        if !entry["install"].is_boolean() || !entry["uninstall"].is_boolean() {
+            return Err("registration presence fields must be booleans");
+        }
     }
     let empty = |entry: &serde_json::Value| {
         entry["install"] == false
@@ -152,36 +183,48 @@ fn classify_missing(
             && entry["commandType"].is_null()
     };
     if !empty(&entries[1]) {
-        return Class::Other;
+        return Err("HKLM is not absent with four literal JSON null optional fields");
     }
     let user = &entries[0];
     if empty(user) {
-        return Class::None;
+        return Ok(Class::None);
     }
-    let Some(destination) = destination.to_str().and_then(drive_path) else {
-        return Class::Other;
-    };
-    let Some(filename) = uninstaller_filename(id) else {
-        return Class::Other;
-    };
-    let bound = user["install"] == true
-        && user["uninstall"] == true
-        && user["locationType"] == "String"
-        && user["commandType"] == "String"
-        && user["location"].as_str().and_then(drive_path).as_ref() == Some(&destination)
-        && user["command"]
-            .as_str()
-            .filter(|s| s.len() <= 8192 && !s.chars().any(char::is_control))
-            .and_then(|command| command_file(id, command).ok())
-            .and_then(drive_path)
-            == Some(format!("{destination}\\{}", filename.to_ascii_lowercase()));
-    if bound {
-        Class::ExactStale
-    } else {
-        Class::Other
+    let destination = destination
+        .to_str()
+        .and_then(drive_path)
+        .ok_or("trusted destination is not an ordinary drive spelling")?;
+    if user["install"] != true || user["uninstall"] != true {
+        return Err("HKCU presence or optional null fields are inconsistent");
     }
+    if user["locationType"] != "String" || user["commandType"] != "String" {
+        return Err("HKCU registration value types are not String");
+    }
+    if user["location"].as_str().and_then(drive_path).as_ref() != Some(&destination) {
+        return Err("HKCU InstallLocation is not the exact trusted drive path");
+    }
+    if user["command"]
+        .as_str()
+        .filter(|s| s.len() <= 8192 && !s.chars().any(char::is_control))
+        .and_then(|command| command_file(id, command).ok())
+        .and_then(drive_path)
+        != Some(format!("{destination}\\{}", filename.to_ascii_lowercase()))
+    {
+        return Err("HKCU uninstall command is not the exact known quoted current-user binding");
+    }
+    Ok(Class::ExactStale)
 }
 
+#[cfg(any(windows, test))]
+fn json_kind(value: &serde_json::Value) -> &'static str {
+    match value {
+        serde_json::Value::Null => "null",
+        serde_json::Value::Bool(_) => "boolean",
+        serde_json::Value::Number(_) => "number",
+        serde_json::Value::String(_) => "string",
+        serde_json::Value::Array(_) => "array",
+        serde_json::Value::Object(_) => "object",
+    }
+}
 #[cfg(any(windows, test))]
 fn registration_diagnostic(
     destination: &Path,
@@ -199,6 +242,7 @@ fn registration_diagnostic(
         .take(2)
         .map(|entry| {
             let mut bounded = serde_json::Map::new();
+            let mut shapes=serde_json::Map::new();
             for key in [
                 "scope",
                 "view",
@@ -210,6 +254,7 @@ fn registration_diagnostic(
                 "commandType",
             ] {
                 let value = &entry[key];
+                shapes.insert(key.into(),json!({"present":entry.get(key).is_some(),"kind":json_kind(value),"isNull":value.is_null(),"arrayLength":value.as_array().map(Vec::len),"objectFieldCount":value.as_object().map(serde_json::Map::len)}));
                 bounded.insert(
                     key.into(),
                     if let Some(text) = value.as_str() {
@@ -221,6 +266,7 @@ fn registration_diagnostic(
                     },
                 );
             }
+            bounded.insert("fieldSchema".into(),serde_json::Value::Object(shapes));
             serde_json::Value::Object(bounded)
         })
         .collect();
@@ -230,7 +276,7 @@ fn registration_diagnostic(
             .take(1024)
             .collect::<String>()
     };
-    json!({"appId":id,"destination":bounded_path(destination),"expectedFilename":uninstaller_filename(id),"expectedArguments":"/currentuser","expectedUninstaller":uninstaller.map(bounded_path),"entries":entries})
+    json!({"appId":id,"destination":bounded_path(destination),"expectedFilename":uninstaller_filename(id),"expectedArguments":"/currentuser","expectedUninstaller":uninstaller.map(bounded_path),"rawSchema":{"kind":json_kind(raw),"arrayLength":raw.as_array().map(Vec::len),"objectFieldCount":raw.as_object().map(serde_json::Map::len)},"missingRefusalCheck":missing_classification(destination,id,raw).err(),"entries":entries})
 }
 fn check_entries(
     destination: &Path,
@@ -373,6 +419,143 @@ mod tests {
         assert_eq!(diagnostic["entries"][0]["commandType"], "String");
         assert!(diagnostic["entries"][0].get("unrelated").is_none());
         assert!(!diagnostic.to_string().contains('\n'));
+    }
+    #[test]
+    fn diagnostics_distinguish_literal_null_from_arrays_objects_and_missing_fields() {
+        let empty = serde_json::json!({"scope":"CurrentUser","view":"Registry64","install":false,"uninstall":false,"location":null,"command":null,"locationType":null,"commandType":null});
+        let mut machine = empty.clone();
+        machine["scope"] = serde_json::json!("LocalMachine");
+        let absent = serde_json::json!([empty, machine]);
+        assert_eq!(
+            classify_missing(
+                Path::new(r"C:\apps\app.hexbot.client"),
+                "app.hexbot.client",
+                &absent
+            ),
+            crate::windows_recovery::Registration::None
+        );
+        for (field, value, kind) in [
+            ("location", serde_json::json!(["not collected"]), "array"),
+            (
+                "command",
+                serde_json::json!({"secret":"not collected"}),
+                "object",
+            ),
+            ("locationType", serde_json::json!(0), "number"),
+        ] {
+            let mut raw = absent.clone();
+            raw[1][field] = value;
+            let diagnostic = registration_diagnostic(
+                Path::new(r"C:\apps\app.hexbot.client"),
+                "app.hexbot.client",
+                None,
+                &raw,
+            );
+            let shape = &diagnostic["entries"][1]["fieldSchema"][field];
+            assert_eq!(shape["kind"], kind);
+            assert_eq!(shape["present"], true);
+            assert_eq!(shape["isNull"], false);
+            assert!(
+                diagnostic["missingRefusalCheck"]
+                    .as_str()
+                    .unwrap()
+                    .contains("HKLM")
+            );
+            assert!(!diagnostic.to_string().contains("not collected"));
+            assert_eq!(
+                classify_missing(
+                    Path::new(r"C:\apps\app.hexbot.client"),
+                    "app.hexbot.client",
+                    &raw
+                ),
+                crate::windows_recovery::Registration::Other
+            );
+        }
+        let mut missing = absent.clone();
+        missing[1].as_object_mut().unwrap().remove("commandType");
+        let diagnostic =
+            registration_diagnostic(Path::new("app"), "app.hexbot.client", None, &missing);
+        assert_eq!(
+            diagnostic["entries"][1]["fieldSchema"]["commandType"]["present"],
+            false
+        );
+        assert_eq!(
+            diagnostic["missingRefusalCheck"],
+            "a known registration field is missing"
+        );
+        assert_eq!(
+            classify_missing(Path::new("app"), "app.hexbot.client", &missing),
+            crate::windows_recovery::Registration::Other
+        );
+        let mut extra = absent;
+        extra
+            .as_array_mut()
+            .unwrap()
+            .push(serde_json::json!({"not":"displayed"}));
+        let diagnostic =
+            registration_diagnostic(Path::new("app"), "app.hexbot.client", None, &extra);
+        assert_eq!(diagnostic["rawSchema"]["arrayLength"], 3);
+        assert_eq!(diagnostic["entries"].as_array().unwrap().len(), 2);
+        assert_eq!(
+            diagnostic["missingRefusalCheck"],
+            "outer value must be exactly two entries"
+        );
+        assert!(!diagnostic.to_string().contains("displayed"));
+    }
+    #[cfg(windows)]
+    #[test]
+    fn native_absent_entry_serializer_preserves_the_literal_null_schema_without_registry_access() {
+        use std::{os::windows::process::CommandExt, process::Command};
+        let source = include_str!("windows-nsis-registration.ps1");
+        let function = source
+            .split_once("function Read-String")
+            .unwrap()
+            .1
+            .split_once("$entries=@(")
+            .unwrap()
+            .0;
+        let record = source
+            .split_once("        @{scope=")
+            .unwrap()
+            .1
+            .split_once("\n    } finally")
+            .unwrap()
+            .0;
+        let script = format!(
+            "$ErrorActionPreference='Stop';[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false);function Read-String{function}\n$entries=@(foreach($hive in @([Microsoft.Win32.RegistryHive]::CurrentUser,[Microsoft.Win32.RegistryHive]::LocalMachine)){{$install=$null;$uninstall=$null;@{{scope={record}\n}})\nConvertTo-Json -InputObject $entries -Compress"
+        );
+        let output = Command::new(
+            crate::windows_paths::system_program("WindowsPowerShell/v1.0/powershell.exe").unwrap(),
+        )
+        .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+        .creation_flags(0x08000000)
+        .output()
+        .unwrap();
+        assert!(output.stdout.len() <= 16384 && output.stderr.len() <= 4096);
+        assert!(
+            output.status.success(),
+            "Absent serializer: status={} stderr={}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let raw: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        eprintln!(
+            "Native registry-free absent serializer: {}",
+            registration_diagnostic(
+                Path::new(r"C:\apps\app.hexbot.client"),
+                "app.hexbot.client",
+                None,
+                &raw
+            )
+        );
+        assert_eq!(
+            classify_missing(
+                Path::new(r"C:\apps\app.hexbot.client"),
+                "app.hexbot.client",
+                &raw
+            ),
+            crate::windows_recovery::Registration::None
+        );
     }
     #[test]
     fn executable_based_nsis_names_are_bound_to_the_known_edition() {
