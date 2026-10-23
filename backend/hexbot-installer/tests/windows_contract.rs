@@ -23,6 +23,33 @@ use std::{
     thread,
 };
 
+// Hash every ordinary installed file, not just the executable and receipt.
+fn app_snapshot(root: &std::path::Path) -> Vec<(std::path::PathBuf, Vec<u8>)> {
+    fn walk(
+        root: &std::path::Path,
+        path: &std::path::Path,
+        files: &mut Vec<(std::path::PathBuf, Vec<u8>)>,
+    ) {
+        let metadata = fs::symlink_metadata(path).unwrap();
+        assert!(!metadata.is_symlink());
+        if metadata.is_dir() {
+            for entry in fs::read_dir(path).unwrap() {
+                walk(root, &entry.unwrap().path(), files);
+            }
+        } else {
+            assert!(metadata.is_file());
+            files.push((
+                path.strip_prefix(root).unwrap().into(),
+                Sha512::digest(fs::read(path).unwrap()).to_vec(),
+            ));
+        }
+    }
+    let mut files = Vec::new();
+    walk(root, root, &mut files);
+    files.sort();
+    files
+}
+
 fn regular_file(path: &std::path::Path) -> std::io::Result<std::path::PathBuf> {
     if !path.is_absolute() {
         return Err(std::io::Error::other("Expected an absolute path"));
@@ -487,6 +514,8 @@ fn real_nsis_install_repair_and_uninstall() {
     );
     protocol.assert_other_values();
     let protocol_before = protocol.snapshot();
+    let app_before = app_snapshot(&app);
+    let receipt_before = fs::read(installer.paths.receipt()).unwrap();
     let canceled = std::process::Command::new(env!("CARGO_BIN_EXE_hexbot-install"))
         .args(["--uninstall", "--json"])
         .env("HEXBOT_HOME", &installer.paths.hexbot_home)
@@ -500,9 +529,28 @@ fn real_nsis_install_repair_and_uninstall() {
         .env("HEXBOT_SERVICE_NO_LOAD", "1")
         .output()
         .unwrap();
-    assert!(!canceled.status.success());
-    assert!(String::from_utf8_lossy(&canceled.stderr).contains("Uninstall cancelled"));
+    eprintln!(
+        "Real NSIS uninstall cancellation: {}",
+        json!({"status":canceled.status.code(),
+            "stdoutBytes":canceled.stdout.len(),"stderrBytes":canceled.stderr.len(),
+            "stdout":String::from_utf8_lossy(&canceled.stdout[..canceled.stdout.len().min(8192)]),
+            "stderr":String::from_utf8_lossy(&canceled.stderr[..canceled.stderr.len().min(8192)])})
+    );
+    assert_eq!(canceled.status.code(), Some(1));
+    let events: Vec<serde_json::Value> = String::from_utf8(canceled.stdout)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("CLI JSON event"))
+        .collect();
+    assert!(!events.iter().any(|event| event["stage"] == "done"));
+    assert_eq!(
+        events,
+        vec![json!({"stage":"error",
+        "message":"Uninstall cancelled. Use --yes to confirm in a script."})]
+    );
     assert_eq!(protocol.snapshot(), protocol_before);
+    assert_eq!(app_snapshot(&app), app_before);
+    assert_eq!(fs::read(installer.paths.receipt()).unwrap(), receipt_before);
     let uninstaller = app.join(if client {
         "Uninstall HexbotClient.exe"
     } else {

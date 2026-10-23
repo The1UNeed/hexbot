@@ -6,7 +6,7 @@ import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import test from 'node:test'
-import { promisify } from 'node:util'
+import { getSystemErrorMap, promisify } from 'node:util'
 import { NODE_VERSION, publishNativeRuntime, standaloneNode } from './native-runtime.mjs'
 
 test('pinned Windows Node/Pi version-process exit permits verified directory publication',
@@ -76,9 +76,10 @@ test('prewarmed publication observation reports a live cwd blocker without chang
     const { spawn } = await import('node:child_process')
     const { once } = await import('node:events')
     const root = await mkdtemp(join(tmpdir(), 'hexbot observer control π '))
-    let observer, child, observed, primary
+    let observer, child, observed, primary, reportedError
     const failureChannel = channel('hexbot.native-publication-failed')
     const failed = ({ staging, destination, versionProbe, error }) => {
+      reportedError = error
       observed = observer.observe(staging, destination, versionProbe, error).catch(error => ({ diagnosticError: error.message }))
     }
     try {
@@ -98,12 +99,27 @@ test('prewarmed publication observation reports a live cwd blocker without chang
       catch (error) { original = error }
       const evidence = await observed
       console.log('Immediate held-CWD observation:', JSON.stringify(evidence))
-      assert.equal(original?.code, 'EPERM')
+      assert.equal(original, reportedError, 'Publication must rethrow the original error object')
+      // Pinned libuv maps access denied to EPERM and sharing violation to EBUSY.
+      const mappings = new Map([['EPERM', -4048], ['EBUSY', -4082]])
+      assert(mappings.has(original?.code), 'Expected only the pinned Windows sharing/access mappings')
+      assert.equal(mappings.get(original.code), original.errno)
+      assert.equal(getSystemErrorMap().get(original.errno)?.[0], original.code)
+      assert.equal(original.syscall, 'rename')
+      assert.equal(original.path, staging)
+      assert.equal(original.dest, destination)
+      assert.deepEqual(evidence.failure, { ...evidence.failure,
+        code: original.code, errno: original.errno, syscall: original.syscall })
+      assert.equal(evidence.worker.directories[0].path, staging)
+      assert.equal(evidence.worker.directories[0].share, 7)
       assert.equal(evidence.worker.directories[0].deleteError, 32)
+      assert.equal(evidence.worker.directories[1].path, destination)
       assert.equal(evidence.worker.directories[1].deleteError, 2)
       assert.equal(evidence.worker.process.pid, child.pid)
       assert.equal(evidence.worker.process.wait, 258) // WAIT_TIMEOUT: the owned child is still live.
+      assert.equal(evidence.worker.process.exitCode, 259)
       assert.match(evidence.worker.process.created, /^\d+$/)
+      assert.equal(evidence.worker.process.image.toLowerCase(), process.execPath.toLowerCase())
       assert.equal(await readFile(join(staging, 'manifest.json'), 'utf8'), 'verified marker')
       await assert.rejects(readFile(join(destination, 'manifest.json')), { code: 'ENOENT' })
       child.stdin.end()
