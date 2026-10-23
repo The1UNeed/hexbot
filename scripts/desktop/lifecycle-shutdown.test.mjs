@@ -108,6 +108,11 @@ test('an attached inspector holds exit; the native will-quit hook detaches it wi
         assert.deepEqual(await exited, [0, null], stderr)
         const events = (await readFile(trace, 'utf8')).trim().split('\n').map(JSON.parse)
         assert.equal(events.filter(event => event.event === 'inspector-detach').length, Number(detach))
+        const detached = events.find(event => event.event === 'inspector-detached')
+        if (detach) {
+          assert.equal(detached.active, false)
+          assert(Array.isArray(detached.resources))
+        } else assert.equal(detached, undefined)
         assert.equal(events.filter(event => event.event === 'process-exit' && event.code === 0).length, 1)
       } finally {
         socket?.close()

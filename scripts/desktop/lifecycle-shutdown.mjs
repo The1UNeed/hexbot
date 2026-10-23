@@ -12,8 +12,9 @@ export function instrumentShutdown({ app }, file) {
   app.once('will-quit', () => {
     trace('inspector-detach', { active: Boolean(inspector.url()) })
     inspector.close()
+    trace('inspector-detached', { active: Boolean(inspector.url()), resources: process.getActiveResourcesInfo() })
   })
-  process.once('exit', code => trace('process-exit', { code }))
+  process.once('exit', code => trace('process-exit', { code, resources: process.getActiveResourcesInfo() }))
 }
 
 // Subscribe while the application is live, before any shutdown action. A

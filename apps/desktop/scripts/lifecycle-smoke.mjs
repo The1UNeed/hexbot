@@ -4,9 +4,9 @@ import assert from 'node:assert/strict'
 import { execFile, spawn } from 'node:child_process'
 import { once } from 'node:events'
 import { appendFileSync } from 'node:fs'
-import { cp, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises'
+import { cp, lstat, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { dirname, join, resolve } from 'node:path'
+import { dirname, isAbsolute, join, resolve } from 'node:path'
 import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
@@ -100,19 +100,52 @@ async function launch(directory, name, fixture = false) {
   return currentApp
 }
 async function quit(app, source = 'app') {
-  await requestShutdown(shutdowns.get(app), () => app.evaluate(({ app, Menu }, source) => {
-    setImmediate(() => {
-      globalThis.hexbotLifecycleTrace('shutdown-request', { source })
-      globalThis.lifecycleFixture?.trace('shutdown-request', { source })
-      if (source === 'tray')
-        globalThis.lifecycleFixture.trayMenu.items.find(item => item.label === 'Quit').click()
-      else if (source === 'window') globalThis.lifecycleFixture.window.close()
-      else if (source === 'menu')
-        Menu.getApplicationMenu().items[0].submenu.items.find(item => item.role === 'quit').click()
-      else app.quit()
-    })
-  }, source))
-  currentApp = undefined
+  try {
+    await requestShutdown(shutdowns.get(app), () => app.evaluate(({ app, Menu }, source) => {
+      setImmediate(() => {
+        globalThis.hexbotLifecycleTrace('shutdown-request', { source })
+        globalThis.lifecycleFixture?.trace('shutdown-request', { source })
+        if (source === 'tray')
+          globalThis.lifecycleFixture.trayMenu.items.find(item => item.label === 'Quit').click()
+        else if (source === 'window') globalThis.lifecycleFixture.window.close()
+        else if (source === 'menu')
+          Menu.getApplicationMenu().items[0].submenu.items.find(item => item.role === 'quit').click()
+        else app.quit()
+      })
+    }, source))
+    currentApp = undefined
+  } catch (error) {
+    // Diagnostics run only after a failed strict gate and before cleanup kills
+    // the owned test process. They must never replace the primary failure.
+    if (process.platform === 'win32') {
+      try {
+        const system = process.env.SystemRoot
+        assert(system && isAbsolute(system))
+        const program = join(system, 'System32/WindowsPowerShell/v1.0/powershell.exe')
+        const info = await lstat(program)
+        assert(info.isFile() && !info.isSymbolicLink())
+        const child = processes.get(app)
+        let result
+        try {
+          const output = await promisify(execFile)(program,
+            ['-NoProfile', '-NonInteractive', '-File', resolve(desktop, '../../scripts/desktop/windows-shutdown-diagnostic.ps1')],
+            { cwd: tmpdir(), windowsHide: true, timeout: 5000, maxBuffer: 65536,
+              env: { ...environment, HEXBOT_TEST_SHUTDOWN_PID: String(child.pid) } })
+          result = { status: 0, ...output }
+        } catch (diagnostic) {
+          result = { status: diagnostic.code, signal: diagnostic.signal, message: diagnostic.message.slice(0, 2048),
+            stdout: diagnostic.stdout, stderr: diagnostic.stderr }
+        }
+        const bounded = stream => ({ bytes: Buffer.byteLength(stream || ''), text: (stream || '').slice(0, 16384) })
+        const evidence = { pid: child.pid, utc: new Date().toISOString(), source, phase: 'after strict deadline, before cleanup',
+          observed: shutdowns.get(app).observed, status: result.status, signal: result.signal, message: result.message,
+          stdout: bounded(result.stdout), stderr: bounded(result.stderr) }
+        console.error('Native shutdown failure snapshot:', JSON.stringify(evidence))
+        await writeFile(join(artifacts, `shutdown-failure-${child.pid}.json`), JSON.stringify(evidence, null, 2))
+      } catch (diagnostic) { console.error('Shutdown diagnostics failed:', diagnostic.message) }
+    }
+    throw error
+  }
 }
 
 async function background(app) {
