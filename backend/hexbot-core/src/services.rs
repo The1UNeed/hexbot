@@ -1681,7 +1681,13 @@ pub(crate) fn publish_native(
         .ok_or_else(|| Error::new(5243, "Missing runtime directory"))?;
     let _lock = activation_lock(runtime)?;
     if let Some(requested) = newer_than_selected {
-        let selected = selected_native(native).map_or_else(|| json!({}), |(_, manifest)| manifest);
+        let selected = runtime
+            .join("native-executable")
+            .canonicalize()
+            .ok()
+            .and_then(|executable| fs::read(executable.with_file_name("manifest.json")).ok())
+            .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+            .unwrap_or_else(|| json!({}));
         require_newer_native_build(requested, &selected)?;
     }
     let directory = native.join(format!("{version}-{}", common::id()));
