@@ -1460,3 +1460,88 @@ fn terminal_answer_round_trips_utf8_after_a_legacy_console_code_page() {
         assert_eq!(windows_terminal::answer(&powershell(&script)), expected);
     }
 }
+
+#[test]
+fn config_only_cli_preflight_precedes_setup_activation_and_provisioning() {
+    use std::os::windows::fs::OpenOptionsExt;
+    let root = tempfile::tempdir().unwrap();
+    for case in [
+        "foreign",
+        "malformed",
+        "directory",
+        "junction",
+        "unreadable",
+        "owned",
+    ] {
+        let user = root.path().join(case);
+        let home = user.join("state");
+        let other = user.join("other/state");
+        let bin = user.join(".local/bin");
+        fs::create_dir_all(&home).unwrap();
+        fs::create_dir_all(&other).unwrap();
+        fs::create_dir_all(&bin).unwrap();
+        let cli = bin.join("hexbot.exe");
+        let config = cli.with_extension("json");
+        let record = |owner: &Path| {
+            json!({"schema":1,"home":owner,"hashes":["a".repeat(64)],"pathAdded":false}).to_string()
+        };
+        match case {
+            "foreign" => fs::write(&config, record(&other)).unwrap(),
+            "malformed" => fs::write(&config, "invalid").unwrap(),
+            "directory" => fs::create_dir(&config).unwrap(),
+            "junction" => {
+                let result = powershell(&format!(
+                    "New-Item -ItemType Junction -Path {} -Target {} | Out-Null",
+                    quote(&config),
+                    quote(&other)
+                ));
+                assert!(
+                    result.status.success(),
+                    "{}",
+                    String::from_utf8_lossy(&result.stderr)
+                );
+            }
+            _ => fs::write(&config, record(&home)).unwrap(),
+        }
+        let before = fs::read(&config).ok();
+        let held = (case == "unreadable").then(|| {
+            fs::OpenOptions::new()
+                .read(true)
+                .share_mode(0)
+                .open(&config)
+                .unwrap()
+        });
+        if case == "owned" {
+            assert_eq!(
+                windows_cli::preflight_owner(&cli).unwrap(),
+                Some(home.clone())
+            );
+            windows_cli::install(Path::new(env!("CARGO_BIN_EXE_hexbot-cli")), &home, &bin).unwrap();
+            assert!(windows_cli::owned(&cli, &home));
+            continue;
+        }
+        let output = Command::new(env!("CARGO_BIN_EXE_hexbot"))
+            .args(["setup", "--activate", "--json"])
+            .env("HEXBOT_HOME", &home)
+            .env("HOME", &user)
+            .env("USERPROFILE", &user)
+            .output()
+            .unwrap();
+        eprintln!(
+            "config-only setup {case}: status={} stdout={} stderr={}",
+            output.status,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(!output.status.success());
+        drop(held);
+        assert!(!cli.exists());
+        assert!(!home.join("runtime").exists());
+        assert!(!home.join("python").exists());
+        assert_eq!(fs::read(&config).ok(), before);
+        assert_eq!(fs::read_dir(&bin).unwrap().count(), 1);
+        if case == "junction" {
+            fs::remove_dir(&config).unwrap();
+        }
+    }
+}

@@ -5,7 +5,7 @@ use std::{
     path::{Path, PathBuf},
 };
 fn metadata(path: &Path) -> io::Result<serde_json::Value> {
-    if !fs::symlink_metadata(path.with_extension("json"))?.is_file() {
+    if !ordinary(&fs::symlink_metadata(path.with_extension("json"))?) {
         return Err(io::Error::other("CLI configuration is not a regular file"));
     }
     let value: serde_json::Value = serde_json::from_slice(&fs::read(path.with_extension("json"))?)
@@ -38,8 +38,52 @@ fn metadata(path: &Path) -> io::Result<serde_json::Value> {
     }
     Ok(value)
 }
+fn ordinary(metadata: &fs::Metadata) -> bool {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        metadata.is_file() && metadata.file_attributes() & 0x400 == 0
+    }
+    #[cfg(not(windows))]
+    {
+        metadata.is_file() && !metadata.file_type().is_symlink()
+    }
+}
+/// Validate the same record for an existing forwarder or a config-only
+/// interruption. Absence of both is the only unowned empty state.
+pub fn preflight_owner(path: &Path) -> io::Result<Option<PathBuf>> {
+    let executable = match fs::symlink_metadata(path) {
+        Ok(metadata) if ordinary(&metadata) => true,
+        Ok(_) => return Err(io::Error::other("CLI wrapper is not an ordinary file")),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => false,
+        Err(error) => return Err(error),
+    };
+    if !executable {
+        match fs::symlink_metadata(path.with_extension("json")) {
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error),
+            Ok(_) => {}
+        }
+    }
+    let value = metadata(path)?;
+    if executable {
+        let hash = format!("{:x}", Sha256::digest(fs::read(path)?));
+        if !value["hashes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|value| value.as_str() == Some(&hash))
+        {
+            return Err(io::Error::other(
+                "Unrecognized Windows CLI wrapper; left it alone",
+            ));
+        }
+    }
+    Ok(Some(PathBuf::from(value["home"].as_str().unwrap())))
+}
+
 pub fn owner(path: &Path) -> Option<PathBuf> {
-    if !fs::symlink_metadata(path).ok()?.is_file() {
+    if !ordinary(&fs::symlink_metadata(path).ok()?) {
         return None;
     }
     let value = metadata(path).ok()?;
@@ -83,6 +127,13 @@ pub fn install(source: &Path, home: &Path, bin: &Path) -> io::Result<PathBuf> {
     fs::create_dir_all(bin)?;
     let _lock = lock(bin)?;
     let path = bin.join("hexbot.exe");
+    if let Some(owner) = preflight_owner(&path)?
+        && owner.canonicalize()? != home.canonicalize()?
+    {
+        return Err(io::Error::other(
+            "Existing CLI configuration belongs to another installation",
+        ));
+    }
     if fs::symlink_metadata(&path).is_ok() && !owned(&path, home) {
         return Err(io::Error::other(
             "Existing CLI belongs to another installation",

@@ -515,6 +515,16 @@ pub async fn run(home: &Path, args: &[String]) -> Result<()> {
         crate::osutil::user_home().ok_or_else(|| Error::new(4200, "User home is required"))?;
     fs::create_dir_all(home)?;
     let home = home.canonicalize()?;
+    #[cfg(windows)]
+    if let Some(owner) =
+        crate::windows_cli::preflight_owner(&user_home.join(".local/bin/hexbot.exe"))?
+        && owner.canonicalize()? != home
+    {
+        return Err(Error::new(
+            4208,
+            "Existing CLI configuration belongs to another installation",
+        ));
+    }
     if args.iter().any(|a| a == "--activate") {
         let executable = std::env::current_exe()?.canonicalize()?;
         let source = executable

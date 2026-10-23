@@ -1342,3 +1342,103 @@ fn missing_receipt_repair_refuses_linked_root_and_leaf_without_network() {
         );
     }
 }
+
+fn cli_sidecar(path: &Path, home: &Path) {
+    fs::write(
+        path.with_extension("json"),
+        json!({"schema":1,"home":home,"hashes":["a".repeat(64)],"pathAdded":false}).to_string(),
+    )
+    .unwrap();
+}
+fn headless_fixture(base: &str) -> BTreeMap<String, Vec<u8>> {
+    use sha2::{Digest, Sha256};
+    let bytes = b"download verified before ownership recheck".to_vec();
+    let manifest = serde_json::to_vec(&json!({"schema":1,"channel":"stable","version":"1.2.3","minInstaller":"0.0.1","targets":{"windows-x86_64":{"headless":{"url":format!("{base}/native.zip"),"size":bytes.len(),"sha256":format!("{:x}",Sha256::digest(&bytes)),"format":"zip"}}}})).unwrap();
+    BTreeMap::from([
+        ("/install/stable.json".into(), manifest.clone()),
+        (
+            "/install/1.2.3/stable.json.sig".into(),
+            hexbot_installer::update_signature::test_signature(&manifest).into_bytes(),
+        ),
+        ("/native.zip".into(), bytes),
+    ])
+}
+#[test]
+fn headless_config_only_cli_refuses_before_download_and_rechecks_after_download() {
+    for case in ["foreign", "malformed", "directory", "owned-swapped"] {
+        let root = tempfile::tempdir().unwrap();
+        let mut engine = engine(root.path());
+        fs::create_dir_all(&engine.paths.hexbot_home).unwrap();
+        let other = root.path().join("other/.hexbot");
+        fs::create_dir_all(&other).unwrap();
+        let cli = engine.paths.cli_wrapper(engine.target);
+        fs::create_dir_all(cli.parent().unwrap()).unwrap();
+        let config = cli.with_extension("json");
+        match case {
+            "foreign" => cli_sidecar(&cli, &other),
+            "malformed" => fs::write(&config, "invalid configuration").unwrap(),
+            "directory" => fs::create_dir(&config).unwrap(),
+            _ => cli_sidecar(&cli, &engine.paths.hexbot_home),
+        }
+        let changed = cli.clone();
+        let foreign = other.clone();
+        let server = Server::with_request(headless_fixture, move |path| {
+            if path == "/native.zip" {
+                cli_sidecar(&changed, &foreign);
+            }
+        });
+        engine.base_url = server.base.clone();
+        let original = fs::read(&config).ok();
+        let mut stages = Vec::new();
+        let error = engine
+            .apply(InstallOption::Headless, Track::Stable, &mut |event| {
+                stages.push(event.stage)
+            })
+            .unwrap_err();
+        eprintln!(
+            "config-only {case}: {error}; stages={stages:?}; requests={:?}",
+            server.requests.lock().unwrap()
+        );
+        assert!(
+            !stages
+                .iter()
+                .any(|stage| matches!(stage.as_str(), "extract" | "setup" | "done"))
+        );
+        assert!(!cli.exists());
+        assert!(!engine.paths.receipt().exists());
+        assert!(
+            !engine
+                .paths
+                .hexbot_home
+                .join("runtime/native-current.json")
+                .exists()
+        );
+        if case == "owned-swapped" {
+            assert!(stages.iter().any(|stage| stage == "verify"));
+            assert!(
+                server
+                    .requests
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .any(|path| path == "/native.zip")
+            );
+            assert!(error.to_string().contains("belongs to"));
+            assert_eq!(
+                serde_json::from_slice::<serde_json::Value>(&fs::read(&config).unwrap()).unwrap()["home"],
+                serde_json::json!(other)
+            );
+        } else {
+            assert!(stages.is_empty());
+            assert!(
+                !server
+                    .requests
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .any(|path| path == "/native.zip")
+            );
+            assert_eq!(fs::read(&config).ok(), original);
+        }
+    }
+}

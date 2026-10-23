@@ -59,14 +59,14 @@ pub fn check_service(path: &Path, home: &Path) -> io::Result<()> {
     inspect(path, home).map(|_| ())
 }
 pub fn foreign_wrapper_owner(path: &Path, home: &Path) -> io::Result<Option<PathBuf>> {
-    if matches!(fs::symlink_metadata(path), Err(e) if e.kind() == io::ErrorKind::NotFound)
-        || crate::windows_cli::owned(path, home)
-    {
+    let Some(owner) = crate::windows_cli::preflight_owner(path)? else {
         return Ok(None);
+    };
+    if crate::install_ownership::resolved(&owner)? == crate::install_ownership::resolved(home)? {
+        Ok(None)
+    } else {
+        Ok(Some(owner))
     }
-    Ok(Some(crate::windows_cli::owner(path).ok_or_else(|| {
-        io::Error::other("Unrecognized Windows CLI wrapper; left it alone")
-    })?))
 }
 
 #[cfg(windows)]
@@ -109,4 +109,48 @@ pub fn remove(path: &Path, home: &Path, no_load: bool) -> io::Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn config_only_cli_preflight_checks_the_recorded_home_and_schema() {
+        let root = tempfile::tempdir().unwrap();
+        let home = root.path().join("home");
+        let other = root.path().join("other");
+        fs::create_dir(&home).unwrap();
+        fs::create_dir(&other).unwrap();
+        let path = root.path().join("hexbot.exe");
+        let config = path.with_extension("json");
+        let record = |owner: &Path| {
+            serde_json::json!({"schema":1,"home":owner,"hashes":["a".repeat(64)],"pathAdded":false})
+                .to_string()
+        };
+        assert!(foreign_wrapper_owner(&path, &home).unwrap().is_none());
+        fs::write(&config, record(&home)).unwrap();
+        assert!(foreign_wrapper_owner(&path, &home).unwrap().is_none());
+        fs::write(&config, record(&other)).unwrap();
+        assert_eq!(foreign_wrapper_owner(&path, &home).unwrap(), Some(other));
+        fs::write(&config, "malformed").unwrap();
+        assert!(foreign_wrapper_owner(&path, &home).is_err());
+        fs::remove_file(&config).unwrap();
+        fs::create_dir(&config).unwrap();
+        assert!(foreign_wrapper_owner(&path, &home).is_err());
+        fs::remove_dir(&config).unwrap();
+        #[cfg(unix)]
+        {
+            let target = root.path().join("record");
+            fs::write(&target, record(&home)).unwrap();
+            std::os::unix::fs::symlink(&target, &config).unwrap();
+            assert!(foreign_wrapper_owner(&path, &home).is_err());
+            fs::remove_file(&config).unwrap();
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&target, fs::Permissions::from_mode(0o0)).unwrap();
+            fs::rename(&target, &config).unwrap();
+            let error = foreign_wrapper_owner(&path, &home).unwrap_err();
+            assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+            fs::set_permissions(&config, fs::Permissions::from_mode(0o600)).unwrap();
+        }
+    }
 }
