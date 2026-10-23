@@ -65,7 +65,7 @@ pub(crate) fn cleanup(binding: &Binding) -> crate::Result<()> {
     if binding.0.is_empty() {
         return Ok(());
     }
-    execute(binding, &script(COMMAND_KEY))
+    execute(binding, &script(COMMAND_KEY), COMMAND_KEY)
 }
 #[cfg(windows)]
 fn script(key: &str) -> String {
@@ -76,7 +76,7 @@ fn script(key: &str) -> String {
     )
 }
 #[cfg(windows)]
-fn execute(binding: &Binding, script: &str) -> crate::Result<()> {
+fn execute(binding: &Binding, script: &str, diagnostic_key: &str) -> crate::Result<()> {
     use std::{os::windows::process::CommandExt, process::Command};
     let output = Command::new(crate::windows_paths::system_program(
         "WindowsPowerShell/v1.0/powershell.exe",
@@ -88,13 +88,72 @@ fn execute(binding: &Binding, script: &str) -> crate::Result<()> {
     )
     .creation_flags(0x08000000)
     .output()?;
+    let diagnose = || {
+        eprintln!(
+            "Windows protocol cleanup failed: {}",
+            execution_diagnostic(
+                binding,
+                diagnostic_key,
+                &output.status.to_string(),
+                &output.stdout,
+                &output.stderr
+            )
+        );
+    };
     if !output.status.success() || output.stdout.len() > 1024 {
-        return Err(format!("Protocol command cleanup failed ({}).", output.status).into());
+        diagnose();
+        return Err(Box::new(CommandFailure {
+            status: output.status.to_string(),
+            cause: std::io::Error::other(
+                String::from_utf8_lossy(&output.stderr[..output.stderr.len().min(8192)])
+                    .into_owned(),
+            ),
+        }));
     }
-    let result: serde_json::Value = serde_json::from_slice(&output.stdout)?;
+    let result: serde_json::Value =
+        serde_json::from_slice(&output.stdout).inspect_err(|_| diagnose())?;
     match result["outcome"].as_str() {
         Some("removed" | "absent" | "preserved") => Ok(()),
-        _ => Err("Unexpected protocol cleanup result.".into()),
+        _ => {
+            diagnose();
+            Err("Unexpected protocol cleanup result.".into())
+        }
+    }
+}
+#[cfg(any(windows, test))]
+fn execution_diagnostic(
+    binding: &Binding,
+    key: &str,
+    status: &str,
+    stdout: &[u8],
+    stderr: &[u8],
+) -> serde_json::Value {
+    let sample = |bytes: &[u8]| {
+        let retained = bytes.len().min(8192);
+        serde_json::json!({"bytes":bytes.len(),"retainedBytes":retained,"truncated":retained<bytes.len(),"text":String::from_utf8_lossy(&bytes[..retained])})
+    };
+    serde_json::json!({"stage":"PowerShell result","key":key.chars().take(1024).collect::<String>(),"status":status,
+        "candidateCount":binding.0.len(),"candidates":binding.0.iter().take(2).map(|value|serde_json::json!({
+            "type":"Rust String / Windows environment string","utf16Units":value.encode_utf16().count(),
+            "spelling":value.chars().take(1024).collect::<String>(),"truncated":value.chars().count()>1024})).collect::<Vec<_>>(),
+        "stdout":sample(stdout),"stderr":sample(stderr)})
+}
+#[cfg(windows)]
+#[derive(Debug)]
+struct CommandFailure {
+    status: String,
+    cause: std::io::Error,
+}
+#[cfg(windows)]
+impl std::fmt::Display for CommandFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Protocol command cleanup failed ({}).", self.status)
+    }
+}
+#[cfg(windows)]
+impl std::error::Error for CommandFailure {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.cause)
     }
 }
 #[cfg(any(windows, test))]
@@ -178,6 +237,41 @@ mod tests {
         assert_eq!(SCRIPT.matches("__COMMAND_KEY__").count(), 1);
     }
     #[test]
+    fn process_failure_diagnostics_bound_both_streams_and_candidate_spellings() {
+        let binding = Binding(vec![
+            "π".repeat(5000),
+            "second".into(),
+            "never printed third".into(),
+        ]);
+        let output = execution_diagnostic(
+            &binding,
+            "known test seam",
+            "exit code: 1",
+            &[b'x'; 20000],
+            &[b'y'; 20000],
+        );
+        assert_eq!(output["status"], "exit code: 1");
+        assert_eq!(output["candidateCount"], 3);
+        assert_eq!(output["candidates"].as_array().unwrap().len(), 2);
+        assert_eq!(output["candidates"][0]["utf16Units"], 5000);
+        assert_eq!(
+            output["candidates"][0]["spelling"]
+                .as_str()
+                .unwrap()
+                .chars()
+                .count(),
+            1024
+        );
+        assert_eq!(output["candidates"][0]["truncated"], true);
+        for stream in ["stdout", "stderr"] {
+            assert_eq!(output[stream]["bytes"], 20000);
+            assert_eq!(output[stream]["retainedBytes"], 8192);
+            assert_eq!(output[stream]["text"].as_str().unwrap().len(), 8192);
+            assert_eq!(output[stream]["truncated"], true);
+        }
+        assert!(!output.to_string().contains("never printed third"));
+    }
+    #[test]
     fn cleanup_error_is_reported_after_residual_removal_and_retains_both_causes() {
         let removed = std::cell::Cell::new(false);
         let cleanup: crate::Result<()> = Err(std::io::Error::other("registry unavailable").into());
@@ -253,56 +347,88 @@ try {
         let expected = binding.0[0].clone();
         std::fs::remove_file(executable).unwrap(); // NSIS already removed it.
         let script = script(&key.0);
-        for (command, kind, remove) in [
-            (expected.clone(), "String", true),
-            (expected.to_lowercase(), "String", true),
-            (expected.clone(), "ExpandString", false),
-            (
-                expected.replace("HexbotClient.exe", "Hexbot.exe"),
-                "String",
-                false,
-            ),
-            (
-                expected.replace("HexbotClient.exe", "other\\HexbotClient.exe"),
-                "String",
-                false,
-            ),
-            (
-                expected.replace("\" \"%1\"", "\" \"%1\" extra"),
-                "String",
-                false,
-            ),
-            (expected.replace('"', ""), "String", false),
-            (expected.replace("%1", "%L"), "String", false),
-            (format!("{expected}\r\n"), "String", false),
-            ("x".repeat(4201), "String", false),
-        ] {
-            let before = fixture(&key.0, "set", &command, kind);
-            execute(&binding, &script).unwrap();
-            let after = fixture(&key.0, "read", "", "String");
-            if remove {
-                assert_eq!(after["exists"], false);
-                assert_eq!(after["sentinel"], before["sentinel"]);
-                assert_eq!(after["child"], before["child"]);
+        for candidate_count in [1, 2] {
+            let binding = Binding(if candidate_count == 1 {
+                vec![expected.clone()]
             } else {
-                assert_eq!(after, before);
+                vec![expected.clone(), expected.to_lowercase()]
+            });
+            for (case, (command, kind, remove)) in [
+                (expected.clone(), "String", true),
+                (expected.to_lowercase(), "String", true),
+                (expected.clone(), "ExpandString", false),
+                (
+                    expected.replace("HexbotClient.exe", "Hexbot.exe"),
+                    "String",
+                    false,
+                ),
+                (
+                    expected.replace("HexbotClient.exe", "other\\HexbotClient.exe"),
+                    "String",
+                    false,
+                ),
+                (
+                    expected.replace("\" \"%1\"", "\" \"%1\" extra"),
+                    "String",
+                    false,
+                ),
+                (expected.replace('"', ""), "String", false),
+                (expected.replace("%1", "%L"), "String", false),
+                (format!("{expected}\r\n"), "String", false),
+                ("x".repeat(4201), "String", false),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                let before = fixture(&key.0, "set", &command, kind);
+                eprintln!(
+                    "Native protocol case before cleanup: {}",
+                    serde_json::json!({"case":case,"candidateCount":candidate_count,"kind":kind,"expectedRemoval":remove,
+                "commandBytes":command.len(),"command":command.chars().take(1024).collect::<String>(),"commandTruncated":command.chars().count()>1024,
+                "key":key.0,"bindings":execution_diagnostic(&binding,&key.0,"before cleanup",&[],&[])})
+                );
+                let cleanup = execute(&binding, &script, &key.0);
+                if let Err(error) = &cleanup {
+                    let after = std::panic::catch_unwind(|| fixture(&key.0, "read", "", "String"));
+                    let after=after.unwrap_or_else(|_|json!({"snapshotError":"Registry fixture read failed after cleanup error"}));
+                    eprintln!(
+                        "Native protocol case failed before fixture cleanup: {}",
+                        serde_json::json!({"case":case,"error":error.to_string(),"kind":after["kind"],"defaultExists":after["exists"],"sentinel":after["sentinel"],"child":after["child"]})
+                    );
+                }
+                cleanup.unwrap_or_else(|error| {
+                    panic!("protocol candidates={candidate_count} case={case} kind={kind} expectedRemoval={remove}: {error}")
+                });
+                let after = fixture(&key.0, "read", "", "String");
+                if remove {
+                    assert_eq!(after["exists"], false);
+                    assert_eq!(after["sentinel"], before["sentinel"]);
+                    assert_eq!(after["child"], before["child"]);
+                } else {
+                    assert_eq!(after, before);
+                }
             }
         }
         // A new handler written before cleanup is preserved rather than using
         // a stale pre-uninstall registry snapshot as deletion authority.
         let replacement = Binding(vec![expected.replace("HexbotClient.exe", "Hexbot.exe")]);
         let before = fixture(&key.0, "set", &replacement.0[0], "String");
-        execute(&binding, &script).unwrap();
+        execute(&binding, &script, &key.0).unwrap();
         assert_eq!(fixture(&key.0, "read", "", "String"), before);
         let residual = root.path().join("residual");
         std::fs::create_dir(&residual).unwrap();
         let error = finish(
-            execute(&binding, "throw 'injected cleanup failure'"),
+            execute(&binding, "throw 'injected cleanup failure'", &key.0),
             || Ok(std::fs::remove_dir(&residual)?),
         )
         .unwrap_err();
         assert!(!residual.exists());
         assert!(error.to_string().contains("The app was removed"));
+        let cause = error.source().unwrap().source().unwrap();
+        assert!(
+            cause.to_string().contains("injected cleanup failure"),
+            "Original PowerShell cause was lost: {cause}"
+        );
         assert!(!root.path().join("HexbotClient.exe").exists());
         eprintln!(
             "Native protocol command cleanup controls: {}",
