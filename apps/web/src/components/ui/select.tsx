@@ -1,6 +1,14 @@
 import { Select as BaseSelect } from '@base-ui/react/select'
 import { Check, ChevronDown } from 'lucide-react'
-import { type FocusEvent, type KeyboardEvent, type PointerEvent, useRef, useState } from 'react'
+import {
+  type ComponentProps,
+  type FocusEvent,
+  type KeyboardEvent,
+  type PointerEvent,
+  useLayoutEffect,
+  useRef,
+  useState
+} from 'react'
 
 import { cn } from '../../lib/cn'
 
@@ -61,6 +69,25 @@ export function findOption(labels: string[], text: string, from: number): number
   return -1
 }
 
+/** An option that says when Base UI's highlight leaves it. */
+function Option({
+  highlighted,
+  onUnhighlight,
+  ...props
+}: ComponentProps<'div'> & { highlighted: boolean; onUnhighlight: () => void }) {
+  const was = useRef(highlighted)
+
+  useLayoutEffect(() => {
+    if (was.current && !highlighted) {
+      onUnhighlight()
+    }
+
+    was.current = highlighted
+  })
+
+  return <div {...props} />
+}
+
 export function Select({
   disabled,
   label,
@@ -95,13 +122,22 @@ export function Select({
     search.current = { after: null, match: null, space: false, text: '' }
   }
 
+  // Base UI highlights an option when it takes focus, and keeps the highlight by position. When
+  // the options reorder under an open list, the option the search found can keep focus while
+  // the highlight stays at its old position, so focus leaves it and comes back.
   const highlightMatch = () => {
     const item = items()[indexOf(search.current.match)]
 
-    if (item && document.activeElement !== item) {
-      item.focus({ preventScroll: true })
-      item.scrollIntoView?.({ block: 'nearest' })
+    if (!item || (document.activeElement === item && item.hasAttribute('data-highlighted'))) {
+      return
     }
+
+    if (document.activeElement === item) {
+      popupRef.current?.focus({ preventScroll: true })
+    }
+
+    item.focus({ preventScroll: true })
+    item.scrollIntoView?.({ block: 'nearest' })
   }
 
   const changeOpen = (next: boolean) => {
@@ -269,6 +305,17 @@ export function Select({
                 <BaseSelect.Item
                   className="flex cursor-default items-center gap-2 rounded-[10px] py-2 pr-3 pl-2.5 text-[length:var(--text-secondary)] outline-none data-[highlighted]:bg-foreground/[0.07]"
                   key={option.value}
+                  render={(props, state) => (
+                    <Option
+                      {...props}
+                      highlighted={state.highlighted}
+                      onUnhighlight={() => {
+                        if (search.current.match === option.value) {
+                          highlightMatch()
+                        }
+                      }}
+                    />
+                  )}
                   value={option.value}
                 >
                   <span className="flex size-4 shrink-0 items-center justify-center">

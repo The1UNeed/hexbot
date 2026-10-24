@@ -181,4 +181,54 @@ describe('Select typeahead', () => {
     await act(async () => undefined)
     expect(change).not.toHaveBeenCalled()
   })
+
+  describe('when the open list reorders', () => {
+    const deepSeek = 'DeepSeek · DeepSeek V3'
+    const added = { label: 'Aardvark', value: 'aardvark' }
+
+    async function openAt(change: () => void) {
+      const view = render(<Select label="Model" onValueChange={change} options={options} />)
+
+      screen.getByRole('combobox', { name: 'Model' }).focus()
+      await type('deep')
+      await waitFor(() => expect(highlighted()).toBe(deepSeek))
+
+      return (next: typeof options) => {
+        view.rerender(<Select label="Model" onValueChange={change} options={next} />)
+      }
+    }
+
+    // Base UI renumbers its options after the DOM moves them, from a mutation observer.
+    const settle = () => act(async () => undefined)
+
+    it.each([
+      ['reverses', () => [...options].reverse()],
+      ['gains an option at the top', () => [added, ...options]]
+    ])('keeps the found option highlighted when it %s, and Enter chooses it', async (_, next) => {
+      const change = vi.fn()
+      const reorder = await openAt(change)
+
+      reorder(next())
+      await settle()
+      expect(highlighted()).toBe(deepSeek)
+
+      fireEvent.keyDown(document.activeElement ?? document.body, { key: 'Enter' })
+      await waitFor(() => expect(change).toHaveBeenCalledWith('deepseek · deepseek v3'))
+      expect(change).toHaveBeenCalledTimes(1)
+    })
+
+    it('keeps the found option when typing goes on after a reorder', async () => {
+      const change = vi.fn()
+      const reorder = await openAt(change)
+
+      reorder([...options].reverse())
+      await settle()
+      await type('s')
+      expect(highlighted()).toBe(deepSeek)
+
+      fireEvent.keyDown(document.activeElement ?? document.body, { key: 'Enter' })
+      await waitFor(() => expect(change).toHaveBeenCalledWith('deepseek · deepseek v3'))
+      expect(change).toHaveBeenCalledTimes(1)
+    })
+  })
 })
