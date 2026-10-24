@@ -24,6 +24,7 @@ function deferred() {
   return { promise, resolve }
 }
 
+// Leave time for the manager's 30-second observation and fixture cleanup.
 for (const intent of ['stop', 'start', 'quit'] as const)
 for (const identity of ['valid', 'wrong-home', 'wrong-pid'] as const)
 it(`observes entered service readiness before a newer ${intent}, identity=${identity}`, async () => {
@@ -104,4 +105,4 @@ it(`observes entered service readiness before a newer ${intent}, identity=${iden
     else process.env.HEXBOT_HOME = previousHome
     await rm(home, { recursive: true, force: true })
   }
-})
+}, 40_000)
