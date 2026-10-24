@@ -137,12 +137,44 @@ windows_contract owned_python_provisions_repairs_and_refuses_through_production_
 helper. After building the real Full bundle, its control runs with
 `HEXBOT_NATIVE_TEST_BUNDLE` naming that bundle and `pnpm --filter
 ./apps/desktop run test --run src/main/backend/windows-bootstrap.test.ts`.
-These controls cover a subset of the acceptance matrix. They do not yet exercise
-the first-install alias-removal window, interrupted pip or missing RECORD,
-uv leaf write-through, poisoned cached payloads, every access/sharing failure,
-or the full path-representation matrix. There is no dedicated executable
-invocation for those missing controls yet; they still require controls and
-native results before acceptance.
+The full `windows_contract` target also includes seven independent native tests
+from `tests/windows_contract/python_acceptance.rs`. Run that target without the
+single-test filter to include first-install alias resume and record interruption,
+stale/missing-receipt adoption, damaged legacy refusal, actual short/long/extended
+cfg paths, ASCII production probes, bytecode-free healthy repeats, finite healthy
+traversal, populated operation-root junctions, alias drift/escape, shared and
+reparse leaves, sharing/read-only errors, atomic hard-link witnesses, interrupted
+pip, missing RECORD, unpacked-cache tampering and separate uv leaf observations.
+Each independent test owns one fresh Unicode home and reuses it for its related
+cases. Full's existing fixture additionally tests poisoned PATH/UV/Python/config
+and extension-fallback settings, activation/retained-runtime escape refusals and
+a fresh-profile direct CLI refusal. The existing 300-second Full deadline and
+workflow budgets are unchanged; no retry or timing allowance is added.
+
+The diagnostic uv calls have two distinct purposes. A verified owned uv pip
+child is stopped at process start and joined before production recovery; that
+control does not prove interruption after a particular write. A separate
+missing-RECORD fixture supplies deterministic partial metadata. Another fresh
+fixture observes uv's launcher/cfg hard-link replacement or write-through. That
+diagnostic never supplies a healed environment to production repair tests.
+Cache tampering preserves importable syntax: a successful setup must restore
+exact original payload hashes, or the control fails for unsafe reuse. Explicit
+failure must preserve completion and its original cause. No flags, cache purge,
+retry or fixture uv recovery answers a failed control.
+
+All native results remain pending. Two required positives/negatives are explicit
+unignored acceptance gates: module-only repair versus independent entrypoint
+failure, and missing base EXE repair versus refusal for an existing damaged DLL.
+Their observability policy is under independent assessment; passing portable or
+compile checks does not resolve either gate. The old module-only positives are
+separate from the other native cases so a failure cannot hide those controls.
+
+Deterministic native final-probe crash/malformed injection is specifically
+blocked by the absence of an event after uv exits and before final probes. The
+parent approved recording this blocker, with existing private Runner controls
+providing portable coverage of final failure and receipt behavior. No new
+production hook, filesystem race, sleep or fake native result was added. This
+is not native certification or a waiver of safe final failure behavior.
 
 ## Install and update contracts
 

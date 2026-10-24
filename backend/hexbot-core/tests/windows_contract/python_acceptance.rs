@@ -65,6 +65,22 @@ const EXTENSIONS: &[(&str, &str)] = &[
     ),
     ("yarl._quoting_c", "yarl/_quoting_c.cp311-win_amd64.pyd"),
 ];
+pub(super) fn locked_sources(home: &Path) -> Vec<PathBuf> {
+    let site = home.join("runtime/tools/code-python/Lib/site-packages");
+    MODULES
+        .iter()
+        .map(|(_, module)| {
+            let package = site.join(module).join("__init__.py");
+            let path = if package.is_file() {
+                package
+            } else {
+                site.join(format!("{module}.py"))
+            };
+            assert!(path.is_file(), "missing locked source {module}");
+            path
+        })
+        .collect()
+}
 fn digest(path: &Path) -> String {
     format!("{:x}", Sha256::digest(fs::read(path).unwrap()))
 }
@@ -98,7 +114,7 @@ fn junction(path: &Path, target: &Path) {
 fn unlink_alias(alias: &Path) {
     let m = fs::symlink_metadata(alias).unwrap();
     assert_ne!(m.file_attributes() & 0x400, 0);
-    if m.is_dir() {
+    if m.file_attributes() & 0x10 != 0 {
         fs::remove_dir(alias).unwrap();
     } else {
         fs::remove_file(alias).unwrap();
@@ -284,6 +300,7 @@ impl Home {
             self.venv().join("Scripts/edge-tts.exe"),
             self.site().join("edge_tts/communicate.py"),
         ];
+        files.extend(locked_sources(&self.home));
         files.extend(EXTENSIONS.iter().map(|(_, p)| self.site().join(p)));
         files
             .into_iter()
@@ -385,20 +402,13 @@ async fn first_install_alias_resume_and_record_before_voice_interruption() {
     ))
     .catch_unwind()
     .await;
-    let interrupted = result.unwrap_or_else(|panic| {
-        assert_eq!(panic.downcast_ref::<&str>(), Some(&"owned before pip"));
-        assert!(f.identity().is_file());
-        assert!(!f.receipt().exists());
-        Err(hexbot_core::Error::new(
-            5243,
-            "expected before-pip interruption",
-        ))
-    });
-    assert!(interrupted.is_err());
-    assert!(
-        f.identity().is_file(),
-        "N1: the one allowed install did not restore a usable alias: {interrupted:?}"
+    let interrupted = result.unwrap_err();
+    assert_eq!(
+        interrupted.downcast_ref::<&str>(),
+        Some(&"owned before pip")
     );
+    assert!(f.identity().is_file());
+    assert!(!f.receipt().exists());
     let record = fs::read(f.identity()).unwrap();
     let key = f.key();
     assert_eq!(
@@ -482,6 +492,10 @@ async fn legacy_adoption_alias_cfg_forms_and_ascii_round_trips() {
     f.setup().await.unwrap();
     assert_eq!(fs::read(f.identity()).unwrap(), identity);
     f.restored(&original);
+    case(&format!(
+        "N2 observed alias present after exact reinstall: {}",
+        fs::symlink_metadata(&alias).is_ok()
+    ));
     if fs::symlink_metadata(&alias).is_ok() {
         assert_eq!(
             alias.canonicalize().unwrap(),
@@ -505,14 +519,44 @@ async fn legacy_adoption_alias_cfg_forms_and_ascii_round_trips() {
         io::Error::last_os_error()
     );
     let short = PathBuf::from(std::ffi::OsString::from_wide(&short[..count]));
-    for shape in [base.clone(), short, base.canonicalize().unwrap()] {
-        case("N3 cfg canonical base Unicode/long/OS-short/extended representation");
+    let long = f
+        ._root
+        .path()
+        .join(f.home.file_name().unwrap())
+        .join("python")
+        .join(&key);
+    assert!(
+        short.to_string_lossy().contains('~'),
+        "N3 filesystem supplied no actual 8.3 alias: {short:?}"
+    );
+    for shape in [long, short, base.canonicalize().unwrap()] {
+        case("N3 actual allow-existing repair through Unicode/long/OS-short/extended home");
         fs::write(&cfg, with_home(&shape)).unwrap();
+        fs::write(f.venv().join("Scripts/python.exe"), b"x").unwrap();
         let before = f.completion();
-        f.setup().await.unwrap();
-        assert!(f.events.borrow().is_empty());
+        let caller_home = shape.parent().unwrap().parent().unwrap();
+        f.events.borrow_mut().clear();
+        hexbot_core::setup::windows_contract_code_tools(caller_home, &|stage, message| {
+            f.emit(stage, message)
+        })
+        .await
+        .unwrap();
+        assert_eq!(
+            *f.events.borrow(),
+            ["python: Restoring the code tools interpreter"]
+        );
         assert_eq!(f.completion(), before);
-        f.healthy();
+        f.restored(&original);
+        let observed_cfg = fs::read_to_string(&cfg).unwrap();
+        let actual_home = observed_cfg
+            .lines()
+            .find_map(|line| line.strip_prefix("home = "))
+            .unwrap();
+        assert_eq!(
+            Path::new(actual_home).canonicalize().unwrap(),
+            base.canonicalize().unwrap()
+        );
+        case(&format!("N3 actual cfg after repair: {observed_cfg}"));
     }
     fs::write(&cfg, original_cfg).unwrap();
     case("N6 exact production identity and package probes emit escaped ASCII");
@@ -618,17 +662,34 @@ async fn finite_healthy_checks_and_owned_path_refusals() {
     case("N5 filled operation roots reject those junctions before uv mutation");
     let entry = f.venv().join("Scripts/edge-tts.exe");
     let entry_bytes = fs::read(&entry).unwrap();
-    fs::remove_file(&entry).unwrap();
-    f.refusal("E/N5 populated mutation-only directory walk")
-        .await;
     for root in &roots {
         fs::remove_dir(root.join("unrelated-directory-junction")).unwrap();
     }
-    fs::write(&entry, &entry_bytes).unwrap();
+    for root in &roots {
+        junction(&root.join("unrelated-directory-junction"), outside.path());
+        fs::remove_file(&entry).unwrap();
+        f.refusal(&format!("E/N5 populated mutation-only walk: {root:?}"))
+            .await;
+        fs::remove_dir(root.join("unrelated-directory-junction")).unwrap();
+        fs::write(&entry, &entry_bytes).unwrap();
+    }
     assert_eq!(
         fs::read(outside.path().join("sentinel")).unwrap(),
         b"outside unchanged"
     );
+    case("E alias drift and escape refuse without selecting another base");
+    let alias = f.path("python").join(ALIAS);
+    let base = f.path("python").join(f.key());
+    let wrong = f.path("python/cpython-3.11.0-windows-x86_64-none");
+    fs::create_dir(&wrong).unwrap();
+    for target in [outside.path(), wrong.as_path()] {
+        unlink_alias(&alias);
+        junction(&alias, target);
+        f.refusal("E alias escape/drift").await;
+        unlink_alias(&alias);
+        junction(&alias, &base);
+    }
+    fs::remove_dir(wrong).unwrap();
 
     // Existing fixed shared leaves must refuse without changing their other link.
     for leaf in [
@@ -650,6 +711,24 @@ async fn finite_healthy_checks_and_owned_path_refusals() {
         .await;
         assert_eq!(fs::read(&witness).unwrap(), bytes);
         fs::remove_file(witness).unwrap();
+    }
+    for leaf in [
+        f.path("bin/uv.exe"),
+        f.venv().join("Scripts/python.exe"),
+        f.venv().join("pyvenv.cfg"),
+        f.site().join(EXTENSIONS[4].1),
+        f.path("logs/bootstrap.log"),
+    ] {
+        let parked = outside.path().join("reparse-leaf-target");
+        fs::rename(&leaf, &parked).unwrap();
+        let bytes = fs::read(&parked).unwrap();
+        std::os::windows::fs::symlink_file(&parked, &leaf)
+            .unwrap_or_else(|error| panic!("E file-reparse fixture unavailable: {error}"));
+        f.refusal("E reparse fixed file/native leaf refuses before execution/write-through")
+            .await;
+        assert_eq!(fs::read(&parked).unwrap(), bytes);
+        fs::remove_file(&leaf).unwrap();
+        fs::rename(parked, leaf).unwrap();
     }
     for leaf in [
         f.venv().join("Scripts/python.exe"),
@@ -961,4 +1040,43 @@ async fn diagnostic_uv_observes_launcher_and_cfg_leaf_write_through() {
         String::from_utf8_lossy(&output.stderr)
     );
     // No production recovery is inferred from this diagnostic. Observe only.
+}
+
+#[tokio::test]
+async fn required_module_only_repairs_remain_explicit_acceptance_gates() {
+    let f = Home::installed().await;
+    let original = f.payloads();
+    let source = f.site().join("edge_tts/communicate.py");
+    // Required positives, not expected failures/skips. R1's strict independent
+    // entrypoint refusal exposes the unresolved observability conflict here.
+    for damage in ["missing", "syntax", "combined"] {
+        case(&format!("required module-only positive gate: {damage}"));
+        if damage == "syntax" {
+            fs::write(&source, b"def (:\n").unwrap();
+        } else {
+            fs::remove_file(&source).unwrap();
+        }
+        if damage == "combined" {
+            fs::write(f.venv().join("Scripts/python.exe"), b"x").unwrap();
+        }
+        f.setup().await.unwrap();
+        f.restored(&original);
+    }
+}
+#[tokio::test]
+async fn required_existing_dll_refusal_dominates_missing_base_executable_gate() {
+    let f = Home::installed().await;
+    let key = f.key();
+    let completion = f.completion();
+    fs::remove_file(f.path(&format!("python/{key}/python.exe"))).unwrap();
+    let dll = f.path(&format!("python/{key}/python311.dll"));
+    fs::write(&dll, b"truncated").unwrap();
+    case("required R2 combined-state refusal gate, no DLL replacement authority");
+    assert!(
+        f.setup().await.is_err(),
+        "R2 unresolved: existing DLL was replaced under missing-EXE repair"
+    );
+    assert!(f.events.borrow().is_empty());
+    assert_eq!(fs::read(dll).unwrap(), b"truncated");
+    assert_eq!(f.completion(), completion);
 }

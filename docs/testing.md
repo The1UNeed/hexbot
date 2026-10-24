@@ -446,3 +446,11 @@ lock serialization, with faked processes over real files and symlinks). Its
 native controls drive the production pass in
 `backend/hexbot-core/tests/windows_contract.rs` and the Full bootstrap in
 `apps/desktop/src/main/backend/windows-bootstrap.test.ts`.
+
+The remaining owned-Python native controls are included by the existing
+`windows_contract` target from
+`backend/hexbot-core/tests/windows_contract/python_acceptance.rs`. They use
+seven fresh homes across independent test functions and the existing Full
+fixture. Both observability acceptance gates are unignored; native execution
+and fresh source review remain required. See the Windows build contract for
+the exact final-probe event blocker and the process-start interruption limit.

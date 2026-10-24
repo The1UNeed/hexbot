@@ -354,17 +354,22 @@ async fn owned_python_provisions_repairs_and_refuses_through_production_setup() 
     let frozen = site.join("frozenlist/_frozenlist.cp311-win_amd64.pyd");
     let dll = base.join("python311.dll");
     let base_python = base.join("python.exe");
-    let originals: Vec<(&Path, String)> = [
-        &python,
-        &entrypoint,
-        &communicate,
-        &frozen,
-        &dll,
-        &base_python,
-    ]
-    .into_iter()
-    .map(|p| (p.as_path(), sha(p)))
-    .collect();
+    let mut original_paths = vec![
+        python.clone(),
+        entrypoint.clone(),
+        communicate.clone(),
+        frozen.clone(),
+        dll.clone(),
+        base_python.clone(),
+    ];
+    original_paths.extend(owned_python_acceptance::locked_sources(&home));
+    let originals: Vec<(std::path::PathBuf, String)> = original_paths
+        .into_iter()
+        .map(|path| {
+            let hash = sha(&path);
+            (path, hash)
+        })
+        .collect();
     let restored = |label: &str| {
         for (path, digest) in &originals {
             assert_eq!(&sha(path), digest, "{label}: {}", path.display());
@@ -425,16 +430,6 @@ async fn owned_python_provisions_repairs_and_refuses_through_production_setup() 
             "Restoring the Python base",
         ),
         (
-            "missing owned module",
-            Box::new(|| fs::remove_file(&communicate).unwrap()),
-            "Repairing voice tools",
-        ),
-        (
-            "invalid owned module syntax",
-            Box::new(|| fs::write(&communicate, b"def (:\n").unwrap()),
-            "Repairing voice tools",
-        ),
-        (
             "missing edge entrypoint",
             Box::new(|| fs::remove_file(&entrypoint).unwrap()),
             "Repairing voice tools",
@@ -448,14 +443,6 @@ async fn owned_python_provisions_repairs_and_refuses_through_production_setup() 
             "missing native extension",
             Box::new(|| fs::remove_file(&frozen).unwrap()),
             "Repairing voice tools",
-        ),
-        (
-            "combined redirector and module damage",
-            Box::new(|| {
-                fs::write(&python, b"x").unwrap();
-                fs::remove_file(&communicate).unwrap();
-            }),
-            "Restoring the code tools interpreter",
         ),
     ];
     for (label, damage, expected_event) in cases {

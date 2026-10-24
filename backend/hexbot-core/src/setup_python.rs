@@ -1220,6 +1220,9 @@ pub(super) fn classify(
                             error.kind == "ModuleNotFoundError"
                                 && !error.exact_import_error
                                 && error.path.is_none()
+                                && error.filename.is_none()
+                                && error.errno.is_none()
+                                && error.winerror.is_none()
                                 && error.name.as_deref().is_some_and(|name| {
                                     name == *full
                                         || full
