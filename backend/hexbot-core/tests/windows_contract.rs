@@ -3,6 +3,9 @@
 #[path = "../src/windows_paths.rs"]
 mod windows_paths;
 
+#[path = "windows_python_acceptance.rs"]
+mod owned_python_acceptance;
+
 // Comparative publication controls. The current path is the public
 // `common::atomic_write` (tempfile persist). The candidate below is private to
 // this file: it closes the temp, clears only that owned temp's attributes,
@@ -284,6 +287,9 @@ async fn owned_python_provisions_repairs_and_refuses_through_production_setup() 
     let site = venv.join("Lib/site-packages");
     let log = home.join("logs/bootstrap.log");
     let probe = |label: &str| {
+        let record: serde_json::Value =
+            serde_json::from_slice(&fs::read(&identity).unwrap()).unwrap();
+        owned_python_acceptance::assert_health(&home, record["base_key"].as_str().unwrap());
         let output = Command::new(&python)
             .args(["-I", "-B", "-c", "import aiohappyeyeballs, aiohttp, aiosignal, attrs, certifi, edge_tts, frozenlist, idna, multidict, propcache, tabulate, typing_extensions, yarl; import aiohttp._http_parser, aiohttp._http_writer, aiohttp._websocket.mask, aiohttp._websocket.reader_c, frozenlist._frozenlist, multidict._multidict, propcache._helpers_c, yarl._quoting_c; from importlib.metadata import version; print(version('edge-tts'))"])
             .output()
