@@ -68,6 +68,7 @@ describe.skipIf(process.platform !== 'win32' || !process.env.HEXBOT_NATIVE_TEST_
       await performBootstrap({ run, emit, appIsPackaged: true, appVersion: manifest.version, resourcesPath: dirname(bundle), platform: 'win32', arch: 'x64' })
       expect(nativeServiceExecutable()).toBe(exe)
       await provePinnedUvRepair(chosen, exe, redact)
+      await proveProductionRepair(chosen, () => performBootstrap({ run, emit, appIsPackaged: true, appVersion: manifest.version, resourcesPath: dirname(bundle), platform: 'win32', arch: 'x64' }))
       await expect(readFile(join(chosen, 'runtime/native-executable.exe'))).rejects.toThrow()
       const older = join(root, 'older runtime')
       await cp(bundle, older, { recursive: true })
@@ -169,4 +170,70 @@ async function provePinnedUvRepair(home: string, daemon: string, redact: (text: 
   // The direct Headless setup surface stays on this same verified home/base.
   expect(await run(daemon, ['setup', '--json'])).toContain('"stage":"done"')
   await check('healthy direct setup')
+}
+
+// Production Full bootstrap repairs owned damage itself. The fixture only
+// damages files and restores them after a refusal; uv is never run here.
+async function proveProductionRepair(home: string, bootstrap: () => Promise<unknown>): Promise<void> {
+  const { execFile } = await import('node:child_process')
+  const { promisify } = await import('node:util')
+  const { stat } = await import('node:fs/promises')
+  const environment = join(home, 'runtime/tools/code-python')
+  const python = join(environment, 'Scripts/python.exe')
+  const entry = join(environment, 'Scripts/edge-tts.exe')
+  const tools = join(home, 'runtime/tools')
+  const identity = JSON.parse(await readFile(join(tools, 'code-python-identity.json'), 'utf8')) as { schema: number; home: string; base_key: string }
+  expect(identity.schema).toBe(1)
+  expect(canonicalRuntimePath(identity.home)).toBe(canonicalRuntimePath(home))
+  expect(identity.base_key).toMatch(/^cpython-3\.11\.(?:0|[1-9]\d*)-windows-x86_64-none$/)
+  const dll = join(home, 'python', identity.base_key, 'python311.dll')
+  const communicate = join(environment, 'Lib/site-packages/edge_tts/communicate.py')
+  const digest = async (path: string): Promise<string> => createHash('sha256').update(await readFile(path)).digest('hex')
+  const originals = new Map<string, string>()
+  for (const path of [python, entry, dll, communicate]) originals.set(path, await digest(path))
+  const healthy = async (label: string): Promise<void> => {
+    for (const [path, expected] of originals) expect(await digest(path), `${label}: ${path}`).toBe(expected)
+    const check = await promisify(execFile)(python, ['-I', '-B', '-c', 'import edge_tts, aiohttp._http_parser; from importlib.metadata import version; print(version("edge-tts"))'], { windowsHide: true })
+    expect(check.stdout.trim(), label).toBe('7.2.7')
+  }
+  const receipt = join(tools, 'edge-tts.requirements.txt')
+  const unchanged = async (label: string, act: () => Promise<void>): Promise<void> => {
+    const before = await Promise.all([receipt, join(tools, 'code-python-identity.json')].map(path => readFile(path)))
+    await act()
+    const after = await Promise.all([receipt, join(tools, 'code-python-identity.json')].map(path => readFile(path)))
+    expect(after.map(buffer => buffer.toString('hex')), label).toEqual(before.map(buffer => buffer.toString('hex')))
+  }
+  // Healthy repeat: no uv call appends to the bootstrap log, no receipt write.
+  const logBefore = (await stat(join(home, 'logs/bootstrap.log'))).size
+  await unchanged('healthy Full repeat', () => bootstrap().then(() => undefined))
+  expect((await stat(join(home, 'logs/bootstrap.log'))).size).toBe(logBefore)
+  await healthy('healthy Full repeat')
+  // Recorded damage repaired by Full bootstrap, same payload hashes.
+  await writeFile(python, 'ordinary truncated redirector')
+  await bootstrap()
+  await healthy('Full restores a 29-byte redirector')
+  await rm(dll)
+  await bootstrap()
+  await healthy('Full restores a missing base DLL')
+  await rm(communicate)
+  await rm(entry)
+  await bootstrap()
+  await healthy('Full restores a missing module and entrypoint')
+  await rm(environment, { recursive: true, force: true })
+  await bootstrap()
+  await healthy('Full recreates the deleted environment')
+  expect(JSON.parse(await readFile(join(tools, 'code-python-identity.json'), 'utf8'))).toEqual(identity)
+  // Refusals: a long invalid redirector and an existing truncated DLL keep
+  // their bytes, publish nothing new and fail the Full bootstrap.
+  const saved = await readFile(python)
+  await writeFile(python, Buffer.alloc(64, 'g'))
+  await unchanged('64-byte redirector refusal', () => expect(bootstrap()).rejects.toThrow())
+  expect((await readFile(python)).toString('hex')).toBe(Buffer.alloc(64, 'g').toString('hex'))
+  await writeFile(python, saved)
+  const image = await readFile(dll)
+  await writeFile(dll, image.subarray(0, image.length >> 1))
+  await unchanged('truncated DLL refusal', () => expect(bootstrap()).rejects.toThrow())
+  expect((await readFile(dll)).length).toBe(image.length >> 1)
+  await writeFile(dll, image)
+  await healthy('after refusals')
 }

@@ -243,3 +243,475 @@ async fn uv_repair_replaces_ordinary_existing_bytes_and_missing_or_stale_receipt
 fn setup_revalidates_a_concurrent_newer_runtime_and_preserves_automatic_update_floor() {
     hexbot_core::services::windows_contract_tests::setup_retains_newer();
 }
+
+// Production owned-Python pass in a disposable Unicode home: first install,
+// healthy repeat, recorded repairs and refusals, all through the same code
+// `hexbot setup` runs. Needs network for the pinned uv, CPython and wheels.
+#[tokio::test]
+async fn owned_python_provisions_repairs_and_refuses_through_production_setup() {
+    use sha2::{Digest, Sha256};
+    use std::{fs, path::Path, process::Command};
+    const LOCK: &str = include_str!("../assets/edge-tts.requirements.txt");
+    fn sha(path: &Path) -> String {
+        format!("{:x}", Sha256::digest(fs::read(path).unwrap()))
+    }
+    fn powershell(script: &str) -> std::process::Output {
+        Command::new(
+            windows_paths::system_program("WindowsPowerShell/v1.0/powershell.exe").unwrap(),
+        )
+        .args(["-NoProfile", "-NonInteractive", "-Command", script])
+        .output()
+        .unwrap()
+    }
+    fn quote(path: &Path) -> String {
+        format!("'{}'", path.display().to_string().replace('\'', "''"))
+    }
+    let root = tempfile::tempdir().unwrap();
+    let home = root.path().join("Jos\u{e9} owned home");
+    fs::create_dir_all(&home).unwrap();
+    let home = home.canonicalize().unwrap();
+    let events = std::cell::RefCell::new(Vec::<String>::new());
+    let emit = |stage: &str, message: &str| events.borrow_mut().push(format!("{stage}: {message}"));
+    let setup = || hexbot_core::setup::windows_contract_code_tools(&home, &emit);
+    let since = |mark: usize| events.borrow()[mark..].to_vec();
+    let tools = home.join("runtime/tools");
+    let venv = tools.join("code-python");
+    let python = venv.join("Scripts/python.exe");
+    let entrypoint = venv.join("Scripts/edge-tts.exe");
+    let cfg = venv.join("pyvenv.cfg");
+    let identity = tools.join("code-python-identity.json");
+    let receipt = tools.join("edge-tts.requirements.txt");
+    let site = venv.join("Lib/site-packages");
+    let log = home.join("logs/bootstrap.log");
+    let probe = |label: &str| {
+        let output = Command::new(&python)
+            .args(["-I", "-B", "-c", "import aiohappyeyeballs, aiohttp, aiosignal, attrs, certifi, edge_tts, frozenlist, idna, multidict, propcache, tabulate, typing_extensions, yarl; import aiohttp._http_parser, aiohttp._http_writer, aiohttp._websocket.mask, aiohttp._websocket.reader_c, frozenlist._frozenlist, multidict._multidict, propcache._helpers_c, yarl._quoting_c; from importlib.metadata import version; print(version('edge-tts'))"])
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{label}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout).trim(),
+            "7.2.7",
+            "{label}"
+        );
+        let version = Command::new(&entrypoint)
+            .arg("--version")
+            .env("PYTHONDONTWRITEBYTECODE", "1")
+            .output()
+            .unwrap();
+        assert_eq!(
+            String::from_utf8_lossy(&version.stdout).trim(),
+            "edge-tts 7.2.7",
+            "{label}"
+        );
+    };
+
+    // A. First install into an empty home.
+    setup().await.unwrap();
+    let record: serde_json::Value = serde_json::from_slice(&fs::read(&identity).unwrap()).unwrap();
+    assert_eq!(record["schema"], 1);
+    assert_eq!(record.as_object().unwrap().len(), 3);
+    assert_eq!(
+        Path::new(record["home"].as_str().unwrap())
+            .canonicalize()
+            .unwrap(),
+        home
+    );
+    let key = record["base_key"].as_str().unwrap().to_owned();
+    let patch = key
+        .strip_prefix("cpython-3.11.")
+        .and_then(|k| k.strip_suffix("-windows-x86_64-none"))
+        .unwrap();
+    assert!(
+        !patch.is_empty() && patch.bytes().all(|b| b.is_ascii_digit()) && !patch.starts_with('0'),
+        "{key}"
+    );
+    let base = home.join("python").join(&key);
+    let alias = home.join("python/cpython-3.11-windows-x86_64-none");
+    let alias_target = fs::read_link(&alias).unwrap();
+    eprintln!(
+        "native alias {alias:?} -> {alias_target:?}; cfg {}",
+        fs::read_to_string(&cfg).unwrap()
+    );
+    assert_eq!(alias_target.file_name().unwrap(), key.as_str());
+    assert_eq!(fs::read_to_string(&receipt).unwrap(), LOCK);
+    assert_eq!(
+        fs::read_to_string(venv.join("requirements.txt")).unwrap(),
+        LOCK
+    );
+    probe("first install");
+    let communicate = site.join("edge_tts/communicate.py");
+    let frozen = site.join("frozenlist/_frozenlist.cp311-win_amd64.pyd");
+    let dll = base.join("python311.dll");
+    let base_python = base.join("python.exe");
+    let originals: Vec<(&Path, String)> = [
+        &python,
+        &entrypoint,
+        &communicate,
+        &frozen,
+        &dll,
+        &base_python,
+    ]
+    .into_iter()
+    .map(|p| (p.as_path(), sha(p)))
+    .collect();
+    let restored = |label: &str| {
+        for (path, digest) in &originals {
+            assert_eq!(&sha(path), digest, "{label}: {}", path.display());
+        }
+        probe(label);
+    };
+    let snapshot = || -> Vec<(Vec<u8>, std::time::SystemTime)> {
+        [&identity, &receipt, &venv.join("requirements.txt"), &cfg]
+            .iter()
+            .map(|p| {
+                (
+                    fs::read(p).unwrap(),
+                    fs::metadata(p).unwrap().modified().unwrap(),
+                )
+            })
+            .collect()
+    };
+
+    // D. Healthy repeat: no uv call, no identity/receipt/requirements/cfg write.
+    let before = snapshot();
+    let log_len = fs::metadata(&log).unwrap().len();
+    let mark = events.borrow().len();
+    setup().await.unwrap();
+    assert_eq!(snapshot(), before);
+    assert_eq!(
+        fs::metadata(&log).unwrap().len(),
+        log_len,
+        "uv appends to the log; a healthy pass must not run it"
+    );
+    assert!(since(mark).is_empty(), "{:?}", since(mark));
+
+    // C. Recorded damage repaired by the production pass, same payload hashes.
+    let cases: Vec<(&str, Box<dyn Fn()>, &str)> = vec![
+        (
+            "short redirector 29 B",
+            Box::new(|| fs::write(&python, b"ordinary truncated redirector").unwrap()),
+            "Restoring the code tools interpreter",
+        ),
+        (
+            "empty redirector",
+            Box::new(|| fs::write(&python, b"").unwrap()),
+            "Restoring the code tools interpreter",
+        ),
+        (
+            "missing redirector",
+            Box::new(|| fs::remove_file(&python).unwrap()),
+            "Restoring the code tools interpreter",
+        ),
+        (
+            "missing base python.exe",
+            Box::new(|| fs::remove_file(&base_python).unwrap()),
+            "Restoring the Python base",
+        ),
+        (
+            "missing python311.dll",
+            Box::new(|| fs::remove_file(&dll).unwrap()),
+            "Restoring the Python base",
+        ),
+        (
+            "missing owned module",
+            Box::new(|| fs::remove_file(&communicate).unwrap()),
+            "Repairing voice tools",
+        ),
+        (
+            "invalid owned module syntax",
+            Box::new(|| fs::write(&communicate, b"def (:\n").unwrap()),
+            "Repairing voice tools",
+        ),
+        (
+            "missing edge entrypoint",
+            Box::new(|| fs::remove_file(&entrypoint).unwrap()),
+            "Repairing voice tools",
+        ),
+        (
+            "short edge entrypoint 63 B",
+            Box::new(|| fs::write(&entrypoint, [b'e'; 63]).unwrap()),
+            "Repairing voice tools",
+        ),
+        (
+            "missing native extension",
+            Box::new(|| fs::remove_file(&frozen).unwrap()),
+            "Repairing voice tools",
+        ),
+        (
+            "combined redirector and module damage",
+            Box::new(|| {
+                fs::write(&python, b"x").unwrap();
+                fs::remove_file(&communicate).unwrap();
+            }),
+            "Restoring the code tools interpreter",
+        ),
+    ];
+    for (label, damage, expected_event) in cases {
+        damage();
+        let mark = events.borrow().len();
+        setup()
+            .await
+            .unwrap_or_else(|e| panic!("{label}: {}", e.message));
+        assert!(
+            since(mark).iter().any(|e| e.contains(expected_event)),
+            "{label}: {:?}",
+            since(mark)
+        );
+        assert_eq!(fs::read_to_string(&receipt).unwrap(), LOCK, "{label}");
+        restored(label);
+    }
+    // N7. A real cut into the extension's section data must be an exact
+    // ImportError after a successful pre-open; the pass repairs it.
+    let image = fs::read(&frozen).unwrap();
+    assert!(image.len() > 4096);
+    fs::write(&frozen, &image[..image.len() / 2]).unwrap();
+    eprintln!(
+        "truncated {} from {} to {} bytes",
+        frozen.display(),
+        image.len(),
+        image.len() / 2
+    );
+    let load = Command::new(&python).args(["-I", "-B", "-c", "import frozenlist\ntry:\n import frozenlist._frozenlist\nexcept BaseException as e:\n print(type(e) is ImportError, type(e).__name__, getattr(e,'name',None), getattr(e,'path',None))"]).output().unwrap();
+    eprintln!(
+        "truncated extension probe: {}{}",
+        String::from_utf8_lossy(&load.stdout),
+        String::from_utf8_lossy(&load.stderr)
+    );
+    let mark = events.borrow().len();
+    setup().await.unwrap();
+    assert!(
+        since(mark)
+            .iter()
+            .any(|e| e.contains("Repairing voice tools")),
+        "{:?}",
+        since(mark)
+    );
+    restored("truncated native extension");
+
+    // Whole recorded layers: exact venv directory, then exact base directory
+    // with its dangling alias. The record stays byte-identical.
+    let record_bytes = fs::read(&identity).unwrap();
+    fs::remove_dir_all(&venv).unwrap();
+    let mark = events.borrow().len();
+    setup().await.unwrap();
+    assert!(
+        since(mark)
+            .iter()
+            .any(|e| e.contains("Recreating the code tools environment"))
+    );
+    assert!(
+        since(mark)
+            .iter()
+            .any(|e| e.contains("Installing voice tools"))
+    );
+    assert_eq!(fs::read(&identity).unwrap(), record_bytes);
+    restored("recreated venv");
+    fs::remove_dir_all(&base).unwrap();
+    assert!(
+        fs::symlink_metadata(&alias).is_ok(),
+        "alias must dangle at the recorded key"
+    );
+    let mark = events.borrow().len();
+    setup().await.unwrap();
+    assert!(
+        since(mark)
+            .iter()
+            .any(|e| e.contains("Restoring the Python base"))
+    );
+    assert_eq!(
+        fs::read_link(&alias).unwrap().file_name().unwrap(),
+        key.as_str(),
+        "N2: alias binds the recorded key after reinstall"
+    );
+    assert_eq!(fs::read(&identity).unwrap(), record_bytes);
+    restored("recreated base");
+
+    // E. Refusals: no uv mutation, no receipt change, original bytes kept.
+    let refusals: Vec<(&str, Box<dyn Fn() -> Box<dyn FnOnce()>>)> = vec![
+        (
+            "64-byte invalid redirector",
+            Box::new(|| {
+                let saved = fs::read(&python).unwrap();
+                fs::write(&python, [b'g'; 64]).unwrap();
+                Box::new(move || fs::write(&python, saved).unwrap())
+            }),
+        ),
+        (
+            "existing truncated python311.dll",
+            Box::new(|| {
+                let saved = fs::read(&dll).unwrap();
+                fs::write(&dll, &saved[..saved.len() / 2]).unwrap();
+                Box::new(move || fs::write(&dll, saved).unwrap())
+            }),
+        ),
+        (
+            "malformed identity record",
+            Box::new(|| {
+                let saved = fs::read(&identity).unwrap();
+                fs::write(&identity, b"{\"schema\":1,\"home\":\"C:\\\\elsewhere\"}").unwrap();
+                Box::new(move || fs::write(&identity, saved).unwrap())
+            }),
+        ),
+        (
+            "identity record of another home",
+            Box::new(|| {
+                let saved = fs::read(&identity).unwrap();
+                fs::write(&identity, serde_json::json!({"schema":1,"home":root.path().canonicalize().unwrap(),"base_key":key}).to_string()).unwrap();
+                Box::new(move || fs::write(&identity, saved).unwrap())
+            }),
+        ),
+        (
+            "foreign pyvenv.cfg home",
+            Box::new(|| {
+                let saved = fs::read(&cfg).unwrap();
+                let text = String::from_utf8(saved.clone())
+                    .unwrap()
+                    .lines()
+                    .map(|l| {
+                        if l.starts_with("home") {
+                            format!("home = {}", root.path().display())
+                        } else {
+                            l.to_owned()
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                fs::write(&cfg, text).unwrap();
+                Box::new(move || fs::write(&cfg, saved).unwrap())
+            }),
+        ),
+        (
+            "current receipt with a crashing package",
+            Box::new(|| {
+                let init = site.join("edge_tts/__init__.py");
+                let saved = fs::read(&init).unwrap();
+                fs::write(
+                    &init,
+                    [b"import os\nos._exit(77)\n".as_slice(), &saved].concat(),
+                )
+                .unwrap();
+                Box::new(move || fs::write(&init, saved).unwrap())
+            }),
+        ),
+        (
+            "junction inside the uv cache before a package mutation",
+            Box::new(|| {
+                let junction = home.join("runtime/uv-cache/owned-junction");
+                let output = powershell(&format!(
+                    "New-Item -ItemType Junction -Path {} -Target {} | Out-Null",
+                    quote(&junction),
+                    quote(root.path())
+                ));
+                assert!(
+                    output.status.success(),
+                    "{}",
+                    String::from_utf8_lossy(&output.stderr)
+                );
+                let saved = fs::read(&entrypoint).unwrap();
+                fs::remove_file(&entrypoint).unwrap();
+                Box::new(move || {
+                    fs::remove_dir(&junction).unwrap();
+                    fs::write(&entrypoint, saved).unwrap();
+                })
+            }),
+        ),
+        (
+            "denied read on an expected extension",
+            Box::new(|| {
+                let user = std::env::var("USERNAME").unwrap();
+                let deny = Command::new("icacls")
+                    .arg(&frozen)
+                    .args(["/deny", &format!("{user}:(R)")])
+                    .output()
+                    .unwrap();
+                assert!(
+                    deny.status.success(),
+                    "{}",
+                    String::from_utf8_lossy(&deny.stdout)
+                );
+                let frozen = frozen.clone();
+                Box::new(move || {
+                    let allow = Command::new("icacls")
+                        .arg(&frozen)
+                        .args(["/remove:d", &user])
+                        .output()
+                        .unwrap();
+                    assert!(
+                        allow.status.success(),
+                        "{}",
+                        String::from_utf8_lossy(&allow.stdout)
+                    );
+                })
+            }),
+        ),
+    ];
+    for (label, arrange) in refusals {
+        let undo = arrange();
+        let before = snapshot_bytes(&[&receipt, &python, &dll, &entrypoint]);
+        let log_len = fs::metadata(&log).unwrap().len();
+        let mark = events.borrow().len();
+        let error = setup()
+            .await
+            .err()
+            .unwrap_or_else(|| panic!("{label}: expected a refusal"));
+        eprintln!("{label}: {}", error.message);
+        assert!(
+            error.message.starts_with("Python code tools ("),
+            "{label}: {}",
+            error.message
+        );
+        assert!(
+            since(mark)
+                .iter()
+                .all(|e| !e.contains("Installing voice tools")
+                    && !e.contains("Repairing")
+                    && !e.contains("Restoring")
+                    && !e.contains("Recreating")),
+            "{label}: {:?}",
+            since(mark)
+        );
+        assert_eq!(
+            snapshot_bytes(&[&receipt, &python, &dll, &entrypoint]),
+            before,
+            "{label}"
+        );
+        let appended = fs::metadata(&log).unwrap().len() - log_len;
+        assert!(
+            appended <= error.message.len() as u64 + 2,
+            "{label}: a refusal appends only its own line"
+        );
+        undo();
+    }
+    fn snapshot_bytes(paths: &[&std::path::PathBuf]) -> Vec<Option<Vec<u8>>> {
+        paths.iter().map(|p| fs::read(p).ok()).collect()
+    }
+    restored("after refusals");
+    // A stale receipt with crashing packages takes the one explicit install
+    // without the old pre-probe and recovers.
+    let init = site.join("edge_tts/__init__.py");
+    let saved = fs::read(&init).unwrap();
+    fs::write(
+        &init,
+        [b"import os\nos._exit(77)\n".as_slice(), &saved].concat(),
+    )
+    .unwrap();
+    fs::write(&receipt, "old lock").unwrap();
+    let mark = events.borrow().len();
+    setup().await.unwrap();
+    assert_eq!(since(mark), ["voice: Installing voice tools"]);
+    assert_eq!(fs::read(&init).unwrap(), saved);
+    assert_eq!(fs::read_to_string(&receipt).unwrap(), LOCK);
+    restored("stale receipt recovery");
+    // Legacy adoption: the record alone is removed; the pass records the
+    // observed key again without reinstalling anything.
+    fs::remove_file(&identity).unwrap();
+    let mark = events.borrow().len();
+    setup().await.unwrap();
+    assert!(since(mark).is_empty(), "{:?}", since(mark));
+    assert_eq!(fs::read(&identity).unwrap(), record_bytes);
+}

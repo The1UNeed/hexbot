@@ -80,6 +80,54 @@ Both native and Electron provisioners explicitly set `UV_LINK_MODE=copy`, so
 new package installs do not share uv cache inodes. This does not establish a
 race-free hard-link boundary or change permissions on legacy Python files.
 
+### Owned Python repair
+
+Windows setup records the Python it owns in
+`runtime/tools/code-python-identity.json`: exactly `schema`, the canonical
+`home` and the exact `base_key` (`cpython-3.11.<patch>-windows-x86_64-none`).
+The record is written once, after the base and the venv pass their identity
+probes and before voice packages install. App, uv and voice-lock upgrades
+never rewrite it; a Python version change is not migrated.
+
+Every run is one ordered pass under the activation lock: read-only checks of
+the fixed chains and leaves, the record, the base, the venv, then packages.
+Each layer gets at most one repair, and only for these states: the exact
+recorded base or venv directory missing, a missing base `python.exe` or
+`python311.dll`, a missing or under-64-byte `Scripts/python.exe` or
+`edge-tts.exe`, and structured package damage reported by a complete `-I -B`
+probe (a missing locked distribution or module, a version that differs from
+the lock, a syntax error in an owned source, or an exact `ImportError` for an
+audited `.pyd` whose name and path match after a successful read-only
+pre-open). Repairs use only four uv commands: `python install --no-bin 3.11`,
+`python install --no-bin --reinstall <key>`, `venv --allow-existing ...
+--python <base>/python.exe`, and `pip install --reinstall --require-hashes
+--no-deps --no-build`. Immediately before each uv call the operation roots are
+walked for reparse directories; only uv's minor alias under `python/` is
+allowed. A recreated venv removes the old voice receipt before pip, so an
+interrupted install takes the plain install branch next time.
+
+Everything else refuses without writing: reparse or hard-linked fixed leaves,
+a malformed record or one naming another home, an alias that disagrees with
+the record, a `pyvenv.cfg` not pointing at the owned base or its alias, an
+unrecorded nonempty venv without a usable cfg, a launcher of 64 bytes or more
+that fails, an existing truncated DLL, a package probe that crashes or returns
+anything but the complete structured result, access or sharing errors, and
+any failed final probe. The refusal names the layer and the OS cause on the
+CLI and in `logs/bootstrap.log`; the native runtime activation that preceded
+it is already complete.
+
+Known limitation: Windows remains unsupported. Setup repairs only the owned
+states described here. If Python identity or code verification is refused,
+the Full daemon may not start, because Full awaits bootstrap and never passes
+`--no-code-tools`. This scope provides no automatic recovery or Full option
+to skip code tools. The portable controls live in
+`backend/hexbot-core/src/setup_python_tests.rs`; the native production pass
+runs in `tests/windows_contract.rs` and the Full bootstrap test. The actual
+alias type after a first install or reinstall, exact-executable venv creation
+across 8.3 and extended paths, interrupted pip recovery, populated-cache
+junctions, ASCII JSON round trips and the section-data `.pyd` truncation
+positive are native acceptance gates, not claims.
+
 ## Install and update contracts
 
 Change to Client explicitly checks service ownership before downloading and again

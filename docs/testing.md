@@ -438,4 +438,11 @@ nested steps before and after reload in light and dark themes.
 Windows build/install probes live in `.github/workflows/windows-contract.yml`.
 They do not publish packages or establish Windows support. See
 [the build contract](windows-build-contract.md) for the runtime layout,
-security dependency and native validation still required.
+security dependency and native validation still required. The owned Python
+pass has portable controls in `backend/hexbot-core/src/setup_python_tests.rs`
+(record schema, cfg shapes, the four uv forms, the 0/1/29/63 against 64 byte
+launcher boundary, the exact-ImportError classifier, receipt ordering and
+lock serialization, with faked processes over real files and symlinks). Its
+native controls drive the production pass in
+`backend/hexbot-core/tests/windows_contract.rs` and the Full bootstrap in
+`apps/desktop/src/main/backend/windows-bootstrap.test.ts`.
