@@ -8,6 +8,7 @@ import {
   readFile,
   realpath,
   rm,
+  symlink,
   writeFile
 } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -97,6 +98,27 @@ it.skipIf(!process.env.HEXBOT_TEST_RUNTIME_58 || !process.env.HEXBOT_TEST_RUNTIM
       const recordPath = join(home, 'runtime/native-current.json')
       // The supported Python handoff writer records only these three fields.
       const original = JSON.parse(await readFile(recordPath, 'utf8'))
+      const pointer = join(home, 'runtime/native-executable')
+      const unlisted = join(dirname(original.executable), 'unlisted')
+      await writeFile(unlisted, 'not the verified Hexbot launcher')
+      for (const sparse of [false, true]) {
+        for (const [file, mode] of [['unlisted', 0o644], ['unlisted', 0o755], ['node', 0o755]] as const) {
+          const wrong = join(dirname(original.executable), file)
+          await chmod(wrong, mode)
+          await rm(pointer)
+          await symlink(wrong, pointer)
+          await writeFile(recordPath, JSON.stringify({
+            ...(sparse ? { version: original.version, previous: null } : original), executable: wrong
+          }))
+          await expect(manager.start(() => performBootstrap({
+            appIsPackaged: true, appVersion: '0.1.5-nightly.20261022.58', resourcesPath: join(root, '58')
+          }))).rejects.toThrow('identity cannot be verified')
+          expect(manager.status().pid).toBe(old.pid)
+          expect(await runningDaemonPort(home)).toBe(old.port)
+        }
+      }
+      await rm(pointer)
+      await symlink(original.executable, pointer)
       await writeFile(recordPath, JSON.stringify({
         version: original.version, executable: original.executable, previous: null
       }))

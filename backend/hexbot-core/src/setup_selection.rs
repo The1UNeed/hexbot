@@ -183,6 +183,8 @@ fn selected(native: &Path) -> Selected {
         let mut manifest = read_manifest(&executable.with_file_name("manifest.json"))?;
         if !executable.starts_with(native)
             || !executable.is_file()
+            // Only the bundle's hashed launcher is a daemon entrypoint.
+            || executable != executable.with_file_name("hexbot").canonicalize()?
             || record["version"] != manifest["version"]
             || record["executable"]
                 .as_str()
@@ -663,3 +665,7 @@ mod identity_tests;
 #[cfg(test)]
 #[path = "setup_selection_handoff_tests.rs"]
 mod handoff_tests;
+
+#[cfg(test)]
+#[path = "setup_selection_entrypoint_tests.rs"]
+mod entrypoint_tests;

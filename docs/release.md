@@ -328,8 +328,8 @@ before downloading, then again under `runtime/activate.lock` against the build
 installer selected meanwhile is not replaced by an older one. Uninstall removes
 Hexbot apps a killed install left in `.tmp*/previous.app` staging on macOS.
 Installers released before this lock and the Electron app updater do not take
-the installer lock; the native updater takes only `runtime/activate.lock`, and
-the desktop bootstrap's runtime activation takes neither. Fresh installs and explicit
+the installer lock. The native updater and packaged POSIX runtime selection take
+`runtime/activate.lock`, but not the installer lock. Fresh installs and explicit
 track changes may install an older version.
 
 Not covered by these manifest signatures:
