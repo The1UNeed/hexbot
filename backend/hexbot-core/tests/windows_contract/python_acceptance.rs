@@ -753,6 +753,7 @@ async fn finite_healthy_checks_and_owned_path_refusals() {
     }
     for leaf in [
         f.path("bin/uv.exe"),
+        f.path(&format!("python/{}/python311.dll", f.key())),
         f.venv().join("Scripts/python.exe"),
         f.venv().join("pyvenv.cfg"),
         f.site().join(EXTENSIONS[4].1),
@@ -770,6 +771,7 @@ async fn finite_healthy_checks_and_owned_path_refusals() {
         fs::rename(parked, leaf).unwrap();
     }
     for leaf in [
+        f.path(&format!("python/{}/python311.dll", f.key())),
         f.venv().join("Scripts/python.exe"),
         f.site().join(EXTENSIONS[4].1),
         f.receipt(),
@@ -1337,6 +1339,48 @@ async fn schema2_loaded_dll_migration_and_changed_bytes_are_explicit_native_gate
     let record = f.record();
     assert_eq!(record["schema"], 2);
     assert_eq!(record["base_dll_sha256"], digest(&dll));
+    case("schema2 matching DLL bytes with denied read refuse before execution or repair");
+    let user = std::env::var("USERNAME").unwrap();
+    let icacls = super::windows_paths::system_program("icacls.exe").unwrap();
+    let before = f.completion();
+    let deny = Command::new(&icacls)
+        .arg(&dll)
+        .args(["/deny", &format!("{user}:(R)")])
+        .output()
+        .unwrap();
+    assert!(deny.status.success());
+    let result = f.setup().await;
+    let allow = Command::new(&icacls)
+        .arg(&dll)
+        .args(["/remove:d", &user])
+        .output()
+        .unwrap();
+    assert!(allow.status.success());
+    let error = result.unwrap_err();
+    assert!(error.message.contains("os error 5"), "{}", error.message);
+    assert!(f.events.borrow().is_empty());
+    assert_eq!(f.completion(), before);
+    assert_eq!(digest(&dll), record["base_dll_sha256"]);
+    case("schema2 real API foreign module path from wrong already-loaded handle refuses");
+    // A startup damage fixture supplies an already-loaded kernel32 handle in
+    // place of sys.dllhandle. The production probe calls the real Windows API;
+    // this does not pretend to execute Python from a different Python DLL.
+    let startup = f.site().join("00-owned-foreign-dll-handle.pth");
+    fs::write(
+        &startup,
+        "import ctypes,sys; sys.dllhandle=ctypes.WinDLL('kernel32')._handle\n",
+    )
+    .unwrap();
+    let result = f.setup().await;
+    fs::remove_file(startup).unwrap();
+    let error = result.unwrap_err();
+    assert!(
+        error.message.contains("loaded Python DLL"),
+        "{}",
+        error.message
+    );
+    assert!(f.events.borrow().is_empty());
+    assert_eq!(f.completion(), before);
     fs::write(&exe, b"x").unwrap();
     f.setup().await.unwrap();
     f.restored(&original);
