@@ -72,6 +72,14 @@ export function startupRedactor(environment = process.env) {
   }
 }
 
+export function formatStartupDiagnostic(value, redact) {
+  return JSON.stringify(value, (key, field) => {
+    if (/token|secret|password|credential|api[_-]?key|pairing[_-]?code/i.test(key))
+      return '[redacted]'
+    return typeof field === 'string' ? redact(field) : field
+  })
+}
+
 export function captureInstalledApp(child, redact) {
   const output = { stdout: '', stderr: '' }
   const truncated = { stdout: false, stderr: false }

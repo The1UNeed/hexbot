@@ -6,6 +6,7 @@ import { join } from 'node:path'
 import test from 'node:test'
 import {
   captureInstalledApp,
+  formatStartupDiagnostic,
   installedStartupFiles,
   startInstalledRuntime,
   startupRedactor
@@ -183,6 +184,74 @@ test('bounded app output redacts split credentials, pairing codes and URL secret
   capture.dispose()
   assert.equal(child.stdout.listenerCount('data'), 0)
   assert.equal(child.stderr.listenerCount('data'), 0)
+})
+
+test('emitted startup diagnostics redact owned file contents and structured secrets before serialization', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'hexbot diagnostic emission '))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const home = join(root, 'home'),
+    bundle = join(root, 'bundle')
+  await mkdir(join(home, 'logs'), { recursive: true })
+  await mkdir(bundle)
+  const deviceToken = 'synthetic-private-device-value'
+  const environmentToken = 'synthetic-env-"quoted"-\\token'
+  await writeFile(
+    join(home, 'logs/bootstrap.log'),
+    JSON.stringify({
+      deviceToken,
+      message: 'bootstrap reached "selection"',
+      environment: environmentToken,
+      url: 'https://private-user:private-password@example.com/start?code=private-query#private-fragment'
+    }) + '\n'
+  )
+  await writeFile(
+    join(bundle, 'manifest.json'),
+    JSON.stringify({
+      version: '0.1.5-nightly.20990101.1',
+      target: 'win32-x64',
+      token: 'unread-auth-value'
+    })
+  )
+  const files = await installedStartupFiles(home, bundle)
+  // The same formatter emits baseline, startup status, identity and failure evidence.
+  const emitted = formatStartupDiagnostic(
+    {
+      identity: { isPackaged: true, edition: 'full', version: '0.1.5-nightly.20990101.1' },
+      status: {
+        state: 'stopped',
+        deviceToken: 'structured-private-value',
+        credentials: { nested: 'private-credential' }
+      },
+      files
+    },
+    startupRedactor({ API_TOKEN: environmentToken })
+  )
+  for (const secret of [
+    deviceToken,
+    environmentToken,
+    JSON.stringify(environmentToken).slice(1, -1),
+    'private-user',
+    'private-password',
+    'private-query',
+    'private-fragment',
+    'structured-private-value',
+    'private-credential',
+    'unread-auth-value'
+  ])
+    assert(!emitted.includes(secret), `Emitted diagnostic exposed ${secret}`)
+  const observed = JSON.parse(emitted)
+  assert.equal(observed.identity.isPackaged, true)
+  assert.equal(observed.identity.edition, 'full')
+  assert.equal(observed.status.state, 'stopped')
+  assert.equal(observed.status.deviceToken, '[redacted]')
+  assert.equal(observed.status.credentials, '[redacted]')
+  assert.equal(observed.files.manifest.version, '0.1.5-nightly.20990101.1')
+  assert.equal(observed.files.manifest.target, 'win32-x64')
+  const bootstrap = JSON.parse(observed.files.bootstrap)
+  assert.equal(bootstrap.deviceToken, '[redacted]')
+  assert.equal(bootstrap.environment, '[redacted]')
+  assert.equal(bootstrap.message, 'bootstrap reached "selection"')
+  assert(bootstrap.url.includes('example.com/start'))
 })
 
 test('failure files are bounded, allowlisted identities and cannot follow logs outside the owned home', async t => {

@@ -8,7 +8,7 @@ import { cp, mkdir, readFile, realpath, writeFile } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { dirname, isAbsolute, join, relative, sep } from 'node:path'
 import { waitForRuntimeJson } from './runtime-file.mjs'
-import { captureInstalledApp, installedStartupFiles, startInstalledRuntime, startupRedactor } from './installed-app-startup.mjs'
+import { captureInstalledApp, formatStartupDiagnostic, installedStartupFiles, startInstalledRuntime, startupRedactor } from './installed-app-startup.mjs'
 import { nodePath } from '../../apps/desktop/src/main/backend/node-path.ts'
 const require = createRequire(new URL('../../apps/desktop/package.json', import.meta.url))
 const { _electron: electron } = require('@playwright/test')
@@ -123,7 +123,7 @@ async function openApp() {
     home: process.env.HEXBOT_HOME, node: process.versions.node
   }))
   initialIdentity ??= identity
-  console.log('Installed app identity:', redact(JSON.stringify(identity)))
+  console.log('Installed app identity:', formatStartupDiagnostic(identity, redact))
   assert.equal(identity.isPackaged, true)
   window = await app.firstWindow({ timeout: 300_000 })
   await window.waitForLoadState('domcontentloaded')
@@ -149,7 +149,7 @@ try {
   if (edition === 'full') {
     const [baseline, files] = await Promise.all([startupStatus(), diagnostic(() =>
       installedStartupFiles(home, join(dirname(executable), 'resources/hexbot-native')))])
-    console.log('Installed Full before initial start:', redact(JSON.stringify({ baseline, files })))
+    console.log('Installed Full before initial start:', formatStartupDiagnostic({ baseline, files }, redact))
     await window.evaluate(() => {
       const events = []
       const off = window.hexbot.daemon.onProgress(event => {
@@ -163,7 +163,7 @@ try {
     const running = await startInstalledRuntime(edition,
       () => window.evaluate(() => window.hexbot.daemon.start()),
       signal => waitForRuntimeJson(join(home, 'serve-state.json'), value => value.port, 300_000, undefined, { signal }))
-    console.log('Installed Full initial startup:', redact(JSON.stringify(await startupStatus())))
+    console.log('Installed Full initial startup:', formatStartupDiagnostic(await startupStatus(), redact))
     await diagnostic(() => window.evaluate(() => globalThis.installedStartupProgress?.off()))
     ownedPid = JSON.parse(await readFile(join(home, 'runtime/native-running.json'), 'utf8')).pid
     assert(Number.isSafeInteger(ownedPid))
@@ -332,9 +332,9 @@ try {
   primaryFailure = error
   const [status, files] = await Promise.all([startupStatus(), diagnostic(() =>
     installedStartupFiles(home, join(dirname(executable), 'resources/hexbot-native')))])
-  console.error('Installed app failure evidence:', redact(JSON.stringify({
+  console.error('Installed app failure evidence:', formatStartupDiagnostic({
     identity: initialIdentity, status, output: captures.map(capture => capture.snapshot()), files
-  })))
+  }, redact))
   throw error
 } finally {
   await diagnostic(() => window?.evaluate(() => globalThis.installedStartupProgress?.off()))
@@ -360,7 +360,7 @@ try {
     if (servicePid) await assertStopped(servicePid)
   } catch (error) {
     if (!primaryFailure) throw error
-    console.error('Installed app cleanup also failed:', redact(String(error)))
+    console.error('Installed app cleanup also failed:', formatStartupDiagnostic({ error: String(error) }, redact))
     throw primaryFailure
   }
 }
