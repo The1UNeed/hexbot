@@ -173,7 +173,9 @@ impl Runner for Fake {
         _env: &[(OsString, OsString)],
     ) -> Result<Output> {
         assert_eq!(&args[..2], &[OsString::from("-I"), OsString::from("-B")]);
-        if self.fail == Some("launch") {
+        if self.fail == Some("launch")
+            || (self.fail == Some("package_launch") && args[3] == PACKAGE_PROBE)
+        {
             return Err(Error::new(5243, "start probe: fixture OS error 193"));
         }
         if args[3] == IDENTITY_PROBE {
@@ -209,6 +211,9 @@ impl Runner for Fake {
         env: &[(OsString, OsString)],
     ) -> Result<Output> {
         assert_eq!(executable, self.layout.entrypoint);
+        if self.fail == Some("entry_launch") {
+            return Err(Error::new(5243, "start probe: fixture OS error 193"));
+        }
         assert!(
             env.iter()
                 .any(|(k, v)| k == "PYTHONDONTWRITEBYTECODE" && v == "1")
@@ -224,13 +229,23 @@ impl Runner for Fake {
 #[tokio::test]
 async fn interpreter_launch_errors_keep_the_layer_and_original_cause_without_repair() {
     let (_dir, layout) = installed().await;
-    let mut fake = Fake::new(&layout);
-    fake.fail = Some("launch");
-    let error = run(&layout, &mut fake).await.unwrap_err();
-    assert!(error.message.starts_with("Python code tools (base):"));
-    assert!(error.message.contains("fixture OS error 193"));
-    assert!(fake.uv_calls().is_empty());
-    assert_eq!(fs::read_to_string(&layout.receipt).unwrap(), LOCK);
+    for (failure, stage) in [
+        ("launch", "base"),
+        ("package_launch", "voice"),
+        ("entry_launch", "voice"),
+    ] {
+        let mut fake = Fake::new(&layout);
+        fake.fail = Some(failure);
+        let error = run(&layout, &mut fake).await.unwrap_err();
+        assert!(
+            error
+                .message
+                .starts_with(&format!("Python code tools ({stage}):"))
+        );
+        assert!(error.message.contains("fixture OS error 193"));
+        assert!(fake.uv_calls().is_empty());
+        assert_eq!(fs::read_to_string(&layout.receipt).unwrap(), LOCK);
+    }
 }
 async fn run(layout: &Layout, fake: &mut Fake) -> Result<()> {
     let emit = |_: &str, _: &str| {};

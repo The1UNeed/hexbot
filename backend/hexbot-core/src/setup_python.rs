@@ -1421,8 +1421,7 @@ impl<R: Runner> Pass<'_, R> {
                 Mutation::ReinstallKey(key),
                 ("python", "Restoring the Python base for code tools"),
             )
-            .await
-            .map_err(|error| refuse(stage, error.message))?;
+            .await?;
         }
         self.base_healthy(stage, key).await
     }
@@ -1566,7 +1565,8 @@ impl<R: Runner> Pass<'_, R> {
                 &self.layout.runtime,
                 &self.probe_env,
             )
-            .await?;
+            .await
+            .map_err(|error| refuse(stage, error.message))?;
         let probe: PackageProbe = complete_json(stage, "package probe", &output)?;
         let versions = locked_versions(self.lock);
         let health = classify(&probe, &versions, &site, &|p| canonical(p).ok());
