@@ -58,7 +58,8 @@ try {
 } finally { if($null -ne $process) { $process.Dispose() } }
 `
 
-export async function windowsDaemon(home: string): Promise<WindowsDaemon | undefined> {
+export async function windowsDaemon(home: string, signal?: AbortSignal): Promise<WindowsDaemon | undefined> {
+  signal?.throwIfAborted()
   let lock
   try { lock = await lstat(join(home, 'native-daemon.lock')) }
   catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined; throw error }
@@ -66,10 +67,24 @@ export async function windowsDaemon(home: string): Promise<WindowsDaemon | undef
   const canonicalHome = await realpath(home)
   const system = process.env.SystemRoot
   if (!system || !isAbsolute(system)) throw new Error('Windows system directory is unavailable')
-  const { stdout } = await promisify(execFile)(join(system, 'System32/WindowsPowerShell/v1.0/powershell.exe'),
+  signal?.throwIfAborted()
+  const pending = promisify(execFile)(join(system, 'System32/WindowsPowerShell/v1.0/powershell.exe'),
     ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(windowsReadinessScript, 'utf16le').toString('base64')],
-    { windowsHide: true, timeout: 10_000, maxBuffer: 16_384, env: { ...process.env, HEXBOT_READINESS_HOME: canonicalHome } })
-    .catch(() => { throw new Error('Cannot verify the daemon holding this home') })
+    { windowsHide: true, timeout: 10_000, maxBuffer: 16_384, env: { ...process.env, HEXBOT_READINESS_HOME: canonicalHome }, ...(signal ? { signal } : {}) })
+  // execFile can reject on abort before its owned PowerShell process closes.
+  // The harness must reap that read-only probe before starting cleanup.
+  const closed = signal && new Promise<void>(resolve => pending.child.once('close', () => resolve()))
+  let stdout: string
+  try {
+    const result = await pending
+    stdout = result.stdout
+  } catch {
+    signal?.throwIfAborted()
+    throw new Error('Cannot verify the daemon holding this home')
+  } finally {
+    if (closed) await closed
+  }
+  signal?.throwIfAborted()
   const value = JSON.parse(stdout) as (WindowsDaemon & { image: string; created: string }) | null
   if (!value) return undefined
   if (!Number.isInteger(value.pid) || value.pid <= 0 || !Number.isInteger(value.port) || value.port < 1 || value.port > 65535 || !value.created)
@@ -80,5 +95,6 @@ export async function windowsDaemon(home: string): Promise<WindowsDaemon | undef
   const rel = relative(root, executable)
   if (!rel || rel.startsWith('..') || isAbsolute(rel) || basename(executable) !== 'hexbot.exe' || executable !== await canonical(value.image))
     throw new Error('Running daemon is outside this managed runtime')
+  signal?.throwIfAborted()
   return { pid: value.pid, port: value.port, executable }
 }
