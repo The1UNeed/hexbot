@@ -51,29 +51,44 @@ export async function runChild(
   command: string,
   args: string[],
   options: { cwd?: string; env?: NodeJS.ProcessEnv } = {},
-  onLine?: (line: string) => void
+  onLine?: (line: string, stream: 'stdout' | 'stderr') => void
 ): Promise<void> {
   await mkdir(join(hexbotHome(), 'logs'), { recursive: true })
   await new Promise<void>((resolve, reject) => {
     const child = spawn(command, args, { windowsHide: process.platform === 'win32', cwd: options.cwd, env: { ...(options.env ?? process.env), HEXBOT_HOME: hexbotHome() } })
     const pending = new Map<NodeJS.ReadableStream, string>()
+    let stderr = ''
+    let logs = Promise.resolve()
+    let logFailure: unknown
+    const emitLine = (stream: NodeJS.ReadableStream, line: string): void =>
+      onLine?.(line, stream === child.stdout ? 'stdout' : 'stderr')
     const consume = (stream: NodeJS.ReadableStream, chunk: Buffer): void => {
-      void appendLog(chunk)
+      logs = logs.then(() => appendLog(chunk)).catch(error => { logFailure ??= error })
+      if (stream === child.stderr) stderr = `${stderr}${chunk.toString()}`.slice(-4096)
       const parts = `${pending.get(stream) ?? ''}${chunk.toString()}`.split(/\r?\n/)
       pending.set(stream, parts.pop() ?? '')
-      for (const line of parts.filter(Boolean)) onLine?.(line)
+      for (const line of parts.filter(Boolean)) emitLine(stream, line)
     }
     const flush = (): void => {
-      for (const line of pending.values()) if (line) onLine?.(line)
+      for (const [stream, line] of pending) if (line) emitLine(stream, line)
       pending.clear()
     }
     child.stdout.on('data', chunk => consume(child.stdout, chunk))
     child.stderr.on('data', chunk => consume(child.stderr, chunk))
     child.once('error', reject)
-    child.once('exit', code => {
+    // close follows stdio draining; exit can precede the last protocol bytes.
+    child.once('close', code => {
       flush()
-      if (code === 0) resolve()
-      else reject(new Error(`${command} exited with code ${code ?? 'unknown'}`))
+      void logs.then(() => {
+        const failure = code === 0 ? undefined : new Error(
+          `${command} exited with code ${code ?? 'unknown'}${stderr.trim() ? `: ${stderr.trim()}` : ''}`
+        )
+        if (logFailure) reject(new AggregateError(
+          [...(failure ? [failure] : []), logFailure], 'Runtime command logging failed'
+        ))
+        else if (failure) reject(failure)
+        else resolve()
+      })
     })
   })
 }
@@ -319,7 +334,8 @@ async function selectPosixRuntime(deps: BootstrapDeps, source: string, files: Re
         join(source, 'hexbot'),
         ['setup', '--select-runtime', '--manifest', effective, '--json'],
         { env: { ...process.env, HEXBOT_HOME: hexbotHome() } },
-        line => {
+        (line, stream) => {
+          if (stream !== 'stdout') return
           try {
             const result = JSON.parse(line) as {
               stage?: string

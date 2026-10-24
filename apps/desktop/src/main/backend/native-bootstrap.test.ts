@@ -6,7 +6,7 @@ import { existsSync } from 'node:fs'
 import { describe, expect, it, vi } from 'vitest'
 import { runningDaemonPort } from './manager'
 import { toolAsset, type Tool } from './tools'
-import { performBootstrap, pruneNativeRuntimes, type BootstrapDeps } from './bootstrap'
+import { performBootstrap, pruneNativeRuntimes, runChild, type BootstrapDeps } from './bootstrap'
 
 const migration = vi.hoisted(() => vi.fn(async () => undefined))
 vi.mock('../service', () => ({ migrateLegacyService: migration }))
@@ -53,7 +53,7 @@ async function fixture() {
         join(home, 'runtime/native-current.json'),
         JSON.stringify({ ...manifest, executable })
       )
-      onLine?.(JSON.stringify({ stage: 'done', executable, version: manifest.version }))
+      onLine?.(JSON.stringify({ stage: 'done', executable, version: manifest.version }), 'stdout')
     }
 
     if (command === 'tar') {
@@ -65,7 +65,7 @@ async function fixture() {
       const python = join(home, 'python', 'managed', 'bin', 'python3.11')
       await mkdir(dirname(python), { recursive: true })
       await writeFile(python, '#!/bin/sh')
-      onLine?.(python)
+      onLine?.(python, 'stdout')
     }
     if (args[0] === 'venv') await mkdir(join(args.at(-1)!, 'bin'), { recursive: true })
     if (args[0] === 'pip')
@@ -176,13 +176,69 @@ describe('native runtime bootstrap', () => {
     }
   })
 
+  it.each([true, false])('accepts stdout setup completion with stderr diagnostics (newline=%s)', async newline => {
+    const f = await fixture()
+    const diagnostics: string[] = []
+    try {
+      await f.bundle('1.0.0', 100)
+      const run: BootstrapDeps['run'] = async (command, args, options, onLine) => {
+        if (!args.includes('--select-runtime')) return f.run(command, args, options, onLine)
+        let done = ''
+        await f.run(command, args, options, line => { done = line })
+        await runChild(process.execPath, ['-e',
+          `process.stdout.write(${JSON.stringify(done + (newline ? '\n' : ''))}); process.stderr.write('Runtime cleanup: permission denied')`
+        ], options, (...line) => {
+          diagnostics.push(line[0])
+          onLine?.(...line)
+        })
+      }
+      expect(await performBootstrap({ ...f.options('1.0.0'), run })).toMatchObject({ version: '1.0.0' })
+      expect(diagnostics).toContain('Runtime cleanup: permission denied')
+      expect(await readFile(join(f.home, 'logs/bootstrap.log'), 'utf8')).toContain('Runtime cleanup: permission denied')
+    } finally { await f.close() }
+  })
+
+  it('refuses malformed stdout even when stderr contains a valid completion', async () => {
+    const f = await fixture()
+    try {
+      await f.bundle('1.0.0', 100)
+      const run: BootstrapDeps['run'] = async (command, args, options, onLine) => {
+        if (!args.includes('--select-runtime')) return f.run(command, args, options, onLine)
+        let done = ''
+        await f.run(command, args, options, line => { done = line })
+        return runChild(process.execPath, ['-e',
+          `process.stdout.write('malformed\\n'); process.stderr.write(${JSON.stringify(done + '\n')})`
+        ], options, onLine)
+      }
+      await expect(performBootstrap({ ...f.options('1.0.0'), run })).rejects.toThrow('invalid response')
+    } finally { await f.close() }
+  })
+
+  it('retains a stdout JSON error and failing child stderr in the cause chain', async () => {
+    const f = await fixture()
+    try {
+      await f.bundle('1.0.0', 100)
+      const run: BootstrapDeps['run'] = async (command, args, options, onLine) => {
+        if (!args.includes('--select-runtime')) return f.run(command, args, options, onLine)
+        return runChild(process.execPath, ['-e',
+          `process.stdout.write(JSON.stringify({stage:'error',message:'Durable identity refused'})+'\\n'); process.stderr.write('useful child diagnostic'); process.exitCode=7`
+        ], options, onLine)
+      }
+      const error: unknown = await performBootstrap({ ...f.options('1.0.0'), run }).catch(error => error)
+      expect(error).toMatchObject({ message: 'Durable identity refused' })
+      if (!(error instanceof Error) || !(error.cause instanceof Error)) throw error
+      expect(error.cause.message).toContain('exited with code 7')
+      expect(error.cause.message).toContain('useful child diagnostic')
+    } finally { await f.close() }
+  })
+
   it('reports an unsupported runtime before changing selection', async () => {
     const f = await fixture()
     try {
       await f.bundle('1.0.0', 100)
       const run: BootstrapDeps['run'] = async (command, args, options, onLine) => {
         if (command.endsWith('/hexbot') && args[0] === 'version') {
-          onLine?.('unsupported system')
+          onLine?.('unsupported system', 'stderr')
           throw new Error('probe failed')
         }
         return f.run(command, args, options, onLine)
