@@ -197,25 +197,34 @@ fn selected(native: &Path) -> Selected {
                 })
             })
             || record.get("target").is_some_and(|target| target != &manifest["target"])
-            || files(&record)?.keys().ne(files(&manifest)?.keys())
         {
             return Err(Error::new(
                 4212,
                 "Runtime identity cannot be verified; repair the installation",
             ));
         }
-        for (file, digest) in files(&record)? {
-            if manifest["files"][file] != *digest
-                && !(cfg!(target_os = "macos") && SIGNED_MACHO.contains(&file.as_str()))
-            {
+        // Python handoff records omit files. Verify those against the complete
+        // selected manifest below; a present null or incomplete map is damage.
+        if record.get("files").is_some() {
+            if files(&record)?.keys().ne(files(&manifest)?.keys()) {
                 return Err(Error::new(
                     4212,
                     "Runtime file identities disagree; repair the installation",
                 ));
             }
+            for (file, digest) in files(&record)? {
+                if manifest["files"][file] != *digest
+                    && !(cfg!(target_os = "macos") && SIGNED_MACHO.contains(&file.as_str()))
+                {
+                    return Err(Error::new(
+                        4212,
+                        "Runtime file identities disagree; repair the installation",
+                    ));
+                }
+            }
+            // A complete legacy record pins post-signing bytes of the same bundle.
+            manifest["files"] = record["files"].clone();
         }
-        // A complete legacy record pins post-signing bytes of the same bundle.
-        manifest["files"] = record["files"].clone();
         Ok((executable, manifest))
     };
     match verify() {
@@ -650,3 +659,7 @@ mod repair_tests;
 #[cfg(test)]
 #[path = "setup_selection_identity_tests.rs"]
 mod identity_tests;
+
+#[cfg(test)]
+#[path = "setup_selection_handoff_tests.rs"]
+mod handoff_tests;

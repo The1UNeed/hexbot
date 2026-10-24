@@ -18,7 +18,7 @@ The app and the daemon it talks to can be on different computers. When the daemo
 
 Bots stop while the daemon restarts; chats and memory stay. The client waits for the daemon to come back and reports a failure if it does not. A daemon service only updates automatically to a build made from newer source, on either track. These automatic updates refuse a build from equally old source even when its version number is higher. An app can also move its own daemon to a later Nightly with the same version base, as described in [Channels](https://github.com/The1UNeed/hexbot/blob/main/docs/channels.md). When a service or another copy of the app already runs the daemon, the app connects to it and does not stop it.
 
-The app refuses a runtime it cannot verify. Damaged runtime records can block updates instead of allowing them to guess. On a Headless computer, run the installer again and choose Update or repair ([Install](/docs/install/)).
+The app refuses a runtime it cannot verify. When preparing its local daemon, damaged runtime records can stop the Full app from starting or connecting to it. Full has no installer repair for these records. On a Headless computer, run the installer again and choose Update or repair ([Install](/docs/install/)).
 
 Native daemon and installer manifests require a signature from a trusted Hexbot
 release key. Their signed checksums pin the downloaded packages. If verification

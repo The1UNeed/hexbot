@@ -201,9 +201,14 @@ differ; on Linux every hash must match. Rust verifies the source, writes the
 effective manifest only into the staged copy, and verifies the copy again.
 Required executable files must be readable and executable by the effective user,
 including when retaining a selected runtime. The signed app is never modified.
-Packaged selection refuses missing or conflicting recorded identity rather than
-rebuilding it from a manifest alone. Existing `setup --activate` from a verified
-bundle can repair that metadata.
+Legacy Python handoff records omit `files` and `builtAt`. Packaged selection
+verifies them against the complete selected manifest, actual bytes and executable
+access, deriving chronology from that manifest without losing any other known
+floor. A present invalid or conflicting hash map still fails. Missing records or
+selected manifests and conflicting identities are refused. This can also block
+Full from starting or attaching to its local daemon. Existing `setup --activate`
+from a verified bundle can repair damaged metadata through the Headless installer;
+Full has no installer repair for these records.
 
 The September 27 darwin-arm64 staging check reduced dependency files from
 463,982,503 to 86,636,413 bytes, about 81%. The complete bundle contains

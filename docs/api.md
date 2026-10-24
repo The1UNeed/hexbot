@@ -1122,8 +1122,14 @@ A client newer than the daemon asks the daemon to update itself
   It may exceed the selected manifest's chronology after explicit setup chooses
   an older bundle. The selected bundle itself must be at the floor for a packaged
   tie or exact-version repair; automatic updates must still exceed the floor.
-  Missing metadata for an existing selection, corrupt records and conflicting
-  identities are refused by packaged selection, not treated as a first install.
+  Legacy Python handoff records omit `files` and `builtAt`. Packaged selection
+  verifies their identity against the complete selected manifest, actual bytes
+  and executable access, and derives chronology from that manifest while keeping
+  every other known floor. A present invalid or conflicting `files` map still
+  fails. Missing records or selected manifests, corrupt records and conflicting
+  identities are refused, not treated as a first install. Since the Full app
+  prepares before ordinary local attachment too, this can block starting or
+  connecting to its local daemon.
   Automatic updates keep their strict chronology checks. Existing explicit
   `hexbot setup --activate` from a verified bundle can rewrite damaged metadata
   and keeps the highest valid `builtAt` it can still read independently. The

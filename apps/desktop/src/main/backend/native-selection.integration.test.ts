@@ -95,6 +95,18 @@ it.skipIf(!process.env.HEXBOT_TEST_RUNTIME_58 || !process.env.HEXBOT_TEST_RUNTIM
       const old = manager.status()
       expect(old.state).toBe('running')
       const recordPath = join(home, 'runtime/native-current.json')
+      // The supported Python handoff writer records only these three fields.
+      const original = JSON.parse(await readFile(recordPath, 'utf8'))
+      await writeFile(recordPath, JSON.stringify({
+        version: original.version, executable: original.executable, previous: null
+      }))
+      const attaching = new DaemonManager(await findFreePort())
+      expect(await attaching.start(() => performBootstrap({
+        appIsPackaged: true, appVersion: '0.1.5-nightly.20261022.58', resourcesPath: join(root, '58')
+      }), 'attach-or-start')).toEqual({ state: 'external', port: old.port })
+      expect(await attaching.stop()).toEqual({ state: 'external', port: old.port })
+      expect(manager.status().pid).toBe(old.pid)
+      expect(await runningDaemonPort(home)).toBe(old.port)
       const record = await readFile(recordPath, 'utf8')
       await writeFile(recordPath, JSON.stringify({ ...JSON.parse(record), version: 'invalid' }))
       Object.defineProperty(process, 'resourcesPath', {
