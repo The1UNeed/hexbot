@@ -34,6 +34,12 @@ test('stage builds locked dependencies, validates Pi and emits artifact checksum
   try {
     for (const path of ['apps/desktop', 'apps/web/dist', 'skills', 'backend/pi-runtime', `backend/hexbot-core/target/${rustTarget(process.platform, process.arch)}/release`]) await mkdir(join(root, path), { recursive: true })
     await writeFile(join(root, 'skills/.history.json'), '{}\n')
+    // The repository's own license files, byte for byte.
+    const notices = {}
+    for (const file of ['LICENSE', 'NOTICE']) {
+      notices[file] = await readFile(new URL(`../../${file}`, import.meta.url))
+      await writeFile(join(root, file), notices[file])
+    }
     await writeFile(join(root, 'apps/web/dist/index.html'), '<html>Hexbot</html>')
     await writeFile(join(root, 'apps/desktop/package.json'), JSON.stringify({ version: '1.2.3' }))
     await writeFile(join(root, 'backend/pi-runtime/package.json'), JSON.stringify({ dependencies: { '@earendil-works/pi-coding-agent': '1.0.1' } }))
@@ -66,6 +72,13 @@ test('stage builds locked dependencies, validates Pi and emits artifact checksum
     assert(calls.find(c => c.command === 'npm').args.includes(`--os=${process.platform}`))
     assert(calls.find(c => c.command === 'npm').args.includes('--ignore-scripts'))
     assert.deepEqual(calls.at(-1).args.slice(-1), ['--version'])
+    for (const [file, bytes] of Object.entries(notices)) assert.deepEqual(await readFile(join(result.destination, file)), bytes)
+    // Headless installs and daemon updates unpack this archive.
+    const archive = join(root, 'native.tar.gz')
+    await createNativeArchive(result.destination, archive)
+    const unpacked = join(root, 'unpacked'); await mkdir(unpacked)
+    await exec('tar', ['-xzf', archive, '-C', unpacked])
+    for (const [file, bytes] of Object.entries(notices)) assert.deepEqual(await readFile(join(unpacked, file)), bytes)
   } finally { await rm(root, { recursive: true, force: true }) }
 })
 
