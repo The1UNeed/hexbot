@@ -647,3 +647,7 @@ mod floor_tests;
 #[cfg(test)]
 #[path = "setup_selection_permissions_tests.rs"]
 mod permissions_tests;
+
+#[cfg(test)]
+#[path = "setup_selection_repair_tests.rs"]
+mod repair_tests;

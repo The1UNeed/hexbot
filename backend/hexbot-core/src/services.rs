@@ -1738,6 +1738,47 @@ pub(crate) fn native_chronology_floor(native: &Path, include_running: bool) -> R
     Ok(floor)
 }
 
+// Only the existing unchecked installer/setup activation may replace damaged
+// metadata. Read each available chronology independently; never use this for
+// automatic updates or packaged selection, whose readers remain strict.
+fn unchecked_repair_floor(native: &Path) -> u64 {
+    let read = |path: &Path| {
+        fs::read(path)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+    };
+    let chronology = |value: &Value| {
+        value["builtAt"]
+            .as_u64()
+            .unwrap_or(0)
+            .max(value["updateManifest"]["builtAt"].as_u64().unwrap_or(0))
+    };
+    let runtime = native.parent().unwrap();
+    let mut floor = 0;
+    let mut executables = Vec::new();
+    for file in ["native-current.json", "native-running.json"] {
+        if let Some(record) = read(&runtime.join(file)) {
+            floor = floor.max(chronology(&record));
+            if let Some(path) = record["executable"].as_str() {
+                executables.push(PathBuf::from(path));
+            }
+        }
+    }
+    if let Ok(executable) = selected_native_executable(runtime.parent().unwrap()) {
+        executables.push(executable);
+    }
+    for executable in executables {
+        if let Ok(executable) = executable.canonicalize()
+            && executable.starts_with(native)
+            && executable.is_file()
+            && let Some(manifest) = read(&executable.with_file_name("manifest.json"))
+        {
+            floor = floor.max(chronology(&manifest));
+        }
+    }
+    floor
+}
+
 fn automatic_native_floor(native: &Path) -> Result<u64> {
     let floor = native_chronology_floor(native, true)?;
     let current = native_metadata(&std::env::current_exe()?.with_file_name("manifest.json"))?;
@@ -1834,6 +1875,18 @@ fn publish_native_inner(
             require_newer_native_build(requested, &selected)?;
         }
     }
+    if newer_than_selected.is_none() {
+        // setup::activate is the sole unchecked production caller. Packaged
+        // setup calls publish_native_locked directly after strict validation.
+        return publish_native_with_repair_floor_locked(
+            native,
+            version,
+            staging,
+            entrypoint,
+            None,
+            Some(unchecked_repair_floor(native)),
+        );
+    }
     publish_native_locked(native, version, staging, entrypoint, newer_than_selected)
 }
 
@@ -1845,10 +1898,21 @@ pub(crate) fn publish_native_locked(
     entrypoint: &str,
     update: Option<&Value>,
 ) -> Result<PathBuf> {
+    publish_native_with_repair_floor_locked(native, version, staging, entrypoint, update, None)
+}
+
+fn publish_native_with_repair_floor_locked(
+    native: &Path,
+    version: &str,
+    staging: &Path,
+    entrypoint: &str,
+    update: Option<&Value>,
+    repair_floor: Option<u64>,
+) -> Result<PathBuf> {
     let directory = native.join(format!("{version}-{}", common::id()));
     fs::rename(staging, &directory)?;
     let executable = directory.join(entrypoint);
-    activate_native_with_update_locked(native, version, &executable, update)?;
+    activate_native_with_update_locked(native, version, &executable, update, repair_floor)?;
     Ok(executable)
 }
 
@@ -1860,7 +1924,7 @@ fn activate_native(native: &Path, version: &str, executable: &Path) -> Result<()
 
 #[cfg(any(test, all(debug_assertions, windows)))]
 fn activate_native_locked(native: &Path, version: &str, executable: &Path) -> Result<()> {
-    activate_native_with_update_locked(native, version, executable, None)
+    activate_native_with_update_locked(native, version, executable, None, None)
 }
 
 fn activate_native_with_update_locked(
@@ -1868,6 +1932,7 @@ fn activate_native_with_update_locked(
     version: &str,
     executable: &Path,
     update: Option<&Value>,
+    repair_floor: Option<u64>,
 ) -> Result<()> {
     let runtime = native
         .parent()
@@ -1897,9 +1962,11 @@ fn activate_native_with_update_locked(
     };
     let mut manifest =
         native_metadata(&executable.with_file_name("manifest.json"))?.unwrap_or_else(|| json!({}));
-    let built_at = native_chronology_floor(native, false)?
-        .max(native_built_at(&manifest)?)
-        .max(update.map(native_built_at).transpose()?.unwrap_or(0));
+    let built_at = match repair_floor {
+        Some(floor) => floor.max(manifest["builtAt"].as_u64().unwrap_or(0)),
+        None => native_chronology_floor(native, false)?.max(native_built_at(&manifest)?),
+    }
+    .max(update.map(native_built_at).transpose()?.unwrap_or(0));
     // The record's builtAt is a monotonic floor, not the selected bundle's
     // identity. Keep the installed manifest unchanged for identity verification.
     manifest["builtAt"] = json!(built_at);
