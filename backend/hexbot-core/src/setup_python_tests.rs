@@ -173,6 +173,9 @@ impl Runner for Fake {
         _env: &[(OsString, OsString)],
     ) -> Result<Output> {
         assert_eq!(&args[..2], &[OsString::from("-I"), OsString::from("-B")]);
+        if self.fail == Some("launch") {
+            return Err(Error::new(5243, "start probe: fixture OS error 193"));
+        }
         if args[3] == IDENTITY_PROBE {
             self.events.push("identity".into());
             if let Some(queued) = self.identity.pop_front() {
@@ -216,6 +219,18 @@ impl Runner for Fake {
             .pop_front()
             .unwrap_or_else(|| out(Some(0), "edge-tts 7.2.7\r\n")))
     }
+}
+
+#[tokio::test]
+async fn interpreter_launch_errors_keep_the_layer_and_original_cause_without_repair() {
+    let (_dir, layout) = installed().await;
+    let mut fake = Fake::new(&layout);
+    fake.fail = Some("launch");
+    let error = run(&layout, &mut fake).await.unwrap_err();
+    assert!(error.message.starts_with("Python code tools (base):"));
+    assert!(error.message.contains("fixture OS error 193"));
+    assert!(fake.uv_calls().is_empty());
+    assert_eq!(fs::read_to_string(&layout.receipt).unwrap(), LOCK);
 }
 async fn run(layout: &Layout, fake: &mut Fake) -> Result<()> {
     let emit = |_: &str, _: &str| {};

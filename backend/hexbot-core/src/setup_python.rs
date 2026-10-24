@@ -1350,7 +1350,8 @@ impl<R: Runner> Pass<'_, R> {
         let output = self
             .runner
             .python(executable, &args, &self.layout.runtime, &self.probe_env)
-            .await?;
+            .await
+            .map_err(|error| refuse(stage, error.message))?;
         let probe: IdentityProbe = complete_json(stage, "identity probe", &output)?;
         identity_consistent(
             stage,
@@ -1420,7 +1421,8 @@ impl<R: Runner> Pass<'_, R> {
                 Mutation::ReinstallKey(key),
                 ("python", "Restoring the Python base for code tools"),
             )
-            .await?;
+            .await
+            .map_err(|error| refuse(stage, error.message))?;
         }
         self.base_healthy(stage, key).await
     }
@@ -1583,7 +1585,8 @@ impl<R: Runner> Pass<'_, R> {
         let output = self
             .runner
             .entrypoint(&self.layout.entrypoint, &self.probe_env)
-            .await?;
+            .await
+            .map_err(|error| refuse(stage, error.message))?;
         let reported = String::from_utf8_lossy(&output.stdout).trim().to_owned();
         if output.status != Some(0) || reported != expected {
             return Ok(Health::Refused(format!(
