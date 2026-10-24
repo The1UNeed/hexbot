@@ -213,6 +213,11 @@ route and composer checked before continuing.
   replies stay silent. It calls the actual native API and records its delivery
   events in `notifications.json`. Set `HEXBOT_SMOKE_NATIVE_NOTIFICATIONS=1` on
   a host with notification permissions to require the OS `show` events too.
+  A launch-owned CJS preload records bounded, redacted native call stacks,
+  window events, reply phases and the notification handler's actual predicate
+  values and observed `Notification.show` calls in `native-window-trace.jsonl`.
+  It runs before main and saves failure evidence before screenshots or cleanup;
+  it adds no initial-visibility barrier or change to the native window policy.
   On macOS it launches the ad-hoc signed `Hexbot (dev)` copy that
   `pnpm dev --desktop` uses (`scripts/dev/electron-launcher.mjs`); macOS
   rejects notifications from the Electron in `node_modules`, whose signature

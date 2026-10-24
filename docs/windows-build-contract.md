@@ -30,12 +30,12 @@ Windows VMs, with no dependencies or shared binaries:
   source after the production unsupported guard check, then runs the unchanged
   Full Nightly NSIS probe. It builds its own Full and Client Nightly packages.
 
-The old combined 45-minute Client job needed about 59 minutes. Its complete
-Stable NSIS test passed in 1298.53 seconds before Nightly was cancelled at the
-job deadline. The split's runtime estimates remain unverified. Stable Full
+The old combined 45-minute Client job would have needed an estimated 59 minutes.
+Its complete Stable NSIS test passed in 1298.53 seconds before Nightly was
+cancelled at the job deadline. The split's runtime estimates remain unverified. Stable Full
 NSIS duration and the complete native-runtime total remain unknown; no other
 controls move. Separate VMs isolate registry, protocol and sibling-prefix
-fixtures. Sequential track probes uninstall Stable first, so they do not prove
+fixtures. Nightly probes run on VMs without a Stable install, so they do not prove
 coinstalled-track behavior. No disposable binary is uploaded or published.
 
 ## Runtime layout

@@ -14,6 +14,8 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
 import { prepareDevElectron } from './electron-launcher.mjs'
+import { writeNativeWindowPreload } from './native-window-diagnostics.mjs'
+import { formatStartupDiagnostic, startupRedactor } from '../desktop/installed-app-startup.mjs'
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
 const require = createRequire(path.join(root, 'apps/desktop/package.json'))
@@ -39,7 +41,20 @@ let daemon, browser, page, socket, electronApp, desktopHome, desktopBuild
 let daemonLog = ''
 let electronLog = ''
 let windowTransition
+let windowTrace
+let windowTraceSaved = false
+const redactDiagnostic = startupRedactor()
 const heldReplies = new Map()
+
+async function saveWindowTrace() {
+  if (!windowTrace || windowTraceSaved) return
+  try {
+    const trace = await readFile(windowTrace, 'utf8')
+    await writeFile(path.join(artifacts, 'native-window-trace.jsonl'), trace)
+    console.error('Native window trace:', trace)
+    windowTraceSaved = true
+  } catch { console.error('Native window trace unavailable') }
+}
 
 function textOf(value) {
   return typeof value === 'string' ? value : Array.isArray(value) ? value.map(block => block.text || '').join('\n') : ''
@@ -155,9 +170,11 @@ try {
     const electronEnv = { ...process.env, HEXBOT_HOME: desktopHome, HEXBOT_PI_EXECUTABLE: piPath, HEXBOT_E2E_TARGET: base, HEXBOT_WEB_DEV_URL: 'http://127.0.0.1:1' }
     // Agent hosts may themselves run in Electron's Node mode; the app must not inherit it.
     delete electronEnv.ELECTRON_RUN_AS_NODE
+    windowTrace = path.join(desktopBuild, 'native-window-trace.jsonl')
+    const windowPreload = await writeNativeWindowPreload(desktopBuild, windowTrace)
     electronApp = await electron.launch({
       // On macOS, the signed dev copy, so the OS accepts its notifications.
-      executablePath: await prepareDevElectron(root, edition), args: [...(process.env.CI && process.platform === 'linux' ? ['--no-sandbox'] : []), desktopBuild], timeout: 30_000, env: electronEnv
+      executablePath: await prepareDevElectron(root, edition), args: [...(process.env.CI && process.platform === 'linux' ? ['--no-sandbox'] : []), '-r', windowPreload, desktopBuild], timeout: 30_000, env: electronEnv
     })
     electronApp.process().stderr.on('data', chunk => { electronLog = (electronLog + chunk).slice(-8192) })
     page = await electronApp.firstWindow()
@@ -169,30 +186,16 @@ try {
     // production notification boundary was reached or the OS accepted it.
     await electronApp.evaluate(({ Notification }) => {
       globalThis.smokeNotifications = []
+      globalThis.hexbotNativeWindowDiagnostics.observeNotifications()
       const show = Notification.prototype.show
       Notification.prototype.show = function () {
         const record = { title: this.title, body: this.body, shown: false }
         globalThis.smokeNotifications.push(record)
         this.once('show', () => { record.shown = true })
         this.once('failed', (_event, error) => { record.error = error })
+        globalThis.hexbotNativeWindowDiagnostics.notification(record.title === 'Owl' && record.body === 'Native browser reply.')
         return show.call(this)
       }
-    })
-    // Observe the existing native policy; do not call hide/minimize ourselves.
-    await electronApp.evaluate(({ BrowserWindow }) => {
-      globalThis.smokeWindowEvents = []
-      const win = BrowserWindow.getAllWindows()[0]
-      const id = win.id
-      const record = (event, native) => {
-        globalThis.smokeWindowEvents.push({ event, time: Date.now(), id,
-          prevented: native?.defaultPrevented,
-          destroyed: win.isDestroyed(),
-          ...(!win.isDestroyed() ? { visible: win.isVisible(), minimized: win.isMinimized(), focused: win.isFocused() } : {}) })
-        if (globalThis.smokeWindowEvents.length > 100) globalThis.smokeWindowEvents.shift()
-      }
-      for (const event of ['close', 'closed', 'show', 'hide', 'minimize', 'restore', 'focus', 'blur'])
-        win.on(event, native => record(event, native))
-      record('observed')
     })
     await page.setViewportSize({ width: 1360, height: 900 })
     assert.equal(await page.evaluate(() => window.hexbot.edition), edition, 'Edition must be baked into Electron main')
@@ -251,9 +254,10 @@ try {
   const composer = page.locator('#conversation-composer')
   if (desktop) {
     const replies = page.getByTestId('bot-message').filter({ hasText: 'Native browser reply.' })
-    const notifications = () => electronApp.evaluate(() =>
-      globalThis.smokeNotifications.filter(item => item.title === 'Owl' && item.body === 'Native browser reply.')
-    )
+    const notifications = () => electronApp.evaluate((_electron, state) => {
+      globalThis.hexbotNativeWindowDiagnostics.mark('reply-complete', state)
+      return globalThis.smokeNotifications.filter(item => item.title === 'Owl' && item.body === 'Native browser reply.')
+    }, windowTransition)
     let completed = 0
     for (const state of ['closed', 'minimized', 'foreground']) {
       windowTransition = state
@@ -266,6 +270,7 @@ try {
       await expect(page.getByRole('button', { name: 'Stop', exact: true })).toBeVisible()
       if (state !== 'foreground') {
         await electronApp.evaluate(({ BrowserWindow }, state) => {
+          globalThis.hexbotNativeWindowDiagnostics.mark('before-action', state)
           const win = BrowserWindow.getAllWindows()[0]
           if (state === 'closed') win.close()
           else win.minimize()
@@ -275,7 +280,11 @@ try {
           return !win.isVisible() || win.isMinimized()
         })).toBe(true)
       }
-      assert.equal(await electronApp.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().length), 1)
+      assert.equal(await electronApp.evaluate(({ BrowserWindow }, state) => {
+        if (state !== 'foreground') globalThis.hexbotNativeWindowDiagnostics.mark('background-observed', state)
+        globalThis.hexbotNativeWindowDiagnostics.mark('reply-release', state)
+        return BrowserWindow.getAllWindows().length
+      }, state), 1)
       heldReplies.get(prompt).release()
       await expect(replies).toHaveCount(++completed)
       await expect(page.getByRole('button', { name: 'Stop', exact: true })).toHaveCount(0)
@@ -353,6 +362,8 @@ try {
   assert(requests.length >= 4, 'The real Pi process must call the local streaming model')
   console.log(JSON.stringify({ passed: true, client: desktop ? 'electron' : 'browser', edition: desktop ? edition : undefined, scenarios: ['cold room deep link and reload', 'warm room navigation', 'chat', 'multi-agent room and @user', 'per-bot memory', 'soul editing', 'About you', 'one chat per bot and history'], modelRequests: requests.length, artifacts }, null, 2))
 } catch (error) {
+  // Preserve call attribution before screenshot/diagnostics can focus a window.
+  await saveWindowTrace()
   await writeFile(path.join(artifacts, 'model-requests.json'), JSON.stringify(requests, null, 2))
   if (electronApp) {
     // Collect before screenshot or cleanup can focus/reopen/dispose a window.
@@ -374,8 +385,8 @@ try {
           evidence.x11 = { stdout: result.stdout, stderr: result.stderr }
         } catch (diagnostic) { evidence.x11 = { error: diagnostic.message.slice(0, 2048) } }
       }
-      console.error('Native background failure:', JSON.stringify(evidence))
-      await writeFile(path.join(artifacts, 'window-events.json'), JSON.stringify(evidence, null, 2))
+      console.error('Native background failure:', formatStartupDiagnostic(evidence, redactDiagnostic))
+      await writeFile(path.join(artifacts, 'window-events.json'), formatStartupDiagnostic(evidence, redactDiagnostic))
       await writeFile(path.join(artifacts, 'notifications.json'), JSON.stringify(await electronApp.evaluate(() => globalThis.smokeNotifications), null, 2))
     } catch (diagnostic) { console.error('Window diagnostics failed:', diagnostic.message) }
   }
@@ -387,6 +398,8 @@ try {
   console.error(`Artifacts: ${artifacts}\nDaemon: ${daemonLog.slice(-3000)}`)
   throw error
 } finally {
+  // Save on success too, before app close and temporary-build cleanup.
+  await saveWindowTrace()
   for (const reply of heldReplies.values()) reply.release()
   socket?.close()
   await electronApp?.close()
