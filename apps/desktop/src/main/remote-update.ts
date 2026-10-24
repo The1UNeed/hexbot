@@ -117,7 +117,7 @@ export async function handleDaemonUpdateRequest(
           throw new Error('The verified runtime does not satisfy the requested daemon version')
         version = activation.version
         return activation
-      })
+      }, 'owned-replacement')
       terminal = true
       await writes
       await writeStatus('up-to-date', {

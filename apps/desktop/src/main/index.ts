@@ -278,7 +278,7 @@ function registerIpc(): void {
   handle('hexbot:daemon:status', () => daemon.status())
   handle('hexbot:daemon:start', async () => {
     requireRuntime('Running a daemon on this machine')
-    return daemon.start(app.isPackaged ? () => bootstrap(sendProgress) : undefined)
+    return daemon.start(app.isPackaged ? () => bootstrap(sendProgress) : undefined, 'attach-or-start')
   })
   handle('hexbot:daemon:stop', () => daemon.stop())
   handle('hexbot:daemon:local-token', async () => {

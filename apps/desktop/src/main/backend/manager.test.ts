@@ -52,6 +52,11 @@ describe('a daemon that already owns the home', () => {
       expect(await manager.start()).toEqual({ state: 'external', port })
       expect(await manager.start()).toEqual({ state: 'external', port })
       expect(await manager.stop()).toEqual({ state: 'external', port })
+      const prepare = vi.fn(async () => ({ executable: join(home, 'selected'), version: '1.0.0' }))
+      expect(await manager.start(prepare, 'attach-or-start')).toEqual({ state: 'external', port })
+      expect(prepare).toHaveBeenCalledOnce()
+      expect(port).not.toBe(9119)
+      expect(spawnDaemon).not.toHaveBeenCalled()
       await expect(
         manager.start(async () => ({ executable: join(home, 'selected'), version: '1.0.0' }))
       ).rejects.toThrow('does not own')

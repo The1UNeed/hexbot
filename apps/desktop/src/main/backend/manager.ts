@@ -265,7 +265,10 @@ export class DaemonManager extends EventEmitter {
     this.emit('transition-cancelled')
   }
 
-  start(prepare?: () => Promise<RuntimeActivation | undefined>): Promise<DaemonStatus> {
+  start(
+    prepare?: () => Promise<RuntimeActivation | undefined>,
+    policy: 'attach-or-start' | 'owned-replacement' = 'owned-replacement'
+  ): Promise<DaemonStatus> {
     this.cancelTransition()
     const requestedEpoch = this.requestEpoch
     return this.serialize(async () => {
@@ -290,7 +293,8 @@ export class DaemonManager extends EventEmitter {
           if (epoch !== this.requestEpoch) throw new Error('Daemon start was superseded')
         }
         await this.startOwned(activation)
-        if (activation) await this.waitForOwned(activation)
+        if (activation && !(policy === 'attach-or-start' && this.current.state === 'external'))
+          await this.waitForOwned(activation)
         return this.status()
       } catch (error) {
         const recover = epoch === this.requestEpoch

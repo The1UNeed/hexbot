@@ -140,6 +140,7 @@ describe('handleDaemonUpdateRequest', () => {
     })
     await handleDaemonUpdateRequest('0.1.5-nightly.20261022.59', { start })
     expect(start).toHaveBeenCalledTimes(1)
+    expect(start).toHaveBeenCalledWith(expect.any(Function), 'owned-replacement')
     expect(await status()).toMatchObject({
       status: 'up-to-date',
       version: '0.1.5-nightly.20261022.59'
