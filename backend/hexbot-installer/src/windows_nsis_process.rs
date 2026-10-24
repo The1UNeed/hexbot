@@ -196,8 +196,26 @@ pub(crate) fn check(
         command.args(["-NoProfile", "-NonInteractive", "-C", script]);
         command
     };
-    let available = output(invoke(AVAILABLE_PROBE))?.status.success()
-        && output(invoke(POLICY_PROBE))?.status.success();
+    let available_probe = output(invoke(AVAILABLE_PROBE))?;
+    let policy_probe = if available_probe.status.success() {
+        Some(output(invoke(POLICY_PROBE))?)
+    } else {
+        None
+    };
+    let available = policy_probe
+        .as_ref()
+        .is_some_and(|probe| probe.status.success());
+    if std::env::var("HEXBOT_WINDOWS_NSIS_PROBE").as_deref() == Ok("1") {
+        // Evidence only: the decision above is unchanged and mirrors NSIS.
+        let list = output(invoke(
+            "[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false);@(Get-ExecutionPolicy -List|ForEach-Object{@{scope=[string]$_.Scope;policy=[string]$_.ExecutionPolicy}})|ConvertTo-Json -Compress",
+        ))?;
+        let report = |probe: &std::process::Output| serde_json::json!({"status":probe.status.code(),"stdout":String::from_utf8_lossy(&probe.stdout),"stderr":String::from_utf8_lossy(&probe.stderr)});
+        eprintln!(
+            "Native NSIS availability probes: {}",
+            serde_json::json!({"available":report(&available_probe),"policy":policy_probe.as_ref().map(report),"policies":report(&list)})
+        );
+    }
     let script = format!(
         "{}\n{}",
         include_str!("windows-nsis-process-policy.ps1"),
