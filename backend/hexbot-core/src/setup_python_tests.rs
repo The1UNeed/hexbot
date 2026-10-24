@@ -2614,3 +2614,125 @@ async fn observability_actual_child_zero_cleanup_budget_never_fabricates_reap() 
     assert!(ordinary_entrypoint(&output, "edge-tts 7.2.7").is_err());
     drop(input);
 }
+
+#[tokio::test]
+async fn observability_actual_child_cleanup_result_controls_invocation_scratch_lifetime() {
+    struct HangingEntrypoint {
+        fake: Fake,
+        child: Option<tokio::process::Child>,
+        input: Option<tokio::process::ChildStdin>,
+        reaped: bool,
+    }
+    impl Runner for HangingEntrypoint {
+        async fn uv(
+            &mut self,
+            layout: &Layout,
+            uv: &Path,
+            env: &[(OsString, OsString)],
+            args: &[OsString],
+        ) -> Result<()> {
+            self.fake.uv(layout, uv, env, args).await
+        }
+        async fn python(
+            &mut self,
+            executable: &Path,
+            args: &[OsString],
+            cwd: &Path,
+            env: &[(OsString, OsString)],
+        ) -> Result<Output> {
+            self.fake.python(executable, args, cwd, env).await
+        }
+        async fn entrypoint(&mut self, _: &Path, env: &[(OsString, OsString)]) -> Result<Output> {
+            use tokio::io::AsyncReadExt;
+            let scratch = env
+                .iter()
+                .find(|(name, _)| name == "PYTHONPATH")
+                .unwrap()
+                .1
+                .clone();
+            assert!(Path::new(&scratch).join("sitecustomize.py").is_file());
+            // This is a real helper/process lifetime control, not a claim that
+            // a Unix Python child is the shipped Windows launcher.
+            let mut command =
+                child_command("import sys;print('R',flush=True);sys.stdin.buffer.read()");
+            command
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped());
+            let mut child = command.spawn().unwrap();
+            self.input = child.stdin.take();
+            let mut stdout = child.stdout.take().unwrap();
+            let stderr = child.stderr.take().unwrap();
+            let mut ready = [0; 2];
+            stdout.read_exact(&mut ready).await.unwrap();
+            assert_eq!(&ready, b"R\n");
+            assert!(child.try_wait().unwrap().is_none());
+            let output = capture_child(
+                &mut child,
+                stdout,
+                stderr,
+                tokio::time::Instant::now(),
+                Duration::ZERO,
+            )
+            .await?;
+            self.reaped = output.reaped;
+            self.child = Some(child);
+            Ok(output)
+        }
+    }
+    let (_dir, layout) = installed().await;
+    let (graph, _) = syntax_evidence(&layout);
+    let before = snapshot(&[&layout.identity, &layout.receipt, &layout.requirements]);
+    let mut fake = Fake::new(&layout);
+    fake.packages.push_back(json_out(&graph));
+    let mut runner = HangingEntrypoint {
+        fake,
+        child: None,
+        input: None,
+        reaped: false,
+    };
+    let result = provision(
+        &layout.home,
+        &|_, _| {},
+        &mut runner,
+        |home| async move { Ok(home.join("bin/uv.exe")) },
+        LOCK,
+    )
+    .await;
+    let error = result.unwrap_err();
+    assert!(error.message.contains("operation deadline"));
+    assert!(runner.fake.uv_calls().is_empty());
+    assert_eq!(
+        snapshot(&[&layout.identity, &layout.receipt, &layout.requirements]),
+        before
+    );
+    let scratch: Vec<_> = fs::read_dir(&layout.runtime)
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .filter(|p| {
+            p.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with(".hexbot-entrypoint-")
+        })
+        .collect();
+    assert_eq!(scratch.len(), usize::from(!runner.reaped));
+    if !runner.reaped {
+        assert!(
+            error.message.contains("scratch retained")
+                && error.message.contains("cleanup deadline")
+        );
+        assert!(scratch[0].join("sitecustomize.py").is_file());
+    }
+    // The fixture joins the same retained Child before touching retained
+    // scratch. It never converts its exhausted production envelope to success.
+    tokio::time::timeout(PROBE_CLEANUP, runner.child.as_mut().unwrap().wait())
+        .await
+        .unwrap()
+        .unwrap();
+    drop(runner.input.take());
+    for path in scratch {
+        fs::remove_file(path.join("sitecustomize.py")).unwrap();
+        fs::remove_dir(path).unwrap();
+    }
+}
