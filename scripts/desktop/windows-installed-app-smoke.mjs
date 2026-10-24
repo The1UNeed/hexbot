@@ -9,7 +9,7 @@ import { createRequire } from 'node:module'
 import { dirname, isAbsolute, join, relative, sep } from 'node:path'
 import { waitForRuntimeJson } from './runtime-file.mjs'
 import { captureInstalledApp, formatStartupDiagnostic, installedStartupFiles, startupRedactor } from './installed-app-startup.mjs'
-import { quitInstalledApp, startInstalledOwned, verifyInstalledDaemon } from './installed-app-lifecycle.mjs'
+import { quitInstalledApp, startInstalledOwned, startInstalledTask, verifyInstalledDaemon } from './installed-app-lifecycle.mjs'
 import { nodePath } from '../../apps/desktop/src/main/backend/node-path.ts'
 const require = createRequire(new URL('../../apps/desktop/package.json', import.meta.url))
 const { _electron: electron } = require('@playwright/test')
@@ -344,9 +344,8 @@ try {
     await writeFile(join(older, 'manifest.json'), JSON.stringify(manifest))
     const olderExe = join(older, 'hexbot.exe')
     await writeFile(join(home, 'runtime/native-current.json'), JSON.stringify({ ...current, executable: olderExe, builtAt: manifest.builtAt }))
-    await native(olderExe, ['service', 'start'], nativeOptions)
-    const oldTask = await waitForRuntimeJson(join(home, 'runtime/native-running.json'), value => value.pid && value.pid !== servicePid)
-    await verifyInstalledDaemon({ home, selected: olderExe, expectedPid: oldTask.pid, previousPid: servicePid })
+    const oldTask = await startInstalledTask({ home, selected: olderExe, previousPid: servicePid,
+      start: () => native(olderExe, ['service', 'start'], nativeOptions) })
     servicePid = oldTask.pid
     assert.equal(await realpath(oldTask.executable), await realpath(olderExe))
     const serviceScript = join(root, 'AppData/Local/Hexbot/daemon.ps1')

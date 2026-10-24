@@ -1,7 +1,7 @@
 // Installed Windows app probe only. Production readiness stays in windowsDaemon.
 import assert from 'node:assert/strict'
 import { realpathSync, watch } from 'node:fs'
-import { realpath } from 'node:fs/promises'
+import { readFile, realpath } from 'node:fs/promises'
 import { join, toNamespacedPath } from 'node:path'
 import { windowsDaemon } from '../../apps/desktop/src/main/backend/windows-readiness.ts'
 import { nodePath } from '../../apps/desktop/src/main/backend/node-path.ts'
@@ -25,7 +25,43 @@ export async function verifyInstalledDaemon({ home, selected, status, expectedSt
   return ready
 }
 
-function waitForOwnedReady(options, signal) {
+async function verifyStartedTask(options, signal) {
+  let record, state
+  try {
+    record = JSON.parse(await readFile(join(options.home, 'runtime/native-running.json'), 'utf8'))
+  } catch (error) { if (error.code === 'ENOENT') return; throw error }
+  signal.throwIfAborted()
+  assert(Number.isSafeInteger(record.pid) && record.pid > 0, 'Invalid task daemon PID')
+  if (record.pid === options.previousPid) return
+  const selected = typeof options.selected === 'function' ? await options.selected() : options.selected
+  assert.equal(toNamespacedPath(await realpath(record.executable)), toNamespacedPath(await realpath(selected)), 'Task record is not the selected executable')
+  try { state = JSON.parse(await readFile(join(options.home, 'serve-state.json'), 'utf8')) }
+  catch (error) { if (error.code === 'ENOENT') return; throw error }
+  assert(Number.isInteger(state.port) && state.port > 0 && state.port <= 65535, 'Invalid task daemon port')
+  // The CLI only schedules the task. Early metadata can precede HTTP serving.
+  // Only a refused loopback connection is ordinary startup here; malformed or
+  // wrong identities and all strict windowsDaemon failures remain fatal.
+  let response
+  try {
+    signal.throwIfAborted()
+    response = await (options.fetch ?? fetch)(`http://127.0.0.1:${state.port}/api/daemon/identity`, { signal, redirect: 'error' })
+  } catch (error) {
+    signal.throwIfAborted()
+    if (error.cause?.code === 'ECONNREFUSED') return
+    throw error
+  }
+  assert.equal(response.status, 200, 'Task identity endpoint refused readiness')
+  const identity = await response.json()
+  const install = (await readFile(join(options.home, 'install_id'), 'utf8')).trim()
+  assert(install, 'Installed home has no identity')
+  assert.equal(identity.install_id, install, 'Task daemon belongs to another home')
+  assert.equal(identity.pid, record.pid, 'Task HTTP and recorded PIDs differ')
+  const ready = await verifyInstalledDaemon({ ...options, status: undefined, expectedPid: record.pid, signal })
+  assert.equal(ready.port, state.port, 'Task port changed during authenticated readiness')
+  return ready
+}
+
+function waitForInstalledReady(options, signal, taskStart) {
   signal.throwIfAborted()
   return new Promise((resolve, reject) => {
     const watchers = []
@@ -53,9 +89,19 @@ function waitForOwnedReady(options, signal) {
       try {
         do {
           changed = false
+          if (taskStart) {
+            probing = verifyStartedTask(options, probeSignal)
+            const ready = await probing
+            if (settled) return
+            if (ready) finish(undefined, ready)
+            continue
+          }
           const status = await options.status()
           if (settled) return
-          if (status.state === 'starting') continue
+          if (status.state === 'starting') {
+            assert(!/^Daemon exited \(.+\); restarting$/.test(status.lastError ?? ''), `Owned daemon crashed before readiness: ${status.lastError}`)
+            continue
+          }
           assert.equal(status.state, 'running', 'Owned daemon stopped or crashed before readiness')
           probing = verifyInstalledDaemon({ ...options, status, signal: probeSignal })
           const ready = await probing
@@ -72,8 +118,8 @@ function waitForOwnedReady(options, signal) {
     try {
       signal.addEventListener('abort', aborted, { once: true })
       if (signal.aborted) return aborted()
-      // Daemon log writes wake a check after the manager consumes READY. Log
-      // contents, runtime progress and metadata presence are never proof.
+      // Owned READY consumption writes the log; task HTTP startup republishes
+      // native-running.json. Both are wakeups, never readiness proof alone.
       for (const directory of [options.home, join(options.home, 'runtime'), join(options.home, 'logs')]) {
         const canonical = nodePath(realpathSync.native(directory))
         const watcher = (options.watchDirectory ?? watch)(canonical, notify)
@@ -87,17 +133,20 @@ function waitForOwnedReady(options, signal) {
 
 // Ordinary start alone is asynchronous in a17. Never use this for service
 // recovery, handoff, Quit or activation replacement: verify those immediately.
-export async function startInstalledOwned({ start, timeout = 30_000, ...options }) {
+async function startInstalledDaemon({ start, timeout = 30_000, ...options }, taskStart) {
   let readiness
   try {
     return await startInstalledRuntime('full', start,
-      signal => (readiness = waitForOwnedReady(options, signal)), timeout)
+      signal => (readiness = waitForInstalledReady(options, signal, taskStart)), timeout)
   } finally {
     // The shared deadline aborts before rejecting. Drain its owned probe before
     // returning to lifecycle cleanup; a late bridge call cannot start a probe.
     await readiness?.catch(() => undefined)
   }
 }
+
+export const startInstalledOwned = options => startInstalledDaemon(options, false)
+export const startInstalledTask = options => startInstalledDaemon(options, true)
 
 export async function quitInstalledApp({ ownedPid, taskInstalled, retain, quit, verifyTask, uninstallTask, assertStopped, assertHomeStopped }) {
   const errors = []
