@@ -59,7 +59,7 @@ A summary keeps the thread of the work but not every detail. What lasts goes int
 
 ## Dream reports
 
-Each night's [dream](/docs/dreaming/) report appears in the chat as a message from the bot. It is there for you to read; the bot does not see it as something it said, and later dreams skip it.
+A [dream](/docs/dreaming/) posts nothing in the chat; its summary is in the bot's settings, Memory. Reports an earlier version posted stay in the chat. The bot does not see them as something it said, and later dreams skip them.
 
 ## Stop and delete
 

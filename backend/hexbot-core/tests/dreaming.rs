@@ -130,7 +130,7 @@ fn digest_preserves_archived_sources_filters_time_and_caps_unicode() {
     );
 }
 #[tokio::test]
-async fn dreams_use_restricted_tools_persist_snapshots_and_report_in_the_chat() {
+async fn dreams_use_restricted_tools_persist_snapshots_and_stay_out_of_the_chat() {
     let home = setup();
     let hub = EventHub::new();
     let mut receiver = hub.subscribe();
@@ -150,18 +150,13 @@ async fn dreams_use_restricted_tools_persist_snapshots_and_report_in_the_chat() 
             .await
             .unwrap()
             .unwrap();
-        // An idle chat, open or not, can be read again now, and says so.
-        let mut posted = event(&mut receiver, "hexbot.sections.changed").await;
-        while posted["reload"].is_null() {
-            posted = event(&mut receiver, "hexbot.sections.changed").await;
-        }
-        assert_eq!(posted["reload"], true);
         let changed = event(&mut receiver, "hexbot.dreaming.changed").await;
         assert_eq!(changed["dream"]["status"], "complete");
         assert_eq!(changed["dream"]["memory_before"], "before");
         assert_eq!(changed["dream"]["memory_after"], "before");
     }
-    // Reports go into the bot's one chat, marked as reports.
+    // A dream is hidden: no conversation, and nothing in the bot's chat.
+    // Its summary is kept with the dream, for the Memory tab.
     let rows = common::rows(
         &db::open(home.path()).unwrap(),
         "SELECT id FROM sections",
@@ -169,13 +164,13 @@ async fn dreams_use_restricted_tools_persist_snapshots_and_report_in_the_chat() 
     )
     .unwrap();
     assert_eq!(rows.len(), 1);
-    let history = runtime_store::history(home.path(), "chat").unwrap();
-    assert_eq!(history.len(), 2);
-    assert!(
-        history
-            .iter()
-            .all(|m| m["role"] == "assistant" && m["dream"] == true)
-    );
+    assert!(runtime_store::history(home.path(), "chat").unwrap().is_empty());
+    let listed = dreams
+        .call("alice", "hexbot.dreaming.list", &json!({"bot":"owl"}))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(listed["dreams"][0]["summary"], "Dream summary");
     dreams.shutdown().await;
     runtime.shutdown().await;
 }

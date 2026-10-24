@@ -65,9 +65,11 @@ more freedom and more capability than a hosted product can offer.
   and bots said, not tool output or its own earlier reports, plus the summaries
   written when its chat or that bot's room conversation was compacted,
   which it treats as untrusted since they were written with tool output in
-  view, and its notes from those days first of all. It never touches the soul or About you. It posts a report in the
-  bot's chat as a message the bot itself does not see, marked so later dreams
-  skip it. A "dream now" action exists. Rooms dream through
+  view, and its notes from those days first of all. It never touches the soul or About you. It runs in a hidden
+  session and posts nothing in the bot's chat; its summary is kept with the
+  dream in the Memory tab. Reports an earlier version posted stay in the
+  chat, marked so the bot does not see them and later dreams skip them. A
+  "dream now" action exists. Rooms dream through
   their main bot into the room's section.
 - Scheduled jobs run unattended, so they cannot write memory, notes, or
   the soul. What a job asks to remember is a proposal; the bot's next dream reviews it
