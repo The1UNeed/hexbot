@@ -1754,9 +1754,10 @@ fn automatic_native_floor(native: &Path) -> Result<u64> {
 // Windows publisher. Provenance is added before the one durable atomic write.
 fn write_native_current(path: &Path, bytes: &[u8], update: Option<&Value>) -> Result<()> {
     if let Some(update) = update {
-        let mut record: Value = serde_json::from_slice(bytes)?;
+        let mut record: Value =
+            serde_json::from_slice(bytes).map_err(|error| Error::new(5243, error.to_string()))?;
         record["updateManifest"] = update.clone();
-        common::atomic_write(path, &serde_json::to_vec(&record)?)
+        common::atomic_write(path, &serde_json::to_vec(&record).unwrap())
     } else {
         common::atomic_write(path, bytes)
     }

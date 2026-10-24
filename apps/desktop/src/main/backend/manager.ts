@@ -1,5 +1,5 @@
 import { EventEmitter } from 'node:events'
-import { createWriteStream, existsSync, renameSync, statSync, realpathSync, watch } from 'node:fs'
+import { createWriteStream, existsSync, renameSync, statSync, watch } from 'node:fs'
 import { mkdir, readFile } from 'node:fs/promises'
 import net from 'node:net'
 import { join, delimiter, dirname, basename } from 'node:path'
@@ -7,7 +7,7 @@ import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
 
 import { app } from 'electron'
 
-import { binDir, daemonDirectory, hexbotExecutable, hexbotHome } from './paths'
+import { binDir, canonicalRuntimePath, daemonDirectory, hexbotExecutable, hexbotHome } from './paths'
 
 // 'external': a service or another copy of the app runs the daemon for this
 // home. The app uses it and cannot stop it.
@@ -265,7 +265,7 @@ export class DaemonManager extends EventEmitter {
         if (
           activation &&
           this.child &&
-          realpathSync(activation.executable) !== this.childExecutable
+          canonicalRuntimePath(activation.executable) !== this.childExecutable
         ) {
           const stopping = this.stopOwned()
           await stopping
@@ -340,13 +340,13 @@ export class DaemonManager extends EventEmitter {
           const record = JSON.parse(
             await readFile(join(hexbotHome(), 'runtime/native-running.json'), 'utf8')
           ) as { pid?: number; executable?: string }
-          const actual = record.executable && realpathSync(record.executable)
+          const actual = record.executable && canonicalRuntimePath(record.executable)
           const core =
             executable &&
             basename(executable) === 'hexbot' &&
             join(dirname(executable), 'hexbot-core')
           const matchesExecutable =
-            actual === executable || (core && existsSync(core) && actual === realpathSync(core))
+            actual === executable || (core && existsSync(core) && actual === canonicalRuntimePath(core))
           if (
             this.child !== child ||
             this.current.state !== 'running' ||
@@ -398,7 +398,7 @@ export class DaemonManager extends EventEmitter {
     const log = createWriteStream(logPath, { flags: 'a' })
     this.setStatus({ state: 'starting', port })
     const executable = activation?.executable ?? hexbotExecutable()
-    const canonical = existsSync(executable) ? realpathSync(executable) : executable
+    const canonical = existsSync(executable) ? canonicalRuntimePath(executable) : executable
     const child = spawn(executable, ['serve', '--port', String(port)], {
       cwd: daemonDirectory(),
       windowsHide: process.platform === 'win32',
