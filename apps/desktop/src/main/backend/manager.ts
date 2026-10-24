@@ -111,6 +111,8 @@ export function requestOwnedShutdown(child: Pick<ChildProcessWithoutNullStreams,
 export class DaemonManager extends EventEmitter {
   private child?: ChildProcessWithoutNullStreams
   private childExecutable?: string
+  // Keep the owned launch across crash backoff, independently of selection.
+  private ownedRuntime?: { executable: string; port: number }
   private current: DaemonStatus = { state: 'stopped' }
   private intentionalStop = false
   private failures: number[] = []
@@ -273,6 +275,7 @@ export class DaemonManager extends EventEmitter {
     const requestedEpoch = this.requestEpoch
     return this.serialize(async () => {
       const owned = this.ownedIntent || Boolean(this.child)
+      const previous = owned ? this.ownedRuntime : undefined
       let activation: RuntimeActivation | undefined
       let epoch = requestedEpoch
       try {
@@ -292,17 +295,22 @@ export class DaemonManager extends EventEmitter {
           await stopping
           if (epoch !== this.requestEpoch) throw new Error('Daemon start was superseded')
         }
-        await this.startOwned(activation)
+        await this.startOwned(activation, previous?.port)
+        if (this.quitting || epoch !== this.requestEpoch)
+          throw new Error('Daemon start was superseded')
         if (activation && !(policy === 'attach-or-start' && this.current.state === 'external'))
           await this.waitForOwned(activation)
         return this.status()
       } catch (error) {
         const recover = epoch === this.requestEpoch
         if (recover) this.revokeRetry()
-        if (recover && owned && activation && !this.child && !this.quitting) {
+        const recovery = activation ?? previous
+        if (recover && owned && recovery && !this.child && !this.quitting) {
           try {
-            await this.startOwned(activation)
-            await this.waitForOwned(activation)
+            await this.startOwned(recovery, previous?.port)
+            if (this.quitting || epoch !== this.requestEpoch)
+              throw new Error('Daemon start was superseded')
+            await this.waitForOwned(recovery)
           } catch (restore) {
             throw new AggregateError(
               [error, restore],
@@ -315,22 +323,25 @@ export class DaemonManager extends EventEmitter {
     })
   }
 
-  private async startOwned(activation?: RuntimeActivation, epoch = this.retryEpoch): Promise<void> {
+  private async startOwned(activation?: Pick<RuntimeActivation, 'executable'>, port?: number): Promise<void> {
+    const epoch = this.retryEpoch
     if (this.quitting) throw new Error('The app is quitting')
     if (this.child && (this.current.state === 'starting' || this.current.state === 'running'))
       return
     this.ownedIntent = true
     this.intentionalStop = false
     const running = await runningDaemonPort()
+    if (this.quitting || epoch !== this.retryEpoch)
+      throw new Error('Daemon start was superseded')
     if (running) {
       this.ownedIntent = false
       this.setStatus({ state: 'external', port: running })
       return
     }
-    await this.spawnDaemon(this.configuredPort ?? (await findFreePort()), epoch, activation)
+    await this.spawnDaemon(port ?? this.configuredPort ?? (await findFreePort()), epoch, activation)
   }
 
-  private waitForOwned(activation?: RuntimeActivation): Promise<void> {
+  private waitForOwned(activation?: Pick<RuntimeActivation, 'executable'>): Promise<void> {
     const child = this.child
     if (!child) return Promise.reject(new Error('The app does not own the replacement daemon'))
     const executable = activation?.executable ?? this.childExecutable
@@ -396,7 +407,7 @@ export class DaemonManager extends EventEmitter {
   private async spawnDaemon(
     port: number,
     epoch = this.retryEpoch,
-    activation?: RuntimeActivation
+    activation?: Pick<RuntimeActivation, 'executable'>
   ): Promise<void> {
     const authorized = (): boolean =>
       epoch === this.retryEpoch &&
@@ -434,6 +445,8 @@ export class DaemonManager extends EventEmitter {
     })
     this.child = child
     this.childExecutable = canonical
+    const runtime = { executable: canonical, port }
+    if (child.pid) this.ownedRuntime = runtime
     const pending = new Map<NodeJS.ReadableStream, string>()
     const consume = (stream: NodeJS.ReadableStream, chunk: Buffer): void => {
       if (this.child !== child) return
@@ -442,7 +455,10 @@ export class DaemonManager extends EventEmitter {
       pending.set(stream, lines.pop() ?? '')
       for (const line of lines) {
         const readyPort = parseReadyLine(line)
-        if (readyPort) this.setStatus({ state: 'running', port: readyPort, pid: child.pid })
+        if (readyPort) {
+          runtime.port = readyPort
+          this.setStatus({ state: 'running', port: readyPort, pid: child.pid })
+        }
         const requested = parseUpdateRequestLine(line)
         if (requested) this.emit('update-requested', requested)
       }
@@ -488,7 +504,7 @@ export class DaemonManager extends EventEmitter {
       const retryEpoch = this.retryEpoch
       this.restartTimer = setTimeout(() => {
         void this.serialize(async () => {
-          if (retryEpoch === this.retryEpoch) await this.spawnDaemon(port, retryEpoch, activation)
+          if (retryEpoch === this.retryEpoch) await this.spawnDaemon(runtime.port, retryEpoch, runtime)
         }).catch(error => {
           if (retryEpoch === this.retryEpoch)
             this.setStatus({ state: 'crashed', port, lastError: String(error) })
