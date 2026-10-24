@@ -13,6 +13,12 @@ files:
   - '!resources/hexbot-native.tar.gz*'
   - '!resources/hexbot-native.staging-*/**'
   - package.json
+# Hexbot's own license and notices, beside Electron's and Chromium's.
+extraResources:
+  - from: ../../LICENSE
+    to: LICENSE
+  - from: ../../NOTICE
+    to: NOTICE
 asar: true
 protocols:
   - name: Hexbot

@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "description": "Hex Connect: identity and tunnel broker for reaching a daemon from outside the LAN.",
-  "license": "AGPL-3.0-only",
+  "license": "Apache-2.0",
   "scripts": {
     "dev": "next dev",
     "build": "next build",

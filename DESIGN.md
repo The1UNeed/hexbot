@@ -10,8 +10,9 @@ agent conversations through Pi.
 Bots on any provider share rooms, each with its own memory and skills, with
 more freedom and more capability than a hosted product can offer.
 
-- Repo: private `The1UNeed/hexbot`, no upstream git history, one import commit.
-- License: AGPL-3.0. `NOTICE` carries the inherited MIT attributions.
+- Repo: public `The1UNeed/hexbot`, no upstream git history, one import commit.
+- License: Apache-2.0 for Hexbot's own source, except where a file or
+  directory states otherwise. `NOTICE` carries the inherited MIT attributions.
 - Layout: one monorepo. The daemon lives in `backend/hexbot-core/`, with a
   pinned agent runtime and private extension in `backend/pi-runtime/`.
   `apps/desktop/` hosts the shared React bundle from `apps/web/`.
@@ -365,7 +366,7 @@ more freedom and more capability than a hosted product can offer.
 - Plain WebSocket on the LAN. Tailscale is the documented first outside path.
 - Connect (hexbot.app): Cloudflare Tunnel per daemon with a managed hostname,
   one Clerk account owning many daemons, device-code registration, Next.js on
-  Vercel with Postgres, AGPL, free during beta. Traffic goes direct through
+  Vercel with Postgres, Apache-2.0, free during beta. Traffic goes direct through
   the tunnel; Connect only brokers identity and hostnames.
 
 ## 5. Packaging and operations
