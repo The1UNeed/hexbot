@@ -33,7 +33,7 @@ export default async function Home() {
       </section>
       <section className="narrow center" style={{ marginTop: "3rem" }}>
         <h2 className="display-sm" style={{ fontSize: "1.6rem" }}>What Connect holds, and what it never sees</h2>
-        <p className="mute" style={{ marginTop: ".75rem" }}>Your sign-in identity, the names and hostnames of your daemons, hashed tokens, and the devices that signed in. Never your conversations, memory, files, or provider keys. Read the <a href="https://hexbot.app/privacy/#connect">privacy policy</a> or <a href="https://hexbot.app/docs/connect/#self-host-connect">run your own instance</a>: Connect is Apache-2.0 software like the rest of Hexbot.</p>
+        <p className="mute" style={{ marginTop: ".75rem" }}>Your sign-in identity, the names and hostnames of your daemons, hashed tokens, and the devices that signed in. Never your conversations, memory, files, or provider keys. Read the <a href="https://hexbot.app/privacy/#connect">privacy policy</a> or <a href="https://hexbot.app/docs/connect/#self-host-connect">run your own instance</a>: Connect is Apache-2.0 software, like the rest of Hexbot's own code.</p>
       </section>
     </div>
   );
