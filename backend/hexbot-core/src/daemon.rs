@@ -173,6 +173,10 @@ async fn run() -> Result<()> {
         );
         return Ok(());
     }
+    #[cfg(all(windows, debug_assertions))]
+    if command == "__dev-child" {
+        std::process::exit(hexbot_core::pi::dev_child::run(&arguments[1..]).await);
+    }
     let home = home()?;
 
     if let Some(result) = hexbot_core::cli::dispatch(&home, &arguments).await {

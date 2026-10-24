@@ -164,65 +164,142 @@ export function printsSignInLink(terminal, env = process.env) {
     (env.XPC_SERVICE_NAME === undefined || env.XPC_SERVICE_NAME === '0')
 }
 
-const children = []
-function start(label, command, commandArgs, env) {
-  // Each child leads its own process group, so stopping it also stops what
-  // it spawned (pnpm -> electron-vite -> Electron -> daemon) instead of leaving
-  // an orphaned app holding the single-instance lock.
-  const child = spawn(command, commandArgs, {
-    cwd: repositoryRoot,
-    detached: process.platform !== 'win32',
-    env: { ...process.env, ...env },
-    stdio: 'inherit'
-  })
-  children.push(child)
-  child.once('exit', code => {
-    if (!stopping) {
-      console.error(`[dev] ${label} exited with code ${code ?? 'unknown'}`)
-      stop(1)
-    }
-  })
-  return child
-}
-let stopping = false
-function stop(code = 0) {
-  if (stopping) return
-  stopping = true
-  // Kill only the PIDs we started (AGENTS.md, "Killing by pattern").
-  for (const child of children) {
-    if (child.exitCode !== null) continue
+// Windows web/Electron roots run inside the debug daemon's private job host.
+// The direct daemon path keeps its existing lifetime boundary.
+export function createDevRunner({ hexbot, platform = process.platform, spawnChild = spawn,
+  killGroup = (pid, signal) => process.kill(pid, signal),
+  exit = code => process.exit(code), report = message => console.error(message),
+  now = Date.now, schedule = setTimeout, cancel = clearTimeout } = {}) {
+  const children = []
+  let stopping = false
+  let primaryCode = 0
+  let stopped
+  let notifyStopping
+  const stoppingSignal = new Promise(resolve => { notifyStopping = resolve })
+  const alive = entry => !entry.done
+  function start(label, command, commandArgs, env) {
+    if (stopping) return
+    const hosted = platform === 'win32' && (label === 'web' || label === 'desktop')
+    let child
     try {
-      if (process.platform === 'win32') child.kill('SIGTERM')
-      else process.kill(-child.pid, 'SIGTERM')
-    } catch {
-      child.kill('SIGTERM')
+      child = spawnChild(hosted ? hexbot : command,
+        hosted ? ['__dev-child', label, '--', command, ...commandArgs] : commandArgs, {
+          cwd: repositoryRoot, detached: platform !== 'win32',
+          env: { ...process.env, ...env }, stdio: hosted ? ['pipe', 'inherit', 'inherit'] : 'inherit'
+        })
+    } catch (error) {
+      report(`[dev] ${label}: ${error.message}`)
+      void stop(1)
+      return
     }
+    let finish
+    const entry = { child, label, hosted, done: false,
+      completion: new Promise(resolve => { finish = resolve }) }
+    children.push(entry)
+    const complete = code => {
+      if (entry.done) return
+      entry.done = true
+      finish()
+      if (!stopping) {
+        report(`[dev] ${label} exited with code ${code ?? 'unknown'}`)
+        void stop(1)
+      } else if (hosted && code !== 0) {
+        report(`[dev] cleanup of ${label} was not confirmed (code ${code ?? 'unknown'})`)
+        if (!primaryCode) primaryCode = 1
+      }
+    }
+    child.once('error', error => {
+      report(`[dev] ${label}: ${error.message}`)
+      complete(1)
+    })
+    child.once('exit', complete)
+    // A host can close its input before the runner does. Handle EPIPE without
+    // an uncaught stream error; only the host's exit can confirm completion.
+    child.stdin?.on('error', () => {})
+    return child
   }
-  setTimeout(() => process.exit(code), 500).unref()
+  function stop(code = 0) {
+    if (code && !primaryCode) primaryCode = code
+    if (stopping) return stopped
+    stopping = true
+    notifyStopping()
+    // Defer completion so synchronous fake-child events cannot re-enter stop
+    // before its shared promise exists.
+    stopped = Promise.resolve().then(async () => {
+      if (platform !== 'win32') {
+        for (const { child } of children.filter(alive)) {
+          try { killGroup(-child.pid, 'SIGTERM') } catch { child.kill('SIGTERM') }
+        }
+        schedule(() => exit(primaryCode), 500).unref?.()
+        return
+      }
+      const deadline = now() + 20_000
+      // Close every private input in this turn, before awaiting any child.
+      for (const entry of children.filter(alive)) {
+        try {
+          if (entry.hosted) entry.child.stdin.end()
+          else entry.child.kill('SIGTERM')
+        } catch (error) {
+          report(`[dev] ${entry.label}: ${error.message}`)
+          if (!primaryCode) primaryCode = 1
+        }
+      }
+      let timer
+      await Promise.race([
+        Promise.all(children.map(entry => entry.completion)),
+        new Promise(resolve => { timer = schedule(resolve, Math.max(0, deadline - now())) })
+      ])
+      cancel(timer)
+      for (const entry of children.filter(alive)) {
+        report(`[dev] cleanup of ${entry.label} was not confirmed`)
+        if (!primaryCode) primaryCode = 1
+        // The ChildProcess owns this handle. Never use taskkill or a PID lookup.
+        try { entry.child.kill('SIGKILL') } catch (error) { report(`[dev] ${entry.label}: ${error.message}`) }
+      }
+      exit(primaryCode)
+    })
+    return stopped
+  }
+  async function ready(port, label, wait = waitForPort) {
+    if (stopping) return false
+    await Promise.race([wait(port, label), stoppingSignal])
+    return !stopping
+  }
+  return { start, stop, ready, get stopping() { return stopping } }
 }
-process.on('SIGINT', () => stop())
-process.on('SIGTERM', () => stop())
 
-if (process.argv[1] === fileURLToPath(import.meta.url)) {
+async function main() {
+  const hexbot = resolve(repositoryRoot, `backend/hexbot-core/target/debug/hexbot${process.platform === 'win32' ? '.exe' : ''}`)
+  const runner = createDevRunner({ hexbot })
+  const { start, stop } = runner
+  process.on('SIGINT', () => { void stop() })
+  process.on('SIGTERM', () => { void stop() })
   try {
     validateDevArgs(args)
     const home = resolve(option('--home') ?? resolve(repositoryRoot, '.hexbot'))
     if (home === resolve(homedir(), '.hexbot'))
       throw new Error('Refusing to run a dev daemon against ~/.hexbot, the live install')
     await mkdir(home, { recursive: true })
-    const hexbot = resolve(repositoryRoot, `backend/hexbot-core/target/debug/hexbot${process.platform === 'win32' ? '.exe' : ''}`)
     const pi = devPiEntrypoint(resolve(repositoryRoot, 'backend/pi-runtime'))
     console.log('[dev] building the Rust daemon')
-    const run = devExecFile
+    const run = (...args) => {
+      if (runner.stopping) throw new Error('Dev runner stopped')
+      return devExecFile(...args)
+    }
     await run('cargo', ['build', '--locked', '--manifest-path', resolve(repositoryRoot, 'backend/hexbot-core/Cargo.toml'), '--bin', 'hexbot'], { cwd: repositoryRoot, maxBuffer: 32 * 1024 * 1024 })
+    if (runner.stopping) return
     await ensurePiRuntime(resolve(repositoryRoot, 'backend/pi-runtime'), run)
-    const runtimeEnv = await prepareDevRuntime(home, hexbot, pi)
+    if (runner.stopping) return
+    const runtimeEnv = await prepareDevRuntime(home, hexbot, pi, { run })
+    if (runner.stopping) return
 
     const derived = derivePorts(repositoryRoot)
     const daemonPort = Number(option('--port') ?? (await freePortFrom(derived.daemon)))
     const webPort = await freePortFrom(derived.web)
+    if (runner.stopping) return
     const pnpm = await pnpmCommand()
 
+    if (runner.stopping) return
     console.log(`[dev] home ${home}`)
     if (desktop) {
       // The Electron app starts and owns its daemon; it needs the web dev server.
@@ -235,7 +312,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
         String(webPort),
         '--strictPort'
       ])
-      await waitForPort(webPort, 'web bundle')
+      if (!(await runner.ready(webPort, 'web bundle'))) return
       console.log(`[dev] web http://localhost:${webPort}`)
       start('desktop', pnpm.command, [...pnpm.prefix, '--filter', './apps/desktop', 'run', 'dev'], {
         ...runtimeEnv,
@@ -246,7 +323,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
       // its own; the link below is minted with `hexbot pair` and points at the Vite
       // server, which proxies the daemon so the browser gets its cookie there.
       start('daemon', hexbot, ['serve', '--port', String(daemonPort)], { ...runtimeEnv, HEXBOT_SUPERVISOR: 'dev', HEXBOT_WEB_DEV_URL: `http://localhost:${webPort}` })
-      await waitForPort(daemonPort, 'daemon')
+      if (!(await runner.ready(daemonPort, 'daemon'))) return
       console.log(`[dev] daemon http://127.0.0.1:${daemonPort}`)
       start(
         'web',
@@ -256,7 +333,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
           VITE_HEXBOT_ORIGIN: `http://127.0.0.1:${daemonPort}`
         }
       )
-      await waitForPort(webPort, 'web bundle')
+      if (!(await runner.ready(webPort, 'web bundle'))) return
       if (printsSignInLink(process.stdout.isTTY)) {
         try {
           const code = pairingCode((await run(hexbot, ['pair', '--sign-in'], { env: { ...process.env, ...runtimeEnv } })).stdout)
@@ -267,7 +344,11 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
       console.log(`[dev] new code: HEXBOT_HOME=${home} ${hexbot} pair`)
     }
   } catch (error) {
-    console.error(`[dev] ${error.message}`)
-    stop(1)
+    if (!runner.stopping) {
+      console.error(`[dev] ${error.message}`)
+      void stop(1)
+    }
   }
 }
+
+if (process.argv[1] === fileURLToPath(import.meta.url)) await main()

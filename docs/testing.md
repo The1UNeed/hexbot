@@ -439,3 +439,17 @@ Windows build/install probes live in `.github/workflows/windows-contract.yml`.
 They do not publish packages or establish Windows support. See
 [the build contract](windows-build-contract.md) for the runtime layout,
 security dependency and native validation still required.
+
+The Windows `windows_launchers` debug suite also exercises the private Dev
+child host through its actual CLI router. It covers stdin EOF, a root exiting
+with a live descendant, a retained parent dying while the input writer remains
+open, Ctrl+Break in a new process group, Ctrl+C in a dedicated console,
+assignment refusal, literal Unicode arguments, and an unrelated process that
+must survive. Its app control uses the installed workspace pnpm, Vite,
+Electron and daemon, so it requires the native workspace dependencies. The
+`windows_dev_release` test target in the release profile checks that the private action is absent.
+Portable admission tables run with `cargo test --lib dev_child_policy`; runner
+shutdown and startup races run with `node --test scripts/dev/run.test.mjs`.
+Cross-compilation checks these sources but does not validate native shutdown.
+The direct Windows daemon stop is still a force-kill of its owned root; its
+kill-on-close job does not establish acknowledged descendant completion.

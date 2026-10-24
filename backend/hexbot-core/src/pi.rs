@@ -17,6 +17,12 @@ use std::{
 
 #[cfg(windows)]
 use crate::windows_task::completion::identity as windows_process_identity;
+#[cfg(all(windows, debug_assertions))]
+#[path = "windows_dev_child.rs"]
+pub mod dev_child;
+#[cfg(any(all(windows, debug_assertions), test))]
+#[path = "windows_dev_child_policy.rs"]
+mod dev_child_policy;
 #[cfg(windows)]
 #[path = "windows_pi_job.rs"]
 mod windows_pi_job;

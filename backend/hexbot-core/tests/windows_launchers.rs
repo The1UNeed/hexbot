@@ -1562,3 +1562,7 @@ fn config_only_cli_preflight_precedes_setup_activation_and_provisioning() {
         }
     }
 }
+
+#[cfg(debug_assertions)]
+#[path = "support/dev_child_controls.rs"]
+mod dev_child_controls;
