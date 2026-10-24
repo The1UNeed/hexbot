@@ -450,8 +450,18 @@ native controls drive the production pass in
 The remaining owned-Python native controls are included by the existing
 `windows_contract` target from
 `backend/hexbot-core/tests/windows_contract/python_acceptance.rs`. They use
-seven fresh installation homes across independent test functions, one empty
-boundary-refusal home, and the existing Full fixture. Both observability
-acceptance gates are unignored; native execution
+nine fresh installation homes across independent test functions, one empty
+boundary-refusal home, and the existing Full fixture. Module-only repair and combined damaged-DLL gates remain unignored; native execution
 and fresh source review remain required. See the Windows build contract for
 the exact final-probe event blocker and the process-start interruption limit.
+
+The Python observability controls also exercise strict schema-2 DLL digests,
+limited schema-1 enrichment, exact tagged launcher exceptions, empty fully
+collected stderr and final ordinary launcher checks. Actual portable child
+processes cover the private 30-second operation/5-second cleanup mechanism with
+shortened private helper deadlines, real EOF/pipe ownership, overflow/read errors
+and primary diagnostics. No detached task supplies fake cleanup completion.
+Native launcher startup, actual loaded Windows DLL restoration, cleanup failures
+and the remaining boundary-injection limits are pending as documented in the
+Windows build contract. A future uv-pin change must prove same-key DLL byte
+compatibility or bring its own reviewed narrow migration.

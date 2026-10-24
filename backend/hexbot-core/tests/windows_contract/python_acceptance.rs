@@ -148,9 +148,14 @@ fn python(home: &Path, script: &str, args: &[String]) -> Value {
 }
 /// Independent complete version/origin/loader and exact interpreter assertions.
 pub(super) fn assert_health(home: &Path, key: &str) {
-    let script = r#"import importlib,importlib.metadata,json,platform,sys
+    let script = r#"import ctypes,importlib,importlib.metadata,json,platform,sys
 modules,extensions=json.loads(sys.argv[1]),json.loads(sys.argv[2])
 out={'implementation':platform.python_implementation(),'version':platform.python_version(),'executable':sys.executable,'prefix':sys.prefix,'base':sys.base_prefix,'distributions':{},'modules':{},'extensions':{}}
+api=ctypes.WinDLL('kernel32',use_last_error=True).GetModuleFileNameW
+api.argtypes=[ctypes.c_void_p,ctypes.c_wchar_p,ctypes.c_uint32]; api.restype=ctypes.c_uint32
+buffer=ctypes.create_unicode_buffer(32768); count=api(ctypes.c_void_p(sys.dllhandle),buffer,len(buffer))
+assert 0<count<len(buffer),ctypes.get_last_error()
+out['loaded_dll']=buffer[:count]; out['ctypes_origin']=ctypes.__spec__.origin
 for dist,name in modules:
  out['distributions'][dist]=importlib.metadata.version(dist)
  module=importlib.import_module(name); out['modules'][name]=[module.__spec__.origin,type(module.__spec__.loader).__name__]
@@ -184,6 +189,35 @@ print(json.dumps(out,ensure_ascii=True))"#;
             expected.canonicalize().unwrap()
         );
     }
+    assert_eq!(
+        Path::new(result["loaded_dll"].as_str().unwrap())
+            .canonicalize()
+            .unwrap(),
+        home.join("python")
+            .join(key)
+            .join("python311.dll")
+            .canonicalize()
+            .unwrap()
+    );
+    assert_eq!(
+        Path::new(result["ctypes_origin"].as_str().unwrap())
+            .canonicalize()
+            .unwrap(),
+        home.join("python")
+            .join(key)
+            .join("Lib/ctypes/__init__.py")
+            .canonicalize()
+            .unwrap()
+    );
+    let record: Value = serde_json::from_slice(
+        &fs::read(home.join("runtime/tools/code-python-identity.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(record["schema"], 2);
+    assert_eq!(
+        record["base_dll_sha256"],
+        digest(&home.join("python").join(key).join("python311.dll"))
+    );
     assert_eq!(result["distributions"], json!(pins()));
     for (_, module) in MODULES {
         let entry = &result["modules"][module];
@@ -1055,11 +1089,13 @@ async fn required_module_only_repairs_remain_explicit_acceptance_gates() {
     let f = Home::installed().await;
     let original = f.payloads();
     let source = f.site().join("edge_tts/communicate.py");
-    // Required positives, not expected failures/skips. R1's strict independent
-    // entrypoint refusal exposes the unresolved observability conflict here.
-    for damage in ["missing", "syntax", "combined"] {
+    // Required positives use the actual launcher observer and production
+    // repair. A native failure remains an acceptance failure, never a skip.
+    for damage in ["missing", "syntax", "combined", "dependency"] {
         case(&format!("required module-only positive gate: {damage}"));
-        if damage == "syntax" {
+        if damage == "dependency" {
+            fs::write(f.site().join("frozenlist/__init__.py"), b"def (:\n").unwrap();
+        } else if damage == "syntax" {
             fs::write(&source, b"def (:\n").unwrap();
         } else {
             fs::remove_file(&source).unwrap();
@@ -1076,15 +1112,269 @@ async fn required_existing_dll_refusal_dominates_missing_base_executable_gate() 
     let f = Home::installed().await;
     let key = f.key();
     let completion = f.completion();
-    fs::remove_file(f.path(&format!("python/{key}/python.exe"))).unwrap();
+    let exe = f.path(&format!("python/{key}/python.exe"));
     let dll = f.path(&format!("python/{key}/python311.dll"));
-    fs::write(&dll, b"truncated").unwrap();
-    case("required R2 combined-state refusal gate, no DLL replacement authority");
+    let exe_bytes = fs::read(&exe).unwrap();
+    let image = fs::read(&dll).unwrap();
+    let u16_at = |offset| u16::from_le_bytes(image[offset..offset + 2].try_into().unwrap());
+    let u32_at =
+        |offset| u32::from_le_bytes(image[offset..offset + 4].try_into().unwrap()) as usize;
+    let pe = u32_at(0x3c);
+    assert_eq!(&image[pe..pe + 4], b"PE\0\0");
+    let sections = pe + 24 + usize::from(u16_at(pe + 20));
+    let cut = image.len() / 2;
     assert!(
-        f.setup().await.is_err(),
-        "R2 unresolved: existing DLL was replaced under missing-EXE repair"
+        (0..usize::from(u16_at(pe + 6))).any(|index| {
+            let at = sections + index * 40;
+            let size = u32_at(at + 16);
+            let start = u32_at(at + 20);
+            start < cut && cut < start + size
+        }),
+        "DLL cut must enter section raw data"
     );
-    assert!(f.events.borrow().is_empty());
-    assert_eq!(fs::read(dll).unwrap(), b"truncated");
+    for short_exe in [false, true] {
+        for bytes in [b"truncated".as_slice(), &image[..cut]] {
+            if short_exe {
+                fs::write(&exe, b"x").unwrap();
+            } else {
+                fs::remove_file(&exe).unwrap();
+            }
+            fs::write(&dll, bytes).unwrap();
+            case("schema2 required combined existing-DLL refusal, missing/SHORT EXE");
+            f.refusal("DLL mismatch dominates base EXE repair").await;
+            assert_eq!(fs::read(&dll).unwrap(), bytes);
+            assert_eq!(f.completion(), completion);
+            fs::write(&exe, &exe_bytes).unwrap();
+            fs::write(&dll, &image).unwrap();
+        }
+    }
+}
+
+#[tokio::test]
+async fn actual_launcher_observer_refuses_unknown_diagnostics_alternate_and_access() {
+    let f = Home::installed().await;
+    let original = f.payloads();
+    let init = f.site().join("edge_tts/__init__.py");
+    let init_bytes = fs::read(&init).unwrap();
+    let source = f.site().join("edge_tts/communicate.py");
+    let source_bytes = fs::read(&source).unwrap();
+    case("observer healthy-package ordinary version plus stderr refuses, no observer fallback");
+    fs::write(
+        &init,
+        [
+            b"import sys\nsys.stderr.write('owned ordinary launcher diagnostics\\n')\n".as_slice(),
+            &init_bytes,
+        ]
+        .concat(),
+    )
+    .unwrap();
+    let error = f.refusal("ordinary healthy stderr").await;
+    assert!(
+        error.contains("owned ordinary launcher diagnostics"),
+        "{error}"
+    );
+    fs::write(&init, &init_bytes).unwrap();
+    for candidate in [false, true] {
+        case("observer expected version OR tagged error with late atexit stderr refuses");
+        fs::write(&init,[b"import atexit\ndef owned_late_failure():\n raise RuntimeError('owned late teardown cause')\natexit.register(owned_late_failure)\n".as_slice(),&init_bytes].concat()).unwrap();
+        if candidate {
+            fs::write(&source, b"def (:\n").unwrap();
+        }
+        // Healthy packages exercise the ordinary health rule; syntax damage
+        // exercises tagged observer JSON plus genuine finalization diagnostics.
+        let error = f.refusal("actual late teardown diagnostics").await;
+        assert!(error.contains("owned late teardown cause"), "{error}");
+        if candidate {
+            assert!(error.contains("SyntaxError"), "{error}");
+        }
+        fs::write(&source, &source_bytes).unwrap();
+        fs::write(&init, &init_bytes).unwrap();
+    }
+    for (label, injection, expected) in [
+        (
+            "observer extra stdout",
+            "import sys\nif sys.argv[0].lower().endswith('edge-tts.exe'):\n print('owned unexpected stdout')\n",
+            "incomplete result",
+        ),
+        (
+            "observer final flush",
+            "import sys\nif sys.argv[0].lower().endswith('edge-tts.exe'):\n class OwnedOutput:\n  def __init__(self): self.calls=0; self.original=sys.stdout\n  def write(self,text): return self.original.write(text)\n  def flush(self):\n   self.calls+=1\n   if self.calls>1: raise OSError('owned final flush cause')\n   return self.original.flush()\n sys.stdout=OwnedOutput()\n",
+            "status Some(120)",
+        ),
+        (
+            "observer output bound",
+            "import sys\nif sys.argv[0].lower().endswith('edge-tts.exe'):\n sys.stdout.write('x'*(1024*1024+1)); sys.stdout.flush()\n",
+            "exceeded",
+        ),
+    ] {
+        fs::write(&init, [injection.as_bytes(), &init_bytes].concat()).unwrap();
+        fs::write(&source, b"def (:\n").unwrap();
+        let error = f.refusal(label).await;
+        assert!(error.contains(expected), "{label}: {error}");
+        fs::write(&source, &source_bytes).unwrap();
+        fs::write(&init, &init_bytes).unwrap();
+    }
+    case("observer exclusive version stdout with diagnostics on a repairable graph");
+    let metadata = fs::read_dir(f.site())
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .find(|p| {
+            p.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("idna-")
+                && p.extension().is_some_and(|e| e == "dist-info")
+        })
+        .unwrap()
+        .join("METADATA");
+    let metadata_bytes = fs::read(&metadata).unwrap();
+    let metadata_text = String::from_utf8(metadata_bytes.clone()).unwrap();
+    let altered = metadata_text
+        .lines()
+        .map(|line| {
+            if line.starts_with("Version: ") {
+                "Version: 0"
+            } else {
+                line
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    fs::write(&metadata, altered).unwrap();
+    fs::write(&init,[b"import sys\nif sys.argv[0].lower().endswith('edge-tts.exe'):\n sys.stderr.write('owned observer version diagnostics\\n')\n".as_slice(),&init_bytes].concat()).unwrap();
+    let error = f.refusal("observer version and stderr").await;
+    assert!(
+        error.contains("owned observer version diagnostics"),
+        "{error}"
+    );
+    fs::write(&init,[b"import sys\nif sys.argv[0].lower().endswith('edge-tts.exe'):\n raise AttributeError('owned independent launcher failure')\n".as_slice(),&init_bytes].concat()).unwrap();
+    let error = f.refusal("observer unmatched actual AttributeError").await;
+    assert!(error.contains("AttributeError"), "{error}");
+    fs::write(&init, &init_bytes).unwrap();
+    let entry = f.venv().join("Scripts/edge-tts.exe");
+    let entry_bytes = fs::read(&entry).unwrap();
+    fs::write(&entry, [b'g'; 64]).unwrap();
+    let error = f.refusal("observer unknown native OS193").await;
+    assert!(error.contains("os error 193"), "{error}");
+    fs::write(&entry, &entry_bytes).unwrap();
+    // Execute permission denial leaves read/hash checks available. Only this
+    // owned fixture leaf's deny ACE is changed and removed after the refusal.
+    let user = std::env::var("USERNAME").unwrap();
+    let icacls = super::windows_paths::system_program("icacls.exe").unwrap();
+    let denied = Command::new(&icacls)
+        .arg(&entry)
+        .args(["/deny", &format!("{user}:(X)")])
+        .output()
+        .unwrap();
+    assert!(denied.status.success());
+    let completion = f.completion();
+    let result = f.setup().await;
+    let restored = Command::new(&icacls)
+        .arg(&entry)
+        .args(["/remove:d", &user])
+        .output()
+        .unwrap();
+    assert!(restored.status.success());
     assert_eq!(f.completion(), completion);
+    let error = result.unwrap_err();
+    assert!(error.message.contains("os error 5"), "{}", error.message);
+    assert!(f.events.borrow().is_empty());
+    fs::write(&metadata, &metadata_bytes).unwrap();
+    let alternate = f.site().join("sitecustomize.py");
+    fs::write(
+        &alternate,
+        b"# owned alternate must be discovered, never masked\n",
+    )
+    .unwrap();
+    fs::write(&source, b"def (:\n").unwrap();
+    let error = f.refusal("observer planted alternate sitecustomize").await;
+    assert!(error.contains("alternate sitecustomize"), "{error}");
+    fs::remove_file(alternate).unwrap();
+    fs::write(&source, &source_bytes).unwrap();
+    f.restored(&original);
+    // Failed CreateProcess calls conservatively retain their invocation scratch:
+    // the Runner returned no confirmed-reap result. No leftover is reused.
+    let retained: Vec<_> = fs::read_dir(f.path("runtime"))
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .filter(|p| {
+            p.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with(".hexbot-entrypoint-")
+        })
+        .collect();
+    for path in &retained {
+        assert_eq!(fs::read_dir(path).unwrap().count(), 1);
+        assert!(path.join("sitecustomize.py").is_file());
+    }
+    let completion = f.completion();
+    f.setup().await.unwrap();
+    assert_eq!(f.completion(), completion);
+    assert!(f.events.borrow().is_empty());
+    for path in &retained {
+        assert!(path.join("sitecustomize.py").is_file());
+    }
+}
+
+#[tokio::test]
+async fn schema2_loaded_dll_migration_and_changed_bytes_are_explicit_native_gates() {
+    let f = Home::installed().await;
+    let key = f.key();
+    let original = f.payloads();
+    let identity = fs::read(f.identity()).unwrap();
+    let base = f.path("python").join(&key);
+    let exe = base.join("python.exe");
+    let dll = base.join("python311.dll");
+    let exe_bytes = fs::read(&exe).unwrap();
+    let dll_bytes = fs::read(&dll).unwrap();
+    case("schema2 actual loaded DLL and exact digest, SHORT base EXE restoration");
+    let record = f.record();
+    assert_eq!(record["schema"], 2);
+    assert_eq!(record["base_dll_sha256"], digest(&dll));
+    fs::write(&exe, b"x").unwrap();
+    f.setup().await.unwrap();
+    f.restored(&original);
+    assert_eq!(fs::read(f.identity()).unwrap(), identity);
+    case("schema1 healthy one-time enrichment before voice, no repeat record write");
+    let legacy = json!({"schema":1,"home":f.home,"base_key":key}).to_string();
+    fs::write(f.identity(), &legacy).unwrap();
+    f.setup().await.unwrap();
+    assert!(f.events.borrow().is_empty());
+    assert_eq!(fs::read(f.identity()).unwrap(), identity);
+    f.healthy();
+    let completion = f.completion();
+    f.setup().await.unwrap();
+    assert_eq!(f.completion(), completion);
+    for short in [false, true] {
+        case("schema1 damaged EXE with present DLL refuses without retroactive blessing");
+        fs::write(f.identity(), &legacy).unwrap();
+        if short {
+            fs::write(&exe, b"x").unwrap();
+        } else {
+            fs::remove_file(&exe).unwrap();
+        }
+        let error = f.refusal("schema1 no historical DLL evidence").await;
+        assert!(error.contains("schema 1"), "{error}");
+        fs::write(&exe, &exe_bytes).unwrap();
+        fs::write(f.identity(), &identity).unwrap();
+    }
+    case("schema1 missing DLL exact-key repair then observed enrichment");
+    fs::write(f.identity(), &legacy).unwrap();
+    fs::remove_file(&dll).unwrap();
+    f.setup().await.unwrap();
+    assert_eq!(fs::read(f.identity()).unwrap(), identity);
+    f.restored(&original);
+    case("schema2 future-pin compatibility guard: changed existing same-key bytes refuse");
+    let mut changed = dll_bytes.clone();
+    changed.extend_from_slice(b"owned prospective payload difference");
+    fs::write(&dll, &changed).unwrap();
+    let error = f.refusal("changed fixed DLL cannot rebaseline").await;
+    assert!(error.contains("previously observed"), "{error}");
+    assert_eq!(fs::read(&dll).unwrap(), changed);
+    fs::write(&dll, &dll_bytes).unwrap();
+    f.restored(&original);
+    // Actual future-pin mutation is not simulated by invoking a different uv.
+    // Portable Runner controls supply different bytes after the production uv
+    // boundary and assert post-mutation refusal plus no automatic rebaseline.
 }

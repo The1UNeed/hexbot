@@ -10,11 +10,13 @@
 use crate::{Error, Result, common};
 use serde::Deserialize;
 use serde_json::json;
+use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeMap,
     ffi::{OsStr, OsString},
     fs, io,
     path::{Path, PathBuf},
+    time::Duration,
 };
 
 const CODE: i64 = 5243;
@@ -24,6 +26,8 @@ const KEY_SUFFIX: &str = "-windows-x86_64-none";
 const SHORT_LIMIT: u64 = 64;
 const IDENTITY_LIMIT: u64 = 16 * 1024;
 const OUTPUT_LIMIT: usize = 1024 * 1024;
+const PROBE_DEADLINE: Duration = Duration::from_secs(30);
+const PROBE_CLEANUP: Duration = Duration::from_secs(5);
 #[cfg(windows)]
 const REPARSE_ATTRIBUTE: u32 = 0x400;
 
@@ -130,14 +134,45 @@ const LOCKED: &[Locked] = &[
 
 /// Reports interpreter identity and the small required stdlib set: json,
 /// _ssl, _socket, select, asyncio and zlib.
-const IDENTITY_PROBE: &str = r#"import json, platform, sys
-result = {"implementation": platform.python_implementation(), "version": platform.python_version(), "executable": sys.executable, "prefix": sys.prefix, "base_prefix": sys.base_prefix, "failures": {}}
-for name in ("json", "_ssl", "_socket", "select", "asyncio", "zlib"):
-    try:
-        __import__(name)
-    except BaseException as error:
+const IDENTITY_PROBE: &str = r#"import json, os, platform, sys
+def identity():
+    result = {"implementation": platform.python_implementation(), "version": platform.python_version(), "executable": sys.executable, "prefix": sys.prefix, "base_prefix": sys.base_prefix, "python_dll": None, "failures": {}}
+    def failed(name, error):
         result["failures"][name] = {"type": type(error).__name__, "errno": getattr(error, "errno", None), "winerror": getattr(error, "winerror", None), "filename": getattr(error, "filename", None), "message": str(error)[:512]}
-sys.stdout.write(json.dumps(result, ensure_ascii=True) + "\n")
+    for name in ("json", "_ssl", "_socket", "select", "asyncio", "zlib"):
+        try:
+            __import__(name)
+        except BaseException as error:
+            failed(name, error)
+    try:
+        import ctypes
+        expected = os.path.join(sys.base_prefix, 'Lib', 'ctypes', '__init__.py')
+        if os.path.normcase(os.path.realpath(ctypes.__spec__.origin)) != os.path.normcase(os.path.realpath(expected)):
+            raise RuntimeError('ctypes has a foreign origin')
+        api = ctypes.WinDLL('kernel32', use_last_error=True).GetModuleFileNameW
+        api.argtypes = [ctypes.c_void_p, ctypes.c_wchar_p, ctypes.c_uint32]
+        api.restype = ctypes.c_uint32
+        handle = sys.dllhandle
+        if type(handle) is not int or handle == 0:
+            raise RuntimeError('Python DLL handle is unavailable')
+        size = 512
+        while True:
+            buffer = ctypes.create_unicode_buffer(size)
+            ctypes.set_last_error(0)
+            count = api(ctypes.c_void_p(handle), buffer, size)
+            if count == 0:
+                raise ctypes.WinError(ctypes.get_last_error())
+            if count < size and ctypes.get_last_error() != 122:
+                result['python_dll'] = buffer[:count]
+                break
+            if size == 32768:
+                raise OSError(122, 'loaded Python DLL path exceeded the Unicode buffer bound')
+            size = min(size * 2, 32768)
+    except BaseException as error:
+        failed('python_dll', error)
+    return result
+if __name__ == '__main__':
+    sys.stdout.write(json.dumps(identity(), ensure_ascii=True) + "\n")
 "#;
 /// argv: site-packages, JSON spec. Pre-opens each expected .pyd read-only
 /// before any import of its distribution, then records complete per-check
@@ -272,11 +307,19 @@ struct RawIdentity {
     schema: u64,
     home: String,
     base_key: String,
+    #[serde(default, deserialize_with = "present_digest")]
+    base_dll_sha256: Option<String>,
+}
+fn present_digest<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> std::result::Result<Option<String>, D::Error> {
+    String::deserialize(deserializer).map(Some)
 }
 #[derive(Debug, PartialEq, Eq)]
 pub(super) struct Identity {
     pub home: PathBuf,
     pub base_key: String,
+    pub base_dll_sha256: Option<String>,
 }
 /// `cpython-3.11.<patch>-windows-x86_64-none` with a plain decimal patch.
 pub(super) fn key_patch(key: &str) -> Option<u32> {
@@ -291,8 +334,15 @@ pub(super) fn parse_identity(bytes: &[u8]) -> std::result::Result<Identity, Stri
         return Err("record is larger than 16 KiB".into());
     }
     let raw: RawIdentity = serde_json::from_slice(bytes).map_err(|e| e.to_string())?;
-    if raw.schema != 1 {
-        return Err(format!("unsupported schema {}", raw.schema));
+    match (raw.schema, &raw.base_dll_sha256) {
+        (1, None) => {}
+        (2, Some(digest))
+            if digest.len() == 64
+                && digest
+                    .bytes()
+                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)) => {}
+        (1 | 2, _) => return Err("record has an invalid DLL digest field".into()),
+        _ => return Err(format!("unsupported schema {}", raw.schema)),
     }
     if key_patch(&raw.base_key).is_none() {
         return Err(format!("invalid base key {:?}", raw.base_key));
@@ -303,6 +353,7 @@ pub(super) fn parse_identity(bytes: &[u8]) -> std::result::Result<Identity, Stri
     Ok(Identity {
         home: PathBuf::from(raw.home),
         base_key: raw.base_key,
+        base_dll_sha256: raw.base_dll_sha256,
     })
 }
 
@@ -427,6 +478,47 @@ fn unshared_leaf(stage: &str, path: &Path) -> Result<Option<Observed>> {
         ));
     }
     Ok(Some(entry))
+}
+/// Hash only the fixed ordinary, unshared DLL. Repeated hashes around identity
+/// execution bind the bytes actually observed healthy, without a PE heuristic.
+fn dll_digest(stage: &str, path: &Path) -> Result<Option<String>> {
+    use std::io::Read;
+    let Some(entry) = unshared_leaf(stage, path)? else {
+        return Ok(None);
+    };
+    if entry.len < SHORT_LIMIT {
+        return Err(refuse(
+            stage,
+            "existing python311.dll is shorter than a possible image",
+        ));
+    }
+    let mut file =
+        fs::File::open(path).map_err(io_stage(stage, "open python311.dll for hashing"))?;
+    let before = observe(&file).map_err(io_stage(stage, "inspect opened python311.dll"))?;
+    if before != entry {
+        return Err(refuse(
+            stage,
+            "opened python311.dll disagrees with its fixed leaf",
+        ));
+    }
+    let mut hash = Sha256::new();
+    let mut buffer = [0; 8192];
+    let mut count = 0;
+    loop {
+        let read = file
+            .read(&mut buffer)
+            .map_err(io_stage(stage, "read python311.dll"))?;
+        if read == 0 {
+            break;
+        }
+        count += read as u64;
+        hash.update(&buffer[..read]);
+    }
+    let after = observe(&file).map_err(io_stage(stage, "reinspect opened python311.dll"))?;
+    if after != before || count != before.len || unshared_leaf(stage, path)? != Some(before) {
+        return Err(refuse(stage, "python311.dll changed while hashing"));
+    }
+    Ok(Some(format!("{:x}", hash.finalize())))
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
@@ -836,6 +928,34 @@ pub(super) struct Output {
     pub status: Option<i32>,
     pub stdout: Vec<u8>,
     pub stderr: Vec<u8>,
+    pub capture_failure: Option<String>,
+    pub reaped: bool,
+}
+fn output_cause(output: &Output) -> String {
+    format!(
+        "status {:?}; stdout {:?}; stderr {:?}{}",
+        output.status,
+        tail(&output.stdout),
+        tail(&output.stderr),
+        output
+            .capture_failure
+            .as_ref()
+            .map(|e| format!("; capture: {e}"))
+            .unwrap_or_default()
+    )
+}
+fn complete_capture(stage: &str, output: &Output) -> Result<()> {
+    if !output.reaped
+        || output.capture_failure.is_some()
+        || output.stdout.len() > OUTPUT_LIMIT
+        || output.stderr.len() > OUTPUT_LIMIT
+    {
+        return Err(refuse(
+            stage,
+            format!("probe capture did not complete: {}", output_cause(output)),
+        ));
+    }
+    Ok(())
 }
 fn tail(bytes: &[u8]) -> String {
     let text = String::from_utf8_lossy(bytes);
@@ -849,33 +969,42 @@ pub(super) fn complete_json<T: serde::de::DeserializeOwned>(
     what: &str,
     output: &Output,
 ) -> Result<T> {
+    complete_capture(stage, output)?;
     if output.status != Some(0) {
         return Err(refuse(
             stage,
-            format!(
-                "{what} exited with {}: {}",
-                output
-                    .status
-                    .map_or("an abnormal termination".to_owned(), |c| format!(
-                        "status {c}"
-                    )),
-                tail(&output.stderr)
-            ),
+            format!("{what} did not exit normally: {}", output_cause(output)),
         ));
     }
     if output.stdout.len() > OUTPUT_LIMIT || !output.stdout.is_ascii() {
-        return Err(refuse(stage, format!("{what} produced unexpected output")));
+        return Err(refuse(
+            stage,
+            format!(
+                "{what} produced unexpected output: {}",
+                output_cause(output)
+            ),
+        ));
     }
     let text = String::from_utf8_lossy(&output.stdout);
-    let line = text.trim_end_matches(['\r', '\n']);
+    let line = text
+        .strip_suffix("\r\n")
+        .or_else(|| text.strip_suffix('\n'))
+        .unwrap_or(&text);
     if line.contains('\n') || line.is_empty() {
         return Err(refuse(
             stage,
-            format!("{what} produced an incomplete result"),
+            format!(
+                "{what} produced an incomplete result: {}",
+                output_cause(output)
+            ),
         ));
     }
-    serde_json::from_str(line)
-        .map_err(|e| refuse(stage, format!("{what} result is malformed: {e}")))
+    serde_json::from_str(line).map_err(|e| {
+        refuse(
+            stage,
+            format!("{what} result is malformed: {e}; {}", output_cause(output)),
+        )
+    })
 }
 
 #[derive(Deserialize)]
@@ -886,6 +1015,7 @@ pub(super) struct IdentityProbe {
     executable: String,
     prefix: String,
     base_prefix: String,
+    python_dll: Option<String>,
     failures: BTreeMap<String, IdentityFailure>,
 }
 #[derive(Deserialize)]
@@ -907,31 +1037,6 @@ pub(super) fn identity_consistent(
     base: &Path,
     key: &str,
 ) -> Result<()> {
-    let patch = key_patch(key).unwrap_or_default();
-    if probe.implementation != "CPython" || probe.version != format!("3.11.{patch}") {
-        return Err(refuse(
-            stage,
-            format!(
-                "interpreter reports {} {}, expected CPython 3.11.{patch}",
-                probe.implementation, probe.version
-            ),
-        ));
-    }
-    for (label, reported, expected) in [
-        ("executable", &probe.executable, executable),
-        ("prefix", &probe.prefix, prefix),
-        ("base prefix", &probe.base_prefix, base),
-    ] {
-        if !same_identity(Path::new(reported), expected) {
-            return Err(refuse(
-                stage,
-                format!(
-                    "interpreter {label} {reported} is not {}",
-                    expected.display()
-                ),
-            ));
-        }
-    }
     if let Some((module, failure)) = probe.failures.iter().next() {
         return Err(refuse(
             stage,
@@ -944,6 +1049,36 @@ pub(super) fn identity_consistent(
                 tail(failure.message.as_bytes())
             ),
         ));
+    }
+    let patch = key_patch(key).unwrap_or_default();
+    if probe.implementation != "CPython" || probe.version != format!("3.11.{patch}") {
+        return Err(refuse(
+            stage,
+            format!(
+                "interpreter reports {} {}, expected CPython 3.11.{patch}",
+                probe.implementation, probe.version
+            ),
+        ));
+    }
+    for (label, reported, expected) in [
+        ("executable", probe.executable.as_str(), executable),
+        ("prefix", probe.prefix.as_str(), prefix),
+        ("base prefix", probe.base_prefix.as_str(), base),
+        (
+            "loaded Python DLL",
+            probe.python_dll.as_deref().unwrap_or(""),
+            &base.join("python311.dll"),
+        ),
+    ] {
+        if !same_identity(Path::new(reported), expected) {
+            return Err(refuse(
+                stage,
+                format!(
+                    "interpreter {label} {reported} is not {}",
+                    expected.display()
+                ),
+            ));
+        }
     }
     Ok(())
 }
@@ -969,7 +1104,7 @@ struct ImportResult {
     loader: Option<String>,
     error: Option<Failure>,
 }
-#[derive(Deserialize)]
+#[derive(Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 struct Failure {
     #[serde(rename = "type")]
@@ -987,7 +1122,7 @@ struct Extension {
     preopen: Preopen,
     import: ImportResult,
 }
-#[derive(Deserialize)]
+#[derive(Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 struct Preopen {
     status: String,
@@ -1308,6 +1443,245 @@ fn remove_obsolete_receipt(
     }
 }
 
+const ENTRYPOINT_OBSERVER: &str = r#"
+import stat
+class ObserverRefusal(BaseException):
+    pass
+try:
+    own = os.path.normcase(os.path.realpath(os.path.dirname(__file__)))
+    sys.path[:] = [entry for entry in sys.path if os.path.normcase(os.path.realpath(entry)) != own]
+    for finder in sys.meta_path:
+        if finder.find_spec('sitecustomize', None) is not None:
+            raise ObserverRefusal('alternate sitecustomize lookup refused')
+    ready = identity()
+    if ready['failures']:
+        raise ObserverRefusal('observer identity failed: ' + json.dumps(ready['failures'], ensure_ascii=True))
+    opened = {name: preopen(os.path.join(config['site'], relative)) for item in config['spec'] for name, relative in item['extensions']}
+    if any(item['status'] not in ('ok', 'missing', 'parent_missing') for item in opened.values()):
+        raise ObserverRefusal('observer native pre-open refused: ' + json.dumps(opened, ensure_ascii=True))
+    argv = list(sys.argv)
+    builtin_type, missing_type, syntax_type, import_type = type, ModuleNotFoundError, SyntaxError, ImportError
+    def observed(kind, error, traceback):
+        actual = builtin_type(error)
+        fields = failure(error)
+        fields['type'] = actual.__name__
+        fields['exact_import_error'] = actual is import_type
+        result = {'tag':'hexbot-entrypoint-error-v1', 'nonce':config['nonce'], 'identity':ready, 'argv':argv, 'preopens':opened,
+                  'error':{'module':actual.__module__, 'qualname':actual.__qualname__,
+                           'exact_module_not_found_error':actual is missing_type,
+                           'exact_syntax_error':actual is syntax_type,
+                           'failure':fields, 'message':str(error)[:512]}}
+        sys.stdout.write(json.dumps(result, ensure_ascii=True) + '\n')
+        sys.stdout.flush()
+        raise SystemExit(0)
+    sys.excepthook = observed
+except BaseException as error:
+    raise ObserverRefusal(str(error)[:1024]) from error
+"#;
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ObserverResult {
+    tag: String,
+    nonce: String,
+    identity: IdentityProbe,
+    argv: Vec<String>,
+    preopens: BTreeMap<String, Preopen>,
+    error: ObserverFailure,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ObserverFailure {
+    module: String,
+    qualname: String,
+    exact_module_not_found_error: bool,
+    exact_syntax_error: bool,
+    failure: Failure,
+    message: String,
+}
+impl ObserverFailure {
+    fn describe(&self) -> String {
+        format!(
+            "{}.{} name {:?} path {:?} filename {:?}: {} {}",
+            self.module,
+            self.qualname,
+            self.failure.name,
+            self.failure.path,
+            self.failure.filename,
+            self.failure.describe(),
+            self.message
+        )
+    }
+}
+fn observer_source(site: &Path, nonce: &str) -> String {
+    let config = json!({"site":site, "nonce":nonce, "spec":serde_json::from_str::<serde_json::Value>(&probe_spec()).expect("compiled spec")}).to_string();
+    let hex: String = config.bytes().map(|b| format!("{b:02x}")).collect();
+    // Reuse the exact private identity and native pre-open implementations.
+    let definitions = PACKAGE_PROBE
+        .split_once("def failure")
+        .unwrap()
+        .1
+        .split_once("out = ")
+        .unwrap()
+        .0;
+    format!(
+        "{IDENTITY_PROBE}\nimport stat\ndef failure{definitions}\nconfig = json.loads(bytes.fromhex('{hex}'))\n{ENTRYPOINT_OBSERVER}"
+    )
+}
+fn expected_version(output: &Output, expected: &str) -> bool {
+    output.stdout == expected.as_bytes()
+        || output.stdout == format!("{expected}\n").as_bytes()
+        || output.stdout == format!("{expected}\r\n").as_bytes()
+}
+fn ordinary_entrypoint(output: &Output, expected: &str) -> Result<()> {
+    complete_capture("entrypoint", output)?;
+    if output.status != Some(0) || !output.stderr.is_empty() || !expected_version(output, expected)
+    {
+        return Err(refuse(
+            "entrypoint",
+            format!(
+                "edge-tts.exe --version is not healthy: {}",
+                output_cause(output)
+            ),
+        ));
+    }
+    Ok(())
+}
+fn observer_result(
+    output: &Output,
+    expected: &str,
+    nonce: &str,
+    layout: &Layout,
+    key: &str,
+    graph: &PackageProbe,
+) -> Result<Option<String>> {
+    // Parsing here retains an available primary exception even when capture or
+    // teardown failed. Only the complete contract below can authorize repair.
+    let detail = serde_json::from_slice::<ObserverResult>(&output.stdout)
+        .ok()
+        .map(|r| r.error.describe())
+        .unwrap_or_default();
+    let denied = |cause: String| {
+        refuse(
+            "observer",
+            format!("{cause}; observed {detail}; {}", output_cause(output)),
+        )
+    };
+    complete_capture("observer", output).map_err(|e| denied(e.message))?;
+    if output.status != Some(0) || !output.stderr.is_empty() {
+        return Err(denied(
+            "entrypoint observer did not complete with empty stderr".into(),
+        ));
+    }
+    if expected_version(output, expected) {
+        return Ok(None);
+    }
+    let result: ObserverResult =
+        complete_json("observer", "entrypoint observer", output).map_err(|e| denied(e.message))?;
+    if result.tag != "hexbot-entrypoint-error-v1"
+        || result.nonce != nonce
+        || result.argv.len() != 2
+        || result.argv[1] != "--version"
+        || !same_identity(Path::new(&result.argv[0]), &layout.entrypoint)
+    {
+        return Err(denied("observer tag, nonce or actual argv differs".into()));
+    }
+    identity_consistent(
+        "observer",
+        &result.identity,
+        &layout.venv_python,
+        &layout.venv,
+        &layout.base(key),
+        key,
+    )
+    .map_err(|e| denied(e.message))?;
+    if result.preopens.len() != graph.extensions.len()
+        || graph
+            .extensions
+            .iter()
+            .any(|(name, item)| result.preopens.get(name) != Some(&item.preopen))
+    {
+        return Err(denied(
+            "observer native pre-opens differ from the complete package graph".into(),
+        ));
+    }
+    let error = &result.error;
+    let failure = &error.failure;
+    if error.module != "builtins"
+        || error.qualname != failure.kind
+        || error.message.chars().count() > 512
+        || failure.errno.is_some()
+        || failure.winerror.is_some()
+    {
+        return Err(denied(
+            "observer exception is unknown or has an OS refusal".into(),
+        ));
+    }
+    let same_path = |a: &Option<String>, b: &Option<String>| match (a, b) {
+        (Some(a), Some(b)) => same_identity(Path::new(a), Path::new(b)),
+        _ => false,
+    };
+    let matching_source = graph
+        .modules
+        .values()
+        .filter_map(|item| item.error.as_ref())
+        .any(|known| {
+            (error.exact_module_not_found_error
+                && !error.exact_syntax_error
+                && !failure.exact_import_error
+                && failure.kind == "ModuleNotFoundError"
+                && known.kind == "ModuleNotFoundError"
+                && failure.name.is_some()
+                && failure.name == known.name
+                && failure.path.is_none()
+                && failure.filename.is_none()
+                && known.path.is_none()
+                && known.filename.is_none()
+                && known.errno.is_none()
+                && known.winerror.is_none())
+                || (error.exact_syntax_error
+                    && !error.exact_module_not_found_error
+                    && !failure.exact_import_error
+                    && failure.kind == "SyntaxError"
+                    && known.kind == "SyntaxError"
+                    && failure.name.is_none()
+                    && failure.path.is_none()
+                    && known.name.is_none()
+                    && known.path.is_none()
+                    && known.errno.is_none()
+                    && known.winerror.is_none()
+                    && same_path(&failure.filename, &known.filename))
+        });
+    let matching_native = failure.exact_import_error
+        && !error.exact_module_not_found_error
+        && !error.exact_syntax_error
+        && failure.kind == "ImportError"
+        && graph.extensions.iter().any(|(module, item)| {
+            item.preopen.status == "ok"
+                && item.preopen.regular == Some(true)
+                && item.preopen.reparse == Some(false)
+                && item.preopen.error.is_none()
+                && item.import.error.as_ref().is_some_and(|known| {
+                    known.exact_import_error
+                        && known.kind == "ImportError"
+                        && known.errno.is_none()
+                        && known.winerror.is_none()
+                        && [Some(module.as_str()), module.rsplit('.').next()]
+                            .contains(&failure.name.as_deref())
+                        && [Some(module.as_str()), module.rsplit('.').next()]
+                            .contains(&known.name.as_deref())
+                        && same_path(&failure.path, &known.path)
+                })
+        });
+    if !matching_source && !matching_native {
+        return Err(denied(
+            "entrypoint exception has no matching eligible evidence in the complete package graph"
+                .into(),
+        ));
+    }
+    Ok(Some(result.error.describe()))
+}
+
 /// Child processes. Production runs real programs; tests record calls.
 pub(super) trait Runner {
     async fn uv(
@@ -1339,6 +1713,7 @@ struct Pass<'a, R: Runner> {
     uv_env: Vec<(OsString, OsString)>,
     probe_env: Vec<(OsString, OsString)>,
     lock: &'a str,
+    dll_sha256: Option<String>,
 }
 impl<R: Runner> Pass<'_, R> {
     async fn mutate(
@@ -1370,6 +1745,13 @@ impl<R: Runner> Pass<'_, R> {
             unshared_leaf(stage, &self.layout.venv_cfg)?;
             launcher_state(stage, &self.layout.venv_python)?;
         }
+        if let Some(key) = key {
+            match dll_digest(stage, &self.layout.base(key).join("python311.dll"))? {
+                Some(digest) => self.check_digest(stage, &digest)?,
+                None if matches!(mutation, Mutation::ReinstallKey(_)) => {}
+                None => return Err(refuse(stage, "python311.dll is missing before mutation")),
+            }
+        }
         let args = mutation.args();
         (self.emit)(message.0, message.1);
         self.runner
@@ -1384,6 +1766,9 @@ impl<R: Runner> Pass<'_, R> {
         prefix: &Path,
         key: &str,
     ) -> Result<()> {
+        let before = dll_digest(stage, &self.layout.base(key).join("python311.dll"))?
+            .ok_or_else(|| refuse(stage, "python311.dll is missing"))?;
+        self.check_digest(stage, &before)?;
         let args: Vec<OsString> = ["-I", "-B", "-c", IDENTITY_PROBE]
             .map(OsString::from)
             .to_vec();
@@ -1400,7 +1785,29 @@ impl<R: Runner> Pass<'_, R> {
             prefix,
             &self.layout.base(key),
             key,
-        )
+        )?;
+        let after = dll_digest(stage, &self.layout.base(key).join("python311.dll"))?;
+        if after.as_deref() != Some(&before) {
+            return Err(refuse(
+                stage,
+                "Python DLL bytes changed during identity observation",
+            ));
+        }
+        self.dll_sha256 = Some(before);
+        Ok(())
+    }
+    fn check_digest(&self, stage: &str, observed: &str) -> Result<()> {
+        if self
+            .dll_sha256
+            .as_deref()
+            .is_some_and(|expected| expected != observed)
+        {
+            return Err(refuse(
+                stage,
+                "python311.dll differs from the previously observed healthy bytes",
+            ));
+        }
+        Ok(())
     }
     async fn base_healthy(&mut self, stage: &str, key: &str) -> Result<()> {
         let base = self.layout.base(key);
@@ -1446,8 +1853,18 @@ impl<R: Runner> Pass<'_, R> {
             ));
         }
         let repair = if ordinary_dir(stage, &base)? {
-            launcher_state(stage, &base.join("python.exe"))? != Launcher::Present
-                || unshared_leaf(stage, &base.join("python311.dll"))?.is_none()
+            let dll = dll_digest(stage, &base.join("python311.dll"))?;
+            if let Some(digest) = &dll {
+                self.check_digest(stage, digest)?;
+            }
+            let executable = launcher_state(stage, &base.join("python.exe"))?;
+            if executable != Launcher::Present && dll.is_some() && self.dll_sha256.is_none() {
+                return Err(refuse(
+                    stage,
+                    "schema 1 has no prior healthy DLL evidence for a missing or truncated base executable",
+                ));
+            }
+            executable != Launcher::Present || dll.is_none()
         } else {
             if !ordinary_dir(stage, &self.layout.python_root)? {
                 return Err(refuse(stage, "the Python root is missing"));
@@ -1563,17 +1980,23 @@ impl<R: Runner> Pass<'_, R> {
         self.venv_healthy(stage, &key).await?;
         Ok(key)
     }
-    fn publish_identity(&self, key: &str) -> Result<()> {
+    fn publish_identity(&self, key: &str, enrich: bool) -> Result<()> {
         let stage = "identity";
-        if lstat(&self.layout.identity)
-            .map_err(io_stage(stage, "inspect identity record"))?
-            .is_some()
-        {
-            return Err(refuse(
-                stage,
-                "an identity record appeared during provisioning",
-            ));
+        match (read_record(self.layout)?, enrich) {
+            (Record::Absent, false) => {}
+            (Record::Valid(identity), true)
+                if identity.base_key == key && identity.base_dll_sha256.is_none() => {}
+            _ => {
+                return Err(refuse(
+                    stage,
+                    "the identity record changed before publication",
+                ));
+            }
         }
+        let digest = self
+            .dll_sha256
+            .as_ref()
+            .ok_or_else(|| refuse(stage, "no healthy DLL observation is available"))?;
         let home = self
             .layout
             .home
@@ -1581,12 +2004,17 @@ impl<R: Runner> Pass<'_, R> {
             .ok_or_else(|| refuse(stage, "the home path is not valid Unicode"))?;
         common::atomic_write(
             &self.layout.identity,
-            json!({"schema": 1, "home": home, "base_key": key})
+            json!({"schema": 2, "home": home, "base_key": key, "base_dll_sha256": digest})
                 .to_string()
                 .as_bytes(),
         )
     }
-    async fn probe_packages(&mut self, stage: &str) -> Result<Health> {
+    async fn probe_packages(
+        &mut self,
+        stage: &str,
+        key: &str,
+        observe_damage: bool,
+    ) -> Result<Health> {
         let site = self.layout.site_packages();
         package_preflight(stage, &site)?;
         let args: Vec<OsString> = vec![
@@ -1609,7 +2037,7 @@ impl<R: Runner> Pass<'_, R> {
             .map_err(|error| refuse(stage, error.message))?;
         let probe: PackageProbe = complete_json(stage, "package probe", &output)?;
         let versions = locked_versions(self.lock);
-        let health = classify(&probe, &versions, &site, &|p| canonical(p).ok());
+        let mut health = classify(&probe, &versions, &site, &|p| canonical(p).ok());
         if matches!(health, Health::Refused(_)) {
             return Ok(health);
         }
@@ -1628,25 +2056,98 @@ impl<R: Runner> Pass<'_, R> {
             "edge-tts {}",
             versions.get("edge-tts").copied().unwrap_or_default()
         );
-        let output = self
-            .runner
-            .entrypoint(&self.layout.entrypoint, &self.probe_env)
-            .await
-            .map_err(|error| refuse(stage, error.message))?;
-        let reported = String::from_utf8_lossy(&output.stdout).trim().to_owned();
-        if output.status != Some(0) || reported != expected {
-            return Ok(Health::Refused(format!(
-                "edge-tts.exe --version reported {:?} with {}: {}",
-                tail(&output.stdout),
-                output
-                    .status
-                    .map_or("an abnormal termination".to_owned(), |c| format!(
-                        "status {c}"
-                    )),
-                tail(&output.stderr)
-            )));
+        if observe_damage && matches!(health, Health::Repairable(_)) {
+            if let Some(original) = self
+                .observe_entrypoint(&expected, key, &probe)
+                .await
+                .map_err(|error| {
+                    let original = match &health {
+                        Health::Repairable(cause) => cause.as_str(),
+                        _ => "",
+                    };
+                    refuse(stage, format!("{original}; {}", error.message))
+                })?
+                && let Health::Repairable(cause) = &mut health
+            {
+                cause.push_str(&format!("; entrypoint exception: {original}"));
+            }
+        } else {
+            let output = self
+                .runner
+                .entrypoint(&self.layout.entrypoint, &self.probe_env)
+                .await
+                .map_err(|error| refuse(stage, error.message))?;
+            ordinary_entrypoint(&output, &expected)?;
         }
         Ok(health)
+    }
+    async fn observe_entrypoint(
+        &mut self,
+        expected: &str,
+        key: &str,
+        graph: &PackageProbe,
+    ) -> Result<Option<String>> {
+        ordinary_dir("observer", &self.layout.runtime)?;
+        let scratch = tempfile::Builder::new()
+            .prefix(".hexbot-entrypoint-")
+            .tempdir_in(&self.layout.runtime)
+            .map_err(io_stage("observer", "create private scratch"))?
+            .keep();
+        let nonce = uuid::Uuid::new_v4().to_string();
+        let script = scratch.join("sitecustomize.py");
+        {
+            use std::io::Write;
+            fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&script)
+                .and_then(|mut file| {
+                    file.write_all(observer_source(&self.layout.site_packages(), &nonce).as_bytes())
+                })
+                .map_err(io_stage("observer", "write private observer"))?;
+        }
+        let mut env = self.probe_env.clone();
+        env.push(("PYTHONPATH".into(), scratch.clone().into_os_string()));
+        let output = self
+            .runner
+            .entrypoint(&self.layout.entrypoint, &env)
+            .await
+            .map_err(|error| {
+                refuse(
+                    "observer",
+                    format!(
+                        "{}; scratch retained at {} because direct-child reap is unconfirmed",
+                        error.message,
+                        scratch.display()
+                    ),
+                )
+            })?;
+        let decision = observer_result(&output, expected, &nonce, self.layout, key, graph);
+        if !output.reaped {
+            return Err(refuse(
+                "observer",
+                format!(
+                    "{}; scratch retained at {}",
+                    decision
+                        .err()
+                        .map(|e| e.message)
+                        .unwrap_or_else(|| "direct-child reap unconfirmed".into()),
+                    scratch.display()
+                ),
+            ));
+        }
+        // Only our generated leaf and invocation directory, never a recursive
+        // cleanup of arbitrary leftovers. Unknown contents fail closed.
+        if let Err(error) = fs::remove_file(&script).and_then(|()| fs::remove_dir(&scratch)) {
+            return Err(refuse(
+                "observer",
+                format!(
+                    "{}; remove private scratch: {error}",
+                    decision.err().map(|e| e.message).unwrap_or_default()
+                ),
+            ));
+        }
+        decision
     }
     async fn install_packages(&mut self, stage: &str, key: &str, message: &str) -> Result<()> {
         common::atomic_write(&self.layout.requirements, self.lock.as_bytes())?;
@@ -1667,7 +2168,7 @@ impl<R: Runner> Pass<'_, R> {
         let (venv_python, venv) = (self.layout.venv_python.clone(), self.layout.venv.clone());
         self.probe_identity("final", &venv_python, &venv, key)
             .await?;
-        match self.probe_packages("final").await? {
+        match self.probe_packages("final", key, false).await? {
             Health::Healthy => Ok(()),
             Health::Repairable(cause) | Health::Refused(cause) => Err(refuse(
                 "final",
@@ -1688,7 +2189,7 @@ impl<R: Runner> Pass<'_, R> {
                     .await?;
                 common::atomic_write(&self.layout.receipt, self.lock.as_bytes())
             }
-            Branch::HealthRepair => match self.probe_packages(stage).await? {
+            Branch::HealthRepair => match self.probe_packages(stage, key, true).await? {
                 Health::Healthy => Ok(()),
                 Health::Repairable(cause) => self
                     .install_packages(stage, key, &format!("Repairing voice tools: {cause}"))
@@ -1863,6 +2364,10 @@ where
         uv_env: uv_environment(std::env::vars_os(), layout),
         probe_env: probe_environment(std::env::vars_os()),
         lock,
+        dll_sha256: match &record {
+            Record::Valid(identity) => identity.base_dll_sha256.clone(),
+            Record::Absent => None,
+        },
     };
     let (key, recreated) = match recorded_key {
         Some(key) => {
@@ -1876,6 +2381,9 @@ where
             }
             pass.ensure_recorded_base(&key).await?;
             let recreated = pass.ensure_recorded_venv(&key).await?;
+            if matches!(&record, Record::Valid(identity) if identity.base_dll_sha256.is_none()) {
+                pass.publish_identity(&key, true)?;
+            }
             (key, recreated)
         }
         None => {
@@ -1883,7 +2391,7 @@ where
                 VenvState::AbsentOrEmpty => pass.first_install().await?,
                 VenvState::Populated => pass.adopt().await?,
             };
-            pass.publish_identity(&key)?;
+            pass.publish_identity(&key, false)?;
             (key, false)
         }
     };
@@ -1942,38 +2450,104 @@ impl Runner for Processes {
         bounded_output(command(executable, &args, cwd, env)).await
     }
 }
-#[cfg(windows)]
-async fn bounded_output(mut command: tokio::process::Command) -> Result<Output> {
-    use tokio::io::AsyncReadExt;
+// No spawned reader/reaper tasks: cancellation drops only these owned read
+// futures and their pipe ends. The directly owned child is explicitly reaped.
+async fn bounded_output(command: tokio::process::Command) -> Result<Output> {
+    capture_output(command, PROBE_DEADLINE, PROBE_CLEANUP).await
+}
+async fn capture_output(
+    mut command: tokio::process::Command,
+    operation: Duration,
+    cleanup: Duration,
+) -> Result<Output> {
     command
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
+    let deadline = tokio::time::Instant::now() + operation;
     let mut child = command
         .spawn()
         .map_err(common::io_context("start the code tools probe"))?;
     let stdout = child.stdout.take().expect("piped stdout");
     let stderr = child.stderr.take().expect("piped stderr");
-    async fn read(stream: impl tokio::io::AsyncRead + Unpin) -> Result<Vec<u8>> {
-        let mut bytes = Vec::new();
-        stream
-            .take(OUTPUT_LIMIT as u64 + 1)
-            .read_to_end(&mut bytes)
-            .await?;
-        if bytes.len() > OUTPUT_LIMIT {
-            return Err(refuse("probe", "output exceeded 1 MiB"));
+    capture_child(&mut child, stdout, stderr, deadline, cleanup).await
+}
+async fn capture_child(
+    child: &mut tokio::process::Child,
+    stdout: impl tokio::io::AsyncRead + Unpin,
+    stderr: impl tokio::io::AsyncRead + Unpin,
+    deadline: tokio::time::Instant,
+    cleanup: Duration,
+) -> Result<Output> {
+    async fn read(
+        mut stream: impl tokio::io::AsyncRead + Unpin,
+        bytes: &mut Vec<u8>,
+    ) -> std::result::Result<(), String> {
+        use tokio::io::AsyncReadExt;
+        let mut buffer = [0u8; 8192];
+        loop {
+            let count = stream
+                .read(&mut buffer)
+                .await
+                .map_err(|e| format!("read pipe: {e}"))?;
+            if count == 0 {
+                return Ok(());
+            }
+            let retained = count.min(OUTPUT_LIMIT + 1 - bytes.len());
+            bytes.extend_from_slice(&buffer[..retained]);
+            if bytes.len() > OUTPUT_LIMIT {
+                return Err("output exceeded 1 MiB".into());
+            }
         }
-        Ok(bytes)
     }
-    // An over-limit stream stops the wait, then kill_on_drop stops the child.
-    let (status, stdout, stderr) = tokio::try_join!(
-        async { child.wait().await.map_err(Error::from) },
-        read(stdout),
-        read(stderr),
-    )?;
+    let mut stdout_bytes = Vec::new();
+    let mut stderr_bytes = Vec::new();
+    let mut status = None;
+    // One absolute deadline includes root wait AND both EOFs. A root exit does
+    // not complete descendant-held pipes. All three futures are dropped here
+    // before cleanup, so no reader task can remain detached.
+    let result = tokio::time::timeout_at(deadline, async {
+        tokio::try_join!(
+            async {
+                status = Some(
+                    child
+                        .wait()
+                        .await
+                        .map_err(|e| format!("wait for probe: {e}"))?,
+                );
+                Ok::<(), String>(())
+            },
+            read(stdout, &mut stdout_bytes),
+            read(stderr, &mut stderr_bytes),
+        )
+        .map(|_| ())
+    })
+    .await;
+    let mut failure = match result {
+        Ok(Ok(())) => None,
+        Ok(Err(error)) => Some(error),
+        Err(_) => Some("probe operation deadline expired before completion and pipe EOF".into()),
+    };
+    if let Some(failure) = &mut failure {
+        let cleanup_deadline = tokio::time::Instant::now() + cleanup;
+        if status.is_none() {
+            if let Err(error) = child.start_kill() {
+                failure.push_str(&format!("; stop directly owned probe: {error}"));
+            }
+            match tokio::time::timeout_at(cleanup_deadline, child.wait()).await {
+                Ok(Ok(exit)) => status = Some(exit),
+                Ok(Err(error)) => failure.push_str(&format!("; cleanup wait failed: {error}")),
+                Err(_) => {
+                    failure.push_str("; cleanup deadline expired; direct-child reap unconfirmed")
+                }
+            }
+        }
+    }
     Ok(Output {
-        status: status.code(),
-        stdout,
-        stderr,
+        status: status.as_ref().and_then(std::process::ExitStatus::code),
+        reaped: status.is_some(),
+        stdout: stdout_bytes,
+        stderr: stderr_bytes,
+        capture_failure: failure,
     })
 }
 #[cfg(windows)]

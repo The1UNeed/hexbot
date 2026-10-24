@@ -88,10 +88,36 @@ fn out(status: Option<i32>, stdout: &str) -> Output {
         status,
         stdout: stdout.as_bytes().to_vec(),
         stderr: Vec::new(),
+        capture_failure: None,
+        reaped: true,
     }
 }
 fn json_out(value: &Value) -> Output {
     out(Some(0), &format!("{value}\n"))
+}
+
+#[tokio::test]
+async fn observability_healthy_launcher_stderr_refuses_without_pip_or_completion_write() {
+    let (_dir, layout) = installed().await;
+    let before = snapshot(&[&layout.identity, &layout.receipt, &layout.requirements]);
+    let mut fake = Fake::new(&layout);
+    let mut warning = out(Some(0), "edge-tts 7.2.7\n");
+    warning.stderr = b"actual launcher warning\n".to_vec();
+    fake.entry.push_back(warning);
+    let result = run(&layout, &mut fake).await;
+    assert!(result.is_err());
+    assert!(fake.uv_calls().is_empty());
+    assert_eq!(
+        snapshot(&[&layout.identity, &layout.receipt, &layout.requirements]),
+        before
+    );
+}
+
+#[test]
+fn observability_schema2_requires_the_exact_digest_field() {
+    let valid =
+        json!({"schema":2,"home":"/owned/home","base_key":KEY,"base_dll_sha256":"a".repeat(64)});
+    assert!(parse_identity(valid.to_string().as_bytes()).is_ok());
 }
 
 /// Fake processes over the real temp home. uv calls create the files the real
@@ -105,6 +131,10 @@ struct Fake {
     entry: VecDeque<Output>,
     identity_at_pip: Option<bool>,
     receipt_at_pip: Option<bool>,
+    observer_error: Option<Value>,
+    last_package: Option<Value>,
+    replacement_dll: Option<Vec<u8>>,
+    change_dll_during_probe: bool,
 }
 impl Fake {
     fn new(layout: &Layout) -> Self {
@@ -117,6 +147,10 @@ impl Fake {
             entry: VecDeque::new(),
             identity_at_pip: None,
             receipt_at_pip: None,
+            observer_error: None,
+            last_package: None,
+            replacement_dll: None,
+            change_dll_during_probe: false,
         }
     }
     fn uv_calls(&self) -> Vec<String> {
@@ -163,6 +197,11 @@ impl Runner for Fake {
             "pip" => fake_packages(&self.layout),
             other => panic!("unexpected uv subcommand {other}"),
         }
+        if args[1] == "python"
+            && let Some(bytes) = &self.replacement_dll
+        {
+            fs::write(self.layout.base(KEY).join("python311.dll"), bytes).unwrap();
+        }
         Ok(())
     }
     async fn python(
@@ -194,16 +233,21 @@ impl Runner for Fake {
             } else {
                 &base
             };
+            if self.change_dll_during_probe {
+                fs::write(base.join("python311.dll"), vec![b'z'; EXE.len()]).unwrap();
+            }
             return Ok(json_out(
-                &json!({"implementation": "CPython", "version": "3.11.16", "executable": executable, "prefix": prefix, "base_prefix": base, "failures": {}}),
+                &json!({"implementation": "CPython", "version": "3.11.16", "executable": executable, "prefix": prefix, "base_prefix": base, "python_dll": base.join("python311.dll"), "failures": {}}),
             ));
         }
         assert_eq!(args[3], PACKAGE_PROBE);
         self.events.push("packages".into());
-        Ok(self
+        let output = self
             .packages
             .pop_front()
-            .unwrap_or_else(|| json_out(&healthy_probe(&self.layout.site_packages()))))
+            .unwrap_or_else(|| json_out(&healthy_probe(&self.layout.site_packages())));
+        self.last_package = serde_json::from_slice(&output.stdout).ok();
+        Ok(output)
     }
     async fn entrypoint(
         &mut self,
@@ -218,7 +262,40 @@ impl Runner for Fake {
             env.iter()
                 .any(|(k, v)| k == "PYTHONDONTWRITEBYTECODE" && v == "1")
         );
-        self.events.push("entry".into());
+        let scratch = env
+            .iter()
+            .find(|(name, _)| name == "PYTHONPATH")
+            .map(|(_, path)| PathBuf::from(path));
+        self.events.push(
+            if scratch.is_some() {
+                "observer"
+            } else {
+                "entry"
+            }
+            .into(),
+        );
+        if let (Some(scratch), Some(error)) = (scratch, self.observer_error.take()) {
+            let source = fs::read_to_string(scratch.join("sitecustomize.py")).unwrap();
+            let hex = source
+                .split("bytes.fromhex('")
+                .nth(1)
+                .unwrap()
+                .split('\'')
+                .next()
+                .unwrap();
+            let bytes: Vec<u8> = hex
+                .as_bytes()
+                .chunks_exact(2)
+                .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
+                .collect();
+            let config: Value = serde_json::from_slice(&bytes).unwrap();
+            return Ok(json_out(&observer_fixture(
+                &self.layout,
+                self.last_package.as_ref().unwrap(),
+                error,
+                config["nonce"].as_str().unwrap(),
+            )));
+        }
         Ok(self
             .entry
             .pop_front()
@@ -303,7 +380,8 @@ fn identity_record_schema_is_strict() {
         parse_identity(valid).unwrap(),
         Identity {
             home: "/owned/home".into(),
-            base_key: KEY.into()
+            base_key: KEY.into(),
+            base_dll_sha256: None,
         }
     );
     for invalid in [
@@ -894,7 +972,8 @@ async fn first_install_records_identity_before_voice_and_repeats_without_writes(
         record,
         Identity {
             home: layout.home.clone(),
-            base_key: KEY.into()
+            base_key: KEY.into(),
+            base_dll_sha256: Some(format!("{:x}", Sha256::digest(EXE)))
         }
     );
     assert_eq!(fs::read_to_string(&layout.receipt).unwrap(), LOCK);
@@ -1490,7 +1569,7 @@ async fn failed_recreated_venv_identity_keeps_the_old_receipt_and_prevents_pip()
     fs::remove_dir_all(&layout.venv).unwrap();
     let mut fake = Fake::new(&layout);
     let base = layout.base(KEY);
-    fake.identity.push_back(json_out(&json!({"implementation":"CPython", "version":"3.11.16", "executable":base.join("python.exe"), "prefix":base, "base_prefix":base, "failures":{}})));
+    fake.identity.push_back(json_out(&json!({"implementation":"CPython", "version":"3.11.16", "executable":base.join("python.exe"), "prefix":base, "base_prefix":base, "python_dll":base.join("python311.dll"), "failures":{}})));
     fake.identity.push_back(out(Some(1), ""));
     assert!(run(&layout, &mut fake).await.is_err());
     assert_eq!(fake.uv_calls().len(), 1);
@@ -1654,4 +1733,884 @@ async fn review_r5_identity_consumer_and_entrypoint_keep_original_diagnostics() 
             .contains("owned entrypoint sharing sentinel OS error 5")
     );
     assert!(fake.uv_calls().is_empty());
+}
+
+fn child_command(code: &str) -> tokio::process::Command {
+    let mut command = tokio::process::Command::new("python3");
+    command
+        .args(["-I", "-B", "-c", code])
+        .stdin(std::process::Stdio::null())
+        .kill_on_drop(true);
+    command
+}
+#[tokio::test]
+async fn observability_actual_child_complete_eof_and_cap_error_are_not_health() {
+    let output = bounded_output(child_command(
+        "import sys; print('edge-tts 7.2.7'); sys.stderr.write('late diagnostics\\n')",
+    ))
+    .await
+    .unwrap();
+    assert!(output.reaped && output.capture_failure.is_none());
+    let error = ordinary_entrypoint(&output, "edge-tts 7.2.7").unwrap_err();
+    assert!(error.message.contains("late diagnostics"));
+    let output = capture_output(child_command("import sys; sys.stdout.buffer.write(b'x'*(1024*1024+1)); sys.stdout.flush(); sys.stdin.read()"), Duration::from_secs(2), PROBE_CLEANUP).await.unwrap();
+    assert!(output.reaped);
+    assert!(
+        output
+            .capture_failure
+            .as_ref()
+            .unwrap()
+            .contains("exceeded")
+    );
+    assert!(ordinary_entrypoint(&output, "edge-tts 7.2.7").is_err());
+}
+#[tokio::test]
+async fn observability_actual_hanging_child_is_stopped_and_reaped() {
+    use tokio::io::AsyncReadExt;
+    let mut command = child_command("import sys; print('R',flush=True); sys.stdin.buffer.read()");
+    command
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    let mut child = command.spawn().unwrap();
+    let input = child.stdin.take().unwrap();
+    let mut stdout = child.stdout.take().unwrap();
+    let stderr = child.stderr.take().unwrap();
+    let mut ready = [0; 2];
+    stdout.read_exact(&mut ready).await.unwrap();
+    assert_eq!(&ready, b"R\n");
+    assert!(child.try_wait().unwrap().is_none());
+    let output = capture_child(
+        &mut child,
+        stdout,
+        stderr,
+        tokio::time::Instant::now() + Duration::from_millis(50),
+        PROBE_CLEANUP,
+    )
+    .await
+    .unwrap();
+    assert!(output.reaped && child.try_wait().unwrap().is_some());
+    assert!(output.capture_failure.unwrap().contains("deadline"));
+    drop(input);
+}
+#[tokio::test]
+async fn observability_root_exit_does_not_complete_another_owned_writer_eof() {
+    use std::os::fd::OwnedFd;
+    use tokio::io::AsyncReadExt;
+    let (reader, writer) = std::os::unix::net::UnixStream::pair().unwrap();
+    reader.set_nonblocking(true).unwrap();
+    let mut reader = tokio::net::UnixStream::from_std(reader).unwrap();
+    let (err_reader, err_writer) = std::os::unix::net::UnixStream::pair().unwrap();
+    err_reader.set_nonblocking(true).unwrap();
+    let err_reader = tokio::net::UnixStream::from_std(err_reader).unwrap();
+    // Both processes are directly owned by this fixture. Sharing the root's
+    // write ends reproduces inherited-pipe EOF behavior without unowned kills.
+    let mut holder_command = child_command("import sys; sys.stdin.buffer.read()");
+    holder_command
+        .stdin(std::process::Stdio::piped())
+        .stdout(OwnedFd::from(writer.try_clone().unwrap()))
+        .stderr(OwnedFd::from(err_writer.try_clone().unwrap()));
+    let mut holder = holder_command.spawn().unwrap();
+    let holder_input = holder.stdin.take().unwrap();
+    let mut root_command = child_command("print('R',flush=True)");
+    root_command
+        .stdout(OwnedFd::from(writer))
+        .stderr(OwnedFd::from(err_writer));
+    let mut root = root_command.spawn().unwrap();
+    let mut ready = [0; 2];
+    reader.read_exact(&mut ready).await.unwrap();
+    assert_eq!(&ready, b"R\n");
+    assert!(root.wait().await.unwrap().success());
+    assert!(holder.try_wait().unwrap().is_none());
+    let output = capture_child(
+        &mut root,
+        reader,
+        err_reader,
+        tokio::time::Instant::now() + Duration::from_millis(50),
+        PROBE_CLEANUP,
+    )
+    .await
+    .unwrap();
+    assert_eq!(output.status, Some(0));
+    assert!(output.reaped && output.capture_failure.unwrap().contains("deadline"));
+    drop(holder_input);
+    assert!(
+        tokio::time::timeout(PROBE_CLEANUP, holder.wait())
+            .await
+            .unwrap()
+            .unwrap()
+            .success()
+    );
+}
+#[tokio::test]
+async fn observability_actual_pipe_read_error_preserves_primary_diagnostics_and_reaps() {
+    struct BrokenAfterData(tokio::process::ChildStderr, bool);
+    impl tokio::io::AsyncRead for BrokenAfterData {
+        fn poll_read(
+            mut self: std::pin::Pin<&mut Self>,
+            cx: &mut std::task::Context<'_>,
+            buffer: &mut tokio::io::ReadBuf<'_>,
+        ) -> std::task::Poll<io::Result<()>> {
+            if self.1 {
+                return std::task::Poll::Ready(Err(io::Error::other("owned pipe read failure")));
+            }
+            let before = buffer.filled().len();
+            let result = std::pin::Pin::new(&mut self.0).poll_read(cx, buffer);
+            if buffer.filled().len() > before {
+                self.1 = true;
+            }
+            result
+        }
+    }
+    let mut command = child_command(
+        "import sys; sys.stderr.write('primary exception cause\\n'); sys.stderr.flush(); sys.stdin.buffer.read()",
+    );
+    command
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    let mut child = command.spawn().unwrap();
+    let input = child.stdin.take().unwrap();
+    let stdout = child.stdout.take().unwrap();
+    let stderr = BrokenAfterData(child.stderr.take().unwrap(), false);
+    let output = capture_child(
+        &mut child,
+        stdout,
+        stderr,
+        tokio::time::Instant::now() + Duration::from_secs(2),
+        PROBE_CLEANUP,
+    )
+    .await
+    .unwrap();
+    assert!(output.reaped);
+    assert!(
+        output
+            .capture_failure
+            .as_ref()
+            .unwrap()
+            .contains("owned pipe read failure")
+    );
+    let error = ordinary_entrypoint(&output, "edge-tts 7.2.7").unwrap_err();
+    assert!(
+        error.message.contains("primary exception cause")
+            && error.message.contains("owned pipe read failure")
+    );
+    drop(input);
+}
+
+fn observer_fixture(layout: &Layout, graph: &Value, error: Value, nonce: &str) -> Value {
+    let base = layout.base(KEY);
+    let preopens: serde_json::Map<String, Value> = graph["extensions"]
+        .as_object()
+        .unwrap()
+        .iter()
+        .map(|(name, item)| (name.clone(), item["preopen"].clone()))
+        .collect();
+    json!({"tag":"hexbot-entrypoint-error-v1","nonce":nonce,"identity":{"implementation":"CPython","version":"3.11.16","executable":layout.venv_python,"prefix":layout.venv,"base_prefix":base,"python_dll":base.join("python311.dll"),"failures":{}},"argv":[layout.entrypoint,"--version"],"preopens":preopens,"error":error})
+}
+fn syntax_evidence(layout: &Layout) -> (Value, Value) {
+    let source = layout.site_packages().join("edge_tts/communicate.py");
+    fs::write(&source, "def (:\n").unwrap();
+    let mut graph = healthy_probe(&layout.site_packages());
+    let mut failed = failure("SyntaxError", false, None, None);
+    failed["filename"] = json!(source);
+    graph["modules"]["edge_tts"] =
+        json!({"status":"error","origin":null,"loader":null,"error":failed});
+    let error = json!({"module":"builtins","qualname":"SyntaxError","exact_module_not_found_error":false,"exact_syntax_error":true,"failure":failed,"message":"owned syntax cause"});
+    (graph, error)
+}
+#[tokio::test]
+async fn observability_matching_exception_repairs_once_then_ordinary_final_and_preserves_cause() {
+    let (_dir, layout) = installed().await;
+    let before = snapshot(&[
+        &layout.identity,
+        &layout.receipt,
+        &layout.venv_python,
+        &layout.venv_cfg,
+    ]);
+    let (graph, error) = syntax_evidence(&layout);
+    let mut fake = Fake::new(&layout);
+    fake.packages.push_back(json_out(&graph));
+    fake.observer_error = Some(error.clone());
+    run(&layout, &mut fake).await.unwrap();
+    assert_eq!(fake.events.iter().filter(|e| *e == "observer").count(), 1);
+    assert_eq!(fake.events.iter().filter(|e| *e == "entry").count(), 1);
+    assert_eq!(fake.uv_calls().len(), 1);
+    assert_eq!(
+        snapshot(&[
+            &layout.identity,
+            &layout.receipt,
+            &layout.venv_python,
+            &layout.venv_cfg
+        ]),
+        before
+    );
+    assert!(!fs::read_dir(&layout.runtime).unwrap().any(|e| {
+        e.unwrap()
+            .file_name()
+            .to_string_lossy()
+            .starts_with(".hexbot-entrypoint-")
+    }));
+    let (graph, _) = syntax_evidence(&layout);
+    let mut failed = Fake::new(&layout);
+    failed.packages.push_back(json_out(&graph));
+    failed.observer_error = Some(error);
+    failed.fail = Some("pip");
+    let error = run(&layout, &mut failed).await.unwrap_err();
+    assert!(
+        error.message.contains("owned syntax cause") && error.message.contains("installer failed")
+    );
+}
+#[tokio::test]
+async fn observability_unknown_or_unmatched_exception_never_uses_unrelated_version_damage() {
+    let (_dir, layout) = installed().await;
+    let before = snapshot(&[&layout.identity, &layout.receipt, &layout.requirements]);
+    let (mut graph, error) = syntax_evidence(&layout);
+    // Valid observer syntax evidence must not match only a version mismatch.
+    graph["modules"]["edge_tts"] =
+        healthy_probe(&layout.site_packages())["modules"]["edge_tts"].clone();
+    graph["distributions"]["idna"]["version"] = json!("old");
+    let mut fake = Fake::new(&layout);
+    fake.packages.push_back(json_out(&graph));
+    fake.observer_error = Some(error);
+    assert!(run(&layout, &mut fake).await.is_err());
+    assert!(fake.uv_calls().is_empty());
+    assert_eq!(
+        snapshot(&[&layout.identity, &layout.receipt, &layout.requirements]),
+        before
+    );
+}
+#[test]
+fn observability_exact_observer_contract_refuses_all_independent_failures() {
+    let (_dir, layout) = home();
+    fake_base(&layout, KEY, false);
+    fake_venv(&layout, &layout.alias);
+    fake_packages(&layout);
+    let (graph, error) = syntax_evidence(&layout);
+    let parsed: PackageProbe = serde_json::from_value(graph.clone()).unwrap();
+    let good = observer_fixture(&layout, &graph, error, "nonce");
+    assert!(
+        observer_result(
+            &json_out(&good),
+            "edge-tts 7.2.7",
+            "nonce",
+            &layout,
+            KEY,
+            &parsed
+        )
+        .unwrap()
+        .unwrap()
+        .contains("owned syntax cause")
+    );
+    for (pointer, value) in [
+        ("/nonce", json!("wrong")),
+        ("/tag", json!("unknown")),
+        ("/argv/1", json!("--other")),
+        ("/identity/python_dll", json!("/foreign/python311.dll")),
+        ("/identity/executable", json!("/foreign/python.exe")),
+        ("/error/exact_syntax_error", json!(false)),
+        ("/error/exact_syntax_error", json!("true")),
+        ("/error/module", json!("lookalike")),
+        ("/error/failure/winerror", json!(5)),
+        ("/error/failure/filename", json!("/foreign/source.py")),
+        ("/preopens/frozenlist._frozenlist/status", json!("error")),
+    ] {
+        let mut bad = good.clone();
+        *bad.pointer_mut(pointer).unwrap() = value;
+        assert!(
+            observer_result(
+                &json_out(&bad),
+                "edge-tts 7.2.7",
+                "nonce",
+                &layout,
+                KEY,
+                &parsed
+            )
+            .is_err(),
+            "{pointer}"
+        );
+    }
+    for version_text in [false, true] {
+        for failure in [
+            "stderr",
+            "capture",
+            "unreaped",
+            "nonzero",
+            "crash",
+            "over-limit",
+        ] {
+            let mut output = if version_text {
+                out(Some(0), "edge-tts 7.2.7\n")
+            } else {
+                json_out(&good)
+            };
+            match failure {
+                "stderr" => output.stderr = b"late atexit diagnostics\n".to_vec(),
+                "capture" => output.capture_failure = Some("pipe read failed".into()),
+                "unreaped" => {
+                    output.reaped = false;
+                    output.capture_failure = Some("cleanup reap unconfirmed".into());
+                }
+                "nonzero" => output.status = Some(120),
+                "crash" => output.status = None,
+                _ => output.stdout.extend(vec![b'x'; OUTPUT_LIMIT]),
+            }
+            let denied = observer_result(&output, "edge-tts 7.2.7", "nonce", &layout, KEY, &parsed)
+                .unwrap_err();
+            if !version_text && failure != "over-limit" {
+                assert!(denied.message.contains("owned syntax cause"));
+            }
+        }
+    }
+    for text in [
+        format!("{}\nextra", good),
+        format!("{}\n\n", good),
+        "{\"tag\":".to_owned(),
+    ] {
+        assert!(
+            observer_result(
+                &out(Some(0), &text),
+                "edge-tts 7.2.7",
+                "nonce",
+                &layout,
+                KEY,
+                &parsed
+            )
+            .is_err()
+        );
+    }
+}
+#[tokio::test]
+async fn observability_unconfirmed_reap_retains_only_own_scratch_and_completion() {
+    let (_dir, layout) = installed().await;
+    let (graph, _) = syntax_evidence(&layout);
+    let before = snapshot(&[&layout.identity, &layout.receipt, &layout.requirements]);
+    let mut fake = Fake::new(&layout);
+    fake.packages.push_back(json_out(&graph));
+    let mut output = out(Some(0), "edge-tts 7.2.7\n");
+    output.reaped = false;
+    output.capture_failure = Some("primary timeout; cleanup reap unconfirmed".into());
+    fake.entry.push_back(output);
+    let error = run(&layout, &mut fake).await.unwrap_err();
+    assert!(
+        error.message.contains("primary timeout") && error.message.contains("scratch retained")
+    );
+    assert!(fake.uv_calls().is_empty());
+    assert_eq!(
+        snapshot(&[&layout.identity, &layout.receipt, &layout.requirements]),
+        before
+    );
+    let scratch: Vec<_> = fs::read_dir(&layout.runtime)
+        .unwrap()
+        .filter_map(|e| {
+            let e = e.unwrap();
+            e.file_name()
+                .to_string_lossy()
+                .starts_with(".hexbot-entrypoint-")
+                .then_some(e.path())
+        })
+        .collect();
+    assert_eq!(scratch.len(), 1);
+    assert!(scratch[0].join("sitecustomize.py").is_file());
+    // Fake has no real child. Only this test-owned leftover is removed here.
+    fs::remove_file(scratch[0].join("sitecustomize.py")).unwrap();
+    fs::remove_dir(&scratch[0]).unwrap();
+}
+
+#[test]
+fn observability_schema2_rejects_null_duplicate_unknown_or_noncanonical_digests() {
+    let good =
+        json!({"schema":2,"home":"/owned/home","base_key":KEY,"base_dll_sha256":"a".repeat(64)});
+    for value in [
+        Value::Null,
+        json!("A".repeat(64)),
+        json!("f".repeat(63)),
+        json!("g".repeat(64)),
+        json!(7),
+    ] {
+        let mut bad = good.clone();
+        bad["base_dll_sha256"] = value;
+        assert!(parse_identity(bad.to_string().as_bytes()).is_err());
+    }
+    let mut legacy = good.clone();
+    legacy["schema"] = json!(1);
+    assert!(parse_identity(legacy.to_string().as_bytes()).is_err());
+    let null_legacy =
+        format!(r#"{{"schema":1,"home":"/h","base_key":"{KEY}","base_dll_sha256":null}}"#);
+    assert!(parse_identity(null_legacy.as_bytes()).is_err());
+    assert!(
+        parse_identity(
+            null_legacy
+                .replace("base_dll_sha256", "base_dll_sha25\\u0036")
+                .as_bytes()
+        )
+        .is_err()
+    );
+    let duplicate = format!(
+        r#"{{"schema":2,"home":"/h","base_key":"{KEY}","base_dll_sha256":"{}","base_dll_sha256":"{}"}}"#,
+        "a".repeat(64),
+        "b".repeat(64)
+    );
+    assert!(parse_identity(duplicate.as_bytes()).is_err());
+}
+fn legacy_record(layout: &Layout) {
+    fs::write(
+        &layout.identity,
+        json!({"schema":1,"home":layout.home,"base_key":KEY}).to_string(),
+    )
+    .unwrap();
+}
+#[tokio::test]
+async fn observability_schema1_enriches_only_after_both_identities_then_repeats_without_write() {
+    let (_dir, layout) = installed().await;
+    legacy_record(&layout);
+    let before = snapshot(&[
+        &layout.receipt,
+        &layout.requirements,
+        &layout.venv_cfg,
+        &layout.venv_python,
+    ]);
+    let mut fake = Fake::new(&layout);
+    run(&layout, &mut fake).await.unwrap();
+    assert!(fake.uv_calls().is_empty());
+    let record = parse_identity(&fs::read(&layout.identity).unwrap()).unwrap();
+    assert_eq!(
+        record.base_dll_sha256,
+        Some(format!("{:x}", Sha256::digest(EXE)))
+    );
+    assert_eq!(
+        snapshot(&[
+            &layout.receipt,
+            &layout.requirements,
+            &layout.venv_cfg,
+            &layout.venv_python
+        ]),
+        before
+    );
+    let identity = snapshot(&[&layout.identity]);
+    let mut next = Fake::new(&layout);
+    run(&layout, &mut next).await.unwrap();
+    assert_eq!(snapshot(&[&layout.identity]), identity);
+    // Any failed second identity keeps the exact legacy record.
+    legacy_record(&layout);
+    let identity = snapshot(&[&layout.identity]);
+    let mut failed = Fake::new(&layout);
+    failed.identity.push_back(json_out(&json!({"implementation":"CPython","version":"3.11.16","executable":layout.base(KEY).join("python.exe"),"prefix":layout.base(KEY),"base_prefix":layout.base(KEY),"python_dll":layout.base(KEY).join("python311.dll"),"failures":{}})));
+    failed.identity.push_back(out(Some(77), ""));
+    assert!(run(&layout, &mut failed).await.is_err());
+    assert_eq!(snapshot(&[&layout.identity]), identity);
+    assert!(failed.uv_calls().is_empty());
+}
+#[tokio::test]
+async fn observability_schema1_damaged_exe_refuses_but_missing_dll_can_repair_then_enrich() {
+    for short in [false, true] {
+        let (_dir, layout) = installed().await;
+        legacy_record(&layout);
+        let before = snapshot(&[&layout.identity, &layout.receipt]);
+        let exe = layout.base(KEY).join("python.exe");
+        if short {
+            fs::write(&exe, b"x").unwrap();
+        } else {
+            fs::remove_file(&exe).unwrap();
+        }
+        let mut fake = Fake::new(&layout);
+        let error = run(&layout, &mut fake).await.unwrap_err();
+        assert!(error.message.contains("schema 1"));
+        assert!(fake.uv_calls().is_empty());
+        assert_eq!(snapshot(&[&layout.identity, &layout.receipt]), before);
+    }
+    let (_dir, layout) = installed().await;
+    legacy_record(&layout);
+    fs::remove_file(layout.base(KEY).join("python311.dll")).unwrap();
+    let mut fake = Fake::new(&layout);
+    run(&layout, &mut fake).await.unwrap();
+    assert_eq!(fake.uv_calls().len(), 1);
+    assert!(
+        parse_identity(&fs::read(&layout.identity).unwrap())
+            .unwrap()
+            .base_dll_sha256
+            .is_some()
+    );
+}
+#[tokio::test]
+async fn observability_schema2_dll_mismatch_dominates_exe_and_never_rebaselines_after_uv() {
+    for short_exe in [false, true] {
+        let (_dir, layout) = installed().await;
+        let before = snapshot(&[&layout.identity, &layout.receipt]);
+        let base = layout.base(KEY);
+        if short_exe {
+            fs::write(base.join("python.exe"), b"x").unwrap();
+        } else {
+            fs::remove_file(base.join("python.exe")).unwrap();
+        }
+        fs::write(base.join("python311.dll"), vec![b'z'; EXE.len()]).unwrap();
+        let mut fake = Fake::new(&layout);
+        assert!(run(&layout, &mut fake).await.is_err());
+        assert!(fake.uv_calls().is_empty());
+        assert_eq!(snapshot(&[&layout.identity, &layout.receipt]), before);
+    }
+    let (_dir, layout) = installed().await;
+    let before = snapshot(&[&layout.identity, &layout.receipt]);
+    fs::remove_file(layout.base(KEY).join("python311.dll")).unwrap();
+    let mut changed = Fake::new(&layout);
+    changed.replacement_dll = Some(vec![b'z'; EXE.len()]);
+    let error = run(&layout, &mut changed).await.unwrap_err();
+    assert!(error.message.contains("previously observed"));
+    assert_eq!(changed.uv_calls().len(), 1);
+    assert_eq!(snapshot(&[&layout.identity, &layout.receipt]), before);
+    let mut next = Fake::new(&layout);
+    assert!(run(&layout, &mut next).await.is_err());
+    assert!(next.uv_calls().is_empty());
+    assert_eq!(snapshot(&[&layout.identity, &layout.receipt]), before);
+}
+#[tokio::test]
+async fn observability_failed_loaded_path_or_unstable_bytes_never_publishes_identity() {
+    for unstable in [false, true] {
+        let (_dir, layout) = home();
+        fake_base(&layout, KEY, false);
+        fake_venv(&layout, &layout.alias);
+        fake_packages(&layout);
+        let mut fake = Fake::new(&layout);
+        if unstable {
+            fake.change_dll_during_probe = true;
+        } else {
+            fake.identity.push_back(json_out(&json!({"implementation":"CPython","version":"3.11.16","executable":layout.base(KEY).join("python.exe"),"prefix":layout.base(KEY),"base_prefix":layout.base(KEY),"python_dll":layout.entrypoint,"failures":{}})));
+        }
+        assert!(run(&layout, &mut fake).await.is_err());
+        assert!(!layout.identity.exists());
+        assert!(fake.uv_calls().is_empty());
+    }
+}
+#[tokio::test]
+async fn observability_final_ordinary_diagnostics_cannot_publish_completion() {
+    for recreated in [false, true] {
+        let (_dir, layout) = installed().await;
+        if recreated {
+            fs::remove_dir_all(&layout.venv).unwrap();
+        } else {
+            fs::write(&layout.receipt, "old lock").unwrap();
+        }
+        let before = snapshot(&[&layout.identity, &layout.receipt]);
+        let mut fake = Fake::new(&layout);
+        let mut output = out(Some(0), "edge-tts 7.2.7\n");
+        output.stderr = b"final launcher diagnostics".to_vec();
+        fake.entry.push_back(output);
+        let error = run(&layout, &mut fake).await.unwrap_err();
+        assert!(error.message.contains("final launcher diagnostics"));
+        assert!(!fake.events.iter().any(|e| e == "observer"));
+        assert_eq!(snapshot(&[&layout.identity]), before[..1]);
+        if recreated {
+            assert!(!layout.receipt.exists());
+        } else {
+            assert_eq!(snapshot(&[&layout.identity, &layout.receipt]), before);
+        }
+    }
+}
+
+#[tokio::test]
+async fn observability_actual_python_hook_teardown_and_alternate_lookup() {
+    let (_dir, layout) = home();
+    fake_base(&layout, KEY, false);
+    fake_venv(&layout, &layout.alias);
+    fake_packages(&layout);
+    let (graph, error) = syntax_evidence(&layout);
+    let graph: PackageProbe = serde_json::from_value(graph.clone()).unwrap();
+    let scratch = layout.runtime.join("portable observer");
+    fs::create_dir_all(&scratch).unwrap();
+    let script = scratch.join("sitecustomize.py");
+    fs::write(&script, observer_source(&layout.site_packages(), "nonce")).unwrap();
+    let identity = observer_fixture(
+        &layout,
+        &healthy_probe(&layout.site_packages()),
+        error,
+        "nonce",
+    )["identity"]
+        .clone();
+    let driver = r#"import sys,json,types,importlib.util
+from pathlib import Path
+script,body,identity,argv,extra,mode=sys.argv[1:]
+source=Path(script).read_text(); head=source[:-len(body)]
+namespace={'__name__':'sitecustomize','__file__':script}
+exec(compile(head,script,'exec'),namespace)
+# Only the native DLL identity is supplied by this portable fixture. The
+# generated hook, lookup, pre-opens, finalization and capture are production code.
+namespace['identity']=lambda:json.loads(identity)
+sys.argv=json.loads(argv)
+sys.path.insert(0,str(Path(script).parent))
+sys.modules['sitecustomize']=types.ModuleType('sitecustomize')
+sys.modules['sitecustomize'].__spec__=importlib.util.spec_from_file_location('sitecustomize',script)
+if extra: sys.path.append(extra)
+if mode=='missing-finder': sys.meta_path.insert(0,object())
+exec(compile(body,script,'exec'),namespace)
+if mode=='atexit':
+ import atexit
+ def teardown(): raise RuntimeError('actual late teardown cause')
+ atexit.register(teardown)
+if mode=='final-flush':
+ class OwnedOutput:
+  def __init__(self): self.calls=0; self.original=sys.stdout
+  def write(self,text): return self.original.write(text)
+  def flush(self):
+   self.calls+=1
+   if self.calls>1: raise OSError('actual final flush cause')
+   return self.original.flush()
+ sys.stdout=OwnedOutput()
+if mode=='unknown': raise AttributeError('actual unknown cause')
+if mode=='exit':
+ import os
+ os._exit(77)
+if mode=='success': print('edge-tts 7.2.7')
+else:
+ source=Path(sys.argv[0]).parent.parent/'Lib'/'site-packages'/'edge_tts'/'communicate.py'
+ exec(compile(source.read_text(),str(source),'exec'))
+"#;
+    let alternate = layout.runtime.join("alternate");
+    fs::create_dir(&alternate).unwrap();
+    let sentinel = alternate.join("executed");
+    fs::write(
+        alternate.join("sitecustomize.py"),
+        format!(
+            "from pathlib import Path\nPath({:?}).write_text('unsafe')\n",
+            sentinel.display().to_string()
+        ),
+    )
+    .unwrap();
+    for mode in [
+        "syntax",
+        "atexit",
+        "unknown",
+        "exit",
+        "missing-finder",
+        "final-flush",
+        "alternate",
+        "success",
+    ] {
+        let mut command = child_command(driver);
+        command
+            .arg(&script)
+            .arg(ENTRYPOINT_OBSERVER)
+            .arg(identity.to_string())
+            .arg(json!([layout.entrypoint, "--version"]).to_string())
+            .arg(if mode == "alternate" {
+                alternate.as_os_str()
+            } else {
+                OsStr::new("")
+            })
+            .arg(mode);
+        let output = bounded_output(command).await.unwrap();
+        let result = observer_result(&output, "edge-tts 7.2.7", "nonce", &layout, KEY, &graph);
+        if matches!(mode, "syntax" | "success") {
+            assert!(result.is_ok(), "{mode}: {}", output_cause(&output));
+        } else {
+            let error = result.unwrap_err();
+            if mode == "final-flush" {
+                assert_eq!(output.status, Some(120));
+                assert!(error.message.contains("actual final flush cause"));
+            }
+            if mode == "atexit" {
+                assert_eq!(output.status, Some(0));
+                assert!(
+                    error.message.contains("actual late teardown cause")
+                        && error.message.contains("SyntaxError")
+                );
+            }
+        }
+        assert!(output.reaped);
+        assert!(!sentinel.exists());
+    }
+}
+#[tokio::test]
+async fn observability_production_dll_probe_uses_pointer_sized_handle_and_grows_unicode_buffer() {
+    let driver = r#"import ctypes,sys,types,os
+source,path,mode=sys.argv[1:]
+ctypes.__spec__.origin=os.path.join(sys.base_prefix,'Lib','ctypes','__init__.py')
+sys.dllhandle=0x100000001
+state={'error':0,'sizes':[]}
+ctypes.set_last_error=lambda error:state.update(error=error)
+ctypes.get_last_error=lambda:state['error']
+ctypes.WinError=lambda code:OSError(code,'emulated API error')
+class API:
+ def __call__(self,handle,buffer,size):
+  assert handle.value==0x100000001,'DLL handle was truncated'
+  assert self.argtypes[0] is ctypes.c_void_p
+  state['sizes'].append(size)
+  if mode=='zero': state['error']=5; return 0
+  if mode=='truncate' or len(path)>=size: state['error']=122; return size
+  buffer.value=path
+  return len(path)
+api=API()
+ctypes.WinDLL=lambda name,**kwargs:types.SimpleNamespace(GetModuleFileNameW=api)
+exec(compile(source,'identity-probe','exec'))
+assert state['sizes'][0]==512
+if mode=='long': assert len(state['sizes'])>1
+if mode=='truncate': assert state['sizes'][-1]==32768
+"#;
+    for mode in ["long", "zero", "truncate"] {
+        let path = format!("C:/{}python311.dll", "José 中文/".repeat(100));
+        let mut command = child_command(driver);
+        command.arg(IDENTITY_PROBE).arg(&path).arg(mode);
+        let output = bounded_output(command).await.unwrap();
+        let result: Value = complete_json("test", "emulated DLL API probe", &output).unwrap();
+        assert!(output.stderr.is_empty(), "{}", output_cause(&output));
+        if mode == "long" {
+            assert_eq!(result["python_dll"], path);
+            assert!(output.stdout.is_ascii());
+        } else {
+            assert!(result["python_dll"].is_null());
+            assert!(
+                result["failures"]["python_dll"]["message"]
+                    .as_str()
+                    .is_some()
+            );
+        }
+    }
+}
+
+#[test]
+fn observability_missing_source_and_finite_native_names_need_the_same_graph_evidence() {
+    let (_dir, layout) = home();
+    fake_base(&layout, KEY, false);
+    fake_venv(&layout, &layout.alias);
+    fake_packages(&layout);
+    fs::remove_file(layout.site_packages().join("edge_tts/communicate.py")).unwrap();
+    let mut graph = healthy_probe(&layout.site_packages());
+    let missing = failure(
+        "ModuleNotFoundError",
+        false,
+        Some("edge_tts.communicate"),
+        None,
+    );
+    graph["modules"]["edge_tts"] =
+        json!({"status":"error","origin":null,"loader":null,"error":missing});
+    let error = json!({"module":"builtins","qualname":"ModuleNotFoundError","exact_module_not_found_error":true,"exact_syntax_error":false,"failure":missing,"message":"missing owned communicate"});
+    let parsed: PackageProbe = serde_json::from_value(graph.clone()).unwrap();
+    assert!(matches!(
+        classify(
+            &parsed,
+            &locked_versions(LOCK),
+            &layout.site_packages(),
+            &|p| canonical(p).ok()
+        ),
+        Health::Repairable(_)
+    ));
+    let result = observer_fixture(&layout, &graph, error, "n");
+    assert!(
+        observer_result(
+            &json_out(&result),
+            "edge-tts 7.2.7",
+            "n",
+            &layout,
+            KEY,
+            &parsed
+        )
+        .is_ok()
+    );
+    for locked in LOCKED {
+        for (full, relative) in locked.extensions {
+            let mut graph = healthy_probe(&layout.site_packages());
+            let path = layout.site_packages().join(relative);
+            let short = full.rsplit('.').next().unwrap();
+            let known = failure("ImportError", true, Some(full), Some(&path));
+            graph["extensions"][full]["import"] =
+                json!({"status":"error","origin":null,"loader":null,"error":known});
+            let parsed: PackageProbe = serde_json::from_value(graph.clone()).unwrap();
+            assert!(matches!(
+                classify(
+                    &parsed,
+                    &locked_versions(LOCK),
+                    &layout.site_packages(),
+                    &|p| canonical(p).ok()
+                ),
+                Health::Repairable(_)
+            ));
+            for name in [*full, short] {
+                let error = json!({"module":"builtins","qualname":"ImportError","exact_module_not_found_error":false,"exact_syntax_error":false,"failure":failure("ImportError",true,Some(name),Some(&path)),"message":"actual DLL load exception"});
+                let good = observer_fixture(&layout, &graph, error, "n");
+                assert!(
+                    observer_result(
+                        &json_out(&good),
+                        "edge-tts 7.2.7",
+                        "n",
+                        &layout,
+                        KEY,
+                        &parsed
+                    )
+                    .is_ok(),
+                    "{full} {name}"
+                );
+                for (pointer, value) in [
+                    ("/error/failure/name", json!(format!("prefix_{name}"))),
+                    ("/error/failure/path", json!(layout.entrypoint)),
+                    ("/error/failure/exact_import_error", json!(false)),
+                    ("/error/failure/winerror", json!(5)),
+                ] {
+                    let mut bad = good.clone();
+                    *bad.pointer_mut(pointer).unwrap() = value;
+                    assert!(
+                        observer_result(
+                            &json_out(&bad),
+                            "edge-tts 7.2.7",
+                            "n",
+                            &layout,
+                            KEY,
+                            &parsed
+                        )
+                        .is_err()
+                    );
+                }
+            }
+        }
+    }
+}
+#[tokio::test]
+async fn observability_actual_child_zero_cleanup_budget_never_fabricates_reap() {
+    use tokio::io::AsyncReadExt;
+    let mut command = child_command("import sys;print('R',flush=True);sys.stdin.buffer.read()");
+    command
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    let mut child = command.spawn().unwrap();
+    let input = child.stdin.take().unwrap();
+    let mut stdout = child.stdout.take().unwrap();
+    let stderr = child.stderr.take().unwrap();
+    let mut ready = [0; 2];
+    stdout.read_exact(&mut ready).await.unwrap();
+    assert_eq!(&ready, b"R\n");
+    assert!(child.try_wait().unwrap().is_none());
+    let output = capture_child(
+        &mut child,
+        stdout,
+        stderr,
+        tokio::time::Instant::now(),
+        Duration::ZERO,
+    )
+    .await
+    .unwrap();
+    assert!(
+        output
+            .capture_failure
+            .as_ref()
+            .unwrap()
+            .contains("operation deadline")
+    );
+    if output.reaped {
+        assert!(child.try_wait().unwrap().is_some());
+    } else {
+        assert!(
+            output
+                .capture_failure
+                .as_ref()
+                .unwrap()
+                .contains("cleanup deadline")
+        );
+        // The fixture still owns this exact child. Finish its cleanup without
+        // claiming that the production helper's exhausted envelope succeeded.
+        tokio::time::timeout(PROBE_CLEANUP, child.wait())
+            .await
+            .unwrap()
+            .unwrap();
+    }
+    assert!(ordinary_entrypoint(&output, "edge-tts 7.2.7").is_err());
+    drop(input);
 }

@@ -110,7 +110,11 @@ describe.skipIf(process.platform !== 'win32' || !process.env.HEXBOT_NATIVE_TEST_
       expect(directDiagnostics).not.toContain('"stage":"done"')
       expect(await readdir(phaseOutside)).toEqual(['sentinel'])
       await rm(join(directHome, 'runtime'))
-      await proveProductionRepair(chosen, exe, () => performBootstrap({ run, emit, appIsPackaged: true, appVersion: manifest.version, resourcesPath: dirname(bundle), platform: 'win32', arch: 'x64' }))
+      await proveProductionRepair(chosen, exe, async () => {
+        progress.length = 0
+        try { return await performBootstrap({ run, emit, appIsPackaged: true, appVersion: manifest.version, resourcesPath: dirname(bundle), platform: 'win32', arch: 'x64' }) }
+        catch (error) { expect(progress).not.toContain('done'); throw error }
+      })
       await expect(readFile(join(chosen, 'runtime/native-executable.exe'))).rejects.toThrow()
       const older = join(root, 'older runtime')
       await cp(bundle, older, { recursive: true })
@@ -226,12 +230,13 @@ async function proveProductionRepair(home: string, daemon: string, bootstrap: ()
   const python = join(environment, 'Scripts/python.exe')
   const entry = join(environment, 'Scripts/edge-tts.exe')
   const tools = join(home, 'runtime/tools')
-  const identity = JSON.parse(await readFile(join(tools, 'code-python-identity.json'), 'utf8')) as { schema: number; home: string; base_key: string }
-  expect(identity.schema).toBe(1)
+  const identity = JSON.parse(await readFile(join(tools, 'code-python-identity.json'), 'utf8')) as { schema: number; home: string; base_key: string; base_dll_sha256: string }
+  expect(identity.schema).toBe(2)
   expect(canonicalRuntimePath(identity.home)).toBe(canonicalRuntimePath(home))
   expect(identity.base_key).toMatch(/^cpython-3\.11\.(?:0|[1-9]\d*)-windows-x86_64-none$/)
   const dll = join(home, 'python', identity.base_key, 'python311.dll')
   const basePython = join(home, 'python', identity.base_key, 'python.exe')
+  expect(identity.base_dll_sha256).toBe(createHash('sha256').update(await readFile(dll)).digest('hex'))
   const communicate = join(environment, 'Lib/site-packages/edge_tts/communicate.py')
   const digest = async (path: string): Promise<string> => createHash('sha256').update(await readFile(path)).digest('hex')
   const originals = new Map<string, string>()
@@ -283,6 +288,12 @@ async function proveProductionRepair(home: string, daemon: string, bootstrap: ()
   await unchanged('healthy Full repeat', () => bootstrap().then(() => undefined))
   expect(await Promise.all(stablePaths.map(async path => [await digest(path), (await stat(path)).mtimeMs]))).toEqual(before)
   await healthy('healthy Full repeat')
+  const edgeInit = join(environment, 'Lib/site-packages/edge_tts/__init__.py')
+  const edgeInitBytes = await readFile(edgeInit)
+  await writeFile(edgeInit, Buffer.concat([Buffer.from("import sys\nsys.stderr.write('owned healthy launcher diagnostics\\n')\n"), edgeInitBytes]))
+  await unchanged('healthy Full launcher stderr refuses without done', () => expect(bootstrap()).rejects.toThrow())
+  await writeFile(edgeInit, edgeInitBytes)
+  await healthy('after healthy stderr refusal')
   // Direct explicit setup uses the selected real runtime, with no fixture uv
   // repair and no activation. It must report done only after production probes.
   const direct = async (): Promise<void> => {
@@ -345,8 +356,16 @@ async function proveProductionRepair(home: string, daemon: string, bootstrap: ()
   expect(await digest(witness)).toBe(witnessBefore)
   await rm(witness)
   await healthy('after retained-runtime refusals')
-  // This required positive intentionally remains an acceptance gate. Strict R1
-  // entrypoint aggregation can refuse --version when the same package is bad.
+  // Schema-1 fixture scope is unreleased; one healthy enrichment is allowed.
+  await writeFile(join(tools, 'code-python-identity.json'), JSON.stringify({ schema: 1, home: identity.home, base_key: identity.base_key }))
+  await bootstrap()
+  expect(await readFile(join(tools, 'code-python-identity.json'))).toEqual(identityBytes)
+  await healthy('healthy schema-1 enrichment')
+  // Both actual production callers must repair module-only damage with the
+  // launcher still present. Final checks use the ordinary launcher.
+  await rm(communicate)
+  await bootstrap()
+  await healthy('Full restores module-only damage through launcher observer')
   await writeFile(communicate, 'def (:\n')
   await direct()
   await healthy('direct setup restores invalid owned source')

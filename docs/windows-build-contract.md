@@ -82,106 +82,145 @@ race-free hard-link boundary or change permissions on legacy Python files.
 
 ### Owned Python repair
 
-Windows setup records the Python it owns in
-`runtime/tools/code-python-identity.json`: exactly `schema`, the canonical
-`home` and the exact `base_key` (`cpython-3.11.<patch>-windows-x86_64-none`).
-The record is written once, after the base and the venv pass their identity
-probes and before voice packages install. App, uv and voice-lock upgrades
-never rewrite it; a Python version change is not migrated.
+Windows setup keeps one private identity record beside the venv at
+`runtime/tools/code-python-identity.json`. Schema 2 has exactly `schema`, the
+canonical `home`, the exact CPython `base_key`, and `base_dll_sha256`. The digest
+binds fixed `python311.dll` bytes observed through healthy base and venv probes
+that report the same actual loaded DLL path. It is not a signature or download
+provenance claim. Unknown fields, duplicates, foreign homes and unknown schemas
+refuse. No app, uv or voice version resets the Python identity.
 
-Every run is one ordered pass under the activation lock: read-only checks of
-the fixed chains and leaves, the record, the base, the venv, then packages.
-Each layer gets at most one repair, and only for these states: the exact
-recorded base or venv directory missing, a missing or under-64-byte base
-`python.exe`, a missing `python311.dll`, a missing or under-64-byte `Scripts/python.exe` or
-`edge-tts.exe`, and structured package damage reported by a complete `-I -B`
-probe (a missing locked distribution or module, a version that differs from
-the lock, a syntax error in an owned source, or an exact `ImportError` for an
-audited `.pyd` whose name and path match after a successful read-only
-pre-open). Repairs use only four uv commands: `python install --no-bin 3.11`,
-`python install --no-bin --reinstall <key>`, `venv --allow-existing ...
---python <base>/python.exe`, and `pip install --reinstall --require-hashes
---no-deps --no-build`. Immediately before each uv call the operation roots are
-walked for reparse directories; only uv's minor alias under `python/` is
-allowed. A recreated venv removes the old voice receipt before pip, so an
-interrupted install takes the plain install branch next time.
+The ordered pass repairs only these owned states, once per layer:
 
-Other states refuse: reparse fixed leaves or shared append/lock/launcher/cfg/DLL leaves,
-a malformed record or one naming another home, an alias that disagrees with
-the record, a `pyvenv.cfg` not pointing at the owned base or its alias, an
-unrecorded nonempty venv without a usable cfg, a launcher of 64 bytes or more
-that fails, an existing truncated DLL, a package probe that crashes or returns
-anything but the complete structured result, access or sharing errors, and
-any failed final probe. The refusal names the layer and the OS cause on the
-CLI and, when its owned log is safe to append, in `logs/bootstrap.log`.
-Earlier package changes and any requested native runtime activation may already
-have completed. Atomic requirements and receipt replacement leaves other hard
-links unchanged or fails safely.
+- A missing whole recorded base, a missing base DLL, or a missing/SHORT base
+  executable. SHORT means an ordinary, readable, unshared launcher under 64
+  bytes. A present DLL must match its prior schema-2 digest before an EXE repair;
+  existing short, changed, inaccessible, shared or reparse DLLs refuse.
+- A missing whole recorded venv, or its missing/SHORT redirector, against the
+  exact verified base executable. Other invalid cfg or identity states refuse.
+- Missing or SHORT `edge-tts.exe`, known missing locked modules/distributions,
+  a locked version mismatch, owned locked-graph syntax damage, or an exact
+  structured native import failure. Complete package-graph refusal dominates.
 
-Known limitation: Windows remains unsupported. Setup repairs only the owned
-states described here. If Python identity or code verification is refused,
-the Full daemon may not start, because Full awaits bootstrap and never passes
-`--no-code-tools`. This scope provides no automatic recovery or Full option
-to skip code tools. The portable controls live in
-`backend/hexbot-core/src/setup_python_tests.rs`; the native production pass
-runs in `tests/windows_contract.rs` and the Full bootstrap test. The actual
-alias type after a first install or reinstall, exact-executable venv creation
-across 8.3 and extended paths, interrupted pip recovery, populated-cache
-junctions, ASCII JSON round trips and the section-data `.pyd` truncation
-positive are native acceptance gates, not claims.
+For current receipts, a present launcher with repairable package damage runs
+once with an app-authored exception observer in a fresh private runtime scratch
+directory. Only that child's PYTHONPATH names the scratch; inherited Python
+settings are scrubbed. The observer removes its directory from sys.path and
+asks every existing meta-path finder directly about `sitecustomize`, bypassing
+the module cache. An alternate, missing finder method or uncertain lookup
+refuses. No installed package, launcher, cfg or completion file is edited by
+this observation. An accepted exception must bind the nonce, actual argv,
+canonical interpreter identity and exact builtin type to matching evidence in
+the same complete package graph, including the eight native pre-opens. A mere
+unrelated version mismatch cannot explain an unknown launcher failure.
 
-The existing Windows workflow reaches the direct production control with
-`cargo test --locked --manifest-path backend/hexbot-core/Cargo.toml --test
-windows_contract owned_python_provisions_repairs_and_refuses_through_production_setup
--- --exact --nocapture`, in the disposable source prepared by the unchanged
-helper. After building the real Full bundle, its control runs with
-`HEXBOT_NATIVE_TEST_BUNDLE` naming that bundle and `pnpm --filter
-./apps/desktop run test --run src/main/backend/windows-bootstrap.test.ts`.
-The full `windows_contract` target also includes seven independent native tests
-from `tests/windows_contract/python_acceptance.rs`. Run that target without the
-single-test filter to include first-install alias resume and record interruption,
-stale/missing-receipt adoption, damaged legacy refusal, actual short/long/extended
-cfg paths, ASCII production probes, bytecode-free healthy repeats, finite healthy
-traversal, populated operation-root junctions, alias drift/escape, shared and
-reparse leaves, sharing/read-only errors, atomic hard-link witnesses, interrupted
-pip, missing RECORD, unpacked-cache tampering and separate uv leaf observations.
-Each independent test owns one fresh Unicode home and reuses it for its related
-cases. One additional empty home checks boundary refusal without an install.
-Full's existing fixture additionally tests poisoned PATH/UV/Python/config
-and extension-fallback settings, activation/retained-runtime escape refusals and
-a fresh-profile direct CLI refusal. The existing 300-second Full deadline and
-workflow budgets are unchanged; no retry or timing allowance is added.
+Every ordinary actual `edge-tts.exe --version` check requires exit zero, exactly
+the pinned version line, complete bounded stdout/stderr collection, and zero
+stderr bytes. This applies to healthy repeats, healthy-package checks before
+repair and all final paths. Healthy-package failure has no observer or pip
+fallback. The observer accepts either that version output or one complete tagged
+ASCII JSON exception, with the same empty-stderr and capture requirements.
+Startup warnings, late atexit diagnostics, abnormal exits, unknown exceptions,
+OS errors and incomplete results refuse. Final success always uses the ordinary
+uninstrumented launcher; observing a classified exception never declares it
+healthy. No stderr filtering or localized-message parsing supplies authority.
 
-The diagnostic uv calls have two distinct purposes. A verified owned uv pip
-child is stopped at process start and joined before production recovery; that
-control does not prove interruption after a particular write. A separate
-missing-RECORD fixture supplies deterministic partial metadata. Another fresh
-fixture observes uv's launcher/cfg hard-link replacement or write-through. That
-diagnostic never supplies a healed environment to production repair tests.
-Cache tampering preserves importable syntax: a successful setup must restore
-exact original payload hashes, or the control fails for unsafe reuse. A missing
-launcher triggers pip while the installed module remains healthy, so the
-module-only observability conflict cannot prevent this cache observation. Explicit
-failure must preserve completion and its original cause. No flags, cache purge,
-retry or fixture uv recovery answers a failed control.
+Read-only identity/package/launcher probes have one private 30-second absolute
+limit for process completion plus concurrent capped stream EOF. A failure gets
+one additional shared 5-second cleanup envelope for the directly owned child
+and owned reads. No detached reader/reaper tasks are created. Root exit alone
+cannot complete pipes held by another process. The helper cancels its own reads
+and stops/reaps only its directly owned child, with no descendant/PID-pattern
+kill authority. Observer scratch is removed only after confirmed direct-child
+reaping; unconfirmed cleanup or a launch error without a confirmed-reap result
+retains that invocation's scratch, which is never reused as evidence. Cleanup
+failure preserves the primary cause and prevents uv or completion publication.
+These limits do not apply to uv mutations or alter Full/CI test deadlines.
 
-All native results remain pending. Two required positives/negatives are explicit
-unignored acceptance gates: module-only repair versus independent entrypoint
-failure, and missing base EXE repair versus refusal for an existing damaged DLL.
-Their observability policy is under independent assessment; passing portable or
-compile checks does not resolve either gate. The old module-only positives are
-separate from the other native cases so a failure cannot hide those controls.
+Missing/stale voice completion takes the explicit pinned install/update branch
+after interpreter checks, without probing damaged old packages first. All final
+identity, package, origin/loader and ordinary launcher checks remain mandatory.
+Verified whole-venv recreation alone removes its obsolete receipt before pip;
+a later failure leaves it absent. Other failures preserve prior completion
+bytes/absence. Native activation or package mutation may already have happened;
+there is no rollback promise. Healthy schema-2 repeats do not rewrite identity,
+requirements, receipts or Python files, and do not create observer scratch.
 
-Deterministic native final-probe crash/malformed injection is specifically
-blocked by the absence of an event after uv exits and before final probes. The
-parent approved recording this blocker. The private Runner test
-`final_package_crash_or_malformed_output_never_publishes_completion` supplies
-crash and incomplete JSON outputs after simulated pip success, checks stable
-identity and stale/invalidated receipt behavior, then checks the next install.
-It exercises the production pass over owned files, but cannot prove real uv
-exit timing, Windows process behavior or the native final-probe boundary. No new
-production hook, filesystem race, sleep or fake native result was added. This
-is not native certification or a waiver of safe final failure behavior.
+Schema-1 records exist only in unreleased PR133 builds and fixtures. Healthy
+base/venv observations permit one atomic enrichment to schema 2 before voice
+work, an explicit one-time no-write exception. A missing/SHORT base EXE with a
+present DLL refuses under schema 1 because it has no prior healthy-DLL evidence.
+A missing DLL or proved whole base may use the existing exact-key repair, then
+enrich after both healthy observations. Already damaged bytes are never blessed
+retroactively. Unknown/malformed identities cannot enter migration.
+
+Every future uv-pin update must prove byte-identical fixed DLL payloads for the
+existing schema-2 exact keys it must repair, or carry its own separately reviewed
+narrow migration. Updating uv alone never changes a healthy identity or digest.
+A later same-key reinstall with different distribution bytes may mutate the base
+and then refuse the final digest; later invocations also refuse that mismatch.
+No automatic rebaseline, rollback or recovery recipe is provided.
+
+Downgrade behavior differs. Unreleased schema-1-aware PR133 code refuses schema
+2 as unsupported. Known main `670dc94c` has no identity-record handling and
+ignores the record, so it may mutate the environment. Returning to schema-2-aware
+code can then refuse changed bytes or identity. This is not a general backward
+compatibility or downgrade-refusal guarantee.
+
+Windows remains unsupported. Refused Python identity or code verification can
+prevent the Full daemon from starting. This scope provides no automatic recovery
+or Full option to skip code tools. Native runtime activation may already have
+completed. CLI/log errors name the layer and available original cause; logging
+requires an available safe log path. No renderer repair UI is promised.
+
+Portable controls run the actual private pass over owned files with process
+results supplied by a Runner. Actual local Python children additionally exercise
+hook lookup/finalization, Unicode serialization, output overflow/read failures,
+hanging children and root-exited/held-pipe EOF. The loaded-DLL API control uses
+an explicit emulation on non-Windows hosts. These are not shipped Windows
+launcher or DLL-restoration proof.
+
+Native source remains reachable through the unchanged full `windows_contract`
+target and `windows-bootstrap.test.ts` with a real Full bundle. The focused
+`tests/windows_contract/python_acceptance.rs` now contains nine independent
+native tests, each with one fresh installation home, plus one empty
+boundary-refusal home. Related cases reuse the same verified owned home. The
+existing production target and Full/direct callers retain A-F/N1-N7 controls,
+all thirteen locked versions/source origins, eight native origins/loaders,
+identity/digest bytes and restored payload hashes. Added gates cover actual
+module-only/dependency repairs, late/ordinary diagnostics, extra stdout, final flush/output caps, OS193/execute denial,
+alternate customization, loaded DLL paths, schema-1 enrichment/refusal and
+missing/SHORT-EXE combined with both 9-byte and section-truncated DLLs.
+
+Damage-only pinned uv interruption remains a process-start control, not proof
+of a partial-write window; its child is stopped and joined before production
+recovery. Missing RECORD is a separate deterministic fixture. Another fresh
+fixture observes exact allow-existing uv launcher/cfg hard-link behavior and
+never heals a production-repair fixture. Importable unpacked-cache tampering
+uses a missing launcher to reach pip; success must restore exact original bytes
+or fail the control. Explicit safe failure must preserve completion.
+
+ALL native A-F/N1-N7 and observer/DLL/migration results remain UNRUN/PENDING.
+Portable or GNU source checks do not settle them. A pinned launcher warning,
+cache inconsistency, different same-key DLL or unsupported alias/cfg behavior
+remains a failing acceptance gate, never a skip, whitelist or retry. The existing
+300-second Full deadline and 60-minute native workflow budget are unchanged;
+actual durations of the expanded native controls are unmeasured.
+
+Deterministic native final-probe crash/malformed injection remains blocked by
+no event after uv exits and before final probes. No production hook, filesystem
+race or sleep was added. Portable
+`final_package_crash_or_malformed_output_never_publishes_completion` and ordinary
+final-diagnostic controls check receipt/identity behavior across that simulated
+boundary. Forcing an unconfirmed native direct-child reap also lacks an honest
+deterministic injection at the real boundary. The native observer flush/cap
+controls instead damage owned module behavior before its original import. Portable
+actual-child capture controls cover the helper, and Runner controls pin scratch
+retention/status-120 refusal, but do not certify those Windows branches. Testing
+a future uv pin's different replacement bytes requires that separately reviewed
+pin; the portable Runner supplies changed bytes after the real mutation boundary
+and proves no rebaseline. Current native tampering tests cover pre-existing
+changed bytes without pretending to execute a different pin.
 
 ## Install and update contracts
 
