@@ -1,5 +1,8 @@
 //! One startup witness for the real PowerShell creator, not a supervisor/RPC.
 use super::{process_handle::ProcessHandle, shutdown_output::Output, windows_paths};
+#[path = "readiness_input.rs"]
+mod readiness_input;
+use readiness_input::ReadinessInput;
 #[allow(dead_code)] // Reuse identity checks, not the production PID-opening helper.
 #[path = "../../src/windows_process_identity.rs"]
 mod identity;
@@ -257,6 +260,8 @@ impl Startup {
         Ok(())
     }
     pub async fn ready(&mut self, child: &mut Child) -> Result<u16, String> {
+        let mut input = ReadinessInput::new(child);
+        let child = input.child();
         let deadline = Instant::now() + Duration::from_secs(45);
         let run = async {
             let mut port = None;
