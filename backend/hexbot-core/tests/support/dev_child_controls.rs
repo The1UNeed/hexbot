@@ -1,5 +1,8 @@
 //! Actual debug router/host controls, included by the existing native suite.
+#[path = "dev_host_completion.rs"]
+mod completion;
 use super::{powershell, process_handle::ProcessHandle, quote};
+use completion::assert_parent_completion;
 use futures_util::FutureExt;
 use serde_json::Value;
 use std::{
@@ -180,6 +183,9 @@ async fn dev_host_parent_death_console_events_and_assignment_refusal() {
         }
         assert_ended(&handles);
         assert!(!host.alive());
+        if mode == "parent" {
+            assert_parent_completion(&host.snapshot());
+        }
         drop(leaf_stream);
     }
 }
@@ -450,6 +456,11 @@ async fn dev_runner_actual_pnpm_electron_daemon_and_direct_web_stop_separately()
                     assert!(process.exits_within(remaining));
                 }
                 assert_ended(&observed);
+                for label in ["web", "desktop"] {
+                    let pid = event["hosts"][label].as_u64().unwrap() as u32;
+                    let host = observed.iter().find(|process| process.pid == pid).expect("Host handle retained before parent death");
+                    assert_parent_completion(&host.snapshot());
+                }
                 return;
             }
             if let Some(child) = &mut direct { child.start_kill().unwrap(); }
