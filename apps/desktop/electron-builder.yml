@@ -1,5 +1,6 @@
 # Full package: the Rust daemon, pinned Node/Pi runtime, skills and web assets.
 extends: ./electron-builder.base.yml
+# Added to the base list: extends concatenates extraResources.
 extraResources:
   - from: resources/hexbot-native
     to: hexbot-native

@@ -42,6 +42,7 @@
   "bundle": {
     "active": true,
     "targets": ["dmg", "appimage"],
+    "resources": { "../../../LICENSE": "LICENSE", "../../../NOTICE": "NOTICE" },
     "category": "Utility",
     "shortDescription": "Install Hexbot Headless, Client, or Full.",
     "copyright": "Hexbot contributors",

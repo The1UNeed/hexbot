@@ -1529,7 +1529,7 @@ export function AboutSettings(): React.JSX.Element {
             />
           ) : null}
           <Row control={value(info?.hermes_version ?? '—')} title="Agent core" />
-          <Row control={value('AGPL-3.0')} title="License" />
+          <Row control={value('Apache-2.0')} title="License" />
         </Group>
         <div className="flex gap-2">
           <Button
@@ -1565,7 +1565,7 @@ function Licenses({ onBack }: { onBack: () => void }) {
       >
         About
       </Button>
-      <Heading description="Hexbot is AGPL-3.0 software built with these open source projects. Each project's license is in its repository.">
+      <Heading description="Hexbot is Apache-2.0 software built with these open source projects. Each project's license is in its repository.">
         Licenses
       </Heading>
       <div className="space-y-8">
