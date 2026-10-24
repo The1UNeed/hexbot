@@ -523,6 +523,20 @@ record the actual PE machine and observed probe host architecture/image. They
 do not claim to observe the NSIS child itself. Malformed or unsupported headers
 and nonordinary system executables refuse rather than selecting another host.
 
+In Client run 40052789176, the controlled RemoteSigned prefix case took the
+fallback because `Get-ExecutionPolicy` failed with CouldNotAutoloadMatchingModule
+in the 32-bit host, not because of the policy. Microsoft documents that a
+PowerShell 7 parent's `PSModulePath` reaches Windows PowerShell 5.1 through an
+intermediate process and makes it resolve incompatible same-name modules
+(about_PSModulePath). That matches the CI runner shape, though the run did not
+record the resolved module path. The controlled RemoteSigned and Restricted
+terminal fixtures therefore remove the inherited `PSModulePath` from their own
+child only. A native control on the actual I386 and AMD64 hosts requires the
+pinned probes to pass under RemoteSigned with default modules and the policy
+probe to fail under Restricted. It records the unmodified environment as
+evidence. Production keeps the inherited environment, and the probes and
+branch decision still mirror NSIS.
+
 In the available branch, the preflight refuses matching raw directory prefixes,
 including sibling names, while preserving an independent daemon outside them.
 In the fallback branch, it verifies process-owner names and SIDs against the

@@ -134,6 +134,11 @@ pub fn terminal(
         .env("HEXBOT_UPDATE_URL", &installer.base_url);
     if let Some(policy) = policy {
         command.env("PSExecutionPolicyPreference", policy);
+        // Controlled policy scenarios only. A PowerShell 7 runner's module
+        // path reaches Windows PowerShell 5.1 through this Rust child, and 5.1
+        // then resolves incompatible same-name modules (about_PSModulePath).
+        // Removing it lets 5.1 build its default path; production is unchanged.
+        command.env_remove("PSModulePath");
     }
     let stdout = tempfile::tempfile().unwrap();
     let stderr = tempfile::tempfile().unwrap();

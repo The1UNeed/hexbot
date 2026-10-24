@@ -328,6 +328,10 @@ fn output(mut command: std::process::Command) -> crate::Result<std::process::Out
     })
 }
 
+#[cfg(all(test, windows))]
+#[path = "windows_nsis_host_control.rs"]
+mod host_control;
+
 #[cfg(test)]
 mod tests {
     use super::*;
