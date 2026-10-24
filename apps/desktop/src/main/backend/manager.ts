@@ -198,7 +198,7 @@ export class DaemonManager extends EventEmitter {
           throw error
         })
         if (installed) {
-          const port = await this.waitForService(undefined, this.quitting || epoch !== this.requestEpoch)
+          const port = await this.waitForService()
           this.failures = []
           this.setStatus({ state: 'external', port })
         } else this.setStatus({ state: 'stopped' })
@@ -229,14 +229,13 @@ export class DaemonManager extends EventEmitter {
       }
     })
   }
-  private waitForService(previousPid?: number, observeOperation = false): Promise<number> {
+  private waitForService(previousPid?: number): Promise<number> {
     return new Promise((resolve, reject) => {
       let settled = false, checking = false, changed = false
       let retry: NodeJS.Timeout | undefined
       let lastError: unknown
       const probe = new AbortController()
       const watchers: ReturnType<typeof watch>[] = []
-      const cancelled = (): void => finish(new Error('Service change was superseded'))
       const watchError = (error: Error): void => finish(error)
       const finish = (error?: Error, port?: number): void => {
         if (settled) return
@@ -244,7 +243,6 @@ export class DaemonManager extends EventEmitter {
         clearTimeout(timer)
         clearTimeout(retry)
         probe.abort()
-        this.off('transition-cancelled', cancelled)
         for (const watcher of watchers) {
           watcher.off('error', watchError)
           watcher.close()
@@ -279,8 +277,8 @@ export class DaemonManager extends EventEmitter {
         // HTTP can begin serving after the final filesystem publication.
         if (!settled) retry = setTimeout(() => { void check() }, 250)
       }
-      // A task operation already in flight must settle under this same deadline.
-      if (!observeOperation) this.on('transition-cancelled', cancelled)
+      // Every caller has entered a service operation. Finish its bounded
+      // ownership observation before the caller rejects a superseded request.
       try {
         const home = process.platform === 'win32' ? nodePath(realpathSync.native(hexbotHome())) : hexbotHome()
         for (const directory of [home, join(home, 'runtime')]) {
@@ -361,7 +359,7 @@ export class DaemonManager extends EventEmitter {
             throw error
           })
           if (previousPid !== undefined) {
-            const port = await this.waitForService(previousPid, true)
+            const port = await this.waitForService(previousPid)
             this.setStatus({ state: 'external', port })
           }
         }
@@ -630,7 +628,7 @@ export class DaemonManager extends EventEmitter {
       try {
         if (owned && this.handoffService) {
           if (await this.handoffService(async () => { await this.stopOwned() })) {
-            const port = await this.waitForService(previousPid ?? 0, true)
+            const port = await this.waitForService(previousPid ?? 0)
             this.setStatus({ state: 'external', port })
           }
         } else await this.stopOwned()
