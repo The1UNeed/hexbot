@@ -92,8 +92,8 @@ never rewrite it; a Python version change is not migrated.
 Every run is one ordered pass under the activation lock: read-only checks of
 the fixed chains and leaves, the record, the base, the venv, then packages.
 Each layer gets at most one repair, and only for these states: the exact
-recorded base or venv directory missing, a missing base `python.exe` or
-`python311.dll`, a missing or under-64-byte `Scripts/python.exe` or
+recorded base or venv directory missing, a missing or under-64-byte base
+`python.exe`, a missing `python311.dll`, a missing or under-64-byte `Scripts/python.exe` or
 `edge-tts.exe`, and structured package damage reported by a complete `-I -B`
 probe (a missing locked distribution or module, a version that differs from
 the lock, a syntax error in an owned source, or an exact `ImportError` for an

@@ -3,7 +3,7 @@
 #[path = "../src/windows_paths.rs"]
 mod windows_paths;
 
-#[path = "windows_python_acceptance.rs"]
+#[path = "windows_contract/python_acceptance.rs"]
 mod owned_python_acceptance;
 
 // Comparative publication controls. The current path is the public

@@ -136,7 +136,7 @@ for name in ("json", "_ssl", "_socket", "select", "asyncio", "zlib"):
     try:
         __import__(name)
     except BaseException as error:
-        result["failures"][name] = type(error).__name__
+        result["failures"][name] = {"type": type(error).__name__, "errno": getattr(error, "errno", None), "winerror": getattr(error, "winerror", None), "filename": getattr(error, "filename", None), "message": str(error)[:512]}
 sys.stdout.write(json.dumps(result, ensure_ascii=True) + "\n")
 "#;
 /// argv: site-packages, JSON spec. Pre-opens each expected .pyd read-only
@@ -200,7 +200,7 @@ fn refuse(stage: &str, cause: impl std::fmt::Display) -> Error {
     Error::new(
         CODE,
         format!(
-            "Python code tools ({stage}): {cause}. Any requested runtime activation already completed; details are in logs/bootstrap.log"
+            "Python code tools ({stage}): {cause}. Any requested runtime activation already completed; details are logged when logs/bootstrap.log is available and safe to append"
         ),
     )
 }
@@ -886,7 +886,17 @@ pub(super) struct IdentityProbe {
     executable: String,
     prefix: String,
     base_prefix: String,
-    failures: BTreeMap<String, String>,
+    failures: BTreeMap<String, IdentityFailure>,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct IdentityFailure {
+    #[serde(rename = "type")]
+    kind: String,
+    errno: Option<i64>,
+    winerror: Option<i64>,
+    filename: Option<String>,
+    message: String,
 }
 /// Exact implementation, patch, canonical executable/prefix/base and stdlib.
 pub(super) fn identity_consistent(
@@ -922,10 +932,17 @@ pub(super) fn identity_consistent(
             ));
         }
     }
-    if let Some((module, kind)) = probe.failures.iter().next() {
+    if let Some((module, failure)) = probe.failures.iter().next() {
         return Err(refuse(
             stage,
-            format!("required module {module} failed: {kind}"),
+            format!(
+                "required module {module} failed: {} errno {:?} winerror {:?} filename {:?}: {}",
+                failure.kind,
+                failure.errno,
+                failure.winerror,
+                failure.filename,
+                tail(failure.message.as_bytes())
+            ),
         ));
     }
     Ok(())
@@ -1108,7 +1125,13 @@ pub(super) fn classify(
                     .as_deref()
                     .map(Path::new)
                     .and_then(canon)
-                    .is_some_and(|f| f.starts_with(&package_dir));
+                    .is_some_and(|f| {
+                        f.extension().is_some_and(|extension| extension == "py")
+                            && LOCKED.iter().any(|member| {
+                                f.starts_with(site_canonical.join(member.module))
+                                    || f == site_canonical.join(format!("{}.py", member.module))
+                            })
+                    });
                 if !owned {
                     return Health::Refused(format!(
                         "{} has a syntax error outside its owned files",
@@ -1190,9 +1213,23 @@ pub(super) fn classify(
                     }
                 },
                 "parent_missing" => {
-                    if !(dist_missing || module_missing) {
+                    let expected_missing = import.status == "error"
+                        && import.origin.is_none()
+                        && import.loader.is_none()
+                        && import.error.as_ref().is_some_and(|error| {
+                            error.kind == "ModuleNotFoundError"
+                                && !error.exact_import_error
+                                && error.path.is_none()
+                                && error.name.as_deref().is_some_and(|name| {
+                                    name == *full
+                                        || full
+                                            .strip_prefix(name)
+                                            .is_some_and(|rest| rest.starts_with('.'))
+                                })
+                        });
+                    if !(dist_missing || module_missing) || !expected_missing {
                         return Health::Refused(format!(
-                            "{full} parent directory is missing while {} is present",
+                            "{full} parent directory is missing without a consistent missing-package result for {}",
                             locked.dist
                         ));
                     }
@@ -1570,13 +1607,19 @@ impl<R: Runner> Pass<'_, R> {
         let probe: PackageProbe = complete_json(stage, "package probe", &output)?;
         let versions = locked_versions(self.lock);
         let health = classify(&probe, &versions, &site, &|p| canonical(p).ok());
-        if health != Health::Healthy {
+        if matches!(health, Health::Refused(_)) {
             return Ok(health);
         }
         match launcher_state(stage, &self.layout.entrypoint)? {
             Launcher::Present => {}
-            Launcher::Missing => return Ok(Health::Repairable("edge-tts.exe is missing".into())),
-            Launcher::Short => return Ok(Health::Repairable("edge-tts.exe is truncated".into())),
+            Launcher::Missing | Launcher::Short => {
+                return Ok(match health {
+                    Health::Healthy => {
+                        Health::Repairable("edge-tts.exe is missing or truncated".into())
+                    }
+                    other => other,
+                });
+            }
         }
         let expected = format!(
             "edge-tts {}",
@@ -1590,15 +1633,17 @@ impl<R: Runner> Pass<'_, R> {
         let reported = String::from_utf8_lossy(&output.stdout).trim().to_owned();
         if output.status != Some(0) || reported != expected {
             return Ok(Health::Refused(format!(
-                "edge-tts.exe --version reported {reported:?} with {}",
+                "edge-tts.exe --version reported {:?} with {}: {}",
+                tail(&output.stdout),
                 output
                     .status
                     .map_or("an abnormal termination".to_owned(), |c| format!(
                         "status {c}"
-                    ))
+                    )),
+                tail(&output.stderr)
             )));
         }
-        Ok(Health::Healthy)
+        Ok(health)
     }
     async fn install_packages(&mut self, stage: &str, key: &str, message: &str) -> Result<()> {
         common::atomic_write(&self.layout.requirements, self.lock.as_bytes())?;

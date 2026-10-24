@@ -669,8 +669,13 @@ fn classifier_accepts_only_exact_structured_damage() {
     assert!(repairable(&with(
         &|v| v["modules"]["edge_tts"] = syntax(&site.join("edge_tts/__init__.py"))
     )));
-    assert!(refused(&with(
+    assert!(repairable(&with(
         &|v| v["modules"]["edge_tts"] = syntax(&site.join("yarl/__init__.py"))
+    )));
+    let unknown = site.join("unknown_dependency/__init__.py");
+    write(&unknown, b"def (:\n");
+    assert!(refused(&with(
+        &|v| v["modules"]["edge_tts"] = syntax(&unknown)
     )));
     assert!(refused(&with(
         &|v| v["modules"]["edge_tts"]["origin"] = json!(site.join("yarl/__init__.py"))
@@ -1444,4 +1449,161 @@ async fn failed_recreated_venv_identity_keeps_the_old_receipt_and_prevents_pip()
     assert!(fake.uv_calls()[0].starts_with("venv "));
     assert_eq!(fs::read_to_string(&layout.receipt).unwrap(), LOCK);
     assert_eq!(fake.receipt_at_pip, None);
+}
+
+#[tokio::test]
+async fn review_r1_package_damage_cannot_mask_entrypoint_refusal() {
+    let (_dir, layout) = installed().await;
+    let before = snapshot(&[
+        &layout.requirements,
+        &layout.receipt,
+        &layout.identity,
+        &layout.entrypoint,
+    ]);
+    let mut damaged = healthy_probe(&layout.site_packages());
+    damaged["distributions"]["idna"]["version"] = json!("0");
+    let mut fake = Fake::new(&layout);
+    fake.packages.push_back(json_out(&damaged));
+    fake.fail = Some("entry_launch");
+    let error = run(&layout, &mut fake).await.unwrap_err();
+    assert!(error.message.contains("OS error 193"));
+    assert!(fake.uv_calls().is_empty(), "{:?}", fake.events);
+    assert_eq!(
+        snapshot(&[
+            &layout.requirements,
+            &layout.receipt,
+            &layout.identity,
+            &layout.entrypoint
+        ]),
+        before
+    );
+}
+#[tokio::test]
+async fn review_r2_existing_truncated_dll_dominates_missing_executable() {
+    let (_dir, layout) = installed().await;
+    fs::remove_file(layout.base(KEY).join("python.exe")).unwrap();
+    fs::write(layout.base(KEY).join("python311.dll"), b"truncated").unwrap();
+    let mut fake = Fake::new(&layout);
+    let result = run(&layout, &mut fake).await;
+    assert!(result.is_err());
+    assert!(fake.uv_calls().is_empty(), "{:?}", fake.uv_calls());
+    assert_eq!(
+        fs::read(layout.base(KEY).join("python311.dll")).unwrap(),
+        b"truncated"
+    );
+}
+#[test]
+fn review_r3_locked_dependency_source_syntax_is_owned_graph_damage() {
+    let (_dir, layout) = home();
+    fake_packages(&layout);
+    let site = layout.site_packages();
+    let source = site.join("frozenlist/__init__.py");
+    fs::write(&source, b"def (:\n").unwrap();
+    let mut value = healthy_probe(&site);
+    for module in ["aiosignal", "frozenlist"] {
+        let mut error = failure("SyntaxError", false, None, None);
+        error["filename"] = json!(source);
+        value["modules"][module] =
+            json!({"status":"error","origin":null,"loader":null,"error":error});
+    }
+    let probe = serde_json::from_value(value).unwrap();
+    assert!(matches!(
+        classify(&probe, &locked_versions(LOCK), &site, &|p| canonical(p)
+            .ok()),
+        Health::Repairable(_)
+    ));
+}
+#[test]
+fn review_r4_missing_parent_cannot_mask_unknown_extension_failure() {
+    let (_dir, layout) = home();
+    fake_packages(&layout);
+    let site = layout.site_packages();
+    let mut value = healthy_probe(&site);
+    value["distributions"]["frozenlist"] = json!({"version":null,"error":failure("PackageNotFoundError",false,Some("frozenlist"),None)});
+    value["modules"]["frozenlist"] = json!({"status":"error","origin":null,"loader":null,"error":failure("ModuleNotFoundError",false,Some("frozenlist"),None)});
+    value["extensions"]["frozenlist._frozenlist"] = json!({"preopen":{"status":"parent_missing","size":null,"regular":null,"reparse":null,"error":null},"import":{"status":"error","origin":null,"loader":null,"error":failure("PermissionError",false,None,None)}});
+    let probe = serde_json::from_value(value).unwrap();
+    assert!(matches!(
+        classify(&probe, &locked_versions(LOCK), &site, &|p| canonical(p)
+            .ok()),
+        Health::Refused(_)
+    ));
+}
+#[test]
+fn review_r4_missing_parent_cannot_mask_foreign_success() {
+    let (_dir, layout) = home();
+    fake_packages(&layout);
+    let site = layout.site_packages();
+    let outside = tempfile::tempdir().unwrap();
+    let foreign = outside.path().join("_frozenlist.py");
+    fs::write(&foreign, b"# foreign\n").unwrap();
+    let mut value = healthy_probe(&site);
+    value["distributions"]["frozenlist"] = json!({"version":null,"error":failure("PackageNotFoundError",false,Some("frozenlist"),None)});
+    value["extensions"]["frozenlist._frozenlist"] = json!({"preopen":{"status":"parent_missing","size":null,"regular":null,"reparse":null,"error":null},"import":{"status":"ok","origin":foreign,"loader":"SourceFileLoader","error":null}});
+    let probe = serde_json::from_value(value).unwrap();
+    assert!(matches!(
+        classify(&probe, &locked_versions(LOCK), &site, &|p| canonical(p)
+            .ok()),
+        Health::Refused(_)
+    ));
+}
+#[test]
+fn review_r5_real_identity_probe_preserves_os_cause() {
+    let wrapper = format!(
+        "import builtins\noriginal=builtins.__import__\ndef controlled(name,*args,**kwargs):\n if name=='_ssl': raise PermissionError(13,'owned denied stdlib sentinel','owned/\\u4e2d_ssl.pyd')\n return original(name,*args,**kwargs)\nbuiltins.__import__=controlled\nexec({})\n",
+        json!(IDENTITY_PROBE)
+    );
+    let output = std::process::Command::new("python3")
+        .args(["-I", "-B", "-c", &wrapper])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(output.stdout.is_ascii());
+    let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(value["failures"]["_ssl"]["errno"], 13);
+    assert_eq!(
+        value["failures"]["_ssl"]["filename"],
+        "owned/\u{4e2d}_ssl.pyd"
+    );
+    assert!(
+        value["failures"]["_ssl"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("owned denied stdlib sentinel")
+    );
+}
+
+#[tokio::test]
+async fn review_r5_identity_consumer_and_entrypoint_keep_original_diagnostics() {
+    let (_dir, layout) = installed().await;
+    let base = layout.base(KEY);
+    let value = json!({"implementation":"CPython","version":"3.11.16","executable":base.join("python.exe"),"prefix":base,"base_prefix":base,
+        "failures":{"_ssl":{"type":"PermissionError","errno":13,"winerror":5,"filename":base.join("DLLs/_ssl.pyd"),"message":"owned denied stdlib sentinel"}}});
+    let probe: IdentityProbe = serde_json::from_value(value).unwrap();
+    let error = identity_consistent("base", &probe, &base.join("python.exe"), &base, &base, KEY)
+        .unwrap_err();
+    for original in [
+        "PermissionError",
+        "13",
+        "5",
+        "_ssl.pyd",
+        "owned denied stdlib sentinel",
+    ] {
+        assert!(error.message.contains(original), "{}", error.message);
+    }
+    let mut fake = Fake::new(&layout);
+    let mut output = out(Some(5), "");
+    output.stderr = b"owned entrypoint sharing sentinel OS error 5".to_vec();
+    fake.entry.push_back(output);
+    let error = run(&layout, &mut fake).await.unwrap_err();
+    assert!(
+        error
+            .message
+            .contains("owned entrypoint sharing sentinel OS error 5")
+    );
+    assert!(fake.uv_calls().is_empty());
 }

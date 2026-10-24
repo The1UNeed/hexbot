@@ -17,7 +17,7 @@ use std::{
     path::{Path, PathBuf},
     process::{Command, Stdio},
 };
-const LOCK: &str = include_str!("../assets/edge-tts.requirements.txt");
+const LOCK: &str = include_str!("../../assets/edge-tts.requirements.txt");
 const ALIAS: &str = "cpython-3.11-windows-x86_64-none";
 const MODULES: &[(&str, &str)] = &[
     ("aiohappyeyeballs", "aiohappyeyeballs"),
@@ -340,7 +340,7 @@ impl Home {
     }
 }
 fn production_probe(name: &str) -> &'static str {
-    include_str!("../src/setup_python.rs")
+    include_str!("../../src/setup_python.rs")
         .split(&format!("const {name}: &str = r#\""))
         .nth(1)
         .unwrap()
