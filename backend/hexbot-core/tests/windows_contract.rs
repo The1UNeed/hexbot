@@ -75,6 +75,10 @@ mod publication {
                 "(Get-Acl -LiteralPath $env:HEXBOT_ACL_PATH).Sddl",
             ])
             .env("HEXBOT_ACL_PATH", path)
+            // A PowerShell 7 runner's module path reaches Windows PowerShell 5.1
+            // through this Rust child, which then cannot autoload Get-Acl's module
+            // (about_PSModulePath). Let 5.1 build its default path; test-only.
+            .env_remove("PSModulePath")
             .output()
             .unwrap();
         assert!(
