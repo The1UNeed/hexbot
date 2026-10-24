@@ -5,7 +5,8 @@ import { nodePath } from '../../apps/desktop/src/main/backend/node-path.ts'
 
 // Windows notifications use long paths, even when TEMP used an 8.3 alias.
 // Older libuv asserts on that mismatch before JavaScript can catch an error.
-export function waitForRuntimeJson(path, predicate, timeout = 30_000, watchDirectory = watch) {
+export function waitForRuntimeJson(path, predicate, timeout = 30_000, watchDirectory = watch, { signal } = {}) {
+  signal?.throwIfAborted()
   const directory = nodePath(realpathSync.native(dirname(path)))
   const file = join(directory, basename(path))
   console.error('Runtime watcher:', JSON.stringify({ node: process.versions.node, uv: process.versions.uv,
@@ -13,11 +14,13 @@ export function waitForRuntimeJson(path, predicate, timeout = 30_000, watchDirec
   return new Promise((resolve, reject) => {
     let settled = false
     let watcher, timer
+    const aborted = () => finish(signal.reason)
     const finish = (error, value) => {
       if (settled) return
       settled = true
       clearTimeout(timer)
       watcher?.close()
+      signal?.removeEventListener('abort', aborted)
       if (error) reject(error)
       else resolve(value)
     }
@@ -32,6 +35,8 @@ export function waitForRuntimeJson(path, predicate, timeout = 30_000, watchDirec
       }
     }
     try {
+      signal?.addEventListener('abort', aborted, { once: true })
+      if (signal?.aborted) return aborted()
       watcher = watchDirectory(directory, check)
       watcher.once('error', finish)
       timer = setTimeout(() => finish(new Error(`Timed out waiting for ${file}`)), timeout)

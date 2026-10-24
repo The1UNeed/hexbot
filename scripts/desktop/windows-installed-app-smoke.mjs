@@ -8,6 +8,7 @@ import { cp, mkdir, readFile, realpath, writeFile } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { dirname, isAbsolute, join, relative, sep } from 'node:path'
 import { waitForRuntimeJson } from './runtime-file.mjs'
+import { captureInstalledApp, installedStartupFiles, startInstalledRuntime, startupRedactor } from './installed-app-startup.mjs'
 import { nodePath } from '../../apps/desktop/src/main/backend/node-path.ts'
 const require = createRequire(new URL('../../apps/desktop/package.json', import.meta.url))
 const { _electron: electron } = require('@playwright/test')
@@ -30,6 +31,33 @@ async function assertHomeLock(expected) {
   assert.equal(output.stdout.trim(), expected)
 }
 let app, ownedPid, servicePid, selected, serviceAttempted = false
+const redact = startupRedactor()
+const captures = []
+let initialIdentity, window, primaryFailure
+// Diagnostics are bounded independently and never replace the test failure.
+async function diagnostic(action) {
+  let timer
+  try {
+    return await Promise.race([Promise.resolve().then(action), new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error('Startup diagnostic did not complete within 2000 ms')), 2000)
+    })])
+  } catch (error) { return { error: String(error) } }
+  finally { clearTimeout(timer) }
+}
+async function startupStatus() {
+  if (!window) return { window: 'unavailable' }
+  return diagnostic(() => window.evaluate(async () => {
+    const status = await window.hexbot.daemon.status()
+    return {
+      edition: window.hexbot.edition, version: window.hexbot.version, isPackaged: window.hexbot.isPackaged,
+      route: location.pathname,
+      onboarding: ['onboarding-get-started', 'onboarding-next', 'onboarding-choice-local']
+        .filter(id => document.querySelector(`[data-testid="${id}"]`)),
+      status: { state: status.state, pid: status.pid, port: status.port, lastError: status.lastError == null ? status.lastError : String(status.lastError).slice(0, 1024) },
+      progress: globalThis.installedStartupProgress?.events
+    }
+  }))
+}
 const native = promisify(execFile)
 const nativeOptions = { env: { ...process.env, HEXBOT_HOME: home, USERPROFILE: root, HOME: root, HEXBOT_SERVICE_ROOT: root }, windowsHide: true, timeout: 30_000 }
 // Test-only observer retains the actual Process.Handle before Quit. It only
@@ -88,14 +116,22 @@ async function openApp() {
     ...process.env, HOME: root, USERPROFILE: root, HEXBOT_HOME: home, HERMES_HOME: home,
     APPDATA: join(root, 'roaming'), LOCALAPPDATA: join(root, 'local'), HEXBOT_SERVICE_ROOT: root, HEXBOT_CLI_NO_PATH: '1',
   } })
-  assert.equal(await app.evaluate(({ app }) => app.isPackaged), true)
-  const window = await app.firstWindow({ timeout: 300_000 })
+  captures.push(captureInstalledApp(app.process(), redact))
+  const identity = await app.evaluate(({ app }) => ({
+    isPackaged: app.isPackaged, version: app.getVersion(), appPath: app.getAppPath(),
+    userData: app.getPath('userData'), resourcesPath: process.resourcesPath, executable: process.execPath,
+    home: process.env.HEXBOT_HOME, node: process.versions.node
+  }))
+  initialIdentity ??= identity
+  console.log('Installed app identity:', redact(JSON.stringify(identity)))
+  assert.equal(identity.isPackaged, true)
+  window = await app.firstWindow({ timeout: 300_000 })
   await window.waitForLoadState('domcontentloaded')
   assert(await window.locator('body').isVisible())
   return window
 }
 try {
-  let window = await openApp()
+  window = await openApp()
   const repair = JSON.parse(repairInvocation)
   assert(isAbsolute(repair.program))
   const beforeReceipt = await readFile(join(repair.env.HEXBOT_HOME, 'install.json'))
@@ -111,7 +147,24 @@ try {
   assert.equal(await app.evaluate(({ app }) => app.isPackaged), true)
   console.log('Actual running installed app refused Repair before NSIS; original app and receipt retained')
   if (edition === 'full') {
-    const running = await state()
+    const [baseline, files] = await Promise.all([startupStatus(), diagnostic(() =>
+      installedStartupFiles(home, join(dirname(executable), 'resources/hexbot-native')))])
+    console.log('Installed Full before initial start:', redact(JSON.stringify({ baseline, files })))
+    await window.evaluate(() => {
+      const events = []
+      const off = window.hexbot.daemon.onProgress(event => {
+        events.push({ stage: String(event.stage).slice(0, 64), message: String(event.message).slice(0, 1024), percent: event.percent })
+        if (events.length > 32) events.shift()
+      })
+      globalThis.installedStartupProgress = { events, off }
+    })
+    // A fresh profile waits on onboarding. Request the normal product path
+    // once; bootstrap and the first real readiness record share the old budget.
+    const running = await startInstalledRuntime(edition,
+      () => window.evaluate(() => window.hexbot.daemon.start()),
+      signal => waitForRuntimeJson(join(home, 'serve-state.json'), value => value.port, 300_000, undefined, { signal }))
+    console.log('Installed Full initial startup:', redact(JSON.stringify(await startupStatus())))
+    await diagnostic(() => window.evaluate(() => globalThis.installedStartupProgress?.off()))
     ownedPid = JSON.parse(await readFile(join(home, 'runtime/native-running.json'), 'utf8')).pid
     assert(Number.isSafeInteger(ownedPid))
     selected = JSON.parse(await readFile(join(home, 'runtime/native-current.json'), 'utf8')).executable
@@ -275,23 +328,39 @@ try {
     await assert.rejects(readFile(join(home, 'runtime/native-current.json')), { code: 'ENOENT' })
   }
   console.log(`Installed ${edition} app opened its real packaged window${edition === 'full' ? ' and activated its verified native daemon' : ''}`)
+} catch (error) {
+  primaryFailure = error
+  const [status, files] = await Promise.all([startupStatus(), diagnostic(() =>
+    installedStartupFiles(home, join(dirname(executable), 'resources/hexbot-native')))])
+  console.error('Installed app failure evidence:', redact(JSON.stringify({
+    identity: initialIdentity, status, output: captures.map(capture => capture.snapshot()), files
+  })))
+  throw error
 } finally {
+  await diagnostic(() => window?.evaluate(() => globalThis.installedStartupProgress?.off()))
+  for (const capture of captures) capture.dispose()
   try {
-    if (app) await app.close()
-    if (ownedPid) {
-      await assertStopped(ownedPid)
-      console.log('Packaged Full quit completed graceful cleanup and released its home lock')
+    try {
+      if (app) await app.close()
+      if (ownedPid) {
+        await assertStopped(ownedPid)
+        console.log('Packaged Full quit completed graceful cleanup and released its home lock')
+      }
+      if (servicePid) {
+        process.kill(servicePid, 0)
+        const status = JSON.parse((await native(selected, ['service', 'status', '--json'], nativeOptions)).stdout)
+        assert.equal(status.running, true, 'Quitting Full must retain the task daemon')
+        await assertHomeLock('held')
+        const state = await waitForRuntimeJson(join(home, 'serve-state.json'), value => value.port)
+        assert.equal((await fetch(`http://127.0.0.1:${state.port}/api/daemon/identity`)).status, 200)
+      }
+    } finally {
+      if (serviceAttempted) await native(selected, ['service', 'uninstall'], nativeOptions)
     }
-    if (servicePid) {
-      process.kill(servicePid, 0)
-      const status = JSON.parse((await native(selected, ['service', 'status', '--json'], nativeOptions)).stdout)
-      assert.equal(status.running, true, 'Quitting Full must retain the task daemon')
-      await assertHomeLock('held')
-      const state = await waitForRuntimeJson(join(home, 'serve-state.json'), value => value.port)
-      assert.equal((await fetch(`http://127.0.0.1:${state.port}/api/daemon/identity`)).status, 200)
-    }
-  } finally {
-    if (serviceAttempted) await native(selected, ['service', 'uninstall'], nativeOptions)
+    if (servicePid) await assertStopped(servicePid)
+  } catch (error) {
+    if (!primaryFailure) throw error
+    console.error('Installed app cleanup also failed:', redact(String(error)))
+    throw primaryFailure
   }
-  if (servicePid) await assertStopped(servicePid)
 }

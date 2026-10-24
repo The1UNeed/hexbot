@@ -6,6 +6,15 @@ local packages and native CI probes. It does not provide Windows confinement.
 The fail-closed execution boundary and independent GPT 6.1 and Opus 5.5 approval
 are required before merge or shipping, together with native validation.
 
+The installed Full app probe explicitly requests its first start through the
+normal renderer bridge. A fresh profile opens onboarding and does not start a
+daemon by opening a window alone. The one initial start and first readiness
+record share a 300-second deadline. Bounded app output, progress, identity and
+owned-home log diagnostics are captured before failure cleanup. The old `0af`
+Nightly timeout did not capture the actual renderer state or bootstrap error;
+the corrected harness still requires native execution. Client gates and Full
+stop/restart and retained-handle service handoff checks are unchanged.
+
 ## CI budgets
 
 `Windows build and install contract` runs four independent jobs on separate
