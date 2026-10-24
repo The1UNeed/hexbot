@@ -568,3 +568,22 @@ test('Windows publication refuses a live staging cwd and succeeds after its owne
     await rm(root, {recursive:true,force:true})
   }
 })
+
+
+test('release Dev action probe rejects enabled debug admission and requires exact unknown command', async () => {
+  const { assertDevActionAbsent } = await import('./dev-action-absence.mjs')
+  const root = await mkdtemp(join(tmpdir(), 'hexbot-release-action-'))
+  const failure = (code, stderr) => async () => { throw Object.assign(new Error('child failed'), { code, stdout: '', stderr }) }
+  try {
+    await assertDevActionAbsent('/already-built/hexbot.exe', root, failure(1, 'unknown command: __dev-child\n'))
+    for (const [code, stderr] of [[2, 'Invalid Dev child arguments\n'], [3, 'Dev host refused\n'], [1, 'some other failure\n']]) {
+      await assert.rejects(assertDevActionAbsent('/already-built/hexbot.exe', root, failure(code, stderr)))
+    }
+    await assert.rejects(assertDevActionAbsent('/already-built/hexbot.exe', root, async () => ({ stdout: '', stderr: '' })))
+    await mkdir(join(root, 'dev-action-must-not-create-home'))
+    await assert.rejects(assertDevActionAbsent('/already-built/hexbot.exe', root, failure(1, 'unknown command: __dev-child\n')))
+    await rm(join(root, 'dev-action-must-not-create-home'), { recursive: true })
+    await writeFile(join(root, 'dev-action-must-not-run'), 'owned')
+    await assert.rejects(assertDevActionAbsent('/already-built/hexbot.exe', root, failure(1, 'unknown command: __dev-child\n')))
+  } finally { await rm(root, { recursive: true, force: true }) }
+})

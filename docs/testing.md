@@ -446,8 +446,17 @@ with a live descendant, a retained parent dying while the input writer remains
 open, Ctrl+Break in a new process group, Ctrl+C in a dedicated console,
 assignment refusal, literal Unicode arguments, and an unrelated process that
 must survive. Its app control uses the installed workspace pnpm, Vite,
-Electron and daemon, so it requires the native workspace dependencies. The
-`windows_dev_release` test target in the release profile checks that the private action is absent.
+Electron and daemon. It provisions Pi through the existing Dev helpers and
+starts the fresh Electron app's daemon once through its normal bridge. The
+180-second startup budget includes provisioning, app start and the authenticated
+daemon handshake. Rust retains the direct daemon's creation handle before
+readiness and always reaps it on fixture failure. The injected readiness-failure
+control checks its ports and home are released and an unrelated process survives.
+Sibling failure requires the surviving desktop host's zero exit acknowledgement
+and retained descendants signalled before allowing the runner to complete.
+The existing Windows Full-build runtime smoke probe checks the staged release
+daemon rejects the private action with the exact unknown-command response and
+creates neither the requested home nor an execution marker.
 Portable admission tables run with `cargo test --lib dev_child_policy`; runner
 shutdown and startup races run with `node --test scripts/dev/run.test.mjs`.
 Cross-compilation checks these sources but does not validate native shutdown.

@@ -377,3 +377,45 @@ test('Unix retains inherited stdin and process-group stop', async () => {
   await runner.stop()
   assert.deepEqual(calls, [[-42, 'SIGTERM']])
 })
+
+test('native Dev fixture provisions before one normal bridge start and authenticates readiness', async () => {
+  const { startDevRuntime, remainingStartup } = await import('../../backend/hexbot-core/tests/support/dev-app-harness.mjs')
+  const calls = []
+  const env = { HEXBOT_PI_EXECUTABLE: 'C:\\owned\\node.exe' }
+  let now = 100
+  const remaining = () => remainingStartup(280, () => now)
+  const result = await startDevRuntime({
+    provision: async () => { calls.push(['provision', remaining()]); now += 40; return env },
+    startClients: async value => { assert.equal(value, env); calls.push(['clients', remaining()]); now += 30 },
+    startOwnedDaemon: async value => { assert.equal(value, env); calls.push(['bridge', remaining()]); now += 50; return { port: 1234 } },
+    ready: async () => { calls.push(['ready', remaining()]); now += 20; return { port: 1234 } },
+    handshake: async (state, owned) => { assert.equal(state.port, owned.port); calls.push(['handshake', remaining()]); return { pid: 42 } }
+  })
+  assert.deepEqual(result, { pid: 42 })
+  assert.deepEqual(calls, [['provision', 180], ['clients', 140], ['bridge', 110], ['ready', 60], ['handshake', 40]])
+  assert.throws(() => remainingStartup(280, () => 281), /budget exhausted/)
+})
+
+for (const failed of ['provision', 'startClients', 'startOwnedDaemon', 'ready', 'handshake']) test(`native Dev startup preserves ${failed} failure without retry`, async () => {
+  const { startDevRuntime } = await import('../../backend/hexbot-core/tests/support/dev-app-harness.mjs')
+  const calls = []
+  const names = ['provision', 'startClients', 'startOwnedDaemon', 'ready', 'handshake']
+  const failure = new Error(failed)
+  await assert.rejects(startDevRuntime(Object.fromEntries(names.map(name => [name, async () => {
+    calls.push(name)
+    if (name === failed) throw failure
+  }]))), error => error === failure)
+  assert.deepEqual(calls, names.slice(0, names.indexOf(failed) + 1))
+})
+
+test('native sibling fixture requires surviving desktop acknowledgement independently of primary failure', async () => {
+  const { assertSurvivingDesktop } = await import('../../backend/hexbot-core/tests/support/dev-app-harness.mjs')
+  const good = { code: 1, exits: { web: null, desktop: 0 }, kills: [{ label: 'web', signal: 'SIGKILL' }], diagnostics: [] }
+  assertSurvivingDesktop(good)
+  for (const desktop of [125, 126, 3, null, undefined]) {
+    assert.throws(() => assertSurvivingDesktop({ ...good, exits: { desktop } }))
+  }
+  assert.throws(() => assertSurvivingDesktop({ ...good, kills: [...good.kills, { label: 'desktop', signal: 'SIGKILL' }] }))
+  assert.throws(() => assertSurvivingDesktop({ ...good, diagnostics: ['[dev] cleanup of desktop was not confirmed'] }))
+  assert.throws(() => assertSurvivingDesktop({ ...good, code: 0 }))
+})

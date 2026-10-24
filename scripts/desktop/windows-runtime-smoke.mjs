@@ -9,6 +9,7 @@ import { dirname, join, resolve } from 'node:path'
 import { promisify } from 'node:util'
 import { nodePath } from '../../apps/desktop/src/main/backend/node-path.ts'
 import { waitForRuntimeJson } from './runtime-file.mjs'
+import { assertDevActionAbsent } from './dev-action-absence.mjs'
 const exec = promisify(execFile)
 assert.equal(process.platform, 'win32', 'This probe must run on native Windows')
 const bundle = resolve('apps/desktop/resources/hexbot-native')
@@ -19,6 +20,7 @@ const run = (exe, args) => exec(exe, args, { env, timeout: 300_000, windowsHide:
 let daemon, selected
 
 try {
+  await assertDevActionAbsent(join(bundle, 'hexbot.exe'), root)
   await run(join(bundle, 'hexbot.exe'), ['setup', '--activate', '--json'])
   selected = JSON.parse(await readFile(join(home, 'runtime/native-current.json'), 'utf8')).executable
   assert(selected.endsWith('hexbot.exe'))
