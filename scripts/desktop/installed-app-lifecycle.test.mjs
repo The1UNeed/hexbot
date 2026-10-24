@@ -19,6 +19,15 @@ async function fixture(t) {
   let status = { state: 'starting', port: ready.port }
   const options = {
     home, selected, previousPid: 41,
+    observeStatus: async () => {
+      calls.push('observe')
+      const failure = Promise.withResolvers()
+      let finished = false
+      return { failure: failure.promise, finish: async () => {
+        if (!finished) { finished = true; calls.push('unobserve'); failure.resolve(null) }
+        return null
+      } }
+    },
     start: () => { calls.push('start') },
     status: async () => { calls.push('status'); return status },
     probe: async (_home, signal) => { calls.push('probe'); signal?.throwIfAborted(); return ready },
@@ -45,7 +54,7 @@ test('old record gate accepts a stopped PID; ordinary gate waits through fresh m
   let accepted = false
   starting.then(() => { accepted = true }, () => undefined)
   await flush()
-  assert.deepEqual(f.calls, ['start', 'watch', 'watch', 'watch', 'status'])
+  assert.deepEqual(f.calls, ['observe', 'status', 'start', 'watch', 'watch', 'watch', 'status'])
   await writeFile(record, JSON.stringify({ pid: 42 }))
   f.notify(); await flush()
   assert.equal(accepted, false)
@@ -60,19 +69,23 @@ test('immediate readiness is checked after every observer is registered', async 
   const f = await fixture(t)
   f.running()
   assert.equal((await startInstalledOwned(f.options)).pid, 42)
-  assert.deepEqual(f.calls, ['start', 'watch', 'watch', 'watch', 'status', 'probe', 'status'])
+  assert.deepEqual(f.calls, ['observe', 'status', 'start', 'watch', 'watch', 'watch', 'status', 'probe', 'status', 'unobserve'])
 })
 
 test('events during a pending check are coalesced without losing delayed READY', async t => {
   const f = await fixture(t), first = Promise.withResolvers()
   let reads = 0
-  f.options.status = () => ++reads === 1 ? first.promise : { state: 'running', pid: 42, port: 9119 }
+  f.options.status = () => {
+    reads++
+    if (reads === 1) return { state: 'starting', port: 9119 }
+    return reads === 2 ? first.promise : { state: 'running', pid: 42, port: 9119 }
+  }
   const starting = startInstalledOwned(f.options)
   await flush()
   f.notify(); f.notify()
   first.resolve({ state: 'starting' })
   assert.equal((await starting).pid, 42)
-  assert.equal(reads, 3, 'one coalesced check and one final manager snapshot')
+  assert.equal(reads, 4, 'pre-start sample, one coalesced check and final manager snapshot')
 })
 
 test('crashed/stopped/wrong owner/PID/port/image and stale running PID fail without another start', async t => {
@@ -361,6 +374,6 @@ test('actual manager starting/backoff status fails before a future retry READY c
   await rejected
   await flush()
   assert(!f.calls.includes('probe'), 'automatic retry READY must not repair the failed requested start')
-  assert.equal(f.calls.filter(value => value === 'start').length, 1)
+  assert.equal(f.calls.filter(value => value === 'start').length, 0)
   assert(f.watchers.every(watcher => watcher.closed))
 })

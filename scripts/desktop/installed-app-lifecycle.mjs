@@ -134,14 +134,58 @@ function waitForInstalledReady(options, signal, taskStart) {
 // Ordinary start alone is asynchronous in a17. Never use this for service
 // recovery, handoff, Quit or activation replacement: verify those immediately.
 async function startInstalledDaemon({ start, timeout = 30_000, ...options }, taskStart) {
-  let readiness
+  let readiness, observing, observation, primaryFailure
+  const failed = new AbortController()
   try {
-    return await startInstalledRuntime('full', start,
-      signal => (readiness = waitForInstalledReady(options, signal, taskStart)), timeout)
+    return await startInstalledRuntime('full', async signal => {
+      if (taskStart) return start()
+      observing = options.observeStatus()
+      observation = await observing
+      signal.throwIfAborted()
+      const failure = observation.failure.then(message => {
+        if (message) throw new Error(message)
+      }).catch(error => {
+        failed.abort(error)
+        throw error
+      })
+      void failure.catch(() => undefined)
+      const starting = Promise.resolve().then(async () => {
+        const initial = await options.status()
+        assert(initial.state !== 'crashed', 'Owned daemon stopped or crashed before readiness')
+        assert(!/^Daemon exited \(.+\); restarting$/.test(initial.lastError ?? ''), `Owned daemon crashed before readiness: ${initial.lastError}`)
+        signal.throwIfAborted()
+        failed.signal.throwIfAborted()
+        return start()
+      })
+      // A main-process crash can reject a still-pending start IPC. Its later
+      // rejection remains observed; it cannot create a readiness probe.
+      return Promise.race([starting, failure])
+    }, signal => {
+      const readySignal = taskStart ? signal : AbortSignal.any([signal, failed.signal])
+      readiness = waitForInstalledReady(options, readySignal, taskStart).then(async ready => {
+        if (!taskStart) {
+          const error = await observation.finish({ pid: ready.pid, port: ready.port })
+          if (error) throw new Error(error)
+        }
+        return ready
+      })
+      return readiness
+    }, timeout)
+  } catch (error) {
+    primaryFailure = error
+    throw error
   } finally {
     // The shared deadline aborts before rejecting. Drain its owned probe before
     // returning to lifecycle cleanup; a late bridge call cannot start a probe.
     await readiness?.catch(() => undefined)
+    if (!taskStart) {
+      // Also drain a subscription whose setup replied after the deadline.
+      const active = observation ?? await observing?.catch(() => undefined)
+      try {
+        const error = await active?.finish()
+        if (error && !primaryFailure) throw new Error(error)
+      } catch (error) { if (!primaryFailure) throw error }
+    }
   }
 }
 

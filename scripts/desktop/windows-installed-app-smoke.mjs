@@ -11,6 +11,7 @@ import { waitForRuntimeJson } from './runtime-file.mjs'
 import { captureInstalledApp, formatStartupDiagnostic, installedStartupFiles, startupRedactor } from './installed-app-startup.mjs'
 import { quitInstalledApp, startInstalledOwned, startInstalledTask, verifyInstalledDaemon } from './installed-app-lifecycle.mjs'
 import { nodePath } from '../../apps/desktop/src/main/backend/node-path.ts'
+import { observeInstalledStatus } from './installed-app-status.mjs'
 const require = createRequire(new URL('../../apps/desktop/package.json', import.meta.url))
 const { _electron: electron } = require('@playwright/test')
 const [executable, edition, root, repairInvocation] = process.argv.slice(2)
@@ -44,6 +45,7 @@ const selection = async () => {
 }
 const startOwned = (previousPid, timeout = 30_000) => startInstalledOwned({
   home, selected: selection, previousPid, timeout, status: managerStatus,
+  observeStatus: () => observeInstalledStatus((action, value) => app.evaluate(action, value)),
   start: () => window.evaluate(() => window.hexbot.daemon.start())
 })
 const verify = async (expectedState, previousPid, expectedPid) => verifyInstalledDaemon({
@@ -156,7 +158,7 @@ try {
 async function openApp() {
   app = await electron.launch({ executablePath: executable, timeout: 300_000, env: {
     ...process.env, HOME: root, USERPROFILE: root, HEXBOT_HOME: home, HERMES_HOME: home,
-    APPDATA: join(root, 'roaming'), LOCALAPPDATA: join(root, 'local'), HEXBOT_SERVICE_ROOT: root, HEXBOT_CLI_NO_PATH: '1',
+    APPDATA: join(root, 'roaming'), LOCALAPPDATA: join(root, 'local'), HEXBOT_SERVICE_ROOT: root, HEXBOT_CLI_NO_PATH: '1', HEXBOT_INSTALLED_APP_SMOKE: '1',
   } })
   captures.push(captureInstalledApp(app.process(), redact))
   const identity = await app.evaluate(({ app }) => ({
