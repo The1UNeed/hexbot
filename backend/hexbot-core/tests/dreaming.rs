@@ -164,7 +164,11 @@ async fn dreams_use_restricted_tools_persist_snapshots_and_stay_out_of_the_chat(
     )
     .unwrap();
     assert_eq!(rows.len(), 1);
-    assert!(runtime_store::history(home.path(), "chat").unwrap().is_empty());
+    assert!(
+        runtime_store::history(home.path(), "chat")
+            .unwrap()
+            .is_empty()
+    );
     let listed = dreams
         .call("alice", "hexbot.dreaming.list", &json!({"bot":"owl"}))
         .await
