@@ -735,6 +735,7 @@ async fn finite_healthy_checks_and_owned_path_refusals() {
         f.site().join(EXTENSIONS[4].1),
         f.receipt(),
     ] {
+        let completion = f.completion();
         let held = fs::OpenOptions::new()
             .read(true)
             .share_mode(0)
@@ -745,6 +746,7 @@ async fn finite_healthy_checks_and_owned_path_refusals() {
         assert!(error.message.contains("os error 32"), "{}", error.message);
         assert!(f.events.borrow().is_empty());
         drop(held);
+        assert_eq!(f.completion(), completion);
         f.restored(&original);
     }
     let requirements = f.venv().join("requirements.txt");
@@ -935,7 +937,10 @@ async fn interrupted_pip_missing_record_and_unpacked_cache_integrity() {
         "cache mutation must not write through to installed bytes"
     );
     let completion = f.completion();
-    fs::remove_file(&source).unwrap();
+    // An independently missing launcher reaches pip even while strict
+    // entrypoint aggregation leaves module-only repair unresolved. Keep the
+    // installed source healthy until uv actually tries to replace it.
+    fs::remove_file(f.venv().join("Scripts/edge-tts.exe")).unwrap();
     match f.setup().await {
         Ok(()) => {
             f.restored(&original);
@@ -948,6 +953,9 @@ async fn interrupted_pip_missing_record_and_unpacked_cache_integrity() {
         Err(error) => {
             assert_eq!(f.completion(), completion);
             assert!(error.message.contains("Python code tools"));
+            let events = f.events.borrow();
+            assert_eq!(events.len(), 1);
+            assert!(events[0].starts_with("voice: Repairing voice tools:"));
             case("F observed explicit safe failure; no completion publication");
         }
     }

@@ -146,7 +146,8 @@ traversal, populated operation-root junctions, alias drift/escape, shared and
 reparse leaves, sharing/read-only errors, atomic hard-link witnesses, interrupted
 pip, missing RECORD, unpacked-cache tampering and separate uv leaf observations.
 Each independent test owns one fresh Unicode home and reuses it for its related
-cases. Full's existing fixture additionally tests poisoned PATH/UV/Python/config
+cases. One additional empty home checks boundary refusal without an install.
+Full's existing fixture additionally tests poisoned PATH/UV/Python/config
 and extension-fallback settings, activation/retained-runtime escape refusals and
 a fresh-profile direct CLI refusal. The existing 300-second Full deadline and
 workflow budgets are unchanged; no retry or timing allowance is added.
@@ -158,7 +159,9 @@ missing-RECORD fixture supplies deterministic partial metadata. Another fresh
 fixture observes uv's launcher/cfg hard-link replacement or write-through. That
 diagnostic never supplies a healed environment to production repair tests.
 Cache tampering preserves importable syntax: a successful setup must restore
-exact original payload hashes, or the control fails for unsafe reuse. Explicit
+exact original payload hashes, or the control fails for unsafe reuse. A missing
+launcher triggers pip while the installed module remains healthy, so the
+module-only observability conflict cannot prevent this cache observation. Explicit
 failure must preserve completion and its original cause. No flags, cache purge,
 retry or fixture uv recovery answers a failed control.
 
@@ -171,8 +174,12 @@ separate from the other native cases so a failure cannot hide those controls.
 
 Deterministic native final-probe crash/malformed injection is specifically
 blocked by the absence of an event after uv exits and before final probes. The
-parent approved recording this blocker, with existing private Runner controls
-providing portable coverage of final failure and receipt behavior. No new
+parent approved recording this blocker. The private Runner test
+`final_package_crash_or_malformed_output_never_publishes_completion` supplies
+crash and incomplete JSON outputs after simulated pip success, checks stable
+identity and stale/invalidated receipt behavior, then checks the next install.
+It exercises the production pass over owned files, but cannot prove real uv
+exit timing, Windows process behavior or the native final-probe boundary. No new
 production hook, filesystem race, sleep or fake native result was added. This
 is not native certification or a waiver of safe final failure behavior.
 

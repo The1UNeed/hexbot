@@ -1077,6 +1077,54 @@ async fn current_receipt_crash_refuses_while_stale_receipt_installs_without_the_
 }
 
 #[tokio::test]
+async fn final_package_crash_or_malformed_output_never_publishes_completion() {
+    for recreated in [false, true] {
+        for crashed in [false, true] {
+            let (_dir, layout) = installed().await;
+            let identity = snapshot(&[&layout.identity]);
+            if recreated {
+                fs::remove_dir_all(&layout.venv).unwrap();
+            } else {
+                fs::write(&layout.receipt, "old lock").unwrap();
+            }
+            let receipt = snapshot(&[&layout.receipt]);
+            let mut fake = Fake::new(&layout);
+            fake.packages.push_back(if crashed {
+                out(None, "")
+            } else {
+                out(Some(0), "{\"distributions\":")
+            });
+            assert!(run(&layout, &mut fake).await.is_err());
+            let pip = fake
+                .events
+                .iter()
+                .position(|e| e.starts_with("uv pip"))
+                .unwrap();
+            assert_eq!(fake.events[pip + 1..], ["identity", "packages"]);
+            assert_eq!(fake.receipt_at_pip, Some(!recreated));
+            assert_eq!(snapshot(&[&layout.identity]), identity);
+            if recreated {
+                assert!(!layout.receipt.exists());
+            } else {
+                assert_eq!(snapshot(&[&layout.receipt]), receipt);
+            }
+            // Both failure states remain eligible for the intended next install,
+            // without probing the crashing or incomplete old package result.
+            let mut next = Fake::new(&layout);
+            run(&layout, &mut next).await.unwrap();
+            let pip = next
+                .events
+                .iter()
+                .position(|e| e.starts_with("uv pip"))
+                .unwrap();
+            assert!(!next.events[..pip].iter().any(|e| e == "packages"));
+            assert_eq!(next.uv_calls().len(), 1);
+            assert_eq!(fs::read_to_string(&layout.receipt).unwrap(), LOCK);
+        }
+    }
+}
+
+#[tokio::test]
 async fn module_damage_repairs_packages_without_touching_the_venv() {
     let (_dir, layout) = installed().await;
     let site = layout.site_packages();
