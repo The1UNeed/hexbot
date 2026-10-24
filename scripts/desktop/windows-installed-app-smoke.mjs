@@ -4,12 +4,14 @@ import { execFile, spawn } from 'node:child_process'
 import { once } from 'node:events'
 import { createInterface } from 'node:readline'
 import { promisify } from 'node:util'
-import { cp, mkdir, readFile, realpath, writeFile } from 'node:fs/promises'
+import { cp, lstat, mkdir, readFile, realpath, writeFile } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { dirname, isAbsolute, join, relative, sep } from 'node:path'
 import { waitForRuntimeJson } from './runtime-file.mjs'
-import { captureInstalledApp, formatStartupDiagnostic, installedStartupFiles, startInstalledRuntime, startupRedactor } from './installed-app-startup.mjs'
+import { captureInstalledApp, formatStartupDiagnostic, installedStartupFiles, startupRedactor } from './installed-app-startup.mjs'
+import { quitInstalledApp, startInstalledOwned, startInstalledTask, verifyInstalledDaemon } from './installed-app-lifecycle.mjs'
 import { nodePath } from '../../apps/desktop/src/main/backend/node-path.ts'
+import { observeInstalledStatus } from './installed-app-status.mjs'
 const require = createRequire(new URL('../../apps/desktop/package.json', import.meta.url))
 const { _electron: electron } = require('@playwright/test')
 const [executable, edition, root, repairInvocation] = process.argv.slice(2)
@@ -22,7 +24,12 @@ const state = () => waitForRuntimeJson(join(home, 'serve-state.json'), value => 
 
 async function assertStopped(pid) {
   assert.throws(() => process.kill(pid, 0), { code: 'ESRCH' }, 'Packaged Full left its owned daemon alive')
+  await assertHomeStopped()
+}
+async function assertHomeStopped() {
   await assert.rejects(readFile(join(home, 'serve-state.json')), { code: 'ENOENT' })
+  try { await lstat(join(home, 'native-daemon.lock')) }
+  catch (error) { if (error.code === 'ENOENT') return; throw error }
   await assertHomeLock('free')
 }
 async function assertHomeLock(expected) {
@@ -30,7 +37,43 @@ async function assertHomeLock(expected) {
   const output = await promisify(execFile)(ps, ['-NoProfile', '-NonInteractive', '-Command', "$f=[IO.File]::Open((Join-Path $env:HEXBOT_HOME 'native-daemon.lock'),'Open','ReadWrite','ReadWrite,Delete'); try {try {$f.Lock(0,1);$f.Unlock(0,1);'free'} catch [IO.IOException] {'held'}} finally {$f.Dispose()}"], {env: {...process.env, HEXBOT_HOME: home}, windowsHide: true, timeout: 30_000})
   assert.equal(output.stdout.trim(), expected)
 }
-let app, ownedPid, servicePid, selected, serviceAttempted = false
+let app, ownedPid, servicePid, stoppedTaskPid, selected, serviceAttempted = false, taskInstalled = false
+const managerStatus = () => window.evaluate(() => window.hexbot.daemon.status())
+const selection = async () => {
+  selected = JSON.parse(await readFile(join(home, 'runtime/native-current.json'), 'utf8')).executable
+  return selected
+}
+const startOwned = (previousPid, timeout = 30_000) => startInstalledOwned({
+  home, selected: selection, previousPid, timeout, status: managerStatus,
+  observeStatus: () => observeInstalledStatus((action, value) => app.evaluate(action, value)),
+  start: () => window.evaluate(() => window.hexbot.daemon.start())
+})
+const verify = async (expectedState, previousPid, expectedPid) => verifyInstalledDaemon({
+  home, selected: selection, previousPid, expectedPid,
+  status: await managerStatus(), expectedState
+})
+async function verifyTask(previousPid, expectedPid) {
+  const ready = await verifyInstalledDaemon({ home, selected: selection, previousPid, expectedPid })
+  const status = JSON.parse((await native(selected, ['service', 'status', '--json'], nativeOptions)).stdout)
+  assert.equal(status.installed, true)
+  assert.equal(status.running, true)
+  await assertHomeLock('held')
+  return ready
+}
+async function closeApp() {
+  if (!app) return
+  const closing = app
+  const child = closing.process()
+  const exited = child.exitCode !== null || child.signalCode !== null
+    ? Promise.resolve([child.exitCode, child.signalCode]) : once(child, 'exit')
+  void exited.catch(() => undefined)
+  try {
+    await closing.close()
+    assert.deepEqual(await exited, [0, null])
+  } finally {
+    app = undefined
+  }
+}
 const redact = startupRedactor()
 const captures = []
 let initialIdentity, window, primaryFailure
@@ -80,6 +123,7 @@ try {
     ...nativeOptions, env: { ...nativeOptions.env, HEXBOT_TEST_WAIT_PID: String(pid) }, stdio: ['pipe', 'pipe', 'pipe']
   })
   const completed = once(child, 'close')
+  void completed.catch(() => undefined)
   let stderr = ''
   child.stderr.on('data', bytes => { stderr = (stderr + bytes).slice(-4096) })
   const lines = createInterface({ input: child.stdout })[Symbol.asyncIterator]()
@@ -114,7 +158,7 @@ try {
 async function openApp() {
   app = await electron.launch({ executablePath: executable, timeout: 300_000, env: {
     ...process.env, HOME: root, USERPROFILE: root, HEXBOT_HOME: home, HERMES_HOME: home,
-    APPDATA: join(root, 'roaming'), LOCALAPPDATA: join(root, 'local'), HEXBOT_SERVICE_ROOT: root, HEXBOT_CLI_NO_PATH: '1',
+    APPDATA: join(root, 'roaming'), LOCALAPPDATA: join(root, 'local'), HEXBOT_SERVICE_ROOT: root, HEXBOT_CLI_NO_PATH: '1', HEXBOT_INSTALLED_APP_SMOKE: '1',
   } })
   captures.push(captureInstalledApp(app.process(), redact))
   const identity = await app.evaluate(({ app }) => ({
@@ -160,12 +204,10 @@ try {
     })
     // A fresh profile waits on onboarding. Request the normal product path
     // once; bootstrap and the first real readiness record share the old budget.
-    const running = await startInstalledRuntime(edition,
-      () => window.evaluate(() => window.hexbot.daemon.start()),
-      signal => waitForRuntimeJson(join(home, 'serve-state.json'), value => value.port, 300_000, undefined, { signal }))
+    const running = await startOwned(undefined, 300_000)
     console.log('Installed Full initial startup:', formatStartupDiagnostic(await startupStatus(), redact))
     await diagnostic(() => window.evaluate(() => globalThis.installedStartupProgress?.off()))
-    ownedPid = JSON.parse(await readFile(join(home, 'runtime/native-running.json'), 'utf8')).pid
+    ownedPid = running.pid
     assert(Number.isSafeInteger(ownedPid))
     selected = JSON.parse(await readFile(join(home, 'runtime/native-current.json'), 'utf8')).executable
     const path = relative(await realpath(join(home, 'runtime/native')), await realpath(selected))
@@ -177,9 +219,9 @@ try {
     const stopped = await window.evaluate(() => window.hexbot.daemon.stop())
     assert.equal(stopped.state, 'stopped')
     await assertStopped(oldPid)
-    await window.evaluate(() => window.hexbot.daemon.start())
-    const restarted = await state()
-    ownedPid = JSON.parse(await readFile(join(home, 'runtime/native-running.json'), 'utf8')).pid
+    ownedPid = undefined
+    const restarted = await startOwned(oldPid, 300_000)
+    ownedPid = restarted.pid
     assert.notEqual(ownedPid, oldPid, 'Packaged Full did not start a new owned daemon')
     assert.equal((await fetch(`http://127.0.0.1:${restarted.port}/`, {signal: AbortSignal.timeout(10_000)})).status, 200)
     console.log('Packaged Full stop/start waited for cleanup and started a new owned process')
@@ -190,8 +232,9 @@ try {
     await native(ps, ['-NoProfile', '-NonInteractive', '-Command', taskContext + "try{$null=$f.GetTask($name);throw 'Expected no existing task'}catch{$e=$_.Exception;while($e.InnerException){$e=$e.InnerException};if($e.HResult -ne -2147024894){throw}};$t=$s.NewTask(0);$t.Principal.UserId=$sid;$t.Principal.LogonType=3;$t.RegistrationInfo.Description='Hexbot foreign IPC fixture';$a=$t.Actions.Create(0);$a.Path=$cmd;$a.Arguments='/D /C exit 0';$null=$f.RegisterTaskDefinition($name,$t,2,$null,$null,3)"], nativeOptions)
     try {
       const failedPid = ownedPid
+      ownedPid = undefined
       await assert.rejects(window.evaluate(() => window.hexbot.service.install()), /another installation|ownership/i)
-      const restored = await waitForRuntimeJson(join(home, 'runtime/native-running.json'), value => value.pid && value.pid !== failedPid)
+      const restored = await verify('running', failedPid)
       ownedPid = restored.pid
       assert.throws(() => process.kill(failedPid, 0), { code: 'ESRCH' })
       assert.equal((await window.evaluate(() => window.hexbot.daemon.status())).state, 'running')
@@ -199,8 +242,9 @@ try {
       assert.equal((await fetch(`http://127.0.0.1:${restoredState.port}/api/daemon/identity`)).status, 200)
       await assertHomeLock('held')
       const beforeFailedRemoval = ownedPid
+      ownedPid = undefined
       await assert.rejects(window.evaluate(() => window.hexbot.service.uninstall()), /another installation|ownership/i)
-      ownedPid = (await waitForRuntimeJson(join(home, 'runtime/native-running.json'), value => value.pid && value.pid !== beforeFailedRemoval)).pid
+      ownedPid = (await verify('running', beforeFailedRemoval)).pid
       assert.throws(() => process.kill(beforeFailedRemoval, 0), { code: 'ESRCH' })
       assert.equal((await window.evaluate(() => window.hexbot.daemon.status())).state, 'running')
       await assertHomeLock('held')
@@ -209,8 +253,10 @@ try {
     }
     const beforeHandoff = ownedPid
     serviceAttempted = true
+    ownedPid = undefined
     await window.evaluate(() => window.hexbot.service.install())
-    servicePid = JSON.parse(await readFile(join(home, 'runtime/native-running.json'), 'utf8')).pid
+    taskInstalled = true
+    servicePid = (await verify('external', beforeHandoff)).pid
     assert.notEqual(servicePid, beforeHandoff, 'Task must replace the app-owned daemon')
     assert.throws(() => process.kill(beforeHandoff, 0), { code: 'ESRCH' })
     assert.equal((await window.evaluate(() => window.hexbot.daemon.status())).state, 'external')
@@ -227,19 +273,24 @@ try {
     // hand off that owned process before task removal, then restart it once.
     await native(selected, ['service', 'stop'], nativeOptions)
     await assertStopped(servicePid)
+    stoppedTaskPid = servicePid
     servicePid = undefined
-    await window.evaluate(() => window.hexbot.daemon.start())
-    ownedPid = (await waitForRuntimeJson(join(home, 'runtime/native-running.json'), value => value.pid)).pid
+    ownedPid = (await startOwned(stoppedTaskPid)).pid
     const beforeRemoval = ownedPid
     assert.equal((await window.evaluate(() => window.hexbot.daemon.status())).state, 'running')
     await window.evaluate(() => window.hexbot.service.uninstall())
-    ownedPid = (await waitForRuntimeJson(join(home, 'runtime/native-running.json'), value => value.pid && value.pid !== beforeRemoval)).pid
+    taskInstalled = false
+    ownedPid = undefined
+    ownedPid = (await verify('running', beforeRemoval)).pid
     assert.throws(() => process.kill(beforeRemoval, 0), { code: 'ESRCH' })
     assert.deepEqual(await window.evaluate(() => window.hexbot.service.status()), { installed: false, running: false })
     await assertHomeLock('held')
+    const beforeReinstall = ownedPid
+    ownedPid = undefined
     await window.evaluate(() => window.hexbot.service.install())
-    servicePid = (await waitForRuntimeJson(join(home, 'runtime/native-running.json'), value => value.pid && value.pid !== ownedPid)).pid
-    assert.throws(() => process.kill(ownedPid, 0), { code: 'ESRCH' })
+    taskInstalled = true
+    servicePid = (await verify('external', beforeReinstall)).pid
+    assert.throws(() => process.kill(beforeReinstall, 0), { code: 'ESRCH' })
     ownedPid = undefined
 
     // A task remains enabled while stopped or after its script is lost. Full
@@ -247,15 +298,16 @@ try {
     for (const missingScript of [false, true]) {
       await native(selected, ['service', 'stop'], nativeOptions)
       await assertStopped(servicePid)
+      stoppedTaskPid = servicePid
       servicePid = undefined
       const serviceScript = join(root, 'AppData/Local/Hexbot/daemon.ps1')
       const script = await readFile(serviceScript)
       if (missingScript) await (await import('node:fs/promises')).unlink(serviceScript)
-      await window.evaluate(() => window.hexbot.daemon.start())
-      ownedPid = (await waitForRuntimeJson(join(home, 'runtime/native-running.json'), value => value.pid)).pid
+      ownedPid = (await startOwned(stoppedTaskPid)).pid
       assert.equal((await window.evaluate(() => window.hexbot.daemon.status())).state, 'running')
       const completed = await retainDaemon(ownedPid, selected)
       const appExit = once(app.process(), 'exit')
+      void appExit.catch(() => undefined)
       let quitError
       try {
         await app.close(); app = undefined
@@ -266,7 +318,7 @@ try {
       if (quitError) throw quitError
       const beforeQuit = ownedPid
       ownedPid = undefined
-      const newTask = await waitForRuntimeJson(join(home, 'runtime/native-running.json'), value => value.pid && value.pid !== beforeQuit)
+      const newTask = await verifyTask(beforeQuit)
       servicePid = newTask.pid
       assert.equal(await realpath(newTask.executable), await realpath(selected))
       assert.equal(JSON.parse((await native(selected, ['service', 'status', '--json'], nativeOptions)).stdout).running, true)
@@ -275,7 +327,7 @@ try {
       assert.deepEqual(await readFile(serviceScript), script)
       window = await openApp()
       await window.evaluate(() => window.hexbot.daemon.start())
-      assert.equal(JSON.parse(await readFile(join(home, 'runtime/native-running.json'), 'utf8')).pid, servicePid)
+      await verify('external', undefined, servicePid)
       console.log('Packaged Full Quit handed owned daemon to installed task:', JSON.stringify({ beforeQuit, servicePid, missingScript }))
     }
 
@@ -294,8 +346,8 @@ try {
     await writeFile(join(older, 'manifest.json'), JSON.stringify(manifest))
     const olderExe = join(older, 'hexbot.exe')
     await writeFile(join(home, 'runtime/native-current.json'), JSON.stringify({ ...current, executable: olderExe, builtAt: manifest.builtAt }))
-    await native(olderExe, ['service', 'start'], nativeOptions)
-    const oldTask = await waitForRuntimeJson(join(home, 'runtime/native-running.json'), value => value.pid && value.pid !== servicePid)
+    const oldTask = await startInstalledTask({ home, selected: olderExe, previousPid: servicePid,
+      start: () => native(olderExe, ['service', 'start'], nativeOptions) })
     servicePid = oldTask.pid
     assert.equal(await realpath(oldTask.executable), await realpath(olderExe))
     const serviceScript = join(root, 'AppData/Local/Hexbot/daemon.ps1')
@@ -304,7 +356,7 @@ try {
     await unlink(serviceScript)
     window = await openApp()
     await window.evaluate(() => window.hexbot.daemon.start())
-    const upgradedTask = await waitForRuntimeJson(join(home, 'runtime/native-running.json'), value => value.pid && value.pid !== oldTask.pid)
+    const upgradedTask = await verify('external', oldTask.pid)
     servicePid = upgradedTask.pid
     selected = JSON.parse(await readFile(join(home, 'runtime/native-current.json'), 'utf8')).executable
     assert.notEqual(await realpath(selected), await realpath(olderExe))
@@ -319,7 +371,7 @@ try {
     await app.close(); app = undefined
     window = await openApp()
     await window.evaluate(() => window.hexbot.daemon.start())
-    assert.equal(JSON.parse(await readFile(join(home, 'runtime/native-running.json'), 'utf8')).pid, servicePid)
+    await verify('external', undefined, servicePid)
     console.log('Installed Full service toggles, failure recovery and bundled activation/task relaunch passed')
 
   } else {
@@ -340,24 +392,36 @@ try {
   await diagnostic(() => window?.evaluate(() => globalThis.installedStartupProgress?.off()))
   for (const capture of captures) capture.dispose()
   try {
-    try {
-      if (app) await app.close()
-      if (ownedPid) {
-        await assertStopped(ownedPid)
-        console.log('Packaged Full quit completed graceful cleanup and released its home lock')
-      }
-      if (servicePid) {
-        process.kill(servicePid, 0)
+    // Keep task installation knowledge while a stopped task's PID is cleared.
+    // A partial service operation must pass the strict CLI ownership gate too.
+    let taskStatusError
+    if (serviceAttempted) {
+      try {
         const status = JSON.parse((await native(selected, ['service', 'status', '--json'], nativeOptions)).stdout)
-        assert.equal(status.running, true, 'Quitting Full must retain the task daemon')
-        await assertHomeLock('held')
-        const state = await waitForRuntimeJson(join(home, 'serve-state.json'), value => value.port)
-        assert.equal((await fetch(`http://127.0.0.1:${state.port}/api/daemon/identity`)).status, 200)
-      }
-    } finally {
-      if (serviceAttempted) await native(selected, ['service', 'uninstall'], nativeOptions)
+        assert.equal(typeof status.installed, 'boolean')
+        assert.equal(typeof status.running, 'boolean')
+        assert(!status.running || status.installed)
+        if (taskInstalled) assert.equal(status.installed, true, 'Installed task disappeared before Quit')
+        taskInstalled = status.installed
+      } catch (error) { taskStatusError = error }
     }
-    if (servicePid) await assertStopped(servicePid)
+    await quitInstalledApp({
+      ownedPid: app ? ownedPid : undefined, taskInstalled,
+      retain: pid => retainDaemon(pid, selected), quit: closeApp,
+      verifyTask: async () => {
+        if (taskStatusError) throw taskStatusError
+        const task = await verifyTask(ownedPid ?? (servicePid ? undefined : stoppedTaskPid), servicePid)
+        servicePid = task.pid
+        return task
+      },
+      uninstallTask: async () => {
+        await native(selected, ['service', 'uninstall'], nativeOptions)
+        taskInstalled = false
+      },
+      assertStopped,
+      assertHomeStopped: () => edition === 'full' ? assertHomeStopped() : undefined
+    })
+    if (taskStatusError) throw taskStatusError
   } catch (error) {
     if (!primaryFailure) throw error
     console.error('Installed app cleanup also failed:', formatStartupDiagnostic({ error: String(error) }, redact))

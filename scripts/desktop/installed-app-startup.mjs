@@ -18,7 +18,7 @@ export async function startInstalledRuntime(edition, start, ready, timeout = 300
   // Promise.race observes late rejection too. A late start cannot create a new
   // watcher after cancellation, and readiness cannot reset the overall budget.
   const startup = Promise.resolve()
-    .then(start)
+    .then(() => start(signal))
     .then(() => {
       signal.throwIfAborted()
       return ready(signal)
