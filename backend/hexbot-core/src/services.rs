@@ -1664,7 +1664,7 @@ fn native_built_at(metadata: &Value) -> Result<u64> {
 
 // Called only under activate.lock. Neither the selected manifest nor its durable
 // record may erase chronology recorded by the other, even during repair.
-fn native_chronology_floor(native: &Path, include_running: bool) -> Result<u64> {
+pub(crate) fn native_chronology_floor(native: &Path, include_running: bool) -> Result<u64> {
     let runtime = native
         .parent()
         .ok_or_else(|| Error::new(5243, "Missing runtime directory"))?;
@@ -1697,16 +1697,10 @@ fn native_chronology_floor(native: &Path, include_running: bool) -> Result<u64> 
             installed = true;
             floor = floor.max(native_built_at(&record)?);
         }
-        for executable in [
-            Some(std::env::current_exe()?),
-            recorded_native_runtime(native)?,
-        ]
-        .into_iter()
-        .flatten()
+        if let Some(executable) = recorded_native_runtime(native)?
+            && let Some(manifest) = native_metadata(&executable.with_file_name("manifest.json"))?
         {
-            if let Some(manifest) = native_metadata(&executable.with_file_name("manifest.json"))? {
-                floor = floor.max(native_built_at(&manifest)?);
-            }
+            floor = floor.max(native_built_at(&manifest)?);
         }
         if installed && floor == 0 {
             return Err(Error::new(
@@ -1716,6 +1710,18 @@ fn native_chronology_floor(native: &Path, include_running: bool) -> Result<u64> 
         }
     }
     Ok(floor)
+}
+
+fn automatic_native_floor(native: &Path) -> Result<u64> {
+    let floor = native_chronology_floor(native, true)?;
+    let current = native_metadata(&std::env::current_exe()?.with_file_name("manifest.json"))?;
+    Ok(floor.max(
+        current
+            .as_ref()
+            .map(native_built_at)
+            .transpose()?
+            .unwrap_or(0),
+    ))
 }
 
 // Staging directories remain hidden from pruning until the activation lock is held.
@@ -1734,13 +1740,24 @@ pub(crate) fn publish_native(
         .ok_or_else(|| Error::new(5243, "Missing runtime directory"))?;
     let _lock = activation_lock(runtime)?;
     if let Some(requested) = newer_than_selected {
-        let floor = native_chronology_floor(native, true)?;
+        let floor = automatic_native_floor(native)?;
         require_newer_native_build(requested, &json!({"builtAt":floor}))?;
     }
+    publish_native_locked(native, version, staging, entrypoint, newer_than_selected)
+}
+
+// The caller owns activate.lock and has checked its publication policy.
+pub(crate) fn publish_native_locked(
+    native: &Path,
+    version: &str,
+    staging: &Path,
+    entrypoint: &str,
+    update: Option<&Value>,
+) -> Result<PathBuf> {
     let directory = native.join(format!("{version}-{}", common::id()));
     fs::rename(staging, &directory)?;
     let executable = directory.join(entrypoint);
-    activate_native_locked(native, version, &executable, newer_than_selected)?;
+    activate_native_locked(native, version, &executable, update)?;
     Ok(executable)
 }
 
@@ -2494,7 +2511,7 @@ async fn native_update(home: &Path, version: &str, service: &Service) -> Result<
     let native = native_directory(home)?;
     {
         let _lock = activation_lock(native.parent().unwrap())?;
-        let floor = native_chronology_floor(&native, true)?;
+        let floor = automatic_native_floor(&native)?;
         require_newer_native_build(&manifest, &json!({"builtAt":floor}))?;
     }
     let url = artifact_url(&base, &manifest)?;

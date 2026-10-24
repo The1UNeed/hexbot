@@ -13,6 +13,10 @@ use std::{
 };
 use tokio::process::Command;
 
+#[cfg(unix)]
+#[path = "setup_selection.rs"]
+mod selection;
+
 const VOICE_REQUIREMENTS: &str = include_str!("../assets/edge-tts.requirements.txt");
 const REQUIRED_FILES: &[&str] = &[
     "hexbot",
@@ -393,6 +397,18 @@ fn link_cli(home: &Path, user_home: &Path, emit: &impl Fn(&str, &str)) -> Result
 }
 
 pub async fn run(home: &Path, args: &[String]) -> Result<()> {
+    if args
+        .iter()
+        .any(|arg| matches!(arg.as_str(), "--select-runtime" | "--manifest"))
+    {
+        #[cfg(unix)]
+        return selection::run(home, args);
+        #[cfg(not(unix))]
+        return Err(Error::new(
+            4200,
+            "Runtime-only selection is unavailable on this platform",
+        ));
+    }
     if args
         .iter()
         .any(|arg| !matches!(arg.as_str(), "--activate" | "--no-code-tools" | "--json"))
