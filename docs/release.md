@@ -182,6 +182,11 @@ POSIX setup has a separate positive-tie exception for increasing canonical
 Nightlies of the same version base and target, with a fully verified durable
 selection. Timestamp equality does not establish commit identity.
 
+The durable record's `builtAt` is a historical floor. Existing explicit
+`setup --activate` can select an intact older bundle without lowering that floor;
+its manifest still records the bundle's own chronology. Packaged tie selection
+requires the selected bundle itself to be at the floor.
+
 The app uses `setup --select-runtime --manifest ABSOLUTE_FILE --json` for POSIX
 runtime selection. This mode only verifies, copies when publication is needed,
 and selects the runtime under `activate.lock`. It installs no code tools, CLI

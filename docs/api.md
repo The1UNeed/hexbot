@@ -1112,6 +1112,10 @@ A client newer than the daemon asks the daemon to update itself
   only between canonical release Nightlies of the same target and version base,
   with an increasing date/run. Equal timestamps do not identify a source commit.
   The selected manifest, complete file hashes and durable identity must agree.
+  The record chronology is a historical floor and can exceed the selected
+  bundle chronology after explicit setup selects an older runtime. That intact
+  selection remains valid; packaged ties require the selected bundle itself to
+  be at the floor, and automatic updates still must exceed it.
   Exact-version byte repair also requires matching durable identity and floor.
   Missing, corrupt or conflicting identity metadata refuses selection; torn
   pointer/record states may require repairing the installation on its computer.

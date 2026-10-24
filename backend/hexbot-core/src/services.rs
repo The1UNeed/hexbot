@@ -1900,6 +1900,8 @@ fn activate_native_with_update_locked(
     let built_at = native_chronology_floor(native, false)?
         .max(native_built_at(&manifest)?)
         .max(update.map(native_built_at).transpose()?.unwrap_or(0));
+    // The record's builtAt is a monotonic floor, not the selected bundle's
+    // identity. Keep the installed manifest unchanged for identity verification.
     manifest["builtAt"] = json!(built_at);
     write_native_current(
         &runtime.join("native-current.json"),

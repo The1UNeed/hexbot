@@ -24,6 +24,8 @@ cannot read back. Back up the directory before opening a nightly.
 They also share one daemon runtime under `~/.hexbot/runtime`. Selection keeps
 its highest known source chronology, recorded as `builtAt`, across tracks.
 Automatic daemon updates require a strictly newer positive `builtAt`.
+The durable floor can exceed the selected bundle chronology after explicit
+setup selects an older runtime; an intact selection remains verifiable.
 Explicit packaged POSIX setup can replace a verified Nightly with a later
 canonical release Nightly at the same positive chronology only when their
 major/minor/patch and target match. Equal timestamps do not prove a shared

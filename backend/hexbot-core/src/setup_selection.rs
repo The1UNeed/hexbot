@@ -151,9 +151,14 @@ fn selected(native: &Path) -> Selected {
                 .and_then(|p| Path::new(p).canonicalize().ok())
                 .as_ref()
                 != Some(&executable)
-            || record
-                .get("builtAt")
-                .is_some_and(|at| at != &manifest["builtAt"])
+            // The record preserves historical chronology; the manifest identifies
+            // the selected bundle, which explicit setup may have chosen below it.
+            || record.get("builtAt").is_some_and(|at| {
+                at.as_u64().is_none_or(|floor| {
+                    manifest["builtAt"].as_u64().is_none_or(|bundle| floor < bundle)
+                })
+            })
+            || record.get("target").is_some_and(|target| target != &manifest["target"])
             || files(&record)?.keys().ne(files(&manifest)?.keys())
         {
             return Err(Error::new(
@@ -296,7 +301,7 @@ pub(super) fn run(home: &Path, args: &[String]) -> Result<()> {
 mod tests {
     use super::*;
 
-    fn bundle(version: &str, at: u64) -> (tempfile::TempDir, Value) {
+    pub(super) fn bundle(version: &str, at: u64) -> (tempfile::TempDir, Value) {
         let root = tempfile::tempdir().unwrap();
         let mut hashes = serde_json::Map::new();
         for file in REQUIRED_FILES {
@@ -428,6 +433,11 @@ mod tests {
             "pointer",
             "files",
             "floor",
+            "floor-invalid",
+            "floor-null",
+            "target",
+            "record-path",
+            "hash",
         ] {
             let home = tempfile::tempdir().unwrap();
             let (source, manifest) = bundle("0.1.5-nightly.20261022.58", 200);
@@ -449,8 +459,24 @@ mod tests {
                     record["files"].as_object_mut().unwrap().remove("node");
                     fs::write(&path, record.to_string()).unwrap();
                 }
+                "target" => {
+                    record["target"] = json!("other-platform");
+                    fs::write(&path, record.to_string()).unwrap();
+                }
+                "record-path" => {
+                    record["executable"] = json!(runtime.join("elsewhere"));
+                    fs::write(&path, record.to_string()).unwrap();
+                }
+                "hash" => {
+                    record["files"]["hexbot"] = json!("0".repeat(64));
+                    fs::write(&path, record.to_string()).unwrap();
+                }
                 _ => {
-                    record["builtAt"] = json!(300);
+                    record["builtAt"] = match damage {
+                        "floor-invalid" => json!("300"),
+                        "floor-null" => Value::Null,
+                        _ => json!(100),
+                    };
                     fs::write(&path, record.to_string()).unwrap();
                 }
             }
@@ -463,6 +489,11 @@ mod tests {
             assert!(
                 select(home.path(), source.path(), &manifest).is_err(),
                 "exact repair {damage}"
+            );
+            let (candidate, newer) = bundle("0.1.5-nightly.20261022.60", 350);
+            assert!(
+                select(home.path(), candidate.path(), &newer).is_err(),
+                "newer {damage}"
             );
             assert_eq!(fs::read(&path).ok(), before);
             assert!(selected.exists());
@@ -570,3 +601,7 @@ mod tests {
         verify_bytes(repaired.parent().unwrap(), &manifest).unwrap();
     }
 }
+
+#[cfg(test)]
+#[path = "setup_selection_floor_tests.rs"]
+mod floor_tests;
