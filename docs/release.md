@@ -175,9 +175,40 @@ its update archive and manifest. macOS archives exclude AppleDouble files and
 extended attributes. Release jobs archive the runtime inside the signed `.app`,
 so daemon self-updates carry the same signatures as the full package. Archiving
 recomputes the runtime manifest's file hashes after signing without changing the
-signed app. Activation preserves those hashes for desktop verification. Both the
-app and service updater keep the runtime with the newer manifest `builtAt`,
-including when switching between Stable and Nightly.
+signed app. Activation preserves those hashes for desktop verification. The
+service updater needs a strictly newer positive `builtAt` than every runtime
+floor it knows, across Stable and Nightly. Explicit packaged POSIX selection may
+also accept an equal positive `builtAt`: a later canonical Nightly of the same
+`X.Y.Z` and target, over a fully verified selection at that floor. Equal `builtAt`
+does not establish a common commit.
+
+The durable record's `builtAt` is a historical floor. Existing explicit
+`setup --activate` can select an intact older bundle without lowering a readable
+floor; its manifest still records the bundle's own chronology. From a verified
+bundle, this unchecked installer path can rewrite damaged metadata and retains
+the highest valid floor it can still read independently. The installer invokes
+it for Headless Update or repair, not Full runtime repair. Automatic and packaged
+selection keep their stricter checks.
+
+On macOS and Linux the app selects its runtime with
+`hexbot setup --select-runtime --manifest ABSOLUTE_FILE --json`. This mode
+verifies the bundle, copies it only when it must publish it, and selects it
+under `activate.lock`. It installs no code tools, CLI wrapper or service. The app
+passes a temporary manifest describing its bundled bytes. Version, target,
+`builtAt` and the file list must match the bundle's manifest. On macOS only the
+hashes of `node`, `hexbot-core`, `bin/rg` and `bin/fd`, which signing changes, may
+differ; on Linux every hash must match. Rust verifies the source, writes the
+effective manifest only into the staged copy, and verifies the copy again.
+Required executable files must be readable and executable by the effective user,
+including when retaining a selected runtime. The signed app is never modified.
+Legacy Python handoff records omit `files` and `builtAt`. Packaged selection
+verifies them against the complete selected manifest, actual bytes and executable
+access, deriving chronology from that manifest without losing any other known
+floor. A present invalid or conflicting hash map still fails. Missing records or
+selected manifests and conflicting identities are refused. This can also block
+Full from starting or attaching to its local daemon. Existing `setup --activate`
+from a verified bundle can repair damaged metadata through the Headless installer;
+Full has no installer repair for these records.
 
 The September 27 darwin-arm64 staging check reduced dependency files from
 463,982,503 to 86,636,413 bytes, about 81%. The complete bundle contains
@@ -297,8 +328,8 @@ before downloading, then again under `runtime/activate.lock` against the build
 installer selected meanwhile is not replaced by an older one. Uninstall removes
 Hexbot apps a killed install left in `.tmp*/previous.app` staging on macOS.
 Installers released before this lock and the Electron app updater do not take
-the installer lock; the native updater takes only `runtime/activate.lock`, and
-the desktop bootstrap's runtime activation takes neither. Fresh installs and explicit
+the installer lock. The native updater and packaged POSIX runtime selection take
+`runtime/activate.lock`, but not the installer lock. Fresh installs and explicit
 track changes may install an older version.
 
 Not covered by these manifest signatures:

@@ -12,11 +12,13 @@ Hexbot does not download an update during the check. When one is available, a pi
 
 The app and the daemon it talks to can be on different computers. When the daemon runs an older Hexbot than the app, the pill says "Update daemon" and Settings, Updates offers to update it. What happens depends on how the daemon runs on its computer:
 
-- **The Hexbot app runs the daemon.** That app downloads the update on its own track, then closes and reopens on the new version. The daemon comes back with it.
+- **The Hexbot app runs the daemon.** That app downloads the update on its own track, then closes and reopens on the new version. If the app is already up to date and only its daemon is behind, the app checks the available runtime and restarts its own daemon without another download. This works only for a daemon the app started itself, and on Linux it also works outside the AppImage. If preparation fails, the daemon keeps running and the client reports the failure.
 - **The daemon runs as a service**, because it was installed as [Headless](/docs/install/#headless) or with Settings, Network, "Start the daemon at login". The daemon downloads the new version, installs it, and restarts itself.
 - **Started by hand** or from a source checkout. Update Hexbot on that computer yourself.
 
-Bots stop while the daemon restarts; chats and memory stay. The client waits for the daemon to come back and reports a failure if it does not. A daemon only moves to a build made from newer source, on either track, so switching between Stable and Nightly never takes it back to an older daemon. An older or equally old build is refused.
+Bots stop while the daemon restarts; chats and memory stay. The client waits for the daemon to come back and reports a failure if it does not. A daemon service only updates automatically to a build made from newer source, on either track. These automatic updates refuse a build from equally old source even when its version number is higher. An app can also move its own daemon to a later Nightly with the same version base, as described in [Channels](https://github.com/The1UNeed/hexbot/blob/main/docs/channels.md). When a service or another copy of the app already runs the daemon, the app connects to it and does not stop it.
+
+The app refuses a runtime it cannot verify. When preparing its local daemon, damaged runtime records can stop the Full app from starting or connecting to it. Full has no installer repair for these records. On a Headless computer, run the installer again and choose Update or repair ([Install](/docs/install/)).
 
 Native daemon and installer manifests require a signature from a trusted Hexbot
 release key. Their signed checksums pin the downloaded packages. If verification

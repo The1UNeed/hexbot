@@ -52,6 +52,17 @@ copy the bundle into `$HEXBOT_HOME/runtime/native`, select it, install managed
 Python 3.11 and voice tools, and write `~/.local/bin/hexbot`. The wrapper preserves
 the selected home and follows native updates. `--no-code-tools` skips Python and
 voice provisioning. `--json` emits one progress object per line, including errors.
+The internal `setup --select-runtime --manifest ABSOLUTE_FILE --json` mode, on
+macOS and Linux, selects the app's runtime without installing code tools, a CLI
+wrapper or a service. The app passes a manifest describing its signed bytes, and
+selection follows the chronology rules under the activation lock. It checks
+executable access and refuses damaged or conflicting recorded identity.
+`setup --activate` from a verified bundle can rewrite that metadata and keeps
+the highest valid `builtAt` it can still read. The record's historical floor may
+exceed the selected bundle's own manifest chronology after explicit activation
+of an older bundle. The installer uses this repair path for Headless; Full has
+no installer runtime-repair route.
+
 The shared tool pins and voice requirements live in `assets/`; the app uses the
 same files and receipts. An existing installation can run `hexbot setup` to repair
 its code tools and CLI wrapper without replacing the daemon bundle.

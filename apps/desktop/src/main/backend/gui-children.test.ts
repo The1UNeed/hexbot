@@ -15,7 +15,7 @@ it('hides GUI bootstrap children and passes the exact selected home', async () =
   process.env.HEXBOT_HOME = home
   launch.mockImplementation(() => {
     const child = Object.assign(new EventEmitter(), { stdout: new PassThrough(), stderr: new PassThrough() })
-    queueMicrotask(() => child.emit('exit', 0))
+    queueMicrotask(() => { child.emit('exit', 0); child.emit('close', 0) })
     return child
   })
   try {

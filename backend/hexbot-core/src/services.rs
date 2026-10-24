@@ -1412,6 +1412,10 @@ pub async fn exchange_browser_grant(
     Ok(common::required(&result, "grant")?.to_owned())
 }
 
+#[cfg(all(test, unix))]
+#[path = "services_floor_tests.rs"]
+mod floor_tests;
+
 fn capability() -> Option<String> {
     std::env::var("HEXBOT_SUPERVISOR")
         .ok()
@@ -1458,24 +1462,15 @@ fn newer_packaged_nightly(candidate: &str, selected: &str) -> bool {
 }
 
 fn require_newer_native_build(requested: &Value, current: &Value) -> Result<()> {
-    // Match desktop bootstrap: source chronology decides across update tracks.
-    // A runtime predating builtAt has chronology zero.
-    let built_at = |manifest: &Value| manifest["builtAt"].as_u64().unwrap_or(0);
-    if built_at(requested) <= built_at(current) {
+    // Automatic updates require strictly newer positive source chronology.
+    // Versions cannot establish chronology, including when metadata is missing.
+    if requested["builtAt"].as_u64().unwrap_or(0) <= current["builtAt"].as_u64().unwrap_or(0) {
         return Err(Error::new(
             4212,
             "The daemon already runs this build or a newer one.",
         ));
     }
     Ok(())
-}
-fn native_manifest(executable: &Path, version: &str) -> Value {
-    executable
-        .parent()
-        .and_then(|directory| fs::read(directory.join("manifest.json")).ok())
-        .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
-        .filter(|manifest| manifest["version"] == version)
-        .unwrap_or_else(|| json!({}))
 }
 async fn update_status(home: &Path) -> Result<Value> {
     let service = service(home).await?;
@@ -1701,10 +1696,163 @@ fn inherited_activation_lock(file: &fs::File, fd: Option<i32>) -> Option<fs::Fil
     copy.try_lock().is_ok().then_some(copy)
 }
 
+fn native_metadata(path: &Path) -> Result<Option<Value>> {
+    let bytes = match fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.into()),
+    };
+    let metadata: Value = serde_json::from_slice(&bytes)
+        .map_err(|_| Error::new(4212, "Native runtime metadata needs repair"))?;
+    if !metadata.is_object() {
+        return Err(Error::new(4212, "Native runtime metadata needs repair"));
+    }
+    Ok(Some(metadata))
+}
+
+fn native_built_at(metadata: &Value) -> Result<u64> {
+    if !metadata.is_null() && !metadata.is_object() {
+        return Err(Error::new(4212, "Native runtime chronology needs repair"));
+    }
+    match metadata.get("builtAt") {
+        None | Some(Value::Null) => Ok(0),
+        Some(value) => value
+            .as_u64()
+            .ok_or_else(|| Error::new(4212, "Native runtime chronology needs repair")),
+    }
+}
+
+// Called only under activate.lock. Neither the selected manifest nor its durable
+// record may erase chronology recorded by the other, even during repair.
+pub(crate) fn native_chronology_floor(native: &Path, include_running: bool) -> Result<u64> {
+    let runtime = native
+        .parent()
+        .ok_or_else(|| Error::new(5243, "Missing runtime directory"))?;
+    let mut floor = 0;
+    let record = native_metadata(&runtime.join("native-current.json"))?;
+    let pointer_present = match fs::symlink_metadata(runtime.join("native-executable")) {
+        Ok(_) => true,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+        Err(error) => return Err(error.into()),
+    };
+    let missing = record.is_none() && !pointer_present;
+    let mut installed = !missing;
+    if let Some(record) = record {
+        floor = native_built_at(&record)?.max(native_built_at(&record["updateManifest"])?);
+    }
+    match selected_native_executable(runtime.parent().unwrap()) {
+        Ok(executable) => {
+            if !executable.starts_with(native) || !executable.is_file() {
+                if include_running {
+                    return Err(Error::new(4212, "Native runtime selection needs repair"));
+                }
+                // Explicit setup can replace an old external launcher. Its target
+                // is not this home's installed runtime and must not be read.
+                return Ok(floor);
+            }
+            if let Some(manifest) = native_metadata(&executable.with_file_name("manifest.json"))? {
+                floor = floor.max(native_built_at(&manifest)?);
+            }
+        }
+        Err(_) if cfg!(windows) && missing => {}
+        Err(_)
+            if !cfg!(windows)
+                && runtime
+                    .join("native-executable")
+                    .canonicalize()
+                    .is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound) => {}
+        Err(error) => return Err(error),
+    }
+    if include_running {
+        if let Some(record) = native_metadata(&runtime.join("native-running.json"))? {
+            installed = true;
+            floor = floor.max(native_built_at(&record)?);
+        }
+        if let Some(executable) = recorded_native_runtime(native)?
+            && let Some(manifest) = native_metadata(&executable.with_file_name("manifest.json"))?
+        {
+            floor = floor.max(native_built_at(&manifest)?);
+        }
+        if installed && floor == 0 {
+            return Err(Error::new(
+                4212,
+                "Installed native runtime chronology needs repair",
+            ));
+        }
+    }
+    Ok(floor)
+}
+
+// Only the existing unchecked installer/setup activation may replace damaged
+// metadata. Read each available chronology independently; never use this for
+// automatic updates or packaged selection, whose readers remain strict.
+fn unchecked_repair_floor(native: &Path) -> u64 {
+    let read = |path: &Path| {
+        fs::read(path)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+    };
+    let chronology = |value: &Value| {
+        value["builtAt"]
+            .as_u64()
+            .unwrap_or(0)
+            .max(value["updateManifest"]["builtAt"].as_u64().unwrap_or(0))
+    };
+    let runtime = native.parent().unwrap();
+    let mut floor = 0;
+    let mut executables = Vec::new();
+    for file in ["native-current.json", "native-running.json"] {
+        if let Some(record) = read(&runtime.join(file)) {
+            floor = floor.max(chronology(&record));
+            if let Some(path) = record["executable"].as_str() {
+                executables.push(PathBuf::from(path));
+            }
+        }
+    }
+    if let Ok(executable) = selected_native_executable(runtime.parent().unwrap()) {
+        executables.push(executable);
+    }
+    for executable in executables {
+        if let Ok(executable) = executable.canonicalize()
+            && executable.starts_with(native)
+            && executable.is_file()
+            && let Some(manifest) = read(&executable.with_file_name("manifest.json"))
+        {
+            floor = floor.max(chronology(&manifest));
+        }
+    }
+    floor
+}
+
+fn automatic_native_floor(native: &Path) -> Result<u64> {
+    let floor = native_chronology_floor(native, true)?;
+    let current = native_metadata(&std::env::current_exe()?.with_file_name("manifest.json"))?;
+    Ok(floor.max(
+        current
+            .as_ref()
+            .map(native_built_at)
+            .transpose()?
+            .unwrap_or(0),
+    ))
+}
+
+// Keep the shared selection record fields above unchanged for the pinned
+// Windows publisher. Provenance is added before the one durable atomic write.
+fn write_native_current(path: &Path, bytes: &[u8], update: Option<&Value>) -> Result<()> {
+    if let Some(update) = update {
+        let mut record: Value =
+            serde_json::from_slice(bytes).map_err(|error| Error::new(5243, error.to_string()))?;
+        record["updateManifest"] = update.clone();
+        common::atomic_write(path, &serde_json::to_vec(&record).unwrap())
+    } else {
+        common::atomic_write(path, bytes)
+    }
+}
+
 // Staging directories remain hidden from pruning until the activation lock is held.
 // `newer_than_selected` is the daemon updater's manifest: setup or the installer
 // may have selected a newer build while the update downloaded, so chronology is
-// checked again under the lock against the selected runtime, not the running one.
+// checked again under the lock against the selected and running runtime records.
 pub(crate) fn publish_native(
     native: &Path,
     version: &str,
@@ -1755,6 +1903,10 @@ fn publish_native_inner(
         .parent()
         .ok_or_else(|| Error::new(5243, "Missing runtime directory"))?;
     let _lock = activation_lock(runtime)?;
+    if !allow_equal && let Some(requested) = newer_than_selected {
+        let floor = automatic_native_floor(native)?;
+        require_newer_native_build(requested, &json!({"builtAt":floor}))?;
+    }
     if let Some(requested) = newer_than_selected {
         let selected_executable = selected_native_executable(runtime.parent().unwrap()).ok();
         let selected = selected_executable
@@ -1772,27 +1924,6 @@ fn publish_native_inner(
             .filter_map(|manifest| manifest["builtAt"].as_u64())
             .max()
             .unwrap_or(0);
-        // POSIX commits metadata before the symlink. Only the identical signed
-        // source may retry that pending transaction while an older selection
-        // still exists. Windows metadata IS the selection, so never pending.
-        #[cfg(unix)]
-        let pending_retry = recorded.as_ref().is_some_and(|record| {
-            record["updateManifest"] == *requested
-                && record["version"] == version
-                && selected
-                    .as_ref()
-                    .is_some_and(|m| m["builtAt"].as_u64().unwrap_or(0) < floor)
-                && record["executable"]
-                    .as_str()
-                    .and_then(|p| Path::new(p).canonicalize().ok())
-                    .is_some_and(|p| {
-                        p.starts_with(native)
-                            && p.is_file()
-                            && selected_executable.as_ref().is_some_and(|s| s != &p)
-                    })
-        });
-        #[cfg(not(unix))]
-        let pending_retry = false;
         #[cfg(any(windows, test))]
         let different_tie =
             if allow_equal && floor > 0 && requested["builtAt"].as_u64() == Some(floor) {
@@ -1865,17 +1996,51 @@ fn publish_native_inner(
             }
         }
         let selected = json!({"builtAt": floor});
-        if !(allow_equal || pending_retry)
+        if !allow_equal
             || requested["builtAt"].as_u64().unwrap_or(0)
                 != selected["builtAt"].as_u64().unwrap_or(0)
         {
             require_newer_native_build(requested, &selected)?;
         }
     }
+    if newer_than_selected.is_none() {
+        // setup::activate is the sole unchecked production caller. Packaged
+        // setup calls publish_native_locked directly after strict validation.
+        return publish_native_with_repair_floor_locked(
+            native,
+            version,
+            staging,
+            entrypoint,
+            None,
+            Some(unchecked_repair_floor(native)),
+        );
+    }
+    publish_native_locked(native, version, staging, entrypoint, newer_than_selected)
+}
+
+// The caller owns activate.lock and has checked its publication policy.
+pub(crate) fn publish_native_locked(
+    native: &Path,
+    version: &str,
+    staging: &Path,
+    entrypoint: &str,
+    update: Option<&Value>,
+) -> Result<PathBuf> {
+    publish_native_with_repair_floor_locked(native, version, staging, entrypoint, update, None)
+}
+
+fn publish_native_with_repair_floor_locked(
+    native: &Path,
+    version: &str,
+    staging: &Path,
+    entrypoint: &str,
+    update: Option<&Value>,
+    repair_floor: Option<u64>,
+) -> Result<PathBuf> {
     let directory = native.join(format!("{version}-{}", common::id()));
     fs::rename(staging, &directory)?;
     let executable = directory.join(entrypoint);
-    activate_native_locked(native, version, &executable, newer_than_selected)?;
+    activate_native_with_update_locked(native, version, &executable, update, repair_floor)?;
     Ok(executable)
 }
 
@@ -1885,11 +2050,22 @@ fn activate_native(native: &Path, version: &str, executable: &Path) -> Result<()
     activate_native_locked(native, version, executable, None)
 }
 
+#[cfg(any(test, all(debug_assertions, windows)))]
 fn activate_native_locked(
     native: &Path,
     version: &str,
     executable: &Path,
     update: Option<&Value>,
+) -> Result<()> {
+    activate_native_with_update_locked(native, version, executable, update, None)
+}
+
+fn activate_native_with_update_locked(
+    native: &Path,
+    version: &str,
+    executable: &Path,
+    update: Option<&Value>,
+    repair_floor: Option<u64>,
 ) -> Result<()> {
     let runtime = native
         .parent()
@@ -1917,18 +2093,23 @@ fn activate_native_locked(
         std::os::unix::fs::symlink(&executable, temporary.path().join("launcher"))?;
         temporary
     };
-    let manifest = native_manifest(&executable, version);
-    let built_at = manifest["builtAt"]
-        .as_u64()
-        .into_iter()
-        .chain(update.and_then(|m| m["builtAt"].as_u64()))
-        .max();
-    common::atomic_write(
+    let mut manifest =
+        native_metadata(&executable.with_file_name("manifest.json"))?.unwrap_or_else(|| json!({}));
+    let built_at = match repair_floor {
+        Some(floor) => floor.max(manifest["builtAt"].as_u64().unwrap_or(0)),
+        None => native_chronology_floor(native, false)?.max(native_built_at(&manifest)?),
+    }
+    .max(update.map(native_built_at).transpose()?.unwrap_or(0));
+    // The record's builtAt is a monotonic floor, not the selected bundle's
+    // identity. Keep the installed manifest unchanged for identity verification.
+    manifest["builtAt"] = json!(built_at);
+    write_native_current(
         &runtime.join("native-current.json"),
         &serde_json::to_vec(
-            &json!({"version":version,"executable":executable,"previous":previous,"files":manifest["files"],"builtAt":built_at,"updateManifest":update}),
+            &json!({"version":version,"executable":executable,"previous":previous,"files":manifest["files"],"builtAt":manifest["builtAt"]}),
         )
         .unwrap(),
+        update,
     )?;
     #[cfg(unix)]
     {
@@ -2327,7 +2508,7 @@ mod activation_tests {
 
     #[cfg(unix)]
     #[test]
-    fn interrupted_posix_activation_retries_only_the_same_uncommitted_update() {
+    fn interrupted_posix_activation_preserves_the_strict_automatic_floor() {
         let home = tempfile::tempdir().unwrap();
         let native = native_directory(home.path()).unwrap();
         let runtime = native.parent().unwrap();
@@ -2381,8 +2562,29 @@ mod activation_tests {
             );
         }
         let (retry, _) = package("new", 200);
-        let committed =
-            publish_native(&native, "new", retry.path(), "hexbot", Some(&requested)).unwrap();
+        assert_eq!(
+            publish_native(&native, "new", retry.path(), "hexbot", Some(&requested))
+                .unwrap_err()
+                .code,
+            4212
+        );
+        assert!(retry.path().is_dir());
+        assert_eq!(selected_native_executable(home.path()).unwrap(), old);
+        assert_eq!(
+            fs::read(runtime.join("native-current.json")).unwrap(),
+            metadata
+        );
+        // An interrupted automatic publication cannot reuse its durable floor.
+        // Progress requires genuinely newer source chronology.
+        let (newer, newer_manifest) = package("newer", 201);
+        let committed = publish_native(
+            &native,
+            "newer",
+            newer.path(),
+            "hexbot",
+            Some(&newer_manifest),
+        )
+        .unwrap();
         assert_eq!(selected_native_executable(home.path()).unwrap(), committed);
         let (equal, _) = package("new", 200);
         assert_eq!(
@@ -2739,16 +2941,17 @@ async fn native_update(home: &Path, version: &str, service: &Service) -> Result<
             "native update manifest does not match this daemon",
         ));
     }
-    let current = std::env::current_exe()
-        .map(|executable| native_manifest(&executable, &crate::version()))
-        .unwrap_or_else(|_| json!({}));
-    require_newer_native_build(&manifest, &current)?;
+    let native = native_directory(home)?;
+    {
+        let _lock = activation_lock(native.parent().unwrap())?;
+        let floor = automatic_native_floor(&native)?;
+        require_newer_native_build(&manifest, &json!({"builtAt":floor}))?;
+    }
     let url = artifact_url(&base, &manifest)?;
     let digest = common::required(&manifest, "sha256")?;
     if digest.len() != 64 || !digest.bytes().all(|b| b.is_ascii_hexdigit()) {
         return Err(Error::new(5243, "invalid native update checksum"));
     }
-    let native = native_directory(home)?;
     let staging = tempfile::tempdir_in(&native)?;
     let tmp = tempfile::NamedTempFile::new_in(&native)?;
     update_state(service, "downloading", None, None).await;
@@ -3118,7 +3321,9 @@ mod native_version_tests {
             br#"{"version":"0.1.6-nightly.20260930.1","builtAt":200}"#,
         )
         .unwrap();
-        let current = native_manifest(&executable, "0.1.6-nightly.20260930.1");
+        let current = native_metadata(&executable.with_file_name("manifest.json"))
+            .unwrap()
+            .unwrap();
         assert_eq!(current["builtAt"], 200);
         assert!(
             require_newer_native_build(&json!({"version":"0.1.6-alpha.2","builtAt":300}), &current)
@@ -3128,7 +3333,10 @@ mod native_version_tests {
             require_newer_native_build(&json!({"version":"0.1.7","builtAt":100}), &current)
                 .is_err()
         );
-        assert_eq!(native_manifest(&executable, "wrong-version"), json!({}));
+        assert!(
+            require_newer_native_build(&json!({"version":"9.9.0","builtAt":200}), &current)
+                .is_err()
+        );
         assert!(!valid_version("0.1.6-alpha.01"));
     }
 
@@ -3154,6 +3362,27 @@ mod native_version_tests {
         }
         assert!(require_newer_native_build(&json!({"builtAt": 1}), &json!({})).is_ok());
         assert!(require_newer_native_build(&json!({}), &json!({"builtAt": 1})).is_err());
+    }
+
+    #[test]
+    fn automatic_updates_refuse_equal_or_unknown_chronology_regardless_of_version() {
+        for current in ["0.1.5-nightly.20261022.58", "0.1.5", "invalid"] {
+            for requested in ["0.1.5-nightly.20261022.59", "0.1.6", "0.1.4"] {
+                for built_at in [0, 200] {
+                    assert_eq!(
+                        require_newer_native_build(
+                            &json!({"version": requested, "builtAt": built_at}),
+                            &json!({"version": current, "builtAt": built_at}),
+                        )
+                        .unwrap_err()
+                        .code,
+                        4212
+                    );
+                }
+            }
+        }
+        assert!(require_newer_native_build(&json!({"version":"9.8.7"}), &json!({})).is_err());
+        assert!(require_newer_native_build(&json!({"builtAt":0}), &json!({})).is_err());
     }
 
     #[test]

@@ -45,10 +45,10 @@ describe.skipIf(process.platform !== 'win32' || !process.env.HEXBOT_NATIVE_TEST_
       events.push({ command, args: args.slice(0, 16).map(value => redact(value).slice(0, 1024)),
         home: options.env?.HEXBOT_HOME ?? chosen, cwd: options.cwd })
       if (events.length > 32) events.shift()
-      await runChild(command, args, options, line => {
+      await runChild(command, args, options, (line, stream) => {
         output.push(redact(line).slice(-1024))
         while (output.join('\n').length > 8192) output.shift()
-        onLine?.(line)
+        onLine?.(line, stream)
       })
     }
     try {

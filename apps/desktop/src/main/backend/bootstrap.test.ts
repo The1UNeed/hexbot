@@ -85,7 +85,7 @@ it.runIf(process.platform !== 'win32')('provisions Python and voice in copy mode
         if (args[0] === 'python' && args[1] === 'find') {
           const python = join(home, 'python/managed/bin/python3.11')
           await mkdir(dirname(python), { recursive: true }); await writeFile(python, 'fixture')
-          line?.(python)
+          line?.(python, 'stdout')
         }
         if (args[0] === 'venv') {
           const entry = join(args.at(-1)!, 'bin/edge-tts')
