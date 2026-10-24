@@ -6,6 +6,11 @@ mod windows_paths;
 use hexbot_core::{auth, db, osutil};
 use serde_json::{Value, json};
 use std::{fs, path::PathBuf, process::Stdio, time::Duration};
+#[path = "support/service_parent_fixture.rs"]
+mod service_parent_fixture;
+#[path = "support/shutdown_output.rs"]
+mod shutdown_output;
+use service_parent_fixture::Startup;
 use tokio::{
     io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
     process::Command,
@@ -46,23 +51,17 @@ async fn owned_desktop_pipe_quit_and_restart_clean_up_real_pi_and_home_lock() {
         .env("HEXBOT_DESKTOP_CONTROL", "stdin-v1")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
+        .stderr(Stdio::piped())
         .creation_flags(0x08000000)
         .kill_on_drop(true)
         .spawn()
         .unwrap();
     let peer_handle = ProcessHandle::open(peer.id().unwrap());
-    let mut peer_lines = BufReader::new(peer.stdout.take().unwrap()).lines();
-    let peer_port: u16 = tokio::time::timeout(Duration::from_secs(45), async {
-        while let Some(line) = peer_lines.next_line().await.unwrap() {
-            if let Some(port) = line.strip_prefix("HERMES_BACKEND_READY port=") {
-                return port.parse().unwrap();
-            }
-        }
-        panic!("Independent daemon exited before readiness")
-    })
-    .await
-    .unwrap();
+    let mut peer_startup = Startup::new(&mut peer, None, "peer", false);
+    let mut owned_reaped = true;
+    let mut cleanup_deadline = None;
+    let all = std::panic::AssertUnwindSafe(async {
+    let peer_port = peer_startup.ready(&mut peer).await.unwrap();
     for mode in [
         "section",
         "command",
@@ -136,20 +135,15 @@ async fn owned_desktop_pipe_quit_and_restart_clean_up_real_pi_and_home_lock() {
             ),
         )
         .unwrap();
-        let mut command = if service_mode {
-            let exe = env!("CARGO_BIN_EXE_hexbot").replace('\'', "''");
-            let script = format!(
-                "$ErrorActionPreference='Stop';$p=[Diagnostics.ProcessStartInfo]::new();$p.FileName='{exe}';$p.Arguments='serve --host 127.0.0.1 --port 0';$p.UseShellExecute=$false;$p.CreateNoWindow=$true;$null=[Diagnostics.Process]::Start($p);$null=[Console]::ReadLine();exit 0"
-            );
-            let mut parent = Command::new(
-                windows_paths::system_program("WindowsPowerShell/v1.0/powershell.exe").unwrap(),
-            );
-            parent.args(["-NoProfile", "-NonInteractive", "-Command", &script]);
-            parent
+        // The forwarding candidate remains opt-in pending native A/B review.
+        let forward = std::env::var("HEXBOT_SHUTDOWN_FORWARD_STDIO").as_deref() == Ok("1");
+        let (mut command, witness) = if service_mode {
+            let (command, listener) = service_parent_fixture::service_command(&nonce, forward).await;
+            (command, Some(listener))
         } else {
             let mut daemon = Command::new(env!("CARGO_BIN_EXE_hexbot"));
             daemon.args(["serve", "--host", "127.0.0.1", "--port", "0"]);
-            daemon
+            (daemon, None)
         };
         command
             .env("HEXBOT_HOME", &home)
@@ -163,28 +157,25 @@ async fn owned_desktop_pipe_quit_and_restart_clean_up_real_pi_and_home_lock() {
         } else {
             command.env("HEXBOT_DESKTOP_CONTROL", "stdin-v1");
         }
+        owned_reaped = false;
         let mut child = command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::inherit())
+            .stderr(Stdio::piped())
             .creation_flags(0x08000000)
             .kill_on_drop(true)
             .spawn()
             .unwrap();
         let supervisor_pid = child.id().unwrap();
+        let mut startup = Startup::new(&mut child, witness, &nonce, forward);
         let mut daemon_pid = supervisor_pid;
         let mut handles = Vec::new();
         let result = std::panic::AssertUnwindSafe(async {
-            let mut output = BufReader::new(child.stdout.take().unwrap()).lines();
-            let port: u16 = tokio::time::timeout(Duration::from_secs(45), async {
-                while let Some(line) = output.next_line().await.unwrap() {
-                    if let Some(port) = line.strip_prefix("HERMES_BACKEND_READY port=") { return port.parse().unwrap(); }
-                }
-                panic!("{mode}: daemon exited before readiness");
-            }).await.unwrap();
+            let port = startup.ready(&mut child).await.unwrap_or_else(|error| panic!("{mode}: {error}"));
+            let daemon_handle = startup.daemon.as_ref().expect("actual retained child before readiness");
+            daemon_pid = daemon_handle.pid;
             let running:Value=serde_json::from_slice(&fs::read(home.join("runtime/native-running.json")).unwrap()).unwrap();
-            daemon_pid=running["pid"].as_u64().unwrap() as u32;
-            let daemon_handle=ProcessHandle::open(daemon_pid);
+            assert_eq!(running["pid"],daemon_pid,"Readiness record must match the actual retained child");
             assert!(daemon_handle.alive() && peer_handle.alive());
             if service_mode {assert_ne!(daemon_pid,supervisor_pid);} else {assert_eq!(daemon_pid,supervisor_pid);}
             eprintln!("Shutdown {mode}: supervisor={supervisor_pid}; currentDaemon={}; independent={}",daemon_handle.snapshot(),peer_handle.snapshot());
@@ -273,6 +264,9 @@ async fn owned_desktop_pipe_quit_and_restart_clean_up_real_pi_and_home_lock() {
                 assert_ne!(tool_handles[0].pid,pi_pid,"Actual Bash must remain the tool child's parent");
                 tool_socket.write_all(b"tracked\n").await.unwrap();
                 if service_mode {handles.extend(tool_handles);} else {
+                // Keep the actual tool identities available to panic cleanup,
+                // even if this future unwinds before its close assertions.
+                for handle in &tool_handles {handles.push(handle.try_clone().unwrap());}
                 // Subsequent Pi instances run the original pinned launcher.
                 // Keep a second section live throughout closing/rebuilding first.
                 fs::write(fixture.join("pi/launch.mjs"),format!("await import({});\n",json!(launcher.as_str()))).unwrap();
@@ -330,10 +324,11 @@ async fn owned_desktop_pipe_quit_and_restart_clean_up_real_pi_and_home_lock() {
             assert!(peer_lock.try_lock().is_err(),"Independent daemon lost its home");
         }).catch_unwind().await;
         provider.abort();
-        for entry in fs::read_dir(&evidence).unwrap().take(8) {
-            let path = entry.unwrap().path();
+        for entry in fs::read_dir(&evidence).into_iter().flatten().take(8).flatten() {
+            let path = entry.path();
             if path.extension().is_some_and(|e| e == "jsonl") {
-                let bytes = fs::read(&path).unwrap();
+                let mut bytes = Vec::new();
+                if let Ok(file) = fs::File::open(&path) {let _=std::io::Read::read_to_end(&mut std::io::Read::take(file,8192),&mut bytes);}
                 eprintln!(
                     "Shutdown {mode}/{nonce} lifecycle {}: {}",
                     path.file_name().unwrap().to_string_lossy(),
@@ -343,25 +338,28 @@ async fn owned_desktop_pipe_quit_and_restart_clean_up_real_pi_and_home_lock() {
         }
         if let Err(error) = result {
             eprintln!(
-                "Shutdown {mode}/{nonce} FAILED before cleanup: daemon={:?}, processes={:?}",
+                "Shutdown {mode}/{nonce} FAILED before cleanup: supervisor={:?}, processes={:?}",
                 child.try_wait(),
                 handles
                     .iter()
                     .map(ProcessHandle::snapshot)
                     .collect::<Vec<_>>()
             );
-            if child.id().is_some() {
-                if let Err(error) = child.start_kill() {
-                    eprintln!("Owned fixture kill: {error}");
-                }
-                if let Err(error) =
-                    tokio::time::timeout(Duration::from_secs(15), child.wait()).await
-                {
-                    eprintln!("Owned fixture reap: {error}");
-                }
+            eprintln!("Shutdown {mode}/{nonce} startup before cleanup: {}",startup.snapshot());
+            eprintln!("Independent peer before failure cleanup: {}",peer_startup.snapshot());
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
+            cleanup_deadline = Some(deadline);
+            let _ = peer.start_kill();
+            owned_reaped = startup.cleanup(&mut child, deadline).await;
+            for handle in &handles {
+                let remaining=deadline.saturating_duration_since(tokio::time::Instant::now());
+                owned_reaped &= handle.exits_within(remaining.as_millis().min(u32::MAX as u128) as u32);
             }
+            eprintln!("Owned descendants after failure cleanup: {:?}",handles.iter().map(ProcessHandle::snapshot).collect::<Vec<_>>());
             std::panic::resume_unwind(error);
         }
+        owned_reaped = true;
+        eprintln!("Shutdown {mode}/{nonce} completed startup/exit: {}", startup.snapshot());
     }
     peer.stdin
         .take()
@@ -378,11 +376,172 @@ async fn owned_desktop_pipe_quit_and_restart_clean_up_real_pi_and_home_lock() {
         Some(0)
     );
     peer_handle.wait();
+    }).catch_unwind().await;
+    if let Err(error) = all {
+        eprintln!(
+            "Independent peer before cleanup: {}",
+            peer_startup.snapshot()
+        );
+        let deadline = cleanup_deadline
+            .unwrap_or_else(|| tokio::time::Instant::now() + Duration::from_secs(15));
+        let peer_reaped = peer_startup.cleanup(&mut peer, deadline).await;
+        if !owned_reaped || !peer_reaped {
+            eprintln!(
+                "Bounded owned cleanup FAILED; retained temporary state at {}",
+                root.keep().display()
+            );
+        }
+        std::panic::resume_unwind(error);
+    }
 }
 
 #[path = "support/windows_process_handle.rs"]
 mod process_handle;
 use process_handle::ProcessHandle;
+
+#[tokio::test]
+#[ignore = "native Windows A/B control; each fresh-home case runs once and a failed A remains a test failure"]
+async fn real_service_parent_stdio_control() {
+    let bundle =
+        PathBuf::from(std::env::var_os("HEXBOT_NATIVE_TEST_BUNDLE").expect("native bundle"));
+    let mut outcomes = Vec::new();
+    for forward in [false, true] {
+        let root = tempfile::tempdir().unwrap();
+        let home = root.path().join("fresh service state");
+        let nonce = hexbot_core::common::id();
+        let (mut command, listener) =
+            service_parent_fixture::service_command(&nonce, forward).await;
+        let mut child = command
+            .env("HEXBOT_HOME", &home)
+            .env("HEXBOT_PI_EXECUTABLE", bundle.join("node.exe"))
+            .env("HEXBOT_SUPERVISOR", "service")
+            .env_remove("HEXBOT_DESKTOP_CONTROL")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .creation_flags(0x08000000)
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
+        let mut startup = Startup::new(&mut child, Some(listener), &nonce, forward);
+        let mut real_ready = false;
+        let mut cleanup_deadline = None;
+        let result = std::panic::AssertUnwindSafe(async {
+            let port = startup
+                .ready(&mut child)
+                .await
+                .unwrap_or_else(|error| panic!("Control forward={forward}: {error}"));
+            assert_ne!(port, 0);
+            real_ready = true;
+            let daemon = startup.daemon.as_ref().unwrap();
+            assert!(daemon.alive());
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
+            cleanup_deadline = Some(deadline);
+            let normal = deadline - Duration::from_secs(3);
+            child
+                .stdin
+                .take()
+                .unwrap()
+                .write_all(b"exit\n")
+                .await
+                .unwrap();
+            let status = tokio::time::timeout_at(normal, child.wait())
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(status.code(), Some(0));
+            assert!(
+                daemon.exits_within(
+                    normal
+                        .saturating_duration_since(tokio::time::Instant::now())
+                        .as_millis() as u32
+                ),
+                "Service child did not complete after its real creator exited"
+            );
+            assert_eq!(
+                daemon.snapshot()["exitCode"],
+                0,
+                "Graceful kernel completion is required before any failure fallback"
+            );
+            let lock = fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(home.join("native-daemon.lock"))
+                .unwrap();
+            lock.try_lock().expect("Control did not release its home");
+        })
+        .catch_unwind()
+        .await;
+        // Always record both cases, including A passing on this machine. No
+        // missing READY or early child exit is an expected-success outcome.
+        eprintln!(
+            "Service A/B forward={forward} before cleanup: {}",
+            startup.snapshot()
+        );
+        let passed = result.is_ok();
+        let mut authenticated_listener = false;
+        if !passed {
+            let deadline = cleanup_deadline
+                .unwrap_or_else(|| tokio::time::Instant::now() + Duration::from_secs(15));
+            // Diagnostic only, within the SAME cleanup budget. At most its
+            // first second is spent here, leaving the witness's 10s deadline
+            // and the reserved force/reap time. Never substitutes for READY.
+            let probe = async {
+                let daemon = startup.daemon.as_ref()?;
+                if !daemon.alive() {
+                    return None;
+                }
+                let state: Value =
+                    serde_json::from_slice(&fs::read(home.join("serve-state.json")).ok()?).ok()?;
+                let port = u16::try_from(state["port"].as_u64()?).ok()?;
+                let identity: Value = reqwest::Client::builder()
+                    .no_proxy()
+                    .build()
+                    .ok()?
+                    .get(format!("http://127.0.0.1:{port}/api/daemon/identity"))
+                    .send()
+                    .await
+                    .ok()?
+                    .json()
+                    .await
+                    .ok()?;
+                if identity["pid"] != daemon.pid {
+                    return None;
+                }
+                let token = auth::local_token(&home).ok()?;
+                let (_socket, _) =
+                    connect_async(format!("ws://127.0.0.1:{port}/api/ws?token={token}"))
+                        .await
+                        .ok()?;
+                Some(daemon.alive())
+            };
+            authenticated_listener =
+                tokio::time::timeout_at(deadline - Duration::from_secs(14), probe)
+                    .await
+                    .ok()
+                    .flatten()
+                    == Some(true);
+            eprintln!(
+                "Service A/B forward={forward}: authenticated listener bound to retained child={authenticated_listener}; before cleanup {}",
+                startup.snapshot()
+            );
+            if !startup.cleanup(&mut child, deadline).await {
+                eprintln!(
+                    "Control bounded cleanup FAILED; retained {}",
+                    root.keep().display()
+                );
+            }
+        }
+        outcomes.push(json!({"forward":forward,"realReady":real_ready,"graceful":passed,"authenticatedListenerWithoutReady":!real_ready && authenticated_listener}));
+    }
+    eprintln!(
+        "Service A/B outcomes: {outcomes:?}; A without READY plus its authenticated listener and B's real READY supports transport loss in this control only; otherwise a live unready A remains unknown. Historical cause is unproved."
+    );
+    assert!(
+        outcomes.iter().all(|row| row["graceful"] == true),
+        "A/B startup or graceful-exit contract failed; B cannot turn A's failure into a pass"
+    );
+}
 
 #[tokio::test]
 async fn native_tunnel_worker_cleanup_reaps_and_can_restart_its_metrics_process() {
