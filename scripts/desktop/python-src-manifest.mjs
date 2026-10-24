@@ -22,5 +22,7 @@ export async function stagePythonSource(repositoryRoot, destination, { nativeTra
     await mkdir(dirname(target), { recursive: true })
     await copyFile(join(repositoryRoot, 'backend/python-handoff', file), target)
   }
+  // Hexbot's own license and notices travel with the published source archive.
+  for (const file of ['LICENSE', 'NOTICE']) await copyFile(join(repositoryRoot, file), join(destination, file))
   await writeFile(join(destination, 'HEXBOT_NATIVE_TRANSITION.json'), `${JSON.stringify({ version: nativeTransitionVersion })}\n`)
 }
