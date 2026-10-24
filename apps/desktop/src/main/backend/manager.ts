@@ -68,7 +68,7 @@ export async function lockedDaemonPid(home = hexbotHome()): Promise<number | und
 // A service, or another copy of the app, may already run the daemon for this
 // home; a second one would exit on the home lock. The running daemon holds that
 // lock and records its port in serve-state.json.
-export async function runningDaemonPort(home = hexbotHome()): Promise<number | undefined> {
+export async function runningDaemonPort(home = hexbotHome(), signal?: AbortSignal): Promise<number | undefined> {
   const pid = await lockedDaemonPid(home)
   if (!pid) return undefined
   try {
@@ -78,7 +78,7 @@ export async function runningDaemonPort(home = hexbotHome()): Promise<number | u
     const port = Number(state.port)
     if (!Number.isInteger(port) || port < 1 || port > 65_535) return undefined
     const response = await fetch(`http://127.0.0.1:${port}/api/daemon/identity`, {
-      signal: AbortSignal.timeout(1_000),
+      signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(1_000)]) : AbortSignal.timeout(1_000),
       redirect: 'error'
     })
     if (!response.ok) return undefined
@@ -150,19 +150,23 @@ export class DaemonManager extends EventEmitter {
   }
   private changeService(operation: () => Promise<void>, installed: boolean): Promise<void> {
     this.cancelTransition()
+    const epoch = this.requestEpoch
     return this.serialize(async () => {
-      if (this.quitting) throw new Error('The app is quitting')
+      if (this.quitting || epoch !== this.requestEpoch)
+        throw new Error('Service change was superseded')
       const owned = this.ownedIntent || Boolean(this.child)
       if (owned) await this.stopOwned()
       try {
         await operation()
+        if (this.quitting || epoch !== this.requestEpoch)
+          throw new Error('Service change was superseded')
         if (installed) this.setStatus({ state: 'external', port: await this.waitForService() })
         else {
           this.setStatus({ state: 'stopped' })
           await this.startOwned()
         }
       } catch (error) {
-        if (owned) {
+        if (owned && epoch === this.requestEpoch && !this.quitting) {
           try {
             await this.startOwned()
             await this.waitForOwned()
@@ -176,28 +180,27 @@ export class DaemonManager extends EventEmitter {
   }
   private waitForService(): Promise<number> {
     return new Promise((resolve, reject) => {
-      let settled = false,
-        checking = false,
-        changed = false
-      const watchers = [
-        watch(hexbotHome(), () => {
-          void check()
-        })
-      ]
-      if (existsSync(join(hexbotHome(), 'runtime')))
-        watchers.push(
-          watch(join(hexbotHome(), 'runtime'), () => {
-            void check()
-          })
-        )
+      let settled = false, checking = false, changed = false
+      let retry: NodeJS.Timeout | undefined
+      const probe = new AbortController()
+      const watchers: ReturnType<typeof watch>[] = []
+      const cancelled = (): void => finish(new Error('Service change was superseded'))
+      const watchError = (error: Error): void => finish(error)
       const finish = (error?: Error, port?: number): void => {
         if (settled) return
         settled = true
         clearTimeout(timer)
-        for (const watcher of watchers) watcher.close()
+        clearTimeout(retry)
+        probe.abort()
+        this.off('transition-cancelled', cancelled)
+        for (const watcher of watchers) {
+          watcher.off('error', watchError)
+          watcher.close()
+        }
         if (error) reject(error)
         else resolve(port!)
       }
+      // One total deadline, including all HTTP probes and filesystem wake-ups.
       const timer = setTimeout(
         () => finish(new Error('Installed service did not become ready')),
         30_000
@@ -205,19 +208,34 @@ export class DaemonManager extends EventEmitter {
       const check = async (): Promise<void> => {
         changed = true
         if (checking || settled) return
+        clearTimeout(retry)
+        retry = undefined
         checking = true
         do {
           changed = false
           try {
-            const port = await runningDaemonPort()
-            if (port) finish(undefined, port)
+            const port = await runningDaemonPort(hexbotHome(), probe.signal)
+            if (port && !settled) finish(undefined, port)
           } catch (error) {
             finish(error instanceof Error ? error : new Error(String(error)))
           }
         } while (changed && !settled)
         checking = false
+        // HTTP can begin serving after the final filesystem publication.
+        if (!settled) retry = setTimeout(() => { void check() }, 250)
       }
-      for (const watcher of watchers) watcher.once('error', finish)
+      this.on('transition-cancelled', cancelled)
+      try {
+        for (const directory of [hexbotHome(), join(hexbotHome(), 'runtime')]) {
+          if (!existsSync(directory)) continue
+          const watcher = watch(directory, () => { void check() })
+          watchers.push(watcher)
+          watcher.once('error', watchError)
+        }
+      } catch (error) {
+        finish(error instanceof Error ? error : new Error(String(error)))
+        return
+      }
       void check()
     })
   }
