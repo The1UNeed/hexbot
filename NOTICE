@@ -1,7 +1,11 @@
 Hexbot
 Copyright (c) 2026 Hexbot contributors
 
-Licensed under the Apache License, Version 2.0 (see LICENSE).
+Hexbot's own source code is licensed under the Apache License, Version 2.0
+(see LICENSE), except where a file or directory states otherwise. Files and
+directories that carry their own license keep it.
+
+Earlier Hexbot releases keep the license they shipped with.
 
 This product is a hard fork of Hermes Agent by Nous Research, imported at
 upstream commit 32fe1293244f186c75e82090ed06fe416739f146 (v0.21.0). The
@@ -24,6 +28,12 @@ imported code is licensed under the MIT License:
   LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
   OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
   SOFTWARE.
+
+The bundled skills in skills/ were imported with Hermes Agent. Each states
+its license in its SKILL.md, and some directories also include a LICENSE
+file; all of them are MIT. skills/creative/humanizer/ is a port of Humanizer
+by Siqi Chen (https://github.com/blader/humanizer), MIT License,
+Copyright (c) 2025 Siqi Chen; its license is in that directory.
 
 The connection, pairing, and auth patterns of the desktop client are modelled
 on T3 Code (https://github.com/pingdotgg/t3code), MIT License,
