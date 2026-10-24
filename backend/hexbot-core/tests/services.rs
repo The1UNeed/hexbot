@@ -320,8 +320,9 @@ async fn native_archive_child() {
             .unwrap();
             assert_eq!(selected["files"], files);
 
-            // A daemon still on its old build restarts into a runtime the app
-            // already selected, without downloading it again.
+            // An equal-chronology selection is never a restart authorization.
+            // In particular, an unverified pointer with no durable record cannot
+            // bypass the signed archive path.
             let other = tempfile::tempdir().unwrap();
             db::migrate(other.path()).unwrap();
             mock.configure(other.path());
@@ -351,16 +352,24 @@ async fn native_archive_child() {
                             .await
                             .unwrap()
                             .unwrap();
-                    assert_ne!(status["status"], "failed", "{status}");
-                    if let Some(path) = services::take_restart(other.path()).await.unwrap() {
-                        break path;
+                    assert_ne!(status["status"], "restarting", "{status}");
+                    if status["status"] == "failed" {
+                        break status;
                     }
                     tokio::task::yield_now().await;
                 }
             })
             .await
             .unwrap();
-            assert_eq!(again, selected.join("hexbot").canonicalize().unwrap());
+            assert!(again["message"].as_str().unwrap().contains("newer"));
+            assert!(
+                services::take_restart(other.path())
+                    .await
+                    .unwrap()
+                    .is_none()
+            );
+            assert!(!other.path().join("runtime/native-current.json").exists());
+            assert_eq!(fs::read(selected.join("hexbot")).unwrap(), binary);
             services::shutdown(other.path()).await.unwrap();
         }
         services::shutdown(home.path()).await.unwrap();
