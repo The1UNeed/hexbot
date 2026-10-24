@@ -7,7 +7,7 @@ import { join } from 'node:path'
 import test from 'node:test'
 import {
   SHUTDOWN_TRACE_ENV, acknowledgeInstrumentation, assertSingleInstall, instrumentShutdown,
-  instrumentationPreloadSource, observeShutdown, requestShutdown, validateInstrumentation, writeInstrumentationPreload
+  instrumentationPreloadSource, observeShutdown, requestShutdown, validateInstrumentation, waitForTrace, writeInstrumentationPreload
 } from './lifecycle-shutdown.mjs'
 
 function fixture() {
@@ -193,4 +193,27 @@ test('instrumentation acknowledgement attributes one fresh record and refuses th
   } finally {
     await rm(root, { recursive: true, force: true })
   }
+})
+
+
+test('main entry can follow preload acknowledgement within the remaining shared deadline', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'hexbot-main-entry-'))
+  try {
+    const trace = join(root, 'native.jsonl')
+    const select = records => records.find(record => record.event === 'main-enter')
+    const deadline = Date.now() + 5000
+    const shutdown = join(root, 'shutdown.jsonl')
+    await writeFile(shutdown, JSON.stringify({ event: 'instrumented', pid: 20, ready: false, electron: '42.11.3' }) + '\n')
+    await acknowledgeInstrumentation(shutdown, { pid: 20 }, { timeout: deadline - Date.now(), platform: 'darwin' })
+    const pending = waitForTrace(trace, select, { timeout: deadline - Date.now(), description: 'App main entry' })
+    await appendFile(trace, JSON.stringify({ event: 'ready' }) + '\n')
+    // A complete unrelated record and partial entry must not count as entry.
+    await appendFile(trace, '{"event":"main-enter",')
+    await appendFile(trace, '"instrumented":true}\n')
+    assert.deepEqual(await pending, { event: 'main-enter', instrumented: true })
+    await assert.rejects(waitForTrace(join(root, 'missing'), select, { timeout: 20, description: 'App main entry' }),
+      /App main entry was not acknowledged within 20 ms/)
+    await writeFile(trace, '{bad json}\n')
+    await assert.rejects(waitForTrace(trace, select), SyntaxError)
+  } finally { await rm(root, { recursive: true, force: true }) }
 })

@@ -119,7 +119,7 @@ export function validateInstrumentation(records, child, platform = process.platf
 // fs.watch can coalesce a file's creation and its first write into one event
 // on macOS, which would lose the completed record. watchFile reports any later
 // change through stat, within the same overall deadline.
-export async function acknowledgeInstrumentation(file, child, { timeout = 30000, platform = process.platform } = {}) {
+export async function waitForTrace(file, select, { timeout = 30000, description = 'Trace record' } = {}) {
   const { readFile } = await import('node:fs/promises')
   const { watchFile, unwatchFile } = await import('node:fs')
   let timer, settle
@@ -127,20 +127,26 @@ export async function acknowledgeInstrumentation(file, child, { timeout = 30000,
   try {
     watchFile(file, { interval: 50 }, changed)
     const deadline = new Promise((_, reject) => {
-      timer = setTimeout(() => reject(new Error(`Instrumentation preload was not acknowledged within ${timeout} ms`)), timeout)
+      timer = setTimeout(() => reject(new Error(`${description} was not acknowledged within ${timeout} ms`)), timeout)
     })
     deadline.catch(() => {}) // observed through Promise.race below
     for (;;) {
       const next = new Promise(resolve => { settle = resolve })
       const text = await readFile(file, 'utf8').catch(error => { if (error.code === 'ENOENT') return ''; throw error })
       const records = traceRecords(text)
-      if (records.length) return validateInstrumentation(records, child, platform)
+      const result = select(records)
+      if (result !== undefined) return result
       await Promise.race([next, deadline])
     }
   } finally {
     clearTimeout(timer)
     unwatchFile(file, changed)
   }
+}
+
+export function acknowledgeInstrumentation(file, child, { timeout = 30000, platform = process.platform } = {}) {
+  return waitForTrace(file, records => records.length ? validateInstrumentation(records, child, platform) : undefined,
+    { timeout, description: 'Instrumentation preload' })
 }
 
 export async function assertSingleInstall(file) {

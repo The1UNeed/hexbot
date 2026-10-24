@@ -148,8 +148,6 @@ async function quit(app, source = 'app') {
         else app.quit()
       })
     }, source))
-    if (!packaged) await assertSingleInstall(traces.get(app))
-    currentApp = undefined
   } catch (error) {
     // Diagnostics run only after a failed strict gate and before cleanup kills
     // the owned test process. They must never replace the primary failure.
@@ -185,6 +183,8 @@ async function quit(app, source = 'app') {
     }
     throw error
   }
+  if (!packaged) await assertSingleInstall(traces.get(app))
+  currentApp = undefined
 }
 
 async function background(app) {
@@ -360,7 +360,10 @@ try {
       await closeSession()
       await expect.poll(() => endingApp.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().length)).toBe(0)
       await quit(endingApp)
-    } else await requestShutdown(shutdowns.get(endingApp), closeSession)
+    } else {
+      await requestShutdown(shutdowns.get(endingApp), closeSession)
+      if (!packaged) await assertSingleInstall(traces.get(endingApp))
+    }
     const shutdownEvents = (await readFile(join(artifacts, `${edition}-session-shutdown.jsonl`), 'utf8'))
       .trim().split('\n').map(line => JSON.parse(line))
     const closes = shutdownEvents.filter(event => event.event === 'session-window-close')

@@ -6,6 +6,29 @@ local packages and native CI probes. It does not provide Windows confinement.
 The fail-closed execution boundary and independent GPT 6.1 and Opus 5.5 approval
 are required before merge or shipping, together with native validation.
 
+## CI budgets
+
+`Windows build and install contract` runs four independent jobs on separate
+Windows VMs, with no dependencies or shared binaries:
+
+- `client-and-installer`, 45 minutes, retains all Stable installer, repair,
+  Tauri, contract and real Client NSIS controls. Only this job uploads the
+  Client artifact.
+- `native-runtime`, 60 minutes, retains all native, Pi, bootstrap, Stable Full
+  NSIS, signed ZIP/Connect and refusal controls.
+- `client-nightly`, 45 minutes, runs the unchanged Client Nightly NSIS probe.
+- `full-nightly`, 60 minutes, prepares its own exact-current-tree disposable
+  source after the production unsupported guard check, then runs the unchanged
+  Full Nightly NSIS probe. It builds its own Full and Client Nightly packages.
+
+The old combined 45-minute Client job needed about 59 minutes. Its complete
+Stable NSIS test passed in 1298.53 seconds before Nightly was cancelled at the
+job deadline. The split's runtime estimates remain unverified. Stable Full
+NSIS duration and the complete native-runtime total remain unknown; no other
+controls move. Separate VMs isolate registry, protocol and sibling-prefix
+fixtures. Sequential track probes uninstall Stable first, so they do not prove
+coinstalled-track behavior. No disposable binary is uploaded or published.
+
 ## Runtime layout
 
 Windows x64 uses `hexbot.exe`, `hexbot-cli.exe`, `node.exe`, `pi/launch.mjs`, the locked Pi

@@ -54,8 +54,6 @@ jobs:
           Write-Host ('Node lookup diagnostic: ' + (@{ type=$(if ($null -eq $lookup) { 'null' } else { $lookup.GetType().FullName }); count=$lookupValues.Count; environmentSpelling=$lookupText.Substring(0, [Math]::Min(1024, $lookupText.Length)); paths=@($lookupValues | Select-Object -First 4 | ForEach-Object { $text=[string]$_; $text.Substring(0, [Math]::Min(512, $text.Length)) }) } | ConvertTo-Json -Compress))
           $env:HEXBOT_WINDOWS_GUI_PROBE = (Resolve-Path scripts/desktop/windows-installed-app-smoke.mjs).Path
           node scripts/dev/run-one-rust-test.mjs backend/hexbot-installer/Cargo.toml windows_contract real_nsis_install_repair_and_uninstall
-      - name: Verify the real Nightly Client NSIS identity without publishing
-        run: node scripts/desktop/windows-nightly-nsis-probe.mjs client
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: windows-client-contract
@@ -194,6 +192,57 @@ jobs:
           if ($artifact.Count -ne 1) { throw 'Expected exactly one native refusal executable' }
           ./scripts/dev/windows-security-standard-user.ps1 -Runtime (Resolve-Path backend/pi-runtime).Path -Probe $artifact[0].executable
       # Disposable guard-removed binaries are never uploaded or published.
+  client-nightly:
+    env:
+      HEXBOT_WINDOWS_NSIS_PROBE: '1'
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: 26.5.0
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+      - run: rustup show active-toolchain
+      - run: pnpm install --frozen-lockfile
+      - name: Verify the real Nightly Client NSIS identity without publishing
+        run: node scripts/desktop/windows-nightly-nsis-probe.mjs client
+  full-nightly:
+    env:
+      HEXBOT_CLI_NO_PATH: '1'
+      HEXBOT_WINDOWS_NSIS_PROBE: '1'
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: 26.5.0
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+      - run: rustup show active-toolchain
+      - run: pnpm install --frozen-lockfile
+      - name: Native daemon compile gate expects only the production support guard
+        run: node scripts/dev/check-windows-unsupported.mjs "${{ github.workspace }}"
+      - name: Prepare the explicitly combined disposable native probe
+        shell: pwsh
+        env:
+          HEXBOT_CI_GIT: C:\Program Files\Git\cmd\git.exe
+        run: |
+          $source = Join-Path $env:RUNNER_TEMP 'hexbot-windows-contract-probe'
+          $metadata = node scripts/dev/prepare-windows-security.mjs $source '${{ github.sha }}' '${{ github.sha }}' --current-tree
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Write-Output $metadata
+          $probe = $metadata | ConvertFrom-Json
+          $tree = git rev-parse '${{ github.sha }}^{tree}'
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot resolve immutable source tree' }
+          if ($probe.sourceDir -ne $source -or $probe.buildSHA -ne '${{ github.sha }}' -or $probe.securitySHA -ne '${{ github.sha }}' -or $probe.appliedSecurityPatch -or $probe.guardedTree -ne $tree) { throw 'Disposable source does not preserve exact current tree' }
+          "HEXBOT_WINDOWS_PROBE_SOURCE=$($probe.sourceDir)" >> $env:GITHUB_ENV
+      - run: pnpm install --frozen-lockfile
+        working-directory: ${{ env.HEXBOT_WINDOWS_PROBE_SOURCE }}
       - name: Verify the real Nightly Full NSIS identity without publishing
         working-directory: ${{ env.HEXBOT_WINDOWS_PROBE_SOURCE }}
         run: node scripts/desktop/windows-nightly-nsis-probe.mjs full

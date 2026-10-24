@@ -3,10 +3,10 @@
 import assert from 'node:assert/strict'
 import { once } from 'node:events'
 import { appendFileSync } from 'node:fs'
-import { mkdir, readFile, writeFile } from 'node:fs/promises'
+import { mkdir, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { format, stripVTControlCharacters } from 'node:util'
-import { SHUTDOWN_TRACE_ENV, acknowledgeInstrumentation, assertSingleInstall, observeShutdown, requestShutdown } from './lifecycle-shutdown.mjs'
+import { SHUTDOWN_TRACE_ENV, acknowledgeInstrumentation, assertSingleInstall, observeShutdown, requestShutdown, waitForTrace } from './lifecycle-shutdown.mjs'
 
 export function protocolSummary(message, direction) {
   const context = message.params?.context
@@ -107,11 +107,12 @@ app.whenReady().then(()=>{const window=new BrowserWindow({show:false});trace('wi
         child.stderr.on('data', data => record('stderr', { bytes: data.length, tail: data.toString().slice(-1024) }))
         if (ready) await app.firstWindow({ timeout: 30000 })
         record('instrumentation-request')
-        const installed = await acknowledgeInstrumentation(shutdownTrace, child)
+        const deadline = Date.now() + 30000
+        const installed = await acknowledgeInstrumentation(shutdownTrace, child, { timeout: deadline - Date.now() })
         record('instrumentation-acknowledged', { pid: installed.pid, ppid: installed.ppid })
         // The app's own first record proves the preload ran before main entry.
-        const entry = (await readFile(nativeTrace, 'utf8')).split('\n').filter(Boolean).map(line => JSON.parse(line))
-          .find(event => event.event === 'main-enter')
+        const entry = await waitForTrace(nativeTrace, records => records.find(event => event.event === 'main-enter'),
+          { timeout: Math.max(1, deadline - Date.now()), description: 'App main entry' })
         assert.equal(entry?.instrumented, true, 'Instrumentation must exist before the app main entry')
         assert.equal(entry.pid, installed.pid)
       } catch (error) {

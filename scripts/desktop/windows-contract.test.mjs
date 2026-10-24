@@ -66,7 +66,47 @@ test('Windows CI keeps the production guard and never publishes disposable probe
   assert.equal(ci.split('HEXBOT_WINDOWS_GUI_PROBE =').length - 1, 2)
   assert(ci.includes('windows-paths.test.ts'))
   for (const name of ['real_pi_process_uses_absolute_node_launcher_and_windows_environment', 'owned_desktop_pipe_quit_and_restart_clean_up_real_pi_and_home_lock', 'user_path_registration_preserves_existing_entries_and_removes_only_its_own', 'interrupted_task_install_uninstalls_owned_files_when_the_task_is_absent']) assert(ci.includes(name))
-  assert(!ci.slice(ci.indexOf('  native-runtime:')).includes('upload-artifact'))
+  const boundaries = [...ci.matchAll(/^  ([a-z][a-z0-9-]*):\r?$/gm)]
+  const jobs = Object.fromEntries(boundaries.map((match, index) =>
+    [match[1], ci.slice(match.index, boundaries[index + 1]?.index ?? ci.length)]))
+  assert.deepEqual(Object.keys(jobs), ['client-and-installer', 'native-runtime', 'client-nightly', 'full-nightly'])
+  assert.equal(ci.match(/uses: actions\/upload-artifact@/g)?.length, 1)
+  assert.deepEqual(Object.keys(jobs).filter(name => jobs[name].includes('prepare-windows-security.mjs')),
+    ['native-runtime', 'full-nightly'])
+  for (const [name, job] of Object.entries(jobs)) {
+    assert.equal(job.includes('upload-artifact'), name === 'client-and-installer', `${name}: artifact boundary`)
+    assert.match(job, /runs-on: windows-latest/)
+    assert.match(job, new RegExp(`timeout-minutes: ${name.startsWith('client-') ? 45 : 60}\\b`))
+    assert(!/^    needs:/m.test(job), `${name}: independent VM`)
+    assert.match(job, /HEXBOT_WINDOWS_NSIS_PROBE: '1'/)
+    if (job.includes('prepare-windows-security.mjs')) {
+      assert(job.includes('check-windows-unsupported.mjs'))
+      assert(job.indexOf('check-windows-unsupported.mjs') < job.indexOf('prepare-windows-security.mjs'))
+      assert(job.includes("$source '${{ github.sha }}' '${{ github.sha }}' --current-tree"))
+      assert(job.includes("$probe.buildSHA -ne '${{ github.sha }}' -or $probe.securitySHA -ne '${{ github.sha }}' -or $probe.appliedSecurityPatch -or $probe.guardedTree -ne $tree"))
+      assert(!job.includes('upload-artifact'))
+    }
+  }
+  const opening = job => job.slice(job.indexOf('      - uses:'), job.indexOf('      - run: pnpm install --frozen-lockfile') + '      - run: pnpm install --frozen-lockfile\n'.length)
+  assert.equal(opening(jobs['client-nightly']), opening(jobs['client-and-installer']))
+  assert.equal(opening(jobs['full-nightly']), opening(jobs['native-runtime']))
+  const nativePreparation = job => job.slice(job.indexOf('      - name: Native daemon compile gate'),
+    job.indexOf('      - name:', job.indexOf('working-directory: ${{ env.HEXBOT_WINDOWS_PROBE_SOURCE }}')))
+  assert.equal(nativePreparation(jobs['full-nightly']), nativePreparation(jobs['native-runtime']))
+  assert.equal(ci.match(/run: node scripts\/desktop\/windows-nightly-nsis-probe.mjs /g)?.length, 2)
+  for (const edition of ['client', 'full']) {
+    const job = jobs[`${edition}-nightly`]
+    assert.equal(job.match(new RegExp(`run: node scripts/desktop/windows-nightly-nsis-probe.mjs ${edition}\\b`, 'g'))?.length, 1)
+    assert(!job.includes('corepack'))
+    if (edition === 'client') {
+      assert(!/HEXBOT_CLI_NO_PATH|check-windows-unsupported|prepare-windows-security|working-directory:/.test(job))
+    } else {
+      assert.match(job, /HEXBOT_CLI_NO_PATH: '1'/)
+      assert(job.includes('working-directory: ${{ env.HEXBOT_WINDOWS_PROBE_SOURCE }}\n        run: node scripts/desktop/windows-nightly-nsis-probe.mjs full'))
+    }
+  }
+  for (const name of ['client-and-installer', 'native-runtime'])
+    assert(!jobs[name].includes('windows-nightly-nsis-probe.mjs'))
   const release = await readFile('.github/workflows/release.yml', 'utf8')
   assert(!release.includes('windows-latest'))
 })
