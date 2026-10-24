@@ -1003,14 +1003,23 @@ fn interrupted_task_install_uninstalls_owned_files_when_the_task_is_absent() {
             if !output.status.success() {
                 let diagnostic =
                     powershell(&windows_task::control(&file, &home, "diagnose").unwrap());
+                // The daemon's own startup error lands in the per-launch logs.
+                let tail = |name: &str| {
+                    fs::read(home.join("logs").join(name)).map(|bytes| {
+                        String::from_utf8_lossy(&bytes[bytes.len().saturating_sub(8192)..])
+                            .into_owned()
+                    })
+                };
                 panic!(
-                    "Task readiness: status={} stdout={} stderr={}; homeIdle={:?}; diagnostic={} stderr={}",
+                    "Task readiness: status={} stdout={} stderr={}; homeIdle={:?}; diagnostic={} stderr={}; serviceLog={:?}; serviceErrorLog={:?}",
                     output.status,
                     bounded(&output.stdout),
                     bounded(&output.stderr),
                     windows_task::home_idle(&home),
                     bounded(&diagnostic.stdout),
-                    bounded(&diagnostic.stderr)
+                    bounded(&diagnostic.stderr),
+                    tail("service.log"),
+                    tail("service-error.log")
                 );
             }
             serde_json::from_slice(&output.stdout).unwrap()
