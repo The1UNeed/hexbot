@@ -68,7 +68,7 @@ describe.skipIf(process.platform !== 'win32' || !process.env.HEXBOT_NATIVE_TEST_
       await performBootstrap({ run, emit, appIsPackaged: true, appVersion: manifest.version, resourcesPath: dirname(bundle), platform: 'win32', arch: 'x64' })
       expect(nativeServiceExecutable()).toBe(exe)
       await provePinnedUvRepair(chosen, exe, redact)
-      await proveProductionRepair(chosen, () => performBootstrap({ run, emit, appIsPackaged: true, appVersion: manifest.version, resourcesPath: dirname(bundle), platform: 'win32', arch: 'x64' }))
+      await proveProductionRepair(chosen, exe, () => performBootstrap({ run, emit, appIsPackaged: true, appVersion: manifest.version, resourcesPath: dirname(bundle), platform: 'win32', arch: 'x64' }))
       await expect(readFile(join(chosen, 'runtime/native-executable.exe'))).rejects.toThrow()
       const older = join(root, 'older runtime')
       await cp(bundle, older, { recursive: true })
@@ -174,7 +174,7 @@ async function provePinnedUvRepair(home: string, daemon: string, redact: (text: 
 
 // Production Full bootstrap repairs owned damage itself. The fixture only
 // damages files and restores them after a refusal; uv is never run here.
-async function proveProductionRepair(home: string, bootstrap: () => Promise<unknown>): Promise<void> {
+async function proveProductionRepair(home: string, daemon: string, bootstrap: () => Promise<unknown>): Promise<void> {
   const { execFile } = await import('node:child_process')
   const { promisify } = await import('node:util')
   const environment = join(home, 'runtime/tools/code-python')
@@ -186,10 +186,11 @@ async function proveProductionRepair(home: string, bootstrap: () => Promise<unkn
   expect(canonicalRuntimePath(identity.home)).toBe(canonicalRuntimePath(home))
   expect(identity.base_key).toMatch(/^cpython-3\.11\.(?:0|[1-9]\d*)-windows-x86_64-none$/)
   const dll = join(home, 'python', identity.base_key, 'python311.dll')
+  const basePython = join(home, 'python', identity.base_key, 'python.exe')
   const communicate = join(environment, 'Lib/site-packages/edge_tts/communicate.py')
   const digest = async (path: string): Promise<string> => createHash('sha256').update(await readFile(path)).digest('hex')
   const originals = new Map<string, string>()
-  for (const path of [python, entry, dll, communicate]) originals.set(path, await digest(path))
+  for (const path of [python, entry, dll, basePython, communicate]) originals.set(path, await digest(path))
   const healthy = async (label: string): Promise<void> => {
     for (const [path, expected] of originals) expect(await digest(path), `${label}: ${path}`).toBe(expected)
     const check = await promisify(execFile)(python, ['-I', '-B', '-c', 'import edge_tts, aiohttp._http_parser; from importlib.metadata import version; print(version("edge-tts"))'], { windowsHide: true })
@@ -210,6 +211,23 @@ async function proveProductionRepair(home: string, bootstrap: () => Promise<unkn
   await unchanged('healthy Full repeat', () => bootstrap().then(() => undefined))
   expect(await Promise.all(stablePaths.map(async path => [await digest(path), (await stat(path)).mtimeMs]))).toEqual(before)
   await healthy('healthy Full repeat')
+  // Direct explicit setup uses the selected real runtime, with no fixture uv
+  // repair and no activation. It must report done only after production probes.
+  const direct = async (): Promise<void> => {
+    const result = await promisify(execFile)(daemon, ['setup', '--json'], {
+      windowsHide: true, env: { ...process.env, HEXBOT_HOME: home, HEXBOT_CLI_NO_PATH: '1' }
+    })
+    expect(result.stdout).toContain('"stage":"done"')
+  }
+  await rm(basePython)
+  await direct()
+  await healthy('direct setup restores the missing base executable')
+  await writeFile(python, Buffer.alloc(63, 'p'))
+  await direct()
+  await healthy('direct setup restores a 63-byte redirector')
+  await writeFile(communicate, 'def (:\n')
+  await direct()
+  await healthy('direct setup restores invalid owned source')
   // Recorded damage repaired by Full bootstrap, same payload hashes.
   await writeFile(python, 'ordinary truncated redirector')
   await bootstrap()
@@ -230,6 +248,7 @@ async function proveProductionRepair(home: string, bootstrap: () => Promise<unkn
   const saved = await readFile(python)
   await writeFile(python, Buffer.alloc(64, 'g'))
   await unchanged('64-byte redirector refusal', () => expect(bootstrap()).rejects.toThrow())
+  await unchanged('direct setup refuses a 64-byte redirector', () => expect(direct()).rejects.toThrow())
   expect((await readFile(python)).toString('hex')).toBe(Buffer.alloc(64, 'g').toString('hex'))
   await writeFile(python, saved)
   const image = await readFile(dll)
