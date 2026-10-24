@@ -1431,6 +1431,32 @@ fn valid_version(version: &str) -> bool {
             !s.is_empty() && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'.')
         })
 }
+#[cfg(any(windows, test))]
+fn newer_packaged_nightly(candidate: &str, selected: &str) -> bool {
+    fn parse(raw: &str) -> Option<semver::Version> {
+        let version = semver::Version::parse(raw).ok()?;
+        if !version.build.is_empty() {
+            return None;
+        }
+        let parts: Vec<_> = version.pre.split('.').collect();
+        if parts.len() != 3 || parts[0] != "nightly" || parts[1].len() != 8 {
+            return None;
+        }
+        let day = chrono::NaiveDate::parse_from_str(parts[1], "%Y%m%d").ok()?;
+        let run = parts[2].parse::<u64>().ok()?;
+        if day.format("%Y%m%d").to_string() != parts[1] || run == 0 || run.to_string() != parts[2] {
+            return None;
+        }
+        Some(version)
+    }
+    match (parse(candidate), parse(selected)) {
+        (Some(next), Some(old)) => {
+            (next.major, next.minor, next.patch) == (old.major, old.minor, old.patch) && next > old
+        }
+        _ => false,
+    }
+}
+
 fn require_newer_native_build(requested: &Value, current: &Value) -> Result<()> {
     // Match desktop bootstrap: source chronology decides across update tracks.
     // A runtime predating builtAt has chronology zero.
@@ -1767,12 +1793,39 @@ fn publish_native_inner(
         });
         #[cfg(not(unix))]
         let pending_retry = false;
+        #[cfg(any(windows, test))]
+        let different_tie =
+            if allow_equal && floor > 0 && requested["builtAt"].as_u64() == Some(floor) {
+                let record = recorded
+                    .as_ref()
+                    .ok_or_else(|| Error::new(4212, "Runtime metadata needs repair"))?;
+                let durable_version = record["version"]
+                    .as_str()
+                    .filter(|v| !v.is_empty())
+                    .ok_or_else(|| Error::new(4212, "Runtime version needs repair"))?;
+                if record["builtAt"].as_u64() != Some(floor)
+                    || selected.as_ref().is_some_and(|manifest| {
+                        manifest["version"]
+                            .as_str()
+                            .filter(|v| valid_version(v))
+                            .is_some_and(|v| v != durable_version)
+                    })
+                {
+                    return Err(Error::new(
+                        4212,
+                        "Runtime selection versions or chronology disagree; repair it first",
+                    ));
+                }
+                durable_version != version
+            } else {
+                false
+            };
         // Windows setup may be an older package or may have lost the race
         // after the installer released its lock. Keep a newer selection only
         // when the bytes, complete manifest and durable floor all corroborate it.
         // The automatic updater never takes this repair-only branch.
         #[cfg(any(windows, test))]
-        if allow_equal && requested["builtAt"].as_u64().unwrap_or(0) < floor {
+        if allow_equal && (requested["builtAt"].as_u64().unwrap_or(0) < floor || different_tie) {
             let executable = selected_executable
                 .as_ref()
                 .ok_or_else(|| Error::new(4212, "Newer runtime selection needs repair"))?;
@@ -1802,7 +1855,14 @@ fn publish_native_inner(
                 ));
             }
             crate::setup::verify_runtime_version(executable.parent().unwrap(), selected_version)?;
-            return Ok(executable.to_owned());
+            // A different-version tie needs the entire verified selection, not
+            // one record field. Automatic publication never enters this branch.
+            if !(different_tie
+                && requested["target"] == manifest["target"]
+                && newer_packaged_nightly(version, selected_version))
+            {
+                return Ok(executable.to_owned());
+            }
         }
         let selected = json!({"builtAt": floor});
         if !(allow_equal || pending_retry)
@@ -1990,6 +2050,116 @@ fn assert_setup_retains_verified_newer_runtime() {
         fs::write(directory.path().join("manifest.json"), manifest.to_string()).unwrap();
         (directory, manifest)
     }
+    let ties: Vec<Value> =
+        serde_json::from_str(include_str!("../assets/native-setup-ties.json")).unwrap();
+    for row in ties {
+        let candidate = row["candidate"].as_str().unwrap();
+        let selected = row["selected"].as_str().unwrap();
+        let advance = row["advance"].as_bool().unwrap();
+        assert_eq!(
+            newer_packaged_nightly(candidate, selected),
+            advance,
+            "{}",
+            row["name"]
+        );
+        let home = tempfile::tempdir().unwrap();
+        let native = native_directory(home.path()).unwrap();
+        let (old, manifest) = bundle(&native, selected, 100);
+        let initial = publish_setup_native(&native, selected, old.path(), &manifest).unwrap();
+        let (next, manifest) = bundle(&native, candidate, 100);
+        // Every equal timestamp, even a greater Nightly, remains automatic-refused.
+        assert_eq!(
+            publish_native(&native, candidate, next.path(), "hexbot", Some(&manifest))
+                .unwrap_err()
+                .code,
+            4212
+        );
+        let actual = publish_setup_native(&native, candidate, next.path(), &manifest).unwrap();
+        assert_eq!(
+            actual != initial,
+            advance || candidate == selected,
+            "{}",
+            row["name"]
+        );
+        assert_eq!(selected_native_executable(home.path()).unwrap(), actual);
+    }
+    // A later Nightly can race packaged setup while both have identical source
+    // chronology. The queued older package must retain the new verified selection.
+    {
+        let home = tempfile::tempdir().unwrap();
+        let native = native_directory(home.path()).unwrap();
+        let older = "0.1.6-nightly.20261023.9";
+        let newer = "0.1.6-nightly.20261023.10";
+        let (first, manifest) = bundle(&native, older, 100);
+        publish_setup_native(&native, older, first.path(), &manifest).unwrap();
+        let (incoming, manifest) = bundle(&native, older, 100);
+        let lock = activation_lock(native.parent().unwrap()).unwrap();
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let n = native.clone();
+        let thread = std::thread::spawn(move || {
+            started_tx.send(()).unwrap();
+            publish_setup_native(&n, older, incoming.path(), &manifest)
+        });
+        started_rx.recv().unwrap();
+        let (update, manifest) = bundle(&native, newer, 100);
+        let executable = update.path().join(if cfg!(windows) {
+            "hexbot.exe"
+        } else {
+            "hexbot"
+        });
+        activate_native_locked(&native, newer, &executable, Some(&manifest)).unwrap();
+        drop(lock);
+        assert_eq!(
+            thread.join().unwrap().unwrap(),
+            executable.canonicalize().unwrap()
+        );
+        let before = fs::read(native.parent().unwrap().join("native-current.json")).unwrap();
+        for damage in ["bytes", "manifest", "floor", "version", "files"] {
+            fs::write(update.path().join("manifest.json"), manifest.to_string()).unwrap();
+            fs::write(&executable, newer).unwrap();
+            fs::write(
+                native.parent().unwrap().join("native-current.json"),
+                &before,
+            )
+            .unwrap();
+            match damage {
+                "bytes" => fs::write(&executable, "corrupt").unwrap(),
+                "manifest" => fs::write(update.path().join("manifest.json"), "{}").unwrap(),
+                _ => {
+                    let mut record: Value = serde_json::from_slice(&before).unwrap();
+                    match damage {
+                        "floor" => record["builtAt"] = json!(200),
+                        "version" => record["version"] = json!(older),
+                        _ => record["files"] = json!({}),
+                    }
+                    fs::write(
+                        native.parent().unwrap().join("native-current.json"),
+                        record.to_string(),
+                    )
+                    .unwrap();
+                }
+            }
+            let (repair, repair_manifest) = bundle(&native, older, 100);
+            assert!(
+                publish_setup_native(&native, older, repair.path(), &repair_manifest).is_err(),
+                "{damage}"
+            );
+        }
+        // Exact-version repair restores damaged bytes only with matching durable
+        // version/floor; it never borrows another identity's equal-floor authority.
+        fs::write(
+            native.parent().unwrap().join("native-current.json"),
+            &before,
+        )
+        .unwrap();
+        fs::write(update.path().join("manifest.json"), manifest.to_string()).unwrap();
+        fs::write(&executable, "corrupt").unwrap();
+        let (repair, repair_manifest) = bundle(&native, newer, 100);
+        let repaired =
+            publish_setup_native(&native, newer, repair.path(), &repair_manifest).unwrap();
+        assert_eq!(fs::read_to_string(repaired).unwrap(), newer);
+    }
+
     for (newer, older) in [("1.0.0-nightly.1", "1.0.0"), ("1.0.0", "1.0.0-nightly.1")] {
         let home = tempfile::tempdir().unwrap();
         let native = native_directory(home.path()).unwrap();
