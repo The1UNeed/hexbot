@@ -182,6 +182,29 @@ describe('Select typeahead', () => {
     expect(change).not.toHaveBeenCalled()
   })
 
+  it('hands the list to the pointer when the wheel turns, without choosing', async () => {
+    const change = vi.fn()
+
+    render(<Select label="Model" onValueChange={change} options={options} />)
+    await openList()
+    await type('deep')
+    expect(highlighted()).toBe('DeepSeek · DeepSeek V3')
+
+    // The list scrolls under a still pointer, and Base UI highlights the option now under it.
+    fireEvent.wheel(screen.getByRole('listbox'), { deltaY: 120 })
+    fireEvent.mouseMove(screen.getByRole('option', { name: 'Perplexity · Sonar' }))
+    await waitFor(() => expect(highlighted()).toBe('Perplexity · Sonar'))
+    expect(document.activeElement?.textContent).toBe('Perplexity · Sonar')
+    expect(change).not.toHaveBeenCalled()
+
+    // Typing starts a new search, and Enter chooses what it found.
+    await type('goo')
+    expect(highlighted()).toBe('Google · Gemini 2.5 Pro')
+    fireEvent.keyDown(document.activeElement ?? document.body, { key: 'Enter' })
+    await waitFor(() => expect(change).toHaveBeenCalledWith('google · gemini 2.5 pro'))
+    expect(change).toHaveBeenCalledTimes(1)
+  })
+
   describe('when the open list reorders', () => {
     const deepSeek = 'DeepSeek · DeepSeek V3'
     const added = { label: 'Aardvark', value: 'aardvark' }

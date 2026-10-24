@@ -248,8 +248,9 @@ export function Select({
     }
   }
 
-  // Moving the mouse hands the highlight back to the pointer. Scrolling the list under a
-  // still pointer also reports a move, so only a real change of position counts.
+  // Moving the mouse or turning the wheel hands the highlight back to the pointer. A list that
+  // scrolls to the found option under a still pointer also reports a move, so only a real change
+  // of position counts there.
   const onPopupPointerMove = (event: PointerEvent<HTMLElement>) => {
     const moved = event.clientX !== pointer.current.x || event.clientY !== pointer.current.y
 
@@ -298,6 +299,7 @@ export function Select({
             onKeyDownCapture={onKeyDownCapture}
             onKeyUpCapture={onKeyUpCapture}
             onPointerMove={onPopupPointerMove}
+            onWheel={reset}
             ref={popupRef}
           >
             <BaseSelect.List>
