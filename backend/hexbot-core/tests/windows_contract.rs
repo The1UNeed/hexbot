@@ -314,13 +314,18 @@ async fn owned_python_provisions_repairs_and_refuses_through_production_setup() 
             "edge-tts 7.2.7",
             "{label}"
         );
+        assert!(
+            version.stderr.is_empty(),
+            "{label}: {}",
+            String::from_utf8_lossy(&version.stderr)
+        );
     };
 
     // A. First install into an empty home.
     setup().await.unwrap();
     let record: serde_json::Value = serde_json::from_slice(&fs::read(&identity).unwrap()).unwrap();
     assert_eq!(record["schema"], 2);
-    assert_eq!(record.as_object().unwrap().len(), 3);
+    assert_eq!(record.as_object().unwrap().len(), 4);
     assert_eq!(
         Path::new(record["home"].as_str().unwrap())
             .canonicalize()
