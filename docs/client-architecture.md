@@ -45,6 +45,12 @@ differs from the stored one, drop live ids and reopen sections lazily.
 A 401 on ws-ticket means the device was revoked: clear the target and show
 the connect screen.
 
+Without a saved target, a remembered chat or a direct app-page link returns
+to connection setup before mounting that page. Full offers the local daemon
+or another device; Client and browsers open the connect screen. Remembered
+chat selection stays intact for reconnection. Revoked devices always return
+to pairing, including Full.
+
 While the status is `reconnecting` (or `offline` on an app page)
 `src/app/connection-lost.tsx` locks the window: the page underneath is
 `inert` behind a full-window overlay with "Reconnect now" and "Connect to
