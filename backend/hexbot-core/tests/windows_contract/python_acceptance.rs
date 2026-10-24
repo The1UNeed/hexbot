@@ -251,6 +251,11 @@ print(json.dumps(out,ensure_ascii=True))"#;
         .output()
         .unwrap();
     assert!(output.status.success());
+    assert!(
+        output.stderr.is_empty(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     assert_eq!(
         String::from_utf8_lossy(&output.stdout).trim(),
         "edge-tts 7.2.7"

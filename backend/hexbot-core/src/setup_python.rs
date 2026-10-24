@@ -166,7 +166,10 @@ def identity():
                 result['python_dll'] = buffer[:count]
                 break
             if size == 32768:
-                raise OSError(122, 'loaded Python DLL path exceeded the Unicode buffer bound')
+                code = ctypes.get_last_error()
+                if code:
+                    raise ctypes.WinError(code)
+                raise RuntimeError('loaded Python DLL path exceeded the Unicode buffer bound')
             size = min(size * 2, 32768)
     except BaseException as error:
         failed('python_dll', error)
