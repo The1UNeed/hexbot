@@ -55,7 +55,10 @@ export async function observeInstalledStatus(evaluate) {
     void failure.catch(() => undefined)
     return { failure, finish }
   } catch (error) {
-    await finish().catch(() => undefined)
+    try { await finish() }
+    catch (cleanupError) {
+      throw new AggregateError([error, cleanupError], `${error.message}; observation cleanup failed: ${cleanupError.message}`, { cause: error })
+    }
     throw error
   }
 }

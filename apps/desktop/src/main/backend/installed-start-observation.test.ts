@@ -189,7 +189,7 @@ it('deadline abort drains the active proof before disposing its main observer', 
   } finally { close(); await f.cleanup() }
 })
 
-it('deadline drains a late subscription acknowledgement without starting or leaking an observer', async () => {
+it('deadline bounds a late subscription acknowledgement and eventually disposes without starting', async () => {
   const f = await fixture()
   vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
   let acknowledge!: () => void, installed!: () => void
@@ -209,8 +209,12 @@ it('deadline drains a late subscription acknowledgement without starting or leak
     await subscribed
     await vi.advanceTimersByTimeAsync(1000)
     expect(settled).toBe(false)
-    acknowledge()
+    await vi.advanceTimersByTimeAsync(2000)
     await rejected
+    expect(settled).toBe(true)
+    expect(f.manager.listenerCount('status')).toBe(1)
+    acknowledge()
+    for (let i = 0; i < 40; i++) await Promise.resolve()
     expect(f.starts()).toBe(0)
     expect(f.observers).toHaveLength(0)
     expect(f.manager.listenerCount('status')).toBe(0)

@@ -162,29 +162,43 @@ async function startInstalledDaemon({ start, timeout = 30_000, ...options }, tas
       return Promise.race([starting, failure])
     }, signal => {
       const readySignal = taskStart ? signal : AbortSignal.any([signal, failed.signal])
-      readiness = waitForInstalledReady(options, readySignal, taskStart).then(async ready => {
+      // Keep owned probe completion separate from the remote completion fence.
+      readiness = waitForInstalledReady(options, readySignal, taskStart)
+      return readiness.then(async ready => {
         if (!taskStart) {
           const error = await observation.finish({ pid: ready.pid, port: ready.port })
           if (error) throw new Error(error)
         }
         return ready
       })
-      return readiness
     }, timeout)
   } catch (error) {
     primaryFailure = error
     throw error
   } finally {
-    // The shared deadline aborts before rejecting. Drain its owned probe before
-    // returning to lifecycle cleanup; a late bridge call cannot start a probe.
-    await readiness?.catch(() => undefined)
-    if (!taskStart) {
-      // Also drain a subscription whose setup replied after the deadline.
-      const active = observation ?? await observing?.catch(() => undefined)
-      try {
-        const error = await active?.finish()
-        if (error && !primaryFailure) throw new Error(error)
-      } catch (error) { if (!primaryFailure) throw error }
+    let cleanupFailure, timer
+    // One shared envelope, using the existing diagnostic bound, covers both
+    // subscription ACK and disposal. Keep this continuation observed after a
+    // timeout: a late ACK must still remove its own listener, never start a probe.
+    const disposal = Promise.resolve(observing).then(active => active?.finish()).then(error => {
+      if (error && !primaryFailure) throw new Error(error)
+    })
+    const boundedDisposal = !taskStart && observing
+      ? Promise.race([disposal, new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error('Installed manager observation disposal unconfirmed within 2000 ms')), 2000)
+      })]).catch(error => { cleanupFailure = error })
+      : Promise.resolve()
+    try {
+      // Unlike a remote evaluation, the owned read-only OS probe MUST be killed
+      // and reaped. Its drain remains mandatory even if remote cleanup expires.
+      await Promise.all([readiness?.catch(() => undefined), boundedDisposal])
+    } finally { clearTimeout(timer) }
+    if (cleanupFailure) {
+      if (!primaryFailure) throw cleanupFailure
+      // A rejected subscription is already the primary failure. Otherwise keep
+      // the startup cause and the separate unconfirmed-disposal cause explicit.
+      if (cleanupFailure !== primaryFailure)
+        throw new AggregateError([primaryFailure, cleanupFailure], `${primaryFailure.message}; observation cleanup failed: ${cleanupFailure.message}`, { cause: primaryFailure })
     }
   }
 }
