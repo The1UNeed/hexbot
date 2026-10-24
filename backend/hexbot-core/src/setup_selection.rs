@@ -1,7 +1,7 @@
 //! Explicit packaged POSIX runtime selection. No tools, CLI or services.
 use super::*;
 use std::io::Read;
-use std::os::unix::fs::OpenOptionsExt;
+use std::os::unix::{ffi::OsStrExt, fs::OpenOptionsExt};
 
 const LIMIT: u64 = 1024 * 1024;
 const SIGNED_MACHO: &[&str] = &["node", "hexbot-core", "bin/rg", "bin/fd"];
@@ -37,6 +37,41 @@ fn files(manifest: &Value) -> Result<&serde_json::Map<String, Value>> {
         .ok_or_else(|| Error::new(5243, "Native runtime manifest is incomplete"))
 }
 
+// These manifest entries are executed directly; JS modules and lockfiles are read.
+const EXECUTABLE_FILES: &[&str] = &[
+    "hexbot",
+    "hexbot-core",
+    "node",
+    "pi/hexbot-pi",
+    "bin/rg",
+    "bin/fd",
+];
+fn verify_executable(path: &Path) -> Result<()> {
+    let name = std::ffi::CString::new(path.as_os_str().as_bytes())
+        .map_err(|_| Error::new(5243, "Invalid native executable path"))?;
+    // Effective-user access includes owner/group selection and ACLs. An execute
+    // bit belonging to another user is insufficient, as in runtime_files.rs.
+    if unsafe {
+        libc::faccessat(
+            libc::AT_FDCWD,
+            name.as_ptr(),
+            libc::R_OK | libc::X_OK,
+            libc::AT_EACCESS,
+        )
+    } < 0
+    {
+        return Err(Error::new(
+            5243,
+            format!(
+                "Native runtime is not executable for this user: {}: {}",
+                path.display(),
+                std::io::Error::last_os_error()
+            ),
+        ));
+    }
+    Ok(())
+}
+
 fn verify_bytes(directory: &Path, manifest: &Value) -> Result<()> {
     if manifest["target"] != target()
         || manifest["version"]
@@ -68,6 +103,9 @@ fn verify_bytes(directory: &Path, manifest: &Value) -> Result<()> {
                 5243,
                 format!("Native runtime checksum failed: {file}"),
             ));
+        }
+        if EXECUTABLE_FILES.contains(&file.as_str()) {
+            verify_executable(&path)?;
         }
     }
     Ok(())
@@ -605,3 +643,7 @@ mod tests {
 #[cfg(test)]
 #[path = "setup_selection_floor_tests.rs"]
 mod floor_tests;
+
+#[cfg(test)]
+#[path = "setup_selection_permissions_tests.rs"]
+mod permissions_tests;

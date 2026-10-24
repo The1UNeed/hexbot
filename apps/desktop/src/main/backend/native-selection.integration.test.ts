@@ -106,10 +106,25 @@ it.skipIf(!process.env.HEXBOT_TEST_RUNTIME_58 || !process.env.HEXBOT_TEST_RUNTIM
         JSON.parse(await readFile(join(home, 'runtime/update-status.json'), 'utf8')).status
       ).toBe('failed')
       await writeFile(recordPath, record)
+      // Select .59 while the healthy owned .58 still runs from a different path.
+      const prepared = await performBootstrap({
+        appIsPackaged: true, appVersion: '0.1.5-nightly.20261022.59', resourcesPath: join(root, '59')
+      })
+      const damaged = prepared!.executable
+      const hashes = await readFile(join(dirname(damaged), 'manifest.json'), 'utf8')
+      for (const file of ['hexbot', 'hexbot-core']) await chmod(join(dirname(damaged), file), 0o644)
+      expect(await readFile(join(dirname(damaged), 'manifest.json'), 'utf8')).toBe(hashes)
+      await expect(manager.start(() => performBootstrap({
+        appIsPackaged: true, appVersion: '0.1.5-nightly.20261022.58', resourcesPath: join(root, '58')
+      }))).rejects.toThrow('identity cannot be verified')
+      expect(manager.status().pid).toBe(old.pid)
+      expect(await runningDaemonPort(home)).toBe(old.port)
+      // Matching .59 source repairs into owned staging, without chmod of the old selection.
       await handleDaemonUpdateRequest('0.1.5-nightly.20261022.59', manager)
       const current = manager.status()
       expect(current.state).toBe('running')
       expect(current.pid).not.toBe(old.pid)
+      expect(await realpath(join(home, 'runtime/native-executable'))).not.toBe(damaged)
       expect(await runningDaemonPort(home)).toBe(current.port)
       const selected = await realpath(join(home, 'runtime/native-executable'))
       expect((await promisify(execFile)(selected, ['version'])).stdout.trim()).toBe(
