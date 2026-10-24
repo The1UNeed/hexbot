@@ -236,7 +236,17 @@ route and composer checked before continuing.
   native close/reopen, renderer retention, a real second launch, menu Quit
   while backgrounded, and injected OS session-end/shutdown events. Native
   fixtures exercise the production tray, update close/failure handling, and
-  tray destruction fallback. CI runs it on macOS, Windows, and Linux with
+  tray destruction fallback. A fixture closing its last window follows the
+  app's platform policy; it must not receive another Quit during shutdown.
+  Separate fixtures test Tray Quit with a retained window. Synchronous JSONL
+  traces record close prevention, session events, native Quit and process exit;
+  every fixture requires one shutdown request and exit code zero.
+  Instrumentation is a `-r` preload in each Playwright-owned launch. Product
+  launches verify one leading ready=false install attributed to that launch.
+  Only the isolated controls prove it exists before main entry; their main-entry
+  wait shares the instrumentation acknowledgement deadline. Packaged-app runs
+  (`HEXBOT_LIFECYCLE_APP`) still instrument through the inspector.
+  CI runs it on macOS, Windows, and Linux with
   Openbox and no tray host. Both launches use the same Linux CI sandbox flags;
   a second launch must exit with code zero and reopen the retained renderer.
   Close waits for native minimization to finish. Reopen waits for rendered
@@ -424,3 +434,8 @@ fixture. Set `HEXBOT_SMOKE_ARTIFACTS` to choose where its screenshots and proof
 files go. It checks daemon-owned cwd, revocation after removal and disable,
 credential changes in an open section, Manual approval for read-only tools, and
 nested steps before and after reload in light and dark themes.
+
+Windows build/install probes live in `.github/workflows/windows-contract.yml`.
+They do not publish packages or establish Windows support. See
+[the build contract](windows-build-contract.md) for the runtime layout,
+security dependency and native validation still required.

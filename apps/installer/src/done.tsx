@@ -17,8 +17,25 @@ function Notes({ notes }: { notes: string[] }) {
   ) : null
 }
 
-function isApp(path: string): boolean {
-  return path.endsWith('.app') || path.endsWith('.AppImage')
+function installedApp(result: InstallResult, detection: Detection): string | undefined {
+  const { option, channel, paths } = result.receipt
+
+  if (option === 'headless') {return undefined}
+
+  if (detection.target === 'windows-x86_64') {
+    const directory = detection.locations?.apps
+
+    if (!directory) {return undefined}
+    const id = `app.hexbot.${option === 'client' ? 'client' : 'desktop'}${channel === 'nightly' ? '.nightly' : ''}`
+    const normalize = (path: string) => path.replaceAll('\\', '/').replace(/\/+$/, '').toLowerCase()
+    const expected = `${normalize(directory)}/${id}`
+
+    // The receipt records the owned NSIS directory, not its executable. Tauri
+    // revalidates the on-disk marker, edition and EXE before opening it.
+    return paths.find(path => normalize(path) === expected)
+  }
+
+  return paths.find(path => path.endsWith('.app') || path.endsWith('.AppImage'))
 }
 
 /** Client and Full: open the app that was just installed. */
@@ -37,7 +54,7 @@ export function AppDone({
 }) {
   const { home } = detection.locations!
   const option = result.receipt.option
-  const app = result.receipt.paths.find(isApp)
+  const app = installedApp(result, detection)
   const [error, setError] = useState<null | string>(null)
   const keptService = option === 'full' && detection.installed?.service === true
 
@@ -360,10 +377,12 @@ function PairingQr({ link }: { link: string }) {
 
 export function Removed({
   detection,
+  notes,
   onQuit,
   removedData
 }: {
   detection: Detection
+  notes: string[]
   onQuit: () => void
   removedData: boolean
 }) {
@@ -383,6 +402,8 @@ export function Removed({
           : `Your Hexbot data is still in ${tildify(locations.hexbotHome, locations.home)}. Install Hexbot again to pick up where you left off.`
       }
       title="Hexbot is uninstalled"
-    />
+    >
+      <Notes notes={notes} />
+    </Frame>
   )
 }

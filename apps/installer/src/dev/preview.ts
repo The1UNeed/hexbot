@@ -13,14 +13,21 @@ import type {
  * A fake engine for previewing the screens in a plain browser (`pnpm dev`).
  * Only loaded in development outside Tauri. Query parameters pick the start:
  * `?installed=full|client|headless`, `?unsupported`, `?fail=apply|manifest`,
- * `?track=stable`, `?speed=0` (finish instantly), `?hold=<stage>` (stop there).
+ * `?platform=windows`, `?track=stable`, `?speed=0` (finish instantly), `?hold=<stage>` (stop there).
  */
 export function previewApi(params: URLSearchParams): InstallerApi {
   const installed = params.get('installed') as InstallOption | null
   const fail = params.get('fail')
   const hold = params.get('hold')
   const speed = Number(params.get('speed') ?? '1')
-  const home = '/Users/sam'
+  const windows = params.get('platform') === 'windows'
+  const home = windows ? 'C:\\Users\\José User' : '/Users/sam'
+  const apps = windows ? `${home}\\AppData\\Local\\Programs` : '/Applications'
+
+  const appPath = (option: InstallOption) => windows
+    ? `${apps}\\app.hexbot.${option === 'client' ? 'client' : 'desktop'}.nightly`
+    : `/Applications/${option === 'full' ? 'Hexbot Nightly' : 'Hexbot Client Nightly'}.app`
+
   const version = '0.1.5-nightly.20261004.1'
 
   const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms * speed))
@@ -33,7 +40,7 @@ export function previewApi(params: URLSearchParams): InstallerApi {
             installed === 'headless'
               ? []
               : [
-                  { path: `/Applications/${installed === 'full' ? 'Hexbot Nightly' : 'Hexbot Client Nightly'}.app`, managed_by_dpkg: params.has('dpkg') }
+                  { path: appPath(installed), managed_by_dpkg: params.has('dpkg') }
                 ],
           option: installed,
           service: installed === 'headless',
@@ -44,13 +51,13 @@ export function previewApi(params: URLSearchParams): InstallerApi {
     daemonFiles: false,
     installerVersion: '0.1.5',
     locations: {
-      apps: '/Applications',
+      apps,
       cli: `${home}/.local/bin/hexbot`,
       hexbotHome: `${home}/.hexbot`,
       home
     },
-    platform: params.has('unsupported') ? 'linux/aarch64' : 'macos/aarch64',
-    target: params.has('unsupported') ? null : 'macos-aarch64'
+    platform: params.has('unsupported') ? 'linux/aarch64' : windows ? 'windows/x86_64' : 'macos/aarch64',
+    target: params.has('unsupported') ? null : windows ? 'windows-x86_64' : 'macos-aarch64'
   }
 
   const status: DaemonStatus = {
@@ -132,7 +139,7 @@ export function previewApi(params: URLSearchParams): InstallerApi {
           option === 'headless'
             ? [`${home}/.hexbot/runtime/native-executable`]
             : [
-                `/Applications/${option === 'full' ? 'Hexbot Nightly' : 'Hexbot Client Nightly'}.app`
+                appPath(option)
               ],
         version
       },
@@ -192,6 +199,11 @@ export function previewApi(params: URLSearchParams): InstallerApi {
         message: `Removing ${detection.installed?.apps[0]?.path ?? 'the daemon'}.`,
         stage: 'remove'
       })
+
+      if (windows && params.has('warn')) {
+        onProgress({ stage: 'warning', message: 'The app folder was already missing. Its Windows entry was not removed because its ownership could not be verified.' })
+      }
+
       await sleep(600)
     }
   }

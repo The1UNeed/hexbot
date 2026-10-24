@@ -8,7 +8,7 @@ exports.default = async function sign(options, packager) {
     ...options,
     optionsForFile: file => ({
       ...optionsForFile(file),
-      ...(file === node ? { entitlements: resolve(__dirname, '../../apps/desktop/entitlements.node.plist') } : {})
+      ...(file === node ? { entitlements: resolve(__dirname, '../entitlements.node.plist') } : {})
     })
   }, { ...packager.platformSpecificBuildOptions, sign: null }, { name: options.identity })
 }

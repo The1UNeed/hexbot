@@ -1,36 +1,22 @@
 //! Shared by the daemon CLI and standalone installer. Fail closed on unknown files.
+#[cfg(unix)]
 use std::{
     fs, io,
     path::{Path, PathBuf},
 };
 
+#[cfg(unix)]
 pub const WRAPPER_MARKER: &str = "# Hexbot CLI, written by hexbot setup";
 
 pub fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
 }
 
-pub fn resolved(path: &Path) -> io::Result<PathBuf> {
-    if !path.is_absolute()
-        || path
-            .components()
-            .any(|c| matches!(c, std::path::Component::ParentDir))
-    {
-        return Err(io::Error::other("Expected an absolute path without '..'"));
-    }
-    match path.canonicalize() {
-        Ok(path) => Ok(path),
-        Err(e) if e.kind() == io::ErrorKind::NotFound => {
-            // A broken symlink is not an absent path.
-            if fs::symlink_metadata(path).is_ok() {
-                return Err(e);
-            }
-            Ok(resolved(path.parent().ok_or(e)?)?.join(path.file_name().unwrap()))
-        }
-        Err(e) => Err(e),
-    }
-}
+#[path = "install_paths.rs"]
+mod paths;
+pub use paths::resolved;
 
+#[cfg(unix)]
 pub fn wrapper_home(text: &str) -> Option<PathBuf> {
     if !text.lines().any(|line| line == WRAPPER_MARKER) {
         return None;
@@ -49,6 +35,7 @@ pub fn wrapper_home(text: &str) -> Option<PathBuf> {
     (shell_quote(&decoded) == value).then(|| PathBuf::from(decoded))
 }
 
+#[cfg(unix)]
 pub fn wrapper_owned(path: &Path, home: &Path) -> bool {
     fs::symlink_metadata(path).is_ok_and(|m| m.is_file())
         && fs::read_to_string(path)
@@ -62,6 +49,7 @@ pub fn wrapper_owned(path: &Path, home: &Path) -> bool {
             })
 }
 
+#[cfg(unix)]
 fn xml_string(text: &str, key: &str, array: bool) -> Option<String> {
     let marker = format!("<key>{key}</key>");
     let mut pieces = text.split(&marker);
@@ -84,6 +72,7 @@ fn xml_string(text: &str, key: &str, array: bool) -> Option<String> {
     )
 }
 
+#[cfg(unix)]
 fn unit_value(text: &str, prefix: &str, suffix: &str) -> Option<String> {
     let mut lines = text.lines().filter_map(|line| line.strip_prefix(prefix));
     let value = lines.next()?.strip_suffix(suffix)?;
@@ -111,6 +100,7 @@ fn unit_value(text: &str, prefix: &str, suffix: &str) -> Option<String> {
     Some(result)
 }
 
+#[cfg(unix)]
 pub fn check_service(path: &Path, home: &Path, macos: bool) -> io::Result<()> {
     let metadata = match fs::symlink_metadata(path) {
         Ok(metadata) => metadata,
@@ -183,7 +173,7 @@ pub fn check_service(path: &Path, home: &Path, macos: bool) -> io::Result<()> {
     Ok(())
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     #[test]

@@ -37,6 +37,8 @@ const requests = []
 const errors = []
 let daemon, browser, page, socket, electronApp, desktopHome, desktopBuild
 let daemonLog = ''
+let electronLog = ''
+let windowTransition
 const heldReplies = new Map()
 
 function textOf(value) {
@@ -157,6 +159,7 @@ try {
       // On macOS, the signed dev copy, so the OS accepts its notifications.
       executablePath: await prepareDevElectron(root, edition), args: [...(process.env.CI && process.platform === 'linux' ? ['--no-sandbox'] : []), desktopBuild], timeout: 30_000, env: electronEnv
     })
+    electronApp.process().stderr.on('data', chunk => { electronLog = (electronLog + chunk).slice(-8192) })
     page = await electronApp.firstWindow()
     // Let main finish its initial load and register reopen/tray handlers before
     // navigating the test page or closing it.
@@ -174,6 +177,22 @@ try {
         this.once('failed', (_event, error) => { record.error = error })
         return show.call(this)
       }
+    })
+    // Observe the existing native policy; do not call hide/minimize ourselves.
+    await electronApp.evaluate(({ BrowserWindow }) => {
+      globalThis.smokeWindowEvents = []
+      const win = BrowserWindow.getAllWindows()[0]
+      const id = win.id
+      const record = (event, native) => {
+        globalThis.smokeWindowEvents.push({ event, time: Date.now(), id,
+          prevented: native?.defaultPrevented,
+          destroyed: win.isDestroyed(),
+          ...(!win.isDestroyed() ? { visible: win.isVisible(), minimized: win.isMinimized(), focused: win.isFocused() } : {}) })
+        if (globalThis.smokeWindowEvents.length > 100) globalThis.smokeWindowEvents.shift()
+      }
+      for (const event of ['close', 'closed', 'show', 'hide', 'minimize', 'restore', 'focus', 'blur'])
+        win.on(event, native => record(event, native))
+      record('observed')
     })
     await page.setViewportSize({ width: 1360, height: 900 })
     assert.equal(await page.evaluate(() => window.hexbot.edition), edition, 'Edition must be baked into Electron main')
@@ -237,6 +256,7 @@ try {
     )
     let completed = 0
     for (const state of ['closed', 'minimized', 'foreground']) {
+      windowTransition = state
       const prompt = `Desktop ${state} chat`
       let release
       heldReplies.set(prompt, { ready: new Promise(resolve => { release = resolve }), release: () => release() })
@@ -334,8 +354,31 @@ try {
   console.log(JSON.stringify({ passed: true, client: desktop ? 'electron' : 'browser', edition: desktop ? edition : undefined, scenarios: ['cold room deep link and reload', 'warm room navigation', 'chat', 'multi-agent room and @user', 'per-bot memory', 'soul editing', 'About you', 'one chat per bot and history'], modelRequests: requests.length, artifacts }, null, 2))
 } catch (error) {
   await writeFile(path.join(artifacts, 'model-requests.json'), JSON.stringify(requests, null, 2))
-  if (electronApp)
-    await writeFile(path.join(artifacts, 'notifications.json'), JSON.stringify(await electronApp.evaluate(() => globalThis.smokeNotifications), null, 2))
+  if (electronApp) {
+    // Collect before screenshot or cleanup can focus/reopen/dispose a window.
+    try {
+      const native = await electronApp.evaluate(({ BrowserWindow }) => ({
+        platform: process.platform,
+        linuxClosePolicy: 'minimize regardless of tray availability',
+        events: globalThis.smokeWindowEvents,
+        windows: BrowserWindow.getAllWindows().map(win => ({ id: win.id, destroyed: win.isDestroyed(),
+          visible: win.isVisible(), minimized: win.isMinimized(), focused: win.isFocused(),
+          closeListeners: win.listenerCount('close'),
+          ...(process.platform === 'linux' ? { x11Id: win.getNativeWindowHandle().readUInt32LE(0) } : {}) }))
+      }))
+      const evidence = { transition: windowTransition, native, stderrTail: electronLog }
+      if (process.platform === 'linux' && native.windows[0]?.x11Id) {
+        try {
+          const result = await promisify(execFile)('xprop', ['-id', `0x${native.windows[0].x11Id.toString(16)}`, 'WM_STATE', '_NET_WM_STATE'],
+            { timeout: 2000, maxBuffer: 8192 })
+          evidence.x11 = { stdout: result.stdout, stderr: result.stderr }
+        } catch (diagnostic) { evidence.x11 = { error: diagnostic.message.slice(0, 2048) } }
+      }
+      console.error('Native background failure:', JSON.stringify(evidence))
+      await writeFile(path.join(artifacts, 'window-events.json'), JSON.stringify(evidence, null, 2))
+      await writeFile(path.join(artifacts, 'notifications.json'), JSON.stringify(await electronApp.evaluate(() => globalThis.smokeNotifications), null, 2))
+    } catch (diagnostic) { console.error('Window diagnostics failed:', diagnostic.message) }
+  }
   if (page) {
     await page.screenshot({ path: path.join(artifacts, 'failure.png') }).catch(() => {})
     console.error(`Failure route: ${new URL(page.url()).pathname}`)

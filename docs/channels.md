@@ -24,7 +24,9 @@ cannot read back. Back up the directory before opening a nightly.
 They also share one daemon runtime under `~/.hexbot/runtime`. Each app keeps
 the installed runtime when it was built from newer source than its own bundle
 (`builtAt` in the runtime manifest), so opening an older Stable or Nightly
-never moves the daemon back.
+never moves the daemon back. On Windows, packaged setup also replaces a Nightly
+built from the same commit with a later Nightly of the same version base; the
+daemon's own updater still takes only a strictly newer `builtAt`.
 
 ## Which files belong to which channel
 
@@ -173,7 +175,9 @@ notice with no buttons until the app closes and reopens on the new version.
 Every check, download, and failure is written to `<home>/logs/desktop.log`.
 A nightly install ignores a stable version in the bucket and the other way
 round; switching tracks in Settings runs a check on the new track at once,
-with downgrades allowed.
+with downgrades allowed. Windows has no published build or feed; how a track
+switch behaves in its local and CI probe builds is an open Windows gate
+(`docs/windows-build-contract.md`).
 
 ### Updating a daemon from a client
 

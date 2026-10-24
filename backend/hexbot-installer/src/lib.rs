@@ -1,14 +1,37 @@
 mod archive;
 mod detect;
+#[cfg(unix)]
 #[path = "../../hexbot-core/src/install_ownership.rs"]
 mod install_ownership;
+#[cfg(windows)]
+#[path = "../../hexbot-core/src/install_paths.rs"]
+mod install_ownership;
 mod installed_version;
+#[path = "../../hexbot-core/src/native_selection.rs"]
+mod native_selection;
+#[path = "../../hexbot-core/src/native_zip.rs"]
+mod native_zip;
 mod safety;
 mod types;
 #[path = "../../hexbot-core/src/update_path.rs"]
 mod update_path;
 #[path = "../../hexbot-core/src/update_signature.rs"]
 pub mod update_signature;
+#[path = "../../hexbot-core/src/windows_cli.rs"]
+pub mod windows_cli;
+#[cfg(any(windows, test))]
+mod windows_nsis;
+#[cfg(any(windows, test))]
+mod windows_nsis_process;
+#[path = "../../hexbot-core/src/windows_paths.rs"]
+mod windows_paths;
+#[cfg(any(windows, test))]
+mod windows_protocol;
+mod windows_recovery;
+mod windows_service;
+#[cfg(windows)]
+#[path = "../../hexbot-core/src/windows_task.rs"]
+mod windows_task;
 
 pub use archive::{extract_native, verify_file};
 pub use detect::{Paths, app_option, detect, detect_at, read_receipt, sanitize_appimage_env};
@@ -187,6 +210,15 @@ pub struct Installer {
     pub base_url: String,
 }
 
+#[derive(PartialEq, Eq)]
+struct WindowsRepair {
+    option: InstallOption,
+    track: Track,
+    path: PathBuf,
+    version: Option<semver::Version>,
+    absent: Option<windows_recovery::Registration>,
+}
+
 impl Installer {
     pub fn from_env() -> Result<Self> {
         Ok(Self {
@@ -206,17 +238,141 @@ impl Installer {
         track: Track,
         progress: &mut ProgressCallback<'_>,
     ) -> Result<InstallResult> {
+        self.refuse_missing_app_transition()?;
         let manifest = fetch_manifest(&self.base_url, track)?;
-        let (result, _install_lock) = self.install(option, &manifest, progress)?;
+        let (result, _install_lock) = self.install(option, &manifest, None, false, progress)?;
         self.write_receipt(&result.receipt)?;
         progress(Progress::new("done", done_message(option)));
         Ok(result)
     }
 
     pub fn repair(&self, progress: &mut ProgressCallback<'_>) -> Result<InstallResult> {
-        let receipt = read_receipt(&self.paths.receipt())?
-            .ok_or("No install receipt was found. Choose an option to install.")?;
-        self.apply(receipt.option, receipt.channel, progress)
+        if let Some(receipt) = read_receipt(&self.paths.receipt())? {
+            if !self.target.is_windows() || receipt.option == InstallOption::Headless {
+                return self.apply(receipt.option, receipt.channel, progress);
+            }
+        } else if self.target.is_windows() {
+            // The same choice as installing Headless again: owned CLI/task
+            // evidence, no app, and only the verified selection names the track.
+            let installed = self.detect()?;
+            if installed.windows_headless() {
+                let track = installed.windows_runtime_track.ok_or(
+                    "Could not verify the installed runtime's track. Choose the option and track to install.",
+                )?;
+                return self.apply(InstallOption::Headless, track, progress);
+            }
+        }
+        let recovered = self.windows_app_repair()?;
+        if recovered.absent.is_some() {
+            progress(Progress::new(
+                "repair",
+                format!(
+                    "Restoring the missing {} app from its {} build.",
+                    recovered.option, recovered.track
+                ),
+            ));
+        } else if recovered.version.is_none() {
+            progress(Progress::new(
+                "repair",
+                format!(
+                    "The app version could not be read. Repairing this app's {} build.",
+                    recovered.track
+                ),
+            ));
+        }
+        let manifest = fetch_manifest(&self.base_url, recovered.track)?;
+        let (result, _install_lock) = self.install(
+            recovered.option,
+            &manifest,
+            Some(&recovered),
+            false,
+            progress,
+        )?;
+        self.write_receipt(&result.receipt)?;
+        progress(Progress::new("done", done_message(recovered.option)));
+        Ok(result)
+    }
+
+    fn windows_app_repair(&self) -> Result<WindowsRepair> {
+        const CHOOSE: &str = "Could not identify one installed Windows app to repair. Choose the option and track to install.";
+        if !self.target.is_windows() {
+            return fail("No install receipt was found. Choose an option to install.");
+        }
+        let installed = self.detect()?;
+        if let Some((app, registration)) = self.missing_windows_app(&installed)? {
+            if registration == windows_recovery::Registration::Other {
+                return fail(
+                    "The missing app's Windows entry cannot be verified. Its registration was left unchanged.",
+                );
+            }
+            return Ok(WindowsRepair {
+                option: app.option,
+                track: app.track,
+                path: app.path,
+                version: Some(app.version),
+                absent: Some(registration),
+            });
+        }
+        let app = installed.windows_repair_app().ok_or(CHOOSE)?;
+        if app.app_id.ends_with(".dev")
+            || app.path != self.paths.planned_apps_dir(self.target)?.join(&app.app_id)
+        {
+            return fail(CHOOSE);
+        }
+        // NSIS registrations are distinct per release identity. A version from
+        // another track inside this marker/path is a mixed install, not evidence
+        // that Repair may move it into a sibling identity.
+        let version = self.app_version(app)?;
+        let track = detect::windows_app_track(&app.app_id).ok_or(CHOOSE)?;
+        match &version {
+            Some(version) if installed_version::track(version) != track => {
+                return fail(
+                    "The app identity and packaged track disagree. Choose the option and track to install.",
+                );
+            }
+            None if installed.receipt.is_none() => return fail(CHOOSE),
+            _ => {}
+        }
+        Ok(WindowsRepair {
+            option: app.option,
+            track,
+            path: app.path.clone(),
+            version,
+            absent: None,
+        })
+    }
+
+    fn missing_windows_app(
+        &self,
+        installed: &Installed,
+    ) -> Result<Option<(windows_recovery::MissingApp, windows_recovery::Registration)>> {
+        if !self.target.is_windows() {
+            return Ok(None);
+        }
+        let Some(app) = windows_recovery::absent(&self.paths, installed)? else {
+            return Ok(None);
+        };
+        #[cfg(windows)]
+        let registration = windows_nsis::missing(&app.path, app.id)?;
+        #[cfg(not(windows))]
+        let registration = windows_recovery::Registration::None;
+        Ok(Some((app, registration)))
+    }
+
+    fn refuse_missing_app_transition(&self) -> Result<()> {
+        self.preflight_uninstall()
+    }
+
+    /// Read-only check shared by the terminal confirmation and destructive actions.
+    pub fn preflight_uninstall(&self) -> Result<()> {
+        if self.target.is_windows()
+            && self
+                .missing_windows_app(&self.detect()?)?
+                .is_some_and(|(_, class)| class == windows_recovery::Registration::ExactStale)
+        {
+            return fail(windows_recovery::REPAIR_FIRST);
+        }
+        Ok(())
     }
 
     pub fn change(
@@ -227,8 +383,12 @@ impl Installer {
         confirm: &mut dyn FnMut(&str) -> bool,
         progress: &mut ProgressCallback<'_>,
     ) -> Result<InstallResult> {
+        self.refuse_missing_app_transition()?;
         if from == to {
             return self.apply(to, track, progress);
+        }
+        if to == InstallOption::Client {
+            self.preflight_service_removal()?;
         }
         let installed = self.detect()?;
         let old_apps: Vec<_> = installed.apps.iter().filter(|a| a.option == from).collect();
@@ -240,13 +400,17 @@ impl Installer {
             return fail("Change cancelled.");
         }
         let manifest = fetch_manifest(&self.base_url, track)?;
-        let (mut result, _install_lock) = self.install(to, &manifest, progress)?;
+        let (mut result, _install_lock) =
+            self.install(to, &manifest, None, to == InstallOption::Client, progress)?;
         // Another installer may have changed the old option during the download.
+        if to == InstallOption::Client {
+            self.preflight_service_removal()?;
+        }
         let installed = self.detect()?;
         let old_apps: Vec<_> = installed.apps.iter().filter(|a| a.option == from).collect();
         self.check_removable(&old_apps)?;
         self.preflight_home_removal()?;
-        if to == InstallOption::Client && installed.service {
+        if to == InstallOption::Client && (installed.service || installed.service_recoverable) {
             self.remove_service(progress)?;
         }
         let _daemon_lock = if to == InstallOption::Client {
@@ -267,12 +431,18 @@ impl Installer {
     }
 
     pub fn uninstall(&self, remove_data: bool, progress: &mut ProgressCallback<'_>) -> Result<()> {
+        self.preflight_uninstall()?;
         let _install_lock = self.lock_installation(progress)?;
+        self.preflight_uninstall()?;
         if remove_data {
             self.validate_data_removal()?;
         }
         self.preflight_home_removal()?;
+        self.preflight_service_removal()?;
         let installed = self.detect()?;
+        let unowned_missing_entry = self
+            .missing_windows_app(&installed)?
+            .is_some_and(|(_, class)| class == windows_recovery::Registration::Other);
         self.check_removable(&installed.apps.iter().collect::<Vec<_>>())?;
         // A killed install can leave the previous app in staging, where it
         // would still set the version floor for a fresh install.
@@ -280,7 +450,7 @@ impl Installer {
         for app in &stranded {
             self.require_quit(&app.app)?;
         }
-        if installed.service {
+        if installed.service || installed.service_recoverable {
             self.remove_service(progress)?;
         }
         let _daemon_lock = self.stop_daemon()?;
@@ -294,7 +464,7 @@ impl Installer {
             ));
             self.remove_owned_path(&app.staging)?;
         }
-        if !self.target.is_macos() {
+        if self.target.is_linux() {
             for base in ["app.hexbot.desktop", "app.hexbot.client"] {
                 for suffix in ["", ".nightly", ".dev"] {
                     self.remove_owned_path(
@@ -311,8 +481,29 @@ impl Installer {
         self.remove_owned_path(&self.paths.hexbot_home.join("runtime/native-current.json"))?;
         self.remove_owned_path(&self.paths.hexbot_home.join("runtime/native"))?;
         // `hexbot setup` marks the wrapper it writes; leave anyone else's `hexbot`.
-        if install_ownership::wrapper_owned(&self.paths.wrapper(), &self.paths.hexbot_home) {
-            self.remove_owned_path(&self.paths.wrapper())?;
+        let wrapper = self.paths.cli_wrapper(self.target);
+        let wrapper_owned = if self.target.is_windows() {
+            windows_cli::removable(&wrapper, &self.paths.hexbot_home)
+        } else {
+            #[cfg(unix)]
+            {
+                install_ownership::wrapper_owned(&self.paths.wrapper(), &self.paths.hexbot_home)
+            }
+            #[cfg(not(unix))]
+            {
+                false
+            }
+        };
+        if wrapper_owned {
+            if self.target.is_windows() {
+                #[cfg(windows)]
+                windows_cli::remove(&wrapper, &self.paths.hexbot_home)?;
+            } else {
+                self.remove_owned_path(&wrapper)?;
+            }
+        }
+        if unowned_missing_entry {
+            progress(Progress::new("warning", windows_recovery::ENTRY_REMAINS));
         }
         self.remove_owned_path(&self.paths.receipt())?;
         if remove_data {
@@ -381,9 +572,14 @@ impl Installer {
         &self,
         option: InstallOption,
         manifest: &Manifest,
+        recovery: Option<&WindowsRepair>,
+        removing_service: bool,
         progress: &mut ProgressCallback<'_>,
     ) -> Result<(InstallResult, fs::File)> {
         self.paths.validate()?;
+        if recovery.is_none() {
+            self.refuse_missing_app_transition()?;
+        }
         manifest.validate(&version())?;
         validate_artifacts(&self.base_url, manifest)?;
         self.refuse_downgrade(manifest)?;
@@ -404,6 +600,17 @@ impl Installer {
         // Downloads can overlap. Replacement and receipt publication cannot.
         // Return the lock so apply/change retain it until the receipt is written.
         let install_lock = self.lock_installation(progress)?;
+        if recovery.is_none() {
+            self.refuse_missing_app_transition()?;
+        }
+        if removing_service {
+            self.preflight_service_removal()?;
+        }
+        if let Some(expected) = recovery
+            && self.windows_app_repair()? != *expected
+        {
+            return fail("The detected app changed during repair. Run the installer again.");
+        }
         if self.target.is_macos()
             && let Some((id, name)) = identity
         {
@@ -423,7 +630,9 @@ impl Installer {
         let mut warnings = Vec::new();
         let mut status = None;
         let paths = if option == InstallOption::Headless {
-            if artifact.format.as_deref() != Some("tar.gz") {
+            let windows = self.target.is_windows();
+            let expected = if windows { "zip" } else { "tar.gz" };
+            if artifact.format.as_deref() != Some(expected) {
                 return fail("The native archive format is not supported.");
             }
             let runtime = self.paths.hexbot_home.join("runtime");
@@ -431,8 +640,12 @@ impl Installer {
             let staging = tempfile::tempdir_in(&runtime)?;
             let unpacked = staging.path().join("native");
             progress(Progress::new("extract", "Extracting the daemon."));
-            extract_native(&download, &unpacked)?;
-            let binary = unpacked.join("hexbot");
+            if windows {
+                extract_zip(&download, &unpacked)?;
+            } else {
+                extract_native(&download, &unpacked)?;
+            }
+            let binary = unpacked.join(if windows { "hexbot.exe" } else { "hexbot" });
             // The daemon may have activated a newer runtime since the check above.
             let activation = self.lock_activation(progress)?;
             self.refuse_downgrade(manifest)?;
@@ -444,28 +657,32 @@ impl Installer {
             )?;
             drop(activation);
             if enable_lan {
-                self.run(&self.paths.executable(), &["lan", "on"], false, progress)?;
+                self.run(&self.service_executable(), &["lan", "on"], false, progress)?;
                 progress(Progress::new(
                     "lan",
                     "LAN access is on. Turn it off with: hexbot lan off. Direct LAN HTTP does not encrypt sign-ins or chat. Use Tailscale or HTTPS on untrusted networks.",
                 ));
             }
-            self.run(
-                &self.paths.executable(),
-                &["service", "install"],
-                false,
-                progress,
-            )?;
+            if windows {
+                self.install_windows_service(progress)?;
+            } else {
+                self.run(
+                    &self.paths.executable(),
+                    &["service", "install"],
+                    false,
+                    progress,
+                )?;
+            }
             status = self.status().ok();
-            if !self.target.is_macos()
+            if self.target.is_linux()
                 && !sandbox_available(status.as_ref(), || command_exists("bwrap"))
             {
                 warnings.push("Bubblewrap is missing or unusable. Auto mode needs it for the sandbox. For installation and the Ubuntu 24.04 AppArmor fix, see https://hexbot.app/docs/install/#linux.".into());
             }
             vec![
-                self.paths.executable(),
+                self.service_executable(),
                 self.paths.service_file(self.target),
-                self.paths.wrapper(),
+                self.paths.cli_wrapper(self.target),
             ]
         } else if self.target.is_macos() {
             self.install_macos(
@@ -476,8 +693,19 @@ impl Installer {
                 &mut warnings,
                 progress,
             )?
-        } else {
+        } else if self.target.is_linux() {
             self.install_linux(&download, artifact, identity.unwrap(), progress)?
+        } else if self.target.is_windows() {
+            self.install_windows(
+                &download,
+                artifact,
+                identity.unwrap(),
+                option,
+                recovery,
+                progress,
+            )?
+        } else {
+            return fail("This installer does not support this computer.");
         };
         for warning in &warnings {
             progress(Progress::new("warning", warning));
@@ -688,10 +916,123 @@ impl Installer {
         Ok(vec![destination, desktop, icon])
     }
 
+    // NSIS must finish and leave a real app before we publish a receipt.
+    fn windows_destination_owned(
+        &self,
+        destination: &Path,
+        id: &str,
+        option: InstallOption,
+    ) -> Result<bool> {
+        let receipt = read_receipt(&self.paths.receipt())?;
+        Ok(
+            detect::windows_owned_id(destination, receipt.as_ref().filter(|r| r.option == option))
+                .as_deref()
+                == Some(id),
+        )
+    }
+    fn install_windows(
+        &self,
+        download: &Path,
+        artifact: &Artifact,
+        (id, _name): (&str, &str),
+        option: InstallOption,
+        recovery: Option<&WindowsRepair>,
+        progress: &mut ProgressCallback<'_>,
+    ) -> Result<Vec<PathBuf>> {
+        if artifact.format.as_deref() != Some("exe") {
+            return fail("Windows app installation requires an NSIS installer.");
+        }
+        let directory = self.paths.install_apps_dir(self.target)?;
+        let destination = directory.join(id);
+        if recovery.is_some_and(|r| r.path != destination) {
+            return fail("The repair destination does not match the installed app identity.");
+        }
+        match fs::symlink_metadata(&destination) {
+            Ok(_) if !self.windows_destination_owned(&destination, id, option)? => {
+                return fail("An unrelated app already uses the install path.");
+            }
+            Err(error) if error.kind() != std::io::ErrorKind::NotFound => return Err(error.into()),
+            _ => {}
+        }
+        self.require_quit(&destination)?;
+        #[cfg(windows)]
+        if let Some(expected) = recovery.and_then(|r| r.absent) {
+            // Only Repair carries this exception. The leaf must still be absent,
+            // and only the unchanged exact HKCU binding can survive without EXE.
+            self.validate_windows_destination(&destination, id)?;
+            match fs::symlink_metadata(&destination) {
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error.into()),
+                Ok(_) => {
+                    return fail("The missing app changed during repair. Run the installer again.");
+                }
+            }
+            if windows_nsis::missing(&destination, id)? != expected {
+                return fail("The missing app changed during repair. Run the installer again.");
+            }
+        } else {
+            self.check_windows_registration(&destination, id, None)?;
+        }
+        let temp = tempfile::tempdir()?;
+        let installer = temp.path().join("Hexbot-setup.exe");
+        fs::copy(download, &installer)?;
+        progress(Progress::new(
+            "install",
+            "Running the Windows app installer.",
+        ));
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            windows_nsis_process::check(&self.paths, &destination, id, &installer)?;
+            // NSIS requires /D last, without quotes even when it contains spaces.
+            let mut command = self.paths.command(&installer);
+            command
+                .arg("/S")
+                .arg("/currentuser")
+                .raw_arg(format!("/D={}", destination.display()));
+            check_output(command.output()?)?;
+        }
+        #[cfg(not(windows))]
+        {
+            fail("Windows app installers must run on Windows.")
+        }
+        #[cfg(windows)]
+        {
+            let executable = destination.join(if id.starts_with("app.hexbot.client") {
+                "HexbotClient.exe"
+            } else {
+                "Hexbot.exe"
+            });
+            if !executable.is_file() || !destination.join("resources/app.asar").is_file() {
+                return fail("NSIS finished without installing the expected app.");
+            }
+            if detect::windows_app_id(&destination).as_deref() != Some(id) {
+                return fail("NSIS finished without the packaged app ownership marker.");
+            }
+            if !self.check_windows_registration(&destination, id, None).map_err(|error| {
+                format!("NSIS ran, but its app registration could not be verified. The app may already be installed; no rollback was performed. {error}")
+            })? {
+                return fail("NSIS finished without a bound per-user app registration.");
+            }
+            Ok(vec![destination])
+        }
+    }
+    fn service_executable(&self) -> PathBuf {
+        self.paths.executable()
+    }
+    fn install_windows_service(&self, progress: &mut ProgressCallback<'_>) -> Result<()> {
+        self.run(
+            &self.paths.executable(),
+            &["service", "install"],
+            false,
+            progress,
+        )
+    }
+
     fn status(&self) -> Result<serde_json::Value> {
         let output = self
             .paths
-            .command(self.paths.executable())
+            .command(self.service_executable())
             .args(["status", "--json"])
             .output()?;
         let bytes = check_output(output)?;
@@ -720,22 +1061,33 @@ impl Installer {
         lock: &fs::File,
         progress: &mut ProgressCallback<'_>,
     ) -> Result<()> {
-        use std::os::{fd::AsRawFd, unix::process::CommandExt};
-        let fd = lock.as_raw_fd();
-        let mut command = self.paths.command(executable);
-        command
-            .args(args)
-            .env("HEXBOT_ACTIVATION_LOCK_FD", fd.to_string());
-        // Only this child inherits the descriptor; fcntl is async-signal-safe.
-        unsafe {
-            command.pre_exec(move || {
-                if libc::fcntl(fd, libc::F_SETFD, 0) == -1 {
-                    return Err(std::io::Error::last_os_error());
-                }
-                Ok(())
-            });
+        #[cfg(unix)]
+        {
+            use std::os::{fd::AsRawFd, unix::process::CommandExt};
+            let fd = lock.as_raw_fd();
+            let mut command = self.paths.command(executable);
+            command
+                .args(args)
+                .env("HEXBOT_ACTIVATION_LOCK_FD", fd.to_string());
+            // Only this child inherits the descriptor; fcntl is async-signal-safe.
+            unsafe {
+                command.pre_exec(move || {
+                    if libc::fcntl(fd, libc::F_SETFD, 0) == -1 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                    Ok(())
+                });
+            }
+            self.run_command(command, args, true, progress)
         }
-        self.run_command(command, args, true, progress)
+        #[cfg(windows)]
+        {
+            // Setup revalidates under its own lock. If an updater wins this
+            // gap it retains only a fully verified newer selection, then
+            // finishes setup so service/receipt installation can complete.
+            lock.unlock()?;
+            self.run(executable, args, true, progress)
+        }
     }
 
     fn run_command(
@@ -797,6 +1149,15 @@ impl Installer {
     fn check_removable(&self, apps: &[&InstalledApp]) -> Result<()> {
         for app in apps {
             self.require_quit(&app.path)?;
+            #[cfg(windows)]
+            if self.target.is_windows() {
+                self.check_windows_registration(&app.path, &app.app_id, None)?;
+                let uninstaller = app.path.join(
+                    windows_nsis::uninstaller_filename(&app.app_id)
+                        .ok_or("Unknown NSIS identity")?,
+                );
+                windows_nsis_process::check(&self.paths, &app.path, &app.app_id, &uninstaller)?;
+            }
         }
         if apps.iter().any(|a| a.managed_by_dpkg) {
             return fail(
@@ -812,8 +1173,48 @@ impl Installer {
             "remove",
             format!("Removing {}.", app.path.display()),
         ));
+        if self.target.is_windows() {
+            #[cfg(not(windows))]
+            {
+                return fail("Windows apps must be uninstalled on Windows.");
+            }
+            #[cfg(windows)]
+            {
+                use std::os::windows::process::CommandExt;
+                let uninstallers = fs::read_dir(&app.path)?
+                    .collect::<std::io::Result<Vec<_>>>()?
+                    .into_iter()
+                    .map(|entry| entry.path())
+                    .filter(|path| {
+                        path.file_name()
+                            .and_then(|s| s.to_str())
+                            .is_some_and(|name| {
+                                windows_nsis::uninstaller_name(&app.app_id, name)
+                                    && fs::symlink_metadata(path)
+                                        .is_ok_and(|m| detect::ordinary(&m) && m.is_file())
+                            })
+                    })
+                    .collect::<Vec<_>>();
+                if uninstallers.len() != 1 {
+                    return fail(
+                        "The Windows app uninstaller is missing or ambiguous. Repair the app first.",
+                    );
+                }
+                self.check_windows_registration(&app.path, &app.app_id, Some(&uninstallers[0]))?;
+                let protocol = windows_protocol::binding(&app.path, &app.app_id);
+                windows_nsis_process::check(&self.paths, &app.path, &app.app_id, &uninstallers[0])?;
+                let mut command = self.paths.command(&uninstallers[0]);
+                command
+                    .arg("/S")
+                    .arg("/currentuser")
+                    .raw_arg(format!("_?={}", app.path.display()));
+                check_output(command.output()?)?;
+                let cleanup = windows_protocol::cleanup(&protocol);
+                return windows_protocol::finish(cleanup, || self.remove_owned_path(&app.path));
+            }
+        }
         self.remove_owned_path(&app.path)?;
-        if !self.target.is_macos() {
+        if self.target.is_linux() {
             if app
                 .path
                 .file_stem()
@@ -831,13 +1232,74 @@ impl Installer {
         Ok(())
     }
 
+    #[cfg(windows)]
+    fn validate_windows_destination(&self, destination: &Path, id: &str) -> Result<()> {
+        let root = self.paths.planned_apps_dir(self.target)?;
+        if destination != root.join(id)
+            || destination.parent().map(Path::canonicalize).transpose()?
+                != Some(root.canonicalize()?)
+        {
+            return fail("The Windows app is outside its exact managed identity directory.");
+        }
+        let meta = fs::symlink_metadata(root)?;
+        if !detect::ordinary(&meta) || !meta.is_dir() {
+            return fail("The Windows apps root is not an ordinary directory.");
+        }
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    fn check_windows_registration(
+        &self,
+        destination: &Path,
+        id: &str,
+        uninstaller: Option<&Path>,
+    ) -> Result<bool> {
+        self.validate_windows_destination(destination, id)?;
+        match fs::symlink_metadata(destination) {
+            Ok(metadata) if !detect::ordinary(&metadata) || !metadata.is_dir() => {
+                return fail("The Windows app directory is not an ordinary directory.");
+            }
+            Err(error) if error.kind() != std::io::ErrorKind::NotFound => return Err(error.into()),
+            _ => {}
+        }
+        Ok(windows_nsis::check(destination, id, uninstaller)?)
+    }
+
     // Replacing or deleting an app while it runs breaks it mid-session.
     fn require_quit(&self, app: &Path) -> Result<()> {
-        if !self.target.is_macos() && safety::appimage_running(Path::new("/proc"), app)? {
+        if self.target.is_linux() && safety::appimage_running(Path::new("/proc"), app)? {
             return fail(format!(
                 "Quit {}, then run the installer again.",
                 app.display()
             ));
+        }
+        #[cfg(windows)]
+        if self.target.is_windows() {
+            match fs::symlink_metadata(app) {
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+                Err(error) => return Err(error.into()),
+                _ => {}
+            }
+            let script = format!(
+                "$ErrorActionPreference='Stop';{}\n$root=[HexbotFinalPath]::Resolve($env:HEXBOT_APP_PROBE)+[IO.Path]::DirectorySeparatorChar; @(Get-CimInstance Win32_Process | Where-Object {{ if($_.Name -notin @('Hexbot.exe','HexbotClient.exe')){{return $false}};if(!$_.ExecutablePath){{throw 'Cannot verify whether the Windows app is running'}};[HexbotFinalPath]::Resolve($_.ExecutablePath).StartsWith($root,[StringComparison]::OrdinalIgnoreCase) }}).Count",
+                include_str!("../../hexbot-core/assets/windows-runtime-selection.ps1")
+            );
+            let output = self
+                .paths
+                .command(crate::windows_paths::system_program(
+                    "WindowsPowerShell/v1.0/powershell.exe",
+                )?)
+                .env("HEXBOT_APP_PROBE", app)
+                .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+                .output()?;
+            let count = String::from_utf8(check_output(output)?)?
+                .trim()
+                .parse::<u32>()?;
+            if count > 0 {
+                return fail("Quit the Windows app, then run the installer again.");
+            }
+            return Ok(());
         }
         let probe = if self.target.is_macos() {
             format!("{}/Contents/MacOS/", app.display())
@@ -923,6 +1385,10 @@ fn executable(path: &Path) -> Result<()> {
         use std::os::unix::fs::PermissionsExt;
         fs::set_permissions(path, fs::Permissions::from_mode(0o755))?;
     }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+    }
     Ok(())
 }
 
@@ -994,6 +1460,15 @@ fn recover_previous_app(directory: &Path, destination: &Path, id: &str) -> Resul
             break;
         }
     }
+    Ok(())
+}
+
+fn extract_zip(archive: &Path, root: &Path) -> Result<()> {
+    let parent = root.parent().ok_or("Missing extraction parent")?;
+    fs::create_dir_all(parent)?;
+    let staging = tempfile::tempdir_in(parent)?;
+    native_zip::extract_zip(archive, staging.path(), 4 * 1024 * 1024 * 1024)?;
+    fs::rename(staging.path(), root)?;
     Ok(())
 }
 

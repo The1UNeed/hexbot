@@ -312,6 +312,12 @@ export const OPEN_SOURCE: OpenSourceGroup[] = [
         repository: 'https://github.com/composefs/tar-rs'
       },
       {
+        license: 'MIT',
+        name: 'zip',
+        packages: ['zip'],
+        repository: 'https://github.com/zip-rs/zip2'
+      },
+      {
         license: 'MIT OR Apache-2.0',
         name: 'flate2',
         packages: ['flate2'],

@@ -244,7 +244,11 @@ fn python_command(
     .to_owned()
 }
 fn edge_command(home: &Path, options: &Value) -> String {
-    let managed = home.join("bin/edge-tts");
+    let managed = home.join(if cfg!(windows) {
+        "runtime/tools/code-python/Scripts/edge-tts.exe"
+    } else {
+        "bin/edge-tts"
+    });
     let fallback = if managed.is_file() {
         managed
     } else {

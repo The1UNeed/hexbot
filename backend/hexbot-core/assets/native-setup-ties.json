@@ -1,0 +1,104 @@
+[
+  {
+    "name": "newer",
+    "candidate": "0.1.6-nightly.20261023.10",
+    "selected": "0.1.6-nightly.20261023.9",
+    "advance": true
+  },
+  {
+    "name": "same",
+    "candidate": "0.1.6-nightly.20261023.9",
+    "selected": "0.1.6-nightly.20261023.9",
+    "advance": false
+  },
+  {
+    "name": "older",
+    "candidate": "0.1.6-nightly.20261023.8",
+    "selected": "0.1.6-nightly.20261023.9",
+    "advance": false
+  },
+  {
+    "name": "later-day",
+    "candidate": "0.1.6-nightly.20261024.1",
+    "selected": "0.1.6-nightly.20261023.9",
+    "advance": true
+  },
+  {
+    "name": "older-day",
+    "candidate": "0.1.6-nightly.20261022.99",
+    "selected": "0.1.6-nightly.20261023.9",
+    "advance": false
+  },
+  {
+    "name": "stable",
+    "candidate": "0.1.6",
+    "selected": "0.1.6-nightly.20261023.9",
+    "advance": false
+  },
+  {
+    "name": "nightly-to-stable",
+    "candidate": "0.1.6-nightly.20261023.10",
+    "selected": "0.1.6",
+    "advance": false
+  },
+  {
+    "name": "different-base",
+    "candidate": "0.1.7-nightly.20261023.10",
+    "selected": "0.1.6-nightly.20261023.9",
+    "advance": false
+  },
+  {
+    "name": "unknown",
+    "candidate": "0.1.6-alpha.10",
+    "selected": "0.1.6-nightly.20261023.9",
+    "advance": false
+  },
+  {
+    "name": "leading-run",
+    "candidate": "0.1.6-nightly.20261023.010",
+    "selected": "0.1.6-nightly.20261023.9",
+    "advance": false
+  },
+  {
+    "name": "zero-run",
+    "candidate": "0.1.6-nightly.20261023.0",
+    "selected": "0.1.6-nightly.20261023.9",
+    "advance": false
+  },
+  {
+    "name": "leading-base",
+    "candidate": "00.1.6-nightly.20261023.10",
+    "selected": "0.1.6-nightly.20261023.9",
+    "advance": false
+  },
+  {
+    "name": "extra",
+    "candidate": "0.1.6-nightly.20261023.10.extra",
+    "selected": "0.1.6-nightly.20261023.9",
+    "advance": false
+  },
+  {
+    "name": "build",
+    "candidate": "0.1.6-nightly.20261023.10+local",
+    "selected": "0.1.6-nightly.20261023.9",
+    "advance": false
+  },
+  {
+    "name": "invalid-day",
+    "candidate": "0.1.6-nightly.20260230.10",
+    "selected": "0.1.6-nightly.20260228.9",
+    "advance": false
+  },
+  {
+    "name": "invalid-selected",
+    "candidate": "0.1.6-nightly.20261023.10",
+    "selected": "0.1.6-nightly.20261023.09",
+    "advance": false
+  },
+  {
+    "name": "overflow",
+    "candidate": "18446744073709551616.1.6-nightly.20261023.10",
+    "selected": "18446744073709551616.1.6-nightly.20261023.9",
+    "advance": false
+  }
+]

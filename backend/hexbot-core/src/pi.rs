@@ -15,6 +15,15 @@ use std::{
     time::Duration,
 };
 
+#[cfg(windows)]
+use crate::windows_task::completion::identity as windows_process_identity;
+#[cfg(windows)]
+#[path = "windows_pi_job.rs"]
+mod windows_pi_job;
+#[cfg(any(windows, test))]
+#[path = "windows_pi_ledger.rs"]
+mod windows_pi_ledger;
+
 use serde::Deserialize;
 use serde_json::Value;
 use tokio::{
@@ -271,6 +280,8 @@ pub fn provider_environment(name: &str, provider: &str) -> bool {
 
 impl PiProcess {
     pub fn spawn(options: PiOptions) -> Result<(Self, PiEvents), PiError> {
+        #[cfg(windows)]
+        let mut options = options;
         if options.max_record_bytes == 0
             || options.event_capacity == 0
             || options.request_capacity == 0
@@ -284,7 +295,40 @@ impl PiProcess {
         }
         // Diagnostics can contain credentials or model inputs. Discard them at
         // the OS boundary rather than retaining or returning them with errors.
-        let mut child = Command::new(&options.executable)
+        #[cfg(windows)]
+        if options
+            .executable
+            .file_name()
+            .is_some_and(|name| name == "node.exe")
+        {
+            options.executable = crate::windows_node_path::node_path(&options.executable)
+                .map_err(|_| PiError::Configuration("unsupported Node path"))?;
+            options.working_dir = crate::windows_node_path::node_path(&options.working_dir)
+                .map_err(|_| PiError::Configuration("unsupported working directory"))?;
+            options.agent_dir = crate::windows_node_path::node_path(&options.agent_dir)
+                .map_err(|_| PiError::Configuration("unsupported agent directory"))?;
+            for argument in &mut options.args {
+                if argument.starts_with(r"\\?\") {
+                    *argument = crate::windows_node_path::node_path(std::path::Path::new(argument))
+                        .map_err(|_| PiError::Configuration("unsupported Pi argument path"))?
+                        .into_os_string()
+                        .into_string()
+                        .map_err(|_| PiError::Configuration("invalid Pi argument path"))?;
+                }
+            }
+            let launcher = options.executable.with_file_name("pi").join("launch.mjs");
+            if launcher.is_file() {
+                options
+                    .args
+                    .insert(0, launcher.to_string_lossy().into_owned());
+            }
+        }
+        #[cfg(windows)]
+        let job = windows_pi_job::PiJob::new().map_err(|_| PiError::Io("create Pi job"))?;
+        let mut command = Command::new(&options.executable);
+        #[cfg(windows)]
+        command.creation_flags(0x08000004); // CREATE_NO_WINDOW | CREATE_SUSPENDED
+        let mut child = command
             .args(&options.args)
             .env_clear()
             .envs(std::env::vars().filter(|(name, _)| inherited_environment(name)))
@@ -297,6 +341,13 @@ impl PiProcess {
             .kill_on_drop(true)
             .spawn()
             .map_err(|_| PiError::Io("spawn"))?;
+        #[cfg(windows)]
+        if job.assign_and_resume(&child).is_err() {
+            let _ = child.start_kill();
+            // Closing the job also kills any partially assigned process. The
+            // child remains kill_on_drop even when assignment itself failed.
+            return Err(PiError::Io("assign/resume Pi job"));
+        }
         let stdin = child.stdin.take().ok_or(PiError::Io("stdin"))?;
         let stdout = child.stdout.take().ok_or(PiError::Io("stdout"))?;
         let (requests, request_rx) = mpsc::channel(options.request_capacity);
@@ -306,7 +357,16 @@ impl PiProcess {
         let max_record_bytes = options.max_record_bytes;
         let admission = Arc::new(Semaphore::new(options.request_capacity));
         tokio::spawn(supervise(
-            child, stdin, stdout, request_rx, event_tx, stop_rx, done_tx, options,
+            child,
+            stdin,
+            stdout,
+            request_rx,
+            event_tx,
+            stop_rx,
+            done_tx,
+            options,
+            #[cfg(windows)]
+            job,
         ));
         Ok((
             Self {
@@ -694,6 +754,7 @@ async fn supervise(
     mut stop: watch::Receiver<Option<PiError>>,
     done: watch::Sender<Option<PiError>>,
     options: PiOptions,
+    #[cfg(windows)] job: windows_pi_job::PiJob,
 ) {
     // At most request_capacity commands remain pending until Pi reads them,
     // and extension admission permits one response until its write completes.
@@ -809,6 +870,11 @@ async fn supervise(
         && terminate(&mut child, graceful, options.stop_grace)
             .await
             .is_err();
+    #[cfg(windows)]
+    let cleanup_failed = cleanup_failed
+        | tokio::task::spawn_blocking(move || job.terminate_and_wait())
+            .await
+            .map_or(true, |r| r.is_err());
     if !writer_finished {
         writer.abort();
         let _ = writer.await;

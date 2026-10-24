@@ -1,0 +1,135 @@
+import assert from 'node:assert/strict'
+import { execFile } from 'node:child_process'
+import { createHash } from 'node:crypto'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import test from 'node:test'
+import { promisify } from 'node:util'
+import { toolAsset } from '../../apps/desktop/src/main/backend/tools.ts'
+import { feedMetadataName } from './update-feed-utils.mjs'
+import { makeInstallManifest } from './make-install-manifest.mjs'
+const exec = promisify(execFile)
+
+test('Windows uses updater wire filenames and distinct NSIS editions without public manifest targets', async t => {
+  assert.equal(feedMetadataName('stable', 'win'), 'latest.yml')
+  assert.equal(feedMetadataName('nightly', 'win'), 'nightly.yml')
+  const root = await mkdtemp(join(tmpdir(), 'hexbot windows feed '))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const version = '1.2.3'
+  for (const [edition, prefix] of [['full', 'Hexbot'], ['client', 'HexbotClient']]) {
+    const out = join(root, edition); await mkdir(out)
+    const filename = `${prefix}-${version}-win-x64.exe`
+    const bytes = Buffer.from(`${edition} NSIS fixture`)
+    await writeFile(join(out, filename), bytes)
+    await exec(process.execPath, ['scripts/desktop/make-update-feed.mjs', '--channel', 'nightly', '--version', version, ...(edition === 'client' ? ['--client'] : []), out, join(root, 'updates')])
+    const feed = await readFile(join(root, 'updates', edition, 'win/x64/nightly.yml'), 'utf8')
+    assert(feed.includes(filename)); assert(feed.includes(createHash('sha512').update(bytes).digest('base64')))
+  }
+  const options = { channel: 'nightly', version, allowMissing: true }
+  const publicManifest = await makeInstallManifest(join(root, 'updates'), options)
+  assert(!publicManifest.targets['windows-x86_64'])
+  const probe = await makeInstallManifest(join(root, 'updates'), { ...options, windowsProbe: true })
+  assert.equal(probe.targets['windows-x86_64'].client.format, 'exe')
+  assert.match(probe.experimental, /probe only/)
+})
+
+test('Windows tool archives have pinned digests and the actual executable members', () => {
+  for (const tool of ['uv', 'rg', 'fd']) {
+    const asset = toolAsset(tool, 'win32', 'x64')
+    assert.match(asset.url, /windows-msvc\.zip$/)
+    assert.match(asset.sha256, /^[a-f0-9]{64}$/)
+    assert.equal(asset.member.endsWith(`${tool}.exe`), true)
+  }
+  assert.equal(toolAsset('uv', 'win32', 'x64').member, 'uv.exe')
+})
+
+test('Windows CI keeps the production guard and never publishes disposable probes', async () => {
+  const ci = await readFile('.github/workflows/windows-contract.yml', 'utf8')
+  for (const line of ci.split('\n').filter(line => line.includes('uses:')))
+    assert.match(line, /@[a-f0-9]{40}(?:\s|$)/)
+  assert(!/secrets\.|contents:\s*write|release.yml|--publish\s+always/.test(ci.replace(/^#.*$/gm, '')))
+  assert(ci.includes('check-windows-unsupported.mjs'))
+  assert(ci.includes('prepare-windows-security.mjs'))
+  assert.equal(ci.split('windows_contract real_nsis_install_repair_and_uninstall').length - 1, 2)
+  assert(ci.includes('backend/hexbot-core/Cargo.toml windows_contract signed_zip_update_and_connect_executable'))
+  assert(ci.includes('windows_contract interrupted_cli_install_and_uninstall_clean_only_owned_metadata_and_path'))
+  assert(ci.includes('--test windows_launchers --test windows_contract --test windows_shutdown'))
+  assert(ci.includes('--test windows_security --no-run --message-format=json'))
+  assert(ci.includes('windows-security-standard-user.ps1'))
+  assert(!ci.includes('--example windows_contract'))
+  assert(ci.includes('windows-update-restart.mjs'))
+  assert(ci.includes('node --test scripts/desktop/runtime-file.test.mjs'))
+  assert(ci.includes('windows-installed-app-smoke.mjs'))
+  assert(!ci.includes('$env:HEXBOT_WINDOWS_GUI_NODE ='))
+  assert(ci.includes('Node lookup diagnostic:'))
+  assert.equal(ci.split('HEXBOT_WINDOWS_GUI_PROBE =').length - 1, 2)
+  assert(ci.includes('windows-paths.test.ts'))
+  for (const name of ['real_pi_process_uses_absolute_node_launcher_and_windows_environment', 'owned_desktop_pipe_quit_and_restart_clean_up_real_pi_and_home_lock', 'user_path_registration_preserves_existing_entries_and_removes_only_its_own', 'interrupted_task_install_uninstalls_owned_files_when_the_task_is_absent']) assert(ci.includes(name))
+  const boundaries = [...ci.matchAll(/^  ([a-z][a-z0-9-]*):\r?$/gm)]
+  const jobs = Object.fromEntries(boundaries.map((match, index) =>
+    [match[1], ci.slice(match.index, boundaries[index + 1]?.index ?? ci.length)]))
+  assert.deepEqual(Object.keys(jobs), ['client-and-installer', 'native-runtime', 'client-nightly', 'full-nightly'])
+  assert.equal(ci.match(/uses: actions\/upload-artifact@/g)?.length, 1)
+  assert.deepEqual(Object.keys(jobs).filter(name => jobs[name].includes('prepare-windows-security.mjs')),
+    ['native-runtime', 'full-nightly'])
+  for (const [name, job] of Object.entries(jobs)) {
+    assert.equal(job.includes('upload-artifact'), name === 'client-and-installer', `${name}: artifact boundary`)
+    assert.match(job, /runs-on: windows-latest/)
+    assert.match(job, new RegExp(`timeout-minutes: ${name.startsWith('client-') ? 45 : 60}\\b`))
+    assert(!/^    needs:/m.test(job), `${name}: independent VM`)
+    assert.match(job, /HEXBOT_WINDOWS_NSIS_PROBE: '1'/)
+    if (job.includes('prepare-windows-security.mjs')) {
+      assert(job.includes('check-windows-unsupported.mjs'))
+      assert(job.indexOf('check-windows-unsupported.mjs') < job.indexOf('prepare-windows-security.mjs'))
+      assert(job.includes("$source '${{ github.sha }}' '${{ github.sha }}' --current-tree"))
+      assert(job.includes("$probe.buildSHA -ne '${{ github.sha }}' -or $probe.securitySHA -ne '${{ github.sha }}' -or $probe.appliedSecurityPatch -or $probe.guardedTree -ne $tree"))
+      assert(!job.includes('upload-artifact'))
+    }
+  }
+  const opening = job => job.slice(job.indexOf('      - uses:'), job.indexOf('      - run: pnpm install --frozen-lockfile') + '      - run: pnpm install --frozen-lockfile\n'.length)
+  assert.equal(opening(jobs['client-nightly']), opening(jobs['client-and-installer']))
+  assert.equal(opening(jobs['full-nightly']), opening(jobs['native-runtime']))
+  const nativePreparation = job => job.slice(job.indexOf('      - name: Native daemon compile gate'),
+    job.indexOf('      - name:', job.indexOf('working-directory: ${{ env.HEXBOT_WINDOWS_PROBE_SOURCE }}')))
+  assert.equal(nativePreparation(jobs['full-nightly']), nativePreparation(jobs['native-runtime']))
+  assert.equal(ci.match(/run: node scripts\/desktop\/windows-nightly-nsis-probe.mjs /g)?.length, 2)
+  for (const edition of ['client', 'full']) {
+    const job = jobs[`${edition}-nightly`]
+    assert.equal(job.match(new RegExp(`run: node scripts/desktop/windows-nightly-nsis-probe.mjs ${edition}\\b`, 'g'))?.length, 1)
+    assert(!job.includes('corepack'))
+    if (edition === 'client') {
+      assert(!/HEXBOT_CLI_NO_PATH|check-windows-unsupported|prepare-windows-security|working-directory:/.test(job))
+    } else {
+      assert.match(job, /HEXBOT_CLI_NO_PATH: '1'/)
+      assert(job.includes('working-directory: ${{ env.HEXBOT_WINDOWS_PROBE_SOURCE }}\n        run: node scripts/desktop/windows-nightly-nsis-probe.mjs full'))
+    }
+  }
+  for (const name of ['client-and-installer', 'native-runtime'])
+    assert(!jobs[name].includes('windows-nightly-nsis-probe.mjs'))
+  const release = await readFile('.github/workflows/release.yml', 'utf8')
+  assert(!release.includes('windows-latest'))
+})
+
+test('Tauri Windows resource icon reproduces the existing installer art', async () => {
+  const { installerIco } = await import('./make-installer-windows-icon.mjs')
+  const base = 'apps/installer/src-tauri/'
+  const png = await readFile(`${base}icons/128x128@2x.png`)
+  const ico = await readFile(`${base}icons/icon.ico`)
+  assert.deepEqual(ico, installerIco(png))
+  assert.equal(ico.readUInt16LE(2), 1)
+  assert.equal(ico.readUInt16LE(4), 1)
+  assert.equal(ico.readUInt32LE(18), 22)
+  assert.deepEqual(ico.subarray(22), png)
+  assert(JSON.parse(await readFile(`${base}tauri.conf.json`, 'utf8')).bundle.icon.includes('icons/icon.ico'))
+})
+
+test('Windows packages own their app before the outer installer commits a receipt', async t => {
+  const afterPack = (await import('../../apps/desktop/scripts/after-pack.cjs')).default.default
+  const root = await mkdtemp(join(tmpdir(), 'hexbot packaged ownership '))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  for (const id of ['app.hexbot.client', 'app.hexbot.desktop.nightly']) {
+    await afterPack({ electronPlatformName: 'win32', appOutDir: root, packager: { appInfo: { id } } })
+    assert.deepEqual(JSON.parse(await readFile(join(root, '.hexbot-app.json'), 'utf8')), { appId: id })
+  }
+})

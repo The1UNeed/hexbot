@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { expect, it, vi } from 'vitest'
 import { hexbotHome } from './backend/paths'
-import { migrateLegacyService } from './service'
+import { migrateLegacyService, reconcileWindowsService } from './service'
 import { launchdPlist, systemdUnit } from './service-files'
 
 for (const platform of ['darwin', 'linux'] as const) {
@@ -162,3 +162,125 @@ it('only reports the Linux service for this home, decoding systemd escapes', asy
     await rm(root, { recursive: true, force: true })
   }
 })
+
+it('Windows setup services pass the exact app home to every native child', async () => {
+  const paths = await import('./backend/paths')
+  const { installService, uninstallService, serviceStatus } = await import('./service')
+  const previous = { ...process.env }
+  const executable = vi.spyOn(paths, 'hexbotExecutable').mockReturnValue('/trusted/hexbot.exe')
+  process.env.HEXBOT_HOME = '/chosen/José state with spaces'
+  process.env.HOME = '/different/git-bash-home'
+  process.env.USERPROFILE = '/windows/profile'
+  const calls: { args: string[]; options?: { env?: NodeJS.ProcessEnv; windowsHide?: boolean } }[] = []
+  const run = async (_command: string, args: string[], options?: { env?: NodeJS.ProcessEnv; windowsHide?: boolean }): Promise<unknown> => {
+    calls.push({ args, options }); return { stdout: '{"installed":true,"running":false}' }
+  }
+  try {
+    await installService('win32', run)
+    await serviceStatus('', 'win32', run)
+    await uninstallService('', 'win32', run)
+    expect(calls.map(call => call.args)).toEqual([['service', 'install'], ['service', 'status', '--json'], ['service', 'uninstall']])
+    for (const call of calls) {
+      expect(call.options?.env?.HEXBOT_HOME).toBe(process.env.HEXBOT_HOME)
+      expect(call.options?.windowsHide).toBe(true)
+    }
+  } finally { process.env = previous; executable.mockRestore() }
+})
+
+it('repairs only a verified running Windows task whose home daemon uses an older executable, including a missing script', async () => {
+  const http = await import('node:http')
+  const root = await mkdtemp(join(tmpdir(), 'hexbot-task-selection-'))
+  const previous = process.env.HEXBOT_HOME
+  process.env.HEXBOT_HOME = root
+  let identityPid = process.pid
+  const server = http.createServer((_request, response) => response.end(JSON.stringify({ install_id: 'selected-home', pid: identityPid })))
+  const selected = join(root, 'runtime/native-executable')
+  const paths = await import('./backend/paths')
+  const executable = vi.spyOn(paths, 'hexbotExecutable').mockReturnValue(selected)
+  const old = join(root, 'runtime/old-executable')
+  let installed = true, running = true
+  const calls: string[][] = []
+  const run = async (command: string, args: string[]) => {
+    calls.push([command, ...args])
+    if (args.includes('status')) return { stdout: JSON.stringify({ installed, running }) }
+    expect(args).toEqual(['service', 'install'])
+  }
+  try {
+    await mkdir(join(root, 'runtime'))
+    await writeFile(selected, 'selected')
+    await writeFile(old, 'older')
+    const port = await new Promise<number>(resolve => server.listen(0, '127.0.0.1', () => resolve((server.address() as import('node:net').AddressInfo).port)))
+    await writeFile(join(root, 'install_id'), 'selected-home')
+    await writeFile(join(root, 'native-daemon.lock'), String(process.pid))
+    await writeFile(join(root, 'serve-state.json'), JSON.stringify({ port }))
+    const record = (executable: string, pid = process.pid) => writeFile(join(root, 'runtime/native-running.json'), JSON.stringify({ pid, executable }))
+    await record(old)
+    expect(await reconcileWindowsService('win32', run)).toBe(process.pid)
+    expect(calls.filter(args => args.includes('install'))).toHaveLength(1)
+    calls.length = 0
+    await record(selected)
+    expect(await reconcileWindowsService('win32', run)).toBeUndefined()
+    expect(calls.some(args => args.includes('install'))).toBe(false)
+    await record(old)
+    const orphan = async (_command: string, args: string[]) => {
+      expect(args).toEqual(['service', 'status', '--json'])
+      return { stdout: JSON.stringify({ installed: false, running: false, recoverable: true, scheduler_checked: true }) }
+    }
+    expect(await reconcileWindowsService('win32', orphan)).toBeUndefined()
+    for (const state of [[false, false], [true, false]]) {
+      ;[installed, running] = state as [boolean, boolean]
+      expect(await reconcileWindowsService('win32', run)).toBeUndefined()
+    }
+    installed = running = true
+    identityPid = process.ppid
+    expect(await reconcileWindowsService('win32', run)).toBeUndefined()
+    identityPid = process.pid
+    await record(old, process.ppid)
+    await expect(reconcileWindowsService('win32', run)).rejects.toThrow('Cannot verify')
+    expect(calls.some(args => args.includes('install'))).toBe(false)
+  } finally {
+    executable.mockRestore()
+    server.closeAllConnections()
+    await new Promise<void>(resolve => server.close(() => resolve()))
+    if (previous === undefined) delete process.env.HEXBOT_HOME
+    else process.env.HEXBOT_HOME = previous
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+for (const state of ['stopped', 'missing-script', 'running', 'disabled', 'removed', 'foreign-before', 'foreign-after', 'install-failed', 'malformed'] as const) {
+  it(`Windows quit handoff preserves ownership and rechecks the task: ${state}`, async () => {
+    const { handoffWindowsService } = await import('./service')
+    const paths = await import('./backend/paths')
+    const executable = vi.spyOn(paths, 'hexbotExecutable').mockReturnValue('/trusted/hexbot.exe')
+    try {
+    const calls: string[] = []
+    let queries = 0
+    const run = async (_command: string, args: string[]): Promise<unknown> => {
+      calls.push(args[1]!)
+      if (args[1] === 'install') {
+        expect(calls).toEqual(['status', 'stop-owned', 'status', 'install'])
+        if (state === 'install-failed') throw new Error('Task installation refused')
+        return
+      }
+      expect(args).toEqual(['service', 'status', '--json'])
+      queries++
+      if ((state === 'foreign-before' && queries === 1) || (state === 'foreign-after' && queries === 2)) throw new Error('Foreign task refused')
+      return { stdout: JSON.stringify({
+        installed: state === 'malformed' ? 'unknown' : state !== 'disabled' && !(state === 'removed' && queries === 2),
+        running: state === 'running', recoverable: state === 'missing-script'
+      }) }
+    }
+    const pending = handoffWindowsService(async () => { calls.push('stop-owned') }, run)
+    if (state.startsWith('foreign') || state === 'malformed' || state === 'install-failed') {
+      await expect(pending).rejects.toThrow(/refused|invalid/)
+      expect(calls.filter(call => call === 'install')).toHaveLength(state === 'install-failed' ? 1 : 0)
+    } else {
+      expect(await pending).toBe(!['disabled', 'removed'].includes(state))
+      expect(calls.filter(call => call === 'install')).toHaveLength(['stopped', 'missing-script'].includes(state) ? 1 : 0)
+    }
+    if (state === 'foreign-before' || state === 'malformed') expect(calls).toEqual(['status'])
+    if (state === 'disabled') expect(calls).toEqual(['status', 'stop-owned'])
+    } finally { executable.mockRestore() }
+  })
+}

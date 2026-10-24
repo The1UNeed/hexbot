@@ -1,5 +1,5 @@
 // Build one desktop package.
-//   --mac|--linux        platform (required)
+//   --mac|--linux|--win        platform (required)
 //   --client             the client-only edition (no daemon runtime)
 //   --channel <name>     stable | nightly | dev (default dev). See docs/channels.md.
 // Remaining arguments go to electron-builder.
@@ -8,6 +8,7 @@ import { readFile } from 'node:fs/promises'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
+import { pnpmCommand } from './pnpm-command.mjs'
 import { nativeBuildEnvironment } from './native-build.mjs'
 import { appId, productName } from './release-version.mjs'
 import { iconOptions, parseBuildArgs } from './build-config.mjs'
@@ -34,9 +35,9 @@ const channelArgs = [
   `-c.extraMetadata.productName=${name}`,
   ...(channel === 'stable' ? [] : [`-c.appId=${appId(channel, client)}`])
 ]
-if (!builderArgs.some(arg => arg === '--mac' || arg === '--linux'))
+if (!builderArgs.some(arg => arg === '--mac' || arg === '--linux' || arg === '--win'))
   throw new Error(
-    'Usage: node scripts/desktop/dist.mjs --mac|--linux [--client] [--channel stable|nightly|dev] [electron-builder options]'
+    'Usage: node scripts/desktop/dist.mjs --mac|--linux|--win [--client] [--channel stable|nightly|dev] [electron-builder options]'
   )
 
 const env = { ...process.env, HEXBOT_EDITION: client ? 'client' : 'full', HEXBOT_CHANNEL: channel }
@@ -69,11 +70,12 @@ function run(command, commandArgs) {
   })
 }
 
-const pnpm = process.platform === 'win32' ? 'pnpm.cmd' : 'pnpm'
-await run(pnpm, ['run', client ? 'build:client' : 'build'])
-// Through pnpm so electron-builder detects pnpm and the workspace root; the
-// lockfile is at the repository root, not next to apps/desktop/package.json.
-await run(pnpm, [
+const { command: pnpm, prefix: pnpmPrefix } = await pnpmCommand()
+await run(pnpm, [...pnpmPrefix, 'run', client ? 'build:client' : 'build'])
+// Keep hooks inside the desktop project. Package-manager workspace discovery
+// may return no root on Windows; hook containment must still hold there.
+const packageArgs = [
+  ...pnpmPrefix,
   'exec',
   'electron-builder',
   ...builderArgs,
@@ -82,7 +84,9 @@ await run(pnpm, [
   ...(client ? ['--config', 'electron-builder.client.yml'] : []),
   '--publish',
   'never'
-]).catch(error => {
+]
+console.log('Desktop packaging invocation:', JSON.stringify({ command: pnpm, args: packageArgs, cwd: desktopRoot }))
+await run(pnpm, packageArgs).catch(error => {
   console.error(error.message)
   process.exitCode = 1
 })
