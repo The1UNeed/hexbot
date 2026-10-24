@@ -827,6 +827,14 @@ esac
         let executable = install_tool(home.path(), "uv", &asset, download, &|_, _| {})
             .await
             .unwrap();
+        // Desktop's native fixtures and binDir() rely on this exact location.
+        assert_eq!(
+            executable,
+            home.path()
+                .join("bin")
+                .join(if cfg!(windows) { "uv.exe" } else { "uv" })
+        );
+        assert!(home.path().join("bin/uv-version").is_file());
         install_tool(
             home.path(),
             "uv",

@@ -1,9 +1,10 @@
+import { createHash } from 'node:crypto'
 import { cp, lstat, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, isAbsolute, join, relative } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import { performBootstrap, runChild } from './bootstrap'
-import { canonicalRuntimePath, hexbotHome, nativeServiceExecutable } from './paths'
+import { binDir, canonicalRuntimePath, hexbotHome, nativeServiceExecutable } from './paths'
 vi.mock('../service', () => ({ migrateLegacyService: async () => undefined }))
 
 describe.skipIf(process.platform !== 'win32' || !process.env.HEXBOT_NATIVE_TEST_BUNDLE)('real Windows Full bootstrap', () => {
@@ -98,7 +99,12 @@ async function provePinnedUvRepair(home: string, daemon: string, redact: (text: 
   const { promisify } = await import('node:util')
   const environment = join(home, 'runtime/tools/code-python')
   const python = join(environment, 'Scripts/python.exe')
-  const uv = join(home, 'runtime/tools/uv.exe')
+  // Rust setup installs pinned tools in <home>/bin with a version/hash receipt.
+  expect(binDir()).toBe(join(home, 'bin'))
+  const uv = join(binDir(), 'uv.exe')
+  const receipt = JSON.parse(await readFile(join(binDir(), 'uv-version'), 'utf8')) as { version?: string; sha256?: string }
+  expect(receipt.version).toBe('0.12.18')
+  expect(receipt.sha256).toBe(createHash('sha256').update(await readFile(uv)).digest('hex'))
   const env: NodeJS.ProcessEnv = Object.fromEntries(Object.entries(process.env)
     .filter(([name]) => !/^(?:UV_|PYTHON|VIRTUAL_ENV$)/i.test(name)))
   Object.assign(env, { HEXBOT_HOME: home,
