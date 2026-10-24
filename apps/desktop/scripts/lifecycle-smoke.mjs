@@ -10,7 +10,10 @@ import { dirname, isAbsolute, join, resolve } from 'node:path'
 import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
-import { instrumentShutdown, observeShutdown, requestShutdown } from '../../../scripts/desktop/lifecycle-shutdown.mjs'
+import {
+  SHUTDOWN_TRACE_ENV, acknowledgeInstrumentation, assertSingleInstall, instrumentShutdown, observeShutdown,
+  requestShutdown, writeInstrumentationPreload
+} from '../../../scripts/desktop/lifecycle-shutdown.mjs'
 import { instrumentationControl, withProtocolTrace } from '../../../scripts/desktop/lifecycle-instrumentation.mjs'
 
 const desktop = resolve(dirname(fileURLToPath(import.meta.url)), '..')
@@ -23,6 +26,12 @@ const artifacts =
   (await mkdtemp(join(tmpdir(), 'hexbot-lifecycle-evidence-')))
 await mkdir(artifacts, { recursive: true })
 const root = await mkdtemp(join(tmpdir(), 'hexbot-lifecycle-'))
+// Stock Electron preloads instrumentation before the app's main entry. A
+// packaged app ignores -r, so it keeps the inspector evaluate (and its known
+// garbage-collection exposure while the main thread is busy).
+const packaged = Boolean(process.env.HEXBOT_LIFECYCLE_APP)
+const preload = packaged ? undefined : await writeInstrumentationPreload(root)
+const traces = new WeakMap()
 const environment = { ...process.env, HEXBOT_WEB_DEV_URL: 'http://127.0.0.1:1' }
 delete environment.ELECTRON_RUN_AS_NODE
 const results = []
@@ -43,10 +52,13 @@ function recordProcess(child, name) {
   return (event, details = {}) => record(`harness=${JSON.stringify({ event, time: Date.now(), ...details })}\n`)
 }
 
-function launchArgs(directory) {
+// Only Playwright-owned launches are instrumented. The bare second launch must
+// hand off to the first instance exactly as a user's would.
+function launchArgs(directory, instrumented = false) {
   return [
     ...(process.platform === 'linux' && process.env.CI ? ['--no-sandbox'] : []),
-    ...(process.env.HEXBOT_LIFECYCLE_APP ? [] : [directory])
+    ...(instrumented && preload ? ['-r', preload] : []),
+    ...(packaged ? [] : [directory])
   ]
 }
 
@@ -86,17 +98,23 @@ async function launch(directory, name, fixture = false) {
   await mkdir(home)
   const perform = async trace => {
     const notBefore = Date.now()
+    const shutdownTrace = join(artifacts, `${name}-shutdown.jsonl`)
+    // Each launch owns a fresh trace; stale evidence must never acknowledge it.
+    await lstat(shutdownTrace).then(() => { throw new Error(`Stale shutdown trace: ${shutdownTrace}`) },
+      error => { if (error.code !== 'ENOENT') throw error })
     trace('launch-request')
     currentApp = await electron.launch({
       executablePath,
-      args: launchArgs(directory),
+      args: launchArgs(directory, true),
       env: {
         ...environment,
         HEXBOT_HOME: home,
+        [SHUTDOWN_TRACE_ENV]: shutdownTrace,
         ...(fixture ? { HEXBOT_LIFECYCLE_TRACE: join(artifacts, `${name}-events.jsonl`) } : {})
       },
       timeout: 30_000
     })
+    traces.set(currentApp, shutdownTrace)
     // Playwright disposes its process accessor when the Electron connection closes.
     launchBounds.set(currentApp, { notBefore, notAfter: Date.now() })
     currentProcess = currentApp.process()
@@ -104,8 +122,10 @@ async function launch(directory, name, fixture = false) {
     const record = recordProcess(currentProcess, name)
     shutdowns.set(currentApp, observeShutdown(currentApp, currentProcess, record))
     trace('instrumentation-request', { trackedPid: currentProcess.pid })
-    await currentApp.evaluate(instrumentShutdown, join(artifacts, `${name}-shutdown.jsonl`))
-    trace('instrumentation-acknowledged')
+    const installed = packaged
+      ? await currentApp.evaluate(instrumentShutdown, shutdownTrace)
+      : await acknowledgeInstrumentation(shutdownTrace, currentProcess)
+    trace('instrumentation-acknowledged', installed && { pid: installed.pid, ppid: installed.ppid })
     return currentApp
   }
   return protocolDebug
@@ -116,7 +136,9 @@ async function quit(app, source = 'app') {
   try {
     await requestShutdown(shutdowns.get(app), () => app.evaluate(({ app, Menu }, source) => {
       setImmediate(() => {
-        globalThis.hexbotLifecycleTrace('shutdown-request', { source })
+        // Missing instrumentation is already a primary failure; it must not
+        // also prevent the cleanup Quit from being requested.
+        globalThis.hexbotLifecycleTrace?.('shutdown-request', { source })
         globalThis.lifecycleFixture?.trace('shutdown-request', { source })
         if (source === 'tray')
           globalThis.lifecycleFixture.trayMenu.items.find(item => item.label === 'Quit').click()
@@ -126,6 +148,7 @@ async function quit(app, source = 'app') {
         else app.quit()
       })
     }, source))
+    if (!packaged) await assertSingleInstall(traces.get(app))
     currentApp = undefined
   } catch (error) {
     // Diagnostics run only after a failed strict gate and before cleanup kills
@@ -229,11 +252,11 @@ async function rendered(app, page) {
 }
 
 try {
-  if (process.platform === 'win32' && !process.env.HEXBOT_LIFECYCLE_APP) {
+  if (!packaged) {
     const playwright = createRequire(createRequire(require.resolve('@playwright/test')).resolve('playwright'))
     const { debug } = playwright(join(dirname(playwright.resolve('playwright-core/package.json')), 'lib/utilsBundle.js'))
-    await instrumentationControl({ electron, debug, executablePath, root, artifacts, environment })
-    protocolDebug = debug
+    await instrumentationControl({ electron, debug, executablePath, root, artifacts, environment, preload })
+    if (process.platform === 'win32') protocolDebug = debug
   }
   for (const edition of process.env.HEXBOT_LIFECYCLE_APP ? ['client'] : ['full', 'client']) {
     const directory = process.env.HEXBOT_LIFECYCLE_APP ? desktop : await prepare(edition)

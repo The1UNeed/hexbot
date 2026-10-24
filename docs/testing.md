@@ -241,6 +241,9 @@ route and composer checked before continuing.
   Separate fixtures test Tray Quit with a retained window. Synchronous JSONL
   traces record close prevention, session events, native Quit and process exit;
   every fixture requires one shutdown request and exit code zero.
+  Instrumentation is a `-r` preload in each Playwright-owned launch, verified
+  as one install before the app's main entry; packaged-app runs
+  (`HEXBOT_LIFECYCLE_APP`) still instrument through the inspector.
   CI runs it on macOS, Windows, and Linux with
   Openbox and no tray host. Both launches use the same Linux CI sandbox flags;
   a second launch must exit with code zero and reopen the retained renderer.

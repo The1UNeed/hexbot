@@ -3,10 +3,10 @@
 import assert from 'node:assert/strict'
 import { once } from 'node:events'
 import { appendFileSync } from 'node:fs'
-import { mkdir, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { format, stripVTControlCharacters } from 'node:util'
-import { instrumentShutdown, observeShutdown, requestShutdown } from './lifecycle-shutdown.mjs'
+import { SHUTDOWN_TRACE_ENV, acknowledgeInstrumentation, assertSingleInstall, observeShutdown, requestShutdown } from './lifecycle-shutdown.mjs'
 
 export function protocolSummary(message, direction) {
   const context = message.params?.context
@@ -70,29 +70,36 @@ export async function withProtocolTrace(debug, file, phase, action) {
   }
 }
 
-export async function instrumentationControl({ electron, debug, executablePath, root, artifacts, environment }) {
+export async function instrumentationControl({ electron, debug, executablePath, root, artifacts, environment, preload }) {
   let phase = 'setup'
   return withProtocolTrace(debug, join(artifacts, 'instrumentation-control.jsonl'), () => phase, async record => {
     const failures = []
-    // Fixed module/phase controls, each with one instrumentation call. Full uses
-    // ESM; CJS is the baseline. The ready case is not a retry or a workaround.
-    for (const { esm, ready } of [{ esm: false, ready: false }, { esm: true, ready: false }, { esm: true, ready: true }]) {
-      phase = `${esm ? 'esm' : 'cjs'}-${ready ? 'after-first-window' : 'immediate'}`
+    // Fixed module/phase controls, each with one preloaded instrumentation.
+    // Full uses ESM; CJS is the baseline. The ready case is not a retry. Busy
+    // controls hold the main thread at entry, where an inspector evaluate's
+    // result promise could be collected; the preload must not depend on it.
+    for (const { esm, ready, busy } of [
+      { esm: false }, { esm: true }, { esm: true, ready: true }, { esm: false, busy: true }, { esm: true, busy: true }
+    ]) {
+      phase = `${esm ? 'esm' : 'cjs'}-${ready ? 'after-first-window' : busy ? 'busy-start' : 'immediate'}`
       const directory = join(root, `instrumentation-${phase}`)
       await mkdir(directory)
       const nativeTrace = join(artifacts, `instrumentation-${phase}-native.jsonl`)
       await writeFile(join(directory, 'package.json'), JSON.stringify({ type: esm ? 'module' : 'commonjs', main: esm ? 'main.mjs' : 'main.cjs' }))
       await writeFile(join(directory, esm ? 'main.mjs' : 'main.cjs'), `
 ${esm ? "import { app, BrowserWindow } from 'electron'; import fs from 'node:fs';" : "const { app, BrowserWindow } = require('electron'); const fs = require('node:fs');"}
-const trace = event => fs.appendFileSync(${JSON.stringify(nativeTrace)}, JSON.stringify({event,time:Date.now(),pid:process.pid,ready:app.isReady(),electron:process.versions.electron,node:process.versions.node})+'\\n');
+const trace = (event, details = {}) => fs.appendFileSync(${JSON.stringify(nativeTrace)}, JSON.stringify({event,time:Date.now(),pid:process.pid,ready:app.isReady(),electron:process.versions.electron,node:process.versions.node,...details})+'\\n');
 app.setPath('userData', ${JSON.stringify(join(directory, 'profile'))});
-trace('main-enter');
+trace('main-enter', { instrumented: typeof globalThis.hexbotLifecycleTrace === 'function' });
+${busy ? "{ const end = Date.now() + 1500; let keep = []; while (Date.now() < end) { keep.push(new Array(1000).fill(Math.random())); if (keep.length > 2000) keep = [] } trace('busy-end') }" : ''}
 app.on('ready',()=>trace('ready'));
 app.whenReady().then(()=>{const window=new BrowserWindow({show:false});trace('window-created');return window.loadURL('data:text/html,instrumentation-control')}).then(()=>trace('loaded'));
 `)
+      const shutdownTrace = join(artifacts, `instrumentation-${phase}-shutdown.jsonl`)
       let app, child, shutdown, closed
       try {
-        app = await electron.launch({ executablePath, args: [directory], env: { ...environment, HEXBOT_HOME: directory }, timeout: 30000 })
+        app = await electron.launch({ executablePath, args: ['-r', preload, directory],
+          env: { ...environment, HEXBOT_HOME: directory, [SHUTDOWN_TRACE_ENV]: shutdownTrace }, timeout: 30000 })
         child = app.process()
         closed = once(child, 'close')
         shutdown = observeShutdown(app, child, (event, details) => record(event, details))
@@ -100,17 +107,13 @@ app.whenReady().then(()=>{const window=new BrowserWindow({show:false});trace('wi
         child.stderr.on('data', data => record('stderr', { bytes: data.length, tail: data.toString().slice(-1024) }))
         if (ready) await app.firstWindow({ timeout: 30000 })
         record('instrumentation-request')
-        let timer
-        try {
-          const value = await Promise.race([
-            app.evaluate(instrumentShutdown, join(artifacts, `instrumentation-${phase}-shutdown.jsonl`)),
-            new Promise((_, reject) => {
-              timer = setTimeout(() => reject(new Error('Instrumentation acknowledgement did not complete')), 30000)
-            })
-          ])
-          assert.equal(value, undefined)
-        } finally { clearTimeout(timer) }
-        record('instrumentation-acknowledged')
+        const installed = await acknowledgeInstrumentation(shutdownTrace, child)
+        record('instrumentation-acknowledged', { pid: installed.pid, ppid: installed.ppid })
+        // The app's own first record proves the preload ran before main entry.
+        const entry = (await readFile(nativeTrace, 'utf8')).split('\n').filter(Boolean).map(line => JSON.parse(line))
+          .find(event => event.event === 'main-enter')
+        assert.equal(entry?.instrumented, true, 'Instrumentation must exist before the app main entry')
+        assert.equal(entry.pid, installed.pid)
       } catch (error) {
         record('control-failure', { message: String(error).slice(0, 1024) })
         failures.push(error)
@@ -118,6 +121,7 @@ app.whenReady().then(()=>{const window=new BrowserWindow({show:false});trace('wi
         if (app) {
           try {
             await requestShutdown(shutdown, () => app.evaluate(({ app }) => { setImmediate(() => app.quit()) }))
+            await assertSingleInstall(shutdownTrace)
           } catch (error) {
             record('cleanup-failure', { message: String(error).slice(0, 1024) })
             failures.push(error)
@@ -133,6 +137,6 @@ app.whenReady().then(()=>{const window=new BrowserWindow({show:false});trace('wi
         }
       }
     }
-    if (failures.length) throw new AggregateError(failures, 'Windows instrumentation controls failed', { cause: failures[0] })
+    if (failures.length) throw new AggregateError(failures, 'Instrumentation controls failed', { cause: failures[0] })
   })
 }

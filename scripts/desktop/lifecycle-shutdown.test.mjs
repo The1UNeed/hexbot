@@ -1,11 +1,14 @@
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
 import { EventEmitter, once } from 'node:events'
-import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { appendFile, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
-import { observeShutdown, requestShutdown } from './lifecycle-shutdown.mjs'
+import {
+  SHUTDOWN_TRACE_ENV, acknowledgeInstrumentation, assertSingleInstall, instrumentShutdown,
+  instrumentationPreloadSource, observeShutdown, requestShutdown, validateInstrumentation, writeInstrumentationPreload
+} from './lifecycle-shutdown.mjs'
 
 function fixture() {
   const app = new EventEmitter()
@@ -122,6 +125,71 @@ test('an attached inspector holds exit; the native will-quit hook detaches it wi
         }
       }
     }
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('the launch preload runs the exact shared instrumentation before an app entry', async () => {
+  assert(instrumentationPreloadSource().includes(instrumentShutdown.toString()))
+  const root = await mkdtemp(join(tmpdir(), 'hexbot-preload-'))
+  try {
+    // A stub electron resolved beside the preload, as default_app resolves it.
+    await mkdir(join(root, 'node_modules/electron'), { recursive: true })
+    await writeFile(join(root, 'node_modules/electron/index.js'),
+      "Object.defineProperty(process.versions, 'electron', { value: '42.11.3', enumerable: true }); const { EventEmitter } = require('node:events'); const app = new EventEmitter(); app.isReady = () => false; module.exports = { app }")
+    const preload = await writeInstrumentationPreload(root)
+    await assert.rejects(writeInstrumentationPreload(root), { code: 'EEXIST' })
+    const trace = join(root, 'shutdown.jsonl')
+    const child = spawn(process.execPath, ['-r', preload, '-e',
+      "process.stdout.write(String(typeof globalThis.hexbotLifecycleTrace === 'function'))"],
+    { cwd: root, env: { ...process.env, [SHUTDOWN_TRACE_ENV]: trace, NODE_OPTIONS: '' }, stdio: ['ignore', 'pipe', 'inherit'] })
+    let entry = ''
+    child.stdout.on('data', data => { entry += data })
+    const [code] = await once(child, 'exit')
+    assert.equal(code, 0)
+    assert.equal(entry, 'true', 'instrumentation exists when the entry script starts')
+    const record = validateInstrumentation(
+      (await readFile(trace, 'utf8')).split('\n').filter(Boolean).map(line => JSON.parse(line)), child, 'linux')
+    assert.equal(record.ready, false)
+    assert.equal(record.ppid, process.pid)
+    await assertSingleInstall(trace)
+
+    const missing = spawn(process.execPath, ['-r', preload, '-e', ''], {
+      cwd: root, env: { ...process.env, [SHUTDOWN_TRACE_ENV]: '', NODE_OPTIONS: '' }, stdio: 'ignore'
+    })
+    assert.notEqual((await once(missing, 'exit'))[0], 0, 'a missing trace path fails the launch')
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('instrumentation acknowledgement attributes one fresh record and refuses the rest', async () => {
+  const record = { event: 'instrumented', pid: 20, ppid: 10, ready: false, electron: '42.11.3' }
+  assert.equal(validateInstrumentation([record], { pid: 20 }, 'darwin'), record)
+  assert.equal(validateInstrumentation([record], { pid: 10 }, 'win32'), record)
+  for (const [records, child, platform] of [
+    [[], { pid: 20 }, 'darwin'],
+    [[record, record], { pid: 20 }, 'darwin'],
+    [[{ event: 'before-quit' }, record], { pid: 20 }, 'darwin'],
+    [[record], { pid: 21 }, 'darwin'],
+    [[record], { pid: 20 }, 'win32'],
+    [[{ ...record, ready: true }], { pid: 20 }, 'darwin']
+  ]) assert.throws(() => validateInstrumentation(records, child, platform))
+
+  const root = await mkdtemp(join(tmpdir(), 'hexbot-acknowledge-'))
+  try {
+    await assert.rejects(acknowledgeInstrumentation(join(root, 'missing.jsonl'), { pid: 20 }, { timeout: 50, platform: 'darwin' }),
+      /not acknowledged within 50 ms/)
+    const malformed = join(root, 'malformed.jsonl')
+    await writeFile(malformed, '{not json\n')
+    await assert.rejects(acknowledgeInstrumentation(malformed, { pid: 20 }, { platform: 'darwin' }), SyntaxError)
+    // A record that arrives after the wait starts is observed through a file event.
+    const late = join(root, 'late.jsonl')
+    const pending = acknowledgeInstrumentation(late, { pid: 20 }, { timeout: 5000, platform: 'darwin' })
+    await appendFile(late, JSON.stringify(record).slice(0, 10))
+    await appendFile(late, JSON.stringify(record).slice(10) + '\n')
+    assert.deepEqual(await pending, record)
   } finally {
     await rm(root, { recursive: true, force: true })
   }
