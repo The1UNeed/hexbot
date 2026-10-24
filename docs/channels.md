@@ -24,7 +24,9 @@ cannot read back. Back up the directory before opening a nightly.
 They also share one daemon runtime under `~/.hexbot/runtime`. Each app keeps
 the installed runtime when it was built from newer source than its own bundle
 (`builtAt` in the runtime manifest), so opening an older Stable or Nightly
-never moves the daemon back.
+never moves the daemon back. On Windows, packaged setup also replaces a Nightly
+built from the same commit with a later Nightly of the same version base; the
+daemon's own updater still takes only a strictly newer `builtAt`.
 
 ## Which files belong to which channel
 

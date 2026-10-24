@@ -149,10 +149,18 @@ foreign, linked and ambiguous apps remain refused.
 Windows setup rechecks selection under its own activation lock. If another
 updater won the installer's lock gap, or the requested track has an older build,
 setup keeps the newer runtime only when its complete manifest, file hashes and
-recorded chronology agree. It still finishes tools and CLI setup; the installer
-then installs the service and writes the requested-track receipt. Damaged or
-inconsistent newer selections refuse repair. Automatic updates still reject
-lower and equal builds. Unix descriptor handoff is unchanged.
+recorded chronology agree. An equal `builtAt` is not a source identity, so
+setup keeps the verified selection on a tie, with one exception: a canonical
+release Nightly (`X.Y.Z-nightly.YYYYMMDD.run`, no leading zeros or build
+metadata) with the same base and target and a higher day or run replaces the
+selected Nightly. Exact-version repair needs the matching recorded version and
+chronology; conflicting manifest and record versions refuse. Desktop and the
+daemon share these decisions (`backend/hexbot-core/assets/native-setup-ties.json`).
+It still finishes tools and CLI setup; the installer then installs the service
+and writes the requested-track receipt. Damaged or inconsistent newer
+selections refuse repair. Automatic updates still require a strictly newer
+`builtAt` and reject lower and equal builds, including a newer Nightly built
+from the same commit. Unix descriptor handoff is unchanged.
 
 Full serializes bootstrap, service toggles, daemon start/stop and quit. Removing
 a task first stops an app-owned daemon, removes only the verified task, then
