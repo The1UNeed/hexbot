@@ -132,9 +132,7 @@ export class DaemonManager extends EventEmitter {
       event.preventDefault()
       this.quitting = true
       this.cancelTransition()
-      void this.serialize(async () => {
-        await this.stopForQuit()
-      }).then(
+      void this.transition.then(() => this.stopForQuit()).then(
         () => app.exit(0),
         error => {
           console.error('Daemon shutdown failed:', error)
@@ -508,7 +506,7 @@ export class DaemonManager extends EventEmitter {
   }
 
   private async stopForQuit(): Promise<void> {
-    if (process.platform === 'win32' || !(await this.serviceInstalled())) await this.stopOwned()
+    if (process.platform === 'win32' || !(await this.serviceInstalled())) await this.stop()
   }
 
 }

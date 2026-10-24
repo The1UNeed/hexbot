@@ -1402,6 +1402,10 @@ pub async fn exchange_browser_grant(
     Ok(common::required(&result, "grant")?.to_owned())
 }
 
+#[cfg(all(test, unix))]
+#[path = "services_floor_tests.rs"]
+mod floor_tests;
+
 fn capability() -> Option<String> {
     std::env::var("HEXBOT_SUPERVISOR")
         .ok()
@@ -1681,8 +1685,13 @@ pub(crate) fn native_chronology_floor(native: &Path, include_running: bool) -> R
         .ok_or_else(|| Error::new(5243, "Missing runtime directory"))?;
     let mut floor = 0;
     let record = native_metadata(&runtime.join("native-current.json"))?;
-    let mut installed =
-        record.is_some() || fs::symlink_metadata(runtime.join("native-executable")).is_ok();
+    let pointer_present = match fs::symlink_metadata(runtime.join("native-executable")) {
+        Ok(_) => true,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+        Err(error) => return Err(error.into()),
+    };
+    let missing = record.is_none() && !pointer_present;
+    let mut installed = !missing;
     if let Some(record) = record {
         floor = native_built_at(&record)?.max(native_built_at(&record["updateManifest"])?);
     }
@@ -1700,6 +1709,7 @@ pub(crate) fn native_chronology_floor(native: &Path, include_running: bool) -> R
                 floor = floor.max(native_built_at(&manifest)?);
             }
         }
+        Err(_) if cfg!(windows) && missing => {}
         Err(_)
             if !cfg!(windows)
                 && runtime
@@ -1738,6 +1748,18 @@ fn automatic_native_floor(native: &Path) -> Result<u64> {
             .transpose()?
             .unwrap_or(0),
     ))
+}
+
+// Keep the shared selection record fields above unchanged for the pinned
+// Windows publisher. Provenance is added before the one durable atomic write.
+fn write_native_current(path: &Path, bytes: &[u8], update: Option<&Value>) -> Result<()> {
+    if let Some(update) = update {
+        let mut record: Value = serde_json::from_slice(bytes)?;
+        record["updateManifest"] = update.clone();
+        common::atomic_write(path, &serde_json::to_vec(&record)?)
+    } else {
+        common::atomic_write(path, bytes)
+    }
 }
 
 // Staging directories remain hidden from pruning until the activation lock is held.
@@ -1878,17 +1900,13 @@ fn activate_native_with_update_locked(
         .max(native_built_at(&manifest)?)
         .max(update.map(native_built_at).transpose()?.unwrap_or(0));
     manifest["builtAt"] = json!(built_at);
-    let encode_record = |record: &Value| {
-        let mut record = record.clone();
-        record["updateManifest"] = json!(update);
-        serde_json::to_vec(&record)
-    };
-    common::atomic_write(
+    write_native_current(
         &runtime.join("native-current.json"),
-        &encode_record(
+        &serde_json::to_vec(
             &json!({"version":version,"executable":executable,"previous":previous,"files":manifest["files"],"builtAt":manifest["builtAt"]}),
         )
         .unwrap(),
+        update,
     )?;
     #[cfg(unix)]
     {
@@ -2763,7 +2781,3 @@ mod native_version_tests {
         assert!(artifact_url("http://mirror.example", &json!({"path": path})).is_err());
     }
 }
-
-#[cfg(all(test, unix))]
-#[path = "services_floor_tests.rs"]
-mod floor_tests;

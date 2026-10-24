@@ -1,9 +1,11 @@
 import { createHash } from 'node:crypto'
 import { existsSync } from 'node:fs'
 import { lstat, mkdir, mkdtemp, readFile, readdir, realpath, rm, symlink, writeFile } from 'node:fs/promises'
-import { arch, platform, tmpdir } from 'node:os'
+import { arch, platform } from 'node:os'
 import { basename, dirname, isAbsolute, join, relative } from 'node:path'
 import { spawn } from 'node:child_process'
+
+import { tmpdir } from 'node:os'
 
 import { app } from 'electron'
 import semver from 'semver'
@@ -12,9 +14,9 @@ import { migrateLegacyService } from '../service'
 import voiceRequirements from '../../../../../backend/hexbot-core/assets/edge-tts.requirements.txt?raw'
 import { lockedDaemonPid, type RuntimeActivation } from './manager'
 import { downloadTool, installTool } from './tools'
-
-import { binDir, canonicalRuntimePath, hexbotHome, nativeServiceExecutable, runtimeDir } from './paths'
 import { nodePath } from './node-path'
+
+import { binDir, canonicalRuntimePath, hexbotHome, nativeDir, nativeServiceExecutable, runtimeDir } from './paths'
 
 export type BootstrapStage = 'uv' | 'python' | 'runtime' | 'dependencies' | 'done'
 export interface BootstrapProgress {
@@ -191,7 +193,7 @@ export async function runningNativeDirectory(): Promise<string | null | undefine
 export async function pruneNativeRuntimes(active: string, previous?: string): Promise<void> {
   if (!(await lstat(runtimeDir())).isDirectory() || !(await lstat(join(runtimeDir(), 'native'))).isDirectory())
     throw new Error('Runtime directories cannot be symbolic links')
-  const root = await realpath(join(runtimeDir(), 'native'))
+  const root = await realpath(nativeDir(''))
   const running = await runningNativeDirectory()
   if (running === null) return
   const keep = new Set([dirname(active), previous && dirname(previous), running])
@@ -253,6 +255,8 @@ async function installNativeRuntime(deps: BootstrapDeps): Promise<RuntimeActivat
     deps.emit({ stage: 'done', message: 'Hexbot runtime is ready', percent: 100 })
     return
   }
+  // The newest build wins whichever app or updater installed it, so Stable and
+  // Nightly apps sharing this home never go back to an older daemon.
   return selectPosixRuntime(deps, source, signedHashes)
 }
 
@@ -339,7 +343,7 @@ async function selectPosixRuntime(deps: BootstrapDeps, source: string, files: Re
     if (!activation || !semver.valid(activation.version))
       throw new Error('Runtime selection did not return a verified identity')
     const executable = await realpath(activation.executable)
-    const root = await realpath(join(runtimeDir(), 'native'))
+    const root = await realpath(nativeDir(''))
     if (executable !== activation.executable || !executable.startsWith(`${root}/`))
       throw new Error('Runtime selection returned an invalid executable')
     await migrateLegacyService().catch(error => appendLog(`Service migration: ${String(error)}\n`))
