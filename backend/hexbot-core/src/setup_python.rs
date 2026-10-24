@@ -182,8 +182,10 @@ def preopen(path):
         result["error"] = failure(error)
     return result
 out = {"distributions": {}, "modules": {}, "extensions": {}}
+# A top-level package can import another distribution's extension. Open every
+# expected native member before importing any of the locked packages.
+opened = {name: preopen(os.path.join(site, relative)) for item in spec for name, relative in item["extensions"]}
 for item in spec:
-    opened = {name: preopen(os.path.join(site, relative)) for name, relative in item["extensions"]}
     try:
         out["distributions"][item["dist"]] = {"version": importlib.metadata.version(item["dist"]), "error": None}
     except BaseException as error:
@@ -485,7 +487,7 @@ fn check_tree(stage: &str, root: &Path, alias: Option<&Path>) -> Result<()> {
             let metadata = entry
                 .metadata()
                 .map_err(io_stage(stage, format!("inspect {}", path.display())))?;
-            if reparse(&metadata) {
+            if reparse(&metadata) && (metadata.is_dir() || cfg!(unix)) {
                 if alias == Some(path.as_path()) {
                     continue;
                 }
@@ -515,6 +517,41 @@ fn check_tree(stage: &str, root: &Path, alias: Option<&Path>) -> Result<()> {
 
 fn canonical(path: &Path) -> io::Result<PathBuf> {
     fs::canonicalize(path)
+}
+/// Check just the ancestors and final leaf of an expected import path. Missing
+/// components remain package damage; existing reparse components refuse before
+/// Python can execute through them. This never walks site-packages recursively.
+fn import_path(stage: &str, site: &Path, relative: &Path) -> Result<()> {
+    let mut path = site.to_owned();
+    ordinary_dir(stage, &path)?;
+    for component in relative.parent().unwrap_or(Path::new("")).components() {
+        path.push(component);
+        ordinary_dir(stage, &path)?;
+    }
+    ordinary_leaf(stage, &site.join(relative))?;
+    Ok(())
+}
+
+fn package_preflight(stage: &str, site: &Path) -> Result<()> {
+    // Lib is outside the relative import paths, but is still a fixed ancestor.
+    ordinary_dir(stage, site.parent().unwrap_or(site))?;
+    import_path(stage, site, Path::new("edge_tts/communicate.py"))?;
+    for locked in LOCKED {
+        import_path(
+            stage,
+            site,
+            &PathBuf::from(locked.module).join("__init__.py"),
+        )?;
+        import_path(stage, site, Path::new(&format!("{}.py", locked.module)))?;
+        for (_, relative) in locked.extensions {
+            import_path(stage, site, Path::new(relative))?;
+            if ordinary_leaf(stage, &site.join(relative))?.is_some() {
+                open_observe(&site.join(relative))
+                    .map_err(io_stage(stage, format!("open {relative}")))?;
+            }
+        }
+    }
+    Ok(())
 }
 fn same_identity(a: &Path, b: &Path) -> bool {
     matches!((canonical(a), canonical(b)), (Ok(a), Ok(b)) if a == b)
@@ -639,15 +676,23 @@ fn cfg_consistent(stage: &str, cfg: &VenvConfig, layout: &Layout, key: &str) -> 
         ));
     }
     let home = Path::new(&cfg.home);
-    let long = long_name(home).map_err(io_stage(stage, "resolve pyvenv.cfg home"))?;
+    let base_missing = !ordinary_dir(stage, &layout.base(key))?;
+    let long = match long_name(home) {
+        Ok(path) => path,
+        Err(e) if base_missing && e.kind() == io::ErrorKind::NotFound => home.to_owned(),
+        Err(e) => return Err(io_stage(stage, "resolve pyvenv.cfg home")(e)),
+    };
     let entry = long.file_name().and_then(OsStr::to_str).unwrap_or_default();
     let parent_ok = long
         .parent()
         .is_some_and(|parent| same_identity(parent, &layout.python_root));
-    if !parent_ok
-        || (entry != MINOR_ALIAS && entry != key)
-        || !same_identity(home, &layout.base(key))
-    {
+    let base_ok = if base_missing {
+        entry == key
+            || (entry == MINOR_ALIAS && alias_target(stage, layout)?.as_deref() == Some(key))
+    } else {
+        same_identity(home, &layout.base(key))
+    };
+    if !parent_ok || (entry != MINOR_ALIAS && entry != key) || !base_ok {
         return Err(refuse(
             stage,
             format!(
@@ -982,6 +1027,12 @@ pub(super) fn classify(
     site: &Path,
     canon: &dyn Fn(&Path) -> Option<PathBuf>,
 ) -> Health {
+    if probe.distributions.len() != LOCKED.len()
+        || probe.modules.len() != LOCKED.len()
+        || probe.extensions.len() != LOCKED.iter().map(|l| l.extensions.len()).sum::<usize>()
+    {
+        return Health::Refused("probe returned an unexpected set of checks".into());
+    }
     let mut repair: Option<String> = None;
     let mut note = |cause: String| {
         repair.get_or_insert(cause);
@@ -1038,7 +1089,15 @@ pub(super) fn classify(
                 false
             }
             ("error", Some(e))
-                if e.kind == "ModuleNotFoundError" && e.name.as_deref() == Some(locked.module) =>
+                if e.kind == "ModuleNotFoundError"
+                    && (e.name.as_deref() == Some(locked.module)
+                        || e.name.as_deref().is_some_and(|name| {
+                            LOCKED.iter().any(|l| {
+                                l.module == name
+                                    || l.extensions.iter().any(|(full, _)| *full == name)
+                            }) || (name == "edge_tts.communicate"
+                                && matches!(lstat(&site.join("edge_tts/communicate.py")), Ok(None)))
+                        })) =>
             {
                 note(format!("{} is missing", locked.module));
                 true
@@ -1197,6 +1256,18 @@ fn read_receipt(stage: &str, layout: &Layout, lock: &str) -> Result<Receipt> {
     })
 }
 
+fn remove_obsolete_receipt(
+    layout: &Layout,
+    remove: impl FnOnce(&Path) -> io::Result<()>,
+) -> Result<()> {
+    ordinary_leaf("voice", &layout.receipt)?;
+    match remove(&layout.receipt) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(io_stage("voice", "remove the obsolete voice receipt")(e)),
+    }
+}
+
 /// Child processes. Production runs real programs; tests record calls.
 pub(super) trait Runner {
     async fn uv(
@@ -1235,9 +1306,23 @@ impl<R: Runner> Pass<'_, R> {
         stage: &str,
         key: Option<&str>,
         mutation: Mutation<'_>,
+        message: (&str, &str),
     ) -> Result<()> {
         let alias = matches!(mutation, Mutation::InstallMinor | Mutation::ReinstallKey(_))
             .then_some(self.layout.alias.as_path());
+        if alias.is_some() {
+            // Even first-install resume may encounter an existing alias.
+            // Only the proved owned alias is exempt from the directory walk.
+            if let Some(selected) = alias_target(stage, self.layout)? {
+                if key.is_some_and(|key| key != selected) {
+                    return Err(refuse(
+                        stage,
+                        "the Python alias disagrees with the recorded key",
+                    ));
+                }
+                ordinary_dir(stage, &self.layout.base(&selected))?;
+            }
+        }
         for root in mutation.roots(self.layout, key) {
             check_tree(stage, &root, alias)?;
         }
@@ -1246,9 +1331,11 @@ impl<R: Runner> Pass<'_, R> {
             launcher_state(stage, &self.layout.venv_python)?;
         }
         let args = mutation.args();
+        (self.emit)(message.0, message.1);
         self.runner
             .uv(self.layout, &self.uv, &self.uv_env, &args)
             .await
+            .map_err(|error| refuse(stage, error.message))
     }
     async fn probe_identity(
         &mut self,
@@ -1327,9 +1414,13 @@ impl<R: Runner> Pass<'_, R> {
             true
         };
         if repair {
-            (self.emit)("python", "Restoring the Python base for code tools");
-            self.mutate(stage, Some(key), Mutation::ReinstallKey(key))
-                .await?;
+            self.mutate(
+                stage,
+                Some(key),
+                Mutation::ReinstallKey(key),
+                ("python", "Restoring the Python base for code tools"),
+            )
+            .await?;
         }
         self.base_healthy(stage, key).await
     }
@@ -1347,16 +1438,26 @@ impl<R: Runner> Pass<'_, R> {
         let recreated = if ordinary_dir(stage, &venv)? {
             check_cfg(stage, self.layout, key)?;
             if launcher_state(stage, &self.layout.venv_python)? != Launcher::Present {
-                (self.emit)("python", "Restoring the code tools interpreter");
-                self.mutate(stage, Some(key), mutation).await?;
+                self.mutate(
+                    stage,
+                    Some(key),
+                    mutation,
+                    ("python", "Restoring the code tools interpreter"),
+                )
+                .await?;
             }
             false
         } else {
             if !ordinary_dir(stage, &self.layout.tools)? {
                 return Err(refuse(stage, "runtime/tools is missing"));
             }
-            (self.emit)("python", "Recreating the code tools environment");
-            self.mutate(stage, Some(key), mutation).await?;
+            self.mutate(
+                stage,
+                Some(key),
+                mutation,
+                ("python", "Recreating the code tools environment"),
+            )
+            .await?;
             true
         };
         self.venv_healthy(stage, key).await?;
@@ -1366,8 +1467,13 @@ impl<R: Runner> Pass<'_, R> {
     /// alias-selected exact base after probing it, then create the venv.
     async fn first_install(&mut self) -> Result<String> {
         let stage = "install";
-        (self.emit)("python", "Installing Python for code tools");
-        self.mutate(stage, None, Mutation::InstallMinor).await?;
+        self.mutate(
+            stage,
+            None,
+            Mutation::InstallMinor,
+            ("python", "Installing Python for code tools"),
+        )
+        .await?;
         let key = alias_target(stage, self.layout)?
             .ok_or_else(|| refuse(stage, "uv did not create the expected Python alias"))?;
         self.base_healthy(stage, &key).await?;
@@ -1380,6 +1486,7 @@ impl<R: Runner> Pass<'_, R> {
                 base_python: &base_python,
                 venv: &venv,
             },
+            ("python", "Installing Python for code tools"),
         )
         .await?;
         self.venv_healthy(stage, &key).await?;
@@ -1440,6 +1547,7 @@ impl<R: Runner> Pass<'_, R> {
     }
     async fn probe_packages(&mut self, stage: &str) -> Result<Health> {
         let site = self.layout.site_packages();
+        package_preflight(stage, &site)?;
         let args: Vec<OsString> = vec![
             "-I".into(),
             "-B".into(),
@@ -1489,7 +1597,7 @@ impl<R: Runner> Pass<'_, R> {
         }
         Ok(Health::Healthy)
     }
-    async fn install_packages(&mut self, stage: &str, key: &str) -> Result<()> {
+    async fn install_packages(&mut self, stage: &str, key: &str, message: &str) -> Result<()> {
         common::atomic_write(&self.layout.requirements, self.lock.as_bytes())?;
         let (python, requirements) = (
             self.layout.venv_python.clone(),
@@ -1502,6 +1610,7 @@ impl<R: Runner> Pass<'_, R> {
                 python: &python,
                 requirements: &requirements,
             },
+            ("voice", message),
         )
         .await?;
         let (venv_python, venv) = (self.layout.venv_python.clone(), self.layout.venv.clone());
@@ -1520,24 +1629,22 @@ impl<R: Runner> Pass<'_, R> {
         let receipt = read_receipt(stage, self.layout, self.lock)?;
         if recreated {
             // The old receipt describes the deleted venv; it must not survive.
-            match fs::remove_file(&self.layout.receipt) {
-                Ok(()) => {}
-                Err(e) if e.kind() == io::ErrorKind::NotFound => {}
-                Err(e) => return Err(io_stage(stage, "remove the obsolete voice receipt")(e)),
-            }
+            remove_obsolete_receipt(self.layout, |path| fs::remove_file(path))?;
         }
         match package_branch(recreated, receipt) {
             Branch::InstallUpdate => {
-                (self.emit)("voice", "Installing voice tools");
-                self.install_packages(stage, key).await?;
+                self.install_packages(stage, key, "Installing voice tools")
+                    .await?;
                 common::atomic_write(&self.layout.receipt, self.lock.as_bytes())
             }
             Branch::HealthRepair => match self.probe_packages(stage).await? {
                 Health::Healthy => Ok(()),
-                Health::Repairable(cause) => {
-                    (self.emit)("voice", &format!("Repairing voice tools: {cause}"));
-                    self.install_packages(stage, key).await
-                }
+                Health::Repairable(cause) => self
+                    .install_packages(stage, key, &format!("Repairing voice tools: {cause}"))
+                    .await
+                    .map_err(|error| {
+                        refuse(stage, format!("{cause}; repair failed: {}", error.message))
+                    }),
                 Health::Refused(cause) => Err(refuse(stage, cause)),
             },
         }
@@ -1597,7 +1704,11 @@ fn read_record(layout: &Layout) -> Result<Record> {
     if entry.len > IDENTITY_LIMIT {
         return Err(refuse(stage, "the identity record is larger than 16 KiB"));
     }
-    let bytes = fs::read(&layout.identity).map_err(io_stage(stage, "read identity record"))?;
+    use std::io::Read;
+    let mut bytes = Vec::new();
+    fs::File::open(&layout.identity)
+        .and_then(|file| file.take(IDENTITY_LIMIT + 1).read_to_end(&mut bytes))
+        .map_err(io_stage(stage, "read identity record"))?;
     let identity = parse_identity(&bytes)
         .map_err(|cause| refuse(stage, format!("the identity record is invalid: {cause}")))?;
     if !same_identity(&identity.home, &layout.home) {
@@ -1646,6 +1757,8 @@ where
     let layout = Layout::new(&canonical(home).map_err(io_stage("preflight", "resolve home"))?);
     let result = provision_in(&layout, emit, runner, install_uv, lock).await;
     if let Err(error) = &result
+        && ordinary_dir("log", &layout.logs).is_ok_and(|exists| exists)
+        && unshared_leaf("log", &layout.log).is_ok_and(|leaf| leaf.is_some())
         && let Ok(mut log) = fs::OpenOptions::new().append(true).open(&layout.log)
     {
         use std::io::Write;
@@ -1702,6 +1815,14 @@ where
     };
     let (key, recreated) = match recorded_key {
         Some(key) => {
+            // Refuse an inconsistent surviving venv before repairing the base.
+            // Only whole-layer absence bypasses that layer's cfg/parents.
+            if ordinary_dir("venv", &layout.venv)? {
+                check_cfg("venv", layout, &key)?;
+                if !ordinary_dir("venv", &layout.scripts)? {
+                    return Err(refuse("venv", "Scripts is missing"));
+                }
+            }
             pass.ensure_recorded_base(&key).await?;
             let recreated = pass.ensure_recorded_venv(&key).await?;
             (key, recreated)
@@ -1758,15 +1879,7 @@ impl Runner for Processes {
         cwd: &Path,
         env: &[(OsString, OsString)],
     ) -> Result<Output> {
-        let output = command(executable, args, cwd, env)
-            .output()
-            .await
-            .map_err(common::io_context("start the code tools interpreter"))?;
-        Ok(Output {
-            status: output.status.code(),
-            stdout: output.stdout,
-            stderr: output.stderr,
-        })
+        bounded_output(command(executable, args, cwd, env)).await
     }
     async fn entrypoint(
         &mut self,
@@ -1775,16 +1888,42 @@ impl Runner for Processes {
     ) -> Result<Output> {
         let args = [OsString::from("--version")];
         let cwd = executable.parent().unwrap_or(executable);
-        let output = command(executable, &args, cwd, env)
-            .output()
-            .await
-            .map_err(common::io_context("start edge-tts"))?;
-        Ok(Output {
-            status: output.status.code(),
-            stdout: output.stdout,
-            stderr: output.stderr,
-        })
+        bounded_output(command(executable, &args, cwd, env)).await
     }
+}
+#[cfg(windows)]
+async fn bounded_output(mut command: tokio::process::Command) -> Result<Output> {
+    use tokio::io::AsyncReadExt;
+    command
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    let mut child = command
+        .spawn()
+        .map_err(common::io_context("start the code tools probe"))?;
+    let stdout = child.stdout.take().expect("piped stdout");
+    let stderr = child.stderr.take().expect("piped stderr");
+    async fn read(stream: impl tokio::io::AsyncRead + Unpin) -> Result<Vec<u8>> {
+        let mut bytes = Vec::new();
+        stream
+            .take(OUTPUT_LIMIT as u64 + 1)
+            .read_to_end(&mut bytes)
+            .await?;
+        if bytes.len() > OUTPUT_LIMIT {
+            return Err(refuse("probe", "output exceeded 1 MiB"));
+        }
+        Ok(bytes)
+    }
+    // An over-limit stream stops the wait, then kill_on_drop stops the child.
+    let (status, stdout, stderr) = tokio::try_join!(
+        async { child.wait().await.map_err(Error::from) },
+        read(stdout),
+        read(stderr),
+    )?;
+    Ok(Output {
+        status: status.code(),
+        stdout,
+        stderr,
+    })
 }
 #[cfg(windows)]
 fn command(

@@ -106,15 +106,17 @@ walked for reparse directories; only uv's minor alias under `python/` is
 allowed. A recreated venv removes the old voice receipt before pip, so an
 interrupted install takes the plain install branch next time.
 
-Everything else refuses without writing: reparse or hard-linked fixed leaves,
+Other states refuse: reparse fixed leaves or shared append/lock/launcher/cfg/DLL leaves,
 a malformed record or one naming another home, an alias that disagrees with
 the record, a `pyvenv.cfg` not pointing at the owned base or its alias, an
 unrecorded nonempty venv without a usable cfg, a launcher of 64 bytes or more
 that fails, an existing truncated DLL, a package probe that crashes or returns
 anything but the complete structured result, access or sharing errors, and
 any failed final probe. The refusal names the layer and the OS cause on the
-CLI and in `logs/bootstrap.log`; the native runtime activation that preceded
-it is already complete.
+CLI and, when its owned log is safe to append, in `logs/bootstrap.log`.
+Earlier package changes and any requested native runtime activation may already
+have completed. Atomic requirements and receipt replacement leaves other hard
+links unchanged or fails safely.
 
 Known limitation: Windows remains unsupported. Setup repairs only the owned
 states described here. If Python identity or code verification is refused,
@@ -127,6 +129,20 @@ alias type after a first install or reinstall, exact-executable venv creation
 across 8.3 and extended paths, interrupted pip recovery, populated-cache
 junctions, ASCII JSON round trips and the section-data `.pyd` truncation
 positive are native acceptance gates, not claims.
+
+The existing Windows workflow reaches the direct production control with
+`cargo test --locked --manifest-path backend/hexbot-core/Cargo.toml --test
+windows_contract owned_python_provisions_repairs_and_refuses_through_production_setup
+-- --exact --nocapture`, in the disposable source prepared by the unchanged
+helper. After building the real Full bundle, its control runs with
+`HEXBOT_NATIVE_TEST_BUNDLE` naming that bundle and `pnpm --filter
+./apps/desktop run test --run src/main/backend/windows-bootstrap.test.ts`.
+These controls cover a subset of the acceptance matrix. They do not yet exercise
+the first-install alias-removal window, interrupted pip or missing RECORD,
+uv leaf write-through, poisoned cached payloads, every access/sharing failure,
+or the full path-representation matrix. There is no dedicated executable
+invocation for those missing controls yet; they still require controls and
+native results before acceptance.
 
 ## Install and update contracts
 

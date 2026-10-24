@@ -469,19 +469,49 @@ async fn owned_python_provisions_repairs_and_refuses_through_production_setup() 
     // ImportError after a successful pre-open; the pass repairs it.
     let image = fs::read(&frozen).unwrap();
     assert!(image.len() > 4096);
-    fs::write(&frozen, &image[..image.len() / 2]).unwrap();
+    // Fixture-only PE section offsets prove this is more than an overlay cut.
+    let u16_at = |offset| u16::from_le_bytes(image[offset..offset + 2].try_into().unwrap());
+    let u32_at =
+        |offset| u32::from_le_bytes(image[offset..offset + 4].try_into().unwrap()) as usize;
+    let pe = u32_at(0x3c);
+    assert_eq!(&image[pe..pe + 4], b"PE\0\0");
+    let sections = pe + 24 + usize::from(u16_at(pe + 20));
+    let cut = image.len() / 2;
+    let containing = (0..usize::from(u16_at(pe + 6))).find_map(|index| {
+        let section = sections + index * 40;
+        let size = u32_at(section + 16);
+        let start = u32_at(section + 20);
+        (start < cut && cut < start + size).then_some((start, size))
+    });
+    assert!(
+        containing.is_some(),
+        "half-file cut must be inside section raw data"
+    );
+    fs::write(&frozen, &image[..cut]).unwrap();
     eprintln!(
         "truncated {} from {} to {} bytes",
         frozen.display(),
         image.len(),
-        image.len() / 2
+        cut
     );
-    let load = Command::new(&python).args(["-I", "-B", "-c", "import frozenlist\ntry:\n import frozenlist._frozenlist\nexcept BaseException as e:\n print(type(e) is ImportError, type(e).__name__, getattr(e,'name',None), getattr(e,'path',None))"]).output().unwrap();
-    eprintln!(
-        "truncated extension probe: {}{}",
-        String::from_utf8_lossy(&load.stdout),
+    let load = Command::new(&python).args(["-I", "-B", "-c", "import importlib,json\ntry:\n importlib.import_module('frozenlist._frozenlist')\n result={'loaded':True}\nexcept BaseException as e:\n result={'loaded':False,'exact':type(e) is ImportError,'name':getattr(e,'name',None),'path':getattr(e,'path',None)}\nprint(json.dumps(result,ensure_ascii=True))"]).output().unwrap();
+    assert!(
+        load.status.success(),
+        "{}",
         String::from_utf8_lossy(&load.stderr)
     );
+    assert!(load.stdout.is_ascii());
+    let failure: serde_json::Value = serde_json::from_slice(&load.stdout).unwrap();
+    assert_eq!(failure["loaded"], false);
+    assert_eq!(failure["exact"], true);
+    assert!(["frozenlist._frozenlist", "_frozenlist"].contains(&failure["name"].as_str().unwrap()));
+    assert_eq!(
+        Path::new(failure["path"].as_str().unwrap())
+            .canonicalize()
+            .unwrap(),
+        frozen.canonicalize().unwrap()
+    );
+    eprintln!("truncated extension probe: {failure}; section {containing:?}");
     let mark = events.borrow().len();
     setup().await.unwrap();
     assert!(

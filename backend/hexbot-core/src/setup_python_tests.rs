@@ -51,6 +51,7 @@ fn fake_packages(layout: &Layout) {
             write(&site.join(relative), b"MZ fake extension");
         }
     }
+    write(&site.join("edge_tts/communicate.py"), b"# owned\n");
     write(&layout.entrypoint, EXE);
 }
 fn healthy_probe(site: &Path) -> Value {
@@ -1218,4 +1219,199 @@ async fn concurrent_passes_serialize_under_the_activation_lock() {
     );
     assert!(first.uv_calls().is_empty() || second.uv_calls().is_empty());
     assert_eq!(fs::read_to_string(&layout.receipt).unwrap(), LOCK);
+}
+
+#[tokio::test]
+async fn refused_logs_never_write_through_links_or_reparse_parents() {
+    for kind in ["hardlink", "symlink", "parent"] {
+        let (_dir, layout) = home();
+        let outside = tempfile::tempdir().unwrap();
+        let sentinel = outside.path().join("bootstrap.log");
+        fs::write(&sentinel, b"keep outside bytes").unwrap();
+        fs::create_dir_all(&layout.logs).unwrap();
+        match kind {
+            "hardlink" => fs::hard_link(&sentinel, &layout.log).unwrap(),
+            "symlink" => link(&sentinel, &layout.log),
+            _ => {
+                fs::remove_dir(&layout.logs).unwrap();
+                link(outside.path(), &layout.logs);
+            }
+        }
+        let mut fake = Fake::new(&layout);
+        assert!(run(&layout, &mut fake).await.is_err());
+        assert!(fake.events.is_empty());
+        assert_eq!(
+            fs::read(&sentinel).unwrap(),
+            b"keep outside bytes",
+            "{kind}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn native_parent_escape_refuses_before_package_execution() {
+    let (_dir, layout) = installed().await;
+    let outside = tempfile::tempdir().unwrap();
+    let websocket = layout.site_packages().join("aiohttp/_websocket");
+    fs::remove_dir_all(&websocket).unwrap();
+    link(outside.path(), &websocket);
+    let mut fake = Fake::new(&layout);
+    assert!(run(&layout, &mut fake).await.is_err());
+    assert!(fake.events.iter().all(|e| e != "packages"));
+    assert!(fake.uv_calls().is_empty());
+}
+
+#[test]
+fn required_transitive_source_missing_is_repairable_but_unknown_names_refuse() {
+    let (_dir, layout) = home();
+    fake_packages(&layout);
+    let site = layout.site_packages();
+    fs::remove_file(site.join("edge_tts/communicate.py")).unwrap();
+    for missing in ["edge_tts.communicate", "unknown_dependency"] {
+        let mut value = healthy_probe(&site);
+        value["modules"]["edge_tts"] = json!({"status":"error", "origin":null, "loader":null,
+            "error":failure("ModuleNotFoundError", false, Some(missing), None)});
+        let probe = serde_json::from_value(value).unwrap();
+        let health = classify(&probe, &locked_versions(LOCK), &site, &|p| {
+            canonical(p).ok()
+        });
+        assert_eq!(
+            matches!(health, Health::Repairable(_)),
+            missing == "edge_tts.communicate",
+            "{missing}: {health:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn surviving_invalid_cfg_or_missing_launcher_parent_refuses_before_base_repair() {
+    for damage in ["cfg", "scripts"] {
+        let (_dir, layout) = installed().await;
+        fs::remove_file(layout.base(KEY).join("python.exe")).unwrap();
+        if damage == "cfg" {
+            fs::write(
+                &layout.venv_cfg,
+                "home = /foreign\nimplementation = CPython\nuv = old\nversion_info = 3.11.16\n",
+            )
+            .unwrap();
+        } else {
+            fs::remove_dir_all(&layout.scripts).unwrap();
+        }
+        let mut fake = Fake::new(&layout);
+        assert!(run(&layout, &mut fake).await.is_err());
+        assert!(fake.uv_calls().is_empty(), "{damage}: {:?}", fake.events);
+        assert!(!layout.base(KEY).join("python.exe").exists());
+    }
+}
+
+#[test]
+fn every_native_member_requires_its_own_exact_name_type_and_path() {
+    let (_dir, layout) = home();
+    fake_packages(&layout);
+    let site = layout.site_packages();
+    for (full, relative) in LOCKED.iter().flat_map(|locked| locked.extensions) {
+        let short = full.rsplit('.').next().unwrap();
+        for (kind, exact, name, path, eligible) in [
+            (
+                "ImportError",
+                true,
+                Some(*full),
+                Some(site.join(relative)),
+                true,
+            ),
+            (
+                "ImportError",
+                true,
+                Some(short),
+                Some(site.join(relative)),
+                true,
+            ),
+            (
+                "ImportError",
+                false,
+                Some(short),
+                Some(site.join(relative)),
+                false,
+            ),
+            (
+                "ModuleNotFoundError",
+                false,
+                Some(*full),
+                Some(site.join(relative)),
+                false,
+            ),
+            (
+                "ImportError",
+                true,
+                Some("wrong_name"),
+                Some(site.join(relative)),
+                false,
+            ),
+            ("ImportError", true, None, Some(site.join(relative)), false),
+            ("ImportError", true, Some(short), None, false),
+            (
+                "ImportError",
+                true,
+                Some(short),
+                Some(site.join("other.pyd")),
+                false,
+            ),
+        ] {
+            let mut value = healthy_probe(&site);
+            value["extensions"][full]["import"] = json!({"status":"error", "origin":null, "loader":null,
+                "error": failure(kind, exact, name, path.as_deref())});
+            let probe = serde_json::from_value(value).unwrap();
+            let health = classify(&probe, &locked_versions(LOCK), &site, &|p| {
+                canonical(p).ok()
+            });
+            assert_eq!(
+                matches!(health, Health::Repairable(_)),
+                eligible,
+                "{full}: {health:?}"
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn first_install_refuses_an_unproved_alias_before_uv() {
+    let (_dir, layout) = home();
+    let outside = tempfile::tempdir().unwrap();
+    link(outside.path(), &layout.alias);
+    let mut fake = Fake::new(&layout);
+    assert!(run(&layout, &mut fake).await.is_err());
+    assert!(fake.events.is_empty());
+    assert!(!layout.identity.exists());
+}
+
+#[test]
+fn obsolete_receipt_removal_preserves_original_errors_and_never_restores_old_bytes() {
+    let (_dir, layout) = home();
+    write(&layout.receipt, LOCK.as_bytes());
+    let error =
+        remove_obsolete_receipt(&layout, |_| Err(io::Error::from_raw_os_error(13))).unwrap_err();
+    assert!(
+        error
+            .message
+            .contains(&io::Error::from_raw_os_error(13).to_string())
+    );
+    assert_eq!(fs::read_to_string(&layout.receipt).unwrap(), LOCK);
+    remove_obsolete_receipt(&layout, |path| fs::remove_file(path)).unwrap();
+    remove_obsolete_receipt(&layout, |path| fs::remove_file(path)).unwrap();
+    assert!(!layout.receipt.exists());
+}
+
+#[tokio::test]
+async fn failed_recreated_venv_identity_keeps_the_old_receipt_and_prevents_pip() {
+    let (_dir, layout) = installed().await;
+    fs::remove_dir_all(&layout.venv).unwrap();
+    let mut fake = Fake::new(&layout);
+    let base = layout.base(KEY);
+    fake.identity.push_back(json_out(&json!({"implementation":"CPython", "version":"3.11.16", "executable":base.join("python.exe"), "prefix":base, "base_prefix":base, "failures":{}})));
+    fake.identity.push_back(out(Some(1), ""));
+    assert!(run(&layout, &mut fake).await.is_err());
+    assert_eq!(fake.uv_calls().len(), 1);
+    assert!(fake.uv_calls()[0].starts_with("venv "));
+    assert_eq!(fs::read_to_string(&layout.receipt).unwrap(), LOCK);
+    assert_eq!(fake.receipt_at_pip, None);
 }

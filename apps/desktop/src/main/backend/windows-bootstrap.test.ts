@@ -177,7 +177,6 @@ async function provePinnedUvRepair(home: string, daemon: string, redact: (text: 
 async function proveProductionRepair(home: string, bootstrap: () => Promise<unknown>): Promise<void> {
   const { execFile } = await import('node:child_process')
   const { promisify } = await import('node:util')
-  const { stat } = await import('node:fs/promises')
   const environment = join(home, 'runtime/tools/code-python')
   const python = join(environment, 'Scripts/python.exe')
   const entry = join(environment, 'Scripts/edge-tts.exe')
@@ -203,10 +202,13 @@ async function proveProductionRepair(home: string, bootstrap: () => Promise<unkn
     const after = await Promise.all([receipt, join(tools, 'code-python-identity.json')].map(path => readFile(path)))
     expect(after.map(buffer => buffer.toString('hex')), label).toEqual(before.map(buffer => buffer.toString('hex')))
   }
-  // Healthy repeat: no uv call appends to the bootstrap log, no receipt write.
-  const logBefore = (await stat(join(home, 'logs/bootstrap.log'))).size
+  // Node logs setup's JSON even on a healthy repeat. Verify the owned
+  // Python files separately from those caller log appends.
+  const stablePaths = [receipt, join(tools, 'code-python-identity.json'), join(environment, 'requirements.txt'), join(environment, 'pyvenv.cfg')]
+  const { stat } = await import('node:fs/promises')
+  const before = await Promise.all(stablePaths.map(async path => [await digest(path), (await stat(path)).mtimeMs]))
   await unchanged('healthy Full repeat', () => bootstrap().then(() => undefined))
-  expect((await stat(join(home, 'logs/bootstrap.log'))).size).toBe(logBefore)
+  expect(await Promise.all(stablePaths.map(async path => [await digest(path), (await stat(path)).mtimeMs]))).toEqual(before)
   await healthy('healthy Full repeat')
   // Recorded damage repaired by Full bootstrap, same payload hashes.
   await writeFile(python, 'ordinary truncated redirector')
