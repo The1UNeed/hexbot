@@ -1148,7 +1148,8 @@ devices, and removes the invite and update methods.
 
 `hexbot.bots.changed {name}`, `hexbot.sections.changed {id, bot}`,
 `hexbot.memory.user.changed {}`, `hexbot.network.changed {}`. Session-less,
-broadcast to every connection. When a dream report lands in a chat,
+broadcast to every connection. When a message lands in a chat outside its
+turns (earlier versions did this for dream reports; dreams now post nothing),
 `hexbot.sections.changed` also carries `reload`: true when a client showing
 the chat should open it again to read the report. The report never stops the
 chat's process. While a turn runs, `reload` is false and a second
