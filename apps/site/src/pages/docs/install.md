@@ -45,6 +45,7 @@ curl -fsSL https://hexbot.app/install.sh | sh -s -- --headless
 | `--remove-data` | With `--uninstall`, also delete `~/.hexbot`. |
 | `--yes` | Confirm a change or an uninstall without asking. |
 | `--json` | Print progress as one JSON object per line. |
+| `--license` | Print Hexbot's `LICENSE` and `NOTICE` and install nothing. |
 
 Without a terminal to answer questions, as in a provisioning script, pass an option, and `--yes` for a change or an uninstall.
 

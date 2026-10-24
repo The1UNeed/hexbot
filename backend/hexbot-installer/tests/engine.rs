@@ -321,3 +321,38 @@ fn linux_appimage_writes_a_desktop_entry_and_replaces_the_previous_app() {
         "#!/bin/sh\necho mine\n"
     );
 }
+
+#[test]
+fn license_prints_the_repository_files_before_home_network_or_writes() {
+    let repository = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let expected = [
+        fs::read(repository.join("LICENSE")).unwrap(),
+        fs::read(repository.join("NOTICE")).unwrap(),
+    ]
+    .concat();
+    let served = tempfile::tempdir().unwrap();
+    let server = Server::new(served.path());
+    let sandbox = tempfile::tempdir().unwrap();
+    for home in [None, Some(sandbox.path().join("missing home"))] {
+        let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_hexbot-install"));
+        command
+            .arg("--license")
+            .env("HEXBOT_HOME", sandbox.path().join("hexbot"))
+            .env("HEXBOT_INSTALL_APPS_DIR", sandbox.path().join("apps"))
+            .env("HEXBOT_SERVICE_ROOT", sandbox.path().join("service"))
+            .env("HEXBOT_SERVICE_NO_LOAD", "1")
+            .env("HEXBOT_UPDATE_URL", &server.base)
+            .env_remove("HEXBOT_TRACK")
+            .stdin(std::process::Stdio::null());
+        match &home {
+            Some(home) => command.env("HOME", home),
+            None => command.env_remove("HOME"),
+        };
+        let output = command.output().unwrap();
+        assert!(output.status.success(), "{output:?}");
+        assert_eq!(output.stdout, expected);
+        assert!(output.stderr.is_empty(), "{output:?}");
+    }
+    assert!(server.requests.lock().unwrap().is_empty());
+    assert_eq!(fs::read_dir(sandbox.path()).unwrap().count(), 0);
+}

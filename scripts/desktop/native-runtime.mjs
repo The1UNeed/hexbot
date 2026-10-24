@@ -136,6 +136,8 @@ export async function stageNativeRuntime({
   await mkdir(dirname(destination), { recursive: true })
   const staging = await mkdtemp(`${destination}.staging-`)
   try {
+    // Hexbot's own license and notices ship in the app, Headless, and update archives.
+    for (const file of ['LICENSE', 'NOTICE']) await cp(join(repository, file), join(staging, file))
     const pi = join(staging, 'pi')
     await mkdir(pi)
     for (const file of ['package.json', 'package-lock.json'])
