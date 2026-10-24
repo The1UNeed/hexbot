@@ -148,6 +148,100 @@ async fn request(socket: &mut Socket, id: &str, method: &str, params: Value) -> 
 }
 
 #[tokio::test]
+async fn shutdown_fixture_section_is_admitted_only_when_seeded_after_startup() {
+    for before_start in [true, false] {
+        let directory = tempfile::tempdir().unwrap();
+        let home = directory.path().join("home");
+        db::migrate(&home).unwrap();
+        fs::create_dir_all(home.join("profiles/owl")).unwrap();
+        fs::write(
+            home.join("profiles/owl/config.yaml"),
+            "model:\n  provider: lmstudio\n  default: test-model\n  api_key: test-key\n  base_url: http://127.0.0.1:1/v1\ntools:\n  enabled_toolsets: []\n",
+        ).unwrap();
+        db::open(&home).unwrap().execute_batch(
+            "INSERT INTO bots(name,owner_id,description) VALUES('owl','local','Owned cleanup fixture'); INSERT INTO sections(id,bot,owner_id,title) VALUES('first','owl','local','First');",
+        ).unwrap();
+        let seed = || {
+            db::open(&home).unwrap().execute(
+                "INSERT INTO sections(id,bot,owner_id,title) VALUES('first-section','owl','local','Lifetime')",
+                [],
+            ).unwrap();
+        };
+        if before_start {
+            seed();
+        }
+        let token = auth::local_token(&home).unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        // A spawn error proves admission only, without a fake Pi response.
+        let app = App::new(
+            home.clone(),
+            address,
+            directory.path().join("deliberately-absent-pi"),
+            None,
+        )
+        .unwrap();
+        if !before_start {
+            seed();
+        }
+        let router = server::router(app.clone());
+        let task = tokio::spawn(async move {
+            axum::serve(
+                listener,
+                router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+            )
+            .await
+            .unwrap();
+        });
+        let fixture = Fixture {
+            _directory: directory,
+            home,
+            app,
+            base: format!("http://{address}"),
+            token,
+            task,
+        };
+        let mut socket = fixture.socket(&fixture.token).await;
+        let created = request(
+            &mut socket,
+            "create",
+            "hexbot.sections.create",
+            json!({"bot":"owl"}),
+        )
+        .await;
+        assert_eq!(created["result"]["section"]["id"], "first");
+        let opened = request(
+            &mut socket,
+            "open",
+            "hexbot.sections.open",
+            json!({"id":"first-section"}),
+        )
+        .await;
+        if before_start {
+            assert_eq!(opened["error"]["code"], 4204);
+            assert_eq!(opened["error"]["message"], "section not found");
+        } else {
+            assert_eq!(opened["error"]["code"], 5201);
+            assert_eq!(
+                opened["error"]["message"],
+                "Bot connection failed during spawn"
+            );
+            let owner: String = db::open(&fixture.home)
+                .unwrap()
+                .query_row(
+                    "SELECT owner_id FROM sections WHERE id='first-section'",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(owner, "local");
+        }
+        socket.close(None).await.unwrap();
+        fixture.shutdown().await;
+    }
+}
+
+#[tokio::test]
 async fn browser_bootstrap_static_files_and_host_origin_checks() {
     let fixture = Fixture::new(false).await;
     let client = reqwest::Client::new();

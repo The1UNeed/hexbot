@@ -77,9 +77,6 @@ async fn owned_desktop_pipe_quit_and_restart_clean_up_real_pi_and_home_lock() {
         } else {
             "first"
         };
-        if mode == "section" {
-            db::open(&home).unwrap().execute("INSERT INTO sections(id,bot,owner_id,title) VALUES('first-section','owl','local','Lifetime')",[]).unwrap();
-        }
         let tool_ready = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let script = root.path().join("actual tool child.mjs");
         fs::write(&script,format!("import net from 'node:net';const s=net.connect({},'127.0.0.1',()=>s.write(JSON.stringify({{pid:process.pid,parent:process.ppid}})+'\\n'));s.on('data',()=>{{setInterval(()=>{{}},60000);s.end();}});",tool_ready.local_addr().unwrap().port())).unwrap();
@@ -191,6 +188,9 @@ async fn owned_desktop_pipe_quit_and_restart_clean_up_real_pi_and_home_lock() {
             assert!(daemon_handle.alive() && peer_handle.alive());
             if service_mode {assert_ne!(daemon_pid,supervisor_pid);} else {assert_eq!(daemon_pid,supervisor_pid);}
             eprintln!("Shutdown {mode}: supervisor={supervisor_pid}; currentDaemon={}; independent={}",daemon_handle.snapshot(),peer_handle.snapshot());
+            if mode == "section" {
+                db::open(&home).unwrap().execute("INSERT INTO sections(id,bot,owner_id,title) VALUES('first-section','owl','local','Lifetime')",[]).unwrap();
+            }
             let (mut socket, _) = connect_async(format!("ws://127.0.0.1:{port}/api/ws?token={token}")).await.unwrap();
             socket.send(Message::Text(json!({"jsonrpc":"2.0","id":"open-pi","method":"hexbot.sections.open","params":{"id":stored}}).to_string().into())).await.unwrap();
             // A fixture-only loopback barrier captures kernel handles before
