@@ -3,16 +3,22 @@
 The live faces use Hexbot's own eight 100-unit outlines, palette, ball
 placement, and capsule eyes from `apps/web/src/lib/avatar-builder.ts` on
 `main` at `e44f26c8`. They are now in `lib/face-geometry.ts`, under the
-repository's existing AGPL-3.0 licence, as recorded in `LICENSE` and
+repository's existing AGPL-3.0 license, as recorded in `LICENSE` and
 `NOTICE`. New activity expressions change capsule sizes and positions. CSS moves the eyes slightly while a bot thinks,
 searches, writes, or works. No external face engine, geometry, behaviour
 dataset, voices, or particle assets are included.
 
-This replaces the proposal in PR #123. That proposal included an unlicensed
-reconstruction and data derived from an x.ai frontend snapshot. Neither is
-used here, and this document makes no claim to rights in that material.
-Starting from current main keeps that vendor tree and its generated rest
-poses out of both the branch history and the shipped bundle.
+PR #123 proposes a different face, adapted from Morph Bot in
+iduu/grokbot-animation. That repository declares no license for its face
+engine. Its README says the geometry and behaviour data derive from a
+publicly delivered x.ai frontend snapshot and that it grants no open-source
+license for those reference assets. No grant covering that engine or data
+has been identified. Permission from whoever holds the rights to that
+material, or original replacements for it, could change that; this document
+makes no claim about who holds those rights. None of that material is used
+here: this change starts from `main`, so the vendor tree, its
+reference-derived data, and its generated rest poses are in neither its
+history nor the shipped bundle.
 
 `node apps/web/scripts/face-rest.mjs` copies the original geometry module to
 mobile, which draws settled poses without animation. Pass `--check` to
