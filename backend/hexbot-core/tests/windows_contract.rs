@@ -391,7 +391,8 @@ async fn owned_python_provisions_repairs_and_refuses_through_production_setup() 
     assert!(since(mark).is_empty(), "{:?}", since(mark));
 
     // C. Recorded damage repaired by the production pass, same payload hashes.
-    let cases: Vec<(&str, Box<dyn Fn()>, &str)> = vec![
+    type Damage<'a> = (&'static str, Box<dyn Fn() + 'a>, &'static str);
+    let cases: Vec<Damage<'_>> = vec![
         (
             "short redirector 29 B",
             Box::new(|| fs::write(&python, b"ordinary truncated redirector").unwrap()),
@@ -562,12 +563,14 @@ async fn owned_python_provisions_repairs_and_refuses_through_production_setup() 
     restored("recreated base");
 
     // E. Refusals: no uv mutation, no receipt change, original bytes kept.
-    let refusals: Vec<(&str, Box<dyn Fn() -> Box<dyn FnOnce()>>)> = vec![
+    type Refusal<'a> = (&'static str, Box<dyn Fn() -> Box<dyn FnOnce()> + 'a>);
+    let refusals: Vec<Refusal<'_>> = vec![
         (
             "64-byte invalid redirector",
             Box::new(|| {
                 let saved = fs::read(&python).unwrap();
                 fs::write(&python, [b'g'; 64]).unwrap();
+                let python = python.clone();
                 Box::new(move || fs::write(&python, saved).unwrap())
             }),
         ),
@@ -576,6 +579,7 @@ async fn owned_python_provisions_repairs_and_refuses_through_production_setup() 
             Box::new(|| {
                 let saved = fs::read(&dll).unwrap();
                 fs::write(&dll, &saved[..saved.len() / 2]).unwrap();
+                let dll = dll.clone();
                 Box::new(move || fs::write(&dll, saved).unwrap())
             }),
         ),
@@ -584,6 +588,7 @@ async fn owned_python_provisions_repairs_and_refuses_through_production_setup() 
             Box::new(|| {
                 let saved = fs::read(&identity).unwrap();
                 fs::write(&identity, b"{\"schema\":1,\"home\":\"C:\\\\elsewhere\"}").unwrap();
+                let identity = identity.clone();
                 Box::new(move || fs::write(&identity, saved).unwrap())
             }),
         ),
@@ -592,6 +597,7 @@ async fn owned_python_provisions_repairs_and_refuses_through_production_setup() 
             Box::new(|| {
                 let saved = fs::read(&identity).unwrap();
                 fs::write(&identity, serde_json::json!({"schema":1,"home":root.path().canonicalize().unwrap(),"base_key":key}).to_string()).unwrap();
+                let identity = identity.clone();
                 Box::new(move || fs::write(&identity, saved).unwrap())
             }),
         ),
@@ -612,6 +618,7 @@ async fn owned_python_provisions_repairs_and_refuses_through_production_setup() 
                     .collect::<Vec<_>>()
                     .join("\n");
                 fs::write(&cfg, text).unwrap();
+                let cfg = cfg.clone();
                 Box::new(move || fs::write(&cfg, saved).unwrap())
             }),
         ),
@@ -644,6 +651,7 @@ async fn owned_python_provisions_repairs_and_refuses_through_production_setup() 
                 );
                 let saved = fs::read(&entrypoint).unwrap();
                 fs::remove_file(&entrypoint).unwrap();
+                let entrypoint = entrypoint.clone();
                 Box::new(move || {
                     fs::remove_dir(&junction).unwrap();
                     fs::write(&entrypoint, saved).unwrap();
