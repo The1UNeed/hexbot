@@ -435,20 +435,10 @@ body {
   }
 }
 
-/* Bot faces: a hover wiggle, and a thinking bob while a reply is pending. */
-@keyframes hex-wiggle {
-  0%,
-  100% {
-    transform: rotate(0deg);
-  }
-  25% {
-    transform: rotate(-6deg) translateY(-1px);
-  }
-  75% {
-    transform: rotate(6deg) translateY(-1px);
-  }
-}
-
+/*
+ * The hexbot-face component animates the eyes and head for each mood.
+ * CSS keeps only the acts' body motion (hexbot-act.tsx).
+ */
 @keyframes hex-bob {
   0%,
   100% {
@@ -646,17 +636,6 @@ body {
   }
 }
 
-@keyframes hex-blink {
-  0%,
-  92%,
-  100% {
-    transform: scaleY(1);
-  }
-  96% {
-    transform: scaleY(0.1);
-  }
-}
-
 @keyframes hex-dot {
   0%,
   80%,
@@ -801,33 +780,6 @@ body {
   }
 }
 
-/*
- * Eyes wander a little while idle, so a face never looks frozen. The eyes
- * are painted on a ball (the frame set up in avatar-builder.ts, 45 units
- * across), so a glance moves them over its surface: they slide toward the
- * rim, roll with it, and shrink as the surface turns away. Each pose holds
- * still between moves; nothing repaints while it holds.
- */
-@keyframes hex-gaze {
-  0%,
-  36%,
-  100% {
-    transform: translate(0, 0) rotate(0deg) scale(1);
-  }
-  40%,
-  54% {
-    transform: translate(15px, -18px) rotate(24deg) scale(0.82);
-  }
-  58%,
-  74% {
-    transform: translate(-6px, 2px) rotate(-9deg) scale(0.95);
-  }
-  78%,
-  96% {
-    transform: translate(3px, 2px) rotate(4deg) scale(0.98);
-  }
-}
-
 @keyframes hex-shimmer {
   from {
     background-position: 200% 0;
@@ -837,53 +789,6 @@ body {
   }
 }
 
-.hex-face:hover {
-  animation: hex-wiggle 500ms ease-in-out;
-}
-.hex-face .hex-eyes {
-  animation: hex-blink 4.5s ease-in-out infinite;
-  transform-box: fill-box;
-  transform-origin: center;
-}
-.hex-face .hex-gaze {
-  animation: hex-gaze 9s ease-in-out infinite;
-}
-/*
- * A face turned toward the bot beside it: eyes over the surface, body
- * tilted. A pose answering a state change, not a loop; units are the ball's.
- */
-.hex-look-right.hex-face .hex-gaze,
-.hex-look-left.hex-face .hex-gaze {
-  animation: none;
-  transition: transform var(--hex-motion-enter) var(--hex-ease-out);
-}
-.hex-look-right.hex-face .hex-gaze {
-  transform: translate(12px, -4px) rotate(14deg) scale(0.9);
-}
-.hex-look-left.hex-face .hex-gaze {
-  transform: translate(-12px, -4px) rotate(-14deg) scale(0.9);
-}
-.hex-lean-right,
-.hex-lean-left {
-  display: inline-flex;
-  transition: transform var(--hex-motion-enter) var(--hex-ease-out);
-}
-.hex-lean-right {
-  transform: rotate(10deg);
-}
-.hex-lean-left {
-  transform: rotate(-10deg);
-}
-/* Eye geometry morphs between moods instead of snapping. */
-.hex-face .hex-eyes rect {
-  transition:
-    x var(--hex-motion-panel) var(--hex-ease-out),
-    y var(--hex-motion-panel) var(--hex-ease-out),
-    width var(--hex-motion-panel) var(--hex-ease-out),
-    height var(--hex-motion-panel) var(--hex-ease-out),
-    rx var(--hex-motion-panel) var(--hex-ease-out),
-    ry var(--hex-motion-panel) var(--hex-ease-out);
-}
 .hex-think {
   animation: hex-bob 1.4s ease-in-out infinite;
   transform-origin: 50% 100%;
@@ -1037,6 +942,12 @@ body {
 .hex-rise {
   animation: hex-rise var(--hex-motion-enter) var(--hex-ease-out) both;
 }
+/* The live face fills the box it is given; the component's own size is for pages without CSS. */
+hexbot-face {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
 /* Like hex-bubble, but honours an animation-delay: hidden until its turn. */
 .hex-pop-in {
   animation: hex-pop var(--hex-motion-enter) var(--hex-ease-out) both;
@@ -1054,9 +965,6 @@ body {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .hex-face:hover,
-  .hex-face .hex-eyes,
-  .hex-face .hex-gaze,
   .hex-think,
   .hex-tap,
   .hex-catch,

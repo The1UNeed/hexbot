@@ -1,9 +1,10 @@
+import { useId } from 'react'
 import { Image, StyleSheet, View } from 'react-native'
-import Svg, { G, Path, Rect } from 'react-native-svg'
+import Svg, { ClipPath, Defs, G, Path } from 'react-native-svg'
 
 import {
-  ballTransform,
-  eyeRects,
+  eyePaths,
+  FACE_VIEWBOX,
   type FaceMood,
   type FaceStyle,
   faceForName,
@@ -67,7 +68,7 @@ function useStatusColor(status?: BotStatus) {
   }
 }
 
-/** The bare drawing: a shape in a colour with two capsule eyes on its ball. */
+/** The bare drawing: a shape in a colour with two eyes on its ball. */
 export function FaceDrawing({
   mood = 'idle',
   size,
@@ -78,13 +79,20 @@ export function FaceDrawing({
   style: FaceStyle
 }) {
   const { color, eyes, shape } = resolveFace(style)
+  // Ids are global on the web, so each face clips its eyes to its own head.
+  const clip = `head-${useId().replace(/[^a-zA-Z0-9]/g, '')}`
 
   return (
-    <Svg height={size} viewBox="0 0 100 100" width={size}>
+    <Svg height={size} viewBox={FACE_VIEWBOX} width={size}>
+      <Defs>
+        <ClipPath id={clip}>
+          <Path d={shape.path} />
+        </ClipPath>
+      </Defs>
       <Path d={shape.path} fill={color.value} />
-      <G transform={ballTransform(shape.ball)}>
-        {eyeRects(mood).map((eye, index) => (
-          <Rect fill={eyes} key={index} {...eye} />
+      <G clipPath={`url(#${clip})`}>
+        {eyePaths(shape.id, mood).map((eye, index) => (
+          <Path d={eye.d} fill={eyes} key={index} transform={eye.transform} />
         ))}
       </G>
     </Svg>

@@ -36,14 +36,14 @@ describe('UI components', () => {
   it('renders a generated face when there is no image', () => {
     const { container } = render(<Avatar name="Ada Lovelace" />)
     expect(screen.getByRole('img', { name: 'Ada Lovelace' })).toBeVisible()
-    expect(container.querySelectorAll('.hex-eyes rect')).toHaveLength(2)
+    expect(container.querySelector('hexbot-face')).toHaveAttribute('state', 'idle')
   })
-  it('changes the eyes with the mood', () => {
-    const { container, rerender } = render(<Avatar mood="idle" name="Ada" />)
-    const idle = container.querySelector('.hex-eyes rect')?.getAttribute('height')
-    rerender(<Avatar mood="sleeping" name="Ada" />)
-    expect(container.querySelector('.hex-eyes')).toHaveAttribute('data-mood', 'sleeping')
-    expect(container.querySelector('.hex-eyes rect')?.getAttribute('height')).not.toBe(idle)
+  it('wears the mood it is given, and turns toward a neighbour', () => {
+    const { rerender } = render(<Avatar mood="idle" name="Ada" />)
+    expect(screen.getByRole('img', { name: 'Ada' })).toHaveAttribute('data-mood', 'idle')
+    rerender(<Avatar look="left" mood="sleeping" name="Ada" />)
+    expect(screen.getByRole('img', { name: 'Ada' })).toHaveAttribute('data-mood', 'sleeping')
+    expect(screen.getByRole('img', { name: 'Ada' })).toHaveAttribute('data-look', 'left')
   })
   it('renders Chip', () => {
     render(<Chip>Ready</Chip>)

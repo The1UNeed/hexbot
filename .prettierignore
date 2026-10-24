@@ -6,3 +6,5 @@ venv
 **/routeTree.gen.ts
 apps/desktop/resources
 apps/shared
+
+apps/web/src/vendor

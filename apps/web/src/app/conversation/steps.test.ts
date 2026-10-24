@@ -207,7 +207,19 @@ describe('liveStatus', () => {
 
     expect(running.label).toBe('Scout is searching the web')
     expect(running.call?.name).toBe('web_search')
-    expect(liveStatus(message({}), 'Scout')).toEqual({ label: 'Scout is working' })
+    expect(liveStatus(message({}), 'Scout')).toEqual({
+      label: 'Scout is working',
+      mood: 'thinking'
+    })
+    expect(
+      liveStatus(message({ toolCalls: [call({ name: 'terminal', status: 'ok' })] }), 'Scout').mood
+    ).toBe('working')
+    expect(
+      liveStatus(
+        message({ toolCalls: [call({ name: 'x_search', status: 'running', summary: 'x' })] }),
+        'Scout'
+      ).mood
+    ).toBe('searching')
     expect(
       liveStatus(
         message({
