@@ -131,4 +131,54 @@ describe('Select typeahead', () => {
     fireEvent.keyDown(document.activeElement ?? document.body, { key: 'Enter' })
     await waitFor(() => expect(change).toHaveBeenCalledWith('openrouter · openai/gpt-5'))
   })
+
+  // A list like "Bot to make primary" is sorted by recent activity, so it can reorder between a
+  // key and the list opening.
+  it('keeps the option it found when the list reorders before it opens', async () => {
+    const change = vi.fn()
+    const { rerender } = render(<Select label="Model" onValueChange={change} options={options} />)
+    const trigger = screen.getByRole('combobox', { name: 'Model' })
+
+    trigger.focus()
+    act(() => {
+      for (const key of 'deep') {
+        fireEvent.keyDown(trigger, { key })
+      }
+
+      rerender(<Select label="Model" onValueChange={change} options={[...options].reverse()} />)
+    })
+    await waitFor(() => expect(highlighted()).toBe('DeepSeek · DeepSeek V3'))
+
+    fireEvent.keyDown(document.activeElement ?? document.body, { key: 'Enter' })
+    await waitFor(() => expect(change).toHaveBeenCalledWith('deepseek · deepseek v3'))
+    expect(change).toHaveBeenCalledTimes(1)
+  })
+
+  it('chooses nothing when the option it found leaves the list before it opens', async () => {
+    const change = vi.fn()
+    const { rerender } = render(<Select label="Model" onValueChange={change} options={options} />)
+    const trigger = screen.getByRole('combobox', { name: 'Model' })
+
+    trigger.focus()
+    act(() => {
+      for (const key of 'deep') {
+        fireEvent.keyDown(trigger, { key })
+      }
+
+      rerender(
+        <Select
+          label="Model"
+          onValueChange={change}
+          options={options.filter(option => !option.label.startsWith('DeepSeek'))}
+        />
+      )
+    })
+    // Wait for Base UI to move focus into the list it opened.
+    await waitFor(() => expect(document.activeElement).not.toBe(trigger))
+    expect(highlighted()).toBeUndefined()
+
+    fireEvent.keyDown(document.activeElement ?? document.body, { key: 'Enter' })
+    await act(async () => undefined)
+    expect(change).not.toHaveBeenCalled()
+  })
 })

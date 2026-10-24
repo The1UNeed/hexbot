@@ -71,21 +71,32 @@ export function Select({
 }: SelectProps) {
   const [open, setOpen] = useState(false)
   const popupRef = useRef<HTMLDivElement>(null)
-  // What has been typed since the list opened, where that search started, and the option it
-  // found. Base UI's own typeahead forgets the text after 750 ms and drops keys typed before
-  // the items mount; this one keeps the text until the list closes or the arrows take over.
-  const search = useRef({ from: 0, match: -1, space: false, text: '' })
+
+  // What has been typed since the list opened, the option that search started after, and the
+  // option it found. Base UI's own typeahead forgets the text after 750 ms and drops keys typed
+  // before the items mount; this one keeps the text until the list closes or the arrows take
+  // over. Options are kept by value, so a list that reorders while the user types never moves
+  // the search onto a different option.
+  const search = useRef<{
+    after: string | null
+    match: string | null
+    space: boolean
+    text: string
+  }>({ after: null, match: null, space: false, text: '' })
+
   const pointer = useRef({ x: 0, y: 0 })
 
   const items = () =>
     Array.from(popupRef.current?.querySelectorAll<HTMLElement>('[role="option"]') ?? [])
 
+  const indexOf = (option: string | null) => options.findIndex(item => item.value === option)
+
   const reset = () => {
-    search.current = { from: 0, match: -1, space: false, text: '' }
+    search.current = { after: null, match: null, space: false, text: '' }
   }
 
   const highlightMatch = () => {
-    const item = items()[search.current.match]
+    const item = items()[indexOf(search.current.match)]
 
     if (item && document.activeElement !== item) {
       item.focus({ preventScroll: true })
@@ -138,26 +149,24 @@ export function Select({
         ? items().findIndex(item => item.hasAttribute('data-highlighted'))
         : -1
 
-      return (
-        (highlighted === -1 ? options.findIndex(option => option.value === value) : highlighted) + 1
-      )
+      return highlighted === -1 ? (value ?? null) : (options[highlighted]?.value ?? null)
     }
 
     if (!current.text) {
-      current.from = after()
+      current.after = after()
     }
 
-    let match = text ? findOption(labels, text, current.from) : current.match
+    let match = text ? findOption(labels, text, indexOf(current.after) + 1) : indexOf(current.match)
 
     // A key that matches nothing together with what came before starts a new search, so
     // typing "o" then "g" lands on Google and pressing "o" twice moves to the next "O".
     if (match === -1 && current.text && key.length === 1 && key !== ' ') {
       const from = after()
 
-      match = findOption(labels, key, from)
+      match = findOption(labels, key, indexOf(from) + 1)
 
       if (match !== -1) {
-        current.from = from
+        current.after = from
         text = key
       }
     }
@@ -167,7 +176,7 @@ export function Select({
     }
 
     current.text = text
-    current.match = match
+    current.match = options[match]?.value ?? null
 
     if (open) {
       highlightMatch()
@@ -185,9 +194,20 @@ export function Select({
   }
 
   // Base UI focuses the chosen option once the list has opened, and keys typed during that
-  // land before it; hand focus back to what the search found.
+  // land before it; hand focus back to what the search found. If that option has left the
+  // list, the search ends and the highlight stays where Base UI put it.
   const onPopupFocus = (event: FocusEvent<HTMLElement>) => {
-    if (search.current.match !== -1 && event.target !== items()[search.current.match]) {
+    const { match } = search.current
+
+    if (match === null) {
+      return
+    }
+
+    const item = items()[indexOf(match)]
+
+    if (!item) {
+      reset()
+    } else if (event.target !== item) {
       highlightMatch()
     }
   }
