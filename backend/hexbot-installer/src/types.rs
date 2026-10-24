@@ -203,6 +203,8 @@ pub struct Installed {
     pub(crate) windows: bool,
     #[serde(skip)]
     pub(crate) missing_windows_track: Option<Track>,
+    #[serde(skip)]
+    pub(crate) windows_runtime_track: Option<Track>,
     pub receipt: Option<Receipt>,
     pub apps: Vec<InstalledApp>,
     pub service: bool,
@@ -230,6 +232,15 @@ impl Installed {
             })
     }
 
+    /// Owned Windows CLI/task evidence without a receipt or any app.
+    pub(crate) fn windows_headless(&self) -> bool {
+        self.windows
+            && self.receipt.is_none()
+            && self.apps.is_empty()
+            && self.missing_windows_track.is_none()
+            && (self.service || self.service_recoverable || self.wrapper)
+    }
+
     pub(crate) fn windows_repair_app(&self) -> Option<&InstalledApp> {
         let mut apps = self.apps.iter().filter(|app| {
             !app.app_id.ends_with(".dev")
@@ -250,6 +261,9 @@ impl Installed {
         {
             if let Some(track) = self.missing_windows_track {
                 return Some(track);
+            }
+            if self.windows_headless() {
+                return self.windows_runtime_track;
             }
             let app = self.windows_repair_app()?;
             let track = crate::detect::windows_app_track(&app.app_id)?;

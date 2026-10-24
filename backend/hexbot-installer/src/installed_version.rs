@@ -36,6 +36,22 @@ fn package_version(executable: &Path) -> Option<semver::Version> {
     manifest["version"].as_str().and_then(parse)
 }
 
+/// The track of the verified Windows runtime selection. Its Windows manifest
+/// and native-current.json must name one release version; otherwise unknown.
+pub(crate) fn windows_runtime_track(home: &Path) -> Option<Track> {
+    let executable = crate::native_selection::selected(home).ok()?;
+    let read = |path: &Path| -> Option<serde_json::Value> {
+        serde_json::from_slice(&fs::read(path).ok()?).ok()
+    };
+    let manifest = read(&executable.parent()?.join("manifest.json"))?;
+    let recorded = read(&home.join("runtime/native-current.json"))?;
+    let version = manifest["version"].as_str().and_then(parse)?;
+    (manifest["target"] == "win32-x64"
+        && recorded["version"] == manifest["version"]
+        && version.build.is_empty())
+    .then(|| track(&version))
+}
+
 /// A macOS app a killed install left in its staging directory: the staging
 /// directory and the Hexbot bundle inside it.
 pub(crate) struct StrandedApp {

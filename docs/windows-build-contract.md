@@ -144,7 +144,11 @@ identity/version is refused before download or NSIS. GUI and terminal Repair
 share this rule and the same unique complete-app recovery path. An exact
 receipt and matching packaged marker also retain ownership when EXE/ASAR bytes
 are missing, so detection, repair and uninstall agree. Receiptless incomplete,
-foreign, linked and ambiguous apps remain refused.
+foreign, linked and ambiguous apps remain refused. A receiptless Headless
+install (owned CLI or task, no app) repairs as Headless on the track of its
+verified runtime selection: the selected `hexbot.exe` under `runtime/native`,
+a `win32-x64` manifest and `native-current.json` naming one release version.
+Otherwise Repair asks for the option and track; it never assumes Stable.
 
 Windows setup rechecks selection under its own activation lock. If another
 updater won the installer's lock gap, or the requested track has an older build,

@@ -317,6 +317,8 @@ pub fn detect_at(paths: &Paths, target: Target) -> Result<Installed> {
     if target.is_windows() {
         installed.missing_windows_track =
             crate::windows_recovery::absent(paths, &installed)?.map(|app| app.track);
+        installed.windows_runtime_track =
+            crate::installed_version::windows_runtime_track(&paths.hexbot_home);
     }
     Ok(installed)
 }

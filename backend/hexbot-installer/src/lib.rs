@@ -7,7 +7,6 @@ mod install_ownership;
 #[path = "../../hexbot-core/src/install_paths.rs"]
 mod install_ownership;
 mod installed_version;
-#[cfg(any(windows, test))]
 #[path = "../../hexbot-core/src/native_selection.rs"]
 mod native_selection;
 #[path = "../../hexbot-core/src/native_zip.rs"]
@@ -248,10 +247,20 @@ impl Installer {
     }
 
     pub fn repair(&self, progress: &mut ProgressCallback<'_>) -> Result<InstallResult> {
-        if let Some(receipt) = read_receipt(&self.paths.receipt())?
-            && (!self.target.is_windows() || receipt.option == InstallOption::Headless)
-        {
-            return self.apply(receipt.option, receipt.channel, progress);
+        if let Some(receipt) = read_receipt(&self.paths.receipt())? {
+            if !self.target.is_windows() || receipt.option == InstallOption::Headless {
+                return self.apply(receipt.option, receipt.channel, progress);
+            }
+        } else if self.target.is_windows() {
+            // The same choice as installing Headless again: owned CLI/task
+            // evidence, no app, and only the verified selection names the track.
+            let installed = self.detect()?;
+            if installed.windows_headless() {
+                let track = installed.windows_runtime_track.ok_or(
+                    "Could not verify the installed runtime's track. Choose the option and track to install.",
+                )?;
+                return self.apply(InstallOption::Headless, track, progress);
+            }
         }
         let recovered = self.windows_app_repair()?;
         if recovered.absent.is_some() {

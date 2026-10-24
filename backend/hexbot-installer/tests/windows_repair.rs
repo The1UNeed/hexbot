@@ -1097,6 +1097,109 @@ fn mixed_identity_repair_never_downloads_or_reaches_a_sibling_nsis_destination()
     }
 }
 
+fn owned_headless(engine: &Installer, version: &str, damage: &str) {
+    fs::create_dir_all(&engine.paths.hexbot_home).unwrap();
+    let script = engine.paths.service_file(engine.target);
+    fs::create_dir_all(script.parent().unwrap()).unwrap();
+    fs::write(
+        &script,
+        format!(
+            "# Hexbot owned home: {}\n",
+            serde_json::to_string(&engine.paths.hexbot_home).unwrap()
+        ),
+    )
+    .unwrap();
+    if damage == "no-runtime" {
+        return;
+    }
+    let runtime = engine.paths.hexbot_home.join("runtime");
+    let build = runtime.join(if damage == "outside" {
+        "elsewhere"
+    } else {
+        "native/build"
+    });
+    fs::create_dir_all(&build).unwrap();
+    fs::create_dir_all(runtime.join("native")).unwrap();
+    fs::write(build.join("hexbot.exe"), "MZ").unwrap();
+    let manifest = match damage {
+        "manifest-version" => json!({"version":"not a version","target":"win32-x64"}),
+        "target" => json!({"version":version,"target":"linux-x64"}),
+        "build-metadata" => json!({"version":format!("{version}+local"),"target":"win32-x64"}),
+        _ => json!({"version":version,"target":"win32-x64"}),
+    };
+    fs::write(build.join("manifest.json"), manifest.to_string()).unwrap();
+    let recorded = if damage == "record-version" {
+        "9.9.9"
+    } else {
+        manifest["version"].as_str().unwrap()
+    };
+    fs::write(
+        runtime.join("native-current.json"),
+        json!({"executable":build.join("hexbot.exe").canonicalize().unwrap(),"version":recorded})
+            .to_string(),
+    )
+    .unwrap();
+}
+
+#[test]
+fn receiptless_headless_repair_uses_the_verified_selected_runtime_track() {
+    for (version, track) in [
+        ("1.2.3", Track::Stable),
+        ("1.2.3-nightly.20261023.1", Track::Nightly),
+    ] {
+        let root = tempfile::tempdir().unwrap();
+        let mut engine = engine(root.path());
+        owned_headless(&engine, version, "");
+        let server = Server::new(|_| BTreeMap::new());
+        engine.base_url = server.base.clone();
+        // An unpublished manifest stops before installation; the request
+        // proves Repair kept Headless on the selected runtime's track.
+        let error = engine.repair(&mut |_| {}).unwrap_err().to_string();
+        assert!(!error.contains("Choose the option and track"), "{error}");
+        assert_eq!(
+            *server.requests.lock().unwrap(),
+            [format!("/install/{track}.json")]
+        );
+        assert!(!engine.paths.receipt().exists());
+        let detected = engine.detect().unwrap();
+        assert_eq!(detected.option(), Some(InstallOption::Headless));
+        assert_eq!(detected.track(), Some(track));
+    }
+}
+
+#[test]
+fn receiptless_headless_repair_refuses_an_unverified_runtime_or_an_app() {
+    for damage in [
+        "no-runtime",
+        "outside",
+        "manifest-version",
+        "record-version",
+        "target",
+        "build-metadata",
+        "app",
+    ] {
+        let root = tempfile::tempdir().unwrap();
+        let mut engine = engine(root.path());
+        owned_headless(&engine, "1.2.3", damage);
+        if damage == "app" {
+            let app = owned_app(&engine, "app.hexbot.client", "1.2.3");
+            fs::rename(&app, app.with_file_name("unrelated-folder")).unwrap();
+        }
+        if damage != "app" {
+            assert_eq!(engine.detect().unwrap().track(), None, "{damage}");
+        }
+        let server = Server::new(|_| BTreeMap::new());
+        engine.base_url = server.base.clone();
+        let error = engine.repair(&mut |_| {}).unwrap_err().to_string();
+        assert!(
+            error.contains("Choose the option and track"),
+            "{damage}: {error}"
+        );
+        assert!(server.requests.lock().unwrap().is_empty(), "{damage}");
+        assert!(!engine.paths.receipt().exists());
+    }
+}
+
 #[test]
 fn no_load_owned_script_is_recoverable_without_claiming_scheduler_installation() {
     let root = tempfile::tempdir().unwrap();
