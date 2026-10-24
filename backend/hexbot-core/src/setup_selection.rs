@@ -260,8 +260,6 @@ fn select(home: &Path, source: &Path, manifest: &Value) -> Result<PathBuf> {
         ));
     }
     if let Selected::Verified(executable, current) = &selection {
-        let equal_repair =
-            manifest["version"] == current["version"] && at == floor && current["builtAt"] == floor;
         let newer_tie = at > 0
             && at == floor
             && current["builtAt"] == floor
@@ -270,10 +268,7 @@ fn select(home: &Path, source: &Path, manifest: &Value) -> Result<PathBuf> {
                 manifest["version"].as_str().unwrap(),
                 current["version"].as_str().unwrap(),
             );
-        if at <= floor && !equal_repair && !newer_tie {
-            return Ok(executable.clone());
-        }
-        if equal_repair && manifest == current {
+        if at <= floor && !newer_tie {
             return Ok(executable.clone());
         }
     } else if matches!(selection, Selected::Missing) && at <= floor {
@@ -651,3 +646,7 @@ mod permissions_tests;
 #[cfg(test)]
 #[path = "setup_selection_repair_tests.rs"]
 mod repair_tests;
+
+#[cfg(test)]
+#[path = "setup_selection_identity_tests.rs"]
+mod identity_tests;

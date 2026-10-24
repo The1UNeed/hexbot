@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto'
 import {
   chmod,
   copyFile,
+  cp,
   mkdir,
   mkdtemp,
   readFile,
@@ -117,6 +118,21 @@ it.skipIf(!process.env.HEXBOT_TEST_RUNTIME_58 || !process.env.HEXBOT_TEST_RUNTIM
       await expect(manager.start(() => performBootstrap({
         appIsPackaged: true, appVersion: '0.1.5-nightly.20261022.58', resourcesPath: join(root, '58')
       }))).rejects.toThrow('identity cannot be verified')
+      expect(manager.status().pid).toBe(old.pid)
+      expect(await runningDaemonPort(home)).toBe(old.port)
+      const alteredResources = join(root, 'altered59')
+      const alteredSource = join(alteredResources, 'hexbot-native')
+      await cp(join(root, '59/hexbot-native'), alteredSource, { recursive: true })
+      const cli = 'pi/node_modules/@earendil-works/pi-coding-agent/dist/cli.js'
+      await writeFile(join(alteredSource, cli), '// Different same-version Pi bytes')
+      const alteredManifest = JSON.parse(await readFile(join(alteredSource, 'manifest.json'), 'utf8'))
+      alteredManifest.files[cli] = createHash('sha256').update(await readFile(join(alteredSource, cli))).digest('hex')
+      await writeFile(join(alteredSource, 'manifest.json'), JSON.stringify(alteredManifest))
+      const damagedRecord = await readFile(recordPath, 'utf8')
+      await expect(manager.start(() => performBootstrap({
+        appIsPackaged: true, appVersion: '0.1.5-nightly.20261022.59', resourcesPath: alteredResources
+      }))).rejects.toThrow('identity cannot be verified')
+      expect(await readFile(recordPath, 'utf8')).toBe(damagedRecord)
       expect(manager.status().pid).toBe(old.pid)
       expect(await runningDaemonPort(home)).toBe(old.port)
       // Matching .59 source repairs into owned staging, without chmod of the old selection.
