@@ -26,18 +26,24 @@ function RootLayout() {
   const daemon = useConnection(state => state.daemon)
   const epoch = useConnection(state => state.epoch)
   const location = useRouterState({ select: state => state.location })
+  // The next location can change before Outlet switches to its new match.
+  const pathname = useRouterState({ select: state => state.matches.at(-1)?.pathname })
   const theme = useUi(state => state.theme)
   const lost = useConnectionLost()
   const installing = useUpdateInstalling()
+
+  const needsConnection = !target && pathname !== '/connect' && pathname !== '/onboarding'
 
   // A question belongs to the page and daemon that opened it.
   useEffect(() => cancelConfirm, [location, target, epoch])
   useEffect(() => applyTheme(theme), [theme])
   useEffect(() => {
     if (status === 'unauthorized') {
-      void navigate({ to: '/connect' })
+      void navigate({ to: '/connect', replace: true })
+    } else if (needsConnection) {
+      void navigate({ to: hasLocalRuntime() ? '/onboarding' : '/connect', replace: true })
     }
-  }, [navigate, status])
+  }, [navigate, needsConnection, status])
   useEffect(() => {
     if (target) {
       // The full package owns its daemon: make sure it is running before
@@ -125,7 +131,7 @@ function RootLayout() {
         {attempt > 0 ? `, attempt ${attempt}` : ''}
       </div>
       <div className="contents" inert={lost || installing}>
-        <Outlet />
+        {needsConnection ? null : <Outlet />}
         <ChatChooser />
         <ConfirmHost blocked={lost || installing} />
       </div>
