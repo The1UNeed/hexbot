@@ -1004,11 +1004,19 @@ fn interrupted_task_install_uninstalls_owned_files_when_the_task_is_absent() {
                 let diagnostic =
                     powershell(&windows_task::control(&file, &home, "diagnose").unwrap());
                 // The daemon's own startup error lands in the per-launch logs.
-                let tail = |name: &str| {
-                    fs::read(home.join("logs").join(name)).map(|bytes| {
-                        String::from_utf8_lossy(&bytes[bytes.len().saturating_sub(8192)..])
-                            .into_owned()
-                    })
+                // Bounded in memory; a diagnostic error never replaces this failure.
+                let tail = |name: &str| -> std::io::Result<String> {
+                    use std::io::{Read, Seek, SeekFrom};
+                    let path = home.join("logs").join(name);
+                    if !fs::symlink_metadata(&path)?.is_file() {
+                        return Err(std::io::Error::other("not an ordinary file"));
+                    }
+                    let mut file = fs::File::open(&path)?;
+                    let length = file.metadata()?.len();
+                    file.seek(SeekFrom::Start(length.saturating_sub(8192)))?;
+                    let mut bytes = Vec::with_capacity(8192);
+                    file.take(8192).read_to_end(&mut bytes)?;
+                    Ok(String::from_utf8_lossy(&bytes).into_owned())
                 };
                 panic!(
                     "Task readiness: status={} stdout={} stderr={}; homeIdle={:?}; diagnostic={} stderr={}; serviceLog={:?}; serviceErrorLog={:?}",
