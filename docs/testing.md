@@ -458,10 +458,13 @@ the exact final-probe event blocker and the process-start interruption limit.
 The Python observability controls also exercise strict schema-2 DLL digests,
 limited schema-1 enrichment, exact tagged launcher exceptions, empty fully
 collected stderr and final ordinary launcher checks. Actual portable child
-processes cover the private 30-second operation/5-second cleanup mechanism with
-shortened private helper deadlines, real EOF/pipe ownership, overflow/read errors
-and primary diagnostics. No detached task supplies fake cleanup completion.
-Native launcher startup, actual loaded Windows DLL restoration, cleanup failures
-and the remaining boundary-injection limits are pending as documented in the
-Windows build contract. A future uv-pin change must prove same-key DLL byte
-compatibility or bring its own reviewed narrow migration.
+processes exercise the private helper with shortened operation/cleanup deadlines,
+real Unix EOF/pipe ownership, overflow/read errors and primary diagnostics.
+They do not establish the required Windows reader settlement. Pinned Tokio's
+Windows blocking pipe reads can outlive dropped outer futures and direct-child
+reaping; this remains a source blocker. The required 30-second operation plus
+shared 5-second cleanup contract still forbids detached readers and premature
+scratch removal. Native launcher startup, actual loaded Windows DLL restoration,
+cleanup failures and the remaining boundary-injection limits are pending as
+documented in the Windows build contract. A future uv-pin change must prove
+same-key DLL byte compatibility or bring its own reviewed narrow migration.

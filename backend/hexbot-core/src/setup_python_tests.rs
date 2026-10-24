@@ -2736,3 +2736,105 @@ async fn observability_actual_child_cleanup_result_controls_invocation_scratch_l
         fs::remove_dir(path).unwrap();
     }
 }
+
+// Independent round-2 controls appended after the exact original test bytes.
+#[tokio::test]
+async fn review_round2_cleanup_failure_must_retain_classified_observer_cause() {
+    struct ExtraScratch {
+        fake: Fake,
+    }
+    impl Runner for ExtraScratch {
+        async fn uv(
+            &mut self,
+            l: &Layout,
+            u: &Path,
+            e: &[(OsString, OsString)],
+            a: &[OsString],
+        ) -> Result<()> {
+            self.fake.uv(l, u, e, a).await
+        }
+        async fn python(
+            &mut self,
+            p: &Path,
+            a: &[OsString],
+            c: &Path,
+            e: &[(OsString, OsString)],
+        ) -> Result<Output> {
+            self.fake.python(p, a, c, e).await
+        }
+        async fn entrypoint(&mut self, p: &Path, e: &[(OsString, OsString)]) -> Result<Output> {
+            let result = self.fake.entrypoint(p, e).await?;
+            let scratch = PathBuf::from(&e.iter().find(|(k, _)| k == "PYTHONPATH").unwrap().1);
+            fs::write(scratch.join("fixture-extra-leaf"), b"owned fixture").unwrap();
+            Ok(result)
+        }
+    }
+    let (_dir, layout) = installed().await;
+    let (graph, error) = syntax_evidence(&layout);
+    let mut fake = Fake::new(&layout);
+    fake.packages.push_back(json_out(&graph));
+    fake.observer_error = Some(error);
+    let mut runner = ExtraScratch { fake };
+    let error = provision(
+        &layout.home,
+        &|_, _| {},
+        &mut runner,
+        |h| async move { Ok(h.join("bin/uv.exe")) },
+        LOCK,
+    )
+    .await
+    .unwrap_err();
+    eprintln!("cleanup error={}", error.message);
+    assert!(runner.fake.uv_calls().is_empty());
+    assert!(error.message.contains("remove private scratch"));
+    assert!(
+        error.message.contains("owned syntax cause"),
+        "cleanup failure must retain the original observed exception"
+    );
+}
+#[tokio::test]
+async fn review_round2_structured_identity_refusal_must_retain_stderr_cause() {
+    let (_dir, layout) = installed().await;
+    let base = layout.base(KEY);
+    let mut failed = json_out(
+        &json!({"implementation":"CPython","version":"3.11.16","executable":base.join("python.exe"),"prefix":base,"base_prefix":base,"python_dll":base.join("python311.dll"),"failures":{"_ssl":{"type":"PermissionError","errno":13,"winerror":5,"filename":base.join("DLLs/_ssl.pyd"),"message":"original import denial"}}}),
+    );
+    failed.stderr = b"available original structured-probe stderr sentinel\n".to_vec();
+    let mut fake = Fake::new(&layout);
+    fake.identity.push_back(failed);
+    let error = run(&layout, &mut fake).await.unwrap_err();
+    eprintln!("identity error={}", error.message);
+    assert!(fake.uv_calls().is_empty());
+    assert!(error.message.contains("original import denial"));
+    assert!(
+        error
+            .message
+            .contains("available original structured-probe stderr sentinel"),
+        "structured refusal must preserve available stderr cause"
+    );
+}
+
+#[tokio::test]
+async fn identity_stderr_alone_does_not_change_healthy_repeat_eligibility() {
+    let (_dir, layout) = installed().await;
+    let before = snapshot(&[&layout.identity, &layout.receipt, &layout.requirements]);
+    let mut fake = Fake::new(&layout);
+    let args = ["-I", "-B", "-c", IDENTITY_PROBE].map(OsString::from);
+    let mut healthy = fake
+        .python(
+            &layout.base(KEY).join("python.exe"),
+            &args,
+            &layout.runtime,
+            &[],
+        )
+        .await
+        .unwrap();
+    healthy.stderr = b"identity diagnostic without an import failure\n".to_vec();
+    fake.identity.push_back(healthy);
+    run(&layout, &mut fake).await.unwrap();
+    assert!(fake.uv_calls().is_empty());
+    assert_eq!(
+        before,
+        snapshot(&[&layout.identity, &layout.receipt, &layout.requirements])
+    );
+}

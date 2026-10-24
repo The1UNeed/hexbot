@@ -1788,7 +1788,13 @@ impl<R: Runner> Pass<'_, R> {
             prefix,
             &self.layout.base(key),
             key,
-        )?;
+        )
+        .map_err(|mut error| {
+            error
+                .message
+                .push_str(&format!("; {}", output_cause(&output)));
+            error
+        })?;
         let after = dll_digest(stage, &self.layout.base(key).join("python311.dll"))?;
         if after.as_deref() != Some(&before) {
             return Err(refuse(
@@ -2142,11 +2148,16 @@ impl<R: Runner> Pass<'_, R> {
         // Only our generated leaf and invocation directory, never a recursive
         // cleanup of arbitrary leftovers. Unknown contents fail closed.
         if let Err(error) = fs::remove_file(&script).and_then(|()| fs::remove_dir(&scratch)) {
+            let cause = match &decision {
+                Err(error) => error.message.as_str(),
+                Ok(Some(original)) => original.as_str(),
+                Ok(None) => "entrypoint returned the expected version",
+            };
             return Err(refuse(
                 "observer",
                 format!(
-                    "{}; remove private scratch: {error}",
-                    decision.err().map(|e| e.message).unwrap_or_default()
+                    "{cause}; {}; remove private scratch: {error}",
+                    output_cause(&output)
                 ),
             ));
         }
@@ -2453,8 +2464,9 @@ impl Runner for Processes {
         bounded_output(command(executable, &args, cwd, env)).await
     }
 }
-// No spawned reader/reaper tasks: cancellation drops only these owned read
-// futures and their pipe ends. The directly owned child is explicitly reaped.
+// Windows cleanup remains blocked: pinned Tokio pipe reads can retain internal
+// blocking tasks after these outer futures are dropped. Root reap alone does
+// not establish the required reader settlement or safe scratch removal.
 async fn bounded_output(command: tokio::process::Command) -> Result<Output> {
     capture_output(command, PROBE_DEADLINE, PROBE_CLEANUP).await
 }
@@ -2506,8 +2518,8 @@ async fn capture_child(
     let mut stderr_bytes = Vec::new();
     let mut status = None;
     // One absolute deadline includes root wait AND both EOFs. A root exit does
-    // not complete descendant-held pipes. All three futures are dropped here
-    // before cleanup, so no reader task can remain detached.
+    // not complete descendant-held pipes. Dropping these outer futures does not
+    // settle pinned Tokio's internal Windows blocking readers.
     let result = tokio::time::timeout_at(deadline, async {
         tokio::try_join!(
             async {

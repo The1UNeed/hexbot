@@ -125,17 +125,24 @@ OS errors and incomplete results refuse. Final success always uses the ordinary
 uninstrumented launcher; observing a classified exception never declares it
 healthy. No stderr filtering or localized-message parsing supplies authority.
 
-Read-only identity/package/launcher probes have one private 30-second absolute
-limit for process completion plus concurrent capped stream EOF. A failure gets
-one additional shared 5-second cleanup envelope for the directly owned child
-and owned reads. No detached reader/reaper tasks are created. Root exit alone
-cannot complete pipes held by another process. The helper cancels its own reads
-and stops/reaps only its directly owned child, with no descendant/PID-pattern
-kill authority. Observer scratch is removed only after confirmed direct-child
-reaping; unconfirmed cleanup or a launch error without a confirmed-reap result
-retains that invocation's scratch, which is never reused as evidence. Cleanup
-failure preserves the primary cause and prevents uv or completion publication.
-These limits do not apply to uv mutations or alter Full/CI test deadlines.
+The required read-only identity/package/launcher contract is one private
+30-second absolute limit for process completion plus concurrent capped stream
+EOF, followed on failure by one shared 5-second cleanup envelope for the
+directly owned child and all owned reads. No reader may remain detached, and
+scratch must remain until cleanup is confirmed. These limits do not apply to
+uv mutations or alter Full/CI test deadlines. They grant no descendant or
+PID-pattern kill authority.
+
+The current implementation does not meet that cleanup contract on Windows.
+Pinned Tokio child pipes use internal blocking reads that can survive dropped
+outer futures. Confirmed direct-child reaping does not settle those reads.
+The helper bounds its outer wait and direct-child cleanup, but may remove
+observer scratch while an internal reader remains active. Unix process tests
+do not prove Windows reader settlement. This unresolved source blocker prevents
+acceptance; the required contract remains unchanged. Reported scratch-removal
+failures preserve the classified exception, package context and bounded process
+diagnostics. Structured identity refusals also retain captured diagnostics;
+identity eligibility does not require empty stderr.
 
 Missing/stale voice completion takes the explicit pinned install/update branch
 after interpreter checks, without probing damaged old packages first. All final
