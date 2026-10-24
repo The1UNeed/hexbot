@@ -108,17 +108,34 @@ pub fn bot_owner(home: &Path, caller: &str, bot: &str) -> Result<()> {
         &owner_id.ok_or_else(|| Error::new(4205, format!("bot not found: {bot}")))?,
     )
 }
+/// The usual IO conversion (code 5200, transient), with the failed step
+/// prefixed. The original OS error text, including its code, is kept.
+pub fn io_context(context: impl std::fmt::Display) -> impl FnOnce(std::io::Error) -> Error {
+    move |error| {
+        let mut error = Error::from(error);
+        error.message = format!("{context}: {}", error.message);
+        error
+    }
+}
 pub fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
     let parent = path
         .parent()
         .ok_or_else(|| Error::new(4202, "invalid path"))?;
-    fs::create_dir_all(parent)?;
-    let mut tmp = tempfile::NamedTempFile::new_in(parent)?;
-    tmp.write_all(bytes)?;
-    tmp.as_file().sync_all()?;
-    tmp.persist(path).map_err(|e| Error::from(e.error))?;
+    let name = path
+        .file_name()
+        .map(|name| name.to_string_lossy())
+        .unwrap_or_default();
+    let step = |phase: &str| io_context(format!("{phase} {name}"));
+    fs::create_dir_all(parent).map_err(step("create directory for"))?;
+    let mut tmp =
+        tempfile::NamedTempFile::new_in(parent).map_err(step("create temporary file for"))?;
+    tmp.write_all(bytes).map_err(step("write"))?;
+    tmp.as_file().sync_all().map_err(step("flush"))?;
+    tmp.persist(path).map_err(|e| step("replace")(e.error))?;
     #[cfg(unix)]
-    fs::File::open(parent)?.sync_all()?;
+    fs::File::open(parent)
+        .and_then(|directory| directory.sync_all())
+        .map_err(step("sync directory for"))?;
     Ok(())
 }
 pub fn read_config(home: &Path) -> Result<Value> {
@@ -1165,4 +1182,40 @@ pub fn bundled_runtime() -> Option<std::path::PathBuf> {
     let root = executable.parent()?;
     (root.join("manifest.json").is_file() && root.join("pi/launch.mjs").is_file())
         .then(|| root.to_owned())
+}
+
+#[cfg(test)]
+mod io_context_tests {
+    use super::*;
+    #[test]
+    fn io_context_names_the_step_and_keeps_the_conversion() {
+        let original = std::io::Error::from_raw_os_error(5);
+        let plain = Error::from(std::io::Error::from_raw_os_error(5));
+        let error = io_context("replace native-running.json")(original);
+        assert_eq!(error.code, plain.code);
+        assert_eq!(error.data, plain.data);
+        assert_eq!(
+            error.message,
+            format!("replace native-running.json: {}", plain.message)
+        );
+        assert!(error.message.contains("(os error 5)"));
+    }
+
+    #[test]
+    fn atomic_write_reports_the_failed_step() {
+        let home = tempfile::tempdir().unwrap();
+        let blocked = home.path().join("blocked");
+        fs::write(&blocked, "file, not a directory").unwrap();
+        let error = atomic_write(&blocked.join("record.json"), b"{}").unwrap_err();
+        assert_eq!(error.code, 5200);
+        assert!(
+            error
+                .message
+                .starts_with("create directory for record.json: "),
+            "{}",
+            error.message
+        );
+        atomic_write(&home.path().join("record.json"), b"{}").unwrap();
+        assert_eq!(fs::read(home.path().join("record.json")).unwrap(), b"{}");
+    }
 }

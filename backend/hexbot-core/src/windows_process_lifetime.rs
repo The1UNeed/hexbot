@@ -39,11 +39,20 @@ unsafe extern "system" {
     fn GetCurrentProcess() -> *mut c_void;
     fn CloseHandle(handle: *mut c_void) -> i32;
 }
-pub fn retain_until_process_exit() -> io::Result<()> {
+/// Errors name the failed phase and keep the original OS error unwrapped.
+pub fn retain_until_process_exit() -> Result<(), (&'static str, io::Error)> {
     let job = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
     if job.is_null() {
-        return Err(io::Error::last_os_error());
+        return Err(("create daemon job", io::Error::last_os_error()));
     }
+    // Capture the OS error before CloseHandle can overwrite it.
+    let fail = |phase| {
+        let error = io::Error::last_os_error();
+        unsafe {
+            CloseHandle(job);
+        }
+        Err((phase, error))
+    };
     let limits = ExtendedLimits {
         basic: BasicLimits {
             flags: 0x00002000,
@@ -51,22 +60,19 @@ pub fn retain_until_process_exit() -> io::Result<()> {
         },
         ..Default::default()
     }; // JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
-    let configured = unsafe {
+    if unsafe {
         SetInformationJobObject(
             job,
             9,
             (&limits as *const ExtendedLimits).cast(),
             std::mem::size_of::<ExtendedLimits>() as u32,
         )
-    };
-    let assigned =
-        configured != 0 && unsafe { AssignProcessToJobObject(job, GetCurrentProcess()) } != 0;
-    if !assigned {
-        let error = io::Error::last_os_error();
-        unsafe {
-            CloseHandle(job);
-        }
-        return Err(error);
+    } == 0
+    {
+        return fail("configure daemon job");
+    }
+    if unsafe { AssignProcessToJobObject(job, GetCurrentProcess()) } == 0 {
+        return fail("assign daemon job");
     }
     // Deliberately do not CloseHandle during Rust cleanup: this job contains
     // this process too. OS teardown closes it after normal App/services cleanup,

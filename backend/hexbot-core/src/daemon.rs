@@ -276,8 +276,10 @@ async fn run() -> Result<()> {
     }
     let _lock = lock_home(&home)?;
     #[cfg(windows)]
-    windows_process_lifetime::retain_until_process_exit()?;
-    let executable = std::env::current_exe()?;
+    windows_process_lifetime::retain_until_process_exit()
+        .map_err(|(phase, error)| common::io_context(phase)(error))?;
+    let executable =
+        std::env::current_exe().map_err(common::io_context("resolve daemon executable"))?;
     let running_record =
         serde_json::to_vec(&serde_json::json!({"pid":std::process::id(),"executable":executable}))
             .unwrap();
