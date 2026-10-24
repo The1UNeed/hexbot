@@ -39,14 +39,16 @@ own visual identity. Read `CLAUDE.md` for the words.
 - Bot faces: Hexbot's original eight outlines and capsule eyes, with white
   eyes except ink on Chalk. `lib/face-geometry.ts` is the source, copied to
   mobile by `apps/web/scripts/face-rest.mjs`. The [provenance note](face-provenance.md)
-  records the source and the replacement of PR #123's unlicensed proposal.
+  records where the outlines, eyes, and poses come from.
   Faces picked in an app are stored as shape and colour, with a static PNG
   for other clients. The web app reads saved current and older flat-eye PNGs
   back into live faces; mobile shows legacy pictures as pictures. Other
   uploads replace the face. Bots without a saved face derive one from their
   names. A live turn starts thinking, searches while a search tool runs,
   looks down while writing, and works during other steps. Roster and header
-  faces match their status dots. Faces in asks look toward each other.
+  faces, including every face in a room's cluster, match their status dots;
+  a cluster without a dot, as in room settings, stays idle. Faces in asks
+  look toward each other.
   Idle faces stay still. Active faces move only their eyes, with no frame
   callbacks or SVG mutations. Reduced motion draws the settled pose, and
   offscreen or hidden-page faces stop their animations. Mobile draws the same
@@ -112,7 +114,7 @@ the roster slides in as a drawer.
 
 - Header: nothing but floating glass over the transcript, which scrolls
   under it. In the centre, a pill with the bot's face (status dot on it,
-  bobbing while it works) and its name; clicking it opens or closes the side
+  expression matching the dot) and its name; clicking it opens or closes the side
   panel. Top right, the context meter and, while the panel is closed, the
   panel toggle. A chat has no title, rename, archive or delete. The
   model is chosen in Bot settings, Model, not in the chat.
