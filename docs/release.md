@@ -176,27 +176,34 @@ extended attributes. Release jobs archive the runtime inside the signed `.app`,
 so daemon self-updates carry the same signatures as the full package. Archiving
 recomputes the runtime manifest's file hashes after signing without changing the
 signed app. Activation preserves those hashes for desktop verification. The
-automatic service updater requires a strictly newer positive `builtAt` than
-all known runtime floors, including across Stable and Nightly. Explicit packaged
-POSIX setup has a separate positive-tie exception for increasing canonical
-Nightlies of the same version base and target, with a fully verified durable
-selection. Timestamp equality does not establish commit identity.
+service updater needs a strictly newer positive `builtAt` than every runtime
+floor it knows, across Stable and Nightly. Explicit packaged POSIX selection may
+also accept an equal positive `builtAt`: a later canonical Nightly of the same
+`X.Y.Z` and target, over a fully verified selection at that floor. Equal `builtAt`
+does not establish a common commit.
 
 The durable record's `builtAt` is a historical floor. Existing explicit
-`setup --activate` can select an intact older bundle without lowering that floor;
-its manifest still records the bundle's own chronology. Packaged tie selection
-requires the selected bundle itself to be at the floor.
+`setup --activate` can select an intact older bundle without lowering a readable
+floor; its manifest still records the bundle's own chronology. From a verified
+bundle, this unchecked installer path can rewrite damaged metadata and retains
+the highest valid floor it can still read independently. The installer invokes
+it for Headless Update or repair, not Full runtime repair. Automatic and packaged
+selection keep their stricter checks.
 
-The app uses `setup --select-runtime --manifest ABSOLUTE_FILE --json` for POSIX
-runtime selection. This mode only verifies, copies when publication is needed,
-and selects the runtime under `activate.lock`. It installs no code tools, CLI
-wrapper or service. The app supplies a temporary effective manifest based on its
-bundled bytes. Identity and the complete file set must match the bundle;
-only macOS post-signing hashes for `node`, `hexbot-core`, `bin/rg` and `bin/fd`
-may differ. Linux hashes must all match. Rust verifies the source, normalizes
-only the staged manifest, and verifies the copied bytes again. Signed app
-resources are never changed. Missing or conflicting durable identity cannot
-be repaired by guessing from a selected manifest alone.
+On macOS and Linux the app selects its runtime with
+`hexbot setup --select-runtime --manifest ABSOLUTE_FILE --json`. This mode
+verifies the bundle, copies it only when it must publish it, and selects it
+under `activate.lock`. It installs no code tools, CLI wrapper or service. The app
+passes a temporary manifest describing its bundled bytes. Version, target,
+`builtAt` and the file list must match the bundle's manifest. On macOS only the
+hashes of `node`, `hexbot-core`, `bin/rg` and `bin/fd`, which signing changes, may
+differ; on Linux every hash must match. Rust verifies the source, writes the
+effective manifest only into the staged copy, and verifies the copy again.
+Required executable files must be readable and executable by the effective user,
+including when retaining a selected runtime. The signed app is never modified.
+Packaged selection refuses missing or conflicting recorded identity rather than
+rebuilding it from a manifest alone. Existing `setup --activate` from a verified
+bundle can repair that metadata.
 
 The September 27 darwin-arm64 staging check reduced dependency files from
 463,982,503 to 86,636,413 bytes, about 81%. The complete bundle contains

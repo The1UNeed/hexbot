@@ -21,17 +21,20 @@ its desktop app (see "Borrowed from T3 Code" at the end).
 Stable and Nightly can be installed side by side because their app ids
 differ. They share `~/.hexbot`, so a nightly can migrate state a stable build
 cannot read back. Back up the directory before opening a nightly.
-They also share one daemon runtime under `~/.hexbot/runtime`. Selection keeps
-its highest known source chronology, recorded as `builtAt`, across tracks.
-Automatic daemon updates require a strictly newer positive `builtAt`.
-The durable floor can exceed the selected bundle chronology after explicit
-setup selects an older runtime; an intact selection remains verifiable.
-Explicit packaged POSIX setup can replace a verified Nightly with a later
-canonical release Nightly at the same positive chronology only when their
-major/minor/patch and target match. Equal timestamps do not prove a shared
-source commit. Reopening the earlier app keeps the verified selection;
-damaged or conflicting runtime identity refuses selection instead of treating
-it as a new installation.
+They also share one daemon runtime under `~/.hexbot/runtime`, which keeps the
+highest source time (`builtAt`) recorded there by any build, on either track.
+A daemon service updates only to a strictly newer positive `builtAt`. An app
+restarting its own daemon may also move from one canonical release Nightly to a
+later one with the same `builtAt`, `X.Y.Z` and target, such as `.58` to `.59`.
+Equal `builtAt` does not show that both came from one commit. An earlier app keeps
+a later verified selection. Damaged or conflicting recorded identity stops app
+selection instead of counting as a new installation.
+
+`hexbot setup --activate` from a verified bundle, which the installer's Headless
+Update or repair runs, rewrites damaged metadata and keeps the highest valid
+`builtAt` it can still read. Explicit installer selection can choose an older
+bundle. The historical floor stays separate from that bundle's manifest;
+a packaged tie requires the selected bundle itself to be at the floor.
 
 ## Which files belong to which channel
 
@@ -217,7 +220,7 @@ its machine. The daemon says how, through `update_capability` in
   hand.
 
 The client polls `hexbot.update.status` every two seconds and treats the
-connection dropping and coming back on a version current for the client as success,
+connection dropping and coming back on a version no longer older than the client as success,
 the same proof T3 Code uses. A failure, including "nothing to install",
 stays on the page until dismissed.
 

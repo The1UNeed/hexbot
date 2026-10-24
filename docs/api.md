@@ -1096,30 +1096,41 @@ A client newer than the daemon asks the daemon to update itself
   with `service` the daemon fetches
   `daemon/native/<version>/<target>/manifest.json`, verifies the target archive
   and its SHA-256, activates the runtime, and restarts itself. Errors: 4210
-  no capability, 4211 an update is already running, 4212 already on that
-  version. Automatic service updates require positive manifest `builtAt`
-  strictly greater than the maximum known running, selected and durable runtime
-  chronology, including across Stable and Nightly. The check runs again under
-  the activation lock before publication. Equal, older and unknown chronology
-  cannot be authorized by a higher version number.
-  With `desktop`, an app that already has a suitable runtime can prepare it and
-  restart its owned daemon without installing another app update, including on
-  Linux outside the AppImage. Preparation finishes before stopping that daemon;
-  completion waits for the replacement's home, PID and executable identity.
-  An external daemon is not stopped. A retained runtime that cannot satisfy the
-  client reports failure and leaves the owned daemon running.
-  Explicit packaged POSIX setup permits a positive equal-chronology transition
-  only between canonical release Nightlies of the same target and version base,
-  with an increasing date/run. Equal timestamps do not identify a source commit.
-  The selected manifest, complete file hashes and durable identity must agree.
-  The record chronology is a historical floor and can exceed the selected
-  bundle chronology after explicit setup selects an older runtime. That intact
-  selection remains valid; packaged ties require the selected bundle itself to
-  be at the floor, and automatic updates still must exceed it.
-  Exact-version byte repair also requires matching durable identity and floor.
-  Missing, corrupt or conflicting identity metadata refuses selection; torn
-  pointer/record states may require repairing the installation on its computer.
-  The manifest must carry a release signature at `manifest.json.sig`
+  no capability, 4211 an update is already running, 4212 chronology or
+  selection refused.
+  A service update needs a positive manifest `builtAt` strictly greater than
+  every one the daemon knows: its running, selected and recorded runtimes,
+  across Stable and Nightly. The check repeats under the activation lock before
+  publication. A higher version never authorizes an equal, older or unknown
+  `builtAt`.
+  With `desktop`, an app that is already current can restart a daemon it started
+  on a verified runtime instead of updating itself, including on Linux outside
+  the AppImage. It prepares that runtime before stopping the daemon. It reports
+  success only once the replacement's home, PID and executable match. It never
+  stops a daemon run by a service or another app. If preparation fails, including
+  when the retained runtime cannot satisfy the client, the daemon keeps running.
+  Failure after stopping or while waiting for readiness is reported; recovery
+  may also fail.
+  Unlike automatic service updates, explicit packaged POSIX selection may accept
+  an equal positive `builtAt`, but only for a later canonical release Nightly
+  (`X.Y.Z-nightly.YYYYMMDD.N`) with the same `X.Y.Z` and target. Equal `builtAt`
+  does not mean the builds share a source commit. The selected manifest, complete
+  file hashes and recorded identity must agree. Executable access is checked for
+  the current user. Matching trusted bytes with permission damage can be repaired
+  into owned staging without changing the damaged selection's permissions.
+  The record's `builtAt` is a historical floor, separate from bundle identity.
+  It may exceed the selected manifest's chronology after explicit setup chooses
+  an older bundle. The selected bundle itself must be at the floor for a packaged
+  tie or exact-version repair; automatic updates must still exceed the floor.
+  Missing metadata for an existing selection, corrupt records and conflicting
+  identities are refused by packaged selection, not treated as a first install.
+  Automatic updates keep their strict chronology checks. Existing explicit
+  `hexbot setup --activate` from a verified bundle can rewrite damaged metadata
+  and keeps the highest valid `builtAt` it can still read independently. The
+  installer's Headless Update or repair uses this path; Full has no installer
+  runtime-repair route. Explicit installer choices may select an older bundle
+  without lowering a readable historical floor.
+  A service-download manifest must carry a release signature at `manifest.json.sig`
   (docs/release.md, "Update signing"); without a valid one the update fails
   before anything downloads, and the SHA-256 in the signed manifest then pins
   the archive.
