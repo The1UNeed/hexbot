@@ -129,7 +129,13 @@ async fn dev_host_parent_death_console_events_and_assignment_refusal() {
             .arg(&binary)
             .arg(env!("CARGO_BIN_EXE_hexbot"))
             .stdin(Stdio::piped())
-            .creation_flags(0x08000000)
+            // DETACHED_PROCESS lets AllocConsole create the console probes' own
+            // console. Parent and assignment modes keep CREATE_NO_WINDOW.
+            .creation_flags(if matches!(mode, "break" | "ctrlc") {
+                0x00000008
+            } else {
+                0x08000000
+            })
             .kill_on_drop(true)
             .spawn()
             .unwrap();
