@@ -214,9 +214,7 @@ it('attaches to a service that takes the home lock before a restart', async () =
   try {
     await manager.start()
     expect(spawnDaemon).toHaveBeenCalledTimes(1)
-    const port = await new Promise<number>(resolve =>
-      server.listen(0, '127.0.0.1', () => resolve((server.address() as net.AddressInfo).port))
-    )
+    const port = await new Promise<number>(resolve => server.listen(0, '127.0.0.1', () => resolve((server.address() as net.AddressInfo).port)))
     await writeFile(join(home, 'install_id'), 'service-home')
     await writeFile(join(home, 'native-daemon.lock'), String(process.pid))
     await writeFile(join(home, 'serve-state.json'), JSON.stringify({ port }))
@@ -248,9 +246,7 @@ it('rejects a stale PID and an unrelated TCP listener', async () => {
   const home = await mkdtemp(join(tmpdir(), 'hexbot-manager-stale-'))
   const server = net.createServer(socket => socket.destroy())
   try {
-    const port = await new Promise<number>(resolve =>
-      server.listen(0, '127.0.0.1', () => resolve((server.address() as net.AddressInfo).port))
-    )
+    const port = await new Promise<number>(resolve => server.listen(0, '127.0.0.1', () => resolve((server.address() as net.AddressInfo).port)))
     await writeFile(join(home, 'native-daemon.lock'), String(process.pid))
     await writeFile(join(home, 'install_id'), 'this-home')
     await writeFile(join(home, 'serve-state.json'), JSON.stringify({ port }))

@@ -1598,6 +1598,17 @@ fn recorded_native_runtime(native: &Path) -> Result<Option<PathBuf>> {
     Ok(Some(executable))
 }
 
+pub fn selected_native_executable(home: &Path) -> Result<PathBuf> {
+    #[cfg(windows)]
+    {
+        Ok(crate::native_selection::selected(home)?)
+    }
+    #[cfg(not(windows))]
+    {
+        Ok(home.join("runtime/native-executable").canonicalize()?)
+    }
+}
+
 pub(crate) fn activation_lock(runtime: &Path) -> Result<fs::File> {
     let file = fs::OpenOptions::new()
         .create(true)
@@ -1675,7 +1686,7 @@ pub(crate) fn native_chronology_floor(native: &Path, include_running: bool) -> R
     if let Some(record) = record {
         floor = native_built_at(&record)?.max(native_built_at(&record["updateManifest"])?);
     }
-    match runtime.join("native-executable").canonicalize() {
+    match selected_native_executable(runtime.parent().unwrap()) {
         Ok(executable) => {
             if !executable.starts_with(native) || !executable.is_file() {
                 if include_running {
@@ -1689,8 +1700,13 @@ pub(crate) fn native_chronology_floor(native: &Path, include_running: bool) -> R
                 floor = floor.max(native_built_at(&manifest)?);
             }
         }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => return Err(error.into()),
+        Err(_)
+            if !cfg!(windows)
+                && runtime
+                    .join("native-executable")
+                    .canonicalize()
+                    .is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound) => {}
+        Err(error) => return Err(error),
     }
     if include_running {
         if let Some(record) = native_metadata(&runtime.join("native-running.json"))? {
@@ -1735,13 +1751,65 @@ pub(crate) fn publish_native(
     entrypoint: &str,
     newer_than_selected: Option<&Value>,
 ) -> Result<PathBuf> {
+    publish_native_inner(
+        native,
+        version,
+        staging,
+        entrypoint,
+        newer_than_selected,
+        false,
+    )
+}
+
+#[cfg(windows)]
+pub(crate) fn publish_setup_native(
+    native: &Path,
+    version: &str,
+    staging: &Path,
+    manifest: &Value,
+) -> Result<PathBuf> {
+    publish_native_inner(native, version, staging, "hexbot.exe", Some(manifest), true)
+}
+
+fn publish_native_inner(
+    native: &Path,
+    version: &str,
+    staging: &Path,
+    entrypoint: &str,
+    newer_than_selected: Option<&Value>,
+    allow_equal: bool,
+) -> Result<PathBuf> {
     let runtime = native
         .parent()
         .ok_or_else(|| Error::new(5243, "Missing runtime directory"))?;
     let _lock = activation_lock(runtime)?;
-    if let Some(requested) = newer_than_selected {
+    if !allow_equal && let Some(requested) = newer_than_selected {
         let floor = automatic_native_floor(native)?;
         require_newer_native_build(requested, &json!({"builtAt":floor}))?;
+    }
+    if let Some(requested) = newer_than_selected {
+        let selected = selected_native_executable(runtime.parent().unwrap())
+            .ok()
+            .and_then(|executable| fs::read(executable.with_file_name("manifest.json")).ok())
+            .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok());
+        // Metadata survives a missing or damaged selected manifest. Neither
+        // source may lower the chronology floor recorded by the other.
+        let recorded = fs::read(runtime.join("native-current.json"))
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok());
+        let floor = selected
+            .iter()
+            .chain(recorded.iter())
+            .filter_map(|manifest| manifest["builtAt"].as_u64())
+            .max()
+            .unwrap_or(0);
+        let selected = json!({"builtAt": floor});
+        if !allow_equal
+            || requested["builtAt"].as_u64().unwrap_or(0)
+                != selected["builtAt"].as_u64().unwrap_or(0)
+        {
+            require_newer_native_build(requested, &selected)?;
+        }
     }
     publish_native_locked(native, version, staging, entrypoint, newer_than_selected)
 }
@@ -1757,17 +1825,22 @@ pub(crate) fn publish_native_locked(
     let directory = native.join(format!("{version}-{}", common::id()));
     fs::rename(staging, &directory)?;
     let executable = directory.join(entrypoint);
-    activate_native_locked(native, version, &executable, update)?;
+    activate_native_with_update_locked(native, version, &executable, update)?;
     Ok(executable)
 }
 
 #[cfg(test)]
 fn activate_native(native: &Path, version: &str, executable: &Path) -> Result<()> {
     let _lock = activation_lock(native.parent().unwrap())?;
-    activate_native_locked(native, version, executable, None)
+    activate_native_locked(native, version, executable)
 }
 
-fn activate_native_locked(
+#[cfg(any(test, all(debug_assertions, windows)))]
+fn activate_native_locked(native: &Path, version: &str, executable: &Path) -> Result<()> {
+    activate_native_with_update_locked(native, version, executable, None)
+}
+
+fn activate_native_with_update_locked(
     native: &Path,
     version: &str,
     executable: &Path,
@@ -1784,7 +1857,7 @@ fn activate_native_locked(
         ));
     }
     let stable = runtime.join("native-executable");
-    let previous = stable.canonicalize().ok();
+    let previous = selected_native_executable(runtime.parent().unwrap()).ok();
     // Replacing a symlink never follows its previous target. A directory cannot
     // be replaced this way and must be rejected before updating the metadata.
     if fs::symlink_metadata(&stable).is_ok_and(|m| m.file_type().is_dir()) {
@@ -1799,15 +1872,21 @@ fn activate_native_locked(
         std::os::unix::fs::symlink(&executable, temporary.path().join("launcher"))?;
         temporary
     };
-    let manifest =
+    let mut manifest =
         native_metadata(&executable.with_file_name("manifest.json"))?.unwrap_or_else(|| json!({}));
     let built_at = native_chronology_floor(native, false)?
         .max(native_built_at(&manifest)?)
         .max(update.map(native_built_at).transpose()?.unwrap_or(0));
+    manifest["builtAt"] = json!(built_at);
+    let encode_record = |record: &Value| {
+        let mut record = record.clone();
+        record["updateManifest"] = json!(update);
+        serde_json::to_vec(&record)
+    };
     common::atomic_write(
         &runtime.join("native-current.json"),
-        &serde_json::to_vec(
-            &json!({"version":version,"executable":executable,"previous":previous,"files":manifest["files"],"builtAt":built_at,"updateManifest":update}),
+        &encode_record(
+            &json!({"version":version,"executable":executable,"previous":previous,"files":manifest["files"],"builtAt":manifest["builtAt"]}),
         )
         .unwrap(),
     )?;
@@ -1893,7 +1972,7 @@ mod activation_tests {
         let (setup, _) = package("9.8.8", 300);
         let selected = native.join("9.8.8");
         fs::rename(setup.path(), &selected).unwrap();
-        activate_native_locked(&native, "9.8.8", &selected.join("hexbot"), None).unwrap();
+        activate_native_locked(&native, "9.8.8", &selected.join("hexbot")).unwrap();
         drop(installer);
         assert_eq!(waiting.join().unwrap().unwrap_err().code, 4212);
         let active = runtime.join("native-executable").canonicalize().unwrap();
@@ -1904,302 +1983,6 @@ mod activation_tests {
         publish_native(&native, "9.8.9", newer.path(), "hexbot", Some(&requested)).unwrap();
         let active = runtime.join("native-executable").canonicalize().unwrap();
         assert_eq!(fs::read_to_string(active).unwrap(), "9.8.9");
-    }
-
-    #[test]
-    fn publication_keeps_durable_floors_when_selection_is_damaged() {
-        for damage in [
-            "missing",
-            "invalid-json",
-            "invalid-version",
-            "lower-manifest",
-            "missing-pointer",
-        ] {
-            let home = tempfile::tempdir().unwrap();
-            let native = native_directory(home.path()).unwrap();
-            let runtime = native.parent().unwrap();
-            let selected = native.join("selected");
-            fs::create_dir(&selected).unwrap();
-            fs::write(selected.join("hexbot"), "selected").unwrap();
-            fs::write(
-                selected.join("manifest.json"),
-                json!({"version":"9.8.8", "builtAt":300}).to_string(),
-            )
-            .unwrap();
-            activate_native(&native, "9.8.8", &selected.join("hexbot")).unwrap();
-            let record = runtime.join("native-current.json");
-            let mut metadata: Value = serde_json::from_slice(&fs::read(&record).unwrap()).unwrap();
-            metadata["builtAt"] = json!(400);
-            if damage == "invalid-version" {
-                metadata["version"] = json!("invalid");
-            }
-            fs::write(&record, metadata.to_string()).unwrap();
-            match damage {
-                "missing" => fs::remove_file(selected.join("manifest.json")).unwrap(),
-                "invalid-json" => fs::write(selected.join("manifest.json"), "invalid").unwrap(),
-                "lower-manifest" => fs::write(
-                    selected.join("manifest.json"),
-                    json!({"builtAt":100}).to_string(),
-                )
-                .unwrap(),
-                "missing-pointer" => fs::remove_file(runtime.join("native-executable")).unwrap(),
-                _ => {}
-            }
-            let before = fs::read(&record).unwrap();
-            for built_at in [0, 200, 400] {
-                let staging = tempfile::tempdir_in(&native).unwrap();
-                fs::write(staging.path().join("hexbot"), "replacement").unwrap();
-                let requested = json!({"version":"9.9.0", "builtAt":built_at});
-                assert_eq!(
-                    publish_native(&native, "9.9.0", staging.path(), "hexbot", Some(&requested))
-                        .unwrap_err()
-                        .code,
-                    4212,
-                    "{damage}"
-                );
-                assert!(staging.path().is_dir());
-                assert_eq!(fs::read(&record).unwrap(), before);
-            }
-        }
-    }
-
-    #[test]
-    fn publication_rechecks_the_recorded_running_bundle_floor() {
-        let home = tempfile::tempdir().unwrap();
-        let native = native_directory(home.path()).unwrap();
-        let running = native.join("running");
-        fs::create_dir(&running).unwrap();
-        fs::write(running.join("hexbot"), "running").unwrap();
-        fs::write(
-            running.join("manifest.json"),
-            json!({"version":"9.8.8", "builtAt":500}).to_string(),
-        )
-        .unwrap();
-        fs::write(
-            native.parent().unwrap().join("native-running.json"),
-            json!({"pid":std::process::id(), "executable":running.join("hexbot")}).to_string(),
-        )
-        .unwrap();
-        let staging = tempfile::tempdir_in(&native).unwrap();
-        fs::write(staging.path().join("hexbot"), "replacement").unwrap();
-        assert_eq!(
-            publish_native(
-                &native,
-                "9.9.0",
-                staging.path(),
-                "hexbot",
-                Some(&json!({"version":"9.9.0", "builtAt":400}))
-            )
-            .unwrap_err()
-            .code,
-            4212
-        );
-        assert!(
-            !native
-                .parent()
-                .unwrap()
-                .join("native-current.json")
-                .exists()
-        );
-    }
-
-    #[test]
-    fn publication_rechecks_a_durable_floor_changed_under_the_activation_lock() {
-        let home = tempfile::tempdir().unwrap();
-        let native = native_directory(home.path()).unwrap();
-        let runtime = native.parent().unwrap();
-        let lock = activation_lock(runtime).unwrap();
-        let staging = tempfile::tempdir_in(&native).unwrap();
-        fs::write(staging.path().join("hexbot"), "replacement").unwrap();
-        let (started, waiting) = std::sync::mpsc::channel();
-        let worker = std::thread::spawn({
-            let native = native.clone();
-            let staging = staging.path().to_owned();
-            move || {
-                started.send(()).unwrap();
-                publish_native(
-                    &native,
-                    "9.9.0",
-                    &staging,
-                    "hexbot",
-                    Some(&json!({"version":"9.9.0", "builtAt":400})),
-                )
-            }
-        });
-        waiting.recv().unwrap();
-        let metadata = json!({"version":"9.8.8", "builtAt":500});
-        fs::write(runtime.join("native-current.json"), metadata.to_string()).unwrap();
-        drop(lock);
-        assert_eq!(worker.join().unwrap().unwrap_err().code, 4212);
-        assert!(staging.path().is_dir());
-        assert_eq!(
-            serde_json::from_slice::<Value>(
-                &fs::read(runtime.join("native-current.json")).unwrap()
-            )
-            .unwrap(),
-            metadata
-        );
-    }
-
-    #[test]
-    fn publication_refuses_damaged_records_without_erasing_the_manifest_floor() {
-        for damage in [
-            None,
-            Some("invalid"),
-            Some("[]"),
-            Some("{\"builtAt\":\"unknown\"}"),
-            Some("{\"builtAt\":400,\"updateManifest\":[]}"),
-        ] {
-            let home = tempfile::tempdir().unwrap();
-            let native = native_directory(home.path()).unwrap();
-            let directory = native.join("selected");
-            fs::create_dir(&directory).unwrap();
-            fs::write(directory.join("hexbot"), "selected").unwrap();
-            fs::write(
-                directory.join("manifest.json"),
-                json!({"version":"9.8.8", "builtAt":500}).to_string(),
-            )
-            .unwrap();
-            activate_native(&native, "9.8.8", &directory.join("hexbot")).unwrap();
-            let record = native.parent().unwrap().join("native-current.json");
-            if let Some(damage) = damage {
-                fs::write(&record, damage).unwrap();
-            } else {
-                fs::remove_file(&record).unwrap();
-            }
-            let before = fs::read(&record).ok();
-            let staging = tempfile::tempdir_in(&native).unwrap();
-            fs::write(staging.path().join("hexbot"), "replacement").unwrap();
-            assert_eq!(
-                publish_native(
-                    &native,
-                    "9.9.0",
-                    staging.path(),
-                    "hexbot",
-                    Some(&json!({"version":"9.9.0", "builtAt":400}))
-                )
-                .unwrap_err()
-                .code,
-                4212
-            );
-            assert_eq!(fs::read(&record).ok(), before);
-            assert!(staging.path().is_dir());
-            if damage.is_some() {
-                assert_eq!(
-                    publish_native(
-                        &native,
-                        "9.9.0",
-                        staging.path(),
-                        "hexbot",
-                        Some(&json!({"version":"9.9.0", "builtAt":600}))
-                    )
-                    .unwrap_err()
-                    .code,
-                    4212
-                );
-                assert_eq!(fs::read(&record).ok(), before);
-                assert!(staging.path().is_dir());
-            }
-        }
-    }
-
-    #[test]
-    fn publication_refuses_an_installed_record_with_no_recoverable_chronology() {
-        let home = tempfile::tempdir().unwrap();
-        let native = native_directory(home.path()).unwrap();
-        let record = native.parent().unwrap().join("native-current.json");
-        fs::write(&record, json!({"version":"9.8.8"}).to_string()).unwrap();
-        let staging = tempfile::tempdir_in(&native).unwrap();
-        fs::write(staging.path().join("hexbot"), "replacement").unwrap();
-        assert_eq!(
-            publish_native(
-                &native,
-                "9.9.0",
-                staging.path(),
-                "hexbot",
-                Some(&json!({"version":"9.9.0", "builtAt":400}))
-            )
-            .unwrap_err()
-            .code,
-            4212
-        );
-        assert_eq!(
-            serde_json::from_slice::<Value>(&fs::read(record).unwrap()).unwrap(),
-            json!({"version":"9.8.8"})
-        );
-        assert!(staging.path().is_dir());
-    }
-
-    #[test]
-    fn activation_preserves_the_highest_record_manifest_and_signed_floor() {
-        let home = tempfile::tempdir().unwrap();
-        let native = native_directory(home.path()).unwrap();
-        let record = native.parent().unwrap().join("native-current.json");
-        fs::write(
-            &record,
-            json!({"version":"invalid", "builtAt":400, "updateManifest":{"builtAt":600}})
-                .to_string(),
-        )
-        .unwrap();
-        let directory = native.join("repair");
-        fs::create_dir(&directory).unwrap();
-        fs::write(directory.join("hexbot"), "repair").unwrap();
-        fs::write(
-            directory.join("manifest.json"),
-            json!({"version":"9.8.8", "builtAt":300}).to_string(),
-        )
-        .unwrap();
-        activate_native(&native, "9.8.8", &directory.join("hexbot")).unwrap();
-        let metadata: Value = serde_json::from_slice(&fs::read(&record).unwrap()).unwrap();
-        assert_eq!(metadata["builtAt"], 600);
-        let staging = tempfile::tempdir_in(&native).unwrap();
-        fs::write(staging.path().join("hexbot"), "replacement").unwrap();
-        assert_eq!(
-            publish_native(
-                &native,
-                "9.9.0",
-                staging.path(),
-                "hexbot",
-                Some(&json!({"version":"9.9.0", "builtAt":500}))
-            )
-            .unwrap_err()
-            .code,
-            4212
-        );
-        assert_eq!(
-            serde_json::from_slice::<Value>(&fs::read(record).unwrap()).unwrap(),
-            metadata
-        );
-    }
-
-    #[test]
-    fn publication_records_the_signed_floor_even_without_an_embedded_manifest() {
-        let home = tempfile::tempdir().unwrap();
-        let native = native_directory(home.path()).unwrap();
-        let staging = tempfile::tempdir_in(&native).unwrap();
-        fs::write(staging.path().join("hexbot"), "replacement").unwrap();
-        let requested = json!({"version":"9.9.0", "builtAt":400});
-        publish_native(&native, "9.9.0", staging.path(), "hexbot", Some(&requested)).unwrap();
-        let metadata: Value = serde_json::from_slice(
-            &fs::read(native.parent().unwrap().join("native-current.json")).unwrap(),
-        )
-        .unwrap();
-        assert_eq!(metadata["builtAt"], 400);
-        assert_eq!(metadata["updateManifest"], requested);
-        let staging = tempfile::tempdir_in(&native).unwrap();
-        fs::write(staging.path().join("hexbot"), "older").unwrap();
-        assert_eq!(
-            publish_native(
-                &native,
-                "10.0.0",
-                staging.path(),
-                "hexbot",
-                Some(&json!({"version":"10.0.0", "builtAt":400}))
-            )
-            .unwrap_err()
-            .code,
-            4212
-        );
     }
 
     #[test]
@@ -2980,3 +2763,7 @@ mod native_version_tests {
         assert!(artifact_url("http://mirror.example", &json!({"path": path})).is_err());
     }
 }
+
+#[cfg(all(test, unix))]
+#[path = "services_floor_tests.rs"]
+mod floor_tests;

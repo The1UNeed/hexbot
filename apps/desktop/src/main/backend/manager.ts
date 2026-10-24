@@ -18,6 +18,11 @@ export interface DaemonStatus {
   pid?: number
   lastError?: string
 }
+export interface RuntimeActivation {
+  executable: string
+  version: string
+}
+
 export const backoffSchedule = [1_000, 2_000, 4_000, 8_000, 16_000] as const
 export function parseReadyLine(line: string): number | undefined {
   const match = /(?:^|\s)HERMES_(?:BACKEND|DASHBOARD)_READY port=(\d+)(?:\s|$)/.exec(line)
@@ -95,9 +100,12 @@ function rotateLog(path: string): void {
   }
 }
 
-export interface RuntimeActivation {
-  executable: string
-  version: string
+export function requestOwnedShutdown(child: Pick<ChildProcessWithoutNullStreams, 'stdin' | 'kill'>, platform = process.platform): void {
+  if (platform === 'win32') {
+    // EPIPE means the child is already exiting. The caller still waits for exit.
+    child.stdin.once('error', () => undefined)
+    child.stdin.end('HEXBOT_SHUTDOWN_V1\n')
+  } else child.kill('SIGTERM')
 }
 
 export class DaemonManager extends EventEmitter {
@@ -125,7 +133,7 @@ export class DaemonManager extends EventEmitter {
       this.quitting = true
       this.cancelTransition()
       void this.serialize(async () => {
-        if (!(await this.serviceInstalled())) await this.stopOwned()
+        await this.stopForQuit()
       }).then(
         () => app.exit(0),
         error => {
@@ -136,6 +144,85 @@ export class DaemonManager extends EventEmitter {
     })
   }
 
+  installService(operation: () => Promise<void>): Promise<void> {
+    return this.changeService(operation, true)
+  }
+  uninstallService(operation: () => Promise<void>): Promise<void> {
+    return this.changeService(operation, false)
+  }
+  private changeService(operation: () => Promise<void>, installed: boolean): Promise<void> {
+    this.cancelTransition()
+    return this.serialize(async () => {
+      if (this.quitting) throw new Error('The app is quitting')
+      const owned = this.ownedIntent || Boolean(this.child)
+      if (owned) await this.stopOwned()
+      try {
+        await operation()
+        if (installed) this.setStatus({ state: 'external', port: await this.waitForService() })
+        else {
+          this.setStatus({ state: 'stopped' })
+          await this.startOwned()
+        }
+      } catch (error) {
+        if (owned) {
+          try {
+            await this.startOwned()
+            await this.waitForOwned()
+          } catch (restore) {
+            throw new AggregateError([error, restore], 'Service change and daemon recovery failed')
+          }
+        }
+        throw error
+      }
+    })
+  }
+  private waitForService(): Promise<number> {
+    return new Promise((resolve, reject) => {
+      let settled = false,
+        checking = false,
+        changed = false
+      const watchers = [
+        watch(hexbotHome(), () => {
+          void check()
+        })
+      ]
+      if (existsSync(join(hexbotHome(), 'runtime')))
+        watchers.push(
+          watch(join(hexbotHome(), 'runtime'), () => {
+            void check()
+          })
+        )
+      const finish = (error?: Error, port?: number): void => {
+        if (settled) return
+        settled = true
+        clearTimeout(timer)
+        for (const watcher of watchers) watcher.close()
+        if (error) reject(error)
+        else resolve(port!)
+      }
+      const timer = setTimeout(
+        () => finish(new Error('Installed service did not become ready')),
+        30_000
+      )
+      const check = async (): Promise<void> => {
+        changed = true
+        if (checking || settled) return
+        checking = true
+        do {
+          changed = false
+          try {
+            const port = await runningDaemonPort()
+            if (port) finish(undefined, port)
+          } catch (error) {
+            finish(error instanceof Error ? error : new Error(String(error)))
+          }
+        } while (changed && !settled)
+        checking = false
+      }
+      for (const watcher of watchers) watcher.once('error', finish)
+      void check()
+    })
+  }
   status(): DaemonStatus {
     return { ...this.current }
   }
@@ -316,10 +403,12 @@ export class DaemonManager extends EventEmitter {
     const canonical = existsSync(executable) ? realpathSync(executable) : executable
     const child = spawn(executable, ['serve', '--port', String(port)], {
       cwd: daemonDirectory(),
+      windowsHide: process.platform === 'win32',
       env: {
         ...process.env,
         HEXBOT_HOME: hexbotHome(),
         HEXBOT_SUPERVISOR: 'desktop',
+        ...(process.platform === 'win32' ? { HEXBOT_DESKTOP_CONTROL: 'stdin-v1' } : {}),
         PATH: [binDir(), process.env.PATH ?? ''].join(delimiter)
       }
     })
@@ -403,99 +492,23 @@ export class DaemonManager extends EventEmitter {
       return this.status()
     }
     await new Promise<void>((resolve, reject) => {
-      const deadline = setTimeout(
-        () => reject(new Error('Owned daemon did not exit after shutdown')),
-        10_000
-      )
-      const force = setTimeout(() => child.kill('SIGKILL'), 5_000)
+      // On Windows SIGTERM force-terminates a process. The inherited stdin
+      // pipe belongs only to this child and is never a network stop endpoint.
+      const deadline = setTimeout(() => reject(new Error('Owned daemon did not exit after shutdown')), 10_000)
+      const force = setTimeout(() => { child.kill('SIGKILL') }, 5_000)
       child.once('exit', () => {
         clearTimeout(force)
         clearTimeout(deadline)
         resolve()
       })
-      child.kill('SIGTERM')
+      requestOwnedShutdown(child)
     })
     this.setStatus({ state: 'stopped' })
     return this.status()
   }
 
-  installService(operation: () => Promise<void>): Promise<void> {
-    return this.changeService(operation, true)
+  private async stopForQuit(): Promise<void> {
+    if (process.platform === 'win32' || !(await this.serviceInstalled())) await this.stopOwned()
   }
-  uninstallService(operation: () => Promise<void>): Promise<void> {
-    return this.changeService(operation, false)
-  }
-  private changeService(operation: () => Promise<void>, installed: boolean): Promise<void> {
-    this.cancelTransition()
-    return this.serialize(async () => {
-      if (this.quitting) throw new Error('The app is quitting')
-      const owned = this.ownedIntent || Boolean(this.child)
-      if (owned) await this.stopOwned()
-      try {
-        await operation()
-        if (installed) this.setStatus({ state: 'external', port: await this.waitForService() })
-        else {
-          this.setStatus({ state: 'stopped' })
-          await this.startOwned()
-        }
-      } catch (error) {
-        if (owned) {
-          try {
-            await this.startOwned()
-            await this.waitForOwned()
-          } catch (restore) {
-            throw new AggregateError([error, restore], 'Service change and daemon recovery failed')
-          }
-        }
-        throw error
-      }
-    })
-  }
-  private waitForService(): Promise<number> {
-    return new Promise((resolve, reject) => {
-      let settled = false,
-        checking = false,
-        changed = false
-      const watchers = [
-        watch(hexbotHome(), () => {
-          void check()
-        })
-      ]
-      if (existsSync(join(hexbotHome(), 'runtime')))
-        watchers.push(
-          watch(join(hexbotHome(), 'runtime'), () => {
-            void check()
-          })
-        )
-      const finish = (error?: Error, port?: number): void => {
-        if (settled) return
-        settled = true
-        clearTimeout(timer)
-        for (const watcher of watchers) watcher.close()
-        if (error) reject(error)
-        else resolve(port!)
-      }
-      const timer = setTimeout(
-        () => finish(new Error('Installed service did not become ready')),
-        30_000
-      )
-      const check = async (): Promise<void> => {
-        changed = true
-        if (checking || settled) return
-        checking = true
-        do {
-          changed = false
-          try {
-            const port = await runningDaemonPort()
-            if (port) finish(undefined, port)
-          } catch (error) {
-            finish(error instanceof Error ? error : new Error(String(error)))
-          }
-        } while (changed && !settled)
-        checking = false
-      }
-      for (const watcher of watchers) watcher.once('error', finish)
-      void check()
-    })
-  }
+
 }
