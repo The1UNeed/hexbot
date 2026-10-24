@@ -36,22 +36,25 @@ own visual identity. Read `CLAUDE.md` for the words.
 - Chart series, for bot visuals only: light #4F46E5, #0D9488, #D97706,
   #DB2777, #2F7CF6, #65A30D; dark #8B85FF, #2DD4BF, #FBBF24, #F472B6,
   #4C9AFF, #A3E635. The first is the accent; the rest step apart in hue.
-- Bot faces: every bot has a face, a shape and a colour with two white
-  capsule eyes painted on a ball (`lib/avatar-builder.ts`; Chalk gets ink
-  eyes). A face picked in an app is stored on the bot as its shape and
-  colour (`face` in `docs/api.md`), which the web and mobile apps draw live,
-  and as a picture for clients that only show pictures. A bot whose face was
-  saved before that keeps only the picture: the web app reads it back into a
-  live face, and mobile shows the picture. Other uploaded images replace the
-  face; otherwise it is derived from the bot's name. Faces wiggle on hover
-  and blink at rest, and a glance moves the eyes over the ball's surface:
-  toward the rim, rolled with it, smaller as it turns away. Every shape
-  places the ball so the eyes stay inside it. Click any face, or the Hexbot
-  mark, and it plays a random act for a few seconds: typing with its two
-  round hands, juggling, blowing a horn (`components/ui/hexbot-act.tsx`, 21
-  acts). The install screen gives each stage its own act. In a chat the
-  face never changes size or plays acts on its own: a working bot's face
-  only bobs (`hex-think`).
+- Bot faces: Hexbot's original eight outlines and capsule eyes, with white
+  eyes except ink on Chalk. `lib/face-geometry.ts` is the source, copied to
+  mobile by `apps/web/scripts/face-rest.mjs`. The [provenance note](face-provenance.md)
+  records where the outlines, eyes, and poses come from.
+  Faces picked in an app are stored as shape and colour, with a static PNG
+  for other clients. The web app reads saved current and older flat-eye PNGs
+  back into live faces; mobile shows legacy pictures as pictures. Other
+  uploads replace the face. Bots without a saved face derive one from their
+  names. A live turn starts thinking, searches while a search tool runs,
+  looks down while writing, and works during other steps. Roster and header
+  faces, including every face in a room's cluster, match their status dots;
+  a cluster without a dot, as in room settings, stays idle. Faces in asks
+  look toward each other.
+  Idle faces stay still. Active faces move only their eyes, with no frame
+  callbacks or SVG mutations. Reduced motion draws the settled pose, and
+  offscreen or hidden-page faces stop their animations. Mobile draws the same
+  settled expressions. Click a face or the in-app mark for one of the existing
+  21 acts. Acts hold the eyes still and clean up with their React subtree.
+  Site, favicon, and desktop icons intentionally retain the static brand mark.
 - Shadows only on floating layers (menus, dialogs, the glass chrome) and the
   cards that sit on the canvas: a hairline plus one soft shadow.
 - Liquid glass (`hex-glass`, `hex-glass-strong` in `tokens.css`) is for
@@ -111,7 +114,7 @@ the roster slides in as a drawer.
 
 - Header: nothing but floating glass over the transcript, which scrolls
   under it. In the centre, a pill with the bot's face (status dot on it,
-  bobbing while it works) and its name; clicking it opens or closes the side
+  expression matching the dot) and its name; clicking it opens or closes the side
   panel. Top right, the context meter and, while the panel is closed, the
   panel toggle. A chat has no title, rename, archive or delete. The
   model is chosen in Bot settings, Model, not in the chat.
@@ -149,12 +152,13 @@ the roster slides in as a drawer.
   20 quiet minutes.
 - Live status: from the moment a turn starts until the whole turn is done,
   a line sits at its foot, under the messages the bot has finished: the
-  bot's bobbing face and muted words, with no bubble behind them. It says
+  bot's face and muted words, with no bubble behind them. It says
   what the bot is doing in plain words ("General is thinking", "General is
   writing", "General is working", "General is searching the web", "General
   is running a command", "Connecting to GitHub" for a connector's tool, or
   the provider's wait notice), never the command, the query or the time;
-  the side panel says the same. The face keeps bobbing while a tool runs.
+  the side panel says the same. The face keeps its working expression while
+  a tool runs.
   No spinner, no ring, no shimmer. Each new label crossfades in. What the
   bot is still writing stays hidden ("General is writing"); the message
   appears whole when it is done and springs in. When the turn ends the line

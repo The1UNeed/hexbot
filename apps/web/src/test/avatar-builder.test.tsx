@@ -18,7 +18,7 @@ import {
   readFace,
   READS_KEPT
 } from '../lib/avatar-builder'
-import tokens from '../styles/tokens.css?raw'
+import { FACE_MOODS, facePose } from '../lib/face'
 
 /** A 100×100 picture filled with `hex`, with `dots` painted in other colours. */
 function picture(hex: string, dots: [number, number, string][] = []) {
@@ -105,33 +105,19 @@ describe('avatar builder', () => {
     }
   })
 
-  it('keeps both eyes inside the ball at every gaze pose in tokens.css', () => {
-    const poses = [
-      ...tokens.matchAll(
-        /translate\((-?[\d.]+)px, (-?[\d.]+)px\) rotate\((-?[\d.]+)deg\) scale\(([\d.]+)\)/g
-      )
-    ].map(match => match.slice(1, 5).map(Number) as [number, number, number, number])
+  it('keeps every activity and neighbour pose inside the original ball', () => {
+    for (const mood of FACE_MOODS) {
+      for (const look of [null, 'left', 'right'] as const) {
+        const [tx, ty] = facePose(mood, look)
+          .match(/-?[\d.]+/g)!
+          .map(Number)
 
-    // The three wander poses and a look each way.
-    expect(poses.length).toBeGreaterThanOrEqual(5)
-
-    for (const [tx, ty, degrees, scale] of poses) {
-      const turn = (degrees * Math.PI) / 180
-
-      for (const mood of ['happy', 'idle', 'listening', 'sleeping', 'working'] as const) {
         for (const eye of eyeRects(mood)) {
-          // The capsule's bounding corners, a little outside the capsule itself.
-          for (const [x, y] of [
-            [eye.x, eye.y],
-            [eye.x + eye.width, eye.y],
-            [eye.x, eye.y + eye.height],
-            [eye.x + eye.width, eye.y + eye.height]
-          ] as const) {
-            // CSS applies scale, then rotate, then translate, about the ball's centre.
-            const px = tx + scale * (x * Math.cos(turn) - y * Math.sin(turn))
-            const py = ty + scale * (x * Math.sin(turn) + y * Math.cos(turn))
-
-            expect(Math.hypot(px, py), `${mood} at ${degrees}deg`).toBeLessThan(BALL)
+          for (const x of [eye.x, eye.x + eye.width]) {
+            for (const y of [eye.y, eye.y + eye.height]) {
+              // Include the most extreme 4-unit activity movement.
+              expect(Math.hypot(x + tx! + 4, y + ty! + 4)).toBeLessThan(BALL)
+            }
           }
         }
       }

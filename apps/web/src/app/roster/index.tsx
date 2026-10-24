@@ -23,6 +23,7 @@ import {
 import { toHandle } from '../../lib/bot-handle'
 import { getBridge } from '../../lib/bridge'
 import { cn } from '../../lib/cn'
+import { moodForStatus } from '../../lib/face'
 import { reasoningOptions, runningLevel } from '../../lib/reasoning'
 import { toMillis } from '../../lib/time'
 import type { Bot, ModelOption, ReasoningEffort, Room, RoomEvent, Section } from '../../lib/types'
@@ -234,7 +235,7 @@ function BotRow({
         type="button"
       >
         <span className="relative shrink-0">
-          <Avatar {...botFace(bot)} name={bot.display_name} size="lg" />
+          <Avatar {...botFace(bot)} mood={moodForStatus(dot)} name={bot.display_name} size="lg" />
           <StatusDot status={dot} />
         </span>
         <span className="min-w-0 flex-1">

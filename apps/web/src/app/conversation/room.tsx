@@ -23,7 +23,7 @@ import { AskingRow, AskRows } from './asking-row'
 import { ClarifyCard } from './clarify-card'
 import { composerFieldClass, ComposerShell } from './composer'
 import { MemoryMarks } from './memory-marks'
-import type { Ask } from './steps'
+import { type Ask, liveMood } from './steps'
 import { WaitingBanner } from './waiting-banner'
 import { WorkStatus } from './work-status'
 
@@ -392,9 +392,8 @@ export function RoomConversation() {
                 <article className="flex gap-2 py-1" data-testid="room-event">
                   <span className="relative mt-1 shrink-0">
                     <Avatar
-                      className="hex-think"
                       {...botFace(bot)}
-                      mood="working"
+                      mood={message ? (liveMood(message) ?? 'working') : 'thinking'}
                       name={name}
                       size="sm"
                     />

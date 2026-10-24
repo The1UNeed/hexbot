@@ -208,7 +208,7 @@ function WorkCard({ computer, message }: { computer: boolean; message: Message }
 
 /**
  * The live line at the foot of a running turn. It stays until the whole turn
- * is done: the bot's bobbing face and muted words, no bubble behind them
+ * is done: the bot's face, thinking or working, and muted words, no bubble behind them
  * ("General is working", "General is running a command"). Click it for the
  * trace and the steps. When the turn ends the line for what it did takes its
  * place at once.
