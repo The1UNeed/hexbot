@@ -365,12 +365,24 @@ These new identity cases remain pending actual native execution.
 
 The earlier stable-marker/nightly-ASAR fixtures modeled a mixed install, not a
 normal updater transition. Pinned electron-updater 6.8.9 only passes /D when
-installDirectory is configured; Hexbot does not set it. A Settings track switch
-can therefore install the other GUID under LocalAppData/Programs while leaving
-the original install/receipt. That Programs install is outside this installer's
-managed discovery and is not migrated or removed by Repair. This remains a
-Windows unsupported-product limitation; no Settings, GUID or channel policy is
-changed here.
+installDirectory is configured; Hexbot does not set it.
+
+Windows packages are local and CI probe builds only. `release.yml` has no
+Windows job, and `updates.hexbot.app` has no Windows app feed or installer, so
+a probe build's update check finds nothing to install. Against a local probe
+feed, a Settings track switch runs the other track's NSIS, which has a distinct
+GUID. It installs that app under LocalAppData/Programs, outside this
+installer's managed root and discovery, and leaves the original identity and
+its receipt in place. Repair does not migrate or remove it. Published macOS and
+Linux track switching is unchanged, and no Settings, updater, GUID or channel
+behaviour changes here.
+
+This is an explicit remaining Windows enablement gate; no handoff or fix is
+included. A genuine handoff needs published, signed Windows installers, a
+verifier available to both editions, an installer-engine switch for the same
+option that leaves an honest, recoverable partial state if NSIS fails (no
+rollback is claimed after a destructive NSIS step, and no migration journal),
+and a way to ask the running app of the other track to quit.
 
 Native 35f0 run 39876584756, job 120163547201, proved actual creator exit/kill
 zero cleanup, the distinct watchdog124/acquisition101 controls, both scheduler

@@ -175,7 +175,9 @@ notice with no buttons until the app closes and reopens on the new version.
 Every check, download, and failure is written to `<home>/logs/desktop.log`.
 A nightly install ignores a stable version in the bucket and the other way
 round; switching tracks in Settings runs a check on the new track at once,
-with downgrades allowed.
+with downgrades allowed. Windows has no published build or feed; how a track
+switch behaves in its local and CI probe builds is an open Windows gate
+(`docs/windows-build-contract.md`).
 
 ### Updating a daemon from a client
 
