@@ -1096,11 +1096,47 @@ A client newer than the daemon asks the daemon to update itself
   with `service` the daemon fetches
   `daemon/native/<version>/<target>/manifest.json`, verifies the target archive
   and its SHA-256, activates the runtime, and restarts itself. Errors: 4210
-  no capability, 4211 an update is already running, 4212 already on that
-  version. Service updates require a newer source build, using manifest
-  `builtAt` across Stable and Nightly. An older or equally old build reports
-  failure before downloading its archive.
-  The manifest must carry a release signature at `manifest.json.sig`
+  no capability, 4211 an update is already running, 4212 chronology or
+  selection refused.
+  A service update needs a positive manifest `builtAt` strictly greater than
+  every one the daemon knows: its running, selected and recorded runtimes,
+  across Stable and Nightly. The check repeats under the activation lock before
+  publication. A higher version never authorizes an equal, older or unknown
+  `builtAt`.
+  With `desktop`, an app that is already current can restart a daemon it started
+  on a verified runtime instead of updating itself, including on Linux outside
+  the AppImage. It prepares that runtime before stopping the daemon. It reports
+  success only once the replacement's home, PID and executable match. It never
+  stops a daemon run by a service or another app. If preparation fails, including
+  when the retained runtime cannot satisfy the client, the daemon keeps running.
+  Failure after stopping or while waiting for readiness is reported; recovery
+  may also fail.
+  Unlike automatic service updates, explicit packaged POSIX selection may accept
+  an equal positive `builtAt`, but only for a later canonical release Nightly
+  (`X.Y.Z-nightly.YYYYMMDD.N`) with the same `X.Y.Z` and target. Equal `builtAt`
+  does not mean the builds share a source commit. The selected manifest, complete
+  file hashes and recorded identity must agree. Executable access is checked for
+  the current user. Matching trusted bytes with permission damage can be repaired
+  into owned staging without changing the damaged selection's permissions.
+  The record's `builtAt` is a historical floor, separate from bundle identity.
+  It may exceed the selected manifest's chronology after explicit setup chooses
+  an older bundle. The selected bundle itself must be at the floor for a packaged
+  tie or exact-version repair; automatic updates must still exceed the floor.
+  Legacy Python handoff records omit `files` and `builtAt`. Packaged selection
+  verifies their identity against the complete selected manifest, actual bytes
+  and executable access, and derives chronology from that manifest while keeping
+  every other known floor. A present invalid or conflicting `files` map still
+  fails. Missing records or selected manifests, corrupt records and conflicting
+  identities are refused, not treated as a first install. Since the Full app
+  prepares before ordinary local attachment too, this can block starting or
+  connecting to its local daemon.
+  Automatic updates keep their strict chronology checks. Existing explicit
+  `hexbot setup --activate` from a verified bundle can rewrite damaged metadata
+  and keeps the highest valid `builtAt` it can still read independently. The
+  installer's Headless Update or repair uses this path; Full has no installer
+  runtime-repair route. Explicit installer choices may select an older bundle
+  without lowering a readable historical floor.
+  A service-download manifest must carry a release signature at `manifest.json.sig`
   (docs/release.md, "Update signing"); without a valid one the update fails
   before anything downloads, and the SHA-256 in the signed manifest then pins
   the archive.
@@ -1108,7 +1144,7 @@ A client newer than the daemon asks the daemon to update itself
   percent, message, at}`. `status` is `idle`, `requested`, `checking`,
   `downloading`, `installing`, `restarting`, `up-to-date`, or `failed`.
   A successful update ends with the connection dropping and the daemon
-  coming back on the requested version.
+  coming back on a verified runtime that satisfies the requesting client.
 
 ### Users and usage
 

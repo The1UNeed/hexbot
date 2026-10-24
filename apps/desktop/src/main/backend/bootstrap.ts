@@ -1,18 +1,22 @@
 import { createHash } from 'node:crypto'
 import { existsSync } from 'node:fs'
-import { chmod, cp, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, symlink, writeFile } from 'node:fs/promises'
+import { lstat, mkdir, mkdtemp, readFile, readdir, realpath, rm, symlink, writeFile } from 'node:fs/promises'
 import { arch, platform } from 'node:os'
-import { basename, dirname, join } from 'node:path'
+import { basename, dirname, isAbsolute, join, relative } from 'node:path'
 import { spawn } from 'node:child_process'
 
+import { tmpdir } from 'node:os'
+
 import { app } from 'electron'
+import semver from 'semver'
 
 import { migrateLegacyService } from '../service'
 import voiceRequirements from '../../../../../backend/hexbot-core/assets/edge-tts.requirements.txt?raw'
-import { lockedDaemonPid } from './manager'
+import { lockedDaemonPid, type RuntimeActivation } from './manager'
 import { downloadTool, installTool } from './tools'
+import { nodePath } from './node-path'
 
-import { binDir, hexbotHome, nativeDir, nativeServiceExecutable, runtimeDir } from './paths'
+import { binDir, canonicalRuntimePath, hexbotHome, nativeDir, nativeServiceExecutable, runtimeDir } from './paths'
 
 export type BootstrapStage = 'uv' | 'python' | 'runtime' | 'dependencies' | 'done'
 export interface BootstrapProgress {
@@ -34,7 +38,7 @@ export interface BootstrapDeps {
   arch: string
 }
 
-let activeInstall: Promise<void> | undefined
+let activeInstall: Promise<RuntimeActivation | undefined> | undefined
 
 async function appendLog(data: string | Buffer): Promise<void> {
   const { appendFile } = await import('node:fs/promises')
@@ -47,29 +51,44 @@ export async function runChild(
   command: string,
   args: string[],
   options: { cwd?: string; env?: NodeJS.ProcessEnv } = {},
-  onLine?: (line: string) => void
+  onLine?: (line: string, stream: 'stdout' | 'stderr') => void
 ): Promise<void> {
   await mkdir(join(hexbotHome(), 'logs'), { recursive: true })
   await new Promise<void>((resolve, reject) => {
-    const child = spawn(command, args, { cwd: options.cwd, env: options.env ?? process.env })
+    const child = spawn(command, args, { windowsHide: process.platform === 'win32', cwd: options.cwd, env: { ...(options.env ?? process.env), HEXBOT_HOME: hexbotHome() } })
     const pending = new Map<NodeJS.ReadableStream, string>()
+    let stderr = ''
+    let logs = Promise.resolve()
+    let logFailure: unknown
+    const emitLine = (stream: NodeJS.ReadableStream, line: string): void =>
+      onLine?.(line, stream === child.stdout ? 'stdout' : 'stderr')
     const consume = (stream: NodeJS.ReadableStream, chunk: Buffer): void => {
-      void appendLog(chunk)
+      logs = logs.then(() => appendLog(chunk)).catch(error => { logFailure ??= error })
+      if (stream === child.stderr) stderr = `${stderr}${chunk.toString()}`.slice(-4096)
       const parts = `${pending.get(stream) ?? ''}${chunk.toString()}`.split(/\r?\n/)
       pending.set(stream, parts.pop() ?? '')
-      for (const line of parts.filter(Boolean)) onLine?.(line)
+      for (const line of parts.filter(Boolean)) emitLine(stream, line)
     }
     const flush = (): void => {
-      for (const line of pending.values()) if (line) onLine?.(line)
+      for (const [stream, line] of pending) if (line) emitLine(stream, line)
       pending.clear()
     }
     child.stdout.on('data', chunk => consume(child.stdout, chunk))
     child.stderr.on('data', chunk => consume(child.stderr, chunk))
     child.once('error', reject)
-    child.once('exit', code => {
+    // close follows stdio draining; exit can precede the last protocol bytes.
+    child.once('close', code => {
       flush()
-      if (code === 0) resolve()
-      else reject(new Error(`${command} exited with code ${code ?? 'unknown'}`))
+      void logs.then(() => {
+        const failure = code === 0 ? undefined : new Error(
+          `${command} exited with code ${code ?? 'unknown'}${stderr.trim() ? `: ${stderr.trim()}` : ''}`
+        )
+        if (logFailure) reject(new AggregateError(
+          [...(failure ? [failure] : []), logFailure], 'Runtime command logging failed'
+        ))
+        else if (failure) reject(failure)
+        else resolve()
+      })
     })
   })
 }
@@ -101,7 +120,7 @@ async function verifyNativeRuntime(
   const manifest = await readManifest(directory)
   if (manifest.version !== deps.appVersion || manifest.target !== `${deps.platform}-${deps.arch}`)
     throw new Error('Native runtime version or architecture does not match this app')
-  const required = ['hexbot', 'hexbot-core', 'node', 'pi/hexbot-pi', 'pi/package-lock.json',
+  const required = [...(deps.platform === 'win32' ? ['hexbot.exe', 'hexbot-cli.exe', 'node.exe', 'pi/launch.mjs', 'pi/search-tools.mjs', 'bin/rg.exe', 'bin/fd.exe', 'web/index.html'] : ['hexbot', 'hexbot-core', 'node', 'pi/hexbot-pi']), 'pi/package-lock.json',
     'pi/node_modules/@earendil-works/pi-coding-agent/dist/cli.js']
   if (!manifest.files || required.some(file => !manifest.files[file]))
     throw new Error('Native runtime manifest is incomplete')
@@ -134,7 +153,8 @@ export async function installCodeRuntime(deps: BootstrapDeps): Promise<void> {
   const options = { cwd: runtimeDir(), env: { ...process.env,
     UV_PYTHON_INSTALL_DIR: join(hexbotHome(), 'python'),
     UV_PYTHON_BIN_DIR: binDir(),
-    UV_CACHE_DIR: join(hexbotHome(), 'runtime', 'uv-cache')
+    UV_CACHE_DIR: join(hexbotHome(), 'runtime', 'uv-cache'),
+    UV_LINK_MODE: 'copy'
   } }
   if (!deps.exists(python)) {
     deps.emit({ stage: 'python', message: 'Installing Python for code tools' })
@@ -188,7 +208,7 @@ export async function runningNativeDirectory(): Promise<string | null | undefine
 export async function pruneNativeRuntimes(active: string, previous?: string): Promise<void> {
   if (!(await lstat(runtimeDir())).isDirectory() || !(await lstat(join(runtimeDir(), 'native'))).isDirectory())
     throw new Error('Runtime directories cannot be symbolic links')
-  const root = await realpath(join(runtimeDir(), 'native'))
+  const root = await realpath(nativeDir(''))
   const running = await runningNativeDirectory()
   if (running === null) return
   const keep = new Set([dirname(active), previous && dirname(previous), running])
@@ -200,9 +220,6 @@ export async function pruneNativeRuntimes(active: string, previous?: string): Pr
   }
 }
 
-const logCleanup = (error: unknown): Promise<void> =>
-  appendLog(`Runtime cleanup: ${String(error)}\n`).catch(() => undefined)
-
 interface SelectedRuntime { executable: string; previous?: string; builtAt: number }
 
 // The runtime native-executable points at, if it is intact. The daemon's own
@@ -212,9 +229,9 @@ async function selectedRuntime(deps: BootstrapDeps): Promise<SelectedRuntime | u
     const selected = JSON.parse(await readFile(join(runtimeDir(), 'native-current.json'), 'utf8')) as {
       version: string; executable: string; previous?: string; files?: Record<string, string>
     }
-    const executable = await realpath(nativeServiceExecutable())
-    const nativeRoot = await realpath(join(runtimeDir(), 'native'))
-    if (executable !== selected.executable || !executable.startsWith(`${nativeRoot}/`)) return undefined
+    const executable = canonicalRuntimePath(nativeServiceExecutable(deps.platform))
+    const nativeRoot = canonicalRuntimePath(join(runtimeDir(), 'native'))
+    if (executable !== canonicalRuntimePath(selected.executable) || relative(nativeRoot, executable).startsWith('..') || isAbsolute(relative(nativeRoot, executable))) return undefined
     const directory = dirname(executable)
     const manifest = await readManifest(directory)
     await verifyNativeRuntime(directory, { ...deps, appVersion: selected.version }, selected.files ?? manifest.files)
@@ -227,71 +244,40 @@ async function selectedRuntime(deps: BootstrapDeps): Promise<SelectedRuntime | u
 // A probe that cannot start usually means this system is older than the runtime supports.
 async function probe(deps: BootstrapDeps, command: string, args: string[]): Promise<void> {
   let last = ''
-  await deps.run(command, args, {}, line => { last = line }).catch((error: Error) => {
-    throw new Error(`This system cannot run the Hexbot runtime: ${last || error.message}`)
-  })
+  await deps
+    .run(command, args, {}, line => {
+      last = line
+    })
+    .catch((error: Error) => {
+      throw new Error(`This system cannot run the Hexbot runtime: ${last || error.message}`, {
+        cause: error
+      })
+    })
 }
 
-async function copyNativeRuntime(source: string, deps: BootstrapDeps, signedHashes: Record<string, string>): Promise<string> {
-  let destination = nativeDir(deps.appVersion)
-  // Always verify an installed copy before reusing it after an interrupted install.
-  try {
-    await verifyNativeRuntime(destination, deps, signedHashes)
-    return destination
-  } catch { /* Copy the bundle below. */ }
-  await mkdir(dirname(destination), { recursive: true })
-  const staging = await mkdtemp(`${destination}.staging-`)
-  try {
-    await cp(source, staging, { recursive: true })
-    await verifyNativeRuntime(staging, deps, signedHashes)
-    for (const file of ['hexbot', 'hexbot-core', 'node', 'pi/hexbot-pi'])
-      await chmod(join(staging, file), 0o755)
-    await probe(deps, join(staging, 'pi/hexbot-pi'), ['--version'])
-    await probe(deps, join(staging, 'hexbot'), ['version'])
-    // Never replace files in a runtime that an existing daemon may be using.
-    if (existsSync(destination)) destination = `${destination}-${basename(staging).split('.staging-')[1]}`
-    await rename(staging, destination)
-    return destination
-  } finally {
-    await rm(staging, { recursive: true, force: true })
-  }
-}
-
-async function activateNativeRuntime(destination: string, deps: BootstrapDeps, files: Record<string, string>): Promise<void> {
-  const stable = nativeServiceExecutable()
-  const previous = await realpath(stable).catch(() => undefined)
-  const staging = await mkdtemp(join(runtimeDir(), '.native-link-'))
-  try {
-    const link = join(staging, 'launcher')
-    const executable = await realpath(join(destination, 'hexbot'))
-    await symlink(executable, link)
-    const metadata = join(staging, 'current.json')
-    await writeFile(metadata, JSON.stringify({ version: deps.appVersion, executable, previous, files }))
-    await rename(link, stable)
-    await rename(metadata, join(runtimeDir(), 'native-current.json'))
-    await pruneNativeRuntimes(executable, previous).catch(logCleanup)
-  } finally {
-    await rm(staging, { recursive: true, force: true })
-  }
-}
-
-async function installNativeRuntime(deps: BootstrapDeps): Promise<void> {
+async function installNativeRuntime(deps: BootstrapDeps): Promise<RuntimeActivation | undefined> {
   const source = join(deps.resourcesPath, 'hexbot-native')
   deps.emit({ stage: 'runtime', message: 'Preparing Hexbot runtime' })
   const signedHashes = await verifyNativeRuntime(source, deps)
   const { builtAt = 0 } = await readManifest(source)
+  if (deps.platform === 'win32') {
+    const selected = await selectedRuntime(deps)
+    // Rust owns Windows setup and atomic selection for both Full and Headless.
+    const executable = selected && selected.builtAt >= builtAt ? selected.executable : join(source, 'hexbot.exe')
+    const launcher = nodePath(canonicalRuntimePath(join(dirname(executable), 'pi/launch.mjs')))
+    await probe(deps, join(dirname(executable), 'node.exe'), [launcher, '--version'])
+    await deps.run(executable, ['setup', ...(selected && selected.builtAt >= builtAt ? [] : ['--activate']), '--json'], { env: { ...process.env, HEXBOT_HOME: hexbotHome() } })
+    deps.emit({ stage: 'done', message: 'Hexbot runtime is ready', percent: 100 })
+    return
+  }
   // The newest build wins whichever app or updater installed it, so Stable and
   // Nightly apps sharing this home never go back to an older daemon.
-  const selected = await selectedRuntime(deps)
-  const destination = selected && selected.builtAt >= builtAt ? undefined : await copyNativeRuntime(source, deps, signedHashes)
-  await installCodeRuntime(deps)
-  if (destination) await activateNativeRuntime(destination, deps, signedHashes)
-  else if (selected) await pruneNativeRuntimes(selected.executable, selected.previous).catch(logCleanup)
-  await migrateLegacyService().catch(error => appendLog(`Service migration: ${String(error)}\n`).catch(() => undefined))
-  deps.emit({ stage: 'done', message: 'Hexbot runtime is ready', percent: 100 })
+  return selectPosixRuntime(deps, source, signedHashes)
 }
 
-export async function performBootstrap(overrides: Partial<BootstrapDeps> = {}): Promise<void> {
+export async function performBootstrap(
+  overrides: Partial<BootstrapDeps> = {}
+): Promise<RuntimeActivation | undefined> {
   const deps: BootstrapDeps = {
     appIsPackaged: app?.isPackaged ?? false,
     appVersion: app?.getVersion?.() ?? '0.0.0',
@@ -312,12 +298,81 @@ export async function performBootstrap(overrides: Partial<BootstrapDeps> = {}): 
   }
   if (!deps.exists(join(deps.resourcesPath, 'hexbot-native', 'manifest.json')))
     throw new Error('This app is missing its Hexbot runtime. Reinstall the full package.')
-  await installNativeRuntime(deps)
+  const activation = await installNativeRuntime(deps)
+  if (deps.platform !== 'win32') return activation
+  // Windows setup owns selection; authenticate its returned durable selection.
+  const selected = await selectedRuntime(deps)
+  if (!selected) throw new Error('Runtime preparation returned no verified selection')
+  const manifest = await readManifest(dirname(selected.executable))
+  return { executable: selected.executable, version: manifest.version }
 }
 
-export function bootstrap(emit: ProgressListener): Promise<void> {
+export function bootstrap(emit: ProgressListener): Promise<RuntimeActivation | undefined> {
   activeInstall ??= performBootstrap({ emit }).finally(() => {
     activeInstall = undefined
   })
   return activeInstall
+}
+
+async function selectPosixRuntime(deps: BootstrapDeps, source: string, files: Record<string, string>): Promise<RuntimeActivation> {
+  if (deps.platform !== 'darwin' && deps.platform !== 'linux')
+    throw new Error('Runtime-only selection is unavailable on this platform')
+  const manifest = await readManifest(source)
+  await probe(deps, join(source, 'pi/hexbot-pi'), ['--version'])
+  await probe(deps, join(source, 'hexbot'), ['version'])
+  await installCodeRuntime(deps)
+  const scratch = await mkdtemp(join(tmpdir(), 'hexbot-runtime-manifest-'))
+  let failure: unknown
+  try {
+    const effective = join(scratch, 'manifest.json')
+    await writeFile(effective, JSON.stringify({ ...manifest, files }), { mode: 0o600 })
+    let activation: RuntimeActivation | undefined
+    let reportedError: string | undefined
+    let protocolError: unknown
+    await deps
+      .run(
+        join(source, 'hexbot'),
+        ['setup', '--select-runtime', '--manifest', effective, '--json'],
+        { env: { ...process.env, HEXBOT_HOME: hexbotHome() } },
+        (line, stream) => {
+          if (stream !== 'stdout') return
+          try {
+            const result = JSON.parse(line) as {
+              stage?: string
+              message?: string
+              executable?: string
+              version?: string
+            }
+            if (result.stage === 'error') reportedError = result.message
+            if (result.stage === 'done' && result.executable && result.version)
+              activation = { executable: result.executable, version: result.version }
+          } catch (error) {
+            protocolError = error
+          }
+        }
+      )
+      .catch(error => {
+        throw reportedError ? new Error(reportedError, { cause: error }) : error
+      })
+    if (protocolError)
+      throw new Error('Runtime selection returned an invalid response', { cause: protocolError })
+    if (!activation || !semver.valid(activation.version))
+      throw new Error('Runtime selection did not return a verified identity')
+    const executable = await realpath(activation.executable)
+    const root = await realpath(nativeDir(''))
+    if (executable !== activation.executable || !executable.startsWith(`${root}/`))
+      throw new Error('Runtime selection returned an invalid executable')
+    await migrateLegacyService().catch(error => appendLog(`Service migration: ${String(error)}\n`))
+    deps.emit({ stage: 'done', message: 'Hexbot runtime is ready', percent: 100 })
+    return activation
+  } catch (error) {
+    failure = error
+    throw error
+  } finally {
+    await rm(scratch, { recursive: true, force: true }).catch(error => {
+      throw failure
+        ? new AggregateError([failure, error], 'Runtime preparation and cleanup failed')
+        : error
+    })
+  }
 }

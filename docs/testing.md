@@ -225,6 +225,14 @@ route and composer checked before continuing.
   dbus-run-session -- xvfb-run -a -s '-screen 0 1600x1200x24' sh -c 'openbox >/dev/null 2>&1 & node scripts/dev/native-ui-smoke.mjs --desktop --edition=client'
   ```
 - Web bundle: `pnpm --filter ./apps/web run typecheck && pnpm --filter ./apps/web run test --run && pnpm --filter ./apps/web run lint && pnpm --filter ./apps/web run build`.
+- POSIX runtime selection and readiness: `node scripts/dev/runtime-selection-smoke.mjs`.
+  Builds real `.58` and `.59` daemons with equal `builtAt` from a disposable source
+  copy. Damaged identity metadata leaves `.58` running. Permission damage to a
+  separately selected `.59` also refuses preparation without stopping `.58`;
+  matching trusted `.59` source repairs into staging and starts an authenticated
+  owned replacement. A `.60` request fails without stopping it. The test uses a
+  temporary target directory and daemon state and removes both when it finishes.
+  Needs the normal Rust and pnpm dependencies.
 - Desktop: `pnpm --filter ./apps/desktop run typecheck && pnpm --filter ./apps/desktop run test --run && pnpm --filter ./apps/desktop run build`.
   `pnpm install` downloads the Electron binary once, through the desktop
   `postinstall`. Electron 42 otherwise downloads it on first use, and
