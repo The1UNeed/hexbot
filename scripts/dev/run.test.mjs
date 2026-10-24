@@ -7,9 +7,9 @@ import { tmpdir } from 'node:os'
 import { delimiter, join } from 'node:path'
 import { promisify } from 'node:util'
 import { createInterface } from 'node:readline'
-import { once } from 'node:events'
+import { once, EventEmitter } from 'node:events'
 import { fileURLToPath } from 'node:url'
-import { derivePorts, printsSignInLink, validateDevArgs, ensurePiRuntime, prepareDevRuntime, devPiEntrypoint, pairingCode } from './run.mjs'
+import { createDevRunner, derivePorts, printsSignInLink, validateDevArgs, ensurePiRuntime, prepareDevRuntime, devPiEntrypoint, pairingCode } from './run.mjs'
 import { downloadTool, toolAsset } from '../../apps/desktop/src/main/backend/tools.ts'
 
 test('dev ports derive from the checkout path and stay apart per worktree', () => {
@@ -232,4 +232,190 @@ test('Windows Pi cache requires the real JS CLI, not an npm .cmd shim', async ()
     await ensurePiRuntime(root, install, 'win32')
     assert.equal(installs, 2)
   } finally { await rm(root, { recursive: true, force: true }) }
+})
+
+// Controlled children and a manually fired deadline keep stop tests event based.
+function controlledRunner() {
+  const children = [], calls = [], timers = [], exits = []
+  let clock = 100
+  const runner = createDevRunner({
+    hexbot: 'C:\\debug\\hexbot.exe', platform: 'win32', now: () => clock,
+    report: message => calls.push(message), exit: code => exits.push(code),
+    schedule: (callback, ms) => { const timer = { callback, ms }; timers.push(timer); return timer },
+    cancel: timer => { if (timer) timer.cancelled = true },
+    spawnChild: (command, args, options) => {
+      const child = new EventEmitter()
+      child.pid = 100 + children.length
+      child.exitCode = null
+      child.stdin = new EventEmitter()
+      child.stdin.end = () => { calls.push(`close ${child.pid}`); clock += 3 }
+      child.kill = signal => { calls.push(`kill ${child.pid} ${signal}`); return true }
+      child.finish = code => { child.exitCode = code; child.emit('exit', code) }
+      children.push(child)
+      calls.push({ command, args, options })
+      return child
+    }
+  })
+  return { runner, children, calls, timers, exits }
+}
+
+test('Windows wraps only web and desktop with literal argv and private input', async () => {
+  const { runner, calls, children } = controlledRunner()
+  const args = ['C:\\工具 path\\pnpm.cjs', 'a&b', '"literal"', '']
+  runner.start('web', 'C:\\node.exe', args)
+  runner.start('desktop', 'C:\\node.exe', args)
+  runner.start('daemon', 'C:\\debug\\hexbot.exe', ['serve'])
+  for (const [index, label] of ['web', 'desktop'].entries()) {
+    assert.equal(calls[index].command, 'C:\\debug\\hexbot.exe')
+    assert.deepEqual(calls[index].args, ['__dev-child', label, '--', 'C:\\node.exe', ...args])
+    assert.deepEqual(calls[index].options.stdio, ['pipe', 'inherit', 'inherit'])
+  }
+  assert.deepEqual(calls[2].args, ['serve'])
+  assert.equal(calls[2].options.stdio, 'inherit')
+  const stopped = runner.stop()
+  await Promise.resolve()
+  children.forEach(child => child.finish(0))
+  await stopped
+})
+
+test('Windows closes all inputs together and uses one deadline from first close', async () => {
+  const { runner, calls, timers, children, exits } = controlledRunner()
+  runner.start('web', 'node.exe', [])
+  runner.start('desktop', 'node.exe', [])
+  const stopped = runner.stop()
+  await Promise.resolve()
+  assert.deepEqual(calls.filter(call => typeof call === 'string'), ['close 100', 'close 101'])
+  assert.equal(timers.length, 1)
+  assert.equal(timers[0].ms, 19_994)
+  children[0].finish(0)
+  timers[0].callback()
+  await stopped
+  assert.deepEqual(calls.filter(call => typeof call === 'string' && call.startsWith('kill')), ['kill 101 SIGKILL'])
+  assert.ok(calls.some(call => typeof call === 'string' && call.includes('cleanup of desktop was not confirmed')))
+  assert.deepEqual(exits, [1])
+})
+
+test('Windows retains the original failure when a sibling cleanup also fails', async () => {
+  const { runner, children, exits } = controlledRunner()
+  runner.start('web', 'node.exe', [])
+  runner.start('desktop', 'node.exe', [])
+  const stopped = runner.stop(7)
+  await Promise.resolve()
+  children[0].finish(125)
+  children[1].finish(0)
+  await stopped
+  assert.deepEqual(exits, [7])
+})
+
+test('Windows rejects successful shutdown when a host refuses assignment', async () => {
+  const { runner, children, exits } = controlledRunner()
+  runner.start('web', 'node.exe', [])
+  const stopped = runner.stop()
+  await Promise.resolve()
+  children[0].finish(126)
+  await stopped
+  assert.deepEqual(exits, [1])
+})
+
+for (const failure of ['spawn-error', 'exit', 'stop']) test(`startup gates the next spawn after ${failure}`, async () => {
+  const { runner, children, timers, exits } = controlledRunner()
+  runner.start('web', 'node.exe', [])
+  let portReady
+  const ready = runner.ready(1234, 'web', () => new Promise(resolve => { portReady = resolve }))
+  if (failure === 'spawn-error') children[0].emit('error', new Error('ENOENT'))
+  else if (failure === 'exit') children[0].finish(9)
+  else void runner.stop()
+  assert.equal(await ready, false)
+  portReady()
+  runner.start('desktop', 'node.exe', [])
+  assert.equal(children.length, 1)
+  await Promise.resolve()
+  if (failure === 'stop') children[0].finish(0)
+  timers[0]?.callback()
+  await runner.stop()
+  assert.deepEqual(exits, [failure === 'stop' ? 0 : 1])
+})
+
+test('synchronous spawn failure prevents all later starts', async () => {
+  const exits = []
+  const runner = createDevRunner({ platform: 'win32', spawnChild: () => { throw new Error('spawn failed') },
+    report: () => {}, exit: code => exits.push(code) })
+  runner.start('web', 'node.exe', [])
+  assert.equal(runner.stopping, true)
+  assert.equal(runner.start('desktop', 'node.exe', []), undefined)
+  await runner.stop()
+  assert.deepEqual(exits, [1])
+})
+
+test('survivor termination failure still reports unconfirmed cleanup and exits 1', async () => {
+  const { runner, children, calls, timers, exits } = controlledRunner()
+  runner.start('web', 'node.exe', [])
+  children[0].kill = () => { throw new Error('owned handle termination failed') }
+  const stopped = runner.stop()
+  await Promise.resolve()
+  timers[0].callback()
+  await stopped
+  assert.deepEqual(exits, [1])
+  assert.ok(calls.some(call => typeof call === 'string' && call.includes('cleanup of web was not confirmed')))
+  assert.ok(calls.some(call => typeof call === 'string' && call.includes('owned handle termination failed')))
+})
+
+test('Unix retains inherited stdin and process-group stop', async () => {
+  const child = new EventEmitter()
+  child.pid = 42
+  const calls = []
+  const runner = createDevRunner({ platform: 'darwin', spawnChild: (command, args, options) => {
+    assert.equal(command, 'pnpm')
+    assert.equal(options.detached, true)
+    assert.equal(options.stdio, 'inherit')
+    return child
+  }, killGroup: (...args) => calls.push(args), schedule: (_callback, ms) => {
+    assert.equal(ms, 500)
+    return { unref() {} }
+  } })
+  runner.start('desktop', 'pnpm', ['dev'])
+  await runner.stop()
+  assert.deepEqual(calls, [[-42, 'SIGTERM']])
+})
+
+test('native Dev fixture provisions before one normal bridge start and authenticates readiness', async () => {
+  const { startDevRuntime, remainingStartup } = await import('../../backend/hexbot-core/tests/support/dev-app-harness.mjs')
+  const calls = []
+  const env = { HEXBOT_PI_EXECUTABLE: 'C:\\owned\\node.exe' }
+  let now = 100
+  const remaining = () => remainingStartup(280, () => now)
+  const result = await startDevRuntime({
+    provision: async () => { calls.push(['provision', remaining()]); now += 40; return env },
+    startClients: async value => { assert.equal(value, env); calls.push(['clients', remaining()]); now += 30 },
+    startOwnedDaemon: async value => { assert.equal(value, env); calls.push(['bridge', remaining()]); now += 50; return { port: 1234 } },
+    ready: async () => { calls.push(['ready', remaining()]); now += 20; return { port: 1234 } },
+    handshake: async (state, owned) => { assert.equal(state.port, owned.port); calls.push(['handshake', remaining()]); return { pid: 42 } }
+  })
+  assert.deepEqual(result, { pid: 42 })
+  assert.deepEqual(calls, [['provision', 180], ['clients', 140], ['bridge', 110], ['ready', 60], ['handshake', 40]])
+  assert.throws(() => remainingStartup(280, () => 281), /budget exhausted/)
+})
+
+for (const failed of ['provision', 'startClients', 'startOwnedDaemon', 'ready', 'handshake']) test(`native Dev startup preserves ${failed} failure without retry`, async () => {
+  const { startDevRuntime } = await import('../../backend/hexbot-core/tests/support/dev-app-harness.mjs')
+  const calls = []
+  const names = ['provision', 'startClients', 'startOwnedDaemon', 'ready', 'handshake']
+  const failure = new Error(failed)
+  await assert.rejects(startDevRuntime(Object.fromEntries(names.map(name => [name, async () => {
+    calls.push(name)
+    if (name === failed) throw failure
+  }]))), error => error === failure)
+  assert.deepEqual(calls, names.slice(0, names.indexOf(failed) + 1))
+})
+
+test('native sibling fixture requires surviving desktop acknowledgement independently of primary failure', async () => {
+  const { assertSurvivingDesktop } = await import('../../backend/hexbot-core/tests/support/dev-app-harness.mjs')
+  const good = { code: 1, exits: { web: null, desktop: 0 }, kills: [{ label: 'web', signal: 'SIGKILL' }], diagnostics: [] }
+  assertSurvivingDesktop(good)
+  for (const desktop of [125, 126, 3, null, undefined]) {
+    assert.throws(() => assertSurvivingDesktop({ ...good, exits: { desktop } }))
+  }
+  assert.throws(() => assertSurvivingDesktop({ ...good, kills: [...good.kills, { label: 'desktop', signal: 'SIGKILL' }] }))
+  assert.throws(() => assertSurvivingDesktop({ ...good, diagnostics: ['[dev] cleanup of desktop was not confirmed'] }))
+  assert.throws(() => assertSurvivingDesktop({ ...good, code: 0 }))
 })

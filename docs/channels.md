@@ -110,6 +110,8 @@ app as `Hexbot (dev)` instead (it runs the daemon itself). Its window, app
 menus, Dock, and app switcher use this name and the blue icon from the
 `apps/desktop/build/icon-dev.icon` bundle. Its data stays in the checkout's
 `.hexbot` directory.
+On Windows, `pnpm dev` runs Vite and electron-vite without stdin, so Vite's
+keyboard shortcuts are unavailable.
 On macOS, `scripts/dev/electron-launcher.mjs` creates an ad-hoc signed copy
 of Electron under `apps/desktop/.electron-runtime/` with a bundle id unique
 to the checkout and edition. The installed Electron dependency stays unchanged.
