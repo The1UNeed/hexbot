@@ -127,4 +127,57 @@ describe('handleDaemonUpdateRequest', () => {
     expect(updater.runRemoteUpdate).toHaveBeenCalledTimes(1)
     expect(await status()).toMatchObject({ status: 'up-to-date' })
   })
+
+  it('uses one manager preparation transition and reports readiness only after it resolves', async () => {
+    runtime.bootstrap.mockResolvedValue({
+      executable: '/verified/runtime/hexbot',
+      version: '0.1.5-nightly.20261022.59'
+    })
+    const start = vi.fn(async prepare => {
+      expect(await prepare()).toMatchObject({ version: '0.1.5-nightly.20261022.59' })
+      expect(await status()).toMatchObject({ status: 'installing' })
+      return { state: 'running' as const }
+    })
+    await handleDaemonUpdateRequest('0.1.5-nightly.20261022.59', { start })
+    expect(start).toHaveBeenCalledTimes(1)
+    expect(await status()).toMatchObject({
+      status: 'up-to-date',
+      version: '0.1.5-nightly.20261022.59'
+    })
+  })
+
+  it('retains updater and preparation or readiness errors in terminal failure', async () => {
+    for (const error of [
+      new Error('Runtime identity cannot be verified'),
+      new Error('Replacement daemon did not become ready')
+    ]) {
+      updater.runRemoteUpdate.mockResolvedValue({
+        outcome: 'failed',
+        message: 'Updates on Linux need the AppImage package.'
+      })
+      const start = vi.fn(async () => {
+        throw error
+      })
+      await handleDaemonUpdateRequest('0.1.5-nightly.20261022.59', { start })
+      expect(await status()).toMatchObject({ status: 'failed' })
+      expect((await status()).message).toContain('AppImage')
+      expect((await status()).message).toContain(error.message)
+    }
+  })
+
+  it('rejects a retained older selection inside prepare instead of starting it', async () => {
+    runtime.bootstrap.mockResolvedValue({
+      executable: '/verified/runtime/hexbot',
+      version: '0.1.5-nightly.20261022.58'
+    })
+    let mayStop = false
+    const start = vi.fn(async prepare => {
+      await prepare()
+      mayStop = true
+      return { state: 'running' as const }
+    })
+    await handleDaemonUpdateRequest('0.1.5-nightly.20261022.59', { start })
+    expect(mayStop).toBe(false)
+    expect(await status()).toMatchObject({ status: 'failed' })
+  })
 })

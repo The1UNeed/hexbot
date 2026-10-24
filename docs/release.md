@@ -175,10 +175,23 @@ its update archive and manifest. macOS archives exclude AppleDouble files and
 extended attributes. Release jobs archive the runtime inside the signed `.app`,
 so daemon self-updates carry the same signatures as the full package. Archiving
 recomputes the runtime manifest's file hashes after signing without changing the
-signed app. Activation preserves those hashes for desktop verification. Both the
-app and service updater keep the runtime with the newer manifest `builtAt`,
-including when switching between Stable and Nightly. Between builds of the same
-commit, which share `builtAt`, the higher version wins.
+signed app. Activation preserves those hashes for desktop verification. The
+automatic service updater requires a strictly newer positive `builtAt` than
+all known runtime floors, including across Stable and Nightly. Explicit packaged
+POSIX setup has a separate positive-tie exception for increasing canonical
+Nightlies of the same version base and target, with a fully verified durable
+selection. Timestamp equality does not establish commit identity.
+
+The app uses `setup --select-runtime --manifest ABSOLUTE_FILE --json` for POSIX
+runtime selection. This mode only verifies, copies when publication is needed,
+and selects the runtime under `activate.lock`. It installs no code tools, CLI
+wrapper or service. The app supplies a temporary effective manifest based on its
+bundled bytes. Identity and the complete file set must match the bundle;
+only macOS post-signing hashes for `node`, `hexbot-core`, `bin/rg` and `bin/fd`
+may differ. Linux hashes must all match. Rust verifies the source, normalizes
+only the staged manifest, and verifies the copied bytes again. Signed app
+resources are never changed. Missing or conflicting durable identity cannot
+be repaired by guessing from a selected manifest alone.
 
 The September 27 darwin-arm64 staging check reduced dependency files from
 463,982,503 to 86,636,413 bytes, about 81%. The complete bundle contains

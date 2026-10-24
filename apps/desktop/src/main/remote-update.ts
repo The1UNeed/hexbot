@@ -1,5 +1,9 @@
 import { mkdir, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
+import semver from 'semver'
+import { bootstrap } from './backend/bootstrap'
+import type { DaemonManager } from './backend/manager'
+import { requireRuntime } from './edition'
 import { hexbotHome, runtimeDir } from './backend/paths'
 import { errorMessage, log } from './log'
 import { runRemoteUpdate, type UpdateState } from './updater'
@@ -63,7 +67,22 @@ function failureMessages(error: unknown, seen = new Set<unknown>()): string[] {
   return messages
 }
 
-export async function handleDaemonUpdateRequest(requested: string): Promise<void> {
+function satisfies(version: string, requested: string): boolean {
+  if (!semver.valid(version) || !semver.valid(requested)) return false
+  if (
+    semver.prerelease(version)?.[0] === 'nightly' &&
+    semver.prerelease(requested)?.[0] === 'nightly'
+  )
+    return semver.gte(version, requested)
+  const base = (value: string) =>
+    `${semver.major(value)}.${semver.minor(value)}.${semver.patch(value)}`
+  return semver.gte(base(version), base(requested))
+}
+
+export async function handleDaemonUpdateRequest(
+  requested: string,
+  daemon?: Pick<DaemonManager, 'start'>
+): Promise<void> {
   if (running) return
   running = true
   log.info(`daemon asked for an app update to ${requested} (home ${hexbotHome()})`)
@@ -87,10 +106,28 @@ export async function handleDaemonUpdateRequest(requested: string): Promise<void
           })
         )
     })
+    if (result.outcome !== 'installing' && daemon) {
+      if (result.message) failures.push(result.message)
+      requireRuntime('Updating the local daemon')
+      await writes
+      await writeStatus('installing', { version: requested })
+      await daemon.start(async () => {
+        const activation = await bootstrap(() => undefined)
+        if (!activation || !satisfies(activation.version, requested))
+          throw new Error('The verified runtime does not satisfy the requested daemon version')
+        version = activation.version
+        return activation
+      })
+      terminal = true
+      await writes
+      await writeStatus('up-to-date', {
+        version,
+        message: 'The daemon is ready on the selected runtime.'
+      })
+      return
+    }
     terminal = true
     await writes
-    // Runtime-only restart must use the manager's serialized prepare transition.
-    // Until that interface is integrated, preserve the app updater's outcome.
     if (result.outcome === 'installing') await writeStatus('installing', { version })
     else {
       log.warn(`remote update ended: ${result.outcome} ${result.message ?? ''}`)

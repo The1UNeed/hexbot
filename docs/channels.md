@@ -21,11 +21,15 @@ its desktop app (see "Borrowed from T3 Code" at the end).
 Stable and Nightly can be installed side by side because their app ids
 differ. They share `~/.hexbot`, so a nightly can migrate state a stable build
 cannot read back. Back up the directory before opening a nightly.
-They also share one daemon runtime under `~/.hexbot/runtime`. Each app keeps
-the installed runtime when it was built from newer source than its own bundle
-(`builtAt` in the runtime manifest), so opening an older Stable or Nightly
-never moves the daemon back. Builds of the same commit share `builtAt`; the
-higher version wins, so a nightly re-run still reaches the daemon.
+They also share one daemon runtime under `~/.hexbot/runtime`. Selection keeps
+its highest known source chronology, recorded as `builtAt`, across tracks.
+Automatic daemon updates require a strictly newer positive `builtAt`.
+Explicit packaged POSIX setup can replace a verified Nightly with a later
+canonical release Nightly at the same positive chronology only when their
+major/minor/patch and target match. Equal timestamps do not prove a shared
+source commit. Reopening the earlier app keeps the verified selection;
+damaged or conflicting runtime identity refuses selection instead of treating
+it as a new installation.
 
 ## Which files belong to which channel
 
@@ -211,7 +215,7 @@ its machine. The daemon says how, through `update_capability` in
   hand.
 
 The client polls `hexbot.update.status` every two seconds and treats the
-connection dropping and coming back on the requested version as success,
+connection dropping and coming back on a version current for the client as success,
 the same proof T3 Code uses. A failure, including "nothing to install",
 stays on the page until dismissed.
 

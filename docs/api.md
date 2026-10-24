@@ -1097,15 +1097,24 @@ A client newer than the daemon asks the daemon to update itself
   `daemon/native/<version>/<target>/manifest.json`, verifies the target archive
   and its SHA-256, activates the runtime, and restarts itself. Errors: 4210
   no capability, 4211 an update is already running, 4212 already on that
-  version. Service updates require a newer source build, using manifest
-  `builtAt` across Stable and Nightly, or the same `builtAt` and a higher
-  version. Any other build reports failure before downloading its archive.
-  When that build or a newer one is already selected, as after the app
-  installed it, the daemon restarts into it without downloading. With
-  `desktop`, when the app's runtime is already current for the requesting
-  client and only its daemon is behind, the app restarts the daemon on that
-  runtime, also where the app cannot update itself (Linux outside the
-  AppImage).
+  version. Automatic service updates require positive manifest `builtAt`
+  strictly greater than the maximum known running, selected and durable runtime
+  chronology, including across Stable and Nightly. The check runs again under
+  the activation lock before publication. Equal, older and unknown chronology
+  cannot be authorized by a higher version number.
+  With `desktop`, an app that already has a suitable runtime can prepare it and
+  restart its owned daemon without installing another app update, including on
+  Linux outside the AppImage. Preparation finishes before stopping that daemon;
+  completion waits for the replacement's home, PID and executable identity.
+  An external daemon is not stopped. A retained runtime that cannot satisfy the
+  client reports failure and leaves the owned daemon running.
+  Explicit packaged POSIX setup permits a positive equal-chronology transition
+  only between canonical release Nightlies of the same target and version base,
+  with an increasing date/run. Equal timestamps do not identify a source commit.
+  The selected manifest, complete file hashes and durable identity must agree.
+  Exact-version byte repair also requires matching durable identity and floor.
+  Missing, corrupt or conflicting identity metadata refuses selection; torn
+  pointer/record states may require repairing the installation on its computer.
   The manifest must carry a release signature at `manifest.json.sig`
   (docs/release.md, "Update signing"); without a valid one the update fails
   before anything downloads, and the SHA-256 in the signed manifest then pins
@@ -1114,7 +1123,7 @@ A client newer than the daemon asks the daemon to update itself
   percent, message, at}`. `status` is `idle`, `requested`, `checking`,
   `downloading`, `installing`, `restarting`, `up-to-date`, or `failed`.
   A successful update ends with the connection dropping and the daemon
-  coming back on the requested version.
+  coming back on a verified runtime that satisfies the requesting client.
 
 ### Users and usage
 

@@ -12,11 +12,11 @@ Hexbot does not download an update during the check. When one is available, a pi
 
 The app and the daemon it talks to can be on different computers. When the daemon runs an older Hexbot than the app, the pill says "Update daemon" and Settings, Updates offers to update it. What happens depends on how the daemon runs on its computer:
 
-- **The Hexbot app runs the daemon.** That app downloads the update on its own track, then closes and reopens on the new version. The daemon comes back with it.
+- **The Hexbot app runs the daemon.** That app downloads the update on its own track, then closes and reopens on the new version. If the app already has a suitable runtime, it can prepare it and restart its own daemon without another app download. Preparation failures leave the running daemon alone. This also works on Linux outside the AppImage when the needed runtime is already bundled.
 - **The daemon runs as a service**, because it was installed as [Headless](/docs/install/#headless) or with Settings, Network, "Start the daemon at login". The daemon downloads the new version, installs it, and restarts itself.
 - **Started by hand** or from a source checkout. Update Hexbot on that computer yourself.
 
-Bots stop while the daemon restarts; chats and memory stay. The client waits for the daemon to come back and reports a failure if it does not. A daemon only moves to a build made from newer source, on either track, so switching between Stable and Nightly never takes it back to an older daemon. An older or equally old build is refused.
+Bots stop while the daemon restarts; chats and memory stay. The client waits for the daemon to come back and reports a failure if it does not. Automatic service updates require strictly newer source chronology on either track. Older or equal chronology is refused even when the version number is higher. Explicit packaged setup can select a later release Nightly at equal positive chronology when its version base and platform match and the existing runtime identity and files verify. Equal timestamps do not prove that builds share a source commit. A damaged or conflicting runtime record blocks selection and may require repairing the installation on the daemon computer. An app does not stop a daemon owned by another app or service.
 
 Native daemon and installer manifests require a signature from a trusted Hexbot
 release key. Their signed checksums pin the downloaded packages. If verification
