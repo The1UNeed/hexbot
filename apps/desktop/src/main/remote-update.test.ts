@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -12,74 +12,119 @@ const { handleDaemonUpdateRequest } = await import('./remote-update')
 
 describe('handleDaemonUpdateRequest', () => {
   let home: string
-  const calls: string[] = []
-  const stopped = { state: 'stopped' } as const
-  const daemon = {
-    stop: vi.fn(async () => (calls.push('stop'), stopped)),
-    start: vi.fn(async () => (calls.push('start'), stopped))
-  }
-  const status = async (): Promise<{ status: string; version: string | null }> =>
-    JSON.parse(await readFile(join(home, 'runtime/update-status.json'), 'utf8'))
+  const status = async (): Promise<{
+    status: string
+    version: string | null
+    message: string | null
+  }> => JSON.parse(await readFile(join(home, 'runtime/update-status.json'), 'utf8'))
 
   beforeEach(async () => {
     home = await mkdtemp(join(tmpdir(), 'hexbot-remote-update-'))
     vi.stubEnv('HEXBOT_HOME', home)
-    calls.length = 0
-    vi.clearAllMocks()
-    updater.runRemoteUpdate.mockResolvedValue({ outcome: 'up-to-date', message: 'The app is already up to date.' })
-    runtime.bootstrap.mockImplementation(async () => void calls.push('bootstrap'))
+    vi.resetAllMocks()
+    updater.runRemoteUpdate.mockResolvedValue({
+      outcome: 'up-to-date',
+      message: 'The app is already up to date.'
+    })
   })
   afterEach(async () => {
     vi.unstubAllEnvs()
     await rm(home, { recursive: true, force: true })
   })
 
-  it('restarts the daemon on the app runtime when only the daemon is behind', async () => {
-    runtime.selectedNativeVersion.mockResolvedValue('0.1.5-nightly.20261022.59')
-    await handleDaemonUpdateRequest('0.1.5-nightly.20261022.59', daemon)
-    expect(calls).toEqual(['bootstrap', 'stop', 'start'])
-    expect(await status()).toMatchObject({ status: 'installing', version: '0.1.5-nightly.20261022.59' })
+  it('keeps an already-current app result without attempting the held runtime transition', async () => {
+    await handleDaemonUpdateRequest('0.1.5-nightly.20261022.59')
+    expect(runtime.bootstrap).not.toHaveBeenCalled()
+    expect(await status()).toMatchObject({
+      status: 'up-to-date',
+      message: 'The app is already up to date.'
+    })
   })
 
-  it('restarts the daemon on an app runtime newer than requested', async () => {
-    runtime.selectedNativeVersion.mockResolvedValue('0.1.5-nightly.20261023.60')
-    await handleDaemonUpdateRequest('0.1.5-nightly.20261022.59', daemon)
-    expect(calls).toEqual(['bootstrap', 'stop', 'start'])
-    expect(await status()).toMatchObject({ status: 'installing', version: '0.1.5-nightly.20261023.60' })
+  it('preserves the useful AppImage failure', async () => {
+    updater.runRemoteUpdate.mockResolvedValue({
+      outcome: 'failed',
+      message: 'Updates on Linux need the AppImage package.'
+    })
+    await handleDaemonUpdateRequest('0.1.5-nightly.20261022.59')
+    expect(await status()).toMatchObject({
+      status: 'failed',
+      message: 'Updates on Linux need the AppImage package.'
+    })
   })
 
-  it('restarts the daemon on a Stable runtime of the release a Nightly client asked for', async () => {
-    // The client counts a daemon of the same release on the other track as current.
-    runtime.selectedNativeVersion.mockResolvedValue('0.1.5-alpha.2')
-    await handleDaemonUpdateRequest('0.1.5-nightly.20261022.59', daemon)
-    expect(calls).toEqual(['bootstrap', 'stop', 'start'])
+  it('reports a rejected update and preserves its cause and recovery errors', async () => {
+    const original = new Error('AppImage required')
+    const activation = new Error('Runtime verification failed', { cause: original })
+    updater.runRemoteUpdate.mockRejectedValue(
+      new AggregateError([activation, new Error('Recovery failed')], 'Update failed')
+    )
+    await expect(handleDaemonUpdateRequest('0.1.5')).resolves.toBeUndefined()
+    const result = await status()
+    expect(result.status).toBe('failed')
+    for (const message of [
+      'Update failed',
+      'Runtime verification failed',
+      'AppImage required',
+      'Recovery failed'
+    ])
+      expect(result.message).toContain(message)
   })
 
-  it('restarts the daemon when this app cannot update itself', async () => {
-    updater.runRemoteUpdate.mockResolvedValue({ outcome: 'failed', message: 'Updates on Linux need the AppImage package.' })
-    runtime.selectedNativeVersion.mockResolvedValue('0.1.5-nightly.20261022.59')
-    await handleDaemonUpdateRequest('0.1.5-nightly.20261022.59', daemon)
-    expect(calls).toEqual(['bootstrap', 'stop', 'start'])
-  })
-
-  it('reports nothing to install when the runtime is older than requested', async () => {
-    runtime.selectedNativeVersion.mockResolvedValue('0.1.4')
-    await handleDaemonUpdateRequest('0.1.5-nightly.20261022.59', daemon)
-    expect(calls).toEqual(['bootstrap'])
-    expect(await status()).toMatchObject({ status: 'up-to-date' })
-  })
-
-  it('reports a runtime that cannot be prepared and keeps the daemon running', async () => {
-    runtime.bootstrap.mockRejectedValue(new Error('This system cannot run the Hexbot runtime'))
-    await handleDaemonUpdateRequest('0.1.5-nightly.20261022.59', daemon)
-    expect(daemon.stop).not.toHaveBeenCalled()
+  it('does not let progress or late notifications overwrite terminal failure', async () => {
+    let report: (state: { status: string; message?: string }) => void = () => undefined
+    updater.runRemoteUpdate.mockImplementation(async callback => {
+      report = callback
+      callback({ status: 'error', message: 'AppImage required' })
+      callback({ status: 'installing' })
+      throw new Error('Installation failed')
+    })
+    await handleDaemonUpdateRequest('0.1.5')
+    report({ status: 'installing' })
     expect(await status()).toMatchObject({ status: 'failed' })
+    expect((await status()).message).toContain('AppImage required')
+    expect((await status()).message).toContain('Installation failed')
   })
 
   it('leaves the daemon alone while an app update installs', async () => {
     updater.runRemoteUpdate.mockResolvedValue({ outcome: 'installing', message: null })
-    await handleDaemonUpdateRequest('0.1.5-nightly.20261022.59', daemon)
+    await handleDaemonUpdateRequest('0.1.5-nightly.20261022.59')
     expect(runtime.bootstrap).not.toHaveBeenCalled()
-    expect(daemon.stop).not.toHaveBeenCalled()
+    expect(await status()).toMatchObject({ status: 'installing' })
+  })
+
+  it('keeps concurrent requests behind one update and releases the gate after failure', async () => {
+    let finish: () => void = () => undefined
+    let started: () => void = () => undefined
+    const pending = new Promise<void>(resolve => {
+      finish = resolve
+    })
+    const entered = new Promise<void>(resolve => {
+      started = resolve
+    })
+    updater.runRemoteUpdate.mockImplementationOnce(async () => {
+      started()
+      await pending
+      throw new Error('Download interrupted')
+    })
+    const first = handleDaemonUpdateRequest('0.1.5')
+    await entered
+    await handleDaemonUpdateRequest('0.1.6')
+    expect(updater.runRemoteUpdate).toHaveBeenCalledTimes(1)
+    finish()
+    await first
+    expect(await status()).toMatchObject({ status: 'failed', message: 'Download interrupted' })
+    await handleDaemonUpdateRequest('0.1.6')
+    expect(updater.runRemoteUpdate).toHaveBeenCalledTimes(2)
+  })
+
+  it('releases the request gate even when removing stale status fails', async () => {
+    const path = join(home, 'runtime/update-status.json')
+    await mkdir(path, { recursive: true })
+    await expect(handleDaemonUpdateRequest('0.1.5')).resolves.toBeUndefined()
+    await rm(path, { recursive: true })
+    await handleDaemonUpdateRequest('0.1.5')
+    expect(updater.runRemoteUpdate).toHaveBeenCalledTimes(1)
+    expect(await status()).toMatchObject({ status: 'up-to-date' })
   })
 })

@@ -1,8 +1,5 @@
 import { mkdir, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import semver from 'semver'
-import { bootstrap, selectedNativeVersion } from './backend/bootstrap'
-import type { DaemonManager } from './backend/manager'
 import { hexbotHome, runtimeDir } from './backend/paths'
 import { errorMessage, log } from './log'
 import { runRemoteUpdate, type UpdateState } from './updater'
@@ -14,8 +11,6 @@ import { runRemoteUpdate, type UpdateState } from './updater'
 // reads back for `hexbot.update.status` (backend/hexbot-core/src/services.rs),
 // because the app has no channel to the daemon of its own. On success the app
 // relaunches and the client sees the daemon come back on the new version.
-// When the app already has that version and only its daemon is behind, the
-// daemon restarts on the app's runtime instead.
 export const updateStatusFile = (): string => join(runtimeDir(), 'update-status.json')
 
 export type RemoteStatus =
@@ -57,66 +52,60 @@ async function writeStatus(
 
 let running = false
 
-// Whether a daemon on `version` is current for a client on `requested`, by the
-// client's own rule (daemonBehind in apps/web/src/lib/version-skew.ts): two
-// nightlies compare in full, any other pair by major.minor.patch.
-function satisfies(version: string, requested: string): boolean {
-  const nightly = (value: string) => semver.prerelease(value)?.[0] === 'nightly'
-  if (nightly(version) && nightly(requested)) return semver.gte(version, requested)
-  const release = (value: string) => `${semver.major(value)}.${semver.minor(value)}.${semver.patch(value)}`
-  return semver.gte(release(version), release(requested))
+function failureMessages(error: unknown, seen = new Set<unknown>()): string[] {
+  if (seen.has(error)) return []
+  seen.add(error)
+  const messages = [errorMessage(error)]
+  if (error instanceof Error && error.cause !== undefined)
+    messages.push(...failureMessages(error.cause, seen))
+  if (error instanceof AggregateError)
+    for (const nested of error.errors) messages.push(...failureMessages(nested, seen))
+  return messages
 }
 
-// Prepares the runtime this app ships, which keeps a newer one already in use,
-// and restarts the daemon when that runtime satisfies the request. Returns
-// whether it reported an outcome: false when there is nothing to restart on,
-// so the request ends with the app updater's result.
-async function restartOnAppRuntime(
-  requested: string,
-  daemon: Pick<DaemonManager, 'start' | 'stop'>
-): Promise<boolean> {
-  try {
-    await bootstrap(() => undefined)
-  } catch (error) {
-    log.warn(`remote update could not prepare the runtime: ${errorMessage(error)}`)
-    await writeStatus('failed', { message: errorMessage(error) })
-    return true
-  }
-  const selected = await selectedNativeVersion()
-  if (!semver.valid(selected) || !semver.valid(requested) || !satisfies(selected!, requested)) return false
-  log.info(`restarting the daemon on ${selected}`)
-  await writeStatus('installing', { version: selected })
-  await daemon.stop()
-  await daemon.start()
-  return true
-}
-
-export async function handleDaemonUpdateRequest(
-  requested: string,
-  daemon: Pick<DaemonManager, 'start' | 'stop'>
-): Promise<void> {
+export async function handleDaemonUpdateRequest(requested: string): Promise<void> {
   if (running) return
   running = true
   log.info(`daemon asked for an app update to ${requested} (home ${hexbotHome()})`)
-  await rm(updateStatusFile(), { force: true })
+  let writes = Promise.resolve()
+  let terminal = false
+  let version: string | null = null
+  const failures: string[] = []
   try {
+    await rm(updateStatusFile(), { force: true })
     const result = await runRemoteUpdate(state => {
+      if (terminal) return
+      if (state.status === 'error' && state.message) failures.push(state.message)
+      version = state.downloadedVersion ?? state.availableVersion ?? version
       const status = remoteStatus(state)
       if (status)
-        void writeStatus(status, {
-          percent: state.percent,
-          message: state.message,
-          version: state.downloadedVersion ?? state.availableVersion
-        })
+        writes = writes.then(() =>
+          writeStatus(status, {
+            percent: state.percent,
+            message: state.message,
+            version: state.downloadedVersion ?? state.availableVersion
+          })
+        )
     })
-    // Also when this app cannot update itself, as on Linux outside the AppImage.
-    if (result.outcome !== 'installing' && (await restartOnAppRuntime(requested, daemon))) return
-    if (result.outcome !== 'installing') {
+    terminal = true
+    await writes
+    // Runtime-only restart must use the manager's serialized prepare transition.
+    // Until that interface is integrated, preserve the app updater's outcome.
+    if (result.outcome === 'installing') await writeStatus('installing', { version })
+    else {
       log.warn(`remote update ended: ${result.outcome} ${result.message ?? ''}`)
       await writeStatus(result.outcome === 'up-to-date' ? 'up-to-date' : 'failed', {
-        message: result.message
+        message:
+          [...new Set([...failures, ...(result.message ? [result.message] : [])])].join('\n') ||
+          null
       })
     }
+  } catch (error) {
+    terminal = true
+    await writes
+    const message = [...new Set([...failures, ...failureMessages(error)])].join('\n')
+    log.warn(`remote update failed: ${message}`)
+    await writeStatus('failed', { message })
   } finally {
     running = false
   }

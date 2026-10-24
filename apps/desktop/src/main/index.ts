@@ -368,7 +368,7 @@ else {
       for (const window of BrowserWindow.getAllWindows())
         window.webContents.send('hexbot:updater:status', state)
     })
-    daemon.on('update-requested', (version: string) => void handleDaemonUpdateRequest(version, daemon))
+    daemon.on('update-requested', (version: string) => void handleDaemonUpdateRequest(version))
     await createWindow()
     try {
       tray = createTray(daemon, () => void showWindow())
