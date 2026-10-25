@@ -277,7 +277,7 @@ impl Pipe {
         unsafe { ptr::addr_of_mut!((*self.storage.get()).request) }
     }
     fn reset(&self) -> io::Result<()> {
-        debug_assert!(self.pending.is_none());
+        assert!(self.pending.is_none(), "cannot reuse a pending operation");
         let event = self
             .event
             .as_ref()
@@ -374,7 +374,10 @@ impl Pipe {
         Err(error.expect("GetOverlappedResult error saved"))
     }
     fn bytes(&self, count: u32) -> &[u8] {
-        debug_assert!(self.pending.is_none() && count <= 8192);
+        assert!(
+            self.pending.is_none() && count <= 8192,
+            "invalid terminal read count"
+        );
         unsafe {
             std::slice::from_raw_parts(
                 ptr::addr_of!((*self.storage.get()).buffer).cast::<u8>(),
@@ -461,16 +464,22 @@ impl Owner {
             let mut immediate = false;
             for index in 0..2 {
                 let pipe = self.pipes[index].as_mut().expect("installed pipe");
-                let bytes = pipe.collect()?;
+                let bytes = pipe.collect().map_err(|e| {
+                    io::Error::other(format!("stream {index} GetOverlappedResult: {e}"))
+                })?;
                 if let Some(count) = bytes {
                     self.output.append(index, pipe.bytes(count));
                     immediate = true;
                 }
-                if pipe.pending.is_none() && !pipe.eof && self.output.capture_failure.is_none() {
-                    if let Some(count) = pipe.read()? {
-                        self.output.append(index, pipe.bytes(count));
-                        immediate = true;
-                    }
+                if pipe.pending.is_none()
+                    && !pipe.eof
+                    && self.output.capture_failure.is_none()
+                    && let Some(count) = pipe
+                        .read()
+                        .map_err(|e| io::Error::other(format!("stream {index} ReadFile: {e}")))?
+                {
+                    self.output.append(index, pipe.bytes(count));
+                    immediate = true;
                 }
                 self.output.settlement.natural_eof[index] = pipe.eof;
             }
@@ -490,7 +499,7 @@ impl Owner {
         match unsafe { WaitForSingleObject(self.stop.as_raw_handle(), 0) } {
             0 => return Err(io::Error::other("probe wrapper cancelled")),
             WAIT_TIMEOUT => {}
-            _ => return Err(io::Error::last_os_error()),
+            result => return Err(wait_error(result)),
         }
         if Instant::now() >= self.deadline {
             return Err(io::Error::other(
@@ -500,11 +509,11 @@ impl Owner {
         Ok(())
     }
     fn reap(&mut self) -> io::Result<()> {
-        if self.output.settlement.child == ChildState::Unconfirmed {
-            if let Some(status) = self.child.as_mut().expect("owned child").try_wait()? {
-                self.output.status = status.code();
-                self.output.settlement.child = ChildState::Reaped;
-            }
+        if self.output.settlement.child == ChildState::Unconfirmed
+            && let Some(status) = self.child.as_mut().expect("owned child").try_wait()?
+        {
+            self.output.status = status.code();
+            self.output.settlement.child = ChildState::Reaped;
         }
         Ok(())
     }
@@ -568,11 +577,11 @@ impl Owner {
                     self.output.fail(format!("cancel stream {index}: {error}"));
                 }
             }
-            if self.output.settlement.child == ChildState::Unconfirmed {
-                if let Err(error) = self.child.as_mut().expect("owned child").kill() {
-                    self.output
-                        .fail(format!("stop directly owned probe: {error}"));
-                }
+            if self.output.settlement.child == ChildState::Unconfirmed
+                && let Err(error) = self.child.as_mut().expect("owned child").kill()
+            {
+                self.output
+                    .fail(format!("stop directly owned probe: {error}"));
             }
         }
         while self.output.settlement.child == ChildState::Unconfirmed
@@ -618,8 +627,9 @@ impl Owner {
                 {
                     if pipe.pending.is_some() {
                         let event = pipe.event.as_ref().expect("live event").as_raw_handle();
-                        if unsafe { WaitForSingleObject(event, INFINITE) } != 0 {
-                            let error = io::Error::last_os_error();
+                        let result = unsafe { WaitForSingleObject(event, INFINITE) };
+                        if result != 0 {
+                            let error = wait_error(result);
                             self.output.fail(format!(
                                 "exact operation event cannot confirm completion {index}: {error}"
                             ));
@@ -686,7 +696,14 @@ fn wait_events(handles: &[Handle], deadline: Option<Instant>) -> io::Result<()> 
     if result < handles.len() as u32 || result == WAIT_TIMEOUT {
         Ok(())
     } else {
-        Err(io::Error::last_os_error())
+        Err(wait_error(result))
+    }
+}
+fn wait_error(result: u32) -> io::Error {
+    if result == INFINITE {
+        io::Error::last_os_error()
+    } else {
+        io::Error::other(format!("unexpected event wait status {result}"))
     }
 }
 fn remaining_ms(deadline: Instant, now: Instant) -> u32 {
@@ -700,6 +717,18 @@ struct Worker {
     thread: Option<JoinHandle<Output>>,
 }
 impl Worker {
+    fn stop_and_join(&mut self) -> Output {
+        let failure = if unsafe { SetEvent(self.stop.as_raw_handle()) } == 0 {
+            Some(io::Error::last_os_error())
+        } else {
+            None
+        };
+        let mut output = self.join();
+        if let Some(error) = failure {
+            output.fail(format!("signal independent stop event: {error}"));
+        }
+        output
+    }
     fn join(&mut self) -> Output {
         // The worker does not use a wrapper-held lock or Tokio progress.
         let result = self.thread.take().expect("owned worker").join();
@@ -724,12 +753,9 @@ impl Worker {
 impl Drop for Worker {
     fn drop(&mut self) {
         if self.thread.is_some() {
-            unsafe {
-                SetEvent(self.stop.as_raw_handle());
-            }
             // A failed SetEvent cannot detach: the worker also has its original
             // operation deadline. Drop still waits for actual ownership release.
-            let _ = self.join();
+            let _ = self.stop_and_join();
         }
     }
 }
