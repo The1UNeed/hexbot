@@ -251,10 +251,40 @@ probes also cover Restricted PowerShell/CMD argument propagation, real 8.3
 aliases where the volume supplies them, interrupted task cleanup, foreign
 actions, Tauri app detachment, and owned Full quit/EOF/force cleanup with a real
 Runtime-owned Pi child and a descendant.
-The shutdown fixture binds each run to a fresh mode/nonce, waits for descendant
-startup and a real Pi RPC response, and retains kernel process handles before
-Pi can reply or exit. Lifecycle/CIM/exit-code diagnostics distinguish startup
-failure from cleanup; no production Pi stderr is captured or relaxed.
+The shutdown fixture binds each run to a fresh mode/nonce. Before accepting
+readiness, it retains the real PowerShell creator and duplicates its actual
+returned daemon handle, verifying PID, creation time, owner, canonical image
+and parent relationship. State-file PIDs grant no process authority. Readiness
+holds stdin outside Tokio's `Child::wait` and restores it on every exit path,
+so observing process exit cannot send EOF before the later shutdown command.
+Wrapper/daemon stdout and stderr are piped into bounded, redacted diagnostics.
+The fixture also waits for descendant startup and a real Pi RPC response,
+retaining kernel handles before Pi can reply or exit. Production Pi stderr
+capture and cleanup assertions remain unchanged.
+
+The ignored `real_service_parent_stdio_control` runs once each in fresh homes:
+A keeps the original no-redirect inner launch; B explicitly redirects and
+concurrently copies real stdout/stderr bytes. B also inherits non-redirected
+stdin through .NET Framework's `GetStdHandle` setup; the daemon's service path
+does not read it. There is no explicit stdin copy, but input is still inherited.
+An A startup failure remains an overall control failure even if B passes.
+The normal workflow selects only A. Before claiming B acceptance, explicitly
+invoke the control and the full six-mode fixture with
+`HEXBOT_SHUTDOWN_FORWARD_STDIO=1`, using the verified bundle in
+`HEXBOT_NATIVE_TEST_BUNDLE`:
+
+```powershell
+node scripts/dev/run-one-rust-test.mjs backend/hexbot-core/Cargo.toml windows_shutdown real_service_parent_stdio_control
+$env:HEXBOT_SHUTDOWN_FORWARD_STDIO = '1'
+node scripts/dev/run-one-rust-test.mjs backend/hexbot-core/Cargo.toml windows_shutdown owned_desktop_pipe_quit_and_restart_clean_up_real_pi_and_home_lock
+Remove-Item Env:\HEXBOT_SHUTDOWN_FORWARD_STDIO
+```
+
+Portable stdin controls check input ownership; GNU compilation checks source only.
+PowerShell/C# and exact Windows stdio transport remain unrun for this candidate;
+historical stdout loss is an inference, not an established cause. The historical
+a17 run completed four modes, timed out in service-exit readiness and never
+reached service-kill. The ignored control and B forwarding remain opt-in.
 A separate native supervisor probe
 starts/stops a local tunnel metrics fixture twice through real services cleanup.
 It does not prove live Cloudflare enrollment. A volume without distinct 8.3 names

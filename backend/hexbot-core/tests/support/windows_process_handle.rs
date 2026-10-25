@@ -7,6 +7,17 @@ pub struct ProcessHandle {
 }
 #[link(name = "kernel32")]
 unsafe extern "system" {
+    fn GetCurrentProcess() -> *mut std::ffi::c_void;
+    fn GetProcessId(handle: *mut std::ffi::c_void) -> u32;
+    fn DuplicateHandle(
+        source: *mut std::ffi::c_void,
+        handle: *mut std::ffi::c_void,
+        target: *mut std::ffi::c_void,
+        copy: *mut *mut std::ffi::c_void,
+        access: u32,
+        inherit: i32,
+        options: u32,
+    ) -> i32;
     fn OpenProcess(access: u32, inherit: i32, pid: u32) -> *mut std::ffi::c_void;
     fn WaitForSingleObject(handle: *mut std::ffi::c_void, milliseconds: u32) -> u32;
     fn GetExitCodeProcess(handle: *mut std::ffi::c_void, code: *mut u32) -> i32;
@@ -18,6 +29,45 @@ unsafe extern "system" {
         user: *mut u64,
     ) -> i32;
     fn CloseHandle(handle: *mut std::ffi::c_void) -> i32;
+}
+// Only the shutdown fixture needs to duplicate a creator's actual returned
+// handle. The duplicate deliberately has no termination or inheritance rights.
+#[allow(dead_code)]
+impl ProcessHandle {
+    pub fn duplicate(
+        source: *mut std::ffi::c_void,
+        original: *mut std::ffi::c_void,
+    ) -> std::io::Result<Self> {
+        let mut handle = std::ptr::null_mut();
+        if unsafe {
+            DuplicateHandle(
+                source,
+                original,
+                GetCurrentProcess(),
+                &mut handle,
+                0x00101000,
+                0,
+                0,
+            )
+        } == 0
+        {
+            return Err(std::io::Error::last_os_error());
+        }
+        let result = Self {
+            handle,
+            pid: unsafe { GetProcessId(handle) },
+        };
+        if result.pid == 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(result)
+    }
+    pub fn raw(&self) -> *mut std::ffi::c_void {
+        self.handle
+    }
+    pub fn try_clone(&self) -> std::io::Result<Self> {
+        Self::duplicate(unsafe { GetCurrentProcess() }, self.handle)
+    }
 }
 impl ProcessHandle {
     pub fn open(pid: u32) -> Self {
