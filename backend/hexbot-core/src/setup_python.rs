@@ -25,7 +25,11 @@ const KEY_PREFIX: &str = "cpython-3.11.";
 const KEY_SUFFIX: &str = "-windows-x86_64-none";
 const SHORT_LIMIT: u64 = 64;
 const IDENTITY_LIMIT: u64 = 16 * 1024;
-const OUTPUT_LIMIT: usize = 1024 * 1024;
+#[path = "setup_python_capture.rs"]
+mod capture;
+#[cfg(all(test, unix))]
+use capture::{ChildState, Settlement, WorkerState};
+use capture::{OUTPUT_LIMIT, Output};
 const PROBE_DEADLINE: Duration = Duration::from_secs(30);
 const PROBE_CLEANUP: Duration = Duration::from_secs(5);
 #[cfg(windows)]
@@ -926,18 +930,11 @@ pub(super) fn probe_environment(
     env
 }
 
-/// One child process result. `status` is `None` for abnormal termination.
-pub(super) struct Output {
-    pub status: Option<i32>,
-    pub stdout: Vec<u8>,
-    pub stderr: Vec<u8>,
-    pub capture_failure: Option<String>,
-    pub reaped: bool,
-}
 fn output_cause(output: &Output) -> String {
     format!(
-        "status {:?}; stdout {:?}; stderr {:?}{}",
+        "status {:?}; settlement {:?}; stdout {:?}; stderr {:?}{}",
         output.status,
+        output.settlement,
         tail(&output.stdout),
         tail(&output.stderr),
         output
@@ -948,11 +945,7 @@ fn output_cause(output: &Output) -> String {
     )
 }
 fn complete_capture(stage: &str, output: &Output) -> Result<()> {
-    if !output.reaped
-        || output.capture_failure.is_some()
-        || output.stdout.len() > OUTPUT_LIMIT
-        || output.stderr.len() > OUTPUT_LIMIT
-    {
+    if !output.complete() {
         return Err(refuse(
             stage,
             format!("probe capture did not complete: {}", output_cause(output)),
@@ -2132,11 +2125,11 @@ impl<R: Runner> Pass<'_, R> {
                 )
             })?;
         let decision = observer_result(&output, expected, &nonce, self.layout, key, graph);
-        if !output.reaped {
+        if !output.settlement.cleanup_eligible() {
             return Err(refuse(
                 "observer",
                 format!(
-                    "{}; scratch retained at {}",
+                    "{}; scratch retained at {} because full cleanup is ineligible",
                     decision
                         .err()
                         .map(|e| e.message)
@@ -2412,8 +2405,8 @@ where
     pass.packages(&key, recreated).await
 }
 
-/// Production processes: hidden children, null stdin, kill on drop, uv output
-/// appended to the bootstrap log.
+/// Production processes: hidden children and null stdin. Private capture owns
+/// read-only probes; uv mutation output is appended to the bootstrap log.
 #[cfg(windows)]
 pub(super) struct Processes;
 #[cfg(windows)]
@@ -2464,12 +2457,19 @@ impl Runner for Processes {
         bounded_output(command(executable, &args, cwd, env)).await
     }
 }
-// Windows cleanup remains blocked: pinned Tokio pipe reads can retain internal
-// blocking tasks after these outer futures are dropped. Root reap alone does
-// not establish the required reader settlement or safe scratch removal.
+// Production Windows probes own overlapped I/O and a joined event waiter.
 async fn bounded_output(command: tokio::process::Command) -> Result<Output> {
-    capture_output(command, PROBE_DEADLINE, PROBE_CLEANUP).await
+    #[cfg(windows)]
+    {
+        Ok(capture::capture(command, PROBE_DEADLINE, PROBE_CLEANUP).await)
+    }
+    #[cfg(not(windows))]
+    {
+        capture_output(command, PROBE_DEADLINE, PROBE_CLEANUP).await
+    }
 }
+// Retained Unix actual-child controls exercise async Unix pipes only.
+#[cfg(all(test, unix))]
 async fn capture_output(
     mut command: tokio::process::Command,
     operation: Duration,
@@ -2486,6 +2486,7 @@ async fn capture_output(
     let stderr = child.stderr.take().expect("piped stderr");
     capture_child(&mut child, stdout, stderr, deadline, cleanup).await
 }
+#[cfg(all(test, unix))]
 async fn capture_child(
     child: &mut tokio::process::Child,
     stdout: impl tokio::io::AsyncRead + Unpin,
@@ -2518,8 +2519,8 @@ async fn capture_child(
     let mut stderr_bytes = Vec::new();
     let mut status = None;
     // One absolute deadline includes root wait AND both EOFs. A root exit does
-    // not complete descendant-held pipes. Dropping these outer futures does not
-    // settle pinned Tokio's internal Windows blocking readers.
+    // not complete descendant-held pipes. This Unix-only control cannot prove
+    // Windows request settlement; production Windows capture is separate.
     let result = tokio::time::timeout_at(deadline, async {
         tokio::try_join!(
             async {
@@ -2559,7 +2560,17 @@ async fn capture_child(
     }
     Ok(Output {
         status: status.as_ref().and_then(std::process::ExitStatus::code),
-        reaped: status.is_some(),
+        settlement: Settlement {
+            child: if status.is_some() {
+                ChildState::Reaped
+            } else {
+                ChildState::Unconfirmed
+            },
+            natural_eof: [failure.is_none(); 2],
+            pipes_closed: true,
+            worker: WorkerState::Joined,
+            cleanup_unconfirmed: status.is_none(),
+        },
         stdout: stdout_bytes,
         stderr: stderr_bytes,
         capture_failure: failure,

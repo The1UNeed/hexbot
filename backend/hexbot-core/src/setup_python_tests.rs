@@ -83,13 +83,22 @@ fn healthy_probe(site: &Path) -> Value {
 fn failure(kind: &str, exact: bool, name: Option<&str>, path: Option<&Path>) -> Value {
     json!({"type": kind, "exact_import_error": exact, "name": name, "path": path, "filename": null, "errno": null, "winerror": null})
 }
+fn completed_settlement() -> Settlement {
+    Settlement {
+        child: ChildState::Reaped,
+        natural_eof: [true; 2],
+        pipes_closed: true,
+        worker: WorkerState::Joined,
+        cleanup_unconfirmed: false,
+    }
+}
 fn out(status: Option<i32>, stdout: &str) -> Output {
     Output {
         status,
         stdout: stdout.as_bytes().to_vec(),
         stderr: Vec::new(),
         capture_failure: None,
-        reaped: true,
+        settlement: completed_settlement(),
     }
 }
 fn json_out(value: &Value) -> Output {
@@ -135,6 +144,7 @@ struct Fake {
     last_package: Option<Value>,
     replacement_dll: Option<Vec<u8>>,
     change_dll_during_probe: bool,
+    observer_cleanup_threshold: bool,
 }
 impl Fake {
     fn new(layout: &Layout) -> Self {
@@ -151,6 +161,7 @@ impl Fake {
             last_package: None,
             replacement_dll: None,
             change_dll_during_probe: false,
+            observer_cleanup_threshold: false,
         }
     }
     fn uv_calls(&self) -> Vec<String> {
@@ -289,12 +300,17 @@ impl Runner for Fake {
                 .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
                 .collect();
             let config: Value = serde_json::from_slice(&bytes).unwrap();
-            return Ok(json_out(&observer_fixture(
+            let mut output = json_out(&observer_fixture(
                 &self.layout,
                 self.last_package.as_ref().unwrap(),
                 error,
                 config["nonce"].as_str().unwrap(),
-            )));
+            ));
+            if self.observer_cleanup_threshold {
+                output.fail("primary capture error with classified observer bytes");
+                output.cleanup_unconfirmed();
+            }
+            return Ok(output);
         }
         Ok(self
             .entry
@@ -1750,11 +1766,11 @@ async fn observability_actual_child_complete_eof_and_cap_error_are_not_health() 
     ))
     .await
     .unwrap();
-    assert!(output.reaped && output.capture_failure.is_none());
+    assert!(output.reaped() && output.capture_failure.is_none());
     let error = ordinary_entrypoint(&output, "edge-tts 7.2.7").unwrap_err();
     assert!(error.message.contains("late diagnostics"));
     let output = capture_output(child_command("import sys; sys.stdout.buffer.write(b'x'*(1024*1024+1)); sys.stdout.flush(); sys.stdin.read()"), Duration::from_secs(2), PROBE_CLEANUP).await.unwrap();
-    assert!(output.reaped);
+    assert!(output.reaped());
     assert!(
         output
             .capture_failure
@@ -1789,7 +1805,7 @@ async fn observability_actual_hanging_child_is_stopped_and_reaped() {
     )
     .await
     .unwrap();
-    assert!(output.reaped && child.try_wait().unwrap().is_some());
+    assert!(output.reaped() && child.try_wait().unwrap().is_some());
     assert!(output.capture_failure.unwrap().contains("deadline"));
     drop(input);
 }
@@ -1832,7 +1848,7 @@ async fn observability_root_exit_does_not_complete_another_owned_writer_eof() {
     .await
     .unwrap();
     assert_eq!(output.status, Some(0));
-    assert!(output.reaped && output.capture_failure.unwrap().contains("deadline"));
+    assert!(output.reaped() && output.capture_failure.unwrap().contains("deadline"));
     drop(holder_input);
     assert!(
         tokio::time::timeout(PROBE_CLEANUP, holder.wait())
@@ -1882,7 +1898,7 @@ async fn observability_actual_pipe_read_error_preserves_primary_diagnostics_and_
     )
     .await
     .unwrap();
-    assert!(output.reaped);
+    assert!(output.reaped());
     assert!(
         output
             .capture_failure
@@ -2048,7 +2064,7 @@ fn observability_exact_observer_contract_refuses_all_independent_failures() {
                 "stderr" => output.stderr = b"late atexit diagnostics\n".to_vec(),
                 "capture" => output.capture_failure = Some("pipe read failed".into()),
                 "unreaped" => {
-                    output.reaped = false;
+                    output.settlement.child = ChildState::Unconfirmed;
                     output.capture_failure = Some("cleanup reap unconfirmed".into());
                 }
                 "nonzero" => output.status = Some(120),
@@ -2088,7 +2104,7 @@ async fn observability_unconfirmed_reap_retains_only_own_scratch_and_completion(
     let mut fake = Fake::new(&layout);
     fake.packages.push_back(json_out(&graph));
     let mut output = out(Some(0), "edge-tts 7.2.7\n");
-    output.reaped = false;
+    output.settlement.child = ChildState::Unconfirmed;
     output.capture_failure = Some("primary timeout; cleanup reap unconfirmed".into());
     fake.entry.push_back(output);
     let error = run(&layout, &mut fake).await.unwrap_err();
@@ -2415,7 +2431,7 @@ else:
                 );
             }
         }
-        assert!(output.reaped);
+        assert!(output.reaped());
         assert!(!sentinel.exists());
     }
 }
@@ -2594,7 +2610,7 @@ async fn observability_actual_child_zero_cleanup_budget_never_fabricates_reap() 
             .unwrap()
             .contains("operation deadline")
     );
-    if output.reaped {
+    if output.reaped() {
         assert!(child.try_wait().unwrap().is_some());
     } else {
         assert!(
@@ -2675,7 +2691,7 @@ async fn observability_actual_child_cleanup_result_controls_invocation_scratch_l
                 Duration::ZERO,
             )
             .await?;
-            self.reaped = output.reaped;
+            self.reaped = output.reaped();
             self.child = Some(child);
             Ok(output)
         }
@@ -2837,4 +2853,80 @@ async fn identity_stderr_alone_does_not_change_healthy_repeat_eligibility() {
         before,
         snapshot(&[&layout.identity, &layout.receipt, &layout.requirements])
     );
+}
+
+#[test]
+fn capture_result_requires_eof_settlement_and_join_without_erasing_failure() {
+    let mut output = capture::Output::empty();
+    output.fail("primary read error OS error 5");
+    assert!(output.settlement.cleanup_eligible()); // No child/worker/pipe existed.
+    assert!(complete_capture("observer", &output).is_err());
+    output.settlement = completed_settlement();
+    for state in [
+        Settlement {
+            child: ChildState::Unconfirmed,
+            ..completed_settlement()
+        },
+        Settlement {
+            natural_eof: [true, false],
+            ..completed_settlement()
+        },
+        Settlement {
+            pipes_closed: false,
+            ..completed_settlement()
+        },
+        Settlement {
+            worker: WorkerState::Running,
+            ..completed_settlement()
+        },
+    ] {
+        output.settlement = state;
+        assert!(complete_capture("observer", &output).is_err());
+    }
+    output.append(0, &vec![b'x'; OUTPUT_LIMIT + 32]);
+    output.append(1, b"late stderr diagnostic");
+    output.cleanup_unconfirmed();
+    output.settlement.child = ChildState::Reaped;
+    output.settlement.natural_eof = [true; 2];
+    output.settlement.pipes_closed = true;
+    output.settlement.worker = WorkerState::Joined;
+    assert_eq!(output.stdout.len(), OUTPUT_LIMIT + 1);
+    assert_eq!(output.stderr, b"late stderr diagnostic");
+    assert!(!output.settlement.cleanup_eligible());
+    assert!(complete_capture("observer", &output).is_err());
+    let causes = output.capture_failure.as_ref().unwrap();
+    assert!(causes.starts_with("primary read error OS error 5"));
+    assert!(causes.contains("stdout output exceeded") && causes.contains("CleanupUnconfirmed"));
+}
+#[tokio::test]
+async fn capture_threshold_remains_a_refusal_and_preserves_scratch_after_eventual_join() {
+    let (_dir, layout) = installed().await;
+    let before = snapshot(&[&layout.identity, &layout.receipt, &layout.requirements]);
+    let (graph, error) = syntax_evidence(&layout);
+    let mut fake = Fake::new(&layout);
+    fake.packages.push_back(json_out(&graph));
+    fake.observer_error = Some(error);
+    fake.observer_cleanup_threshold = true;
+    let error = run(&layout, &mut fake).await.unwrap_err();
+    assert!(error.message.contains("primary capture error"));
+    assert!(error.message.contains("owned syntax cause"));
+    assert!(error.message.contains("CleanupUnconfirmed"));
+    assert!(fake.uv_calls().is_empty());
+    assert_eq!(
+        before,
+        snapshot(&[&layout.identity, &layout.receipt, &layout.requirements])
+    );
+    let scratch: Vec<_> = fs::read_dir(&layout.runtime)
+        .unwrap()
+        .filter_map(|e| {
+            let p = e.unwrap().path();
+            p.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with(".hexbot-entrypoint-")
+                .then_some(p)
+        })
+        .collect();
+    assert_eq!(scratch.len(), 1);
+    assert!(scratch[0].join("sitecustomize.py").is_file());
 }

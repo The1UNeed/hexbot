@@ -125,24 +125,37 @@ OS errors and incomplete results refuse. Final success always uses the ordinary
 uninstrumented launcher; observing a classified exception never declares it
 healthy. No stderr filtering or localized-message parsing supplies authority.
 
-The required read-only identity/package/launcher contract is one private
-30-second absolute limit for process completion plus concurrent capped stream
-EOF, followed on failure by one shared 5-second cleanup envelope for the
-directly owned child and all owned reads. No reader may remain detached, and
-scratch must remain until cleanup is confirmed. These limits do not apply to
-uv mutations or alter Full/CI test deadlines. They grant no descendant or
-PID-pattern kill authority.
+Read-only identity/package/launcher probes use one private 30-second absolute
+operation deadline for setup, process completion and both capped stream EOFs.
+On failure, one shared 5-second cleanup threshold covers both exact I/O requests
+and the directly owned child. The private Windows helper owns two local
+first-instance overlapped byte pipes, fixed request/buffer storage and one joined
+event-wait worker. Its logon-SID DACL, noninheritable original handles and remote
+client rejection do not grant protection from hostile code with the same
+Windows authority. Parent copies of the write handles close immediately after
+spawn or launch failure. It uses no synchronous pipe reader or Tokio blocking
+reader. Zero-byte reads are not EOF, and root exit is not stream completion.
 
-The current implementation does not meet that cleanup contract on Windows.
-Pinned Tokio child pipes use internal blocking reads that can survive dropped
-outer futures. Confirmed direct-child reaping does not settle those reads.
-The helper bounds its outer wait and direct-child cleanup, but may remove
-observer scratch while an internal reader remains active. Unix process tests
-do not prove Windows reader settlement. This unresolved source blocker prevents
-acceptance; the required contract remains unchanged. Reported scratch-removal
-failures preserve the classified exception, package context and bounded process
-diagnostics. Structured identity refusals also retain captured diagnostics;
-identity eligibility does not require empty stderr.
+Cancellation requests do not prove settlement. The helper collects terminal
+results for each submitted operation and reaps its own child before closing
+those resources and joining the worker. It has no descendant or PID-pattern
+kill authority. Crossing the shared cleanup threshold permanently latches
+`CleanupUnconfirmed`, refuses repair/completion and preserves that invocation's
+scratch. Ownership and the wait continue until actual settlement and join;
+eventual cleanup cannot erase the failure or permit scratch deletion. Exceptional
+OS cleanup failure can block setup and Full startup. There is no universal
+35-second return guarantee. Dropping the async wrapper signals the independent
+stop event and joins the same worker, which needs no Tokio/receiver progress.
+These private probe limits do not change uv mutation timeouts or Full/CI budgets.
+
+This replacement is locally staged and unapproved. Windows native settlement,
+resource-lifetime and runtime-exit gates remain unexecuted; portable passes and
+GNU compilation do not establish those results. Scratch deletion requires full
+cleanup eligibility, not direct-child reaping alone. Scratch-removal failures
+retain the classified exception, package context and bounded captured output.
+Structured identity refusals also retain diagnostics; identity eligibility does
+not require empty stderr. Fresh independent GPT/Claude full-source and copy
+review remains required.
 
 Missing/stale voice completion takes the explicit pinned install/update branch
 after interpreter checks, without probing damaged old packages first. All final

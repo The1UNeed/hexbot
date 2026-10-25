@@ -458,13 +458,19 @@ the exact final-probe event blocker and the process-start interruption limit.
 The Python observability controls also exercise strict schema-2 DLL digests,
 limited schema-1 enrichment, exact tagged launcher exceptions, empty fully
 collected stderr and final ordinary launcher checks. Actual portable child
-processes exercise the private helper with shortened operation/cleanup deadlines,
-real Unix EOF/pipe ownership, overflow/read errors and primary diagnostics.
-They do not establish the required Windows reader settlement. Pinned Tokio's
-Windows blocking pipe reads can outlive dropped outer futures and direct-child
-reaping; this remains a source blocker. The required 30-second operation plus
-shared 5-second cleanup contract still forbids detached readers and premature
-scratch removal. Native launcher startup, actual loaded Windows DLL restoration,
-cleanup failures and the remaining boundary-injection limits are pending as
-documented in the Windows build contract. A future uv-pin change must prove
-same-key DLL byte compatibility or bring its own reviewed narrow migration.
+processes exercise the Unix helper with shortened deadlines, real Unix
+EOF/pipe ownership, overflow/read errors and primary diagnostics. They do not
+establish Windows settlement. The existing `windows_contract` target also
+includes the exact private Windows capture source and its native event-driven
+controls. These cover both streams, zero/late bytes, root-exited held writers,
+cap-plus-hang, partial setup, read/wait errors, cancellation races, spawn refusal,
+wrapper cancellation/join, unwind, handle/thread counts and runtime exit. A
+simulated past-threshold case retains a real pending request until fixture
+release; it does not reproduce an OS driver stall. All these native gates are
+unrun. The shared 5-second cleanup threshold latches permanent refusal/scratch
+retention while ownership remains until actual settlement/join, so exceptional
+OS cleanup can block setup and Full startup beyond 35 seconds. No detached
+reader or worker may substitute for settlement. Native launcher/DLL restoration
+and the documented boundary-injection limits remain pending. A future uv-pin
+change must prove same-key DLL byte compatibility or bring its own reviewed
+narrow migration.

@@ -3,6 +3,9 @@
 #[path = "../src/windows_paths.rs"]
 mod windows_paths;
 
+#[path = "../src/setup_python_capture.rs"]
+mod private_python_capture;
+
 #[path = "windows_contract/python_acceptance.rs"]
 mod owned_python_acceptance;
 
