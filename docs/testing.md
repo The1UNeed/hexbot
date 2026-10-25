@@ -475,3 +475,40 @@ shutdown and startup races run with `node --test scripts/dev/run.test.mjs`.
 Cross-compilation checks these sources but does not validate native shutdown.
 The direct Windows daemon stop is still a force-kill of its owned root; its
 kill-on-close job does not establish acknowledged descendant completion.
+
+The owned Python
+pass has portable controls in `backend/hexbot-core/src/setup_python_tests.rs`
+(record schema, cfg shapes, the four uv forms, the 0/1/29/63 against 64 byte
+launcher boundary, the exact-ImportError classifier, receipt ordering and
+lock serialization, with faked processes over real files and symlinks). Its
+native controls drive the production pass in
+`backend/hexbot-core/tests/windows_contract.rs` and the Full bootstrap in
+`apps/desktop/src/main/backend/windows-bootstrap.test.ts`.
+
+The remaining owned-Python native controls are included by the existing
+`windows_contract` target from
+`backend/hexbot-core/tests/windows_contract/python_acceptance.rs`. They use
+nine fresh installation homes across independent test functions, one empty
+boundary-refusal home, and the existing Full fixture. Module-only repair and combined damaged-DLL gates remain unignored; native execution
+and fresh source review remain required. See the Windows build contract for
+the exact final-probe event blocker and the process-start interruption limit.
+
+The Python observability controls also exercise strict schema-2 DLL digests,
+limited schema-1 enrichment, exact tagged launcher exceptions, empty fully
+collected stderr and final ordinary launcher checks. Actual portable child
+processes exercise the Unix helper with shortened deadlines, real Unix
+EOF/pipe ownership, overflow/read errors and primary diagnostics. They do not
+establish Windows settlement. The existing `windows_contract` target also
+includes the exact private Windows capture source and its native event-driven
+controls. These cover both streams, zero/late bytes, root-exited held writers,
+cap-plus-hang, partial setup, read/wait errors, cancellation races, spawn refusal,
+wrapper cancellation/join, unwind, handle/thread counts and runtime exit. A
+simulated past-threshold case retains a real pending request until fixture
+release; it does not reproduce an OS driver stall. All these native gates are
+unrun. The shared 5-second cleanup threshold latches permanent refusal/scratch
+retention while ownership remains until actual settlement/join, so exceptional
+OS cleanup can block setup and Full startup beyond 35 seconds. No detached
+reader or worker may substitute for settlement. Native launcher/DLL restoration
+and the documented boundary-injection limits remain pending. A future uv-pin
+change must prove same-key DLL byte compatibility or bring its own reviewed
+narrow migration.

@@ -65,7 +65,10 @@ no installer runtime-repair route.
 
 The shared tool pins and voice requirements live in `assets/`; the app uses the
 same files and receipts. An existing installation can run `hexbot setup` to repair
-its code tools and CLI wrapper without replacing the daemon bundle.
+its code tools and CLI wrapper without replacing the daemon bundle. On Windows
+that repair is bounded to the owned states listed in
+`docs/windows-build-contract.md` (Owned Python repair); other states refuse
+with the layer and cause, and Windows remains unsupported.
 
 `hexbot service install` installs and starts a per-user launchd or systemd service.
 Use `uninstall`, `start`, `stop`, or `restart` to manage it, `status --json` to inspect

@@ -4,15 +4,20 @@ use crate::install_ownership::{WRAPPER_MARKER, shell_quote};
 use crate::{Error, Result, common, services};
 use serde::Deserialize;
 use serde_json::{Value, json};
+#[cfg(not(windows))]
+use std::io::Write;
 use std::{
     collections::BTreeMap,
     fs,
     future::Future,
-    io::Write,
     path::{Path, PathBuf},
 };
+#[cfg(not(windows))]
 use tokio::process::Command;
 
+#[cfg(any(windows, test))]
+#[path = "setup_python.rs"]
+mod python;
 #[cfg(unix)]
 #[path = "setup_selection.rs"]
 mod selection;
@@ -257,6 +262,12 @@ pub async fn windows_contract_install_uv(home: &Path, archive: &Path) -> Result<
     )
     .await
 }
+// Native CI drives the production Windows Python pass directly, as `hexbot
+// setup` does after activation, in a disposable home.
+#[cfg(all(windows, debug_assertions))]
+pub async fn windows_contract_code_tools(home: &Path, emit: &impl Fn(&str, &str)) -> Result<()> {
+    install_code_runtime(home, emit).await
+}
 async fn download_tool(url: String, destination: PathBuf) -> Result<()> {
     services::download(&url, &destination, 256 * 1024 * 1024, true).await
 }
@@ -316,6 +327,7 @@ where
     )?;
     Ok(executable)
 }
+#[cfg(not(windows))]
 async fn run_uv(home: &Path, uv: &Path, args: &[&str]) -> Result<String> {
     let mut command = Command::new(uv);
     #[cfg(windows)]
@@ -878,64 +890,15 @@ esac
 
 #[cfg(windows)]
 async fn install_code_runtime(home: &Path, emit: &impl Fn(&str, &str)) -> Result<()> {
-    fs::create_dir_all(home.join("runtime"))?;
-    let runtime = home.join("runtime");
-    let _lock = tokio::task::spawn_blocking(move || services::activation_lock(&runtime))
-        .await
-        .map_err(|e| Error::new(5243, e.to_string()))??;
-    let uv = install_tool(
+    let asset = tool_asset("uv", &target())?;
+    python::provision(
         home,
-        "uv",
-        &tool_asset("uv", &target())?,
-        download_tool,
         emit,
+        &mut python::Processes,
+        |home| async move { install_tool(&home, "uv", &asset, download_tool, emit).await },
+        VOICE_REQUIREMENTS,
     )
-    .await?;
-    let environment = home.join("runtime/tools/code-python");
-    let python = environment.join("Scripts/python.exe");
-    if !python.is_file() {
-        emit("python", "Installing Python for code tools");
-        run_uv(home, &uv, &["python", "install", "--no-bin", "3.11"]).await?;
-        run_uv(
-            home,
-            &uv,
-            &[
-                "venv",
-                "--no-project",
-                "--managed-python",
-                "--python",
-                "3.11",
-                &environment.to_string_lossy(),
-            ],
-        )
-        .await?;
-    }
-    let receipt = home.join("runtime/tools/edge-tts.requirements.txt");
-    if !environment.join("Scripts/edge-tts.exe").is_file()
-        || fs::read_to_string(&receipt).ok().as_deref() != Some(VOICE_REQUIREMENTS)
-    {
-        emit("voice", "Installing voice tools");
-        let requirements = environment.join("requirements.txt");
-        fs::write(&requirements, VOICE_REQUIREMENTS)?;
-        run_uv(
-            home,
-            &uv,
-            &[
-                "pip",
-                "install",
-                "--python",
-                &python.to_string_lossy(),
-                "--require-hashes",
-                "--no-deps",
-                "--no-build",
-                "-r",
-                &requirements.to_string_lossy(),
-            ],
-        )
-        .await?;
-        common::atomic_write(&receipt, VOICE_REQUIREMENTS.as_bytes())?;
-    }
-    Ok(())
+    .await
 }
 #[cfg(any(windows, test))]
 fn legacy_cli(home: &Path, bin: &Path) -> Result<Option<PathBuf>> {

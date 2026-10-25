@@ -80,6 +80,168 @@ Both native and Electron provisioners explicitly set `UV_LINK_MODE=copy`, so
 new package installs do not share uv cache inodes. This does not establish a
 race-free hard-link boundary or change permissions on legacy Python files.
 
+### Owned Python repair
+
+Windows setup keeps one private identity record beside the venv at
+`runtime/tools/code-python-identity.json`. Schema 2 has exactly `schema`, the
+canonical `home`, the exact CPython `base_key`, and `base_dll_sha256`. The digest
+binds fixed `python311.dll` bytes observed through healthy base and venv probes
+that report the same actual loaded DLL path. It is not a signature or download
+provenance claim. Unknown fields, duplicates, foreign homes and unknown schemas
+refuse. No app, uv or voice version resets the Python identity.
+
+The ordered pass repairs only these owned states, once per layer:
+
+- A missing whole recorded base, a missing base DLL, or a missing/SHORT base
+  executable. SHORT means an ordinary, readable, unshared launcher under 64
+  bytes. A present DLL must match its prior schema-2 digest before an EXE repair;
+  existing short, changed, inaccessible, shared or reparse DLLs refuse.
+- A missing whole recorded venv, or its missing/SHORT redirector, against the
+  exact verified base executable. Other invalid cfg or identity states refuse.
+- Missing or SHORT `edge-tts.exe`, known missing locked modules/distributions,
+  a locked version mismatch, owned locked-graph syntax damage, or an exact
+  structured native import failure. Complete package-graph refusal dominates.
+
+For current receipts, a present launcher with repairable package damage runs
+once with an app-authored exception observer in a fresh private runtime scratch
+directory. Only that child's PYTHONPATH names the scratch; inherited Python
+settings are scrubbed. The observer removes its directory from sys.path and
+asks every existing meta-path finder directly about `sitecustomize`, bypassing
+the module cache. An alternate, missing finder method or uncertain lookup
+refuses. No installed package, launcher, cfg or completion file is edited by
+this observation. An accepted exception must bind the nonce, actual argv,
+canonical interpreter identity and exact builtin type to matching evidence in
+the same complete package graph, including the eight native pre-opens. A mere
+unrelated version mismatch cannot explain an unknown launcher failure.
+
+Every ordinary actual `edge-tts.exe --version` check requires exit zero, exactly
+the pinned version line, complete bounded stdout/stderr collection, and zero
+stderr bytes. This applies to healthy repeats, healthy-package checks before
+repair and all final paths. Healthy-package failure has no observer or pip
+fallback. The observer accepts either that version output or one complete tagged
+ASCII JSON exception, with the same empty-stderr and capture requirements.
+Startup warnings, late atexit diagnostics, abnormal exits, unknown exceptions,
+OS errors and incomplete results refuse. Final success always uses the ordinary
+uninstrumented launcher; observing a classified exception never declares it
+healthy. No stderr filtering or localized-message parsing supplies authority.
+
+Read-only identity/package/launcher probes use one private 30-second absolute
+operation deadline for setup, process completion and both capped stream EOFs.
+On failure, one shared 5-second cleanup threshold covers both exact I/O requests
+and the directly owned child. The private Windows helper owns two local
+first-instance overlapped byte pipes, fixed request/buffer storage and one joined
+event-wait worker. Its logon-SID DACL, noninheritable original handles and remote
+client rejection do not grant protection from hostile code with the same
+Windows authority. Parent copies of the write handles close immediately after
+spawn or launch failure. It uses no synchronous pipe reader or Tokio blocking
+reader. Zero-byte reads are not EOF, and root exit is not stream completion.
+
+Cancellation requests do not prove settlement. The helper collects terminal
+results for each submitted operation and reaps its own child before closing
+those resources and joining the worker. It has no descendant or PID-pattern
+kill authority. Crossing the shared cleanup threshold permanently latches
+`CleanupUnconfirmed`, refuses repair/completion and preserves that invocation's
+scratch. Ownership and the wait continue until actual settlement and join;
+eventual cleanup cannot erase the failure or permit scratch deletion. Exceptional
+OS cleanup failure can block setup and Full startup. There is no universal
+35-second return guarantee. Dropping the async wrapper signals the independent
+stop event and joins the same worker, which needs no Tokio/receiver progress.
+These private probe limits do not change uv mutation timeouts or Full/CI budgets.
+
+This replacement is locally staged and unapproved. Windows native settlement,
+resource-lifetime and runtime-exit gates remain unexecuted; portable passes and
+GNU compilation do not establish those results. Scratch deletion requires full
+cleanup eligibility, not direct-child reaping alone. Scratch-removal failures
+retain the classified exception, package context and bounded captured output.
+Structured identity refusals also retain diagnostics; identity eligibility does
+not require empty stderr. Fresh independent GPT/Claude full-source and copy
+review remains required.
+
+Missing/stale voice completion takes the explicit pinned install/update branch
+after interpreter checks, without probing damaged old packages first. All final
+identity, package, origin/loader and ordinary launcher checks remain mandatory.
+Verified whole-venv recreation alone removes its obsolete receipt before pip;
+a later failure leaves it absent. Other failures preserve prior completion
+bytes/absence. Native activation or package mutation may already have happened;
+there is no rollback promise. Healthy schema-2 repeats do not rewrite identity,
+requirements, receipts or Python files, and do not create observer scratch.
+
+Schema-1 records exist only in unreleased PR133 builds and fixtures. Healthy
+base/venv observations permit one atomic enrichment to schema 2 before voice
+work, an explicit one-time no-write exception. A missing/SHORT base EXE with a
+present DLL refuses under schema 1 because it has no prior healthy-DLL evidence.
+A missing DLL or proved whole base may use the existing exact-key repair, then
+enrich after both healthy observations. Already damaged bytes are never blessed
+retroactively. Unknown/malformed identities cannot enter migration.
+
+Every future uv-pin update must prove byte-identical fixed DLL payloads for the
+existing schema-2 exact keys it must repair, or carry its own separately reviewed
+narrow migration. Updating uv alone never changes a healthy identity or digest.
+A later same-key reinstall with different distribution bytes may mutate the base
+and then refuse the final digest; later invocations also refuse that mismatch.
+No automatic rebaseline, rollback or recovery recipe is provided.
+
+Downgrade behavior differs. Unreleased schema-1-aware PR133 code refuses schema
+2 as unsupported. Known main `670dc94c` has no identity-record handling and
+ignores the record, so it may mutate the environment. Returning to schema-2-aware
+code can then refuse changed bytes or identity. This is not a general backward
+compatibility or downgrade-refusal guarantee.
+
+Windows remains unsupported. Refused Python identity or code verification can
+prevent the Full daemon from starting. This scope provides no automatic recovery
+or Full option to skip code tools. Native runtime activation may already have
+completed. CLI/log errors name the layer and available original cause; logging
+requires an available safe log path. No renderer repair UI is promised.
+
+Portable controls run the actual private pass over owned files with process
+results supplied by a Runner. Actual local Python children additionally exercise
+hook lookup/finalization, Unicode serialization, output overflow/read failures,
+hanging children and root-exited/held-pipe EOF. The loaded-DLL API control uses
+an explicit emulation on non-Windows hosts. These are not shipped Windows
+launcher or DLL-restoration proof.
+
+Native source remains reachable through the unchanged full `windows_contract`
+target and `windows-bootstrap.test.ts` with a real Full bundle. The focused
+`tests/windows_contract/python_acceptance.rs` now contains nine independent
+native tests, each with one fresh installation home, plus one empty
+boundary-refusal home. Related cases reuse the same verified owned home. The
+existing production target and Full/direct callers retain A-F/N1-N7 controls,
+all thirteen locked versions/source origins, eight native origins/loaders,
+identity/digest bytes and restored payload hashes. Added gates cover actual
+module-only/dependency repairs, late/ordinary diagnostics, extra stdout, final flush/output caps, OS193/execute denial,
+alternate customization, loaded DLL paths, schema-1 enrichment/refusal and
+missing/SHORT-EXE combined with both 9-byte and section-truncated DLLs.
+
+Damage-only pinned uv interruption remains a process-start control, not proof
+of a partial-write window; its child is stopped and joined before production
+recovery. Missing RECORD is a separate deterministic fixture. Another fresh
+fixture observes exact allow-existing uv launcher/cfg hard-link behavior and
+never heals a production-repair fixture. Importable unpacked-cache tampering
+uses a missing launcher to reach pip; success must restore exact original bytes
+or fail the control. Explicit safe failure must preserve completion.
+
+ALL native A-F/N1-N7 and observer/DLL/migration results remain UNRUN/PENDING.
+Portable or GNU source checks do not settle them. A pinned launcher warning,
+cache inconsistency, different same-key DLL or unsupported alias/cfg behavior
+remains a failing acceptance gate, never a skip, whitelist or retry. The existing
+300-second Full deadline and 60-minute native workflow budget are unchanged;
+actual durations of the expanded native controls are unmeasured.
+
+Deterministic native final-probe crash/malformed injection remains blocked by
+no event after uv exits and before final probes. No production hook, filesystem
+race or sleep was added. Portable
+`final_package_crash_or_malformed_output_never_publishes_completion` and ordinary
+final-diagnostic controls check receipt/identity behavior across that simulated
+boundary. Forcing an unconfirmed native direct-child reap also lacks an honest
+deterministic injection at the real boundary. The native observer flush/cap
+controls instead damage owned module behavior before its original import. Portable
+actual-child capture controls cover the helper, and Runner controls pin scratch
+retention/status-120 refusal, but do not certify those Windows branches. Testing
+a future uv pin's different replacement bytes requires that separately reviewed
+pin; the portable Runner supplies changed bytes after the real mutation boundary
+and proves no rebaseline. Current native tampering tests cover pre-existing
+changed bytes without pretending to execute a different pin.
+
 ## Install and update contracts
 
 Change to Client explicitly checks service ownership before downloading and again
