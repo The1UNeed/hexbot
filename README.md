@@ -181,7 +181,4 @@ the current nightly and says stable is coming soon.
 ## License
 
 Hexbot's own source code is Apache-2.0, except where a file or directory
-states otherwise. See `LICENSE` and `NOTICE`. Hermes Agent is MIT licensed;
-its license is in `docs/upstream/HERMES_LICENSE.txt`. The bundled skills in
-`skills/` are MIT, as each one's `SKILL.md` states. Earlier releases keep
-the license they shipped with.
+states otherwise. See `LICENSE` and `NOTICE`. 
