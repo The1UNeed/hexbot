@@ -89,6 +89,7 @@ impl Fixture {
     fn command(&self, mode: &str) -> tokio::process::Command {
         let mut command = fixture_command(mode);
         command
+            .current_dir(self.directory.path())
             .env("HEXBOT_CAPTURE_READY", &self.ready_name)
             .env("HEXBOT_CAPTURE_GATE", &self.gate_name)
             .env("HEXBOT_CAPTURE_DIRECTORY", self.directory.path());
@@ -176,6 +177,11 @@ fn capture_fixture() {
     let ready = open_event(&std::env::var("HEXBOT_CAPTURE_READY").unwrap());
     let gate = open_event(&std::env::var("HEXBOT_CAPTURE_GATE").unwrap());
     let directory = std::env::var_os("HEXBOT_CAPTURE_DIRECTORY").unwrap();
+    assert_eq!(
+        std::env::current_dir().unwrap().canonicalize().unwrap(),
+        Path::new(&directory).canonicalize().unwrap(),
+        "into_std must retain the owned cwd"
+    );
     if mode == "holder" {
         let selection = std::env::var("HEXBOT_CAPTURE_STREAM").unwrap();
         let mut command = fixture_command("writer").into_std();
@@ -548,6 +554,7 @@ fn native_simulated_past_five_second_threshold_retains_pending_owner_until_relea
     settled(&output);
     assert!(!output.settlement.cleanup_eligible());
     assert!(output.settlement.cleanup_unconfirmed);
+    assert!(output.settlement.cleanup_threshold_exceeded);
     let cause = output.capture_failure.unwrap();
     assert!(
         cause.starts_with("primary simulated cleanup delay")

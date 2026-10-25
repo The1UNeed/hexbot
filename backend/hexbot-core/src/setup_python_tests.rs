@@ -90,6 +90,7 @@ fn completed_settlement() -> Settlement {
         pipes_closed: true,
         worker: WorkerState::Joined,
         cleanup_unconfirmed: false,
+        cleanup_threshold_exceeded: false,
     }
 }
 fn out(status: Option<i32>, stdout: &str) -> Output {
@@ -308,7 +309,7 @@ impl Runner for Fake {
             ));
             if self.observer_cleanup_threshold {
                 output.fail("primary capture error with classified observer bytes");
-                output.cleanup_unconfirmed();
+                output.cleanup_threshold_failed();
             }
             return Ok(output);
         }
@@ -2876,6 +2877,10 @@ fn capture_result_requires_eof_settlement_and_join_without_erasing_failure() {
             ..completed_settlement()
         },
         Settlement {
+            cleanup_threshold_exceeded: true,
+            ..completed_settlement()
+        },
+        Settlement {
             worker: WorkerState::Running,
             ..completed_settlement()
         },
@@ -2885,7 +2890,7 @@ fn capture_result_requires_eof_settlement_and_join_without_erasing_failure() {
     }
     output.append(0, &vec![b'x'; OUTPUT_LIMIT + 32]);
     output.append(1, b"late stderr diagnostic");
-    output.cleanup_unconfirmed();
+    output.cleanup_threshold_failed();
     output.settlement.child = ChildState::Reaped;
     output.settlement.natural_eof = [true; 2];
     output.settlement.pipes_closed = true;

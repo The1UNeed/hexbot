@@ -2570,6 +2570,7 @@ async fn capture_child(
             pipes_closed: true,
             worker: WorkerState::Joined,
             cleanup_unconfirmed: status.is_none(),
+            cleanup_threshold_exceeded: false,
         },
         stdout: stdout_bytes,
         stderr: stderr_bytes,

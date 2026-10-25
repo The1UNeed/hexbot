@@ -37,6 +37,11 @@ struct Overlapped {
     offset_high: u32,
     event: Handle,
 }
+const _: () = {
+    assert!(size_of::<Overlapped>() == 3 * size_of::<usize>() + 8);
+    assert!(std::mem::offset_of!(Overlapped, event) == 2 * size_of::<usize>() + 8);
+    assert!(size_of::<SecurityAttributes>() == 3 * size_of::<usize>());
+};
 struct IoStorage {
     request: Overlapped,
     buffer: [u8; 8192],
@@ -425,8 +430,10 @@ impl Owner {
         }
     }
     fn run(&mut self, mut command: std::process::Command) -> io::Result<()> {
+        self.check_active()?;
         let descriptor = security()?;
         for index in 0..2 {
+            self.check_active()?;
             let (pipe, name) = Pipe::new(descriptor.0)?;
             self.pipes[index] = Some(pipe);
             self.output.settlement.pipes_closed = false;
@@ -547,7 +554,8 @@ impl Owner {
             Err(error) => {
                 self.output
                     .fail(format!("owned child wait cannot confirm reap: {error}"));
-                self.output.cleanup_unconfirmed();
+                self.output
+                    .preserve_scratch("direct-child reap cannot be confirmed");
                 loop {
                     std::thread::park();
                 }
@@ -556,7 +564,7 @@ impl Owner {
     }
     fn threshold(&mut self) {
         if self.cleanup_deadline.is_some_and(|d| Instant::now() >= d) {
-            self.output.cleanup_unconfirmed();
+            self.output.cleanup_threshold_failed();
         }
     }
     fn settle(&mut self) {
@@ -633,7 +641,8 @@ impl Owner {
                             self.output.fail(format!(
                                 "exact operation event cannot confirm completion {index}: {error}"
                             ));
-                            self.output.cleanup_unconfirmed();
+                            self.output
+                                .preserve_scratch("exact operation settlement cannot be confirmed");
                             // No terminal result: retain the submitted storage.
                             loop {
                                 std::thread::park();
@@ -667,7 +676,8 @@ impl Owner {
                         let _retained = unsafe { OwnedHandle::from_raw_handle(raw) };
                         self.output
                             .fail(format!("close settled pipe/event: {error}"));
-                        self.output.cleanup_unconfirmed();
+                        self.output
+                            .preserve_scratch("pipe/event close cannot be confirmed");
                         // An unconfirmed close cannot authorize return/free.
                         loop {
                             std::thread::park();
@@ -743,7 +753,7 @@ impl Worker {
                 output.fail("capture worker panic; result unavailable");
                 output.settlement.child = ChildState::Unconfirmed;
                 output.settlement.pipes_closed = false;
-                output.cleanup_unconfirmed();
+                output.preserve_scratch("worker result unavailable");
                 output.settlement.worker = WorkerState::Joined;
                 output
             }

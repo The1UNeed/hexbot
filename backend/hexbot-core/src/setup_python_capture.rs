@@ -21,6 +21,7 @@ pub(crate) struct Settlement {
     pub pipes_closed: bool,
     pub worker: WorkerState,
     pub cleanup_unconfirmed: bool,
+    pub cleanup_threshold_exceeded: bool,
 }
 impl Settlement {
     pub fn cleanup_eligible(&self) -> bool {
@@ -28,6 +29,7 @@ impl Settlement {
             && self.pipes_closed
             && self.worker != WorkerState::Running
             && !self.cleanup_unconfirmed
+            && !self.cleanup_threshold_exceeded
     }
     pub fn complete(&self) -> bool {
         self.cleanup_eligible()
@@ -66,6 +68,7 @@ impl Output {
                 pipes_closed: true,
                 worker: WorkerState::NotStarted,
                 cleanup_unconfirmed: false,
+                cleanup_threshold_exceeded: false,
             },
         }
     }
@@ -75,10 +78,16 @@ impl Output {
             None => self.capture_failure = Some(cause.to_string()),
         }
     }
-    pub fn cleanup_unconfirmed(&mut self) {
-        if !self.settlement.cleanup_unconfirmed {
-            self.settlement.cleanup_unconfirmed = true;
-            self.fail("CleanupUnconfirmed: shared cleanup threshold exceeded; scratch retained permanently for this invocation");
+    pub fn preserve_scratch(&mut self, cause: &str) {
+        self.settlement.cleanup_unconfirmed = true;
+        self.fail(format!(
+            "CleanupUnconfirmed: {cause}; scratch retained permanently for this invocation"
+        ));
+    }
+    pub fn cleanup_threshold_failed(&mut self) {
+        if !self.settlement.cleanup_threshold_exceeded {
+            self.settlement.cleanup_threshold_exceeded = true;
+            self.preserve_scratch("shared cleanup threshold exceeded");
         }
     }
     pub fn append(&mut self, stream: usize, bytes: &[u8]) {
