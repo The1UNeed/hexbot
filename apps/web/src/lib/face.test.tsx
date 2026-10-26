@@ -3,7 +3,7 @@ import { act, fireEvent, render } from '@testing-library/react'
 import { Avatar, LiveFace } from '../components/ui/avatar'
 import { HexbotMark } from '../components/ui/wordmark'
 
-import { FACE_MOODS, moodForStatus } from './face'
+import { FACE_EMOTIONS, FACE_MOODS, moodForStatus } from './face'
 import { AVATAR_SHAPES, CAPSULE_EYE } from './face-geometry'
 import { MORPHS, restFrame } from './face-motion'
 
@@ -43,7 +43,7 @@ describe('original faces', () => {
     const { container, rerender } = render(<LiveFace color="pink" eyes="white" still />)
     const svg = container.querySelector('svg')!
 
-    for (const mood of FACE_MOODS) {
+    for (const mood of [...FACE_MOODS, ...FACE_EMOTIONS]) {
       rerender(
         <LiveFace color="blue" eyes="black" look="left" mood={mood} shape="triangle" still />
       )
@@ -194,6 +194,23 @@ describe('original faces', () => {
     act(() => vi.advanceTimersByTime(1000))
     expect(part('body')).toHaveAttribute('display', 'inline')
     expect(dots).toHaveAttribute('display', 'none')
+    vi.useRealTimers()
+  })
+
+  it('unfolds for an emotion, and celebrates with a hop, a turn and sparks', () => {
+    vi.useFakeTimers({ toFake: ['requestAnimationFrame', 'cancelAnimationFrame', 'performance'] })
+    const { container, rerender } = render(<LiveFace color="pink" eyes="white" mood="thinking" />)
+    const part = (name: string) => container.querySelector(`[data-part="${name}"]`)!
+    expect(part('body')).toHaveAttribute('display', 'none')
+    rerender(<LiveFace color="pink" eyes="white" mood="celebrating" />)
+    act(() => vi.advanceTimersByTime(300))
+    expect(part('sparks')).toHaveAttribute('display', 'inline')
+    expect(part('trail')).toHaveAttribute('display', 'inline')
+    expect(part('body')).toHaveAttribute('display', 'inline')
+    expect(part('head').getAttribute('transform')).not.toBe(restFrame('celebrating').head)
+    rerender(<LiveFace color="pink" eyes="white" mood="sad" />)
+    act(() => vi.advanceTimersByTime(1500))
+    expect(part('sparks')).toHaveAttribute('display', 'none')
     vi.useRealTimers()
   })
 

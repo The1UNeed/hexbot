@@ -98,9 +98,25 @@ export const DEFAULT_AVATAR_STYLE: AvatarStyle = { color: 'pink', shape: 'hexago
 export const EYES = '#ffffff'
 
 /**
- * What the face is doing. The capsule eyes change with it: upright while idle,
- * wide while it waits on you, narrowed and lowered while it writes, squinted
- * when something went well, shut when it sleeps.
+ * A short reaction to what just happened, worn over what the bot is doing
+ * until it passes (lib/emotions.ts decides when).
+ */
+export type FaceEmotion =
+  | 'bored'
+  | 'celebrating'
+  | 'confused'
+  | 'curious'
+  | 'drowsy'
+  | 'frustrated'
+  | 'proud'
+  | 'sad'
+  | 'shy'
+  | 'surprised'
+
+/**
+ * What the face is doing or feeling. The capsule eyes change with it: upright
+ * while idle, wide while it waits on you, narrowed and lowered while it
+ * writes, squinted when something went well, shut when it sleeps.
  */
 export type FaceMood =
   | 'happy'
@@ -112,6 +128,7 @@ export type FaceMood =
   | 'thinking'
   | 'working'
   | 'writing'
+  | FaceEmotion
 
 /** The radius of the ball frame; eye sizes and poses below are in its units. */
 export const BALL = 45
@@ -130,11 +147,13 @@ export const CAPSULE_EYE =
 /**
  * How a mood holds the eyes in the ball frame: both shifted by `dx` and `dy`,
  * `size` from centre to top, flattened to `squash` of their height, and
- * turned by `turn` degrees (90 lays the capsule on its side).
+ * turned by `turn` degrees (90 lays the capsule on its side). `lean` tips the
+ * two eyes' tops toward each other, or apart when negative.
  */
 export interface EyePose {
   dx: number
   dy: number
+  lean?: number
   size: number
   squash: number
   turn: number
@@ -149,11 +168,32 @@ export const EYE_MOODS: Record<FaceMood, EyePose> = {
   sleeping: { dx: 0, dy: 3, size: 9, squash: 0.2, turn: 90 },
   thinking: { dx: 2, dy: -4, size: 11, squash: 1, turn: 0 },
   working: { dx: 0, dy: 1, size: 12.5, squash: 1, turn: 0 },
-  writing: { dx: 0, dy: 5, size: 12, squash: 0.7, turn: 0 }
+  writing: { dx: 0, dy: 5, size: 12, squash: 0.7, turn: 0 },
+  // Flat, heavy bars.
+  bored: { dx: 0, dy: 4, size: 7.5, squash: 1.1, turn: 90 },
+  // Squinted arcs, raised.
+  celebrating: { dx: 0, dy: -3, lean: -14, size: 10.5, squash: 0.6, turn: 90 },
+  // Tipped apart and narrowed a little.
+  confused: { dx: 0, dy: 0, lean: 12, size: 13, squash: 0.8, turn: 0 },
+  // One step up and to the side, wide open.
+  curious: { dx: 1, dy: -2, lean: -6, size: 13.5, squash: 1, turn: 0 },
+  // Lids nearly shut, drooping outward.
+  drowsy: { dx: 0, dy: 5, lean: -6, size: 8.5, squash: 0.45, turn: 90 },
+  // Flat and slanted down toward the middle.
+  frustrated: { dx: 0, dy: 1, lean: 16, size: 11, squash: 0.45, turn: 90 },
+  // Content squint, chin up.
+  proud: { dx: 0, dy: -3, lean: -12, size: 10, squash: 0.55, turn: 90 },
+  // Small, low and drooping outward.
+  sad: { dx: 0, dy: 6, lean: -12, size: 11.5, squash: 0.85, turn: 0 },
+  // Squinted and looking down and away.
+  shy: { dx: -3, dy: 4, lean: -10, size: 9.5, squash: 0.6, turn: 90 },
+  // As wide as they go.
+  surprised: { dx: 0, dy: -1, size: 16.5, squash: 1, turn: 0 }
 }
 
 /** Where one eye sits and how it is drawn, in the ball frame. */
 export interface EyePlacement {
+  lean: number
   sx: number
   sy: number
   turn: number
@@ -166,6 +206,7 @@ export function eyePlacements(mood: FaceMood = 'idle'): EyePlacement[] {
   const pose = EYE_MOODS[mood]
 
   return [-1, 1].map(side => ({
+    lean: -side * (pose.lean ?? 0),
     sx: pose.size,
     sy: pose.size * pose.squash,
     turn: pose.turn,
@@ -175,13 +216,8 @@ export function eyePlacements(mood: FaceMood = 'idle'): EyePlacement[] {
 }
 
 /** An eye's `transform` attribute, for still pictures. */
-export function eyeTransform({ sx, sy, turn, x, y }: EyePlacement): string {
-  return `translate(${x} ${y}) scale(${sx} ${sy}) rotate(${turn})`
-}
-
-/** The same transform as CSS, so the eyes ease from one mood to the next. */
-export function eyeTransformCss({ sx, sy, turn, x, y }: EyePlacement): string {
-  return `translate(${x}px, ${y}px) scale(${sx}, ${sy}) rotate(${turn}deg)`
+export function eyeTransform({ lean, sx, sy, turn, x, y }: EyePlacement): string {
+  return `translate(${x} ${y}) rotate(${lean}) scale(${sx} ${sy}) rotate(${turn})`
 }
 
 /** The `transform` that takes the ball frame onto a shape. */

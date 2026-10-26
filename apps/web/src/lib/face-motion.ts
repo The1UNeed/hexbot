@@ -2,8 +2,11 @@
  * The motion of a live bot face. Springs carry the head, the eyes and the gaze
  * toward what the mood asks for, so a face sways, bobs, hops, nods, blinks,
  * glances and now and then turns all the way round; thinking, writing and
- * loading fold the face into dots, a pencil or a whirl. Written for Hexbot,
- * with no third-party code or data (docs/face-provenance.md).
+ * loading fold the face into dots, a pencil or a whirl. Emotions are moods
+ * too, each with its own pose and motion, and moving from one mood to the
+ * next plays a small transition: a blink, a jump, a slump or a jolt awake.
+ * Written for Hexbot, with no third-party code or data
+ * (docs/face-provenance.md).
  *
  * `restFrame` is the still pose React draws; `FaceMotion` moves the same
  * elements from there. One frame loop serves every moving face and stops when
@@ -32,7 +35,7 @@ const PIVOT = { x: 50, y: 92 }
 /** How far apart the thinking dots sit. */
 const DOT_GAP = 23
 
-/** Sparks thrown when a face wakes. */
+/** Sparks thrown when a face wakes from sleep or celebrates. */
 export const SPARKS = 8
 
 interface Eye {
@@ -101,6 +104,16 @@ function peer(side: -1 | 1): Expression {
   ]
 }
 
+/** Lopsided eyes, one big and one narrowed, that swap sides. */
+function lopsided(side: -1 | 1): Expression {
+  const [left, right] = rest('confused')
+
+  return [
+    { ...left, size: side < 0 ? 14.5 : 10.5, squash: side < 0 ? 1 : 0.6 },
+    { ...right, size: side > 0 ? 14.5 : 10.5, squash: side > 0 ? 1 : 0.6 }
+  ]
+}
+
 const WIDE = pair({ dy: -1, size: 16.5 })
 
 interface Behaviour {
@@ -146,12 +159,49 @@ const BEHAVIOUR: Record<FaceMood, Behaviour> = {
     poses: [rest('working')],
     spinEvery: [6, 10]
   },
-  writing: { blinks: false, glance: 0, poseEvery: [4, 4], poses: [rest('writing')] }
+  writing: { blinks: false, glance: 0, poseEvery: [4, 4], poses: [rest('writing')] },
+  bored: {
+    blinks: true,
+    glance: 0,
+    poseEvery: [1.6, 2.6],
+    poses: [
+      rest('bored'),
+      pair({ ...EYE_MOODS.bored, dx: -6 }),
+      rest('bored'),
+      pair({ ...EYE_MOODS.bored, dx: 6 })
+    ]
+  },
+  celebrating: {
+    blinks: false,
+    glance: 0,
+    hopEvery: [0.6, 0.8],
+    poseEvery: [0.5, 0.7],
+    poses: [rest('celebrating'), pair({ dy: -4, lean: -18, size: 11, squash: 0.5, turn: 90 })]
+  },
+  confused: { blinks: true, glance: 3, poseEvery: [0.7, 1.1], poses: [lopsided(-1), lopsided(1)] },
+  curious: {
+    blinks: true,
+    glance: 2,
+    poseEvery: [1, 1.6],
+    poses: [rest('curious'), pair({ ...EYE_MOODS.curious, dx: -2, lean: 6 })]
+  },
+  drowsy: { blinks: false, glance: 0, poseEvery: [4, 4], poses: [rest('drowsy')] },
+  frustrated: { blinks: false, glance: 0, poseEvery: [4, 4], poses: [rest('frustrated')] },
+  proud: { blinks: false, glance: 0, poseEvery: [4, 4], poses: [rest('proud')] },
+  sad: { blinks: true, glance: 0, poseEvery: [4, 4], poses: [rest('sad')] },
+  shy: {
+    blinks: true,
+    glance: 0,
+    poseEvery: [0.9, 1.5],
+    poses: [rest('shy'), pair({ ...EYE_MOODS.shy, dx: -6, dy: 5 })]
+  },
+  surprised: { blinks: false, glance: 0, poseEvery: [4, 4], poses: [rest('surprised')] }
 }
 
-/** The head's own motion in a mood, before springs and kicks. */
-function ambient(mood: FaceMood, t: number, side: number): Head {
+/** The head's own motion in a mood, `since` seconds after the face took it. */
+function ambient(mood: FaceMood, t: number, side: number, since: number): Head {
   const wave = (speed: number, phase = 0) => Math.sin(speed * t + phase)
+  const rest = restHead(mood)
 
   switch (mood) {
     case 'idle':
@@ -190,14 +240,94 @@ function ambient(mood: FaceMood, t: number, side: number): Head {
         y: 5 + 1.6 * wave(0.8)
       }
 
+    case 'curious':
+      return {
+        ...rest,
+        r: rest.r * side + wave(1.2),
+        x: rest.x * side,
+        y: rest.y + 0.6 * wave(2.4)
+      }
+    case 'surprised': {
+      // A tremble that dies away.
+      const tremble = Math.exp(-3 * since) * Math.sin(40 * since)
+
+      return { ...rest, r: 1.5 * tremble, y: rest.y + tremble }
+    }
+
+    case 'shy':
+      return { ...rest, r: rest.r + 1.5 * wave(2.2), y: rest.y + 0.5 * wave(2.2) }
+
+    case 'confused':
+      return { ...rest, r: rest.r * side + 2 * wave(1.4), x: rest.x * side }
+    case 'frustrated': {
+      // A quick shake of the head, then a huff now and then.
+      const shake = 5 * Math.exp(-2.2 * since) * Math.sin(26 * since)
+      const huff = Math.max(0, Math.sin(Math.PI * 2 * (since / 1.3))) ** 6
+
+      return { ...rest, r: shake, sx: rest.sx + 0.03 * huff, y: rest.y - 1.5 * huff }
+    }
+
+    case 'sad':
+      return {
+        ...rest,
+        r: rest.r + 0.8 * wave(0.5),
+        sy: rest.sy + 0.01 * wave(0.6),
+        y: rest.y + 0.8 * wave(0.6)
+      }
+
+    case 'proud':
+      return {
+        ...rest,
+        r: rest.r + wave(0.9),
+        sy: rest.sy + 0.01 * wave(1.8),
+        y: rest.y + 0.6 * wave(1.8)
+      }
+
+    case 'celebrating':
+      return { ...rest, r: 4 * wave(5), x: 1.5 * wave(5) }
+    case 'bored': {
+      // Sways, and lets out a sigh every few seconds.
+      const sigh = Math.max(0, Math.sin(Math.PI * 2 * (since / 4.5))) ** 4
+
+      return {
+        r: 2.5 * wave(0.35),
+        sx: 1 + 0.03 * sigh,
+        sy: 1 - 0.04 * sigh,
+        x: 1.5 * wave(0.35),
+        y: rest.y + 2 * sigh
+      }
+    }
+
+    case 'drowsy': {
+      // Nods off slowly, then jerks back up.
+      const p = (since % 4) / 4
+      const droop = p < 0.85 ? (p / 0.85) ** 2 : 1 - (p - 0.85) / 0.15
+
+      return { r: rest.r + 4 * droop, sx: 1, sy: 1 - 0.02 * droop, x: 0, y: rest.y + 5 * droop }
+    }
+
     default:
       return STILL_HEAD
   }
 }
 
-/** Where the head rests in a mood: upright, or nodded off. */
+/** Where the head rests in each mood that does not stand upright. */
+const REST_HEADS: Partial<Record<FaceMood, Head>> = {
+  bored: { ...STILL_HEAD, y: 2 },
+  confused: { ...STILL_HEAD, r: 6, x: 1 },
+  curious: { ...STILL_HEAD, r: 8, sy: 1.02, x: 1.5, y: -1 },
+  drowsy: { ...STILL_HEAD, r: 2, y: 2 },
+  frustrated: { ...STILL_HEAD, sx: 1.02, sy: 0.97, y: 1 },
+  proud: { ...STILL_HEAD, r: -3, sy: 1.04, y: -2 },
+  sad: { r: -3, sx: 1.01, sy: 0.95, x: -1, y: 4 },
+  shy: { r: -7, sx: 0.97, sy: 0.97, x: -2.5, y: 2 },
+  sleeping: { ...STILL_HEAD, r: 5, x: -1.5, y: 5 },
+  surprised: { ...STILL_HEAD, y: -2 }
+}
+
+/** Where the head rests in a mood: upright, nodded off, slumped or proud. */
 function restHead(mood: FaceMood): Head {
-  return mood === 'sleeping' ? { ...STILL_HEAD, r: 5, x: -1.5, y: 5 } : STILL_HEAD
+  return REST_HEADS[mood] ?? STILL_HEAD
 }
 
 const LOOK_TURN = 9
@@ -479,6 +609,8 @@ export class FaceMotion {
   private nextSpin = Infinity
   private nextHop = Infinity
   private wokeAt = -1
+  private sparkAt = -1
+  private enteredAt = 0
   private morph: MorphKind | null
   private morphAt = 0
 
@@ -498,14 +630,10 @@ export class FaceMotion {
     this.writer.forget()
 
     if (before.mood !== state.mood) {
-      if (before.mood === 'sleeping') {
-        this.wokeAt = this.t
-        this.head.y.velocity -= 55
-        this.squash.sy.velocity += 1.4
-      }
-
       this.pose = 0
       this.spinAt = -1
+      this.enteredAt = this.t
+      this.transition(before.mood, state.mood)
       this.schedule()
     }
 
@@ -514,6 +642,74 @@ export class FaceMotion {
       this.draw()
     } else {
       this.settle()
+    }
+  }
+
+  /** The moment between two moods: what the face does as it changes. */
+  private transition(from: FaceMood, to: FaceMood) {
+    const { head, squash } = this
+    const t = this.t
+    const dozing = (mood: FaceMood) => mood === 'sleeping' || mood === 'drowsy'
+
+    if (dozing(from) && !dozing(to)) {
+      // Jolts awake, eyes wide; from sleep it throws sparks too.
+      this.wokeAt = t
+      this.sparkAt = from === 'sleeping' ? t : this.sparkAt
+      head.y.velocity -= 55
+      squash.sy.velocity += 1.4
+
+      return
+    }
+
+    switch (to) {
+      case 'surprised':
+        head.y.velocity -= 70
+        squash.sy.velocity += 2.2
+
+        break
+
+      case 'celebrating':
+        this.sparkAt = t
+        this.spinAt = t
+        head.y.velocity -= 60
+        squash.sy.velocity += 1.6
+
+        break
+
+      case 'proud':
+        head.y.velocity -= 35
+        squash.sy.velocity += 1
+
+        break
+
+      case 'sad':
+        squash.sy.velocity -= 1
+
+        break
+
+      case 'frustrated':
+        squash.sx.velocity += 1.2
+
+        break
+
+      case 'shy':
+        squash.sx.velocity -= 0.8
+
+        break
+
+      case 'sleeping':
+
+      case 'drowsy':
+        // Settles slowly into the droop, no blink.
+        break
+
+      default:
+        // A blink and a small dip, so the change reads as one gesture.
+        if (!MORPHS[to]) {
+          this.blinkAt = t
+        }
+
+        squash.sy.velocity -= 0.6
     }
   }
 
@@ -547,6 +743,7 @@ export class FaceMotion {
   /** Every spring at its target and nothing in flight, drawn. */
   settle() {
     this.wokeAt = -1
+    this.sparkAt = -1
     this.spinAt = -1
     this.blinkAt = -1
     this.gazeTarget = { x: 0, y: 0 }
@@ -648,7 +845,10 @@ export class FaceMotion {
   private aim(resting = false) {
     const { look, mood } = this.state
     const side = lookSide(look)
-    const head = resting ? restHead(mood) : ambient(mood, this.t, this.side)
+
+    const head = resting
+      ? restHead(mood)
+      : ambient(mood, this.t, this.side, this.t - this.enteredAt)
 
     aim(this.head, turned(head, side))
     aim(this.squash, { sx: head.sx, sy: head.sy })
@@ -697,8 +897,8 @@ export class FaceMotion {
     // Working eyes narrow on each beat, as if concentrating, and open again.
     const beat = (t / 1.2) % 1
 
-    const focus =
-      this.state.mood === 'working' && !this.waking && beat < 0.5 ? Math.sin(Math.PI * beat * 2) : 0
+    const focusing = this.state.mood === 'working' && !this.waking && running.has(this)
+    const focus = focusing && beat < 0.5 ? Math.sin(Math.PI * beat * 2) : 0
 
     this.eyes.forEach((springsOf, index) => {
       const eye = read(springsOf)
@@ -787,7 +987,7 @@ export class FaceMotion {
 
   private drawSparks() {
     const { parts, writer } = this
-    const age = this.wokeAt >= 0 ? this.t - this.wokeAt : SPARK_LIFE
+    const age = this.sparkAt >= 0 ? this.t - this.sparkAt : SPARK_LIFE
     const shown = age < SPARK_LIFE
     writer.set(parts.sparksGroup, 'display', shown ? 'inline' : 'none', 'sparks')
 

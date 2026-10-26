@@ -15,8 +15,11 @@ concentrating. Searching, working and happy
 faces now and then turn all the way round, with a sweep in tints of their
 own colour. A face leaving sleeping throws four-point sparks. Thinking,
 writing and loading fold the face into three round dots, a pencil, or a
-whirl round a dot. The kind of motion follows the faces proposed
-in #123, which were preferred to the CSS-only faces that replaced them;
+whirl round a dot. Ten emotions (curious, surprised, shy, confused,
+frustrated, sad, proud, celebrating, bored, drowsy) are further poses and
+motions of the same capsules, and `lib/emotions.ts` decides them from the
+conversation with rules written for Hexbot. The kind of motion follows the
+faces proposed in #123, which were preferred to the CSS-only faces that replaced them;
 none of #123's code, timings, curves, expression shapes, outlines, or data
 is used. The springs, schedules, poses, and morph shapes were written and
 tuned for Hexbot.

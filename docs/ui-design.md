@@ -60,6 +60,20 @@ own visual identity. Read `CLAUDE.md` for the words.
   faces, including every face in a room's cluster, match their status dots;
   a cluster without a dot, as in room settings, stays idle. Faces in asks
   turn and look toward each other.
+  Faces also show emotions (`lib/emotions.ts`), read from what happens in
+  the open chat or room, never asked of the model: as a turn starts the
+  bot is shy at thanks, surprised at alarm or shouting, and otherwise
+  curious; a failed step confuses it, three frustrate it; a reply that
+  fails or apologises is sad, one that reports passing tests, a merge or a
+  deploy celebrates, a long or many-step one is proud, and one that ends in
+  a question is curious. A quiet open chat gets bored after 3 minutes and
+  drowsy after 8, and anything happening wakes it. Each emotion shows for
+  a second or a few over what the bot is doing, on its header, live and
+  roster faces and its latest room message; drowsy stays until something
+  happens. Moving between moods is one gesture: a blink and a dip, a jump
+  for surprise, a slump for sadness, a jolt awake, and a hop, a turn and
+  sparks to celebrate. Mobile shows the same emotions, still, on a bot
+  chat's header and waiting faces.
   One frame loop moves every visible face and stops when none moves.
   Reduced motion draws each mood's rest pose, morph included, and offscreen
   or hidden-page faces stop. Mobile draws the same settled expressions.

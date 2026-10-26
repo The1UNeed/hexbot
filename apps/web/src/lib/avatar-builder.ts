@@ -47,7 +47,6 @@ export {
   type EyePose,
   EYES,
   eyeTransform,
-  eyeTransformCss,
   type FaceMood
 } from './face-geometry'
 

@@ -28,7 +28,7 @@ import { createRoot } from 'react-dom/client'
 import { flushSync } from 'react-dom'
 import { Avatar, LiveFace } from '/src/components/ui/avatar.tsx'
 import * as avatars from '/src/lib/avatar-builder.ts'
-import { FACE_MOODS } from '/src/lib/face.ts'
+import { FACE_EMOTIONS, FACE_MOODS } from '/src/lib/face.ts'
 import { restFrame } from '/src/lib/face-motion.ts'
 import { HEXBOT_ACT_NAMES } from '/src/components/ui/hexbot-act.tsx'
 const h = React.createElement
@@ -36,15 +36,15 @@ const root = createRoot(document.getElementById('root'))
 const render = children => flushSync(() => root.render(children))
 const style = { color: 'pink', shape: 'hexagon' }
 window.faces = {
-  ...avatars, moods: FACE_MOODS, restFrame,
+  ...avatars, moods: [...FACE_MOODS, ...FACE_EMOTIONS], restFrame,
   show: props => render(h(LiveFace, { color: '#ec2f8a', eyes: '#ffffff', ...props })),
   roster: (names, act) => render(h('div', { style: { display: 'grid', gridTemplateColumns: 'repeat(8, 72px)', gap: 24 } }, names.map(name => h(Avatar, { key: name, name, act, size: 'xl', mood: 'working', style })))),
   acts: () => render(h('div', { style: { display: 'flex', flexWrap: 'wrap', gap: 48, padding: 40 } }, HEXBOT_ACT_NAMES.map(act => h(Avatar, { key: act, name: act, act, size: 'xl', style })))),
   empty: () => render(null),
   gallery: () => render(h('main', { style: { padding: 48, maxWidth: 1150, margin: 'auto' } },
     h('h1', { style: { fontSize: 28, fontWeight: 600, marginBottom: 12 } }, 'Hexbot faces'),
-    h('p', { style: { marginBottom: 40 } }, 'Capsule eyes. Expressions follow the work.'),
-    h('div', { style: { display: 'flex', gap: 36, marginBottom: 48 } }, FACE_MOODS.map(mood => h('div', { key: mood, style: { textAlign: 'center' } }, h(Avatar, { name: mood, mood, size: 'xl', style }), h('p', { style: { marginTop: 12 } }, mood)))),
+    h('p', { style: { marginBottom: 40 } }, 'Capsule eyes. Expressions follow the work; emotions follow what happens.'),
+    ...[FACE_MOODS, FACE_EMOTIONS].map((moods, row) => h('div', { key: row, style: { display: 'flex', gap: 36, marginBottom: 48 } }, moods.map(mood => h('div', { key: mood, style: { textAlign: 'center' } }, h(Avatar, { name: mood, mood, size: 'xl', style }), h('p', { style: { marginTop: 12 } }, mood))))),
     h('div', { style: { display: 'flex', gap: 42, marginBottom: 48 } }, avatars.AVATAR_SHAPES.map(shape => h('div', { key: shape.id, style: { textAlign: 'center' } }, h(Avatar, { name: shape.label, size: 'xl', style: { color: 'teal', shape: shape.id } }), h('p', { style: { marginTop: 12 } }, shape.label)))),
     h('div', { style: { display: 'flex', gap: 20 } }, avatars.AVATAR_COLORS.map(color => h(Avatar, { key: color.id, name: color.label, size: 'lg', style: { color: color.id, shape: 'hexagon' } })))
   ))
