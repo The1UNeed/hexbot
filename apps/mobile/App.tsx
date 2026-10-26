@@ -13,22 +13,24 @@ import { version as appVersion } from '../desktop/package.json'
 import { pickFile } from './src/core/pickFile'
 import AsyncStorage from '@react-native-async-storage/async-storage'
 import {
-  ChatBody,
   ChatChooser,
   ChatScreen,
   type ChatScreenProps,
   ConnectionScreen,
   DaemonSwitcher,
   HomeScreen,
+  LibraryScreen,
   ModelSummary,
+  SettingsScreen,
   type ApprovalChoice,
   type AttachmentView,
+  type BotStatus,
   type BotSummary,
   type ChatItem,
+  type ConversationSummary,
   type DaemonArea,
   type DaemonEntry,
   type FaceSource,
-  type HomeTab,
   type ToolActivity
 } from './src/screens'
 import {
@@ -43,7 +45,6 @@ import {
   Row,
   Text,
   ThemeProvider,
-  useTabBarInset,
   useTheme
 } from './src/ui'
 import { MarkdownText } from './src/MarkdownText'
@@ -54,14 +55,17 @@ import { activityLabel, readableResult, resultLine, toolLabel } from './src/core
 import { Management, type Panel } from './src/Management'
 import { useMobile } from './src/core/useMobile'
 import { clearTapped, useTappedSection } from './src/core/tapped'
-import { chatPreview, purposeOf, shownRoom } from './src/core/routes'
+import { chatPreview, pulseTarget, purposeOf } from './src/core/routes'
 import { CONNECT_ORIGIN, parseConnectCallback } from './src/core/links'
 import { clearConnectSession, loadConnectSession, saveConnectSession } from './src/core/storage'
 import { connectGrant, request, RevokedError } from './src/core/transport'
-import type { Bot, ChatTool, ConnectDaemon, Section } from './src/core/types'
+import type { Bot, ChatTool, ConnectDaemon, Room, Section } from './src/core/types'
 WebBrowser.maybeCompleteAuthSession()
 const messageOf = (e: unknown) => (e instanceof Error ? e.message : String(e))
 const ms = (seconds: number | null | undefined) => (seconds == null ? undefined : seconds * 1000)
+/** Which status a conversation shows when several bots are busy in it. */
+const URGENCY: Partial<Record<BotStatus, number>> = { needs_you: 3, stopped: 2, working: 1 }
+const PINNED: Record<string, number> = { needs_you: 0, stopped: 1, working: 2 }
 // A face picked in an app is drawn live, with its colour; otherwise the picture.
 const faceOf = (b: Bot): FaceSource =>
   b.face
@@ -128,10 +132,9 @@ export default function App() {
 function MobileApp() {
   const mobile = useMobile()
   const theme = useTheme()
-  const tabInset = useTabBarInset()
-  const [tab, setTab] = useState<HomeTab>('bots')
+  // Pages pushed over the chat list; an open conversation shows above them.
+  const [page, setPage] = useState<'home' | 'library' | 'settings'>('home')
   const [botPage, setBotPage] = useState<string | null>(null)
-  const [roomId, setRoomId] = useState<string | null>(null)
   const [addDaemon, setAddDaemon] = useState(false)
   const [panels, setPanels] = useState<Panel[]>([])
   const [switcherOpen, setSwitcherOpen] = useState(false)
@@ -242,10 +245,7 @@ function MobileApp() {
       }
       if (parsed.hostname === 'bot') {
         const bot = mobileRef.current.bots.find(b => b.name === parsed.searchParams.get('name'))
-        if (bot) {
-          setTab('bots')
-          await mobileRef.current.openSection(bot)
-        }
+        if (bot) await mobileRef.current.openSection(bot)
       }
     })().catch(e => mobileRef.current.setError(messageOf(e)))
   }, [nativeUrl, callback])
@@ -282,50 +282,26 @@ function MobileApp() {
     } else setQuestion(null)
   }, [firstQuestionId, firstQuestion?.requestId])
   const route = mobile.route
-  // A room that opens anywhere, such as right after it is created, shows in Rooms.
-  const routeRoom = route?.kind === 'room' ? route.room.id : null
-  useEffect(() => {
-    if (routeRoom) {
-      setRoomId(routeRoom)
-      setTab('rooms')
-      setBotPage(null)
-    }
-  }, [routeRoom])
   useEffect(() => {
     setPanels([])
     setSwitcherOpen(false)
     setBotPage(null)
-    setRoomId(null)
+    setPage('home')
   }, [mobile.active?.id])
-  // Rooms shows one room at a time; start with the most recent. A room archived
-  // while it is open stays, so it can be restored there.
-  const shown = demo ? roomId : shownRoom(mobile.rooms, roomId, routeRoom)
-  useEffect(() => {
-    if (shown !== roomId) setRoomId(shown)
-  }, [shown, roomId])
-  useEffect(() => {
-    const m = mobileRef.current
-    if (tab !== 'rooms' || demo || botPage || m.connection !== 'connected') return
-    if (m.route?.kind === 'section') return
-    if (m.route?.kind === 'room' && m.route.room.id === roomId) return
-    const room = m.rooms.find(r => r.id === roomId)
-    if (room) void m.openRoom(room)
-  }, [tab, roomId, demo, botPage, mobile.connection])
-  const changeTab = (next: HomeTab) => {
-    if (uploading) return
-    if (next !== 'rooms' && mobile.route?.kind === 'room') mobile.back()
-    setTab(next)
-  }
   useEffect(() => {
     if (Platform.OS !== 'android') return
     // Cards close themselves on back; this handles the screens under them.
     const subscription = BackHandler.addEventListener('hardwareBackPress', () => {
-      if (mobile.route?.kind === 'section') {
+      if (mobile.route) {
         mobile.back()
         return true
       }
       if (botPage) {
         setBotPage(null)
+        return true
+      }
+      if (page !== 'home') {
+        setPage('home')
         return true
       }
       if (addDaemon && mobile.active) {
@@ -339,7 +315,7 @@ function MobileApp() {
       return false
     })
     return () => subscription.remove()
-  }, [mobile, botPage, addDaemon, demo])
+  }, [mobile, botPage, page, addDaemon, demo])
   const signIn = async () => {
     setConnectPending(true)
     mobile.setError(null)
@@ -477,18 +453,103 @@ function MobileApp() {
     mobile.sections,
     mobile.bots
   ])
-  const rooms = mobile.rooms.map(r => ({
-    id: r.id,
-    name: r.name,
-    members: r.members
+  const membersOf = (r: Room) =>
+    r.members
       .filter(m => m.member_kind === 'bot' && !m.left_at)
       .flatMap(m => {
         const b = botByName(m.member_id)
         return b ? [faceOf(b)] : []
-      }),
-    updatedAt: ms(r.last_activity_at),
-    archived: !!r.archived_at
-  }))
+      })
+  // Where a busy bot is working or waiting when it is not its own chat: a room,
+  // Check-ins, or a conversation with another bot. That row shows the status.
+  const elsewhere = (b: Bot) => {
+    const detail = b.status_detail
+    if (!detail || !b.status || b.status === 'idle') return null
+    const room = detail.room_id
+      ? mobile.rooms.find(r => r.id === detail.room_id && !r.archived_at)
+      : undefined
+    if (room) return { room }
+    const section = detail.section_id
+      ? mobile.sections.find(
+          s =>
+            s.id === detail.section_id &&
+            s.bot === b.name &&
+            (s.peer_bot || purposeOf(s, mobile.sections))
+        )
+      : undefined
+    return section ? { section } : null
+  }
+  const urgent = (statuses: (BotStatus | undefined)[]) =>
+    statuses.reduce<BotStatus | undefined>(
+      (best, next) => ((URGENCY[next!] ?? 0) > (URGENCY[best!] ?? 0) ? next : best),
+      undefined
+    )
+  const primaryBot = mobile.bots.find(b => b.primary)
+  const checkins = primaryBot
+    ? mobile.sections.find(
+        s =>
+          s.bot === primaryBot.name &&
+          purposeOf(s, mobile.sections) === 'checkins' &&
+          !s.archived_at
+      )
+    : undefined
+  const conversations: ConversationSummary[] = demo
+    ? DEMO_BOTS.map(b => ({ ...b, kind: 'bot' as const, face: b }))
+    : [
+        ...bots.map(b => {
+          const away = elsewhere(botByName(b.id)!)
+          return {
+            kind: 'bot' as const,
+            id: b.id,
+            name: b.name,
+            face: b,
+            preview: b.preview,
+            activity: away ? null : b.activity,
+            status: away ? undefined : b.status,
+            updatedAt: b.updatedAt,
+            primary: b.primary
+          }
+        }),
+        ...mobile.rooms
+          .filter(r => !r.archived_at)
+          .map(r => {
+            const here = mobile.bots.filter(b => elsewhere(b)?.room?.id === r.id)
+            return {
+              kind: 'room' as const,
+              id: r.id,
+              name: r.name,
+              members: membersOf(r),
+              status: urgent([
+                ...here.map(b => b.status),
+                r.turns?.length ? 'working' : undefined
+              ]),
+              activity: here.find(b => b.status === 'working')?.status_detail?.text,
+              updatedAt: ms(r.last_activity_at)
+            }
+          }),
+        ...(primaryBot && checkins
+          ? [
+              {
+                kind: 'checkins' as const,
+                id: checkins.id,
+                name: 'Check-ins',
+                face: faceOf(primaryBot),
+                preview: checkins.preview || null,
+                status:
+                  elsewhere(primaryBot)?.section?.id === checkins.id ? primaryBot.status : undefined,
+                updatedAt: ms(checkins.updated_at)
+              }
+            ]
+          : [])
+      ]
+  // A bot waiting in a conversation with another bot has no row there; the list names it.
+  const waitingElsewhere = bots.filter(b => {
+    const bot = botByName(b.id)
+    return bot?.status === 'needs_you' && !!elsewhere(bot)?.section?.peer_bot
+  })
+  const busyBots = bots
+    .filter(bot => bot.status && PINNED[bot.status] !== undefined)
+    .sort((a, b) => PINNED[a.status!]! - PINNED[b.status!]!)
   const daemon = demo
     ? {
         name: 'Demo',
@@ -507,40 +568,40 @@ function MobileApp() {
           platform: mobile.info?.platform
         }
       : null
-  const areas: DaemonArea[] = demo
+  const area = (
+    key: DaemonArea['key'],
+    label: string,
+    icon: DaemonArea['icon'],
+    detail?: string | null
+  ): DaemonArea => ({ key, label, icon, detail })
+  const settingsGroups: { title?: string; areas: DaemonArea[] }[] = demo
     ? []
     : [
+        { areas: [area('about', 'About you', 'person-outline')] },
         {
-          key: 'settings',
-          label: 'Settings',
-          detail: 'Approvals',
-          icon: 'options-outline'
+          title: 'Bots',
+          areas: [
+            area('settings', 'Daemon settings', 'options-outline', 'Approvals, budgets'),
+            area('providers', 'Models', 'hardware-chip-outline'),
+            area('connectors', 'Connectors', 'extension-puzzle-outline'),
+            area('skills', 'Skills', 'sparkles-outline')
+          ]
         },
-        { key: 'providers', label: 'Models', detail: 'Providers', icon: 'hardware-chip-outline' },
         {
-          key: 'connectors',
-          label: 'Connectors',
-          detail: 'Apps and MCP',
-          icon: 'extension-puzzle-outline'
+          title: 'Activity',
+          areas: [
+            area('usage', 'Usage', 'stats-chart-outline'),
+            area('activity', 'Bot activity', 'pulse-outline')
+          ]
         },
-        { key: 'skills', label: 'Skills', detail: 'Library', icon: 'sparkles-outline' },
-        { key: 'jobs', label: 'Jobs', detail: 'Scheduled', icon: 'alarm-outline' },
-        { key: 'about', label: 'About you', detail: 'Bots read it', icon: 'person-outline' },
-        { key: 'usage', label: 'Usage', detail: 'Tokens, cost', icon: 'stats-chart-outline' },
-        { key: 'activity', label: 'Activity', detail: 'Bot to bot', icon: 'pulse-outline' },
         {
-          key: 'devices',
-          label: 'Devices',
-          detail: 'Paired',
-          icon: 'phone-portrait-outline'
-        },
-        { key: 'network', label: 'Network', detail: 'Pairing codes', icon: 'wifi-outline' },
-        { key: 'connect', label: 'Hex Connect', detail: 'Remote', icon: 'cloud-outline' },
-        {
-          key: 'updates',
-          label: 'Updates',
-          detail: mobile.info?.version ?? null,
-          icon: 'download-outline'
+          title: 'This daemon',
+          areas: [
+            area('devices', 'Paired devices', 'phone-portrait-outline'),
+            area('network', 'Network and pairing', 'wifi-outline'),
+            area('connect', 'Hex Connect', 'cloud-outline'),
+            area('updates', 'Updates', 'download-outline', mobile.info?.version ?? null)
+          ]
         }
       ]
   const toolView = (t: ChatTool): ToolActivity => ({
@@ -772,6 +833,59 @@ function MobileApp() {
         await mobile.refresh()
       })
   }
+  const refresh = () => {
+    if (demo) return
+    setRefreshing(true)
+    void mobile
+      .refresh()
+      .catch(e => mobile.setError(messageOf(e)))
+      .finally(() => setRefreshing(false))
+  }
+  const reconnect = () =>
+    act(async () => {
+      await mobile.retry()
+    })
+  const openPanelFor = (c: ConversationSummary) => {
+    if (demo) return
+    if (c.kind === 'room') {
+      const r = mobile.rooms.find(item => item.id === c.id)
+      if (r) setPanels([{ kind: 'room', room: r }])
+      return
+    }
+    const b = c.kind === 'checkins' ? primaryBot : botByName(c.id)
+    if (b) setPanels([{ kind: 'bot', bot: b }])
+  }
+  const openConversation = (c: ConversationSummary) => {
+    if (demo) {
+      setBotPage(c.id)
+      return
+    }
+    if (c.kind === 'room') {
+      const r = mobile.rooms.find(item => item.id === c.id)
+      if (r) act(() => mobile.openRoom(r))
+      return
+    }
+    if (c.kind === 'checkins') {
+      const s = mobile.sections.find(item => item.id === c.id)
+      if (primaryBot && s) act(() => mobile.openSection(primaryBot, s))
+      return
+    }
+    // Each bot has one chat with you.
+    const b = botByName(c.id)
+    if (b) act(() => mobile.openSection(b))
+  }
+  // Pulse opens where a busy bot works or waits; a bot tap opens its own chat.
+  const openPulse = (id: string) => {
+    const b = botByName(id)
+    if (!b) {
+      setBotPage(id)
+      return
+    }
+    const target = pulseTarget(b, mobile.rooms, mobile.sections)
+    act(() =>
+      'room' in target ? mobile.openRoom(target.room) : mobile.openSection(b, target.section)
+    )
+  }
   const demoBot = demo && botPage ? DEMO_BOTS.find(b => b.id === botPage) : undefined
   const screen =
     !demo && (!mobile.active || addDaemon) ? (
@@ -827,6 +941,13 @@ function MobileApp() {
       <ChatScreen
         {...conversation}
         title={route.bot.display_name}
+        subtitle={
+          purposeOf(route.section, mobile.sections) === 'checkins'
+            ? 'Check-ins'
+            : route.section.peer_bot
+              ? `With ${botByName(route.section.peer_bot)?.display_name ?? route.section.peer_bot}`
+              : null
+        }
         face={faceOf(route.bot)}
         status={route.bot.status}
         intro={
@@ -854,53 +975,69 @@ function MobileApp() {
         }}
         archived={!!route.section.archived_at}
       />
+    ) : route?.kind === 'room' && !demo ? (
+      <ChatScreen
+        {...conversation}
+        title={route.room.name}
+        subtitle={(() => {
+          const names = membersOf(route.room).map(m => m.name)
+          return names.length ? `${names.join(', ')} and you` : null
+        })()}
+        members={membersOf(route.room)}
+        archived={!!route.room.archived_at}
+        hasEarlier={mobile.hasEarlier}
+        loadingEarlier={mobile.loadingEarlier}
+        onLoadEarlier={() => act(mobile.loadEarlier)}
+        onBack={back}
+        onOpenSettings={() => {
+          if (!uploading) setPanels([{ kind: 'room', room: route.room }])
+        }}
+      />
+    ) : page === 'settings' ? (
+      <SettingsScreen
+        daemon={daemon}
+        user={mobile.user ? { name: mobile.user.display_name } : null}
+        onBack={() => setPage('home')}
+        onSwitchDaemon={() => setSwitcherOpen(true)}
+        busy={demo ? [] : busyBots}
+        onOpenPulse={openPulse}
+        groups={settingsGroups}
+        onOpenArea={key => setPanels([{ kind: key }])}
+        onReconnect={reconnect}
+        onPairAgain={() => setAddDaemon(true)}
+        onDisconnect={() => {
+          setDemo(false)
+          setBotPage(null)
+          setPage('home')
+          void mobile.disconnect()
+        }}
+        refreshing={refreshing}
+        onRefresh={demo ? undefined : refresh}
+      />
+    ) : page === 'library' ? (
+      <LibraryScreen
+        bots={demo ? DEMO_BOTS : bots}
+        onBack={() => setPage('home')}
+        onOpenBot={id => {
+          const b = botByName(id)
+          if (b && !demo) setPanels([{ kind: 'bot', bot: b }])
+        }}
+        onNewBot={demo ? undefined : () => setPanels([{ kind: 'bot-create' }])}
+        onOpenJobs={demo ? undefined : () => setPanels([{ kind: 'jobs' }])}
+        onOpenRooms={demo ? undefined : () => setPanels([{ kind: 'rooms' }])}
+        archivedRooms={mobile.rooms.filter(r => r.archived_at).length}
+      />
     ) : (
       <HomeScreen
         error={mobile.error}
         onDismissError={() => mobile.setError(null)}
-        tab={tab}
-        onTabChange={changeTab}
-        bots={demo ? DEMO_BOTS : bots}
-        onOpenBot={id => {
-          if (tab !== 'bots') changeTab('bots')
-          const b = botByName(id)
-          // Each bot has one chat with you; the demo shows a sample one.
-          if (b && !demo) act(() => mobile.openSection(b))
-          else setBotPage(id)
-        }}
-        onOpenPulse={id => {
-          const b = botByName(id)
-          const detail = b?.status_detail
-          if (
-            b &&
-            detail?.room_id &&
-            mobile.rooms.some(r => r.id === detail.room_id && !r.archived_at)
-          ) {
-            setRoomId(detail.room_id)
-            changeTab('rooms')
-            return
-          }
-          // Pulse follows the reported conversation, including work between bots
-          // and Check-ins. A normal bot tap still resolves its owner chat.
-          const thread = b
-            ? mobile.sections.find(s =>
-                s.id === detail?.section_id && s.bot === b.name &&
-                (s.peer_bot || purposeOf(s, mobile.sections)) &&
-                (!detail.session_id || !s.live_session_id || detail.session_id === s.live_session_id)
-              )
-            : undefined
-          if (b) act(() => mobile.openSection(b, thread))
-          else setBotPage(id)
-        }}
-        onBotLongPress={
-          demo
-            ? undefined
-            : id => {
-                const b = botByName(id)
-                if (b) setPanels([{ kind: 'bot', bot: b }])
-              }
-        }
+        conversations={conversations}
+        onOpen={openConversation}
+        onLongPress={demo ? undefined : openPanelFor}
+        waiting={demo ? [] : waitingElsewhere}
+        onOpenPulse={openPulse}
         onNewBot={demo ? undefined : () => setPanels([{ kind: 'bot-create' }])}
+        onNewRoom={demo ? undefined : () => setPanels([{ kind: 'room-create' }])}
         primaryChoice={
           // A daemon from before the primary bot leaves `primary` out; an
           // empty one is offered HexBot too, falling back on older daemons.
@@ -932,59 +1069,14 @@ function MobileApp() {
               }
             : null
         }
-        rooms={demo ? [] : rooms}
-        roomId={roomId}
-        onSelectRoom={id => setRoomId(id)}
-        onNewRoom={demo ? undefined : () => setPanels([{ kind: 'room-create' }])}
-        onOpenRoomSettings={id => {
-          const r = mobile.rooms.find(r => r.id === id)
-          if (r) setPanels([{ kind: 'room', room: r }])
-        }}
-        onOpenAllRooms={() => setPanels([{ kind: 'rooms' }])}
-        roomChat={
-          route?.kind === 'room' && route.room.id === roomId ? (
-            <ChatBody
-              {...conversation}
-              title={route.room.name}
-              members={rooms.find(r => r.id === route.room.id)?.members ?? []}
-              archived={!!route.room.archived_at}
-              bottomInset={tabInset - 12}
-              hasEarlier={mobile.hasEarlier}
-              loadingEarlier={mobile.loadingEarlier}
-              onLoadEarlier={() => act(mobile.loadEarlier)}
-            />
-          ) : (
-            <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
-              <ActivityIndicator />
-            </View>
-          )
-        }
         daemon={daemon}
-        onSwitchDaemon={() => setSwitcherOpen(true)}
-        areas={areas}
-        onOpenArea={key => setPanels([{ kind: key }])}
         user={mobile.user ? { name: mobile.user.display_name } : null}
-        onReconnect={() =>
-          act(async () => {
-            await mobile.retry()
-          })
-        }
-        onPairAgain={() => setAddDaemon(true)}
-        onDisconnect={() => {
-          setDemo(false)
-          setBotPage(null)
-          void mobile.disconnect()
-        }}
+        onOpenSettings={() => setPage('settings')}
+        onOpenLibrary={() => setPage('library')}
+        onSwitchDaemon={saved.length > 1 ? () => setSwitcherOpen(true) : undefined}
+        onReconnect={reconnect}
         refreshing={refreshing}
-        onRefresh={() => {
-          if (!demo) {
-            setRefreshing(true)
-            void mobile
-              .refresh()
-              .catch(e => mobile.setError(messageOf(e)))
-              .finally(() => setRefreshing(false))
-          }
-        }}
+        onRefresh={demo ? undefined : refresh}
         loading={!demo && !mobile.info && mobile.connection === 'connecting'}
       />
     )
@@ -1104,9 +1196,8 @@ function MobileApp() {
         mobile={mobile}
         onOpenRoom={room => {
           setPanels([])
-          setRoomId(room.id)
           setBotPage(null)
-          changeTab('rooms')
+          act(() => mobile.openRoom(room))
         }}
       />
       <ChatChooser

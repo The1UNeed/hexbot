@@ -7,10 +7,24 @@ Transparency use solid controls. Lists and messages use solid backgrounds.
 
 ## Layout
 
-Three tabs: Bots, Rooms and Daemon. Bots is a feed of bot posts. A bot opens
-its one chat. Settings, bot settings, tool
-steps and visuals open as front cards (`src/ui/Layer.tsx`) that leave the
-screen below in view. The daemon name above Bots switches daemons. The model
+A messaging app with no tabs. One list holds every bot's chat, every room and
+the primary bot's Check-ins, newest first, with the primary bot pinned on top.
+Each row shows the face, the name, the time and the last thing said, or what
+the bot is doing while it works. Search at the bottom filters the list. A row
+opens its conversation; a long press opens the bot's profile or the room's
+settings. Rooms open full screen like a bot's chat, and archiving the open
+room returns to the list. A bot waiting on you in a conversation with another
+bot gets a line at the top of the list that opens it.
+
+Your initials at the top left open Settings: the daemon, what bots are doing
+right now, About you, models, connectors, skills, usage, devices, pairing,
+Hex Connect and updates. + at the top right makes a new bot or room. The grid
+button next to Search opens Bots & jobs: every bot's profile, scheduled jobs,
+and all rooms, archived ones included. With more than one daemon saved, its
+name above the list switches daemons; otherwise Settings does.
+
+Profiles, settings areas, tool steps and visuals open as front cards
+(`src/ui/Layer.tsx`) that leave the screen below in view. The model
 pill lists the providers with a key or sign-in, plus the bot's own, each from
 `hexbot.models.list {provider}` so the provider's current list is used, as in
 the web app. Thinking levels come from `reasoning_levels`; a model the daemon
@@ -48,9 +62,9 @@ when Connect supplies one, and exchanges the grant directly with that daemon.
 
 | Area | Mobile controls |
 | --- | --- |
-| Bots | Feed with role and description; create, edit, delete, soul, picture, model and thinking level, tools, approvals, workspace, notifications and dreaming |
-| Conversations | Streamed chat, stop, file/image/PDF attachments, Markdown, tool steps with their results, visuals, questions and approvals |
-| Rooms | Rooms in one tab: chat, stop, switch rooms, bot membership, main bot, budgets, approvals, archive, restore and delete |
+| Bots | Chat list and Bots & jobs; create, edit, delete, soul, picture, model and thinking level, tools, approvals, workspace, notifications and dreaming |
+| Conversations | Check-ins in the chat list; streamed chat, stop, file/image/PDF attachments, Markdown, tool steps with their results, visuals, questions and approvals |
+| Rooms | Rooms in the chat list: chat, stop, bot membership, main bot, budgets, approvals, archive, restore from All rooms, and delete |
 | Memory | Edit each bot's memory and your About you text; inspect dreaming and restore memory |
 | Models | Provider API keys and device sign-in, model selection, daemon defaults and fallback model |
 | Jobs | Create, edit, pause, resume, run and delete; schedule, prompt, script, workspace, model, reasoning, skills and run count |

@@ -2,8 +2,7 @@
 import { act, cleanup, renderHook } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { useMobile } from './useMobile'
-import appSource from '../../App.tsx?raw'
-import ts from 'typescript'
+import { pulseTarget } from './routes'
 import type { Bot, Room, SavedDaemon, Section } from './types'
 
 const state = vi.hoisted(() => ({
@@ -290,19 +289,12 @@ describe('mobile navigation while a bot lookup waits', () => {
   })
 })
 
-/** Execute the actual HomeScreen callback with the real hook, without loading native UI. */
+/** Open what Pulse opens for a bot, the way the app does, with the real hook. */
 const pulse = (mobile: ReturnType<typeof useMobile>, selected: Bot) => {
-  const app = appSource
-  const callback = app.split('onOpenPulse={')[1]!.split('\n        onBotLongPress=')[0]!.trim().slice(0, -1)
-  const js = ts.transpile(`const handler = ${callback}`, { target: ts.ScriptTarget.ES2022 })
-  let pending = Promise.resolve()
-  let roomId: string | null = null
-  const handler = new Function('mobile', 'botByName', 'act', 'setRoomId', 'changeTab', 'setBotPage', `${js}; return handler`)(
-    mobile, () => selected, (run: () => Promise<void>) => { pending = run() },
-    (id: string) => { roomId = id }, () => {}, () => {}
-  )
-  handler(selected.name)
-  return { done: () => pending, room: () => roomId }
+  const target = pulseTarget(selected, mobile.rooms, mobile.sections)
+  const pending =
+    'room' in target ? mobile.openRoom(target.room) : mobile.openSection(selected, target.section)
+  return { done: () => pending, room: () => ('room' in target ? target.room.id : null) }
 }
 const waiting = (id = 'thread') => ({ ...bot, status: 'needs_you', status_detail: { section_id: id, room_id: null } }) as Bot
 

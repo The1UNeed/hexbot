@@ -330,12 +330,16 @@ try {
     d => d.name === 'Hexbot on Android'
   )
   assert(device, 'The browser preview must pair through the native credential flow')
-  await page.getByTestId('daemon-pill').click()
+  // One saved daemon: the list names no daemon, and Settings switches daemons.
+  await expect(page.getByTestId('daemon-pill')).not.toBeVisible()
+  await page.getByTestId('home-settings').click()
+  await page.getByTestId('daemon-switch').click()
   await expect(page.getByTestId('daemon-switcher')).toBeVisible()
   await settle()
   await shot('daemon-switcher')
   await page.getByTestId('daemon-switcher-close').click()
   await expect(page.getByTestId('daemon-switcher')).not.toBeVisible()
+  await page.getByRole('button', { name: 'Back', exact: true }).click()
   // The bot row opens its one chat.
   await page.getByTestId('bot-row-owl').click()
   await expect(page.getByTestId('chat-empty')).toBeVisible()
@@ -556,51 +560,52 @@ try {
   await page.getByTestId('management-sheet-close').click()
   await expect(page.getByTestId('management-sheet')).not.toBeVisible()
   await page.getByRole('button', { name: 'Back', exact: true }).click()
-  await page.getByTestId('home-tabs-rooms').click()
-  await expect(page.getByTestId('rooms-view')).toBeVisible()
-  await expect(page.getByTestId(`room-chip-${launch.id}`)).toBeVisible()
-  await page.getByTestId(`room-chip-${room.id}`).click()
-  await expect(page.getByRole('heading', { name: 'Our team', exact: true })).toBeVisible()
+  // Rooms sit in the same list as chats and open like one.
+  await expect(page.getByTestId(`room-row-${launch.id}`)).toBeVisible()
+  await page.getByTestId(`room-row-${room.id}`).click()
+  await expect(page.getByTestId('chat-title')).toContainText('Our team')
   await page.getByTestId('chat-input').fill('Check our team on mobile')
   await page.getByTestId('chat-send').click()
   await expect(
     page.getByText('The mobile room is working. @user your team is ready.', { exact: true })
   ).toBeVisible({ timeout: 30000 })
   await page.screenshot({ path: path.join(artifacts, 'room.png') })
-  await page.getByTestId('room-settings').click()
+  await page.getByTestId('chat-settings').click()
   await expect(page.getByTestId('main-bot-owl')).toBeVisible()
   await settle()
   await shot('room-settings')
-  // An archived room stays reachable after the lists reload, and restores from there.
-  // Archiving the open room moves Rooms to the other one.
+  // Archiving the open room returns to the list, which leaves it out.
   await page.getByTestId('action-archive-room').click()
   await expect(page.getByTestId('management-sheet')).not.toBeVisible()
-  await expect(page.getByTestId(`room-chip-${room.id}`)).not.toBeVisible()
-  await expect(page.getByRole('heading', { name: 'Launch week', exact: true })).toBeVisible()
-  // Restoring another room from Archived keeps the open one.
-  await page.getByTestId('rooms-archived').click()
+  await expect(page.getByTestId('home-screen')).toBeVisible()
+  await expect(page.getByTestId(`room-row-${room.id}`)).not.toBeVisible()
+  await expect(page.getByTestId(`room-row-${launch.id}`)).toBeVisible()
+  // All rooms, under Bots & jobs, restores it.
+  await page.getByTestId('home-library').click()
+  await expect(page.getByTestId('library-rooms')).toContainText('1 archived')
+  await page.getByTestId('library-rooms').click()
   await page.getByTestId(`managed-room-${room.id}`).click()
   await page.getByTestId('action-restore-room').click()
   await expect
     .poll(async () => (await rpc('hexbot.rooms.get', { id: room.id })).room.archived_at)
     .toBe(null)
   await expect(page.getByTestId('management-sheet')).not.toBeVisible()
-  await expect(page.getByTestId('rooms-archived')).not.toBeVisible()
-  await expect(page.getByRole('heading', { name: 'Launch week', exact: true })).toBeVisible()
-  await expect(page.getByTestId('chat-input')).toBeVisible()
+  await expect(page.getByTestId('library-rooms')).not.toContainText('archived')
+  await page.getByRole('button', { name: 'Back', exact: true }).click()
   // A room archived elsewhere while open stays, and restoring it there keeps it open.
-  await page.getByTestId(`room-chip-${room.id}`).click()
-  await expect(page.getByRole('heading', { name: 'Our team', exact: true })).toBeVisible()
+  await page.getByTestId(`room-row-${room.id}`).click()
+  await expect(page.getByTestId('chat-title')).toContainText('Our team')
   await rpc('hexbot.rooms.archive', { id: room.id })
   await expect(page.getByTestId('chat-archived')).toBeVisible()
-  await page.getByTestId('room-settings').click()
+  await page.getByTestId('chat-settings').click()
   await page.getByTestId('action-restore-room').click()
   await expect(page.getByTestId('management-sheet')).not.toBeVisible()
   await expect(page.getByTestId('chat-archived')).not.toBeVisible()
-  await expect(page.getByRole('heading', { name: 'Our team', exact: true })).toBeVisible()
+  await expect(page.getByTestId('chat-title')).toContainText('Our team')
   await expect(page.getByTestId('chat-input')).toBeVisible()
-  await page.getByTestId('home-tabs-daemon').click()
-  await shot('daemon')
+  await page.getByRole('button', { name: 'Back', exact: true }).click()
+  await page.getByTestId('home-settings').click()
+  await shot('settings')
   await page.getByTestId('daemon-about').click()
   await page.getByTestId('field-text').fill('I prefer brief updates from my phone.')
   await page.getByTestId('management-sheet-action').click()
@@ -664,7 +669,11 @@ try {
     await page.getByTestId('management-sheet-close').click()
     await expect(page.getByTestId('management-sheet')).not.toBeVisible()
   }
-  await page.getByTestId('daemon-jobs').click()
+  await page.getByRole('button', { name: 'Back', exact: true }).click()
+  await page.getByTestId('home-library').click()
+  await settle()
+  await shot('library')
+  await page.getByTestId('library-jobs').click()
   await page.getByTestId('manage-job-create').click()
   await page.getByTestId('field-name').fill('Mobile morning brief')
   await page.getByTestId('field-prompt').fill('Write my brief')
@@ -700,9 +709,13 @@ try {
   await page.getByTestId('management-sheet-backdrop').click({ position: { x: 196, y: 20 } })
   await page.screenshot({ path: path.join(artifacts, 'daemons.png') })
   await expect(page.getByTestId('management-sheet')).not.toBeVisible()
-  await page.getByTestId('home-tabs-bots').click()
-  await shot('bots-feed')
-  await page.getByTestId('bots-new').click()
+  await page.getByRole('button', { name: 'Back', exact: true }).click()
+  await shot('home')
+  await page.getByTestId('home-new').click()
+  await expect(page.getByTestId('home-new-menu')).toBeVisible()
+  await settle()
+  await shot('home-new')
+  await page.getByTestId('home-new-bot').click()
   await expect(page.getByTestId('field-name')).toBeVisible()
   await settle()
   await shot('bot-new')
@@ -720,12 +733,11 @@ try {
   // A reload keeps metadata, but the browser preview intentionally has no persistent secrets.
   // Reconnect the same client by disconnecting and selecting its saved target.
   await page.getByRole('button', { name: 'Back', exact: true }).click()
-  await page.getByTestId('home-tabs-daemon').click()
+  await page.getByTestId('home-settings').click()
   await page.getByTestId('daemon-disconnect').click()
   await expect(page.getByTestId('connection-screen')).toBeVisible()
   await shot('connection-saved')
   await page.locator('[data-testid^="connection-saved-"]').first().click()
-  await page.getByTestId('home-tabs-bots').click()
   await expect(page.getByTestId('bot-row-owl')).toBeVisible({ timeout: 30000 })
   await page.getByTestId('bot-row-owl').click()
   await expect(
@@ -752,7 +764,7 @@ try {
       'attachment-only send delivered to Pi, clears chips after acceptance, and leaves out a file staged by another app',
       'retained paired-app upload keeps its bytes and submits exactly once without the mobile file',
       'approval gates a real file write',
-      'bot feed, and one chat per bot opened from its row',
+      'chat list, and one chat per bot opened from its row',
       'model menu lists connected providers from their live lists and shows the level the model runs at',
       'tool card',
       'soul editing',
@@ -760,7 +772,7 @@ try {
       'About you',
       'daemon management panels and unlimited room turn budget',
       'skill creation',
-      'room chat in the Rooms tab, archive and restore',
+      'rooms in the chat list, archive and restore from All rooms',
       'scheduled jobs, edits that keep the schedule, and pause',
       'daemon disconnect and reconnect',
       'history restoration'

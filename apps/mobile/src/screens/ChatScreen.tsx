@@ -46,6 +46,8 @@ type MessageItem = Extract<ChatItem, { kind: 'message' }>
 export interface ChatScreenProps {
   /** The bot's or the room's name. */
   title: string
+  /** A line under the name, such as a room's members. */
+  subtitle?: string | null
   /** The bot's face. Rooms pass `members` instead. */
   face?: FaceSource
   members?: FaceSource[]
@@ -106,17 +108,22 @@ type Entry = ChatItem | { id: string; kind: 'waiting' }
  * one quiet line per run, and approvals stop the transcript with a card.
  */
 export function ChatScreen(props: ChatScreenProps) {
-  const { face, members, onBack, onOpenSettings, status, title } = props
+  const { face, members, onBack, onOpenSettings, status, subtitle, title } = props
   const room = !!members
 
   const header = (
-    <View
+    <Pressable
+      accessibilityHint={
+        onOpenSettings ? (room ? 'Opens the room settings' : 'Opens the profile') : undefined
+      }
       accessibilityLabel={title}
-      accessibilityRole="header"
-      style={styles.titleButton}
+      accessibilityRole={onOpenSettings ? 'button' : 'header'}
+      disabled={!onOpenSettings}
+      onPress={onOpenSettings}
+      style={({ pressed }) => [styles.titleButton, { opacity: pressed ? 0.7 : 1 }]}
       testID="chat-title"
     >
-      <Glass radius={24} style={styles.titlePill}>
+      <Glass interactive={!!onOpenSettings} radius={24} style={styles.titlePill}>
         {room ? (
           <RoomFace members={members} name={title} size={30} status={status} />
         ) : (
@@ -126,9 +133,14 @@ export function ChatScreen(props: ChatScreenProps) {
           <Text numberOfLines={1} variant="subhead">
             {title}
           </Text>
+          {subtitle ? (
+            <Text numberOfLines={1} tone="muted" variant="caption">
+              {subtitle}
+            </Text>
+          ) : null}
         </View>
       </Glass>
-    </View>
+    </Pressable>
   )
 
   return (
@@ -157,13 +169,8 @@ export function ChatScreen(props: ChatScreenProps) {
   )
 }
 
-/**
- * The transcript and the composer without a screen around them, so a tab
- * can host a conversation. `bottomInset` lifts the composer above a tab bar.
- */
-export function ChatBody(
-  props: Omit<ChatScreenProps, 'onBack'> & { onBack?: () => void; bottomInset?: number }
-) {
+/** The transcript and the composer. */
+function ChatBody(props: ChatScreenProps) {
   const {
     archived,
     busy,
@@ -181,7 +188,7 @@ export function ChatBody(
   const room = !!members
   const keyboard = useKeyboardVisible()
   const insets = useSafeAreaInsets()
-  const bottom = keyboard ? 8 : Math.max(props.bottomInset ?? insets.bottom, 8)
+  const bottom = keyboard ? 8 : Math.max(insets.bottom, 8)
 
   // Inverted list: newest first, so the view starts at the bottom and stays there.
   const entries = useMemo<Entry[]>(() => {

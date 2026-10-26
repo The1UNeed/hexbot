@@ -24,15 +24,24 @@ export interface BotSummary extends FaceSource {
   primary?: boolean
 }
 
-export interface RoomSummary {
+/**
+ * One row in the chat list: a bot's chat, a room, or the primary bot's
+ * Check-ins. `id` is the bot's name, the room's id or the section's id.
+ */
+export interface ConversationSummary {
+  kind: 'bot' | 'checkins' | 'room'
   id: string
   name: string
-  /** Bot members, in join order; the first four draw the room's face. */
-  members: FaceSource[]
+  /** The bot's face; a room draws `members` instead. */
+  face?: FaceSource
+  members?: FaceSource[]
   preview?: string | null
+  /** What the bot is doing now, shown instead of the preview while it works. */
+  activity?: string | null
   updatedAt?: number | null
   status?: BotStatus
-  archived?: boolean
+  /** The primary bot's chat, pinned on top. */
+  primary?: boolean
 }
 
 /** A daemon this app has paired with and can switch to. */
@@ -117,44 +126,3 @@ export type ChatItem =
   | { kind: 'approval'; id: string; request: ApprovalRequestView }
   | { kind: 'notice'; id: string; text: string; tone?: 'danger' | 'neutral' }
   | { kind: 'day'; id: string; at: number }
-
-export interface ModelChoice {
-  id: string
-  label: string
-  provider: string
-  detail?: string | null
-}
-
-export interface ToolToggle {
-  id: string
-  label: string
-  description?: string | null
-  enabled: boolean
-  /** False when the tool is not set up on the daemon's computer. */
-  available?: boolean
-}
-
-export interface DeviceView {
-  id: string
-  name: string
-  platform: string
-  lastSeenAt?: number | null
-  current?: boolean
-}
-
-export interface JobView {
-  id: string
-  name: string
-  /** Plain-language schedule: "Every day at 8:00 AM". */
-  schedule: string
-  bot?: FaceSource | null
-  nextRunAt?: number | null
-  lastRunOk?: boolean | null
-  enabled: boolean
-}
-
-export interface PairingView {
-  code: string
-  link: string
-  expiresAt: number
-}
