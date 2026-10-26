@@ -22,7 +22,6 @@ import { useTranscripts } from '../../stores/transcripts'
 import { AskingRow, AskRows } from './asking-row'
 import { ClarifyCard } from './clarify-card'
 import { composerFieldClass, ComposerShell } from './composer'
-import { MemoryMarks } from './memory-marks'
 import type { Ask } from './steps'
 import { WaitingBanner } from './waiting-banner'
 import { WorkStatus } from './work-status'
@@ -410,7 +409,6 @@ export function RoomConversation() {
                       </p>
                     ) : null}
                     {/* The bot's words arrive whole, as its room message when the turn ends. */}
-                    {message ? <MemoryMarks message={message} /> : null}
                     {/* The live status sits at the foot of the turn until it is done. */}
                     {message ? (
                       <WorkStatus checking={transcript?.checking} message={message} name={name} />

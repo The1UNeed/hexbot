@@ -1,15 +1,6 @@
 import { Ionicons } from '@expo/vector-icons'
 import { type ReactNode, useMemo, useState } from 'react'
-import {
-  ActivityIndicator,
-  FlatList,
-  Image,
-  Pressable,
-  ScrollView,
-  StyleSheet,
-  TextInput,
-  View
-} from 'react-native'
+import { FlatList, Image, Pressable, ScrollView, StyleSheet, TextInput, View } from 'react-native'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 
 import {
@@ -22,7 +13,6 @@ import {
   formatDayDivider,
   Glass,
   IconButton,
-  type IconName,
   mono,
   radius,
   RoomFace,
@@ -33,13 +23,7 @@ import {
   useTheme,
   withAlpha
 } from '../ui'
-import type {
-  ApprovalChoice,
-  ApprovalRequestView,
-  AttachmentView,
-  ChatItem,
-  ToolActivity
-} from './types'
+import type { ApprovalChoice, ApprovalRequestView, AttachmentView, ChatItem } from './types'
 
 type MessageItem = Extract<ChatItem, { kind: 'message' }>
 
@@ -92,8 +76,6 @@ export interface ChatScreenProps {
 
   /** Draw a message's text yourself, such as with a Markdown renderer. */
   renderMessageText?: (item: MessageItem) => ReactNode
-  /** Opens one tool call on its own card. */
-  onOpenTool?: (tool: ToolActivity) => void
   /** Opens a visual item from the transcript. */
   onOpenVisual?: (id: string) => void
   /** Under the empty state of a new chat, such as the model it will use. */
@@ -324,8 +306,6 @@ function TranscriptEntry({
           {entry.text}
         </Text>
       )
-    case 'tools':
-      return <ToolsCard id={entry.id} onOpen={props.onOpenTool} tools={entry.tools} />
     case 'visual':
       return (
         <View style={styles.visualItem}>
@@ -450,104 +430,6 @@ function WaitingRow({ label, who }: { label?: string | null; who?: FaceSource | 
       <Text tone="muted" variant="footnote">
         {label || 'Thinking…'}
       </Text>
-    </View>
-  )
-}
-
-const TOOL_GLYPHS: Record<string, IconName> = {
-  browser: 'compass-outline',
-  clarify: 'help-circle-outline',
-  delegate: 'git-branch-outline',
-  edit: 'create-outline',
-  edit_file: 'create-outline',
-  read_file: 'document-text-outline',
-  write_file: 'create-outline',
-  web_fetch: 'globe-outline',
-  message_bot: 'chatbubbles-outline',
-  memory: 'bookmark-outline',
-  hexbot_show_html: 'bar-chart-outline',
-  ls: 'folder-open-outline',
-  read: 'document-text-outline',
-  terminal: 'terminal-outline',
-  bash: 'terminal-outline',
-  web_search: 'search-outline',
-  write: 'create-outline'
-}
-
-const glyphFor = (name = ''): IconName => TOOL_GLYPHS[name] ?? 'construct-outline'
-
-/** How many tool lines show before the rest fold away. */
-const TOOL_LINES = 3
-
-/**
- * A run of tool calls as quiet lines under the bot's message, one per call,
- * like a log you can skim. Tap a line to see the call on its own card.
- */
-function ToolsCard({
-  id,
-  onOpen,
-  tools
-}: {
-  id: string
-  tools: ToolActivity[]
-  onOpen?: (tool: ToolActivity) => void
-}) {
-  const theme = useTheme()
-  const [open, setOpen] = useState(false)
-  const shown = open ? tools : tools.slice(-TOOL_LINES)
-  const hidden = tools.length - shown.length
-  const color = { error: theme.danger, ok: theme.muted, running: theme.info }
-
-  return (
-    <View style={styles.tools} testID={`chat-tools-${id}`}>
-      {hidden > 0 ? (
-        <Pressable
-          accessibilityRole="button"
-          onPress={() => setOpen(true)}
-          style={styles.toolLine}
-          testID={`chat-tools-${id}-more`}
-        >
-          <Ionicons color={theme.faint} name="chevron-up" size={15} />
-          <Text tone="muted" variant="footnote">
-            {hidden === 1 ? '1 earlier step' : `${hidden} earlier steps`}
-          </Text>
-        </Pressable>
-      ) : null}
-      {shown.map(tool => (
-        <Pressable
-          accessibilityHint={onOpen ? 'Shows what this step did' : undefined}
-          accessibilityLabel={`${tool.label}, ${tool.status === 'running' ? 'running' : tool.status === 'error' ? 'failed' : 'done'}`}
-          accessibilityRole={onOpen ? 'button' : undefined}
-          disabled={!onOpen}
-          key={tool.id}
-          onPress={() => onOpen?.(tool)}
-          style={({ pressed }) => [styles.toolLine, { opacity: pressed ? 0.6 : 1 }]}
-          testID={`chat-tool-${tool.id}`}
-        >
-          {tool.status === 'running' ? (
-            <ActivityIndicator color={theme.info} size="small" style={styles.toolSpinner} />
-          ) : (
-            <Ionicons
-              color={color[tool.status]}
-              name={tool.status === 'error' ? 'alert-circle-outline' : glyphFor(tool.name)}
-              size={16}
-            />
-          )}
-          <Text
-            numberOfLines={1}
-            style={[styles.toolLabel, tool.status === 'error' && { color: theme.danger }]}
-            tone="muted"
-            variant="footnote"
-          >
-            {tool.label}
-          </Text>
-          {tool.detail ? (
-            <Text numberOfLines={1} style={styles.toolDetail} tone="faint" variant="caption">
-              {tool.detail.replace(/\s+/g, ' ')}
-            </Text>
-          ) : null}
-        </Pressable>
-      ))}
     </View>
   )
 }
@@ -887,11 +769,6 @@ const styles = StyleSheet.create({
     paddingRight: 14
   },
   titleText: { flexShrink: 1 },
-  toolDetail: { flexShrink: 2, marginLeft: 'auto', maxWidth: '45%' },
-  toolLabel: { flexShrink: 1 },
-  toolLine: { alignItems: 'center', flexDirection: 'row', gap: 8, minHeight: 30 },
-  toolSpinner: { height: 16, transform: [{ scale: 0.7 }], width: 16 },
-  tools: { alignSelf: 'stretch', marginTop: 10, paddingHorizontal: 4 },
   transcript: { paddingBottom: 8, paddingHorizontal: 14, paddingTop: 12 },
   visual: {
     alignItems: 'center',

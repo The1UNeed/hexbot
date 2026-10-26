@@ -39,6 +39,55 @@ describe('MessageRow', () => {
     expect(screen.queryByRole('status')).toBeNull()
   })
 
+  it('shows a finished turn as its bubbles alone, past ones included', () => {
+    row({
+      createdAt: 1,
+      text: 'I set my soul.',
+      thinking: 'The user wants short answers.',
+      toolCalls: [
+        {
+          args: { action: 'write', text: 'Warm but efficient.' },
+          durationS: 1,
+          name: 'hexbot_soul',
+          result: '{"ok":true}',
+          startedAt: 0,
+          status: 'ok',
+          toolId: 's1'
+        },
+        {
+          args: { action: 'add', content: 'Files are local.' },
+          durationS: 1,
+          name: 'memory',
+          result: '{"success":true}',
+          startedAt: 0,
+          status: 'ok',
+          toolId: 'm1'
+        },
+        {
+          args: null,
+          durationS: 12,
+          name: 'terminal',
+          result: 'ok',
+          startedAt: 0,
+          status: 'ok',
+          summary: 'ls',
+          toolId: 't1'
+        }
+      ],
+      workUntil: 13_000
+    })
+
+    expect(screen.getByTestId('bot-message')).toHaveTextContent(/^I set my soul\.$/)
+    expect(screen.queryByRole('button')).toBeNull()
+    expect(screen.queryByText(/Soul updated|Memory updated|Thought for|Worked for/)).toBeNull()
+    expect(screen.queryByText(/short answers|Warm but efficient|Files are local/)).toBeNull()
+  })
+
+  it('keeps Copy beside your own messages', () => {
+    row({ role: 'user', text: 'Hi' })
+    expect(screen.getByRole('button', { name: 'Copy' })).toBeInTheDocument()
+  })
+
   it('draws a visual between what the bot said first and its final reply', () => {
     row({
       parts: ['Here are the costs.'],
@@ -97,7 +146,7 @@ describe('MessageRow', () => {
 })
 
 describe('CheckingRow', () => {
-  it('shows checking a step after a card ends the message, until the clear', () => {
+  it('stays working after a card ends the message while a step is checked, until the clear', () => {
     useTranscripts.setState({ bySession: {} })
     setTranscriptEffects({ ackApproval: vi.fn(), notify: vi.fn(), touchSection: vi.fn() })
     const actions = useTranscripts.getState()
@@ -113,7 +162,7 @@ describe('CheckingRow', () => {
     actions.approvalRequest('s', { request_id: 'a' })
     resetTranscriptEffects()
     rerender(<CheckingRow transcript={transcript()} />)
-    expect(screen.getByRole('status', { name: 'Checking this step' })).toBeVisible()
+    expect(screen.getByRole('status', { name: 'Bot is working' })).toBeVisible()
     actions.statusUpdate('s', { kind: 'checking', text: '' })
     rerender(<CheckingRow transcript={transcript()} />)
     expect(screen.queryByRole('status')).toBeNull()
