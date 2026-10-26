@@ -17,6 +17,8 @@ import type {
   ClarifyQuestion,
   ClarifyRequest,
   ClarifyRequestPayload,
+  ComputerSize,
+  ComputerStatus,
   Connector,
   ConnectorTest,
   ContextUsage,
@@ -376,6 +378,20 @@ export const dreamingList = (bot: string, limit = 10) =>
 /** Put the bot's memory back to what it was before this dream. */
 export const dreamingRestore = (id: string) =>
   rpcCall<{ bot: string; memory_md: string }>('hexbot.dreaming.restore', { id })
+
+export const computerStatus = () => rpcCall<ComputerStatus>('hexbot.computer.status')
+/** Start, stop, restart or reset; the step runs on and reports `hexbot.computer.changed`. */
+export const computerStep = (step: 'reset' | 'restart' | 'start' | 'stop') =>
+  rpcCall<ComputerStatus>(`hexbot.computer.${step}`)
+export const computerControl = (holder: 'bot' | 'user') =>
+  rpcCall<ComputerStatus>('hexbot.computer.control', { holder })
+/** A link, relative to the daemon, to the computer's screen; `control` takes over. */
+export const computerView = (control: boolean) =>
+  rpcCall<{ control: boolean; expires_at: number; path: string }>('hexbot.computer.view', {
+    control
+  })
+export const computerConfigure = (size: ComputerSize) =>
+  rpcCall<ComputerStatus>('hexbot.computer.configure', { size })
 
 export const checkinsStatus = () => rpcCall<CheckinStatus>('hexbot.checkins.status')
 export const checkinsRunNow = () => rpcCall<{ id: string }>('hexbot.checkins.run_now')

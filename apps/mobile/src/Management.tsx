@@ -96,7 +96,7 @@ const TOOLS: { key: string; label: string; description: string }[] = [
   {
     key: 'computer_use',
     label: 'Computer use',
-    description: 'See the screen and click. Needs the cua driver on this computer.'
+    description: "Work on your bots' shared Linux desktop, which you can watch and take over. Uses Cua."
   },
   { key: 'vision', label: 'Vision', description: 'Look at images you attach.' },
   {
@@ -130,6 +130,41 @@ function confirm(title: string, body: string, action: () => void) {
     { text: 'Cancel', style: 'cancel' },
     { text: title, style: 'destructive', onPress: action }
   ])
+}
+/** How big the bots' shared computer is; a new size applies when it is reset. */
+function ComputerSize({ mobile }: { mobile: ReturnType<typeof useMobile> }) {
+  const status = mobile.computer
+  const [error, setError] = useState<string | null>(null)
+  useEffect(() => {
+    void mobile.computerCall().catch((e: unknown) => setError(String(e)))
+  }, [])
+  if (!status?.sizes) return error ? <Text tone="danger">{error}</Text> : null
+  return (
+    <Group
+      title="Computer size"
+      footer={
+        status.state === 'absent'
+          ? 'Shared by all your bots. Used when the computer is made.'
+          : "Shared by all your bots. A new size applies after Reset, on the bots' computer card."
+      }
+    >
+      {status.sizes.map(size => (
+        <ChoiceRow
+          key={size.name}
+          title={`${size.name[0]!.toUpperCase()}${size.name.slice(1)}`}
+          subtitle={`${size.cpu} CPUs, ${size.memory_gb} GB`}
+          selected={status.size === size.name}
+          disabled={mobile.connection !== 'connected'}
+          testID={`computer-size-${size.name}`}
+          onPress={() =>
+            void mobile
+              .computerCall('hexbot.computer.configure', { size: size.name })
+              .catch((e: unknown) => setError(String(e)))
+          }
+        />
+      ))}
+    </Group>
+  )
 }
 export function Management({
   panel: requested,
@@ -790,6 +825,13 @@ export function Management({
           ))}
         </Group>
       )
+      if ((bot?.tools as string[] | undefined)?.includes('computer_use'))
+        content = (
+          <>
+            {content}
+            <ComputerSize mobile={mobile} />
+          </>
+        )
       break
     }
     case 'rooms':

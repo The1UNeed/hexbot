@@ -28,6 +28,7 @@ import type { GatewayEvent } from '@hermes/shared'
 
 import { useBots } from '../stores/bots'
 import { useCheckins } from '../stores/checkins'
+import { useComputer } from '../stores/computer'
 import { useConnectors } from '../stores/connectors'
 import { useMe } from '../stores/me'
 import { useRooms } from '../stores/rooms'
@@ -46,6 +47,7 @@ import type { HexbotRpcClient } from './rpc'
 import type {
   ApprovalChoice,
   ClarifyRequestPayload,
+  ComputerStatus,
   ContextUsage,
   RoomEvent,
   RoomTurn,
@@ -157,6 +159,11 @@ export function routeEvent(event: GatewayEvent, deps: EventRouterDeps = {}): voi
       return
 
     case 'hexbot.memory.user.changed':
+      return
+
+    case 'hexbot.computer.changed':
+      useComputer.getState().apply(payload as Partial<ComputerStatus>)
+
       return
 
     case 'hexbot.checkins.changed':

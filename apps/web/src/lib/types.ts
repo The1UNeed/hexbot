@@ -130,6 +130,38 @@ export interface Bot {
   workdir?: null | string
 }
 
+/** The bots' computer, one Cua sandbox per daemon (docs/api.md, "Computer"). */
+export type ComputerState =
+  'absent' | 'error' | 'resetting' | 'restarting' | 'running' | 'starting' | 'stopped' | 'stopping'
+
+export type ComputerSize = 'large' | 'medium' | 'small'
+
+/** Where a bot last acted, as fractions of the screen, and when. */
+export interface ComputerCursor {
+  action: string
+  /** Seconds since the epoch. */
+  at: number
+  bot: string
+  x: number
+  y: number
+}
+
+export interface ComputerStatus {
+  /** The action in progress, such as `click`, and the bot doing it. */
+  activity: null | string
+  actor: null | string
+  /** Whether the daemon's computer has Cua; events leave it out. */
+  available?: boolean
+  /** Who is using the computer: the bots, or the user who took over. */
+  control: 'bot' | 'user'
+  cursors: ComputerCursor[]
+  error: null | string
+  image?: string
+  size?: ComputerSize
+  sizes?: { cpu: number; memory_gb: number; name: ComputerSize }[]
+  state: ComputerState
+}
+
 /** Pi's thinking levels; Pi clamps each to what the model supports. */
 export type ReasoningEffort = 'high' | 'low' | 'max' | 'medium' | 'minimal' | 'off' | 'xhigh'
 

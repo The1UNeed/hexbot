@@ -2,8 +2,10 @@ import { useEffect, useState } from 'react'
 
 import { Button } from '../../components/ui/button'
 import { Input } from '../../components/ui/input'
+import { Select } from '../../components/ui/select'
 import { Switch } from '../../components/ui/switch'
-import type { Bot, BotTool } from '../../lib/types'
+import type { Bot, BotTool, ComputerSize } from '../../lib/types'
+import { useComputer } from '../../stores/computer'
 
 import { Group, Heading, Row, type SaveBot } from './shared'
 
@@ -35,7 +37,8 @@ export const TOOL_GROUPS: { rows: ToolRow[]; title: string }[] = [
       },
       { description: 'Drive a local Chrome window.', key: 'browser', label: 'Browser' },
       {
-        description: 'See the screen and click. Needs the cua driver on this computer.',
+        description:
+          "Work on your bots' shared Linux desktop, which you can watch and take over. Uses Cua.",
         key: 'computer_use',
         label: 'Computer use'
       }
@@ -70,6 +73,43 @@ export const TOOL_GROUPS: { rows: ToolRow[]; title: string }[] = [
     title: 'Working with others'
   }
 ]
+
+/** How big the bots' shared computer is; a new size applies when it is reset. */
+function ComputerSizeRow() {
+  const status = useComputer(state => state.status)
+  const refresh = useComputer(state => state.refresh)
+  const configure = useComputer(state => state.configure)
+
+  useEffect(() => {
+    void refresh()
+  }, [refresh])
+
+  if (!status?.sizes) {
+    return null
+  }
+
+  return (
+    <Row
+      control={
+        <Select
+          label="Computer size"
+          onValueChange={value => void configure(value as ComputerSize)}
+          options={status.sizes.map(size => ({
+            label: `${size.name[0]!.toUpperCase()}${size.name.slice(1)} · ${size.cpu} CPUs, ${size.memory_gb} GB`,
+            value: size.name
+          }))}
+          value={status.size}
+        />
+      }
+      description={
+        status.state === 'absent'
+          ? 'Shared by all your bots. Used when the computer is made.'
+          : 'Shared by all your bots. A new size applies after Reset, in the Computer tab.'
+      }
+      title="Computer size"
+    />
+  )
+}
 
 export function ToolsTab({ bot, onSave }: { bot: Bot; onSave: SaveBot }) {
   const tools = Array.isArray(bot.tools) ? bot.tools : []
@@ -116,6 +156,11 @@ export function ToolsTab({ bot, onSave }: { bot: Bot; onSave: SaveBot }) {
                 }
               />
             ))}
+            {group.title === 'Computer' &&
+            tools.includes('computer_use') &&
+            group.rows.some(row => row.key === 'computer_use') ? (
+              <ComputerSizeRow />
+            ) : null}
           </Group>
         ))}
         <Group title="Workspace">

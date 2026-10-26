@@ -677,6 +677,51 @@ Settings `checkin_enabled`, `checkin_every_minutes` (15 to 1440) and
   `hexbot.checkins.message {bot, section_id, id, row_id, timestamp, text}`
   with the whole text; `row_id` is the message's id in the section history.
 
+### Computer
+
+The daemon has one computer that its bots share: a Cua sandbox, a Linux
+desktop made from the `linux` image the first time a bot or the user turns
+it on. Every bot with Computer use (`computer_use` in its tools) works on
+it. The daemon drives it with the `cua` CLI on its own computer
+(`computer_use.command` in config, `HEXBOT_CUA_CMD`, or `cua` on the path)
+and runs `cua mcp` for the bots' actions. It passes `CUA_TELEMETRY=0` unless
+`computer_use.telemetry` is true. The sandbox is named
+`hexbot-computer-<hash>`, unique per daemon home. Deleting a bot leaves the
+computer and removes only its cursor.
+
+The desktop has one pointer and one focused window, so bots take turns one
+action at a time; a bot that waits more than two minutes gets error 4209.
+The daemon records where each bot last acted so clients can draw its
+cursor there.
+
+- `hexbot.computer.status {}` → `{available, state, control, actor,
+  activity, cursors: [{bot, x, y, action, at}], error, size, sizes: [{name,
+  cpu, memory_gb}], image}`. `available` is false when the daemon's computer
+  has no Cua. `state` is `absent`, `starting`, `running`, `stopping`,
+  `stopped`, `restarting`, `resetting` or `error`. `control` is `bot`, or
+  `user` while the user has taken over; the bots' actions are refused until
+  it is `bot` again. `actor` and `activity` are the bot acting and its action,
+  such as `click`. A cursor's `x` and `y` are fractions of the screen and
+  `at` is when it last acted, in seconds.
+- `hexbot.computer.start|stop|restart|reset {}` → the status. The step runs
+  on and reports by event; a first start downloads the image. Reset deletes
+  the computer and makes a new one at the chosen size. Error 4209 while
+  another step runs.
+- `hexbot.computer.control {holder: "user" | "bot"}` → the status.
+- `hexbot.computer.view {control?}` → `{path, control, expires_at}`. `path`
+  is relative to the daemon, `/hexbot/computer/<token>/viewer/#ticket=…`:
+  Cua's viewer, served by the daemon for an hour, so it works over LAN,
+  Tailscale and Connect. Without `control` it only watches. With `control`
+  the user takes over and the page takes clicks and keys. Handing the
+  computer back closes the pages that could type. The token in the path is
+  the credential; the daemon drops cookies and the viewer's own ticket
+  authorises its calls.
+- `hexbot.computer.configure {size: "small" | "medium" | "large"}` → the
+  status. Small is 2 CPUs and 4 GB, medium 4 and 8, large 8 and 16. A new
+  size applies when the computer is next made, so after Reset.
+- Changes broadcast `hexbot.computer.changed {state, control, actor,
+  activity, cursors, error}`.
+
 ### Scheduled jobs
 
 Paired apps manage the scheduler through the same owner checks and job storage
@@ -1295,6 +1340,9 @@ on the pairing code or grant's single-use protection instead. CORS exposes
 - `hexbot checkins [now | on | off | every MINUTES | hours HH:MM-HH:MM |
   cancel ID]`: shows check-ins and wake-ups, runs one, or changes their
   settings. Status, now, and cancel need the daemon running.
+- `hexbot computer [on | off | restart | reset | give-back | size
+  small|medium|large]`: shows the bots' computer or changes it, through the
+  running daemon.
 - `hexbot devices list|revoke`, `hexbot bots list|create|delete`,
   `hexbot rooms list`, and `hexbot send <bot> <text>`.
 - Native commands use the running daemon when available, preserving event

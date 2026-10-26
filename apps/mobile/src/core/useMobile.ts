@@ -30,6 +30,7 @@ import {
 import type {
   Bot,
   ChatState,
+  ComputerStatus,
   Section,
   Room,
   RoomEvent,
@@ -57,6 +58,8 @@ export function useMobile() {
   const infoRef = useRef<DaemonInfo | null>(null)
   const refreshSequence = useRef(0)
   const [settings, setSettings] = useState<Settings | null>(null)
+  /** The bots' shared computer, once something shows it; events keep it current. */
+  const [computer, setComputer] = useState<ComputerStatus | null>(null)
   const [user, setUser] = useState<CurrentUser | null>(null)
   const [route, setRoute] = useState<ChatRoute | null>(null)
   const [chat, setChat] = useState(emptyChat)
@@ -313,6 +316,11 @@ export function useMobile() {
     (event: GatewayEvent) => {
       const target = routeRef.current
       const p = (event.payload ?? {}) as Record<string, unknown>
+      // Sent on every bot action there; it changes nothing else.
+      if (event.type === 'hexbot.computer.changed') {
+        setComputer(current => (current ? { ...current, ...(p as Partial<ComputerStatus>) } : current))
+        return
+      }
       if (event.type.endsWith('.changed')) {
         if (!refreshTimer.current)
           refreshTimer.current = setTimeout(() => {
@@ -412,6 +420,7 @@ export function useMobile() {
       session.current?.stop()
       setError(null)
       setActive(daemon)
+      setComputer(null)
       setBots([])
       setRooms([])
       setSections([])
@@ -770,6 +779,18 @@ export function useMobile() {
     approval,
     answer,
     liveSessionId: () => liveId.current,
+    computer,
+    /** Read the computer's status, or run a `hexbot.computer.*` method and keep what it returns. */
+    computerCall: async (method = 'hexbot.computer.status', params: Record<string, unknown> = {}) => {
+      const result = await rpc<ComputerStatus>(method, params)
+      setComputer(current => ({ ...current, ...result }) as ComputerStatus)
+      return result
+    },
+    /** A link, relative to the daemon, to the computer's screen; `control` takes over. */
+    computerView: (control: boolean) =>
+      rpc<{ path: string; control: boolean; expires_at: number }>('hexbot.computer.view', {
+        control
+      }),
     /** A file reached the daemon and waits for that session's next message. */
     stage: (sessionId: string) => {
       unsent.current.add(sessionId)

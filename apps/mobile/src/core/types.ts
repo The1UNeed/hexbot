@@ -12,7 +12,10 @@ export type {
   Connector,
   SkillInfo,
   NetworkInfo,
-  UsageSummary
+  UsageSummary,
+  ComputerCursor,
+  ComputerSize,
+  ComputerStatus
 } from '../../../web/src/lib/types'
 import type { CurrentUser as WireUser } from '../../../web/src/lib/types'
 export type CurrentUser = Omit<WireUser, 'role'>

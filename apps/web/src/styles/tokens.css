@@ -465,6 +465,101 @@ body {
   }
 }
 
+/*
+ * A bot's cursor on the bots' computer (panel/computer.tsx): an arrow in its
+ * face colour with its face beside it. It glides to where the bot acts, then
+ * presses and rings on a click; the face taps while the bot types. A cursor
+ * fades once its bot has been idle a while.
+ */
+.hex-cursor {
+  position: absolute;
+  width: 0;
+  height: 0;
+  transition:
+    left 650ms var(--hex-ease-in-out),
+    top 650ms var(--hex-ease-in-out),
+    opacity var(--hex-motion-panel) var(--hex-ease-out);
+  animation: hex-cursor-in var(--hex-motion-enter) var(--hex-ease-spring);
+}
+.hex-cursor[data-stale='true'] {
+  opacity: 0;
+}
+.hex-cursor-body {
+  position: absolute;
+  transform: scale(var(--hex-cursor-scale, 1));
+  transform-origin: 0 0;
+}
+.hex-cursor-arrow {
+  position: absolute;
+  top: -4px;
+  left: -5px;
+  width: 30px;
+  height: 30px;
+  fill: var(--hex-cursor);
+  stroke: #ffffff;
+  stroke-width: 2;
+  stroke-linejoin: round;
+  filter: drop-shadow(0 2px 3px rgb(0 0 0 / 0.28));
+  transform-origin: 5px 4px;
+}
+.hex-cursor-press {
+  animation: hex-cursor-press 360ms var(--hex-ease-out) 560ms both;
+}
+.hex-cursor-ring {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 44px;
+  height: 44px;
+  border: 2.5px solid var(--hex-cursor);
+  border-radius: 9999px;
+  animation: hex-cursor-ring 640ms var(--hex-ease-out) 600ms both;
+}
+.hex-cursor-face {
+  position: absolute;
+  top: 20px;
+  left: 20px;
+  display: grid;
+  width: 30px;
+  height: 30px;
+  filter: drop-shadow(0 0 1px #ffffff) drop-shadow(0 0 1px #ffffff)
+    drop-shadow(0 2px 4px rgb(0 0 0 / 0.25));
+}
+.hex-cursor-typing > * {
+  animation: hex-tap 280ms ease-in-out infinite;
+}
+
+@keyframes hex-cursor-in {
+  from {
+    opacity: 0;
+    transform: scale(0.6);
+  }
+}
+
+@keyframes hex-cursor-press {
+  0%,
+  100% {
+    transform: scale(1);
+  }
+  40% {
+    transform: scale(0.78);
+  }
+}
+
+@keyframes hex-cursor-ring {
+  0% {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(0.25);
+  }
+  12% {
+    opacity: 0.8;
+  }
+  100% {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(1);
+  }
+}
+
 /* Hexbot's acts (hexbot-act.tsx): the body moves, and a prop plays beside it. */
 @keyframes hex-tap {
   0%,

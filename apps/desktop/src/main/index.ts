@@ -161,9 +161,12 @@ async function buildWindow(): Promise<BrowserWindow> {
   window.on('closed', () => {
     mainWindow = null
   })
-  // Frames may only load the visual frame page; see frameNavigationAllowed.
+  // Frames may only load the visual frame page or a computer screen; see frameNavigationAllowed.
   window.webContents.on('will-frame-navigate', event => {
-    if (!event.isMainFrame && !frameNavigationAllowed(event.url, window.webContents.getURL()))
+    if (
+      !event.isMainFrame &&
+      !frameNavigationAllowed(event.url, window.webContents.getURL(), event.frame?.url ?? '')
+    )
       event.preventDefault()
   })
   window.on('resize', () => void saveBounds(window))
@@ -278,7 +281,10 @@ function registerIpc(): void {
   handle('hexbot:daemon:status', () => daemon.status())
   handle('hexbot:daemon:start', async () => {
     requireRuntime('Running a daemon on this machine')
-    return daemon.start(app.isPackaged ? () => bootstrap(sendProgress) : undefined, 'attach-or-start')
+    return daemon.start(
+      app.isPackaged ? () => bootstrap(sendProgress) : undefined,
+      'attach-or-start'
+    )
   })
   handle('hexbot:daemon:stop', () => daemon.stop())
   handle('hexbot:daemon:local-token', async () => {

@@ -252,10 +252,30 @@ notice. Working and idle draw the plain pill.
     Connectors, Skills), and "Bot settings" for the tab last used.
   - Library: images (a three-column grid) and files shared in the section,
     newest first.
-  - Computer: every tool call in the section, housekeeping included, newest
-    first, each with its glyph, time and result mark, closed until clicked
-    open to its arguments and output. A plain-words line on top says what
-    the bot is doing while a tool runs, and the tab shows a still blue dot.
+  - Computer: the bots' shared computer on top, when the bot has Computer
+    use: its live screen, watch-only, with a still blue ring while a bot
+    acts there or the user has it, and one line under it saying what is
+    happening ("Scout is clicking on the computer", "You have control. Your
+    bots wait until you give it back."). Each bot that acted lately has a
+    cursor on the screen: an arrow in its face colour with its face beside
+    it. The cursor glides to where the bot acts, presses and rings on a
+    click, and the face taps while the bot types; it fades after 45 seconds
+    idle. "Take control" opens the screen large over the app, where the user
+    can click and type; "Give back" or closing the window hands it back. A
+    menu has Open larger, Restart, Turn off and Reset… (asks first:
+    everything on it is erased, for every bot). An off computer shows "Turn
+    on"; a daemon without Cua shows how to install it. Under it, the bot's
+    other tool calls in the section, housekeeping included, newest first,
+    each with its glyph, time and result mark, closed until clicked open to
+    its arguments and output. Computer actions are not listed, here or in
+    the chat; the screen and cursor show them. A plain-words line on top
+    says what the bot is doing while a tool runs, and the tab shows a still
+    blue dot.
+    The mobile app shows the same computer on a front card from a computer
+    button in the chat's header, which carries a dot while a bot acts there
+    or you have it: the screen with the same face cursors, the line under
+    it, Take control or Give back, and Restart, Turn off and Reset… as rows.
+    Closing the card while you have control gives it back.
 - Opening and closing is one 240 ms move: the panel's column widens or
   narrows while the chat column follows, and the card slides in from the
   right edge. The panel remembers open or closed, and its tab, per window.
