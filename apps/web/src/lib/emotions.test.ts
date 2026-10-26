@@ -97,6 +97,34 @@ describe('emotions', () => {
     const cut = momentOf([said, { ...working, streaming: false, text: 'Merged it.' }, card])
     expect(feeling(before, cut)).toBe('sad')
 
+    // An approval card split the turn: its steps and failures all count.
+    const split = [
+      said,
+      { ...working, streaming: false, toolCalls: [call('error'), call('error'), call('ok')] }
+    ]
+
+    const resumed = momentOf([...split, message({ id: 'r2', streaming: true })], true)
+    expect(feeling(momentOf(split, true), resumed)).toBeNull()
+
+    const third = momentOf(
+      [...split, message({ id: 'r2', streaming: true, toolCalls: [call('error')] })],
+      true
+    )
+
+    expect(feeling(resumed, third)).toBe('frustrated')
+
+    // Four steps before the card and four after: proud of the whole turn.
+    const four = () => [call('ok'), call('ok'), call('ok'), call('ok')]
+    const before2 = [said, { ...working, streaming: false, toolCalls: four() }]
+    const going = momentOf([...before2, message({ id: 'r2', streaming: true })], true)
+
+    const ended = momentOf(
+      [...before2, message({ id: 'r2', text: 'Done.', toolCalls: four() })],
+      false
+    )
+
+    expect(feeling(going, ended)).toBe('proud')
+
     // A send that failed meanwhile leaves a card, but the reply went well.
     const unsent = { ...card, id: 'e2', request: true as const }
     const fine = momentOf([said, { ...working, streaming: false, text: 'Merged it.' }, unsent])

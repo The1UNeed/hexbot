@@ -58,30 +58,38 @@ export interface Moment {
 /**
  * `active` is whether the turn still runs. A question or approval card closes
  * the bubble on screen while the turn goes on, so the bubble alone would end
- * the reply early and start it again after the card.
+ * the reply early and start it again after the card; the reply's steps, time
+ * and failures count every bubble of the turn.
  */
 export function momentOf(
   messages: readonly (Message & { request?: true })[],
   active?: boolean
 ): Moment {
   const said = messages.findLast(message => message.role === 'user')
-  const reply = messages.findLast(message => message.role === 'assistant')
+  const last = messages.findLastIndex(message => message.role === 'assistant')
+  // The turn is everything since you last spoke; with nothing from you, as in
+  // Check-ins, only the latest reply.
+  const turn = messages.slice(said ? messages.indexOf(said) + 1 : Math.max(0, last))
+  const bubbles = turn.filter(message => message.role === 'assistant')
+  const reply = bubbles.at(-1)
+  const calls = bubbles.flatMap(bubble => bubble.toolCalls)
+  const first = bubbles[0]
 
   // An error event leaves its Stopped card after the reply, not on it. A
   // failed send (`request`) leaves a card too, but the reply runs on.
   const stopped =
-    reply && messages.slice(messages.indexOf(reply) + 1).some(item => item.error && !item.request)
+    reply && turn.slice(turn.indexOf(reply) + 1).some(item => item.error && !item.request)
 
   return {
     reply: reply && {
-      errors: reply.toolCalls.filter(call => call.status === 'error').length,
+      errors: calls.filter(call => call.status === 'error').length,
       failed: Boolean(reply.error) || reply.status === 'error' || Boolean(stopped),
       id: reply.id,
       status: reply.status,
-      steps: reply.toolCalls.length,
+      steps: calls.length,
       streaming: active ?? reply.streaming,
       text: [...(reply.parts ?? []), reply.text].join('\n'),
-      workedMs: Math.max(0, (reply.workUntil ?? reply.createdAt) - reply.createdAt)
+      workedMs: Math.max(0, (reply.workUntil ?? reply.createdAt) - (first?.createdAt ?? 0))
     },
     said: said && { text: said.text }
   }
@@ -155,7 +163,6 @@ export function feelingAfter(reply: NonNullable<Moment['reply']>): FaceEmotion |
 /** What, if anything, the bot feels about the change from `before` to `after`. */
 export function feeling(before: Moment, after: Moment): FaceEmotion | null {
   const reply = after.reply
-  const earlier = before.reply?.id === reply?.id ? before.reply : undefined
 
   if (!reply) {
     return null
@@ -167,8 +174,11 @@ export function feeling(before: Moment, after: Moment): FaceEmotion | null {
     return after.said ? feelingAbout(after.said.text) : null
   }
 
-  if (reply.streaming && reply.errors > (earlier?.errors ?? 0)) {
-    return reply.errors >= FRUSTRATED_ERRORS && (earlier?.errors ?? 0) < FRUSTRATED_ERRORS
+  // Still the same turn, which counts its failed steps across bubbles.
+  const failedBefore = before.reply?.errors ?? 0
+
+  if (reply.streaming && reply.errors > failedBefore) {
+    return reply.errors >= FRUSTRATED_ERRORS && failedBefore < FRUSTRATED_ERRORS
       ? 'frustrated'
       : 'confused'
   }
