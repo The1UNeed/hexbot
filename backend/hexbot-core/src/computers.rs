@@ -532,7 +532,7 @@ async fn lifecycle_step(home: &Path, step: &str) -> Result<()> {
     }
     .await;
     forget(home).await;
-    with(home, |c| c.user_control = false);
+    release(home);
     settle(home, &result);
     result.map(|_| ())
 }
@@ -579,13 +579,10 @@ pub async fn call(home: &Path, method: &str, p: &Value) -> Option<Result<Value>>
                         "bot" => false,
                         _ => return Err(Error::new(4202, "holder must be user or bot")),
                     };
-                    with(home, |c| c.user_control = user);
-                    if !user {
-                        // Views that could type stop working once the bots have it back.
-                        views()
-                            .lock()
-                            .unwrap_or_else(|e| e.into_inner())
-                            .retain(|_, v| !(v.home == home && v.control));
+                    if user {
+                        with(home, |c| c.user_control = true);
+                    } else {
+                        release(home);
                     }
                     changed(home);
                     Ok(snapshot(home))
@@ -625,6 +622,7 @@ async fn view(home: &Path, control: bool) -> Result<Value> {
         "--ttl".into(),
         format!("{}s", VIEW_TTL as u64),
     ];
+    let held = with(home, |c| c.user_control);
     if control {
         with(home, |c| c.user_control = true);
         changed(home);
@@ -664,18 +662,19 @@ async fn view(home: &Path, control: bool) -> Result<Value> {
         Ok(url)
     }
     .await;
-    if control && made.is_err() {
-        with(home, |c| c.user_control = false);
+    if control && !held && made.is_err() {
+        release(home);
         changed(home);
     }
     let url = made?;
     let upstream = url.origin().ascii_serialization();
+    let token = format!("{}{}", common::id(), common::id());
+    let expires = common::now() + VIEW_TTL;
+    // Checked under the lock `release` holds, so a give-back can't slip between.
+    let mut map = views().lock().unwrap_or_else(|e| e.into_inner());
     if control && !with(home, |c| c.user_control) {
         return Err(Error::new(4209, "The computer went back to your bots."));
     }
-    let token = format!("{}{}", common::id(), common::id());
-    let expires = common::now() + VIEW_TTL;
-    let mut map = views().lock().unwrap_or_else(|e| e.into_inner());
     map.retain(|_, v| v.expires > common::now());
     map.insert(
         token.clone(),
@@ -691,6 +690,13 @@ async fn view(home: &Path, control: bool) -> Result<Value> {
         "control": control,
         "expires_at": expires,
     }))
+}
+
+/// The bots have the computer again: screens that could type stop working.
+fn release(home: &Path) {
+    let mut map = views().lock().unwrap_or_else(|e| e.into_inner());
+    with(home, |c| c.user_control = false);
+    map.retain(|_, v| !(v.home == home && v.control));
 }
 
 struct View {

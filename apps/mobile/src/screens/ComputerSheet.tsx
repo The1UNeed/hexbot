@@ -295,8 +295,14 @@ export function ComputerSheet({
     call(method, params).catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)))
   }
 
+  // A new link waits for this connection's status, so a hold given back
+  // elsewhere while the phone was away is not taken again.
+  const [read, setRead] = useState(-1)
   useEffect(() => {
-    act('hexbot.computer.status')
+    setError(null)
+    call('hexbot.computer.status')
+      .then(() => setRead(connects))
+      .catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)))
   }, [connects])
 
   // Hand the computer back when the card closes.
@@ -311,7 +317,7 @@ export function ComputerSheet({
 
   useEffect(() => {
     setSrc(null)
-    if (!running || !origin || !enabled) return
+    if (!running || !origin || !enabled || read !== connects) return
     let current = true
     let renew: ReturnType<typeof setTimeout> | undefined
     const load = () =>
@@ -328,7 +334,7 @@ export function ComputerSheet({
       current = false
       if (renew) clearTimeout(renew)
     }
-  }, [running, origin, user, enabled, connects])
+  }, [running, origin, user, enabled, connects, read])
 
   const byName = new Map(bots.map(b => [b.name, b]))
   const faceFor = (name: string) => {

@@ -15,6 +15,8 @@ import {
 } from '../lib/api'
 import type { ComputerSize, ComputerStatus } from '../lib/types'
 
+import { useConnection } from './connection'
+
 const message = (error: unknown) => (error instanceof Error ? error.message : String(error))
 
 export interface ComputerStoreState {
@@ -24,6 +26,8 @@ export interface ComputerStoreState {
   control: (holder: 'bot' | 'user') => Promise<void>
   /** The last failed request; the daemon's own errors live in the status. */
   error: null | string
+  /** The daemon run (`replay_epoch`) the status was last read from. */
+  read: null | string
   refresh: () => Promise<void>
   status: ComputerStatus | null
   step: (step: 'reset' | 'restart' | 'start' | 'stop') => Promise<void>
@@ -48,7 +52,12 @@ export const useComputer = create<ComputerStoreState>(set => {
     configure: size => run(() => computerConfigure(size)),
     control: holder => run(() => computerControl(holder)),
     error: null,
-    refresh: () => run(computerStatus),
+    read: null,
+    async refresh() {
+      const epoch = useConnection.getState().epoch
+      await run(computerStatus)
+      set({ read: epoch })
+    },
     status: null,
     step: step => run(() => computerStep(step)),
     async view(control) {

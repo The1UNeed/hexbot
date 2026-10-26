@@ -48,8 +48,10 @@ const TYPING = new Set(['key', 'type'])
  */
 function useScreen(live: boolean, control: boolean): null | string {
   const target = useConnection(state => state.target)
-  // A restarted daemon forgets the old link.
+  // A restarted daemon forgets the old link; a new one waits for its status,
+  // so a hold the daemon no longer has is not taken again.
   const epoch = useConnection(state => state.epoch)
+  const read = useComputer(state => state.read)
   const view = useComputer(state => state.view)
   const [screen, setScreen] = useState<{ expires: number; src: string } | null>(null)
   const [renewals, setRenewals] = useState(0)
@@ -57,7 +59,7 @@ function useScreen(live: boolean, control: boolean): null | string {
   useEffect(() => {
     setScreen(null)
 
-    if (!live || !target) {
+    if (!live || !target || read !== epoch) {
       return
     }
 
@@ -77,7 +79,7 @@ function useScreen(live: boolean, control: boolean): null | string {
     return () => {
       current = false
     }
-  }, [control, epoch, live, renewals, target, view])
+  }, [control, epoch, live, read, renewals, target, view])
 
   useEffect(() => {
     if (!screen) {
