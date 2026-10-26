@@ -348,7 +348,7 @@ struct StabilityRound {
     after_join: (u32, usize),
     after_drop: (u32, usize),
     writer_pid: Option<u32>,
-    settlement: Option<Settlement>,
+    settlement: Option<super::super::Settlement>,
     status: Option<i32>,
 }
 async fn held_writers_once(selection: &str, mut observation: Option<&mut StabilityRound>) {
