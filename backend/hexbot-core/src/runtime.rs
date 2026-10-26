@@ -3161,9 +3161,12 @@ impl Runtime {
             })
             .collect()
     }
+    /// A bot is working only in a conversation the user can see: its chat or
+    /// a room. Check-ins, jobs, dreams and delegates run out of sight and stay
+    /// quiet, unless one is waiting for the user.
     pub fn status_for_bot(&self, owner: &str, bot: &str) -> Option<Value> {
         let sessions = self.sessions.lock().unwrap();
-        let active = sessions
+        let mut active = sessions
             .values()
             .filter(|session| session.owner == owner && session.bot == bot)
             .filter_map(|session| {
@@ -3172,26 +3175,33 @@ impl Runtime {
                     .busy
                     .then(|| (session.clone(), !state.pending.is_empty()))
             })
-            .max_by_key(|(session, waiting)| (*waiting, session.stored.clone()));
+            .collect::<Vec<_>>();
         drop(sessions);
-        let (session, waiting) = active?;
-        let context = db::open(&self.home)
-            .ok()
-            .and_then(|conn| {
-                conn.query_row(
-                    "SELECT (SELECT id FROM sections WHERE id=?1),(SELECT room_id FROM room_sessions WHERE stored_session_id=?1),(SELECT MAX(started_at) FROM room_turns WHERE bot=?2 AND status='running')",
-                    params![session.stored, bot],
-                    |row| {
-                        Ok((
-                            row.get::<_, Option<String>>(0)?,
-                            row.get::<_, Option<String>>(1)?,
-                            row.get::<_, Option<f64>>(2)?,
-                        ))
-                    },
-                )
-                .ok()
-            })
-            .unwrap_or_default();
+        active.sort_by_key(|(session, waiting)| {
+            std::cmp::Reverse((*waiting, session.stored.clone()))
+        });
+        let conn = db::open(&self.home).ok();
+        let (session, waiting, context) = active.into_iter().find_map(|(session, waiting)| {
+            let context = conn
+                .as_ref()
+                .and_then(|conn| {
+                    conn.query_row(
+                        "SELECT (SELECT id FROM sections WHERE id=?1),(SELECT room_id FROM room_sessions WHERE stored_session_id=?1),(SELECT MAX(started_at) FROM room_turns WHERE bot=?2 AND status='running')",
+                        params![session.stored, bot],
+                        |row| {
+                            Ok((
+                                row.get::<_, Option<String>>(0)?,
+                                row.get::<_, Option<String>>(1)?,
+                                row.get::<_, Option<f64>>(2)?,
+                            ))
+                        },
+                    )
+                    .ok()
+                })
+                .unwrap_or_default();
+            let seen = context.0.is_some() || context.1.is_some();
+            (waiting || seen).then_some((session, waiting, context))
+        })?;
         Some(json!({
             "status": if waiting { "needs_you" } else { "working" },
             "status_detail": {

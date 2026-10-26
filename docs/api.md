@@ -252,7 +252,10 @@ when it overrides the default.
 
 `status` is `idle`, `working`, `needs_you`, or `stopped` (priority in that
 reverse order), folded by the daemon from live session state, room turns,
-room `waiting.human` events, and open incidents. `status_detail` is
+room `waiting.human` events, and open incidents. Only a bot's chat and its
+room sessions make it `working`; check-ins, scheduled jobs, dreams, CLI runs
+and subagents never do, though one waiting on the user still makes it
+`needs_you`. `status_detail` is
 `{text, section_id, room_id, session_id, since, action}` where `action` is
 null, `{kind: "fix_connector", connector}`, or `{kind: "retry"}`. A room's
 failed turns count only while the bot is still in that room; adding it back
