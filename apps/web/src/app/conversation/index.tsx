@@ -582,13 +582,14 @@ export function MessageRow({
 /**
  * The live status at the foot of a bot's chat while Auto mode still reviews
  * a step and no message streams: an approval card from an overlapping review
- * ended the message that showed it.
+ * ended the message that showed it. A message with a step still running
+ * shows the line itself.
  */
 export function CheckingRow({ bot, transcript }: { bot?: Bot; transcript?: Transcript }) {
   const checking = transcript?.streamingMessageId ? undefined : transcript?.checking
   const message = checking && transcript?.messages.findLast(item => item.role === 'assistant')
 
-  if (!checking || !message) {
+  if (!checking || !message || isWorking(message)) {
     return null
   }
 

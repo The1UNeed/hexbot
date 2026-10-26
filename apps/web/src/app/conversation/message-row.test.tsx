@@ -152,13 +152,11 @@ describe('CheckingRow', () => {
     const actions = useTranscripts.getState()
     const transcript = () => useTranscripts.getState().bySession.s
     actions.messageStart('s')
-    actions.toolStart('s', { name: 'terminal', tool_id: 'a' })
-    actions.toolStart('s', { name: 'terminal', tool_id: 'b' })
     actions.statusUpdate('s', { kind: 'checking', text: 'Checking this step' })
     // While a message streams, its own row shows the line.
     const { rerender } = render(<CheckingRow transcript={transcript()} />)
     expect(screen.queryByRole('status')).toBeNull()
-    // Review A's card ends the message while review B still runs.
+    // A card ends the message while the review still runs.
     actions.approvalRequest('s', { request_id: 'a' })
     resetTranscriptEffects()
     rerender(<CheckingRow transcript={transcript()} />)
@@ -166,5 +164,32 @@ describe('CheckingRow', () => {
     actions.statusUpdate('s', { kind: 'checking', text: '' })
     rerender(<CheckingRow transcript={transcript()} />)
     expect(screen.queryByRole('status')).toBeNull()
+  })
+
+  it('leaves the line to the message while one of its steps still runs', () => {
+    useTranscripts.setState({ bySession: {} })
+    setTranscriptEffects({ ackApproval: vi.fn(), notify: vi.fn(), touchSection: vi.fn() })
+    const actions = useTranscripts.getState()
+    actions.messageStart('s')
+    actions.toolStart('s', { name: 'terminal', tool_id: 'a' })
+    actions.toolStart('s', { name: 'terminal', tool_id: 'b' })
+    actions.statusUpdate('s', { kind: 'checking', text: 'Checking this step' })
+    // Review A's card ends the message while review B still runs.
+    actions.approvalRequest('s', { request_id: 'a' })
+    resetTranscriptEffects()
+    const transcript = useTranscripts.getState().bySession.s!
+
+    render(
+      <>
+        <MessageRow
+          message={transcript.messages.findLast(item => item.role === 'assistant')!}
+          onImage={() => {}}
+          onRetry={() => {}}
+        />
+        <CheckingRow transcript={transcript} />
+      </>
+    )
+
+    expect(screen.getAllByRole('status')).toHaveLength(1)
   })
 })
