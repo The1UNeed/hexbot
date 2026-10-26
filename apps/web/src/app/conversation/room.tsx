@@ -298,7 +298,18 @@ export function RoomConversation() {
   const streaming = Object.keys(turns).length > 0
   const status = roomStatus(events, turns)
   const failure = roomFailure(events)
-  useTurnCues(roomId, { failed: Boolean(failure), streaming, waiting: 0 })
+  const waiting = Object.values(turns).reduce((count, turn) => {
+    const transcript = turn.live_session_id ? transcripts[turn.live_session_id] : undefined
+
+    return (
+      count +
+      (transcript?.approvals.filter(card => !card.decision).length ?? 0) +
+      (transcript?.clarifies.filter(
+        card => !card.expired && Object.keys(card.answers).length < card.questions.length
+      ).length ?? 0)
+    )
+  }, 0)
+  useTurnCues(roomId, { failed: Boolean(failure), streaming, waiting })
 
   const send = async () => {
     if (!text.trim()) {

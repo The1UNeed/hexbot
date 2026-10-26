@@ -1447,6 +1447,7 @@ function BotConversation() {
   }, [bot?.display_name, messages, section?.id, streaming])
   useTurnCues(section?.id, {
     failed: Boolean(messages.at(-1)?.error),
+    ready,
     streaming,
     waiting:
       approvals.filter(card => !card.decision).length +

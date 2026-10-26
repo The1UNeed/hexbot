@@ -91,4 +91,17 @@ describe('sound cues', () => {
     rerender({ failed: true, streaming: false, waiting: 0 })
     expect(started).toEqual([])
   })
+
+  it('silently establishes the baseline after an asynchronous conversation restore', () => {
+    const { rerender } = renderHook(props => useTurnCues('a', props), {
+      initialProps: { ready: false, streaming: false, waiting: 0 }
+    })
+
+    rerender({ ready: false, streaming: true, waiting: 1 })
+    rerender({ ready: true, streaming: true, waiting: 1 })
+    expect(started).toEqual([])
+
+    rerender({ ready: true, streaming: true, waiting: 2 })
+    expect(started).toEqual(notes('ask'))
+  })
 })

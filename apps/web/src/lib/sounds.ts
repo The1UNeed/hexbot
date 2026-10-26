@@ -117,15 +117,21 @@ export function playCue(cue: SoundCue): void {
  */
 export function useTurnCues(
   conversation: null | string | undefined,
-  { failed = false, streaming, waiting }: { failed?: boolean; streaming: boolean; waiting: number }
+  {
+    failed = false,
+    ready = true,
+    streaming,
+    waiting
+  }: { failed?: boolean; ready?: boolean; streaming: boolean; waiting: number }
 ): void {
-  const last = useRef({ conversation, streaming, waiting })
+  const last = useRef({ conversation, ready, streaming, waiting })
 
   useEffect(() => {
     const before = last.current
-    last.current = { conversation, streaming, waiting }
+    last.current = { conversation, ready, streaming, waiting }
 
-    if (!conversation || before.conversation !== conversation) {
+    // Restored cards and running turns establish the baseline without a cue.
+    if (!ready || !before.ready || !conversation || before.conversation !== conversation) {
       return
     }
 
@@ -136,5 +142,5 @@ export function useTurnCues(
     } else if (!streaming && before.streaming && !failed) {
       playCue('done')
     }
-  }, [conversation, failed, streaming, waiting])
+  }, [conversation, failed, ready, streaming, waiting])
 }
