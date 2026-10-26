@@ -129,6 +129,12 @@ fn rfc3339(at: f64) -> String {
         .to_rfc3339()
 }
 
+/// A short check-in window far from this test's scheduler ticks, at any local hour.
+fn outside_hours(at: f64) -> String {
+    let hour = (Local.timestamp_opt(at as i64, 0).single().unwrap().hour() + 12) % 24;
+    format!("{hour:02}:00-{hour:02}:01")
+}
+
 #[tokio::test]
 async fn a_wakeup_the_primary_bot_sets_messages_the_user_in_its_check_ins_section() {
     let (h, app) = setup();
@@ -155,7 +161,7 @@ async fn a_wakeup_the_primary_bot_sets_messages_the_user_in_its_check_ins_sectio
     assert_eq!(waiting["bot"], "hexbot");
 
     // Not yet: the wake-up waits for its time, and no heartbeat runs outside the hours.
-    set(&app, json!({"checkin_hours": "03:00-03:01"})).await;
+    set(&app, json!({"checkin_hours": outside_hours(now)})).await;
     app.dreaming.tick_at(now).await.unwrap();
     let status = app
         .call("local", "hexbot.checkins.status", &json!({}))
@@ -241,9 +247,9 @@ async fn a_failed_check_in_gives_its_wake_up_back_and_runs_read_only() {
     )
     .await
     .unwrap();
-    set(&app, json!({"checkin_hours": "03:00-03:01"})).await;
     let live = open(&app, created["section"]["id"].as_str().unwrap()).await;
     let now = common::now();
+    set(&app, json!({"checkin_hours": outside_hours(now)})).await;
     call_tool(
         &app,
         &live,
@@ -437,8 +443,8 @@ async fn a_wake_up_waits_a_few_minutes_after_the_last_check_in() {
         .call("local", "hexbot.bots.create_primary", &json!({}))
         .await
         .unwrap();
-    set(&app, json!({"checkin_hours": "03:00-03:01"})).await;
     let now = common::now();
+    set(&app, json!({"checkin_hours": outside_hours(now)})).await;
     let mut events = app.events.subscribe();
     app.call("local", "hexbot.checkins.run_now", &json!({}))
         .await
