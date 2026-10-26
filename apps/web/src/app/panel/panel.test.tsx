@@ -178,7 +178,7 @@ describe('ProfilePanel', () => {
         scout: { ...bot, tools: ['computer_use'] }
       }
     })
-    render(<ProfilePanel />)
+    const { unmount } = render(<ProfilePanel />)
     fireEvent.click(screen.getByRole('tab', { name: 'Computer' }))
     expect(screen.getByTestId('computer-steps').querySelectorAll('li')).toHaveLength(1)
 
@@ -219,5 +219,9 @@ describe('ProfilePanel', () => {
     expect(
       await screen.findAllByText('You have control. Your bots wait until you give it back.')
     ).toHaveLength(2)
+
+    // A panel closed under the window, as on a narrow window, gives it back.
+    unmount()
+    expect(api.computerControl).toHaveBeenLastCalledWith('bot')
   })
 })

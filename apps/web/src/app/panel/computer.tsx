@@ -1,5 +1,5 @@
 import { Ellipsis, Monitor, SquareTerminal } from 'lucide-react'
-import { type CSSProperties, useEffect, useMemo, useState } from 'react'
+import { type CSSProperties, useEffect, useMemo, useRef, useState } from 'react'
 
 import { Avatar, useFaceColor } from '../../components/ui/avatar'
 import { Button } from '../../components/ui/button'
@@ -241,20 +241,27 @@ function ComputerWindow({ onClose, status }: { onClose: () => void; status: Comp
   const user = status.control === 'user'
   const src = useScreen(status.state === 'running', user)
   const actor = useActorName(status.actor)
+  // Closing the window, or the panel going away under it, hands it back.
+  const holding = useRef(user)
 
-  const close = () => {
-    if (user) {
-      void control('bot')
-    }
+  useEffect(() => {
+    holding.current = user
+  }, [user])
 
-    onClose()
-  }
+  useEffect(
+    () => () => {
+      if (holding.current) {
+        void useComputer.getState().control('bot')
+      }
+    },
+    []
+  )
 
   return (
     <Dialog
       className="max-h-[94vh] w-[min(72rem,94vw)]"
       description={caption(status, actor)}
-      onOpenChange={open => !open && close()}
+      onOpenChange={open => !open && onClose()}
       open
       title="Your bots' computer"
       toolbar={
@@ -273,7 +280,7 @@ function ComputerWindow({ onClose, status }: { onClose: () => void; status: Comp
               Take control
             </Button>
           )}
-          <Button onClick={close} size="sm" variant="ghost">
+          <Button onClick={onClose} size="sm" variant="ghost">
             Close
           </Button>
         </div>
