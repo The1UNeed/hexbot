@@ -97,6 +97,11 @@ describe('emotions', () => {
     const cut = momentOf([said, { ...working, streaming: false, text: 'Merged it.' }, card])
     expect(feeling(before, cut)).toBe('sad')
 
+    // A send that failed meanwhile leaves a card, but the reply went well.
+    const unsent = { ...card, id: 'e2', request: true as const }
+    const fine = momentOf([said, { ...working, streaming: false, text: 'Merged it.' }, unsent])
+    expect(feeling(before, fine)).toBe('celebrating')
+
     const failed = momentOf([said, { ...working, error: 'Provider down', streaming: false }])
     expect(feeling(before, failed)).toBe('sad')
   })

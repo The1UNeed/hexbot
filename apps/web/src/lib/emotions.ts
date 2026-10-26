@@ -60,12 +60,17 @@ export interface Moment {
  * the bubble on screen while the turn goes on, so the bubble alone would end
  * the reply early and start it again after the card.
  */
-export function momentOf(messages: readonly Message[], active?: boolean): Moment {
+export function momentOf(
+  messages: readonly (Message & { request?: true })[],
+  active?: boolean
+): Moment {
   const said = messages.findLast(message => message.role === 'user')
   const reply = messages.findLast(message => message.role === 'assistant')
 
-  // An error event leaves its Stopped card after the reply, not on it.
-  const stopped = reply && messages.slice(messages.indexOf(reply) + 1).some(item => item.error)
+  // An error event leaves its Stopped card after the reply, not on it. A
+  // failed send (`request`) leaves a card too, but the reply runs on.
+  const stopped =
+    reply && messages.slice(messages.indexOf(reply) + 1).some(item => item.error && !item.request)
 
   return {
     reply: reply && {
