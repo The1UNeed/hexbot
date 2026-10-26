@@ -45,6 +45,15 @@ describe('mobile feelings', () => {
     expect(result.current).toBeUndefined()
   })
 
+  it('takes a running chat that loads after opening as the baseline', () => {
+    const { rerender, result } = renderHook(({ chat, ready }) => useFeeling('s1', chat, ready), {
+      initialProps: { chat: emptyChat(), ready: false }
+    })
+
+    rerender({ chat: { ...said('thanks so much'), busy: true }, ready: true })
+    expect(result.current).toBeUndefined()
+  })
+
   it('gets bored, then drowsy, and starts calm in another chat', () => {
     const { rerender, result } = renderHook(({ chat, id }) => useFeeling(id, chat), {
       initialProps: { chat: said('hi'), id: 's1' }

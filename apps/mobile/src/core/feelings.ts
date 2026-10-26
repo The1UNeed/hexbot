@@ -57,20 +57,29 @@ export function chatMoment(chat: ChatState): Moment {
 /**
  * What the bot feels in the open chat, for its face in the header and the
  * waiting row: a moment's reaction to what just happened, bored and then
- * drowsy while nothing does. Opening or switching chats starts calm.
+ * drowsy while nothing does. Opening or switching chats starts calm, and
+ * the history that loads while `ready` is false is not news.
  */
-export function useFeeling(conversation: null | string, chat: ChatState): FaceEmotion | undefined {
+export function useFeeling(
+  conversation: null | string,
+  chat: ChatState,
+  ready = true
+): FaceEmotion | undefined {
   const moment = useMemo(() => chatMoment(chat), [chat])
   const [emotion, setEmotion] = useState<FaceEmotion>()
-  const last = useRef({ conversation, moment })
+  const last = useRef({ conversation, moment, ready })
 
   useEffect(() => {
     const before = last.current
-    last.current = { conversation, moment }
+    last.current = { conversation, moment, ready }
 
     if (!conversation || before.conversation !== conversation) {
       setEmotion(undefined)
 
+      return
+    }
+
+    if (!ready || !before.ready) {
       return
     }
 
@@ -96,7 +105,7 @@ export function useFeeling(conversation: null | string, chat: ChatState): FaceEm
   const busy = chat.busy
 
   useEffect(() => {
-    if (!conversation || busy) {
+    if (!conversation || !ready || busy) {
       return
     }
 
@@ -109,7 +118,7 @@ export function useFeeling(conversation: null | string, chat: ChatState): FaceEm
       // Anything happening wakes the bot.
       setEmotion(current => (current === 'bored' || current === 'drowsy' ? undefined : current))
     }
-  }, [busy, conversation, moment])
+  }, [busy, conversation, moment, ready])
 
   return emotion
 }

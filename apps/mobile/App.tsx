@@ -788,7 +788,11 @@ function MobileApp() {
   const renderMessageText: ChatScreenProps['renderMessageText'] = item =>
     item.text ? <MarkdownText text={item.text} user={item.role === 'user'} /> : null
   // Everything a conversation needs, for a bot thread and for the open room alike.
-  const emotion = useFeeling(route?.kind === 'section' ? route.section.id : null, mobile.chat)
+  const emotion = useFeeling(
+    route?.kind === 'section' ? route.section.id : null,
+    mobile.chat,
+    !mobile.loading
+  )
 
   const conversation = {
     items,
