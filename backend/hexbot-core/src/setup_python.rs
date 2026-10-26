@@ -226,7 +226,8 @@ def preopen(path):
 out = {"distributions": {}, "modules": {}, "extensions": {}}
 # A top-level package can import another distribution's extension. Open every
 # expected native member before importing any of the locked packages.
-opened = {name: preopen(os.path.join(site, relative)) for item in spec for name, relative in item["extensions"]}
+# Audited wheel members use '/', but extended Windows paths require native separators.
+opened = {name: preopen(os.path.join(site, *relative.split('/'))) for item in spec for name, relative in item["extensions"]}
 for item in spec:
     try:
         out["distributions"][item["dist"]] = {"version": importlib.metadata.version(item["dist"]), "error": None}
@@ -1452,7 +1453,7 @@ try:
     ready = identity()
     if ready['failures']:
         raise ObserverRefusal('observer identity failed: ' + json.dumps(ready['failures'], ensure_ascii=True))
-    opened = {name: preopen(os.path.join(config['site'], relative)) for item in config['spec'] for name, relative in item['extensions']}
+    opened = {name: preopen(os.path.join(config['site'], *relative.split('/'))) for item in config['spec'] for name, relative in item['extensions']}
     if any(item['status'] not in ('ok', 'missing', 'parent_missing') for item in opened.values()):
         raise ObserverRefusal('observer native pre-open refused: ' + json.dumps(opened, ensure_ascii=True))
     argv = list(sys.argv)
