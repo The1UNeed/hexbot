@@ -27,6 +27,7 @@ pub const USAGE: &str = concat!(
     "hexbot bots list | create NAME [--title TEXT] [--description TEXT] [--persona TEXT] [--provider NAME] [--model NAME] [--reasoning-effort LEVEL] | delete NAME\n",
     "hexbot bots primary [NAME]\n",
     "hexbot checkins [now | on | off | every MINUTES | hours HH:MM-HH:MM | cancel ID]\n",
+    "hexbot computer [on | off | restart | reset | give-back | size small|medium|large]\n",
     "hexbot rooms list\n",
     "hexbot devices list | revoke ID\n",
     "hexbot connect [--name TEXT | status | disconnect]\n",
@@ -66,6 +67,13 @@ fn command(args: &[String]) -> Result<(&'static str, Value)> {
             "hexbot.settings.set",
             json!({"patch":{"checkin_hours":window}}),
         )),
+        ["computer"] => Ok(("hexbot.computer.status", json!({}))),
+        ["computer", "on"] => Ok(("hexbot.computer.start", json!({}))),
+        ["computer", "off"] => Ok(("hexbot.computer.stop", json!({}))),
+        ["computer", "restart"] => Ok(("hexbot.computer.restart", json!({}))),
+        ["computer", "reset"] => Ok(("hexbot.computer.reset", json!({}))),
+        ["computer", "give-back"] => Ok(("hexbot.computer.control", json!({"holder":"bot"}))),
+        ["computer", "size", size] => Ok(("hexbot.computer.configure", json!({"size":size}))),
         ["send", bot, text] => Ok((
             "hexbot.cli.send",
             json!({"bot":bot,"text":text,"request_id":common::id()}),
@@ -546,7 +554,7 @@ pub async fn execute(home: &Path, args: &[String]) -> Result<Value> {
 pub async fn dispatch(home: &Path, args: &[String]) -> Option<Result<()>> {
     let recognized = matches!(
         args.first().map(String::as_str),
-        Some("connect" | "devices" | "lan" | "send" | "checkins" | "hermes")
+        Some("connect" | "devices" | "lan" | "send" | "checkins" | "computer" | "hermes")
     ) || (args.first().map(String::as_str) == Some("bots")
         && args.get(1).map(String::as_str) != Some("list"));
     if !recognized {

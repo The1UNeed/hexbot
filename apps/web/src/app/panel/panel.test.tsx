@@ -1,8 +1,10 @@
-import { fireEvent, render, screen } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { vi } from 'vitest'
 
 import type { Bot, ToolCall } from '../../lib/types'
 import { useBots } from '../../stores/bots'
+import { useComputer } from '../../stores/computer'
+import { useConnection } from '../../stores/connection'
 import { useSections } from '../../stores/sections'
 import { useTranscripts } from '../../stores/transcripts'
 import { useUi } from '../../stores/ui'
@@ -27,6 +29,17 @@ vi.hoisted(() => {
     }
   })
 })
+
+const api = vi.hoisted(() => ({
+  computerControl: vi.fn(),
+  computerStatus: vi.fn(),
+  computerView: vi.fn()
+}))
+
+vi.mock('../../lib/api', async importOriginal => ({
+  ...(await importOriginal<object>()),
+  ...api
+}))
 
 vi.mock('@tanstack/react-router', () => ({
   useNavigate: () => vi.fn(),
@@ -127,5 +140,119 @@ describe('ProfilePanel', () => {
     expect(screen.getByText('Images and files you share with Scout show up here.')).toBeVisible()
     fireEvent.click(screen.getByRole('tab', { name: 'Computer' }))
     expect(screen.getByText(/each step shows up here/)).toBeVisible()
+  })
+
+  it("shows the bots' computer live, with each bot's cursor, and hands it over", async () => {
+    const running = {
+      activity: null,
+      actor: null,
+      available: true,
+      control: 'bot' as const,
+      cursors: [],
+      error: null,
+      size: 'small' as const,
+      sizes: [],
+      state: 'running' as const
+    }
+
+    api.computerStatus.mockResolvedValue(running)
+    api.computerView.mockResolvedValue({
+      control: false,
+      expires_at: 0,
+      path: '/hexbot/computer/t/viewer/#ticket=v'
+    })
+    api.computerControl.mockResolvedValue({ ...running, control: 'user' })
+    useComputer.setState({ error: null, status: null })
+    useConnection.setState({ target: { kind: 'local', origin: 'http://127.0.0.1:9119' } })
+    // Computer actions are not steps: the screen shows them.
+    seed(
+      [
+        call({ name: 'computer_use', summary: 'click', toolId: 'a' }),
+        call({ summary: 'ls', toolId: 'b' })
+      ],
+      false
+    )
+    useBots.setState({
+      byName: {
+        owl: { ...bot, display_name: 'Owl', name: 'owl', tools: ['computer_use'] },
+        scout: { ...bot, tools: ['computer_use'] }
+      }
+    })
+    const { unmount } = render(<ProfilePanel />)
+    fireEvent.click(screen.getByRole('tab', { name: 'Computer' }))
+    expect(screen.getByTestId('computer-steps').querySelectorAll('li')).toHaveLength(1)
+
+    // A small screen that only watches, through the daemon.
+    const frame = await screen.findByTitle("Your bots' screen")
+    expect(frame).toHaveAttribute(
+      'src',
+      'http://127.0.0.1:9119/hexbot/computer/t/viewer/#ticket=v&audio=off&fps=12'
+    )
+    expect(api.computerView).toHaveBeenCalledWith(false)
+
+    // Two bots on it: each has a cursor where it last acted, and the line
+    // under the screen says who is acting.
+    const now = Date.now() / 1000
+    act(() =>
+      useComputer.getState().apply({
+        activity: 'click',
+        actor: 'scout',
+        cursors: [
+          { action: 'click', at: now, bot: 'scout', x: 0.5, y: 0.25 },
+          { action: 'type', at: now - 2, bot: 'owl', x: 0.1, y: 0.9 }
+        ]
+      })
+    )
+    expect(screen.getByTestId('computer-caption')).toHaveTextContent(
+      'Scout is clicking on the computer'
+    )
+    const scout = screen.getByRole('img', { name: "Scout's cursor" })
+    expect(scout).toHaveStyle({ left: '50%', top: '25%' })
+    expect(scout.querySelector('.hex-cursor-press')).not.toBeNull()
+    expect(screen.getByRole('img', { name: "Owl's cursor" })).toHaveAttribute('data-stale', 'false')
+
+    // Taking over opens it large; the bots wait until it is given back.
+    fireEvent.click(screen.getByRole('button', { name: 'Take control' }))
+    expect(api.computerControl).toHaveBeenCalledWith('user')
+    expect(await screen.findByRole('button', { name: 'Give back' })).toBeVisible()
+    // The window and the line under the small screen both say who has it.
+    expect(
+      await screen.findAllByText('You have control. Your bots wait until you give it back.')
+    ).toHaveLength(2)
+
+    // A panel closed under the window, as on a narrow window, gives it back.
+    unmount()
+    await waitFor(() => expect(api.computerControl).toHaveBeenLastCalledWith('bot'))
+  })
+
+  it('gives the computer back when the window closes before a take-over lands', async () => {
+    const running = {
+      activity: null,
+      actor: null,
+      available: true,
+      control: 'bot' as const,
+      cursors: [],
+      error: null,
+      size: 'small' as const,
+      sizes: [],
+      state: 'running' as const
+    }
+
+    let land = (_: unknown) => {}
+    api.computerStatus.mockResolvedValue(running)
+    api.computerView.mockResolvedValue({ control: false, expires_at: 0, path: '/v/#t' })
+    api.computerControl.mockReset()
+    api.computerControl.mockImplementationOnce(() => new Promise(resolve => (land = resolve)))
+    api.computerControl.mockResolvedValue(running)
+    useComputer.setState({ error: null, status: null })
+    useConnection.setState({ target: { kind: 'local', origin: 'http://127.0.0.1:9119' } })
+    seed([], false)
+    useBots.setState({ byName: { scout: { ...bot, tools: ['computer_use'] } } })
+    const { unmount } = render(<ProfilePanel />)
+    fireEvent.click(screen.getByRole('tab', { name: 'Computer' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Take control' }))
+    unmount()
+    await act(async () => land({ ...running, control: 'user' }))
+    await waitFor(() => expect(api.computerControl).toHaveBeenLastCalledWith('bot'))
   })
 })

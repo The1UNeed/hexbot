@@ -103,7 +103,8 @@ Tabs, in order:
    this page links to it. Today the core editor appears inside every
    bot's Memory tab, which reads as if each bot had its own.
 5. **Tools.** Switches grouped as Computer (terminal, files, code
-   execution, browser, computer use), Senses (vision, built-in voice),
+   execution, browser, computer use, and with computer use on, the size
+   of the computer the bots share), Senses (vision, built-in voice),
    Working with others (message other bots, delegate, scheduling), and
    the Workspace working directory. A tool with a missing prerequisite
    shows what to install instead of a switch.

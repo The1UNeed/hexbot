@@ -8,6 +8,7 @@ pub mod auth;
 pub mod catalog;
 pub mod cli;
 pub mod common;
+pub mod computers;
 pub mod connectors;
 pub mod credentials;
 pub mod daemon_status;

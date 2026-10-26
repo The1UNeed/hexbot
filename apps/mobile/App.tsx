@@ -16,6 +16,7 @@ import {
   ChatChooser,
   ChatScreen,
   type ChatScreenProps,
+  ComputerSheet,
   ConnectionScreen,
   DaemonSwitcher,
   HomeScreen,
@@ -143,6 +144,8 @@ function MobileApp() {
   const [connectPending, setConnectPending] = useState(false)
   const [connectSession, setConnectSession] = useState<string | null>(null)
   const [visual, setVisual] = useState<{ title: string; html: string } | null>(null)
+  /** The bots' computer card is open. */
+  const [computerOpen, setComputerOpen] = useState(false)
   const [draft, setDraft] = useState('')
   const [attachments, setAttachments] = useState<AttachmentView[]>([])
   const [question, setQuestion] = useState<{
@@ -953,6 +956,12 @@ function MobileApp() {
         }
         onBack={back}
         onAttach={() => act(attach)}
+        onOpenComputer={
+          (route.bot.available_tools ?? route.bot.tools ?? []).includes('computer_use')
+            ? () => setComputerOpen(true)
+            : undefined
+        }
+        computerLive={!!mobile.computer?.actor || mobile.computer?.control === 'user'}
         onOpenSettings={() => {
           if (!uploading) setPanels([{ kind: 'bot', bot: route.bot }])
         }}
@@ -1136,6 +1145,38 @@ function MobileApp() {
               '--font-sans': 'system-ui',
               '--font-mono': 'monospace'
             })}
+          />
+        ) : null}
+      </Layer>
+      <Layer
+        visible={computerOpen}
+        onClose={() => setComputerOpen(false)}
+        title="Your bots' computer"
+        testID="computer-sheet"
+      >
+        {computerOpen ? (
+          <ComputerSheet
+            bot={route?.kind === 'section' ? (botByName(route.bot.name) ?? route.bot) : undefined}
+            bots={mobile.bots}
+            call={mobile.computerCall}
+            connects={mobile.connects}
+            faceOf={faceOf}
+            onEnable={
+              route?.kind === 'section'
+                ? () =>
+                    act(async () => {
+                      const bot = botByName(route.bot.name) ?? route.bot
+                      await mobile.rpc('hexbot.bots.update', {
+                        name: bot.name,
+                        tools: [...(bot.tools ?? []), 'computer_use']
+                      })
+                      await mobile.refresh()
+                    })
+                : undefined
+            }
+            origin={mobile.active?.origin ?? null}
+            status={mobile.computer}
+            view={mobile.computerView}
           />
         ) : null}
       </Layer>

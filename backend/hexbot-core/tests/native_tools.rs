@@ -522,92 +522,520 @@ print(json.dumps({'success':True,'data':{'snapshot':'[e1] Button','refs':{'e1':'
     assert!(log.contains("wss://browser.invalid/session"));
     server.abort();
 }
+/// A stand-in for the `cua` CLI: a sandbox recorded in a file, `cua mcp`
+/// answering the computer tools, and a viewer link to `upstream.txt`.
+#[cfg(unix)]
+const FAKE_CUA: &str = r#"import json,sys,pathlib,os,base64
+here=pathlib.Path(__file__).parent
+state=here/'sandbox.json'
+def log(row):
+    row['secret']=os.getenv('OPENAI_API_KEY'); row['telemetry']=os.getenv('CUA_TELEMETRY')
+    with (here/'cua.log').open('a') as f: f.write(json.dumps(row)+'\n')
+args=sys.argv[1:]
+log({'argv':args})
+if args[:2]==['sb','info']:
+    if not state.exists(): print('cua: not found: sandbox',file=sys.stderr); sys.exit(3)
+    print(state.read_text()); sys.exit(0)
+if args[:2]==['sb','create']:
+    if (here/'slow').exists():
+        (here/'creating').write_text('1'); import time; time.sleep(60)
+    state.write_text(json.dumps({'name':args[args.index('--name')+1],'state':'running','status':'ready'})); print(state.read_text()); sys.exit(0)
+if args[:2]==['sb','rm']:
+    state.unlink(missing_ok=True); sys.exit(0)
+if args[:2]==['sb','view']:
+    upstream=(here/'upstream.txt').read_text().strip()
+    print(json.dumps({'url':upstream+'/viewer/#ticket=abc&files=%2Fhome%2Fcua'})); sys.exit(0)
+if args[0]=='mcp':
+    png=base64.b64encode(b'\x89PNG\r\n\x1a\nscreen').decode()
+    for line in sys.stdin:
+        r=json.loads(line)
+        if 'id' not in r: continue
+        m=r.get('method')
+        if m=='initialize': result={'protocolVersion':'2024-11-05','capabilities':{'tools':{}},'serverInfo':{'name':'cua','version':'1'}}
+        elif m=='tools/list': result={'tools':[]}
+        elif m=='tools/call':
+            name=r['params']['name']; log({'tool':name,'args':r['params'].get('arguments',{})})
+            if name=='computer_click' and (here/'hold').exists():
+                import time
+                while (here/'hold').exists(): time.sleep(0.02)
+                log({'done':name})
+            if name=='computer_screenshot': result={'content':[{'type':'image','mimeType':'image/png','data':png}]}
+            else: result={'content':[{'type':'text','text':json.dumps({'success':True})}]}
+        else: result={}
+        print(json.dumps({'jsonrpc':'2.0','id':r['id'],'result':result}),flush=True)
+"#;
 #[cfg(unix)]
 #[tokio::test]
-async fn computer_actions_use_captured_window_and_snapshot_token() {
+async fn bots_share_one_computer_and_take_turns() {
+    use hexbot_core::computers;
     let h = home(json!({"tools":{"enabled_toolsets":["computer_use"]}}));
-    let driver = script(
-        h.path(),
-        "cua-driver-test",
-        r#"import json,sys,pathlib,os
-for line in sys.stdin:
- r=json.loads(line)
- if 'id' not in r: continue
- method=r.get('method')
- if method=='initialize': result={'protocolVersion':'2024-11-05','capabilities':{'tools':{}},'serverInfo':{'name':'cua-test','version':'1'}}
- elif method=='tools/list': result={'tools':[{'name':n,'inputSchema':{'type':'object','properties':{}},'description':n} for n in ['start_session','end_session','list_windows','get_window_state','click']]}
- elif method=='tools/call':
-  name=r['params']['name'];args=r['params'].get('arguments',{})
-  with pathlib.Path(__file__).with_suffix('.log').open('a') as f: f.write(json.dumps({'name':name,'args':args,'secret':os.getenv('OPENAI_API_KEY')})+'\n')
-  data={}
-  if name=='list_windows': data={'windows':[{'pid':42,'window_id':7,'app_name':'Test App','z_index':1,'is_on_screen':True}]}
-  elif name=='get_window_state': data={'elements':[{'element_index':1,'element_token':'snapshot-1:1','role':'button','label':'Run'}]}
-  elif name=='click': data={'ok':True,'verdict':'confirmed'}
-  result={'structuredContent':data,'content':[{'type':'text','text':json.dumps(data)}]}
- else: result={}
- print(json.dumps({'jsonrpc':'2.0','id':r['id'],'result':result}),flush=True)
-"#,
-    );
-    let mut cfg = common::read_config(h.path()).unwrap();
-    cfg["computer_use"] = json!({"args":[]});
+    let cua = script(h.path(), "cua-test", FAKE_CUA);
     std::fs::write(
         h.path().join(".env"),
         format!(
-            "HEXBOT_CUA_DRIVER_CMD={}\nHERMES_CUA_DRIVER_CMD=/nonexistent\n",
-            driver.display()
+            "OPENAI_API_KEY=must-not-reach-cua\nHEXBOT_CUA_CMD={}\n",
+            cua.display()
         ),
     )
     .unwrap();
-    common::write_config(h.path(), &cfg).unwrap();
     assert!(
         native_tools::descriptors(h.path(), "tester")
             .unwrap()
             .iter()
             .any(|d| d["name"] == "computer_use")
     );
-    std::fs::write(
-        h.path().join(".env"),
-        format!("OPENAI_API_KEY=must-not-reach-driver\nHEXBOT_CUA_DRIVER_CMD={}\nHERMES_CUA_DRIVER_CMD=/nonexistent\n", driver.display()),
-    )
-    .unwrap();
-    assert!(
-        call(
-            h.path(),
-            "computer_use",
-            json!({"action":"click","element":1})
-        )
+    let status = computers::call(h.path(), "hexbot.computer.status", &json!({}))
         .await
-        .unwrap_err()
-        .message
-        .contains("capture first")
-    );
+        .unwrap()
+        .unwrap();
+    assert_eq!(status["state"], "absent");
+    assert_eq!(status["control"], "bot");
+    // The first action creates the computer at the chosen size.
+    let shot = call(h.path(), "computer_use", json!({"action":"screenshot"}))
+        .await
+        .unwrap();
+    assert!(Path::new(shot["screenshot_path"].as_str().unwrap()).is_file());
     call(
         h.path(),
         "computer_use",
-        json!({"action":"capture","app":"Test App"}),
+        json!({"action":"click","coordinate":[10,20]}),
     )
     .await
     .unwrap();
-    let result = call(
+    call(
         h.path(),
         "computer_use",
-        json!({"action":"click","element":1}),
+        json!({"action":"key","keys":"ctrl+l"}),
     )
     .await
     .unwrap();
-    assert_eq!(result["structuredContent"]["verdict"], "confirmed");
-    let lines = std::fs::read_to_string(driver.with_extension("log")).unwrap();
-    let rows = lines
+    // While the user has control, the bot's actions wait.
+    computers::call(
+        h.path(),
+        "hexbot.computer.control",
+        &json!({"holder":"user"}),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let refused = call(
+        h.path(),
+        "computer_use",
+        json!({"action":"click","coordinate":[1,2]}),
+    )
+    .await
+    .unwrap_err();
+    assert!(refused.message.contains("taken over"));
+    computers::call(
+        h.path(),
+        "hexbot.computer.control",
+        &json!({"holder":"bot"}),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    call(
+        h.path(),
+        "computer_use",
+        json!({"action":"type","text":"hello"}),
+    )
+    .await
+    .unwrap();
+    let rows = std::fs::read_to_string(h.path().join("cua.log"))
+        .unwrap()
         .lines()
         .map(|line| serde_json::from_str::<Value>(line).unwrap())
         .collect::<Vec<_>>();
     assert!(rows.iter().all(|row| row["secret"].is_null()));
-    let click = rows.iter().find(|row| row["name"] == "click").unwrap();
-    assert_eq!(click["args"]["pid"], 42);
-    assert_eq!(click["args"]["window_id"], 7);
-    assert_eq!(click["args"]["element_token"], "snapshot-1:1");
+    assert!(rows.iter().all(|row| row["telemetry"] == "0"));
+    let create = rows.iter().find(|row| row["argv"][1] == "create").unwrap()["argv"].clone();
+    let name = computers::sandbox(h.path());
+    assert!(name.starts_with("hexbot-computer-"));
+    assert_eq!(create[2], "linux");
+    for pair in [
+        ["--name", name.as_str()],
+        ["--cpu", "2"],
+        ["--memory", "4GB"],
+    ] {
+        let at = create
+            .as_array()
+            .unwrap()
+            .iter()
+            .position(|v| v == pair[0])
+            .unwrap();
+        assert_eq!(create[at + 1], pair[1]);
+    }
+    let tools = rows
+        .iter()
+        .filter(|row| row["tool"].is_string())
+        .map(|row| (row["tool"].as_str().unwrap(), row["args"].clone()))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        tools,
+        vec![
+            ("computer_screenshot", json!({})),
+            ("computer_click", json!({"x":10,"y":20,"button":"left"})),
+            ("computer_hotkey", json!({"keys":"ctrl+l"})),
+            ("computer_type", json!({"text":"hello"})),
+        ]
+    );
+    // A second bot works on the same computer. Both act at once; they take
+    // turns, and each keeps a cursor where it last acted.
+    db::open(h.path())
+        .unwrap()
+        .execute(
+            "INSERT INTO bots(name,owner_id,workdir) VALUES ('helper','local',NULL)",
+            [],
+        )
+        .unwrap();
+    std::fs::create_dir_all(h.path().join("profiles/helper")).unwrap();
+    let double = json!({"action":"double_click","coordinate":[300,150]});
+    let (first, second) = tokio::join!(
+        call(
+            h.path(),
+            "computer_use",
+            json!({"action":"click","coordinate":[600,375]}),
+        ),
+        native_tools::call(
+            h.path(),
+            "local",
+            "helper",
+            "conversation",
+            "computer_use",
+            &double,
+        ),
+    );
+    first.unwrap();
+    second.unwrap();
+    let status = computers::call(h.path(), "hexbot.computer.status", &json!({}))
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(status["actor"].is_null());
+    let cursor = |bot: &str| {
+        status["cursors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|c| c["bot"] == bot)
+            .cloned()
+            .unwrap()
+    };
+    assert_eq!(
+        (cursor("tester")["x"].clone(), cursor("tester")["y"].clone()),
+        (json!(0.5), json!(0.5))
+    );
+    assert_eq!(cursor("helper")["action"], "double_click");
+    assert_eq!(
+        (cursor("helper")["x"].clone(), cursor("helper")["y"].clone()),
+        (json!(0.25), json!(0.2))
+    );
+    let creates = std::fs::read_to_string(h.path().join("cua.log"))
+        .unwrap()
+        .lines()
+        .filter(|line| line.contains("\"create\""))
+        .count();
+    assert_eq!(creates, 1);
+    // A deleted bot's cursor goes; the computer stays.
+    computers::forget_bot(h.path(), "helper").await;
+    let status = computers::call(h.path(), "hexbot.computer.status", &json!({}))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(status["cursors"].as_array().unwrap().len(), 1);
+    assert_eq!(status["state"], "running");
     native_tools::close_session(h.path(), "conversation").await;
     hexbot_core::connectors::close_bot(h.path(), "tester").await;
+    hexbot_core::connectors::close_bot(h.path(), "helper").await;
+}
+#[cfg(unix)]
+#[tokio::test]
+async fn computer_screen_is_served_through_the_daemon_and_embeddable() {
+    use axum::{body::Body, http::Request, routing::get};
+    use hexbot_core::computers;
+    let h = home(json!({"tools":{"enabled_toolsets":["computer_use"]}}));
+    let cua = script(h.path(), "cua-test", FAKE_CUA);
+    std::fs::write(
+        h.path().join(".env"),
+        format!("HEXBOT_CUA_CMD={}\n", cua.display()),
+    )
+    .unwrap();
+    let seen: Arc<Mutex<Vec<HeaderMap>>> = Default::default();
+    let recorded = seen.clone();
+    let viewer = Router::new().route(
+        "/viewer/",
+        get(move |headers: HeaderMap| {
+            recorded.lock().unwrap().push(headers);
+            async {
+                (
+                    [(
+                        "content-security-policy",
+                        "default-src 'self'; frame-ancestors 'none'",
+                    )],
+                    axum::response::Html("<html><head></head><body>viewer page</body></html>"),
+                )
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move { axum::serve(listener, viewer).await.unwrap() });
+    std::fs::write(h.path().join("upstream.txt"), format!("http://{address}")).unwrap();
+    let view = computers::call(h.path(), "hexbot.computer.view", &json!({}))
+        .await
+        .unwrap()
+        .unwrap();
+    let path = view["path"].as_str().unwrap();
+    let (location, fragment) = path.split_once('#').unwrap();
+    assert_eq!(fragment, "ticket=abc&files=%2Fhome%2Fcua");
+    assert_eq!(view["control"], false);
+    let token = location
+        .strip_prefix("/hexbot/computer/")
+        .unwrap()
+        .strip_suffix("/viewer/")
+        .unwrap();
+    let request = Request::get(location)
+        .header("cookie", "hexbot_session=secret")
+        .body(Body::empty())
+        .unwrap();
+    let response = computers::proxy(token.to_owned(), request).await;
+    assert_eq!(response.status(), 200);
+    let policy = response.headers()["content-security-policy"]
+        .to_str()
+        .unwrap()
+        .to_owned();
+    assert!(policy.contains("default-src 'self'"));
+    assert!(!policy.contains("frame-ancestors 'none'"));
+    assert!(policy.contains("frame-ancestors 'self' hexbot-app:"));
+    let body = axum::body::to_bytes(response.into_body(), 1024)
+        .await
+        .unwrap();
+    // A watching page hides the viewer's toolbar.
+    let body = String::from_utf8_lossy(&body);
+    assert!(body.contains("viewer page"));
+    assert!(body.contains(".cua-toolbar"));
+    assert!(seen.lock().unwrap()[0].get("cookie").is_none());
+    // An unknown token reaches nothing.
+    let missing = computers::proxy(
+        "nope".into(),
+        Request::get("/hexbot/computer/nope/viewer/")
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(missing.status(), 404);
+    server.abort();
+}
+#[cfg(unix)]
+#[tokio::test]
+async fn a_bot_action_under_way_keeps_the_turn_until_it_ends() {
+    use hexbot_core::computers;
+    let h = home(json!({"tools":{"enabled_toolsets":["computer_use"]}}));
+    let cua = script(h.path(), "cua-test", FAKE_CUA);
+    std::fs::write(
+        h.path().join(".env"),
+        format!("HEXBOT_CUA_CMD={}\n", cua.display()),
+    )
+    .unwrap();
+    db::open(h.path())
+        .unwrap()
+        .execute(
+            "INSERT INTO bots(name,owner_id,workdir) VALUES ('helper','local',NULL)",
+            [],
+        )
+        .unwrap();
+    std::fs::create_dir_all(h.path().join("profiles/helper")).unwrap();
+    // A conversation from before keeps the earlier tool's action names.
+    let shot = call(h.path(), "computer_use", json!({"action":"capture"}))
+        .await
+        .unwrap();
+    assert!(Path::new(shot["screenshot_path"].as_str().unwrap()).is_file());
+    let log = || std::fs::read_to_string(h.path().join("cua.log")).unwrap_or_default();
+    let hold = h.path().join("hold");
+    let clicked = |log: &str| log.matches(r#""tool": "computer_click""#).count();
+    let helper = |home: std::path::PathBuf| {
+        tokio::spawn(async move {
+            native_tools::call(
+                &home,
+                "local",
+                "helper",
+                "conversation",
+                "computer_use",
+                &json!({"action":"double_click","coordinate":[20,20]}),
+            )
+            .await
+        })
+    };
+    // A click is under way, held by the computer, when its bot is stopped.
+    std::fs::write(&hold, "").unwrap();
+    let mut click = Box::pin(call(
+        h.path(),
+        "computer_use",
+        json!({"action":"click","coordinate":[10,10]}),
+    ));
+    tokio::select! {
+        _ = &mut click => panic!("the click should be held"),
+        _ = async { while clicked(&log()) < 1 { tokio::task::yield_now().await } } => {}
+    }
+    drop(click);
+    // Another bot waits for the click to end before acting.
+    let mut second = helper(h.path().to_owned());
+    let waited = tokio::time::timeout(std::time::Duration::from_secs(1), &mut second).await;
+    assert!(waited.is_err(), "the second bot acted during the click");
+    std::fs::remove_file(&hold).unwrap();
+    second.await.unwrap().unwrap();
+    let after = log();
+    assert!(after.find(r#""done""#).unwrap() < after.find("computer_double_click").unwrap());
+    // Taking control waits for a click under way, too.
+    std::fs::write(&hold, "").unwrap();
+    let home = h.path().to_owned();
+    let click = tokio::spawn(async move {
+        native_tools::call(
+            &home,
+            "local",
+            "tester",
+            "conversation",
+            "computer_use",
+            &json!({"action":"click","coordinate":[30,30]}),
+        )
+        .await
+    });
+    while clicked(&log()) < 2 {
+        tokio::task::yield_now().await;
+    }
+    let home = h.path().to_owned();
+    let mut take = tokio::spawn(async move {
+        computers::call(&home, "hexbot.computer.control", &json!({"holder":"user"}))
+            .await
+            .unwrap()
+    });
+    let waited = tokio::time::timeout(std::time::Duration::from_secs(1), &mut take).await;
+    assert!(waited.is_err(), "control was granted during the click");
+    std::fs::remove_file(&hold).unwrap();
+    click.await.unwrap().unwrap();
+    assert_eq!(take.await.unwrap().unwrap()["control"], "user");
+    hexbot_core::connectors::close_bot(h.path(), "tester").await;
+    hexbot_core::connectors::close_bot(h.path(), "helper").await;
+}
+#[cfg(unix)]
+#[tokio::test]
+async fn a_bot_stopped_while_the_computer_starts_leaves_it_free() {
+    use hexbot_core::computers;
+    let h = home(json!({"tools":{"enabled_toolsets":["computer_use"]}}));
+    let cua = script(h.path(), "cua-test", FAKE_CUA);
+    std::fs::write(
+        h.path().join(".env"),
+        format!("HEXBOT_CUA_CMD={}\n", cua.display()),
+    )
+    .unwrap();
+    std::fs::write(h.path().join("slow"), "").unwrap();
+    let status = || async {
+        computers::call(h.path(), "hexbot.computer.status", &json!({}))
+            .await
+            .unwrap()
+            .unwrap()
+    };
+    // The bot's first action starts the computer; the bot is stopped meanwhile.
+    let mut action = Box::pin(call(
+        h.path(),
+        "computer_use",
+        json!({"action":"screenshot"}),
+    ));
+    tokio::select! {
+        _ = &mut action => panic!("the start should still be running"),
+        _ = async {
+            while status().await["state"] != "starting" {
+                tokio::task::yield_now().await;
+            }
+        } => {}
+    }
+    drop(action);
+    assert_eq!(status().await["state"], "absent");
+    let started = computers::call(h.path(), "hexbot.computer.start", &json!({}))
+        .await
+        .unwrap();
+    assert!(started.is_ok(), "the computer is no longer busy");
+}
+#[cfg(unix)]
+#[tokio::test]
+async fn giving_the_computer_back_closes_an_open_control_screen() {
+    use axum::{
+        extract::{Path as UrlPath, Request, WebSocketUpgrade, ws::Message},
+        routing::{any, get},
+    };
+    use futures_util::{SinkExt, StreamExt};
+    use hexbot_core::computers;
+    let h = home(json!({"tools":{"enabled_toolsets":["computer_use"]}}));
+    let cua = script(h.path(), "cua-test", FAKE_CUA);
+    std::fs::write(
+        h.path().join(".env"),
+        format!("HEXBOT_CUA_CMD={}\n", cua.display()),
+    )
+    .unwrap();
+    // The computer's screen: a socket that answers whatever it is sent.
+    let viewer = Router::new().route(
+        "/media",
+        get(|ws: WebSocketUpgrade| async {
+            ws.on_upgrade(|mut socket| async move {
+                while let Some(Ok(Message::Text(text))) = socket.recv().await {
+                    if socket.send(Message::Text(text)).await.is_err() {
+                        break;
+                    }
+                }
+            })
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let upstream = tokio::spawn(async move { axum::serve(listener, viewer).await.unwrap() });
+    std::fs::write(h.path().join("upstream.txt"), format!("http://{address}")).unwrap();
+    let daemon = Router::new().route(
+        "/hexbot/computer/{token}/{*rest}",
+        any(
+            |UrlPath((token, _)): UrlPath<(String, String)>, request: Request| {
+                computers::proxy(token, request)
+            },
+        ),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let served = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move { axum::serve(listener, daemon).await.unwrap() });
+    let view = computers::call(h.path(), "hexbot.computer.view", &json!({"control": true}))
+        .await
+        .unwrap()
+        .unwrap();
+    let location = view["path"].as_str().unwrap().split_once('#').unwrap().0;
+    let media = location.strip_suffix("viewer/").unwrap();
+    let (mut socket, _) = tokio_tungstenite::connect_async(format!("ws://{served}{media}media"))
+        .await
+        .unwrap();
+    socket.send("click".into()).await.unwrap();
+    assert_eq!(
+        socket.next().await.unwrap().unwrap().into_text().unwrap(),
+        "click"
+    );
+    computers::call(
+        h.path(),
+        "hexbot.computer.control",
+        &json!({"holder": "bot"}),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    // The bots have it again, so the screen that could type is shut.
+    let ended = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            match socket.next().await {
+                None | Some(Err(_)) => break,
+                Some(Ok(message)) if message.is_close() => break,
+                Some(Ok(_)) => {}
+            }
+        }
+    })
+    .await;
+    assert!(ended.is_ok(), "the control screen stayed open");
+    server.abort();
+    upstream.abort();
 }
 #[tokio::test]
 async fn keenable_mistral_and_krea_use_selected_vendor_contracts() {

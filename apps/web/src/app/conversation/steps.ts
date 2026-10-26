@@ -35,6 +35,39 @@ const VERBS: Record<string, [live: string, done: string]> = {
   write_file: ['Writing', 'Wrote']
 }
 
+/**
+ * The bots' computer, by `computer_use` action. The daemon sends the
+ * action as the call's summary.
+ */
+const COMPUTER: Record<string, [live: string, done: string]> = {
+  click: ['Clicking', 'Clicked'],
+  double_click: ['Clicking', 'Clicked'],
+  drag: ['Dragging', 'Dragged'],
+  key: ['Pressing keys', 'Pressed keys'],
+  launch: ['Opening an app', 'Opened an app'],
+  middle_click: ['Clicking', 'Clicked'],
+  move: ['Moving the pointer', 'Moved the pointer'],
+  open: ['Opening a page', 'Opened a page'],
+  right_click: ['Clicking', 'Clicked'],
+  screenshot: ['Looking at the screen', 'Looked at the screen'],
+  scroll: ['Scrolling', 'Scrolled'],
+  shell: ['Running a command', 'Ran a command'],
+  type: ['Typing', 'Typed'],
+  wait: ['Waiting', 'Waited'],
+  windows: ['Checking windows', 'Checked windows']
+}
+
+/** "Clicking on the computer", or the plain phrase when the action is unknown. */
+export function computerLabel(action: null | string | undefined, tense: 'done' | 'live'): string {
+  const verbs = COMPUTER[(action ?? '').trim()]
+
+  if (!verbs) {
+    return tense === 'live' ? 'Using the computer' : 'Used the computer'
+  }
+
+  return `${verbs[tense === 'live' ? 0 : 1]} on the computer`
+}
+
 /** Tools whose argument preview reads well after the verb, with its connector. */
 const PREVIEW: Record<string, string> = {
   hexbot_show_html: ' ',
@@ -178,6 +211,10 @@ export function toolLabel(
     return `${tense === 'live' ? 'Connecting to' : 'Used'} ${service}`
   }
 
+  if (call.name === 'computer_use') {
+    return computerLabel(call.summary, tense)
+  }
+
   const connector = PREVIEW[call.name]
   const detail = connector === undefined ? '' : preview(call)
   const verbs = (detail ? undefined : NO_PREVIEW[call.name]) ?? VERBS[call.name]
@@ -286,6 +323,10 @@ export function activityLabel(call: ToolCall, name: string): string {
 
   if (service) {
     return `Connecting to ${service}`
+  }
+
+  if (call.name === 'computer_use') {
+    return `${name} is ${computerLabel(call.summary, 'live').replace(/^\w/, c => c.toLowerCase())}`
   }
 
   return `${name} ${ACTIVITY[call.name] ?? `is using ${humanize(call.name)}`}`

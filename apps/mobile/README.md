@@ -23,9 +23,9 @@ button next to Search opens Bots & jobs: every bot's profile, scheduled jobs,
 and all rooms, archived ones included. With more than one daemon saved, its
 name above the list switches daemons; otherwise Settings does.
 
-Profiles, settings areas, tool steps and visuals open as front cards
-(`src/ui/Layer.tsx`) that leave the screen below in view. The model
-pill lists the providers with a key or sign-in, plus the bot's own, each from
+Profiles, settings areas, tool steps, visuals and the bots' computer open as
+front cards (`src/ui/Layer.tsx`) that leave the screen below in view. The
+model pill lists the providers with a key or sign-in, plus the bot's own, each from
 `hexbot.models.list {provider}` so the provider's current list is used, as in
 the web app. Thinking levels come from `reasoning_levels`; a model the daemon
 knows nothing about offers every level. The pill and the selected level show
@@ -64,6 +64,7 @@ when Connect supplies one, and exchanges the grant directly with that daemon.
 | --- | --- |
 | Bots | Chat list and Bots & jobs; create, edit, delete, soul, picture, model and thinking level, tools, approvals, workspace, notifications and dreaming |
 | Conversations | Check-ins in the chat list; streamed chat, stop, file/image/PDF attachments, Markdown, tool steps with their results, visuals, questions and approvals |
+| Computer | The bots' shared computer on its own card from a chat's computer button: the live screen with each bot's face cursor, what is happening on it, Take control and Give back, Turn on, Restart, Turn off and Reset; its size in a bot's Tools |
 | Rooms | Rooms in the chat list: chat, stop, bot membership, main bot, budgets, approvals, archive, restore from All rooms, and delete |
 | Memory | Edit each bot's memory and your About you text; inspect dreaming and restore memory |
 | Models | Provider API keys and device sign-in, model selection, daemon defaults and fallback model |

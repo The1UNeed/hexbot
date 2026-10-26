@@ -79,6 +79,10 @@ export interface ChatScreenProps {
 
   /** Draw a message's text yourself, such as with a Markdown renderer. */
   renderMessageText?: (item: MessageItem) => ReactNode
+  /** Opens the bots' computer on its own card; the button shows only with this. */
+  onOpenComputer?: () => void
+  /** A bot is acting on the computer, or you have it: the button shows a dot. */
+  computerLive?: boolean
   /** Opens a visual item from the transcript. */
   onOpenVisual?: (id: string) => void
   /** Under the empty state of a new chat, such as the model it will use. */
@@ -93,7 +97,9 @@ type Entry = ChatItem | { id: string; kind: 'waiting' }
  * one quiet line per run, and approvals stop the transcript with a card.
  */
 export function ChatScreen(props: ChatScreenProps) {
-  const { face, members, onBack, onOpenSettings, status, subtitle, title } = props
+  const { computerLive, face, members, onBack, onOpenComputer, onOpenSettings, status, subtitle, title } =
+    props
+  const theme = useTheme()
   const room = !!members
 
   const header = (
@@ -142,6 +148,27 @@ export function ChatScreen(props: ChatScreenProps) {
         testID="chat-bar"
         trailing={
           <>
+            {onOpenComputer ? (
+              <View>
+                <IconButton
+                  accessibilityLabel="Your bots' computer"
+                  icon="desktop-outline"
+                  iconSize={20}
+                  onPress={onOpenComputer}
+                  testID="chat-computer"
+                  variant="glass"
+                />
+                {computerLive ? (
+                  <View
+                    pointerEvents="none"
+                    style={[
+                      styles.computerDot,
+                      { backgroundColor: theme.info, borderColor: theme.background }
+                    ]}
+                  />
+                ) : null}
+              </View>
+            ) : null}
             {onOpenSettings ? (
               <IconButton
                 accessibilityLabel={room ? 'Room settings' : `Edit ${title}`}
@@ -787,6 +814,15 @@ const styles = StyleSheet.create({
     paddingRight: 14
   },
   titleText: { flexShrink: 1 },
+  computerDot: {
+    borderRadius: 5,
+    borderWidth: 1.5,
+    height: 10,
+    position: 'absolute',
+    right: 4,
+    top: 4,
+    width: 10
+  },
   transcript: { paddingBottom: 8, paddingHorizontal: 14, paddingTop: 12 },
   visual: {
     alignItems: 'center',

@@ -1259,7 +1259,10 @@ impl McpSession {
             transport,
             next_id: 1,
         };
-        let initialized = session.request("initialize", json!({"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"hexbot","version":env!("CARGO_PKG_VERSION")}})).await?;
+        // A built-in server may name the client after the bot it acts for; the
+        // bots' computer labels each bot's on-screen marker with it.
+        let client = entry["client_name"].as_str().unwrap_or("hexbot");
+        let initialized = session.request("initialize", json!({"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":client,"version":env!("CARGO_PKG_VERSION")}})).await?;
         if let McpTransport::Http { version, .. } = &mut session.transport
             && let Some(v) = initialized["protocolVersion"].as_str()
         {

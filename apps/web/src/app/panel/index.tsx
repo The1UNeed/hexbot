@@ -12,15 +12,13 @@ import {
   ScrollText,
   Settings,
   Sparkles,
-  SquareTerminal,
   Wrench
 } from 'lucide-react'
 import { useMemo, useState } from 'react'
 
 import { Switch } from '../../components/ui/switch'
 import { cn } from '../../lib/cn'
-import { toMillis } from '../../lib/time'
-import type { Attachment, Bot, ToolCall } from '../../lib/types'
+import type { Attachment, Bot } from '../../lib/types'
 import { useBots } from '../../stores/bots'
 import { useLiveSessionId } from '../../stores/sections'
 import { type TranscriptMessage, useTranscript } from '../../stores/transcripts'
@@ -28,7 +26,8 @@ import { type PanelTab, useUi } from '../../stores/ui'
 import { type BotSettingsTab, rememberedTab } from '../bot-settings'
 import { AvatarPicker, errorText, InlineField, type SaveBot } from '../bot-settings/shared'
 import { activityLabel } from '../conversation/steps'
-import { StepRow } from '../conversation/work-status'
+
+import { ComputerTab } from './computer'
 
 // Stable empty value: a fresh [] per render would re-run the tabs' memos.
 const NO_MESSAGES: TranscriptMessage[] = []
@@ -186,58 +185,12 @@ function LibraryTab({ messages, name }: { messages: TranscriptMessage[]; name: s
   )
 }
 
-const clock = (call: ToolCall) =>
-  call.startedAt > 0
-    ? new Date(toMillis(call.startedAt)).toLocaleTimeString([], {
-        hour: 'numeric',
-        minute: '2-digit'
-      })
-    : undefined
-
-/**
- * Every tool call in the section, housekeeping included, newest first, each
- * closed until clicked. While a step runs, a line on top says what the bot
- * is doing in plain words, as the chat does.
- */
-function ComputerTab({ messages, name }: { messages: TranscriptMessage[]; name: string }) {
-  const calls = useMemo(() => messages.flatMap(message => message.toolCalls).reverse(), [messages])
-
-  const running = calls.find(call => call.status === 'running')
-
-  if (!calls.length) {
-    return (
-      <Empty
-        icon={SquareTerminal}
-        text={`When ${name} runs a command, reads a page or edits a file, each step shows up here.`}
-      />
-    )
-  }
-
-  return (
-    <div className="grid gap-3">
-      {running ? (
-        <div className="hex-fade flex items-center gap-2 px-1 text-[length:var(--text-secondary)]">
-          <span className="size-1.5 shrink-0 rounded-full bg-info" />
-          <span className="truncate">{activityLabel(running, name)}</span>
-        </div>
-      ) : null}
-      <ul
-        className="min-w-0 rounded-[16px] bg-background p-1.5 shadow-card"
-        data-testid="computer-steps"
-      >
-        {calls.map(call => (
-          <StepRow call={call} key={call.toolId} meta={clock(call)} />
-        ))}
-      </ul>
-    </div>
-  )
-}
-
 /**
  * The side panel, opened from the name pill above the chat: the bot's face,
  * name and label, then three tabs. Details holds the description, the model,
  * notifications and the doors into Bot settings. Library collects what was
- * shared in the section. Computer lists every step the bot took, live.
+ * shared in the section. Computer shows the bot's own computer, live, and
+ * every step the bot took.
  */
 export function ProfilePanel(): React.JSX.Element {
   const selected = useUi(state => state.lastSection)
@@ -371,7 +324,7 @@ export function ProfilePanel(): React.JSX.Element {
         >
           {tab === 'details' ? <DetailsTab bot={bot} onSave={save} /> : null}
           {tab === 'library' ? <LibraryTab messages={messages} name={bot.display_name} /> : null}
-          {tab === 'computer' ? <ComputerTab messages={messages} name={bot.display_name} /> : null}
+          {tab === 'computer' ? <ComputerTab bot={bot} messages={messages} onSave={save} /> : null}
         </div>
       </div>
     </div>

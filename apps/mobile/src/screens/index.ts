@@ -1,5 +1,6 @@
 export { ChatChooser, type ChatChooserProps } from './ChatChooser'
 export { ApprovalCard, ChatScreen, type ChatScreenProps, VisualCard } from './ChatScreen'
+export { ComputerSheet, type ComputerSheetProps } from './ComputerSheet'
 export {
   type ConnectionPending,
   ConnectionScreen,

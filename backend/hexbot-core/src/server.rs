@@ -15,7 +15,7 @@ use axum::{
     },
     http::{HeaderMap, HeaderValue, StatusCode},
     response::{Html, IntoResponse, Response},
-    routing::{get, post},
+    routing::{any, get, post},
 };
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde_json::{Value, json};
@@ -95,6 +95,7 @@ impl App {
             );
         }
         let events = EventHub::new();
+        crate::computers::attach(&home, events.clone());
         let runtime = Runtime::new(home.clone(), events.clone(), pi)?;
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
             let runtime = runtime.clone();
@@ -463,6 +464,8 @@ impl App {
                     result
                 } else if let Some(result) = rooms::call(&self.home, owner, method, p) {
                     result
+                } else if let Some(result) = crate::computers::call(&self.home, method, p).await {
+                    result
                 } else if let Some(result) = connectors::call(&self.home, owner, method, p).await {
                     result
                 } else if let Some(result) = providers::call(&self.home, owner, method, p).await {
@@ -530,7 +533,9 @@ impl App {
             )?;
         }
         if method == "hexbot.bots.delete" {
-            crate::connectors::close_bot(&self.home, common::required(p, "name")?).await;
+            let name = common::required(p, "name")?;
+            crate::connectors::close_bot(&self.home, name).await;
+            crate::computers::forget_bot(&self.home, name).await;
         }
         if method == "hexbot.pairing.code" {
             let code = result["code"].as_str().unwrap_or("");
@@ -1905,6 +1910,13 @@ fn set_push(home: &std::path::Path, owner: &str, device: &str, p: &Value) -> Res
     tx.commit()?;
     Ok(json!({"ok":true}))
 }
+/// A bot's computer screen, from the link `hexbot.computer.view` gave out.
+async fn computer_view(
+    axum::extract::Path((token, _rest)): axum::extract::Path<(String, String)>,
+    request: axum::extract::Request,
+) -> Response {
+    crate::computers::proxy(token, request).await
+}
 /// Frames on a daemon page may only load from the daemon. A bot's visual runs
 /// in a sandboxed frame (`/visual-frame.html`); this keeps its script from
 /// navigating that frame to another site with data in the URL.
@@ -1928,7 +1940,8 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/auth/password-login", post(login))
         .route("/api/auth/ws-ticket", post(ticket))
         .route("/hexbot/pair", post(pair))
-        .route("/hexbot/session", post(session));
+        .route("/hexbot/session", post(session))
+        .route("/hexbot/computer/{token}/{*rest}", any(computer_view));
     if let Some(dist) = app.web_dist.clone() {
         router = router.fallback_service(
             tower_http::services::ServeDir::new(dist).fallback(get(spa).with_state(app.clone())),

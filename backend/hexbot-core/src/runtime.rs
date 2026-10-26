@@ -5688,9 +5688,8 @@ fn tool_context(name: &str, args: &Value) -> String {
         "delegate_task" => "goal",
         "message_bot" => "to",
         "hexbot_show_html" => "title",
-        "hexbot_bots" | "hexbot_rooms" | "hexbot_jobs" | "hexbot_settings" | "hexbot_wakeups" => {
-            "action"
-        }
+        "hexbot_bots" | "hexbot_rooms" | "hexbot_jobs" | "hexbot_settings" | "hexbot_wakeups"
+        | "computer_use" => "action",
         "hexbot_notify" => "message",
         "hexbot_connector_read" => "path",
         name if name.starts_with("mcp__") => args

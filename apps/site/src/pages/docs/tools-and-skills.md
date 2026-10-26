@@ -16,14 +16,20 @@ Open Bot settings, Tools. Each switch controls one capability:
 | Files | Reads, writes, and searches files. |
 | Code execution | Runs Python code for data work and checks. |
 | Browser | Navigates and interacts with a configured browser. |
-| Computer use | Reads the screen and acts through a configured computer-use driver. |
+| Computer use | Lets the bot work on your bots' shared computer, a Linux desktop it clicks and types in, which you can watch and take over. |
 | Vision | Reads images you attach. |
 | Voice | Speaks replies with the built-in voice; premium voice uses a connector. |
 | Message other bots | Asks a named teammate for help privately. |
 | Delegate | Hands a subtask to an isolated subagent. |
 | Scheduling | Creates and manages reminders and recurring jobs. |
 
-Tools execute where the daemon runs, even when you use the client app on another computer. A tool that needs something the daemon computer doesn't have is hidden from this list and from the bot until it's set up: code execution needs Python, browser needs a browser driver or a CDP address, computer use needs the cua driver, vision needs a key or endpoint for its vision model, and voice needs edge-tts or a voice provider key. Adding or removing a provider key refreshes tool availability in connected apps. A hidden tool that was switched on is switched off the next time you save the bot's tools. Full and Headless install Python for code execution and the voice tools. Neither installs Poppler: to render PDF pages, install it on the daemon computer (`brew install poppler` or `sudo apt install poppler-utils`).
+Tools execute where the daemon runs, even when you use the client app on another computer. A tool that needs something the daemon computer doesn't have is hidden from this list and from the bot until it's set up: code execution needs Python, browser needs a browser driver or a CDP address, computer use needs [Cua](https://cua.ai) and Docker, vision needs a key or endpoint for its vision model, and voice needs edge-tts or a voice provider key. Adding or removing a provider key refreshes tool availability in connected apps. A hidden tool that was switched on is switched off the next time you save the bot's tools. Full and Headless install Python for code execution and the voice tools. Neither installs Poppler: to render PDF pages, install it on the daemon computer (`brew install poppler` or `sudo apt install poppler-utils`).
+
+### Your bots' computer
+
+Your bots share one computer: a Cua sandbox, a Linux desktop with a browser and a terminal, running in Docker on the daemon computer. It is made the first time a bot with Computer use needs it, and it is separate from your computer and from the bots' workspaces. Install Cua there with `uv tool install cua` and start Docker; the first start downloads the computer, a few GB.
+
+Open the side panel's Computer tab to watch the screen live; on the phone, tap the computer button at the top of a bot's chat. Each bot that works on it has a cursor with its face, which moves to where it clicks and types, and the line under the screen says who is doing what. Bots take turns one action at a time. If something goes wrong, choose **Take control**: the screen opens large and takes your clicks and keys, and the bots wait until you choose **Give back**. The tab's menu restarts the computer, turns it off, or resets it to a fresh one. Bot settings, Tools sets its size (small, medium or large); a new size applies after Reset. Without the app, `hexbot computer` shows it, and `on`, `off`, `restart`, `reset`, `give-back` and `size` change it.
 
 The **Working directory** is the bot's workspace. Choose a project folder outside `~/.hexbot`; the daemon refuses its own data directory as a workspace. [Approvals](/docs/approvals/) explains sandbox access, network requests, and credential protection.
 

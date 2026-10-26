@@ -621,3 +621,41 @@ it.each(['clarify.resolved', 'clarify.expire'])('a question settled by %s while 
   expect(hook.result.current.route).toMatchObject({ section: { id: 'owl-chat' } })
   expect(hook.result.current.chat.questions).toEqual([])
 })
+
+it("keeps the bots' computer current from its events without reloading everything", async () => {
+  const hook = await connected()
+  const running = {
+    activity: null,
+    actor: null,
+    available: true,
+    control: 'bot',
+    cursors: [],
+    error: null,
+    state: 'running'
+  }
+  state.request.mockImplementation(async (method: string, params: Record<string, unknown> = {}) =>
+    method === 'hexbot.computer.status' ? running : reply(method, params)
+  )
+  await act(async () => {
+    await hook.result.current.computerCall()
+  })
+  state.request.mockClear()
+  await act(async () => {
+    state.event({
+      type: 'hexbot.computer.changed',
+      payload: {
+        actor: 'owl',
+        activity: 'click',
+        cursors: [{ action: 'click', at: 1, bot: 'owl', x: 0.5, y: 0.25 }]
+      }
+    })
+    await new Promise(resolve => setTimeout(resolve, 300))
+  })
+  expect(hook.result.current.computer).toMatchObject({
+    actor: 'owl',
+    available: true,
+    cursors: [{ bot: 'owl', x: 0.5, y: 0.25 }]
+  })
+  // A computer event comes with every bot action; it reloads nothing.
+  expect(state.request).not.toHaveBeenCalled()
+})
