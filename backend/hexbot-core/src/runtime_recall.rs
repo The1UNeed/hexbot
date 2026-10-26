@@ -11,6 +11,10 @@ fn busy() -> Error {
     Error::new(4002, "session is already working")
 }
 
+fn latest_only() -> Error {
+    Error::new(4202, "Only your latest message can be recalled")
+}
+
 impl Runtime {
     pub(super) async fn recall(&self, s: &Arc<Live>, p: &Value) -> Result<Value> {
         let input_id = p["input_id"].as_str().filter(|id| !id.is_empty());
@@ -30,8 +34,24 @@ impl Runtime {
                 "Only messages in a bot's chat can be recalled",
             ));
         }
-        // A turn still working on it stops first, as Stop would.
-        if s.state.lock().unwrap().busy {
+        // A turn still working on it stops first, as Stop would. A stale
+        // Recall leaves a newer message's turn alone.
+        let working = {
+            let state = s.state.lock().unwrap();
+            let newest = state
+                .inputs
+                .back()
+                .map(|i| &i.intent)
+                .or(state.input_run.as_ref());
+            if state.busy
+                && input_id.is_some()
+                && newest.is_some_and(|n| Some(n.as_str()) != input_id)
+            {
+                return Err(latest_only());
+            }
+            state.busy
+        };
+        if working {
             self.interrupt(s, DEADLINE).await?;
         }
         let _input = s.input_gate.clone().try_lock_owned().map_err(|_| busy())?;
@@ -64,8 +84,19 @@ impl Runtime {
         let result = self.recall_latest(s, input_id, row_id).await;
         let reread = s.state.lock().unwrap().end_turn();
         s.run_ended.send_modify(|v| *v += 1);
-        if result.is_ok() || reread {
-            self.reload(s);
+        match &result {
+            // Every open view drops the message and what followed it.
+            Ok(row) => {
+                let recalled = json!({"row_id":row["row_id"],"input_id":row["input_id"]});
+                self.events.emit(
+                    &s.owner,
+                    None,
+                    "hexbot.sections.changed",
+                    json!({"id":s.stored,"bot":s.bot,"reload":true,"recalled":recalled}),
+                );
+            }
+            Err(_) if reread => self.reload(s),
+            Err(_) => {}
         }
         // A turn that failed on the recalled message went with it.
         if result.is_ok()
@@ -80,9 +111,10 @@ impl Runtime {
             self.events
                 .emit(&s.owner, None, "hexbot.bots.changed", json!({"name":s.bot}));
         }
-        result
+        result.map(|row| json!({"recalled":true,"text":row["text"]}))
     }
 
+    /// The recalled row.
     async fn recall_latest(
         &self,
         s: &Arc<Live>,
@@ -103,10 +135,7 @@ impl Runtime {
                 && ((input_id.is_some() && row["input_id"].as_str() == input_id)
                     || (row_id.is_some() && row["row_id"].as_str() == row_id))
         }) else {
-            return Err(Error::new(
-                4202,
-                "Only your latest message can be recalled",
-            ));
+            return Err(latest_only());
         };
         let reply = s
             .process
@@ -127,6 +156,6 @@ impl Runtime {
         // The command reports a failure only as an extension error, so the
         // conversation file is the proof that Pi moved.
         store::follow_branch(&self.home, &s.stored, &entry)?;
-        Ok(json!({"recalled":true,"text":row["text"]}))
+        Ok(row)
     }
 }

@@ -8,6 +8,7 @@ import {
 } from '@tanstack/react-router'
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 
+import { routeEvent } from '../../lib/events'
 import { setActiveRpc } from '../../lib/rpc'
 import type { Bot, DaemonInfo, Section } from '../../lib/types'
 import { useBots } from '../../stores/bots'
@@ -137,7 +138,6 @@ async function stop(text = 'The turn was interrupted') {
 it('takes back the latest message after its turn stopped and puts it in the composer', async () => {
   await mount()
   await send('Read my plan')
-  expect(recallButton()).toBeNull()
   await stop()
   fireEvent.click(recallButton()!)
   await waitFor(() => expect(screen.queryByTestId('user-message')).toBeNull())
@@ -191,6 +191,8 @@ it('closes a Stopped card, and the bot’s Stopped state for this chat with it',
   const card = screen.getByTestId('stopped-card')
   fireEvent.click(within(card).getByRole('button', { name: 'Dismiss' }))
   expect(screen.queryByTestId('stopped-card')).toBeNull()
+  // The turn still stopped without an answer.
+  expect(recallButton()).not.toBeNull()
   // An interrupted turn is not a Stopped state.
   expect(call.mock.calls.some(([method]) => method === 'hexbot.bots.clear_status')).toBe(false)
 
@@ -210,4 +212,30 @@ it('closes a Stopped card, and the bot’s Stopped state for this chat with it',
   fireEvent.click(within(status).getByRole('button', { name: 'Dismiss' }))
   expect(screen.queryByTestId('stopped-card')).toBeNull()
   expect(call).toHaveBeenCalledWith('hexbot.bots.clear_status', { name: 'owl' })
+})
+
+it('drops a message recalled from another app, with its card', async () => {
+  await mount()
+  await send('Read my plan')
+  await stop()
+  const sent = rows.at(-1)!
+  rows.pop()
+  act(() =>
+    routeEvent(
+      {
+        type: 'hexbot.sections.changed',
+        payload: {
+          id: 'chat',
+          bot: 'owl',
+          reload: true,
+          recalled: { row_id: 'pi-1', input_id: sent.input_id }
+        }
+      } as never,
+      { refreshBots: () => undefined, refreshSections: () => undefined }
+    )
+  )
+  await waitFor(() => expect(screen.queryByTestId('user-message')).toBeNull())
+  expect(await screen.findByText('Earlier reply')).toBeVisible()
+  expect(screen.queryByTestId('user-message')).toBeNull()
+  expect(screen.queryByTestId('stopped-card')).toBeNull()
 })

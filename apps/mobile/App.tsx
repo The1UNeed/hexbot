@@ -768,7 +768,8 @@ function MobileApp() {
   }
   const renderMessageText: ChatScreenProps['renderMessageText'] = item =>
     item.text ? <MarkdownText text={item.text} user={item.role === 'user'} /> : null
-  // Your latest message in a bot's chat, while the bot is on it or after its turn stopped.
+  // Your latest message in a bot's chat, while the bot is on it or after its turn
+  // stopped, with or without its closed error.
   const recallId = (() => {
     if (route?.kind !== 'section' || route.section.peer_bot || !mobile.info?.recall) return null
     const owner = botByName(route.bot.name) ?? route.bot
@@ -776,6 +777,7 @@ function MobileApp() {
     const stopped =
       mobile.chat.busy ||
       !!mobile.chat.error ||
+      mobile.chat.messages.at(-1) === last ||
       (owner.status === 'stopped' && owner.status_detail?.section_id === route.section.id)
     return last && stopped ? last.id : null
   })()

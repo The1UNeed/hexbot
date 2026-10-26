@@ -106,10 +106,17 @@ async fn recall_takes_back_the_latest_message_and_the_bot_forgets_it() {
     );
     let recalled = recall(&runtime, &id, SECOND).await.unwrap();
     assert_eq!(recalled, json!({"recalled":true,"text":"Second"}));
-    stop_tests::stop_event(&mut events, |e| {
+    // Every open view learns which message went.
+    let changed = stop_tests::stop_event(&mut events, |e| {
         e["type"] == "hexbot.sections.changed" && e["payload"]["reload"] == true
     })
     .await;
+    assert_eq!(changed["payload"]["recalled"]["input_id"], SECOND);
+    assert!(
+        changed["payload"]["recalled"]["row_id"]
+            .as_str()
+            .is_some_and(|id| id.starts_with("pi-"))
+    );
     assert_eq!(shown(&runtime, &id).await, ["First", "Re: First"]);
     // The next message continues from before the recalled one.
     send(&runtime, &mut events, &id, "Third", THIRD).await;
@@ -137,6 +144,9 @@ async fn recall_stops_the_turn_working_on_it() {
     send(&runtime, &mut events, &id, "First", FIRST).await;
     send(&runtime, &mut events, &id, "wait", SECOND).await;
     let s = runtime.sessions.lock().unwrap()["first"].clone();
+    assert!(s.state.lock().unwrap().busy);
+    // A stale Recall leaves the newer message's turn working.
+    assert_eq!(recall(&runtime, &id, FIRST).await.unwrap_err().code, 4202);
     assert!(s.state.lock().unwrap().busy);
     let recalled = recall(&runtime, &id, SECOND).await.unwrap();
     assert_eq!(recalled["text"], "wait");

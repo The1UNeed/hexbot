@@ -35,10 +35,12 @@ data model. The native transport and event projection live in
   the conversation back to just before the message and records the move in
   the conversation file, so the next request reuses the cached prefix and a
   restart keeps it. The message and every row after it leave the history;
-  `hexbot.sections.changed {id, bot, reload: true}` tells clients to read it
-  again, and a turn failure on this chat is resolved. Anything else answers
-  4202 and changes nothing: an older message, a hidden one, a room or a
-  thread between bots. A prompt starting `/hexbot-recall` is refused with
+  `hexbot.sections.changed {id, bot, reload: true, recalled: {row_id,
+  input_id}}` tells clients to drop that message and what followed it, kept
+  rows included, and read the chat again; a turn failure on this chat is
+  resolved. Anything else answers 4202 and changes nothing: an older message,
+  a hidden one, a room or a thread between bots. A Recall naming an older
+  message than the one a running turn works on leaves that turn running. A prompt starting `/hexbot-recall` is refused with
   4202. `hexbot.info.recall: true` advertises the method.
 - History: `session.history {session_id, history_cursor?}` → `{messages,
   history_cursor: string, history_delta: boolean}`, using the same cursor

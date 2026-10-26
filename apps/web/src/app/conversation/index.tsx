@@ -1591,17 +1591,20 @@ function BotConversation() {
   const recallable = useConnection(state => state.daemon?.recall === true)
   const [draftVersion, setDraftVersion] = useState(0)
 
-  // Your latest message, while the bot is on it or after its turn stopped.
-  // One the daemon refused never reached the bot and goes from here alone.
+  // Your latest message, while the bot is on it or after its turn stopped,
+  // with or without its closed card. One the daemon refused never reached the
+  // bot and goes from here alone.
   const recallFor = (message: TranscriptMessage): (() => void) | undefined => {
     const index = messages.findLastIndex(item => item.role === 'user')
     const submitted = message.submission?.status ?? 'accepted'
+    const after = messages.slice(index + 1)
 
     const stopped =
       status === 'working' ||
       streaming ||
       Boolean(stoppedHere) ||
-      messages.slice(index + 1).some(item => item.error)
+      after.some(item => item.error) ||
+      !after.some(item => item.role === 'assistant')
 
     if (
       !ownerInput ||

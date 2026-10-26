@@ -288,7 +288,29 @@ export function routeEvent(event: GatewayEvent, deps: EventRouterDeps = {}): voi
     case 'hexbot.sections.changed':
       // A dream report landed in the chat; an open view reads it again.
       if (payload.reload === true && typeof payload.id === 'string') {
-        useSections.getState().forgetLive(payload.id)
+        // A recalled message leaves every open view, with what followed it.
+        const sections = useSections.getState()
+
+        const live =
+          sections.liveSessionId[payload.id] ?? sections.byId[payload.id]?.live_session_id
+
+        const recalled = payload.recalled as { input_id?: unknown; row_id?: unknown } | undefined
+
+        const message =
+          live && recalled
+            ? transcripts.bySession[live]?.messages.find(
+                item =>
+                  item.role === 'user' &&
+                  (item.id === recalled.row_id ||
+                    (typeof recalled.input_id === 'string' && item.inputId === recalled.input_id))
+              )
+            : undefined
+
+        if (live && message) {
+          transcripts.recallFrom(live, message.id)
+        }
+
+        sections.forgetLive(payload.id)
       }
 
       effects.refreshSections()

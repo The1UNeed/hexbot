@@ -31,10 +31,10 @@ mod delegation;
 mod identity;
 #[path = "runtime_primary.rs"]
 mod primary;
-#[path = "runtime_review.rs"]
-mod review;
 #[path = "runtime_recall.rs"]
 mod recall;
+#[path = "runtime_review.rs"]
+mod review;
 #[path = "runtime_stop.rs"]
 mod stop;
 use crate::dreaming::checkins;
