@@ -95,7 +95,7 @@ impl Fixture {
             .env("HEXBOT_CAPTURE_DIRECTORY", self.directory.path());
         command
     }
-    fn retain(&mut self, name: &str) {
+    fn retain(&mut self, name: &str) -> u32 {
         let pid: u32 = std::fs::read_to_string(self.directory.path().join(name))
             .unwrap()
             .parse()
@@ -104,6 +104,7 @@ impl Fixture {
         // remains held. Retain a kernel wait handle; never terminate by PID.
         self.processes
             .push(owned(unsafe { OpenProcess(0x00101000, 0, pid) }).unwrap());
+        pid
     }
     fn release_and_join(&mut self) {
         signal(&self.gate);
@@ -158,20 +159,39 @@ fn capture_fixture() {
     if mode == "stability" {
         // A separate exact-test process avoids unrelated suite threads/handles.
         // Its runtime has no blocking pool I/O or time/network driver to warm.
+        let pid = std::process::id();
+        // Keep the original baseline's thread count as the first Toolhelp
+        // call. Observe its handle-count measurement gap separately.
+        let before_runtime_handles = handles();
         let runtime = tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap();
         let before = (handles(), threads());
-        for _ in 0..3 {
-            runtime.block_on(held_writers_once("both"));
+        let after_baseline_threads_handles = handles();
+        for round in 0..3 {
+            let mut observation = StabilityRound::default();
+            runtime.block_on(held_writers_once("both", Some(&mut observation)));
+            let after = (handles(), threads());
+            // Log only after the final sample, without retaining Fixture,
+            // Output or an extra owned handle through that sample.
+            if after != before {
+                eprintln!(
+                    "stability pid={pid} round={round} before_runtime_handles={before_runtime_handles} baseline={before:?} after_baseline_threads_handles={after_baseline_threads_handles} phases={observation:?} after_block_on={after:?}"
+                );
+            }
             assert_eq!(
-                (handles(), threads()),
-                before,
+                after, before,
                 "owned worker/pipe/event/process handles must close"
             );
         }
         drop(runtime); // Must return after all workers joined, with no pool read.
-        assert_eq!((handles(), threads()), before);
+        let after_runtime_drop = (handles(), threads());
+        if after_runtime_drop != before {
+            eprintln!(
+                "stability pid={pid} after_runtime_drop={after_runtime_drop:?} baseline={before:?} before_runtime_handles={before_runtime_handles} after_baseline_threads_handles={after_baseline_threads_handles}"
+            );
+        }
+        assert_eq!(after_runtime_drop, before);
         return;
     }
     let ready = open_event(&std::env::var("HEXBOT_CAPTURE_READY").unwrap());
@@ -318,13 +338,40 @@ async fn native_both_streams_zero_write_and_late_bytes_require_natural_eof() {
         assert!(text.contains(early) && text.contains(late), "{text}");
     }
 }
-async fn held_writers_once(selection: &str) {
+#[derive(Debug, Default)]
+struct StabilityRound {
+    // Pairs are (handles, threads); intermediate fixture resources are live.
+    // Only the original final equality is a success assertion.
+    block_on_entry: (u32, usize),
+    after_fixture: (u32, usize),
+    after_capture: (u32, usize),
+    after_join: (u32, usize),
+    after_drop: (u32, usize),
+    writer_pid: Option<u32>,
+    settlement: Option<Settlement>,
+    status: Option<i32>,
+}
+async fn held_writers_once(selection: &str, mut observation: Option<&mut StabilityRound>) {
+    if let Some(round) = observation.as_deref_mut() {
+        round.block_on_entry = (handles(), threads());
+    }
     let mut fixture = Fixture::new();
+    if let Some(round) = observation.as_deref_mut() {
+        round.after_fixture = (handles(), threads());
+    }
     let mut command = fixture.command("holder");
     command.env("HEXBOT_CAPTURE_STREAM", selection);
     let output = super::super::capture(command, Duration::from_secs(2), CLEANUP).await;
+    if let Some(round) = observation.as_deref_mut() {
+        round.after_capture = (handles(), threads());
+        round.settlement = Some(output.settlement);
+        round.status = output.status;
+    }
     wait(&fixture.ready);
-    fixture.retain("writer");
+    let writer_pid = fixture.retain("writer");
+    if let Some(round) = observation.as_deref_mut() {
+        round.writer_pid = Some(writer_pid);
+    }
     settled(&output);
     assert!(
         output.reaped(),
@@ -343,11 +390,19 @@ async fn held_writers_once(selection: &str) {
     let index = usize::from(selection == "stderr");
     assert!(!output.settlement.natural_eof[index]);
     fixture.release_and_join();
+    if let Some(round) = observation.as_deref_mut() {
+        round.after_join = (handles(), threads());
+    }
+    drop(output);
+    drop(fixture);
+    if let Some(round) = observation {
+        round.after_drop = (handles(), threads());
+    }
 }
 #[tokio::test(flavor = "current_thread")]
 async fn native_root_reaped_held_stdout_stderr_and_both_refuse_without_descendant_kills() {
     for selection in ["stdout", "stderr", "both"] {
-        held_writers_once(selection).await;
+        held_writers_once(selection, None).await;
     }
 }
 #[tokio::test(flavor = "current_thread")]
@@ -417,9 +472,30 @@ async fn native_spawn_193_and_access_5_keep_nochild_cleanup_and_original_causes(
     let directory = tempfile::tempdir().unwrap();
     let image = directory.path().join("invalid.exe");
     std::fs::write(&image, b"this is not a Windows executable image").unwrap();
-    for (path, code) in [(image.as_path(), 193), (directory.path(), 5)] {
+    for (case, path, code) in [
+        ("invalid-image", image.as_path(), 193),
+        ("directory-access", directory.path(), 5),
+    ] {
         let output =
             super::super::capture(tokio::process::Command::new(path), BOUND, CLEANUP).await;
+        let metadata =
+            std::fs::symlink_metadata(path).map(|metadata| (metadata.file_type(), metadata.len()));
+        let failure: Option<String> = output
+            .capture_failure
+            .as_ref()
+            .map(|cause| cause.chars().take(2048).collect());
+        let stdout = String::from_utf8_lossy(&output.stdout[..output.stdout.len().min(512)]);
+        let stderr = String::from_utf8_lossy(&output.stderr[..output.stderr.len().min(512)]);
+        eprintln!(
+            "spawn case={case} expected_os_error={code} path={path:?} absolute={} metadata={metadata:?} capture_failure={failure:?} status={:?} settlement={:?} cleanup_eligible={} complete={} stdout_len={} stdout_prefix={stdout:?} stderr_len={} stderr_prefix={stderr:?}",
+            path.is_absolute(),
+            output.status,
+            output.settlement,
+            output.settlement.cleanup_eligible(),
+            output.settlement.complete(),
+            output.stdout.len(),
+            output.stderr.len(),
+        );
         settled(&output);
         assert_eq!(output.settlement.child, ChildState::NoChild);
         assert!(output.settlement.cleanup_eligible());
