@@ -305,12 +305,24 @@ export function ComputerSheet({
       .catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)))
   }, [connects])
 
-  // Hand the computer back when the card closes.
+  // Hand the computer back when the card closes, once a take-over still on
+  // its way has landed.
   const holding = useRef(false)
   holding.current = user
+  const taking = useRef<Promise<ComputerStatus | undefined>>(Promise.resolve(undefined))
+  const take = () => {
+    setError(null)
+    taking.current = call('hexbot.computer.control', { holder: 'user' }).catch((e: unknown) => {
+      setError(e instanceof Error ? e.message : String(e))
+      return undefined
+    })
+  }
   useEffect(
     () => () => {
-      if (holding.current) void call('hexbot.computer.control', { holder: 'bot' }).catch(() => {})
+      void taking.current.then(taken => {
+        if (holding.current || taken?.control === 'user')
+          void call('hexbot.computer.control', { holder: 'bot' }).catch(() => {})
+      })
     },
     []
   )
@@ -429,7 +441,7 @@ export function ComputerSheet({
       {running ? (
         <Button
           label={user ? 'Give back' : 'Take control'}
-          onPress={() => act('hexbot.computer.control', { holder: user ? 'bot' : 'user' })}
+          onPress={() => (user ? act('hexbot.computer.control', { holder: 'bot' }) : take())}
           testID="computer-control"
           variant={user ? 'primary' : 'secondary'}
           wide

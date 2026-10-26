@@ -26,8 +26,8 @@ export interface ComputerStoreState {
   control: (holder: 'bot' | 'user') => Promise<void>
   /** The last failed request; the daemon's own errors live in the status. */
   error: null | string
-  /** The daemon run (`replay_epoch`) the status was last read from. */
-  read: null | string
+  /** The connection (`connects`) the status was last read on. */
+  read: null | number
   refresh: () => Promise<void>
   status: ComputerStatus | null
   step: (step: 'reset' | 'restart' | 'start' | 'stop') => Promise<void>
@@ -70,10 +70,10 @@ export const useComputer = create<ComputerStoreState>(set => {
     error: null,
     read: null,
     async refresh() {
-      const epoch = useConnection.getState().epoch
+      const connection = useConnection.getState().connects
 
       if (await run(computerStatus)) {
-        set({ read: epoch })
+        set({ read: connection })
       }
     },
     status: null,

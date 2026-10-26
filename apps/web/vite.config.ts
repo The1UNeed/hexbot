@@ -15,8 +15,11 @@ export default defineConfig({
   plugins: [tanstackRouter({ target: 'react' }), react(), tailwindcss()],
   server: {
     // As the daemon does: frames load only from this origin, so a bot's
-    // visual cannot navigate its frame to another site.
-    headers: { 'Content-Security-Policy': "frame-src 'self'" },
+    // visual cannot navigate its frame to another site. The app in dev also
+    // frames the bots' computer from the local daemon's own port.
+    headers: {
+      'Content-Security-Policy': "frame-src 'self' http://127.0.0.1:* http://localhost:*"
+    },
     ...(daemon && {
       proxy: Object.fromEntries(
         ['/api', '/hexbot', '/login', '/auth'].map(prefix => [prefix, { target: daemon, ws: true }])

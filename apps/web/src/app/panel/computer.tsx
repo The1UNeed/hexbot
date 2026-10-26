@@ -48,9 +48,9 @@ const TYPING = new Set(['key', 'type'])
  */
 function useScreen(live: boolean, control: boolean): null | string {
   const target = useConnection(state => state.target)
-  // A restarted daemon forgets the old link; a new one waits for its status,
-  // so a hold the daemon no longer has is not taken again.
-  const epoch = useConnection(state => state.epoch)
+  // After a reconnect the old link may be gone (a restart, a reset meanwhile);
+  // a new one waits for fresh status, so a hold given up is not taken again.
+  const connects = useConnection(state => state.connects)
   const read = useComputer(state => state.read)
   const view = useComputer(state => state.view)
   const [screen, setScreen] = useState<{ expires: number; src: string } | null>(null)
@@ -59,7 +59,7 @@ function useScreen(live: boolean, control: boolean): null | string {
   useEffect(() => {
     setScreen(null)
 
-    if (!live || !target || read !== epoch) {
+    if (!live || !target || read !== connects) {
       return
     }
 
@@ -79,7 +79,7 @@ function useScreen(live: boolean, control: boolean): null | string {
     return () => {
       current = false
     }
-  }, [control, epoch, live, read, renewals, target, view])
+  }, [connects, control, live, read, renewals, target, view])
 
   useEffect(() => {
     if (!screen) {
@@ -318,11 +318,11 @@ function Screen({ bot, onSave }: { bot: Bot; onSave: SaveBot }) {
   const running = status?.state === 'running'
   const src = useScreen(running && enabled && !open, false)
   const actor = useActorName(status?.actor)
-  const epoch = useConnection(state => state.epoch)
+  const connects = useConnection(state => state.connects)
 
   useEffect(() => {
     void refresh()
-  }, [epoch, refresh])
+  }, [connects, refresh])
 
   // Nothing until the daemon answers; an older daemon has no computer.
   if (!status) {

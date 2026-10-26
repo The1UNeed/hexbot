@@ -16,10 +16,10 @@ vi.mock('../lib/api', () => ({
 describe('useComputer', () => {
   beforeEach(() => {
     useComputer.setState({ error: null, read: null, status: null })
-    useConnection.getState().setEpoch('restarted')
+    useConnection.setState({ connects: 3 })
   })
 
-  it('counts a daemon run as read only once its status arrives', async () => {
+  it('counts a connection as read only once its status arrives', async () => {
     vi.mocked(computerStatus).mockRejectedValueOnce(new Error('Not connected'))
     await useComputer.getState().refresh()
     expect(useComputer.getState().read).toBeNull()
@@ -34,7 +34,7 @@ describe('useComputer', () => {
       state: 'running'
     })
     await useComputer.getState().refresh()
-    expect(useComputer.getState().read).toBe('restarted')
+    expect(useComputer.getState().read).toBe(3)
     expect(useComputer.getState().status?.control).toBe('bot')
   })
 })
