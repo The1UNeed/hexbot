@@ -498,6 +498,8 @@ async fn lifecycle_step(home: &Path, step: &str) -> Result<()> {
     }
     let lock = lifecycle(home);
     let _guard = lock.lock().await;
+    // A bot's action finishes first, and no bot acts on the machine meanwhile.
+    let _turn = turns(home).lock_owned().await;
     let name = sandbox(home);
     set_busy(home, Some(busy_word(step)));
     let result = async {
@@ -623,41 +625,53 @@ async fn view(home: &Path, control: bool) -> Result<Value> {
         "--ttl".into(),
         format!("{}s", VIEW_TTL as u64),
     ];
-    if !control {
-        args.push("--view-only".into());
-    }
-    let out = cua(
-        &cfg,
-        &env,
-        &args.iter().map(String::as_str).collect::<Vec<_>>(),
-        30,
-    )
-    .await?;
-    if out.code == 3 {
-        return Err(Error::new(4209, "The computer is off."));
-    }
-    if out.code != 0 {
-        return Err(failure(
-            &out.stderr,
-            "Could not open the computer's screen.",
-        ));
-    }
-    let link = parse(&out.stdout)?;
-    let url = url::Url::parse(link["url"].as_str().unwrap_or(""))
-        .map_err(|_| Error::new(4211, "Cua returned no screen link."))?;
-    let upstream = url.origin().ascii_serialization();
-    if !matches!(
-        url.host_str(),
-        Some("127.0.0.1" | "localhost" | "::1" | "[::1]")
-    ) {
-        return Err(Error::new(
-            4211,
-            "The computer's screen is not on this machine.",
-        ));
-    }
     if control {
         with(home, |c| c.user_control = true);
         changed(home);
+    } else {
+        args.push("--view-only".into());
+    }
+    // Taking control is what the user asked for; a link that fails hands it back.
+    let made = async {
+        let out = cua(
+            &cfg,
+            &env,
+            &args.iter().map(String::as_str).collect::<Vec<_>>(),
+            30,
+        )
+        .await?;
+        if out.code == 3 {
+            return Err(Error::new(4209, "The computer is off."));
+        }
+        if out.code != 0 {
+            return Err(failure(
+                &out.stderr,
+                "Could not open the computer's screen.",
+            ));
+        }
+        let link = parse(&out.stdout)?;
+        let url = url::Url::parse(link["url"].as_str().unwrap_or(""))
+            .map_err(|_| Error::new(4211, "Cua returned no screen link."))?;
+        if !matches!(
+            url.host_str(),
+            Some("127.0.0.1" | "localhost" | "::1" | "[::1]")
+        ) {
+            return Err(Error::new(
+                4211,
+                "The computer's screen is not on this machine.",
+            ));
+        }
+        Ok(url)
+    }
+    .await;
+    if control && made.is_err() {
+        with(home, |c| c.user_control = false);
+        changed(home);
+    }
+    let url = made?;
+    let upstream = url.origin().ascii_serialization();
+    if control && !with(home, |c| c.user_control) {
+        return Err(Error::new(4209, "The computer went back to your bots."));
     }
     let token = format!("{}{}", common::id(), common::id());
     let expires = common::now() + VIEW_TTL;
@@ -719,7 +733,7 @@ pub async fn proxy(token: String, request: Request) -> Response {
         .is_some_and(|v| v.eq_ignore_ascii_case("websocket"));
     if upgrade {
         return match WebSocketUpgrade::from_request_parts(&mut parts, &()).await {
-            Ok(ws) => websocket(ws, target, &parts.headers).await,
+            Ok(ws) => websocket(ws, target, &parts.headers, token).await,
             Err(rejection) => rejection.into_response(),
         };
     }
@@ -842,7 +856,12 @@ fn embeddable(policy: &HeaderValue) -> HeaderValue {
         .unwrap_or_else(|_| HeaderValue::from_static("frame-ancestors 'self'"))
 }
 
-async fn websocket(ws: WebSocketUpgrade, target: String, headers: &HeaderMap) -> Response {
+async fn websocket(
+    ws: WebSocketUpgrade,
+    target: String,
+    headers: &HeaderMap,
+    token: String,
+) -> Response {
     let target = if let Some(rest) = target.strip_prefix("https://") {
         format!("wss://{rest}")
     } else {
@@ -874,13 +893,14 @@ async fn websocket(ws: WebSocketUpgrade, target: String, headers: &HeaderMap) ->
     };
     ws.max_message_size(WS_LIMIT)
         .max_frame_size(WS_LIMIT)
-        .on_upgrade(move |client| pump(client, upstream))
+        .on_upgrade(move |client| pump(client, upstream, token))
 }
 async fn pump(
     client: ws::WebSocket,
     upstream: tokio_tungstenite::WebSocketStream<
         tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
     >,
+    token: String,
 ) {
     use tungstenite::Message as Up;
     let (mut client_tx, mut client_rx) = client.split();
@@ -916,9 +936,24 @@ async fn pump(
         }
         let _ = client_tx.close().await;
     };
+    // Giving the computer back, or the link expiring, ends an open screen too.
+    let revoked = async {
+        loop {
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            let live = views()
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .get(&token)
+                .is_some_and(|v| v.expires > common::now());
+            if !live {
+                break;
+            }
+        }
+    };
     tokio::select! {
         _ = outbound => {},
         _ = inbound => {},
+        _ = revoked => {},
     }
 }
 
@@ -946,7 +981,7 @@ pub fn descriptor() -> Value {
                 "amount": { "type": "integer", "minimum": 1, "maximum": 50 },
                 "url": { "type": "string", "description": "URL or file path for open" },
                 "app": { "type": "string", "description": "Application for launch, such as firefox" },
-                "command": { "type": "string", "description": "Shell command for shell; runs on that computer, 120 s limit" },
+                "command": { "type": "string", "description": "Shell command for shell; runs on that computer, 30 s limit; start longer jobs in the background" },
                 "seconds": { "type": "number", "minimum": 0, "maximum": 30 },
                 "capture_after": { "type": "boolean" }
             },

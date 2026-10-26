@@ -820,6 +820,87 @@ async fn computer_screen_is_served_through_the_daemon_and_embeddable() {
     assert_eq!(missing.status(), 404);
     server.abort();
 }
+#[cfg(unix)]
+#[tokio::test]
+async fn giving_the_computer_back_closes_an_open_control_screen() {
+    use axum::{
+        extract::{Path as UrlPath, Request, WebSocketUpgrade, ws::Message},
+        routing::{any, get},
+    };
+    use futures_util::{SinkExt, StreamExt};
+    use hexbot_core::computers;
+    let h = home(json!({"tools":{"enabled_toolsets":["computer_use"]}}));
+    let cua = script(h.path(), "cua-test", FAKE_CUA);
+    std::fs::write(
+        h.path().join(".env"),
+        format!("HEXBOT_CUA_CMD={}\n", cua.display()),
+    )
+    .unwrap();
+    // The computer's screen: a socket that answers whatever it is sent.
+    let viewer = Router::new().route(
+        "/media",
+        get(|ws: WebSocketUpgrade| async {
+            ws.on_upgrade(|mut socket| async move {
+                while let Some(Ok(Message::Text(text))) = socket.recv().await {
+                    if socket.send(Message::Text(text)).await.is_err() {
+                        break;
+                    }
+                }
+            })
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let upstream = tokio::spawn(async move { axum::serve(listener, viewer).await.unwrap() });
+    std::fs::write(h.path().join("upstream.txt"), format!("http://{address}")).unwrap();
+    let daemon = Router::new().route(
+        "/hexbot/computer/{token}/{*rest}",
+        any(
+            |UrlPath((token, _)): UrlPath<(String, String)>, request: Request| {
+                computers::proxy(token, request)
+            },
+        ),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let served = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move { axum::serve(listener, daemon).await.unwrap() });
+    let view = computers::call(h.path(), "hexbot.computer.view", &json!({"control": true}))
+        .await
+        .unwrap()
+        .unwrap();
+    let location = view["path"].as_str().unwrap().split_once('#').unwrap().0;
+    let media = location.strip_suffix("viewer/").unwrap();
+    let (mut socket, _) = tokio_tungstenite::connect_async(format!("ws://{served}{media}media"))
+        .await
+        .unwrap();
+    socket.send("click".into()).await.unwrap();
+    assert_eq!(
+        socket.next().await.unwrap().unwrap().into_text().unwrap(),
+        "click"
+    );
+    computers::call(
+        h.path(),
+        "hexbot.computer.control",
+        &json!({"holder": "bot"}),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    // The bots have it again, so the screen that could type is shut.
+    let ended = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            match socket.next().await {
+                None | Some(Err(_)) => break,
+                Some(Ok(message)) if message.is_close() => break,
+                Some(Ok(_)) => {}
+            }
+        }
+    })
+    .await;
+    assert!(ended.is_ok(), "the control screen stayed open");
+    server.abort();
+    upstream.abort();
+}
 #[tokio::test]
 async fn keenable_mistral_and_krea_use_selected_vendor_contracts() {
     use base64::Engine;

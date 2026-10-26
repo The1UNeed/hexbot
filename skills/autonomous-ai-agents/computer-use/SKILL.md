@@ -55,7 +55,7 @@ has focus before you type anything long.
 - `open` with a URL or a file path opens it in the right app.
 - `launch` starts an app by name, such as `firefox` or `xfce4-terminal`.
 - `windows` lists open windows when the screen is cluttered.
-- `shell` runs a command on that computer (120 s limit): install a package,
+- `shell` runs a command on that computer (30 s limit): install a package,
   download a file, read what a page saved. It is faster than driving a
   terminal window, and it never touches the user's computer.
 - `wait` pauses up to 30 seconds while a page loads.

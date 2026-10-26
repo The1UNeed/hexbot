@@ -260,6 +260,8 @@ export interface ComputerSheetProps {
   view: (control: boolean) => Promise<{ path: string }>
   /** Gives `bot` Computer use. */
   onEnable?: () => void
+  /** Moves on at every reconnect; a restarted daemon forgets the old link. */
+  connects: number
 }
 
 /**
@@ -271,6 +273,7 @@ export function ComputerSheet({
   bot,
   bots,
   call,
+  connects,
   faceOf,
   onEnable,
   origin,
@@ -294,7 +297,7 @@ export function ComputerSheet({
 
   useEffect(() => {
     act('hexbot.computer.status')
-  }, [])
+  }, [connects])
 
   // Hand the computer back when the card closes.
   const holding = useRef(false)
@@ -325,7 +328,7 @@ export function ComputerSheet({
       current = false
       if (renew) clearTimeout(renew)
     }
-  }, [running, origin, user, enabled])
+  }, [running, origin, user, enabled, connects])
 
   const byName = new Map(bots.map(b => [b.name, b]))
   const faceFor = (name: string) => {

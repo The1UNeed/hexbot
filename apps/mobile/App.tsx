@@ -1159,6 +1159,7 @@ function MobileApp() {
             bot={route?.kind === 'section' ? (botByName(route.bot.name) ?? route.bot) : undefined}
             bots={mobile.bots}
             call={mobile.computerCall}
+            connects={mobile.connects}
             faceOf={faceOf}
             onEnable={
               route?.kind === 'section'

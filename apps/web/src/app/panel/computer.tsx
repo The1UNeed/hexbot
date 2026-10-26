@@ -48,6 +48,8 @@ const TYPING = new Set(['key', 'type'])
  */
 function useScreen(live: boolean, control: boolean): null | string {
   const target = useConnection(state => state.target)
+  // A restarted daemon forgets the old link.
+  const epoch = useConnection(state => state.epoch)
   const view = useComputer(state => state.view)
   const [screen, setScreen] = useState<{ expires: number; src: string } | null>(null)
   const [renewals, setRenewals] = useState(0)
@@ -75,7 +77,7 @@ function useScreen(live: boolean, control: boolean): null | string {
     return () => {
       current = false
     }
-  }, [control, live, renewals, target, view])
+  }, [control, epoch, live, renewals, target, view])
 
   useEffect(() => {
     if (!screen) {
@@ -310,10 +312,11 @@ function Screen({ bot, onSave }: { bot: Bot; onSave: SaveBot }) {
   const running = status?.state === 'running'
   const src = useScreen(running && enabled && !open, false)
   const actor = useActorName(status?.actor)
+  const epoch = useConnection(state => state.epoch)
 
   useEffect(() => {
     void refresh()
-  }, [refresh])
+  }, [epoch, refresh])
 
   // Nothing until the daemon answers; an older daemon has no computer.
   if (!status) {

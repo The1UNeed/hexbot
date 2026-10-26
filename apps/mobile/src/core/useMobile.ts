@@ -60,6 +60,8 @@ export function useMobile() {
   const [settings, setSettings] = useState<Settings | null>(null)
   /** The bots' shared computer, once something shows it; events keep it current. */
   const [computer, setComputer] = useState<ComputerStatus | null>(null)
+  /** Counts connections, so what a daemon forgets on restart is asked for again. */
+  const [connects, setConnects] = useState(0)
   const [user, setUser] = useState<CurrentUser | null>(null)
   const [route, setRoute] = useState<ChatRoute | null>(null)
   const [chat, setChat] = useState(emptyChat)
@@ -455,6 +457,7 @@ export function useMobile() {
         },
         async () => {
           if (session.current !== next || !mounted.current) return
+          setConnects(count => count + 1)
           // A reconnect can reach an upgraded daemon at the same address.
           cancelNavigation()
           const generation = navigation.current
@@ -780,6 +783,7 @@ export function useMobile() {
     answer,
     liveSessionId: () => liveId.current,
     computer,
+    connects,
     /** Read the computer's status, or run a `hexbot.computer.*` method and keep what it returns. */
     computerCall: async (method = 'hexbot.computer.status', params: Record<string, unknown> = {}) => {
       const result = await rpc<ComputerStatus>(method, params)
