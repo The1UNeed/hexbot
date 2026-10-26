@@ -1,6 +1,6 @@
 import { Ionicons } from '@expo/vector-icons'
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { ActivityIndicator, BackHandler, Platform, ScrollView, View } from 'react-native'
+import { ActivityIndicator, BackHandler, Platform, View } from 'react-native'
 import { SafeAreaProvider } from 'react-native-safe-area-context'
 import { StatusBar } from 'expo-status-bar'
 import * as ExpoLinking from 'expo-linking'
@@ -30,8 +30,7 @@ import {
   type ConversationSummary,
   type DaemonArea,
   type DaemonEntry,
-  type FaceSource,
-  type ToolActivity
+  type FaceSource
 } from './src/screens'
 import {
   Banner,
@@ -41,7 +40,6 @@ import {
   Group,
   Layer,
   LayerRoot,
-  mono,
   Row,
   Text,
   ThemeProvider,
@@ -51,7 +49,6 @@ import { MarkdownText } from './src/MarkdownText'
 import { VisualFrame } from './src/VisualFrame'
 import { visualDocument } from './src/core/visual'
 import { parseArgs } from './src/core/chat'
-import { activityLabel, readableResult, resultLine, toolLabel } from './src/core/tools'
 import { Management, type Panel } from './src/Management'
 import { useMobile } from './src/core/useMobile'
 import { clearTapped, useTappedSection } from './src/core/tapped'
@@ -59,7 +56,7 @@ import { chatPreview, pulseTarget, purposeOf } from './src/core/routes'
 import { CONNECT_ORIGIN, parseConnectCallback } from './src/core/links'
 import { clearConnectSession, loadConnectSession, saveConnectSession } from './src/core/storage'
 import { connectGrant, request, RevokedError } from './src/core/transport'
-import type { Bot, ChatTool, ConnectDaemon, Room, Section } from './src/core/types'
+import type { Bot, ConnectDaemon, Room, Section } from './src/core/types'
 WebBrowser.maybeCompleteAuthSession()
 const messageOf = (e: unknown) => (e instanceof Error ? e.message : String(e))
 const ms = (seconds: number | null | undefined) => (seconds == null ? undefined : seconds * 1000)
@@ -145,7 +142,6 @@ function MobileApp() {
   const [connectPending, setConnectPending] = useState(false)
   const [connectSession, setConnectSession] = useState<string | null>(null)
   const [visual, setVisual] = useState<{ title: string; html: string } | null>(null)
-  const [tool, setTool] = useState<ToolActivity | null>(null)
   const [draft, setDraft] = useState('')
   const [attachments, setAttachments] = useState<AttachmentView[]>([])
   const [question, setQuestion] = useState<{
@@ -251,7 +247,6 @@ function MobileApp() {
   }, [nativeUrl, callback])
   useEffect(() => {
     setVisual(null)
-    setTool(null)
     setDraft('')
     setAttachments([])
     attachmentData.current.clear()
@@ -604,26 +599,12 @@ function MobileApp() {
           ]
         }
       ]
-  const toolView = (t: ChatTool): ToolActivity => ({
-    id: t.id,
-    name: t.name,
-    label: toolLabel(t.name, t.status === 'running'),
-    detail: resultLine(t.detail).slice(0, 200),
-    input:
-      t.args == null || t.name === 'hexbot_show_html'
-        ? null
-        : (typeof t.args === 'string' ? t.args : JSON.stringify(t.args, null, 2)).slice(0, 4000),
-    output: readableResult(t.detail).slice(0, 12000),
-    status: t.status
-  })
   const visuals = new Map<string, { title: string; html: string }>()
   const items: ChatItem[] = mobile.chat.messages.flatMap((m): ChatItem[] =>
     m.role === 'system'
       ? [{ kind: 'notice', id: m.id, text: m.text, tone: m.tone }]
       : [
-          ...(m.tools?.length
-            ? [{ kind: 'tools' as const, id: `tools-${m.id}`, tools: m.tools.map(toolView) }]
-            : []),
+          // A conversation shows what bots say and the visuals they draw, not their steps.
           ...(m.tools ?? [])
             .filter(t => t.name === 'hexbot_show_html' && t.status === 'ok')
             .flatMap((t, i) => {
@@ -666,8 +647,6 @@ function MobileApp() {
   for (const turn of liveTurns) {
     const bot = botByName(turn.bot)
     const author = bot ? faceOf(bot) : { name: turn.bot }
-    if (turn.tools.length)
-      items.push({ kind: 'tools', id: `tools-${turn.sessionId}`, tools: turn.tools.map(toolView) })
     turn.interim.forEach((text, i) =>
       items.push({
         kind: 'message',
@@ -791,10 +770,7 @@ function MobileApp() {
     items,
     renderMessageText,
     busy: mobile.chat.busy,
-    waiting:
-      mobile.chat.busy && !mobile.chat.streaming
-        ? { label: activityLabel(mobile.chat.activity) || 'Working' }
-        : undefined,
+    waiting: mobile.chat.busy && !mobile.chat.streaming ? { label: 'Working' } : undefined,
     onSend: send,
     sendWhileBusy: route?.kind === 'room' || mobile.chat.questions.length > 0,
     draft,
@@ -803,7 +779,6 @@ function MobileApp() {
     attachments,
     onRemoveAttachment: removeAttachment,
     onApprove: (id: string, choice: ApprovalChoice) => act(() => mobile.approval(id, choice)),
-    onOpenTool: setTool,
     onOpenVisual: (id: string) => setVisual(visuals.get(id) ?? null),
     sendDisabledReason: uploading
       ? 'Sending attachments'
@@ -1154,40 +1129,6 @@ function MobileApp() {
               '--font-mono': 'monospace'
             })}
           />
-        ) : null}
-      </Layer>
-      <Layer
-        visible={!!tool}
-        onClose={() => setTool(null)}
-        title={tool?.label ?? 'Step'}
-        testID="tool-sheet"
-      >
-        {tool ? (
-          <Form>
-            <Text tone={tool.status === 'error' ? 'danger' : 'muted'} variant="footnote">
-              {tool.status === 'running'
-                ? 'Still running'
-                : tool.status === 'error'
-                  ? 'This step failed'
-                  : `Finished, ${tool.name}`}
-            </Text>
-            {[
-              [
-                'Result',
-                tool.output ||
-                  (tool.status === 'running' ? 'Waiting for the result.' : 'No output.')
-              ],
-              ...(tool.input ? [['Input', tool.input]] : [])
-            ].map(([title, body]) => (
-              <Group key={title} title={title}>
-                <ScrollView horizontal contentContainerStyle={{ padding: 14 }}>
-                  <Text selectable style={{ fontFamily: mono }} variant="footnote">
-                    {body}
-                  </Text>
-                </ScrollView>
-              </Group>
-            ))}
-          </Form>
         ) : null}
       </Layer>
       <Management

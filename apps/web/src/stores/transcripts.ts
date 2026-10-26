@@ -32,6 +32,7 @@ import type {
   SessionInfo,
   StatusLine,
   ToolCall,
+  ToolCallStatus,
   Usage
 } from '../lib/types'
 
@@ -526,6 +527,22 @@ function closePart(message: Message): Message {
       }
     : message
 }
+
+/**
+ * When the turn ends no step still runs, including one on a message an
+ * approval card closed. A step left running would keep its message working.
+ */
+const stopSteps = <T extends Message>(messages: T[], status: ToolCallStatus): T[] =>
+  messages.map(message =>
+    message.toolCalls.some(call => call.status === 'running')
+      ? {
+          ...message,
+          toolCalls: message.toolCalls.map(call =>
+            call.status === 'running' ? { ...call, status } : call
+          )
+        }
+      : message
+  )
 
 /**
  * A card that blocks the turn (a question, an approval) ends the bubble in
@@ -1079,6 +1096,7 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
           // The turn ended right after the card: the closed bubble already holds it all.
           return {
             ...transcript,
+            messages: stopSteps(transcript.messages, 'ok'),
             turnActive: false,
             turnPrefix: undefined,
             usage: payload.usage ?? transcript.usage
@@ -1114,6 +1132,7 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
         return {
           ...next,
           checking: undefined,
+          messages: stopSteps(next.messages, 'ok'),
           turnPrefix: undefined,
           error: payload.error ?? null,
           status: null,
@@ -1411,7 +1430,7 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
             )
           : -1
 
-        const messages = transcript.messages.map(item =>
+        const messages = stopSteps(transcript.messages, 'error').map(item =>
           item.id === transcript.streamingMessageId ? { ...item, streaming: false } : item
         )
 

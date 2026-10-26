@@ -211,6 +211,32 @@ describe('transcript reducer', () => {
     expect(useTranscripts.getState().bySession.s!.messages[0]?.error).toBe('Still refused')
   })
 
+  it('stops every running step when the turn ends', () => {
+    const actions = useTranscripts.getState()
+
+    const running = () =>
+      useTranscripts
+        .getState()
+        .bySession.s!.messages.flatMap(message => message.toolCalls)
+        .filter(call => call.status === 'running')
+
+    // A card closes the message while its step still runs, then the turn fails.
+    actions.messageStart('s')
+    actions.toolStart('s', { name: 'terminal', tool_id: 'a' })
+    actions.approvalRequest('s', { request_id: 'a' })
+    actions.messageStart('s')
+    actions.toolStart('s', { name: 'terminal', tool_id: 'b' })
+    actions.errorEvent('s', 'Pi stopped')
+    expect(running()).toEqual([])
+
+    // A turn that ends right after a card settles the closed message too.
+    actions.messageStart('s')
+    actions.messageDelta('s', 'Run it?')
+    actions.toolStart('s', { name: 'terminal', tool_id: 'c' })
+    actions.approvalRequest('s', { request_id: 'c' })
+    actions.messageComplete('s')
+    expect(running()).toEqual([])
+  })
   it('keeps the connector on an error row', () => {
     const actions = useTranscripts.getState()
     actions.messageDelta('s', 'working')
