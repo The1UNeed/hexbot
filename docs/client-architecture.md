@@ -45,6 +45,12 @@ differs from the stored one, drop live ids and reopen sections lazily.
 A 401 on ws-ticket means the device was revoked: clear the target and show
 the connect screen.
 
+Without a saved target, a remembered chat or a direct app-page link returns
+to connection setup before mounting that page. Full offers the local daemon
+or another device; Client and browsers open the connect screen. Remembered
+chat selection stays intact for reconnection. Revoked devices always return
+to pairing, including Full.
+
 While the status is `reconnecting` (or `offline` on an app page)
 `src/app/connection-lost.tsx` locks the window: the page underneath is
 `inert` behind a full-window overlay with "Reconnect now" and "Connect to
@@ -152,7 +158,7 @@ if another report invalidates the snapshot before it arrives.
 Roster selections and Dream log entries resolve the daemon's canonical chat
 on activation. Older daemons use the same explicit chooser and persist a pick
 before opening it. Later navigation, unmount, or a daemon change cancels the
-lookup before any further writes or navigation. Mobile omits a bot card's quote
+lookup before any further writes or navigation. Mobile omits a chat row's preview
 when multiple preserved owner conversations make its source uncertain.
 
 ## Event mapping

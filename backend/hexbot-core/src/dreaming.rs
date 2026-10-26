@@ -1546,15 +1546,6 @@ impl Dreaming {
                     self.events
                         .emit(owner, None, "error", json!({"message":error.message}));
                 }
-                if room.is_none()
-                    && !record["summary"].as_str().unwrap_or("").is_empty()
-                    && let Err(error) = self
-                        .post_summary(owner, bot, record["summary"].as_str().unwrap_or(""))
-                        .await
-                {
-                    self.events
-                        .emit(owner, None, "error", json!({"message":error.message}));
-                }
                 self.running.lock().unwrap().remove(&format!("dream:{bot}"));
                 self.events.emit(
                     owner,
@@ -1569,28 +1560,6 @@ impl Dreaming {
                     .emit(owner, None, "error", json!({"message":error.message}));
             }
         }
-    }
-    /// The report goes into the bot's chat, marked so later dreams skip it.
-    /// It is shown, not said: the bot's conversation does not include it.
-    async fn post_summary(&self, owner: &str, bot: &str, output: &str) -> Result<()> {
-        let chat = crate::catalog::chat_section(&self.home, owner, bot)?;
-        let section = common::required(&chat, "id")?;
-        // Open clients read the chat again now, or when a running turn settles.
-        let reload = self.runtime.append_outside_turn(
-            section,
-            json!({"role":"assistant","text":output,"dream":true,"timestamp":common::now()}),
-        )?;
-        db::open(&self.home)?.execute(
-            "UPDATE sections SET updated_at=? WHERE id=?",
-            params![common::now(), section],
-        )?;
-        self.events.emit(
-            owner,
-            None,
-            "hexbot.sections.changed",
-            json!({"id":section,"bot":bot,"reload":reload}),
-        );
-        Ok(())
     }
     pub async fn tick_at(self: &Arc<Self>, now: f64) -> Result<()> {
         if *self.stop.borrow() {

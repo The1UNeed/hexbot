@@ -12,6 +12,8 @@ Open Hexbot and choose **Run on this machine**. Let setup finish installing the 
 
 On another computer, choose **Connect to a daemon** and use its address and pairing code. You can also choose **Sign in with Hex Connect** if the daemon is registered. The daemon computer must stay awake and running for either connection to work.
 
+If Hexbot no longer has a saved connection, it opens connection setup before returning to your chat. In Full, choose **On this computer** to reconnect to the local daemon, or **On another device** to pair elsewhere. Client and browsers open the connect screen. Your bots and chats stay on the daemon.
+
 ## 2. Tell bots about yourself
 
 Setup first asks for your name, what you do, and how bots should speak to you. Your name is what rooms show on your messages; all three become **About you**, one text that every bot you own reads. Edit it later in Settings, Memory. Only you can write this text.

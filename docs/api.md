@@ -252,7 +252,10 @@ when it overrides the default.
 
 `status` is `idle`, `working`, `needs_you`, or `stopped` (priority in that
 reverse order), folded by the daemon from live session state, room turns,
-room `waiting.human` events, and open incidents. `status_detail` is
+room `waiting.human` events, and open incidents. Only a bot's chat and its
+room sessions make it `working`; check-ins, scheduled jobs, dreams, CLI runs
+and subagents never do, though one waiting on the user still makes it
+`needs_you`. `status_detail` is
 `{text, section_id, room_id, session_id, since, action}` where `action` is
 null, `{kind: "fix_connector", connector}`, or `{kind: "retry"}`. A room's
 failed turns count only while the bot is still in that room; adding it back
@@ -1184,7 +1187,8 @@ devices, and removes the invite and update methods.
 
 `hexbot.bots.changed {name}`, `hexbot.sections.changed {id, bot}`,
 `hexbot.memory.user.changed {}`, `hexbot.network.changed {}`. Session-less,
-broadcast to every connection. When a dream report lands in a chat,
+broadcast to every connection. When a message lands in a chat outside its
+turns (earlier versions did this for dream reports; dreams now post nothing),
 `hexbot.sections.changed` also carries `reload`: true when a client showing
 the chat should open it again to read the report. The report never stops the
 chat's process. While a turn runs, `reload` is false and a second

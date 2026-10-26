@@ -90,18 +90,29 @@ export async function botChat(
   return opened
 }
 /**
- * The room Rooms shows: the picked one while it is open or not archived,
- * otherwise the most recent room that is not archived. An open room the list
- * does not have yet, such as one just created, stays.
+ * Where Pulse opens a busy bot: the room it reports while that room is not
+ * archived, else the conversation between bots or Check-ins it reports while
+ * that section is the bot's and runs the reported session. Otherwise no
+ * section, so the bot's own chat opens.
  */
-export function shownRoom(rooms: Room[], picked: string | null, open: string | null) {
-  if (picked && picked === open) return picked
-  const room = rooms.find(r => r.id === picked)
-  if (room && !room.archived_at) return room.id
-  return (
-    rooms.filter(r => !r.archived_at).sort((a, b) => b.last_activity_at - a.last_activity_at)[0]
-      ?.id ?? null
+export function pulseTarget(
+  bot: Bot,
+  rooms: Room[],
+  sections: Section[]
+): { room: Room } | { section?: Section } {
+  const detail = bot.status_detail
+  const room = detail?.room_id
+    ? rooms.find(r => r.id === detail.room_id && !r.archived_at)
+    : undefined
+  if (room) return { room }
+  const section = sections.find(
+    s =>
+      s.id === detail?.section_id &&
+      s.bot === bot.name &&
+      (s.peer_bot || purposeOf(s, sections)) &&
+      (!detail.session_id || !s.live_session_id || detail.session_id === s.live_session_id)
   )
+  return { section }
 }
 /** Whether this room is the open conversation. */
 export const isOpenRoom = (route: ChatRoute | null, id: string) =>

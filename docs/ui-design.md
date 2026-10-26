@@ -126,24 +126,9 @@ the roster slides in as a drawer.
 - Header: nothing but floating glass over the transcript, which scrolls
   under it. In the centre, a pill with the bot's face (status dot on it,
   expression matching the dot) and its name; clicking it opens or closes the side
-  panel. Top right, the context meter and, while the panel is closed, the
-  panel toggle. A chat has no title, rename, archive or delete. The
-  model is chosen in Bot settings, Model, not in the chat.
-- Context meter: a glass pill with a 28 px
-  hairline bar and "Context 62%" in meta type, muted; a tick on the bar marks
-  where older messages get summarised. Hover or focus (the pill is in the tab
-  order) for the plain numbers ("41k of 200k tokens. Older messages are
-  summarised above 184k tokens.") in a solid tooltip, so the conversation
-  never shows through it. Within 15% of that point the pill turns warning and the tooltip
-  says summarising starts soon; while Hexbot summarises it reads "Summarising", and
-  right after, until the next reply is measured, a neutral "Context" with
-  "Recounting after the summary." Nothing is drawn until the daemon has
-  measured the section (`hexbot.sections.open`, `session.usage`), and nothing
-  in rooms. The bar never animates; it is redrawn when a turn ends, a
-  summary starts or ends, or the model changes. The conversation column is
-  a container: under 54rem the word "Context" goes, and the centred title
-  truncates before it can reach the pill. The context window is never called
-  memory.
+  panel. Top right, while the panel is closed, the panel toggle. A chat has
+  no title, rename, archive or delete. The model is chosen in Bot settings,
+  Model, not in the chat.
 - Transcript: a centred column capped at 52rem. Bot messages left-aligned in
   soft grey bubbles washed with the bot's face colour (14% light, 20% dark;
   plain grey for an uploaded photo), human messages right-aligned in inverse

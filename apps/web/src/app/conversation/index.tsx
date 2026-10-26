@@ -66,7 +66,6 @@ import { useUi } from '../../stores/ui'
 import { AskingRow } from './asking-row'
 import { ClarifyCard } from './clarify-card'
 import { composerFieldClass, ComposerShell } from './composer'
-import { ContextMeter } from './context-meter'
 import { MemoryMarks } from './memory-marks'
 import { RoomConversation } from './room'
 import { liveMood } from './steps'
@@ -1790,7 +1789,6 @@ function BotConversation() {
         <ConnectedToolsNotice sectionId={params.section ?? ''} />
       </header>
       <div className="hex-no-drag absolute top-2.5 right-3 z-30 flex items-center gap-1.5">
-        <ContextMeter context={transcript?.context} />
         {panelOpen ? null : (
           <button
             aria-label="Toggle profile panel"

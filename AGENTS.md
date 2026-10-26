@@ -54,7 +54,7 @@ Use these words consistently in code, UI copy, docs, and commit messages.
 - **Track**: the channel an installed app takes updates from, Stable or Nightly. Defaults to the channel the build came from; the user switches it in Settings, Updates.
 - **Update server**: `updates.hexbot.app`, a Cloudflare R2 bucket holding every package, the electron-updater feed files, the native daemon archives, and the installers with their `install/<track>.json` manifests. Written only by `release.yml`.
 - **Bot**: a named agent with its own soul, model, skills, and memory. One bot profile with independent Pi conversations managed by the daemon.
-- **Chat**: your one ongoing conversation with a bot, like a contact in a messaging app. A bot has exactly one chat with you; it never ends, and summarising older messages keeps it going. There is no new chat, archive, or delete; deleting the bot deletes it. Its dream reports appear in it.
+- **Chat**: your one ongoing conversation with a bot, like a contact in a messaging app. A bot has exactly one chat with you; it never ends, and summarising older messages keeps it going. There is no new chat, archive, or delete; deleting the bot deletes it. Dreams run out of sight and post nothing in it; reports an earlier version posted stay.
 - **Primary bot**: the one bot that looks after the others, created by onboarding as **HexBot** (handle `hexbot`, which no other bot may take). In its own chat it can create, change, and delete bots, manage rooms, schedule jobs for any bot, and change settings; deleting anything and changing settings, approval modes, or working folders always ask, even in Bypass. It cannot be deleted. An install from before it adds HexBot or promotes a bot once. Internal column `bots.is_primary`. UI copy says "primary bot", since the user may rename HexBot.
 - **Check-in**: the primary bot looking at what is going on, on its own: regularly during the user's hours (every hour, 08:00 to 22:00 by default) and at **wake-ups** it sets for itself. It messages the user only when something needs them, in its **Check-ins** conversation, which is not its chat, and as a notification on their app, browser, and phone. A check-in runs unattended like a scheduled job and only reads. Internal names `checkins`, `hexbot_notify`, `hexbot_wakeups`.
 - **Section** = **conversation** = **thread**: the daemon's name for one persistent Pi session with its own context window: a bot's chat, a room conversation, the primary bot's Check-ins, or a thread in which one bot asks another for help. UI copy says chat, room, or conversation, not section.
@@ -188,7 +188,14 @@ A change is done when it works in every place the feature appears:
 - **Install options**: Full, Client, and Headless. A daemon feature that a
   user sets up in the app must also be reachable from a paired app or the
   `hexbot` CLI when no app runs on the daemon's computer.
-- **Clients**: the Electron app and the browser bundle served by the daemon.
+- **Clients**: the Electron app, the browser bundle served by the daemon,
+  and the mobile app in `apps/mobile` (iOS and Android). A change a user can
+  see or use in `apps/web` lands in `apps/mobile` in the same PR, or the PR
+  says why it is desktop-only. The mobile app reuses the wire types in
+  `apps/web/src/lib/types.ts` and talks to the daemon through
+  `apps/mobile/src/core/useMobile.ts`; it shares no components, so port the
+  behaviour, not the markup. Run `pnpm mobile:check`, and the mobile smoke
+  test when navigation or a flow changes (`docs/testing.md`, "Mobile").
 - **Connection modes**: LAN pairing, Tailscale, and Connect.
 - **Reverse states**: a toggle needs both directions; archive needs
   unarchive; a revoked device needs to land back on the connect screen.
@@ -247,6 +254,12 @@ exercise the graph.
   animations; the bot faces are the one place motion is allowed.
 - Copy is short, concrete, and uses glossary words. No "seamless", no
   exclamation marks.
+- The mobile app is a messaging app. One list holds every bot's chat, every
+  room and Check-ins, newest first, with the primary bot pinned. Settings
+  sit behind your initials at the top left, new bots and rooms behind +,
+  and every bot's profile, scheduled jobs and all rooms behind the grid
+  button next to Search. There are no tabs. A new feature finds its place
+  in one of these; it does not add a tab or a home-screen section.
 
 ## Cursor Cloud specific instructions
 
