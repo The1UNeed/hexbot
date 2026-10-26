@@ -40,8 +40,12 @@ export const useComputer = create<ComputerStoreState>(set => {
       set({ error: null })
       const result = await request()
       set(state => ({ status: { ...state.status, ...result } }))
+
+      return true
     } catch (error) {
       set({ error: message(error) })
+
+      return false
     }
   }
 
@@ -49,17 +53,25 @@ export const useComputer = create<ComputerStoreState>(set => {
     // An event before the first load has no availability or size yet.
     apply: status =>
       set(state => (state.status ? { status: { ...state.status, ...status } } : state)),
-    configure: size => run(() => computerConfigure(size)),
-    control: holder => run(() => computerControl(holder)),
+    async configure(size) {
+      await run(() => computerConfigure(size))
+    },
+    async control(holder) {
+      await run(() => computerControl(holder))
+    },
     error: null,
     read: null,
     async refresh() {
       const epoch = useConnection.getState().epoch
-      await run(computerStatus)
-      set({ read: epoch })
+
+      if (await run(computerStatus)) {
+        set({ read: epoch })
+      }
     },
     status: null,
-    step: step => run(() => computerStep(step)),
+    async step(step) {
+      await run(() => computerStep(step))
+    },
     async view(control) {
       try {
         return (await computerView(control)).path
