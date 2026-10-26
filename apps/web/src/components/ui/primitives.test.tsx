@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from '@testing-library/react'
+import { act, fireEvent, render, screen } from '@testing-library/react'
 
 import { Avatar } from './avatar'
 import { Button } from './button'
@@ -39,11 +39,14 @@ describe('UI components', () => {
     expect(container.querySelectorAll('.hex-eyes .hex-eye-shape')).toHaveLength(2)
   })
   it('changes the eyes with the mood', () => {
+    vi.useFakeTimers({ toFake: ['requestAnimationFrame', 'cancelAnimationFrame'] })
     const { container, rerender } = render(<Avatar mood="idle" name="Ada" />)
-    const idle = container.querySelector<SVGGElement>('.hex-eye')?.style.transform
+    const idle = container.querySelector('.hex-eye')?.getAttribute('transform')
     rerender(<Avatar mood="sleeping" name="Ada" />)
+    act(() => vi.advanceTimersByTime(600))
     expect(container.querySelector('.hex-eyes')).toHaveAttribute('data-mood', 'sleeping')
-    expect(container.querySelector<SVGGElement>('.hex-eye')?.style.transform).not.toBe(idle)
+    expect(container.querySelector('.hex-eye')?.getAttribute('transform')).not.toBe(idle)
+    vi.useRealTimers()
   })
   it('renders Chip', () => {
     render(<Chip>Ready</Chip>)

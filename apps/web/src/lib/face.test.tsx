@@ -1,10 +1,11 @@
 import { act, fireEvent, render } from '@testing-library/react'
 
-import { Avatar, LiveFace, WAKE_MS } from '../components/ui/avatar'
+import { Avatar, LiveFace } from '../components/ui/avatar'
 import { HexbotMark } from '../components/ui/wordmark'
 
 import { FACE_MOODS, moodForStatus } from './face'
-import { AVATAR_SHAPES, eyePlacements, eyeTransformCss, HEX_EYE } from './face-geometry'
+import { AVATAR_SHAPES, HEX_EYE } from './face-geometry'
+import { MORPHS, restFrame } from './face-motion'
 
 const observations: {
   callback: IntersectionObserverCallback
@@ -31,12 +32,15 @@ beforeEach(() => {
     }
   )
 })
-afterEach(() => vi.unstubAllGlobals())
+afterEach(() => {
+  vi.useRealTimers()
+  vi.unstubAllGlobals()
+})
 
 describe('original faces', () => {
-  it('updates every target pose, outline and colour synchronously without scheduling frames', () => {
+  it('rests in every mood, with outline and colours, without scheduling frames while held', () => {
     const raf = vi.spyOn(window, 'requestAnimationFrame')
-    const { container, rerender } = render(<LiveFace color="pink" eyes="white" />)
+    const { container, rerender } = render(<LiveFace color="pink" eyes="white" still />)
     const svg = container.querySelector('svg')!
 
     for (const mood of FACE_MOODS) {
@@ -52,10 +56,18 @@ describe('original faces', () => {
       expect(svg.querySelector('path')).toHaveAttribute('fill', 'blue')
       expect(svg.querySelector('.hex-eye-shape')).toHaveAttribute('fill', 'black')
       expect(svg.querySelector('.hex-eye-shape')).toHaveAttribute('d', HEX_EYE)
-      expect(svg.querySelector<SVGGElement>('.hex-eye')!.style.transform).toBe(
-        eyeTransformCss(eyePlacements(mood)[0]!)
+      const rest = restFrame(mood, 'left')
+      expect(svg.querySelector('.hex-eye')).toHaveAttribute('transform', rest.eyes[0])
+      expect(svg.querySelector('[data-part="head"]')).toHaveAttribute('transform', rest.head)
+      expect(svg.querySelector('[data-part="body"]')).toHaveAttribute(
+        'display',
+        MORPHS[mood] ? 'none' : 'inline'
       )
-      expect(svg.querySelector('[transform="translate(-10 -2)"]')).not.toBeNull()
+      expect(
+        [...svg.querySelectorAll('[data-part="morph"]')]
+          .filter(morph => morph.getAttribute('display') === 'inline')
+          .map(morph => morph.getAttribute('data-morph'))
+      ).toEqual(MORPHS[mood] ? [MORPHS[mood]] : [])
     }
 
     expect(raf).not.toHaveBeenCalled()
@@ -145,49 +157,66 @@ describe('original faces', () => {
     )
   })
 
-  it('draws the marks each mood needs and none while held', () => {
-    const marks = {
-      happy: 'happy',
-      loading: 'load',
-      sleeping: 'sleep',
-      thinking: 'think',
-      writing: 'write'
-    }
+  it('moves a visible face frame by frame and returns it to rest when held', () => {
+    vi.useFakeTimers({ toFake: ['requestAnimationFrame', 'cancelAnimationFrame', 'performance'] })
 
-    for (const mood of FACE_MOODS) {
-      const { container, rerender, unmount } = render(
-        <LiveFace color="pink" eyes="white" mood={mood} />
-      )
+    const { container, rerender, unmount } = render(
+      <LiveFace color="pink" eyes="white" mood="working" />
+    )
 
-      expect(container.querySelector('[data-marks]')?.getAttribute('data-marks')).toBe(
-        marks[mood as keyof typeof marks]
-      )
-      rerender(<LiveFace color="pink" eyes="white" mood={mood} still />)
-      expect(container.querySelector('[data-marks]')).toBeNull()
-      unmount()
-    }
-  })
-
-  it('wakes for a moment when its bot comes back, then settles', () => {
-    vi.useFakeTimers()
-    const { container, rerender } = render(<LiveFace color="pink" eyes="white" mood="sleeping" />)
-    const svg = container.querySelector('svg')!
-    expect(svg).not.toHaveAttribute('data-waking')
-    rerender(<LiveFace color="pink" eyes="white" mood="idle" />)
-    expect(svg).toHaveAttribute('data-waking', 'true')
-    expect(container.querySelector('[data-marks="wake"]')).not.toBeNull()
-    act(() => vi.advanceTimersByTime(WAKE_MS))
-    expect(svg).not.toHaveAttribute('data-waking')
-    expect(container.querySelector('[data-marks]')).toBeNull()
-    rerender(<LiveFace color="pink" eyes="white" mood="working" />)
-    expect(svg).not.toHaveAttribute('data-waking')
+    const head = container.querySelector('[data-part="head"]')!
+    const rest = restFrame('working').head
+    expect(head).toHaveAttribute('transform', rest)
+    act(() => vi.advanceTimersByTime(700))
+    expect(head.getAttribute('transform')).not.toBe(rest)
+    rerender(<LiveFace color="pink" eyes="white" mood="working" still />)
+    expect(head).toHaveAttribute('transform', rest)
+    unmount()
+    expect(vi.getTimerCount()).toBe(0)
     vi.useRealTimers()
   })
 
-  it('leans toward the face it looks at', () => {
-    const { container, rerender } = render(<LiveFace color="pink" eyes="white" look="left" />)
+  it('folds into its morph and back, and throws sparks when it wakes', () => {
+    vi.useFakeTimers({ toFake: ['requestAnimationFrame', 'cancelAnimationFrame', 'performance'] })
+    const { container, rerender } = render(<LiveFace color="pink" eyes="white" mood="sleeping" />)
+    const part = (name: string) => container.querySelector(`[data-part="${name}"]`)!
+    const dots = container.querySelector('[data-morph="dots"]')!
+    rerender(<LiveFace color="pink" eyes="white" mood="idle" />)
+    act(() => vi.advanceTimersByTime(100))
+    expect(part('sparks')).toHaveAttribute('display', 'inline')
+    act(() => vi.advanceTimersByTime(1000))
+    expect(part('sparks')).toHaveAttribute('display', 'none')
+    rerender(<LiveFace color="pink" eyes="white" mood="thinking" />)
+    act(() => vi.advanceTimersByTime(1000))
+    expect(part('body')).toHaveAttribute('display', 'none')
+    expect(dots).toHaveAttribute('display', 'inline')
+    rerender(<LiveFace color="pink" eyes="white" mood="idle" />)
+    act(() => vi.advanceTimersByTime(1000))
+    expect(part('body')).toHaveAttribute('display', 'inline')
+    expect(dots).toHaveAttribute('display', 'none')
+    vi.useRealTimers()
+  })
+
+  it('rests under reduced motion', () => {
+    vi.stubGlobal('matchMedia', (query: string) => ({
+      addEventListener: () => undefined,
+      matches: query.includes('reduce'),
+      removeEventListener: () => undefined
+    }))
+    const raf = vi.spyOn(window, 'requestAnimationFrame')
+    const { container } = render(<LiveFace color="pink" eyes="white" mood="happy" />)
+    expect(container.querySelector('svg')).toHaveAttribute('data-moving', 'false')
+    expect(raf).not.toHaveBeenCalled()
+    raf.mockRestore()
+  })
+
+  it('turns toward the face it looks at', () => {
+    const { container, rerender } = render(<LiveFace color="pink" eyes="white" look="left" still />)
+    const head = container.querySelector('[data-part="head"]')!
     expect(container.querySelector('svg')).toHaveAttribute('data-look', 'left')
-    rerender(<LiveFace color="pink" eyes="white" look={null} />)
+    expect(head).toHaveAttribute('transform', restFrame('idle', 'left').head)
+    rerender(<LiveFace color="pink" eyes="white" look={null} still />)
     expect(container.querySelector('svg')).not.toHaveAttribute('data-look')
+    expect(head).toHaveAttribute('transform', restFrame('idle').head)
   })
 })

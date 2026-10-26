@@ -29,13 +29,14 @@ import { flushSync } from 'react-dom'
 import { Avatar, LiveFace } from '/src/components/ui/avatar.tsx'
 import * as avatars from '/src/lib/avatar-builder.ts'
 import { FACE_MOODS } from '/src/lib/face.ts'
+import { restFrame } from '/src/lib/face-motion.ts'
 import { HEXBOT_ACT_NAMES } from '/src/components/ui/hexbot-act.tsx'
 const h = React.createElement
 const root = createRoot(document.getElementById('root'))
 const render = children => flushSync(() => root.render(children))
 const style = { color: 'pink', shape: 'hexagon' }
 window.faces = {
-  ...avatars, moods: FACE_MOODS,
+  ...avatars, moods: FACE_MOODS, restFrame,
   show: props => render(h(LiveFace, { color: '#ec2f8a', eyes: '#ffffff', ...props })),
   roster: (names, act) => render(h('div', { style: { display: 'grid', gridTemplateColumns: 'repeat(8, 72px)', gap: 24 } }, names.map(name => h(Avatar, { key: name, name, act, size: 'xl', mood: 'working', style })))),
   acts: () => render(h('div', { style: { display: 'flex', flexWrap: 'wrap', gap: 48, padding: 40 } }, HEXBOT_ACT_NAMES.map(act => h(Avatar, { key: act, name: act, act, size: 'xl', style })))),
@@ -96,43 +97,41 @@ window.faces.gallery()
   })
   assert.deepEqual(roundtrips.failures, [])
 
-  // Idle breathes, glances and blinks, all in CSS: no frame callbacks or SVG writes.
-  await page.evaluate(() => window.faces.show({ mood: 'idle' }))
-  await expect.poll(() => page.evaluate(() => document.getAnimations().length)).toBe(3)
-  const quiet = await page.evaluate(async () => {
-    let mutations = 0, frames = 0
-    const original = window.requestAnimationFrame
-    window.requestAnimationFrame = (...args) => { frames++; return original(...args) }
+  // Faces move in one frame loop that writes only the attributes that changed.
+  const writes = ms => page.evaluate(async ms => {
+    let mutations = 0
     const observer = new MutationObserver(records => { mutations += records.length })
-    observer.observe(document.querySelector('svg'), { attributes: true, childList: true, subtree: true })
-    await new Promise(resolve => setTimeout(resolve, 350))
+    for (const svg of document.querySelectorAll('svg')) observer.observe(svg, { attributes: true, childList: true, subtree: true })
+    await new Promise(resolve => setTimeout(resolve, ms))
     observer.disconnect()
-    window.requestAnimationFrame = original
-    return { mutations, frames }
-  })
-  assert.deepEqual(quiet, { mutations: 0, frames: 0 })
-
-  // Working bobs, blinks, and turns both eyes, one each way.
+    return mutations
+  }, ms)
+  for (const mood of await page.evaluate(() => window.faces.moods)) {
+    await page.evaluate(mood => window.faces.show({ mood }), mood)
+    assert(await writes(250) > 0, mood + ' moves')
+    assert.equal(await page.evaluate(() => document.getAnimations().length), 0)
+  }
+  const quiet = { offscreen: 0, still: 0 }
   await page.evaluate(() => window.faces.show({ mood: 'working' }))
-  await expect.poll(() => page.evaluate(() => document.getAnimations().length)).toBe(4)
   await page.evaluate(() => { document.getElementById('root').style.marginTop = '2000px' })
   await expect(page.locator('svg')).toHaveAttribute('data-moving', 'false')
-  assert.equal(await page.evaluate(() => document.getAnimations().length), 0)
+  quiet.offscreen = await writes(300)
   await page.evaluate(() => { document.getElementById('root').style.marginTop = '0' })
   await expect(page.locator('svg')).toHaveAttribute('data-moving', 'true')
   await page.evaluate(() => window.faces.show({ mood: 'working', still: true }))
-  assert.equal(await page.evaluate(() => document.getAnimations().length), 0)
+  quiet.still = await writes(300)
+  assert.deepEqual(quiet, { offscreen: 0, still: 0 })
 
   await page.emulateMedia({ reducedMotion: 'reduce' })
   for (const mood of await page.evaluate(() => window.faces.moods)) {
     await page.evaluate(mood => window.faces.show({ mood, shape: 'triangle', color: '#ececf0', eyes: '#151517', look: 'left' }), mood)
-    assert.equal(await page.evaluate(() => document.getAnimations().length), 0)
-    await expect(page.locator('svg .hex-body > path')).toHaveAttribute('fill', '#ececf0')
+    await expect(page.locator('svg')).toHaveAttribute('data-moving', 'false')
+    await expect(page.locator('svg [data-part="body"] > path')).toHaveAttribute('fill', '#ececf0')
     await expect(page.locator('.hex-eye-shape').first()).toHaveAttribute('fill', '#151517')
-    assert.equal(await page.locator('[transform="translate(-10 -2)"]').count(), 1)
-    const drawn = await page.locator('svg').innerHTML()
-    await page.waitForTimeout(80)
-    assert.equal(await page.locator('svg').innerHTML(), drawn)
+    const rest = await page.evaluate(mood => window.faces.restFrame(mood, 'left'), mood)
+    await expect(page.locator('[data-part="head"]')).toHaveAttribute('transform', rest.head)
+    await expect(page.locator('.hex-eye').first()).toHaveAttribute('transform', rest.eyes[0])
+    assert.equal(await writes(120), 0)
   }
   await page.evaluate(() => window.faces.acts())
   assert.equal(await page.evaluate(() => document.getAnimations().length), 0, 'Every act settles under reduced motion')
@@ -149,7 +148,7 @@ window.faces.gallery()
   assert.equal(await page.evaluate(() => document.getAnimations().length), 0)
   assert.equal(await page.locator('svg').count(), 0)
 
-  // Twenty-four working faces, 4x CPU throttling. CSS produces no SVG attribute writes.
+  // Twenty-four working faces, 4x CPU throttling.
   const cdp = await page.context().newCDPSession(page)
   await cdp.send('Emulation.setCPUThrottlingRate', { rate: 4 })
   await page.evaluate(() => window.faces.roster(Array.from({ length: 24 }, (_, n) => 'Bot ' + n)))
@@ -169,7 +168,6 @@ window.faces.gallery()
     intervals.sort((a, b) => a - b)
     return { mutations, medianFrameMs: intervals[30], p95FrameMs: intervals[57] }
   })
-  assert.equal(performance.mutations, 0)
   assert(performance.p95FrameMs < 50, JSON.stringify(performance))
   assert.deepEqual(errors, [])
   console.log(JSON.stringify({ passed: true, roundtrips: roundtrips.count, quiet, performance, artifacts }, null, 2))

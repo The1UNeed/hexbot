@@ -44,26 +44,28 @@ own visual identity. Read `CLAUDE.md` for the words.
   for other clients. The web app reads saved hexagon-eye, capsule-eye, and
   flat-eye PNGs back into live faces; mobile shows legacy pictures as pictures. Other
   uploads replace the face. Bots without a saved face derive one from their
-  names. Each mood moves the whole face and its eyes, with marks around it:
-  idle breathes, glances and blinks; listening nods; thinking tilts, its
-  eyes lie flat and drift up, and thought dots rise; searching sways with
-  its scanning eyes; working bobs while each eye turns a sixth of a turn and
-  rests, the two in opposite directions; writing nods over a line it draws;
-  happy hops with sparks; sleeping droops with drifting Zs; loading circles
-  a dot around the face. A face leaving sleeping pops awake with sparks. The
+  names. Each mood moves the whole face and its eyes on springs
+  (`lib/face-motion.ts`): idle sways, glances and blinks; listening tilts
+  from side to side; searching peers one eye wide, then the other; working
+  bobs while each eye turns a sixth of a turn and rests, the two in
+  opposite directions; happy hops and squints; sleeping droops and breathes.
+  Searching, working and happy faces now and then turn all the way round,
+  with a sweep in tints of their colour. Thinking folds the face into three
+  bobbing hexagon dots, writing into a pencil that scribbles, and loading
+  into a whirl round a dot; the face unfolds when the mood ends. A face
+  leaving sleeping opens wide and throws sparks. The
   in-app mark sleeps on the connection-lost screen and loads while an update
   installs. A live turn starts thinking, searches while a
   search tool runs, writes while text streams, and works during other steps.
   Roster and header
   faces, including every face in a room's cluster, match their status dots;
   a cluster without a dot, as in room settings, stays idle. Faces in asks
-  lean and look toward each other.
-  All face motion is CSS keyframes in `tokens.css`, with no frame callbacks
-  or SVG mutations. Reduced motion draws the settled pose with its marks, and
-  offscreen or hidden-page faces stop their animations. Mobile draws the same
-  settled expressions. Click a face or the in-app mark for one of the existing
-  21 acts. Acts hold the face still, hide its marks, and clean up with their
-  React subtree.
+  turn and look toward each other.
+  One frame loop moves every visible face and stops when none moves.
+  Reduced motion draws each mood's rest pose, morph included, and offscreen
+  or hidden-page faces stop. Mobile draws the same settled expressions.
+  Click a face or the in-app mark for one of the existing 21 acts. Acts hold
+  the face at rest and clean up with their React subtree.
   The site's faces use the same hexagon eyes. The site logo, favicon, and
   package icons still show the static capsule-eye mark until they are redrawn.
 - Shadows only on floating layers (menus, dialogs, the glass chrome) and the

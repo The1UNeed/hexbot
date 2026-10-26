@@ -1,14 +1,11 @@
 import { cva, type VariantProps } from 'class-variance-authority'
-import { useEffect, useReducer, useRef, useState } from 'react'
+import { useEffect, useId, useLayoutEffect, useReducer, useRef, useSyncExternalStore } from 'react'
 
 import {
   AVATAR_SHAPES,
   type AvatarStyle,
-  type Ball,
   ballTransform,
   botFace,
-  eyePlacements,
-  eyeTransformCss,
   type FaceMood,
   faceReadNow,
   HEX_EYE,
@@ -17,7 +14,19 @@ import {
   styleForName
 } from '../../lib/avatar-builder'
 import { cn } from '../../lib/cn'
-import { FACE_VIEWBOX, type FaceLook, facePose } from '../../lib/face'
+import { FACE_VIEWBOX, type FaceLook } from '../../lib/face'
+import {
+  coreTransform,
+  dotLift,
+  dotTransform,
+  FaceMotion,
+  MORPH_KINDS,
+  type MorphKind,
+  pencilTransform,
+  restFrame,
+  SPARKS,
+  tints
+} from '../../lib/face-motion'
 import { useFaceVisibility } from '../../lib/face-visibility'
 
 import { ActProps, type HexbotActName, useAct } from './hexbot-act'
@@ -37,42 +46,6 @@ const avatarVariants = cva('relative inline-flex shrink-0 items-center justify-c
     }
   }
 })
-
-const HEXAGON_BALL = AVATAR_SHAPES.find(shape => shape.id === 'hexagon')!.ball
-
-/**
- * The two hexagonal eyes for a mood on a 100x100 face, painted on the shape's
- * ball. Each eye's pose is a CSS transform, so a new mood eases the eyes into
- * place; tokens.css adds the activity motion. Shared with the brand mark,
- * which is a hexagon.
- */
-export function FaceEyes({
-  ball = HEXAGON_BALL,
-  fill = '#ffffff',
-  mood = 'idle',
-  look
-}: {
-  ball?: Ball
-  fill?: string
-  mood?: FaceMood
-  look?: FaceLook | null
-}) {
-  return (
-    <g transform={ballTransform(ball)}>
-      <g transform={facePose(mood, look)}>
-        <g className="hex-gaze">
-          <g className="hex-eyes" data-mood={mood}>
-            {eyePlacements(mood).map((eye, index) => (
-              <g className="hex-eye" key={index} style={{ transform: eyeTransformCss(eye) }}>
-                <path className="hex-eye-shape" d={HEX_EYE} fill={fill} />
-              </g>
-            ))}
-          </g>
-        </g>
-      </g>
-    </g>
-  )
-}
 
 export interface AvatarProps extends VariantProps<typeof avatarVariants> {
   /** An act to keep playing, such as typing while the bot works. A click plays a random one. */
@@ -94,152 +67,105 @@ export interface LiveFaceProps {
   look?: FaceLook | null
   mood?: FaceMood
   shape?: string
-  /** Hold the eyes while an act moves the body. */
+  /** Hold the face at rest while an act moves the body. */
   still?: boolean
 }
 
-/** How long a face takes to wake up when its bot comes back. */
-export const WAKE_MS = 900
+const REDUCED_MOTION = '(prefers-reduced-motion: reduce)'
 
-/** True for a moment after `mood` leaves sleeping. */
-function useWaking(mood: FaceMood): boolean {
-  const previous = useRef(mood)
-  const [waking, setWaking] = useState(false)
+/** Whether the user asks for reduced motion, kept current as the setting changes. */
+function useReducedMotion(): boolean {
+  return useSyncExternalStore(
+    notify => {
+      const query = typeof matchMedia === 'function' ? matchMedia(REDUCED_MOTION) : null
+      query?.addEventListener('change', notify)
 
-  useEffect(() => {
-    const woke = previous.current === 'sleeping' && mood !== 'sleeping'
-    previous.current = mood
-
-    if (!woke) {
-      return
-    }
-
-    setWaking(true)
-    const timer = window.setTimeout(() => setWaking(false), WAKE_MS)
-
-    return () => window.clearTimeout(timer)
-  }, [mood])
-
-  return waking
+      return () => query?.removeEventListener('change', notify)
+    },
+    () => (typeof matchMedia === 'function' ? matchMedia(REDUCED_MOTION).matches : false),
+    () => false
+  )
 }
 
-/** A small hexagon centred on `x`, `y`, for the marks around a face. */
-function hexagon(x: number, y: number, size: number): string {
-  return `translate(${x}px, ${y}px) scale(${size})`
-}
+/** A four-pointed spark, one unit from its centre to each point. */
+const SPARK = 'M0 -1Q0.16 -0.16 1 0Q0.16 0.16 0 1Q-0.16 0.16 -1 0Q-0.16 -0.16 0 -1Z'
 
 /**
- * Marks drawn around the face for some moods: thought dots rising while it
- * thinks, a line being written, sparks when it is happy or wakes, Zs while
- * it sleeps, and a dot circling it while it loads. They sit outside the
- * outline, in the face colour, and hold still wherever motion stops.
+ * What a face folds into: three dots while it thinks, a pencil while it
+ * writes, a whirl round a dot while it loads.
  */
-function FaceMarks({ color, mood, waking }: { color: string; mood: FaceMood; waking: boolean }) {
-  const spark = (x: number, y: number, index: number) => (
-    <g className="hex-mark" key={index} style={{ transform: hexagon(x, y, 1) }}>
-      <path
-        className="hex-mark-shape"
-        d="M0 -5.5Q0.9 -0.9 5.5 0Q0.9 0.9 0 5.5Q-0.9 0.9 -5.5 0Q-0.9 -0.9 0 -5.5Z"
-        fill={color}
-      />
-    </g>
-  )
+function Morph({
+  color,
+  eyes,
+  kind,
+  tint
+}: {
+  color: string
+  eyes: string
+  kind: MorphKind
+  tint: string
+}) {
+  switch (kind) {
+    case 'dots':
+      return [0, 1, 2].map(index => {
+        const lift = dotLift(index, 0)
 
-  if (waking) {
-    return (
-      <g className="hex-marks" data-marks="wake">
-        {[
-          [4, 18],
-          [96, 14],
-          [50, -6]
-        ].map(([x, y], index) => spark(x!, y!, index))}
-      </g>
-    )
-  }
-
-  switch (mood) {
-    case 'thinking':
-      return (
-        <g className="hex-marks" data-marks="think">
-          {[
-            [80, 14, 2.6],
-            [89, 5, 3.4],
-            [99, -5, 4.3]
-          ].map(([x, y, size], index) => (
-            <g className="hex-mark" key={index} style={{ transform: hexagon(x!, y!, size!) }}>
-              <path className="hex-mark-shape" d={HEX_EYE} fill={color} />
-            </g>
-          ))}
-        </g>
-      )
-
-    case 'writing':
-      return (
-        <g className="hex-marks" data-marks="write">
-          <path
-            className="hex-mark-line"
-            d="M66 101q3-5 6 0t6 0t6 0t6 0"
-            fill="none"
-            pathLength={1}
-            stroke={color}
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            strokeWidth={3.2}
-          />
-        </g>
-      )
-
-    case 'happy':
-      return (
-        <g className="hex-marks" data-marks="happy">
-          {[
-            [6, 14],
-            [94, 10]
-          ].map(([x, y], index) => spark(x!, y!, index))}
-        </g>
-      )
-
-    case 'sleeping':
-      return (
-        <g className="hex-marks" data-marks="sleep">
-          {[
-            [80, 16, 13],
-            [92, 2, 10]
-          ].map(([x, y, size], index) => (
-            <text
-              className="hex-mark"
-              fill={color}
-              fontFamily="var(--hex-font-sans)"
-              fontSize={size}
-              fontWeight={700}
-              key={index}
-              x={x}
-              y={y}
-            >
-              z
-            </text>
-          ))}
-        </g>
-      )
-
-    case 'loading':
-      return (
-        <g className="hex-marks hex-orbit" data-marks="load">
-          <g style={{ transform: hexagon(50, -5, 4) }}>
+        return (
+          <g
+            data-part="dot"
+            key={index}
+            opacity={Math.round((0.45 + 0.55 * lift) * 100) / 100}
+            transform={dotTransform(index, lift)}
+          >
             <path d={HEX_EYE} fill={color} />
           </g>
+        )
+      })
+
+    case 'pencil':
+      return (
+        <g data-part="pencil" transform={pencilTransform(0)}>
+          <path d="M-7 -30a4 4 0 0 1 4-4h6a4 4 0 0 1 4 4v42h-14Z" fill={color} />
+          <path d="M-7 -24h14v5h-14Z" fill={eyes} opacity={0.55} />
+          <path d="M-7 12h14l-7 17Z" fill={color} opacity={0.55} />
+          <path d="M-2.6 22.4h5.2l-2.6 6.6Z" fill={color} />
         </g>
       )
 
-    default:
-      return null
+    case 'whirl':
+      return (
+        <>
+          {[
+            { dash: '55 45', rx: 38, ry: 13, turn: -22, width: 6 },
+            { dash: '38 62', rx: 31, ry: 10, turn: 30, width: 4.5 }
+          ].map(({ dash, rx, ry, turn, width }, index) => (
+            <g key={index} transform={`translate(50 52) rotate(${turn})`}>
+              <ellipse
+                data-part="whirl"
+                fill="none"
+                pathLength={100}
+                rx={rx}
+                ry={ry}
+                stroke={tint}
+                strokeDasharray={dash}
+                strokeDashoffset={0}
+                strokeLinecap="round"
+                strokeWidth={width}
+              />
+            </g>
+          ))}
+          <path d={HEX_EYE} fill={color} transform="translate(50 52) scale(7)" />
+        </>
+      )
   }
 }
 
 /**
- * Original SVG. While a visible bot is active the whole face moves with its
- * mood (a sway, nod, bob or hop in tokens.css) and the eyes blink and
- * glance; a look leans the face toward its neighbour.
+ * Original SVG brought to life by face-motion.ts: while a visible bot is
+ * active its face sways, bobs or hops with its mood, blinks and glances,
+ * turns round now and then, and folds into dots, a pencil or a whirl while
+ * it thinks, writes or loads. A look turns it toward its neighbour. Held
+ * still, off screen, or with reduced motion it rests in its mood's pose.
  */
 export function LiveFace({
   className,
@@ -252,7 +178,38 @@ export function LiveFace({
 }: LiveFaceProps) {
   const outline = AVATAR_SHAPES.find(item => item.id === shape) ?? AVATAR_SHAPES[0]!
   const { ref, visible } = useFaceVisibility<SVGSVGElement>()
-  const waking = useWaking(mood)
+  const reduced = useReducedMotion()
+  const motion = useRef<FaceMotion | null>(null)
+  const tint = `hex-tint-${useId().replace(/[^\w-]/g, '')}`
+  const moving = visible && !still && !reduced
+  const rest = restFrame(mood, look)
+  const { ball } = outline
+
+  useLayoutEffect(() => {
+    // Made once; the effects below hand it every change.
+    const face = new FaceMotion(ref.current!, { look, mood })
+    motion.current = face
+
+    return () => {
+      face.stop()
+      motion.current = null
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  useLayoutEffect(() => {
+    motion.current?.set({ look, mood })
+  }, [look, mood])
+
+  useLayoutEffect(() => {
+    const face = motion.current
+
+    if (moving) {
+      face?.start()
+    } else {
+      face?.stop(still || reduced)
+    }
+  }, [moving, reduced, still])
 
   return (
     <svg
@@ -260,18 +217,83 @@ export function LiveFace({
       className={cn('hex-live-face size-full overflow-visible', className)}
       data-look={look ?? undefined}
       data-mood={mood}
-      data-moving={visible && !still}
-      data-waking={waking || undefined}
+      data-moving={moving}
       ref={ref}
       viewBox={FACE_VIEWBOX}
     >
-      <g className="hex-face-lean">
-        <g className="hex-body">
+      <defs>
+        <linearGradient id={tint} x1={0} x2={1} y1={0} y2={0.3}>
+          {tints(color).map((stop, index) => (
+            <stop
+              key={index}
+              offset={index / 2}
+              stopColor={stop.color}
+              stopOpacity={stop.opacity}
+            />
+          ))}
+        </linearGradient>
+      </defs>
+      <g data-part="head" transform={rest.head}>
+        <g
+          className="hex-body"
+          data-part="body"
+          display={rest.bodyShown ? 'inline' : 'none'}
+          transform={rest.body}
+        >
           <path d={outline.path} fill={color} />
-          <FaceEyes ball={outline.ball} fill={eyes} look={look} mood={mood} />
+          <g transform={ballTransform(ball)}>
+            <g className="hex-gaze" data-part="gaze" transform={rest.gaze}>
+              <g className="hex-eyes" data-mood={mood}>
+                {rest.eyes.map((transform, index) => (
+                  <g className="hex-eye" data-part="eye" key={index} transform={transform}>
+                    <path className="hex-eye-shape" d={HEX_EYE} fill={eyes} />
+                  </g>
+                ))}
+              </g>
+            </g>
+          </g>
+        </g>
+        <g data-part="trail" display="none">
+          {[
+            { dash: '38 62', width: 7 },
+            { dash: '26 74', width: 4.5 }
+          ].map(({ dash, width }, index) => (
+            <ellipse
+              cx={50}
+              cy={ball.cy}
+              data-part="trail-band"
+              fill="none"
+              key={index}
+              pathLength={100}
+              rx={ball.r * 1.22 + index * 4}
+              ry={ball.r * 0.3 + index * 2}
+              stroke={`url(#${tint})`}
+              strokeDasharray={dash}
+              strokeDashoffset={0}
+              strokeLinecap="round"
+              strokeWidth={width}
+            />
+          ))}
         </g>
       </g>
-      {still ? null : <FaceMarks color={color} mood={mood} waking={waking} />}
+      {MORPH_KINDS.map(kind => (
+        <g
+          data-morph={kind}
+          data-part="morph"
+          display={rest.morph === kind ? 'inline' : 'none'}
+          key={kind}
+          transform={rest.morph === kind ? rest.morphScale : coreTransform(0)}
+        >
+          <Morph color={color} eyes={eyes} kind={kind} tint={`url(#${tint})`} />
+        </g>
+      ))}
+      <g data-part="sparks" display="none">
+        {Array.from({ length: SPARKS }, (_, index) => (
+          <g data-part="spark" key={index} transform="scale(0)">
+            <path d={SPARK} fill={color} />
+          </g>
+        ))}
+      </g>
     </svg>
   )
 }
