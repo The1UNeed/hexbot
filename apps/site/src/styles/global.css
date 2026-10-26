@@ -1,6 +1,6 @@
 @import "tailwindcss";
 @import "@fontsource-variable/bricolage-grotesque/opsz.css";
-/* Face eye-turn delays are emitted as arbitrary classes from a prop, so Tailwind cannot see them in source. Add new delays here. */
+/* Face blink delays are emitted as arbitrary classes from a prop, so Tailwind cannot see them in source. Add new delays here. */
 @source inline("[animation-delay:{0,0.4,0.7,1.1,1.2,1.4,1.8,2.1,2.2,2.6,2.8,3.5,4.2,4.9}s]");
 
 @theme {
@@ -75,15 +75,15 @@ p.rise, div.rise { display: block; }
 div.rise { display: flex; }
 .rise-2 { animation-delay: 90ms; } .rise-3 { animation-delay: 180ms; } .rise-4 { animation-delay: 300ms; } .rise-5 { animation-delay: 420ms; }
 
-/* Bot faces. Now and then each hexagonal eye turns a sixth of a turn, which looks the same as none, so the loop never jumps; a small script points the eyes at the pointer. */
+/* Bot faces. Eyes blink at rest; a small script points them at the cursor. */
 .face { display: inline-block; }
-.face .eye { transform-box: fill-box; transform-origin: center; animation: eye-turn 6s cubic-bezier(.45, 0, .2, 1) infinite; }
+.face .eyes { transform-box: fill-box; transform-origin: center; animation: blink 5.4s infinite; }
 .face .pupils { transition: transform 160ms ease-out; }
-@keyframes eye-turn { 0%, 90% { transform: rotate(0deg); } 97%, 100% { transform: rotate(60deg); } }
+@keyframes blink { 0%, 93%, 100% { transform: scaleY(1); } 96.5% { transform: scaleY(.08); } }
 @media (prefers-reduced-motion: reduce) {
   .hero-face-in { animation: none; transform: rotate(var(--rot)); }
   .rise { animation: none; }
-  .face .eye { animation: none; }
+  .face .eyes { animation: none; }
   .face .pupils { transition: none; }
   .button:hover { transform: none; }
   html { scroll-behavior: auto; }

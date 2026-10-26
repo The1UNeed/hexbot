@@ -36,22 +36,21 @@ own visual identity. Read `CLAUDE.md` for the words.
 - Chart series, for bot visuals only: light #4F46E5, #0D9488, #D97706,
   #DB2777, #2F7CF6, #65A30D; dark #8B85FF, #2DD4BF, #FBBF24, #F472B6,
   #4C9AFF, #A3E635. The first is the accent; the rest step apart in hue.
-- Bot faces: Hexbot's eight outlines with two hexagonal eyes, white except
+- Bot faces: Hexbot's eight outlines with the icon's two capsule eyes, white except
   ink on Chalk. `lib/face-geometry.ts` is the source, copied to
   mobile by `apps/web/scripts/face-rest.mjs`. The [provenance note](face-provenance.md)
   records where the outlines, eyes, and poses come from.
   Faces picked in an app are stored as shape and colour, with a static PNG
-  for other clients. The web app reads saved hexagon-eye, capsule-eye, and
+  for other clients. The web app reads saved capsule-eye and
   flat-eye PNGs back into live faces; mobile shows legacy pictures as pictures. Other
   uploads replace the face. Bots without a saved face derive one from their
   names. Each mood moves the whole face and its eyes on springs
   (`lib/face-motion.ts`): idle sways, glances and blinks; listening tilts
   from side to side; searching peers one eye wide, then the other; working
-  bobs while each eye turns a sixth of a turn and rests, the two in
-  opposite directions; happy hops and squints; sleeping droops and breathes.
+  bobs while its eyes narrow on a steady beat; happy hops and squints; sleeping droops and breathes.
   Searching, working and happy faces now and then turn all the way round,
   with a sweep in tints of their colour. Thinking folds the face into three
-  bobbing hexagon dots, writing into a pencil that scribbles, and loading
+  bobbing dots, writing into a pencil that scribbles, and loading
   into a whirl round a dot; the face unfolds when the mood ends. A face
   leaving sleeping opens wide and throws sparks. The
   in-app mark sleeps on the connection-lost screen and loads while an update
@@ -66,8 +65,8 @@ own visual identity. Read `CLAUDE.md` for the words.
   or hidden-page faces stop. Mobile draws the same settled expressions.
   Click a face or the in-app mark for one of the existing 21 acts. Acts hold
   the face at rest and clean up with their React subtree.
-  The site's faces use the same hexagon eyes. The site logo, favicon, and
-  package icons still show the static capsule-eye mark until they are redrawn.
+  The site's faces, logo, favicon, and package icons use the same capsule
+  eyes.
 - Shadows only on floating layers (menus, dialogs, the glass chrome) and the
   cards that sit on the canvas: a hairline plus one soft shadow.
 - Liquid glass (`hex-glass`, `hex-glass-strong` in `tokens.css`) is for

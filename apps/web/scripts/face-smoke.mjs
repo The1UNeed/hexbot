@@ -43,7 +43,7 @@ window.faces = {
   empty: () => render(null),
   gallery: () => render(h('main', { style: { padding: 48, maxWidth: 1150, margin: 'auto' } },
     h('h1', { style: { fontSize: 28, fontWeight: 600, marginBottom: 12 } }, 'Hexbot faces'),
-    h('p', { style: { marginBottom: 40 } }, 'Hexagonal eyes. Expressions follow the work.'),
+    h('p', { style: { marginBottom: 40 } }, 'Capsule eyes. Expressions follow the work.'),
     h('div', { style: { display: 'flex', gap: 36, marginBottom: 48 } }, FACE_MOODS.map(mood => h('div', { key: mood, style: { textAlign: 'center' } }, h(Avatar, { name: mood, mood, size: 'xl', style }), h('p', { style: { marginTop: 12 } }, mood)))),
     h('div', { style: { display: 'flex', gap: 42, marginBottom: 48 } }, avatars.AVATAR_SHAPES.map(shape => h('div', { key: shape.id, style: { textAlign: 'center' } }, h(Avatar, { name: shape.label, size: 'xl', style: { color: 'teal', shape: shape.id } }), h('p', { style: { marginTop: 12 } }, shape.label)))),
     h('div', { style: { display: 'flex', gap: 20 } }, avatars.AVATAR_COLORS.map(color => h(Avatar, { key: color.id, name: color.label, size: 'lg', style: { color: color.id, shape: 'hexagon' } })))
@@ -75,7 +75,7 @@ window.faces.gallery()
         const eyes = color.eyes ?? f.EYES
         const scale = shape.ball.r / f.BALL
         const older = {
-          // Capsule eyes on the ball, saved before the eyes became hexagons.
+          // Capsule eyes drawn as two rects, as saved before the eye became one path.
           capsule: '<g transform="translate(50 ' + shape.ball.cy + ') scale(' + scale + ')"><rect x="-20.35" y="-13.5" width="11.7" height="27" rx="5.85" fill="' + eyes + '"/><rect x="8.65" y="-13.5" width="11.7" height="27" rx="5.85" fill="' + eyes + '"/></g>',
           // Flat eyes from avatar-builder.ts before f1582cad, same outlines.
           flat: '<ellipse cx="41" cy="48" rx="3.6" ry="6.2" fill="#151517"/><ellipse cx="59" cy="48" rx="3.6" ry="6.2" fill="#151517"/>'

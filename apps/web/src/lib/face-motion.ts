@@ -40,7 +40,7 @@ interface Eye {
   lean: number
   size: number
   squash: number
-  /** Turn of the hexagon inside the eye. */
+  /** Turn of the capsule inside the eye; 90 lays it on its side. */
   turn: number
   x: number
   y: number
@@ -93,15 +93,15 @@ function rest(mood: FaceMood): Expression {
 
 /** One eye peers wide while the other narrows, as if through a lens. */
 function peer(side: -1 | 1): Expression {
-  const [left, right] = pair({ dy: -2, size: 10.5 })
+  const [left, right] = pair({ dy: -2, size: 12.5 })
 
   return [
-    { ...left, size: side < 0 ? 13 : 8.5 },
-    { ...right, size: side > 0 ? 13 : 8.5 }
+    { ...left, size: side < 0 ? 15.5 : 10 },
+    { ...right, size: side > 0 ? 15.5 : 10 }
   ]
 }
 
-const WIDE = pair({ dy: -1, size: 15 })
+const WIDE = pair({ dy: -1, size: 16.5 })
 
 interface Behaviour {
   blinks: boolean
@@ -119,7 +119,7 @@ const BEHAVIOUR: Record<FaceMood, Behaviour> = {
     glance: 0,
     hopEvery: [1.5, 2.3],
     poseEvery: [1.4, 2.4],
-    poses: [rest('happy'), pair({ dy: -3.5, lean: -14, size: 12, squash: 0.42, turn: 30 })],
+    poses: [rest('happy'), pair({ dy: -3.5, lean: -14, size: 10, squash: 0.6, turn: 90 })],
     spinEvery: [4.5, 7]
   },
   idle: { blinks: true, glance: 5, poseEvery: [4, 4], poses: [rest('idle')] },
@@ -127,7 +127,7 @@ const BEHAVIOUR: Record<FaceMood, Behaviour> = {
     blinks: true,
     glance: 1.5,
     poseEvery: [1.6, 2.8],
-    poses: [rest('listening'), pair({ dy: 1, size: 12.5 })]
+    poses: [rest('listening'), pair({ dy: 1, size: 15 })]
   },
   loading: { blinks: false, glance: 0, poseEvery: [4, 4], poses: [rest('loading')] },
   searching: {
@@ -220,10 +220,10 @@ function headTransform({ r, sx, sy, x, y }: Head): string {
   )
 }
 
-function eyeTransform(eye: Eye, width = 1, open = 1, spin = 0): string {
+function eyeTransform(eye: Eye, width = 1, open = 1): string {
   return (
     `translate(${round(eye.x)} ${round(eye.y)}) rotate(${round(eye.lean)}) ` +
-    `scale(${round(eye.size * width)} ${round(eye.size * eye.squash * open)}) rotate(${round(eye.turn + spin)})`
+    `scale(${round(eye.size * width)} ${round(eye.size * eye.squash * open)}) rotate(${round(eye.turn)})`
   )
 }
 
@@ -694,10 +694,11 @@ export class FaceMotion {
     const blink = this.blinkAt >= 0 ? (t - this.blinkAt) / BLINK : 1
     const open = blink < 1 ? 1 - 0.88 * Math.sin(Math.PI * blink) : 1
 
-    // Working eyes turn a sixth of a turn and rest, one each way, like gears.
-    const gearStep = Math.floor(t / 1.2)
-    const gearEase = easeInOut(Math.min((t / 1.2 - gearStep) / 0.4, 1))
-    const gear = this.state.mood === 'working' && !this.waking ? (gearEase % 1) * 60 : 0
+    // Working eyes narrow on each beat, as if concentrating, and open again.
+    const beat = (t / 1.2) % 1
+
+    const focus =
+      this.state.mood === 'working' && !this.waking && beat < 0.5 ? Math.sin(Math.PI * beat * 2) : 0
 
     this.eyes.forEach((springsOf, index) => {
       const eye = read(springsOf)
@@ -713,7 +714,7 @@ export class FaceMotion {
       writer.set(
         parts.eyes[index],
         'transform',
-        eyeTransform(eye, width, open, index ? -gear : gear),
+        eyeTransform(eye, width, open * (1 - 0.3 * focus)),
         `eye${index}`
       )
     })

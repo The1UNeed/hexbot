@@ -4,7 +4,7 @@ import { Avatar, LiveFace } from '../components/ui/avatar'
 import { HexbotMark } from '../components/ui/wordmark'
 
 import { FACE_MOODS, moodForStatus } from './face'
-import { AVATAR_SHAPES, HEX_EYE } from './face-geometry'
+import { AVATAR_SHAPES, CAPSULE_EYE } from './face-geometry'
 import { MORPHS, restFrame } from './face-motion'
 
 const observations: {
@@ -55,7 +55,7 @@ describe('original faces', () => {
       )
       expect(svg.querySelector('path')).toHaveAttribute('fill', 'blue')
       expect(svg.querySelector('.hex-eye-shape')).toHaveAttribute('fill', 'black')
-      expect(svg.querySelector('.hex-eye-shape')).toHaveAttribute('d', HEX_EYE)
+      expect(svg.querySelector('.hex-eye-shape')).toHaveAttribute('d', CAPSULE_EYE)
       const rest = restFrame(mood, 'left')
       expect(svg.querySelector('.hex-eye')).toHaveAttribute('transform', rest.eyes[0])
       expect(svg.querySelector('[data-part="head"]')).toHaveAttribute('transform', rest.head)

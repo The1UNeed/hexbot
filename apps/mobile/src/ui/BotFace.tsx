@@ -9,7 +9,7 @@ import {
   type FaceMood,
   type FaceStyle,
   faceForName,
-  HEX_EYE,
+  CAPSULE_EYE,
   resolveFace
 } from './faces'
 import { Text } from './Text'
@@ -70,7 +70,7 @@ function useStatusColor(status?: BotStatus) {
   }
 }
 
-/** The bare drawing: a shape in a colour with two hexagonal eyes on its ball. */
+/** The bare drawing: a shape in a colour with two capsule eyes on its ball. */
 export function FaceDrawing({
   mood = 'idle',
   size,
@@ -88,7 +88,7 @@ export function FaceDrawing({
       <G transform={ballTransform(shape.ball)}>
         <G transform={facePose(mood)}>
           {eyePlacements(mood).map((eye, index) => (
-            <Path d={HEX_EYE} fill={eyes} key={index} transform={eyeTransform(eye)} />
+            <Path d={CAPSULE_EYE} fill={eyes} key={index} transform={eyeTransform(eye)} />
           ))}
         </G>
       </G>

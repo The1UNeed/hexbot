@@ -1,9 +1,9 @@
 ---
 /**
- * A bot face as the app draws it: a shape, a colour, two hexagonal eyes painted
- * on a ball (apps/web/src/lib/face-geometry.ts has the same geometry). The
+ * A bot face as the app draws it: a shape, a colour, two capsule eyes painted
+ * on a ball (apps/web/src/lib/avatar-builder.ts has the same geometry). The
  * eyes sit in the ball frame, so the script that turns them toward the
- * pointer moves a small triangle and a big round face by the same amount.
+ * pointer moves a small triangle and a big round face by the same angle.
  * Give `size` for a fixed face, or omit it and size the parent: the SVG then fills its container.
  */
 interface Props { shape: keyof typeof shapes; color: string; size?: number; class?: string; delay?: number }
@@ -22,18 +22,15 @@ const LIGHT = ['#ececf0']
 const { shape, color, size, class: className = '', delay = 0 } = Astro.props
 const { path, cy, r } = shapes[shape]
 const eyes = LIGHT.includes(color.toLowerCase()) ? '#151517' : '#ffffff'
-/** One eye: a hexagon with softened corners, point up, one unit to each corner (HEX_EYE in the app). */
-const hexEye = 'M-0.173 -0.9Q0 -1 0.173 -0.9L0.693 -0.6Q0.866 -0.5 0.866 -0.3L0.866 0.3Q0.866 0.5 0.693 0.6L0.173 0.9Q0 1 -0.173 0.9L-0.693 0.6Q-0.866 0.5 -0.866 0.3L-0.866 -0.3Q-0.866 -0.5 -0.693 -0.6Z'
 ---
 <svg aria-hidden="true" class:list={['face', size === undefined && 'h-auto w-full', className]} viewBox="0 0 100 100" width={size ?? 100} height={size ?? 100} data-face>
   <path d={path} fill={color}></path>
   <g transform={`translate(50 ${cy}) scale(${r / 45})`}>
     <g class="pupils">
-      {[-14.5, 14.5].map(x => (
-        <g transform={`translate(${x} 0) scale(11)`}>
-          <path class:list={['eye', `[animation-delay:${delay}s]`]} d={hexEye} fill={eyes}></path>
-        </g>
-      ))}
+      <g class:list={['eyes', `[animation-delay:${delay}s]`]}>
+        <rect x="-20.35" y="-13.5" width="11.7" height="27" rx="5.85" fill={eyes}></rect>
+        <rect x="8.65" y="-13.5" width="11.7" height="27" rx="5.85" fill={eyes}></rect>
+      </g>
     </g>
   </g>
 </svg>

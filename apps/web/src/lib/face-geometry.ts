@@ -1,7 +1,7 @@
 /**
  * Hexbot's 100-unit outlines and palette, extracted from avatar-builder.ts,
- * with hexagonal eyes drawn for Hexbot. Every mood is a pose of the same
- * hexagon. No third-party geometry or behaviour data. See
+ * with the capsule eyes of the Hexbot icon. Every mood is a pose of the same
+ * capsule. No third-party geometry or behaviour data. See
  * docs/face-provenance.md.
  */
 
@@ -97,9 +97,9 @@ export const DEFAULT_AVATAR_STYLE: AvatarStyle = { color: 'pink', shape: 'hexago
 export const EYES = '#ffffff'
 
 /**
- * What the face is doing. The hexagonal eyes change with it: upright while
- * idle, wide while it waits on you, turned and lowered while it writes,
- * squinted when something went well, shut when it sleeps.
+ * What the face is doing. The capsule eyes change with it: upright while idle,
+ * wide while it waits on you, narrowed and lowered while it writes, squinted
+ * when something went well, shut when it sleeps.
  */
 export type FaceMood =
   | 'happy'
@@ -119,17 +119,17 @@ export const BALL = 45
 export const EYE_GAP = 29
 
 /**
- * One eye: a hexagon with softened corners, point up, one unit from its centre
- * to each corner. Every pose scales and turns this same outline.
+ * One eye: the upright capsule of the Hexbot icon, one unit from its centre to
+ * the top. At the idle size it is the icon's 11.7 by 27 eye. Every pose scales
+ * and turns this same outline.
  */
-export const HEX_EYE =
-  'M-0.173 -0.9Q0 -1 0.173 -0.9L0.693 -0.6Q0.866 -0.5 0.866 -0.3L0.866 0.3Q0.866 0.5 0.693 0.6' +
-  'L0.173 0.9Q0 1 -0.173 0.9L-0.693 0.6Q-0.866 0.5 -0.866 0.3L-0.866 -0.3Q-0.866 -0.5 -0.693 -0.6Z'
+export const CAPSULE_EYE =
+  'M-0.4333 -0.5667A0.4333 0.4333 0 0 1 0.4333 -0.5667V0.5667A0.4333 0.4333 0 0 1 -0.4333 0.5667Z'
 
 /**
  * How a mood holds the eyes in the ball frame: both shifted by `dx` and `dy`,
- * `size` from centre to corner, flattened to `squash` of their height, and
- * turned by `turn` degrees (30 lays the hexagon flat).
+ * `size` from centre to top, flattened to `squash` of their height, and
+ * turned by `turn` degrees (90 lays the capsule on its side).
  */
 export interface EyePose {
   dx: number
@@ -140,15 +140,15 @@ export interface EyePose {
 }
 
 export const EYE_MOODS: Record<FaceMood, EyePose> = {
-  happy: { dx: 0, dy: -2, size: 11.5, squash: 0.45, turn: 30 },
-  idle: { dx: 0, dy: 0, size: 11, squash: 1, turn: 0 },
-  listening: { dx: 0, dy: 2, size: 12, squash: 1, turn: 0 },
-  loading: { dx: 0, dy: 0, size: 9, squash: 1, turn: 0 },
-  searching: { dx: 0, dy: -2, size: 10.5, squash: 1, turn: 0 },
-  sleeping: { dx: 0, dy: 2, size: 11.5, squash: 0.14, turn: 30 },
-  thinking: { dx: 3, dy: -5, size: 9.5, squash: 1, turn: 30 },
-  working: { dx: 0, dy: 1, size: 10, squash: 1, turn: 0 },
-  writing: { dx: 0, dy: 6, size: 10.5, squash: 0.72, turn: 30 }
+  happy: { dx: 0, dy: -2, size: 9.5, squash: 0.7, turn: 90 },
+  idle: { dx: 0, dy: 0, size: 13.5, squash: 1, turn: 0 },
+  listening: { dx: 0, dy: 1, size: 14.5, squash: 1, turn: 0 },
+  loading: { dx: 0, dy: 0, size: 11, squash: 1, turn: 0 },
+  searching: { dx: 0, dy: -2, size: 12.5, squash: 1, turn: 0 },
+  sleeping: { dx: 0, dy: 3, size: 9, squash: 0.2, turn: 90 },
+  thinking: { dx: 2, dy: -4, size: 11, squash: 1, turn: 0 },
+  working: { dx: 0, dy: 1, size: 12.5, squash: 1, turn: 0 },
+  writing: { dx: 0, dy: 5, size: 12, squash: 0.7, turn: 0 }
 }
 
 /** Where one eye sits and how it is drawn, in the ball frame. */

@@ -6,9 +6,9 @@ import {
   type AvatarStyle,
   ballTransform,
   botFace,
+  CAPSULE_EYE,
   type FaceMood,
   faceReadNow,
-  HEX_EYE,
   readFace,
   resolveStyle,
   styleForName
@@ -117,7 +117,7 @@ function Morph({
             opacity={Math.round((0.45 + 0.55 * lift) * 100) / 100}
             transform={dotTransform(index, lift)}
           >
-            <path d={HEX_EYE} fill={color} />
+            <circle fill={color} r={1} />
           </g>
         )
       })
@@ -154,7 +154,7 @@ function Morph({
               />
             </g>
           ))}
-          <path d={HEX_EYE} fill={color} transform="translate(50 52) scale(7)" />
+          <circle cx={50} cy={52} fill={color} r={7} />
         </>
       )
   }
@@ -246,7 +246,7 @@ export function LiveFace({
               <g className="hex-eyes" data-mood={mood}>
                 {rest.eyes.map((transform, index) => (
                   <g className="hex-eye" data-part="eye" key={index} transform={transform}>
-                    <path className="hex-eye-shape" d={HEX_EYE} fill={eyes} />
+                    <path className="hex-eye-shape" d={CAPSULE_EYE} fill={eyes} />
                   </g>
                 ))}
               </g>

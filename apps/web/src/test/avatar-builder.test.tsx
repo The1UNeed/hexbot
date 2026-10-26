@@ -10,12 +10,12 @@ import {
   avatarSvgDataUrl,
   BALL,
   botFace,
+  CAPSULE_EYE,
   EYE_GAP,
   EYE_MOODS,
   eyePlacements,
   faceReadNow,
   faceReadsHeld,
-  HEX_EYE,
   matchFace,
   readFace,
   READS_KEPT
@@ -82,7 +82,7 @@ describe('avatar builder', () => {
 
     expect(svg).toContain(hexagon.path)
     expect(svg).toContain(pink.value)
-    expect(svg.split(`d="${HEX_EYE}"`)).toHaveLength(3)
+    expect(svg.split(`d="${CAPSULE_EYE}"`)).toHaveLength(3)
     expect(svg).toContain('fill="#ffffff"')
     expect(svg).toContain(`translate(50 ${hexagon.ball.cy}) scale(${hexagon.ball.r / BALL})`)
     expect(avatarSvgDataUrl({ color: 'pink', shape: 'hexagon' })).toMatch(/^data:image\/svg\+xml/)
@@ -97,7 +97,7 @@ describe('avatar builder', () => {
     expect(avatarSvg({ color: 'nope', shape: 'nope' })).toContain(AVATAR_SHAPES[0]!.path)
   })
 
-  it('draws both eyes as the same hexagon, mirrored about the centre', () => {
+  it('draws both eyes as the same capsule, mirrored about the centre', () => {
     for (const mood of FACE_MOODS) {
       const [left, right] = eyePlacements(mood)
       const { dx } = EYE_MOODS[mood]
@@ -116,12 +116,15 @@ describe('avatar builder', () => {
           .map(Number)
 
         for (const eye of eyePlacements(mood)) {
-          // The hexagon's corners are one unit from its centre, whatever its turn.
-          const reach = Math.max(eye.sx, eye.sy)
+          // The capsule is 0.43 wide and 1 tall before its turn; 90 lays it on its side.
+          const [wide, tall] = eye.turn === 90 ? [1, 0.4333] : [0.4333, 1]
 
-          // Include the most extreme 5-unit activity movement.
+          // The corner of its box, plus the most extreme 5-unit activity movement.
           expect(
-            Math.hypot(Math.abs(eye.x + tx!) + 5, Math.abs(eye.y + ty!) + 5) + reach
+            Math.hypot(
+              Math.abs(eye.x + tx!) + wide * eye.sx + 5,
+              Math.abs(eye.y + ty!) + tall * eye.sy + 5
+            )
           ).toBeLessThan(BALL)
         }
       }

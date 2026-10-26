@@ -1,14 +1,14 @@
 /**
- * Generated bot faces: a shape and a colour with two hexagonal eyes, drawn as
+ * Generated bot faces: a shape and a colour with two capsule eyes, drawn as
  * if painted on a ball. Drawn as SVG in the UI and rasterised to PNG for the
  * profile asset (the daemon accepts png, jpeg or webp only). Bots without an
  * uploaded avatar get a face derived from their name so every bot has one.
  *
  * The eyes live in the "ball frame": a group translated to the shape's eye
- * centre and scaled by the shape's ball radius over `BALL`. The activity
- * poses in face.ts and the motion in tokens.css work
- * in that frame, so the same CSS pose turns a small triangle and a big round
- * face by the same angle and keeps both inside their silhouette.
+ * centre and scaled by the shape's ball radius over `BALL`. The mood poses in
+ * face-geometry.ts and the motion in face-motion.ts work in that frame, so the
+ * same pose moves a small triangle and a big round face by the same amount and
+ * keeps both inside their silhouette.
  */
 
 import { hueFromString } from './cn'
@@ -20,13 +20,13 @@ import {
   BALL,
   type Ball,
   ballTransform,
+  CAPSULE_EYE,
   EYE_GAP,
   EYE_MOODS,
   eyePlacements,
   EYES,
   eyeTransform,
   type FaceMood,
-  HEX_EYE,
   INK
 } from './face-geometry'
 
@@ -38,6 +38,7 @@ export {
   BALL,
   type Ball,
   ballTransform,
+  CAPSULE_EYE,
   DEFAULT_AVATAR_STYLE,
   EYE_GAP,
   EYE_MOODS,
@@ -47,8 +48,7 @@ export {
   EYES,
   eyeTransform,
   eyeTransformCss,
-  type FaceMood,
-  HEX_EYE
+  type FaceMood
 } from './face-geometry'
 
 /** A stable face for a bot that has no uploaded avatar. */
@@ -75,7 +75,7 @@ export function resolveStyle(style: AvatarStyle) {
 /** The eyes as SVG markup, shared by the inline face and the rasterised one. */
 export function faceEyes(ball: Ball, fill: string, mood: FaceMood = 'idle'): string {
   const eyes = eyePlacements(mood)
-    .map(eye => `<path d="${HEX_EYE}" transform="${eyeTransform(eye)}" fill="${fill}"/>`)
+    .map(eye => `<path d="${CAPSULE_EYE}" transform="${eyeTransform(eye)}" fill="${fill}"/>`)
     .join('')
 
   return (
@@ -203,9 +203,8 @@ function near(rgba: number[], hex: string, tolerance: number): boolean {
 /**
  * Matches a 100×100 RGBA picture against every colour and shape, given each
  * shape's mask drawn at the same size, with its eyes where this module puts
- * them now or where it put them before they moved onto the ball. Hexagonal
- * and older capsule eyes share their centres, so both read back. A photo or
- * any other upload matches nothing.
+ * them now or where it put them before they moved onto the ball. Every
+ * capsule-eye picture shares the same eye centres, so all read back. A photo or any other upload matches nothing.
  */
 export function matchFace(
   pixels: Uint8ClampedArray,
