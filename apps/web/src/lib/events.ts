@@ -296,18 +296,24 @@ export function routeEvent(event: GatewayEvent, deps: EventRouterDeps = {}): voi
 
         const recalled = payload.recalled as { input_id?: unknown; row_id?: unknown } | undefined
 
-        const message =
-          live && recalled
-            ? transcripts.bySession[live]?.messages.find(
-                item =>
-                  item.role === 'user' &&
-                  (item.id === recalled.row_id ||
-                    (typeof recalled.input_id === 'string' && item.inputId === recalled.input_id))
-              )
-            : undefined
+        const shown = (live && recalled && transcripts.bySession[live]?.messages) || []
+
+        const message = shown.find(
+          item =>
+            item.role === 'user' &&
+            (item.id === recalled?.row_id ||
+              (typeof recalled?.input_id === 'string' && item.inputId === recalled.input_id))
+        )
 
         if (live && message) {
           transcripts.recallFrom(live, message.id)
+        } else if (live) {
+          // A view opened before it was sent shows only its turn's cards, last.
+          const kept = shown.findLastIndex(item => !(item.createdAt && item.error))
+
+          for (const card of shown.slice(kept + 1)) {
+            transcripts.dismiss(live, card.id)
+          }
         }
 
         sections.forgetLive(payload.id)

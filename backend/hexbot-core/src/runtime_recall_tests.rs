@@ -145,8 +145,29 @@ async fn recall_stops_the_turn_working_on_it() {
     send(&runtime, &mut events, &id, "wait", SECOND).await;
     let s = runtime.sessions.lock().unwrap()["first"].clone();
     assert!(s.state.lock().unwrap().busy);
-    // A stale Recall leaves the newer message's turn working.
+    // A stale Recall leaves the newer message's turn working, by either name.
+    let history = runtime
+        .call("alice", "session.history", &json!({"session_id":id}))
+        .await
+        .unwrap()
+        .unwrap();
+    let first = history["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["text"] == "First")
+        .unwrap()["row_id"]
+        .clone();
     assert_eq!(recall(&runtime, &id, FIRST).await.unwrap_err().code, 4202);
+    let stale = runtime
+        .call(
+            "alice",
+            "session.recall",
+            &json!({"session_id":id,"row_id":first}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(stale.unwrap_err().code, 4202);
     assert!(s.state.lock().unwrap().busy);
     let recalled = recall(&runtime, &id, SECOND).await.unwrap();
     assert_eq!(recalled["text"], "wait");

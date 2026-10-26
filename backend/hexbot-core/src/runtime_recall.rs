@@ -43,10 +43,7 @@ impl Runtime {
                 .back()
                 .map(|i| &i.intent)
                 .or(state.input_run.as_ref());
-            if state.busy
-                && input_id.is_some()
-                && newest.is_some_and(|n| Some(n.as_str()) != input_id)
-            {
+            if state.busy && newest.is_some_and(|n| Some(n.as_str()) != input_id) {
                 return Err(latest_only());
             }
             state.busy

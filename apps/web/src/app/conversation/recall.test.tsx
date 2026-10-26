@@ -239,3 +239,25 @@ it('drops a message recalled from another app, with its card', async () => {
   expect(screen.queryByTestId('user-message')).toBeNull()
   expect(screen.queryByTestId('stopped-card')).toBeNull()
 })
+
+it('closes the cards of a message recalled from another app this view never showed', async () => {
+  await mount()
+  await stop()
+  expect(screen.getByTestId('stopped-card')).toBeVisible()
+  act(() =>
+    routeEvent(
+      {
+        type: 'hexbot.sections.changed',
+        payload: {
+          id: 'chat',
+          bot: 'owl',
+          reload: true,
+          recalled: { row_id: 'pi-9', input_id: 'phone' }
+        }
+      } as never,
+      { refreshBots: () => undefined, refreshSections: () => undefined }
+    )
+  )
+  expect(await screen.findByText('Earlier reply')).toBeVisible()
+  await waitFor(() => expect(screen.queryByTestId('stopped-card')).toBeNull())
+})
