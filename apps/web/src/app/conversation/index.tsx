@@ -1,6 +1,6 @@
 import { JsonRpcGatewayError } from '@hermes/shared'
 import { useNavigate, useParams, useRouter } from '@tanstack/react-router'
-import { ArrowDown, Copy, File, PanelRight, RotateCcw, X } from 'lucide-react'
+import { ArrowDown, Copy, File, PanelRight, X } from 'lucide-react'
 import {
   type CSSProperties,
   isValidElement,
@@ -67,13 +67,12 @@ import { useUi } from '../../stores/ui'
 import { AskingRow } from './asking-row'
 import { ClarifyCard } from './clarify-card'
 import { composerFieldClass, ComposerShell } from './composer'
-import { MemoryMarks } from './memory-marks'
 import { RoomConversation } from './room'
 import { liveMood } from './steps'
 import { visualsOf } from './visual'
 import { Visuals } from './visual-frame'
 import { WaitingBanner } from './waiting-banner'
-import { LiveStatus, WorkSummary } from './work-status'
+import { isWorking, LiveStatus } from './work-status'
 
 export function ConnectedToolsNotice({ sectionId }: { sectionId: string }) {
   const warnings = useTranscripts(state => state.warnings)
@@ -468,16 +467,16 @@ export function MessageRow({
   // Bubbles drawn when the row first rendered stay still; later ones spring in.
   const still = settled.current ?? (settled.current = fresh ? 0 : bubbles.length)
 
-  const copy = {
-    icon: <Copy size={14} />,
-    label: 'Copy',
-    onClick: () => void navigator.clipboard.writeText(bubbles.join('\n\n'))
-  }
-
-  const actions =
-    assistant && onRetry
-      ? [copy, { icon: <RotateCcw size={14} />, label: 'Retry', onClick: onRetry }]
-      : [copy]
+  // A bot's bubbles stand alone, like a text; only yours can be copied.
+  const actions = assistant
+    ? []
+    : [
+        {
+          icon: <Copy size={14} />,
+          label: 'Copy',
+          onClick: () => void navigator.clipboard.writeText(bubbles.join('\n\n'))
+        }
+      ]
 
   const last = bubbles.length - 1
   const name = bot?.display_name ?? 'Bot'
@@ -513,7 +512,9 @@ export function MessageRow({
           <Attachments attachments={message.attachments} onImage={onImage} />
         ) : null}
       </div>
-      {index === last && !message.streaming ? <BubbleActions actions={actions} /> : null}
+      {index === last && actions.length > 0 && !message.streaming ? (
+        <BubbleActions actions={actions} />
+      ) : null}
     </div>
   ))
 
@@ -527,10 +528,10 @@ export function MessageRow({
     )
   }
 
-  // The column reads in order: the bot's messages, their marks, and at the
-  // foot the live status while the turn runs, then the line for what it did.
-  // The bots it asked get their own row under the turn, two faces turned
-  // toward each other.
+  // The column reads in order: the bot's messages, then at the foot the live
+  // status while the turn runs. Nothing stays for how it got there. The bots
+  // it asked get their own row under the turn, two faces turned toward each
+  // other.
   return (
     <>
       <article
@@ -560,18 +561,13 @@ export function MessageRow({
           )}
         >
           {column}
-          {assistant ? <MemoryMarks message={message} /> : null}
-          {assistant ? (
-            <WorkSummary computer={!showFace} fresh={fresh} message={message} name={name} />
-          ) : null}
-          {assistant && message.streaming ? (
+          {assistant && isWorking(message) ? (
             <LiveStatus
-              computer={!showFace}
               face={
                 showFace ? undefined : (
                   <Avatar
                     {...botFace(bot)}
-                    mood={emotion ?? liveMood(message)}
+                    mood={emotion ?? liveMood(message) ?? 'working'}
                     name={name}
                     size="sm"
                   />
@@ -589,16 +585,16 @@ export function MessageRow({
 }
 
 /**
- * "Checking this step" at the foot of a bot's chat while Auto mode still
- * reviews a step and no message streams: an approval card from an
- * overlapping review ended the message that showed it. The line opens into
- * that message's steps.
+ * The live status at the foot of a bot's chat while Auto mode still reviews
+ * a step and no message streams: an approval card from an overlapping review
+ * ended the message that showed it. A message with a step still running
+ * shows the line itself.
  */
 export function CheckingRow({ bot, transcript }: { bot?: Bot; transcript?: Transcript }) {
   const checking = transcript?.streamingMessageId ? undefined : transcript?.checking
   const message = checking && transcript?.messages.findLast(item => item.role === 'assistant')
 
-  if (!checking || !message) {
+  if (!checking || !message || isWorking(message)) {
     return null
   }
 
@@ -607,9 +603,8 @@ export function CheckingRow({ bot, transcript }: { bot?: Bot; transcript?: Trans
   return (
     <div className="flex pt-1">
       <LiveStatus
-        computer
         face={<Avatar {...botFace(bot)} mood="working" name={name} size="sm" />}
-        message={{ ...message, checking }}
+        message={message}
         name={name}
       />
     </div>

@@ -15,7 +15,6 @@ import { type ThreadRef, uiActions, useUi } from '../../stores/ui'
 import { ApprovalCard, bubbleClass, CardRow, Markdown } from '../conversation'
 import { AskingRow } from '../conversation/asking-row'
 import { ClarifyCard } from '../conversation/clarify-card'
-import { MemoryMarks } from '../conversation/memory-marks'
 import { liveMood } from '../conversation/steps'
 import { WorkStatus } from '../conversation/work-status'
 
@@ -86,10 +85,8 @@ function ThreadMessage({ bot, message, name }: { bot?: Bot; message: Message; na
           <span className="px-1 text-[length:var(--text-meta)] font-semibold text-muted">
             {name}
           </span>
-          {/* The name above already marks who is working; show work only once there is some. */}
-          {reply && (message.toolCalls.length || !message.streaming) ? (
-            <WorkStatus message={message} name={name} />
-          ) : null}
+          {/* The name above already marks who is working; say so once it does something. */}
+          {reply && message.toolCalls.length ? <WorkStatus message={message} name={name} /> : null}
           {bubbles.length ? (
             <div
               className={cn('flex max-w-full flex-col gap-1', reply ? 'items-end' : 'items-start')}
@@ -110,7 +107,6 @@ function ThreadMessage({ bot, message, name }: { bot?: Bot; message: Message; na
               ))}
             </div>
           ) : null}
-          {reply ? <MemoryMarks message={message} /> : null}
         </div>
       </article>
       {/* The asked bot may ask a third; its row opens that conversation in turn. */}
