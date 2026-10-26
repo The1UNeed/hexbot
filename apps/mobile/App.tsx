@@ -996,6 +996,8 @@ function MobileApp() {
     ) : page === 'settings' ? (
       <SettingsScreen
         daemon={daemon}
+        error={mobile.error}
+        onDismissError={() => mobile.setError(null)}
         user={mobile.user ? { name: mobile.user.display_name } : null}
         onBack={() => setPage('home')}
         onSwitchDaemon={() => setSwitcherOpen(true)}

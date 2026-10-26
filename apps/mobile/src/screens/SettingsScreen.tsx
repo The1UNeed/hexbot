@@ -41,6 +41,8 @@ export interface DaemonArea {
 
 export interface SettingsScreenProps {
   daemon: DaemonOverview | null
+  error?: string | null
+  onDismissError?: () => void
   /** Signed-in person on this daemon. */
   user?: { name: string } | null
   onBack: () => void
@@ -70,9 +72,11 @@ const STATE: Record<ConnectionState, string> = {
 export function SettingsScreen({
   busy,
   daemon,
+  error,
   groups,
   onBack,
   onDisconnect,
+  onDismissError,
   onOpenArea,
   onOpenPulse,
   onPairAgain,
@@ -168,6 +172,15 @@ export function SettingsScreen({
             variant="tinted"
           />
         </Pressable>
+
+        {error ? (
+          <Banner
+            actionLabel="Dismiss"
+            message={error}
+            onAction={onDismissError}
+            testID="app-error"
+          />
+        ) : null}
 
         {daemon && (daemon.state === 'offline' || daemon.state === 'unauthorized') ? (
           <Banner
