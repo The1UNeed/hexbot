@@ -425,7 +425,6 @@ async fn forget(home: &Path) {
 async fn ensure(home: &Path, cfg: &Value, env: &BTreeMap<String, String>) -> Result<()> {
     let lock = lifecycle(home);
     let _guard = lock.lock().await;
-    let _unfinished = Unfinished { home };
     let current = match info(home, cfg, env).await {
         Ok(current) => current,
         Err(error) => {
@@ -433,19 +432,18 @@ async fn ensure(home: &Path, cfg: &Value, env: &BTreeMap<String, String>) -> Res
             return Err(error);
         }
     };
-    let result = match state(current.as_ref()) {
-        "running" => {
-            if with(home, |c| c.busy.is_some() || c.state != Some("running")) {
-                settle(home, &Ok("running"));
-            }
-            return Ok(());
+    let found = state(current.as_ref());
+    if found == "running" {
+        if with(home, |c| c.busy.is_some() || c.state != Some("running")) {
+            settle(home, &Ok("running"));
         }
-        "absent" => {
-            set_busy(home, Some("starting"));
-            create(home, cfg, env).await
-        }
+        return Ok(());
+    }
+    set_busy(home, Some("starting"));
+    let mut unfinished = Unfinished { home, armed: true };
+    let result = match found {
+        "absent" => create(home, cfg, env).await,
         "stopped" => {
-            set_busy(home, Some("starting"));
             async {
                 let out = cua(cfg, env, &["sb", "resume", &sandbox(home)], 120).await?;
                 if out.code != 0 {
@@ -455,13 +453,9 @@ async fn ensure(home: &Path, cfg: &Value, env: &BTreeMap<String, String>) -> Res
             }
             .await
         }
-        "starting" => {
-            set_busy(home, Some("starting"));
-            ready(home, cfg, env).await
-        }
+        "starting" => ready(home, cfg, env).await,
         // A computer that failed to start is made again.
         _ => {
-            set_busy(home, Some("starting"));
             async {
                 remove(home, cfg, env).await?;
                 create(home, cfg, env).await
@@ -472,17 +466,20 @@ async fn ensure(home: &Path, cfg: &Value, env: &BTreeMap<String, String>) -> Res
     forget(home).await;
     let result = result.map(|_| "running");
     settle(home, &result);
+    unfinished.armed = false;
     result.map(|_| ())
 }
 
 /// A bot stopped while its first action starts the computer: the start is
-/// dropped unfinished, and the computer must not stay busy.
+/// dropped unfinished, and the computer must not stay busy. Armed only while
+/// the busy mark is this start's own.
 struct Unfinished<'a> {
     home: &'a Path,
+    armed: bool,
 }
 impl Drop for Unfinished<'_> {
     fn drop(&mut self) {
-        if with(self.home, |c| c.busy.take().is_some()) {
+        if self.armed && with(self.home, |c| c.busy.take().is_some()) {
             changed(self.home);
         }
     }
