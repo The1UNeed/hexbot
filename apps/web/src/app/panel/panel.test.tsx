@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { vi } from 'vitest'
 
 import type { Bot, ToolCall } from '../../lib/types'
@@ -222,6 +222,37 @@ describe('ProfilePanel', () => {
 
     // A panel closed under the window, as on a narrow window, gives it back.
     unmount()
-    expect(api.computerControl).toHaveBeenLastCalledWith('bot')
+    await waitFor(() => expect(api.computerControl).toHaveBeenLastCalledWith('bot'))
+  })
+
+  it('gives the computer back when the window closes before a take-over lands', async () => {
+    const running = {
+      activity: null,
+      actor: null,
+      available: true,
+      control: 'bot' as const,
+      cursors: [],
+      error: null,
+      size: 'small' as const,
+      sizes: [],
+      state: 'running' as const
+    }
+
+    let land = (_: unknown) => {}
+    api.computerStatus.mockResolvedValue(running)
+    api.computerView.mockResolvedValue({ control: false, expires_at: 0, path: '/v/#t' })
+    api.computerControl.mockReset()
+    api.computerControl.mockImplementationOnce(() => new Promise(resolve => (land = resolve)))
+    api.computerControl.mockResolvedValue(running)
+    useComputer.setState({ error: null, status: null })
+    useConnection.setState({ target: { kind: 'local', origin: 'http://127.0.0.1:9119' } })
+    seed([], false)
+    useBots.setState({ byName: { scout: { ...bot, tools: ['computer_use'] } } })
+    const { unmount } = render(<ProfilePanel />)
+    fireEvent.click(screen.getByRole('tab', { name: 'Computer' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Take control' }))
+    unmount()
+    await act(async () => land({ ...running, control: 'user' }))
+    await waitFor(() => expect(api.computerControl).toHaveBeenLastCalledWith('bot'))
   })
 })

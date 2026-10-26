@@ -592,10 +592,12 @@ pub async fn call(home: &Path, method: &str, p: &Value) -> Option<Result<Value>>
                     };
                     if user {
                         with(home, |c| c.user_control = true);
+                        changed(home);
+                        settled(home).await;
                     } else {
                         release(home);
+                        changed(home);
                     }
-                    changed(home);
                     Ok(snapshot(home))
                 }
                 "hexbot.computer.view" => view(home, p["control"] == true).await,
@@ -637,6 +639,7 @@ async fn view(home: &Path, control: bool) -> Result<Value> {
     if control {
         with(home, |c| c.user_control = true);
         changed(home);
+        settled(home).await;
     } else {
         args.push("--view-only".into());
     }
@@ -701,6 +704,12 @@ async fn view(home: &Path, control: bool) -> Result<Value> {
         "control": control,
         "expires_at": expires,
     }))
+}
+
+/// Waits for the action a bot has under way, so none of its input lands
+/// after the user takes over. Bots waiting for a turn see the user has it.
+async fn settled(home: &Path) {
+    let _ = tokio::time::timeout(TURN_WAIT, turns(home).lock()).await;
 }
 
 /// The bots have the computer again: screens that could type stop working.
@@ -1092,7 +1101,12 @@ pub async fn act(
     env: &BTreeMap<String, String>,
     args: &Value,
 ) -> Result<Value> {
-    let action = common::required(args, "action")?;
+    // Conversations that started with the earlier computer tool keep its names.
+    let action = match common::required(args, "action")? {
+        "capture" => "screenshot",
+        "list_apps" | "list_windows" => "windows",
+        action => action,
+    };
     if action == "wait" {
         let seconds = args["seconds"].as_f64().unwrap_or(1.);
         if !(0. ..=30.).contains(&seconds) {
@@ -1121,7 +1135,8 @@ pub async fn act(
             ("computer_move_cursor", json!({"x":x,"y":y}))
         }
         "drag" => {
-            let (start_x, start_y) = point(args, "coordinate")?;
+            let (start_x, start_y) =
+                point(args, "coordinate").or_else(|_| point(args, "from_coordinate"))?;
             let (end_x, end_y) = point(args, "to_coordinate")?;
             (
                 "computer_drag",

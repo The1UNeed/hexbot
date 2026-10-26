@@ -1,5 +1,5 @@
 import { Ellipsis, Monitor, SquareTerminal } from 'lucide-react'
-import { type CSSProperties, useEffect, useMemo, useRef, useState } from 'react'
+import { type CSSProperties, useEffect, useMemo, useState } from 'react'
 
 import { Avatar, useFaceColor } from '../../components/ui/avatar'
 import { Button } from '../../components/ui/button'
@@ -241,18 +241,15 @@ function ComputerWindow({ onClose, status }: { onClose: () => void; status: Comp
   const user = status.control === 'user'
   const src = useScreen(status.state === 'running', user)
   const actor = useActorName(status.actor)
-  // Closing the window, or the panel going away under it, hands it back.
-  const holding = useRef(user)
-
-  useEffect(() => {
-    holding.current = user
-  }, [user])
-
+  // Closing the window, or the panel going away under it, hands it back,
+  // once a take-over still on its way has landed.
   useEffect(
     () => () => {
-      if (holding.current) {
-        void useComputer.getState().control('bot')
-      }
+      void useComputer.getState().taking.then(() => {
+        if (useComputer.getState().status?.control === 'user') {
+          void useComputer.getState().control('bot')
+        }
+      })
     },
     []
   )

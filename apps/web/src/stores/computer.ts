@@ -31,6 +31,8 @@ export interface ComputerStoreState {
   refresh: () => Promise<void>
   status: ComputerStatus | null
   step: (step: 'reset' | 'restart' | 'start' | 'stop') => Promise<void>
+  /** The last request to take control, answered or not. */
+  taking: Promise<void>
   view: (control: boolean) => Promise<null | string>
 }
 
@@ -57,7 +59,13 @@ export const useComputer = create<ComputerStoreState>(set => {
       await run(() => computerConfigure(size))
     },
     async control(holder) {
-      await run(() => computerControl(holder))
+      const request = run(() => computerControl(holder)).then(() => undefined)
+
+      if (holder === 'user') {
+        set({ taking: request })
+      }
+
+      await request
     },
     error: null,
     read: null,
@@ -69,6 +77,7 @@ export const useComputer = create<ComputerStoreState>(set => {
       }
     },
     status: null,
+    taking: Promise.resolve(),
     async step(step) {
       await run(() => computerStep(step))
     },
