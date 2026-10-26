@@ -1195,7 +1195,7 @@ pub async fn act(
     });
     changed(home);
     let _acting = Acting { home };
-    let _turn = turn;
+    let turn = Arc::new(turn);
     let server = json!({
         "command": command(cfg, env).ok_or_else(unavailable)?,
         "args": ["mcp", "--sandbox", sandbox(home), "--permissions", "computer:all"],
@@ -1212,10 +1212,11 @@ pub async fn act(
             &server,
             "computer_move_cursor",
             json!({"x":x,"y":y}),
+            &turn,
         )
         .await?;
     }
-    let result = request(home, bot, &server, tool, params).await?;
+    let result = request(home, bot, &server, tool, params, &turn).await?;
     if action == "drag" {
         aim(home, bot, action, point(args, "to_coordinate").ok());
     }
@@ -1231,15 +1232,37 @@ pub async fn act(
     if args["capture_after"] == true {
         // Let the screen draw what the action did.
         tokio::time::sleep(Duration::from_millis(500)).await;
-        let capture = look(request(home, bot, &server, "computer_screenshot", json!({})).await?)?;
+        let capture =
+            look(request(home, bot, &server, "computer_screenshot", json!({}), &turn).await?)?;
         let mut content = result["content"].as_array().cloned().unwrap_or_default();
         content.extend(capture["content"].as_array().cloned().unwrap_or_default());
         return Ok(json!({"content":content,"screenshot_path":capture["screenshot_path"]}));
     }
     Ok(result)
 }
-async fn request(home: &Path, bot: &str, server: &Value, tool: &str, args: Value) -> Result<Value> {
-    let result = connectors::mcp_call_config(home, bot, SERVER, server, tool, args).await?;
+/// One call to the computer. It runs to its end even if the bot is stopped,
+/// and keeps the turn until then, so no other bot acts on the screen meanwhile.
+async fn request(
+    home: &Path,
+    bot: &str,
+    server: &Value,
+    tool: &str,
+    args: Value,
+    turn: &Arc<tokio::sync::OwnedMutexGuard<()>>,
+) -> Result<Value> {
+    let (home, bot, server, name) = (
+        home.to_owned(),
+        bot.to_owned(),
+        server.clone(),
+        tool.to_owned(),
+    );
+    let held = turn.clone();
+    let result = tokio::spawn(async move {
+        let _held = held;
+        connectors::mcp_call_config(&home, &bot, SERVER, &server, &name, args).await
+    })
+    .await
+    .map_err(|_| Error::new(4211, "The computer action stopped unexpectedly."))??;
     if result["isError"] == true {
         return Err(Error::new(
             4211,

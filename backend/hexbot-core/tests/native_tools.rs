@@ -555,6 +555,8 @@ if args[0]=='mcp':
         elif m=='tools/list': result={'tools':[]}
         elif m=='tools/call':
             name=r['params']['name']; log({'tool':name,'args':r['params'].get('arguments',{})})
+            if name=='computer_click' and (here/'slow-click').exists():
+                import time; time.sleep(1.5); log({'done':name})
             if name=='computer_screenshot': result={'content':[{'type':'image','mimeType':'image/png','data':png}]}
             else: result={'content':[{'type':'text','text':json.dumps({'success':True})}]}
         else: result={}
@@ -821,6 +823,66 @@ async fn computer_screen_is_served_through_the_daemon_and_embeddable() {
     .await;
     assert_eq!(missing.status(), 404);
     server.abort();
+}
+#[cfg(unix)]
+#[tokio::test]
+async fn a_stopped_action_keeps_the_turn_until_it_ends() {
+    let h = home(json!({"tools":{"enabled_toolsets":["computer_use"]}}));
+    let cua = script(h.path(), "cua-test", FAKE_CUA);
+    std::fs::write(
+        h.path().join(".env"),
+        format!("HEXBOT_CUA_CMD={}\n", cua.display()),
+    )
+    .unwrap();
+    db::open(h.path())
+        .unwrap()
+        .execute(
+            "INSERT INTO bots(name,owner_id,workdir) VALUES ('helper','local',NULL)",
+            [],
+        )
+        .unwrap();
+    std::fs::create_dir_all(h.path().join("profiles/helper")).unwrap();
+    call(h.path(), "computer_use", json!({"action":"screenshot"}))
+        .await
+        .unwrap();
+    let log = || std::fs::read_to_string(h.path().join("cua.log")).unwrap_or_default();
+    // A slow click is under way when its bot is stopped.
+    std::fs::write(h.path().join("slow-click"), "").unwrap();
+    let mut click = Box::pin(call(
+        h.path(),
+        "computer_use",
+        json!({"action":"click","coordinate":[10,10]}),
+    ));
+    tokio::select! {
+        _ = &mut click => panic!("the click should still be running"),
+        _ = async {
+            while !log().contains("computer_click") {
+                tokio::task::yield_now().await;
+            }
+        } => {}
+    }
+    drop(click);
+    std::fs::remove_file(h.path().join("slow-click")).unwrap();
+    // Another bot waits for it to end before acting.
+    native_tools::call(
+        h.path(),
+        "local",
+        "helper",
+        "conversation",
+        "computer_use",
+        &json!({"action":"double_click","coordinate":[20,20]}),
+    )
+    .await
+    .unwrap();
+    let log = log();
+    let done = log.find(r#""done""#).expect("the click ran to its end");
+    let next = log.find("computer_double_click").unwrap();
+    assert!(
+        done < next,
+        "the second bot acted during the first one's click"
+    );
+    hexbot_core::connectors::close_bot(h.path(), "tester").await;
+    hexbot_core::connectors::close_bot(h.path(), "helper").await;
 }
 #[cfg(unix)]
 #[tokio::test]
