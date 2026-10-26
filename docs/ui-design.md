@@ -267,8 +267,8 @@ notice. Working and idle draw the plain pill.
     on"; a daemon without Cua shows how to install it. Under it, the bot's
     other tool calls in the section, housekeeping included, newest first,
     each with its glyph, time and result mark, closed until clicked open to
-    its arguments and output. Computer actions are not listed, here or in
-    the chat; the screen and cursor show them. A plain-words line on top
+    its arguments and output. Computer actions are not listed here; the
+    screen and cursor show them. A plain-words line on top
     says what the bot is doing while a tool runs, and the tab shows a still
     blue dot.
     The mobile app shows the same computer on a front card from a computer

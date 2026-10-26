@@ -64,7 +64,7 @@ when Connect supplies one, and exchanges the grant directly with that daemon.
 | --- | --- |
 | Bots | Chat list and Bots & jobs; create, edit, delete, soul, picture, model and thinking level, tools, approvals, workspace, notifications and dreaming |
 | Conversations | Check-ins in the chat list; streamed chat, stop, file/image/PDF attachments, Markdown, tool steps with their results, visuals, questions and approvals |
-| Computer | The bots' shared computer on its own card from a chat's computer button: the live screen with each bot's face cursor, what is happening on it, Take control and Give back, Turn on, Restart, Turn off and Reset; its size in a bot's Tools. Computer actions are not listed as steps |
+| Computer | The bots' shared computer on its own card from a chat's computer button: the live screen with each bot's face cursor, what is happening on it, Take control and Give back, Turn on, Restart, Turn off and Reset; its size in a bot's Tools |
 | Rooms | Rooms in the chat list: chat, stop, bot membership, main bot, budgets, approvals, archive, restore from All rooms, and delete |
 | Memory | Edit each bot's memory and your About you text; inspect dreaming and restore memory |
 | Models | Provider API keys and device sign-in, model selection, daemon defaults and fallback model |
