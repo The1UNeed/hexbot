@@ -53,7 +53,7 @@ Changes reach the chat at different times:
 | Tools, connectors, or MCP servers              | From your next message. That one reply rereads the conversation without the provider's prompt cache, so it costs more than usual. |
 | Soul, memory, About you, skills, and teammates | After the chat next summarises older messages, as described below.                                                                |
 
-The context meter at the top right of the chat shows how much of the model's context window the conversation fills, as a percentage, with the plain numbers on hover. A tick on its bar marks the summary point: when the conversation exceeds it, Hexbot summarises the older messages so the chat can go on, and the pill reads "Summarising" while that happens. When the meter is high, it says summarising starts soon. If the model's window is too small to keep any messages before that point, the tooltip says older messages are summarised after every reply. After a summary, the meter reads "Context" until the next reply is measured, even after the daemon restarts.
+When a chat grows past what the model can hold, Hexbot summarises the older messages so the chat can go on.
 
 A summary keeps the thread of the work but not every detail. What lasts goes into the bot's memory and notes, and the bot can search the chat's history from before its latest summary when it needs an exact detail.
 
