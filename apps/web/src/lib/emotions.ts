@@ -55,7 +55,12 @@ export interface Moment {
   said?: { text: string }
 }
 
-export function momentOf(messages: readonly Message[]): Moment {
+/**
+ * `active` is whether the turn still runs. A question or approval card closes
+ * the bubble on screen while the turn goes on, so the bubble alone would end
+ * the reply early and start it again after the card.
+ */
+export function momentOf(messages: readonly Message[], active?: boolean): Moment {
   const said = messages.findLast(message => message.role === 'user')
   const reply = messages.findLast(message => message.role === 'assistant')
 
@@ -66,7 +71,7 @@ export function momentOf(messages: readonly Message[]): Moment {
       id: reply.id,
       status: reply.status,
       steps: reply.toolCalls.length,
-      streaming: reply.streaming,
+      streaming: active ?? reply.streaming,
       text: [...(reply.parts ?? []), reply.text].join('\n'),
       workedMs: Math.max(0, (reply.workUntil ?? reply.createdAt) - reply.createdAt)
     },

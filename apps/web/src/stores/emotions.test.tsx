@@ -1,9 +1,9 @@
 import { act, renderHook } from '@testing-library/react'
 
 import { BORED_AFTER_MS, DROWSY_AFTER_MS, EMOTION_SECONDS } from '../lib/emotions'
-import type { Message } from '../lib/types'
+import type { Message, RoomEvent, RoomTurn } from '../lib/types'
 
-import { useConversationFeelings, useEmotions } from './emotions'
+import { useConversationFeelings, useEmotions, useRoomFeelings } from './emotions'
 
 const user = (id: string, text: string): Message => ({
   attachments: [],
@@ -84,5 +84,47 @@ describe('bot feelings', () => {
     act(() => vi.advanceTimersByTime(EMOTION_SECONDS.curious * 1000))
     expect(feels()).toBeUndefined()
     expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('keeps one turn one reaction while a card closes its bubble', () => {
+    const said = user('u1', 'thanks!')
+
+    const { rerender } = renderHook(
+      ({ active, messages }) => useConversationFeelings('ada', 's1', messages, true, active),
+      { initialProps: { active: false, messages: [said] } }
+    )
+
+    rerender({ active: true, messages: [said, replying] })
+    expect(feels()).toBe('shy')
+    act(() => useEmotions.getState().calm('ada'))
+    // An approval card closes the bubble; the turn runs on in a new one.
+    const closed = { ...replying, streaming: false, text: 'Sorry, I need approval.' }
+    rerender({ active: true, messages: [said, closed] })
+    rerender({ active: true, messages: [said, closed, { ...replying, id: 'r2' }] })
+    expect(feels()).toBeUndefined()
+  })
+
+  it('takes a room history that loads after opening as the baseline', () => {
+    const event = (seq: number, text: string): RoomEvent => ({
+      actor_id: 'ada',
+      actor_kind: 'bot',
+      created_at: seq,
+      kind: 'message.bot',
+      payload: { text },
+      room_id: 'r1',
+      seq
+    })
+
+    const turns: Record<string, RoomTurn> = {}
+
+    const { rerender } = renderHook(
+      ({ events, ready }) => useRoomFeelings('r1', events, turns, {}, ready),
+      { initialProps: { events: [] as RoomEvent[], ready: false } }
+    )
+
+    rerender({ events: [event(1, 'Merged it.')], ready: true })
+    expect(feels()).toBeUndefined()
+    rerender({ events: [event(1, 'Merged it.'), event(2, 'Shipped.')], ready: true })
+    expect(feels()).toBe('celebrating')
   })
 })

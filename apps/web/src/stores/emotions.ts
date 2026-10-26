@@ -107,9 +107,11 @@ export function useConversationFeelings(
   bot: null | string | undefined,
   conversation: null | string | undefined,
   messages: readonly Message[],
-  ready = true
+  ready = true,
+  /** Whether the bot's turn still runs, through any card that closed its bubble. */
+  active?: boolean
 ): void {
-  const moment = useMemo(() => momentOf(messages), [messages])
+  const moment = useMemo(() => momentOf(messages, active), [active, messages])
   const last = useRef({ conversation, moment, ready })
 
   useEffect(() => {
@@ -139,7 +141,9 @@ export function useRoomFeelings(
   room: string,
   events: readonly RoomEvent[],
   turns: Record<string, RoomTurn>,
-  transcripts: Record<string, { messages: Message[] } | undefined>
+  transcripts: Record<string, { messages: Message[] } | undefined>,
+  /** The room's history has loaded: what was there by then is not news. */
+  ready: boolean
 ): void {
   const live = useMemo(() => {
     const moments: Record<string, Moment> = {}
@@ -149,20 +153,21 @@ export function useRoomFeelings(
         ? transcripts[turn.live_session_id]?.messages
         : undefined
 
-      moments[turn.bot] = momentOf(messages ?? [])
+      // A live turn runs until the room says it ended.
+      moments[turn.bot] = momentOf(messages ?? [], true)
     }
 
     return moments
   }, [transcripts, turns])
 
   const latest = events.at(-1)
-  const last = useRef({ latest: latest?.seq ?? -1, live, room })
+  const last = useRef({ latest: latest?.seq ?? -1, live, ready, room })
 
   useEffect(() => {
     const before = last.current
-    last.current = { latest: latest?.seq ?? -1, live, room }
+    last.current = { latest: latest?.seq ?? -1, live, ready, room }
 
-    if (before.room !== room) {
+    if (before.room !== room || !ready || !before.ready) {
       return
     }
 
@@ -213,5 +218,5 @@ export function useRoomFeelings(
         }
       }
     }
-  }, [events, latest?.seq, live, room])
+  }, [events, latest?.seq, live, ready, room])
 }

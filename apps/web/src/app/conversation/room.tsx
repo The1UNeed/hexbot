@@ -273,6 +273,7 @@ export function RoomConversation() {
   const navigate = useNavigate()
   const room = useRoomOrLeave(roomId, 'open')
   const events = useRooms(state => state.eventsByRoom[roomId] ?? NO_EVENTS)
+  const loaded = useRooms(state => roomId in state.eventsByRoom)
   const turns = useRooms(state => state.liveTurnsByRoom[roomId] ?? NO_TURNS)
   const transcripts = useTranscripts(state => state.bySession)
   const bots = useBots(state => state.byName)
@@ -330,8 +331,9 @@ export function RoomConversation() {
     )
   }, 0)
 
-  useTurnCues(roomId, { failed: Boolean(failure), streaming, waiting })
-  useRoomFeelings(roomId, events, turns, transcripts)
+  const ended = useRooms(state => state.endedByRoom[roomId])
+  useTurnCues(roomId, { failed: Boolean(failure) || ended === 'failed', streaming, waiting })
+  useRoomFeelings(roomId, events, turns, transcripts, loaded)
   const feelings = useEmotions(state => state.feelings)
 
   // Each bot's latest message, whose face shows what it feels.

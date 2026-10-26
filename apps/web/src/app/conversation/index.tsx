@@ -1453,7 +1453,13 @@ function BotConversation() {
 
     wasStreaming.current = streaming
   }, [bot?.display_name, messages, section?.id, streaming])
-  useConversationFeelings(bot?.name, section?.id, messages, ready)
+  useConversationFeelings(
+    bot?.name,
+    section?.id,
+    messages,
+    ready,
+    Boolean(transcript?.turnActive) || streaming
+  )
   const emotion = useEmotion(bot?.name)
   useTurnCues(section?.id, {
     failed: Boolean(messages.at(-1)?.error),

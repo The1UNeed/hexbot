@@ -237,6 +237,17 @@ describe('approvals and questions in a room', () => {
     expect(screen.queryByRole('status', { name: 'Checking this step' })).toBeNull()
   })
 
+  it('cues a failed turn as failed, though its failure event comes after it ends', () => {
+    const cues = vi.spyOn(sounds, 'useTurnCues')
+    render(<RoomConversation />)
+    act(() => useRooms.getState().handleTurn({ ...turn, status: 'failed' }))
+    expect(cues).toHaveBeenLastCalledWith(
+      'r1',
+      expect.objectContaining({ failed: true, streaming: false })
+    )
+    cues.mockRestore()
+  })
+
   it('drops an open card when the turn ends, so the next turn starts clean', async () => {
     render(<RoomConversation />)
     act(() => routeEvent(approval('ap-2')))
@@ -350,13 +361,28 @@ describe('approvals and questions in a room', () => {
 describe('room history', () => {
   it('prefers your renamed identity over stale room member names', () => {
     useMe.setState({ me: { display_name: 'Alex', id: 'local' } })
-    useRooms.setState({ byId: { r1: { id: 'r1', members: [
-      { member_kind: 'human', member_id: 'local', display_name: 'Admin' }
-    ] } as Room } })
-    render(<RoomEventRow event={{
-      actor_id: 'local', actor_kind: 'human', kind: 'member.added',
-      payload: { member_id: 'local', member_kind: 'human' }, room_id: 'r1', seq: 1
-    } as never} />)
+    useRooms.setState({
+      byId: {
+        r1: {
+          id: 'r1',
+          members: [{ member_kind: 'human', member_id: 'local', display_name: 'Admin' }]
+        } as Room
+      }
+    })
+    render(
+      <RoomEventRow
+        event={
+          {
+            actor_id: 'local',
+            actor_kind: 'human',
+            kind: 'member.added',
+            payload: { member_id: 'local', member_kind: 'human' },
+            room_id: 'r1',
+            seq: 1
+          } as never
+        }
+      />
+    )
     expect(screen.getByText(/Alex/)).toBeVisible()
     expect(screen.queryByText(/Admin/)).toBeNull()
   })
