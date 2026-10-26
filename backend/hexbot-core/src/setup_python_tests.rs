@@ -2343,9 +2343,20 @@ async fn observability_actual_python_hook_teardown_and_alternate_lookup() {
         "nonce",
     )["identity"]
         .clone();
-    let driver = r#"import sys,json,types,importlib.util
+    // The host interpreter is recorded for failure messages only; no assertion
+    // depends on it. A host whose own search path ships a sitecustomize (Homebrew
+    // Python does, in its stdlib) must not change any outcome below.
+    let host = bounded_output(child_command(
+        "import sys,json,importlib.util\nspec=importlib.util.find_spec('sitecustomize')\nprint(json.dumps({'executable':sys.executable,'version':sys.version,'ambient_sitecustomize':spec.origin if spec else None}))",
+    ))
+    .await
+    .unwrap();
+    let host = String::from_utf8_lossy(&host.stdout).trim().to_string();
+    // The traceback module is loaded before the search path is narrowed so that
+    // shutdown and teardown diagnostics keep their ordinary form on every host.
+    let driver = r#"import sys,json,types,importlib.util,traceback
 from pathlib import Path
-script,body,identity,argv,extra,mode=sys.argv[1:]
+script,body,identity,argv,ambient,extra,mode=sys.argv[1:]
 source=Path(script).read_text(); head=source[:-len(body)]
 namespace={'__name__':'sitecustomize','__file__':script}
 exec(compile(head,script,'exec'),namespace)
@@ -2353,9 +2364,17 @@ exec(compile(head,script,'exec'),namespace)
 # generated hook, lookup, pre-opens, finalization and capture are production code.
 namespace['identity']=lambda:json.loads(identity)
 sys.argv=json.loads(argv)
-sys.path.insert(0,str(Path(script).parent))
 sys.modules['sitecustomize']=types.ModuleType('sitecustomize')
 sys.modules['sitecustomize'].__spec__=importlib.util.spec_from_file_location('sitecustomize',script)
+# A test-owned sitecustomize stands in for one shipped on the host interpreter's
+# own search path. The fixture then owns the search path the production lookup
+# inspects: the observer's own directory plus, for the alternate mode, one
+# explicit alternate. Every host directory is dropped; the stdlib needed later is
+# already loaded. The ambient mode skips that narrowing to show the stand-in is
+# visible to the unchanged lookup and refused like any other alternate.
+sys.path.insert(0,ambient)
+if mode!='ambient': sys.path[:]=[]
+sys.path.insert(0,str(Path(script).parent))
 if extra: sys.path.append(extra)
 if mode=='missing-finder': sys.meta_path.insert(0,object())
 exec(compile(body,script,'exec'),namespace)
@@ -2381,17 +2400,23 @@ else:
  source=Path(sys.argv[0]).parent.parent/'Lib'/'site-packages'/'edge_tts'/'communicate.py'
  exec(compile(source.read_text(),str(source),'exec'))
 "#;
-    let alternate = layout.runtime.join("alternate");
-    fs::create_dir(&alternate).unwrap();
-    let sentinel = alternate.join("executed");
-    fs::write(
-        alternate.join("sitecustomize.py"),
-        format!(
-            "from pathlib import Path\nPath({:?}).write_text('unsafe')\n",
-            sentinel.display().to_string()
-        ),
-    )
-    .unwrap();
+    // Each candidate sitecustomize records a sentinel if it is ever executed.
+    let candidate = |name: &str| {
+        let dir = layout.runtime.join(name);
+        fs::create_dir(&dir).unwrap();
+        let sentinel = dir.join("executed");
+        fs::write(
+            dir.join("sitecustomize.py"),
+            format!(
+                "from pathlib import Path\nPath({:?}).write_text('unsafe')\n",
+                sentinel.display().to_string()
+            ),
+        )
+        .unwrap();
+        (dir, sentinel)
+    };
+    let (alternate, sentinel) = candidate("alternate");
+    let (ambient, ambient_sentinel) = candidate("ambient");
     for mode in [
         "syntax",
         "atexit",
@@ -2400,6 +2425,7 @@ else:
         "missing-finder",
         "final-flush",
         "alternate",
+        "ambient",
         "success",
     ] {
         let mut command = child_command(driver);
@@ -2408,6 +2434,7 @@ else:
             .arg(ENTRYPOINT_OBSERVER)
             .arg(identity.to_string())
             .arg(json!([layout.entrypoint, "--version"]).to_string())
+            .arg(&ambient)
             .arg(if mode == "alternate" {
                 alternate.as_os_str()
             } else {
@@ -2417,7 +2444,11 @@ else:
         let output = bounded_output(command).await.unwrap();
         let result = observer_result(&output, "edge-tts 7.2.7", "nonce", &layout, KEY, &graph);
         if matches!(mode, "syntax" | "success") {
-            assert!(result.is_ok(), "{mode}: {}", output_cause(&output));
+            assert!(
+                result.is_ok(),
+                "{mode} on {host}: {}",
+                output_cause(&output)
+            );
         } else {
             let error = result.unwrap_err();
             if mode == "final-flush" {
@@ -2431,9 +2462,19 @@ else:
                         && error.message.contains("SyntaxError")
                 );
             }
+            if matches!(mode, "alternate" | "ambient") {
+                assert_eq!(output.status, Some(1), "{mode} on {host}");
+                assert!(
+                    error
+                        .message
+                        .contains("alternate sitecustomize lookup refused"),
+                    "{mode} on {host}: {}",
+                    error.message
+                );
+            }
         }
         assert!(output.reaped());
-        assert!(!sentinel.exists());
+        assert!(!sentinel.exists() && !ambient_sentinel.exists(), "{mode}");
     }
 }
 #[tokio::test]

@@ -148,14 +148,14 @@ OS cleanup failure can block setup and Full startup. There is no universal
 stop event and joins the same worker, which needs no Tokio/receiver progress.
 These private probe limits do not change uv mutation timeouts or Full/CI budgets.
 
-This replacement is locally staged and unapproved. Windows native settlement,
-resource-lifetime and runtime-exit gates remain unexecuted; portable passes and
-GNU compilation do not establish those results. Scratch deletion requires full
-cleanup eligibility, not direct-child reaping alone. Scratch-removal failures
-retain the classified exception, package context and bounded captured output.
-Structured identity refusals also retain diagnostics; identity eligibility does
-not require empty stderr. Fresh independent GPT/Claude full-source and copy
-review remains required.
+Native Windows validation and independent source and copy review are required
+before this capture helper ships in any Windows distribution. Its native
+settlement, resource-lifetime and runtime-exit gates are unrun; portable passes
+and GNU compilation do not establish those results. Scratch deletion requires
+full cleanup eligibility, not direct-child reaping alone. Scratch-removal
+failures retain the classified exception, package context and bounded captured
+output. Structured identity refusals also retain diagnostics; identity
+eligibility does not require empty stderr.
 
 Missing/stale voice completion takes the explicit pinned install/update branch
 after interpreter checks, without probing damaged old packages first. All final
@@ -443,10 +443,11 @@ Remove-Item Env:\HEXBOT_SHUTDOWN_FORWARD_STDIO
 ```
 
 Portable stdin controls check input ownership; GNU compilation checks source only.
-PowerShell/C# and exact Windows stdio transport remain unrun for this candidate;
-historical stdout loss is an inference, not an established cause. The historical
-a17 run completed four modes, timed out in service-exit readiness and never
-reached service-kill. The ignored control and B forwarding remain opt-in.
+PowerShell/C# and exact Windows stdio transport are unrun for the service
+controls this document describes; historical stdout loss is an inference, not
+an established cause. The native run on commit a17cbe6d completed four modes,
+timed out in service-exit readiness and never reached service-kill. The ignored
+control and B forwarding remain opt-in.
 A separate native supervisor probe
 starts/stops a local tunnel metrics fixture twice through real services cleanup.
 It does not prove live Cloudflare enrollment. A volume without distinct 8.3 names

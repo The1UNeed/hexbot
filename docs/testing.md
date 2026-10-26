@@ -489,16 +489,22 @@ The remaining owned-Python native controls are included by the existing
 `windows_contract` target from
 `backend/hexbot-core/tests/windows_contract/python_acceptance.rs`. They use
 nine fresh installation homes across independent test functions, one empty
-boundary-refusal home, and the existing Full fixture. Module-only repair and combined damaged-DLL gates remain unignored; native execution
-and fresh source review remain required. See the Windows build contract for
-the exact final-probe event blocker and the process-start interruption limit.
+boundary-refusal home, and the existing Full fixture. Module-only repair and
+combined damaged-DLL gates remain unignored. Native execution and independent
+source review are required before Windows distribution. See the Windows build
+contract for the exact final-probe event blocker and the process-start
+interruption limit.
 
 The Python observability controls also exercise strict schema-2 DLL digests,
 limited schema-1 enrichment, exact tagged launcher exceptions, empty fully
 collected stderr and final ordinary launcher checks. Actual portable child
 processes exercise the Unix helper with shortened deadlines, real Unix
 EOF/pipe ownership, overflow/read errors and primary diagnostics. They do not
-establish Windows settlement. The existing `windows_contract` target also
+establish Windows settlement. The portable hook and teardown fixture runs the
+host `python3` over a search path it owns, so a host interpreter whose stdlib
+ships `sitecustomize` cannot change its outcome, while an explicit alternate
+inside the fixture is still refused by the unchanged lookup. The existing
+`windows_contract` target also
 includes the exact private Windows capture source and its native event-driven
 controls. These cover both streams, zero/late bytes, root-exited held writers,
 cap-plus-hang, partial setup, read/wait errors, cancellation races, spawn refusal,
