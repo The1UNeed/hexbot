@@ -5,6 +5,7 @@ import {
   DROWSY_AFTER_MS,
   EMOTION_SECONDS,
   feeling,
+  interrupted,
   type Moment
 } from '../../../web/src/lib/emotions'
 import type { FaceEmotion } from '../ui/face-geometry'
@@ -42,9 +43,9 @@ export function chatMoment(chat: ChatState): Moment {
   return {
     reply: {
       errors: tools.filter(tool => tool.status === 'error').length,
-      failed: Boolean(chat.error),
+      failed: Boolean(chat.error) && !interrupted(chat.error),
       id,
-      status: chat.error ? 'error' : 'complete',
+      status: interrupted(chat.error) ? 'interrupted' : chat.error ? 'error' : 'complete',
       steps: tools.length,
       streaming: false,
       text: replies.map(message => message.text).join('\n'),

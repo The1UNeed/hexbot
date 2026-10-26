@@ -65,10 +65,15 @@ export function momentOf(
   messages: readonly (Message & { request?: true })[],
   active?: boolean
 ): Moment {
-  const said = messages.findLast(message => message.role === 'user')
   const last = messages.findLastIndex(message => message.role === 'assistant')
-  // The turn is everything since you last spoke; with nothing from you, as in
-  // Check-ins, only the latest reply.
+
+  // The turn is everything since you last spoke before the latest reply, so a
+  // message you send while it runs waits for the next turn. With nothing
+  // from you, as in Check-ins, it is only the latest reply.
+  const said = (last < 0 ? messages : messages.slice(0, last)).findLast(
+    message => message.role === 'user'
+  )
+
   const turn = messages.slice(said ? messages.indexOf(said) + 1 : Math.max(0, last))
   const bubbles = turn.filter(message => message.role === 'assistant')
   const reply = bubbles.at(-1)
@@ -78,14 +83,20 @@ export function momentOf(
   // An error event leaves its Stopped card after the reply, not on it. A
   // failed send (`request`) leaves a card too, but the reply runs on.
   const stopped =
-    reply && turn.slice(turn.indexOf(reply) + 1).some(item => item.error && !item.request)
+    reply &&
+    turn
+      .slice(turn.indexOf(reply) + 1)
+      .some(item => item.error && !item.request && !interrupted(item.error))
+
+  // You pressed Stop: the daemon reports it as an error, but nothing failed.
+  const cut = interrupted(reply?.error)
 
   return {
     reply: reply && {
       errors: calls.filter(call => call.status === 'error').length,
-      failed: Boolean(reply.error) || reply.status === 'error' || Boolean(stopped),
+      failed: !cut && (Boolean(reply.error) || reply.status === 'error' || Boolean(stopped)),
       id: reply.id,
-      status: reply.status,
+      status: cut ? 'interrupted' : reply.status,
       steps: calls.length,
       streaming: active ?? reply.streaming,
       text: [...(reply.parts ?? []), reply.text].join('\n'),
@@ -107,6 +118,11 @@ const CELEBRATION =
   /[🎉🥳]|\b(all (\d+ )?tests pass(ed)?|tests are (all )?passing|shipped|merged|deployed|it works)\b/iu
 
 const STOPPED = /interrupt|stop|cancel|abort/i
+
+/** The daemon's error for a turn you stopped. */
+export function interrupted(error?: null | string): boolean {
+  return Boolean(error && /^The turn was interrupted/.test(error))
+}
 
 /** Mostly capitals: someone is shouting. */
 function shouting(text: string): boolean {

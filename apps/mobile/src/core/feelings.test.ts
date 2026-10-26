@@ -43,6 +43,11 @@ describe('mobile feelings', () => {
     expect(result.current).toBe('sad')
     act(() => vi.advanceTimersByTime(10_000))
     expect(result.current).toBeUndefined()
+    // Stopped by you: no feelings about it.
+    rerender({ chat: working })
+    act(() => vi.advanceTimersByTime(10_000))
+    rerender({ chat: { ...said('thanks so much'), error: 'The turn was interrupted' } })
+    expect(result.current).toBeUndefined()
   })
 
   it('takes a running chat that loads after opening as the baseline', () => {

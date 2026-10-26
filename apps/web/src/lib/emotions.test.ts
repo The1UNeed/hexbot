@@ -125,6 +125,20 @@ describe('emotions', () => {
 
     expect(feeling(going, ended)).toBe('proud')
 
+    // You stopped it: the daemon says so as an error, but nothing failed.
+    const halted = momentOf([
+      said,
+      { ...working, error: 'The turn was interrupted', streaming: false, status: 'error' }
+    ])
+
+    expect(feeling(before, halted)).toBeNull()
+
+    // A message you send while it runs waits for the next turn.
+    const queued = message({ id: 'u2', role: 'user', text: 'and another thing' })
+    const busy = momentOf([said, { ...working, toolCalls: [call('error')] }, queued], true)
+    expect(busy.reply?.id).toBe('r1')
+    expect(busy.said?.text).toBe('thank you!')
+
     // A send that failed meanwhile leaves a card, but the reply went well.
     const unsent = { ...card, id: 'e2', request: true as const }
     const fine = momentOf([said, { ...working, streaming: false, text: 'Merged it.' }, unsent])
