@@ -362,7 +362,9 @@ starts with your name, the one Get Started asked for.
   a notice when the daemon has no OS sandbox.
 - Appearance: theme System, Light, Dark; Sounds, off by default: a soft
   synthesised tone when a bot starts, finishes, or needs you, in the open
-  conversation while the window is visible (`lib/sounds.ts`).
+  conversation while the window is visible (`lib/sounds.ts`). Web and
+  desktop only for now: the mobile app plays no audio of its own and
+  leaves sound to the phone's notifications.
 - Updates: current version, channel, check now.
 - About: version, license, links.
 

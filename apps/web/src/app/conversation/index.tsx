@@ -1448,7 +1448,8 @@ function BotConversation() {
   useTurnCues(section?.id, {
     failed: Boolean(messages.at(-1)?.error),
     ready,
-    streaming,
+    // The turn, not its bubble: a card closes the bubble while the turn runs on.
+    streaming: Boolean(transcript?.turnActive) || streaming,
     waiting:
       approvals.filter(card => !card.decision).length +
       clarifies.filter(card => !card.expired && !Object.keys(card.answers).length).length

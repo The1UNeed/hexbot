@@ -6,6 +6,7 @@ import { promptSubmit } from '../../lib/api'
 import { activeCacheScope, authorizeCache, resetDeviceCacheForTests } from '../../lib/device-cache'
 import { routeEvent } from '../../lib/events'
 import { setActiveRpc } from '../../lib/rpc'
+import * as sounds from '../../lib/sounds'
 import type { Bot, DaemonInfo, Section } from '../../lib/types'
 import { useBots } from '../../stores/bots'
 import { useConnection } from '../../stores/connection'
@@ -646,6 +647,28 @@ it.each(['loaded', 'unloaded'])(
     ])
   }
 )
+
+it('cues one turn through the card that closes its bubble', async () => {
+  const cues = vi.spyOn(sounds, 'useTurnCues')
+  await useSections.getState().open('chat')
+  render(<ConversationColumn />)
+
+  const event = (type: string, payload: Record<string, unknown> = {}) =>
+    routeEvent({
+      type,
+      session_id: 'chat',
+      payload: { turn_id: 'card-run', ...payload }
+    } as GatewayEvent)
+
+  await act(async () => {
+    event('message.start')
+    event('message.interim', { message_id: 'before-card', text: 'Checking first' })
+    event('approval.request', { message_id: 'before-card', request_id: 'card', command: 'ls' })
+  })
+  expect(useTranscripts.getState().bySession.chat?.streamingMessageId).toBeNull()
+  expect(cues).toHaveBeenLastCalledWith('chat', expect.objectContaining({ streaming: true }))
+  cues.mockRestore()
+})
 
 it('renders queued users, identified replies and an answered card in their actual order', async () => {
   await useSections.getState().open('chat')
