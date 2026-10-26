@@ -718,8 +718,8 @@ body {
 }
 
 /*
- * Content unfolding into the column (a work card, the line above a reply) and
- * folding away (the live status when the turn ends): the row's height
+ * Content unfolding into the column (a step's detail in the Computer tab) and
+ * folding away: the row's height
  * animates, so what sits below slides instead of jumping.
  */
 @keyframes hex-unfold {

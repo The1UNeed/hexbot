@@ -795,9 +795,8 @@ The refreshed prompt is saved only once the extension adopts it, so idle
 retirement and daemon restart never reopen a section on a discarded refresh.
 Older sections and those whose fixed guidance or tool layout no longer matches
 after an update keep their prompt, except a chat, which is rebuilt with its
-bot's current tools at its next message. The chat
-shows a "Soul updated" mark under the bubble, as it shows "Memory updated"
-for the builtin memory tool and "Note added" for its `note` action.
+bot's current tools at its next message. The chat shows no mark for soul,
+memory, or note writes; the side panel's Computer tab lists the calls.
 
 The `hexbot_show_html {title, html}` tool shows a visual: one self-contained
 HTML page (a chart, table, diagram or mockup) drawn in the conversation. It

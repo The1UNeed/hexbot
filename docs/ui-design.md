@@ -142,42 +142,31 @@ the roster slides in as a drawer.
   left edge; bubbles and cards from the same side in a row stack 4 px apart,
   and a new speaker starts 12 px lower. Each message a bot finishes is its
   own bubble, so a turn that says "I'll run both" and then reports back is
-  two bubbles, live and after a reload. Copy and retry icons appear beside
-  the last bubble on hover. Markdown body with code blocks (a fenced block
+  two bubbles, live and after a reload. A bot's bubbles stand alone, with
+  nothing under or beside them: no thinking line, no memory or soul marks,
+  no copy or retry. A copy icon appears beside your own last bubble on
+  hover. The same holds for history from before this change. Markdown body with code blocks (a fenced block
   is a block even without a language; its copy button shows on hover),
   tables, images. Time separators ("Today 9:13 PM") between days and after
   20 quiet minutes.
 - Live status: from the moment a turn starts until the whole turn is done,
   a line sits at its foot, under the messages the bot has finished: the
-  bot's face and muted words, with no bubble behind them. It says
-  what the bot is doing in plain words ("General is thinking", "General is
-  writing", "General is working", "General is searching the web", "General
-  is running a command", "Connecting to GitHub" for a connector's tool, or
-  the provider's wait notice), never the command, the query or the time;
-  the side panel says the same. The face keeps its working expression while
-  a tool runs.
-  No spinner, no ring, no shimmer. Each new label crossfades in. What the
-  bot is still writing stays hidden ("General is writing"); the message
-  appears whole when it is done and springs in. When the turn ends the line
-  is gone at once, the closing message springs in, and the summary line
-  fades in at the foot of the turn, where the status was.
+  bot's face, in the mood of its work, and "General is working" in muted
+  words, with no bubble behind it. It never names the step, the tool, the
+  thinking, or the provider's wait notice, and it does not open. It stays
+  while a step the user approved still runs. The face thinks, searches,
+  works or writes with the turn; no spinner, no ring, no shimmer. What the
+  bot is still writing stays hidden; the message appears whole when it is
+  done and springs in. When the turn ends the line is gone at once and
+  nothing takes its place.
 - "Waiting on you" is a purple glass pill pinned under the header pill
   while a bot has asked the human something (in a room it names the bot).
   Nothing is written into the transcript for it. A red banner names the bot
   when a room turn failed.
-- Work card: thinking traces and steps are hidden until asked for. Click
-  the live status and it opens under it, set off by a thin rule on the left
-  and no background, with the
-  reasoning trace as it streams and each step as a one-line row; a row
-  opens to its arguments and output in monospace only when clicked. The
-  card and a row's detail unfold into the column rather than popping. Once
-  opened the card stays open until the turn ends; "Open in Computer" shows
-  the same steps in the side panel. When the turn ends the work collapses
-  into one small muted line at the foot of the turn ("Thought for 12s",
-  "Worked for 3s") that opens into the same card. Work that finished in under two
-  seconds leaves no line.
-  Housekeeping tools (memory, tasks, history search, skills) never appear
-  once finished. The Computer tab in the panel still
+- Thinking and steps: a conversation shows what bots say, never how they
+  got there. Thinking, steps, and writes to memory, notes, or soul have no
+  line, card, or mark in a chat, a room, or a thread between bots, on the
+  app, the browser, or the phone. The Computer tab in the side panel still
   lists every call.
 - Approvals: an inline card with the command or action in monospace, the
   reason, and Approve and Deny buttons. Manual and unreviewed cards can also

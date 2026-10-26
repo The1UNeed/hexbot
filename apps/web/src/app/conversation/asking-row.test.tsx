@@ -8,7 +8,7 @@ import { useTranscripts } from '../../stores/transcripts'
 import { useUi } from '../../stores/ui'
 
 import { AskingRow } from './asking-row'
-import { askLabel, asks, runningLabel, visibleSteps } from './steps'
+import { askLabel, asks, runningLabel } from './steps'
 
 const call = (partial: Partial<ToolCall>): ToolCall => ({
   args: { text: 'Can you draft the intro?', to: 'writer', wait: true },
@@ -100,9 +100,8 @@ describe('asks', () => {
     ])
   })
 
-  it('keeps the ask out of the step list and the working line', () => {
+  it('keeps the ask out of the working line', () => {
     const running = message([call({ result: null, status: 'running' })], true)
-    expect(visibleSteps(running.toolCalls)).toEqual([])
     expect(runningLabel(running)).toBeUndefined()
   })
 })

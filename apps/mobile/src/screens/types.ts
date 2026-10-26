@@ -72,20 +72,6 @@ export interface DaemonOverview {
   detail?: string | null
 }
 
-export interface ToolActivity {
-  id: string
-  /** What the user reads: "Read inbox", "Ran npm test". */
-  label: string
-  /** The tool's own name, such as `write_file`, for its icon. */
-  name?: string
-  /** One line of result for the transcript. */
-  detail?: string | null
-  /** The full call, for the tool's own card. */
-  input?: string | null
-  output?: string | null
-  status: 'error' | 'ok' | 'running'
-}
-
 export type ApprovalChoice = 'deny' | 'once' | 'session'
 
 export interface ApprovalRequestView {
@@ -120,7 +106,6 @@ export type ChatItem =
       error?: string | null
       attachments?: AttachmentView[]
     }
-  | { kind: 'tools'; id: string; tools: ToolActivity[] }
   /** A bot's interactive visual, shown as its own card. */
   | { kind: 'visual'; id: string; title: string; index: number }
   | { kind: 'approval'; id: string; request: ApprovalRequestView }
