@@ -145,8 +145,8 @@ export const isWorking = (message: Message) => message.streaming || stepRunning(
 
 /**
  * The live line at the foot of a running turn. It stays until the whole turn
- * is done: the bot's bobbing face and "General is working", no bubble behind
- * it and nothing to open. A conversation shows what bots say, not how they
+ * is done: the bot's face, in the mood of its work, and "General is
+ * working", no bubble behind it and nothing to open. A conversation shows what bots say, not how they
  * got there; the side panel's Computer tab still lists every step.
  */
 export function LiveStatus({

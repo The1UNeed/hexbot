@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest'
 import type { Connector, Message, ToolCall } from '../../lib/types'
 import { useConnectors } from '../../stores/connectors'
 
-import { activityLabel, runningLabel, toolLabel } from './steps'
+import { activityLabel, liveMood, runningLabel, toolLabel } from './steps'
 
 const call = (partial: Partial<ToolCall>): ToolCall => ({
   args: null,
@@ -114,5 +114,35 @@ describe('activityLabel', () => {
     expect(activityLabel(call({ name: 'weather_lookup' }), 'Scout')).toBe(
       'Scout is using weather lookup'
     )
+  })
+})
+describe('liveMood', () => {
+  it('follows a whole turn and returns to idle once streaming ends', () => {
+    const turn = message({})
+    expect(liveMood(turn)).toBe('thinking')
+    expect(
+      liveMood({ ...turn, toolCalls: [call({ name: 'web_search', status: 'running' })] })
+    ).toBe('searching')
+    expect(liveMood({ ...turn, toolCalls: [call({ name: 'web_search', status: 'ok' })] })).toBe(
+      'working'
+    )
+    expect(liveMood({ ...turn, text: 'Here is the result.' })).toBe('writing')
+    expect(liveMood({ ...turn, text: 'Here is the result.', streaming: false })).toBeUndefined()
+  })
+
+  it('shows work during approval checking, provider waits and delegation', () => {
+    expect(liveMood(message({ checking: 'Checking this step' }))).toBe('working')
+    expect(liveMood(message({ activity: 'Waiting on the provider' }))).toBe('working')
+    expect(liveMood(message({ toolCalls: [call({ name: 'ask_bot', status: 'running' })] }))).toBe(
+      'working'
+    )
+    expect(
+      liveMood(
+        message({
+          toolCalls: [call({ name: 'terminal', status: 'running' })],
+          text: 'Earlier text'
+        })
+      )
+    ).toBe('working')
   })
 })

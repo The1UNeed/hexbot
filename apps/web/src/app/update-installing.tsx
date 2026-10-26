@@ -27,7 +27,7 @@ export function UpdateInstalling() {
     >
       <div aria-hidden className="hex-drag absolute inset-x-0 top-0 h-11" />
       <div className="hex-rise w-full max-w-[420px] space-y-5 rounded-window border border-border bg-surface p-6 text-center shadow-popup">
-        <HexbotMark className="mx-auto" mood="working" size={56} />
+        <HexbotMark className="mx-auto" mood="loading" size={56} />
         <div>
           <h1
             className="text-[length:var(--text-title)] font-semibold"

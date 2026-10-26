@@ -30,7 +30,9 @@ import {
 import { botFace } from '../../lib/avatar-builder'
 import { getBridge } from '../../lib/bridge'
 import { cn } from '../../lib/cn'
+import { moodForStatus } from '../../lib/face'
 import { NotConnectedError } from '../../lib/rpc'
+import { useTurnCues } from '../../lib/sounds'
 import { toMillis } from '../../lib/time'
 import type {
   ApprovalChoice,
@@ -65,6 +67,7 @@ import { AskingRow } from './asking-row'
 import { ClarifyCard } from './clarify-card'
 import { composerFieldClass, ComposerShell } from './composer'
 import { RoomConversation } from './room'
+import { liveMood } from './steps'
 import { visualsOf } from './visual'
 import { Visuals } from './visual-frame'
 import { WaitingBanner } from './waiting-banner'
@@ -540,9 +543,9 @@ export function MessageRow({
         showFace &&
         (bubbles.length > 0 || visuals.length > 0 || message.streaming) ? (
           <Avatar
-            className={cn('mt-1', message.streaming && 'hex-think')}
+            className="mt-1"
             {...botFace(bot)}
-            mood={message.streaming ? 'working' : undefined}
+            mood={liveMood(message)}
             name={name}
             size="sm"
           />
@@ -560,9 +563,8 @@ export function MessageRow({
               face={
                 showFace ? undefined : (
                   <Avatar
-                    className="hex-think"
                     {...botFace(bot)}
-                    mood="working"
+                    mood={liveMood(message) ?? 'working'}
                     name={name}
                     size="sm"
                   />
@@ -598,9 +600,7 @@ export function CheckingRow({ bot, transcript }: { bot?: Bot; transcript?: Trans
   return (
     <div className="flex pt-1">
       <LiveStatus
-        face={
-          <Avatar className="hex-think" {...botFace(bot)} mood="working" name={name} size="sm" />
-        }
+        face={<Avatar {...botFace(bot)} mood="working" name={name} size="sm" />}
         message={message}
         name={name}
       />
@@ -1445,6 +1445,15 @@ function BotConversation() {
 
     wasStreaming.current = streaming
   }, [bot?.display_name, messages, section?.id, streaming])
+  useTurnCues(section?.id, {
+    failed: Boolean(messages.at(-1)?.error),
+    ready,
+    // The turn, not its bubble: a card closes the bubble while the turn runs on.
+    streaming: Boolean(transcript?.turnActive) || streaming,
+    waiting:
+      approvals.filter(card => !card.decision).length +
+      clarifies.filter(card => !card.expired && !Object.keys(card.answers).length).length
+  })
   const previousApprovalCount = useRef(approvals.length)
   useEffect(() => {
     if (
@@ -1771,13 +1780,7 @@ function BotConversation() {
           type="button"
         >
           <span className="relative shrink-0">
-            <Avatar
-              className={cn(status === 'working' && 'hex-think')}
-              {...botFace(bot)}
-              mood={status === 'working' ? 'working' : undefined}
-              name={name}
-              size="sm"
-            />
+            <Avatar {...botFace(bot)} mood={moodForStatus(status)} name={name} size="sm" />
             <StatusDot size="sm" status={status} />
           </span>
           <span className="shrink-0 truncate text-[length:var(--text-secondary)] font-semibold">

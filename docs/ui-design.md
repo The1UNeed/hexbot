@@ -36,22 +36,37 @@ own visual identity. Read `CLAUDE.md` for the words.
 - Chart series, for bot visuals only: light #4F46E5, #0D9488, #D97706,
   #DB2777, #2F7CF6, #65A30D; dark #8B85FF, #2DD4BF, #FBBF24, #F472B6,
   #4C9AFF, #A3E635. The first is the accent; the rest step apart in hue.
-- Bot faces: every bot has a face, a shape and a colour with two white
-  capsule eyes painted on a ball (`lib/avatar-builder.ts`; Chalk gets ink
-  eyes). A face picked in an app is stored on the bot as its shape and
-  colour (`face` in `docs/api.md`), which the web and mobile apps draw live,
-  and as a picture for clients that only show pictures. A bot whose face was
-  saved before that keeps only the picture: the web app reads it back into a
-  live face, and mobile shows the picture. Other uploaded images replace the
-  face; otherwise it is derived from the bot's name. Faces wiggle on hover
-  and blink at rest, and a glance moves the eyes over the ball's surface:
-  toward the rim, rolled with it, smaller as it turns away. Every shape
-  places the ball so the eyes stay inside it. Click any face, or the Hexbot
-  mark, and it plays a random act for a few seconds: typing with its two
-  round hands, juggling, blowing a horn (`components/ui/hexbot-act.tsx`, 21
-  acts). The install screen gives each stage its own act. In a chat the
-  face never changes size or plays acts on its own: a working bot's face
-  only bobs (`hex-think`).
+- Bot faces: Hexbot's eight outlines with the icon's two capsule eyes, white except
+  ink on Chalk. `lib/face-geometry.ts` is the source, copied to
+  mobile by `apps/web/scripts/face-rest.mjs`. The [provenance note](face-provenance.md)
+  records where the outlines, eyes, and poses come from.
+  Faces picked in an app are stored as shape and colour, with a static PNG
+  for other clients. The web app reads saved capsule-eye and
+  flat-eye PNGs back into live faces; mobile shows legacy pictures as pictures. Other
+  uploads replace the face. Bots without a saved face derive one from their
+  names. Each mood moves the whole face and its eyes on springs
+  (`lib/face-motion.ts`): idle sways, glances and blinks; listening tilts
+  from side to side; searching peers one eye wide, then the other; working
+  bobs while its eyes narrow on a steady beat; happy hops and squints; sleeping droops and breathes.
+  Searching, working and happy faces now and then turn all the way round,
+  with a sweep in tints of their colour. Thinking folds the face into three
+  bobbing dots, writing into a pencil that scribbles, and loading
+  into a whirl round a dot; the face unfolds when the mood ends. A face
+  leaving sleeping opens wide and throws sparks. The
+  in-app mark sleeps on the connection-lost screen and loads while an update
+  installs. A live turn starts thinking, searches while a
+  search tool runs, writes while text streams, and works during other steps.
+  Roster and header
+  faces, including every face in a room's cluster, match their status dots;
+  a cluster without a dot, as in room settings, stays idle. Faces in asks
+  turn and look toward each other.
+  One frame loop moves every visible face and stops when none moves.
+  Reduced motion draws each mood's rest pose, morph included, and offscreen
+  or hidden-page faces stop. Mobile draws the same settled expressions.
+  Click a face or the in-app mark for one of the existing 21 acts. Acts hold
+  the face at rest and clean up with their React subtree.
+  The site's faces, logo, favicon, and package icons use the same capsule
+  eyes.
 - Shadows only on floating layers (menus, dialogs, the glass chrome) and the
   cards that sit on the canvas: a hairline plus one soft shadow.
 - Liquid glass (`hex-glass`, `hex-glass-strong` in `tokens.css`) is for
@@ -77,7 +92,7 @@ own visual identity. Read `CLAUDE.md` for the words.
   `ease-out` settles, `ease-in-out` is for things leaving, `ease-spring` is
   for small controls that snap into place (the switch knob). Only what
   arrives while the chat is open animates: history is drawn still. The one
-  continuous motion is a working bot's face. Respect prefers-reduced-motion.
+  continuous motion is bot faces. Respect prefers-reduced-motion.
 - Focus: the accent ring, 2 px outside the shape (`hex-focus`), on every
   rounded control, including the glass pills.
 
@@ -111,7 +126,7 @@ the roster slides in as a drawer.
 
 - Header: nothing but floating glass over the transcript, which scrolls
   under it. In the centre, a pill with the bot's face (status dot on it,
-  bobbing while it works) and its name; clicking it opens or closes the side
+  expression matching the dot) and its name; clicking it opens or closes the side
   panel. Top right, while the panel is closed, the panel toggle. A chat has
   no title, rename, archive or delete. The model is chosen in Bot settings,
   Model, not in the chat.
@@ -136,13 +151,14 @@ the roster slides in as a drawer.
   20 quiet minutes.
 - Live status: from the moment a turn starts until the whole turn is done,
   a line sits at its foot, under the messages the bot has finished: the
-  bot's bobbing face and "General is working" in muted words, with no
-  bubble behind it. It never names the step, the tool, the thinking, or the
-  provider's wait notice, and it does not open. It stays while a step the
-  user approved still runs. The face keeps bobbing; no spinner, no ring, no
-  shimmer. What the bot is still writing stays hidden; the message appears
-  whole when it is done and springs in. When the turn ends the line is gone
-  at once and nothing takes its place.
+  bot's face, in the mood of its work, and "General is working" in muted
+  words, with no bubble behind it. It never names the step, the tool, the
+  thinking, or the provider's wait notice, and it does not open. It stays
+  while a step the user approved still runs. The face thinks, searches,
+  works or writes with the turn; no spinner, no ring, no shimmer. What the
+  bot is still writing stays hidden; the message appears whole when it is
+  done and springs in. When the turn ends the line is gone at once and
+  nothing takes its place.
 - "Waiting on you" is a purple glass pill pinned under the header pill
   while a bot has asked the human something (in a room it names the bot).
   Nothing is written into the transcript for it. A red banner names the bot
@@ -333,7 +349,11 @@ starts with your name, the one Get Started asked for.
 - Approvals: "Choose when Hexbot asks before a bot acts. Bots and rooms can
   override it." Modes Manual, Auto, and Bypass, one row each;
   a notice when the daemon has no OS sandbox.
-- Appearance: theme System, Light, Dark.
+- Appearance: theme System, Light, Dark; Sounds, off by default: a soft
+  synthesised tone when a bot starts, finishes, or needs you, in the open
+  conversation while the window is visible (`lib/sounds.ts`). Web and
+  desktop only for now: the mobile app plays no audio of its own and
+  leaves sound to the phone's notifications.
 - Updates: current version, channel, check now.
 - About: version, license, links.
 

@@ -417,6 +417,18 @@ listener, managed Python and voice executable. Desktop unit tests cover bad uv
 checksums, consecutive updates, failed activation, running-runtime retention and
 service migration. Rust tests cover update pruning and legacy listener refusal.
 
+### Bot faces
+
+`node apps/web/scripts/face-rest.mjs --check` checks that mobile uses the
+web's face geometry. `node apps/web/scripts/face-smoke.mjs` launches a
+temporary Vite entry and Chromium, then removes the entry and closes both.
+It checks all 264 PNG shape and colour roundtrips (hexagon, capsule, and flat
+eyes), every mood moving with no CSS animation, no writes from offscreen or
+held faces, reduced-motion rest poses and all acts, offscreen pause/resume,
+keyed reorder/unmount cleanup, and 24 working faces under 4× CPU throttling.
+`HEXBOT_FACE_ARTIFACTS` selects the screenshot directory. It uses the desktop
+workspace's Playwright installation and needs its Chromium browser.
+
 ### Connected tools through Pi
 
 `node --test backend/pi-runtime/*.test.mjs` includes `mcp.test.mjs`, which runs

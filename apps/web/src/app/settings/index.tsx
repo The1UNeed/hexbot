@@ -35,6 +35,7 @@ import { cn } from '../../lib/cn'
 import { connectStatusMessage } from '../../lib/connect-status'
 import { connectBaseUrl } from '../../lib/connect-url'
 import { pairWithDaemon, targetOrigin } from '../../lib/connection'
+import { primeSounds } from '../../lib/sounds'
 import type { DaemonInfo, ModelOption, PairingCode, Provider } from '../../lib/types'
 import { daemonBehind } from '../../lib/version-skew'
 import { useBots } from '../../stores/bots'
@@ -1208,10 +1209,12 @@ export function ApprovalsSettings(): React.JSX.Element {
 export function AppearanceSettings(): React.JSX.Element {
   const theme = useUi(state => state.theme)
   const setTheme = useUi(state => state.setTheme)
+  const sounds = useUi(state => state.sounds)
+  const setSounds = useUi(state => state.setSounds)
 
   return (
     <>
-      <Heading description="How this window looks.">Appearance</Heading>
+      <Heading description="How this window looks and sounds.">Appearance</Heading>
       <Group>
         <Row
           control={
@@ -1241,6 +1244,23 @@ export function AppearanceSettings(): React.JSX.Element {
           }
           description="System follows the computer's setting."
           title="Theme"
+        />
+        <Row
+          control={
+            <Switch
+              aria-label="Sounds"
+              checked={sounds}
+              onCheckedChange={on => {
+                setSounds(on)
+
+                if (on) {
+                  primeSounds()
+                }
+              }}
+            />
+          }
+          description="A soft tone when a bot starts, finishes, or needs you."
+          title="Sounds"
         />
       </Group>
     </>

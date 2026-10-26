@@ -148,16 +148,17 @@ describe('AskingRow', () => {
     )
 
     expect(screen.getByText('Scout is asking Writer')).toBeVisible()
-    expect(screen.getByRole('img', { name: 'Scout' })).toHaveClass('hex-look-right')
-    expect(screen.getByRole('img', { name: 'Writer' })).toHaveClass('hex-look-left')
-    // Writer listens until its reply streams; nothing bobs yet.
-    expect(screen.getByRole('img', { name: 'Writer' })).not.toHaveClass('hex-think')
+    expect(screen.getByRole('img', { name: 'Scout' })).toHaveAttribute('data-look', 'right')
+    expect(screen.getByRole('img', { name: 'Writer' })).toHaveAttribute('data-look', 'left')
+    // Writer listens until its reply streams; nothing nods yet.
+    expect(screen.getByRole('img', { name: 'Writer' })).toHaveAttribute('data-mood', 'listening')
     expect(screen.getByTestId('asking-row')).toHaveAttribute('data-status', 'running')
 
     rerender(<AskingRow message={message([call({})])} sender="scout" />)
     expect(screen.getByText('Writer helped')).toBeVisible()
     expect(screen.getByTestId('asking-row')).toHaveAttribute('data-status', 'done')
-    expect(screen.getByRole('img', { name: 'Writer' })).toHaveClass('hex-look-left')
+    expect(screen.getByRole('img', { name: 'Writer' })).toHaveAttribute('data-look', 'left')
+    expect(screen.getByRole('img', { name: 'Writer' })).toHaveAttribute('data-mood', 'idle')
     expect(screen.queryByText(/is asking/)).toBeNull()
   })
 
@@ -181,12 +182,12 @@ describe('AskingRow', () => {
     })
 
     expect(await screen.findByText('Your bots now work as a team.')).toBeVisible()
-    expect(screen.getByRole('img', { name: 'Writer' })).toHaveClass('hex-think')
+    expect(screen.getByRole('img', { name: 'Writer' })).toHaveAttribute('data-mood', 'writing')
     expect(rpc).toHaveBeenCalledTimes(1)
 
     act(() => transcripts.messageComplete('live-t', { text: 'Your bots now work as a team.' }))
     expect(screen.queryByText('Your bots now work as a team.')).toBeNull()
-    expect(screen.getByRole('img', { name: 'Writer' })).not.toHaveClass('hex-think')
+    expect(screen.getByRole('img', { name: 'Writer' })).toHaveAttribute('data-mood', 'listening')
   })
 
   it('says a message was sent when no reply was waited for', () => {

@@ -290,3 +290,44 @@ export function activityLabel(call: ToolCall, name: string): string {
 
   return `${name} ${ACTIVITY[call.name] ?? `is using ${humanize(call.name)}`}`
 }
+
+/** Tools that look for something; the face searches with them. */
+const SEARCHING = new Set(['search_files', 'session_search', 'web_search', 'x_search'])
+
+/** The face a bot wears while it works: thinking, searching, writing, or working. */
+export type LiveMood = 'searching' | 'thinking' | 'working' | 'writing'
+
+/**
+ * The face a bot wears over a message while it streams: thinking before
+ * anything happens, searching or working while a step runs, writing while
+ * its words stream. None once the message is done.
+ */
+export function liveMood(message: Message): LiveMood | undefined {
+  if (!message.streaming) {
+    return undefined
+  }
+
+  // An ask in progress has its own row with the other bot's face.
+  const running = message.toolCalls.findLast(
+    call => call.status === 'running' && call.name !== ASKING_TOOL
+  )
+
+  if (running && !message.checking) {
+    return SEARCHING.has(running.name) ? 'searching' : 'working'
+  }
+
+  if (message.checking || message.activity) {
+    return 'working'
+  }
+
+  if (message.text) {
+    return 'writing'
+  }
+
+  if (message.thinking) {
+    return 'thinking'
+  }
+
+  // Nothing has happened yet: the bot thinks until it does, whatever the model shows.
+  return message.toolCalls.length ? 'working' : 'thinking'
+}

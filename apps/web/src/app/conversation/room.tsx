@@ -11,6 +11,7 @@ import { roomsSend, roomsStop } from '../../lib/api'
 import { botFace } from '../../lib/avatar-builder'
 import { cn } from '../../lib/cn'
 import { useRoomOrLeave } from '../../lib/room-or-leave'
+import { useTurnCues } from '../../lib/sounds'
 import { toMillis } from '../../lib/time'
 import type { Bot, RoomEvent, RoomMember, RoomTurn } from '../../lib/types'
 import { useBots } from '../../stores/bots'
@@ -22,7 +23,7 @@ import { useTranscripts } from '../../stores/transcripts'
 import { AskingRow, AskRows } from './asking-row'
 import { ClarifyCard } from './clarify-card'
 import { composerFieldClass, ComposerShell } from './composer'
-import type { Ask } from './steps'
+import { type Ask, liveMood } from './steps'
 import { WaitingBanner } from './waiting-banner'
 import { WorkStatus } from './work-status'
 
@@ -296,6 +297,18 @@ export function RoomConversation() {
   const streaming = Object.keys(turns).length > 0
   const status = roomStatus(events, turns)
   const failure = roomFailure(events)
+  const waiting = Object.values(turns).reduce((count, turn) => {
+    const transcript = turn.live_session_id ? transcripts[turn.live_session_id] : undefined
+
+    return (
+      count +
+      (transcript?.approvals.filter(card => !card.decision).length ?? 0) +
+      (transcript?.clarifies.filter(
+        card => !card.expired && Object.keys(card.answers).length < card.questions.length
+      ).length ?? 0)
+    )
+  }, 0)
+  useTurnCues(roomId, { failed: Boolean(failure), streaming, waiting })
 
   const send = async () => {
     if (!text.trim()) {
@@ -391,9 +404,8 @@ export function RoomConversation() {
                 <article className="flex gap-2 py-1" data-testid="room-event">
                   <span className="relative mt-1 shrink-0">
                     <Avatar
-                      className="hex-think"
                       {...botFace(bot)}
-                      mood="working"
+                      mood={message ? (liveMood(message) ?? 'working') : 'thinking'}
                       name={name}
                       size="sm"
                     />

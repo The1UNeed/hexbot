@@ -10,15 +10,17 @@ import {
   avatarSvgDataUrl,
   BALL,
   botFace,
+  CAPSULE_EYE,
   EYE_GAP,
-  eyeRects,
+  EYE_MOODS,
+  eyePlacements,
   faceReadNow,
   faceReadsHeld,
   matchFace,
   readFace,
   READS_KEPT
 } from '../lib/avatar-builder'
-import tokens from '../styles/tokens.css?raw'
+import { FACE_MOODS, facePose } from '../lib/face'
 
 /** A 100×100 picture filled with `hex`, with `dots` painted in other colours. */
 function picture(hex: string, dots: [number, number, string][] = []) {
@@ -80,7 +82,7 @@ describe('avatar builder', () => {
 
     expect(svg).toContain(hexagon.path)
     expect(svg).toContain(pink.value)
-    expect(svg.match(/<rect/g)).toHaveLength(2)
+    expect(svg.split(`d="${CAPSULE_EYE}"`)).toHaveLength(3)
     expect(svg).toContain('fill="#ffffff"')
     expect(svg).toContain(`translate(50 ${hexagon.ball.cy}) scale(${hexagon.ball.r / BALL})`)
     expect(avatarSvgDataUrl({ color: 'pink', shape: 'hexagon' })).toMatch(/^data:image\/svg\+xml/)
@@ -95,44 +97,35 @@ describe('avatar builder', () => {
     expect(avatarSvg({ color: 'nope', shape: 'nope' })).toContain(AVATAR_SHAPES[0]!.path)
   })
 
-  it('draws both eyes as capsules the same width, mirrored about the centre', () => {
-    for (const mood of ['happy', 'idle', 'listening', 'sleeping', 'working'] as const) {
-      const [left, right] = eyeRects(mood)
+  it('draws both eyes as the same capsule, mirrored about the centre', () => {
+    for (const mood of FACE_MOODS) {
+      const [left, right] = eyePlacements(mood)
+      const { dx } = EYE_MOODS[mood]
 
-      expect(left!.x + left!.width / 2).toBeCloseTo(-(right!.x + right!.width / 2))
-      expect(left!.rx).toBe(Math.min(left!.width, left!.height) / 2)
-      expect(left!.y + left!.height / 2).toBeLessThan(BALL / 2)
+      expect(left!.x - dx).toBeCloseTo(-(right!.x - dx))
+      expect([left!.sx, left!.sy, left!.turn]).toEqual([right!.sx, right!.sy, right!.turn])
+      expect(left!.y).toBeLessThan(BALL / 2)
     }
   })
 
-  it('keeps both eyes inside the ball at every gaze pose in tokens.css', () => {
-    const poses = [
-      ...tokens.matchAll(
-        /translate\((-?[\d.]+)px, (-?[\d.]+)px\) rotate\((-?[\d.]+)deg\) scale\(([\d.]+)\)/g
-      )
-    ].map(match => match.slice(1, 5).map(Number) as [number, number, number, number])
+  it('keeps every activity and neighbour pose inside the original ball', () => {
+    for (const mood of FACE_MOODS) {
+      for (const look of [null, 'left', 'right'] as const) {
+        const [tx, ty] = facePose(mood, look)
+          .match(/-?[\d.]+/g)!
+          .map(Number)
 
-    // The three wander poses and a look each way.
-    expect(poses.length).toBeGreaterThanOrEqual(5)
+        for (const eye of eyePlacements(mood)) {
+          // The capsule is 0.43 wide and 1 tall before its turn; 90 lays it on its side.
+          const [wide, tall] = eye.turn === 90 ? [1, 0.4333] : [0.4333, 1]
 
-    for (const [tx, ty, degrees, scale] of poses) {
-      const turn = (degrees * Math.PI) / 180
-
-      for (const mood of ['happy', 'idle', 'listening', 'sleeping', 'working'] as const) {
-        for (const eye of eyeRects(mood)) {
-          // The capsule's bounding corners, a little outside the capsule itself.
-          for (const [x, y] of [
-            [eye.x, eye.y],
-            [eye.x + eye.width, eye.y],
-            [eye.x, eye.y + eye.height],
-            [eye.x + eye.width, eye.y + eye.height]
-          ] as const) {
-            // CSS applies scale, then rotate, then translate, about the ball's centre.
-            const px = tx + scale * (x * Math.cos(turn) - y * Math.sin(turn))
-            const py = ty + scale * (x * Math.sin(turn) + y * Math.cos(turn))
-
-            expect(Math.hypot(px, py), `${mood} at ${degrees}deg`).toBeLessThan(BALL)
-          }
+          // The corner of its box, plus the most extreme 5-unit activity movement.
+          expect(
+            Math.hypot(
+              Math.abs(eye.x + tx!) + wide * eye.sx + 5,
+              Math.abs(eye.y + ty!) + tall * eye.sy + 5
+            )
+          ).toBeLessThan(BALL)
         }
       }
     }

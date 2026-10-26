@@ -15,6 +15,7 @@ import { type ThreadRef, uiActions, useUi } from '../../stores/ui'
 import { ApprovalCard, bubbleClass, CardRow, Markdown } from '../conversation'
 import { AskingRow } from '../conversation/asking-row'
 import { ClarifyCard } from '../conversation/clarify-card'
+import { liveMood } from '../conversation/steps'
 import { WorkStatus } from '../conversation/work-status'
 
 type Loaded =
@@ -68,13 +69,10 @@ function ThreadMessage({ bot, message, name }: { bot?: Bot; message: Message; na
         data-testid={reply ? 'thread-reply' : 'thread-question'}
       >
         <Avatar
-          className={cn(
-            'mt-1',
-            reply ? 'hex-look-left' : 'hex-look-right',
-            message.streaming && 'hex-think'
-          )}
+          className="mt-1"
           {...botFace(bot)}
-          mood={message.streaming ? 'working' : undefined}
+          look={reply ? 'left' : 'right'}
+          mood={liveMood(message)}
           name={name}
           size="sm"
         />
@@ -267,8 +265,8 @@ export function ThreadPanel({ thread }: { thread: ThreadRef }): React.JSX.Elemen
     <div className="flex h-full min-h-0 flex-col" data-testid="thread-panel">
       <header className="hex-drag flex h-11 shrink-0 items-center gap-2 px-3">
         <span className="flex shrink-0 items-center gap-1">
-          <Avatar className="hex-look-right" {...botFace(sender)} name={senderName} size="sm" />
-          <Avatar className="hex-look-left" {...botFace(receiver)} name={receiverName} size="sm" />
+          <Avatar {...botFace(sender)} look="right" name={senderName} size="sm" />
+          <Avatar {...botFace(receiver)} look="left" name={receiverName} size="sm" />
         </span>
         <h2 className="hex-no-drag min-w-0 flex-1 truncate text-[length:var(--text-secondary)] font-semibold">
           {senderName} and {receiverName}

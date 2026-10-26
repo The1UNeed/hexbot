@@ -4,6 +4,7 @@ import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 
 import { routeEvent } from '../../lib/events'
 import { setActiveRpc } from '../../lib/rpc'
+import * as sounds from '../../lib/sounds'
 import type { Bot, Room, RoomMember } from '../../lib/types'
 import { useBots } from '../../stores/bots'
 import { useMe } from '../../stores/me'
@@ -169,6 +170,29 @@ describe('approvals and questions in a room', () => {
     setActiveRpc({ call } as never)
   })
   afterEach(resetTranscriptEffects)
+
+  it('includes live pending approvals and partially answered questions in sound cues', async () => {
+    const cues = vi.spyOn(sounds, 'useTurnCues')
+    render(<RoomConversation />)
+    act(() => routeEvent(approval('sound-approval')))
+    await waitFor(() =>
+      expect(cues).toHaveBeenLastCalledWith('r1', expect.objectContaining({ waiting: 1 }))
+    )
+    act(() =>
+      useTranscripts.getState().clarifyRequest('live-1', {
+        request_id: 'sound-question',
+        questions: [
+          { qid: 'one', question: 'First?', choices: ['Yes', 'No'] },
+          { qid: 'two', question: 'Second?', choices: ['Yes', 'No'] }
+        ],
+        answers: { one: 'Yes' }
+      })
+    )
+    expect(cues).toHaveBeenLastCalledWith('r1', expect.objectContaining({ waiting: 2 }))
+    act(() => useTranscripts.getState().clarifyExpire('live-1', 'sound-question'))
+    expect(cues).toHaveBeenLastCalledWith('r1', expect.objectContaining({ waiting: 1 }))
+    cues.mockRestore()
+  })
 
   it.each([
     ['Approve', 'once'],

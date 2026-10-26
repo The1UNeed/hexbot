@@ -74,8 +74,27 @@
   /* A sampled spring (damping 0.62) for glass that swells under a press. */
   --hex-motion-glass: 520ms;
   --hex-ease-glass: linear(
-    0, 0.113, 0.352, 0.608, 0.819, 0.965, 1.048, 1.08, 1.081, 1.065, 1.043, 1.023, 1.008, 0.999,
-    0.994, 0.993, 0.994, 0.996, 0.997, 0.999, 1
+    0,
+    0.113,
+    0.352,
+    0.608,
+    0.819,
+    0.965,
+    1.048,
+    1.08,
+    1.081,
+    1.065,
+    1.043,
+    1.023,
+    1.008,
+    0.999,
+    0.994,
+    0.993,
+    0.994,
+    0.996,
+    0.997,
+    0.999,
+    1
   );
 }
 
@@ -112,9 +131,9 @@
     --hex-glass-strong: rgb(24 24 27 / 0.82);
     --hex-glass-glow: rgb(255 255 255 / 0.2);
     --hex-glass-shadow:
-      inset 1px 1px 0 -0.5px rgb(255 255 255 / 0.3), inset -1px -1px 0 -0.5px rgb(255 255 255 / 0.12),
-      inset 0 0 6px rgb(255 255 255 / 0.04), 0 0 0 0.5px rgb(255 255 255 / 0.07),
-      0 4px 16px -4px rgb(0 0 0 / 0.5);
+      inset 1px 1px 0 -0.5px rgb(255 255 255 / 0.3),
+      inset -1px -1px 0 -0.5px rgb(255 255 255 / 0.12), inset 0 0 6px rgb(255 255 255 / 0.04),
+      0 0 0 0.5px rgb(255 255 255 / 0.07), 0 4px 16px -4px rgb(0 0 0 / 0.5);
     --hex-card-shadow: 0 0 0 0.5px rgb(255 255 255 / 0.07), 0 1px 3px rgb(0 0 0 / 0.5);
   }
 }
@@ -435,20 +454,7 @@ body {
   }
 }
 
-/* Bot faces: a hover wiggle, and a thinking bob while a reply is pending. */
-@keyframes hex-wiggle {
-  0%,
-  100% {
-    transform: rotate(0deg);
-  }
-  25% {
-    transform: rotate(-6deg) translateY(-1px);
-  }
-  75% {
-    transform: rotate(6deg) translateY(-1px);
-  }
-}
-
+/* Original face acts. Idle faces stay still. */
 @keyframes hex-bob {
   0%,
   100% {
@@ -646,17 +652,6 @@ body {
   }
 }
 
-@keyframes hex-blink {
-  0%,
-  92%,
-  100% {
-    transform: scaleY(1);
-  }
-  96% {
-    transform: scaleY(0.1);
-  }
-}
-
 @keyframes hex-dot {
   0%,
   80%,
@@ -801,33 +796,6 @@ body {
   }
 }
 
-/*
- * Eyes wander a little while idle, so a face never looks frozen. The eyes
- * are painted on a ball (the frame set up in avatar-builder.ts, 45 units
- * across), so a glance moves them over its surface: they slide toward the
- * rim, roll with it, and shrink as the surface turns away. Each pose holds
- * still between moves; nothing repaints while it holds.
- */
-@keyframes hex-gaze {
-  0%,
-  36%,
-  100% {
-    transform: translate(0, 0) rotate(0deg) scale(1);
-  }
-  40%,
-  54% {
-    transform: translate(15px, -18px) rotate(24deg) scale(0.82);
-  }
-  58%,
-  74% {
-    transform: translate(-6px, 2px) rotate(-9deg) scale(0.95);
-  }
-  78%,
-  96% {
-    transform: translate(3px, 2px) rotate(4deg) scale(0.98);
-  }
-}
-
 @keyframes hex-shimmer {
   from {
     background-position: 200% 0;
@@ -837,52 +805,18 @@ body {
   }
 }
 
-.hex-face:hover {
-  animation: hex-wiggle 500ms ease-in-out;
-}
-.hex-face .hex-eyes {
-  animation: hex-blink 4.5s ease-in-out infinite;
-  transform-box: fill-box;
-  transform-origin: center;
-}
-.hex-face .hex-gaze {
-  animation: hex-gaze 9s ease-in-out infinite;
-}
 /*
- * A face turned toward the bot beside it: eyes over the surface, body
- * tilted. A pose answering a state change, not a loop; units are the ball's.
+ * Faces move in face-motion.ts. Acts are CSS and own only their React
+ * subtree; an act off screen or under reduced motion stops outright.
  */
-.hex-look-right.hex-face .hex-gaze,
-.hex-look-left.hex-face .hex-gaze {
-  animation: none;
-  transition: transform var(--hex-motion-enter) var(--hex-ease-out);
+.hex-face[data-visible='false'] * {
+  animation: none !important;
 }
-.hex-look-right.hex-face .hex-gaze {
-  transform: translate(12px, -4px) rotate(14deg) scale(0.9);
-}
-.hex-look-left.hex-face .hex-gaze {
-  transform: translate(-12px, -4px) rotate(-14deg) scale(0.9);
-}
-.hex-lean-right,
-.hex-lean-left {
-  display: inline-flex;
-  transition: transform var(--hex-motion-enter) var(--hex-ease-out);
-}
-.hex-lean-right {
-  transform: rotate(10deg);
-}
-.hex-lean-left {
-  transform: rotate(-10deg);
-}
-/* Eye geometry morphs between moods instead of snapping. */
-.hex-face .hex-eyes rect {
-  transition:
-    x var(--hex-motion-panel) var(--hex-ease-out),
-    y var(--hex-motion-panel) var(--hex-ease-out),
-    width var(--hex-motion-panel) var(--hex-ease-out),
-    height var(--hex-motion-panel) var(--hex-ease-out),
-    rx var(--hex-motion-panel) var(--hex-ease-out),
-    ry var(--hex-motion-panel) var(--hex-ease-out);
+@media (prefers-reduced-motion: reduce) {
+  .hex-face * {
+    animation: none !important;
+    transition: none !important;
+  }
 }
 .hex-think {
   animation: hex-bob 1.4s ease-in-out infinite;
@@ -1054,9 +988,6 @@ body {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .hex-face:hover,
-  .hex-face .hex-eyes,
-  .hex-face .hex-gaze,
   .hex-think,
   .hex-tap,
   .hex-catch,
