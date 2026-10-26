@@ -631,13 +631,15 @@ export function useMobile() {
     if (target.kind === 'section' && (target.section.peer_bot || !liveId.current))
       throw new Error('Open your chat before sending.')
     const messageId = Crypto.randomUUID()
+    // A daemon with transcript identity keys the message, so Recall can name it.
+    const inputId = infoRef.current?.transcript_identity ? messageId : undefined
     setChat(c => ({
       ...c,
       busy: true,
       error: null,
       messages:
         target.kind === 'section'
-          ? [...c.messages, { id: messageId, role: 'user', text }]
+          ? [...c.messages, { id: messageId, role: 'user', text, inputId }]
           : c.messages
     }))
     try {
@@ -645,7 +647,12 @@ export function useMobile() {
       else {
         if (!liveId.current) throw new Error('Open this thread again before sending.')
         const sessionId = liveId.current
-        await rpc('prompt.submit', { session_id: sessionId, text, attachments })
+        await rpc('prompt.submit', {
+          session_id: sessionId,
+          text,
+          attachments,
+          ...(inputId && { input_id: inputId })
+        })
         unsent.current.delete(sessionId)
       }
     } catch (e) {
@@ -702,6 +709,37 @@ export function useMobile() {
     const target = routeRef.current
     if (target?.kind === 'room') await rpc('hexbot.rooms.stop', { id: target.room.id })
     else if (liveId.current) await rpc('session.interrupt', { session_id: liveId.current })
+  }
+  /**
+   * Takes back your latest message in a bot's chat: a turn on it stops, and
+   * the bot forgets it and everything after it. Answers with its text.
+   */
+  const recall = async (messageId: string): Promise<string | null> => {
+    const sessionId = liveId.current
+    const message = chat.messages.find(m => m.id === messageId)
+    if (routeRef.current?.kind !== 'section' || !sessionId || !message) return null
+    await rpc('session.recall', {
+      session_id: sessionId,
+      ...(message.inputId ? { input_id: message.inputId } : { row_id: message.id })
+    })
+    if (liveId.current === sessionId)
+      setChat(c => {
+        const index = c.messages.findIndex(m => m.id === messageId)
+        return index < 0
+          ? c
+          : { ...c, messages: c.messages.slice(0, index), busy: false, error: null }
+      })
+    return message.text
+  }
+  /** Closes the error under a chat, and the bot's Stopped state for it, which would bring it back. */
+  const dismissError = async () => {
+    const target = routeRef.current
+    setChat(c => ({ ...c, error: null }))
+    setError(null)
+    if (target?.kind !== 'section') return
+    const owner = botsRef.current.find(b => b.name === target.section.bot)
+    if (owner?.status === 'stopped' && owner.status_detail?.section_id === target.section.id)
+      await rpc('hexbot.bots.clear_status', { name: owner.name })
   }
   const approval = async (requestId: string, choice: string) => {
     const pending = chat.approvals.find(a => a.requestId === requestId)
@@ -779,6 +817,8 @@ export function useMobile() {
     openRoom,
     send,
     stop,
+    recall,
+    dismissError,
     approval,
     answer,
     liveSessionId: () => liveId.current,

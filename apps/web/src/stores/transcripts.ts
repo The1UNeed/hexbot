@@ -215,6 +215,10 @@ export interface TranscriptsState {
    * whole notice: a turn already running keeps its stream, cards and Stop.
    */
   requestFailed: (sessionId: string, message: string) => void
+  /** The owner closed a Stopped card. */
+  dismiss: (sessionId: string, messageId: string) => void
+  /** The owner recalled this message: it and everything after it go. */
+  recallFrom: (sessionId: string, messageId: string) => void
   /**
    * A Stopped card from a daemon incident. Unlike `errorEvent` it leaves the
    * streaming message alone: the incident fires mid-turn (a tool refused) and
@@ -1470,6 +1474,28 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
         ...transcript,
         messages: [...transcript.messages, requestCard(message)]
       }))
+    },
+
+    dismiss(sessionId, messageId) {
+      update(sessionId, transcript => {
+        const messages = transcript.messages.filter(message => message.id !== messageId)
+
+        return {
+          ...transcript,
+          error: messages.some(message => message.error) ? transcript.error : null,
+          messages
+        }
+      })
+    },
+
+    recallFrom(sessionId, messageId) {
+      update(sessionId, transcript => {
+        const index = transcript.messages.findIndex(message => message.id === messageId)
+
+        return index < 0
+          ? transcript
+          : { ...transcript, error: null, messages: transcript.messages.slice(0, index) }
+      })
     },
 
     checkinMessage(sessionId, message) {

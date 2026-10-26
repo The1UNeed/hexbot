@@ -53,7 +53,7 @@ function fixture(t, mode = 'manual', enabledToolsets = [], extra = {}) {
     notify:(message, type)=>notices.push({message,type}),
     async select(title, options) {choices.push({...JSON.parse(title.slice('__HEXBOT_APPROVAL__'.length)), options}); return ctx.choice ?? 'deny';}
   }};
-  const pi = {setActiveTools:names=>activeTools.push(names), getAllTools:()=>Object.values(tools), unregisterMcpServer:()=>{}, registerMcpServer:(name, config)=>registrations.push({name,config}), on:(name,handler)=>handlers[name]=handler, registerTool:tool=>tools[tool.name]=tool, registerProvider(){}, async setModel(model){models.push(model);ctx.model=model;return true;}, sendMessage(message){sent.push(message);}, getThinkingLevel(){}};
+  const pi = {setActiveTools:names=>activeTools.push(names), getAllTools:()=>Object.values(tools), unregisterMcpServer:()=>{}, registerMcpServer:(name, config)=>registrations.push({name,config}), on:(name,handler)=>handlers[name]=handler, registerTool:tool=>tools[tool.name]=tool, registerProvider(){}, registerCommand(){}, async setModel(model){models.push(model);ctx.model=model;return true;}, sendMessage(message){sent.push(message);}, getThinkingLevel(){}};
   hexbot(pi);
   let calls = 0;
   const gate = (toolName, input, toolCallId = `call-${++calls}`) => handlers.tool_call({toolName, input, toolCallId}, ctx);
@@ -484,7 +484,7 @@ test('tool dialog receives the execution abort signal', async () => {
     writeFileSync(config, JSON.stringify({tools: [{name: 'execute_code'}]}));
     process.env.HEXBOT_SESSION_CONFIG = config;
     let tool;
-    hexbot({on() {}, registerProvider() {}, registerTool(value) {tool = value;}});
+    hexbot({on() {}, registerProvider() {}, registerCommand() {}, registerTool(value) {tool = value;}});
     const controller = new AbortController();
     const ctx = {ui: {input(_title, _placeholder, options) {
       assert.equal(options.signal, controller.signal);
@@ -509,7 +509,7 @@ test('Codex stream uses the current daemon token on every request and stops on a
     writeFileSync(process.env.HEXBOT_SESSION_CONFIG, JSON.stringify({tools: []}));
     const handlers = new Map();
     const providers = new Map();
-    hexbot({on: (event, callback) => handlers.set(event, callback), registerProvider: (name, value) => providers.set(name, value)});
+    hexbot({on: (event, callback) => handlers.set(event, callback), registerProvider: (name, value) => providers.set(name, value), registerCommand() {}});
     let n = 0;
     let error;
     const token = n => `header.${Buffer.from(JSON.stringify({'https://api.openai.com/auth': {chatgpt_account_id: `account-${n}`}})).toString('base64url')}.signature`;
@@ -843,7 +843,7 @@ test('without an OS sandbox every shell command asks in Manual and Auto', async 
       async input(title) {const r = JSON.parse(title.slice('__HEXBOT_TOOL__'.length)); if (r.name === 'hexbot_session_settings') return JSON.stringify({result:settings}); return JSON.stringify({result:{}});},
       async select(title) {choices.push(JSON.parse(title.slice('__HEXBOT_APPROVAL__'.length))); return ctx.choice;}
     }};
-    hexbot({on:(name, handler) => handlers[name] = handler, registerTool:tool => tools[tool.name] = tool, registerProvider() {}});
+    hexbot({on:(name, handler) => handlers[name] = handler, registerTool:tool => tools[tool.name] = tool, registerProvider() {}, registerCommand() {}});
     const gate = (command, full_access = false, toolCallId) => handlers.tool_call({toolName:'bash', input:{command, full_access}, toolCallId}, ctx);
     const out = {};
     out.manualDenied = (await gate('echo hi'))?.block === true;

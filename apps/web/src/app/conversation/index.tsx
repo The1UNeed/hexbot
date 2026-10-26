@@ -1,6 +1,6 @@
 import { JsonRpcGatewayError } from '@hermes/shared'
 import { useNavigate, useParams, useRouter } from '@tanstack/react-router'
-import { ArrowDown, Copy, File, PanelRight, X } from 'lucide-react'
+import { ArrowDown, Copy, File, PanelRight, Undo2, X } from 'lucide-react'
 import {
   type CSSProperties,
   isValidElement,
@@ -22,10 +22,12 @@ import { StatusDot } from '../../components/ui/status-dot'
 import {
   approvalRespond,
   attachFile,
+  botsClearStatus,
   newInputId,
   promptSubmit,
   sectionsList,
-  sessionInterrupt
+  sessionInterrupt,
+  sessionRecall
 } from '../../lib/api'
 import { botFace } from '../../lib/avatar-builder'
 import { getBridge } from '../../lib/bridge'
@@ -362,11 +364,13 @@ export function humanConnector(id: null | string | undefined): string {
 export function StoppedCard({
   message,
   name,
+  onDismiss,
   onFix,
   onRetry
 }: {
   message: TranscriptMessage
   name: string
+  onDismiss?: () => void
   onFix?: (connector: string) => void
   onRetry?: () => void
 }) {
@@ -383,14 +387,27 @@ export function StoppedCard({
       <div className="flex items-center gap-2">
         <span aria-hidden className="size-2 shrink-0 rounded-full bg-danger" />
         <span className="font-medium">{name} stopped</span>
-        {message.createdAt > 0 ? (
-          <time className="ml-auto text-[length:var(--text-meta)] text-muted">
-            {new Date(toMillis(message.createdAt)).toLocaleTimeString([], {
-              hour: 'numeric',
-              minute: '2-digit'
-            })}
-          </time>
-        ) : null}
+        <span className="ml-auto flex items-center gap-1">
+          {message.createdAt > 0 ? (
+            <time className="text-[length:var(--text-meta)] text-muted">
+              {new Date(toMillis(message.createdAt)).toLocaleTimeString([], {
+                hour: 'numeric',
+                minute: '2-digit'
+              })}
+            </time>
+          ) : null}
+          {onDismiss ? (
+            <button
+              aria-label="Dismiss"
+              className="hex-focus -my-1 -mr-1.5 grid size-6 place-items-center rounded-full text-muted transition-colors duration-[var(--hex-motion-fast)] hover:bg-foreground/[0.06] hover:text-foreground"
+              onClick={onDismiss}
+              title="Dismiss"
+              type="button"
+            >
+              <X size={14} />
+            </button>
+          ) : null}
+        </span>
       </div>
       <p className="text-[length:var(--text-secondary)]">{message.error}</p>
       <div className="flex gap-2">
@@ -412,8 +429,10 @@ export function StoppedCard({
 export function MessageRow({
   bot,
   message,
+  onDismiss,
   onFix,
   onImage,
+  onRecall,
   onRetry,
   fresh = false,
   joined = false,
@@ -421,8 +440,11 @@ export function MessageRow({
 }: {
   bot?: Bot
   message: TranscriptMessage
+  onDismiss?: () => void
   onFix?: (connector: string) => void
   onImage: (source: string) => void
+  /** Your latest message, while the bot is on it or after its turn stopped. */
+  onRecall?: () => void
   onRetry?: () => void
   /** Arrived while this chat was open: each of its bubbles springs in as it appears. */
   fresh?: boolean
@@ -442,6 +464,7 @@ export function MessageRow({
       <StoppedCard
         message={message}
         name={bot?.display_name ?? 'The bot'}
+        onDismiss={onDismiss}
         onFix={onFix}
         onRetry={onRetry}
       />
@@ -475,7 +498,8 @@ export function MessageRow({
           icon: <Copy size={14} />,
           label: 'Copy',
           onClick: () => void navigator.clipboard.writeText(bubbles.join('\n\n'))
-        }
+        },
+        ...(onRecall ? [{ icon: <Undo2 size={14} />, label: 'Recall', onClick: onRecall }] : [])
       ]
 
   const last = bubbles.length - 1
@@ -878,6 +902,7 @@ interface DraftAttachment {
 function Composer({
   accessory,
   bot,
+  draftVersion,
   notice,
   sectionId,
   sessionId,
@@ -886,6 +911,8 @@ function Composer({
 }: {
   accessory?: React.ReactNode
   bot?: Bot
+  /** Changes when the draft was written outside the composer, as by Recall. */
+  draftVersion?: number
   notice?: React.ReactNode
   sectionId: string | null
   sessionId: string | null
@@ -1007,6 +1034,13 @@ function Composer({
       node.style.height = `${Math.min(node.scrollHeight, 8 * 22)}px`
     }
   }, [text])
+
+  useEffect(() => {
+    if (draftVersion && sectionId) {
+      setText(draftsActions().byId[sectionId] ?? '')
+      document.getElementById('conversation-composer')?.focus()
+    }
+  }, [draftVersion, sectionId])
 
   return (
     <ComposerShell
@@ -1265,7 +1299,10 @@ function BotConversation() {
   const clarifies = useMemo(() => transcript?.clarifies ?? [], [transcript?.clarifies])
   const streaming = Boolean(transcript?.streamingMessageId)
   const [openFailure, setOpenFailure] = useState<{ section: string; message: string } | null>(null)
-  const stoppedHere = stoppedCardFor(bot, params.section ?? null, messages)
+  // A Stopped card the owner closed stays closed while the bot's state catches up.
+  const [dismissedSince, setDismissedSince] = useState<number>()
+  const stoppedCard = stoppedCardFor(bot, params.section ?? null, messages)
+  const stoppedHere = stoppedCard?.createdAt === dismissedSince ? null : stoppedCard
 
   const status = sectionStatusOf(
     bot,
@@ -1551,6 +1588,81 @@ function BotConversation() {
     identified === (useConnection.getState().daemon?.transcript_identity === true) &&
     installation === useConnection.getState().daemon?.install_id
 
+  const recallable = useConnection(state => state.daemon?.recall === true)
+  const [draftVersion, setDraftVersion] = useState(0)
+
+  // Your latest message, while the bot is on it or after its turn stopped.
+  // One the daemon refused never reached the bot and goes from here alone.
+  const recallFor = (message: TranscriptMessage): (() => void) | undefined => {
+    const index = messages.findLastIndex(item => item.role === 'user')
+    const submitted = message.submission?.status ?? 'accepted'
+
+    const stopped =
+      status === 'working' ||
+      streaming ||
+      Boolean(stoppedHere) ||
+      messages.slice(index + 1).some(item => item.error)
+
+    if (
+      !ownerInput ||
+      !recallable ||
+      messages[index] !== message ||
+      !stopped ||
+      !['accepted', 'rejected'].includes(submitted)
+    ) {
+      return undefined
+    }
+
+    return () => {
+      const sectionId = params.section
+
+      if (!canPrompt() || !liveId || !sectionId) {
+        return
+      }
+      void (async () => {
+        try {
+          if (submitted !== 'rejected') {
+            await sessionRecall(liveId, {
+              inputId: message.inputId,
+              rowId: message.submission ? undefined : message.id
+            })
+          }
+        } catch (error) {
+          transcriptActions().requestFailed(
+            liveId,
+            error instanceof Error ? error.message : String(error)
+          )
+
+          return
+        }
+
+        transcriptActions().recallFrom(liveId, message.id)
+        // It comes back to edit, ahead of anything typed since.
+        const typed = draftsActions().byId[sectionId] ?? ''
+        draftsActions().set(sectionId, typed.trim() ? `${message.text}\n\n${typed}` : message.text)
+
+        if (canPrompt()) {
+          setDraftVersion(version => version + 1)
+        }
+      })()
+    }
+  }
+
+  // Closing a card closes the bot's Stopped state for this chat too, or the
+  // card would come back from it.
+  const dismiss = (card: TranscriptMessage) => {
+    if (liveId) {
+      transcriptActions().dismiss(liveId, card.id)
+    }
+
+    const detail = bot?.status === 'stopped' ? bot.status_detail : null
+
+    if (bot && detail && detail.section_id === params.section) {
+      setDismissedSince(detail.since)
+      void botsClearStatus(bot.name).catch(() => undefined)
+    }
+  }
+
   const retryFor = (card: TranscriptMessage): (() => void) | undefined => {
     // Retry requires durable input ownership. Legacy bubble order and error
     // timing cannot establish it, even after a history read or a later send.
@@ -1757,8 +1869,10 @@ function BotConversation() {
                     fresh={toMillis(message.createdAt) > openedAt}
                     joined={joined}
                     message={message}
+                    onDismiss={() => dismiss(message)}
                     onFix={fixConnector}
                     onImage={setLightbox}
+                    onRecall={recallFor(message)}
                     onRetry={retryFor(message)}
                   />
                 </div>
@@ -1769,6 +1883,7 @@ function BotConversation() {
               <StoppedCard
                 message={stoppedHere}
                 name={bot?.display_name ?? 'Bot'}
+                onDismiss={() => dismiss(stoppedHere)}
                 onFix={fixConnector}
                 onRetry={retryFor(stoppedHere)}
               />
@@ -1837,6 +1952,7 @@ function BotConversation() {
           <div className="relative mx-auto max-w-[52rem] px-1">
             <Composer
               bot={bot}
+              draftVersion={draftVersion}
               key={params.section}
               notice={notice}
               sectionId={params.section ?? null}

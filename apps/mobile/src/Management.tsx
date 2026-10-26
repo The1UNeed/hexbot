@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState } from 'react'
-import { Alert, Linking, Platform, StyleSheet, View } from 'react-native'
+import { Linking, StyleSheet, View } from 'react-native'
 import {
   Banner,
   BotFace,
   Button,
   ChoiceRow,
+  confirm,
   Field,
   Form,
   Group,
@@ -96,7 +97,8 @@ const TOOLS: { key: string; label: string; description: string }[] = [
   {
     key: 'computer_use',
     label: 'Computer use',
-    description: "Work on your bots' shared Linux desktop, which you can watch and take over. Uses Cua."
+    description:
+      "Work on your bots' shared Linux desktop, which you can watch and take over. Uses Cua."
   },
   { key: 'vision', label: 'Vision', description: 'Look at images you attach.' },
   {
@@ -120,17 +122,6 @@ const num = (value: string | boolean | undefined) => {
   return parsed
 }
 const str = (v: unknown) => (v == null ? '' : String(v))
-function confirm(title: string, body: string, action: () => void) {
-  if (Platform.OS === 'web') {
-    // React Native Web has no Alert, so the browser preview asks with the browser's dialog.
-    if (globalThis.confirm?.(`${title}. ${body}`) ?? true) action()
-    return
-  }
-  Alert.alert(title, body, [
-    { text: 'Cancel', style: 'cancel' },
-    { text: title, style: 'destructive', onPress: action }
-  ])
-}
 /** How big the bots' shared computer is; a new size applies when it is reset. */
 function ComputerSize({ mobile }: { mobile: ReturnType<typeof useMobile> }) {
   const status = mobile.computer
@@ -222,9 +213,7 @@ export function Management({
       onSaved?.()
       if (close) (onBack ?? onClose)()
       else if (
-        ['devices', 'skills', 'jobs', 'dreams', 'network', 'usage', 'updates'].includes(
-          kind
-        )
+        ['devices', 'skills', 'jobs', 'dreams', 'network', 'usage', 'updates'].includes(kind)
       )
         await load()
     } catch (e) {

@@ -19,6 +19,7 @@ export {
   type IconButtonProps,
   type IconName
 } from './Button'
+export { confirm } from './confirm'
 export { EmptyState, type EmptyStateProps } from './EmptyState'
 export { FacePicker } from './FacePicker'
 export {

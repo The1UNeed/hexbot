@@ -208,6 +208,14 @@ the roster slides in as a drawer.
   A failed send or upload leaves any running answer, tools and Stop available,
   including with an older daemon. An unknown send outcome offers no Retry;
   the draft stays available while the user checks whether the message arrived.
+  Every Stopped card has a close button (×) in its header. Closing one built
+  from the bot's Stopped state for this chat clears that state
+  (`hexbot.bots.clear_status`), so it does not come back. The phone's error
+  banner under a chat closes the same way.
+- Recall: your latest message in a bot's chat, while the bot works on it or
+  after its turn stopped, shows Recall beside Copy on hover; the phone offers
+  it on a long press. The message and everything after it leave the chat, and
+  its text goes back to the composer ahead of anything typed since.
 
 ### Status colours
 

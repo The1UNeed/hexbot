@@ -496,6 +496,20 @@ export default function hexbot(pi: any) {
       if (typeof fresh?.text === 'string' && fresh.text) pendingPrompt = fresh.text;
     } catch {}
   });
+  // Recall (runtime_recall.rs): the chat returns to just before the owner's
+  // latest message, so the next request keeps the cached prefix. Pi resumes a
+  // conversation from its file's last entry, so a custom entry records the move.
+  pi.registerCommand('hexbot-recall', {
+    description: 'Take back the latest user message',
+    handler: async (args: string, ctx: any) => {
+      const id = args.trim();
+      const latest = ctx.sessionManager.getBranch().findLast((entry: any) => entry.type === 'message' && entry.message.role === 'user');
+      if (!id || latest?.id !== id) throw new Error('Only the latest message can be recalled');
+      const {cancelled} = await ctx.navigateTree(id, {summarize: false});
+      if (cancelled) throw new Error('The message could not be recalled');
+      pi.appendEntry('hexbot_recall', {entryId: id});
+    },
+  });
   pi.on('agent_before_settle', async (event: any, ctx: any) => {
     if (limitReached || event.outcome !== 'error' || fallbackUsed) return;
     await refresh(ctx);

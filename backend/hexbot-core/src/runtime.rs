@@ -33,6 +33,8 @@ mod identity;
 mod primary;
 #[path = "runtime_review.rs"]
 mod review;
+#[path = "runtime_recall.rs"]
+mod recall;
 #[path = "runtime_stop.rs"]
 mod stop;
 use crate::dreaming::checkins;
@@ -1794,6 +1796,9 @@ impl Runtime {
         }
         common::bot_owner(&self.home, &s.owner, &s.bot)?;
         let compact = text.trim() == "/compact" || text.trim().starts_with("/compact ");
+        if text.trim_start().starts_with(recall::RECALL_COMMAND) {
+            return Err(Error::new(4202, "Use Recall to take back a message"));
+        }
         if !compact {
             if text.trim().is_empty() {
                 return Err(Error::new(4200, "missing parameter: text"));
@@ -2799,6 +2804,7 @@ impl Runtime {
                 | "session.history"
                 | "session.usage"
                 | "session.interrupt"
+                | "session.recall"
                 | "session.steer"
                 | "session.close"
                 | "session.status"
@@ -3027,6 +3033,7 @@ impl Runtime {
                 Ok(json!({"status":"interrupted"}))
             }
             "session.steer" => self.steer(&s, required(p, "text")?, input_id).await,
+            "session.recall" => self.recall(&s, p).await,
             "session.close" => Ok(json!({"closed":self.close_stored(caller,&s.stored).await?})),
             "session.save" => Ok(json!({"saved":true,"stored_session_id":s.stored})),
             "session.title" => {
