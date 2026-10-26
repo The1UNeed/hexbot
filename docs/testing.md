@@ -439,7 +439,7 @@ nested steps before and after reload in light and dark themes.
 web's face geometry. `node apps/web/scripts/face-smoke.mjs` launches a
 temporary Vite entry and Chromium, then removes the entry and closes both.
 It checks all 264 PNG shape and colour roundtrips (hexagon, capsule, and flat
-eyes), quiet idle faces,
+eyes), idle faces that animate without frame callbacks or SVG writes,
 settled reduced-motion expressions and all acts, offscreen pause/resume,
 keyed reorder/unmount cleanup, and 24 active faces under 4× CPU throttling.
 `HEXBOT_FACE_ARTIFACTS` selects the screenshot directory. It uses the desktop

@@ -96,8 +96,9 @@ window.faces.gallery()
   })
   assert.deepEqual(roundtrips.failures, [])
 
+  // Idle breathes, glances and blinks, all in CSS: no frame callbacks or SVG writes.
   await page.evaluate(() => window.faces.show({ mood: 'idle' }))
-  await expect.poll(() => page.evaluate(() => document.getAnimations().length)).toBe(0)
+  await expect.poll(() => page.evaluate(() => document.getAnimations().length)).toBe(3)
   const quiet = await page.evaluate(async () => {
     let mutations = 0, frames = 0
     const original = window.requestAnimationFrame
@@ -111,9 +112,9 @@ window.faces.gallery()
   })
   assert.deepEqual(quiet, { mutations: 0, frames: 0 })
 
-  // Working turns both eyes, one each way.
+  // Working bobs, blinks, and turns both eyes, one each way.
   await page.evaluate(() => window.faces.show({ mood: 'working' }))
-  await expect.poll(() => page.evaluate(() => document.getAnimations().length)).toBe(2)
+  await expect.poll(() => page.evaluate(() => document.getAnimations().length)).toBe(4)
   await page.evaluate(() => { document.getElementById('root').style.marginTop = '2000px' })
   await expect(page.locator('svg')).toHaveAttribute('data-moving', 'false')
   assert.equal(await page.evaluate(() => document.getAnimations().length), 0)
@@ -126,7 +127,7 @@ window.faces.gallery()
   for (const mood of await page.evaluate(() => window.faces.moods)) {
     await page.evaluate(mood => window.faces.show({ mood, shape: 'triangle', color: '#ececf0', eyes: '#151517', look: 'left' }), mood)
     assert.equal(await page.evaluate(() => document.getAnimations().length), 0)
-    await expect(page.locator('svg > path')).toHaveAttribute('fill', '#ececf0')
+    await expect(page.locator('svg .hex-body > path')).toHaveAttribute('fill', '#ececf0')
     await expect(page.locator('.hex-eye-shape').first()).toHaveAttribute('fill', '#151517')
     assert.equal(await page.locator('[transform="translate(-10 -2)"]').count(), 1)
     const drawn = await page.locator('svg').innerHTML()

@@ -806,17 +806,155 @@ body {
 }
 
 /*
- * Activity moves the painted eyes, never the outline. A new mood eases each
- * hexagon into its pose; while a visible bot works, its eyes turn a sixth of
- * a turn and rest, the two in opposite directions like meshed gears. A sixth
- * of a turn looks the same as none, so the loop never jumps.
+ * Faces move with what their bot does. The whole face sways, nods, bobs or
+ * hops (.hex-body), leans toward a neighbour it looks at (.hex-face-lean), and its
+ * eyes blink, glance, scan or turn. A new mood eases each hexagonal eye into
+ * its pose. While a visible bot works, its eyes turn a sixth of a turn and
+ * rest, the two in opposite directions like meshed gears; a sixth of a turn
+ * looks the same as none, so the loop never jumps. Marks around the face
+ * (.hex-marks) say the rest: thought dots, a line being written, sparks, Zs.
+ * Units are the face's 100-unit box.
  */
+.hex-face-lean,
+.hex-body {
+  transform-box: view-box;
+  transform-origin: 50px 92px;
+}
+.hex-face-lean {
+  transition: transform var(--hex-motion-enter) var(--hex-ease-spring);
+}
+.hex-live-face[data-look='left'] .hex-face-lean {
+  transform: rotate(-8deg);
+}
+.hex-live-face[data-look='right'] .hex-face-lean {
+  transform: rotate(8deg);
+}
 .hex-eye {
   transition: transform var(--hex-motion-panel) var(--hex-ease-spring);
 }
-.hex-eye-shape {
+.hex-eyes,
+.hex-eye-shape,
+.hex-mark,
+.hex-mark-shape {
   transform-box: fill-box;
   transform-origin: center;
+}
+.hex-orbit {
+  transform-box: view-box;
+  transform-origin: 50px 50px;
+}
+
+/* The face as a whole. */
+@keyframes hex-body-breathe {
+  50% {
+    transform: translateY(-0.6px) scale(1.012);
+  }
+}
+@keyframes hex-body-nod {
+  0%,
+  72%,
+  100% {
+    transform: none;
+  }
+  80% {
+    transform: translateY(2px) rotate(-2deg);
+  }
+  88% {
+    transform: translateY(-0.5px);
+  }
+}
+@keyframes hex-body-ponder {
+  0%,
+  100% {
+    transform: rotate(-4deg);
+  }
+  50% {
+    transform: rotate(-6deg) translateY(-1px);
+  }
+}
+@keyframes hex-body-sway {
+  0%,
+  100% {
+    transform: translateX(-1.5px) rotate(-5deg);
+  }
+  50% {
+    transform: translateX(1.5px) rotate(4deg);
+  }
+}
+@keyframes hex-body-bob {
+  50% {
+    transform: translateY(1.5px) scale(1.01, 0.985);
+  }
+}
+@keyframes hex-body-scribble {
+  50% {
+    transform: translateY(1px) rotate(2deg);
+  }
+}
+@keyframes hex-body-hop {
+  0%,
+  44%,
+  100% {
+    transform: none;
+  }
+  10% {
+    transform: translateY(1px) scale(1.04, 0.95);
+  }
+  22% {
+    transform: translateY(-7px) scale(0.98, 1.03);
+  }
+  34% {
+    transform: translateY(0.5px) scale(1.03, 0.97);
+  }
+}
+@keyframes hex-body-doze {
+  0%,
+  100% {
+    transform: translateY(3px) rotate(5deg);
+  }
+  50% {
+    transform: translateY(3.5px) rotate(5deg) scale(1.01, 1.025);
+  }
+}
+@keyframes hex-body-wake {
+  0% {
+    transform: translateY(3px) rotate(5deg) scale(0.97);
+  }
+  45% {
+    transform: translateY(-5px) scale(1.06);
+  }
+  100% {
+    transform: none;
+  }
+}
+
+/* The eyes. */
+@keyframes hex-eyes-blink {
+  0%,
+  93%,
+  100% {
+    transform: scaleY(1);
+  }
+  96.5% {
+    transform: scaleY(0.1);
+  }
+}
+@keyframes hex-face-glance {
+  0%,
+  30%,
+  56%,
+  84%,
+  100% {
+    transform: translate(0, 0);
+  }
+  36%,
+  50% {
+    transform: translate(6px, -3px);
+  }
+  62%,
+  78% {
+    transform: translate(-5px, 1px);
+  }
 }
 @keyframes hex-face-think {
   0%,
@@ -859,29 +997,174 @@ body {
     transform: rotate(-60deg);
   }
 }
-.hex-live-face[data-moving='true'][data-mood='thinking'] .hex-gaze {
-  animation: hex-face-think 2.4s ease-in-out infinite;
+
+/* The marks. Each rests visible, so a paused face still shows it. */
+@keyframes hex-mark-rise {
+  0%,
+  100% {
+    opacity: 0;
+    transform: scale(0.4);
+  }
+  25%,
+  75% {
+    opacity: 1;
+    transform: scale(1);
+  }
 }
-.hex-live-face[data-moving='true'][data-mood='searching'] .hex-gaze {
-  animation: hex-face-search 2.2s ease-in-out infinite;
+@keyframes hex-mark-write {
+  0% {
+    stroke-dashoffset: 1;
+  }
+  55%,
+  70% {
+    stroke-dashoffset: 0;
+    opacity: 1;
+  }
+  100% {
+    stroke-dashoffset: 0;
+    opacity: 0;
+  }
 }
-.hex-live-face[data-moving='true'][data-mood='writing'] .hex-gaze {
-  animation: hex-face-write 0.9s ease-in-out infinite;
+@keyframes hex-mark-twinkle {
+  0%,
+  100% {
+    opacity: 0;
+    transform: scale(0.3) rotate(0deg);
+  }
+  30%,
+  60% {
+    opacity: 1;
+    transform: scale(1) rotate(45deg);
+  }
 }
-.hex-live-face[data-moving='true']:is([data-mood='working'], [data-mood='loading'])
-  .hex-eye:first-child
-  .hex-eye-shape {
-  animation: hex-eye-turn 1.4s var(--hex-ease-in-out) infinite;
+@keyframes hex-mark-drift {
+  0% {
+    opacity: 0;
+    transform: translate(-2px, 4px);
+  }
+  30%,
+  70% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+    transform: translate(3px, -8px);
+  }
 }
-.hex-live-face[data-moving='true']:is([data-mood='working'], [data-mood='loading'])
-  .hex-eye:last-child
-  .hex-eye-shape {
-  animation: hex-eye-turn-back 1.4s var(--hex-ease-in-out) infinite;
+@keyframes hex-mark-orbit {
+  to {
+    transform: rotate(360deg);
+  }
+}
+.hex-mark-line {
+  stroke-dasharray: 1;
+}
+
+/* Which motion each mood wears. */
+.hex-live-face[data-moving='true'] {
+  &[data-mood='idle'] .hex-body {
+    animation: hex-body-breathe 4.6s ease-in-out infinite;
+  }
+  &[data-mood='idle'] .hex-gaze {
+    animation: hex-face-glance 9s var(--hex-ease-in-out) infinite;
+  }
+  &:is(
+      [data-mood='idle'],
+      [data-mood='listening'],
+      [data-mood='thinking'],
+      [data-mood='searching'],
+      [data-mood='working'],
+      [data-mood='writing']
+    )
+    .hex-eyes {
+    animation: hex-eyes-blink 5.2s ease-in-out infinite;
+  }
+  &[data-mood='listening'] .hex-body {
+    animation: hex-body-nod 2.8s ease-in-out infinite;
+  }
+  &[data-mood='thinking'] .hex-body {
+    animation: hex-body-ponder 3.2s ease-in-out infinite;
+  }
+  &[data-mood='thinking'] .hex-gaze {
+    animation: hex-face-think 2.4s ease-in-out infinite;
+  }
+  &[data-mood='searching'] .hex-body {
+    animation: hex-body-sway 2.2s ease-in-out infinite;
+  }
+  &[data-mood='searching'] .hex-gaze {
+    animation: hex-face-search 2.2s ease-in-out infinite;
+  }
+  &[data-mood='working'] .hex-body {
+    animation: hex-body-bob 0.7s ease-in-out infinite;
+  }
+  &:is([data-mood='working'], [data-mood='loading']) .hex-eye:first-child .hex-eye-shape {
+    animation: hex-eye-turn 1.4s var(--hex-ease-in-out) infinite;
+  }
+  &:is([data-mood='working'], [data-mood='loading']) .hex-eye:last-child .hex-eye-shape {
+    animation: hex-eye-turn-back 1.4s var(--hex-ease-in-out) infinite;
+  }
+  &[data-mood='writing'] .hex-body {
+    animation: hex-body-scribble 0.9s ease-in-out infinite;
+  }
+  &[data-mood='writing'] .hex-gaze {
+    animation: hex-face-write 0.9s ease-in-out infinite;
+  }
+  &[data-mood='happy'] .hex-body {
+    animation: hex-body-hop 1.8s ease-in-out infinite;
+  }
+  &[data-mood='sleeping'] .hex-body {
+    animation: hex-body-doze 4.8s ease-in-out infinite;
+  }
+  &[data-waking] .hex-body {
+    animation: hex-body-wake 0.9s var(--hex-ease-out) both;
+  }
+
+  [data-marks='think'] .hex-mark-shape {
+    animation: hex-mark-rise 2.1s ease-in-out infinite;
+  }
+  [data-marks='think'] .hex-mark:nth-child(2) .hex-mark-shape {
+    animation-delay: 0.25s;
+  }
+  [data-marks='think'] .hex-mark:nth-child(3) .hex-mark-shape {
+    animation-delay: 0.5s;
+  }
+  [data-marks='write'] .hex-mark-line {
+    animation: hex-mark-write 1.6s ease-in-out infinite;
+  }
+  :is([data-marks='happy'], [data-marks='wake']) .hex-mark-shape {
+    animation: hex-mark-twinkle 1.8s ease-in-out infinite;
+  }
+  [data-marks='happy'] .hex-mark:nth-child(2) .hex-mark-shape {
+    animation-delay: 0.6s;
+  }
+  [data-marks='wake'] .hex-mark-shape {
+    animation-duration: 0.9s;
+    animation-iteration-count: 1;
+    animation-fill-mode: both;
+  }
+  [data-marks='wake'] .hex-mark:nth-child(2) .hex-mark-shape {
+    animation-delay: 0.08s;
+  }
+  [data-marks='wake'] .hex-mark:nth-child(3) .hex-mark-shape {
+    animation-delay: 0.16s;
+  }
+  [data-marks='sleep'] .hex-mark {
+    animation: hex-mark-drift 2.8s ease-in-out infinite;
+  }
+  [data-marks='sleep'] .hex-mark:nth-child(2) {
+    animation-delay: 1.4s;
+  }
+  [data-marks='load'] {
+    animation: hex-mark-orbit 1.6s linear infinite;
+  }
+}
+/* A held or paused sleeper still droops. */
+.hex-live-face[data-mood='sleeping'] .hex-body {
+  transform: translateY(3px) rotate(5deg);
 }
 /* Acts own only their React subtree. Pausing removes animation effects outright. */
 .hex-face[data-visible='false'] *,
-.hex-live-face[data-moving='false'] .hex-gaze,
-.hex-live-face[data-moving='false'] .hex-eye-shape {
+.hex-live-face[data-moving='false'] * {
   animation: none !important;
 }
 @media (prefers-reduced-motion: reduce) {

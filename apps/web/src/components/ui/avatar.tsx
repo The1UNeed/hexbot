@@ -1,5 +1,5 @@
 import { cva, type VariantProps } from 'class-variance-authority'
-import { useEffect, useReducer } from 'react'
+import { useEffect, useReducer, useRef, useState } from 'react'
 
 import {
   AVATAR_SHAPES,
@@ -98,7 +98,149 @@ export interface LiveFaceProps {
   still?: boolean
 }
 
-/** Original SVG, with CSS motion only while a visible bot is active. */
+/** How long a face takes to wake up when its bot comes back. */
+export const WAKE_MS = 900
+
+/** True for a moment after `mood` leaves sleeping. */
+function useWaking(mood: FaceMood): boolean {
+  const previous = useRef(mood)
+  const [waking, setWaking] = useState(false)
+
+  useEffect(() => {
+    const woke = previous.current === 'sleeping' && mood !== 'sleeping'
+    previous.current = mood
+
+    if (!woke) {
+      return
+    }
+
+    setWaking(true)
+    const timer = window.setTimeout(() => setWaking(false), WAKE_MS)
+
+    return () => window.clearTimeout(timer)
+  }, [mood])
+
+  return waking
+}
+
+/** A small hexagon centred on `x`, `y`, for the marks around a face. */
+function hexagon(x: number, y: number, size: number): string {
+  return `translate(${x}px, ${y}px) scale(${size})`
+}
+
+/**
+ * Marks drawn around the face for some moods: thought dots rising while it
+ * thinks, a line being written, sparks when it is happy or wakes, Zs while
+ * it sleeps, and a dot circling it while it loads. They sit outside the
+ * outline, in the face colour, and hold still wherever motion stops.
+ */
+function FaceMarks({ color, mood, waking }: { color: string; mood: FaceMood; waking: boolean }) {
+  const spark = (x: number, y: number, index: number) => (
+    <g className="hex-mark" key={index} style={{ transform: hexagon(x, y, 1) }}>
+      <path
+        className="hex-mark-shape"
+        d="M0 -5.5Q0.9 -0.9 5.5 0Q0.9 0.9 0 5.5Q-0.9 0.9 -5.5 0Q-0.9 -0.9 0 -5.5Z"
+        fill={color}
+      />
+    </g>
+  )
+
+  if (waking) {
+    return (
+      <g className="hex-marks" data-marks="wake">
+        {[
+          [4, 18],
+          [96, 14],
+          [50, -6]
+        ].map(([x, y], index) => spark(x!, y!, index))}
+      </g>
+    )
+  }
+
+  switch (mood) {
+    case 'thinking':
+      return (
+        <g className="hex-marks" data-marks="think">
+          {[
+            [80, 14, 2.6],
+            [89, 5, 3.4],
+            [99, -5, 4.3]
+          ].map(([x, y, size], index) => (
+            <g className="hex-mark" key={index} style={{ transform: hexagon(x!, y!, size!) }}>
+              <path className="hex-mark-shape" d={HEX_EYE} fill={color} />
+            </g>
+          ))}
+        </g>
+      )
+
+    case 'writing':
+      return (
+        <g className="hex-marks" data-marks="write">
+          <path
+            className="hex-mark-line"
+            d="M66 101q3-5 6 0t6 0t6 0t6 0"
+            fill="none"
+            pathLength={1}
+            stroke={color}
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            strokeWidth={3.2}
+          />
+        </g>
+      )
+
+    case 'happy':
+      return (
+        <g className="hex-marks" data-marks="happy">
+          {[
+            [6, 14],
+            [94, 10]
+          ].map(([x, y], index) => spark(x!, y!, index))}
+        </g>
+      )
+
+    case 'sleeping':
+      return (
+        <g className="hex-marks" data-marks="sleep">
+          {[
+            [80, 16, 13],
+            [92, 2, 10]
+          ].map(([x, y, size], index) => (
+            <text
+              className="hex-mark"
+              fill={color}
+              fontFamily="var(--hex-font-sans)"
+              fontSize={size}
+              fontWeight={700}
+              key={index}
+              x={x}
+              y={y}
+            >
+              z
+            </text>
+          ))}
+        </g>
+      )
+
+    case 'loading':
+      return (
+        <g className="hex-marks hex-orbit" data-marks="load">
+          <g style={{ transform: hexagon(50, -5, 4) }}>
+            <path d={HEX_EYE} fill={color} />
+          </g>
+        </g>
+      )
+
+    default:
+      return null
+  }
+}
+
+/**
+ * Original SVG. While a visible bot is active the whole face moves with its
+ * mood (a sway, nod, bob or hop in tokens.css) and the eyes blink and
+ * glance; a look leans the face toward its neighbour.
+ */
 export function LiveFace({
   className,
   color,
@@ -110,18 +252,26 @@ export function LiveFace({
 }: LiveFaceProps) {
   const outline = AVATAR_SHAPES.find(item => item.id === shape) ?? AVATAR_SHAPES[0]!
   const { ref, visible } = useFaceVisibility<SVGSVGElement>()
+  const waking = useWaking(mood)
 
   return (
     <svg
       aria-hidden
-      className={cn('hex-live-face size-full', className)}
+      className={cn('hex-live-face size-full overflow-visible', className)}
+      data-look={look ?? undefined}
       data-mood={mood}
       data-moving={visible && !still}
+      data-waking={waking || undefined}
       ref={ref}
       viewBox={FACE_VIEWBOX}
     >
-      <path d={outline.path} fill={color} />
-      <FaceEyes ball={outline.ball} fill={eyes} look={look} mood={mood} />
+      <g className="hex-face-lean">
+        <g className="hex-body">
+          <path d={outline.path} fill={color} />
+          <FaceEyes ball={outline.ball} fill={eyes} look={look} mood={mood} />
+        </g>
+      </g>
+      {still ? null : <FaceMarks color={color} mood={mood} waking={waking} />}
     </svg>
   )
 }

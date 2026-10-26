@@ -1,6 +1,6 @@
 import { act, fireEvent, render } from '@testing-library/react'
 
-import { Avatar, LiveFace } from '../components/ui/avatar'
+import { Avatar, LiveFace, WAKE_MS } from '../components/ui/avatar'
 import { HexbotMark } from '../components/ui/wordmark'
 
 import { FACE_MOODS, moodForStatus } from './face'
@@ -143,5 +143,51 @@ describe('original faces', () => {
       'fill',
       'var(--hex-background)'
     )
+  })
+
+  it('draws the marks each mood needs and none while held', () => {
+    const marks = {
+      happy: 'happy',
+      loading: 'load',
+      sleeping: 'sleep',
+      thinking: 'think',
+      writing: 'write'
+    }
+
+    for (const mood of FACE_MOODS) {
+      const { container, rerender, unmount } = render(
+        <LiveFace color="pink" eyes="white" mood={mood} />
+      )
+
+      expect(container.querySelector('[data-marks]')?.getAttribute('data-marks')).toBe(
+        marks[mood as keyof typeof marks]
+      )
+      rerender(<LiveFace color="pink" eyes="white" mood={mood} still />)
+      expect(container.querySelector('[data-marks]')).toBeNull()
+      unmount()
+    }
+  })
+
+  it('wakes for a moment when its bot comes back, then settles', () => {
+    vi.useFakeTimers()
+    const { container, rerender } = render(<LiveFace color="pink" eyes="white" mood="sleeping" />)
+    const svg = container.querySelector('svg')!
+    expect(svg).not.toHaveAttribute('data-waking')
+    rerender(<LiveFace color="pink" eyes="white" mood="idle" />)
+    expect(svg).toHaveAttribute('data-waking', 'true')
+    expect(container.querySelector('[data-marks="wake"]')).not.toBeNull()
+    act(() => vi.advanceTimersByTime(WAKE_MS))
+    expect(svg).not.toHaveAttribute('data-waking')
+    expect(container.querySelector('[data-marks]')).toBeNull()
+    rerender(<LiveFace color="pink" eyes="white" mood="working" />)
+    expect(svg).not.toHaveAttribute('data-waking')
+    vi.useRealTimers()
+  })
+
+  it('leans toward the face it looks at', () => {
+    const { container, rerender } = render(<LiveFace color="pink" eyes="white" look="left" />)
+    expect(container.querySelector('svg')).toHaveAttribute('data-look', 'left')
+    rerender(<LiveFace color="pink" eyes="white" look={null} />)
+    expect(container.querySelector('svg')).not.toHaveAttribute('data-look')
   })
 })
