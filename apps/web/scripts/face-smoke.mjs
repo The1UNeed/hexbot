@@ -1,5 +1,5 @@
 /* global window, document, Image, MutationObserver, requestAnimationFrame */
-// Real browser checks for original faces. Uses a temporary Vite entry, removed on exit.
+// Real browser checks for Hexbot's faces. Uses a temporary Vite entry, removed on exit.
 // Run: node apps/web/scripts/face-smoke.mjs
 import assert from 'node:assert/strict'
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
@@ -42,7 +42,7 @@ window.faces = {
   empty: () => render(null),
   gallery: () => render(h('main', { style: { padding: 48, maxWidth: 1150, margin: 'auto' } },
     h('h1', { style: { fontSize: 28, fontWeight: 600, marginBottom: 12 } }, 'Hexbot faces'),
-    h('p', { style: { marginBottom: 40 } }, 'Original outlines and capsule eyes. Expressions follow the work.'),
+    h('p', { style: { marginBottom: 40 } }, 'Hexagonal eyes. Expressions follow the work.'),
     h('div', { style: { display: 'flex', gap: 36, marginBottom: 48 } }, FACE_MOODS.map(mood => h('div', { key: mood, style: { textAlign: 'center' } }, h(Avatar, { name: mood, mood, size: 'xl', style }), h('p', { style: { marginTop: 12 } }, mood)))),
     h('div', { style: { display: 'flex', gap: 42, marginBottom: 48 } }, avatars.AVATAR_SHAPES.map(shape => h('div', { key: shape.id, style: { textAlign: 'center' } }, h(Avatar, { name: shape.label, size: 'xl', style: { color: 'teal', shape: shape.id } }), h('p', { style: { marginTop: 12 } }, shape.label)))),
     h('div', { style: { display: 'flex', gap: 20 } }, avatars.AVATAR_COLORS.map(color => h(Avatar, { key: color.id, name: color.label, size: 'lg', style: { color: color.id, shape: 'hexagon' } })))
@@ -57,11 +57,11 @@ window.faces.gallery()
   page.on('pageerror', error => errors.push(error.message))
   await page.goto(`http://127.0.0.1:${server.httpServer.address().port}/${fixture}`)
   await page.waitForFunction(() => Boolean(window.faces))
-  await page.screenshot({ path: path.join(artifacts, 'original-faces-light.png') })
+  await page.screenshot({ path: path.join(artifacts, 'faces-light.png') })
   await page.emulateMedia({ colorScheme: 'dark' })
-  await page.screenshot({ path: path.join(artifacts, 'original-faces-dark.png') })
+  await page.screenshot({ path: path.join(artifacts, 'faces-dark.png') })
 
-  // Actual canvas rasterisation and readback, all 8 shapes x 11 colours x 2 formats.
+  // Actual canvas rasterisation and readback, all 8 shapes x 11 colours x 3 formats.
   const roundtrips = await page.evaluate(async () => {
     const f = window.faces
     const failures = []
@@ -71,16 +71,25 @@ window.faces.gallery()
         const style = { color: color.id, shape: shape.id }
         const png = await f.avatarPng(style)
         if (JSON.stringify(await f.readFace(png)) !== JSON.stringify(style)) failures.push({ format: 'current', style })
-        // Original flat eyes from avatar-builder.ts before f1582cad, same outlines.
-        const svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><path d="' + shape.path + '" fill="' + color.value + '"/><ellipse cx="41" cy="48" rx="3.6" ry="6.2" fill="#151517"/><ellipse cx="59" cy="48" rx="3.6" ry="6.2" fill="#151517"/></svg>'
-        const image = new Image()
-        image.src = 'data:image/svg+xml;utf8,' + encodeURIComponent(svg)
-        await image.decode()
-        const canvas = document.createElement('canvas')
-        canvas.width = canvas.height = 512
-        canvas.getContext('2d').drawImage(image, 0, 0, 512, 512)
-        if (JSON.stringify(await f.readFace(canvas.toDataURL('image/png'))) !== JSON.stringify(style)) failures.push({ format: 'legacy', style })
-        count += 2
+        const eyes = color.eyes ?? f.EYES
+        const scale = shape.ball.r / f.BALL
+        const older = {
+          // Capsule eyes on the ball, saved before the eyes became hexagons.
+          capsule: '<g transform="translate(50 ' + shape.ball.cy + ') scale(' + scale + ')"><rect x="-20.35" y="-13.5" width="11.7" height="27" rx="5.85" fill="' + eyes + '"/><rect x="8.65" y="-13.5" width="11.7" height="27" rx="5.85" fill="' + eyes + '"/></g>',
+          // Flat eyes from avatar-builder.ts before f1582cad, same outlines.
+          flat: '<ellipse cx="41" cy="48" rx="3.6" ry="6.2" fill="#151517"/><ellipse cx="59" cy="48" rx="3.6" ry="6.2" fill="#151517"/>'
+        }
+        for (const [format, drawn] of Object.entries(older)) {
+          const svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><path d="' + shape.path + '" fill="' + color.value + '"/>' + drawn + '</svg>'
+          const image = new Image()
+          image.src = 'data:image/svg+xml;utf8,' + encodeURIComponent(svg)
+          await image.decode()
+          const canvas = document.createElement('canvas')
+          canvas.width = canvas.height = 512
+          canvas.getContext('2d').drawImage(image, 0, 0, 512, 512)
+          if (JSON.stringify(await f.readFace(canvas.toDataURL('image/png'))) !== JSON.stringify(style)) failures.push({ format, style })
+        }
+        count += 3
       }
     }
     return { count, failures }
@@ -102,8 +111,9 @@ window.faces.gallery()
   })
   assert.deepEqual(quiet, { mutations: 0, frames: 0 })
 
+  // Working turns both eyes, one each way.
   await page.evaluate(() => window.faces.show({ mood: 'working' }))
-  await expect.poll(() => page.evaluate(() => document.getAnimations().length)).toBe(1)
+  await expect.poll(() => page.evaluate(() => document.getAnimations().length)).toBe(2)
   await page.evaluate(() => { document.getElementById('root').style.marginTop = '2000px' })
   await expect(page.locator('svg')).toHaveAttribute('data-moving', 'false')
   assert.equal(await page.evaluate(() => document.getAnimations().length), 0)
@@ -117,7 +127,7 @@ window.faces.gallery()
     await page.evaluate(mood => window.faces.show({ mood, shape: 'triangle', color: '#ececf0', eyes: '#151517', look: 'left' }), mood)
     assert.equal(await page.evaluate(() => document.getAnimations().length), 0)
     await expect(page.locator('svg > path')).toHaveAttribute('fill', '#ececf0')
-    await expect(page.locator('rect').first()).toHaveAttribute('fill', '#151517')
+    await expect(page.locator('.hex-eye-shape').first()).toHaveAttribute('fill', '#151517')
     assert.equal(await page.locator('[transform="translate(-10 -2)"]').count(), 1)
     const drawn = await page.locator('svg').innerHTML()
     await page.waitForTimeout(80)

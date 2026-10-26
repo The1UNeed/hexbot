@@ -1,5 +1,5 @@
 /**
- * Generated bot faces: a shape and a colour with two capsule eyes, drawn as
+ * Generated bot faces: a shape and a colour with two hexagonal eyes, drawn as
  * if painted on a ball. Drawn as SVG in the UI and rasterised to PNG for the
  * profile asset (the daemon accepts png, jpeg or webp only). Bots without an
  * uploaded avatar get a face derived from their name so every bot has one.
@@ -22,9 +22,11 @@ import {
   ballTransform,
   EYE_GAP,
   EYE_MOODS,
-  eyeRects,
+  eyePlacements,
   EYES,
+  eyeTransform,
   type FaceMood,
+  HEX_EYE,
   INK
 } from './face-geometry'
 
@@ -39,10 +41,14 @@ export {
   DEFAULT_AVATAR_STYLE,
   EYE_GAP,
   EYE_MOODS,
-  eyeRects,
+  type EyePlacement,
+  eyePlacements,
+  type EyePose,
   EYES,
-  type EyeShape,
-  type FaceMood
+  eyeTransform,
+  eyeTransformCss,
+  type FaceMood,
+  HEX_EYE
 } from './face-geometry'
 
 /** A stable face for a bot that has no uploaded avatar. */
@@ -68,17 +74,13 @@ export function resolveStyle(style: AvatarStyle) {
 
 /** The eyes as SVG markup, shared by the inline face and the rasterised one. */
 export function faceEyes(ball: Ball, fill: string, mood: FaceMood = 'idle'): string {
-  const rects = eyeRects(mood)
-    .map(
-      eye =>
-        `<rect x="${eye.x}" y="${eye.y}" width="${eye.width}" height="${eye.height}"` +
-        ` rx="${eye.rx}" ry="${eye.ry}" fill="${fill}"/>`
-    )
+  const eyes = eyePlacements(mood)
+    .map(eye => `<path d="${HEX_EYE}" transform="${eyeTransform(eye)}" fill="${fill}"/>`)
     .join('')
 
   return (
     `<g transform="${ballTransform(ball)}">` +
-    `<g class="hex-gaze"><g class="hex-eyes">${rects}</g></g>` +
+    `<g class="hex-gaze"><g class="hex-eyes">${eyes}</g></g>` +
     `</g>`
   )
 }
@@ -174,7 +176,7 @@ export function botFace(
 /** Sampling size; the 100×100 face space, one pixel per unit. */
 const SIDE = 100
 
-/** A point on every shape's body, clear of the eyes old and new. */
+/** A point on every shape's body, clear of every eye this module has drawn. */
 const BODY = [50, 30] as const
 
 /** Where the flat faces had their eyes. */
@@ -201,7 +203,8 @@ function near(rgba: number[], hex: string, tolerance: number): boolean {
 /**
  * Matches a 100×100 RGBA picture against every colour and shape, given each
  * shape's mask drawn at the same size, with its eyes where this module puts
- * them now or where it put them before they moved onto the ball. A photo or
+ * them now or where it put them before they moved onto the ball. Hexagonal
+ * and older capsule eyes share their centres, so both read back. A photo or
  * any other upload matches nothing.
  */
 export function matchFace(

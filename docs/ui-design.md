@@ -36,16 +36,18 @@ own visual identity. Read `CLAUDE.md` for the words.
 - Chart series, for bot visuals only: light #4F46E5, #0D9488, #D97706,
   #DB2777, #2F7CF6, #65A30D; dark #8B85FF, #2DD4BF, #FBBF24, #F472B6,
   #4C9AFF, #A3E635. The first is the accent; the rest step apart in hue.
-- Bot faces: Hexbot's original eight outlines and capsule eyes, with white
-  eyes except ink on Chalk. `lib/face-geometry.ts` is the source, copied to
+- Bot faces: Hexbot's eight outlines with two hexagonal eyes, white except
+  ink on Chalk. `lib/face-geometry.ts` is the source, copied to
   mobile by `apps/web/scripts/face-rest.mjs`. The [provenance note](face-provenance.md)
   records where the outlines, eyes, and poses come from.
   Faces picked in an app are stored as shape and colour, with a static PNG
   for other clients. The web app reads saved current and older flat-eye PNGs
   back into live faces; mobile shows legacy pictures as pictures. Other
   uploads replace the face. Bots without a saved face derive one from their
-  names. A live turn starts thinking, searches while a search tool runs,
-  looks down while writing, and works during other steps. Roster and header
+  names. A live turn starts thinking (eyes lie flat and drift up), searches
+  while a search tool runs (eyes scan), looks down while writing, and works
+  during other steps (each eye turns a sixth of a turn and rests, the two in
+  opposite directions). Roster and header
   faces, including every face in a room's cluster, match their status dots;
   a cluster without a dot, as in room settings, stays idle. Faces in asks
   look toward each other.
@@ -54,7 +56,8 @@ own visual identity. Read `CLAUDE.md` for the words.
   offscreen or hidden-page faces stop their animations. Mobile draws the same
   settled expressions. Click a face or the in-app mark for one of the existing
   21 acts. Acts hold the eyes still and clean up with their React subtree.
-  Site, favicon, and desktop icons intentionally retain the static brand mark.
+  The site's faces use the same hexagon eyes. The site logo, favicon, and
+  package icons still show the static capsule-eye mark until they are redrawn.
 - Shadows only on floating layers (menus, dialogs, the glass chrome) and the
   cards that sit on the canvas: a hairline plus one soft shadow.
 - Liquid glass (`hex-glass`, `hex-glass-strong` in `tokens.css`) is for
@@ -363,7 +366,9 @@ starts with your name, the one Get Started asked for.
 - Approvals: "Choose when Hexbot asks before a bot acts. Bots and rooms can
   override it." Modes Manual, Auto, and Bypass, one row each;
   a notice when the daemon has no OS sandbox.
-- Appearance: theme System, Light, Dark.
+- Appearance: theme System, Light, Dark; Sounds, off by default: a soft
+  synthesised tone when a bot starts, finishes, or needs you, in the open
+  conversation while the window is visible (`lib/sounds.ts`).
 - Updates: current version, channel, check now.
 - About: version, license, links.
 

@@ -50,9 +50,14 @@ vi.mock('../../lib/connection', async importOriginal => ({
 
 vi.mock('qrcode', () => ({ default: { toCanvas: vi.fn().mockResolvedValue(undefined) } }))
 
+const sounds = vi.hoisted(() => ({ prime: vi.fn(), set: vi.fn() }))
+
+vi.mock('../../lib/sounds', () => ({ primeSounds: sounds.prime }))
+
 vi.mock('../../stores/ui', () => ({
   useUi: (selector: (state: object) => unknown) =>
     selector({
+      setSounds: sounds.set,
       setTheme: (theme: string) => {
         if (theme === 'system') {
           document.documentElement.removeAttribute('data-theme')
@@ -60,6 +65,7 @@ vi.mock('../../stores/ui', () => ({
           document.documentElement.setAttribute('data-theme', theme)
         }
       },
+      sounds: false,
       theme: 'system'
     })
 }))
@@ -260,27 +266,30 @@ describe('settings', () => {
     ['member', 'off', true],
     ['admin', 'smart', true],
     [undefined, 'smart', true]
-  ] as const)('global approvals for role %s, mode %s offer Bypass: %s', (role, approval_mode, bypass) => {
-    useMe.setState({ me: { display_name: 'Alex', id: 'local', role } })
-    useSettings.setState({
-      refresh: vi.fn().mockResolvedValue(undefined),
-      settings: {
-        approval_mode,
-        billing_notice_ack: false,
-        dream_enabled: true,
-        dream_time: '03:00',
-        lan_enabled: false,
-        service_installed: false,
-        workspace_dir: ''
-      }
-    })
-    render(<ApprovalsSettings />)
-    expect(screen.queryByRole('radio', { name: /^Bypass/ }) !== null).toBe(bypass)
+  ] as const)(
+    'global approvals for role %s, mode %s offer Bypass: %s',
+    (role, approval_mode, bypass) => {
+      useMe.setState({ me: { display_name: 'Alex', id: 'local', role } })
+      useSettings.setState({
+        refresh: vi.fn().mockResolvedValue(undefined),
+        settings: {
+          approval_mode,
+          billing_notice_ack: false,
+          dream_enabled: true,
+          dream_time: '03:00',
+          lan_enabled: false,
+          service_installed: false,
+          workspace_dir: ''
+        }
+      })
+      render(<ApprovalsSettings />)
+      expect(screen.queryByRole('radio', { name: /^Bypass/ }) !== null).toBe(bypass)
 
-    if (approval_mode === 'off') {
-      expect(screen.getByRole('radio', { name: /^Bypass/ })).toBeChecked()
+      if (approval_mode === 'off') {
+        expect(screen.getByRole('radio', { name: /^Bypass/ })).toBeChecked()
+      }
     }
-  })
+  )
 
   it('warns when the daemon has no OS sandbox, and only then', async () => {
     useSettings.setState({ refresh: vi.fn().mockResolvedValue(undefined) })
@@ -336,6 +345,15 @@ describe('settings', () => {
     expect(document.documentElement).toHaveAttribute('data-theme', 'dark')
   })
 
+  it('turns sounds on and plays one so you hear what you chose', () => {
+    render(<AppearanceSettings />)
+    const toggle = screen.getByRole('switch', { name: 'Sounds' })
+    expect(toggle).toHaveAttribute('aria-checked', 'false')
+    fireEvent.click(toggle)
+    expect(sounds.set).toHaveBeenCalledWith(true)
+    expect(sounds.prime).toHaveBeenCalledOnce()
+  })
+
   it('registers Connect and polls until approval', async () => {
     vi.mocked(connectStatus)
       .mockResolvedValueOnce({
@@ -373,7 +391,9 @@ describe('settings', () => {
   })
 
   it('shows an identity conflict even while the registered tunnel is running', async () => {
-    const conflict = 'Hex Connect has a different key for this daemon. Disconnect and connect again.'
+    const conflict =
+      'Hex Connect has a different key for this daemon. Disconnect and connect again.'
+
     vi.mocked(connectStatus).mockResolvedValue({
       registered: true,
       daemon_id: 'd1',
@@ -401,7 +421,9 @@ describe('settings', () => {
       last_error: 'Removed in Hex Connect'
     })
     render(<ConnectSettings />)
-    expect(await screen.findByText('Removed in Hex Connect. Sign in to register it again.')).toBeVisible()
+    expect(
+      await screen.findByText('Removed in Hex Connect. Sign in to register it again.')
+    ).toBeVisible()
     expect(screen.getByRole('button', { name: 'Sign in and register' })).toBeVisible()
   })
 
@@ -620,8 +642,14 @@ it('refreshes delayed identity and tunnel errors, clears recovery, and stops on 
   vi.useFakeTimers()
 
   const healthy = {
-    registered: true, daemon_id: 'd1', slug: 'home', tunnel_hostname: 'home.connect.hexbot.app',
-    tunnel_running: true, last_heartbeat_at: 1, last_error: null, identity_error: null
+    registered: true,
+    daemon_id: 'd1',
+    slug: 'home',
+    tunnel_hostname: 'home.connect.hexbot.app',
+    tunnel_running: true,
+    last_heartbeat_at: 1,
+    last_error: null,
+    identity_error: null
   }
 
   const conflict = 'Hex Connect has a different key for this daemon. Disconnect and connect again.'
@@ -631,18 +659,28 @@ it('refreshes delayed identity and tunnel errors, clears recovery, and stops on 
   try {
     await act(async () => {})
     expect(screen.queryByText(conflict)).toBeNull()
-    vi.mocked(connectStatus).mockResolvedValue({ ...healthy, last_error: 'cloudflared exited: exit status: 1', identity_error: conflict })
-    await act(async () => { await vi.advanceTimersByTimeAsync(5000) })
+    vi.mocked(connectStatus).mockResolvedValue({
+      ...healthy,
+      last_error: 'cloudflared exited: exit status: 1',
+      identity_error: conflict
+    })
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5000)
+    })
     expect(screen.getByText(conflict)).toBeVisible()
     expect(screen.getByText('The tunnel is not connected.')).toBeVisible()
     expect(screen.queryByText('cloudflared exited: exit status: 1')).toBeNull()
     vi.mocked(connectStatus).mockResolvedValue(healthy)
-    await act(async () => { await vi.advanceTimersByTimeAsync(5000) })
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5000)
+    })
     expect(screen.queryByText(conflict)).toBeNull()
     expect(screen.queryByText('The tunnel is not connected.')).toBeNull()
     view.unmount()
     const calls = vi.mocked(connectStatus).mock.calls.length
-    await act(async () => { await vi.advanceTimersByTimeAsync(10000) })
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10000)
+    })
     expect(connectStatus).toHaveBeenCalledTimes(calls)
   } finally {
     view.unmount()

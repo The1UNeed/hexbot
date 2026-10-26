@@ -4,7 +4,7 @@ import { Avatar, LiveFace } from '../components/ui/avatar'
 import { HexbotMark } from '../components/ui/wordmark'
 
 import { FACE_MOODS, moodForStatus } from './face'
-import { AVATAR_SHAPES, eyeRects } from './face-geometry'
+import { AVATAR_SHAPES, eyePlacements, eyeTransformCss, HEX_EYE } from './face-geometry'
 
 const observations: {
   callback: IntersectionObserverCallback
@@ -50,8 +50,11 @@ describe('original faces', () => {
         AVATAR_SHAPES.find(s => s.id === 'triangle')!.path
       )
       expect(svg.querySelector('path')).toHaveAttribute('fill', 'blue')
-      expect(svg.querySelector('rect')).toHaveAttribute('fill', 'black')
-      expect(svg.querySelector('rect')).toHaveAttribute('height', String(eyeRects(mood)[0]!.height))
+      expect(svg.querySelector('.hex-eye-shape')).toHaveAttribute('fill', 'black')
+      expect(svg.querySelector('.hex-eye-shape')).toHaveAttribute('d', HEX_EYE)
+      expect(svg.querySelector<SVGGElement>('.hex-eye')!.style.transform).toBe(
+        eyeTransformCss(eyePlacements(mood)[0]!)
+      )
       expect(svg.querySelector('[transform="translate(-10 -2)"]')).not.toBeNull()
     }
 
@@ -136,6 +139,9 @@ describe('original faces', () => {
       'd',
       AVATAR_SHAPES.find(s => s.id === 'hexagon')!.path
     )
-    expect(container.querySelector('rect')).toHaveAttribute('fill', 'var(--hex-background)')
+    expect(container.querySelector('.hex-eye-shape')).toHaveAttribute(
+      'fill',
+      'var(--hex-background)'
+    )
   })
 })

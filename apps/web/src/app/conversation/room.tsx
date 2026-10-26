@@ -11,6 +11,7 @@ import { roomsSend, roomsStop } from '../../lib/api'
 import { botFace } from '../../lib/avatar-builder'
 import { cn } from '../../lib/cn'
 import { useRoomOrLeave } from '../../lib/room-or-leave'
+import { useTurnCues } from '../../lib/sounds'
 import { toMillis } from '../../lib/time'
 import type { Bot, RoomEvent, RoomMember, RoomTurn } from '../../lib/types'
 import { useBots } from '../../stores/bots'
@@ -297,6 +298,7 @@ export function RoomConversation() {
   const streaming = Object.keys(turns).length > 0
   const status = roomStatus(events, turns)
   const failure = roomFailure(events)
+  useTurnCues(roomId, { failed: Boolean(failure), streaming, waiting: 0 })
 
   const send = async () => {
     if (!text.trim()) {

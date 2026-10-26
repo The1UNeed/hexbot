@@ -11,9 +11,11 @@ import {
   BALL,
   botFace,
   EYE_GAP,
-  eyeRects,
+  EYE_MOODS,
+  eyePlacements,
   faceReadNow,
   faceReadsHeld,
+  HEX_EYE,
   matchFace,
   readFace,
   READS_KEPT
@@ -80,7 +82,7 @@ describe('avatar builder', () => {
 
     expect(svg).toContain(hexagon.path)
     expect(svg).toContain(pink.value)
-    expect(svg.match(/<rect/g)).toHaveLength(2)
+    expect(svg.split(`d="${HEX_EYE}"`)).toHaveLength(3)
     expect(svg).toContain('fill="#ffffff"')
     expect(svg).toContain(`translate(50 ${hexagon.ball.cy}) scale(${hexagon.ball.r / BALL})`)
     expect(avatarSvgDataUrl({ color: 'pink', shape: 'hexagon' })).toMatch(/^data:image\/svg\+xml/)
@@ -95,13 +97,14 @@ describe('avatar builder', () => {
     expect(avatarSvg({ color: 'nope', shape: 'nope' })).toContain(AVATAR_SHAPES[0]!.path)
   })
 
-  it('draws both eyes as capsules the same width, mirrored about the centre', () => {
-    for (const mood of ['happy', 'idle', 'listening', 'sleeping', 'working'] as const) {
-      const [left, right] = eyeRects(mood)
+  it('draws both eyes as the same hexagon, mirrored about the centre', () => {
+    for (const mood of FACE_MOODS) {
+      const [left, right] = eyePlacements(mood)
+      const { dx } = EYE_MOODS[mood]
 
-      expect(left!.x + left!.width / 2).toBeCloseTo(-(right!.x + right!.width / 2))
-      expect(left!.rx).toBe(Math.min(left!.width, left!.height) / 2)
-      expect(left!.y + left!.height / 2).toBeLessThan(BALL / 2)
+      expect(left!.x - dx).toBeCloseTo(-(right!.x - dx))
+      expect([left!.sx, left!.sy, left!.turn]).toEqual([right!.sx, right!.sy, right!.turn])
+      expect(left!.y).toBeLessThan(BALL / 2)
     }
   })
 
@@ -112,13 +115,14 @@ describe('avatar builder', () => {
           .match(/-?[\d.]+/g)!
           .map(Number)
 
-        for (const eye of eyeRects(mood)) {
-          for (const x of [eye.x, eye.x + eye.width]) {
-            for (const y of [eye.y, eye.y + eye.height]) {
-              // Include the most extreme 4-unit activity movement.
-              expect(Math.hypot(x + tx! + 4, y + ty! + 4)).toBeLessThan(BALL)
-            }
-          }
+        for (const eye of eyePlacements(mood)) {
+          // The hexagon's corners are one unit from its centre, whatever its turn.
+          const reach = Math.max(eye.sx, eye.sy)
+
+          // Include the most extreme 5-unit activity movement.
+          expect(
+            Math.hypot(Math.abs(eye.x + tx!) + 5, Math.abs(eye.y + ty!) + 5) + reach
+          ).toBeLessThan(BALL)
         }
       }
     }

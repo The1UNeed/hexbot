@@ -74,8 +74,27 @@
   /* A sampled spring (damping 0.62) for glass that swells under a press. */
   --hex-motion-glass: 520ms;
   --hex-ease-glass: linear(
-    0, 0.113, 0.352, 0.608, 0.819, 0.965, 1.048, 1.08, 1.081, 1.065, 1.043, 1.023, 1.008, 0.999,
-    0.994, 0.993, 0.994, 0.996, 0.997, 0.999, 1
+    0,
+    0.113,
+    0.352,
+    0.608,
+    0.819,
+    0.965,
+    1.048,
+    1.08,
+    1.081,
+    1.065,
+    1.043,
+    1.023,
+    1.008,
+    0.999,
+    0.994,
+    0.993,
+    0.994,
+    0.996,
+    0.997,
+    0.999,
+    1
   );
 }
 
@@ -112,9 +131,9 @@
     --hex-glass-strong: rgb(24 24 27 / 0.82);
     --hex-glass-glow: rgb(255 255 255 / 0.2);
     --hex-glass-shadow:
-      inset 1px 1px 0 -0.5px rgb(255 255 255 / 0.3), inset -1px -1px 0 -0.5px rgb(255 255 255 / 0.12),
-      inset 0 0 6px rgb(255 255 255 / 0.04), 0 0 0 0.5px rgb(255 255 255 / 0.07),
-      0 4px 16px -4px rgb(0 0 0 / 0.5);
+      inset 1px 1px 0 -0.5px rgb(255 255 255 / 0.3),
+      inset -1px -1px 0 -0.5px rgb(255 255 255 / 0.12), inset 0 0 6px rgb(255 255 255 / 0.04),
+      0 0 0 0.5px rgb(255 255 255 / 0.07), 0 4px 16px -4px rgb(0 0 0 / 0.5);
     --hex-card-shadow: 0 0 0 0.5px rgb(255 255 255 / 0.07), 0 1px 3px rgb(0 0 0 / 0.5);
   }
 }
@@ -786,47 +805,83 @@ body {
   }
 }
 
-/* Activity is a small movement of the painted eyes, never a changing outline. */
+/*
+ * Activity moves the painted eyes, never the outline. A new mood eases each
+ * hexagon into its pose; while a visible bot works, its eyes turn a sixth of
+ * a turn and rest, the two in opposite directions like meshed gears. A sixth
+ * of a turn looks the same as none, so the loop never jumps.
+ */
+.hex-eye {
+  transition: transform var(--hex-motion-panel) var(--hex-ease-spring);
+}
+.hex-eye-shape {
+  transform-box: fill-box;
+  transform-origin: center;
+}
 @keyframes hex-face-think {
+  0%,
+  100% {
+    transform: translate(0, 0);
+  }
   50% {
-    transform: translateY(-3px);
+    transform: translate(-1.5px, -2.5px);
   }
 }
 @keyframes hex-face-search {
   0%,
   100% {
-    transform: translateX(-4px);
+    transform: translateX(-5px);
   }
   50% {
-    transform: translateX(4px);
+    transform: translateX(3px);
   }
 }
 @keyframes hex-face-write {
   50% {
-    transform: translateY(2px) scaleY(0.85);
+    transform: translateY(1.5px);
   }
 }
-@keyframes hex-face-work {
-  50% {
-    transform: translateY(2px);
+@keyframes hex-eye-turn {
+  0% {
+    transform: rotate(0deg);
+  }
+  45%,
+  100% {
+    transform: rotate(60deg);
+  }
+}
+@keyframes hex-eye-turn-back {
+  0% {
+    transform: rotate(0deg);
+  }
+  45%,
+  100% {
+    transform: rotate(-60deg);
   }
 }
 .hex-live-face[data-moving='true'][data-mood='thinking'] .hex-gaze {
-  animation: hex-face-think 1.8s ease-in-out infinite;
+  animation: hex-face-think 2.4s ease-in-out infinite;
 }
 .hex-live-face[data-moving='true'][data-mood='searching'] .hex-gaze {
-  animation: hex-face-search 2.4s ease-in-out infinite;
+  animation: hex-face-search 2.2s ease-in-out infinite;
 }
 .hex-live-face[data-moving='true'][data-mood='writing'] .hex-gaze {
-  animation: hex-face-write 0.8s ease-in-out infinite;
+  animation: hex-face-write 0.9s ease-in-out infinite;
 }
-.hex-live-face[data-moving='true'][data-mood='working'] .hex-gaze,
-.hex-live-face[data-moving='true'][data-mood='loading'] .hex-gaze {
-  animation: hex-face-work 1.2s ease-in-out infinite;
+.hex-live-face[data-moving='true']:is([data-mood='working'], [data-mood='loading'])
+  .hex-eye:first-child
+  .hex-eye-shape {
+  animation: hex-eye-turn 1.4s var(--hex-ease-in-out) infinite;
+}
+.hex-live-face[data-moving='true']:is([data-mood='working'], [data-mood='loading'])
+  .hex-eye:last-child
+  .hex-eye-shape {
+  animation: hex-eye-turn-back 1.4s var(--hex-ease-in-out) infinite;
 }
 /* Acts own only their React subtree. Pausing removes animation effects outright. */
 .hex-face[data-visible='false'] *,
-.hex-live-face[data-moving='false'] .hex-gaze {
+.hex-live-face[data-moving='false'] .hex-gaze,
+.hex-live-face[data-moving='false'] .hex-eye-shape {
   animation: none !important;
 }
 @media (prefers-reduced-motion: reduce) {

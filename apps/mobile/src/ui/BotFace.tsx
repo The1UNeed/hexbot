@@ -1,13 +1,15 @@
 import { Image, StyleSheet, View } from 'react-native'
-import Svg, { G, Path, Rect } from 'react-native-svg'
+import Svg, { G, Path } from 'react-native-svg'
 
 import {
   ballTransform,
-  eyeRects,
+  eyePlacements,
+  eyeTransform,
   facePose,
   type FaceMood,
   type FaceStyle,
   faceForName,
+  HEX_EYE,
   resolveFace
 } from './faces'
 import { Text } from './Text'
@@ -68,7 +70,7 @@ function useStatusColor(status?: BotStatus) {
   }
 }
 
-/** The bare drawing: a shape in a colour with two capsule eyes on its ball. */
+/** The bare drawing: a shape in a colour with two hexagonal eyes on its ball. */
 export function FaceDrawing({
   mood = 'idle',
   size,
@@ -85,8 +87,8 @@ export function FaceDrawing({
       <Path d={shape.path} fill={color.value} />
       <G transform={ballTransform(shape.ball)}>
         <G transform={facePose(mood)}>
-          {eyeRects(mood).map((eye, index) => (
-            <Rect fill={eyes} key={index} {...eye} />
+          {eyePlacements(mood).map((eye, index) => (
+            <Path d={HEX_EYE} fill={eyes} key={index} transform={eyeTransform(eye)} />
           ))}
         </G>
       </G>

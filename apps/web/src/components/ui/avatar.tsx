@@ -7,9 +7,11 @@ import {
   type Ball,
   ballTransform,
   botFace,
-  eyeRects,
+  eyePlacements,
+  eyeTransformCss,
   type FaceMood,
   faceReadNow,
+  HEX_EYE,
   readFace,
   resolveStyle,
   styleForName
@@ -39,9 +41,10 @@ const avatarVariants = cva('relative inline-flex shrink-0 items-center justify-c
 const HEXAGON_BALL = AVATAR_SHAPES.find(shape => shape.id === 'hexagon')!.ball
 
 /**
- * The two eyes for a mood on a 100x100 face, painted on the shape's ball so
- * the CSS poses in tokens.css turn them with its surface. Shared with the
- * brand mark, which is a hexagon.
+ * The two hexagonal eyes for a mood on a 100x100 face, painted on the shape's
+ * ball. Each eye's pose is a CSS transform, so a new mood eases the eyes into
+ * place; tokens.css adds the activity motion. Shared with the brand mark,
+ * which is a hexagon.
  */
 export function FaceEyes({
   ball = HEXAGON_BALL,
@@ -59,8 +62,10 @@ export function FaceEyes({
       <g transform={facePose(mood, look)}>
         <g className="hex-gaze">
           <g className="hex-eyes" data-mood={mood}>
-            {eyeRects(mood).map((eye, index) => (
-              <rect fill={fill} key={index} {...eye} />
+            {eyePlacements(mood).map((eye, index) => (
+              <g className="hex-eye" key={index} style={{ transform: eyeTransformCss(eye) }}>
+                <path className="hex-eye-shape" d={HEX_EYE} fill={fill} />
+              </g>
             ))}
           </g>
         </g>

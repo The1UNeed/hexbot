@@ -16,9 +16,9 @@ if (faces.length && !reduced) {
       const turn = Math.min(1, distance / 320)
       const ux = dx / distance
       const uy = dy / distance
-      // The eyes are painted on a ball: they slide toward the pointer, roll with the surface, and shrink as it turns away.
+      // The eyes slide a little toward the pointer and stay inside the face.
       const eyes = pupils[index]
-      if (eyes) eyes.style.transform = `translate(${ux * 16 * turn}px, ${uy * 16 * turn}px) rotate(${ux * 24 * turn}deg) scale(${1 - 0.18 * turn})`
+      if (eyes) eyes.style.transform = `translate(${ux * 10 * turn}px, ${uy * 10 * turn}px)`
     })
   }
   addEventListener('pointermove', event => {

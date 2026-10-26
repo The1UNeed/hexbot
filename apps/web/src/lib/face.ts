@@ -1,4 +1,4 @@
-/** Hexbot's original capsule-eye poses. All coordinates are in the ball frame. */
+/** Face moods and the poses they share with mobile. Coordinates are in the ball frame. */
 import { type FaceMood } from './face-geometry'
 
 export type { FaceMood } from './face-geometry'

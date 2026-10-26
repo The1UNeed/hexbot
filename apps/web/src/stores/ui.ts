@@ -1,6 +1,6 @@
 /**
- * Client-only preferences, persisted to localStorage: theme, right panel,
- * sidebar width and the last opened section (used by `/` to restore the app
+ * Client-only preferences, persisted to localStorage: theme, sound cues,
+ * right panel, sidebar width and the last opened section (used by `/` to restore the app
  * where the user left it). The open thread panel is session state and is not
  * persisted.
  */
@@ -43,8 +43,11 @@ export interface UiState {
   setPanelTab: (tab: PanelTab) => void
   setLastSection: (value: LastSection | null) => void
   setSidebarWidth: (width: number) => void
+  setSounds: (on: boolean) => void
   setTheme: (theme: ThemePreference) => void
   sidebarWidth: number
+  /** Soft cues when a bot starts, finishes, or needs you. Off by default. */
+  sounds: boolean
   theme: ThemePreference
   thread: null | ThreadRef
   /** Bumped when the daemon reports a section changed while a thread is open: read it again. */
@@ -63,6 +66,7 @@ export const useUi = create<UiState>()(
       panelTab: 'details',
       rightPanelOpen: true,
       sidebarWidth: 280,
+      sounds: false,
       theme: 'system',
       thread: null,
       threadChanged: 0,
@@ -70,6 +74,10 @@ export const useUi = create<UiState>()(
       setTheme(theme) {
         set({ theme })
         applyTheme(theme)
+      },
+
+      setSounds(sounds) {
+        set({ sounds })
       },
 
       openPanel(tab) {
@@ -122,11 +130,12 @@ export const useUi = create<UiState>()(
     }),
     {
       name: 'hexbot.ui',
-      partialize: ({ lastSection, panelTab, rightPanelOpen, sidebarWidth, theme }) => ({
+      partialize: ({ lastSection, panelTab, rightPanelOpen, sidebarWidth, sounds, theme }) => ({
         lastSection,
         panelTab,
         rightPanelOpen,
         sidebarWidth,
+        sounds,
         theme
       }),
       version: 1

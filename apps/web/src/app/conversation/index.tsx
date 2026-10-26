@@ -32,6 +32,7 @@ import { getBridge } from '../../lib/bridge'
 import { cn } from '../../lib/cn'
 import { moodForStatus } from '../../lib/face'
 import { NotConnectedError } from '../../lib/rpc'
+import { useTurnCues } from '../../lib/sounds'
 import { toMillis } from '../../lib/time'
 import type {
   ApprovalChoice,
@@ -1445,6 +1446,13 @@ function BotConversation() {
 
     wasStreaming.current = streaming
   }, [bot?.display_name, messages, section?.id, streaming])
+  useTurnCues(section?.id, {
+    failed: Boolean(messages.at(-1)?.error),
+    streaming,
+    waiting:
+      approvals.filter(card => !card.decision).length +
+      clarifies.filter(card => !card.expired && !Object.keys(card.answers).length).length
+  })
   const previousApprovalCount = useRef(approvals.length)
   useEffect(() => {
     if (

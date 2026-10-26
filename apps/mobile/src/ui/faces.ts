@@ -1,5 +1,5 @@
 /**
- * Bot faces: a shape and a colour with two capsule eyes painted on a ball,
+ * Bot faces: a shape and a colour with two hexagonal eyes painted on a ball,
  * the same set the web app draws (apps/web/src/lib/avatar-builder.ts). Keep
  * the two in step so a bot looks the same on every client.
  */
@@ -19,10 +19,12 @@ export {
   type Ball,
   ballTransform,
   EYE_MOODS,
-  eyeRects,
+  eyePlacements,
+  eyeTransform,
   EYES as FACE_EYES,
   facePose,
-  type FaceMood
+  type FaceMood,
+  HEX_EYE
 } from './face-geometry'
 
 function hueFromString(value: string): number {
