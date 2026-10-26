@@ -245,8 +245,14 @@ function ComputerWindow({ onClose, status }: { onClose: () => void; status: Comp
   // once a take-over still on its way has landed.
   useEffect(
     () => () => {
+      // Only to the daemon that has it: a switch to another one leaves it be.
+      const target = useConnection.getState().target
+
       void useComputer.getState().taking.then(() => {
-        if (useComputer.getState().status?.control === 'user') {
+        if (
+          useConnection.getState().target === target &&
+          useComputer.getState().status?.control === 'user'
+        ) {
           void useComputer.getState().control('bot')
         }
       })

@@ -1,5 +1,6 @@
 /** The authorized daemon's roster and recent room logs. Never restored before auth. */
 import { botCacheRead, selectBotList, useBots } from '../stores/bots'
+import { useComputer } from '../stores/computer'
 import { useMe } from '../stores/me'
 import { applyLog, LOG_PAGE, recentRooms, roomCacheRead, useRooms } from '../stores/rooms'
 import { sectionCacheRead, useSections } from '../stores/sections'
@@ -43,6 +44,7 @@ export function clearPersonalState(): void {
   useRooms.getState().reset()
   useMe.setState({ me: null })
   useTranscripts.getState().dropAll()
+  useComputer.setState({ error: null, read: null, status: null })
 }
 
 export async function restoreRoster(scope: null | string): Promise<void> {

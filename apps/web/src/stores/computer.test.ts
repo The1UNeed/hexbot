@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { computerStatus } from '../lib/api'
+import { computerControl, computerStatus } from '../lib/api'
+import type { ComputerStatus } from '../lib/types'
 
 import { useComputer } from './computer'
 import { useConnection } from './connection'
@@ -36,5 +37,18 @@ describe('useComputer', () => {
     await useComputer.getState().refresh()
     expect(useComputer.getState().read).toBe(3)
     expect(useComputer.getState().status?.control).toBe('bot')
+  })
+
+  it('drops an answer from a daemon the app has since left', async () => {
+    let answer = (_: ComputerStatus) => {}
+    vi.mocked(computerControl).mockImplementationOnce(
+      () => new Promise<ComputerStatus>(resolve => (answer = resolve))
+    )
+    useConnection.setState({ target: { kind: 'local', origin: 'http://127.0.0.1:1' } })
+    const taking = useComputer.getState().control('user')
+    useConnection.setState({ target: { kind: 'local', origin: 'http://127.0.0.1:2' } })
+    answer({ activity: null, actor: null, control: 'user', cursors: [], error: null, state: 'running' })
+    await taking
+    expect(useComputer.getState().status).toBeNull()
   })
 })

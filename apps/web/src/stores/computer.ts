@@ -38,9 +38,17 @@ export interface ComputerStoreState {
 
 export const useComputer = create<ComputerStoreState>(set => {
   const run = async (request: () => Promise<ComputerStatus>) => {
+    const target = useConnection.getState().target
+
     try {
       set({ error: null })
       const result = await request()
+
+      // An answer from a daemon the app has since left describes another computer.
+      if (useConnection.getState().target !== target) {
+        return false
+      }
+
       set(state => ({ status: { ...state.status, ...result } }))
 
       return true
