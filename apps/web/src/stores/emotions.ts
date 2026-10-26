@@ -201,7 +201,7 @@ export function useRoomFeelings(
           errors: reply?.errors ?? 0,
           failed: false,
           id: String(event.seq),
-          status: 'ok',
+          status: 'complete',
           steps: reply?.steps ?? 0,
           streaming: false,
           text: event.payload.text ?? '',

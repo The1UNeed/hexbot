@@ -44,7 +44,7 @@ export interface Moment {
     errors: number
     failed: boolean
     id: string
-    /** How the reply ended: `ok`, `error`, or a stop. */
+    /** How the reply ended, as the daemon says: `complete`, `error`, or a stop. */
     status?: string
     steps: number
     streaming: boolean
@@ -85,6 +85,8 @@ const APOLOGY =
 const CELEBRATION =
   /[🎉🥳]|\b(all (\d+ )?tests pass(ed)?|tests are (all )?passing|shipped|merged|deployed|it works)\b/iu
 
+const STOPPED = /interrupt|stop|cancel|abort/i
+
 /** Mostly capitals: someone is shouting. */
 function shouting(text: string): boolean {
   const letters = text.replace(/[^a-z]/gi, '')
@@ -112,7 +114,7 @@ export function feelingAfter(reply: NonNullable<Moment['reply']>): FaceEmotion |
   }
 
   // Stopped by you: no feelings about it.
-  if (reply.status && reply.status !== 'ok') {
+  if (reply.status && STOPPED.test(reply.status)) {
     return null
   }
 
@@ -158,7 +160,9 @@ export function feeling(before: Moment, after: Moment): FaceEmotion | null {
       : 'confused'
   }
 
-  if (!reply.streaming && (earlier?.streaming ?? false)) {
+  // The reply ended. The chat may have swapped the live message for its saved
+  // copy, with a new id, as it ended.
+  if (!reply.streaming && before.reply?.streaming) {
     return feelingAfter(reply)
   }
 

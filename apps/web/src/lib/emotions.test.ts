@@ -28,7 +28,7 @@ const reply = (overrides: Partial<NonNullable<Moment['reply']>>) => ({
   errors: 0,
   failed: false,
   id: 'r',
-  status: 'ok',
+  status: 'complete',
   steps: 0,
   streaming: false,
   text: 'Here it is.',
@@ -48,6 +48,8 @@ describe('emotions', () => {
   it('feels about how a reply ended', () => {
     expect(feelingAfter(reply({ failed: true }))).toBe('sad')
     expect(feelingAfter(reply({ status: 'interrupted' }))).toBeNull()
+    // The daemon ends a reply that went well as `complete`.
+    expect(feelingAfter(reply({ status: 'complete', text: 'Shipped.' }))).toBe('celebrating')
     expect(feelingAfter(reply({ text: "Sorry, I couldn't reach the server." }))).toBe('sad')
     expect(feelingAfter(reply({ text: 'All 42 tests pass 🎉' }))).toBe('celebrating')
     expect(feelingAfter(reply({ steps: 9 }))).toBe('proud')
@@ -81,10 +83,14 @@ describe('emotions', () => {
 
     const done = momentOf([
       said,
-      { ...working, streaming: false, text: 'Merged it.', status: 'ok' }
+      { ...working, streaming: false, text: 'Merged it.', status: 'complete' }
     ])
 
     expect(feeling(before, done)).toBe('celebrating')
+
+    // Swapped for its saved copy as it ended, under a new id.
+    const saved = momentOf([said, message({ id: 'saved-1', text: 'All tests pass.' })])
+    expect(feeling(before, saved)).toBe('celebrating')
 
     const failed = momentOf([said, { ...working, error: 'Provider down', streaming: false }])
     expect(feeling(before, failed)).toBe('sad')

@@ -44,7 +44,7 @@ export function chatMoment(chat: ChatState): Moment {
       errors: tools.filter(tool => tool.status === 'error').length,
       failed: Boolean(chat.error),
       id,
-      status: chat.error ? 'error' : 'ok',
+      status: chat.error ? 'error' : 'complete',
       steps: tools.length,
       streaming: false,
       text: replies.map(message => message.text).join('\n'),
