@@ -2976,3 +2976,126 @@ async fn capture_threshold_remains_a_refusal_and_preserves_scratch_after_eventua
     assert_eq!(scratch.len(), 1);
     assert!(scratch[0].join("sitecustomize.py").is_file());
 }
+// Execute the actual package probe and Rust-generated observer against Windows
+// path semantics. Filesystem calls are spies, not native Windows I/O evidence.
+async fn assert_audited_preopen_paths(observer: bool) {
+    for item in LOCKED {
+        for (_, relative) in item.extensions {
+            assert!(relative.split('/').all(|part| !part.is_empty()
+                && part != "."
+                && part != ".."
+                && !part.contains(['\\', ':'])));
+        }
+    }
+    let sites = [
+        r"\\?\C:\Owned Home\runtime\tools\code-python\Lib\site-packages",
+        r"\\?\UNC\server\share\用户\Lib\site-packages",
+        r"C:\Owned Home\Lib\site-packages",
+        r"C:\用户\声 音\Lib\site-packages",
+        r"C:\OWNEDH~1\Lib\site-packages",
+        r"\\?\C:\OWNEDH~1\Lib\site-packages",
+        r"\\server\share\用户\Lib\site-packages",
+        r"\\?\C:\用户\声 音\Lib\site-packages",
+    ];
+    let cases: Vec<_> = sites.iter().map(|site| json!({
+        "site": site,
+        "source": if observer { observer_source(Path::new(site), "member-path-control") } else { PACKAGE_PROBE.to_owned() }
+    })).collect();
+    let driver = r#"import builtins, importlib, importlib.metadata, io, json, ntpath, os, platform, stat, sys, types
+cases, spec, body, observer = json.loads(sys.argv[1]), json.loads(sys.argv[2]), sys.argv[3], sys.argv[4] == 'observer'
+# Independent audited destinations; no call to the production join expression.
+members = {
+ 'aiohttp._http_parser': r'aiohttp\_http_parser.cp311-win_amd64.pyd',
+ 'aiohttp._http_writer': r'aiohttp\_http_writer.cp311-win_amd64.pyd',
+ 'aiohttp._websocket.mask': r'aiohttp\_websocket\mask.cp311-win_amd64.pyd',
+ 'aiohttp._websocket.reader_c': r'aiohttp\_websocket\reader_c.cp311-win_amd64.pyd',
+ 'frozenlist._frozenlist': r'frozenlist\_frozenlist.cp311-win_amd64.pyd',
+ 'multidict._multidict': r'multidict\_multidict.cp311-win_amd64.pyd',
+ 'propcache._helpers_c': r'propcache\_helpers_c.cp311-win_amd64.pyd',
+ 'yarl._quoting_c': r'yarl\_quoting_c.cp311-win_amd64.pyd',
+}
+assert set(members) == {name for item in spec for name, relative in item['extensions']}
+for case in cases:
+ site, source = case['site'], case['source']
+ expected = {name: site + '\\' + relative for name, relative in members.items()}
+ directories = {ntpath.dirname(path) for path in expected.values()}
+ calls, opened, reads = [], [], []
+ def lstat(path):
+  calls.append(path)
+  if path in directories: return types.SimpleNamespace(st_mode=stat.S_IFDIR)
+  assert path in expected.values(), ('unexpected fixed member path', path)
+  return types.SimpleNamespace(st_mode=stat.S_IFREG, st_size=128, st_file_attributes=0)
+ class Handle:
+  def __enter__(self): return self
+  def __exit__(self, *args): pass
+  def read(self, count): reads.append(count); return b'x'
+ def read_only(path, mode):
+  assert path in expected.values(), ('wrong open path', path)
+  assert mode == 'rb', mode
+  opened.append(path)
+  return Handle()
+ original = (os.path, os.lstat, builtins.open, importlib.metadata.version, importlib.import_module,
+             sys.argv, list(sys.path), sys.stdout, sys.excepthook)
+ capture = io.StringIO()
+ try:
+  os.path, os.lstat, builtins.open = ntpath, lstat, read_only
+  importlib.metadata.version = lambda name: 'fixture-version'
+  importlib.import_module = lambda name: types.SimpleNamespace(__spec__=None)
+  sys.stdout = capture
+  if observer:
+   assert source.endswith(body)
+   script = site + r'\private observer\sitecustomize.py'
+   namespace = {'__name__':'sitecustomize', '__file__':script}
+   exec(compile(source[:-len(body)], script, 'exec'), namespace)
+   namespace['identity'] = lambda: {'failures':{}}
+   sys.path[:] = [ntpath.dirname(script)]
+   sys.argv = [site + r'\Scripts\edge-tts.exe', '--version']
+   exec(compile(body, script, 'exec'), namespace)
+   try: namespace['observed'](SyntaxError, SyntaxError('owned fixture cause'), None)
+   except SystemExit as error: assert error.code == 0
+   result = json.loads(capture.getvalue())
+   assert result['tag'] == 'hexbot-entrypoint-error-v1' and result['nonce'] == 'member-path-control'
+   preopens = result['preopens']
+  else:
+   sys.argv = ['probe', site, json.dumps(spec)]
+   exec(compile(source, 'PACKAGE_PROBE', 'exec'), {'__name__':'__main__'})
+   result = json.loads(capture.getvalue())
+   assert len(result['distributions']) == len(result['modules']) == 13
+   preopens = {name: item['preopen'] for name, item in result['extensions'].items()}
+  assert len(preopens) == 8 and all(item['status'] == 'ok' for item in preopens.values()), (site, calls, preopens)
+  assert sorted(opened) == sorted(expected.values()), (opened, expected)
+  assert reads == [1] * 8
+  for path in opened:
+   # Lexical containment and exact supplied root spelling, not Windows alias
+   # expansion. Actual Unicode/8.3/extended OS identity stays a native gate.
+   assert path.startswith(site + '\\') and '/' not in path
+   assert ntpath.commonpath([site, path]) == site
+ finally:
+  os.path, os.lstat, builtins.open, importlib.metadata.version, importlib.import_module, sys.argv, old_path, sys.stdout, sys.excepthook = original
+  sys.path[:] = old_path
+print(json.dumps({'mode':'observer' if observer else 'package','sites':len(cases),'members_per_site':len(members)}, ensure_ascii=True))
+"#;
+    let mut command = child_command(driver);
+    command
+        .arg(serde_json::to_string(&cases).unwrap())
+        .arg(probe_spec())
+        .arg(ENTRYPOINT_OBSERVER)
+        .arg(if observer { "observer" } else { "package" });
+    let output = bounded_output(command).await.unwrap();
+    assert!(
+        output.complete() && output.status == Some(0) && output.stderr.is_empty(),
+        "{}",
+        output_cause(&output)
+    );
+    let result: Value = complete_json("path control", "actual source paths", &output).unwrap();
+    assert_eq!(result["sites"], 8);
+    assert_eq!(result["members_per_site"], 8);
+}
+#[tokio::test]
+async fn package_preopen_windows_members_keep_extended_drive_and_unc_identity() {
+    assert_audited_preopen_paths(false).await;
+}
+#[tokio::test]
+async fn observer_preopen_windows_members_keep_extended_drive_and_unc_identity() {
+    assert_audited_preopen_paths(true).await;
+}
