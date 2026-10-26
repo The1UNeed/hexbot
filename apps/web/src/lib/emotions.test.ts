@@ -92,6 +92,11 @@ describe('emotions', () => {
     const saved = momentOf([said, message({ id: 'saved-1', text: 'All tests pass.' })])
     expect(feeling(before, saved)).toBe('celebrating')
 
+    // An error event stops the reply and leaves its card after it.
+    const card = message({ error: 'Provider down', id: 'e1', role: 'system' })
+    const cut = momentOf([said, { ...working, streaming: false, text: 'Merged it.' }, card])
+    expect(feeling(before, cut)).toBe('sad')
+
     const failed = momentOf([said, { ...working, error: 'Provider down', streaming: false }])
     expect(feeling(before, failed)).toBe('sad')
   })

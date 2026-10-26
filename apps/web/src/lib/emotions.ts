@@ -64,10 +64,13 @@ export function momentOf(messages: readonly Message[], active?: boolean): Moment
   const said = messages.findLast(message => message.role === 'user')
   const reply = messages.findLast(message => message.role === 'assistant')
 
+  // An error event leaves its Stopped card after the reply, not on it.
+  const stopped = reply && messages.slice(messages.indexOf(reply) + 1).some(item => item.error)
+
   return {
     reply: reply && {
       errors: reply.toolCalls.filter(call => call.status === 'error').length,
-      failed: Boolean(reply.error) || reply.status === 'error',
+      failed: Boolean(reply.error) || reply.status === 'error' || Boolean(stopped),
       id: reply.id,
       status: reply.status,
       steps: reply.toolCalls.length,
