@@ -54,6 +54,7 @@ import { parseArgs } from './src/core/chat'
 import { activityLabel, readableResult, resultLine, toolLabel } from './src/core/tools'
 import { Management, type Panel } from './src/Management'
 import { useMobile } from './src/core/useMobile'
+import { useFeeling } from './src/core/feelings'
 import { clearTapped, useTappedSection } from './src/core/tapped'
 import { chatPreview, pulseTarget, purposeOf } from './src/core/routes'
 import { CONNECT_ORIGIN, parseConnectCallback } from './src/core/links'
@@ -787,6 +788,8 @@ function MobileApp() {
   const renderMessageText: ChatScreenProps['renderMessageText'] = item =>
     item.text ? <MarkdownText text={item.text} user={item.role === 'user'} /> : null
   // Everything a conversation needs, for a bot thread and for the open room alike.
+  const emotion = useFeeling(route?.kind === 'section' ? route.section.id : null, mobile.chat)
+
   const conversation = {
     items,
     renderMessageText,
@@ -949,6 +952,7 @@ function MobileApp() {
               : null
         }
         face={faceOf(route.bot)}
+        emotion={emotion}
         status={route.bot.status}
         intro={
           <View style={{ alignItems: 'center', gap: 4, maxWidth: 320 }}>

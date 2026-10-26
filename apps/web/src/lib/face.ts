@@ -1,7 +1,7 @@
 /** Face moods and the poses they share with mobile. Coordinates are in the ball frame. */
-import { type FaceMood } from './face-geometry'
+import { type FaceEmotion, type FaceMood } from './face-geometry'
 
-export type { FaceMood } from './face-geometry'
+export type { FaceEmotion, FaceMood } from './face-geometry'
 export { type FaceLook, facePose } from './face-geometry'
 
 export const FACE_MOODS = [
@@ -15,6 +15,20 @@ export const FACE_MOODS = [
   'sleeping',
   'loading'
 ] as const satisfies readonly FaceMood[]
+
+/** Reactions a face shows for a moment over what it is doing; see lib/emotions.ts. */
+export const FACE_EMOTIONS = [
+  'curious',
+  'surprised',
+  'shy',
+  'confused',
+  'frustrated',
+  'sad',
+  'proud',
+  'celebrating',
+  'bored',
+  'drowsy'
+] as const satisfies readonly FaceEmotion[]
 
 export const FACE_VIEWBOX = '0 0 100 100'
 

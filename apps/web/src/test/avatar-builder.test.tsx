@@ -20,7 +20,7 @@ import {
   readFace,
   READS_KEPT
 } from '../lib/avatar-builder'
-import { FACE_MOODS, facePose } from '../lib/face'
+import { FACE_EMOTIONS, FACE_MOODS, facePose } from '../lib/face'
 
 /** A 100×100 picture filled with `hex`, with `dots` painted in other colours. */
 function picture(hex: string, dots: [number, number, string][] = []) {
@@ -98,7 +98,7 @@ describe('avatar builder', () => {
   })
 
   it('draws both eyes as the same capsule, mirrored about the centre', () => {
-    for (const mood of FACE_MOODS) {
+    for (const mood of [...FACE_MOODS, ...FACE_EMOTIONS]) {
       const [left, right] = eyePlacements(mood)
       const { dx } = EYE_MOODS[mood]
 
@@ -109,7 +109,7 @@ describe('avatar builder', () => {
   })
 
   it('keeps every activity and neighbour pose inside the original ball', () => {
-    for (const mood of FACE_MOODS) {
+    for (const mood of [...FACE_MOODS, ...FACE_EMOTIONS]) {
       for (const look of [null, 'left', 'right'] as const) {
         const [tx, ty] = facePose(mood, look)
           .match(/-?[\d.]+/g)!
@@ -118,13 +118,23 @@ describe('avatar builder', () => {
         for (const eye of eyePlacements(mood)) {
           // The capsule is 0.43 wide and 1 tall before its turn; 90 lays it on its side.
           const [wide, tall] = eye.turn === 90 ? [1, 0.4333] : [0.4333, 1]
+          const [w, h] = [wide * eye.sx, tall * eye.sy]
+          const lean = (eye.lean * Math.PI) / 180
 
-          // The corner of its box, plus the most extreme 5-unit activity movement.
+          // The corner of its box, tipped by its lean, plus the most extreme
+          // 5-unit activity movement.
           expect(
             Math.hypot(
-              Math.abs(eye.x + tx!) + wide * eye.sx + 5,
-              Math.abs(eye.y + ty!) + tall * eye.sy + 5
-            )
+              Math.abs(eye.x + tx!) +
+                Math.abs(w * Math.cos(lean)) +
+                Math.abs(h * Math.sin(lean)) +
+                5,
+              Math.abs(eye.y + ty!) +
+                Math.abs(w * Math.sin(lean)) +
+                Math.abs(h * Math.cos(lean)) +
+                5
+            ),
+            `${mood} looking ${look ?? 'ahead'}`
           ).toBeLessThan(BALL)
         }
       }

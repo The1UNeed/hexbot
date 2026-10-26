@@ -16,6 +16,7 @@ import { toMillis } from '../../lib/time'
 import type { Bot, RoomEvent, RoomMember, RoomTurn } from '../../lib/types'
 import { useBots } from '../../stores/bots'
 import { connectorsActions } from '../../stores/connectors'
+import { useEmotion, useEmotions, useRoomFeelings } from '../../stores/emotions'
 import { useMe } from '../../stores/me'
 import { roomFailure, roomStatus, useRooms } from '../../stores/rooms'
 import { useTranscripts } from '../../stores/transcripts'
@@ -44,8 +45,18 @@ import {
 const NO_EVENTS: RoomEvent[] = []
 const NO_TURNS: Record<string, RoomTurn> = {}
 
-export function RoomEventRow({ event, fresh = false }: { event: RoomEvent; fresh?: boolean }) {
+export function RoomEventRow({
+  event,
+  fresh = false,
+  latest = false
+}: {
+  event: RoomEvent
+  fresh?: boolean
+  /** The bot's latest message in the room: its face shows what the bot feels. */
+  latest?: boolean
+}) {
   const bot = useBots(state => (event.actor_id ? state.byName[event.actor_id] : undefined))
+  const emotion = useEmotion(latest ? event.actor_id : undefined)
   const text = typeof event.payload.text === 'string' ? event.payload.text : ''
 
   // Member events name the bot or person who came or went; other events their actor.
@@ -147,7 +158,15 @@ export function RoomEventRow({ event, fresh = false }: { event: RoomEvent; fresh
         className={`flex gap-2 py-1 ${mine ? 'flex-row-reverse' : ''}`}
         data-testid="room-event"
       >
-        {mine ? null : <Avatar className="mt-1" {...botFace(bot)} name={name ?? 'Bot'} size="sm" />}
+        {mine ? null : (
+          <Avatar
+            className="mt-1"
+            {...botFace(bot)}
+            mood={emotion}
+            name={name ?? 'Bot'}
+            size="sm"
+          />
+        )}
         <div className="flex min-w-0 max-w-[80%] flex-col items-start">
           <div
             className={cn(
@@ -298,6 +317,7 @@ export function RoomConversation() {
   const streaming = Object.keys(turns).length > 0
   const status = roomStatus(events, turns)
   const failure = roomFailure(events)
+
   const waiting = Object.values(turns).reduce((count, turn) => {
     const transcript = turn.live_session_id ? transcripts[turn.live_session_id] : undefined
 
@@ -309,7 +329,23 @@ export function RoomConversation() {
       ).length ?? 0)
     )
   }, 0)
+
   useTurnCues(roomId, { failed: Boolean(failure), streaming, waiting })
+  useRoomFeelings(roomId, events, turns, transcripts)
+  const feelings = useEmotions(state => state.feelings)
+
+  // Each bot's latest message, whose face shows what it feels.
+  const latestByBot = useMemo(() => {
+    const latest: Record<string, number> = {}
+
+    for (const event of events) {
+      if (event.kind === 'message.bot' && event.actor_id) {
+        latest[event.actor_id] = event.seq
+      }
+    }
+
+    return latest
+  }, [events])
 
   const send = async () => {
     if (!text.trim()) {
@@ -372,7 +408,11 @@ export function RoomConversation() {
             return (
               <div key={event.seq}>
                 {separator ? <DaySeparator time={event.created_at} /> : null}
-                <RoomEventRow event={event} fresh={toMillis(event.created_at) > openedAt} />
+                <RoomEventRow
+                  event={event}
+                  fresh={toMillis(event.created_at) > openedAt}
+                  latest={event.actor_id ? latestByBot[event.actor_id] === event.seq : false}
+                />
               </div>
             )
           })}
@@ -406,7 +446,10 @@ export function RoomConversation() {
                   <span className="relative mt-1 shrink-0">
                     <Avatar
                       {...botFace(bot)}
-                      mood={message ? (liveMood(message) ?? 'working') : 'thinking'}
+                      mood={
+                        feelings[turn.bot] ??
+                        (message ? (liveMood(message) ?? 'working') : 'thinking')
+                      }
                       name={name}
                       size="sm"
                     />

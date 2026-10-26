@@ -46,6 +46,7 @@ import { botMissing, useBot, useBots } from '../../stores/bots'
 import { useConnection } from '../../stores/connection'
 import { connectorsActions } from '../../stores/connectors'
 import { draftsActions } from '../../stores/drafts'
+import { useConversationFeelings, useEmotion } from '../../stores/emotions'
 import {
   liveSectionsOf,
   sectionsActions,
@@ -434,6 +435,8 @@ export function MessageRow({
   const assistant = message.role === 'assistant'
   const settled = useRef<number>(undefined)
   const color = useFaceColor(bot, bot ? bot.display_name : null)
+  // A live face shows what the bot feels over what it is doing.
+  const emotion = useEmotion(assistant && message.streaming ? bot?.name : undefined)
 
   if (message.error) {
     return (
@@ -544,7 +547,7 @@ export function MessageRow({
           <Avatar
             className="mt-1"
             {...botFace(bot)}
-            mood={liveMood(message)}
+            mood={emotion ?? liveMood(message)}
             name={name}
             size="sm"
           />
@@ -566,7 +569,12 @@ export function MessageRow({
               computer={!showFace}
               face={
                 showFace ? undefined : (
-                  <Avatar {...botFace(bot)} mood={liveMood(message)} name={name} size="sm" />
+                  <Avatar
+                    {...botFace(bot)}
+                    mood={emotion ?? liveMood(message)}
+                    name={name}
+                    size="sm"
+                  />
                 )
               }
               message={message}
@@ -1445,6 +1453,8 @@ function BotConversation() {
 
     wasStreaming.current = streaming
   }, [bot?.display_name, messages, section?.id, streaming])
+  useConversationFeelings(bot?.name, section?.id, messages, ready)
+  const emotion = useEmotion(bot?.name)
   useTurnCues(section?.id, {
     failed: Boolean(messages.at(-1)?.error),
     ready,
@@ -1780,7 +1790,12 @@ function BotConversation() {
           type="button"
         >
           <span className="relative shrink-0">
-            <Avatar {...botFace(bot)} mood={moodForStatus(status)} name={name} size="sm" />
+            <Avatar
+              {...botFace(bot)}
+              mood={emotion ?? moodForStatus(status)}
+              name={name}
+              size="sm"
+            />
             <StatusDot size="sm" status={status} />
           </span>
           <span className="shrink-0 truncate text-[length:var(--text-secondary)] font-semibold">

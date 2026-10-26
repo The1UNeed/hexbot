@@ -31,6 +31,7 @@ import { useChatSelection } from '../../lib/use-chat-selection'
 import { useBotList, useBots } from '../../stores/bots'
 import { useConnection } from '../../stores/connection'
 import { useDrafts } from '../../stores/drafts'
+import { useEmotion } from '../../stores/emotions'
 import { useMe } from '../../stores/me'
 import { roomStatus, roomUnread, useRoomList, useRooms } from '../../stores/rooms'
 import {
@@ -200,6 +201,8 @@ function BotRow({
   query,
   sections
 }: BotRowProps) {
+  const emotion = useEmotion(bot.name)
+
   if (query && !`${bot.display_name} ${bot.name}`.toLowerCase().includes(query)) {
     return null
   }
@@ -235,7 +238,12 @@ function BotRow({
         type="button"
       >
         <span className="relative shrink-0">
-          <Avatar {...botFace(bot)} mood={moodForStatus(dot)} name={bot.display_name} size="lg" />
+          <Avatar
+            {...botFace(bot)}
+            mood={emotion ?? moodForStatus(dot)}
+            name={bot.display_name}
+            size="lg"
+          />
           <StatusDot status={dot} />
         </span>
         <span className="min-w-0 flex-1">

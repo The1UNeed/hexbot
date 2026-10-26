@@ -18,6 +18,7 @@ import {
   type BotStatus,
   bubbleFill,
   Button,
+  type FaceMood,
   type FaceSource,
   formatDayDivider,
   Glass,
@@ -52,6 +53,8 @@ export interface ChatScreenProps {
   face?: FaceSource
   members?: FaceSource[]
   status?: BotStatus
+  /** What the bot feels right now, worn over its status for a moment. */
+  emotion?: FaceMood
 
   /** The transcript, oldest first. */
   items: ChatItem[]
@@ -127,7 +130,13 @@ export function ChatScreen(props: ChatScreenProps) {
         {room ? (
           <RoomFace members={members} name={title} size={30} status={status} />
         ) : (
-          <BotFace {...(face ?? { name: title })} name={title} size={30} status={status} />
+          <BotFace
+            {...(face ?? { name: title })}
+            mood={props.emotion}
+            name={title}
+            size={30}
+            status={status}
+          />
         )}
         <View style={styles.titleText}>
           <Text numberOfLines={1} variant="subhead">
@@ -304,6 +313,7 @@ function TranscriptEntry({
       return (
         <WaitingRow
           label={props.waiting?.label}
+          mood={props.emotion}
           who={props.waiting?.who ?? (room ? null : (props.face ?? { name: props.title }))}
         />
       )
@@ -443,10 +453,18 @@ function MessageBubble({
   )
 }
 
-function WaitingRow({ label, who }: { label?: string | null; who?: FaceSource | null }) {
+function WaitingRow({
+  label,
+  mood,
+  who
+}: {
+  label?: string | null
+  mood?: FaceMood
+  who?: FaceSource | null
+}) {
   return (
     <View accessibilityLiveRegion="polite" style={styles.waiting} testID="chat-waiting">
-      {who ? <BotFace {...who} mood="working" size={26} /> : null}
+      {who ? <BotFace {...who} mood={mood ?? 'working'} size={26} /> : null}
       <Text tone="muted" variant="footnote">
         {label || 'Thinking…'}
       </Text>
