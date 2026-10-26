@@ -47,7 +47,6 @@ export { Layer, LayerRoot, type LayerProps, PEEK } from './Layer'
 export { LargeHeader, Screen, type ScreenProps, TopBar, type TopBarProps } from './Screen'
 export { type SegmentOption, Segmented } from './Segmented'
 export { Form, ModalSheet, type ModalSheetProps, type SheetAction } from './Sheet'
-export { TabBar, type TabItem, useTabBarInset } from './TabBar'
 export { Text, type TextProps, type TextTone } from './Text'
 export {
   HIT,

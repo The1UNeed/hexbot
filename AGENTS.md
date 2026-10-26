@@ -188,7 +188,14 @@ A change is done when it works in every place the feature appears:
 - **Install options**: Full, Client, and Headless. A daemon feature that a
   user sets up in the app must also be reachable from a paired app or the
   `hexbot` CLI when no app runs on the daemon's computer.
-- **Clients**: the Electron app and the browser bundle served by the daemon.
+- **Clients**: the Electron app, the browser bundle served by the daemon,
+  and the mobile app in `apps/mobile` (iOS and Android). A change a user can
+  see or use in `apps/web` lands in `apps/mobile` in the same PR, or the PR
+  says why it is desktop-only. The mobile app reuses the wire types in
+  `apps/web/src/lib/types.ts` and talks to the daemon through
+  `apps/mobile/src/core/useMobile.ts`; it shares no components, so port the
+  behaviour, not the markup. Run `pnpm mobile:check`, and the mobile smoke
+  test when navigation or a flow changes (`docs/testing.md`, "Mobile").
 - **Connection modes**: LAN pairing, Tailscale, and Connect.
 - **Reverse states**: a toggle needs both directions; archive needs
   unarchive; a revoked device needs to land back on the connect screen.
@@ -247,6 +254,12 @@ exercise the graph.
   animations; the bot faces are the one place motion is allowed.
 - Copy is short, concrete, and uses glossary words. No "seamless", no
   exclamation marks.
+- The mobile app is a messaging app. One list holds every bot's chat, every
+  room and Check-ins, newest first, with the primary bot pinned. Settings
+  sit behind your initials at the top left, new bots and rooms behind +,
+  and every bot's profile, scheduled jobs and all rooms behind the grid
+  button next to Search. There are no tabs. A new feature finds its place
+  in one of these; it does not add a tab or a home-screen section.
 
 ## Cursor Cloud specific instructions
 

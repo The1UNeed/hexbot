@@ -158,7 +158,7 @@ if another report invalidates the snapshot before it arrives.
 Roster selections and Dream log entries resolve the daemon's canonical chat
 on activation. Older daemons use the same explicit chooser and persist a pick
 before opening it. Later navigation, unmount, or a daemon change cancels the
-lookup before any further writes or navigation. Mobile omits a bot card's quote
+lookup before any further writes or navigation. Mobile omits a chat row's preview
 when multiple preserved owner conversations make its source uncertain.
 
 ## Event mapping

@@ -147,8 +147,8 @@ export function BotFace({ face, imageUri, mood, name, size = 44, status, testID 
 }
 
 /**
- * A room's face: one bot's face for a single bot, otherwise up to four faces
- * in a 2x2 grid, the way the web app draws rooms.
+ * A room's face: one bot's face for a single bot, two overlapping on a
+ * diagonal, otherwise up to four faces in a 2x2 grid.
  */
 export function RoomFace({
   members,
@@ -173,7 +173,9 @@ export function RoomFace({
     return <BotFace {...only} name={name} size={size} status={status} testID={testID} />
   }
 
-  const cell = (size - 2) / 2
+  // Two faces overlap on a diagonal, like a group chat; three or four tile.
+  const pair = members.length === 2
+  const cell = pair ? Math.round(size * 0.64) : (size - 2) / 2
 
   return (
     <View
@@ -183,9 +185,26 @@ export function RoomFace({
       style={{ height: size, width: size }}
       testID={testID}
     >
-      <View style={styles.grid}>
+      <View style={pair ? styles.fill : styles.grid}>
         {members.slice(0, 4).map((member, index) => (
-          <View key={`${member.name}-${index}`} style={{ height: cell, width: cell }}>
+          <View
+            key={`${member.name}-${index}`}
+            style={[
+              { height: cell, width: cell },
+              pair &&
+                (index
+                  ? {
+                      backgroundColor: theme.background,
+                      borderRadius: cell,
+                      boxSizing: 'content-box',
+                      left: size - cell - 2,
+                      padding: 2,
+                      position: 'absolute',
+                      top: size - cell - 2
+                    }
+                  : { left: 0, position: 'absolute', top: 0 })
+            ]}
+          >
             {member.imageUri ? (
               <Image
                 source={{ uri: member.imageUri }}
@@ -258,6 +277,14 @@ export function PersonFace({
 
 const styles = StyleSheet.create({
   dot: { bottom: -1, position: 'absolute', right: -1 },
-  grid: { flex: 1, flexDirection: 'row', flexWrap: 'wrap', gap: 2 },
+  fill: { flex: 1 },
+  grid: {
+    alignContent: 'center',
+    flex: 1,
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 2,
+    justifyContent: 'center'
+  },
   person: { alignItems: 'center', justifyContent: 'center' }
 })
