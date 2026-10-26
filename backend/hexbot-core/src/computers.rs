@@ -425,6 +425,7 @@ async fn forget(home: &Path) {
 async fn ensure(home: &Path, cfg: &Value, env: &BTreeMap<String, String>) -> Result<()> {
     let lock = lifecycle(home);
     let _guard = lock.lock().await;
+    let _unfinished = Unfinished { home };
     let current = match info(home, cfg, env).await {
         Ok(current) => current,
         Err(error) => {
@@ -472,6 +473,19 @@ async fn ensure(home: &Path, cfg: &Value, env: &BTreeMap<String, String>) -> Res
     let result = result.map(|_| "running");
     settle(home, &result);
     result.map(|_| ())
+}
+
+/// A bot stopped while its first action starts the computer: the start is
+/// dropped unfinished, and the computer must not stay busy.
+struct Unfinished<'a> {
+    home: &'a Path,
+}
+impl Drop for Unfinished<'_> {
+    fn drop(&mut self) {
+        if with(self.home, |c| c.busy.take().is_some()) {
+            changed(self.home);
+        }
+    }
 }
 
 fn busy_word(step: &str) -> &'static str {

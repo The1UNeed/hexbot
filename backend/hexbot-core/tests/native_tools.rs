@@ -537,6 +537,8 @@ if args[:2]==['sb','info']:
     if not state.exists(): print('cua: not found: sandbox',file=sys.stderr); sys.exit(3)
     print(state.read_text()); sys.exit(0)
 if args[:2]==['sb','create']:
+    if (here/'slow').exists():
+        (here/'creating').write_text('1'); import time; time.sleep(60)
     state.write_text(json.dumps({'name':args[args.index('--name')+1],'state':'running','status':'ready'})); print(state.read_text()); sys.exit(0)
 if args[:2]==['sb','rm']:
     state.unlink(missing_ok=True); sys.exit(0)
@@ -819,6 +821,45 @@ async fn computer_screen_is_served_through_the_daemon_and_embeddable() {
     .await;
     assert_eq!(missing.status(), 404);
     server.abort();
+}
+#[cfg(unix)]
+#[tokio::test]
+async fn a_bot_stopped_while_the_computer_starts_leaves_it_free() {
+    use hexbot_core::computers;
+    let h = home(json!({"tools":{"enabled_toolsets":["computer_use"]}}));
+    let cua = script(h.path(), "cua-test", FAKE_CUA);
+    std::fs::write(
+        h.path().join(".env"),
+        format!("HEXBOT_CUA_CMD={}\n", cua.display()),
+    )
+    .unwrap();
+    std::fs::write(h.path().join("slow"), "").unwrap();
+    let status = || async {
+        computers::call(h.path(), "hexbot.computer.status", &json!({}))
+            .await
+            .unwrap()
+            .unwrap()
+    };
+    // The bot's first action starts the computer; the bot is stopped meanwhile.
+    let mut action = Box::pin(call(
+        h.path(),
+        "computer_use",
+        json!({"action":"screenshot"}),
+    ));
+    tokio::select! {
+        _ = &mut action => panic!("the start should still be running"),
+        _ = async {
+            while status().await["state"] != "starting" {
+                tokio::task::yield_now().await;
+            }
+        } => {}
+    }
+    drop(action);
+    assert_eq!(status().await["state"], "absent");
+    let started = computers::call(h.path(), "hexbot.computer.start", &json!({}))
+        .await
+        .unwrap();
+    assert!(started.is_ok(), "the computer is no longer busy");
 }
 #[cfg(unix)]
 #[tokio::test]
