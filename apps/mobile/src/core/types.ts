@@ -14,6 +14,7 @@ export type {
   NetworkInfo,
   UsageSummary,
   ComputerCursor,
+  ComputerQuality,
   ComputerSize,
   ComputerStatus
 } from '../../../web/src/lib/types'

@@ -30,6 +30,7 @@ import {
 import type {
   Bot,
   ChatState,
+  ComputerQuality,
   ComputerStatus,
   Section,
   Room,
@@ -831,9 +832,10 @@ export function useMobile() {
       return result
     },
     /** A link, relative to the daemon, to the computer's screen; `control` takes over. */
-    computerView: (control: boolean) =>
+    computerView: (control: boolean, quality: ComputerQuality = 'auto') =>
       rpc<{ path: string; control: boolean; expires_at: number }>('hexbot.computer.view', {
-        control
+        control,
+        quality
       }),
     /** A file reached the daemon and waits for that session's next message. */
     stage: (sessionId: string) => {

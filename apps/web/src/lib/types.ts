@@ -135,6 +135,11 @@ export type ComputerState =
   'absent' | 'error' | 'resetting' | 'restarting' | 'running' | 'starting' | 'stopped' | 'stopping'
 
 export type ComputerSize = 'large' | 'medium' | 'small'
+/**
+ * How the computer's screen streams to this device. `auto` follows the
+ * connection, from 1080p at 60 fps down to 720p at 30 fps; the others hold.
+ */
+export type ComputerQuality = '1080p30' | '1080p60' | '720p30' | '720p60' | 'auto'
 
 /** Where a bot last acted, as fractions of the screen, and when. */
 export interface ComputerCursor {

@@ -17,6 +17,7 @@ import type {
   ClarifyQuestion,
   ClarifyRequest,
   ClarifyRequestPayload,
+  ComputerQuality,
   ComputerSize,
   ComputerStatus,
   Connector,
@@ -386,9 +387,10 @@ export const computerStep = (step: 'reset' | 'restart' | 'start' | 'stop') =>
 export const computerControl = (holder: 'bot' | 'user') =>
   rpcCall<ComputerStatus>('hexbot.computer.control', { holder })
 /** A link, relative to the daemon, to the computer's screen; `control` takes over. */
-export const computerView = (control: boolean) =>
+export const computerView = (control: boolean, quality: ComputerQuality = 'auto') =>
   rpcCall<{ control: boolean; expires_at: number; path: string }>('hexbot.computer.view', {
-    control
+    control,
+    quality
   })
 export const computerConfigure = (size: ComputerSize) =>
   rpcCall<ComputerStatus>('hexbot.computer.configure', { size })
