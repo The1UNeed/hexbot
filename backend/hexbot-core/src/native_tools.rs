@@ -271,6 +271,12 @@ pub(crate) fn not_set_up_with_config(
             .collect(),
     )
 }
+/// Whether a toolset's program or service is set up for the daemon as a
+/// whole, before any bot's own settings.
+pub(crate) fn set_up_on_daemon(home: &Path, toolset: &str) -> Result<bool> {
+    let env = connectors::profile_credentials(home, home)?;
+    Ok(set_up(home, &common::read_config(home)?, &env, toolset))
+}
 fn set_up(
     home: &Path,
     cfg: &Value,

@@ -932,7 +932,7 @@ to each tool's core availability check when the plugin registers. Onboarding
 offers the search and media connectors before the first bot is created
 (`hexbot.connectors.setup` without a `bot`).
 
-Connector shape: `{id, name, description, group, icon, scope, state, state_text,
+Connector shape: `{id, name, description, group, icon, scope, ready, state, state_text,
 providers | null, provider | null, fields: [{key, provider, label, help, url,
 secret, advanced, set, hint}], enabled_for_bot | null, enabled_bots: [string],
 last_error | null, mcp?: {name, transport, tool_count, test_failed, running}}`. `state` is
@@ -958,12 +958,24 @@ or a clear.
   list reports the last probe count, or null when untested.
 - `hexbot.connectors.clear {id, bot?, bot_only?}` → `{connector}`.
 - `hexbot.connectors.set_for_bot {id, bot, enabled}` → `{connector}`.
-- `hexbot.connectors.add_mcp {name, command?, args?, env?, url?, transport?}` →
-  `{connector}`; `hexbot.connectors.remove_mcp {name}` → `{removed: true}`.
-  MCP servers live in the root `config.yaml` and appear as
-  `mcp:<name>` connectors. New entries accept stdio or streamable HTTP. SSE
-  returns 4202, "SSE is not supported. Use the server's streamable HTTP URL."
-  Environment values starting with `!` are rejected.
+- `hexbot.connectors.add_mcp {name, command?, args?, env?, url?, transport?,
+  bots?, bot?}` → `{connector}`; `hexbot.connectors.remove_mcp {name}` →
+  `{removed: true}`. MCP servers are defined once, in the root `config.yaml`,
+  and appear as `mcp:<name>` connectors. Each entry's `bots` list names the
+  bots it is given to. A new server goes to no bot; saving an existing one
+  keeps its bots. `bots` replaces the caller's bots on the list (other owners'
+  bots stay); `bot` adds that bot. Every listed bot must be the caller's. New
+  entries accept stdio or streamable HTTP. SSE returns 4202, "SSE is not
+  supported. Use the server's streamable HTTP URL." Environment values
+  starting with `!` are rejected.
+- `hexbot.connectors.set_for_bot {id, bot, enabled}` on an `mcp:` connector
+  adds the bot to the server's `bots` or takes it off. Deleting a bot takes it
+  off every server.
+- An entry without `bots` predates assignment and reaches every bot except
+  one whose profile lists the server as `disabled`. Each start writes the list
+  from that state and removes the per-bot copies older versions kept in
+  profile `config.yaml` files. A server defined only in a bot's profile
+  stays private to that bot.
 - `hexbot.skills.list {bot?}` → `{skills: [Skill]}`. The `skills.list` alias
   accepts the same arguments. Omitting `bot` lists the library. With `bot`,
   its private overrides are included.
@@ -994,9 +1006,18 @@ or a clear.
 
 `Skill` is `{name, description, category: string | null,
 source: "bundled" | "library" | "bot", path: string, enabled_for_bot: boolean,
-disabled_globally: boolean, enabled: boolean}`. `path` points to `SKILL.md`.
+disabled_globally: boolean, ready: boolean, missing: [Requirement],
+enabled: boolean}`. `path` points to `SKILL.md`.
 `enabled_for_bot` is the bot's own grant, independent of global disables.
-`enabled` is the effective value: `enabled_for_bot && !disabled_globally`.
+`ready` says the daemon's computer has everything the skill's frontmatter
+declares: `platforms`, `prerequisites.commands` (found on the daemon's
+`PATH`, `~/.local/bin`, `~/.cargo/bin`, `/opt/homebrew/bin` or
+`/usr/local/bin`) and `prerequisites.env_vars` (in the bot's or daemon's
+`.env`, or the daemon's environment). `missing` lists what is not there, as
+`{kind: "platform", name: [string]}`, `{kind: "command", name}` or
+`{kind: "env", name}`. `enabled` is the effective value:
+`enabled_for_bot && !disabled_globally && ready`. A skill that is not ready is
+left out of the bot's skill list and `skill_view` refuses it.
 Without a bot, `enabled_for_bot` is true and `enabled` reflects the global deny-list. Names are directory
 names matching `[a-z0-9_-]{1,64}`. Saves require YAML frontmatter with a
 nonempty description and a Markdown body, capped at 2 MiB. Paths cannot escape
@@ -1014,10 +1035,34 @@ New library skills are enabled for all bots unless denied. Resolution is by
 name: private skill, then user library, then bundled skill. `hexbot.bots.update
 {skills}` still sets per-bot selection; returned bot skills are derived from
 current config rather than `bots.skills_json`. When a skill is globally
-disabled, legacy selection updates preserve its existing per-bot grant,
-whether it appears in the selection or not. Config read-modify-write operations
+disabled or not ready, legacy selection updates preserve its existing per-bot
+grant, whether it appears in the selection or not. Config read-modify-write operations
 share one process-wide synchronous lock, including connector toggles and
 settings mirroring.
+
+### Plugins
+
+Plugins are connectors, skills and capabilities (built-in tools that need a
+program or service on the daemon's computer: `computer_use`, `browser`,
+`code_execution`). Each is set up once for the daemon and given to bots.
+
+- `hexbot.plugins.list {bot?}` → `{connectors: [Plugin], skills: [Plugin],
+  capabilities: [Plugin]}`. Every row has `kind` (`connector`, `skill`,
+  `capability`), `id`, `name`, `description`, `ready` and `bots`, the caller's
+  bots it is given to. Connector rows are the `Connector` shape; one is
+  `ready` when its required keys are saved or its MCP server is enabled,
+  independently of an earlier connection error. Skill rows are the `Skill` shape
+  without `path`, and their `bots` are the bots whose grant is on, ready or
+  not. Capability rows add `setup`, a sentence on what to install, while not
+  ready. With `bot`, rows add `enabled_for_bot`.
+- `hexbot.plugins.set_bots {kind, id, bots}` → `{plugin: Plugin}`. Gives the
+  plugin to exactly the caller's bots in `bots` and takes it from the
+  caller's others; other owners' bots are untouched. A plugin that is not
+  ready can be taken from bots but not given: 4209, "Set up NAME before
+  giving it to a bot." An unknown kind is 4202 and an unknown id 4213.
+  Capabilities change through `hexbot.bots.update {tools}`. It emits the
+  kind's own event (`hexbot.connectors.changed {connector}` or
+  `hexbot.skills.changed {name}`) and `hexbot.bots.changed`.
 
 Successful skill mutations emit `hexbot.skills.changed` and `hexbot.bots.changed`.
 Library changes reach all users with `{name}`; private changes reach the caller
@@ -1388,5 +1433,8 @@ on the pairing code or grant's single-use protection instead. CORS exposes
   running daemon.
 - `hexbot devices list|revoke`, `hexbot bots list|create|delete`,
   `hexbot rooms list`, and `hexbot send <bot> <text>`.
+- `hexbot plugins [list [--bot NAME]]` and `hexbot plugins assign
+  connector|skill|capability ID [BOT ...]`: `hexbot.plugins.list` and
+  `hexbot.plugins.set_bots`, with or without a running daemon.
 - Native commands use the running daemon when available, preserving event
   delivery and the single runtime owner. Offline mutations require its home lock.

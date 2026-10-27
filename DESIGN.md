@@ -273,6 +273,10 @@ more freedom and more capability than a hosted product can offer.
   including in Bypass.
   Changed credentials block old clients until they reconnect at the next prompt.
   Saved sections keep their existing Rust bridge tools.
+- Connected servers are defined once for the daemon and given to bots by
+  name (each server's `bots` list); a new server reaches no bot until the
+  user picks one, and a new bot starts with none. A server defined in one
+  bot's profile stays private to it.
 - Approvals render inline in the transcript with Approve, Allow for now, and
   Deny when a grant is available. "Allow for now" quiets the same kind of
   Manual or unreviewed request until the bot's agent process restarts;
@@ -282,7 +286,9 @@ more freedom and more capability than a hosted product can offer.
 - New bots get files, web search, browser and terminal (terminal gated by
   approvals). Computer use is off until enabled. Self-authored skills are on,
   with a transcript notice. Bundled and user-shared skills form one library,
-  enabled for every bot unless disabled globally or for that bot. Bots write
+  enabled for every bot unless disabled globally or for that bot. A skill
+  whose frontmatter names a platform, program or key this computer lacks
+  stays hidden from bots until it is set up; settings say what it needs. Bots write
   private skills; the owner can share a bot's skills into the library.
   A bot owner can edit its private skills and grants.
 - Tools run on the host in a shared workspace at `~/Hexbot`. Per-bot working

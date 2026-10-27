@@ -11,6 +11,7 @@ export type {
   ModelOption,
   Connector,
   SkillInfo,
+  SkillRequirement,
   NetworkInfo,
   UsageSummary,
   ComputerCursor,

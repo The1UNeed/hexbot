@@ -1856,10 +1856,12 @@ fn configure(home: &Path, name: &str, p: &Value) -> Result<()> {
                 ));
             }
         }
+        // A skill that is off everywhere, or waiting to be set up, is not in
+        // the list a client sends back; keep this bot's own choice for it.
         cfg["skills"]["disabled"] = json!(
             installed
                 .into_iter()
-                .filter(|s| if s.disabled_globally {
+                .filter(|s| if s.disabled_globally || !s.ready {
                     !s.enabled_for_bot
                 } else {
                     !v.contains(&json!(s.name))
@@ -2448,6 +2450,9 @@ fn finish_bot_delete_locked(home: &Path, name: &str) -> Result<()> {
             ),
         ));
     }
+    // Keep the name reserved until every server grant is removed. A failed
+    // config cleanup must be retried before another bot can use this name.
+    crate::connectors::forget_bot(home, name)?;
     let targets = journal["targets"]
         .as_array()
         .ok_or_else(|| Error::new(5200, "Invalid bot deletion journal"))?;
@@ -2744,14 +2749,8 @@ fn creation_config(mut config: Value) -> Value {
         object.remove("custom_providers");
         // Global skill revocations stay global; new bots inherit new grants live.
         object.remove("skills");
-    }
-    if let Some(servers) = config["mcp_servers"].as_object_mut() {
-        for server in servers.values_mut() {
-            if let Some(server) = server.as_object_mut() {
-                server.remove("env");
-                server.remove("headers");
-            }
-        }
+        // Connected servers are defined once and given to bots by name.
+        object.remove("mcp_servers");
     }
     config
 }
@@ -3163,7 +3162,7 @@ mod parity_tests {
         );
         let copy = creation_config(config);
         assert!(!copy.to_string().contains("SECRET"));
-        assert_eq!(copy["mcp_servers"]["local"]["command"], "tool");
+        assert!(copy["mcp_servers"].is_null());
         assert_eq!(
             public_model(&json!("standalone")),
             json!({"provider":null,"default":"standalone"})

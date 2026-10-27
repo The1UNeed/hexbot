@@ -3,9 +3,24 @@ import { useEffect, useState } from 'react'
 import { SkeletonLines } from '../../components/ui/skeleton'
 import { Switch } from '../../components/ui/switch'
 import { skillsList } from '../../lib/api'
-import type { Bot, SkillInfo } from '../../lib/types'
+import type { Bot, SkillInfo, SkillRequirement } from '../../lib/types'
 
 import { errorText, Group, Heading, Row, type SaveBot } from './shared'
+
+const PLATFORMS: Record<string, string> = { linux: 'Linux', macos: 'macOS', windows: 'Windows' }
+
+/** What a skill still needs, in a few words: "Needs imsg installed". */
+export function requirementText(missing: SkillRequirement[]): string {
+  return missing
+    .map(item =>
+      item.kind === 'platform'
+        ? `Only on ${item.name.map(name => PLATFORMS[name] ?? name).join(' or ')}`
+        : item.kind === 'command'
+          ? `Needs ${item.name} installed`
+          : `Needs ${item.name}`
+    )
+    .join(' · ')
+}
 
 export function SkillsTab({ bot, onSave }: { bot: Bot; onSave: SaveBot }) {
   const [skills, setSkills] = useState<SkillInfo[] | null>(null)
@@ -49,20 +64,31 @@ export function SkillsTab({ bot, onSave }: { bot: Bot; onSave: SaveBot }) {
             <Group key={category} title={category}>
               {skills
                 .filter(item => (item.category || 'Other') === category)
-                .map(item => (
-                  <Row
-                    control={
-                      <Switch
-                        aria-label={item.name}
-                        checked={item.enabled}
-                        onCheckedChange={checked => toggle(item.name, checked)}
-                      />
-                    }
-                    description={item.description}
-                    key={item.name}
-                    title={item.name}
-                  />
-                ))}
+                .map(item => {
+                  const waiting = item.ready === false
+
+                  return (
+                    <Row
+                      control={
+                        <Switch
+                          aria-label={item.name}
+                          checked={item.enabled}
+                          disabled={waiting}
+                          onCheckedChange={checked => toggle(item.name, checked)}
+                        />
+                      }
+                      description={item.description}
+                      key={item.name}
+                      title={item.name}
+                    >
+                      {waiting && item.missing?.length ? (
+                        <div className="mt-0.5 text-[length:var(--text-secondary)] text-warning">
+                          {requirementText(item.missing)}
+                        </div>
+                      ) : null}
+                    </Row>
+                  )
+                })}
             </Group>
           ))}
         </div>

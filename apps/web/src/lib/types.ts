@@ -269,11 +269,23 @@ export interface ConnectorTest {
   ok: boolean
 }
 
+/** Something a skill needs before bots can use it. */
+export type SkillRequirement =
+  | { kind: 'command'; name: string }
+  | { kind: 'env'; name: string }
+  | { kind: 'platform'; name: string[] }
+
 export interface SkillInfo {
   category: string
   description: string
+  /** On for this bot and ready: what the bot sees. */
   enabled: boolean
+  /** This bot's own switch, kept while the skill waits for setup. */
+  enabled_for_bot?: boolean
+  missing?: SkillRequirement[]
   name: string
+  /** Everything it needs is on the daemon's computer. Older daemons omit it. */
+  ready?: boolean
 }
 
 export type ConnectionStatus =

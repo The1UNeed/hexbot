@@ -255,6 +255,8 @@ export function connectorsSetForBot(
 
 export interface McpServerInput {
   args?: string[]
+  /** Also give the server to this bot. Saving keeps the bots it already had. */
+  bot?: string
   command?: string
   env?: Record<string, string>
   name: string

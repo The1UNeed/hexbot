@@ -320,6 +320,7 @@ clear, close and deletion cleanup apply to retained uploads.
 | `rooms` | Concurrent responders, mentions, main-bot collection, limits, interruption |
 | `settings`, `dreaming` | Settings, budgets, incidents, dreaming, restoration, cron |
 | `providers`, `provider_acp`, `connectors` | Models, credentials, OAuth, ACP, connector setup/probes, MCP |
+| `plugins` | One list of connectors, skills and capabilities, and which bots have each |
 | `native_tools`, `native_external_tools`, `native_product_tools` | Code, browser, computer, media, web, HA, X, skills and history tools |
 | `services` | Connect registration, grants, tunnel lifecycle, native updates |
 | `osutil` | Home, hostname, file errors, process probes and owned-child signals; interrupted lock waits |
@@ -347,6 +348,10 @@ copy taking precedence over `<home>/skills`, then bundled `skills/` selected by
 `HEXBOT_BUNDLED_SKILLS`. New bots do not copy bundled skills. Bot authoring writes
 only private skills; editing an inherited skill creates a private override.
 People can move a private skill into the library using the share RPC.
+
+A skill's `ready` and `missing` come from its frontmatter `platforms` and
+`prerequisites` (`commands`, `env_vars`), checked at every resolve; `enabled`
+requires `ready`, so every path that reads it hides a skill waiting for setup.
 
 New library skills are on for every bot. The bot's `config.yaml` `skills.disabled`
 is the per-bot deny-list, and the root config's `skills.disabled` disables a

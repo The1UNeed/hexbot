@@ -24,10 +24,12 @@ import {
   type Device,
   type Room,
   type Rpc,
-  type Section
+  type Section,
+  type SkillRequirement
 } from './core/types'
 import { botPhoto } from './core/avatar'
 import { scheduleChange } from './core/jobs'
+import { requirementText } from './core/skills'
 import { isOpenRoom } from './core/routes'
 import { pickFile } from './core/pickFile'
 import type { useMobile } from './core/useMobile'
@@ -1207,6 +1209,8 @@ export function Management({
         rpc('hexbot.connectors.add_mcp', {
           name: values.name,
           transport: values.transport,
+          // Saved from a bot's settings, the server goes to that bot.
+          ...(bot ? { bot: bot.name } : {}),
           ...(values.transport === 'http'
             ? { url: values.url }
             : { command: values.command, args: str(values.args).split('\n').filter(Boolean) })
@@ -1240,32 +1244,38 @@ export function Management({
       content = (
         <Group>
           {row('Create skill', 'skill-create')}
-          {rows.map(s => (
-            <View key={str(s.name)}>
-              <Row
-                title={str(s.name)}
-                subtitle={str(s.description)}
-                testID={`skill-${s.name}`}
-                chevron
-                onPress={() => navigate('skill', s)}
-              />
-              <SwitchRow
-                title={`Enable ${s.name}`}
-                testID={`enable-skill-${s.name}`}
-                value={s.enabled === true}
-                disabled={busy || mobile.connection !== 'connected'}
-                onValueChange={enabled =>
-                  void run(() =>
-                    rpc(bot ? 'hexbot.skills.set_for_bot' : 'hexbot.skills.set_global', {
-                      name: s.name,
-                      ...(bot ? { bot: bot.name } : {}),
-                      enabled
-                    })
-                  )
-                }
-              />
-            </View>
-          ))}
+          {rows.map(s => {
+            // Waiting for setup: bots can't use it, so the switch can't give it.
+            const missing = s.ready === false ? ((s.missing as SkillRequirement[]) ?? []) : null
+
+            return (
+              <View key={str(s.name)}>
+                <Row
+                  title={str(s.name)}
+                  subtitle={str(s.description)}
+                  testID={`skill-${s.name}`}
+                  chevron
+                  onPress={() => navigate('skill', s)}
+                />
+                <SwitchRow
+                  title={`Enable ${s.name}`}
+                  subtitle={missing?.length ? requirementText(missing) : undefined}
+                  testID={`enable-skill-${s.name}`}
+                  value={s.enabled === true}
+                  disabled={busy || mobile.connection !== 'connected' || !!missing}
+                  onValueChange={enabled =>
+                    void run(() =>
+                      rpc(bot ? 'hexbot.skills.set_for_bot' : 'hexbot.skills.set_global', {
+                        name: s.name,
+                        ...(bot ? { bot: bot.name } : {}),
+                        enabled
+                      })
+                    )
+                  }
+                />
+              </View>
+            )
+          })}
         </Group>
       )
       break

@@ -29,6 +29,7 @@ pub const USAGE: &str = concat!(
     "hexbot checkins [now | on | off | every MINUTES | hours HH:MM-HH:MM | cancel ID]\n",
     "hexbot computer [on | off | restart | reset | give-back | size small|medium|large]\n",
     "hexbot rooms list\n",
+    "hexbot plugins [list [--bot NAME]] | assign connector|skill|capability ID [BOT ...]\n",
     "hexbot devices list | revoke ID\n",
     "hexbot connect [--name TEXT | status | disconnect]\n",
     "hexbot lan on | off\n",
@@ -74,6 +75,18 @@ fn command(args: &[String]) -> Result<(&'static str, Value)> {
         ["computer", "reset"] => Ok(("hexbot.computer.reset", json!({}))),
         ["computer", "give-back"] => Ok(("hexbot.computer.control", json!({"holder":"bot"}))),
         ["computer", "size", size] => Ok(("hexbot.computer.configure", json!({"size":size}))),
+        ["plugins"] | ["plugins", "list"] => Ok(("hexbot.plugins.list", json!({}))),
+        ["plugins", "list", "--bot", bot] => Ok(("hexbot.plugins.list", json!({"bot":bot}))),
+        [
+            "plugins",
+            "assign",
+            kind @ ("connector" | "skill" | "capability"),
+            id,
+            bots @ ..,
+        ] => Ok((
+            "hexbot.plugins.set_bots",
+            json!({"kind":kind,"id":id,"bots":bots}),
+        )),
         ["send", bot, text] => Ok((
             "hexbot.cli.send",
             json!({"bot":bot,"text":text,"request_id":common::id()}),
@@ -457,6 +470,7 @@ async fn invoke(home: &Path, socket: &mut Option<Socket>, method: &str, p: Value
     if let Some(result) = auth::call(home, "local", method, &p)
         .or_else(|| catalog::call(home, "local", method, &p))
         .or_else(|| settings::call(home, "local", method, &p))
+        .or_else(|| crate::plugins::call(home, "local", method, &p))
     {
         return result;
     }
@@ -554,7 +568,9 @@ pub async fn execute(home: &Path, args: &[String]) -> Result<Value> {
 pub async fn dispatch(home: &Path, args: &[String]) -> Option<Result<()>> {
     let recognized = matches!(
         args.first().map(String::as_str),
-        Some("connect" | "devices" | "lan" | "send" | "checkins" | "computer" | "hermes")
+        Some(
+            "connect" | "devices" | "lan" | "send" | "checkins" | "computer" | "plugins" | "hermes"
+        )
     ) || (args.first().map(String::as_str) == Some("bots")
         && args.get(1).map(String::as_str) != Some("list"));
     if !recognized {

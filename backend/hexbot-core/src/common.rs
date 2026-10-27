@@ -205,29 +205,45 @@ pub fn write_yaml(path: &Path, value: &Value) -> Result<()> {
         }
         file.to_string()
     } else {
-        // A root type change replaces the full value; preserve standalone comments.
-        let comments = source
-            .lines()
-            .filter(|line| line.trim_start().starts_with('#'))
-            .collect::<Vec<_>>()
-            .join("\n");
-        if comments.is_empty() {
-            fresh
-        } else {
-            format!("{comments}\n{fresh}")
-        }
+        // A root type change replaces the full value.
+        rewritten(&source, &fresh)
     };
     // Lossless parsers have different YAML dialect support. Never persist a
     // formatting edit unless the independent semantic parser confirms its value.
-    let actual: Value = serde_yaml::from_str(&text)
+    // Some in-place edits the editor gets wrong, such as emptying an unindented
+    // block sequence; those write the whole value fresh instead.
+    let text = if same_value(&text, value) {
+        text
+    } else {
+        rewritten(&source, &fresh)
+    };
+    serde_yaml::from_str::<Value>(&text)
         .map_err(|e| Error::new(5200, format!("edited YAML failed validation: {e}")))?;
-    // Removing the last key leaves a document with no value, which reads as null; that is
-    // the empty mapping the caller asked for (`read_config` treats it the same way).
-    let emptied = actual.is_null() && value.as_object().is_some_and(|map| map.is_empty());
-    if &actual != value && !emptied {
+    if !same_value(&text, value) {
         return Err(Error::new(5200, "edited YAML changed configuration values"));
     }
     atomic_write(path, text.as_bytes())
+}
+/// Whether `text` reads back as `value`. Removing the last key leaves a
+/// document with no value, which reads as null; that is the empty mapping the
+/// caller asked for (`read_config` treats it the same way).
+fn same_value(text: &str, value: &Value) -> bool {
+    serde_yaml::from_str::<Value>(text).is_ok_and(|actual| {
+        &actual == value || (actual.is_null() && value.as_object().is_some_and(|m| m.is_empty()))
+    })
+}
+/// A fresh serialization that keeps the source's standalone comments.
+fn rewritten(source: &str, fresh: &str) -> String {
+    let comments = source
+        .lines()
+        .filter(|line| line.trim_start().starts_with('#'))
+        .collect::<Vec<_>>()
+        .join("\n");
+    if comments.is_empty() {
+        fresh.to_owned()
+    } else {
+        format!("{comments}\n{fresh}")
+    }
 }
 
 fn patch_yaml_mapping(
