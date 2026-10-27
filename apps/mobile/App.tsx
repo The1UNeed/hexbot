@@ -777,7 +777,13 @@ function MobileApp() {
   // Your latest message in a bot's chat, while the bot is on it or after its turn
   // stopped, with or without its closed error.
   const recallId = (() => {
-    if (route?.kind !== 'section' || route.section.peer_bot || !mobile.info?.recall) return null
+    if (
+      route?.kind !== 'section' ||
+      route.section.peer_bot ||
+      route.section.purpose ||
+      !mobile.info?.recall
+    )
+      return null
     const owner = botByName(route.bot.name) ?? route.bot
     const last = mobile.chat.messages.findLast(m => m.role === 'user')
     const stopped =

@@ -1,3 +1,4 @@
+import { JsonRpcGatewayError } from '@hermes/shared'
 import {
   createMemoryHistory,
   createRootRoute,
@@ -52,6 +53,10 @@ function daemon(method: string, input: Record<string, unknown>) {
       return { section: chat, messages: rows.map(row => ({ ...row })) }
 
     case 'prompt.submit':
+      if (input.text === 'Too soon') {
+        throw new JsonRpcGatewayError('session is already working', { code: 4002 })
+      }
+
       rows.push({
         role: 'user',
         row_id: `user-${rows.length}`,
@@ -277,4 +282,22 @@ it('keeps Recall on a partly answered message after its card is closed', async (
 
   expect(screen.queryByTestId('stopped-card')).toBeNull()
   expect(recallButton()).not.toBeNull()
+})
+
+it('takes back a refused message alone, keeping the replies after it', async () => {
+  await mount()
+  fireEvent.change(field(), { target: { value: 'Too soon' } })
+  fireEvent.click(screen.getByRole('button', { name: 'Send' }))
+  await screen.findByTestId('stopped-card')
+  await act(async () => {
+    useTranscripts.getState().messageStart('chat')
+    useTranscripts.getState().messageDelta('chat', 'A late reply')
+    useTranscripts.getState().messageComplete('chat')
+  })
+  fireEvent.click(recallButton()!)
+  await waitFor(() => expect(field()).toHaveValue('Too soon'))
+  expect(screen.queryByTestId('user-message')).toBeNull()
+  expect(screen.queryByTestId('stopped-card')).toBeNull()
+  expect(screen.getByText('A late reply')).toBeVisible()
+  expect(call.mock.calls.some(([method]) => method === 'session.recall')).toBe(false)
 })

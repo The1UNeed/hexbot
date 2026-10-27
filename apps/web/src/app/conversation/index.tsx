@@ -1612,6 +1612,7 @@ function BotConversation() {
     if (
       !ownerInput ||
       !recallable ||
+      section?.purpose ||
       messages[index] !== message ||
       !stopped ||
       !['accepted', 'rejected'].includes(submitted)
@@ -1642,10 +1643,25 @@ function BotConversation() {
           return
         }
 
-        transcriptActions().recallFrom(liveId, message.id)
-        // It comes back to edit, ahead of anything typed since.
-        const typed = draftsActions().byId[sectionId] ?? ''
-        draftsActions().set(sectionId, typed.trim() ? `${message.text}\n\n${typed}` : message.text)
+        if (submitted === 'rejected') {
+          // It never reached the bot: a turn still running keeps its replies.
+          for (const id of [message.id, message.submission?.card]) {
+            if (id) {
+              transcriptActions().dismiss(liveId, id)
+            }
+          }
+        } else {
+          transcriptActions().recallFrom(liveId, message.id)
+        }
+
+        // It comes back to edit, ahead of anything typed since. A refused
+        // send may already have put it back.
+        const typed = (draftsActions().byId[sectionId] ?? '').trim()
+
+        draftsActions().set(
+          sectionId,
+          typed && typed !== message.text.trim() ? `${message.text}\n\n${typed}` : message.text
+        )
 
         if (canPrompt()) {
           setDraftVersion(version => version + 1)

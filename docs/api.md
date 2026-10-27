@@ -39,7 +39,7 @@ data model. The native transport and event projection live in
   input_id}}` tells clients to drop that message and what followed it, kept
   rows included, and read the chat again; a turn failure on this chat is
   resolved. Anything else answers 4202 and changes nothing: an older message,
-  a hidden one, a room or a thread between bots. A Recall naming an older
+  a hidden one, a room, a thread between bots or Check-ins. A Recall naming an older
   message than the one a running turn works on leaves that turn running. A
   prompt or steer starting `/hexbot-recall` is refused with 4202.
   `hexbot.info.recall: true` advertises the method.

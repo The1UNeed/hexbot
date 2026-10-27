@@ -31,9 +31,9 @@ impl Runtime {
         if input_id.is_none() && row_id.is_none() {
             return Err(Error::new(4200, "missing parameter: input_id"));
         }
-        // Rooms and threads between bots keep what was said.
+        // Rooms, threads between bots and Check-ins keep what was said.
         let chat: bool = db::open(&self.home)?.query_row(
-            "SELECT EXISTS(SELECT 1 FROM sections WHERE id=? AND bot=? AND owner_id=? AND peer_bot IS NULL)",
+            "SELECT EXISTS(SELECT 1 FROM sections WHERE id=? AND bot=? AND owner_id=? AND peer_bot IS NULL AND purpose IS NULL)",
             params![s.stored, s.bot, s.owner],
             |r| r.get(0),
         )?;

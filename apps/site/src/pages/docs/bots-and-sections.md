@@ -81,7 +81,7 @@ Close a Stopped card with its **×** once you have read it. If the bot shows Sto
 
 While the bot is working on your latest message, or after its answer stopped, you can take that message back. In the web and desktop apps, hover over it and choose **Recall**. On the phone, long-press it. A running answer stops first. The message and what the bot said after it leave the chat in every app, and the bot forgets them. The text goes back in the message box to edit; attached files do not, so attach them again. Anything the bot already did, such as changing a file, stays done.
 
-Only your latest message can be recalled, and only in a bot's chat, not in a room or a conversation between bots. Recalling keeps the conversation before that message as it was, so the bot's next answer still uses the provider's prompt cache.
+Only your latest message can be recalled, and only in a bot's chat, not in a room, a conversation between bots, or Check-ins. Recalling keeps the conversation before that message as it was, so the bot's next answer still uses the provider's prompt cache.
 
 A chat can't be deleted on its own, even from an older app; deleting the bot removes its profile, chat, memory, and scheduled jobs. Stop its active work first, then wait for Stop cleanup and any queued results to finish; deletion is refused until they do. Back up the daemon's data directory before removing a bot you may need again. Private conversations between bots can still be deleted. While a bot is being deleted it can't start new work; if deletion fails, it can work again.
 
