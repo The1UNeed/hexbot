@@ -44,7 +44,7 @@ import type {
   BotStatus,
   ClarifyRequest
 } from '../../lib/types'
-import { selectionsSettled } from '../../lib/use-chat-selection'
+import { openedElsewhere, selectionsStarted } from '../../lib/use-chat-selection'
 import { botMissing, useBot, useBots } from '../../stores/bots'
 import { useConnection } from '../../stores/connection'
 import { connectorsActions } from '../../stores/connectors'
@@ -1358,6 +1358,7 @@ function BotConversation() {
       // The chat the daemon named on this connection opens at once; the check
       // below still runs and moves to another chat if the daemon names one.
       const known = knownChat(botName)?.id === sectionId
+      const clicks = selectionsStarted()
 
       if (known) {
         setResolved({ entry, peer: false })
@@ -1399,13 +1400,9 @@ function BotConversation() {
         }
 
         if (chat.id !== sectionId) {
-          // A click on another bot still waiting for its chat goes first.
-          if (known) {
-            await selectionsSettled()
-
-            if (!current()) {
-              return
-            }
+          // A click on another bot since this opened goes there instead.
+          if (known && ((await openedElsewhere(clicks)) || !current())) {
+            return
           }
 
           void navigate({

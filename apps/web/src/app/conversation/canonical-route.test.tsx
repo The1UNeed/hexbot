@@ -711,16 +711,7 @@ it.each(['opens', 'fails'] as const)(
     })
     await waitFor(() => expect(state.lookups).toHaveLength(1))
 
-    const yak = selectChat('yak').then(
-      chat =>
-        chat &&
-        view.router.navigate({
-          to: '/b/$bot/s/$section',
-          params: { bot: 'yak', section: chat.id }
-        }),
-      () => undefined
-    )
-
+    const yak = selectChat('yak').catch(() => null)
     await waitFor(() => expect(state.lookups).toHaveLength(2))
     // Owl's check names another chat while Yak's lookup still waits.
     await act(async () => state.lookups[0]!.resolve({ section: section('moved') }))
@@ -731,9 +722,21 @@ it.each(['opens', 'fails'] as const)(
       } else {
         state.lookups[1]!.reject(new Error('lost'))
       }
-
-      await yak
     })
+    const chat = await yak
+
+    // The click navigates when it is ready; Owl's check never moves first.
+    if (chat) {
+      await act(async () => new Promise(resolve => setTimeout(resolve, 20)))
+      expect(view.router.state.location.pathname).toBe('/b/owl/s/canonical')
+      await act(async () => {
+        await view.router.navigate({
+          to: '/b/$bot/s/$section',
+          params: { bot: 'yak', section: chat.id }
+        })
+      })
+    }
+
     await waitFor(() =>
       expect(view.router.state.location.pathname).toBe(
         outcome === 'opens' ? '/b/yak/s/yak-chat' : '/b/owl/s/moved'
