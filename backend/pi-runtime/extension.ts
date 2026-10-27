@@ -499,7 +499,8 @@ export default function hexbot(pi: any) {
   // Recall (runtime_recall.rs): the chat returns to just before the owner's
   // latest message, so the next request keeps the cached prefix. Pi resumes a
   // conversation from its file's last entry, so a custom entry records the move.
-  pi.registerCommand('hexbot-recall', {
+  // Pi always has commands; the security fixtures' stand-ins do not.
+  pi.registerCommand?.('hexbot-recall', {
     description: 'Take back the latest user message',
     handler: async (args: string, ctx: any) => {
       const id = args.trim();

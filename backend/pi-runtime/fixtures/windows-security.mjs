@@ -96,7 +96,7 @@ try {
     const {isolatedCommand,workspaceProtected} = isolation;
     const {canonicalPath} = extension;
     WINDOWS_ISOLATION_UNAVAILABLE = isolation.WINDOWS_ISOLATION_UNAVAILABLE;
-    extension.default({on:(name, handler) => handlers[name] = handler, registerTool:tool => tools[tool.name] = tool, registerProvider() {}, registerCommand() {}});
+    extension.default({on:(name, handler) => handlers[name] = handler, registerTool:tool => tools[tool.name] = tool, registerProvider() {}});
     assert.match(tools.bash.description, /Bash syntax, not cmd.exe or PowerShell/);
     assert.deepEqual(accesses,[], 'registration must not resolve hostile homes');
     for (const mode of ['smart','manual','unknown']) {
