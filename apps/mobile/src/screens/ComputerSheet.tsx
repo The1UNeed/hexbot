@@ -457,7 +457,7 @@ export function ComputerSheet({
           {caption(status, nameOf)}
         </Text>
       </View>
-      {running && plays ? (
+      {running && (plays || user) ? (
         <Button
           label={user ? 'Give back' : 'Take control'}
           onPress={() => (user ? act('hexbot.computer.control', { holder: 'bot' }) : take())}

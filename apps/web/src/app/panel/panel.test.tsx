@@ -288,6 +288,23 @@ describe('ProfilePanel', () => {
     expect(api.computerView).not.toHaveBeenCalled()
   })
 
+  it('still gives the computer back over a plain HTTP connection', async () => {
+    api.computerStatus.mockResolvedValue({ ...running, control: 'user' })
+    api.computerControl.mockReset()
+    api.computerControl.mockResolvedValue(running)
+    useComputer.setState({ error: null, status: null })
+    useConnection.setState({
+      target: { deviceToken: 't', host: '192.168.0.87', kind: 'remote', port: 9119, tls: false }
+    })
+    seed([], false)
+    useBots.setState({ byName: { scout: { ...bot, tools: ['computer_use'] } } })
+    render(<ProfilePanel />)
+    fireEvent.click(screen.getByRole('tab', { name: 'Computer' }))
+    expect(await screen.findByTestId('computer-insecure')).toBeVisible()
+    fireEvent.click(screen.getByRole('button', { name: 'Give back' }))
+    expect(api.computerControl).toHaveBeenCalledWith('bot')
+  })
+
   it('gives the computer back when the window closes before a take-over lands', async () => {
     const running = {
       activity: null,

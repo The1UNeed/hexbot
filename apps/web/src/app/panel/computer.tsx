@@ -485,7 +485,7 @@ function Screen({ bot, onSave }: { bot: Bot; onSave: SaveBot }) {
           ) : null}
           {caption(status, actor)}
         </span>
-        {running && plays ? (
+        {running && (plays || status.control === 'user') ? (
           status.control === 'user' ? (
             <Button onClick={() => void control('bot')} size="sm" variant="pill">
               Give back
