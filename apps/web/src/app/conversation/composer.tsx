@@ -75,7 +75,7 @@ export function ComposerShell({
       ) : null}
       <div
         className={cn(
-          'hex-glass flex items-end gap-1.5 rounded-[23px] border border-transparent p-[7px] transition-[border-color,box-shadow] duration-[var(--hex-motion-fast)]',
+          'hex-glass hex-glass-field flex items-end gap-1.5 rounded-[23px] border border-transparent p-[7px] transition-[border-color,box-shadow] duration-[var(--hex-motion-fast)]',
           tone.border
         )}
         data-status={status}
