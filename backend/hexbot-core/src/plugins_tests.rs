@@ -355,7 +355,12 @@ fn a_capability_that_is_not_set_up_cannot_be_given() {
     let listed = call(home.path(), "alice", "hexbot.plugins.list", json!({})).unwrap();
     let computer = row(&listed, "capabilities", "computer_use");
     assert_eq!(computer["ready"], false);
-    assert!(computer["setup"].as_str().unwrap().contains("uv tool install cua"));
+    assert!(
+        computer["setup"]
+            .as_str()
+            .unwrap()
+            .contains("uv tool install cua")
+    );
     assert_eq!(
         call(
             home.path(),
