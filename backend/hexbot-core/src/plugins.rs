@@ -74,7 +74,12 @@ fn connector_rows(home: &Path, own: &[String], bot: Option<&str>) -> Result<Vec<
         .unwrap_or_default();
     for row in &mut rows {
         row["kind"] = json!("connector");
-        row["bots"] = only(&row["enabled_bots"], own);
+        // A switched-off server is still given to the bots on its stored list.
+        let bots = match row["id"].as_str().and_then(|id| id.strip_prefix("mcp:")) {
+            Some(server) => json!(connectors::mcp_bots(home, server)?),
+            None => row["enabled_bots"].clone(),
+        };
+        row["bots"] = only(&bots, own);
     }
     Ok(rows)
 }

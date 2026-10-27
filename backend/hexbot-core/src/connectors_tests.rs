@@ -392,6 +392,13 @@ async fn stdio_mcp_initializes_discovers_executes_and_obeys_bot_disable() {
         .await
         .unwrap();
     assert_eq!(tested["tool_count"], 1);
+    // A bot it isn't given to yet can still test it before taking it.
+    assert_eq!(
+        connectors::probe(home.path(), "mcp:fixture", Some("fox"))
+            .await
+            .unwrap()["tool_count"],
+        1
+    );
     assert_eq!(
         connectors::get(home.path(), None, "mcp:fixture").unwrap()["mcp"]["tool_count"],
         1

@@ -236,6 +236,11 @@ fn a_switched_off_server_can_be_taken_from_one_of_its_bots() {
         }}),
     )
     .unwrap();
+    let listed = call(home.path(), "alice", "hexbot.plugins.list", json!({})).unwrap();
+    assert_eq!(
+        row(&listed, "connectors", "mcp:files")["bots"],
+        json!(["cat", "owl"])
+    );
     call(
         home.path(),
         "alice",

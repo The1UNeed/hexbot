@@ -688,12 +688,15 @@ fn get(home: &Path, bot: Option<&str>, id: &str) -> Result<Value> {
 }
 async fn probe(home: &Path, id: &str, bot: Option<&str>) -> Result<Value> {
     if let Some(server) = id.strip_prefix("mcp:") {
+        let root = read_config(home)?["mcp_servers"].clone();
+        // From a bot's settings, a server not given to it yet can still be
+        // tested before it is: its own copy first, then the daemon's.
         let config = if let Some(bot) = bot {
             mcp_servers(home, bot)?
         } else {
-            read_config(home)?["mcp_servers"].clone()
+            root.clone()
         };
-        let Some(entry) = config.get(server) else {
+        let Some(entry) = config.get(server).or_else(|| root.get(server)) else {
             return Ok(
                 json!({"ok":false,"message":"This connected tool is not defined or is disabled."}),
             );
