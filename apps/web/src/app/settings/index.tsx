@@ -517,9 +517,9 @@ export function UsageSettings() {
   )
 }
 
-type ProviderRowState = { busy: boolean; open: boolean; result: null | string }
+type ProviderRowState = { busy: boolean; draft: string; open: boolean; result: null | string }
 
-const idleRow: ProviderRowState = { busy: false, open: false, result: null }
+const idleRow: ProviderRowState = { busy: false, draft: '', open: false, result: null }
 
 export function ProvidersSettings(): React.JSX.Element {
   const providers = useSettings(state => state.providers)
@@ -537,8 +537,8 @@ export function ProvidersSettings(): React.JSX.Element {
     provider => !needle || `${provider.label} ${provider.id}`.toLowerCase().includes(needle)
   )
 
-  // A row moves to Connected as soon as it connects. Its open editor, pending
-  // request and last result live here, so they survive the move between groups.
+  // A row moves to Connected as soon as it connects. Its open editor, typed key,
+  // pending request and last result live here, so they survive the move.
   const [rows, setRows] = useState<Record<string, ProviderRowState>>({})
 
   const rowState = (id: string) => rows[id] ?? idleRow
@@ -778,8 +778,8 @@ function ProviderRow({
   state: ProviderRowState
   update: (patch: Partial<ProviderRowState>) => void
 }) {
-  const [key, setDraft] = useState('')
-  const { busy, open, result } = state
+  const { busy, draft: key, open, result } = state
+  const setDraft = (value: string) => update({ draft: value })
   const setBusy = (value: boolean) => update({ busy: value })
   const setOpen = (value: boolean) => update({ open: value })
   const setResult = (value: null | string) => update({ result: value })

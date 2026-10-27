@@ -101,6 +101,14 @@ describe('settings', () => {
   it('adds and tests a provider key', async () => {
     // Saving marks the provider configured, as the daemon does; the row moves
     // to Connected and keeps its editor open, its pending test and its result.
+    // Removing the key moves it back and keeps a replacement already typed.
+    const clearProviderKey = vi.fn(async (id: string) => {
+      useSettings.setState(state => ({
+        providers: state.providers.map(item =>
+          item.id === id ? { ...item, configured: false } : item
+        )
+      }))
+    })
     const setProviderKey = vi.fn(async () => {
       useSettings.setState(state => ({
         providers: state.providers.map(item => ({ ...item, configured: true }))
@@ -118,6 +126,7 @@ describe('settings', () => {
         },
         { auth_type: 'key', configured: true, id: 'groq', label: 'Groq', models_source: 'api' }
       ],
+      clearProviderKey,
       refreshProviders: vi.fn().mockResolvedValue(undefined),
       setProviderKey
     })
@@ -137,6 +146,10 @@ describe('settings', () => {
     expect(screen.getByRole('button', { name: 'Test' })).toBeEnabled()
     expect(screen.getByLabelText('OpenAI API key')).toBeVisible()
     expect(screen.queryByText('More providers')).not.toBeInTheDocument()
+    fireEvent.change(screen.getByLabelText('OpenAI API key'), { target: { value: 'next' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Remove OpenAI key' }))
+    await waitFor(() => expect(within(group('More providers')).getByText('OpenAI')).toBeVisible())
+    expect(screen.getByLabelText('OpenAI API key')).toHaveValue('next')
   })
 
   it('moves a subscription to Connected when it signs in, and back when it signs out', async () => {
