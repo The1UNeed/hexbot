@@ -184,14 +184,18 @@ fn set_bots(home: &Path, caller: &str, p: &Value) -> Result<Value> {
     };
     let chosen = connectors::chosen_bots(home, caller, &current_bots, &p["bots"])?;
     let wanted = |bot: &str| chosen.iter().any(|b| b == bot);
-    // A skill can be ready for one bot through a key in that bot's `.env`.
+    // A skill or connector can be ready for one bot through a key in that
+    // bot's `.env`.
     let ready_for = |bot: &str| -> Result<bool> {
-        if kind == "skill" {
-            return Ok(skills::resolve(home, Some(bot))?
+        match kind {
+            "skill" => Ok(skills::resolve(home, Some(bot))?
                 .iter()
-                .any(|s| s.name == id && s.ready));
+                .any(|s| s.name == id && s.ready)),
+            "connector" if !id.starts_with("mcp:") => {
+                Ok(connectors::get(home, Some(bot), id)?["ready"] == true)
+            }
+            _ => Ok(current["ready"] == true),
         }
-        Ok(current["ready"] == true)
     };
     let mut blocked = false;
     for bot in own

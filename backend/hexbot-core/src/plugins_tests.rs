@@ -597,6 +597,31 @@ fn a_connector_waiting_for_its_key_can_still_be_taken_away() {
 }
 
 #[test]
+fn a_connector_ready_through_a_bots_own_key_can_be_given_to_that_bot() {
+    let home = setup();
+    let listed = call(home.path(), "alice", "hexbot.plugins.list", json!({})).unwrap();
+    if row(&listed, "connectors", "notion")["ready"] == true {
+        return; // NOTION_API_KEY is set in this environment.
+    }
+    fs::write(
+        home.path().join("profiles/owl/.env"),
+        "NOTION_API_KEY=owl-only\n",
+    )
+    .unwrap();
+    let assign = |bots: Value| {
+        call(
+            home.path(),
+            "alice",
+            "hexbot.plugins.set_bots",
+            json!({"kind":"connector","id":"notion","bots":bots}),
+        )
+    };
+    assign(json!([])).unwrap();
+    assign(json!(["owl"])).unwrap();
+    assert_eq!(assign(json!(["owl", "cat"])).unwrap_err().code, 4209);
+}
+
+#[test]
 fn assigning_the_cloud_browser_keeps_the_daemons_provider() {
     let home = setup();
     common::write_config(

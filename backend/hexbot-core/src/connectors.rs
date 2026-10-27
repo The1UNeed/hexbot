@@ -677,7 +677,7 @@ pub(crate) fn list(home: &Path, bot: Option<&str>) -> Result<Value> {
     }
     Ok(json!({"connectors":out}))
 }
-fn get(home: &Path, bot: Option<&str>, id: &str) -> Result<Value> {
+pub(crate) fn get(home: &Path, bot: Option<&str>, id: &str) -> Result<Value> {
     list(home, bot)?["connectors"]
         .as_array()
         .unwrap()
