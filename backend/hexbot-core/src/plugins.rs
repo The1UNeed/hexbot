@@ -182,14 +182,10 @@ fn set_bots(home: &Path, caller: &str, p: &Value) -> Result<Value> {
     match kind {
         "connector" if id.starts_with("mcp:") => {
             let server = &id["mcp:".len()..];
-            let mut bots = connectors::assigned_bots(home, server)?
-                .into_iter()
-                .filter(|b| !own.contains(b))
-                .collect::<Vec<_>>();
-            bots.extend(chosen.iter().filter(|b| own.contains(b)).cloned());
-            bots.sort();
-            bots.dedup();
-            connectors::assign_mcp(home, server, &bots)?;
+            connectors::change_mcp_bots(home, server, |bots| {
+                bots.retain(|b| !own.contains(b));
+                bots.extend(chosen.iter().filter(|b| own.contains(b)).cloned());
+            })?;
         }
         "connector" => {
             for bot in &own {

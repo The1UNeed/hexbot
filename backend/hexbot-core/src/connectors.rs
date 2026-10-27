@@ -249,11 +249,30 @@ pub fn mcp_servers(home: &Path, bot: &str) -> Result<Value> {
 /// Give a daemon-level server to exactly `bots`, and drop any copy of it a
 /// bot profile still holds.
 pub(crate) fn assign_mcp(home: &Path, server: &str, bots: &[String]) -> Result<()> {
+    change_mcp_bots(home, server, |list| *list = bots.to_vec())
+}
+/// Change a daemon-level server's `bots` list from read to write under the
+/// config lock, so concurrent changes keep each other's bots. The stored list
+/// counts even while the server is switched off; an entry without one starts
+/// from the bots that use it now.
+pub(crate) fn change_mcp_bots(
+    home: &Path,
+    server: &str,
+    change: impl FnOnce(&mut Vec<String>),
+) -> Result<()> {
     common::update_config(home, |config| {
         let entry = config["mcp_servers"]
             .get_mut(server)
             .filter(|v| v.is_object())
             .ok_or_else(|| Error::new(4213, format!("unknown MCP server: {server}")))?;
+        let mut bots = if entry["bots"].is_array() {
+            strings(&entry["bots"])
+        } else {
+            assigned_bots(home, server)?
+        };
+        change(&mut bots);
+        bots.sort();
+        bots.dedup();
         entry["bots"] = json!(bots);
         Ok(())
     })?;
@@ -305,11 +324,7 @@ pub(crate) fn forget_bot(home: &Path, bot: &str) -> Result<()> {
         if let Some(bots) = entry["bots"].as_array()
             && bots.iter().any(|b| b == bot)
         {
-            let kept = strings(&json!(bots))
-                .into_iter()
-                .filter(|b| b != bot)
-                .collect::<Vec<_>>();
-            assign_mcp(home, name, &kept)?;
+            change_mcp_bots(home, name, |bots| bots.retain(|b| b != bot))?;
         }
     }
     Ok(())
@@ -406,21 +421,12 @@ pub(crate) fn set_enabled(home: &Path, bot: &str, id: &str, on: bool) -> Result<
         }
     }
     if let Some(server) = id.strip_prefix("mcp:") {
-        if !read_config(home)?["mcp_servers"]
-            .get(server)
-            .is_some_and(Value::is_object)
-        {
-            return Err(Error::new(4213, format!("unknown MCP server: {server}")));
-        }
-        let mut bots = assigned_bots(home, server)?
-            .into_iter()
-            .filter(|b| b != bot)
-            .collect::<Vec<_>>();
-        if on {
-            bots.push(bot.to_string());
-            bots.sort();
-        }
-        return assign_mcp(home, server, &bots);
+        return change_mcp_bots(home, server, |bots| {
+            bots.retain(|b| b != bot);
+            if on {
+                bots.push(bot.to_string());
+            }
+        });
     }
     set_toolsets(home, bot, id, on)
 }
@@ -1055,27 +1061,21 @@ async fn dispatch(home: &Path, caller: &str, method: &str, p: &Value) -> Result<
             // Saving keeps the bots a server already had unless `bots` says
             // otherwise; a new server reaches no bot until it is given one.
             // Saving from a bot's settings (`bot`) also gives it to that bot.
-            let current = if read_config(home)?["mcp_servers"]
-                .get(&name)
-                .is_some_and(Value::is_object)
-            {
-                assigned_bots(home, &name)?
-            } else {
-                vec![]
-            };
-            let mut bots = if p["bots"].is_null() {
-                current
-            } else {
-                chosen_bots(home, caller, &current, &p["bots"])?
-            };
-            if let Some(bot) = bot
-                && !bots.iter().any(|b| b == bot)
-            {
-                bots.push(bot.to_string());
-                bots.sort();
-            }
-            entry["bots"] = json!(bots);
             common::update_config(home, |config| {
+                let current = match config["mcp_servers"].get(&name) {
+                    Some(old) if old["bots"].is_array() => strings(&old["bots"]),
+                    Some(old) if old.is_object() => assigned_bots(home, &name)?,
+                    _ => vec![],
+                };
+                let mut bots = if p["bots"].is_null() {
+                    current
+                } else {
+                    chosen_bots(home, caller, &current, &p["bots"])?
+                };
+                bots.extend(bot.map(str::to_string));
+                bots.sort();
+                bots.dedup();
+                entry["bots"] = json!(bots);
                 config_set(config, "mcp_servers", &name, entry.clone());
                 Ok(())
             })?;

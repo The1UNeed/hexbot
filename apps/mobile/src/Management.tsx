@@ -1209,6 +1209,8 @@ export function Management({
         rpc('hexbot.connectors.add_mcp', {
           name: values.name,
           transport: values.transport,
+          // Saved from a bot's settings, the server goes to that bot.
+          ...(bot ? { bot: bot.name } : {}),
           ...(values.transport === 'http'
             ? { url: values.url }
             : { command: values.command, args: str(values.args).split('\n').filter(Boolean) })

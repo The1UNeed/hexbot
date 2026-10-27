@@ -204,6 +204,58 @@ async fn assigning_keeps_other_owners_bots_and_refuses_theirs() {
 }
 
 #[test]
+fn a_switched_off_server_keeps_who_it_is_given_to() {
+    let home = setup();
+    common::write_config(
+        home.path(),
+        &json!({"mcp_servers": {
+            "files": {"command": "node", "disabled": true, "bots": ["fox", "owl"]}
+        }}),
+    )
+    .unwrap();
+    call(
+        home.path(),
+        "alice",
+        "hexbot.plugins.set_bots",
+        json!({"kind":"connector","id":"mcp:files","bots":[]}),
+    )
+    .unwrap();
+    assert_eq!(
+        common::read_config(home.path()).unwrap()["mcp_servers"]["files"]["bots"],
+        json!(["fox"])
+    );
+}
+
+#[test]
+fn bots_given_a_server_at_the_same_time_all_keep_it() {
+    let home = setup();
+    let names = (0..12).map(|i| format!("bot{i}")).collect::<Vec<_>>();
+    let conn = db::open(home.path()).unwrap();
+    for name in &names {
+        conn.execute("INSERT INTO bots(name,owner_id) VALUES (?,'alice')", [name])
+            .unwrap();
+        fs::create_dir_all(home.path().join("profiles").join(name)).unwrap();
+    }
+    common::write_config(
+        home.path(),
+        &json!({"mcp_servers": {"files": {"command": "node", "bots": []}}}),
+    )
+    .unwrap();
+    std::thread::scope(|scope| {
+        for name in &names {
+            let home = home.path();
+            scope.spawn(move || connectors::set_enabled(home, name, "mcp:files", true).unwrap());
+        }
+    });
+    let mut given =
+        strings_of(&common::read_config(home.path()).unwrap()["mcp_servers"]["files"]["bots"]);
+    given.sort();
+    let mut expected = names.clone();
+    expected.sort();
+    assert_eq!(given, expected);
+}
+
+#[test]
 fn migration_writes_each_servers_bots_and_drops_profile_copies() {
     let home = setup();
     common::write_config(
