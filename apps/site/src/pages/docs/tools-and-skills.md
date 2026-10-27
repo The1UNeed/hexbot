@@ -47,13 +47,15 @@ Your model provider and your connectors may bill separately. A model subscriptio
 
 Add a server in Bot settings, Connectors. Enter a name and a **Command or URL**. A command launches a local server on the daemon computer; an HTTP URL connects to a remote server. Make sure the local command and its dependencies exist on that computer.
 
-Hexbot registers the server for the daemon and gives each bot an enable switch. The bot's chat can use it from your next message after you add or enable it. Removing a server removes it for the deployment, so check whether another bot uses it first.
+Hexbot registers the server once for the daemon. A server you add from a bot's settings goes to that bot; give it to other bots with their own switches or with `hexbot plugins assign connector mcp:NAME BOT ...`. A new bot starts with no servers. The bot's chat can use a server from your next message after you add or enable it. Removing a server removes it for every bot, so check whether another bot uses it first.
 
 Use the server's own instructions for credentials and permissions. Its tools can act on the account you give it, and outside-service calls follow that service's rules. The workspace sandbox describes local commands; it does not limit what an authenticated service can do in its own account.
 
 ## Choose skills
 
 Every bot draws on one shared skill library: the skills bundled with Hexbot plus any you add. A skill in the library is on for every bot until it is turned off for everyone or for one bot. Open Bot settings, Skills to see a bot's skills grouped by category and turn them on or off.
+
+Some skills need something on the daemon's computer first: a program such as `imsg` or `himalaya`, a key such as `NOTION_API_KEY`, or a particular operating system. Until it is there, the skill is hidden from bots, and Bot settings, Skills says what it needs. Install the program or save the key, and the skill appears for bots that have it on.
 
 A skill a bot writes for itself stays private to that bot. You can share a private skill from a bot into the library. A skill can guide a workflow, but it does not supply credentials or make a disabled tool available.
 

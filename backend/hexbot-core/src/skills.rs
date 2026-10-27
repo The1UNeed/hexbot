@@ -134,8 +134,74 @@ pub struct Skill {
     pub path: PathBuf,
     pub enabled_for_bot: bool,
     pub disabled_globally: bool,
-    /// Compatibility with the existing web client.
+    /// Whether everything the skill declares it needs is on this computer.
+    pub ready: bool,
+    /// What is missing, in the order the skill declares it.
+    pub missing: Vec<Requirement>,
+    /// Switched on and ready: what bots see. Also read by the web client.
     pub enabled: bool,
+    #[serde(skip)]
+    needs: Vec<Requirement>,
+}
+
+/// Something a skill's frontmatter says it needs: `platforms`, and
+/// `prerequisites` `commands` and `env_vars`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(tag = "kind", content = "name", rename_all = "snake_case")]
+pub enum Requirement {
+    Platform(Vec<String>),
+    Command(String),
+    Env(String),
+}
+
+fn requirements(meta: &Value) -> Vec<Requirement> {
+    let list = |value: &Value| -> Vec<String> {
+        match value {
+            Value::String(s) => vec![s.clone()],
+            Value::Array(items) => items
+                .iter()
+                .filter_map(|v| v.as_str().or_else(|| v["name"].as_str()))
+                .map(str::to_owned)
+                .collect(),
+            _ => vec![],
+        }
+    };
+    let mut needs = vec![];
+    let platforms = list(&meta["platforms"]);
+    if !platforms.is_empty() {
+        needs.push(Requirement::Platform(platforms));
+    }
+    needs.extend(
+        list(&meta["prerequisites"]["commands"])
+            .into_iter()
+            .map(Requirement::Command),
+    );
+    needs.extend(
+        list(&meta["prerequisites"]["env_vars"])
+            .into_iter()
+            .map(Requirement::Env),
+    );
+    needs
+}
+
+/// The platform names skills use for this computer.
+fn this_platform() -> &'static str {
+    match std::env::consts::OS {
+        "macos" => "macos",
+        "windows" => "windows",
+        _ => "linux",
+    }
+}
+
+fn met(need: &Requirement, env: &BTreeMap<String, String>) -> bool {
+    match need {
+        Requirement::Platform(names) => names.iter().any(|n| n == this_platform()),
+        Requirement::Command(name) => crate::native_tools::on_path(name).is_some(),
+        Requirement::Env(name) => {
+            env.get(name).is_some_and(|v| !v.is_empty())
+                || std::env::var(name).is_ok_and(|v| !v.is_empty())
+        }
+    }
 }
 
 fn bundled_root() -> PathBuf {
@@ -187,7 +253,10 @@ fn discover(
                 path: main,
                 enabled_for_bot: true,
                 disabled_globally: false,
+                ready: true,
+                missing: vec![],
                 enabled: true,
+                needs: requirements(&meta),
             },
         );
         return Ok(());
@@ -234,22 +303,35 @@ fn resolve_with(home: &Path, bot: Option<&str>, bundled: &Path) -> Result<Vec<Sk
     let library = home.join("skills");
     safe_path(home, &library)?;
     discover(&library, &library, "library", &mut found)?;
-    let config = if let Some(bot) = bot {
+    let (config, env) = if let Some(bot) = bot {
         let profile = catalog::profile(home, bot)?;
         let root = profile.join("skills");
         safe_path(home, &root)?;
         discover(&root, &root, "bot", &mut found)?;
         safe_path(home, &profile.join("config.yaml"))?;
-        common::read_config(&profile)?
+        (
+            common::read_config(&profile)?,
+            crate::connectors::profile_credentials(home, &profile)?,
+        )
     } else {
-        json!({})
+        (
+            json!({}),
+            crate::connectors::profile_credentials(home, home)?,
+        )
     };
     safe_path(home, &home.join("config.yaml"))?;
     let global = common::read_config(home)?;
     for skill in found.values_mut() {
         skill.disabled_globally = is_disabled(&global, &skill.name);
         skill.enabled_for_bot = !is_disabled(&config, &skill.name);
-        skill.enabled = skill.enabled_for_bot && !skill.disabled_globally;
+        skill.missing = skill
+            .needs
+            .iter()
+            .filter(|need| !met(need, &env))
+            .cloned()
+            .collect();
+        skill.ready = skill.missing.is_empty();
+        skill.enabled = skill.enabled_for_bot && !skill.disabled_globally && skill.ready;
     }
     Ok(found.into_values().collect())
 }

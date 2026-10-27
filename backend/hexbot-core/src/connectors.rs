@@ -216,15 +216,103 @@ pub fn toolsets(home: &Path, bot: &str) -> Result<Vec<String>> {
     .map(str::to_string)
     .to_vec())
 }
+/// Whether a daemon-level server is given to `bot`. Its `bots` list is the
+/// assignment; an entry without one predates it and reaches every bot until
+/// the next start writes the list (`migrate`).
+fn assigned(entry: &Value, bot: &str) -> bool {
+    entry["bots"]
+        .as_array()
+        .is_none_or(|bots| bots.iter().any(|b| b == bot))
+}
+/// The servers a bot may use: daemon-level ones assigned to it, plus servers
+/// defined only in its own profile. A profile entry never redefines a
+/// daemon-level server; one marked disabled still withholds it.
 pub fn mcp_servers(home: &Path, bot: &str) -> Result<Value> {
     let root = read_config(home)?;
     let config = read_config(&profile(home, bot)?)?;
     let mut servers = root["mcp_servers"].as_object().cloned().unwrap_or_default();
-    if let Some(overrides) = config["mcp_servers"].as_object() {
-        servers.extend(overrides.clone())
+    servers.retain(|_, entry| assigned(entry, bot));
+    if let Some(own) = config["mcp_servers"].as_object() {
+        for (name, entry) in own {
+            if root["mcp_servers"].get(name).is_some_and(Value::is_object) {
+                if entry["disabled"] == true {
+                    servers.remove(name);
+                }
+            } else {
+                servers.insert(name.clone(), entry.clone());
+            }
+        }
     }
     servers.retain(|_, entry| entry.is_object() && entry["disabled"] != true);
     Ok(Value::Object(servers))
+}
+/// Give a daemon-level server to exactly `bots`, and drop any copy of it a
+/// bot profile still holds.
+pub(crate) fn assign_mcp(home: &Path, server: &str, bots: &[String]) -> Result<()> {
+    common::update_config(home, |config| {
+        let entry = config["mcp_servers"]
+            .get_mut(server)
+            .filter(|v| v.is_object())
+            .ok_or_else(|| Error::new(4213, format!("unknown MCP server: {server}")))?;
+        entry["bots"] = json!(bots);
+        Ok(())
+    })?;
+    forget_profile_copies(home, server)
+}
+fn forget_profile_copies(home: &Path, server: &str) -> Result<()> {
+    for path in targets(home)?.into_iter().skip(1) {
+        if read_config(&path)?["mcp_servers"].get(server).is_some() {
+            common::update_config(&path, |config| {
+                if let Some(servers) = config["mcp_servers"].as_object_mut() {
+                    servers.remove(server);
+                }
+                Ok(())
+            })?;
+        }
+    }
+    Ok(())
+}
+pub(crate) fn assigned_bots(home: &Path, server: &str) -> Result<Vec<String>> {
+    let mut bots = vec![];
+    for bot in names(home)? {
+        if mcp_servers(home, &bot)?.get(server).is_some() {
+            bots.push(bot);
+        }
+    }
+    Ok(bots)
+}
+/// Write each daemon-level server's `bots` list from what every bot can use
+/// now, then remove the per-bot copies older versions kept. Runs at every
+/// start; an entry that already has a list is left alone.
+pub(crate) fn migrate(home: &Path) -> Result<()> {
+    let root = read_config(home)?;
+    let Some(servers) = root["mcp_servers"].as_object() else {
+        return Ok(());
+    };
+    for (name, entry) in servers {
+        if entry.is_object() && entry["bots"].is_null() {
+            let bots = assigned_bots(home, name)?;
+            assign_mcp(home, name, &bots)?;
+        }
+    }
+    Ok(())
+}
+/// Take a deleted bot off every server, so a new bot with its name starts
+/// with none.
+pub(crate) fn forget_bot(home: &Path, bot: &str) -> Result<()> {
+    let root = read_config(home)?;
+    for (name, entry) in root["mcp_servers"].as_object().into_iter().flatten() {
+        if let Some(bots) = entry["bots"].as_array()
+            && bots.iter().any(|b| b == bot)
+        {
+            let kept = strings(&json!(bots))
+                .into_iter()
+                .filter(|b| b != bot)
+                .collect::<Vec<_>>();
+            assign_mcp(home, name, &kept)?;
+        }
+    }
+    Ok(())
 }
 // Keep executable lookup and relative arguments out of bot-controlled folders.
 fn mcp_cwd(home: &Path, bot: Option<&str>) -> Result<PathBuf> {
@@ -290,7 +378,8 @@ pub(crate) fn enabled(home: &Path, bot: &str, id: &str) -> Result<bool> {
     if let Some(skill) = s["skill"].as_str() {
         return Ok(crate::skills::resolve(home, Some(bot))?
             .iter()
-            .any(|s| s.name == skill && s.enabled));
+            // Readiness only hides the skill; the bot's grant is its own.
+            .any(|s| s.name == skill && s.enabled_for_bot && !s.disabled_globally));
     }
     let tools = toolsets(home, bot)?;
     if id == "web_search" {
@@ -301,7 +390,7 @@ pub(crate) fn enabled(home: &Path, bot: &str, id: &str) -> Result<bool> {
     }
     Ok(strings(&s["toolsets"]).iter().all(|t| tools.contains(t)))
 }
-fn set_enabled(home: &Path, bot: &str, id: &str, on: bool) -> Result<()> {
+pub(crate) fn set_enabled(home: &Path, bot: &str, id: &str, on: bool) -> Result<()> {
     if !id.starts_with("mcp:") {
         let s = spec(id)?;
         if let Some(skill) = s["skill"].as_str() {
@@ -316,34 +405,44 @@ fn set_enabled(home: &Path, bot: &str, id: &str, on: bool) -> Result<()> {
             return Ok(());
         }
     }
+    if let Some(server) = id.strip_prefix("mcp:") {
+        if !read_config(home)?["mcp_servers"]
+            .get(server)
+            .is_some_and(Value::is_object)
+        {
+            return Err(Error::new(4213, format!("unknown MCP server: {server}")));
+        }
+        let mut bots = assigned_bots(home, server)?
+            .into_iter()
+            .filter(|b| b != bot)
+            .collect::<Vec<_>>();
+        if on {
+            bots.push(bot.to_string());
+            bots.sort();
+        }
+        return assign_mcp(home, server, &bots);
+    }
+    set_toolsets(home, bot, id, on)
+}
+/// Turn a catalog connector's toolsets on or off for one bot.
+pub(crate) fn set_toolsets(home: &Path, bot: &str, id: &str, on: bool) -> Result<()> {
     let path = profile(home, bot)?;
     common::update_config(&path, |config| {
-        if let Some(server) = id.strip_prefix("mcp:") {
-            let root = read_config(home)?;
-            let entry = root["mcp_servers"]
-                .get(server)
-                .filter(|v| v.is_object())
-                .ok_or_else(|| Error::new(4213, format!("unknown MCP server: {server}")))?;
-            let mut entry = entry.clone();
-            entry["disabled"] = json!(!on);
-            config_set(config, "mcp_servers", server, entry);
-        } else {
-            let s = spec(id)?;
-            let mut tools = toolsets(home, bot)?.into_iter().collect::<BTreeSet<_>>();
-            for t in strings(&s["toolsets"]) {
-                if on {
-                    tools.insert(t);
-                } else {
-                    tools.remove(&t);
-                    if t == "web" {
-                        tools.remove("search");
-                    }
+        let s = spec(id)?;
+        let mut tools = toolsets(home, bot)?.into_iter().collect::<BTreeSet<_>>();
+        for t in strings(&s["toolsets"]) {
+            if on {
+                tools.insert(t);
+            } else {
+                tools.remove(&t);
+                if t == "web" {
+                    tools.remove("search");
                 }
             }
-            config_set(config, "tools", "enabled_toolsets", json!(tools));
-            config_set(config, "platform_toolsets", "cli", json!(tools));
-            config_set(config, "known_plugin_toolsets", "cli", json!(["hexbot"]));
         }
+        config_set(config, "tools", "enabled_toolsets", json!(tools));
+        config_set(config, "platform_toolsets", "cli", json!(tools));
+        config_set(config, "known_plugin_toolsets", "cli", json!(["hexbot"]));
         Ok(())
     })
 }
@@ -367,7 +466,7 @@ fn save_test(home: &Path, id: &str, result: &Value, probed: bool) -> Result<()> 
     )?;
     Ok(())
 }
-fn list(home: &Path, bot: Option<&str>) -> Result<Value> {
+pub(crate) fn list(home: &Path, bot: Option<&str>) -> Result<Value> {
     if let Some(b) = bot {
         profile(home, b)?;
     }
@@ -462,6 +561,7 @@ fn list(home: &Path, bot: Option<&str>) -> Result<Value> {
             "group": s["group"],
             "icon": s["icon"],
             "scope": "daemon",
+            "ready": ready,
             "state": state,
             "state_text": state_text,
             "providers": providers,
@@ -507,6 +607,7 @@ fn list(home: &Path, bot: Option<&str>) -> Result<Value> {
                 "group": "mcp",
                 "icon": "glyph:server",
                 "scope": "daemon",
+                "ready": !disabled,
                 "state": if err.is_some() || failed {
                     "error"
                 } else if disabled {
@@ -699,6 +800,32 @@ async fn probe(home: &Path, id: &str, bot: Option<&str>) -> Result<Value> {
     };
     save_test(home, id, &result, true)?;
     Ok(result)
+}
+/// The bots a plugin goes to after the caller picks `value`, a list of bot
+/// names they own. Bots in `current` that belong to someone else stay.
+pub(crate) fn chosen_bots(
+    home: &Path,
+    caller: &str,
+    current: &[String],
+    value: &Value,
+) -> Result<Vec<String>> {
+    let list = value
+        .as_array()
+        .ok_or_else(|| Error::new(4202, "bots must be an array of bot names"))?;
+    let mut bots = BTreeSet::new();
+    for bot in list {
+        let bot = bot
+            .as_str()
+            .ok_or_else(|| Error::new(4202, "bots must be an array of bot names"))?;
+        bot_owner(home, caller, bot)?;
+        bots.insert(bot.to_string());
+    }
+    for bot in current {
+        if bot_owner(home, caller, bot).is_err() {
+            bots.insert(bot.clone());
+        }
+    }
+    Ok(bots.into_iter().collect())
 }
 fn validate_mcp(p: &Value) -> Result<(String, Value)> {
     let name = required(p, "name")?.trim();
@@ -924,13 +1051,40 @@ async fn dispatch(home: &Path, caller: &str, method: &str, p: &Value) -> Result<
         }
         "hexbot.connectors.add_mcp" => {
             user(home, caller)?;
-            let (name, entry) = validate_mcp(p)?;
-            write_all(home, "mcp_servers", &name, entry)?;
+            let (name, mut entry) = validate_mcp(p)?;
+            // Saving keeps the bots a server already had unless `bots` says
+            // otherwise; a new server reaches no bot until it is given one.
+            // Saving from a bot's settings (`bot`) also gives it to that bot.
+            let current = if read_config(home)?["mcp_servers"]
+                .get(&name)
+                .is_some_and(Value::is_object)
+            {
+                assigned_bots(home, &name)?
+            } else {
+                vec![]
+            };
+            let mut bots = if p["bots"].is_null() {
+                current
+            } else {
+                chosen_bots(home, caller, &current, &p["bots"])?
+            };
+            if let Some(bot) = bot
+                && !bots.iter().any(|b| b == bot)
+            {
+                bots.push(bot.to_string());
+                bots.sort();
+            }
+            entry["bots"] = json!(bots);
+            common::update_config(home, |config| {
+                config_set(config, "mcp_servers", &name, entry.clone());
+                Ok(())
+            })?;
+            forget_profile_copies(home, &name)?;
             db::open(home)?.execute(
                 "DELETE FROM settings WHERE key=?",
                 [format!("connector_test:mcp:{name}")],
             )?;
-            Ok(json!({"connector":get(home,None,&format!("mcp:{name}"))?}))
+            Ok(json!({"connector":get(home,bot,&format!("mcp:{name}"))?}))
         }
         "hexbot.connectors.remove_mcp" => {
             user(home, caller)?;
@@ -938,7 +1092,13 @@ async fn dispatch(home: &Path, caller: &str, method: &str, p: &Value) -> Result<
             if read_config(home)?["mcp_servers"].get(name).is_none() {
                 return Err(Error::new(4213, format!("unknown MCP server: {name}")));
             }
-            write_all(home, "mcp_servers", name, Value::Null)?;
+            common::update_config(home, |config| {
+                if let Some(servers) = config["mcp_servers"].as_object_mut() {
+                    servers.remove(name);
+                }
+                Ok(())
+            })?;
+            forget_profile_copies(home, name)?;
             db::open(home)?.execute(
                 "DELETE FROM settings WHERE key=?",
                 [format!("connector_test:mcp:{name}")],

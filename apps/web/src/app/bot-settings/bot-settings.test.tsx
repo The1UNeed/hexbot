@@ -18,6 +18,7 @@ import {
   NotesBlock
 } from './memory'
 import { ModelTab } from './model'
+import { requirementText, SkillsTab } from './skills'
 import { ToolsTab } from './tools'
 
 const router = vi.hoisted(() => ({
@@ -579,5 +580,53 @@ describe('bot approvals on older daemons', () => {
     if (approval_mode === 'off') {
       expect(screen.getByRole('radio', { name: /^Bypass/ })).toBeChecked()
     }
+  })
+})
+
+describe('skills', () => {
+  it('shows what a skill waiting for setup needs and leaves it out of the saved list', async () => {
+    fakeRpc({
+      'hexbot.skills.list': () => ({
+        skills: [
+          {
+            category: 'apple',
+            description: 'Send texts.',
+            enabled: false,
+            enabled_for_bot: true,
+            missing: [{ kind: 'command', name: 'imsg' }],
+            name: 'imessage',
+            ready: false
+          },
+          {
+            category: 'apple',
+            description: 'Write notes.',
+            enabled: false,
+            enabled_for_bot: false,
+            missing: [],
+            name: 'notes',
+            ready: true
+          }
+        ]
+      })
+    })
+    const save = vi.fn().mockResolvedValue(undefined)
+    render(<SkillsTab bot={bot} onSave={save} />)
+
+    expect(await screen.findByText('Needs imsg installed')).toBeVisible()
+    const waiting = screen.getByRole('switch', { name: 'imessage' })
+    expect(waiting).toBeDisabled()
+    expect(waiting).not.toBeChecked()
+
+    fireEvent.click(screen.getByRole('switch', { name: 'notes' }))
+    expect(save).toHaveBeenCalledWith({ skills: ['notes'] })
+  })
+
+  it('names platforms and keys in plain words', () => {
+    expect(
+      requirementText([
+        { kind: 'platform', name: ['macos'] },
+        { kind: 'env', name: 'TENOR_API_KEY' }
+      ])
+    ).toBe('Only on macOS · Needs TENOR_API_KEY')
   })
 })

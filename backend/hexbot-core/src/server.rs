@@ -470,6 +470,8 @@ impl App {
                     result
                 } else if let Some(result) = connectors::call(&self.home, owner, method, p).await {
                     result
+                } else if let Some(result) = crate::plugins::call(&self.home, owner, method, p) {
+                    result
                 } else if let Some(result) = providers::call(&self.home, owner, method, p).await {
                     result
                 } else if let Some(result) = services::call(&self.home, owner, method, p).await {
@@ -685,6 +687,28 @@ impl App {
                 | "model.save_key"
                 | "model.disconnect"
         ) {
+            self.events
+                .emit(owner, None, "hexbot.bots.changed", json!({}));
+            return;
+        }
+        // Plugin assignment reuses each kind's event, so every open list refreshes.
+        if method == "hexbot.plugins.set_bots" {
+            let id = json!({"connector":p["id"]});
+            match p["kind"].as_str() {
+                Some("connector") => {
+                    self.events
+                        .emit(owner, None, "hexbot.connectors.changed", id);
+                }
+                Some("skill") => {
+                    self.events.emit(
+                        owner,
+                        None,
+                        "hexbot.skills.changed",
+                        json!({"name":p["id"]}),
+                    );
+                }
+                _ => {}
+            }
             self.events
                 .emit(owner, None, "hexbot.bots.changed", json!({}));
             return;
