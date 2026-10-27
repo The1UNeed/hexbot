@@ -671,6 +671,23 @@ it('opens a chat the daemon named on this connection at once, while it is checke
   await waitFor(() => expect(view.router.state.location.pathname).toBe('/b/owl/s/moved'))
 })
 
+it('keeps a known chat open when another bot\'s lookup overtakes its check', async () => {
+  const state = holdLookups()
+  const view = await mount('/b/owl/s/canonical')
+  expect(await screen.findByText('canonical history')).toBeVisible()
+  state.hold = true
+  await act(async () => {
+    view.router.history.push('/b/owl/s/canonical')
+  })
+  await waitFor(() => expect(state.lookups).toHaveLength(1))
+  // A click on a bot not opened yet asks for its chat meanwhile.
+  void useSections.getState().chat('yak')
+  await act(async () => state.release())
+  expect(screen.queryByText('Choose a chat to continue.')).toBeNull()
+  expect(screen.getByText('canonical history')).toBeVisible()
+  expect(view.router.state.location.pathname).toBe('/b/owl/s/canonical')
+})
+
 it('a lookup from before a daemon restart cannot enable the kept composer', async () => {
   const state = holdLookups()
   const view = await mount('/b/owl/s/canonical')

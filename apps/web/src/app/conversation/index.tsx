@@ -1356,7 +1356,9 @@ function BotConversation() {
     ) {
       // The chat the daemon named on this connection opens at once; the check
       // below still runs and moves to another chat if the daemon names one.
-      if (knownChat(botName)?.id === sectionId) {
+      const known = knownChat(botName)?.id === sectionId
+
+      if (known) {
         setResolved({ entry, peer: false })
       }
 
@@ -1387,8 +1389,11 @@ function BotConversation() {
           return
         }
 
+        // A check another lookup overtook leaves a known chat open.
         if (!chat) {
-          setOpenFailure({ section: sectionId, message: 'Choose a chat to continue.' })
+          if (!known) {
+            setOpenFailure({ section: sectionId, message: 'Choose a chat to continue.' })
+          }
 
           return
         }
