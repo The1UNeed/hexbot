@@ -5,7 +5,6 @@ import { Pressable, ScrollView, StyleSheet, TextInput, View } from 'react-native
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 
 import {
-  Badge,
   Banner,
   Button,
   type FaceMood,
@@ -25,7 +24,7 @@ export type PairingInput =
   { address: string; code: string; mode: 'code' } | { link: string; mode: 'link' }
 
 /** Which action is running, so only its button shows progress. */
-export type ConnectionPending = 'connect' | 'demo' | 'pair' | { savedId: string } | null
+export type ConnectionPending = 'connect' | 'pair' | { savedId: string } | null
 
 export interface ConnectionScreenProps {
   saved: DaemonEntry[]
@@ -33,8 +32,6 @@ export interface ConnectionScreenProps {
   onPair: (input: PairingInput) => void
   /** Sign in through Hex Connect; leave out to hide the option. */
   onConnectSignIn?: () => void
-  /** Open the demo; leave out to hide it. */
-  onDemo?: () => void
   pending?: ConnectionPending
   error?: string | null
   onDismissError?: () => void
@@ -56,14 +53,13 @@ const HUDDLE: { face: FaceStyle; lift: number; mood: FaceMood; size: number }[] 
 
 /**
  * First run and "add a daemon": the daemons this app knows, pairing by
- * address and code or by link, Hex Connect, and a clearly labelled demo.
+ * address and code or by link, and Hex Connect.
  */
 export function ConnectionScreen({
   error,
   initialAddress = '',
   initialLink = '',
   onConnectSignIn,
-  onDemo,
   onCancel,
   onDismissError,
   onOpenSaved,
@@ -325,37 +321,6 @@ export function ConnectionScreen({
             </Text>
           ) : null}
 
-          {onDemo ? (
-            <Pressable
-              accessibilityHint="Opens sample bots on this phone without a daemon"
-              accessibilityLabel="Try the demo"
-              accessibilityRole="button"
-              accessibilityState={{ busy: pending === 'demo', disabled: busy }}
-              disabled={busy}
-              onPress={onDemo}
-              style={({ pressed }) => [
-                styles.demo,
-                {
-                  borderColor: theme.hairline,
-                  opacity: busy && pending !== 'demo' ? 0.45 : pressed ? 0.7 : 1
-                }
-              ]}
-              testID="connection-demo"
-            >
-              <View style={styles.demoText}>
-                <View style={styles.demoTitle}>
-                  <Text variant="headline">
-                    {pending === 'demo' ? 'Opening the demo…' : 'Try the demo'}
-                  </Text>
-                  <Badge label="Demo" tone="warning" />
-                </View>
-                <Text tone="muted" variant="footnote">
-                  Sample bots and made-up replies. Nothing connects to a daemon.
-                </Text>
-              </View>
-              <Ionicons color={theme.faint} name="chevron-forward" size={18} />
-            </Pressable>
-          ) : null}
         </View>
       </ScrollView>
     </Screen>
@@ -394,19 +359,6 @@ const styles = StyleSheet.create({
     paddingHorizontal: 14
   },
   content: { gap: 18, paddingHorizontal: 20, paddingTop: 22 },
-  demo: {
-    alignItems: 'center',
-    borderRadius: 18,
-    borderStyle: 'dashed',
-    borderWidth: 1,
-    flexDirection: 'row',
-    gap: 12,
-    minHeight: 64,
-    paddingHorizontal: 16,
-    paddingVertical: 12
-  },
-  demoText: { flex: 1, gap: 2 },
-  demoTitle: { alignItems: 'center', flexDirection: 'row', gap: 8 },
   glyph: {
     alignItems: 'center',
     borderRadius: 20,
