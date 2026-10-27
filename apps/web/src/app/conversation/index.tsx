@@ -1393,8 +1393,11 @@ function BotConversation() {
           return
         }
 
+        // A known chat stays open when its check gets no answer; the next entry checks again.
         if (!chat) {
-          setOpenFailure({ section: sectionId, message: 'Choose a chat to continue.' })
+          if (!known) {
+            setOpenFailure({ section: sectionId, message: 'Choose a chat to continue.' })
+          }
 
           return
         }
@@ -1428,7 +1431,7 @@ function BotConversation() {
           return
         }
 
-        if (current()) {
+        if (current() && !known) {
           setOpenFailure({
             section: sectionId,
             message: error instanceof Error ? error.message : String(error)

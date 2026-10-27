@@ -768,6 +768,21 @@ it.each([
   }
 )
 
+it('keeps a known chat open when its check fails', async () => {
+  const state = holdLookups()
+  const view = await mount('/b/owl/s/canonical')
+  expect(await screen.findByText('canonical history')).toBeVisible()
+  state.hold = true
+  await act(async () => {
+    view.router.history.push('/b/owl/s/canonical')
+  })
+  await waitFor(() => expect(state.lookups).toHaveLength(1))
+  await act(async () => state.lookups[0]!.reject(new Error('Hex Connect dropped')))
+  expect(screen.queryByText('Hex Connect dropped')).toBeNull()
+  expect(screen.getByText('canonical history')).toBeVisible()
+  expect(screen.getByRole('textbox', { name: 'Message' })).toBeEnabled()
+})
+
 it('a cancelled bot click does not hold a check that finds another chat', async () => {
   const state = holdLookups()
   const view = await mount('/b/owl/s/canonical')
