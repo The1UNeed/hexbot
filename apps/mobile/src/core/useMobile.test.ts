@@ -659,3 +659,62 @@ it("keeps the bots' computer current from its events without reloading everythin
   // A computer event comes with every bot action; it reloads nothing.
   expect(state.request).not.toHaveBeenCalled()
 })
+
+describe('recall and closing an error in a bot chat', () => {
+  const daemonWith = (bots: Bot[]) =>
+    state.request.mockImplementation(async (method: string, params: Record<string, unknown> = {}) => {
+      if (method === 'hexbot.info') return { one_chat: true, transcript_identity: true, recall: true }
+      if (method === 'hexbot.bots.list') return { bots }
+      if (method === 'session.recall') return { recalled: true, text: 'Hello' }
+      return reply(method, params)
+    })
+  const chat = async (bots: Bot[] = [bot]) => {
+    daemonWith(bots)
+    const hook = await connected()
+    await act(async () => { await hook.result.current.openSection(bot) })
+    return hook
+  }
+
+  it('sends with an input id and recalls that message by it', async () => {
+    const hook = await chat()
+    await act(async () => { await hook.result.current.send('Hello') })
+    expect(state.request).toHaveBeenCalledWith('prompt.submit', expect.objectContaining({ session_id: 'live-owl-chat', text: 'Hello', input_id: 'message' }))
+    expect(hook.result.current.chat.messages).toMatchObject([{ id: 'message', role: 'user', inputId: 'message' }])
+    let text: string | null = null
+    await act(async () => { text = await hook.result.current.recall('message') })
+    expect(text).toBe('Hello')
+    expect(state.request).toHaveBeenCalledWith('session.recall', { session_id: 'live-owl-chat', input_id: 'message' })
+    expect(hook.result.current.chat.messages).toEqual([])
+    expect(hook.result.current.chat.busy).toBe(false)
+  })
+
+  it('names a message from the history by its row when it has no input id', async () => {
+    const hook = await chat()
+    state.request.mockImplementation(async (method: string, params: Record<string, unknown> = {}) => {
+      if (method === 'hexbot.sections.open') return { section: section('owl-chat'), messages: [{ role: 'user', row_id: 'pi-e1', text: 'Earlier' }] }
+      if (method === 'session.recall') return { recalled: true, text: 'Earlier' }
+      return reply(method, params)
+    })
+    await act(async () => { await hook.result.current.syncChat() })
+    await act(async () => { await hook.result.current.recall('pi-e1') })
+    expect(state.request).toHaveBeenCalledWith('session.recall', { session_id: 'live-owl-chat', row_id: 'pi-e1' })
+  })
+
+  it('closes the error, and the bot’s Stopped state when it is for this chat', async () => {
+    const stopped = { ...bot, status: 'stopped', status_detail: { section_id: 'owl-chat' } } as Bot
+    const hook = await chat([stopped])
+    act(() => state.event({ type: 'message.complete', session_id: 'live-owl-chat', payload: { error: 'The model request failed' } }))
+    expect(hook.result.current.chat.error).toBe('The model request failed')
+    await act(async () => { await hook.result.current.dismissError() })
+    expect(hook.result.current.chat.error).toBeNull()
+    expect(state.request).toHaveBeenCalledWith('hexbot.bots.clear_status', { name: 'owl' })
+  })
+
+  it('leaves the bot’s state alone when the error is not a Stopped state here', async () => {
+    const hook = await chat()
+    act(() => state.event({ type: 'message.complete', session_id: 'live-owl-chat', payload: { error: 'The turn was interrupted' } }))
+    await act(async () => { await hook.result.current.dismissError() })
+    expect(hook.result.current.chat.error).toBeNull()
+    expect(state.request.mock.calls.some(([m]) => m === 'hexbot.bots.clear_status')).toBe(false)
+  })
+})

@@ -668,6 +668,22 @@ export function sessionInterrupt(sessionId: string): Promise<{ status: string }>
   return rpcCall<{ status: string }>('session.interrupt', { session_id: sessionId })
 }
 
+/**
+ * Take back your latest message in a bot's chat, named by its input id or
+ * history row id. A turn working on it stops first; the bot forgets it and
+ * everything after it. Answers with the message text.
+ */
+export function sessionRecall(
+  sessionId: string,
+  message: { inputId?: string; rowId?: string }
+): Promise<{ recalled: boolean; text: string }> {
+  return rpcCall<{ recalled: boolean; text: string }>('session.recall', {
+    session_id: sessionId,
+    ...(message.inputId && { input_id: message.inputId }),
+    ...(message.rowId && { row_id: message.rowId })
+  })
+}
+
 export function sessionUsage(sessionId: string): Promise<{ usage: Usage }> {
   return rpcCall<{ usage: Usage }>('session.usage', { session_id: sessionId })
 }

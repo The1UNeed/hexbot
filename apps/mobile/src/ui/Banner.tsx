@@ -2,7 +2,7 @@ import { Ionicons } from '@expo/vector-icons'
 import { StyleSheet, View } from 'react-native'
 
 import { withAlpha } from './Badge'
-import { Button } from './Button'
+import { Button, IconButton } from './Button'
 import { Text } from './Text'
 import { radius, useTheme } from './theme'
 
@@ -13,6 +13,8 @@ export interface BannerProps {
   title?: string
   actionLabel?: string
   onAction?: () => void
+  /** Shows a close button at the end. */
+  onDismiss?: () => void
 }
 
 /** An inline notice: what happened and what to do about it. */
@@ -20,6 +22,7 @@ export function Banner({
   actionLabel,
   message,
   onAction,
+  onDismiss,
   testID,
   title,
   tone = 'danger'
@@ -53,6 +56,18 @@ export function Banner({
           />
         ) : null}
       </View>
+      {onDismiss ? (
+        <IconButton
+          accessibilityLabel="Dismiss"
+          color={theme.muted}
+          icon="close"
+          iconSize={18}
+          onPress={onDismiss}
+          size={28}
+          style={styles.dismiss}
+          testID={`${testID}-dismiss`}
+        />
+      ) : null}
     </View>
   )
 }
@@ -61,5 +76,6 @@ const styles = StyleSheet.create({
   action: { marginLeft: -12, marginTop: -4 },
   banner: { borderRadius: radius.card, flexDirection: 'row', gap: 10, padding: 14 },
   body: { flex: 1, gap: 2 },
+  dismiss: { marginRight: -6, marginTop: -4 },
   icon: { marginTop: 1 }
 })

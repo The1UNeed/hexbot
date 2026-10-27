@@ -424,6 +424,8 @@ impl App {
                 // `hexbot.sections.create` returns the bot's one chat; an older
                 // daemon makes a new section every time.
                 "one_chat": true,
+                // `session.recall` takes back the owner's latest message in a chat.
+                "recall": true,
                 "home": self.home
             })),
             "hexbot.rooms.stop" => {

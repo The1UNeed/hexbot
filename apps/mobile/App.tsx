@@ -36,6 +36,7 @@ import {
 import {
   Banner,
   Button,
+  confirm,
   Field,
   Form,
   Group,
@@ -281,6 +282,12 @@ function MobileApp() {
     } else setQuestion(null)
   }, [firstQuestionId, firstQuestion?.requestId])
   const route = mobile.route
+  const chatKey =
+    route?.kind === 'section' ? route.section.id : route?.kind === 'room' ? route.room.id : null
+  const openChat = useRef(chatKey)
+  openChat.current = chatKey
+  // The message whose stopped turn's error was closed: still yours to recall.
+  const [closedOn, setClosedOn] = useState<string | null>(null)
   useEffect(() => {
     setPanels([])
     setSwitcherOpen(false)
@@ -412,9 +419,8 @@ function MobileApp() {
       preview: chatPreview(b.name, mobile.sections, b.sections_recent),
       activity: b.status_detail?.text,
       status:
-        b.status === 'idle' && b.sections_recent?.some(
-          s => s.done_at && !s.archived_at && !purposeOf(s, mobile.sections)
-        )
+        b.status === 'idle' &&
+        b.sections_recent?.some(s => s.done_at && !s.archived_at && !purposeOf(s, mobile.sections))
           ? ('done' as const)
           : b.status,
       updatedAt: ms(b.last_activity_at)
@@ -518,10 +524,7 @@ function MobileApp() {
               id: r.id,
               name: r.name,
               members: membersOf(r),
-              status: urgent([
-                ...here.map(b => b.status),
-                r.turns?.length ? 'working' : undefined
-              ]),
+              status: urgent([...here.map(b => b.status), r.turns?.length ? 'working' : undefined]),
               activity: here.find(b => b.status === 'working')?.status_detail?.text,
               updatedAt: ms(r.last_activity_at)
             }
@@ -535,7 +538,9 @@ function MobileApp() {
                 face: faceOf(primaryBot),
                 preview: checkins.preview || null,
                 status:
-                  elsewhere(primaryBot)?.section?.id === checkins.id ? primaryBot.status : undefined,
+                  elsewhere(primaryBot)?.section?.id === checkins.id
+                    ? primaryBot.status
+                    : undefined,
                 updatedAt: ms(checkins.updated_at)
               }
             ]
@@ -769,6 +774,26 @@ function MobileApp() {
   }
   const renderMessageText: ChatScreenProps['renderMessageText'] = item =>
     item.text ? <MarkdownText text={item.text} user={item.role === 'user'} /> : null
+  // Your latest message in a bot's chat, while the bot is on it or after its turn
+  // stopped, with or without its closed error.
+  const recallId = (() => {
+    if (
+      route?.kind !== 'section' ||
+      route.section.peer_bot ||
+      route.section.purpose ||
+      !mobile.info?.recall
+    )
+      return null
+    const owner = botByName(route.bot.name) ?? route.bot
+    const last = mobile.chat.messages.findLast(m => m.role === 'user')
+    const stopped =
+      mobile.chat.busy ||
+      !!mobile.chat.error ||
+      mobile.chat.messages.at(-1) === last ||
+      last?.id === closedOn ||
+      (owner.status === 'stopped' && owner.status_detail?.section_id === route.section.id)
+    return last && stopped ? last.id : null
+  })()
   // Everything a conversation needs, for a bot thread and for the open room alike.
   const emotion = useFeeling(
     route?.kind === 'section' ? route.section.id : null,
@@ -802,6 +827,24 @@ function MobileApp() {
               ? 'Open this chat to send'
               : undefined,
     error: mobile.chat.error || mobile.error,
+    onDismissError: () => {
+      setClosedOn(mobile.chat.messages.findLast(m => m.role === 'user')?.id ?? null)
+      act(mobile.dismissError)
+    },
+    recallId,
+    onRecall: (id: string) =>
+      confirm(
+        'Recall',
+        `${route?.kind === 'section' ? route.bot.display_name : 'The bot'} forgets this message and its reply. The text goes back in the message box.`,
+        () =>
+          act(async () => {
+            const from = chatKey
+            const text = await mobile.recall(id)
+            // The message box belongs to the chat open now; another one keeps its own.
+            if (text && openChat.current === from)
+              setDraft(previous => (previous.trim() ? `${text}\n\n${previous}` : text))
+          })
+      ),
     onRetry: () =>
       act(async () => {
         await mobile.retry()

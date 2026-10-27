@@ -66,6 +66,9 @@ export interface ChatScreenProps {
 
   onApprove: (requestId: string, choice: ApprovalChoice) => void
   onMessageLongPress?: (id: string) => void
+  /** Your message Recall can take back; a long press on it recalls it. */
+  recallId?: string | null
+  onRecall?: (id: string) => void
 
   archived?: boolean
   onUnarchive?: () => void
@@ -76,6 +79,7 @@ export interface ChatScreenProps {
 
   error?: string | null
   onRetry?: () => void
+  onDismissError?: () => void
 
   /** Draw a message's text yourself, such as with a Markdown renderer. */
   renderMessageText?: (item: MessageItem) => ReactNode
@@ -199,6 +203,7 @@ function ChatBody(props: ChatScreenProps) {
     loadingEarlier,
     members,
     onLoadEarlier,
+    onDismissError,
     onRetry,
     title,
     waiting
@@ -280,6 +285,7 @@ function ChatBody(props: ChatScreenProps) {
             actionLabel={onRetry ? 'Try again' : undefined}
             message={error}
             onAction={onRetry}
+            onDismiss={onDismissError}
             testID="chat-error"
           />
         </View>
@@ -366,7 +372,11 @@ function TranscriptEntry({
           chat={{ face: room ? null : (props.face ?? { name: props.title }), room }}
           continued={run}
           item={entry}
-          onLongPress={props.onMessageLongPress}
+          onLongPress={
+            entry.id === props.recallId && props.onRecall
+              ? props.onRecall
+              : props.onMessageLongPress
+          }
           renderText={props.renderMessageText}
           showAuthor={room && entry.role !== 'user' && !run}
         />

@@ -60,6 +60,8 @@ export interface ChatMessage {
   createdAt?: number
   tools?: ChatTool[]
   attachments?: { name: string; uri?: string }[]
+  /** The key your message was sent with, which names it for Recall. */
+  inputId?: string
 }
 export interface PendingApproval {
   requestId: string

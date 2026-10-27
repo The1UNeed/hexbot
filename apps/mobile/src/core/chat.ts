@@ -62,7 +62,8 @@ export function historyMessages(raw: unknown[]): ChatMessage[] {
         messages.push({
           id: String(row.id ?? row.row_id ?? `history-${messages.length}`),
           role: row.role,
-          text
+          text,
+          ...(typeof row.input_id === 'string' && { inputId: row.input_id })
         })
     }
   }

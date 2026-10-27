@@ -296,6 +296,8 @@ export interface DaemonInfo {
    * daemon makes a new section every time.
    */
   one_chat?: true
+  /** True once `session.recall` takes back your latest message in a chat; absent on older daemons. */
+  recall?: true
   /** Input, run and assistant fragment correlation metadata; absent on older daemons. */
   transcript_identity?: boolean
   /** How the daemon can update itself when asked; absent on older daemons. */

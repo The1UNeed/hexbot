@@ -8,9 +8,12 @@ mod stop_tests;
 
 #[path = "runtime_admission_tests.rs"]
 mod admission_tests;
+
 #[cfg(unix)]
 #[path = "runtime_pi_file_tests.rs"]
 mod pi_file_tests;
+#[path = "runtime_recall_tests.rs"]
+mod recall_tests;
 
 fn setup() -> (common::TestHome, Arc<Runtime>, EventHub) {
     let home = common::TestHome::new();
