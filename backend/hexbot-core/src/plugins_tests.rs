@@ -250,6 +250,38 @@ fn a_switched_off_server_can_be_taken_from_one_of_its_bots() {
 }
 
 #[test]
+fn a_revoke_racing_a_keep_never_regives_a_switched_off_server() {
+    let home = setup();
+    for _ in 0..20 {
+        common::write_config(
+            home.path(),
+            &json!({"mcp_servers": {
+                "files": {"command": "node", "disabled": true, "bots": ["owl"]}
+            }}),
+        )
+        .unwrap();
+        let assign = |bots: Value| {
+            call(
+                home.path(),
+                "alice",
+                "hexbot.plugins.set_bots",
+                json!({"kind":"connector","id":"mcp:files","bots":bots}),
+            )
+        };
+        std::thread::scope(|scope| {
+            scope.spawn(|| assign(json!([])).unwrap());
+            scope.spawn(|| {
+                let _ = assign(json!(["owl"]));
+            });
+        });
+        assert_eq!(
+            common::read_config(home.path()).unwrap()["mcp_servers"]["files"]["bots"],
+            json!([])
+        );
+    }
+}
+
+#[test]
 fn a_skill_ready_through_a_bots_own_key_can_be_given_to_that_bot() {
     let home = setup();
     skill(

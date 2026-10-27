@@ -195,21 +195,30 @@ fn set_bots(home: &Path, caller: &str, p: &Value) -> Result<Value> {
     {
         blocked |= !ready_for(bot)?;
     }
-    if blocked {
-        return Err(Error::new(
+    let not_set_up = || {
+        Error::new(
             4209,
             format!(
                 "Set up {} before giving it to a bot.",
                 current["name"].as_str().unwrap_or(id)
             ),
-        ));
+        )
+    };
+    if blocked {
+        return Err(not_set_up());
     }
     match kind {
         "connector" if id.starts_with("mcp:") => {
             let server = &id["mcp:".len()..];
             connectors::change_mcp_bots(home, server, |bots| {
+                // Checked again on the list as it is under the lock, so a
+                // concurrent change can't turn keeping a bot into giving it.
+                if current["ready"] != true && own.iter().any(|b| wanted(b) && !bots.contains(b)) {
+                    return Err(not_set_up());
+                }
                 bots.retain(|b| !own.contains(b));
                 bots.extend(chosen.iter().filter(|b| own.contains(b)).cloned());
+                Ok(())
             })?;
         }
         "connector" => {

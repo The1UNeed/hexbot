@@ -249,7 +249,10 @@ pub fn mcp_servers(home: &Path, bot: &str) -> Result<Value> {
 /// Give a daemon-level server to exactly `bots`, and drop any copy of it a
 /// bot profile still holds.
 pub(crate) fn assign_mcp(home: &Path, server: &str, bots: &[String]) -> Result<()> {
-    change_mcp_bots(home, server, |list| *list = bots.to_vec())
+    change_mcp_bots(home, server, |list| {
+        *list = bots.to_vec();
+        Ok(())
+    })
 }
 /// Change a daemon-level server's `bots` list from read to write under the
 /// config lock, so concurrent changes keep each other's bots. The stored list
@@ -258,7 +261,7 @@ pub(crate) fn assign_mcp(home: &Path, server: &str, bots: &[String]) -> Result<(
 pub(crate) fn change_mcp_bots(
     home: &Path,
     server: &str,
-    change: impl FnOnce(&mut Vec<String>),
+    change: impl FnOnce(&mut Vec<String>) -> Result<()>,
 ) -> Result<()> {
     common::update_config(home, |config| {
         let entry = config["mcp_servers"]
@@ -270,7 +273,7 @@ pub(crate) fn change_mcp_bots(
         } else {
             assigned_bots(home, server)?
         };
-        change(&mut bots);
+        change(&mut bots)?;
         bots.sort();
         bots.dedup();
         entry["bots"] = json!(bots);
@@ -333,7 +336,10 @@ pub(crate) fn forget_bot(home: &Path, bot: &str) -> Result<()> {
         if let Some(bots) = entry["bots"].as_array()
             && bots.iter().any(|b| b == bot)
         {
-            change_mcp_bots(home, name, |bots| bots.retain(|b| b != bot))?;
+            change_mcp_bots(home, name, |bots| {
+                bots.retain(|b| b != bot);
+                Ok(())
+            })?;
         }
     }
     Ok(())
@@ -435,6 +441,7 @@ pub(crate) fn set_enabled(home: &Path, bot: &str, id: &str, on: bool) -> Result<
             if on {
                 bots.push(bot.to_string());
             }
+            Ok(())
         });
     }
     set_toolsets(home, bot, id, on)
