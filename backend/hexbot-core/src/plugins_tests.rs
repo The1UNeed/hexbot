@@ -397,6 +397,57 @@ fn saving_a_bots_skills_keeps_its_choice_for_one_waiting_for_setup() {
 }
 
 #[test]
+fn taking_a_capability_keeps_other_tools_waiting_for_setup() {
+    let home = setup();
+    common::write_config(home.path(), &json!({"browser":{"backend":"off"}})).unwrap();
+    common::write_config(
+        &home.path().join("profiles/owl"),
+        &json!({"tools":{"enabled_toolsets":["browser","computer_use","terminal"]}}),
+    )
+    .unwrap();
+    call(
+        home.path(),
+        "alice",
+        "hexbot.plugins.set_bots",
+        json!({"kind":"capability","id":"computer_use","bots":[]}),
+    )
+    .unwrap();
+    assert_eq!(
+        connectors::toolsets(home.path(), "owl").unwrap(),
+        ["browser", "terminal"]
+    );
+}
+
+#[test]
+fn a_bots_list_shows_its_own_view_of_each_skill() {
+    let home = setup();
+    skill(
+        home.path(),
+        "needs-key",
+        "prerequisites:\n  env_vars: [HEXBOT_TEST_OWL_ONLY_KEY]\n",
+    );
+    skill(home.path(), "plain", "");
+    fs::write(
+        home.path().join("profiles/owl/.env"),
+        "HEXBOT_TEST_OWL_ONLY_KEY=set\n",
+    )
+    .unwrap();
+    crate::skills::set_enabled(home.path(), Some("owl"), "plain", false).unwrap();
+    let listed = call(
+        home.path(),
+        "alice",
+        "hexbot.plugins.list",
+        json!({"bot":"owl"}),
+    )
+    .unwrap();
+    assert_eq!(row(&listed, "skills", "needs-key")["ready"], true);
+    let plain = row(&listed, "skills", "plain");
+    assert_eq!(plain["enabled_for_bot"], false);
+    assert_eq!(plain["enabled"], false);
+    assert_eq!(plain["bots"], json!(["cat"]));
+}
+
+#[test]
 fn a_capability_that_is_not_set_up_cannot_be_given() {
     let home = setup();
     common::write_config(

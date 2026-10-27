@@ -3,7 +3,7 @@
 //! the skill's own prerequisites, the program a capability runs); this module
 //! lists what is ready and assigns it to bots in one call.
 use crate::{
-    Error, Result, catalog,
+    Error, Result,
     common::{self, *},
     connectors, db, native_tools, skills,
 };
@@ -84,8 +84,14 @@ fn skill_rows(home: &Path, own: &[String], bot: Option<&str>) -> Result<Vec<Valu
         .iter()
         .map(|b| Ok((b.as_str(), skills::resolve(home, Some(b))?)))
         .collect::<Result<Vec<_>>>()?;
+    // With a bot, each row is that bot's own view: its grant, its private
+    // skills and the keys in its `.env`.
+    let listed = match bot.and_then(|b| per_bot.iter().find(|(name, _)| *name == b)) {
+        Some((_, list)) => list.clone(),
+        None => skills::resolve(home, None)?,
+    };
     let mut rows = vec![];
-    for skill in skills::resolve(home, None)? {
+    for skill in listed {
         let given = per_bot
             .iter()
             .filter(|(_, list)| {
@@ -99,9 +105,6 @@ fn skill_rows(home: &Path, own: &[String], bot: Option<&str>) -> Result<Vec<Valu
         row["id"] = json!(skill.name);
         row["bots"] = json!(given);
         row.as_object_mut().unwrap().remove("path");
-        if let Some(bot) = bot {
-            row["enabled_for_bot"] = json!(given.contains(&bot));
-        }
         rows.push(row);
     }
     Ok(rows)
@@ -212,23 +215,18 @@ fn set_bots(home: &Path, caller: &str, p: &Value) -> Result<Value> {
             }
         }
         _ => {
+            let toolset = CAPABILITIES
+                .iter()
+                .find(|(tool, ..)| *tool == id)
+                .map(|(_, toolset, ..)| *toolset)
+                .unwrap_or(id);
             for bot in &own {
                 if wanted(bot) == current_bots.contains(bot) {
                     continue;
                 }
-                let shaped = catalog::bot(home, caller, bot)?;
-                let mut tools = strings(&shaped["tools"]);
-                tools.retain(|t| t != id);
-                if wanted(bot) {
-                    tools.push(id.to_string());
-                }
-                catalog::call(
-                    home,
-                    caller,
-                    "hexbot.bots.update",
-                    &json!({"name": bot, "tools": tools}),
-                )
-                .expect("bots.update is a catalog method")?;
+                // Only this capability's toolset changes; other granted tools
+                // stay on even while they wait for setup.
+                connectors::switch_toolsets(home, bot, &[toolset.to_string()], wanted(bot))?;
             }
         }
     }

@@ -432,11 +432,14 @@ pub(crate) fn set_enabled(home: &Path, bot: &str, id: &str, on: bool) -> Result<
 }
 /// Turn a catalog connector's toolsets on or off for one bot.
 pub(crate) fn set_toolsets(home: &Path, bot: &str, id: &str, on: bool) -> Result<()> {
+    switch_toolsets(home, bot, &strings(&spec(id)?["toolsets"]), on)
+}
+/// Turn toolsets on or off for one bot, leaving its other toolsets as they are.
+pub(crate) fn switch_toolsets(home: &Path, bot: &str, sets: &[String], on: bool) -> Result<()> {
     let path = profile(home, bot)?;
     common::update_config(&path, |config| {
-        let s = spec(id)?;
         let mut tools = toolsets(home, bot)?.into_iter().collect::<BTreeSet<_>>();
-        for t in strings(&s["toolsets"]) {
+        for t in sets.iter().cloned() {
             if on {
                 tools.insert(t);
             } else {
