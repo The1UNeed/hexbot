@@ -682,10 +682,10 @@ it('keeps a known chat open when another bot\'s lookup overtakes its check', asy
   await waitFor(() => expect(state.lookups).toHaveLength(1))
   // A click on a bot not opened yet asks for its chat meanwhile.
   void useSections.getState().chat('yak')
-  await act(async () => state.release())
+  await act(async () => state.lookups[0]!.resolve({ section: section('moved') }))
   expect(screen.queryByText('Choose a chat to continue.')).toBeNull()
-  expect(screen.getByText('canonical history')).toBeVisible()
-  expect(view.router.state.location.pathname).toBe('/b/owl/s/canonical')
+  // The check still counts: the daemon named another chat, so the view moves.
+  await waitFor(() => expect(view.router.state.location.pathname).toBe('/b/owl/s/moved'))
 })
 
 it('a lookup from before a daemon restart cannot enable the kept composer', async () => {

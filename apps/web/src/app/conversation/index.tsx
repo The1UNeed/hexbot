@@ -1383,17 +1383,16 @@ function BotConversation() {
         // A teammate thread or a section with its own purpose, such as the
         // Check-ins from before the heartbeat, opens as itself; anything else is the chat.
         const chat =
-          row?.peer_bot || row?.purpose ? row : await sectionsActions().chat(botName, current)
+          row?.peer_bot || row?.purpose
+            ? row
+            : await sectionsActions().chat(botName, current, known)
 
         if (!current()) {
           return
         }
 
-        // A check another lookup overtook leaves a known chat open.
         if (!chat) {
-          if (!known) {
-            setOpenFailure({ section: sectionId, message: 'Choose a chat to continue.' })
-          }
+          setOpenFailure({ section: sectionId, message: 'Choose a chat to continue.' })
 
           return
         }

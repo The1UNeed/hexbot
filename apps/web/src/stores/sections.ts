@@ -98,9 +98,10 @@ export interface SectionsState {
   restoreHistory: () => Promise<void>
   /**
    * A bot's one chat with you, made on first use. On an older daemon the
-   * user may be asked to pick it; null when they pick none.
+   * user may be asked to pick it; null when they pick none. A `check` of a
+   * chat already shown neither cancels nor yields to other lookups.
    */
-  chat: (bot: string, current?: () => boolean) => Promise<null | Section>
+  chat: (bot: string, current?: () => boolean, check?: boolean) => Promise<null | Section>
   /** The choice `chat` is waiting on, if any. */
   choosing: ChatChoice | null
   /** Live ids are process-scoped; a new daemon epoch invalidates them all. */
@@ -768,13 +769,16 @@ export const useSections = create<SectionsState>((set, get) => ({
     await get().refresh()
   },
 
-  async chat(bot, active = () => true) {
-    get().choosing?.pick(null)
-    const generation = ++chatGeneration
+  async chat(bot, active = () => true, check = false) {
+    if (!check) {
+      get().choosing?.pick(null)
+    }
+
+    const generation = check ? chatGeneration : ++chatGeneration
     const { target, epoch } = useConnection.getState()
 
     const current = () =>
-      generation === chatGeneration &&
+      (check || generation === chatGeneration) &&
       target === useConnection.getState().target &&
       epoch === useConnection.getState().epoch &&
       active()
@@ -809,7 +813,9 @@ export const useSections = create<SectionsState>((set, get) => ({
 
     const section = modern
       ? (await sectionsCreate(bot)).section
-      : await olderChat(bot, ask, current)
+      : check
+        ? null
+        : await olderChat(bot, ask, current)
 
     if (!section || !current()) {
       return null
