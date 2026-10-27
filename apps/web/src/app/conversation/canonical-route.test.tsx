@@ -585,6 +585,7 @@ function holdLookups() {
     hold: false,
     live: 'canonical',
     lookups: [] as ReturnType<typeof deferred>[],
+    bots: [] as unknown[],
     release() {
       state.hold = false
       state.lookups.forEach(lookup => lookup.resolve({ section: canonical }))
@@ -595,6 +596,7 @@ function holdLookups() {
     if (method === 'hexbot.sections.create' && state.hold) {
       const lookup = deferred()
       state.lookups.push(lookup)
+      state.bots.push(input.bot)
 
       return lookup.promise
     }
@@ -699,28 +701,49 @@ it("keeps a known chat open when another bot's lookup overtakes its check", asyn
   await waitFor(() => expect(view.router.state.location.pathname).toBe('/b/owl/s/moved'))
 })
 
-it.each(['opens', 'fails'] as const)(
-  'a check that finds another chat lets a waiting bot click go first when it %s',
-  async outcome => {
+it.each([
+  ['opens', 'after'],
+  ['fails', 'after'],
+  ['opens', 'before']
+] as const)(
+  'a check that finds another chat lets a waiting bot click go first when it %s, clicked %s the check',
+  async (outcome, clicked) => {
     const state = holdLookups()
     const view = await mount('/b/owl/s/canonical')
     expect(await screen.findByText('canonical history')).toBeVisible()
     state.hold = true
-    await act(async () => {
-      view.router.history.push('/b/owl/s/canonical')
-    })
-    await waitFor(() => expect(state.lookups).toHaveLength(1))
+    let yak!: Promise<null | Section>
 
-    const yak = selectChat('yak').catch(() => null)
-    await waitFor(() => expect(state.lookups).toHaveLength(2))
+    if (clicked === 'before') {
+      // A reconnect checks the chat again while the click waits.
+      yak = selectChat('yak').catch(() => null)
+      await waitFor(() => expect(state.bots).toContain('yak'))
+      await act(async () => useConnection.getState().setStatus('reconnecting'))
+      await act(async () => useConnection.getState().setStatus('connected'))
+    } else {
+      await act(async () => {
+        view.router.history.push('/b/owl/s/canonical')
+      })
+      await waitFor(() => expect(state.bots).toContain('owl'))
+      yak = selectChat('yak').catch(() => null)
+    }
+
+    await waitFor(() => expect(state.bots).toEqual(expect.arrayContaining(['owl', 'yak'])))
+    const click = state.lookups[state.bots.indexOf('yak')]!
     // Owl's check names another chat while Yak's lookup still waits.
-    await act(async () => state.lookups[0]!.resolve({ section: section('moved') }))
+    await act(async () =>
+      state.lookups.forEach((lookup, index) => {
+        if (state.bots[index] === 'owl') {
+          lookup.resolve({ section: section('moved') })
+        }
+      })
+    )
     expect(view.router.state.location.pathname).toBe('/b/owl/s/canonical')
     await act(async () => {
       if (outcome === 'opens') {
-        state.lookups[1]!.resolve({ section: section('yak-chat', { bot: 'yak' }) })
+        click.resolve({ section: section('yak-chat', { bot: 'yak' }) })
       } else {
-        state.lookups[1]!.reject(new Error('lost'))
+        click.reject(new Error('lost'))
       }
     })
     const chat = await yak

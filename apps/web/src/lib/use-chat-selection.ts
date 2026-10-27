@@ -6,14 +6,14 @@ import { sectionsActions } from '../stores/sections'
 
 import type { DaemonInfo } from './types'
 
-/** How many bot chat lookups clicks have started. */
-let started = 0
-/** Whether the latest of them found a chat its caller opens. */
+/** How many bot chat lookups clicks have finished. */
+let settled = 0
+/** Whether the latest click found a chat its caller opens, once it finishes. */
 let latest: Promise<boolean> = Promise.resolve(false)
 
-export const selectionsStarted = () => started
+export const selectionsSettled = () => settled
 
-/** Once no click waits for a bot's chat: whether one started after `since` found a chat to open. */
+/** Once no click waits for a bot's chat: whether one finished after `since` and found a chat to open. */
 export async function openedElsewhere(since: number) {
   let found = false
 
@@ -22,7 +22,7 @@ export async function openedElsewhere(since: number) {
     found = await latest
   }
 
-  return started !== since && found
+  return settled !== since && found
 }
 
 /** A lookup belongs to this view until another selection, navigation, or daemon wins. */
@@ -121,7 +121,6 @@ export function useChatSelection() {
     async (bot: string) => {
       const current = startSelection()
       setAsking(bot)
-      started++
       let found = false
       let settle!: (found: boolean) => void
       latest = new Promise(resolve => (settle = resolve))
@@ -141,6 +140,7 @@ export function useChatSelection() {
           throw error
         }
       } finally {
+        settled++
         settle(found)
       }
 
