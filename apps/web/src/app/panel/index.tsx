@@ -324,7 +324,7 @@ export function ProfilePanel(): React.JSX.Element {
         >
           {tab === 'details' ? <DetailsTab bot={bot} onSave={save} /> : null}
           {tab === 'library' ? <LibraryTab messages={messages} name={bot.display_name} /> : null}
-          {tab === 'computer' ? <ComputerTab bot={bot} messages={messages} onSave={save} /> : null}
+          {tab === 'computer' ? <ComputerTab bot={bot} onSave={save} /> : null}
         </div>
       </div>
     </div>

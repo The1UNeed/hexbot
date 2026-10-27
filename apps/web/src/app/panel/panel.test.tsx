@@ -123,7 +123,7 @@ function seed(calls: ToolCall[], streaming: boolean) {
 }
 
 describe('ProfilePanel', () => {
-  it('follows a running step on Computer and in the status under the name', () => {
+  it('names the running step under the name, and lists no steps on Computer', () => {
     seed(
       [
         call({ toolId: 'a' }),
@@ -138,20 +138,17 @@ describe('ProfilePanel', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Scout is running a command' }))
     expect(screen.getByRole('tab', { name: 'Computer' })).toHaveAttribute('aria-selected', 'true')
 
-    // Every call is listed, housekeeping included, newest first.
-    const steps = screen.getByTestId('computer-steps')
-    expect(steps.querySelectorAll('li')).toHaveLength(3)
-    expect(steps.querySelector('li')).toHaveTextContent('Running ls')
+    // Computer shows no list of steps.
+    expect(screen.queryByTestId('computer-steps')).toBeNull()
+    expect(screen.queryByText('Running ls')).toBeNull()
   })
 
-  it('says how to fill an empty Library and Computer', () => {
+  it('says how to fill an empty Library', () => {
     seed([], false)
     render(<ProfilePanel />)
 
     fireEvent.click(screen.getByRole('tab', { name: 'Library' }))
     expect(screen.getByText('Images and files you share with Scout show up here.')).toBeVisible()
-    fireEvent.click(screen.getByRole('tab', { name: 'Computer' }))
-    expect(screen.getByText(/each step shows up here/)).toBeVisible()
   })
 
   it("shows the bots' computer live, with each bot's cursor, and hands it over", async () => {
@@ -176,7 +173,6 @@ describe('ProfilePanel', () => {
     api.computerControl.mockResolvedValue({ ...running, control: 'user' })
     useComputer.setState({ error: null, status: null })
     useConnection.setState({ target: { kind: 'local', origin: 'http://127.0.0.1:9119' } })
-    // Computer actions are not steps: the screen shows them.
     seed(
       [
         call({ name: 'computer_use', summary: 'click', toolId: 'a' }),
@@ -192,7 +188,6 @@ describe('ProfilePanel', () => {
     })
     const { unmount } = render(<ProfilePanel />)
     fireEvent.click(screen.getByRole('tab', { name: 'Computer' }))
-    expect(screen.getByTestId('computer-steps').querySelectorAll('li')).toHaveLength(1)
 
     // A small screen that only watches, through the daemon, without sound.
     // Its size and frame rate follow the connection.
