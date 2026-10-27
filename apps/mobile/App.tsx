@@ -939,10 +939,6 @@ function MobileApp() {
           })
         }
         onConnectSignIn={() => act(signIn)}
-        onDemo={() => {
-          setDemo(true)
-          setAddDaemon(false)
-        }}
         pending={
           mobile.loading
             ? 'pair'
