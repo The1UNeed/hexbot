@@ -517,6 +517,10 @@ export function UsageSettings() {
   )
 }
 
+type ProviderRowState = { busy: boolean; open: boolean; result: null | string }
+
+const idleRow: ProviderRowState = { busy: false, open: false, result: null }
+
 export function ProvidersSettings(): React.JSX.Element {
   const providers = useSettings(state => state.providers)
   const refresh = useSettings(state => state.refreshProviders)
@@ -533,33 +537,37 @@ export function ProvidersSettings(): React.JSX.Element {
     provider => !needle || `${provider.label} ${provider.id}`.toLowerCase().includes(needle)
   )
 
-  // The groups are fixed when the page opens: a row that gets its first key
-  // stays where it is, so its open editor and test result are not remounted.
-  const [connectedIds, setConnectedIds] = useState<null | Set<string>>(null)
-  useEffect(() => {
-    if (!connectedIds && providers.length) {
-      setConnectedIds(
-        new Set(providers.filter(item => item.configured === true).map(item => item.id))
-      )
-    }
-  }, [connectedIds, providers])
+  // A row moves to Connected as soon as it connects. Its open editor, pending
+  // request and last result live here, so they survive the move between groups.
+  const [rows, setRows] = useState<Record<string, ProviderRowState>>({})
 
-  const isConnected = (provider: Provider) =>
-    connectedIds ? connectedIds.has(provider.id) : provider.configured === true
+  const rowState = (id: string) => rows[id] ?? idleRow
 
-  const connected = visible.filter(isConnected)
-  const rest = visible.filter(provider => !isConnected(provider))
+  const updateRow = (id: string, patch: Partial<ProviderRowState>) =>
+    setRows(current => ({ ...current, [id]: { ...(current[id] ?? idleRow), ...patch } }))
+
+  const connected = visible.filter(provider => provider.configured === true)
+  const rest = visible.filter(provider => provider.configured !== true)
 
   const row = (provider: Provider) =>
     isSubscription(provider) ? (
       <SubscriptionRow
         clearKey={clearKey}
         key={provider.id}
+        open={rowState(provider.id).open}
         provider={provider}
         refresh={refresh}
+        setOpen={open => updateRow(provider.id, { open })}
       />
     ) : (
-      <ProviderRow clearKey={clearKey} key={provider.id} provider={provider} setKey={setKey} />
+      <ProviderRow
+        clearKey={clearKey}
+        key={provider.id}
+        provider={provider}
+        setKey={setKey}
+        state={rowState(provider.id)}
+        update={patch => updateRow(provider.id, patch)}
+      />
     )
 
   return (
@@ -645,15 +653,17 @@ function ExpandableRow({
 
 function SubscriptionRow({
   clearKey,
+  open,
   provider,
-  refresh
+  refresh,
+  setOpen
 }: {
   clearKey: (provider: string) => Promise<void>
+  open: boolean
   provider: Provider
   refresh: () => Promise<void>
+  setOpen: (open: boolean) => void
 }) {
-  const [open, setOpen] = useState(false)
-
   return (
     <ExpandableRow
       control={
@@ -669,7 +679,7 @@ function SubscriptionRow({
         provider.configured ? 'Subscription' : 'Subscription, sign in through your browser'
       }
       expanded={open}
-      onToggle={() => setOpen(value => !value)}
+      onToggle={() => setOpen(!open)}
       title={provider.label}
     >
       {provider.configured ? (
@@ -758,16 +768,21 @@ function DefaultModels() {
 function ProviderRow({
   clearKey,
   provider,
-  setKey
+  setKey,
+  state,
+  update
 }: {
   clearKey: (provider: string) => Promise<void>
   provider: Provider
   setKey: (provider: string, key: string) => Promise<void>
+  state: ProviderRowState
+  update: (patch: Partial<ProviderRowState>) => void
 }) {
-  const [open, setOpen] = useState(false)
   const [key, setDraft] = useState('')
-  const [busy, setBusy] = useState(false)
-  const [result, setResult] = useState<string | null>(null)
+  const { busy, open, result } = state
+  const setBusy = (value: boolean) => update({ busy: value })
+  const setOpen = (value: boolean) => update({ open: value })
+  const setResult = (value: null | string) => update({ result: value })
 
   const save = async () => {
     setBusy(true)
@@ -808,7 +823,7 @@ function ProviderRow({
       <ExpandableRow
         description="Configured on the daemon"
         expanded={open}
-        onToggle={() => setOpen(value => !value)}
+        onToggle={() => setOpen(!open)}
         title={provider.label}
       >
         <ProviderPanel onConfigured={() => Promise.resolve()} provider={provider} />
@@ -829,7 +844,7 @@ function ProviderRow({
       }
       description={provider.configured ? 'API key saved' : 'Needs an API key'}
       expanded={open}
-      onToggle={() => setOpen(value => !value)}
+      onToggle={() => setOpen(!open)}
       title={provider.label}
     >
       <form
