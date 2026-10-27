@@ -119,6 +119,21 @@ describe('mobile navigation while a bot lookup waits', () => {
     })
     expect(hook.result.current.opening).toBe(false)
   })
+  it('opens a chat the daemon named on this connection without waiting for it again', async () => {
+    const hook = await connected()
+    await act(async () => { await hook.result.current.openSection(bot) })
+    await act(async () => { await hook.result.current.openRoom(room) })
+    const held = pause('hexbot.sections.create')
+    await act(async () => { await hook.result.current.openSection(bot) })
+    expect(hook.result.current.route).toMatchObject({ kind: 'section', section: { id: 'owl-chat' } })
+    expect(state.request).toHaveBeenCalledWith('hexbot.sections.open', { id: 'owl-chat' })
+    // The daemon may still name another chat; the tap moves there.
+    await act(async () => {
+      held.resolve({ section: section('moved') })
+      await held.promise
+    })
+    await vi.waitFor(() => expect(hook.result.current.route).toMatchObject({ section: { id: 'moved' } }))
+  })
   it('keeps the later room when canonical resolution completes', async () => {
     const hook = await connected()
     const held = pause('hexbot.sections.create')

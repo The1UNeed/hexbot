@@ -37,6 +37,7 @@ import { roomStatus, roomUnread, useRoomList, useRooms } from '../../stores/room
 import {
   botStatusWithLive,
   introduceBot,
+  knownChat,
   type LiveSections,
   liveSectionsOf,
   sectionsActions,
@@ -298,6 +299,8 @@ export function RosterColumn() {
   }>({ model: '', name: '', provider: '', reasoning: null })
 
   const [newBotError, setNewBotError] = useState<null | string>(null)
+  // The bot whose chat is being asked for, shown as chosen until it opens.
+  const [asking, setAsking] = useState<null | string>(null)
   const [creatingBot, setCreatingBot] = useState(false)
   const [showModel, setShowModel] = useState(false)
 
@@ -420,12 +423,29 @@ export function RosterColumn() {
   /**
    * The bot's one chat, as the daemon names it: this window's list cannot
    * tell one recovery set aside. An older daemon's may be picked by the user.
+   * One it named on this connection opens at once; the chat view asks again.
    */
   const openChat = async (bot: string) => {
-    const chat = await selectChat(bot)
+    const known = knownChat(bot)
 
-    if (chat) {
-      open(bot, chat.id)
+    if (known) {
+      cancelChat()
+      setAsking(null)
+      open(bot, known.id)
+
+      return
+    }
+
+    setAsking(bot)
+
+    try {
+      const chat = await selectChat(bot)
+
+      if (chat) {
+        open(bot, chat.id)
+      }
+    } finally {
+      setAsking(current => (current === bot ? null : current))
     }
   }
 
@@ -575,7 +595,11 @@ export function RosterColumn() {
             />
           ) : (
             <BotRow
-              active={Boolean(params.section) && params.bot === (entry.item as Bot).name}
+              active={
+                asking
+                  ? asking === (entry.item as Bot).name
+                  : Boolean(params.section) && params.bot === (entry.item as Bot).name
+              }
               bot={entry.item as Bot}
               draft={Object.values(sectionMap).some(
                 section => section.bot === (entry.item as Bot).name && Boolean(drafts[section.id])

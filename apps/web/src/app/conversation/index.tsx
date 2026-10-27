@@ -50,6 +50,7 @@ import { connectorsActions } from '../../stores/connectors'
 import { draftsActions } from '../../stores/drafts'
 import { useConversationFeelings, useEmotion } from '../../stores/emotions'
 import {
+  knownChat,
   liveSectionsOf,
   sectionsActions,
   sectionStatusOf,
@@ -1353,6 +1354,12 @@ function BotConversation() {
       destination?.bot === botName &&
       destination?.section === sectionId
     ) {
+      // The chat the daemon named on this connection opens at once; the check
+      // below still runs and moves to another chat if the daemon names one.
+      if (knownChat(botName)?.id === sectionId) {
+        setResolved({ entry, peer: false })
+      }
+
       void (async () => {
         // A bookmark can name an owner chat that survived a conservative upgrade,
         // or an explicit teammate thread. Missing metadata must be read before

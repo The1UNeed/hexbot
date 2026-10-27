@@ -302,6 +302,11 @@ const proving = new WeakSet<object>()
 const picked = new Map<string, string>()
 let pickedDaemon: DaemonInfo | null = null
 let chatGeneration = 0
+/**
+ * Each bot's chat as the daemon last named it on this connection. A view
+ * shows it at once and asks the daemon again, which may name another.
+ */
+const named = new Map<string, string>()
 
 const differentDaemon = (daemon: DaemonInfo) =>
   pickedDaemon &&
@@ -587,6 +592,13 @@ export const useSections = create<SectionsState>((set, get) => ({
 
           authority.finish(id, ticket, 'gone')
           removals.set(id, (removals.get(id) ?? 0) + 1)
+
+          for (const [bot, chat] of named) {
+            if (chat === id) {
+              named.delete(bot)
+            }
+          }
+
           set(state => ({ cachedMessages: withoutKey(state.cachedMessages, id) }))
           await forgetHistory(scope, id)
         }
@@ -807,6 +819,10 @@ export const useSections = create<SectionsState>((set, get) => ({
       set(state => mergeSection(state, section))
     }
 
+    if (modern) {
+      named.set(bot, section.id)
+    }
+
     return section
   },
 
@@ -880,6 +896,7 @@ useConnection.subscribe((next, previous) => {
   if (changed || identityChanged || (!next.daemon && previous.daemon)) {
     useSections.getState().choosing?.pick(null)
     chatGeneration++
+    named.clear()
   }
 
   // With no target or process identity, a reconnect cannot prove this is the
@@ -906,6 +923,14 @@ useConnection.subscribe((next, previous) => {
 
 export function sectionsActions(): SectionsState {
   return useSections.getState()
+}
+
+/** The bot's chat as the daemon last named it on this connection, while still listed. */
+export function knownChat(bot: string): null | Section {
+  const id = named.get(bot)
+  const section = id ? useSections.getState().byId[id] : undefined
+
+  return section?.bot === bot && !section.archived_at ? section : null
 }
 
 export function selectSectionsForBot(bot: null | string) {

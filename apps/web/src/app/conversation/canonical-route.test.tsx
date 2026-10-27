@@ -599,7 +599,7 @@ function holdLookups() {
   return state
 }
 
-it.each(['connection drop', 'daemon restart', 'same URL'] as const)(
+it.each(['connection drop', 'daemon restart'] as const)(
   'keeps staged files on the validated owner chat across a %s',
   async action => {
     const state = holdLookups()
@@ -621,12 +621,6 @@ it.each(['connection drop', 'daemon restart', 'same URL'] as const)(
         useConnection.getState().setEpoch('second')
       })
       await act(async () => useConnection.getState().setDaemon({ one_chat: true } as DaemonInfo))
-    }
-
-    if (action === 'same URL') {
-      await act(async () => {
-        view.router.history.push('/b/owl/s/canonical')
-      })
     }
 
     await waitFor(() => expect(state.lookups.length).toBeGreaterThan(0))
@@ -658,6 +652,24 @@ it.each(['connection drop', 'daemon restart', 'same URL'] as const)(
     })
   }
 )
+
+it('opens a chat the daemon named on this connection at once, while it is checked again', async () => {
+  const state = holdLookups()
+  const view = await mount('/b/owl/s/canonical')
+  await stageOwnerFile(view)
+  state.hold = true
+  await act(async () => {
+    view.router.history.push('/b/owl/s/canonical')
+  })
+  await waitFor(() => expect(state.lookups).toHaveLength(1))
+  expect(screen.getByText('canonical history')).toBeVisible()
+  expect(screen.getByRole('textbox', { name: 'Message' })).toBeEnabled()
+  expect(stagedChip()).toBeVisible()
+
+  // The daemon may still name another chat; the view moves there.
+  await act(async () => state.lookups[0]!.resolve({ section: section('moved') }))
+  await waitFor(() => expect(view.router.state.location.pathname).toBe('/b/owl/s/moved'))
+})
 
 it('a lookup from before a daemon restart cannot enable the kept composer', async () => {
   const state = holdLookups()
