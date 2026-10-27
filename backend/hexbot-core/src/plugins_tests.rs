@@ -227,6 +227,55 @@ fn a_switched_off_server_keeps_who_it_is_given_to() {
 }
 
 #[test]
+fn a_switched_off_server_can_be_taken_from_one_of_its_bots() {
+    let home = setup();
+    common::write_config(
+        home.path(),
+        &json!({"mcp_servers": {
+            "files": {"command": "node", "disabled": true, "bots": ["cat", "owl"]}
+        }}),
+    )
+    .unwrap();
+    call(
+        home.path(),
+        "alice",
+        "hexbot.plugins.set_bots",
+        json!({"kind":"connector","id":"mcp:files","bots":["owl"]}),
+    )
+    .unwrap();
+    assert_eq!(
+        common::read_config(home.path()).unwrap()["mcp_servers"]["files"]["bots"],
+        json!(["owl"])
+    );
+}
+
+#[test]
+fn a_skill_ready_through_a_bots_own_key_can_be_given_to_that_bot() {
+    let home = setup();
+    skill(
+        home.path(),
+        "needs-key",
+        "prerequisites:\n  env_vars: [HEXBOT_TEST_OWL_ONLY_KEY]\n",
+    );
+    fs::write(
+        home.path().join("profiles/owl/.env"),
+        "HEXBOT_TEST_OWL_ONLY_KEY=set\n",
+    )
+    .unwrap();
+    let assign = |bots: Value| {
+        call(
+            home.path(),
+            "alice",
+            "hexbot.plugins.set_bots",
+            json!({"kind":"skill","id":"needs-key","bots":bots}),
+        )
+    };
+    assign(json!([])).unwrap();
+    assign(json!(["owl"])).unwrap();
+    assert_eq!(assign(json!(["owl", "cat"])).unwrap_err().code, 4209);
+}
+
+#[test]
 fn bots_given_a_server_at_the_same_time_all_keep_it() {
     let home = setup();
     let names = (0..12).map(|i| format!("bot{i}")).collect::<Vec<_>>();

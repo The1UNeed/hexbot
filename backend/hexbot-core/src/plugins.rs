@@ -169,11 +169,33 @@ fn set_bots(home: &Path, caller: &str, p: &Value) -> Result<Value> {
     let id = required(p, "id")?;
     let current = find(home, caller, kind, id)?;
     let own = own_bots(home, caller)?;
-    let current_bots = strings(&current["bots"]);
+    // A switched-off server is still given to the bots on its stored list.
+    let current_bots = match id.strip_prefix("mcp:").filter(|_| kind == "connector") {
+        Some(server) => connectors::mcp_bots(home, server)?
+            .into_iter()
+            .filter(|b| own.contains(b))
+            .collect(),
+        None => strings(&current["bots"]),
+    };
     let chosen = connectors::chosen_bots(home, caller, &current_bots, &p["bots"])?;
     let wanted = |bot: &str| chosen.iter().any(|b| b == bot);
-    let adds = own.iter().any(|b| wanted(b) && !current_bots.contains(b));
-    if adds && current["ready"] != true {
+    // A skill can be ready for one bot through a key in that bot's `.env`.
+    let ready_for = |bot: &str| -> Result<bool> {
+        if kind == "skill" {
+            return Ok(skills::resolve(home, Some(bot))?
+                .iter()
+                .any(|s| s.name == id && s.ready));
+        }
+        Ok(current["ready"] == true)
+    };
+    let mut blocked = false;
+    for bot in own
+        .iter()
+        .filter(|b| wanted(b) && !current_bots.contains(b))
+    {
+        blocked |= !ready_for(bot)?;
+    }
+    if blocked {
         return Err(Error::new(
             4209,
             format!(

@@ -291,6 +291,15 @@ fn forget_profile_copies(home: &Path, server: &str) -> Result<()> {
     }
     Ok(())
 }
+/// The bots a daemon-level server is given to: its stored list, which counts
+/// while the server is switched off, or for an entry without one the bots
+/// that use it now.
+pub(crate) fn mcp_bots(home: &Path, server: &str) -> Result<Vec<String>> {
+    match read_config(home)?["mcp_servers"].get(server) {
+        Some(entry) if entry["bots"].is_array() => Ok(strings(&entry["bots"])),
+        _ => assigned_bots(home, server),
+    }
+}
 pub(crate) fn assigned_bots(home: &Path, server: &str) -> Result<Vec<String>> {
     let mut bots = vec![];
     for bot in names(home)? {
