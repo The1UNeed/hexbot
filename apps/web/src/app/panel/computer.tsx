@@ -5,16 +5,23 @@ import { Avatar, useFaceColor } from '../../components/ui/avatar'
 import { Button } from '../../components/ui/button'
 import { confirm } from '../../components/ui/confirm'
 import { Dialog } from '../../components/ui/dialog'
-import { Menu } from '../../components/ui/menu'
+import { Menu, MenuCheckIcon } from '../../components/ui/menu'
 import { botFace } from '../../lib/avatar-builder'
 import { cn } from '../../lib/cn'
 import { targetOrigin } from '../../lib/connection'
 import { toMillis } from '../../lib/time'
-import type { Bot, ComputerCursor, ComputerStatus, ToolCall } from '../../lib/types'
+import type {
+  Bot,
+  ComputerCursor,
+  ComputerQuality,
+  ComputerStatus,
+  ToolCall
+} from '../../lib/types'
 import { useBots } from '../../stores/bots'
 import { useComputer } from '../../stores/computer'
 import { useConnection } from '../../stores/connection'
 import type { TranscriptMessage } from '../../stores/transcripts'
+import { useUi } from '../../stores/ui'
 import type { SaveBot } from '../bot-settings/shared'
 import { activityLabel, computerLabel } from '../conversation/steps'
 import { StepRow } from '../conversation/work-status'
@@ -32,6 +39,30 @@ const BUSY: Partial<Record<ComputerStatus['state'], string>> = {
   restarting: 'Restarting',
   starting: 'Starting',
   stopping: 'Turning off'
+}
+
+/** The screen's quality on this device, as the menu lists it. */
+const QUALITIES: { label: string; value: ComputerQuality }[] = [
+  { label: 'Auto', value: 'auto' },
+  { label: '1080p · 60 fps', value: '1080p60' },
+  { label: '1080p · 30 fps', value: '1080p30' },
+  { label: '720p · 60 fps', value: '720p60' },
+  { label: '720p · 30 fps', value: '720p30' }
+]
+
+/**
+ * Browsers play the screen's video only on a secure page: HTTPS, or the
+ * daemon's own computer. A daemon reached at a plain http:// address on the
+ * network, as LAN pairing and Tailscale do, cannot show it.
+ */
+export function screenPlays(origin: string): boolean {
+  const { hostname, protocol } = new URL(origin)
+
+  return (
+    protocol === 'https:' ||
+    ['127.0.0.1', '[::1]', 'localhost'].includes(hostname) ||
+    hostname.endsWith('.localhost')
+  )
 }
 
 /** A bot's cursor stays this long after its last action, then fades. */
@@ -53,22 +84,23 @@ function useScreen(live: boolean, control: boolean): null | string {
   const connects = useConnection(state => state.connects)
   const read = useComputer(state => state.read)
   const view = useComputer(state => state.view)
+  const quality = useUi(state => state.computerQuality)
   const [screen, setScreen] = useState<{ expires: number; src: string } | null>(null)
   const [renewals, setRenewals] = useState(0)
 
   useEffect(() => {
     setScreen(null)
 
-    if (!live || !target || read !== connects) {
+    if (!live || !target || read !== connects || !screenPlays(targetOrigin(target))) {
       return
     }
 
     let current = true
 
-    void view(control).then(path => {
+    void view(control, quality).then(path => {
       if (current && path) {
-        // A small watching screen needs no sound and fewer frames.
-        const extra = control ? '' : '&audio=off&fps=12'
+        // A watching screen needs no sound. The daemon sets size and frame rate.
+        const extra = control ? '' : '&audio=none'
         setScreen({
           expires: Date.now() + 55 * 60_000,
           src: `${targetOrigin(target)}${path}${extra}`
@@ -79,7 +111,7 @@ function useScreen(live: boolean, control: boolean): null | string {
     return () => {
       current = false
     }
-  }, [connects, control, live, read, renewals, target, view])
+  }, [connects, control, live, quality, read, renewals, target, view])
 
   useEffect(() => {
     if (!screen) {
@@ -325,6 +357,10 @@ function Screen({ bot, onSave }: { bot: Bot; onSave: SaveBot }) {
   const src = useScreen(running && enabled && !open, false)
   const actor = useActorName(status?.actor)
   const connects = useConnection(state => state.connects)
+  const target = useConnection(state => state.target)
+  const plays = !target || screenPlays(targetOrigin(target))
+  const quality = useUi(state => state.computerQuality)
+  const setQuality = useUi(state => state.setComputerQuality)
 
   useEffect(() => {
     void refresh()
@@ -385,7 +421,18 @@ function Screen({ bot, onSave }: { bot: Bot; onSave: SaveBot }) {
 
   return (
     <section className="grid grid-cols-1 gap-2.5">
-      {running ? (
+      {running && !plays ? (
+        <Placeholder>
+          <Monitor className="text-muted" size={20} />
+          <p
+            className="max-w-64 text-[length:var(--text-secondary)] text-muted"
+            data-testid="computer-insecure"
+          >
+            Your bots' screen plays only over a secure connection, and this one is plain HTTP.
+            Connect through Hex Connect, or open Hexbot on the daemon's computer, to watch it.
+          </p>
+        </Placeholder>
+      ) : running ? (
         <button
           aria-label="Open your bots' computer"
           className={cn(
@@ -438,7 +485,7 @@ function Screen({ bot, onSave }: { bot: Bot; onSave: SaveBot }) {
           ) : null}
           {caption(status, actor)}
         </span>
-        {running ? (
+        {running && plays ? (
           status.control === 'user' ? (
             <Button onClick={() => void control('bot')} size="sm" variant="pill">
               Give back
@@ -458,7 +505,7 @@ function Screen({ bot, onSave }: { bot: Bot; onSave: SaveBot }) {
         ) : null}
         <Menu
           items={[
-            { disabled: !running, label: 'Open larger', onSelect: () => setOpen(true) },
+            { disabled: !running || !plays, label: 'Open larger', onSelect: () => setOpen(true) },
             {
               disabled: !running || Boolean(busy),
               label: 'Restart',
@@ -474,7 +521,19 @@ function Screen({ bot, onSave }: { bot: Bot; onSave: SaveBot }) {
               disabled: Boolean(busy) || status.state === 'absent',
               label: 'Reset…',
               onSelect: () => void reset()
-            }
+            },
+            { label: '', separator: true },
+            { disabled: true, label: 'Quality on this device' },
+            ...QUALITIES.map(option => ({
+              'data-testid': `computer-quality-${option.value}`,
+              label: (
+                <span className="flex w-full items-center justify-between gap-6">
+                  {option.label}
+                  {quality === option.value ? <MenuCheckIcon aria-label="Chosen" size={14} /> : null}
+                </span>
+              ),
+              onSelect: () => setQuality(option.value)
+            }))
           ]}
           trigger={
             <button
@@ -492,7 +551,7 @@ function Screen({ bot, onSave }: { bot: Bot; onSave: SaveBot }) {
           {error}
         </p>
       ) : null}
-      {open && running ? <ComputerWindow onClose={() => setOpen(false)} status={status} /> : null}
+      {open && running && plays ? <ComputerWindow onClose={() => setOpen(false)} status={status} /> : null}
     </section>
   )
 }

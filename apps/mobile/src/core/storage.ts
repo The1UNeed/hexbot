@@ -3,7 +3,7 @@ import * as SecureStore from 'expo-secure-store'
 import * as Crypto from 'expo-crypto'
 import { Platform } from 'react-native'
 import { bytesToHex } from '@noble/hashes/utils'
-import type { SavedDaemon } from './types'
+import type { ComputerQuality, SavedDaemon } from './types'
 const memory = new Map<string, string>()
 // The browser preview never writes credentials to localStorage.
 const secret = {
@@ -63,3 +63,11 @@ export const selectDaemon = (id: string) => AsyncStorage.setItem('hexbot.active'
 export const loadConnectSession = () => secret.get('hexbot.connect-session')
 export const saveConnectSession = (token: string) => secret.set('hexbot.connect-session', token)
 export const clearConnectSession = () => secret.delete('hexbot.connect-session')
+
+/** How the bots' computer's screen streams to this phone; `auto` until the user picks. */
+export async function loadComputerQuality(): Promise<ComputerQuality> {
+  const saved = await AsyncStorage.getItem('hexbot.computer-quality')
+  return (['1080p60', '1080p30', '720p60', '720p30'] as const).find(q => q === saved) ?? 'auto'
+}
+export const saveComputerQuality = (quality: ComputerQuality) =>
+  AsyncStorage.setItem('hexbot.computer-quality', quality)

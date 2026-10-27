@@ -66,6 +66,18 @@ const bot = {
   updated_at: 0
 } satisfies Bot
 
+const running = {
+  activity: null,
+  actor: null,
+  available: true,
+  control: 'bot' as const,
+  cursors: [],
+  error: null,
+  size: 'small' as const,
+  sizes: [],
+  state: 'running' as const
+}
+
 const call = (partial: Partial<ToolCall>): ToolCall => ({
   args: { command: 'date' },
   durationS: 1,
@@ -182,13 +194,14 @@ describe('ProfilePanel', () => {
     fireEvent.click(screen.getByRole('tab', { name: 'Computer' }))
     expect(screen.getByTestId('computer-steps').querySelectorAll('li')).toHaveLength(1)
 
-    // A small screen that only watches, through the daemon.
+    // A small screen that only watches, through the daemon, without sound.
+    // Its size and frame rate follow the connection.
     const frame = await screen.findByTitle("Your bots' screen")
     expect(frame).toHaveAttribute(
       'src',
-      'http://127.0.0.1:9119/hexbot/computer/t/viewer/#ticket=v&audio=off&fps=12'
+      'http://127.0.0.1:9119/hexbot/computer/t/viewer/#ticket=v&audio=none'
     )
-    expect(api.computerView).toHaveBeenCalledWith(false)
+    expect(api.computerView).toHaveBeenCalledWith(false, 'auto')
 
     // Two bots on it: each has a cursor where it last acted, and the line
     // under the screen says who is acting.
@@ -223,6 +236,56 @@ describe('ProfilePanel', () => {
     // A panel closed under the window, as on a narrow window, gives it back.
     unmount()
     await waitFor(() => expect(api.computerControl).toHaveBeenLastCalledWith('bot'))
+  })
+
+  it('streams the screen at the quality chosen on this device', async () => {
+    api.computerStatus.mockResolvedValue(running)
+    api.computerView.mockReset()
+    api.computerView.mockImplementation((_control: boolean, quality: string) =>
+      Promise.resolve({ control: false, expires_at: 0, path: `/v/${quality}/#t` })
+    )
+    useComputer.setState({ error: null, status: null })
+    useConnection.setState({ target: { kind: 'local', origin: 'http://127.0.0.1:9119' } })
+    useUi.setState({ computerQuality: 'auto' })
+    seed([], false)
+    useBots.setState({ byName: { scout: { ...bot, tools: ['computer_use'] } } })
+    render(<ProfilePanel />)
+    fireEvent.click(screen.getByRole('tab', { name: 'Computer' }))
+    expect(await screen.findByTitle("Your bots' screen")).toHaveAttribute(
+      'src',
+      'http://127.0.0.1:9119/v/auto/#t&audio=none'
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Computer options' }))
+    fireEvent.click(await screen.findByTestId('computer-quality-720p30'))
+    // A new link at the chosen quality, kept for the next time.
+    await waitFor(() => expect(api.computerView).toHaveBeenLastCalledWith(false, '720p30'))
+    expect(await screen.findByTitle("Your bots' screen")).toHaveAttribute(
+      'src',
+      'http://127.0.0.1:9119/v/720p30/#t&audio=none'
+    )
+    expect(useUi.getState().computerQuality).toBe('720p30')
+    useUi.setState({ computerQuality: 'auto' })
+  })
+
+  it('says why the screen cannot play over a plain HTTP connection', async () => {
+    api.computerStatus.mockResolvedValue(running)
+    api.computerView.mockReset()
+    useComputer.setState({ error: null, status: null })
+    // Paired over the LAN: a plain http:// address that is not this computer.
+    useConnection.setState({
+      target: { deviceToken: 't', host: '192.168.0.87', kind: 'remote', port: 9119, tls: false }
+    })
+    seed([], false)
+    useBots.setState({ byName: { scout: { ...bot, tools: ['computer_use'] } } })
+    render(<ProfilePanel />)
+    fireEvent.click(screen.getByRole('tab', { name: 'Computer' }))
+    expect(await screen.findByTestId('computer-insecure')).toHaveTextContent(
+      'plays only over a secure connection'
+    )
+    expect(screen.queryByTitle("Your bots' screen")).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Take control' })).toBeNull()
+    expect(api.computerView).not.toHaveBeenCalled()
   })
 
   it('gives the computer back when the window closes before a take-over lands', async () => {

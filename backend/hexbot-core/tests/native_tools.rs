@@ -762,21 +762,26 @@ async fn computer_screen_is_served_through_the_daemon_and_embeddable() {
     .unwrap();
     let seen: Arc<Mutex<Vec<HeaderMap>>> = Default::default();
     let recorded = seen.clone();
-    let viewer = Router::new().route(
-        "/viewer/",
-        get(move |headers: HeaderMap| {
-            recorded.lock().unwrap().push(headers);
-            async {
-                (
-                    [(
-                        "content-security-policy",
-                        "default-src 'self'; frame-ancestors 'none'",
-                    )],
-                    axum::response::Html("<html><head></head><body>viewer page</body></html>"),
-                )
-            }
-        }),
-    );
+    let viewer = Router::new()
+        .route(
+            "/viewer/",
+            get(move |headers: HeaderMap| {
+                recorded.lock().unwrap().push(headers);
+                async {
+                    (
+                        [(
+                            "content-security-policy",
+                            "default-src 'self'; frame-ancestors 'none'",
+                        )],
+                        axum::response::Html("<html><head></head><body>viewer page</body></html>"),
+                    )
+                }
+            }),
+        )
+        .route(
+            "/cua.env.v1.StreamService/SetPreferences",
+            axum::routing::post(|| async { "resized" }),
+        );
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let server = tokio::spawn(async move { axum::serve(listener, viewer).await.unwrap() });
@@ -815,6 +820,43 @@ async fn computer_screen_is_served_through_the_daemon_and_embeddable() {
     assert!(body.contains("viewer page"));
     assert!(body.contains(".cua-toolbar"));
     assert!(seen.lock().unwrap()[0].get("cookie").is_none());
+    // Hex Connect's edge drops the trailing slash; the page still loads.
+    let stripped = computers::proxy(
+        token.to_owned(),
+        Request::get(location.trim_end_matches('/'))
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(stripped.status(), 200);
+    let body = axum::body::to_bytes(stripped.into_body(), 1024)
+        .await
+        .unwrap();
+    assert!(String::from_utf8_lossy(&body).contains(".cua-toolbar"));
+    // The viewer may not shrink the stream to its window; the quality decides.
+    let resize = computers::proxy(
+        token.to_owned(),
+        Request::post(format!(
+            "/hexbot/computer/{token}/cua.env.v1.StreamService/SetPreferences"
+        ))
+        .body(Body::empty())
+        .unwrap(),
+    )
+    .await;
+    assert_eq!(resize.status(), 403);
+    // A link may fix the screen's quality; an unknown one is refused.
+    let fixed = computers::call(
+        h.path(),
+        "hexbot.computer.view",
+        &json!({"quality":"720p30"}),
+    )
+    .await
+    .unwrap();
+    assert!(fixed.is_ok());
+    let unknown = computers::call(h.path(), "hexbot.computer.view", &json!({"quality":"4k"}))
+        .await
+        .unwrap();
+    assert_eq!(unknown.unwrap_err().code, 4202);
     // An unknown token reaches nothing.
     let missing = computers::proxy(
         "nope".into(),

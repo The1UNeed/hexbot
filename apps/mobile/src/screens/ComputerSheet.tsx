@@ -12,11 +12,13 @@ import {
 import Svg, { Path } from 'react-native-svg'
 
 import { ComputerFrame } from '../ComputerFrame'
-import { computerActivity } from '../core/computer'
-import type { Bot, ComputerCursor, ComputerStatus } from '../core/types'
+import { COMPUTER_QUALITIES, computerActivity, screenPlays } from '../core/computer'
+import { loadComputerQuality, saveComputerQuality } from '../core/storage'
+import type { Bot, ComputerCursor, ComputerQuality, ComputerStatus } from '../core/types'
 import {
   BotFace,
   Button,
+  ChoiceRow,
   type FaceSource,
   faceForName,
   Group,
@@ -257,7 +259,7 @@ export interface ComputerSheetProps {
   status: ComputerStatus | null
   call: (method?: string, params?: Record<string, unknown>) => Promise<ComputerStatus>
   /** A link to the screen; it is not a status, so it is never merged into one. */
-  view: (control: boolean) => Promise<{ path: string }>
+  view: (control: boolean, quality: ComputerQuality) => Promise<{ path: string }>
   /** Gives `bot` Computer use. */
   onEnable?: () => void
   /** Moves on at every reconnect; a restarted daemon forgets the old link. */
@@ -289,6 +291,18 @@ export function ComputerSheet({
   const running = status?.state === 'running'
   const user = status?.control === 'user'
   const enabled = !bot || (bot.tools ?? []).includes('computer_use')
+  const plays = !origin || screenPlays(origin)
+  // This phone's choice, read before the first link so it is made only once.
+  const [quality, setQuality] = useState<ComputerQuality | null>(null)
+  useEffect(() => {
+    void loadComputerQuality()
+      .catch(() => 'auto' as const)
+      .then(setQuality)
+  }, [])
+  const choose = (next: ComputerQuality) => {
+    setQuality(next)
+    void saveComputerQuality(next).catch(() => {})
+  }
 
   const act = (method: string, params?: Record<string, unknown>) => {
     setError(null)
@@ -329,14 +343,15 @@ export function ComputerSheet({
 
   useEffect(() => {
     setSrc(null)
-    if (!running || !origin || !enabled || read !== connects) return
+    if (!running || !origin || !plays || !enabled || !quality || read !== connects) return
     let current = true
     let renew: ReturnType<typeof setTimeout> | undefined
     const load = () =>
-      view(user)
+      view(user, quality)
         .then(({ path }) => {
           if (!current || !path) return
-          setSrc(`${origin}${path}${user ? '' : '&audio=off&fps=12'}`)
+          // A watching screen needs no sound. The daemon sets size and frame rate.
+          setSrc(`${origin}${path}${user ? '' : '&audio=none'}`)
           renew = setTimeout(load, 55 * 60_000)
         })
         .catch((e: unknown) => current && setError(e instanceof Error ? e.message : String(e)))
@@ -346,7 +361,7 @@ export function ComputerSheet({
       current = false
       if (renew) clearTimeout(renew)
     }
-  }, [running, origin, user, enabled, connects, read])
+  }, [running, origin, plays, user, enabled, quality, connects, read])
 
   const byName = new Map(bots.map(b => [b.name, b]))
   const faceFor = (name: string) => {
@@ -399,7 +414,11 @@ export function ComputerSheet({
   return (
     <View style={styles.body}>
       <View onLayout={event => setWidth(event.nativeEvent.layout.width)}>
-        {running ? (
+        {running && !plays ? (
+          placeholder(
+            "Your bots' screen plays only over a secure connection, and this one is plain HTTP. Connect through Hex Connect to watch it."
+          )
+        ) : running ? (
           <View
             style={[
               styles.screen,
@@ -438,7 +457,7 @@ export function ComputerSheet({
           {caption(status, nameOf)}
         </Text>
       </View>
-      {running ? (
+      {running && plays ? (
         <Button
           label={user ? 'Give back' : 'Take control'}
           onPress={() => (user ? act('hexbot.computer.control', { holder: 'bot' }) : take())}
@@ -472,6 +491,17 @@ export function ComputerSheet({
           testID="computer-reset"
           title="Reset…"
         />
+      </Group>
+      <Group title="Quality on this device">
+        {COMPUTER_QUALITIES.map(option => (
+          <ChoiceRow
+            key={option.value}
+            onPress={() => choose(option.value)}
+            selected={quality === option.value}
+            testID={`computer-quality-${option.value}`}
+            title={option.label}
+          />
+        ))}
       </Group>
     </View>
   )

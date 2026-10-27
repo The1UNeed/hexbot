@@ -271,19 +271,26 @@ notice. Working and idle draw the plain pill.
     idle. "Take control" opens the screen large over the app, where the user
     can click and type; "Give back" or closing the window hands it back. A
     menu has Open larger, Restart, Turn off and Reset… (asks first:
-    everything on it is erased, for every bot). An off computer shows "Turn
-    on"; a daemon without Cua shows how to install it. Under it, the bot's
-    other tool calls in the section, housekeeping included, newest first,
-    each with its glyph, time and result mark, closed until clicked open to
-    its arguments and output. Computer actions are not listed here; the
+    everything on it is erased, for every bot), then "Quality on this
+    device" with Auto (the default), 1080p · 60 fps, 1080p · 30 fps,
+    720p · 60 fps and 720p · 30 fps, a check on the chosen one. An off
+    computer shows "Turn on"; a daemon without Cua shows how to install it.
+    Reached at a plain http:// address on the network, where the screen
+    cannot play, it says so in place of the screen, without Take control.
+    Under it, the bot's other tool calls in the section, housekeeping
+    included, newest first, each with its glyph, time and result mark,
+    closed until clicked open to its arguments and output. Computer actions are not listed here; the
     screen and cursor show them. A plain-words line on top
     says what the bot is doing while a tool runs, and the tab shows a still
     blue dot.
     The mobile app shows the same computer on a front card from a computer
     button in the chat's header, which carries a dot while a bot acts there
     or you have it: the screen with the same face cursors, the line under
-    it, Take control or Give back, and Restart, Turn off and Reset… as rows.
+    it, Take control or Give back, Restart, Turn off and Reset… as rows,
+    and a "Quality on this device" group with the same five choices.
     Closing the card while you have control gives it back.
+
+    ![The Computer tab's menu with the quality choices](screens/computer-quality.png)
 - Opening and closing is one 240 ms move: the panel's column widens or
   narrows while the chat column follows, and the card slides in from the
   right edge. The panel remembers open or closed, and its tab, per window.

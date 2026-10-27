@@ -724,14 +724,41 @@ cursor there.
   the computer and makes a new one at the chosen size. Error 4209 while
   another step runs.
 - `hexbot.computer.control {holder: "user" | "bot"}` → the status.
-- `hexbot.computer.view {control?}` → `{path, control, expires_at}`. `path`
-  is relative to the daemon, `/hexbot/computer/<token>/viewer/#ticket=…`:
-  Cua's viewer, served by the daemon for an hour, so it works over LAN,
-  Tailscale and Connect. Without `control` it only watches. With `control`
-  the user takes over and the page takes clicks and keys. Handing the
-  computer back closes the pages that could type. The token in the path is
-  the credential; the daemon drops cookies and the viewer's own ticket
-  authorises its calls.
+- `hexbot.computer.view {control?, quality?}` → `{path, control,
+  expires_at}`. `path` is relative to the daemon,
+  `/hexbot/computer/<token>/viewer/#ticket=…`: Cua's viewer, served by the
+  daemon for an hour, so it works over LAN, Tailscale and Connect. Without
+  `control` it only watches. With `control` the user takes over and the page
+  takes clicks and keys. Handing the computer back closes the pages that
+  could type. The token in the path is the credential; the daemon drops
+  cookies and the viewer's own ticket authorises its calls. The daemon also
+  serves `…/<token>/viewer` as the page, because Hex Connect's edge drops
+  the trailing slash.
+  The viewer decodes H.264 with WebCodecs, which browsers offer only on a
+  secure page: over HTTPS (Connect) or on the daemon's own computer. A page
+  at a plain `http://` address on the network gets no video; clients say so
+  instead of showing the frame.
+  `quality` is `auto` (the default), `1080p60`, `1080p30`, `720p60` or
+  `720p30`, and sets how the screen streams, never larger than the
+  computer's own screen. The daemon applies it on the viewer's media socket
+  with Cua's `set_stream_preferences` when the session opens, and refuses
+  the viewer's own `StreamService/SetPreferences`, which would shrink the
+  stream to its window. A fixed quality holds (1080p at 8000 or 5000 kbps, 720p at 4000 or 2500 kbps).
+  `auto` starts at 720p, 30 fps, 2500 kbps and reads the stream's
+  statistics every 2 s. A frame dropped or replaced, video queued at the
+  computer, or acknowledgements over a second, or 250 ms slower than the
+  best round trip, move it one step down, at most every 4 s. Three healthy
+  readings in a row while the screen moves, with acknowledgements under
+  200 ms, move it one step up after 8 s; a climb soon undone doubles that
+  wait, up to 64 s. Its steps are 1080p at 60 and 30 fps, then 720p at
+  30 fps with 2500, 1500, 1000 and 600 kbps: it never goes below 720p at
+  30 fps. Clients keep the
+  choice per device. At any quality the daemon reads the statistics every
+  2 s and counts the viewer's `frame_ack`s: Cua's stream can stop for good
+  on a connection that falls behind (a frame dropped, no keyframe after),
+  so when the computer counts 5 or more new frames and the viewer
+  acknowledges none, the daemon sends `request_keyframe`, at most every 6 s,
+  and auto steps down.
 - `hexbot.computer.configure {size: "small" | "medium" | "large"}` → the
   status. Small is 2 CPUs and 4 GB, medium 4 and 8, large 8 and 16. A new
   size applies when the computer is next made, so after Reset.

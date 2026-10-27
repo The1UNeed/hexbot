@@ -24,7 +24,7 @@ use std::{
     path::{Path, PathBuf},
     process::Stdio,
     sync::{Arc, Mutex, OnceLock},
-    time::Duration,
+    time::{Duration, Instant},
 };
 use tokio_tungstenite::tungstenite::{self, client::IntoClientRequest};
 
@@ -42,6 +42,42 @@ const TURN_WAIT: Duration = Duration::from_secs(120);
 /// Screenshots are scaled so the long edge is at most 1200 px: a 1280×800
 /// desktop until the first screenshot says otherwise.
 const DEFAULT_SCREEN: (f64, f64) = (1200., 750.);
+/// How the screen streams: the long edge at most, frames per second, and the
+/// encoder's bitrate. The computer never streams larger than its own screen.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Stream {
+    pub dimension: u32,
+    pub fps: u32,
+    pub kbps: u32,
+}
+const fn stream(dimension: u32, fps: u32, kbps: u32) -> Stream {
+    Stream {
+        dimension,
+        fps,
+        kbps,
+    }
+}
+/// The qualities a client picks by name. `auto`, the default, picks for it.
+pub const QUALITIES: [(&str, Stream); 4] = [
+    ("1080p60", stream(1920, 60, 8000)),
+    ("1080p30", stream(1920, 30, 5000)),
+    ("720p60", stream(1280, 60, 4000)),
+    ("720p30", stream(1280, 30, 2500)),
+];
+/// Auto's steps, best first. It starts in the middle and moves with the
+/// connection, and never goes below 720p at 30 fps: past that it only spends
+/// fewer bits.
+const LADDER: [Stream; 6] = [
+    QUALITIES[0].1,
+    QUALITIES[1].1,
+    QUALITIES[3].1,
+    stream(1280, 30, 1500),
+    stream(1280, 30, 1000),
+    stream(1280, 30, 600),
+];
+const LADDER_START: usize = 2;
+/// How often auto reads the stream's statistics.
+const STATS_EVERY: Duration = Duration::from_secs(2);
 /// Environment `cua` needs to find the container engine and its own state.
 const PASSED_ENV: [&str; 7] = [
     "DOCKER_HOST",
@@ -600,7 +636,24 @@ pub async fn call(home: &Path, method: &str, p: &Value) -> Option<Result<Value>>
                     }
                     Ok(snapshot(home))
                 }
-                "hexbot.computer.view" => view(home, p["control"] == true).await,
+                "hexbot.computer.view" => {
+                    let quality = match p["quality"].as_str().unwrap_or("auto") {
+                        "auto" => None,
+                        name => Some(
+                            QUALITIES
+                                .iter()
+                                .find(|(known, _)| *known == name)
+                                .map(|(_, stream)| *stream)
+                                .ok_or_else(|| {
+                                    Error::new(
+                                        4202,
+                                        "quality must be auto, 1080p60, 1080p30, 720p60 or 720p30",
+                                    )
+                                })?,
+                        ),
+                    };
+                    view(home, p["control"] == true, quality).await
+                }
                 "hexbot.computer.configure" => {
                     let chosen = common::required(p, "size")?;
                     if !SIZES.iter().any(|(name, ..)| *name == chosen) {
@@ -621,7 +674,8 @@ pub async fn call(home: &Path, method: &str, p: &Value) -> Option<Result<Value>>
 
 /// A link to the computer's screen through this daemon. With `control` the
 /// user takes over and the link can type and click; without it, it only watches.
-async fn view(home: &Path, control: bool) -> Result<Value> {
+/// `quality` fixes how the screen streams; without one it follows the connection.
+async fn view(home: &Path, control: bool, quality: Option<Stream>) -> Result<Value> {
     let (cfg, env) = setup(home)?;
     if command(&cfg, &env).is_none() {
         return Err(unavailable());
@@ -696,6 +750,7 @@ async fn view(home: &Path, control: bool) -> Result<Value> {
             home: home.to_owned(),
             upstream,
             control,
+            quality,
             expires,
         },
     );
@@ -723,6 +778,8 @@ struct View {
     home: PathBuf,
     upstream: String,
     control: bool,
+    /// None: auto.
+    quality: Option<Stream>,
     expires: f64,
 }
 fn views() -> &'static Mutex<HashMap<String, View>> {
@@ -739,13 +796,17 @@ pub async fn proxy(token: String, request: Request) -> Response {
         .unwrap_or_else(|e| e.into_inner())
         .get(&token)
         .filter(|v| v.expires > common::now())
-        .map(|v| (v.upstream.clone(), !v.control));
-    let Some((upstream, watching)) = found else {
+        .map(|v| (v.upstream.clone(), !v.control, v.quality));
+    let Some((upstream, watching, quality)) = found else {
         return StatusCode::NOT_FOUND.into_response();
     };
     let (mut parts, body) = request.into_parts();
     let prefix = format!("/hexbot/computer/{token}/");
     let rest = parts.uri.path().strip_prefix(&prefix).unwrap_or("");
+    // Hex Connect's edge drops a trailing slash. The viewer answers `viewer`
+    // with a relative redirect to `viewer/`, which the browser, still on
+    // `viewer/`, would follow to `viewer/viewer/`, a page that is not there.
+    let rest = if rest == "viewer" { "viewer/" } else { rest };
     let query = parts
         .uri
         .query()
@@ -758,10 +819,17 @@ pub async fn proxy(token: String, request: Request) -> Response {
         .and_then(|v| v.to_str().ok())
         .is_some_and(|v| v.eq_ignore_ascii_case("websocket"));
     if upgrade {
+        // The screen's video comes on `media`; the link's quality tunes it.
+        let tuner = (rest == "media").then(|| Tuner::new(quality));
         return match WebSocketUpgrade::from_request_parts(&mut parts, &()).await {
-            Ok(ws) => websocket(ws, target, &parts.headers, token).await,
+            Ok(ws) => websocket(ws, target, &parts.headers, token, tuner).await,
             Err(rejection) => rejection.into_response(),
         };
+    }
+    // The viewer shrinks the stream to fit its window, which would undo the
+    // quality and Auto's 720p floor. It ignores the refusal.
+    if rest == "cua.env.v1.StreamService/SetPreferences" {
+        return StatusCode::FORBIDDEN.into_response();
     }
     let page = watching && rest == "viewer/";
     forward(parts, body, target, upstream, page).await
@@ -887,6 +955,7 @@ async fn websocket(
     target: String,
     headers: &HeaderMap,
     token: String,
+    tuner: Option<Tuner>,
 ) -> Response {
     let target = if let Some(rest) = target.strip_prefix("https://") {
         format!("wss://{rest}")
@@ -919,7 +988,7 @@ async fn websocket(
     };
     ws.max_message_size(WS_LIMIT)
         .max_frame_size(WS_LIMIT)
-        .on_upgrade(move |client| pump(client, upstream, token))
+        .on_upgrade(move |client| pump(client, upstream, token, tuner))
 }
 async fn pump(
     client: ws::WebSocket,
@@ -927,18 +996,31 @@ async fn pump(
         tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
     >,
     token: String,
+    mut tuner: Option<Tuner>,
 ) {
     use tungstenite::Message as Up;
     let (mut client_tx, mut client_rx) = client.split();
     let (mut up_tx, mut up_rx) = upstream.split();
+    // What the daemon itself tells the computer about the stream, and how
+    // many frames the viewer has acknowledged.
+    let (tell, mut told) = tokio::sync::mpsc::unbounded_channel::<String>();
+    let acks = std::sync::atomic::AtomicU64::new(0);
     let outbound = async {
-        while let Some(Ok(message)) = client_rx.next().await {
-            let message = match message {
-                ws::Message::Text(text) => Up::Text(text.as_str().into()),
-                ws::Message::Binary(bytes) => Up::Binary(bytes),
-                ws::Message::Ping(bytes) => Up::Ping(bytes),
-                ws::Message::Pong(bytes) => Up::Pong(bytes),
-                ws::Message::Close(_) => break,
+        loop {
+            let message = tokio::select! {
+                next = client_rx.next() => match next {
+                    Some(Ok(ws::Message::Text(text))) => {
+                        if text.as_str().contains(r#""frame_ack""#) {
+                            acks.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        }
+                        Up::Text(text.as_str().into())
+                    }
+                    Some(Ok(ws::Message::Binary(bytes))) => Up::Binary(bytes),
+                    Some(Ok(ws::Message::Ping(bytes))) => Up::Ping(bytes),
+                    Some(Ok(ws::Message::Pong(bytes))) => Up::Pong(bytes),
+                    _ => break,
+                },
+                Some(text) = told.recv() => Up::Text(text.into()),
             };
             if up_tx.send(message).await.is_err() {
                 break;
@@ -947,14 +1029,31 @@ async fn pump(
         let _ = up_tx.close().await;
     };
     let inbound = async {
-        while let Some(Ok(message)) = up_rx.next().await {
-            let message = match message {
-                Up::Text(text) => ws::Message::Text(text.as_str().into()),
-                Up::Binary(bytes) => ws::Message::Binary(bytes),
-                Up::Ping(bytes) => ws::Message::Ping(bytes),
-                Up::Pong(bytes) => ws::Message::Pong(bytes),
-                Up::Close(_) => break,
-                Up::Frame(_) => continue,
+        let mut tick = tokio::time::interval(STATS_EVERY);
+        loop {
+            let message = tokio::select! {
+                next = up_rx.next() => match next {
+                    Some(Ok(Up::Text(text))) => {
+                        if let Some(tuner) = tuner.as_mut() {
+                            let acked = acks.load(std::sync::atomic::Ordering::Relaxed);
+                            for line in tuner.heard(text.as_str(), acked, Instant::now()) {
+                                let _ = tell.send(line);
+                            }
+                        }
+                        ws::Message::Text(text.as_str().into())
+                    }
+                    Some(Ok(Up::Binary(bytes))) => ws::Message::Binary(bytes),
+                    Some(Ok(Up::Ping(bytes))) => ws::Message::Ping(bytes),
+                    Some(Ok(Up::Pong(bytes))) => ws::Message::Pong(bytes),
+                    Some(Ok(Up::Frame(_))) => continue,
+                    _ => break,
+                },
+                _ = tick.tick() => {
+                    if let Some(ask) = tuner.as_ref().and_then(Tuner::ask) {
+                        let _ = tell.send(ask);
+                    }
+                    continue;
+                }
             };
             if client_tx.send(message).await.is_err() {
                 break;
@@ -980,6 +1079,200 @@ async fn pump(
         _ = outbound => {},
         _ = inbound => {},
         _ = revoked => {},
+    }
+}
+
+/// Sets how a screen streams. It listens to the computer's side of the media
+/// socket: when a session opens it applies the link's quality, and on auto it
+/// reads the stream's statistics and moves along `LADDER` with the connection.
+/// The viewer never sets these itself, so nothing undoes them.
+///
+/// Cua's stream can also stop for good on a connection that falls behind: a
+/// frame is dropped and no keyframe follows, so the computer counts frames
+/// it never sends. When frames are counted but the viewer acknowledges none,
+/// the tuner asks for a keyframe, which starts the picture again.
+pub struct Tuner {
+    fixed: Option<Stream>,
+    auto: Auto,
+    session: Option<String>,
+    /// Frames the computer had counted, and the viewer had acknowledged, at the last reading.
+    emitted: Option<u64>,
+    acks: u64,
+    kicked: Option<Instant>,
+}
+/// How often a stopped stream may be asked for a keyframe.
+const KICK_EVERY: Duration = Duration::from_secs(6);
+impl Tuner {
+    pub fn new(fixed: Option<Stream>) -> Self {
+        Tuner {
+            fixed,
+            auto: Auto::default(),
+            session: None,
+            emitted: None,
+            acks: 0,
+            kicked: None,
+        }
+    }
+    fn stream(&self) -> Stream {
+        self.fixed.unwrap_or(LADDER[self.auto.step])
+    }
+    fn say(&self, kind: &str, mut payload: Value) -> Option<String> {
+        payload["session_id"] = json!(self.session.as_ref()?);
+        Some(json!({"type": kind, "payload": payload}).to_string())
+    }
+    fn set(&self, stream: Stream) -> Option<String> {
+        self.say(
+            "set_stream_preferences",
+            json!({
+                "max_fps": stream.fps,
+                "max_dimension": stream.dimension,
+                "target_bitrate_kbps": stream.kbps,
+            }),
+        )
+    }
+    /// A message from the computer, with the frames the viewer has
+    /// acknowledged so far; returns what to tell the computer in reply.
+    pub fn heard(&mut self, text: &str, acks: u64, now: Instant) -> Vec<String> {
+        // Video comes as binary; text messages are small JSON.
+        let Ok(message) = serde_json::from_str::<Value>(text) else {
+            return vec![];
+        };
+        let payload = &message["payload"];
+        match message["type"].as_str() {
+            Some("session_opened") => {
+                self.session = payload["session_id"].as_str().map(str::to_owned);
+                self.emitted = None;
+                self.acks = acks;
+                self.auto.opened(now);
+                self.set(self.stream()).into_iter().collect()
+            }
+            Some("stats") => {
+                let emitted = payload["frames_emitted"].as_u64().unwrap_or(0);
+                let stopped = self
+                    .emitted
+                    .replace(emitted)
+                    .is_some_and(|was| emitted.saturating_sub(was) >= 5)
+                    && acks == self.acks;
+                self.acks = acks;
+                let mut said = vec![];
+                if stopped
+                    && self
+                        .kicked
+                        .is_none_or(|at| now.duration_since(at) >= KICK_EVERY)
+                {
+                    self.kicked = Some(now);
+                    said.extend(self.say("request_keyframe", json!({})));
+                }
+                if self.fixed.is_none()
+                    && let Some(stream) = self.auto.sample(payload, stopped, now)
+                {
+                    said.extend(self.set(stream));
+                }
+                said
+            }
+            _ => vec![],
+        }
+    }
+    /// The question that brings the next statistics.
+    pub fn ask(&self) -> Option<String> {
+        self.say("get_stats", json!({}))
+    }
+}
+
+/// Auto's judgement, from the stream's statistics every `STATS_EVERY`. A
+/// frame dropped or replaced, video queued at the computer, a stream that
+/// stopped, or acknowledgements over a second, or well past the best round
+/// trip seen, mean the connection is short: one step down. Cua's stream stalls when a
+/// connection stays overloaded, so this does not wait. Three healthy readings
+/// in a row while the screen moves earn one step up, after a pause that
+/// doubles each time a climb is soon undone.
+struct Auto {
+    step: usize,
+    changed: Instant,
+    /// Whether the last change was a climb, so a quick fall can lengthen `hold`.
+    climbed: bool,
+    hold: Duration,
+    healthy: u32,
+    /// Frames sent and lost so far, from the last reading.
+    seen: Option<(u64, u64)>,
+    /// The quickest acknowledgement seen: the connection's own round trip.
+    best_rtt: f64,
+}
+const FALL_AFTER: Duration = Duration::from_secs(4);
+const CLIMB_AFTER: Duration = Duration::from_secs(8);
+const CLIMB_AFTER_MAX: Duration = Duration::from_secs(64);
+/// Acknowledgements this slow mean the screen lags, whatever the connection.
+const LAGGING_MS: f64 = 1000.;
+/// A climb needs acknowledgements this quick, so a baseline learned on a
+/// congested connection cannot pass for a healthy one.
+const QUICK_MS: f64 = 200.;
+impl Default for Auto {
+    fn default() -> Self {
+        Auto {
+            step: LADDER_START,
+            changed: Instant::now(),
+            climbed: false,
+            hold: CLIMB_AFTER,
+            healthy: 0,
+            seen: None,
+            best_rtt: f64::INFINITY,
+        }
+    }
+}
+impl Auto {
+    /// A new session counts from zero; the step stays.
+    fn opened(&mut self, now: Instant) {
+        self.seen = None;
+        self.healthy = 0;
+        self.changed = now;
+    }
+    fn sample(&mut self, stats: &Value, stopped: bool, now: Instant) -> Option<Stream> {
+        let count = |key: &str| stats[key].as_u64().unwrap_or(0);
+        let sent = count("frames_emitted");
+        let lost = count("frames_dropped") + count("frames_replaced");
+        let (new_sent, new_lost) = match self.seen.replace((sent, lost)) {
+            Some((was_sent, was_lost)) => {
+                (sent.saturating_sub(was_sent), lost.saturating_sub(was_lost))
+            }
+            None => return None,
+        };
+        let rtt = stats["ack_rtt_ms"].as_f64();
+        if let Some(rtt) = rtt {
+            self.best_rtt = self.best_rtt.min(rtt);
+        }
+        let since = now.duration_since(self.changed);
+        let lagging = rtt.is_some_and(|rtt| rtt > LAGGING_MS || rtt > self.best_rtt + 250.);
+        let queued = count("queued_video_bytes") > 512 * 1024;
+        if new_lost > 0 || lagging || queued || stopped {
+            self.healthy = 0;
+            if self.step + 1 < LADDER.len() && since >= FALL_AFTER {
+                if self.climbed && since < self.hold * 3 {
+                    self.hold = (self.hold * 2).min(CLIMB_AFTER_MAX);
+                }
+                self.step += 1;
+                self.changed = now;
+                self.climbed = false;
+                return Some(LADDER[self.step]);
+            }
+            return None;
+        }
+        // A still screen sends few frames and says nothing about the connection.
+        if new_sent < 10 {
+            return None;
+        }
+        if !rtt.is_some_and(|rtt| rtt < QUICK_MS && rtt < self.best_rtt + 60.) {
+            self.healthy = 0;
+            return None;
+        }
+        self.healthy += 1;
+        if self.healthy >= 3 && self.step > 0 && since >= self.hold {
+            self.step -= 1;
+            self.healthy = 0;
+            self.changed = now;
+            self.climbed = true;
+            return Some(LADDER[self.step]);
+        }
+        None
     }
 }
 
@@ -1294,4 +1587,220 @@ async fn request(
         ));
     }
     Ok(result)
+}
+
+#[cfg(test)]
+mod tuner_tests {
+    use super::*;
+
+    fn opened(tuner: &mut Tuner, now: Instant) -> Vec<Value> {
+        let said = tuner.heard(
+            r#"{"type":"session_opened","payload":{"session_id":"media-1","max_fps":60}}"#,
+            0,
+            now,
+        );
+        said.iter()
+            .map(|s| serde_json::from_str(s).unwrap())
+            .collect()
+    }
+    /// Everything said in reply to a reading `seconds` in, with the totals
+    /// the computer reports and the frames the viewer acknowledged.
+    fn reading(
+        tuner: &mut Tuner,
+        start: Instant,
+        seconds: u64,
+        (sent, acked): (u64, u64),
+        lost: u64,
+        rtt: f64,
+    ) -> Vec<Value> {
+        let text = json!({"type":"stats","payload":{"session_id":"media-1","frames_emitted":sent,"frames_dropped":lost,"frames_replaced":0,"queued_video_bytes":0,"ack_rtt_ms":rtt}}).to_string();
+        let said = tuner.heard(&text, acked, start + Duration::from_secs(seconds));
+        said.iter()
+            .map(|s| serde_json::from_str(s).unwrap())
+            .collect()
+    }
+    /// A quality change in reply to a reading where the viewer acknowledged every frame.
+    fn stats(
+        tuner: &mut Tuner,
+        start: Instant,
+        seconds: u64,
+        sent: u64,
+        lost: u64,
+        rtt: f64,
+    ) -> Option<Value> {
+        reading(tuner, start, seconds, (sent, sent), lost, rtt)
+            .into_iter()
+            .find(|said| said["type"] == "set_stream_preferences")
+    }
+
+    #[test]
+    fn a_fixed_quality_is_applied_once_the_session_opens() {
+        let mut tuner = Tuner::new(Some(QUALITIES[3].1));
+        let now = Instant::now();
+        assert_eq!(tuner.ask(), None);
+        // Before a session there is nothing to tune.
+        assert!(
+            tuner
+                .heard(r#"{"type":"hello","payload":{}}"#, 0, now)
+                .is_empty()
+        );
+        let said = opened(&mut tuner, now);
+        assert_eq!(said.len(), 1);
+        assert_eq!(said[0]["type"], "set_stream_preferences");
+        assert_eq!(said[0]["payload"]["session_id"], "media-1");
+        assert_eq!(said[0]["payload"]["max_fps"], 30);
+        assert_eq!(said[0]["payload"]["max_dimension"], 1280);
+        assert_eq!(said[0]["payload"]["target_bitrate_kbps"], 2500);
+        // Statistics never move a fixed quality.
+        assert!(tuner.ask().is_some());
+        assert!(stats(&mut tuner, now, 2, 50, 0, 20.).is_none());
+        assert!(stats(&mut tuner, now, 4, 100, 9, 4000.).is_none());
+        // Binary-looking or broken text is ignored.
+        assert!(tuner.heard("not json", 0, now).is_empty());
+    }
+
+    #[test]
+    fn auto_starts_at_720p30_and_asks_for_statistics() {
+        let mut tuner = Tuner::new(None);
+        assert_eq!(tuner.ask(), None);
+        let said = opened(&mut tuner, Instant::now());
+        assert_eq!(said[0]["payload"]["max_dimension"], 1280);
+        assert_eq!(said[0]["payload"]["max_fps"], 30);
+        assert_eq!(said[0]["payload"]["target_bitrate_kbps"], 2500);
+        let ask: Value = serde_json::from_str(&tuner.ask().unwrap()).unwrap();
+        assert_eq!(
+            ask,
+            json!({"type":"get_stats","payload":{"session_id":"media-1"}})
+        );
+    }
+
+    #[test]
+    fn auto_steps_down_when_the_connection_falls_behind_and_never_below_720p30() {
+        let mut tuner = Tuner::new(None);
+        let t = Instant::now();
+        opened(&mut tuner, t);
+        // The first reading is the baseline.
+        assert!(stats(&mut tuner, t, 2, 40, 0, 20.).is_none());
+        // Frames lost: one step down, to fewer bits at the same 720p30.
+        let down = stats(&mut tuner, t, 4, 80, 2, 20.).unwrap();
+        assert_eq!(down["payload"]["target_bitrate_kbps"], 1500);
+        assert_eq!(down["payload"]["max_fps"], 30);
+        // A change settles before the next.
+        assert!(stats(&mut tuner, t, 6, 120, 2, 900.).is_none());
+        // Acknowledgements far slower than the best round trip: down again.
+        let down = stats(&mut tuner, t, 8, 160, 2, 900.).unwrap();
+        assert_eq!(down["payload"]["target_bitrate_kbps"], 1000);
+        let mut last = down;
+        for step in 1..=10 {
+            let seconds = 8 + step * 2;
+            if let Some(said) = stats(&mut tuner, t, seconds, 160 + seconds * 10, 2 + step, 900.) {
+                last = said;
+            }
+        }
+        // The floor: still 720p at 30 fps, only fewer bits.
+        assert_eq!(last["payload"]["max_dimension"], 1280);
+        assert_eq!(last["payload"]["max_fps"], 30);
+        assert_eq!(last["payload"]["target_bitrate_kbps"], 600);
+    }
+
+    #[test]
+    fn a_connection_slow_from_the_start_still_counts_as_lagging() {
+        let mut tuner = Tuner::new(None);
+        let t = Instant::now();
+        opened(&mut tuner, t);
+        // The best round trip it ever sees is already over a second.
+        assert!(stats(&mut tuner, t, 2, 40, 0, 1200.).is_none());
+        let down = stats(&mut tuner, t, 4, 60, 0, 1250.).unwrap();
+        assert_eq!(down["payload"]["target_bitrate_kbps"], 1500);
+        // Quicker than before, but not quick: no climb back.
+        let mut tuner = Tuner::new(None);
+        opened(&mut tuner, t);
+        for s in 1..=12 {
+            assert!(stats(&mut tuner, t, s * 2, s * 60, 0, 400.).is_none());
+        }
+    }
+
+    #[test]
+    fn auto_climbs_after_steady_healthy_readings_but_not_on_a_still_screen() {
+        let mut tuner = Tuner::new(None);
+        let t = Instant::now();
+        opened(&mut tuner, t);
+        assert!(stats(&mut tuner, t, 2, 0, 0, 10.).is_none());
+        // A still screen sends a frame now and then: no evidence, no climb.
+        for s in 1..=10 {
+            assert!(stats(&mut tuner, t, 2 + s * 2, s, 0, 10.).is_none());
+        }
+        // A moving screen, acknowledged quickly, three readings in a row.
+        assert!(stats(&mut tuner, t, 24, 70, 0, 12.).is_none());
+        assert!(stats(&mut tuner, t, 26, 130, 0, 11.).is_none());
+        let up = stats(&mut tuner, t, 28, 190, 0, 12.).unwrap();
+        assert_eq!(up["payload"]["max_dimension"], 1920);
+        assert_eq!(up["payload"]["max_fps"], 30);
+        // The next climb waits for three more healthy readings and the pause.
+        assert!(stats(&mut tuner, t, 30, 250, 0, 12.).is_none());
+        assert!(stats(&mut tuner, t, 32, 310, 0, 12.).is_none());
+        assert!(stats(&mut tuner, t, 34, 370, 0, 12.).is_none());
+        let up = stats(&mut tuner, t, 36, 430, 0, 12.).unwrap();
+        assert_eq!(up["payload"]["max_fps"], 60);
+        assert_eq!(up["payload"]["target_bitrate_kbps"], 8000);
+    }
+
+    #[test]
+    fn a_climb_soon_undone_waits_longer_before_the_next() {
+        let mut tuner = Tuner::new(None);
+        let t = Instant::now();
+        opened(&mut tuner, t);
+        stats(&mut tuner, t, 2, 0, 0, 10.);
+        stats(&mut tuner, t, 4, 60, 0, 10.);
+        stats(&mut tuner, t, 6, 120, 0, 10.);
+        let up = stats(&mut tuner, t, 8, 180, 0, 10.).unwrap();
+        assert_eq!(up["payload"]["max_dimension"], 1920);
+        // The better quality was too much: back down.
+        let down = stats(&mut tuner, t, 12, 240, 3, 10.).unwrap();
+        assert_eq!(down["payload"]["max_dimension"], 1280);
+        // Healthy again, but the next climb now waits 16 s, not 8.
+        for s in [14, 16, 18, 20, 22, 24, 26] {
+            assert!(
+                stats(&mut tuner, t, s, s * 30, 3, 10.).is_none(),
+                "climbed at {s}s"
+            );
+        }
+        let up = stats(&mut tuner, t, 28, 900, 3, 10.).unwrap();
+        assert_eq!(up["payload"]["max_dimension"], 1920);
+    }
+
+    #[test]
+    fn a_stopped_stream_is_asked_for_a_keyframe_at_any_quality() {
+        for fixed in [None, Some(QUALITIES[0].1)] {
+            let mut tuner = Tuner::new(fixed);
+            let t = Instant::now();
+            opened(&mut tuner, t);
+            assert!(reading(&mut tuner, t, 2, (40, 40), 0, 20.).is_empty());
+            // The computer counts frames; the viewer acknowledges none of them.
+            let said = reading(&mut tuner, t, 4, (90, 40), 1, 20.);
+            assert_eq!(
+                said[0],
+                json!({"type":"request_keyframe","payload":{"session_id":"media-1"}})
+            );
+            // Auto also takes it as a connection that fell behind.
+            assert_eq!(said.len(), if fixed.is_none() { 2 } else { 1 });
+            // Asked again only after a pause.
+            assert!(reading(&mut tuner, t, 6, (140, 40), 1, 20.).is_empty());
+            let again = reading(&mut tuner, t, 10, (190, 40), 1, 20.);
+            assert_eq!(again[0]["type"], "request_keyframe");
+            // A still screen counts few frames and is not stopped.
+            assert!(reading(&mut tuner, t, 20, (192, 40), 1, 20.).is_empty());
+        }
+    }
+
+    #[test]
+    fn a_reopened_session_keeps_the_step_auto_reached() {
+        let mut tuner = Tuner::new(None);
+        let t = Instant::now();
+        opened(&mut tuner, t);
+        stats(&mut tuner, t, 2, 40, 0, 20.);
+        stats(&mut tuner, t, 4, 80, 3, 20.).unwrap();
+        let said = opened(&mut tuner, t + Duration::from_secs(5));
+        assert_eq!(said[0]["payload"]["target_bitrate_kbps"], 1500);
+    }
 }

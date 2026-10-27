@@ -13,7 +13,7 @@ import {
   computerStep,
   computerView
 } from '../lib/api'
-import type { ComputerSize, ComputerStatus } from '../lib/types'
+import type { ComputerQuality, ComputerSize, ComputerStatus } from '../lib/types'
 
 import { useConnection } from './connection'
 
@@ -33,7 +33,7 @@ export interface ComputerStoreState {
   step: (step: 'reset' | 'restart' | 'start' | 'stop') => Promise<void>
   /** The last request to take control, answered or not. */
   taking: Promise<void>
-  view: (control: boolean) => Promise<null | string>
+  view: (control: boolean, quality?: ComputerQuality) => Promise<null | string>
 }
 
 export const useComputer = create<ComputerStoreState>(set => {
@@ -89,9 +89,9 @@ export const useComputer = create<ComputerStoreState>(set => {
     async step(step) {
       await run(() => computerStep(step))
     },
-    async view(control) {
+    async view(control, quality) {
       try {
-        return (await computerView(control)).path
+        return (await computerView(control, quality)).path
       } catch (error) {
         set({ error: message(error) })
 
