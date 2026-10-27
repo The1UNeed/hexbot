@@ -5,7 +5,16 @@
 use super::*;
 
 /// The private extension's command. Typed messages may not start with it.
-pub(super) const RECALL_COMMAND: &str = "/hexbot-recall";
+const RECALL_COMMAND: &str = "/hexbot-recall";
+
+/// Sent and steered text never runs the command; Recall goes through
+/// `session.recall`, which keeps the history in step with Pi.
+pub(super) fn refuse_typed(text: &str) -> Result<()> {
+    if text.trim_start().starts_with(RECALL_COMMAND) {
+        return Err(Error::new(4202, "Use Recall to take back a message"));
+    }
+    Ok(())
+}
 
 fn busy() -> Error {
     Error::new(4002, "session is already working")
@@ -34,6 +43,12 @@ impl Runtime {
                 "Only messages in a bot's chat can be recalled",
             ));
         }
+        // A history row names its input, if it has one.
+        let named = match (input_id, row_id) {
+            (Some(id), _) => Some(id.to_owned()),
+            (None, Some(row)) => store::row_input(&self.home, &s.stored, row)?,
+            (None, None) => None,
+        };
         // A turn still working on it stops first, as Stop would. A stale
         // Recall leaves a newer message's turn alone.
         let working = {
@@ -43,7 +58,7 @@ impl Runtime {
                 .back()
                 .map(|i| &i.intent)
                 .or(state.input_run.as_ref());
-            if state.busy && newest.is_some_and(|n| Some(n.as_str()) != input_id) {
+            if state.busy && newest.is_some_and(|n| Some(n.as_str()) != named.as_deref()) {
                 return Err(latest_only());
             }
             state.busy

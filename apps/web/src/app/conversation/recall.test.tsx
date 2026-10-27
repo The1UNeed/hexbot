@@ -261,3 +261,20 @@ it('closes the cards of a message recalled from another app this view never show
   expect(await screen.findByText('Earlier reply')).toBeVisible()
   await waitFor(() => expect(screen.queryByTestId('stopped-card')).toBeNull())
 })
+
+it('keeps Recall on a partly answered message after its card is closed', async () => {
+  await mount()
+  await send('Read my plan')
+  await act(async () => {
+    useTranscripts.getState().messageStart('chat')
+    useTranscripts.getState().messageDelta('chat', 'Half an answer')
+  })
+  await stop()
+
+  for (const card of screen.queryAllByTestId('stopped-card')) {
+    fireEvent.click(within(card).getByRole('button', { name: 'Dismiss' }))
+  }
+
+  expect(screen.queryByTestId('stopped-card')).toBeNull()
+  expect(recallButton()).not.toBeNull()
+})

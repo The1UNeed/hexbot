@@ -2986,6 +2986,19 @@ pub fn latest_input(home: &Path, stored: &str) -> Result<Option<(String, Value)>
     })
     .transpose()
 }
+/// The input a history row was sent as, when it was bound to one.
+pub fn row_input(home: &Path, stored: &str, row_id: &str) -> Result<Option<String>> {
+    Ok(open(home)?
+        .query_row(
+            "SELECT i.id FROM native_messages m
+             JOIN native_pi_journal p ON p.session_id=m.session_id AND p.projection_seq=m.seq
+             JOIN native_prompt_intents i ON i.session_id=p.session_id AND i.consumed_by=p.journal_id
+             WHERE m.session_id=? AND json_extract(m.message_json,'$.row_id')=?",
+            params![stored, row_id],
+            |r| r.get(0),
+        )
+        .optional()?)
+}
 /// Follow a running section to the branch Pi continues after it moved back
 /// to an earlier entry: rows on the abandoned branch leave the history.
 /// Changes nothing while `recalled` is still on the branch.

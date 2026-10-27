@@ -1796,9 +1796,7 @@ impl Runtime {
         }
         common::bot_owner(&self.home, &s.owner, &s.bot)?;
         let compact = text.trim() == "/compact" || text.trim().starts_with("/compact ");
-        if text.trim_start().starts_with(recall::RECALL_COMMAND) {
-            return Err(Error::new(4202, "Use Recall to take back a message"));
-        }
+        recall::refuse_typed(text)?;
         if !compact {
             if text.trim().is_empty() {
                 return Err(Error::new(4200, "missing parameter: text"));

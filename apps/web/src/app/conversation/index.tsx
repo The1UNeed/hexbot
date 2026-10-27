@@ -1301,6 +1301,8 @@ function BotConversation() {
   const [openFailure, setOpenFailure] = useState<{ section: string; message: string } | null>(null)
   // A Stopped card the owner closed stays closed while the bot's state catches up.
   const [dismissedSince, setDismissedSince] = useState<number>()
+  // The message whose stopped turn's card was closed: still yours to recall.
+  const [closedOn, setClosedOn] = useState<string>()
   const stoppedCard = stoppedCardFor(bot, params.section ?? null, messages)
   const stoppedHere = stoppedCard?.createdAt === dismissedSince ? null : stoppedCard
 
@@ -1604,7 +1606,8 @@ function BotConversation() {
       streaming ||
       Boolean(stoppedHere) ||
       after.some(item => item.error) ||
-      !after.some(item => item.role === 'assistant')
+      !after.some(item => item.role === 'assistant') ||
+      message.id === closedOn
 
     if (
       !ownerInput ||
@@ -1654,6 +1657,8 @@ function BotConversation() {
   // Closing a card closes the bot's Stopped state for this chat too, or the
   // card would come back from it.
   const dismiss = (card: TranscriptMessage) => {
+    setClosedOn(messages.findLast(item => item.role === 'user')?.id)
+
     if (liveId) {
       transcriptActions().dismiss(liveId, card.id)
     }

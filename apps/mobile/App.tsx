@@ -282,6 +282,12 @@ function MobileApp() {
     } else setQuestion(null)
   }, [firstQuestionId, firstQuestion?.requestId])
   const route = mobile.route
+  const chatKey =
+    route?.kind === 'section' ? route.section.id : route?.kind === 'room' ? route.room.id : null
+  const openChat = useRef(chatKey)
+  openChat.current = chatKey
+  // The message whose stopped turn's error was closed: still yours to recall.
+  const [closedOn, setClosedOn] = useState<string | null>(null)
   useEffect(() => {
     setPanels([])
     setSwitcherOpen(false)
@@ -778,6 +784,7 @@ function MobileApp() {
       mobile.chat.busy ||
       !!mobile.chat.error ||
       mobile.chat.messages.at(-1) === last ||
+      last?.id === closedOn ||
       (owner.status === 'stopped' && owner.status_detail?.section_id === route.section.id)
     return last && stopped ? last.id : null
   })()
@@ -814,7 +821,10 @@ function MobileApp() {
               ? 'Open this chat to send'
               : undefined,
     error: mobile.chat.error || mobile.error,
-    onDismissError: () => act(mobile.dismissError),
+    onDismissError: () => {
+      setClosedOn(mobile.chat.messages.findLast(m => m.role === 'user')?.id ?? null)
+      act(mobile.dismissError)
+    },
     recallId,
     onRecall: (id: string) =>
       confirm(
@@ -822,8 +832,11 @@ function MobileApp() {
         `${route?.kind === 'section' ? route.bot.display_name : 'The bot'} forgets this message and its reply. The text goes back in the message box.`,
         () =>
           act(async () => {
+            const from = chatKey
             const text = await mobile.recall(id)
-            if (text) setDraft(previous => (previous.trim() ? `${text}\n\n${previous}` : text))
+            // The message box belongs to the chat open now; another one keeps its own.
+            if (text && openChat.current === from)
+              setDraft(previous => (previous.trim() ? `${text}\n\n${previous}` : text))
           })
       ),
     onRetry: () =>

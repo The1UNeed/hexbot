@@ -169,7 +169,24 @@ async fn recall_stops_the_turn_working_on_it() {
         .unwrap();
     assert_eq!(stale.unwrap_err().code, 4202);
     assert!(s.state.lock().unwrap().busy);
-    let recalled = recall(&runtime, &id, SECOND).await.unwrap();
+    // The running message by its saved row alone.
+    let running: String = store::open(home.path())
+        .unwrap()
+        .query_row(
+            "SELECT json_extract(message_json,'$.row_id') FROM native_messages WHERE json_extract(message_json,'$.text')='wait'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let recalled = runtime
+        .call(
+            "alice",
+            "session.recall",
+            &json!({"session_id":id,"row_id":running}),
+        )
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(recalled["text"], "wait");
     assert!(!s.state.lock().unwrap().busy);
     assert_eq!(shown(&runtime, &id).await, ["First", "Re: First"]);
@@ -208,6 +225,16 @@ async fn recall_is_only_for_a_bot_chat_and_never_typed() {
         .unwrap()
         .unwrap_err();
     assert_eq!(typed.code, 4202);
+    let steered = runtime
+        .call(
+            "alice",
+            "session.steer",
+            &json!({"session_id":id,"text":" /hexbot-recall e1"}),
+        )
+        .await
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(steered.code, 4202);
     send(&runtime, &mut events, &id, "First", FIRST).await;
     assert_eq!(recall(&runtime, &id, "").await.unwrap_err().code, 4200);
     // A thread between bots keeps what was said.
