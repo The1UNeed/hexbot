@@ -280,7 +280,7 @@ function BotRow({
 export function RosterColumn() {
   const params = useParams({ strict: false }) as { bot?: string; section?: string }
   const navigate = useNavigate()
-  const { cancel: cancelChat, selectChat } = useChatSelection()
+  const { asking, cancel: cancelChat, selectChat } = useChatSelection()
   const bots = useBotList()
   const rooms = useRoomList()
   const sectionMap = useSections(state => state.byId)
@@ -299,10 +299,6 @@ export function RosterColumn() {
   }>({ model: '', name: '', provider: '', reasoning: null })
 
   const [newBotError, setNewBotError] = useState<null | string>(null)
-  // The bot whose chat is being asked for, shown as chosen on this page until it opens.
-  const place = JSON.stringify(params)
-  const [asking, setAsking] = useState<null | { bot: string; place: string }>(null)
-  const chosen = asking?.place === place ? asking.bot : null
   const [creatingBot, setCreatingBot] = useState(false)
   const [showModel, setShowModel] = useState(false)
 
@@ -432,23 +428,15 @@ export function RosterColumn() {
 
     if (known) {
       cancelChat()
-      setAsking(null)
       open(bot, known.id)
 
       return
     }
 
-    const ask = { bot, place }
-    setAsking(ask)
+    const chat = await selectChat(bot)
 
-    try {
-      const chat = await selectChat(bot)
-
-      if (chat) {
-        open(bot, chat.id)
-      }
-    } finally {
-      setAsking(current => (current === ask ? null : current))
+    if (chat) {
+      open(bot, chat.id)
     }
   }
 
@@ -599,8 +587,8 @@ export function RosterColumn() {
           ) : (
             <BotRow
               active={
-                chosen
-                  ? chosen === (entry.item as Bot).name
+                asking
+                  ? asking === (entry.item as Bot).name
                   : Boolean(params.section) && params.bot === (entry.item as Bot).name
               }
               bot={entry.item as Bot}
