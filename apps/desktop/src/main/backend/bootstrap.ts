@@ -220,22 +220,42 @@ export async function pruneNativeRuntimes(active: string, previous?: string): Pr
   }
 }
 
-interface SelectedRuntime { executable: string; previous?: string; builtAt: number }
+// Explicit packaged setup only. Equal chronology is not a source identity.
+// The release grammar is deliberately narrower than arbitrary SemVer.
+function newerNightly(candidate: string, selected: string): boolean {
+  const parse = (value: string): { base: string; day: bigint; run: bigint } | undefined => {
+    const match = /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)-nightly\.([1-9][0-9]{7})\.([1-9][0-9]*)$/.exec(value)
+    if (!match) return undefined
+    const parts = match.slice(1).map(BigInt)
+    if (parts.some(part => part > 18446744073709551615n)) return undefined
+    const day = match[4]!
+    const date = new Date(`${day.slice(0, 4)}-${day.slice(4, 6)}-${day.slice(6)}T00:00:00Z`)
+    if (!Number.isFinite(date.getTime()) || date.toISOString().slice(0, 10).replaceAll('-', '') !== day) return undefined
+    return { base: match.slice(1, 4).join('.'), day: parts[3]!, run: parts[4]! }
+  }
+  const next = parse(candidate), old = parse(selected)
+  return !!next && !!old && next.base === old.base && (next.day > old.day || (next.day === old.day && next.run > old.run))
+}
+
+interface SelectedRuntime { executable: string; previous?: string; builtAt: number; version: string; target: string }
 
 // The runtime native-executable points at, if it is intact. The daemon's own
 // updater also selects runtimes and records their hashes in native-current.json.
 async function selectedRuntime(deps: BootstrapDeps): Promise<SelectedRuntime | undefined> {
   try {
     const selected = JSON.parse(await readFile(join(runtimeDir(), 'native-current.json'), 'utf8')) as {
-      version: string; executable: string; previous?: string; files?: Record<string, string>
+      version: string; executable: string; previous?: string; files?: Record<string, string>; builtAt?: number
     }
     const executable = canonicalRuntimePath(nativeServiceExecutable(deps.platform))
     const nativeRoot = canonicalRuntimePath(join(runtimeDir(), 'native'))
     if (executable !== canonicalRuntimePath(selected.executable) || relative(nativeRoot, executable).startsWith('..') || isAbsolute(relative(nativeRoot, executable))) return undefined
     const directory = dirname(executable)
     const manifest = await readManifest(directory)
+    if (deps.platform === 'win32' && (!manifest.builtAt || selected.builtAt !== manifest.builtAt ||
+      !selected.files || Object.keys(selected.files).length !== Object.keys(manifest.files).length ||
+      Object.entries(manifest.files).some(([file, digest]) => selected.files![file] !== digest))) return undefined
     await verifyNativeRuntime(directory, { ...deps, appVersion: selected.version }, selected.files ?? manifest.files)
-    return { executable, previous: selected.previous, builtAt: manifest.builtAt ?? 0 }
+    return { executable, previous: selected.previous, builtAt: manifest.builtAt ?? 0, version: manifest.version, target: manifest.target }
   } catch {
     return undefined
   }
@@ -259,16 +279,20 @@ async function installNativeRuntime(deps: BootstrapDeps): Promise<RuntimeActivat
   const source = join(deps.resourcesPath, 'hexbot-native')
   deps.emit({ stage: 'runtime', message: 'Preparing Hexbot runtime' })
   const signedHashes = await verifyNativeRuntime(source, deps)
-  const { builtAt = 0 } = await readManifest(source)
+  const { builtAt = 0, target } = await readManifest(source)
   if (deps.platform === 'win32') {
     const selected = await selectedRuntime(deps)
     // Rust owns Windows setup and atomic selection for both Full and Headless.
-    const executable = selected && selected.builtAt >= builtAt ? selected.executable : join(source, 'hexbot.exe')
+    const retain = selected && (selected.builtAt > builtAt || (selected.builtAt === builtAt &&
+      !(builtAt > 0 && target === selected.target && newerNightly(deps.appVersion, selected.version))))
+    const executable = retain ? selected.executable : join(source, 'hexbot.exe')
     const launcher = nodePath(canonicalRuntimePath(join(dirname(executable), 'pi/launch.mjs')))
     await probe(deps, join(dirname(executable), 'node.exe'), [launcher, '--version'])
-    await deps.run(executable, ['setup', ...(selected && selected.builtAt >= builtAt ? [] : ['--activate']), '--json'], { env: { ...process.env, HEXBOT_HOME: hexbotHome() } })
+    await deps.run(executable, ['setup', ...(retain ? [] : ['--activate']), '--json'], { env: { ...process.env, HEXBOT_HOME: hexbotHome() } })
+    const activated = await selectedRuntime(deps)
+    if (!activated) throw new Error('Windows setup did not select a verified runtime')
     deps.emit({ stage: 'done', message: 'Hexbot runtime is ready', percent: 100 })
-    return
+    return { executable: activated.executable, version: activated.version }
   }
   // The newest build wins whichever app or updater installed it, so Stable and
   // Nightly apps sharing this home never go back to an older daemon.

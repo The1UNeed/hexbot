@@ -1,10 +1,15 @@
-//! OS utilities for the daemon's supported platforms, macOS and Linux.
-//! Keep platform details here; this module does not add support for other OSes.
+//! Process and home utilities. Windows helpers prepare build/install boundaries;
+//! they do not provide confinement or enable a supported Windows product.
 use std::{fs::File, io, path::PathBuf};
 
-/// Preserve the daemon's HOME lookup, including an explicitly empty value.
+/// Windows follows the OS profile, even when Git Bash sets a different HOME.
+/// Unix keeps the existing HOME lookup, including an explicitly empty value.
 pub fn user_home() -> Option<PathBuf> {
-    std::env::var_os("HOME").map(PathBuf::from)
+    #[cfg(windows)]
+    let value = std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME"));
+    #[cfg(not(windows))]
+    let value = std::env::var_os("HOME");
+    value.map(PathBuf::from)
 }
 
 /// Blocking exclusive lock, retrying interrupted waits like the activation lock.
@@ -20,6 +25,7 @@ pub fn lock_exclusive(file: &File) -> io::Result<()> {
 
 /// A liveness hint only, never authority to signal a recorded PID. Unknown or
 /// permission-denied probes count as alive so runtime cleanup stays conservative.
+#[cfg(unix)]
 pub fn process_alive(pid: u32) -> bool {
     let Ok(pid) = libc::pid_t::try_from(pid) else {
         return false;
@@ -31,12 +37,14 @@ pub fn process_alive(pid: u32) -> bool {
 
 /// Signal only a child we still own. Tokio clears its ID after reaping, so the
 /// PID cannot have been reused while this mutable child reference is held.
+#[cfg(unix)]
 pub(crate) fn signal_termination(child: &mut tokio::process::Child) -> bool {
     child
         .id()
         .is_some_and(|pid| unsafe { libc::kill(pid as libc::pid_t, libc::SIGTERM) } == 0)
 }
 
+#[cfg(unix)]
 fn hostname_from_bytes(bytes: &[u8]) -> Option<String> {
     let length = bytes
         .iter()
@@ -45,6 +53,7 @@ fn hostname_from_bytes(bytes: &[u8]) -> Option<String> {
     (length > 0).then(|| String::from_utf8_lossy(&bytes[..length]).into_owned())
 }
 
+#[cfg(unix)]
 pub fn hostname() -> Option<String> {
     let mut bytes = [0u8; 256];
     // The buffer is valid for its entire length and read only after the call.
@@ -58,11 +67,12 @@ pub fn hostname() -> Option<String> {
         .filter(|name| !name.is_empty())
 }
 
+#[cfg(unix)]
 pub fn name_too_long(error: &io::Error) -> bool {
     error.raw_os_error() == Some(libc::ENAMETOOLONG)
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use std::os::fd::AsRawFd;
@@ -163,4 +173,43 @@ mod tests {
         assert!(!process_alive(0));
         assert!(!process_alive(u32::MAX));
     }
+}
+
+#[cfg(windows)]
+pub fn process_alive(pid: u32) -> bool {
+    if pid == 0 {
+        return false;
+    }
+    unsafe extern "system" {
+        fn OpenProcess(access: u32, inherit: i32, pid: u32) -> *mut std::ffi::c_void;
+        fn WaitForSingleObject(handle: *mut std::ffi::c_void, milliseconds: u32) -> u32;
+        fn CloseHandle(handle: *mut std::ffi::c_void) -> i32;
+    }
+    let process = unsafe { OpenProcess(0x00100000, 0, pid) }; // SYNCHRONIZE
+    if process.is_null() {
+        return io::Error::last_os_error().raw_os_error() != Some(87);
+    }
+    let state = unsafe { WaitForSingleObject(process, 0) };
+    unsafe {
+        CloseHandle(process);
+    }
+    state != 0 // WAIT_OBJECT_0 means exited; failures remain conservative.
+}
+#[cfg(windows)]
+pub(crate) fn signal_termination(child: &mut tokio::process::Child) -> bool {
+    child.id().is_some() && child.start_kill().is_ok()
+}
+#[cfg(windows)]
+pub fn hostname() -> Option<String> {
+    unsafe extern "system" {
+        fn GetComputerNameW(buffer: *mut u16, size: *mut u32) -> i32;
+    }
+    let mut buffer = [0u16; 256];
+    let mut size = buffer.len() as u32;
+    (unsafe { GetComputerNameW(buffer.as_mut_ptr(), &mut size) } != 0)
+        .then(|| String::from_utf16_lossy(&buffer[..size as usize]))
+}
+#[cfg(windows)]
+pub fn name_too_long(error: &io::Error) -> bool {
+    error.raw_os_error() == Some(206)
 }

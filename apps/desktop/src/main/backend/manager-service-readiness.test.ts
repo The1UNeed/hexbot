@@ -132,7 +132,7 @@ it('bounds repeated failed probes to thirty seconds without extending the deadli
   cleaned(manager)
 })
 
-it('cancels an in-flight service probe and cleans its deadline and watchers', async () => {
+it('finishes entered service readiness after Stop and cleans its deadline and watchers', async () => {
   let finishProbe!: (response: Response) => void
   fetchIdentity.mockImplementation(() => new Promise(resolve => { finishProbe = resolve }))
   const manager = new DaemonManager()
@@ -142,12 +142,35 @@ it('cancels an in-flight service probe and cleans its deadline and watchers', as
   const signal = fetchIdentity.mock.calls[0]![1]!.signal!
   const stopping = manager.stop()
   await vi.advanceTimersByTimeAsync(0)
+  expect(signal.aborted).toBe(false)
+  finishProbe(ready())
+  await vi.advanceTimersByTimeAsync(0)
   await failed
-  await stopping
+  expect(await stopping).toEqual({ state: 'external', port: 9237 })
+  expect(signal.aborted).toBe(true)
+  expect(manager.status()).toEqual({ state: 'external', port: 9237 })
+  cleaned(manager)
+})
+
+it('keeps the original readiness deadline after a later Stop and ignores late completion', async () => {
+  let finishProbe!: (response: Response) => void
+  fetchIdentity.mockImplementation(() => new Promise(resolve => { finishProbe = resolve }))
+  const manager = new DaemonManager()
+  const installing = manager.installService(async () => undefined)
+  const failed = expect(installing).rejects.toThrow('did not become ready')
+  await vi.advanceTimersByTimeAsync(29_000)
+  const signal = fetchIdentity.mock.calls[0]![1]!.signal!
+  const stopping = manager.stop()
+  await vi.advanceTimersByTimeAsync(999)
+  expect(signal.aborted).toBe(false)
+  expect(controls.watches[0]!.watcher.close).not.toHaveBeenCalled()
+  await vi.advanceTimersByTimeAsync(1)
+  await failed
+  expect(await stopping).toEqual({ state: 'stopped' })
   expect(signal.aborted).toBe(true)
   finishProbe(ready())
   await vi.advanceTimersByTimeAsync(0)
-  expect(manager.status().state).toBe('stopped')
+  expect(manager.status()).toEqual({ state: 'stopped' })
   cleaned(manager)
 })
 

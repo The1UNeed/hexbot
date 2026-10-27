@@ -1,12 +1,15 @@
 import assert from 'node:assert/strict'
-import { execFile } from 'node:child_process'
+import { execFile, spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import test from 'node:test'
 import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { delimiter, join } from 'node:path'
 import { promisify } from 'node:util'
-import { derivePorts, printsSignInLink, validateDevArgs, ensurePiRuntime, prepareDevRuntime, pairingCode } from './run.mjs'
+import { createInterface } from 'node:readline'
+import { once, EventEmitter } from 'node:events'
+import { fileURLToPath } from 'node:url'
+import { createDevRunner, derivePorts, printsSignInLink, validateDevArgs, ensurePiRuntime, prepareDevRuntime, devPiEntrypoint, pairingCode } from './run.mjs'
 import { downloadTool, toolAsset } from '../../apps/desktop/src/main/backend/tools.ts'
 
 test('dev ports derive from the checkout path and stay apart per worktree', () => {
@@ -149,4 +152,270 @@ test('dev prints a sign-in link only to an unsupervised terminal', () => {
   assert.equal(printsSignInLink(true, {XPC_SERVICE_NAME:'0'}), true)
   assert.equal(printsSignInLink(false, {}), false)
   for (const env of [{HEXBOT_SUPERVISOR:'dev'}, {INVOCATION_ID:'systemd'}, {XPC_SERVICE_NAME:'app.hexbot.daemon'}]) assert.equal(printsSignInLink(true, env), false)
+})
+
+// Exercise the Windows layout on every host. Native Windows additionally runs
+// this exact prepared entrypoint through Rust PiProcess, not a shell/shim.
+test('Windows dev layout loads real pinned Pi through Node with literal arguments', { timeout: 60000 }, async () => {
+  const root = await mkdtemp(join(tmpdir(), 'hexbot dev π & '))
+  let child
+  try {
+    const pi = devPiEntrypoint(fileURLToPath(new URL('../../backend/pi-runtime', import.meta.url)), 'win32')
+    const env = await prepareDevRuntime(root, join(root, 'hexbot.exe'), pi, {
+      platform: 'win32', arch: 'x64',
+      download: async url => ['rg', 'fd'].map(tool => toolAsset(tool, 'win32', 'x64')).find(asset => asset.url === url).sha256,
+      run: async (_command, args, options) => {
+        assert.equal(args[1], 'archive.zip')
+        assert.equal(args[3], '.')
+        assert(options.cwd.startsWith(join(root, 'runtime')))
+        const extracted = join(options.cwd, args[4])
+        await mkdir(join(extracted, '..'), { recursive: true })
+        await writeFile(extracted, 'test search tool')
+        // search-tools chooses tool names for the actual host in this portable test.
+        if (process.platform !== 'win32') await writeFile(join(root, 'bin', args[4].endsWith('rg.exe') ? 'rg' : 'fd'), 'test search tool')
+      }
+    })
+    assert.equal(env.HEXBOT_PI_EXECUTABLE, join(root, 'runtime/dev-pi/node.exe'))
+    assert.equal(createHash('sha256').update(await readFile(env.HEXBOT_PI_EXECUTABLE)).digest('hex'),
+      createHash('sha256').update(await readFile(process.execPath)).digest('hex'))
+    const agent = join(root, 'agent π &')
+    const extension = join(root, 'literal " π &.mjs')
+    // A quote is illegal in Windows filenames. Keep it in the literal CLI
+    // option value instead, and exercise spaces/Unicode/& in the file operand.
+    const extensionPath = process.platform === 'win32' ? join(root, 'literal π &.mjs') : extension
+    const record = join(root, 'argv.json')
+    await writeFile(extensionPath, `import {writeFileSync} from 'node:fs';export default function(pi){pi.registerFlag('literal',{type:'string',default:''});writeFileSync(${JSON.stringify(record)},JSON.stringify(process.argv));}`)
+    const literal = 'spaces π 中文 & "quote"'
+    const cliArgs = ['--mode', 'rpc', '--no-session', '--extension', extensionPath, '--literal', literal]
+    child = spawn(process.platform === 'win32' ? env.HEXBOT_PI_EXECUTABLE : process.execPath,
+      [join(root, 'runtime/dev-pi/pi/launch.mjs'), ...cliArgs], {
+        env: { ...process.env, ...env, PI_CODING_AGENT_DIR: agent }, stdio: ['pipe', 'pipe', 'pipe']
+      })
+    let stderr = ''
+    child.stderr.on('data', chunk => { stderr = (stderr + chunk).slice(-8192) })
+    const closed = once(child, 'close')
+    const lines = createInterface({ input: child.stdout })
+    const response = new Promise((done, reject) => {
+      lines.on('line', line => { const value = JSON.parse(line); if (value.id === 'dev-state') done(value) })
+      child.once('close', code => reject(new Error(`Pi exited before handshake: ${code} ${stderr}`)))
+    })
+    child.stdin.write(JSON.stringify({ type: 'get_state', id: 'dev-state' }) + '\n')
+    assert.equal((await response).success, true, stderr)
+    assert.deepEqual(JSON.parse(await readFile(record, 'utf8')).slice(2), cliArgs)
+    child.stdin.end()
+    assert.deepEqual(await closed, [0, null], stderr)
+    for (const tool of process.platform === 'win32' ? ['rg.exe', 'fd.exe'] : ['rg', 'fd'])
+      assert.equal(await readFile(join(agent, 'bin', tool), 'utf8'), 'test search tool')
+  } finally {
+    if (child && child.exitCode === null) child.kill()
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('Windows Pi cache requires the real JS CLI, not an npm .cmd shim', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'hexbot dev cache π '))
+  try {
+    await writeFile(join(root, 'package-lock.json'), 'locked')
+    await mkdir(join(root, 'node_modules/.bin'), { recursive: true })
+    await writeFile(join(root, 'node_modules/.bin/pi.cmd'), 'untrusted shim')
+    let installs = 0
+    const install = async () => {
+      installs++
+      const cli = devPiEntrypoint(root, 'win32')
+      await mkdir(join(cli, '..'), { recursive: true })
+      await writeFile(cli, 'real CLI')
+    }
+    await ensurePiRuntime(root, install, 'win32')
+    await ensurePiRuntime(root, install, 'win32')
+    assert.equal(installs, 1)
+    await rm(devPiEntrypoint(root, 'win32'))
+    await ensurePiRuntime(root, install, 'win32')
+    assert.equal(installs, 2)
+  } finally { await rm(root, { recursive: true, force: true }) }
+})
+
+// Controlled children and a manually fired deadline keep stop tests event based.
+function controlledRunner() {
+  const children = [], calls = [], timers = [], exits = []
+  let clock = 100
+  const runner = createDevRunner({
+    hexbot: 'C:\\debug\\hexbot.exe', platform: 'win32', now: () => clock,
+    report: message => calls.push(message), exit: code => exits.push(code),
+    schedule: (callback, ms) => { const timer = { callback, ms }; timers.push(timer); return timer },
+    cancel: timer => { if (timer) timer.cancelled = true },
+    spawnChild: (command, args, options) => {
+      const child = new EventEmitter()
+      child.pid = 100 + children.length
+      child.exitCode = null
+      child.stdin = new EventEmitter()
+      child.stdin.end = () => { calls.push(`close ${child.pid}`); clock += 3 }
+      child.kill = signal => { calls.push(`kill ${child.pid} ${signal}`); return true }
+      child.finish = code => { child.exitCode = code; child.emit('exit', code) }
+      children.push(child)
+      calls.push({ command, args, options })
+      return child
+    }
+  })
+  return { runner, children, calls, timers, exits }
+}
+
+test('Windows wraps only web and desktop with literal argv and private input', async () => {
+  const { runner, calls, children } = controlledRunner()
+  const args = ['C:\\工具 path\\pnpm.cjs', 'a&b', '"literal"', '']
+  runner.start('web', 'C:\\node.exe', args)
+  runner.start('desktop', 'C:\\node.exe', args)
+  runner.start('daemon', 'C:\\debug\\hexbot.exe', ['serve'])
+  for (const [index, label] of ['web', 'desktop'].entries()) {
+    assert.equal(calls[index].command, 'C:\\debug\\hexbot.exe')
+    assert.deepEqual(calls[index].args, ['__dev-child', label, '--', 'C:\\node.exe', ...args])
+    assert.deepEqual(calls[index].options.stdio, ['pipe', 'inherit', 'inherit'])
+  }
+  assert.deepEqual(calls[2].args, ['serve'])
+  assert.equal(calls[2].options.stdio, 'inherit')
+  const stopped = runner.stop()
+  await Promise.resolve()
+  children.forEach(child => child.finish(0))
+  await stopped
+})
+
+test('Windows closes all inputs together and uses one deadline from first close', async () => {
+  const { runner, calls, timers, children, exits } = controlledRunner()
+  runner.start('web', 'node.exe', [])
+  runner.start('desktop', 'node.exe', [])
+  const stopped = runner.stop()
+  await Promise.resolve()
+  assert.deepEqual(calls.filter(call => typeof call === 'string'), ['close 100', 'close 101'])
+  assert.equal(timers.length, 1)
+  assert.equal(timers[0].ms, 19_994)
+  children[0].finish(0)
+  timers[0].callback()
+  await stopped
+  assert.deepEqual(calls.filter(call => typeof call === 'string' && call.startsWith('kill')), ['kill 101 SIGKILL'])
+  assert.ok(calls.some(call => typeof call === 'string' && call.includes('cleanup of desktop was not confirmed')))
+  assert.deepEqual(exits, [1])
+})
+
+test('Windows retains the original failure when a sibling cleanup also fails', async () => {
+  const { runner, children, exits } = controlledRunner()
+  runner.start('web', 'node.exe', [])
+  runner.start('desktop', 'node.exe', [])
+  const stopped = runner.stop(7)
+  await Promise.resolve()
+  children[0].finish(125)
+  children[1].finish(0)
+  await stopped
+  assert.deepEqual(exits, [7])
+})
+
+test('Windows rejects successful shutdown when a host refuses assignment', async () => {
+  const { runner, children, exits } = controlledRunner()
+  runner.start('web', 'node.exe', [])
+  const stopped = runner.stop()
+  await Promise.resolve()
+  children[0].finish(126)
+  await stopped
+  assert.deepEqual(exits, [1])
+})
+
+for (const failure of ['spawn-error', 'exit', 'stop']) test(`startup gates the next spawn after ${failure}`, async () => {
+  const { runner, children, timers, exits } = controlledRunner()
+  runner.start('web', 'node.exe', [])
+  let portReady
+  const ready = runner.ready(1234, 'web', () => new Promise(resolve => { portReady = resolve }))
+  if (failure === 'spawn-error') children[0].emit('error', new Error('ENOENT'))
+  else if (failure === 'exit') children[0].finish(9)
+  else void runner.stop()
+  assert.equal(await ready, false)
+  portReady()
+  runner.start('desktop', 'node.exe', [])
+  assert.equal(children.length, 1)
+  await Promise.resolve()
+  if (failure === 'stop') children[0].finish(0)
+  timers[0]?.callback()
+  await runner.stop()
+  assert.deepEqual(exits, [failure === 'stop' ? 0 : 1])
+})
+
+test('synchronous spawn failure prevents all later starts', async () => {
+  const exits = []
+  const runner = createDevRunner({ platform: 'win32', spawnChild: () => { throw new Error('spawn failed') },
+    report: () => {}, exit: code => exits.push(code) })
+  runner.start('web', 'node.exe', [])
+  assert.equal(runner.stopping, true)
+  assert.equal(runner.start('desktop', 'node.exe', []), undefined)
+  await runner.stop()
+  assert.deepEqual(exits, [1])
+})
+
+test('survivor termination failure still reports unconfirmed cleanup and exits 1', async () => {
+  const { runner, children, calls, timers, exits } = controlledRunner()
+  runner.start('web', 'node.exe', [])
+  children[0].kill = () => { throw new Error('owned handle termination failed') }
+  const stopped = runner.stop()
+  await Promise.resolve()
+  timers[0].callback()
+  await stopped
+  assert.deepEqual(exits, [1])
+  assert.ok(calls.some(call => typeof call === 'string' && call.includes('cleanup of web was not confirmed')))
+  assert.ok(calls.some(call => typeof call === 'string' && call.includes('owned handle termination failed')))
+})
+
+test('Unix retains inherited stdin and process-group stop', async () => {
+  const child = new EventEmitter()
+  child.pid = 42
+  const calls = []
+  const runner = createDevRunner({ platform: 'darwin', spawnChild: (command, args, options) => {
+    assert.equal(command, 'pnpm')
+    assert.equal(options.detached, true)
+    assert.equal(options.stdio, 'inherit')
+    return child
+  }, killGroup: (...args) => calls.push(args), schedule: (_callback, ms) => {
+    assert.equal(ms, 500)
+    return { unref() {} }
+  } })
+  runner.start('desktop', 'pnpm', ['dev'])
+  await runner.stop()
+  assert.deepEqual(calls, [[-42, 'SIGTERM']])
+})
+
+test('native Dev fixture provisions before one normal bridge start and authenticates readiness', async () => {
+  const { startDevRuntime, remainingStartup } = await import('../../backend/hexbot-core/tests/support/dev-app-harness.mjs')
+  const calls = []
+  const env = { HEXBOT_PI_EXECUTABLE: 'C:\\owned\\node.exe' }
+  let now = 100
+  const remaining = () => remainingStartup(280, () => now)
+  const result = await startDevRuntime({
+    provision: async () => { calls.push(['provision', remaining()]); now += 40; return env },
+    startClients: async value => { assert.equal(value, env); calls.push(['clients', remaining()]); now += 30 },
+    startOwnedDaemon: async value => { assert.equal(value, env); calls.push(['bridge', remaining()]); now += 50; return { port: 1234 } },
+    ready: async () => { calls.push(['ready', remaining()]); now += 20; return { port: 1234 } },
+    handshake: async (state, owned) => { assert.equal(state.port, owned.port); calls.push(['handshake', remaining()]); return { pid: 42 } }
+  })
+  assert.deepEqual(result, { pid: 42 })
+  assert.deepEqual(calls, [['provision', 180], ['clients', 140], ['bridge', 110], ['ready', 60], ['handshake', 40]])
+  assert.throws(() => remainingStartup(280, () => 281), /budget exhausted/)
+})
+
+for (const failed of ['provision', 'startClients', 'startOwnedDaemon', 'ready', 'handshake']) test(`native Dev startup preserves ${failed} failure without retry`, async () => {
+  const { startDevRuntime } = await import('../../backend/hexbot-core/tests/support/dev-app-harness.mjs')
+  const calls = []
+  const names = ['provision', 'startClients', 'startOwnedDaemon', 'ready', 'handshake']
+  const failure = new Error(failed)
+  await assert.rejects(startDevRuntime(Object.fromEntries(names.map(name => [name, async () => {
+    calls.push(name)
+    if (name === failed) throw failure
+  }]))), error => error === failure)
+  assert.deepEqual(calls, names.slice(0, names.indexOf(failed) + 1))
+})
+
+test('native sibling fixture requires surviving desktop acknowledgement independently of primary failure', async () => {
+  const { assertSurvivingDesktop } = await import('../../backend/hexbot-core/tests/support/dev-app-harness.mjs')
+  const good = { code: 1, exits: { web: null, desktop: 0 }, kills: [{ label: 'web', signal: 'SIGKILL' }], diagnostics: [] }
+  assertSurvivingDesktop(good)
+  for (const desktop of [125, 126, 3, null, undefined]) {
+    assert.throws(() => assertSurvivingDesktop({ ...good, exits: { desktop } }))
+  }
+  assert.throws(() => assertSurvivingDesktop({ ...good, kills: [...good.kills, { label: 'desktop', signal: 'SIGKILL' }] }))
+  assert.throws(() => assertSurvivingDesktop({ ...good, diagnostics: ['[dev] cleanup of desktop was not confirmed'] }))
+  assert.throws(() => assertSurvivingDesktop({ ...good, code: 0 }))
 })

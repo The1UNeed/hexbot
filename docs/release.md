@@ -154,7 +154,7 @@ executables before it selects a runtime and reports a system it cannot run on.
 
 Developer ID builds use the hardened runtime. Electron and its helpers inherit
 `allow-jit`; only bundled Node receives `allow-unsigned-executable-memory`, through
-`scripts/desktop/mac-sign.cjs` and `apps/desktop/entitlements.node.plist`. Intel
+`apps/desktop/scripts/mac-sign.cjs` and `apps/desktop/entitlements.node.plist`. Intel
 Node 22 LTS needs that exception: the pinned x64 probe under Rosetta traps in V8's
 `OS::SetPermissions` with `allow-jit` alone. Client-only builds have no Node
 exception. Ad-hoc Dev builds omit the hardened runtime so Electron's
@@ -389,7 +389,7 @@ Secrets: `CSC_LINK` (base64 Developer ID Application `.p12`),
 two are set and notarizes when all five are. The workflow writes the `.p8`
 contents to a file on the runner because electron-builder expects
 `APPLE_API_KEY` to be a path. Without the secrets macOS builds are ad-hoc
-signed by `scripts/desktop/after-pack.cjs` so they still launch on Apple
+signed by `apps/desktop/scripts/after-pack.cjs` so they still launch on Apple
 Silicon, but Gatekeeper warns.
 
 ```sh

@@ -30,7 +30,7 @@ import { edition, hasRuntime, requireRuntime } from './edition'
 import { parseDeepLink } from './deep-link'
 import { notify } from './notify'
 import { pair, pairingReply, pairWithGrant, type GrantPairOptions, type PairOptions } from './pair'
-import { installService, serviceStatus, uninstallService } from './service'
+import { handoffWindowsService, installService, reconcileWindowsService, serviceStatus, uninstallService } from './service'
 import { createTray } from './tray'
 import { setCrashReports, startCrashReports } from './crash-reports'
 import { readDesktopState, updateDesktopState } from './desktop-state'
@@ -363,7 +363,10 @@ else {
     powerMonitor.on('shutdown', () => lifecycle.beginQuit())
     if (devIcon && process.platform === 'darwin') app.dock?.setIcon(devIcon)
     installAppProtocol(rendererDirectory, existsSync)
-    daemon = new DaemonManager(undefined, async () => (await serviceStatus()).installed)
+    daemon = new DaemonManager(undefined, async () => (await serviceStatus()).installed, reconcileWindowsService, handoffWindowsService)
+    // Opt-in observation for the disposable installed-app harness.
+    if (process.env.HEXBOT_INSTALLED_APP_SMOKE === '1')
+      (app as NodeJS.EventEmitter).on('hexbot:installed-smoke:manager', (read: (manager: DaemonManager) => void) => read(daemon))
     registerIpc()
     Menu.setApplicationMenu(
       Menu.buildFromTemplate(

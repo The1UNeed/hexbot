@@ -1,5 +1,5 @@
 import { EventEmitter } from 'node:events'
-import { createWriteStream, existsSync, renameSync, statSync, watch } from 'node:fs'
+import { createWriteStream, existsSync, realpathSync, renameSync, statSync, watch } from 'node:fs'
 import { mkdir, readFile } from 'node:fs/promises'
 import net from 'node:net'
 import { join, delimiter, dirname, basename } from 'node:path'
@@ -7,7 +7,9 @@ import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
 
 import { app } from 'electron'
 
-import { binDir, canonicalRuntimePath, daemonDirectory, hexbotExecutable, hexbotHome } from './paths'
+import { binDir, daemonDirectory, hexbotExecutable, hexbotHome, canonicalRuntimePath } from './paths'
+import { windowsDaemon } from './windows-readiness'
+import { nodePath } from './node-path'
 
 // 'external': a service or another copy of the app runs the daemon for this
 // home. The app uses it and cannot stop it.
@@ -55,6 +57,7 @@ export async function findFreePort(
 // The PID in native-daemon.lock while that process is alive. A permission
 // error counts as alive: uncertain ownership must never look like a stopped daemon.
 export async function lockedDaemonPid(home = hexbotHome()): Promise<number | undefined> {
+  if (process.platform === 'win32') return (await windowsDaemon(home))?.pid
   const pid = Number(await readFile(join(home, 'native-daemon.lock'), 'utf8').catch(() => ''))
   if (!Number.isSafeInteger(pid) || pid <= 0) return undefined
   try {
@@ -69,6 +72,7 @@ export async function lockedDaemonPid(home = hexbotHome()): Promise<number | und
 // home; a second one would exit on the home lock. The running daemon holds that
 // lock and records its port in serve-state.json.
 export async function runningDaemonPort(home = hexbotHome(), signal?: AbortSignal): Promise<number | undefined> {
+  if (process.platform === 'win32') return (await windowsDaemon(home))?.port
   const pid = await lockedDaemonPid(home)
   if (!pid) return undefined
   try {
@@ -108,6 +112,22 @@ export function requestOwnedShutdown(child: Pick<ChildProcessWithoutNullStreams,
   } else child.kill('SIGTERM')
 }
 
+// Readiness includes both the authenticated home identity and the selected
+// immutable executable. A stale serve-state or old PID cannot satisfy restart.
+export async function runningDaemon(home = hexbotHome(), signal?: AbortSignal): Promise<{ pid: number; port: number; executable: string } | undefined> {
+  if (process.platform === 'win32') return windowsDaemon(home)
+  const port = await runningDaemonPort(home, signal)
+  if (!port) return undefined
+  const record = JSON.parse(await readFile(join(home, 'runtime/native-running.json'), 'utf8')) as { pid?: number; executable?: string }
+  if (!record.pid || record.pid !== await lockedDaemonPid(home) || !record.executable)
+    throw new Error('Cannot verify the running service runtime')
+  return { pid: record.pid, port, executable: canonicalRuntimePath(record.executable) }
+}
+export async function selectedDaemon(signal?: AbortSignal): Promise<{ pid: number; port: number } | undefined> {
+  const ready = process.platform === 'win32' ? await runningDaemon() : await runningDaemon(hexbotHome(), signal).catch(() => undefined)
+  return ready && ready.executable === canonicalRuntimePath(hexbotExecutable()) ? ready : undefined
+}
+
 export class DaemonManager extends EventEmitter {
   private child?: ChildProcessWithoutNullStreams
   private childExecutable?: string
@@ -126,7 +146,9 @@ export class DaemonManager extends EventEmitter {
 
   constructor(
     private readonly configuredPort?: number,
-    private readonly serviceInstalled: () => Promise<boolean> = async () => false
+    private readonly serviceInstalled: () => Promise<boolean> = async () => false,
+    private readonly reconcileService: () => Promise<number | undefined> = async () => undefined,
+    private readonly handoffService?: (stopOwned: () => Promise<void>) => Promise<boolean>
   ) {
     super()
     app.on('before-quit', event => {
@@ -151,27 +173,54 @@ export class DaemonManager extends EventEmitter {
     return this.changeService(operation, false)
   }
   private changeService(operation: () => Promise<void>, installed: boolean): Promise<void> {
+    if (this.quitting) return Promise.reject(new Error('The app is quitting'))
+    const requestedOwned = this.ownedIntent || Boolean(this.child)
     this.cancelTransition()
     const epoch = this.requestEpoch
     return this.serialize(async () => {
       if (this.quitting || epoch !== this.requestEpoch)
         throw new Error('Service change was superseded')
-      const owned = this.ownedIntent || Boolean(this.child)
+      const owned = requestedOwned || this.ownedIntent || Boolean(this.child)
+      const previous = owned ? this.ownedRuntime : undefined
       if (owned) await this.stopOwned()
+      if (this.quitting || epoch !== this.requestEpoch)
+        throw new Error('Service change was superseded')
       try {
-        await operation()
+        // An entered CLI operation is real even when a newer intent arrives.
+        // Observe its result before rejecting the superseded caller.
+        await operation().catch(async error => {
+          if (this.quitting || epoch !== this.requestEpoch) {
+            // A failed CLI may still have started the service. Remember only
+            // authenticated ownership; uncertainty never authorizes recovery.
+            const port = await runningDaemonPort().catch(() => undefined)
+            if (port) this.setStatus({ state: 'external', port })
+          }
+          throw error
+        })
+        if (installed) {
+          const port = await this.waitForService()
+          this.failures = []
+          this.setStatus({ state: 'external', port })
+        } else this.setStatus({ state: 'stopped' })
         if (this.quitting || epoch !== this.requestEpoch)
           throw new Error('Service change was superseded')
-        if (installed) this.setStatus({ state: 'external', port: await this.waitForService() })
-        else {
-          this.setStatus({ state: 'stopped' })
-          await this.startOwned()
+        if (!installed) {
+          await this.startOwned(previous, previous?.port)
+          if (this.quitting || epoch !== this.requestEpoch)
+            throw new Error('Service change was superseded')
+          if (this.current.state !== 'external') await this.waitForOwned(previous)
+          if (this.quitting || epoch !== this.requestEpoch)
+            throw new Error('Service change was superseded')
         }
       } catch (error) {
+        // Preserve the original CLI/security error, including after cancellation.
+        // Recovery may only use this request's still-current owned authority.
         if (owned && epoch === this.requestEpoch && !this.quitting) {
           try {
-            await this.startOwned()
-            await this.waitForOwned()
+            await this.startOwned(previous, previous?.port)
+            if (this.quitting || epoch !== this.requestEpoch)
+              throw new Error('Service change was superseded')
+            if (this.current.state !== 'external') await this.waitForOwned(previous)
           } catch (restore) {
             throw new AggregateError([error, restore], 'Service change and daemon recovery failed')
           }
@@ -180,13 +229,13 @@ export class DaemonManager extends EventEmitter {
       }
     })
   }
-  private waitForService(): Promise<number> {
+  private waitForService(previousPid?: number): Promise<number> {
     return new Promise((resolve, reject) => {
       let settled = false, checking = false, changed = false
       let retry: NodeJS.Timeout | undefined
+      let lastError: unknown
       const probe = new AbortController()
       const watchers: ReturnType<typeof watch>[] = []
-      const cancelled = (): void => finish(new Error('Service change was superseded'))
       const watchError = (error: Error): void => finish(error)
       const finish = (error?: Error, port?: number): void => {
         if (settled) return
@@ -194,7 +243,6 @@ export class DaemonManager extends EventEmitter {
         clearTimeout(timer)
         clearTimeout(retry)
         probe.abort()
-        this.off('transition-cancelled', cancelled)
         for (const watcher of watchers) {
           watcher.off('error', watchError)
           watcher.close()
@@ -204,7 +252,7 @@ export class DaemonManager extends EventEmitter {
       }
       // One total deadline, including all HTTP probes and filesystem wake-ups.
       const timer = setTimeout(
-        () => finish(new Error('Installed service did not become ready')),
+        () => finish(new Error('Installed service did not become ready', { cause: lastError })),
         30_000
       )
       const check = async (): Promise<void> => {
@@ -216,19 +264,24 @@ export class DaemonManager extends EventEmitter {
         do {
           changed = false
           try {
-            const port = await runningDaemonPort(hexbotHome(), probe.signal)
+            const ready = previousPid === undefined ? undefined : await selectedDaemon(probe.signal)
+            const port = previousPid === undefined
+              ? await runningDaemonPort(hexbotHome(), probe.signal)
+              : ready && ready.pid !== previousPid ? ready.port : undefined
             if (port && !settled) finish(undefined, port)
           } catch (error) {
-            finish(error instanceof Error ? error : new Error(String(error)))
+            lastError = error
           }
         } while (changed && !settled)
         checking = false
         // HTTP can begin serving after the final filesystem publication.
         if (!settled) retry = setTimeout(() => { void check() }, 250)
       }
-      this.on('transition-cancelled', cancelled)
+      // Every caller has entered a service operation. Finish its bounded
+      // ownership observation before the caller rejects a superseded request.
       try {
-        for (const directory of [hexbotHome(), join(hexbotHome(), 'runtime')]) {
+        const home = process.platform === 'win32' ? nodePath(realpathSync.native(hexbotHome())) : hexbotHome()
+        for (const directory of [home, join(home, 'runtime')]) {
           if (!existsSync(directory)) continue
           const watcher = watch(directory, () => { void check() })
           watchers.push(watcher)
@@ -277,7 +330,7 @@ export class DaemonManager extends EventEmitter {
       const owned = this.ownedIntent || Boolean(this.child)
       const previous = owned ? this.ownedRuntime : undefined
       let activation: RuntimeActivation | undefined
-      let epoch = requestedEpoch
+      const epoch = requestedEpoch
       try {
         if (this.quitting || epoch !== this.requestEpoch)
           throw new Error('Daemon start was superseded')
@@ -295,11 +348,30 @@ export class DaemonManager extends EventEmitter {
           await stopping
           if (epoch !== this.requestEpoch) throw new Error('Daemon start was superseded')
         }
+        // No new task operation starts after cancellation. Once begun, observe
+        // its authenticated result before rejecting a superseded start.
+        if (activation && !this.child) {
+          const previousPid = await this.reconcileService().catch(async error => {
+            if (this.quitting || epoch !== this.requestEpoch) {
+              const port = await runningDaemonPort().catch(() => undefined)
+              if (port) this.setStatus({ state: 'external', port })
+            }
+            throw error
+          })
+          if (previousPid !== undefined) {
+            const port = await this.waitForService(previousPid)
+            this.setStatus({ state: 'external', port })
+          }
+        }
+        if (this.quitting || epoch !== this.requestEpoch)
+          throw new Error('Daemon start was superseded')
         await this.startOwned(activation, previous?.port)
         if (this.quitting || epoch !== this.requestEpoch)
           throw new Error('Daemon start was superseded')
         if (activation && !(policy === 'attach-or-start' && this.current.state === 'external'))
           await this.waitForOwned(activation)
+        if (this.quitting || epoch !== this.requestEpoch)
+          throw new Error('Daemon start was superseded')
         return this.status()
       } catch (error) {
         const recover = epoch === this.requestEpoch
@@ -543,8 +615,33 @@ export class DaemonManager extends EventEmitter {
     return this.status()
   }
 
-  private async stopForQuit(): Promise<void> {
-    if (process.platform === 'win32' || !(await this.serviceInstalled())) await this.stop()
+  private stopForQuit(platform = process.platform): Promise<void> {
+    this.quitting = true
+    this.cancelTransition()
+    return this.serialize(async () => {
+      if (platform !== 'win32') {
+        if (!(await this.serviceInstalled())) await this.stopOwned()
+        return
+      }
+      const owned = this.ownedIntent || Boolean(this.child)
+      const previousPid = this.child?.pid
+      try {
+        if (owned && this.handoffService) {
+          if (await this.handoffService(async () => { await this.stopOwned() })) {
+            const port = await this.waitForService(previousPid ?? 0)
+            this.setStatus({ state: 'external', port })
+          }
+        } else await this.stopOwned()
+      } catch (error) {
+        // A failed ownership query must not leave our child running on Quit.
+        // Only the retained child is stopped; no external task is controlled.
+        if (this.child) {
+          try { await this.stopOwned() }
+          catch (cleanup) { throw new AggregateError([error, cleanup], 'Quit handoff and owned daemon cleanup failed') }
+        }
+        throw error
+      }
+    })
   }
 
 }

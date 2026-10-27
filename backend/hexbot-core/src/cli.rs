@@ -1,4 +1,7 @@
 //! Native command line operations. A running daemon remains the sole runtime owner.
+#[cfg(windows)]
+#[path = "windows_terminal.rs"]
+mod windows_terminal;
 use crate::{
     Error, Result, auth, catalog, common, db, events::EventHub, runtime::Runtime, services,
     settings,
@@ -298,6 +301,28 @@ async fn input(prompt: String) -> Result<String> {
             Ok(String::from_utf8_lossy(&bytes).trim().to_owned())
         };
         tokio::select! {result=read=>result,_=interrupt.recv()=>Err(Error::new(5200,"Command interrupted"))}
+    }
+    #[cfg(windows)]
+    {
+        let mut command = tokio::process::Command::new(crate::windows_paths::system_program(
+            "WindowsPowerShell/v1.0/powershell.exe",
+        )?);
+        command
+            .args([
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                windows_terminal::READ_LINE,
+            ])
+            .stdin(std::process::Stdio::inherit())
+            .kill_on_drop(true);
+        tokio::select! {
+            result = command.output() => {
+                let output = result?;
+                windows_terminal::answer(&output).ok_or_else(|| Error::new(5200, "Terminal answer failed or exceeded 64 KiB"))
+            },
+            _ = tokio::signal::ctrl_c() => Err(Error::new(5200, "Command interrupted"))
+        }
     }
 }
 async fn remote(socket: &mut Socket, method: &str, p: Value) -> Result<Value> {

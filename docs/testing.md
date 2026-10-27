@@ -213,6 +213,11 @@ route and composer checked before continuing.
   replies stay silent. It calls the actual native API and records its delivery
   events in `notifications.json`. Set `HEXBOT_SMOKE_NATIVE_NOTIFICATIONS=1` on
   a host with notification permissions to require the OS `show` events too.
+  A launch-owned CJS preload records bounded, redacted native call stacks,
+  window events, reply phases and the notification handler's actual predicate
+  values and observed `Notification.show` calls in `native-window-trace.jsonl`.
+  It runs before main and saves failure evidence before screenshots or cleanup;
+  it adds no initial-visibility barrier or change to the native window policy.
   On macOS it launches the ad-hoc signed `Hexbot (dev)` copy that
   `pnpm dev --desktop` uses (`scripts/dev/electron-launcher.mjs`); macOS
   rejects notifications from the Electron in `node_modules`, whose signature
@@ -244,7 +249,17 @@ route and composer checked before continuing.
   native close/reopen, renderer retention, a real second launch, menu Quit
   while backgrounded, and injected OS session-end/shutdown events. Native
   fixtures exercise the production tray, update close/failure handling, and
-  tray destruction fallback. CI runs it on macOS, Windows, and Linux with
+  tray destruction fallback. A fixture closing its last window follows the
+  app's platform policy; it must not receive another Quit during shutdown.
+  Separate fixtures test Tray Quit with a retained window. Synchronous JSONL
+  traces record close prevention, session events, native Quit and process exit;
+  every fixture requires one shutdown request and exit code zero.
+  Instrumentation is a `-r` preload in each Playwright-owned launch. Product
+  launches verify one leading ready=false install attributed to that launch.
+  Only the isolated controls prove it exists before main entry; their main-entry
+  wait shares the instrumentation acknowledgement deadline. Packaged-app runs
+  (`HEXBOT_LIFECYCLE_APP`) still instrument through the inspector.
+  CI runs it on macOS, Windows, and Linux with
   Openbox and no tray host. Both launches use the same Linux CI sandbox flags;
   a second launch must exit with code zero and reopen the retained renderer.
   Close waits for native minimization to finish. Reopen waits for rendered
@@ -444,3 +459,74 @@ fixture. Set `HEXBOT_SMOKE_ARTIFACTS` to choose where its screenshots and proof
 files go. It checks daemon-owned cwd, revocation after removal and disable,
 credential changes in an open section, Manual approval for read-only tools, and
 nested steps before and after reload in light and dark themes.
+
+Windows build/install probes live in `.github/workflows/windows-contract.yml`.
+They do not publish packages or establish Windows support. See
+[the build contract](windows-build-contract.md) for the runtime layout,
+security dependency and native validation still required.
+
+The Windows `windows_launchers` debug suite also exercises the private Dev
+child host through its actual CLI router. It covers stdin EOF, a root exiting
+with a live descendant, a retained parent dying while the input writer remains
+open, Ctrl+Break in a new process group, Ctrl+C in a dedicated console,
+assignment refusal, literal Unicode arguments, and an unrelated process that
+must survive. Its app control uses the installed workspace pnpm, Vite,
+Electron and daemon. It provisions Pi through the existing Dev helpers and
+starts the fresh Electron app's daemon once through its normal bridge. The
+180-second startup budget includes provisioning, app start and the authenticated
+daemon handshake. Rust retains the direct daemon's creation handle before
+readiness and always reaps it on fixture failure. The injected readiness-failure
+control checks its ports and home are released and an unrelated process survives.
+Sibling failure requires the surviving desktop host's zero exit acknowledgement
+and retained descendants signalled before allowing the runner to complete.
+The existing Windows Full-build runtime smoke probe checks the staged release
+daemon rejects the private action with the exact unknown-command response and
+creates neither the requested home nor an execution marker.
+Portable admission tables run with `cargo test --lib dev_child_policy`; runner
+shutdown and startup races run with `node --test scripts/dev/run.test.mjs`.
+Cross-compilation checks these sources but does not validate native shutdown.
+The direct Windows daemon stop is still a force-kill of its owned root; its
+kill-on-close job does not establish acknowledged descendant completion.
+
+The owned Python
+pass has portable controls in `backend/hexbot-core/src/setup_python_tests.rs`
+(record schema, cfg shapes, the four uv forms, the 0/1/29/63 against 64 byte
+launcher boundary, the exact-ImportError classifier, receipt ordering and
+lock serialization, with faked processes over real files and symlinks). Its
+native controls drive the production pass in
+`backend/hexbot-core/tests/windows_contract.rs` and the Full bootstrap in
+`apps/desktop/src/main/backend/windows-bootstrap.test.ts`.
+
+The remaining owned-Python native controls are included by the existing
+`windows_contract` target from
+`backend/hexbot-core/tests/windows_contract/python_acceptance.rs`. They use
+nine fresh installation homes across independent test functions, one empty
+boundary-refusal home, and the existing Full fixture. Module-only repair and
+combined damaged-DLL gates remain unignored. Native execution and independent
+source review are required before Windows distribution. See the Windows build
+contract for the exact final-probe event blocker and the process-start
+interruption limit.
+
+The Python observability controls also exercise strict schema-2 DLL digests,
+limited schema-1 enrichment, exact tagged launcher exceptions, empty fully
+collected stderr and final ordinary launcher checks. Actual portable child
+processes exercise the Unix helper with shortened deadlines, real Unix
+EOF/pipe ownership, overflow/read errors and primary diagnostics. They do not
+establish Windows settlement. The portable hook and teardown fixture runs the
+host `python3` over a search path it owns, so a host interpreter whose stdlib
+ships `sitecustomize` cannot change its outcome, while an explicit alternate
+inside the fixture is still refused by the unchanged lookup. The existing
+`windows_contract` target also
+includes the exact private Windows capture source and its native event-driven
+controls. These cover both streams, zero/late bytes, root-exited held writers,
+cap-plus-hang, partial setup, read/wait errors, cancellation races, spawn refusal,
+wrapper cancellation/join, unwind, handle/thread counts and runtime exit. A
+simulated past-threshold case retains a real pending request until fixture
+release; it does not reproduce an OS driver stall. All these native gates are
+unrun. The shared 5-second cleanup threshold latches permanent refusal/scratch
+retention while ownership remains until actual settlement/join, so exceptional
+OS cleanup can block setup and Full startup beyond 35 seconds. No detached
+reader or worker may substitute for settlement. Native launcher/DLL restoration
+and the documented boundary-injection limits remain pending. A future uv-pin
+change must prove same-key DLL byte compatibility or bring its own reviewed
+narrow migration.

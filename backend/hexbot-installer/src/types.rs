@@ -45,6 +45,8 @@ pub enum Target {
     MacosX86_64,
     #[serde(rename = "linux-x86_64")]
     LinuxX86_64,
+    #[serde(rename = "windows-x86_64")]
+    WindowsX86_64,
 }
 
 impl Target {
@@ -57,12 +59,21 @@ impl Target {
             ("macos", "aarch64") => Ok(Self::MacosAarch64),
             ("macos", "x86_64") => Ok(Self::MacosX86_64),
             ("linux", "x86_64") => Ok(Self::LinuxX86_64),
+            ("windows", "x86_64" | "amd64") => Ok(Self::WindowsX86_64),
             _ => fail(format!("Hexbot is not available for {os}/{arch}.")),
         }
     }
 
     pub fn is_macos(self) -> bool {
-        self != Self::LinuxX86_64
+        matches!(self, Self::MacosAarch64 | Self::MacosX86_64)
+    }
+
+    pub fn is_linux(self) -> bool {
+        matches!(self, Self::LinuxX86_64)
+    }
+
+    pub fn is_windows(self) -> bool {
+        matches!(self, Self::WindowsX86_64)
     }
 }
 
@@ -72,6 +83,7 @@ impl fmt::Display for Target {
             Self::MacosAarch64 => "macos-aarch64",
             Self::MacosX86_64 => "macos-x86_64",
             Self::LinuxX86_64 => "linux-x86_64",
+            Self::WindowsX86_64 => "windows-x86_64",
         })
     }
 }
@@ -187,9 +199,17 @@ pub struct InstalledApp {
 
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct Installed {
+    #[serde(skip)]
+    pub(crate) windows: bool,
+    #[serde(skip)]
+    pub(crate) missing_windows_track: Option<Track>,
+    #[serde(skip)]
+    pub(crate) windows_runtime_track: Option<Track>,
     pub receipt: Option<Receipt>,
     pub apps: Vec<InstalledApp>,
     pub service: bool,
+    /// Owned script metadata exists, but a scheduler task was not found/queried.
+    pub service_recoverable: bool,
     pub runtime: bool,
     pub wrapper: bool,
 }
@@ -206,10 +226,57 @@ impl Installed {
                     .map(|a| a.option)
             })
             .or_else(|| self.apps.first().map(|a| a.option))
-            .or_else(|| (self.service || self.wrapper).then_some(InstallOption::Headless))
+            .or_else(|| {
+                (self.service || self.service_recoverable || self.wrapper)
+                    .then_some(InstallOption::Headless)
+            })
     }
 
+    /// Owned Windows CLI/task evidence without a receipt or any app.
+    pub(crate) fn windows_headless(&self) -> bool {
+        self.windows
+            && self.receipt.is_none()
+            && self.apps.is_empty()
+            && self.missing_windows_track.is_none()
+            && (self.service || self.service_recoverable || self.wrapper)
+    }
+
+    pub(crate) fn windows_repair_app(&self) -> Option<&InstalledApp> {
+        let mut apps = self.apps.iter().filter(|app| {
+            !app.app_id.ends_with(".dev")
+                && self
+                    .receipt
+                    .as_ref()
+                    .is_none_or(|r| r.option == app.option && r.paths.contains(&app.path))
+        });
+        let app = apps.next()?;
+        apps.next().is_none().then_some(app)
+    }
     pub fn track(&self) -> Option<Track> {
+        if self.windows
+            && self
+                .receipt
+                .as_ref()
+                .is_none_or(|r| r.option != InstallOption::Headless)
+        {
+            if let Some(track) = self.missing_windows_track {
+                return Some(track);
+            }
+            if self.windows_headless() {
+                return self.windows_runtime_track;
+            }
+            let app = self.windows_repair_app()?;
+            let track = crate::detect::windows_app_track(&app.app_id)?;
+            return match app
+                .version
+                .as_deref()
+                .and_then(|v| semver::Version::parse(v).ok())
+                .map(|v| crate::installed_version::track(&v))
+            {
+                Some(packaged) => (packaged == track).then_some(track),
+                None => self.receipt.as_ref().map(|_| track),
+            };
+        }
         self.receipt.as_ref().map(|r| r.channel).or_else(|| {
             self.apps.first().and_then(|a| {
                 if a.app_id.ends_with(".dev") {

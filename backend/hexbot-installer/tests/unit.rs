@@ -49,7 +49,13 @@ fn target_names_match_the_release_manifest() {
             format!("\"{expected}\"")
         );
     }
-    assert!(Target::from_platform("windows", "x86_64").is_err());
+    assert_eq!(
+        Target::from_platform("windows", "x86_64")
+            .unwrap()
+            .to_string(),
+        "windows-x86_64"
+    );
+    assert!(Target::from_platform("windows", "aarch64").is_err());
     assert!(Target::from_platform("linux", "aarch64").is_err());
 }
 

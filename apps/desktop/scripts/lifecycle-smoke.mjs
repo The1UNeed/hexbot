@@ -4,12 +4,17 @@ import assert from 'node:assert/strict'
 import { execFile, spawn } from 'node:child_process'
 import { once } from 'node:events'
 import { appendFileSync } from 'node:fs'
-import { cp, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises'
+import { cp, lstat, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { dirname, join, resolve } from 'node:path'
+import { dirname, isAbsolute, join, resolve } from 'node:path'
 import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
+import {
+  SHUTDOWN_TRACE_ENV, acknowledgeInstrumentation, assertSingleInstall, instrumentShutdown, observeShutdown,
+  requestShutdown, writeInstrumentationPreload
+} from '../../../scripts/desktop/lifecycle-shutdown.mjs'
+import { instrumentationControl, withProtocolTrace } from '../../../scripts/desktop/lifecycle-instrumentation.mjs'
 
 const desktop = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const require = createRequire(join(desktop, 'package.json'))
@@ -21,26 +26,39 @@ const artifacts =
   (await mkdtemp(join(tmpdir(), 'hexbot-lifecycle-evidence-')))
 await mkdir(artifacts, { recursive: true })
 const root = await mkdtemp(join(tmpdir(), 'hexbot-lifecycle-'))
+// Stock Electron preloads instrumentation before the app's main entry. A
+// packaged app ignores -r, so it keeps the inspector evaluate (and its known
+// garbage-collection exposure while the main thread is busy).
+const packaged = Boolean(process.env.HEXBOT_LIFECYCLE_APP)
+const preload = packaged ? undefined : await writeInstrumentationPreload(root)
+const traces = new WeakMap()
 const environment = { ...process.env, HEXBOT_WEB_DEV_URL: 'http://127.0.0.1:1' }
 delete environment.ELECTRON_RUN_AS_NODE
 const results = []
 let currentApp
+let protocolDebug
 let currentProcess
 const processes = new WeakMap()
+const launchBounds = new WeakMap()
+const shutdowns = new WeakMap()
 
 function recordProcess(child, name) {
   const file = join(artifacts, `${name}-process.log`)
   const record = message => appendFileSync(file, message)
   record(`pid=${child.pid}\n`)
-  child.stdout?.on('data', record)
-  child.stderr?.on('data', record)
-  child.on('exit', (code, signal) => record(`\nexit=${JSON.stringify({ code, signal })}\n`))
+  child.stdout?.on('data', data => record(`[${Date.now()} stdout] ${data}`))
+  child.stderr?.on('data', data => record(`[${Date.now()} stderr] ${data}`))
+  child.on('exit', (code, signal) => record(`\nexit=${JSON.stringify({ time: Date.now(), code, signal })}\n`))
+  return (event, details = {}) => record(`harness=${JSON.stringify({ event, time: Date.now(), ...details })}\n`)
 }
 
-function launchArgs(directory) {
+// Only Playwright-owned launches are instrumented. The bare second launch must
+// hand off to the first instance exactly as a user's would.
+function launchArgs(directory, instrumented = false) {
   return [
     ...(process.platform === 'linux' && process.env.CI ? ['--no-sandbox'] : []),
-    ...(process.env.HEXBOT_LIFECYCLE_APP ? [] : [directory])
+    ...(instrumented && preload ? ['-r', preload] : []),
+    ...(packaged ? [] : [directory])
   ]
 }
 
@@ -75,50 +93,97 @@ async function prepare(edition) {
   await cp(join(desktop, '../web/dist'), join(directory, 'out/renderer'), { recursive: true })
   return directory
 }
-async function launch(directory, name) {
+async function launch(directory, name, fixture = false) {
   const home = join(root, `${name}-home`)
   await mkdir(home)
-  currentApp = await electron.launch({
-    executablePath,
-    args: launchArgs(directory),
-    env: { ...environment, HEXBOT_HOME: home },
-    timeout: 30_000
-  })
-  // Playwright disposes its process accessor when the Electron connection closes.
-  currentProcess = currentApp.process()
-  processes.set(currentApp, currentProcess)
-  recordProcess(currentProcess, name)
-  return currentApp
+  const perform = async trace => {
+    const notBefore = Date.now()
+    const shutdownTrace = join(artifacts, `${name}-shutdown.jsonl`)
+    // Each launch owns a fresh trace; stale evidence must never acknowledge it.
+    await lstat(shutdownTrace).then(() => { throw new Error(`Stale shutdown trace: ${shutdownTrace}`) },
+      error => { if (error.code !== 'ENOENT') throw error })
+    trace('launch-request')
+    currentApp = await electron.launch({
+      executablePath,
+      args: launchArgs(directory, true),
+      env: {
+        ...environment,
+        HEXBOT_HOME: home,
+        [SHUTDOWN_TRACE_ENV]: shutdownTrace,
+        ...(fixture ? { HEXBOT_LIFECYCLE_TRACE: join(artifacts, `${name}-events.jsonl`) } : {})
+      },
+      timeout: 30_000
+    })
+    traces.set(currentApp, shutdownTrace)
+    // Playwright disposes its process accessor when the Electron connection closes.
+    launchBounds.set(currentApp, { notBefore, notAfter: Date.now() })
+    currentProcess = currentApp.process()
+    processes.set(currentApp, currentProcess)
+    const record = recordProcess(currentProcess, name)
+    shutdowns.set(currentApp, observeShutdown(currentApp, currentProcess, record))
+    trace('instrumentation-request', { trackedPid: currentProcess.pid })
+    const installed = packaged
+      ? await currentApp.evaluate(instrumentShutdown, shutdownTrace)
+      : await acknowledgeInstrumentation(shutdownTrace, currentProcess)
+    trace('instrumentation-acknowledged', installed && { pid: installed.pid, ppid: installed.ppid })
+    return currentApp
+  }
+  return protocolDebug
+    ? withProtocolTrace(protocolDebug, join(artifacts, `${name}-instrumentation-protocol.jsonl`), () => name, perform)
+    : perform(() => {})
 }
 async function quit(app, source = 'app') {
-  const child = processes.get(app)
-  // Register both rejection handlers before triggering exit. Native Quit can
-  // dispose the debug connection before evaluate returns on Windows/Linux.
-  const closed = app.waitForEvent('close', { timeout: 15_000 }).catch(error => error)
-  const actionError = await app
-    .evaluate(({ app, Menu }, source) => {
+  try {
+    await requestShutdown(shutdowns.get(app), () => app.evaluate(({ app, Menu }, source) => {
       setImmediate(() => {
+        // Missing instrumentation is already a primary failure; it must not
+        // also prevent the cleanup Quit from being requested.
+        globalThis.hexbotLifecycleTrace?.('shutdown-request', { source })
+        globalThis.lifecycleFixture?.trace('shutdown-request', { source })
         if (source === 'tray')
           globalThis.lifecycleFixture.trayMenu.items.find(item => item.label === 'Quit').click()
+        else if (source === 'window') globalThis.lifecycleFixture.window.close()
         else if (source === 'menu')
-          Menu.getApplicationMenu()
-            .items[0].submenu.items.find(item => item.role === 'quit')
-            .click()
+          Menu.getApplicationMenu().items[0].submenu.items.find(item => item.role === 'quit').click()
         else app.quit()
       })
-    }, source)
-    .then(
-      () => undefined,
-      error => error
-    )
-  const closeError = await closed
-  if (closeError) throw actionError || closeError
-  await expect
-    .poll(() => child.exitCode)
-    .toBe(0)
-    .catch(error => {
-      throw actionError || error
-    })
+    }, source))
+  } catch (error) {
+    // Diagnostics run only after a failed strict gate and before cleanup kills
+    // the owned test process. They must never replace the primary failure.
+    if (process.platform === 'win32') {
+      try {
+        const system = process.env.SystemRoot
+        assert(system && isAbsolute(system))
+        const program = join(system, 'System32/WindowsPowerShell/v1.0/powershell.exe')
+        const info = await lstat(program)
+        assert(info.isFile() && !info.isSymbolicLink())
+        const child = processes.get(app)
+        let result
+        try {
+          const output = await promisify(execFile)(program,
+            ['-NoProfile', '-NonInteractive', '-File', resolve(desktop, '../../scripts/desktop/windows-shutdown-diagnostic.ps1')],
+            { cwd: tmpdir(), windowsHide: true, timeout: 5000, maxBuffer: 65536,
+              env: { ...environment, HEXBOT_TEST_SHUTDOWN_PID: String(child.pid),
+                HEXBOT_TEST_SHUTDOWN_IMAGE: executablePath,
+                HEXBOT_TEST_SHUTDOWN_AFTER: String(launchBounds.get(app).notBefore),
+                HEXBOT_TEST_SHUTDOWN_BEFORE: String(launchBounds.get(app).notAfter) } })
+          result = { status: 0, ...output }
+        } catch (diagnostic) {
+          result = { status: diagnostic.code, signal: diagnostic.signal, message: diagnostic.message.slice(0, 2048),
+            stdout: diagnostic.stdout, stderr: diagnostic.stderr }
+        }
+        const bounded = stream => ({ bytes: Buffer.byteLength(stream || ''), text: (stream || '').slice(0, 16384) })
+        const evidence = { pid: child.pid, utc: new Date().toISOString(), source, phase: 'after strict deadline, before cleanup',
+          observed: shutdowns.get(app).observed, status: result.status, signal: result.signal, message: result.message,
+          stdout: bounded(result.stdout), stderr: bounded(result.stderr) }
+        console.error('Native shutdown failure snapshot:', JSON.stringify(evidence))
+        await writeFile(join(artifacts, `shutdown-failure-${child.pid}.json`), JSON.stringify(evidence, null, 2))
+      } catch (diagnostic) { console.error('Shutdown diagnostics failed:', diagnostic.message) }
+    }
+    throw error
+  }
+  if (!packaged) await assertSingleInstall(traces.get(app))
   currentApp = undefined
 }
 
@@ -187,6 +252,12 @@ async function rendered(app, page) {
 }
 
 try {
+  if (!packaged) {
+    const playwright = createRequire(createRequire(require.resolve('@playwright/test')).resolve('playwright'))
+    const { debug } = playwright(join(dirname(playwright.resolve('playwright-core/package.json')), 'lib/utilsBundle.js'))
+    await instrumentationControl({ electron, debug, executablePath, root, artifacts, environment, preload })
+    if (process.platform === 'win32') protocolDebug = debug
+  }
   for (const edition of process.env.HEXBOT_LIFECYCLE_APP ? ['client'] : ['full', 'client']) {
     const directory = process.env.HEXBOT_LIFECYCLE_APP ? desktop : await prepare(edition)
     const app = await launch(directory, edition)
@@ -268,49 +339,40 @@ try {
     await expect
       .poll(() => endingApp.evaluate(({ powerMonitor }) => powerMonitor.listenerCount('shutdown')))
       .toBeGreaterThan(0)
-    const session = await endingApp
-      .evaluate(({ BrowserWindow, powerMonitor }) => {
-        const win = BrowserWindow.getAllWindows()[0]
+    const closeSession = () => endingApp.evaluate(({ BrowserWindow, powerMonitor }) => {
+      const win = BrowserWindow.getAllWindows()[0]
+      // Return the command acknowledgement before native close can dispose CDP.
+      setImmediate(() => {
+        globalThis.hexbotLifecycleTrace('session-close-request')
         if (process.platform === 'win32')
-          win.emit('session-end', {
-            preventDefault() {
-              throw new Error('Session end vetoed')
-            }
-          })
+          win.emit('session-end', { preventDefault() { throw new Error('Session end vetoed') } })
         else
-          powerMonitor.emit('shutdown', {
-            preventDefault() {
-              throw new Error('Shutdown vetoed')
-            }
-          })
-        // before-quit is intentionally absent here.
-        let prevented = false
-        win.once('close', event => {
-          prevented = event.defaultPrevented
-        })
+          powerMonitor.emit('shutdown', { preventDefault() { throw new Error('Shutdown vetoed') } })
+        // before-quit is intentionally absent here. Register after production's
+        // close handler and persist its actual veto result before destruction.
+        win.once('close', event => globalThis.hexbotLifecycleTrace('session-window-close', {
+          prevented: event.defaultPrevented
+        }))
         win.close()
-        return !prevented
       })
-      .catch(async error => {
-        // On Windows/Linux window-all-closed quits the process immediately.
-        // The debug connection can close before Node receives the process exit.
-        if (process.platform !== 'darwin') {
-          try {
-            await expect.poll(() => endingProcess.exitCode).toBe(0)
-            return true
-          } catch {
-            /* Preserve the evaluation failure if native exit failed. */
-          }
-        }
-        throw error
-      })
-    assert(session, 'OS session end must allow native close')
+    })
     if (process.platform === 'darwin') {
-      await expect
-        .poll(() => endingApp.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().length))
-        .toBe(0)
+      await closeSession()
+      await expect.poll(() => endingApp.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().length)).toBe(0)
       await quit(endingApp)
-    } else await expect.poll(() => endingProcess.exitCode).toBe(0)
+    } else {
+      await requestShutdown(shutdowns.get(endingApp), closeSession)
+      if (!packaged) await assertSingleInstall(traces.get(endingApp))
+    }
+    const shutdownEvents = (await readFile(join(artifacts, `${edition}-session-shutdown.jsonl`), 'utf8'))
+      .trim().split('\n').map(line => JSON.parse(line))
+    const closes = shutdownEvents.filter(event => event.event === 'session-window-close')
+    assert.equal(closes.length, 1, 'One actual native session close')
+    assert.equal(closes[0].prevented, false, 'OS session end must allow native close')
+    assert.equal(shutdownEvents.filter(event => event.event === 'session-close-request').length, 1)
+    assert.equal(shutdownEvents.filter(event => event.event === 'inspector-detach').length, 1)
+    assert.equal(endingProcess.exitCode, 0)
+    assert.equal(endingProcess.signalCode, null)
     currentApp = undefined
     results.push({ edition, osEventClose: 'passed' })
   }
@@ -338,11 +400,11 @@ try {
           formats: ['es'],
           fileName: () => 'fixture.js'
         },
-        rollupOptions: { external: ['electron', 'node:events', 'node:path'] }
+        rollupOptions: { external: ['electron', 'node:events', 'node:fs', 'node:path'] }
       }
     })
-    for (const mode of ['update', 'session-end', 'tray-absent']) {
-      const app = await launch(fixture, mode)
+    for (const mode of ['update', 'session-end', 'tray', 'tray-absent']) {
+      const app = await launch(fixture, mode, true)
       await expect.poll(() => app.evaluate(() => !!globalThis.lifecycleFixture)).toBe(true)
       const state = await app.evaluate(async (_electron, mode) => {
         const { lifecycle, window, tray, trayMenu, calls } = globalThis.lifecycleFixture
@@ -368,25 +430,70 @@ try {
             }
           })
         }
-        if (mode !== 'tray-absent')
-          await new Promise(resolve => {
-            window.once('closed', resolve)
-            window.close()
-          })
         return { retained, opens, calls, destroyed: window.isDestroyed() }
       }, mode)
       assert(state.retained)
       assert.equal(state.opens, process.platform === 'darwin' ? 1 : 2)
       assert.equal(state.calls.stops, 1)
       assert.equal(state.calls.opens, state.opens + 1)
-      if (mode !== 'tray-absent') assert(state.destroyed)
-      else if (process.platform !== 'darwin')
+      assert(!state.destroyed)
+      if (mode === 'tray-absent' && process.platform !== 'darwin')
         await expect
           .poll(() => app.evaluate(() => globalThis.lifecycleFixture.window.isMinimized()), {
             message: 'No tray must keep a taskbar entry'
           })
           .toBe(true)
-      await quit(app, 'tray')
+      if (mode === 'update' || mode === 'session-end') {
+        // Closing the last window starts Quit on Windows/Linux. Do not send a
+        // second Tray Quit into the native shutdown already in progress.
+        if (process.platform !== 'darwin') await quit(app, 'window')
+        else {
+          await app.evaluate(async () => {
+            const { window, trace } = globalThis.lifecycleFixture
+            trace('window-close-request')
+            await new Promise(resolve => {
+              window.once('closed', resolve)
+              window.close()
+            })
+          })
+          await quit(app, 'tray')
+        }
+      } else await quit(app, 'tray')
+      const events = (await readFile(join(artifacts, `${mode}-events.jsonl`), 'utf8'))
+        .trim()
+        .split('\n')
+        .map(line => JSON.parse(line))
+      const named = name => events.filter(item => item.event === name)
+      const closesWindow = ['update', 'session-end'].includes(mode)
+      assert.equal(named('shutdown-request').length, 1, `${mode}: exactly one Quit request`)
+      assert.equal(
+        named('shutdown-request')[0].source,
+        process.platform !== 'darwin' && closesWindow ? 'window' : 'tray'
+      )
+      assert.equal(named('closed').length, 1, `${mode}: native window closed`)
+      // Electron omits window-all-closed when app.quit() initiates the close.
+      assert.equal(
+        named('window-all-closed').length,
+        closesWindow ? 1 : 0,
+        `${mode}: platform close policy`
+      )
+      assert.equal(named('before-quit').length, 1, `${mode}: one native Quit`)
+      assert.equal(named('quit').length, 1, `${mode}: native Quit completed`)
+      assert.equal(named('process-exit').length, 1, `${mode}: process exit recorded`)
+      assert.equal(named('process-exit')[0].code, 0)
+      assert.equal(named('render-process-gone').length, 0, `${mode}: renderer did not crash`)
+      const finalClose = named('close').at(-1)
+      assert.equal(finalClose.prevented, false, `${mode}: final close allowed`)
+      assert.equal(finalClose.exiting, true, `${mode}: lifecycle permits exit`)
+      assert(finalClose.sequence < named('closed')[0].sequence)
+      if (closesWindow) {
+        assert(named('closed')[0].sequence < named('window-all-closed')[0].sequence)
+        assert(named('window-all-closed')[0].sequence < named('before-quit')[0].sequence)
+      } else assert(named('before-quit')[0].sequence < finalClose.sequence)
+      if (mode === 'session-end') {
+        assert.equal(named('session-end').length, 1)
+        assert(named('session-end')[0].sequence < finalClose.sequence)
+      }
       results.push({ fixture: mode, passed: true })
     }
   }
@@ -400,11 +507,18 @@ try {
   await writeFile(join(artifacts, 'failure.txt'), String(error.stack || error)).catch(console.error)
   throw error
 } finally {
-  if (currentApp && currentProcess.exitCode === null && currentProcess.signalCode === null)
-    await quit(currentApp).catch(error => {
+  if (currentApp && currentProcess.exitCode === null && currentProcess.signalCode === null) {
+    appendFileSync(join(artifacts, 'cleanup.jsonl'), JSON.stringify({
+      time: Date.now(), pid: currentProcess.pid, shutdownAlreadyRequested: shutdowns.get(currentApp)?.requested
+    }) + '\n')
+    if (shutdowns.get(currentApp)?.requested) {
+      // Preserve the failed exit gate. Never issue another Quit into a native
+      // shutdown already in progress, including a debugger disconnect failure.
+      currentProcess.kill()
+    } else await quit(currentApp, 'cleanup').catch(error => {
       console.error('Lifecycle cleanup:', error)
-      if (currentProcess.exitCode === null && currentProcess.signalCode === null)
-        currentProcess.kill()
+      if (currentProcess.exitCode === null && currentProcess.signalCode === null) currentProcess.kill()
     })
+  }
   await rm(root, { recursive: true, force: true }).catch(console.error)
 }
