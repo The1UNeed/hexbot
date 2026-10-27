@@ -768,6 +768,24 @@ it.each([
   }
 )
 
+it('a cancelled bot click does not hold a check that finds another chat', async () => {
+  const state = holdLookups()
+  const view = await mount('/b/owl/s/canonical')
+  expect(await screen.findByText('canonical history')).toBeVisible()
+  state.hold = true
+  // Yak's lookup never answers; going back to Owl's known chat cancels it.
+  void selectChat('yak').catch(() => null)
+  await waitFor(() => expect(state.bots).toContain('yak'))
+  await act(async () => {
+    view.router.history.push('/b/owl/s/canonical')
+  })
+  await waitFor(() => expect(state.bots).toContain('owl'))
+  await act(async () =>
+    state.lookups[state.bots.indexOf('owl')]!.resolve({ section: section('moved') })
+  )
+  await waitFor(() => expect(view.router.state.location.pathname).toBe('/b/owl/s/moved'))
+})
+
 it('a lookup from before a daemon restart cannot enable the kept composer', async () => {
   const state = holdLookups()
   const view = await mount('/b/owl/s/canonical')

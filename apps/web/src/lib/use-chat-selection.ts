@@ -30,6 +30,8 @@ export function useChatSelection() {
   const router = useRouter()
   const generation = useRef(0)
   const selection = useRef<null | (() => boolean)>(null)
+  // Ends the pending lookup's wait: a cancelled one opens nothing.
+  const finish = useRef<null | ((found: boolean) => void)>(null)
   // The bot whose chat is being asked for, until it opens or the lookup is cancelled.
   const [asking, setAsking] = useState<null | string>(null)
 
@@ -42,6 +44,7 @@ export function useChatSelection() {
     generation.current++
     selection.current = null
     hydration.current = null
+    finish.current?.(false)
     setAsking(null)
     const choice = sectionsActions().choosing
 
@@ -122,8 +125,25 @@ export function useChatSelection() {
       const current = startSelection()
       setAsking(bot)
       let found = false
-      let settle!: (found: boolean) => void
-      latest = new Promise(resolve => (settle = resolve))
+      let answer!: (found: boolean) => void
+      let done = false
+      latest = new Promise(resolve => (answer = resolve))
+
+      // Each lookup finishes once: when it answers, is cancelled, or a later one replaces it.
+      const settle = (outcome: boolean) => {
+        if (!done) {
+          done = true
+          settled++
+          answer(outcome)
+        }
+
+        if (finish.current === settle) {
+          finish.current = null
+        }
+      }
+
+      finish.current?.(false)
+      finish.current = settle
 
       try {
         const chat = await sectionsActions().chat(bot, current)
@@ -140,7 +160,6 @@ export function useChatSelection() {
           throw error
         }
       } finally {
-        settled++
         settle(found)
       }
 
