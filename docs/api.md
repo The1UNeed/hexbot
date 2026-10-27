@@ -40,8 +40,9 @@ data model. The native transport and event projection live in
   rows included, and read the chat again; a turn failure on this chat is
   resolved. Anything else answers 4202 and changes nothing: an older message,
   a hidden one, a room, a thread between bots or Check-ins. A Recall naming an older
-  message than the one a running turn works on leaves that turn running. A
-  prompt or steer starting `/hexbot-recall` is refused with 4202.
+  message than the one a running turn works on leaves that turn running; one
+  still queued behind it answers 4002 until its own turn starts. A prompt or
+  steer starting `/hexbot-recall` is refused with 4202.
   `hexbot.info.recall: true` advertises the method.
 - History: `session.history {session_id, history_cursor?}` → `{messages,
   history_cursor: string, history_delta: boolean}`, using the same cursor

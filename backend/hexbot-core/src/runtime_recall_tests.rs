@@ -194,6 +194,31 @@ async fn recall_stops_the_turn_working_on_it() {
 }
 
 #[tokio::test]
+async fn recall_leaves_a_message_queued_behind_another_turn() {
+    let (home, runtime, hub) = setup();
+    install_recall_pi(home.path());
+    let id = open(&runtime).await;
+    let mut events = hub.subscribe();
+    send(&runtime, &mut events, &id, "wait", FIRST).await;
+    runtime
+        .call(
+            "alice",
+            "session.steer",
+            &json!({"session_id":id,"text":"later","input_id":SECOND}),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    let s = runtime.sessions.lock().unwrap()["first"].clone();
+    // Stop would replay it, so it waits for its own turn; the running one is
+    // no longer the latest.
+    assert_eq!(recall(&runtime, &id, SECOND).await.unwrap_err().code, 4002);
+    assert_eq!(recall(&runtime, &id, FIRST).await.unwrap_err().code, 4202);
+    assert!(s.state.lock().unwrap().busy);
+    runtime.shutdown().await;
+}
+
+#[tokio::test]
 async fn recall_changes_nothing_when_pi_does_not_move() {
     let (home, runtime, hub) = setup();
     install_recall_pi(home.path());

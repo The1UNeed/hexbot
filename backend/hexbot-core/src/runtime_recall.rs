@@ -50,16 +50,19 @@ impl Runtime {
             (None, None) => None,
         };
         // A turn still working on it stops first, as Stop would. A stale
-        // Recall leaves a newer message's turn alone.
+        // Recall leaves a newer message's turn alone, and one still queued
+        // behind another turn waits for its own: Stop would replay it.
         let working = {
             let state = s.state.lock().unwrap();
-            let newest = state
-                .inputs
-                .back()
-                .map(|i| &i.intent)
-                .or(state.input_run.as_ref());
-            if state.busy && newest.is_some_and(|n| Some(n.as_str()) != named.as_deref()) {
-                return Err(latest_only());
+            let running = state.input_run.as_deref();
+            let newest = state.inputs.back().map(|i| i.intent.as_str()).or(running);
+            if state.busy && newest.is_some() {
+                if newest != named.as_deref() {
+                    return Err(latest_only());
+                }
+                if running != named.as_deref() {
+                    return Err(Error::new(4002, "Recall it once the bot starts on it"));
+                }
             }
             state.busy
         };
