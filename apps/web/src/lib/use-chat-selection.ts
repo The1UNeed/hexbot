@@ -6,6 +6,17 @@ import { sectionsActions } from '../stores/sections'
 
 import type { DaemonInfo } from './types'
 
+/** The latest bot chat lookup a click started, settled or not. */
+let latest: Promise<unknown> = Promise.resolve()
+
+/** Settles once no click is waiting for a bot's chat. */
+export async function selectionsSettled() {
+  for (let waited: unknown; waited !== latest; ) {
+    waited = latest
+    await latest
+  }
+}
+
 /** A lookup belongs to this view until another selection, navigation, or daemon wins. */
 export function useChatSelection() {
   const router = useRouter()
@@ -104,7 +115,9 @@ export function useChatSelection() {
       setAsking(bot)
 
       try {
-        const chat = await sectionsActions().chat(bot, current)
+        const lookup = sectionsActions().chat(bot, current)
+        latest = lookup.catch(() => null)
+        const chat = await lookup
 
         // A chat found stays chosen until the caller's navigation cancels it.
         if (current() && chat) {

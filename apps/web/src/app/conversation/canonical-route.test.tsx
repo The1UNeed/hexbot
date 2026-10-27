@@ -11,6 +11,7 @@ import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 
 import { CONNECT_WAIT_MS, setActiveRpc } from '../../lib/rpc'
 import type { Bot, DaemonInfo, Section } from '../../lib/types'
+import { useChatSelection } from '../../lib/use-chat-selection'
 import { Route as HomeRoute } from '../../routes/index'
 import { useBots } from '../../stores/bots'
 import { useConnection } from '../../stores/connection'
@@ -78,10 +79,20 @@ const reply = (method: string, input: Record<string, unknown> = {}) =>
 
 const calls = (method: string) => call.mock.calls.filter(([name]) => name === method)
 
+/** A roster click, as the roster makes it. */
+let selectChat: ReturnType<typeof useChatSelection>['selectChat']
+
+function Roster() {
+  selectChat = useChatSelection().selectChat
+
+  return null
+}
+
 async function mount(initial = '/b/owl/s/old') {
   const root = createRootRoute({
     component: () => (
       <>
+        <Roster />
         <ChatChooser />
         <Outlet />
       </>
@@ -671,7 +682,7 @@ it('opens a chat the daemon named on this connection at once, while it is checke
   await waitFor(() => expect(view.router.state.location.pathname).toBe('/b/owl/s/moved'))
 })
 
-it('keeps a known chat open when another bot\'s lookup overtakes its check', async () => {
+it("keeps a known chat open when another bot's lookup overtakes its check", async () => {
   const state = holdLookups()
   const view = await mount('/b/owl/s/canonical')
   expect(await screen.findByText('canonical history')).toBeVisible()
@@ -687,6 +698,49 @@ it('keeps a known chat open when another bot\'s lookup overtakes its check', asy
   // The check still counts: the daemon named another chat, so the view moves.
   await waitFor(() => expect(view.router.state.location.pathname).toBe('/b/owl/s/moved'))
 })
+
+it.each(['opens', 'fails'] as const)(
+  'a check that finds another chat lets a waiting bot click go first when it %s',
+  async outcome => {
+    const state = holdLookups()
+    const view = await mount('/b/owl/s/canonical')
+    expect(await screen.findByText('canonical history')).toBeVisible()
+    state.hold = true
+    await act(async () => {
+      view.router.history.push('/b/owl/s/canonical')
+    })
+    await waitFor(() => expect(state.lookups).toHaveLength(1))
+
+    const yak = selectChat('yak').then(
+      chat =>
+        chat &&
+        view.router.navigate({
+          to: '/b/$bot/s/$section',
+          params: { bot: 'yak', section: chat.id }
+        }),
+      () => undefined
+    )
+
+    await waitFor(() => expect(state.lookups).toHaveLength(2))
+    // Owl's check names another chat while Yak's lookup still waits.
+    await act(async () => state.lookups[0]!.resolve({ section: section('moved') }))
+    expect(view.router.state.location.pathname).toBe('/b/owl/s/canonical')
+    await act(async () => {
+      if (outcome === 'opens') {
+        state.lookups[1]!.resolve({ section: section('yak-chat', { bot: 'yak' }) })
+      } else {
+        state.lookups[1]!.reject(new Error('lost'))
+      }
+
+      await yak
+    })
+    await waitFor(() =>
+      expect(view.router.state.location.pathname).toBe(
+        outcome === 'opens' ? '/b/yak/s/yak-chat' : '/b/owl/s/moved'
+      )
+    )
+  }
+)
 
 it('a lookup from before a daemon restart cannot enable the kept composer', async () => {
   const state = holdLookups()

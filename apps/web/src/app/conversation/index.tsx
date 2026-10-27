@@ -44,6 +44,7 @@ import type {
   BotStatus,
   ClarifyRequest
 } from '../../lib/types'
+import { selectionsSettled } from '../../lib/use-chat-selection'
 import { botMissing, useBot, useBots } from '../../stores/bots'
 import { useConnection } from '../../stores/connection'
 import { connectorsActions } from '../../stores/connectors'
@@ -1398,6 +1399,15 @@ function BotConversation() {
         }
 
         if (chat.id !== sectionId) {
+          // A click on another bot still waiting for its chat goes first.
+          if (known) {
+            await selectionsSettled()
+
+            if (!current()) {
+              return
+            }
+          }
+
           void navigate({
             to: '/b/$bot/s/$section',
             params: { bot: chat.bot, section: chat.id },
