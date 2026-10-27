@@ -299,8 +299,10 @@ export function RosterColumn() {
   }>({ model: '', name: '', provider: '', reasoning: null })
 
   const [newBotError, setNewBotError] = useState<null | string>(null)
-  // The bot whose chat is being asked for, shown as chosen until it opens.
-  const [asking, setAsking] = useState<null | string>(null)
+  // The bot whose chat is being asked for, shown as chosen on this page until it opens.
+  const place = JSON.stringify(params)
+  const [asking, setAsking] = useState<null | { bot: string; place: string }>(null)
+  const chosen = asking?.place === place ? asking.bot : null
   const [creatingBot, setCreatingBot] = useState(false)
   const [showModel, setShowModel] = useState(false)
 
@@ -436,7 +438,8 @@ export function RosterColumn() {
       return
     }
 
-    setAsking(bot)
+    const ask = { bot, place }
+    setAsking(ask)
 
     try {
       const chat = await selectChat(bot)
@@ -445,7 +448,7 @@ export function RosterColumn() {
         open(bot, chat.id)
       }
     } finally {
-      setAsking(current => (current === bot ? null : current))
+      setAsking(current => (current === ask ? null : current))
     }
   }
 
@@ -596,8 +599,8 @@ export function RosterColumn() {
           ) : (
             <BotRow
               active={
-                asking
-                  ? asking === (entry.item as Bot).name
+                chosen
+                  ? chosen === (entry.item as Bot).name
                   : Boolean(params.section) && params.bot === (entry.item as Bot).name
               }
               bot={entry.item as Bot}

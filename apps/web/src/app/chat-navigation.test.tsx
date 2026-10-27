@@ -214,6 +214,10 @@ it('shows the clicked bot as chosen while its chat is asked for', async () => {
   fireEvent.click(row)
   await waitFor(() => expect(row).toHaveClass('bg-background'))
   expectLocation('/')
+  // Going elsewhere drops the choice, though the lookup never answers.
+  fireEvent.click(screen.getByRole('button', { name: /Garden/ }))
+  await waitFor(() => expectLocation('/r/garden'))
+  expect(row).not.toHaveClass('bg-background')
 })
 
 it.each(['list', 'chooser', 'write'] as const)(
