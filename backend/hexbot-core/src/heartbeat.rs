@@ -951,13 +951,11 @@ impl Dreaming {
         match method {
             "hexbot.heartbeat.status" => self.heartbeat_status(owner, bot),
             "hexbot.heartbeat.set" => {
-                write(
-                    &self.home,
-                    &self.events,
-                    owner,
-                    bot,
-                    common::required(p, "text")?,
-                )?;
+                // Empty is allowed: clearing the checklist stops the heartbeat.
+                let text = p["text"]
+                    .as_str()
+                    .ok_or_else(|| Error::new(4200, "missing parameter: text"))?;
+                write(&self.home, &self.events, owner, bot, text)?;
                 self.heartbeat_status(owner, bot)
             }
             "hexbot.heartbeat.run_now" => {

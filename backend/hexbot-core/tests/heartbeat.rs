@@ -286,6 +286,15 @@ async fn an_empty_checklist_runs_nothing_and_each_bot_runs_every_thirty_minutes(
     checklist(&app, "fox", "- Did anything on my calendar change today?").await;
     tick(&app, "fox", now + 30.0 * 60.0 + 61.0).await;
     assert_eq!(runs(&h), 3);
+    // Clearing the checklist stops it.
+    assert_eq!(checklist(&app, "fox", "").await["empty"], true);
+    assert_eq!(
+        app.call("local", "hexbot.heartbeat.run_now", &json!({"bot":"fox"}))
+            .await
+            .unwrap_err()
+            .code,
+        4246
+    );
     // Off means off.
     app.call(
         "local",
