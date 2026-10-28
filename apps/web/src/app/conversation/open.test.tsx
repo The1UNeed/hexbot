@@ -80,6 +80,7 @@ beforeEach(() => {
     byId: { old: section('old') },
     idsByBot: { owl: ['old'] },
     liveSessionId: {},
+    cachedMessages: {},
     choosing: null
   })
   useTranscripts.setState({ bySession: {} })
@@ -277,6 +278,26 @@ it('shows the bot loading, not an empty chat, until the history arrives', async 
   })
   expect(await screen.findByText('Owl history')).toBeInTheDocument()
   expect(screen.queryByRole('status', { name: "Opening Owl's chat" })).toBeNull()
+})
+it('keeps loading over an empty saved history until the read finds what arrived since', async () => {
+  const held = deferred()
+  call.mockImplementation((method: string, input: { id?: string }) =>
+    method === 'hexbot.sections.open' ? held.promise : reply(method, input)
+  )
+  useSections.setState({ cachedMessages: { old: [] } })
+  render(<ConversationColumn />)
+  await waitFor(() =>
+    expect(call.mock.calls.some(([method]) => method === 'hexbot.sections.open')).toBe(true)
+  )
+  expect(screen.getByRole('status', { name: "Opening Owl's chat" })).toBeInTheDocument()
+  expect(screen.queryByRole('button', { name: /What can you help me/i })).toBeNull()
+  await act(async () => {
+    held.resolve({
+      section: section('old', 'live-old'),
+      messages: [{ role: 'assistant', text: 'Sent from the phone' }]
+    })
+  })
+  expect(await screen.findByText('Sent from the phone')).toBeInTheDocument()
 })
 it('shows an empty chat once its history is read', async () => {
   call.mockImplementation((method: string, input: { id?: string }) =>

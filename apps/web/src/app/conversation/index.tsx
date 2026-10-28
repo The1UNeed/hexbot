@@ -1783,7 +1783,7 @@ function BotConversation() {
   // Until its history arrives a chat with messages would look empty, so the
   // bot's face whirls instead; it fades in late enough that a quick read never shows it.
   const opening = ready
-    ? !transcript && !cached && readEntry !== entry
+    ? !messages.length && !clarifies.length && readEntry !== entry
     : !(kept && transcript)
 
   return (
