@@ -689,11 +689,13 @@ impl Installer {
     }
 
     fn status(&self) -> Result<serde_json::Value> {
-        let output = self
-            .paths
-            .command(self.paths.executable())
+        let mut command = self.paths.command(self.paths.executable());
+        command
             .args(["status", "--json"])
-            .output()?;
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let output = spawn(&mut command)?.wait_with_output()?;
         let bytes = check_output(output)?;
         Ok(serde_json::from_slice(&bytes)?)
     }
@@ -746,11 +748,11 @@ impl Installer {
         progress: &mut ProgressCallback<'_>,
     ) -> Result<()> {
         let stderr = tempfile::tempfile()?;
-        let mut child = command
+        command
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
-            .stderr(stderr.try_clone()?)
-            .spawn()?;
+            .stderr(stderr.try_clone()?);
+        let mut child = spawn(&mut command)?;
         let output = child.stdout.take().ok_or("Could not read daemon output.")?;
         let mut last_error = None;
         let read_result: Result<()> = (|| {
@@ -917,6 +919,24 @@ fn remove_path(path: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Start a program the installer may have just written. A child that another
+/// thread forks at that moment holds the write descriptor until it execs, and
+/// Linux refuses to run the file meanwhile (ETXTBSY), so try again briefly.
+fn spawn(command: &mut Command) -> std::io::Result<std::process::Child> {
+    let mut attempt = 0;
+    loop {
+        match command.spawn() {
+            Err(error)
+                if error.kind() == std::io::ErrorKind::ExecutableFileBusy && attempt < 10 =>
+            {
+                attempt += 1;
+                std::thread::sleep(Duration::from_millis(20 * attempt));
+            }
+            result => return result,
+        }
+    }
+}
+
 fn executable(path: &Path) -> Result<()> {
     #[cfg(unix)]
     {
@@ -1073,5 +1093,38 @@ mod sandbox_tests {
             );
             assert_eq!(sandbox_available(None, || available), available);
         }
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod spawn_tests {
+    use super::*;
+
+    #[test]
+    fn a_program_still_open_for_writing_runs_once_it_is_closed() {
+        use std::os::unix::fs::OpenOptionsExt;
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("hexbot");
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o755)
+            .open(&path)
+            .unwrap();
+        file.write_all(b"#!/bin/sh\nexit 0\n").unwrap();
+        let busy = Command::new(&path).spawn().unwrap_err();
+        assert_eq!(busy.kind(), std::io::ErrorKind::ExecutableFileBusy);
+        let writer = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(50));
+            drop(file);
+        });
+        assert!(
+            spawn(&mut Command::new(&path))
+                .unwrap()
+                .wait()
+                .unwrap()
+                .success()
+        );
+        writer.join().unwrap();
     }
 }
