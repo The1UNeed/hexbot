@@ -660,11 +660,18 @@ fn package_skills(home: &Path, name: &str) -> Result<Vec<String>> {
         .collect())
 }
 
+/// Whether a package's server is there to give: its manifest has one and
+/// the config still holds it. One removed by hand, or by a removal cut
+/// short, leaves the package's skills to switch on their own.
+fn has_server(home: &Path, name: &str) -> Result<bool> {
+    Ok(manifest(home, name)?["server"] == true
+        && read_config(home)?["mcp_servers"][name].is_object())
+}
+
 /// Give every part of a package to exactly `chosen` of the caller's bots.
 fn assign_package(home: &Path, caller: &str, name: &str, chosen: &[String]) -> Result<()> {
-    let manifest = manifest(home, name)?;
     let own = own_bots(home, caller)?;
-    if manifest["server"] == true {
+    if has_server(home, name)? {
         connectors::change_mcp_bots(home, name, |bots| {
             bots.retain(|b| !own.contains(b));
             bots.extend(chosen.iter().filter(|b| own.contains(b)).cloned());
@@ -699,7 +706,7 @@ pub(crate) fn set_for_bot(
     let current = find(home, caller, kind, id)?;
     let server = match (kind, id.strip_prefix("mcp:")) {
         ("connector", Some(server)) => Some(server.to_owned()),
-        ("package", _) if manifest(home, id)?["server"] == true => Some(id.to_owned()),
+        ("package", _) if has_server(home, id)? => Some(id.to_owned()),
         _ => None,
     };
     let toolset = CAPABILITIES
@@ -785,11 +792,7 @@ pub(crate) fn scope_new_bot(home: &Path, bot: &str) -> Result<()> {
             || manifest["bots"]
                 .as_array()
                 .is_some_and(|bots| bots.iter().any(|b| b == bot));
-        // A server missing from the config (removed by hand, or a removal
-        // cut short) has nobody to give; the bot is created all the same.
-        if manifest["server"] == true
-            && read_config(home)?["mcp_servers"][name.as_str()].is_object()
-        {
+        if has_server(home, &name)? {
             connectors::change_mcp_bots(home, &name, |bots| {
                 bots.retain(|b| b != bot);
                 if on {

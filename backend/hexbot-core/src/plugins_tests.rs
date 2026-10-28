@@ -1090,4 +1090,15 @@ fn a_package_whose_server_is_gone_does_not_block_new_bots() {
     .unwrap()
     .unwrap();
     assert_eq!(skill_on(home.path(), "raven", "github-issues"), Some(true));
+    // Its skills still go on and off with it.
+    call(
+        home.path(),
+        "alice",
+        "hexbot.plugins.set_bots",
+        json!({"kind":"package","id":"github","bots":["owl"]}),
+    )
+    .unwrap();
+    plugins::set_for_bot(home.path(), "alice", "package", "github", "raven", false).unwrap();
+    assert_eq!(skill_on(home.path(), "cat", "github-issues"), Some(false));
+    assert_eq!(skill_on(home.path(), "raven", "github-issues"), Some(false));
 }
