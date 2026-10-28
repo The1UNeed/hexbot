@@ -683,6 +683,70 @@ fn assign_package(home: &Path, caller: &str, name: &str, chosen: &[String]) -> R
     Ok(())
 }
 
+/// Give a plugin to one bot or take it away, leaving every other bot as it
+/// is, as a bot asking for itself does. A server's list changes under the
+/// config lock; a package's scope gains or loses only this bot, so a bot's
+/// request never reaches bots created later.
+pub(crate) fn set_for_bot(
+    home: &Path,
+    caller: &str,
+    kind: &str,
+    id: &str,
+    bot: &str,
+    on: bool,
+) -> Result<()> {
+    let current = find(home, caller, kind, id)?;
+    if on && current["ready"] == false {
+        return Err(Error::new(
+            4209,
+            format!(
+                "Set up {} before giving it to a bot.",
+                current["name"].as_str().unwrap_or(id)
+            ),
+        ));
+    }
+    let server = match (kind, id.strip_prefix("mcp:")) {
+        ("connector", Some(server)) => Some(server.to_owned()),
+        ("package", _) if manifest(home, id)?["server"] == true => Some(id.to_owned()),
+        _ => None,
+    };
+    if let Some(server) = &server {
+        connectors::change_mcp_bots(home, server, |bots| {
+            bots.retain(|b| b != bot);
+            if on {
+                bots.push(bot.to_owned());
+            }
+            Ok(())
+        })?;
+    }
+    match kind {
+        "package" => {
+            for skill in package_skills(home, id)? {
+                skills::set_enabled(home, Some(bot), &skill, on)?;
+            }
+            let mut manifest = manifest(home, id)?;
+            if let Some(scope) = manifest["bots"].as_array_mut() {
+                scope.retain(|b| b != bot);
+                if on {
+                    scope.push(json!(bot));
+                }
+                write_manifest(home, id, &manifest)?;
+            }
+            Ok(())
+        }
+        "connector" if server.is_some() => Ok(()),
+        // Other kinds switch each bot on its own, so the rest stay as they are.
+        _ => {
+            let mut bots = strings(&current["bots"]);
+            bots.retain(|b| b != bot);
+            if on {
+                bots.push(bot.to_owned());
+            }
+            set_bots(home, caller, &json!({"kind": kind, "id": id, "bots": bots})).map(drop)
+        }
+    }
+}
+
 fn set_scope(home: &Path, name: &str, bots: Option<&[String]>) -> Result<()> {
     let mut manifest = manifest(home, name)?;
     manifest["bots"] = json!(bots);
@@ -745,38 +809,40 @@ pub(crate) fn server_of(kind: &str, id: &str) -> Result<String> {
 /// set to null are removed; names left out keep theirs. The server keeps its
 /// bots, description and package.
 pub(crate) fn configure(home: &Path, name: &str, p: &Value) -> Result<()> {
-    let entry = read_config(home)?["mcp_servers"][name].clone();
-    if !entry.is_object() {
-        return Err(Error::new(4213, format!("unknown MCP server: {name}")));
-    }
-    let command = p["command"].as_str().filter(|s| !s.trim().is_empty());
-    let url = p["url"]
-        .as_str()
-        .filter(|s| !s.trim().is_empty())
-        .or_else(|| command.is_none().then(|| entry["url"].as_str()).flatten());
-    let mut params = json!({"name": name});
-    if let Some(url) = url {
-        params["url"] = json!(url);
-        params["transport"] = entry["transport"].clone();
-        params["headers"] = merged(&entry["headers"], &p["headers"], "headers")?;
-    } else {
-        params["command"] = command
-            .map(Value::from)
-            .unwrap_or_else(|| entry["command"].clone());
-        params["args"] = if p["args"].is_null() {
-            entry["args"].clone()
-        } else {
-            p["args"].clone()
-        };
-        params["env"] = merged(&entry["env"], &p["env"], "env")?;
-    }
-    let (_, mut next) = connectors::validate_mcp(&params)?;
-    for key in ["description", "plugin", "timeout", "bots", "disabled"] {
-        if let Some(value) = entry.get(key) {
-            next[key] = value.clone();
-        }
-    }
+    // Read, merge and write under the config lock, so saves made at the same
+    // time, and bots given in between, all keep their part.
     common::update_config(home, |config| {
+        let entry = config["mcp_servers"][name].clone();
+        if !entry.is_object() {
+            return Err(Error::new(4213, format!("unknown MCP server: {name}")));
+        }
+        let command = p["command"].as_str().filter(|s| !s.trim().is_empty());
+        let url = p["url"]
+            .as_str()
+            .filter(|s| !s.trim().is_empty())
+            .or_else(|| command.is_none().then(|| entry["url"].as_str()).flatten());
+        let mut params = json!({"name": name});
+        if let Some(url) = url {
+            params["url"] = json!(url);
+            params["transport"] = entry["transport"].clone();
+            params["headers"] = merged(&entry["headers"], &p["headers"], "headers")?;
+        } else {
+            params["command"] = command
+                .map(Value::from)
+                .unwrap_or_else(|| entry["command"].clone());
+            params["args"] = if p["args"].is_null() {
+                entry["args"].clone()
+            } else {
+                p["args"].clone()
+            };
+            params["env"] = merged(&entry["env"], &p["env"], "env")?;
+        }
+        let (_, mut next) = connectors::validate_mcp(&params)?;
+        for key in ["description", "plugin", "timeout", "bots", "disabled"] {
+            if let Some(value) = entry.get(key) {
+                next[key] = value.clone();
+            }
+        }
         config["mcp_servers"][name] = next;
         Ok(())
     })?;

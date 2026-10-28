@@ -159,8 +159,7 @@ impl Runtime {
                 let (kind, id) = split(full)?;
                 let on = action == "enable";
                 let plugin = crate::plugins::find(&self.home, owner, kind, id)?;
-                let mut bots = bots_of(&plugin);
-                let was = bots.contains(&target);
+                let was = bots_of(&plugin).contains(&target);
                 // A package counts as on when any part is, so only other kinds
                 // can be fully on already; a disable always runs.
                 if on && was && kind != "package" {
@@ -179,15 +178,8 @@ impl Runtime {
                     )
                     .await?;
                 }
-                bots.retain(|b| *b != target);
-                if on {
-                    bots.push(target.clone());
-                }
-                crate::plugins::set_bots(
-                    &self.home,
-                    owner,
-                    &json!({"kind": kind, "id": id, "bots": bots}),
-                )?;
+                // Read again after the user answered: only this bot changes.
+                crate::plugins::set_for_bot(&self.home, owner, kind, id, &target, on)?;
                 self.plugins_changed(owner);
                 let plugin = crate::plugins::find_for(&self.home, owner, kind, id, Some(&target))?;
                 let skills = plugin["skills"]

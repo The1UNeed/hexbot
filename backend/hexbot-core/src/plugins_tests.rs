@@ -942,3 +942,70 @@ fn new_bots_get_packages_for_every_bot_but_not_those_for_some() {
     );
     assert_eq!(skill_on(home.path(), "wren", "github-issues"), Some(true));
 }
+
+#[test]
+fn a_bot_asking_for_itself_changes_only_itself() {
+    let home = setup();
+    let mut install = github();
+    install["bots"] = json!(["owl"]);
+    call(home.path(), "alice", "hexbot.plugins.install", install).unwrap();
+    // Cat asks for it: Owl keeps it, and the scope gains only Cat, so a bot
+    // created later still doesn't get it.
+    plugins::set_for_bot(home.path(), "alice", "package", "github", "cat", true).unwrap();
+    let list = call(home.path(), "alice", "hexbot.plugins.list", json!({})).unwrap();
+    assert_eq!(
+        row(&list, "packages", "github")["bots"],
+        json!(["cat", "owl"])
+    );
+    crate::catalog::call(
+        home.path(),
+        "alice",
+        "hexbot.bots.create",
+        &json!({"name":"raven","display_name":"Raven"}),
+    )
+    .unwrap()
+    .unwrap();
+    assert!(servers(home.path(), "raven").is_empty());
+    // Owl taken away meanwhile, then Cat's change lands: Owl stays off.
+    call(
+        home.path(),
+        "alice",
+        "hexbot.plugins.set_bots",
+        json!({"kind":"package","id":"github","bots":["cat"]}),
+    )
+    .unwrap();
+    plugins::set_for_bot(home.path(), "alice", "package", "github", "cat", true).unwrap();
+    assert!(servers(home.path(), "owl").is_empty());
+    assert_eq!(servers(home.path(), "cat"), ["github"]);
+}
+
+#[test]
+fn settings_saved_at_the_same_time_all_keep_their_part() {
+    let home = setup();
+    call(
+        home.path(),
+        "alice",
+        "hexbot.plugins.install",
+        json!({"name":"api","mcp":{"url":"https://example.com/mcp"}}),
+    )
+    .unwrap();
+    let threads = (0..12)
+        .map(|i| {
+            let home = home.path().to_path_buf();
+            std::thread::spawn(move || {
+                plugins::configure(
+                    &home,
+                    "api",
+                    &json!({"headers": {format!("X-{i}"): "value"}}),
+                )
+                .unwrap()
+            })
+        })
+        .collect::<Vec<_>>();
+    for thread in threads {
+        thread.join().unwrap();
+    }
+    let headers =
+        crate::common::read_config(home.path()).unwrap()["mcp_servers"]["api"]["headers"].clone();
+    assert_eq!(headers.as_object().unwrap().len(), 12, "{headers}");
+}
