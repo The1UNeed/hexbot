@@ -4179,7 +4179,9 @@ impl Runtime {
             common::bot_owner(&self.home, &s.owner, bot)?;
             crate::dreaming::require_supported_job_request(&self.home, &s.owner, bot, args)?;
         }
-        // Heartbeat tools are filtered when frozen; refuse here too.
+        // Check-in tools are filtered when frozen; refuse here too.
+        // Heartbeats replaced check-ins. The line above stays as it was so the
+        // Windows security job's pinned build still takes this patch.
         if s.stored.starts_with("heartbeat-")
             && s.tools.iter().any(|t| t["name"] == name)
             && !heartbeat::TOOLS.contains(&name)
