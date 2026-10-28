@@ -451,15 +451,20 @@ export function Management({
     if (kind !== 'heartbeat' || panelLoading) return
     const current = epoch.current
     const shown = str(extra.text)
+    // A newer change reads again; this answer may arrive after it.
+    let newer = false
     void rpc<RowData>('hexbot.heartbeat.status', { bot: bot?.name })
       .then(detail => {
-        if (current !== epoch.current) return
+        if (newer || current !== epoch.current) return
         setRows((detail.recent as RowData[] | undefined) ?? [])
         setExtra(detail)
         // Unsaved edits stay.
         setValues(v => (v.text === shown ? { ...v, text: str(detail.text) } : v))
       })
       .catch(() => {})
+    return () => {
+      newer = true
+    }
   }, [mobile.heartbeats])
   const set = (key: string, value: string | boolean) => setValues(v => ({ ...v, [key]: value }))
   const field = (

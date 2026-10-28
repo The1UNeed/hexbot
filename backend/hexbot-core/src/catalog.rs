@@ -4204,23 +4204,27 @@ mod parity_tests {
         // Unlike the chat, it can be deleted, and the bot's records of it go with the bot.
         check_section_delete(home.path(), "alice", "chat").unwrap_err();
         check_section_delete(home.path(), "alice", "checkins").unwrap();
-        let text = || -> String {
+        let kept = || -> i64 {
             db::open(home.path())
                 .unwrap()
                 .query_row(
-                    "SELECT text FROM heartbeat_messages WHERE id='m'",
+                    "SELECT COUNT(*) FROM heartbeat_messages WHERE id='m' AND text='Due tonight.'",
                     [],
                     |r| r.get(0),
                 )
                 .unwrap()
         };
-        assert_eq!(text(), "Due tonight.");
+        assert_eq!(kept(), 1);
         db::open(home.path())
             .unwrap()
             .execute("UPDATE bots SET is_primary=0", [])
             .unwrap();
         delete_bot(home.path(), "alice", "hexbot").unwrap();
-        assert_eq!(text(), "");
+        let left: i64 = db::open(home.path())
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM heartbeat_messages", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(left, 0);
     }
     #[test]
     fn unreadable_native_chats_stay_for_repair_but_are_never_canonical() {

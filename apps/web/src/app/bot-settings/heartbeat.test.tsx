@@ -156,6 +156,22 @@ describe('heartbeat', () => {
     expect(field).toHaveValue('- Has Sam replied?')
   })
 
+  it('keeps the newest status when an older read answers last', async () => {
+    let answerStarted: (value: HeartbeatStatus) => void = () => {}
+
+    const call = vi
+      .fn()
+      .mockImplementationOnce(() => new Promise(resolve => (answerStarted = resolve)))
+      .mockImplementationOnce(() => Promise.resolve(status({ running: false })))
+
+    setActiveRpc({ call } as never)
+    const started = useHeartbeat.getState().refresh('owl')
+    await useHeartbeat.getState().refresh('owl')
+    answerStarted(status({ running: true }))
+    await started
+    expect(useHeartbeat.getState().byBot.owl?.running).toBe(false)
+  })
+
   it('deletes the Check-ins from before the heartbeat after asking', async () => {
     let deleted = false
 

@@ -23,17 +23,31 @@ export interface HeartbeatState {
   save: (bot: string, text: string) => Promise<void>
 }
 
+/** The latest status read by bot, so an older answer arriving last is dropped. */
+const reads: Record<string, number> = {}
+
 export const useHeartbeat = create<HeartbeatState>((set, get) => ({
   byBot: {},
   errors: {},
 
   async refresh(bot) {
+    const read = (reads[bot] = (reads[bot] ?? 0) + 1)
+
     try {
       const status = await heartbeatStatus(bot)
+
+      if (read !== reads[bot]) {
+        return
+      }
+
       const { [bot]: _cleared, ...errors } = get().errors
 
       set(state => ({ byBot: { ...state.byBot, [bot]: status }, errors }))
     } catch (error) {
+      if (read !== reads[bot]) {
+        return
+      }
+
       set(state => ({
         errors: {
           ...state.errors,
