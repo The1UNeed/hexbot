@@ -116,6 +116,10 @@ struct OpenRun {
     cost: f64,
     model: String,
     error: Option<String>,
+    /// Pi ended the operation without a retry; its settlement may still come.
+    ended: bool,
+    /// Settlements of earlier operations that have not arrived yet.
+    owed: usize,
 }
 
 struct Failure {
@@ -302,10 +306,18 @@ impl Diagnostics {
         match event["type"].as_str().unwrap_or("") {
             "agent_start" => {
                 // Retries and compaction recovery start again inside the same
-                // run; only `agent_settled` ends it.
+                // run. A new prompt can start before the last one settles: that
+                // run ends here, and its late settlement is owed.
+                let mut owed = 0;
                 if let Some(run) = runs.get_mut(session) {
-                    run.boundary = now;
-                    return;
+                    if !run.ended {
+                        run.boundary = now;
+                        return;
+                    }
+                    if let Some(run) = runs.remove(session) {
+                        owed = run.owed + 1;
+                        self.finish_run(run, now, true);
+                    }
                 }
                 if runs.len() >= OPEN_RUNS {
                     // Sections that vanished without settling.
@@ -336,10 +348,17 @@ impl Diagnostics {
                         cost: 0.,
                         model: String::new(),
                         error: None,
+                        ended: false,
+                        owed,
                     },
                 );
             }
-            "message_start" if event["message"]["role"] == "assistant" => {
+            // Some providers announce the message before any content arrives.
+            "message_update"
+                if event["assistantMessageEvent"]["type"]
+                    .as_str()
+                    .is_some_and(|kind| kind.ends_with("_delta")) =>
+            {
                 if let Some(run) = runs.get_mut(session) {
                     run.first_token.get_or_insert(now);
                 }
@@ -450,7 +469,18 @@ impl Diagnostics {
                     attrs: json!({"tool": tool.name}),
                 });
             }
+            "agent_end" if event["willRetry"] != true => {
+                if let Some(run) = runs.get_mut(session) {
+                    run.ended = true;
+                }
+            }
             "agent_settled" => {
+                if let Some(run) = runs.get_mut(session)
+                    && run.owed > 0
+                {
+                    run.owed -= 1;
+                    return;
+                }
                 if let Some(run) = runs.remove(session) {
                     self.finish_run(run, now, true);
                 }
@@ -460,7 +490,22 @@ impl Diagnostics {
     }
 
     /// Ends a run. `fails` records its error as a run failure too.
-    fn finish_run(&self, run: OpenRun, now: f64, fails: bool) {
+    fn finish_run(&self, mut run: OpenRun, now: f64, fails: bool) {
+        // A stopped run or a crash can end without the tool's own end event.
+        for (_, tool) in run.tools.drain() {
+            run.tool_calls += 1;
+            self.push(Span {
+                id: tool.id,
+                trace: run.trace,
+                parent: Some(run.trace),
+                name: format!("tool {}", tool.name),
+                kind: "tool",
+                start: tool.start,
+                duration: now - tool.start,
+                error: None,
+                attrs: json!({"tool": tool.name, "unfinished": true}),
+            });
+        }
         let error = run
             .error
             .clone()
@@ -973,12 +1018,13 @@ fn prompt_cache(home: &Path, owner: &str) -> Result<Value> {
     };
     let by_bot = rate(query("bot")?);
     let by_model = rate(query("model")?);
-    let sum = |key: &str| {
-        by_bot
-            .iter()
-            .map(|r| r[key].as_i64().unwrap_or(0))
-            .sum::<i64>()
-    };
+    // The totals cover every bot, not only the 30 listed.
+    let totals = common::rows(
+        &conn,
+        "SELECT COUNT(*) AS calls,SUM(input_tokens) AS input,SUM(cache_read_tokens) AS cache_read,SUM(cache_write_tokens) AS cache_write,SUM(output_tokens) AS output FROM native_usage WHERE owner_id=?1 AND timestamp>=?2",
+        &[&owner, &since],
+    )?;
+    let sum = |key: &str| totals.first().and_then(|r| r[key].as_i64()).unwrap_or(0);
     let (input, read, write) = (sum("input"), sum("cache_read"), sum("cache_write"));
     Ok(json!({
         "window_h": 24,
@@ -1239,9 +1285,7 @@ fn host(home: &Path) -> Value {
         })
     });
     let mut host = FIXED.clone();
-    let mut load = [0f64; 3];
-    // SAFETY: getloadavg writes at most three values into the array.
-    if unsafe { libc::getloadavg(load.as_mut_ptr(), 3) } == 3 {
+    if let Some(load) = load_average() {
         host["load"] = json!(load);
     }
     host["memory_available"] = json!(memory_available());
@@ -1252,6 +1296,14 @@ fn host(home: &Path) -> Value {
     host
 }
 
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn load_average() -> Option<[f64; 3]> {
+    let mut load = [0f64; 3];
+    // SAFETY: getloadavg writes at most three values into the array.
+    (unsafe { libc::getloadavg(load.as_mut_ptr(), 3) } == 3).then_some(load)
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 fn hostname() -> Option<String> {
     let mut name = [0 as libc::c_char; 256];
     // SAFETY: the buffer is writable for its whole length.
@@ -1263,6 +1315,7 @@ fn hostname() -> Option<String> {
     Some(name.to_string_lossy().into_owned())
 }
 
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 fn uname() -> (Option<String>, Option<String>) {
     // SAFETY: utsname is plain data, and uname fills it.
     let mut info: libc::utsname = unsafe { std::mem::zeroed() };
@@ -1281,6 +1334,7 @@ fn uname() -> (Option<String>, Option<String>) {
     )
 }
 
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 fn disk(home: &Path) -> Option<(u64, u64)> {
     use std::os::unix::ffi::OsStrExt;
     let path = std::ffi::CString::new(home.as_os_str().as_bytes()).ok()?;
@@ -1407,6 +1461,54 @@ fn meminfo(key: &str) -> Option<u64> {
             .ok()?
             * 1024,
     )
+}
+
+// The daemon runs on macOS and Linux only. These keep the module building
+// for the Windows security probe, which compiles the daemon without its
+// platform guard; there the host and process figures are simply missing.
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+fn read_processes() -> std::result::Result<Vec<RawProcess>, String> {
+    Err("Process sampling needs macOS or Linux".into())
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+fn load_average() -> Option<[f64; 3]> {
+    None
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+fn hostname() -> Option<String> {
+    None
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+fn uname() -> (Option<String>, Option<String>) {
+    (None, None)
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+fn disk(_home: &Path) -> Option<(u64, u64)> {
+    None
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+fn os_version() -> Option<String> {
+    None
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+fn cpu_model() -> Option<String> {
+    None
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+fn memory_total() -> Option<u64> {
+    None
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+fn memory_available() -> Option<u64> {
+    None
 }
 
 /// Free, inactive, speculative and purgeable pages: what macOS can hand out
@@ -1706,5 +1808,72 @@ mod tests {
         assert_eq!(cache["calls"], 1);
         assert_eq!(cache["hit_rate"], 0.75);
         assert_eq!(cache["by_bot"][0]["name"], "owl");
+        // Totals count every bot, past the 30 listed.
+        let more = (0..31)
+            .map(|i| format!("('s','local','bot{i}','m','p',1,0,0,0,0,{})", common::now()))
+            .collect::<Vec<_>>()
+            .join(",");
+        crate::runtime_store::open(home.path())
+            .unwrap()
+            .execute_batch(&format!(
+                "INSERT INTO native_usage(session_id,owner_id,bot,model,provider,input_tokens,output_tokens,cache_read_tokens,cache_write_tokens,cost,timestamp) VALUES{more}"
+            ))
+            .unwrap();
+        let cache = prompt_cache(home.path(), "local").unwrap();
+        assert_eq!(cache["by_bot"].as_array().unwrap().len(), 30);
+        assert_eq!(cache["calls"], 32);
+        assert_eq!(cache["input"], 41);
+    }
+
+    #[test]
+    fn a_late_settlement_cannot_end_the_next_run() {
+        let d = Diagnostics::default();
+        for event in [
+            json!({"type":"agent_start"}),
+            json!({"type":"message_end","message":{"role":"assistant","stopReason":"stop"}}),
+            json!({"type":"agent_end","willRetry":false}),
+            // The next prompt starts before the first one settles.
+            json!({"type":"agent_start"}),
+            json!({"type":"agent_settled"}),
+            json!({"type":"message_end","message":{"role":"assistant","stopReason":"error","errorMessage":"Overloaded"}}),
+            json!({"type":"agent_end","willRetry":false}),
+            json!({"type":"agent_settled"}),
+        ] {
+            d.pi_event("s", "owl", "x", &event);
+        }
+        let spans = Vec::from(d.spans.lock().unwrap().clone());
+        let runs = spans.iter().filter(|s| s.kind == "run").collect::<Vec<_>>();
+        assert_eq!(runs.len(), 2);
+        assert!(runs[0].error.is_none());
+        assert_eq!(runs[1].error.as_deref(), Some("Overloaded"));
+        assert_eq!(runs[1].attrs["model_calls"], 1);
+        assert_eq!(d.failures_json()["total"], 1);
+    }
+
+    #[test]
+    fn first_token_waits_for_content_and_open_tools_close_with_the_run() {
+        let d = Diagnostics::default();
+        for event in [
+            json!({"type":"agent_start"}),
+            json!({"type":"message_start","message":{"role":"assistant"}}),
+            json!({"type":"message_update","assistantMessageEvent":{"type":"start"}}),
+        ] {
+            d.pi_event("s", "owl", "x", &event);
+        }
+        assert!(d.runs.lock().unwrap()["s"].first_token.is_none());
+        for event in [
+            json!({"type":"message_update","assistantMessageEvent":{"type":"text_delta","delta":"hi"}}),
+            json!({"type":"message_end","message":{"role":"assistant","stopReason":"toolUse"}}),
+            json!({"type":"tool_execution_start","toolCallId":"t1","toolName":"bash"}),
+            // Stopped during the tool: Pi settles without its end event.
+            json!({"type":"agent_settled"}),
+        ] {
+            d.pi_event("s", "owl", "x", &event);
+        }
+        let spans = Vec::from(d.spans.lock().unwrap().clone());
+        assert!(spans[0].attrs["first_token_ms"].is_number());
+        let tool = spans.iter().find(|s| s.kind == "tool").unwrap();
+        assert_eq!(tool.attrs["unfinished"], true);
+        assert_eq!(spans.last().unwrap().attrs["tool_calls"], 1);
     }
 }
