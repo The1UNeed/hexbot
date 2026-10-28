@@ -104,9 +104,21 @@ export async function standaloneNode(directory, platform, arch, version = NODE_V
   const name = `node-v${version}-${platform}-${arch}`
   const filename = `${name}.tar.gz`
   const origin = `https://nodejs.org/dist/v${version}`
-  const response = await fetch(`${origin}/${filename}`)
-  if (!response.ok) throw new Error(`Cannot download standalone Node: ${response.status}`)
-  const archive = Buffer.from(await response.arrayBuffer())
+  // CI runners sometimes lose the connection mid-body; the checksum still
+  // guards whatever arrives.
+  let archive
+  for (let attempt = 1; ; attempt++) {
+    let response
+    try {
+      response = await fetch(`${origin}/${filename}`)
+      if (response.ok) { archive = Buffer.from(await response.arrayBuffer()); break }
+    } catch (error) {
+      if (attempt === 3) throw error
+      console.warn(`Standalone Node download failed, retrying: ${error.message}`)
+      continue
+    }
+    throw new Error(`Cannot download standalone Node: ${response.status}`)
+  }
   if (createHash('sha256').update(archive).digest('hex') !== digest) throw new Error('Standalone Node checksum mismatch')
   const path = join(directory, filename)
   await writeFile(path, archive)

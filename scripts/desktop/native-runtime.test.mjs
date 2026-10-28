@@ -118,6 +118,21 @@ test('standalone Node rejects unpinned versions and tampered archives without fe
   assert.equal(urls.length, 4)
 })
 
+test('standalone Node retries a dropped download, then gives up', async t => {
+  const fetch = t.mock.method(globalThis, 'fetch', async () => {
+    if (fetch.mock.callCount() < 2) throw new TypeError('terminated')
+    return new Response('tampered archive')
+  })
+  t.mock.method(console, 'warn', () => {})
+  // The third attempt arrives; its checksum is still checked.
+  await assert.rejects(standaloneNode('/unused', 'darwin', 'arm64'), /checksum mismatch/)
+  assert.equal(fetch.mock.callCount(), 3)
+  fetch.mock.mockImplementation(async () => { throw new TypeError('terminated') })
+  fetch.mock.resetCalls()
+  await assert.rejects(standaloneNode('/unused', 'darwin', 'arm64'), /terminated/)
+  assert.equal(fetch.mock.callCount(), 3)
+})
+
 test('macOS update archives omit AppleDouble files and extended attributes', { skip: process.platform !== 'darwin' }, async () => {
   const root = await mkdtemp(join(tmpdir(), 'hexbot-archive-xattr-'))
   try {
