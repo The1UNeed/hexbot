@@ -8,4 +8,5 @@ const destination = resolve(desktopRoot, 'out/renderer')
 
 await rm(destination, { force: true, recursive: true })
 await mkdir(dirname(destination), { recursive: true })
-await cp(source, destination, { recursive: true })
+// The `.gz` files are for browsers the daemon serves; the app reads plain files.
+await cp(source, destination, { filter: file => !file.endsWith('.gz'), recursive: true })
