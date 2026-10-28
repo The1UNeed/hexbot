@@ -21,7 +21,7 @@ tempfile = "=3.27.0"
 thiserror = "=2.0.20"
 tokio = { version = "=1.53.1", features = ["io-util", "macros", "process", "rt-multi-thread", "sync", "time", "net", "signal"] }
 axum = { version = "=0.8.9", features = ["ws"] }
-tower-http = { version = "=0.6.11", features = ["fs"] }
+tower-http = { version = "=0.6.11", features = ["compression-br", "compression-gzip", "fs"] }
 futures-util = "=0.3.34"
 uuid = { version = "=1.26.1", features = ["v4"] }
 sha2 = "=0.10.9"

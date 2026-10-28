@@ -1361,7 +1361,7 @@ async fn origin_guard(
             .insert("access-control-allow-origin", origin);
         response
             .headers_mut()
-            .insert("vary", HeaderValue::from_static("Origin"));
+            .append("vary", HeaderValue::from_static("Origin"));
         response.headers_mut().insert(
             "access-control-allow-headers",
             HeaderValue::from_static("Content-Type, Authorization, DPoP"),
@@ -1974,6 +1974,24 @@ async fn frame_policy(mut response: Response) -> Response {
         .or_insert(HeaderValue::from_static("frame-src 'self'"));
     response
 }
+/// Vite names every file under `/assets/` by its content hash, so a browser
+/// keeps it until a new bundle names another and reloads without asking.
+async fn immutable_assets(
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    let hashed = request.uri().path().starts_with("/assets/");
+    let mut response = next.run(request).await;
+    if hashed && matches!(response.status(), StatusCode::OK | StatusCode::NOT_MODIFIED) {
+        response
+            .headers_mut()
+            .entry(axum::http::header::CACHE_CONTROL)
+            .or_insert(HeaderValue::from_static(
+                "public, max-age=31536000, immutable",
+            ));
+    }
+    response
+}
 pub fn router(app: Arc<App>) -> Router {
     let mut router = Router::new()
         .route("/", get(index))
@@ -1990,8 +2008,16 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/hexbot/session", post(session))
         .route("/hexbot/computer/{token}/{*rest}", any(computer_view));
     if let Some(dist) = app.web_dist.clone() {
-        router = router.fallback_service(
-            tower_http::services::ServeDir::new(dist).fallback(get(spa).with_state(app.clone())),
+        // Browsers on LAN, Tailscale, or Connect fetch the bundle from here;
+        // the app reads its own copy. Compress it and keep hashed assets.
+        router = router.merge(
+            Router::new()
+                .fallback_service(
+                    tower_http::services::ServeDir::new(dist)
+                        .fallback(get(spa).with_state(app.clone())),
+                )
+                .layer(axum::middleware::from_fn(immutable_assets))
+                .layer(tower_http::compression::CompressionLayer::new()),
         );
     }
     router

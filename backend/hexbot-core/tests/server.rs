@@ -1226,6 +1226,65 @@ async fn connect_browser_login_starts_pkce_redirect() {
 }
 
 #[tokio::test]
+async fn bundle_is_compressed_and_hashed_assets_stay_cached() {
+    let fixture = Fixture::new(false).await;
+    let dist = fixture.app.web_dist.clone().unwrap();
+    let script = "const bundle = true;\n".repeat(500);
+    fs::create_dir(dist.join("assets")).unwrap();
+    fs::write(dist.join("assets/index-abc123.js"), &script).unwrap();
+    let client = reqwest::Client::new();
+    let asset = format!("{}/assets/index-abc123.js", fixture.base);
+    for encoding in ["br", "gzip"] {
+        // A module script sends Origin; the encoding must still vary the cache.
+        let response = client
+            .get(&asset)
+            .header("accept-encoding", encoding)
+            .header("origin", &fixture.base)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200);
+        assert_eq!(response.headers()["content-encoding"], encoding);
+        let vary: Vec<_> = response.headers().get_all("vary").iter().collect();
+        assert!(
+            vary.iter()
+                .any(|v| v.to_str().unwrap().contains("accept-encoding"))
+        );
+        assert!(vary.iter().any(|v| *v == "Origin"));
+        assert_eq!(
+            response.headers()["cache-control"],
+            "public, max-age=31536000, immutable"
+        );
+        assert!(response.bytes().await.unwrap().len() < script.len() / 10);
+    }
+    let plain = client.get(&asset).send().await.unwrap();
+    assert!(plain.headers().get("content-encoding").is_none());
+    assert_eq!(plain.text().await.unwrap(), script);
+    // Only hashed names are kept; a missing one and unhashed files revalidate.
+    let missing = client
+        .get(format!("{}/assets/index-gone.js", fixture.base))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(missing.status(), 404);
+    assert!(missing.headers().get("cache-control").is_none());
+    // A route-like path under /assets/ is the app page and is never kept.
+    let page = client
+        .get(format!("{}/assets/gone", fixture.base))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(page.headers()["cache-control"], "no-store");
+    let unhashed = client
+        .get(format!("{}/app.js", fixture.base))
+        .send()
+        .await
+        .unwrap();
+    assert!(unhashed.headers().get("cache-control").is_none());
+    fixture.shutdown().await;
+}
+
+#[tokio::test]
 async fn pages_only_frame_the_daemon_itself() {
     let fixture = Fixture::new(false).await;
     let client = reqwest::Client::new();
