@@ -785,7 +785,11 @@ pub(crate) fn scope_new_bot(home: &Path, bot: &str) -> Result<()> {
             || manifest["bots"]
                 .as_array()
                 .is_some_and(|bots| bots.iter().any(|b| b == bot));
-        if manifest["server"] == true {
+        // A server missing from the config (removed by hand, or a removal
+        // cut short) has nobody to give; the bot is created all the same.
+        if manifest["server"] == true
+            && read_config(home)?["mcp_servers"][name.as_str()].is_object()
+        {
             connectors::change_mcp_bots(home, &name, |bots| {
                 bots.retain(|b| b != bot);
                 if on {

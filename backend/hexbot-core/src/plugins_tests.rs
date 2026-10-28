@@ -1068,3 +1068,26 @@ fn settings_saved_at_the_same_time_all_keep_their_part() {
         crate::common::read_config(home.path()).unwrap()["mcp_servers"]["api"]["headers"].clone();
     assert_eq!(headers.as_object().unwrap().len(), 12, "{headers}");
 }
+
+#[test]
+fn a_package_whose_server_is_gone_does_not_block_new_bots() {
+    let home = setup();
+    call(home.path(), "alice", "hexbot.plugins.install", github()).unwrap();
+    common::update_config(home.path(), |config| {
+        config["mcp_servers"]
+            .as_object_mut()
+            .unwrap()
+            .remove("github");
+        Ok(())
+    })
+    .unwrap();
+    crate::catalog::call(
+        home.path(),
+        "alice",
+        "hexbot.bots.create",
+        &json!({"name":"raven","display_name":"Raven"}),
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(skill_on(home.path(), "raven", "github-issues"), Some(true));
+}
