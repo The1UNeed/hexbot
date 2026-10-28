@@ -695,8 +695,30 @@ pub(crate) fn set_for_bot(
     bot: &str,
     on: bool,
 ) -> Result<()> {
+    bot_owner(home, caller, bot)?;
     let current = find(home, caller, kind, id)?;
-    if on && current["ready"] == false {
+    let server = match (kind, id.strip_prefix("mcp:")) {
+        ("connector", Some(server)) => Some(server.to_owned()),
+        ("package", _) if manifest(home, id)?["server"] == true => Some(id.to_owned()),
+        _ => None,
+    };
+    let toolset = CAPABILITIES
+        .iter()
+        .find(|(tool, ..)| *tool == id)
+        .map(|(_, toolset, ..)| *toolset);
+    // Ready for this bot: a skill or connector can be, through a key in its own `.env`.
+    let ready = match kind {
+        "skill" => skills::resolve(home, Some(bot))?
+            .iter()
+            .any(|s| s.name == id && s.ready),
+        "connector" if server.is_none() => connectors::get(home, Some(bot), id)?["ready"] == true,
+        "capability" => native_tools::set_up_on_daemon(
+            home,
+            toolset.ok_or_else(|| Error::new(4213, format!("unknown capability: {id}")))?,
+        )?,
+        _ => current["ready"] != false,
+    };
+    if on && !ready {
         return Err(Error::new(
             4209,
             format!(
@@ -705,11 +727,6 @@ pub(crate) fn set_for_bot(
             ),
         ));
     }
-    let server = match (kind, id.strip_prefix("mcp:")) {
-        ("connector", Some(server)) => Some(server.to_owned()),
-        ("package", _) if manifest(home, id)?["server"] == true => Some(id.to_owned()),
-        _ => None,
-    };
     if let Some(server) = &server {
         connectors::change_mcp_bots(home, server, |bots| {
             bots.retain(|b| b != bot);
@@ -732,19 +749,22 @@ pub(crate) fn set_for_bot(
                 }
                 write_manifest(home, id, &manifest)?;
             }
-            Ok(())
         }
-        "connector" if server.is_some() => Ok(()),
-        // Other kinds switch each bot on its own, so the rest stay as they are.
-        _ => {
-            let mut bots = strings(&current["bots"]);
-            bots.retain(|b| b != bot);
-            if on {
-                bots.push(bot.to_owned());
-            }
-            set_bots(home, caller, &json!({"kind": kind, "id": id, "bots": bots})).map(drop)
+        "connector" if server.is_some() => {}
+        // The cloud browser's provider is the daemon's; a bot has it through
+        // its browser tool.
+        "connector" if id == "cloud_browser" => connectors::set_toolsets(home, bot, id, on)?,
+        "connector" => connectors::set_enabled(home, bot, id, on)?,
+        "skill" => {
+            let _guard = skills::LOCK
+                .write()
+                .map_err(|_| Error::new(5200, "skills lock unavailable"))?;
+            skills::find_unlocked(home, Some(bot), id)?;
+            skills::set_enabled(home, Some(bot), id, on)?;
         }
+        _ => connectors::switch_toolsets(home, bot, &[toolset.unwrap_or(id).to_string()], on)?,
     }
+    Ok(())
 }
 
 fn set_scope(home: &Path, name: &str, bots: Option<&[String]>) -> Result<()> {

@@ -310,6 +310,36 @@ fn a_skill_ready_through_a_bots_own_key_can_be_given_to_that_bot() {
     assign(json!([])).unwrap();
     assign(json!(["owl"])).unwrap();
     assert_eq!(assign(json!(["owl", "cat"])).unwrap_err().code, 4209);
+    // A bot asking for itself is checked with its own keys too.
+    assign(json!([])).unwrap();
+    plugins::set_for_bot(home.path(), "alice", "skill", "needs-key", "owl", true).unwrap();
+    assert_eq!(
+        plugins::set_for_bot(home.path(), "alice", "skill", "needs-key", "cat", true)
+            .unwrap_err()
+            .code,
+        4209
+    );
+}
+
+#[test]
+fn a_bot_asking_for_a_skill_leaves_other_bots_as_they_are() {
+    let home = setup();
+    skill(home.path(), "plain", "");
+    let assign = |bots: Value| {
+        call(
+            home.path(),
+            "alice",
+            "hexbot.plugins.set_bots",
+            json!({"kind":"skill","id":"plain","bots":bots}),
+        )
+        .unwrap()
+    };
+    assign(json!(["owl"]));
+    // Owl taken away meanwhile, then Cat's own change lands.
+    assign(json!([]));
+    plugins::set_for_bot(home.path(), "alice", "skill", "plain", "cat", true).unwrap();
+    assert_eq!(skill_on(home.path(), "owl", "plain"), Some(false));
+    assert_eq!(skill_on(home.path(), "cat", "plain"), Some(true));
 }
 
 #[test]
