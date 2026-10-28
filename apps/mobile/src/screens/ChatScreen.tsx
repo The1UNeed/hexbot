@@ -6,6 +6,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import {
   Banner,
   BotFace,
+  LoadingFace,
   type BotStatus,
   bubbleFill,
   Button,
@@ -73,6 +74,8 @@ export interface ChatScreenProps {
   archived?: boolean
   onUnarchive?: () => void
 
+  /** The history is still on its way: show the face loading, not an empty chat. */
+  opening?: boolean
   hasEarlier?: boolean
   loadingEarlier?: boolean
   onLoadEarlier?: () => void
@@ -205,6 +208,7 @@ function ChatBody(props: ChatScreenProps) {
     onLoadEarlier,
     onDismissError,
     onRetry,
+    opening,
     title,
     waiting
   } = props
@@ -222,7 +226,11 @@ function ChatBody(props: ChatScreenProps) {
 
   return (
     <>
-      {items.length === 0 && !waiting ? (
+      {items.length === 0 && !waiting && opening ? (
+        <View style={styles.empty} testID="chat-opening">
+          <LoadingFace {...(face ?? { name: title })} name={title} />
+        </View>
+      ) : items.length === 0 && !waiting ? (
         <ScrollView
           contentContainerStyle={styles.empty}
           keyboardDismissMode="interactive"

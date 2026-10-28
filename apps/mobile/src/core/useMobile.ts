@@ -73,6 +73,8 @@ export function useMobile() {
   const [route, setRoute] = useState<ChatRoute | null>(null)
   const [chat, setChat] = useState(emptyChat)
   const [loading, setLoading] = useState(false)
+  // The chat whose history the transcript shows; until then it is still opening.
+  const [readId, setReadId] = useState<null | string>(null)
   const [hasEarlier, setHasEarlier] = useState(false)
   const [loadingEarlier, setLoadingEarlier] = useState(false)
   const session = useRef<MobileSession | null>(null)
@@ -302,6 +304,7 @@ export function useMobile() {
         loadingEvents.current = null
         liveId.current = restoredLiveId
         setChat(restored)
+        setReadId(target.section.id)
         // A daemon from before one chat names no purpose; keep the one the list marked.
         const section =
           'purpose' in result.section
@@ -447,6 +450,7 @@ export function useMobile() {
       liveId.current = null
       setRoute(null)
       setChat(emptyChat())
+      setReadId(null)
       const next = new MobileSession(
         daemon,
         token,
@@ -478,6 +482,7 @@ export function useMobile() {
           setInfo(null)
           liveId.current = null
           setChat(emptyChat())
+          setReadId(null)
           setLoading(true)
           try {
             const refreshing = refreshRef.current(true)
@@ -591,6 +596,7 @@ export function useMobile() {
       ownerPending.current = false
       liveId.current = null
       setChat(emptyChat())
+      setReadId(null)
       await syncChat()
     } catch (e) {
       if (!stale()) setError(errorText(e))
@@ -619,6 +625,7 @@ export function useMobile() {
     routeRef.current = { kind: 'room', room }
     setRoute(routeRef.current)
     setChat(emptyChat())
+    setReadId(null)
     try {
       await syncRoom(room.id)
     } catch (e) {
@@ -808,6 +815,8 @@ export function useMobile() {
     route,
     chat,
     loading,
+    /** The open chat's history is still on its way. */
+    opening: route?.kind === 'section' && readId !== route.section.id,
     hasEarlier,
     loadingEarlier,
     loadEarlier,

@@ -257,3 +257,34 @@ it('keeps a deep-linked bot and remembered chat while an incomplete cached roste
     vi.unstubAllGlobals()
   }
 })
+it('shows the bot loading, not an empty chat, until the history arrives', async () => {
+  const held = deferred()
+  call.mockImplementation((method: string, input: { id?: string }) =>
+    method === 'hexbot.sections.open' ? held.promise : reply(method, input)
+  )
+  render(<ConversationColumn />)
+  expect(await screen.findByRole('status', { name: "Opening Owl's chat" })).toBeInTheDocument()
+  await waitFor(() =>
+    expect(call.mock.calls.some(([method]) => method === 'hexbot.sections.open')).toBe(true)
+  )
+  expect(screen.getByRole('status', { name: "Opening Owl's chat" })).toBeInTheDocument()
+  expect(screen.queryByRole('button', { name: /What can you help me/i })).toBeNull()
+  await act(async () => {
+    held.resolve({
+      section: section('old', 'live-old'),
+      messages: [{ role: 'assistant', text: 'Owl history' }]
+    })
+  })
+  expect(await screen.findByText('Owl history')).toBeInTheDocument()
+  expect(screen.queryByRole('status', { name: "Opening Owl's chat" })).toBeNull()
+})
+it('shows an empty chat once its history is read', async () => {
+  call.mockImplementation((method: string, input: { id?: string }) =>
+    method === 'hexbot.sections.open'
+      ? Promise.resolve({ section: section('old'), messages: [] })
+      : reply(method, input)
+  )
+  render(<ConversationColumn />)
+  expect(await screen.findByRole('button', { name: /What can you help me/i })).toBeInTheDocument()
+  expect(screen.queryByRole('status', { name: "Opening Owl's chat" })).toBeNull()
+})
