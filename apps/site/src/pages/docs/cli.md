@@ -40,6 +40,12 @@ hexbot status --json
 
 Shows whether the daemon is running, its version and port, its LAN addresses when "Allow other devices" is on, its Tailscale address when `tailscale ip -4` answers, its Hex Connect hostname, whether the service is installed and running, and whether the sandbox is available. It works before the daemon has ever started.
 
+```sh
+hexbot diagnostics
+```
+
+Prints what the running daemon measured since it started, as JSON: how long it took to launch, its processes and their CPU and memory over the last hour, load, prompt and database cache hit rates, recent runs and requests with their timings, and the failures it saw. The app shows the same in Settings, Advanced, Diagnostics, where Copy report copies it.
+
 ## Run the daemon as a service
 
 ```sh

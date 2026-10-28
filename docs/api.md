@@ -1301,6 +1301,44 @@ devices, and removes the invite and update methods.
 - `hexbot.usage.summary {since?}` → `{input_tokens, output_tokens,
   estimated_cost_usd, by_bot}`.
 
+### Diagnostics
+
+What Settings, Advanced, Diagnostics shows (`backend/hexbot-core/src/diagnostics.rs`).
+Everything but the prompt cache lives in memory since the daemon started; no
+span holds message text, only names, timings, token counts and error messages.
+
+- `hexbot.diagnostics.get {span_name?}` → `{generated_at, daemon, host,
+  launch, resources, load, caches, spans, failures}`:
+  - `daemon`: pid, version, Pi version, `started_at` (Unix ms), uptime,
+    supervisor (`desktop`, `service` or null) and home.
+  - `host`: hostname, OS and kernel, architecture, processor and cores,
+    memory total and available, load averages, and the disk holding the home.
+  - `launch`: `total_ms` from `hexbot serve` to ready and its `phases`
+    (`name`, `start_ms`, `duration_ms`).
+  - `resources`: a sample of the daemon's process tree every 5 seconds for
+    an hour (`samples`: total CPU as percent of one core, RSS, process count,
+    and the daemon's own), and the live tree (`processes`, depth first, with
+    `label` naming the daemon and each bot's Pi process, and ten minutes of
+    `history`).
+  - `load`: open sections, running turns, bot process capacity, connected
+    sockets, requests in the last minute and runs in the last hour.
+  - `caches.prompt`: input tokens read from the provider's cache over the
+    last 24 hours, in all, `by_bot` and `by_model`. `caches.sqlite`: page
+    cache hits and misses of every connection, `db::open` timing, statement
+    counts and time, the `slowest` and `busiest` statements, and file sizes.
+  - `spans`: per-name statistics (`count`, `errors`, `avg_ms`, `p95_ms`,
+    `max_ms`) over the last 4000 spans, the latest 200 (`recent`, only
+    `span_name` when given), and the latest 50 runs (`traces`). A span is an
+    RPC (`rpc`, named by method), a run (`run <bot>`), or a model call
+    (`model <model>`) or tool (`tool <name>`) inside one.
+  - `failures`: failed RPCs, runs (not interruptions) and bot processes that
+    ended while open: `recent` (newest first) and `common`, grouped once
+    numbers, ids, quoted text and URLs are set aside.
+- `hexbot.diagnostics.trace {trace}` → `{trace, spans}`: one run's spans,
+  the run first.
+
+Polling `gateway.ping` and the two diagnostics methods are not recorded.
+
 ### Hex Connect
 
 - `hexbot.connect.status {}` → `{registered, daemon_id, slug,
@@ -1431,6 +1469,8 @@ on the pairing code or grant's single-use protection instead. CORS exposes
 - `hexbot computer [on | off | restart | reset | give-back | size
   small|medium|large]`: shows the bots' computer or changes it, through the
   running daemon.
+- `hexbot diagnostics`: prints `hexbot.diagnostics.get` as JSON from the
+  running daemon, the same report as Settings, Advanced, Diagnostics.
 - `hexbot devices list|revoke`, `hexbot bots list|create|delete`,
   `hexbot rooms list`, and `hexbot send <bot> <text>`.
 - `hexbot plugins [list [--bot NAME]]` and `hexbot plugins assign

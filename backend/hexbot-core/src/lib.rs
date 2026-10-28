@@ -13,6 +13,7 @@ pub mod connectors;
 pub mod credentials;
 pub mod daemon_status;
 pub mod db;
+pub mod diagnostics;
 pub mod dpop;
 pub mod dreaming;
 pub mod events;

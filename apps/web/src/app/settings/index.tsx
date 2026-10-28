@@ -53,6 +53,7 @@ import { MemoryEditor } from '../bot-settings/memory'
 import { ChoiceRow, dividerClass, Group, Heading, Row } from '../bot-settings/shared'
 import { ConfirmUpdate, installTarget } from '../confirm-update'
 
+import { DiagnosticsSettings } from './diagnostics'
 import { OPEN_SOURCE } from './licenses'
 
 export const SETTINGS_TABS = [
@@ -64,7 +65,8 @@ export const SETTINGS_TABS = [
   'approvals',
   'appearance',
   'updates',
-  'about'
+  'about',
+  'diagnostics'
 ] as const
 
 export type SettingsTab = (typeof SETTINGS_TABS)[number]
@@ -105,7 +107,11 @@ function ErrorLine({ children }: { children: React.ReactNode }) {
 /** Complete settings body; the file route owns the surrounding window and navigation. */
 export function SettingsPanel({ tab }: { tab: string }): React.JSX.Element {
   return (
-    <section aria-label={`${tab} settings`} className={settingsPageClass}>
+    <section
+      aria-label={`${tab} settings`}
+      // Diagnostics holds tables and charts; it takes the column's full measure.
+      className={cn(settingsPageClass, tab === 'diagnostics' && 'max-w-[820px]')}
+    >
       {tab === 'providers' && <ProvidersSettings />}
       {tab === 'network' && <NetworkSettings />}
       {tab === 'connect' && <ConnectSettings />}
@@ -115,6 +121,7 @@ export function SettingsPanel({ tab }: { tab: string }): React.JSX.Element {
       {tab === 'appearance' && <AppearanceSettings />}
       {tab === 'updates' && <UpdatesSettings />}
       {tab === 'about' && <AboutSettings />}
+      {tab === 'diagnostics' && <DiagnosticsSettings />}
     </section>
   )
 }

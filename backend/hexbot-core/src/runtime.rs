@@ -339,6 +339,9 @@ fn model_choice(options: &Value) -> Value {
         options["reasoning_effort"]
     ])
 }
+/// Bot processes that may run at once.
+const SECTION_CAPACITY: usize = 16;
+
 pub struct Runtime {
     pub(crate) admission: Arc<crate::admission::Admission>,
     home: PathBuf,
@@ -385,7 +388,7 @@ impl Runtime {
             sessions: Mutex::new(HashMap::new()),
             opening: Mutex::new(HashMap::new()),
             input_queues: Mutex::new(HashMap::new()),
-            capacity: Arc::new(tokio::sync::Semaphore::new(16)),
+            capacity: Arc::new(tokio::sync::Semaphore::new(SECTION_CAPACITY)),
             weak: weak.clone(),
             stopping: AtomicBool::new(false),
             children: Mutex::new(HashMap::new()),
@@ -1223,6 +1226,7 @@ impl Runtime {
             .optional()?
             .unwrap_or_else(|| format!("live-{}", common::id()));
         let (process, events) = PiProcess::spawn(pi).map_err(pi_error)?;
+        crate::diagnostics::get().label_process(process.pid(), format!("Pi · {bot}"));
         let (settled, _) = watch::channel(0);
         let s = Arc::new(Live {
             owner: owner.into(),
@@ -3134,6 +3138,23 @@ impl Runtime {
             );
         }
     }
+    /// Open sections, running turns and free capacity, for Diagnostics.
+    pub fn diagnostic_load(&self) -> Value {
+        let sessions = self.sessions.lock().unwrap();
+        let running = sessions
+            .values()
+            .filter(|s| {
+                let state = s.state.lock().unwrap();
+                state.busy && !state.closed
+            })
+            .count();
+        json!({
+            "sessions": sessions.len(),
+            "running": running,
+            "capacity": SECTION_CAPACITY,
+            "capacity_free": self.capacity.available_permits(),
+        })
+    }
     pub fn busy_sections(&self, bot: &str) -> Vec<Value> {
         self.sessions
             .lock()
@@ -3625,6 +3646,8 @@ impl Runtime {
                     .filter(|(name, _)| crate::pi::provider_environment(name, provider.unwrap_or(""))),
             );
             let (process, mut events) = PiProcess::spawn(options).map_err(pi_error)?;
+            crate::diagnostics::get()
+                .label_process(process.pid(), format!("Pi · {bot} (one request)"));
             started = Some(AdmittedPi { process, admission: Some(admission.clone()) });
             let process = &started.as_ref().unwrap().process;
             let response = process
@@ -4674,6 +4697,7 @@ impl Runtime {
         if s.state.lock().unwrap().closed {
             return Ok(());
         }
+        crate::diagnostics::get().pi_event(&s.id, &s.bot, &s.stored, &event);
         let observed = {
             let mut state = s.state.lock().unwrap();
             let text = state.output.clone();
@@ -5243,6 +5267,7 @@ fn pump(
                     );
                 }
                 if !was_closed {
+                    crate::diagnostics::get().process_exit(&s.id, &s.bot, &error.message);
                     runtime.stop_dialogs(&s).await;
                     crate::native_tools::close_session(&runtime.home, &s.stored).await;
                 }

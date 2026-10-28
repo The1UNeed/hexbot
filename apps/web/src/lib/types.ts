@@ -554,6 +554,182 @@ export interface CurrentUser {
   id: string
   display_name: string
 }
+/** One span: an RPC, a run, or a model call or tool inside a run (`hexbot.diagnostics.get`). */
+export interface DiagnosticsSpan {
+  id: number
+  trace: number
+  parent: number | null
+  name: string
+  kind: 'model' | 'rpc' | 'run' | 'tool'
+  /** Unix milliseconds. */
+  start: number
+  duration_ms: number
+  error: string | null
+  attrs: Record<string, unknown>
+  /** Traces only: spans in the trace and how many failed. */
+  spans?: number
+  errors?: number
+}
+
+export interface DiagnosticsProcess {
+  pid: number
+  ppid: number
+  depth: number
+  name: string
+  label: string | null
+  /** Percent of one core. */
+  cpu: number
+  /** Resident memory in bytes. */
+  rss: number
+  /** `[unix ms, cpu, rss]`, oldest first. */
+  history: [number, number, number][] | null
+}
+
+export interface DiagnosticsStatement {
+  sql: string
+  count: number
+  total_ms: number
+  avg_ms: number
+  max_ms: number
+}
+
+export interface DiagnosticsCacheRow {
+  name: string
+  calls: number
+  input: number
+  cache_read: number
+  cache_write: number
+  output: number
+  cost: number
+  hit_rate: number | null
+}
+
+export interface DiagnosticsFailure {
+  at: number
+  kind: 'process' | 'rpc' | 'run'
+  source: string
+  message: string
+  trace: number | null
+}
+
+export interface DiagnosticsFailureGroup {
+  kind: DiagnosticsFailure['kind']
+  source: string
+  pattern: string
+  example: string
+  count: number
+  first: number
+  last: number
+}
+
+/** `hexbot.diagnostics.get`: what the daemon measured since it started. */
+export interface DiagnosticsSnapshot {
+  generated_at: number
+  daemon: {
+    pid: number
+    version: string
+    pi_version: string | null
+    started_at: number
+    uptime_s: number
+    supervisor: string | null
+    home: string
+  }
+  host: {
+    hostname: string | null
+    os: string
+    os_version: string | null
+    kernel: string | null
+    arch: string
+    cpu_model: string | null
+    cpu_cores: number | null
+    memory_total: number | null
+    memory_available?: number | null
+    load?: [number, number, number]
+    disk_total?: number
+    disk_available?: number
+  }
+  launch: {
+    total_ms: number | null
+    phases: { name: string; start_ms: number; duration_ms: number }[]
+  }
+  resources: {
+    interval_s: number
+    error: string | null
+    samples: {
+      t: number
+      cpu: number
+      rss: number
+      processes: number
+      daemon_cpu: number
+      daemon_rss: number
+    }[]
+    processes: DiagnosticsProcess[]
+  }
+  load: {
+    sessions: number
+    running: number
+    capacity: number
+    capacity_free: number
+    sockets: number
+    open_runs: number
+    rpc_per_minute: number
+    runs_last_hour: number
+  }
+  caches: {
+    prompt:
+      | {
+          window_h: number
+          calls: number
+          input: number
+          cache_read: number
+          cache_write: number
+          output: number
+          hit_rate: number | null
+          by_bot: DiagnosticsCacheRow[]
+          by_model: DiagnosticsCacheRow[]
+        }
+      | { error: string }
+    sqlite: {
+      opens: number
+      open_avg_ms: number
+      open_max_ms: number
+      cache_hits: number
+      cache_misses: number
+      cache_hit_rate: number | null
+      statements: number
+      statement_avg_ms: number
+      statement_total_ms: number
+      busiest: DiagnosticsStatement[]
+      slowest: DiagnosticsStatement[]
+      db_bytes: number | null
+      runtime_db_bytes: number | null
+      wal_bytes: number | null
+    }
+  }
+  spans: {
+    kept: number
+    capacity: number
+    names: {
+      name: string
+      kind: DiagnosticsSpan['kind']
+      count: number
+      errors: number
+      avg_ms: number
+      p95_ms: number | null
+      max_ms: number | null
+      total_ms: number
+      last_at: number
+    }[]
+    recent: DiagnosticsSpan[]
+    traces: DiagnosticsSpan[]
+  }
+  failures: {
+    total: number
+    recent: DiagnosticsFailure[]
+    common: DiagnosticsFailureGroup[]
+  }
+}
+
 export interface UsageSummary {
   input_tokens: number
   output_tokens: number

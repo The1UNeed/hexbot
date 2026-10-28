@@ -382,9 +382,9 @@ nested inside a card and no row carries more than one line of explanation.
 
 ### Settings (the shared shell, global tabs)
 
-Tabs in four groups: Models (Providers, Usage), Devices (Network, Hex
+Tabs in five groups: Models (Providers, Usage), Devices (Network, Hex
 Connect), You (Memory, Approvals, Appearance), App (Updates,
-About). A daemon belongs to one person, so there is no Users tab; Memory
+About), Advanced (Diagnostics). A daemon belongs to one person, so there is no Users tab; Memory
 starts with your name, the one Get Started asked for.
 
 - Providers: a search pill, then "Connected" and "More providers" cards,
@@ -405,6 +405,19 @@ starts with your name, the one Get Started asked for.
   leaves sound to the phone's notifications.
 - Updates: current version, channel, check now.
 - About: version, license, links.
+- Diagnostics: what the daemon measured since it started, polled every 5
+  seconds while the page is open, with Copy report. It takes a wider
+  measure than other pages and has five pill views. Overview: six stat
+  tiles (launch time, uptime, CPU, memory, prompt and database cache hits),
+  the launch phases on one time axis, load, host, daemon, and this window's
+  load and round trip. Resources: CPU and memory over the last hour, one
+  series per chart with a crosshair readout, and the live process tree;
+  selecting a process charts its last ten minutes. Traces: recent runs, each
+  opening a waterfall of its model calls and tools with their details; span
+  names with count, failures, average, p95 and max; and the span log,
+  filtered by name. Failures: most common and last. Caches: prompt cache by
+  bot and model, and the local database. Desktop and web only: the mobile
+  app has no Diagnostics.
 
 ### Pairing on the daemon side
 
