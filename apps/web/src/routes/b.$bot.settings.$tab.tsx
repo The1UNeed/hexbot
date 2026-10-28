@@ -1,9 +1,9 @@
 import { createFileRoute, redirect, useNavigate } from '@tanstack/react-router'
 import {
-  BellRing,
   BookOpen,
   Brain,
   Cpu,
+  HeartPulse,
   Plug,
   ShieldCheck,
   SlidersHorizontal,
@@ -53,8 +53,8 @@ export const Route = createFileRoute('/b/$bot/settings/$tab')({
 const ICONS: Record<BotSettingsTab, SettingsTabItem['icon']> = {
   advanced: SlidersHorizontal,
   approvals: ShieldCheck,
-  checkins: BellRing,
   connectors: Plug,
+  heartbeat: HeartPulse,
   memory: Brain,
   model: Cpu,
   persona: Sparkles,
@@ -66,14 +66,14 @@ const ICONS: Record<BotSettingsTab, SettingsTabItem['icon']> = {
 const GROUPS: { ids: BotSettingsTab[]; label?: string }[] = [
   { ids: ['profile', 'persona', 'model'] },
   { ids: ['memory', 'tools', 'connectors', 'skills'], label: 'Abilities' },
-  { ids: ['approvals', 'checkins', 'advanced'], label: 'Manage' }
+  { ids: ['approvals', 'heartbeat', 'advanced'], label: 'Manage' }
 ]
 
-/** Only the primary bot checks in, so only its settings show Check-ins, and only on a daemon that has them. */
-function tabsFor(primary: boolean): SettingsTabGroup<BotSettingsTab>[] {
+/** Every bot has a heartbeat, on a daemon that has one. */
+function tabsFor(heartbeat: boolean): SettingsTabGroup<BotSettingsTab>[] {
   return GROUPS.map(group => ({
     items: group.ids
-      .filter(id => primary || id !== 'checkins')
+      .filter(id => heartbeat || id !== 'heartbeat')
       .map(id => ({ icon: ICONS[id], id, label: TAB_LABELS[id] })),
     label: group.label
   }))
@@ -146,10 +146,9 @@ function BotSettingsDialog() {
     }
   }
 
-  // A daemon from before check-ins sends no check-in settings.
-  const checkins = useSettings(state => state.settings?.checkin_enabled !== undefined)
-  const showCheckins = bot?.primary === true && checkins
-  const current = isBotSettingsTab(tab) && (tab !== 'checkins' || showCheckins) ? tab : 'profile'
+  // A daemon from before the heartbeat sends no heartbeat setting.
+  const heartbeat = useSettings(state => state.settings?.heartbeat_enabled !== undefined)
+  const current = isBotSettingsTab(tab) && (tab !== 'heartbeat' || heartbeat) ? tab : 'profile'
 
   const name = bot?.display_name ?? botName
 
@@ -178,7 +177,7 @@ function BotSettingsDialog() {
         onSelect={item =>
           void navigate({ params: { bot: botName, tab: item }, to: '/b/$bot/settings/$tab' })
         }
-        tabs={tabsFor(showCheckins)}
+        tabs={tabsFor(heartbeat)}
       >
         {closeError ? (
           <p className="px-6 pt-4 text-danger" role="alert">

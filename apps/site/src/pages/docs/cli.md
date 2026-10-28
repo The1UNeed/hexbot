@@ -105,20 +105,18 @@ hexbot bots primary writer
 
 There is one primary bot, and it stays. `hexbot bots list` shows it first, with `"primary": true`.
 
-## Check-ins
+## Heartbeat
 
-The primary bot's check-ins can be managed without the app:
+Every bot's heartbeat can be managed without the app:
 
 ```sh
-hexbot checkins                    # settings, next check-in, wake-ups, recent runs
-hexbot checkins now                # check in now
-hexbot checkins off                # or on
-hexbot checkins every 30           # minutes, 15 to 1440
-hexbot checkins hours 07:30-23:00  # regular check-ins stay inside these hours
-hexbot checkins cancel ID          # cancel a wake-up
+hexbot heartbeat off                                # or on, for every bot
+hexbot heartbeat status owl                         # checklist, next run, recent runs
+hexbot heartbeat now owl                            # run one now
+hexbot heartbeat set owl "- Has Sam replied about the lease?"
 ```
 
-`hexbot checkins`, `now`, and `cancel` need the daemon running.
+The checklist is also a plain file, `profiles/BOT/HEARTBEAT.md` in the daemon's data directory. `status`, `now`, and `set` need the daemon running.
 
 ## Send a message and list rooms
 

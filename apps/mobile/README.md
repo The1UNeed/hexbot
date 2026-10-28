@@ -7,8 +7,9 @@ Transparency use solid controls. Lists and messages use solid backgrounds.
 
 ## Layout
 
-A messaging app with no tabs. One list holds every bot's chat, every room and
-the primary bot's Check-ins, newest first, with the primary bot pinned on top.
+A messaging app with no tabs. One list holds every bot's chat and every room,
+newest first, with the primary bot pinned on top. A Check-ins conversation from
+before the heartbeat stays in it until you delete it.
 Each row shows the face, the name, the time and the last thing said, or what
 the bot is doing while it works. Search at the bottom filters the list. A row
 opens its conversation; a long press opens the bot's profile or the room's
@@ -63,7 +64,7 @@ when Connect supplies one, and exchanges the grant directly with that daemon.
 | Area | Mobile controls |
 | --- | --- |
 | Bots | Chat list and Bots & jobs; create, edit, delete, soul, picture, model and thinking level, tools, approvals, workspace, notifications and dreaming |
-| Conversations | Check-ins in the chat list; streamed chat, stop, file/image/PDF attachments, Markdown, tool steps with their results, visuals, questions and approvals |
+| Conversations | heartbeat messages in each bot's chat; streamed chat, stop, file/image/PDF attachments, Markdown, tool steps with their results, visuals, questions and approvals |
 | Computer | The bots' shared computer on its own card from a chat's computer button: the live screen with each bot's face cursor, what is happening on it, Take control and Give back, Turn on, Restart, Turn off and Reset; its size in a bot's Tools |
 | Rooms | Rooms in the chat list: chat, stop, bot membership, main bot, budgets, approvals, archive, restore from All rooms, and delete |
 | Memory | Edit each bot's memory and your About you text; inspect dreaming and restore memory |
@@ -125,10 +126,10 @@ pnpm exec eas build --platform android --profile preview
 Local native builds use
 `pnpm mobile:ios` and `pnpm mobile:android` and need no EAS account.
 
-Check-in notifications use push through the EAS project above
+Heartbeat notifications use push through the EAS project above
 (`extra.eas.projectId` in `app.config.ts`), with APNs and FCM credentials on
 it. On a daemon reached through Hex Connect, the daemon asks Connect to wake the phone; the push says only that
-the primary bot has a message, never what it is.
+one of your bots has a message, never what it is.
 
 ## TestFlight automation
 

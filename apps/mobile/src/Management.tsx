@@ -44,6 +44,7 @@ export type Panel = {
     | 'connectors'
     | 'devices'
     | 'dreams'
+    | 'heartbeat'
     | 'job'
     | 'job-create'
     | 'jobs'
@@ -196,7 +197,7 @@ export function Management({
   const bot = panel?.bot
     ? (mobile.bots.find(b => b.name === panel.bot!.name) ?? panel.bot)
     : undefined
-  // The primary bot's Check-ins conversation, which can be deleted, unlike its chat.
+  // A Check-ins conversation from before the heartbeat, which can be deleted, unlike its chat.
   const checkinsSection = mobile.sections.find(s => s.bot === bot?.name && s.purpose === 'checkins')
   const room = panel?.room
     ? (mobile.rooms.find(r => r.id === panel.room!.id) ?? panel.room)
@@ -215,7 +216,9 @@ export function Management({
       onSaved?.()
       if (close) (onBack ?? onClose)()
       else if (
-        ['devices', 'skills', 'jobs', 'dreams', 'network', 'usage', 'updates'].includes(kind)
+        ['devices', 'skills', 'jobs', 'dreams', 'heartbeat', 'network', 'usage', 'updates'].includes(
+          kind
+        )
       )
         await load()
     } catch (e) {
@@ -354,6 +357,11 @@ export function Management({
         data = (await rpc<{ dreams: RowData[] }>('hexbot.dreaming.list', { bot: bot?.name })).dreams
         detail = await rpc('hexbot.dreaming.status', { bot: bot?.name })
         break
+      case 'heartbeat':
+        detail = await rpc('hexbot.heartbeat.status', { bot: bot?.name })
+        data = (detail.recent as RowData[] | undefined) ?? []
+        fields = { text: str(detail.text) }
+        break
       case 'connect':
         detail = await rpc('hexbot.connect.status')
         break
@@ -438,6 +446,26 @@ export function Management({
     }
     // A panel is a snapshot; changing it loads a fresh form.
   }, [requested])
+  // A heartbeat starts or ends, or the bot changes its checklist, while the card is open.
+  useEffect(() => {
+    if (kind !== 'heartbeat' || panelLoading) return
+    const current = epoch.current
+    const shown = str(extra.text)
+    // A newer change reads again; this answer may arrive after it.
+    let newer = false
+    void rpc<RowData>('hexbot.heartbeat.status', { bot: bot?.name })
+      .then(detail => {
+        if (newer || current !== epoch.current) return
+        setRows((detail.recent as RowData[] | undefined) ?? [])
+        setExtra(detail)
+        // Unsaved edits stay.
+        setValues(v => (v.text === shown ? { ...v, text: str(detail.text) } : v))
+      })
+      .catch(() => {})
+    return () => {
+      newer = true
+    }
+  }, [mobile.heartbeats])
   const set = (key: string, value: string | boolean) => setValues(v => ({ ...v, [key]: value }))
   const field = (
     key: string,
@@ -534,6 +562,10 @@ export function Management({
             workspace_dir: values.workspace_dir,
             dream_enabled: values.dream_enabled,
             dream_time: values.dream_time,
+            // A daemon from before the heartbeat has no such setting.
+            ...(typeof mobile.settings?.heartbeat_enabled === 'boolean'
+              ? { heartbeat_enabled: values.heartbeat_enabled }
+              : {}),
             default_model: values.default_model || null,
             fallback_model: values.fallback_model || null,
             bot_daily_token_budget: num(values.bot_daily_token_budget),
@@ -572,6 +604,14 @@ export function Management({
               )}
             </View>
           </Group>
+          {typeof mobile.settings?.heartbeat_enabled === 'boolean' ? (
+            <Group
+              title="Heartbeat"
+              footer="Every 30 minutes, day and night, each bot works through its checklist and writes in its chat only when something needs you."
+            >
+              {toggle('heartbeat_enabled', 'Heartbeat')}
+            </Group>
+          ) : null}
         </>
       )
       break
@@ -729,6 +769,9 @@ export function Management({
                 {row('Dreaming history', 'dreams')}
                 {row('Scheduled jobs', 'jobs')}
               </Group>
+              {typeof mobile.settings?.heartbeat_enabled === 'boolean' ? (
+                <Group title="On its own">{row('Heartbeat', 'heartbeat')}</Group>
+              ) : null}
               <Group title="Notifications">{toggle('notify', 'Notify me')}</Group>
               <Group>
                 {action('Clear stopped status', () =>
@@ -750,13 +793,13 @@ export function Management({
                   : null}
                 {checkinsSection
                   ? action(
-                      'Delete Check-ins',
+                      'Delete earlier check-ins',
                       async () => {
                         await rpc('hexbot.sections.delete', { id: checkinsSection.id })
                         await mobile.refresh()
                       },
                       true,
-                      'This deletes what check-ins told you. The next check-in message starts it again.'
+                      'This deletes what check-ins told you before the heartbeat replaced them.'
                     )
                   : null}
                 {/* The primary bot stays; the daemon refuses to delete it too. */}
@@ -1339,6 +1382,61 @@ export function Management({
         </>
       )
       break
+    case 'heartbeat': {
+      const name = bot?.display_name ?? 'The bot'
+      const enabled = extra.enabled !== false
+      const next = extra.running
+        ? 'Running now'
+        : !enabled
+          ? 'Off'
+          : extra.empty
+            ? 'Add a check to start'
+            : extra.next_run_at
+              ? new Date(str(extra.next_run_at)).toLocaleString()
+              : 'Not scheduled'
+      save = () => rpc('hexbot.heartbeat.set', { bot: bot?.name, text: values.text })
+      content = (
+        <>
+          {field(
+            'text',
+            'HEARTBEAT.md',
+            true,
+            `One check per line. Every ${str(extra.every_minutes || 30)} minutes, day and night, ${name} works through this list and writes in its chat only when something needs you. Ask it in its chat to keep an eye on something and it adds a line too.`,
+            false,
+            Number(extra.cap) || 4000
+          )}
+          <Group
+            footer={enabled ? undefined : 'Heartbeats are off for every bot. Turn them on in Settings.'}
+          >
+            <Row title="Next heartbeat" subtitle={next} testID="heartbeat-next" />
+            {action(
+              'Run now',
+              () => rpc('hexbot.heartbeat.run_now', { bot: bot?.name }),
+              false,
+              '',
+              extra.empty === true || extra.running === true || values.text !== extra.text
+            )}
+          </Group>
+          {rows.map(r => (
+            <Group
+              key={str(r.id)}
+              title={`${r.kind === 'manual' ? 'You asked' : 'Heartbeat'} · ${new Date(str(r.started_at)).toLocaleString()}`}
+            >
+              <View style={styles.inset}>
+                <Text selectable>
+                  {r.status === 'running'
+                    ? 'Running'
+                    : r.status === 'failed'
+                      ? `Failed: ${str(r.summary)}`
+                      : `${r.messaged ? 'Posted in your chat' : 'Nothing to tell you'}${r.summary ? `. ${str(r.summary)}` : ''}`}
+                </Text>
+              </View>
+            </Group>
+          ))}
+        </>
+      )
+      break
+    }
     case 'connect':
       content = (
         <>
@@ -1560,6 +1658,7 @@ export function Management({
     skill: str(panel?.data?.name),
     'skill-create': 'Create skill',
     dreams: 'Dreaming',
+    heartbeat: 'Heartbeat',
     connect: 'Hex Connect',
     updates: 'Daemon updates',
     jobs: 'Scheduled jobs',
@@ -1573,6 +1672,7 @@ export function Management({
     jobs: 'No scheduled jobs yet.',
     activity: 'No messages between bots yet.',
     dreams: 'No dreams yet.',
+    heartbeat: 'No heartbeats yet.',
     rooms: 'No rooms yet.'
   }
   return (

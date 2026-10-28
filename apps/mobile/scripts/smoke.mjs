@@ -89,8 +89,14 @@ const model = createServer(async (req, res) => {
             ? { name: 'write', args: { path: 'mobile-approval.txt', content: 'approved' } }
             : !toolAnswered && prompt.startsWith('Read the other app attachment')
               ? { name: 'read', args: { path: retainedUploadPath } }
-              : null
-    const answer = prompt.startsWith('Room: ')
+              : !toolAnswered && prompt.startsWith('# Heartbeat')
+                ? { name: 'hexbot_notify', args: { message: 'Flight BA 286 is two hours late.' } }
+                : null
+    // Long enough for the phone to show the heartbeat running.
+    if (tool?.name === 'hexbot_notify') await new Promise(resolve => setTimeout(resolve, 1500))
+    const answer = prompt.startsWith('# Heartbeat')
+    ? 'Told them BA 286 is late.'
+    : prompt.startsWith('Room: ')
       ? 'The mobile room is working. @user your team is ready.'
       : /native|Hello from/i.test(prompt)
         ? 'Your native message reached the daemon and Pi.'
@@ -552,8 +558,28 @@ try {
   await settle()
   await shot('profile-tools')
   await page.getByTestId('management-sheet-back').click()
+  // The heartbeat card shows a run it started end, and the bot's message lands in its chat.
+  await page.getByTestId('manage-heartbeat').click()
+  await expect(page.getByTestId('action-run-now')).toBeDisabled()
+  await page.getByTestId('field-text').fill('- Is flight BA 286 on Friday delayed?')
+  await page.getByTestId('management-sheet-action').click()
+  await expect
+    .poll(async () => (await rpc('hexbot.heartbeat.status', { bot: 'owl' })).empty)
+    .toBe(false)
+  await page.getByTestId('manage-heartbeat').click()
+  await page.getByTestId('action-run-now').click()
+  await expect(page.getByTestId('heartbeat-next')).toContainText('Running now')
+  await expect(page.getByText('Posted in your chat. Told them BA 286 is late.')).toBeVisible({
+    timeout: 30000
+  })
+  await expect(page.getByTestId('heartbeat-next')).not.toContainText('Running now')
+  await settle()
+  await shot('heartbeat')
+  await page.getByTestId('management-sheet-back').click()
   await page.getByTestId('management-sheet-close').click()
   await expect(page.getByTestId('management-sheet')).not.toBeVisible()
+  await expect(page.getByText('Flight BA 286 is two hours late.', { exact: true })).toBeVisible()
+  await shot('heartbeat-chat')
   await page.getByRole('button', { name: 'Back', exact: true }).click()
   // Rooms sit in the same list as chats and open like one.
   await expect(page.getByTestId(`room-row-${launch.id}`)).toBeVisible()
@@ -762,6 +788,7 @@ try {
       'chat list, and one chat per bot opened from its row',
       'model menu lists connected providers from their live lists and shows the level the model runs at',
       'tool card',
+      'heartbeat checklist, a run the card follows to its end, and its message in the chat',
       'soul editing',
       'isolated bot memory',
       'About you',

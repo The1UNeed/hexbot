@@ -14,7 +14,7 @@ import {
 import { pair } from './transport'
 import { registerPush } from './push'
 import { parsePairing, normalizeOrigin } from './links'
-import { checkinMessage, emptyChat, historyMessages, reduceChat, replayChat } from './chat'
+import { emptyChat, heartbeatMessage, historyMessages, reduceChat, replayChat } from './chat'
 import { reduceRoom, restoreRoom, roomChat, roomMessage } from './room-chat'
 import { attachmentPrompt } from './chat-send'
 import { modelLists, providerModels } from './models'
@@ -45,6 +45,10 @@ export type { ChatRoute }
 const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e))
 /** A room opens at its latest events and pages back this many at a time. */
 const ROOM_PAGE = 200
+/** A bot posted on its own: its heartbeat, or a check-in on a daemon from before it. */
+const postedOnItsOwn = (type: string) =>
+  type === 'hexbot.heartbeat.message' || type === 'hexbot.checkins.message'
+
 export function useMobile() {
   const [saved, setSaved] = useState<SavedDaemon[]>([])
   const [active, setActive] = useState<SavedDaemon | null>(null)
@@ -63,6 +67,8 @@ export function useMobile() {
   const [computer, setComputer] = useState<ComputerStatus | null>(null)
   /** Counts connections, so what a daemon forgets on restart is asked for again. */
   const [connects, setConnects] = useState(0)
+  /** Counts heartbeat changes, so an open heartbeat card reads its status again. */
+  const [heartbeats, setHeartbeats] = useState(0)
   const [user, setUser] = useState<CurrentUser | null>(null)
   const [route, setRoute] = useState<ChatRoute | null>(null)
   const [chat, setChat] = useState(emptyChat)
@@ -282,16 +288,16 @@ export function useMobile() {
         if (replay.reread && attempt < 2) continue
         straddling.current = replay.state.busy ? restoredLiveId : null
         let restored = { ...replay.state, error: failure }
-        // Check-ins that arrived while it loaded carry no session; match the section.
+        // Heartbeat messages that arrived while it loaded carry no session; match the section.
         for (const event of loadingEvents.current ?? []) {
           const p = (event.payload ?? {}) as Record<string, unknown>
           if (
-            event.type === 'hexbot.checkins.message' &&
+            postedOnItsOwn(event.type) &&
             p.section_id === target.section.id &&
             typeof p.row_id === 'string' &&
             typeof p.text === 'string'
           )
-            restored = checkinMessage(restored, p.row_id, p.text)
+            restored = heartbeatMessage(restored, p.row_id, p.text)
         }
         loadingEvents.current = null
         liveId.current = restoredLiveId
@@ -324,6 +330,7 @@ export function useMobile() {
         setComputer(current => (current ? { ...current, ...(p as Partial<ComputerStatus>) } : current))
         return
       }
+      if (event.type === 'hexbot.heartbeat.changed') setHeartbeats(n => n + 1)
       if (event.type.endsWith('.changed')) {
         if (!refreshTimer.current)
           refreshTimer.current = setTimeout(() => {
@@ -364,14 +371,14 @@ export function useMobile() {
           )
         )
       } else {
-        if (event.type === 'hexbot.checkins.message') {
+        if (postedOnItsOwn(event.type)) {
           if (
             p.section_id === target.section.id &&
             typeof p.row_id === 'string' &&
             typeof p.text === 'string'
           ) {
             const [id, text] = [p.row_id, p.text]
-            setChat(c => checkinMessage(c, id, text))
+            setChat(c => heartbeatMessage(c, id, text))
             // Seen as it arrived, so it is read.
             void rpc('hexbot.sections.mark_read', { id: target.section.id }).catch(() => {})
           }
@@ -825,6 +832,7 @@ export function useMobile() {
     liveSessionId: () => liveId.current,
     computer,
     connects,
+    heartbeats,
     /** Read the computer's status, or run a `hexbot.computer.*` method and keep what it returns. */
     computerCall: async (method = 'hexbot.computer.status', params: Record<string, unknown> = {}) => {
       const result = await rpc<ComputerStatus>(method, params)

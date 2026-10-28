@@ -149,13 +149,13 @@ fn team_shape(connection: &Connection) -> Vec<(String, Vec<Column>)> {
     let real = |name: &str, required: bool| (name.into(), "REAL".into(), required, None, 0);
     let key = |name: &str| (name.into(), "TEXT".into(), false, None, 1);
     expected.push((
-        "checkin_messages".into(),
+        "heartbeat_messages".into(),
         vec![
             key("id"),
             text("owner_id", true),
             text("bot", true),
             text("section_id", true),
-            text("checkin_id", false),
+            text("heartbeat_id", false),
             text("text", true),
             real("created_at", true),
             real("offered_at", false),
@@ -164,21 +164,7 @@ fn team_shape(connection: &Connection) -> Vec<(String, Vec<Column>)> {
         ],
     ));
     expected.push((
-        "checkin_wakeups".into(),
-        vec![
-            key("id"),
-            text("owner_id", true),
-            text("bot", true),
-            real("at", true),
-            text("note", true),
-            real("created_at", true),
-            real("fired_at", false),
-            real("cancelled_at", false),
-            text("checkin_id", false),
-        ],
-    ));
-    expected.push((
-        "checkins".into(),
+        "heartbeats".into(),
         vec![
             key("id"),
             text("owner_id", true),

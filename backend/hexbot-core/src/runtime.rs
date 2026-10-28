@@ -37,7 +37,7 @@ mod recall;
 mod review;
 #[path = "runtime_stop.rs"]
 mod stop;
-use crate::dreaming::checkins;
+use crate::dreaming::heartbeat;
 use identity::with_fields;
 
 #[cfg(unix)]
@@ -1169,15 +1169,15 @@ impl Runtime {
             .iter()
             .filter_map(|t| t["name"].as_str().map(str::to_owned))
             .collect::<Vec<_>>();
-        // A check-in reads files but never writes them or runs commands.
-        let checkin = options["checkin"].is_string();
+        // A heartbeat reads files but never writes them or runs commands.
+        let heartbeat = options["heartbeat"].is_string();
         if unrestricted && selected.iter().any(|v| v == "file") {
             names.extend(["read", "grep", "find", "ls"].map(str::to_owned));
-            if !checkin {
+            if !heartbeat {
                 names.extend(["write", "edit"].map(str::to_owned));
             }
         }
-        if unrestricted && !checkin && selected.iter().any(|v| v == "terminal") {
+        if unrestricted && !heartbeat && selected.iter().any(|v| v == "terminal") {
             names.push("bash".into());
         }
         if let Some(allowed) = options["restricted"].as_array() {
@@ -1393,22 +1393,23 @@ impl Runtime {
         // The primary bot looks after the others from its own sections only.
         if own && restricted.is_none() && overrides.is_none() && primary {
             tools.extend(primary::descriptors());
-            tools.push(checkins::wakeups_descriptor());
         }
-        // A check-in run reads and speaks only through hexbot_notify. It runs
-        // on its own over connector content, so nothing it holds acts on the
-        // world (checkins.rs); connectors still ask before changing anything,
-        // and nobody can answer.
-        if overrides.is_some_and(|o| o["checkin"].is_string()) {
-            if primary {
-                tools.push(checkins::notify_descriptor());
-                tools.push(checkins::wakeups_descriptor());
-                tools.push(checkins::connector_read_descriptor());
-            }
+        // Every bot keeps its heartbeat checklist from its own chat.
+        if own && restricted.is_none() && overrides.is_none() {
+            tools.push(heartbeat::file_descriptor());
+        }
+        // A heartbeat reads and speaks only through hexbot_notify. It runs on
+        // its own over connector content and the web, so nothing it holds acts
+        // on the world (heartbeat.rs); connectors still ask before changing
+        // anything, and nobody can answer.
+        if overrides.is_some_and(|o| o["heartbeat"].is_string()) {
+            tools.push(heartbeat::notify_descriptor());
+            tools.push(heartbeat::file_descriptor());
+            tools.push(heartbeat::connector_read_descriptor());
             tools.retain(|t| {
                 t["name"]
                     .as_str()
-                    .is_some_and(|name| checkins::TOOLS.contains(&name))
+                    .is_some_and(|name| heartbeat::TOOLS.contains(&name))
             });
         }
         if let Some(allowed) = restricted {
@@ -1548,8 +1549,8 @@ impl Runtime {
             .and_then(|p| p.get("job"))
             .cloned()
             .unwrap_or(Value::Null);
-        opts["checkin"] = overrides
-            .and_then(|p| p.get("checkin"))
+        opts["heartbeat"] = overrides
+            .and_then(|p| p.get("heartbeat"))
             .cloned()
             .unwrap_or(Value::Null);
         Ok((prompt, opts))
@@ -1577,7 +1578,7 @@ impl Runtime {
         };
         let saved: Value =
             serde_json::from_str(&saved).map_err(|e| Error::new(5200, e.to_string()))?;
-        if ["restricted", "job", "parent_session", "checkin"]
+        if ["restricted", "job", "parent_session", "heartbeat"]
             .iter()
             .any(|key| !saved[key].is_null())
         {
@@ -3188,7 +3189,7 @@ impl Runtime {
             .collect()
     }
     /// A bot is working only in a conversation the user can see: its chat or
-    /// a room. Check-ins, jobs, dreams and delegates run out of sight and stay
+    /// a room. Heartbeats, jobs, dreams and delegates run out of sight and stay
     /// quiet, unless one is waiting for the user.
     pub fn status_for_bot(&self, owner: &str, bot: &str) -> Option<Value> {
         let sessions = self.sessions.lock().unwrap();
@@ -3504,8 +3505,8 @@ impl Runtime {
                 .collect::<serde_json::Map<_, _>>()
                 .into();
         }
-        // The extension asks for check-in messages only when some are waiting.
-        saved["pendingCheckins"] = json!(checkins::pending_context(&self.home, &s.stored)?);
+        // The extension asks for heartbeat messages only when some are waiting.
+        saved["pendingHeartbeat"] = json!(heartbeat::pending_context(&self.home, &s.stored)?);
         saved["canAsk"] = json!(db.query_row(
             "SELECT EXISTS(SELECT 1 FROM sections WHERE id=?) OR EXISTS(SELECT 1 FROM room_sessions WHERE stored_session_id=?)",
             params![s.stored,s.stored], |r| r.get::<_,bool>(0)
@@ -4179,11 +4180,13 @@ impl Runtime {
             crate::dreaming::require_supported_job_request(&self.home, &s.owner, bot, args)?;
         }
         // Check-in tools are filtered when frozen; refuse here too.
-        if s.stored.starts_with("checkin-")
+        // Heartbeats replaced check-ins. The line above stays as it was so the
+        // Windows security job's pinned build still takes this patch.
+        if s.stored.starts_with("heartbeat-")
             && s.tools.iter().any(|t| t["name"] == name)
-            && !checkins::TOOLS.contains(&name)
+            && !heartbeat::TOOLS.contains(&name)
         {
-            return Err(Error::new(4210, "This tool is disabled in check-ins."));
+            return Err(Error::new(4210, "This tool is disabled in a heartbeat."));
         }
         let bot_owner: String = db::open(&self.home)?.query_row(
             "SELECT owner_id FROM bots WHERE name=?",
@@ -4263,16 +4266,12 @@ impl Runtime {
             }
         }
         match name {
-            "hexbot_checkin_context" => {
-                Ok(checkins::take_context(&self.home, &s.owner, &s.stored)?
+            "hexbot_heartbeat_context" => {
+                Ok(heartbeat::take_context(&self.home, &s.owner, &s.stored)?
                     .unwrap_or_else(|| json!({"text":null,"ids":[]})))
             }
-            "hexbot_notify" | "hexbot_wakeups" => self.checkin_tool(s, name, args).await,
-            "hexbot_connector_read" => {
-                if !s.stored.starts_with("checkin-") || !s.tools.iter().any(|t| t["name"] == name) {
-                    return Err(Error::new(4210, "This tool is disabled for this section."));
-                }
-                checkins::connector_read(&self.home, &s.bot, args).await
+            "hexbot_notify" | "hexbot_heartbeat" | "hexbot_connector_read" => {
+                self.heartbeat_tool(s, &bot_owner, name, args).await
             }
             "hexbot_todo_context" => {
                 Ok(json!({"text":crate::native_product_tools::todo_context(&self.home,&s.stored)?}))
@@ -4841,14 +4840,14 @@ impl Runtime {
                             );
                         }
                     }
-                    // Check-in messages entered the section's context (checkins.rs).
-                    "custom" if message["customType"] == "hexbot_checkin" => {
-                        if let Err(error) = checkins::acknowledge(
+                    // Heartbeat messages entered the chat's context (heartbeat.rs).
+                    "custom" if message["customType"] == "hexbot_heartbeat" => {
+                        if let Err(error) = heartbeat::acknowledge(
                             &self.home,
                             &s.stored,
-                            &message["details"]["checkins"],
+                            &message["details"]["heartbeat"],
                         ) {
-                            eprintln!("Check-in context for {}: {}", s.stored, error.message);
+                            eprintln!("Heartbeat context for {}: {}", s.stored, error.message);
                         }
                     }
                     "toolResult" => {
@@ -5721,7 +5720,7 @@ fn tool_context(name: &str, args: &Value) -> String {
         "delegate_task" => "goal",
         "message_bot" => "to",
         "hexbot_show_html" => "title",
-        "hexbot_bots" | "hexbot_rooms" | "hexbot_jobs" | "hexbot_settings" | "hexbot_wakeups"
+        "hexbot_bots" | "hexbot_rooms" | "hexbot_jobs" | "hexbot_settings" | "hexbot_heartbeat"
         | "computer_use" => "action",
         "hexbot_notify" => "message",
         "hexbot_connector_read" => "path",

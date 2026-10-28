@@ -33,7 +33,7 @@ import {
 import type { Bot, BotStatus, DaemonInfo, Message, Section } from '../lib/types'
 
 import { connectionRead, useConnection } from './connection'
-import { releaseCheckinMessages, useTranscripts } from './transcripts'
+import { releaseHeartbeatMessages, useTranscripts } from './transcripts'
 
 /** Interrupted hidden kickoffs must stay hidden in cached and fresh history. */
 function chatMessages(rows: HistoryRow[]) {
@@ -647,9 +647,9 @@ export const useSections = create<SectionsState>((set, get) => ({
           { busy, pending: pending_requests, readAt }
         )
 
-        // Check-ins that arrived while this loaded; the history may hold them already.
-        for (const row of releaseCheckinMessages(id)) {
-          useTranscripts.getState().checkinMessage(live, row)
+        // Heartbeat messages that arrived while this loaded; the history may hold them already.
+        for (const row of releaseHeartbeatMessages(id)) {
+          useTranscripts.getState().heartbeatMessage(live, row)
         }
 
         const transcript = useTranscripts.getState().bySession[live]

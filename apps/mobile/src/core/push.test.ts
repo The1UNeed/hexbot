@@ -58,7 +58,7 @@ describe('check-in push', () => {
     mock.request.mockImplementation(async () => (order.push('ask'), { status: 'granted' }))
     await registerPush(vi.fn().mockResolvedValue({ ok: true }), 'android-device')
     expect(order).toEqual(['channel', 'ask'])
-    expect(mock.channel).toHaveBeenCalledWith('checkins', { name: 'Check-ins', importance: 4 })
+    expect(mock.channel).toHaveBeenCalledWith('checkins', { name: 'Bot messages', importance: 4 })
   })
   it('asks once, and does nothing when the user says no', async () => {
     mock.status = 'undetermined'

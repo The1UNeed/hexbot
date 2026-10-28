@@ -427,7 +427,7 @@ function MobileApp() {
     }
   })
   const botByName = (name: string) => mobile.bots.find(b => b.name === name)
-  // A tapped check-in opens its section once the daemon's lists have it.
+  // A tapped bot message opens its chat once the daemon's lists have it.
   const tapped = useTappedSection()
   const openedTap = useRef<string | null>(null)
   // Restoring the last daemon at start can land after the switch; try again, a few times.

@@ -224,8 +224,8 @@ export interface TranscriptsState {
    * streaming message alone: the incident fires mid-turn (a tool refused) and
    * the reply keeps streaming after it.
    */
-  /** A message the primary bot sent here from a check-in, once by its history row id. */
-  checkinMessage: (sessionId: string, message: CheckinRow) => void
+  /** A message the bot's heartbeat posted in this chat, once by its history row id. */
+  heartbeatMessage: (sessionId: string, message: HeartbeatRow) => void
   incidentEvent: (sessionId: string, message: string, detail: ErrorDetail) => void
   messageComplete: (sessionId: string, payload?: MessageCompletePayload) => void
   messageDelta: (sessionId: string, text: string) => void
@@ -264,24 +264,24 @@ const defaultEffects: TranscriptEffects = {
 
 let effects: TranscriptEffects = defaultEffects
 
-/** A check-in message for a section whose transcript is still loading. */
-export interface CheckinRow {
+/** A heartbeat message for a chat whose transcript is still loading. */
+export interface HeartbeatRow {
   createdAt: number
   id: string
   text: string
 }
-const heldCheckins = new Map<string, CheckinRow[]>()
+const heldHeartbeats = new Map<string, HeartbeatRow[]>()
 
-/** Keeps a check-in message until its section's history is in; a few per section. */
-export function holdCheckinMessage(sectionId: string, row: CheckinRow): void {
-  heldCheckins.set(sectionId, [...(heldCheckins.get(sectionId) ?? []), row].slice(-20))
+/** Keeps a heartbeat message until its chat's history is in; a few per chat. */
+export function holdHeartbeatMessage(sectionId: string, row: HeartbeatRow): void {
+  heldHeartbeats.set(sectionId, [...(heldHeartbeats.get(sectionId) ?? []), row].slice(-20))
 }
 
-/** The check-in messages held for a section, now that its transcript exists. */
-export function releaseCheckinMessages(sectionId: string): CheckinRow[] {
-  const rows = heldCheckins.get(sectionId) ?? []
+/** The heartbeat messages held for a chat, now that its transcript exists. */
+export function releaseHeartbeatMessages(sectionId: string): HeartbeatRow[] {
+  const rows = heldHeartbeats.get(sectionId) ?? []
 
-  heldCheckins.delete(sectionId)
+  heldHeartbeats.delete(sectionId)
 
   return rows
 }
@@ -1498,7 +1498,7 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
       })
     },
 
-    checkinMessage(sessionId, message) {
+    heartbeatMessage(sessionId, message) {
       update(sessionId, transcript => {
         if (transcript.messages.some(item => item.id === message.id)) {
           return transcript

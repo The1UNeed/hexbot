@@ -27,7 +27,7 @@ pub const USAGE: &str = concat!(
     "hexbot pair\n",
     "hexbot bots list | create NAME [--title TEXT] [--description TEXT] [--persona TEXT] [--provider NAME] [--model NAME] [--reasoning-effort LEVEL] | delete NAME\n",
     "hexbot bots primary [NAME]\n",
-    "hexbot checkins [now | on | off | every MINUTES | hours HH:MM-HH:MM | cancel ID]\n",
+    "hexbot heartbeat on | off | status BOT | now BOT | set BOT TEXT\n",
     "hexbot computer [on | off | restart | reset | give-back | size small|medium|large]\n",
     "hexbot rooms list\n",
     "hexbot plugins [list [--bot NAME]] | assign connector|skill|capability ID [BOT ...]\n",
@@ -55,21 +55,15 @@ fn command(args: &[String]) -> Result<(&'static str, Value)> {
         ["bots", "delete", name] => Ok(("hexbot.bots.delete", json!({"name":name}))),
         ["bots", "primary"] => Ok(("hexbot.bots.create_primary", json!({}))),
         ["bots", "primary", name] => Ok(("hexbot.bots.set_primary", json!({"name":name}))),
-        ["checkins"] => Ok(("hexbot.checkins.status", json!({}))),
-        ["checkins", "now"] => Ok(("hexbot.checkins.run_now", json!({}))),
-        ["checkins", "cancel", id] => Ok(("hexbot.checkins.cancel_wakeup", json!({"id":id}))),
-        ["checkins", toggle @ ("on" | "off")] => Ok((
+        ["heartbeat", toggle @ ("on" | "off")] => Ok((
             "hexbot.settings.set",
-            json!({"patch":{"checkin_enabled":*toggle == "on"}}),
+            json!({"patch":{"heartbeat_enabled":*toggle == "on"}}),
         )),
-        ["checkins", "every", minutes] => Ok((
-            "hexbot.settings.set",
-            json!({"patch":{"checkin_every_minutes":minutes.parse::<u64>().map_err(|_| invalid())?}}),
-        )),
-        ["checkins", "hours", window] => Ok((
-            "hexbot.settings.set",
-            json!({"patch":{"checkin_hours":window}}),
-        )),
+        ["heartbeat", "status", bot] => Ok(("hexbot.heartbeat.status", json!({"bot":bot}))),
+        ["heartbeat", "now", bot] => Ok(("hexbot.heartbeat.run_now", json!({"bot":bot}))),
+        ["heartbeat", "set", bot, text] => {
+            Ok(("hexbot.heartbeat.set", json!({"bot":bot,"text":text})))
+        }
         ["computer"] => Ok(("hexbot.computer.status", json!({}))),
         ["computer", "on"] => Ok(("hexbot.computer.start", json!({}))),
         ["computer", "off"] => Ok(("hexbot.computer.stop", json!({}))),
@@ -460,10 +454,10 @@ async fn invoke(home: &Path, socket: &mut Option<Socket>, method: &str, p: Value
     if method == "hexbot.cli.send" {
         return offline_send(home, &p).await;
     }
-    if method.starts_with("hexbot.checkins.") {
+    if method.starts_with("hexbot.heartbeat.") {
         return Err(Error::new(
             4208,
-            "Check-ins run in the daemon. Start it with `hexbot serve` or `hexbot service start`.",
+            "The heartbeat runs in the daemon. Start it with `hexbot serve` or `hexbot service start`.",
         ));
     }
     if method.starts_with("hexbot.diagnostics.") {
@@ -581,7 +575,7 @@ pub async fn dispatch(home: &Path, args: &[String]) -> Option<Result<()>> {
                 | "devices"
                 | "lan"
                 | "send"
-                | "checkins"
+                | "heartbeat"
                 | "computer"
                 | "plugins"
                 | "diagnostics"
@@ -605,7 +599,11 @@ pub async fn dispatch(home: &Path, args: &[String]) -> Option<Result<()>> {
             if v["lan_enabled"] == true {
                 println!("Direct LAN HTTP does not encrypt sign-ins or chat. Use Tailscale or HTTPS on untrusted networks.");
             }
-        } else if let Some(text) = v["text"].as_str() {
+        // A heartbeat's status holds its checklist as `text`; show all of it.
+        } else if let Some(text) = v["text"]
+            .as_str()
+            .filter(|_| args.first().map(String::as_str) != Some("heartbeat"))
+        {
             println!("{text}");
         } else if let Some(url) = v["connected"].as_str() {
             println!("Connected: {url}");

@@ -518,14 +518,14 @@ impl App {
         {
             self.runtime.rollback_retirements(retirements).await?;
         }
-        // Open Check-ins tabs and the CLI's changes meet: settings and the next run move.
+        // Open Heartbeat tabs and the CLI's changes meet: the switch and the next run move.
         if method == "hexbot.settings.set"
             && p["patch"]
                 .as_object()
-                .is_some_and(|patch| patch.keys().any(|k| k.starts_with("checkin_")))
+                .is_some_and(|patch| patch.contains_key("heartbeat_enabled"))
         {
             self.events
-                .emit(owner, None, "hexbot.checkins.changed", json!({}));
+                .emit(owner, None, "hexbot.heartbeat.changed", json!({}));
         }
         // Each running turn lists the cards it still waits on, so a client
         // drops the ones it missed being settled. Opening a room restores them.
@@ -1910,7 +1910,7 @@ async fn handle_request(
         Err(error) => json!({"jsonrpc":"2.0","id":id,"error":error.rpc_value()}),
     })
 }
-/// A phone's push token, for check-in messages. Only the calling device's own
+/// A phone's push token, for heartbeat messages. Only the calling device's own
 /// row changes; a null token stops pushes to it.
 fn set_push(home: &std::path::Path, owner: &str, device: &str, p: &Value) -> Result<Value> {
     // Only a string sets it and only null clears it; anything else is a mistake.

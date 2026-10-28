@@ -95,10 +95,11 @@ it also installs over SSH when nobody is signed in at the screen.
   Version 15 adds `bots.is_primary` with a unique index that allows one
   primary bot per owner. The primary bot's tools live in
   `src/runtime_primary.rs` and call the App's own methods.
-  Version 16 adds check-ins (`src/checkins.rs`): `checkins`,
-  `checkin_wakeups`, `checkin_messages`, `sections.purpose`, and
-  `devices.push_token`/`push_platform`. The scheduler tick runs them; pushes
-  go out through Hex Connect (`services::push`).
+  Version 16 adds `sections.purpose` and `devices.push_token`/`push_platform`.
+  The heartbeat (`src/heartbeat.rs`) keeps `heartbeats` and
+  `heartbeat_messages`; the scheduler tick runs each bot's, and pushes go out
+  through Hex Connect (`services::push`). Every migration drops the
+  check-in tables it replaced.
 - Memory stays in `profiles/<bot>/memories/MEMORY.md`, soul in `SOUL.md`, and
   About you in `users/<id>/user.md`. Deleting a section leaves bot memory alone.
   Only sections, rooms, and dreams write it; a scheduled job's memory tool
