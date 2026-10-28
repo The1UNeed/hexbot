@@ -637,8 +637,7 @@ try {
   for (const area of [
     'settings',
     'providers',
-    'connectors',
-    'skills',
+    'plugins',
     'activity',
     'usage',
     'network',
@@ -661,16 +660,51 @@ try {
       await page.getByTestId('daemon-settings').click()
       await expect(page.getByTestId('management-loading')).not.toBeVisible()
     }
-    if (area === 'connectors') {
+    if (area === 'plugins') {
+      // One plugin card chooses the bots that get it.
+      await page.getByTestId('plugin-skill:github').click()
+      await expect(page.getByTestId('management-loading')).not.toBeVisible({ timeout: 30000 })
+      await settle()
+      await shot('plugin')
+      await page.getByTestId('plugin-bot-owl').click()
+      await expect
+        .poll(async () =>
+          (await rpc('hexbot.plugins.list')).skills
+            .find(p => p.id === 'github')
+            .bots.includes('owl')
+        )
+        .toBe(false)
+      await page.getByTestId('management-sheet-back').click()
       await page.getByTestId('manage-mcp').click()
-      await page.getByTestId('field-name').fill('Calendar MCP')
+      await page.getByTestId('field-name').fill('calendar')
       await page.getByTestId('mcp-http').click()
       await page.getByTestId('field-url').fill('https://mcp.example.com')
+      await page.getByTestId('field-skill').fill('Check the calendar before you plan a meeting.')
       await settle()
       await shot('mcp')
+      await page.getByTestId('management-sheet-action').click()
+      // The server's card takes the token it needs.
+      await page.getByTestId('plugin-package:calendar').click()
+      await expect(page.getByTestId('management-loading')).not.toBeVisible({ timeout: 30000 })
+      await page.getByTestId('field-new_key').fill('Authorization')
+      await page.getByTestId('field-new_value').fill('Bearer mobile-token-1234')
+      await page.getByTestId('action-save-values').click()
+      await expect
+        .poll(async () =>
+          (await rpc('hexbot.plugins.list')).packages.find(p => p.id === 'calendar').server
+            .headers
+        )
+        .toEqual([{ key: 'Authorization', set: true, hint: '…1234' }])
+      await settle()
+      await shot('plugin-server')
+      await page.getByTestId('action-remove-authorization').click()
+      await expect
+        .poll(async () =>
+          (await rpc('hexbot.plugins.list')).packages.find(p => p.id === 'calendar').server
+            .headers
+        )
+        .toEqual([])
       await page.getByTestId('management-sheet-back').click()
-    }
-    if (area === 'skills') {
       await page.getByTestId('manage-skill-create').click()
       await page.getByTestId('field-name').fill('mobile-update')
       await page

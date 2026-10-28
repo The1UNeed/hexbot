@@ -11,7 +11,7 @@ export const docGroups = [
   {
     title: 'Work with bots',
     pages: [
-      { title: 'Tools, connectors, and skills', summary: 'Enable local tools, connect services, add MCP servers, and choose skills.', href: '/docs/tools-and-skills/' },
+      { title: 'Tools, plugins, and skills', summary: 'Enable local tools, then choose the connectors, MCP servers, and skills each bot gets.', href: '/docs/tools-and-skills/' },
       { title: 'Approvals', summary: 'Use Auto, Manual, or Bypass to control what a bot can do.', href: '/docs/approvals/' },
       { title: 'Memory', summary: "Edit a bot's soul and memory, and your About you text.", href: '/docs/memory/' },
       { title: 'Rooms', summary: 'Work with several bots and people, or ask another bot for private help.', href: '/docs/rooms/' },

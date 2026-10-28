@@ -7,6 +7,7 @@ import {
   Globe,
   Info,
   KeyRound,
+  Puzzle,
   ShieldCheck,
   SunMoon,
   Wifi
@@ -39,6 +40,7 @@ const ITEMS: Record<SettingsTab, SettingsTabItem<SettingsTab>> = {
   diagnostics: { icon: Activity, id: 'diagnostics', label: 'Diagnostics' },
   memory: { icon: Brain, id: 'memory', label: 'Memory' },
   network: { icon: Wifi, id: 'network', label: 'Network' },
+  plugins: { icon: Puzzle, id: 'plugins', label: 'Plugins' },
   providers: { icon: KeyRound, id: 'providers', label: 'Providers' },
   updates: { icon: Download, id: 'updates', label: 'Updates' },
   usage: { icon: Gauge, id: 'usage', label: 'Usage' }
@@ -46,6 +48,7 @@ const ITEMS: Record<SettingsTab, SettingsTabItem<SettingsTab>> = {
 
 const GROUPS: { ids: SettingsTab[]; label: string }[] = [
   { ids: ['providers', 'usage'], label: 'Models' },
+  { ids: ['plugins'], label: 'Bots' },
   { ids: ['network', 'connect'], label: 'Devices' },
   { ids: ['memory', 'approvals', 'appearance'], label: 'You' },
   { ids: ['updates', 'about'], label: 'App' },

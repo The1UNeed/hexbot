@@ -269,6 +269,91 @@ export interface ConnectorTest {
   ok: boolean
 }
 
+/** One of an MCP server's environment values or headers; the value stays on the daemon. */
+export interface PluginValue {
+  /** Masked tail of the value, like "…4f2a". */
+  hint: null | string
+  key: string
+  set: boolean
+}
+
+export interface PluginServer {
+  args?: string[]
+  command?: string
+  env: PluginValue[]
+  headers: PluginValue[]
+  transport: 'http' | 'stdio'
+  url?: string
+}
+
+/** `hexbot.plugins.list`: each kind with the bots it is given to. */
+export interface PluginsList {
+  capabilities: {
+    bots: string[]
+    description: string
+    id: string
+    kind: 'capability'
+    name: string
+    ready: boolean
+    /** What setting it up takes, when it isn't. */
+    setup: null | string
+  }[]
+  /** Connectors and MCP servers; a server also carries `server`. */
+  connectors: (Connector & {
+    bots: string[]
+    kind: 'connector'
+    ready?: boolean
+    server?: PluginServer
+  })[]
+  /** Absent on daemons from before packages. */
+  packages?: {
+    bots: string[]
+    connector: Connector | null
+    description: string
+    id: string
+    /** The bot that asked for it, or null when you installed it. */
+    installed_by: null | string
+    kind: 'package'
+    name: string
+    ready: boolean
+    server: null | PluginServer
+    skills: { description: string; name: string }[]
+    state: ConnectorState
+    state_text: string
+  }[]
+  skills: (SkillInfo & {
+    bots: string[]
+    disabled_globally?: boolean
+    id: string
+    kind: 'skill'
+    source?: string
+  })[]
+}
+
+export type PluginKind = 'capability' | 'connector' | 'package' | 'skill'
+
+/** One row of Settings, Plugins, whatever its kind. */
+export interface Plugin {
+  bots: string[]
+  /** A connector's group, a skill's category, or `mcp`, `skills`, `tools`. */
+  category: string
+  /** The connector row behind a connector or a server, for set-up and tests. */
+  connector?: Connector | null
+  description: string
+  icon: string
+  id: string
+  installed_by?: null | string
+  kind: PluginKind
+  name: string
+  /** It can be given to a bot now; one that isn't can still be taken away. */
+  ready: boolean
+  server?: null | PluginServer
+  skills?: { description: string; name: string }[]
+  source?: string
+  state: ConnectorState
+  state_text: string
+}
+
 /** Something a skill needs before bots can use it. */
 export type SkillRequirement =
   | { kind: 'command'; name: string }

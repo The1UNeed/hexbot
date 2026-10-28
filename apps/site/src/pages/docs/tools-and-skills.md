@@ -1,10 +1,14 @@
 ---
 layout: ../../layouts/Docs.astro
-title: Tools, connectors, and skills
-description: Configure local tools, outside services, MCP servers, and skills for a Hexbot bot.
+title: Tools, plugins, and skills
+description: Configure local tools, connectors, MCP servers, and skills for your Hexbot bots.
 ---
 
-Tools let a bot act, connectors give it access to outside services, and skills tell it how to carry out particular work. Configure these per bot. Changed tools and connectors apply from your next message in the bot's chat; that one reply costs more than usual because it cannot reuse the provider's prompt cache.
+Tools let a bot act on the daemon computer. Plugins are everything else a bot can use: connectors reach services Hexbot supports, MCP servers reach anything else, and skills tell a bot how to carry out particular work. Changed tools and plugins apply from your next message in the bot's chat; that one reply costs more than usual because it cannot reuse the provider's prompt cache.
+
+## Plugins
+
+Open Settings, Plugins to see every connector, MCP server, skill, and built-in tool that needs a program (Computer use, Browser, Code execution) on one page. Open a plugin to choose the bots that get it, set it up, test it, or remove it. To work through one bot's plugins, choose the bot at the top of the page: each plugin then shows a switch for that bot. A plugin that isn't set up can be taken from bots but not given to them until it is. Bot settings, Connectors and Skills show the same plugins for one bot.
 
 ## Local tools
 
@@ -35,9 +39,9 @@ The **Working directory** is the bot's workspace. Choose a project folder outsid
 
 ## Connect outside services
 
-Open Bot settings, Connectors to configure web search, cloud browser, image and video generation, premium voice, Notion, Home Assistant, and other available services. The [tool catalog](/tools/) lists the capabilities.
+Connectors are the services Hexbot supports: web search, cloud browser, image and video generation, premium voice, Notion, Home Assistant, and others. The [tool catalog](/tools/) lists the capabilities.
 
-You set up a connector by choosing its provider and entering the requested credentials. Each bot has its own on/off switch. A connector must be ready and enabled for that bot before its tools appear in the bot's chat.
+You set up a connector in Settings, Plugins, or in Bot settings, Connectors, by choosing its provider and entering the requested credentials. Each bot has its own on/off switch. A connector must be ready and enabled for that bot before its tools appear in the bot's chat.
 
 **Connected** means an authenticated probe answered. **Key saved** means Hexbot stored the key but has not verified it with a live probe. Use the connector's test action if a service stops working, and check its reported error before replacing credentials.
 
@@ -45,11 +49,19 @@ Your model provider and your connectors may bill separately. A model subscriptio
 
 ## Add an MCP server
 
-Add a server in Bot settings, Connectors. Enter a name and a **Command or URL**. A command launches a local server on the daemon computer; an HTTP URL connects to a remote server. Make sure the local command and its dependencies exist on that computer.
+Add a server in Settings, Plugins, or in Bot settings, Connectors. Enter a name and a **Command or URL**. A command launches a local server on the daemon computer; an HTTP URL connects to a remote server. Make sure the local command and its dependencies exist on that computer. Servers that sign in through a browser (OAuth) and SSE-only servers are not supported.
+
+From Settings, Plugins, add a line on what the server is for and, if your bots need know-how to use it, a skill: which tools to call, in what order, and what to avoid. The server and its skill are installed together as one package, given to every bot. Then open the server to add the values it needs: environment values for a command, headers such as `Authorization` for a URL. Values stay on the daemon, and Hexbot shows only their last four characters. A server with an empty value shows **Needs** and the value's name. Removing a package removes its server and skills for every bot.
 
 Hexbot registers the server once for the daemon. A server you add from a bot's settings goes to that bot; give it to other bots with their own switches or with `hexbot plugins assign connector mcp:NAME BOT ...`. A new bot starts with no servers. The bot's chat can use a server from your next message after you add or enable it. Removing a server removes it for every bot, so check whether another bot uses it first.
 
 Use the server's own instructions for credentials and permissions. Its tools can act on the account you give it, and outside-service calls follow that service's rules. The workspace sandbox describes local commands; it does not limit what an authenticated service can do in its own account.
+
+## When a bot asks for a plugin
+
+A bot that needs a service it can't reach yet can find an MCP server for it and ask to install it, guided by the bundled `mcp` skill. You see what the server runs, every value it passes, and the skills it adds, and approve or decline. Hexbot asks every time, even in Bypass, and a scheduled job can't install anything. A bot can't hand a server your stored keys. A plugin a bot installs is on for that bot only, also when you add bots later. If it needs a token, the bot leaves the value empty and tells you where to fill it in.
+
+A bot can also ask to turn on a plugin that is off for it, which asks you the same way, and turn one off for itself without asking. Your primary bot can do all of this for any of your bots from its own chat, and remove packages, always asking first.
 
 ## Choose skills
 
@@ -57,6 +69,6 @@ Every bot draws on one shared skill library: the skills bundled with Hexbot plus
 
 Some skills need something on the daemon's computer first: a program such as `imsg` or `himalaya`, a key such as `NOTION_API_KEY`, or a particular operating system. Until it is there, the skill is hidden from bots, and Bot settings, Skills says what it needs. Install the program or save the key, and the skill appears for bots that have it on.
 
-A skill a bot writes for itself stays private to that bot. You can share a private skill from a bot into the library. A skill can guide a workflow, but it does not supply credentials or make a disabled tool available.
+A skill a bot writes for itself stays private to that bot. You can share a private skill from a bot into the library. A bot can also put skills in a package, which asks you first; the bundled `skill-create` skill shows it how. A skill can guide a workflow, but it does not supply credentials or make a disabled tool available.
 
 The chat lists each skill's name and description, and the bot reads the full instructions only when it needs them. Turning a skill off or editing it takes effect the next time a bot reads it; a skill added later appears in the list after the chat next summarises older messages. Read a skill's instructions before relying on it for unattended work.

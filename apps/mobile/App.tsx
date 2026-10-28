@@ -587,8 +587,12 @@ function MobileApp() {
           areas: [
             area('settings', 'Daemon settings', 'options-outline', 'Approvals, budgets'),
             area('providers', 'Models', 'hardware-chip-outline'),
-            area('connectors', 'Connectors', 'extension-puzzle-outline'),
-            area('skills', 'Skills', 'sparkles-outline')
+            area(
+              'plugins',
+              'Plugins',
+              'extension-puzzle-outline',
+              'Connectors, MCP servers, skills'
+            )
           ]
         },
         {

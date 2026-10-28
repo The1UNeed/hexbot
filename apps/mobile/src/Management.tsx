@@ -22,6 +22,8 @@ import {
   type Bot,
   type Connector,
   type Device,
+  type Plugin,
+  type PluginsList,
   type Room,
   type Rpc,
   type Section,
@@ -30,6 +32,7 @@ import {
 import { botPhoto } from './core/avatar'
 import { scheduleChange } from './core/jobs'
 import { requirementText } from './core/skills'
+import { pluginRows } from '../../web/src/lib/plugin-rows'
 import { isOpenRoom } from './core/routes'
 import { pickFile } from './core/pickFile'
 import type { useMobile } from './core/useMobile'
@@ -51,6 +54,8 @@ export type Panel = {
     | 'mcp'
     | 'memory'
     | 'network'
+    | 'plugin'
+    | 'plugins'
     | 'provider'
     | 'providers'
     | 'room'
@@ -125,6 +130,17 @@ const num = (value: string | boolean | undefined) => {
   return parsed
 }
 const str = (v: unknown) => (v == null ? '' : String(v))
+/** A bot as the Plugins cards name it. */
+type PluginBot = { name: string; display_name: string }
+const keyOf = (plugin: Plugin) => `${plugin.kind}:${plugin.id}`
+/** Who a plugin is on for, in a few words. */
+const pluginBots = (plugin: Plugin, bots: PluginBot[]) => {
+  const on = bots.filter(b => plugin.bots.includes(b.name))
+  if (!on.length) return 'Off'
+  if (on.length === bots.length) return bots.length === 1 ? 'On' : 'Every bot'
+  if (on.length <= 2) return on.map(b => b.display_name).join(' and ')
+  return `${on.length} bots`
+}
 /** How big the bots' shared computer is; a new size applies when it is reset. */
 function ComputerSize({ mobile }: { mobile: ReturnType<typeof useMobile> }) {
   const status = mobile.computer
@@ -203,6 +219,10 @@ export function Management({
     ? (mobile.rooms.find(r => r.id === panel.room!.id) ?? panel.room)
     : undefined
   const kind = panel?.kind ?? ''
+  // The primary bot first, as on the web.
+  const pluginRoster: PluginBot[] = [...mobile.bots]
+    .sort((a, b) => Number(Boolean(b.primary)) - Number(Boolean(a.primary)))
+    .map(b => ({ name: b.name, display_name: b.display_name || b.name }))
   const run = async (action: () => Promise<unknown>, close = false) => {
     const current = epoch.current
     setBusy(true)
@@ -216,9 +236,18 @@ export function Management({
       onSaved?.()
       if (close) (onBack ?? onClose)()
       else if (
-        ['devices', 'skills', 'jobs', 'dreams', 'heartbeat', 'network', 'usage', 'updates'].includes(
-          kind
-        )
+        [
+          'devices',
+          'skills',
+          'jobs',
+          'dreams',
+          'heartbeat',
+          'network',
+          'usage',
+          'updates',
+          'plugins',
+          'plugin'
+        ].includes(kind)
       )
         await load()
     } catch (e) {
@@ -330,8 +359,28 @@ export function Management({
       case 'connector':
         fields = { provider: str(panel?.data?.provider) }
         break
+      case 'plugins':
+        data = pluginRows(await rpc<PluginsList>('hexbot.plugins.list')) as unknown as RowData[]
+        break
+      case 'plugin': {
+        // Fresh from the daemon, so a card returned to shows the current bots.
+        const opened = panel?.data as unknown as Plugin | undefined
+        const plugins = pluginRows(await rpc<PluginsList>('hexbot.plugins.list'))
+        detail = {
+          plugin: plugins.find(p => opened && keyOf(p) === keyOf(opened)) ?? panel?.data
+        }
+        break
+      }
       case 'mcp':
-        fields = { name: '', transport: 'http', url: '', command: '', args: '' }
+        fields = {
+          name: '',
+          transport: 'http',
+          url: '',
+          command: '',
+          args: '',
+          description: '',
+          skill: ''
+        }
         break
       case 'skills':
         data = (
@@ -416,7 +465,9 @@ export function Management({
       fields = { ...fields, ...(panel.data.draft as Values) }
     if (current === epoch.current) {
       setRows(data)
-      setValues(fields)
+      // A plugin card reloads after each action; keep values typed but not
+      // yet saved. It opens empty, and Save values clears them itself.
+      if (kind !== 'plugin') setValues(fields)
       setExtra(detail)
     }
   }
@@ -1248,16 +1299,40 @@ export function Management({
       break
     }
     case 'mcp':
-      save = () =>
-        rpc('hexbot.connectors.add_mcp', {
-          name: values.name,
-          transport: values.transport,
-          // Saved from a bot's settings, the server goes to that bot.
-          ...(bot ? { bot: bot.name } : {}),
-          ...(values.transport === 'http'
+      save = () => {
+        const mcp =
+          values.transport === 'http'
             ? { url: values.url }
-            : { command: values.command, args: str(values.args).split('\n').filter(Boolean) })
+            : { command: values.command, args: str(values.args).split('\n').filter(Boolean) }
+        // Saved from a bot's settings, the server goes to that bot.
+        if (bot)
+          return rpc('hexbot.connectors.add_mcp', {
+            name: values.name,
+            transport: values.transport,
+            bot: bot.name,
+            ...mcp
+          })
+        const name = str(values.name).trim()
+        const about = str(values.description).trim()
+        const skill = str(values.skill).trim()
+        return rpc('hexbot.plugins.install', {
+          name,
+          description: about,
+          mcp,
+          // JSON strings are valid YAML, so any description survives the frontmatter.
+          ...(skill
+            ? {
+                skills: [
+                  {
+                    // Skill names stop at 64 characters, like plugin names.
+                    name: `${name.slice(0, 58)}-guide`,
+                    content: `---\ndescription: ${JSON.stringify(about || `How to use the ${name} MCP server.`)}\n---\n${skill}\n`
+                  }
+                ]
+              }
+            : {})
         })
+      }
       content = (
         <>
           {field('name', 'Server name')}
@@ -1280,9 +1355,212 @@ export function Management({
               {field('args', 'Arguments', true, 'One argument per line.')}
             </>
           )}
+          {bot ? null : (
+            <>
+              {field('description', 'What it is for')}
+              {field(
+                'skill',
+                'Skill for your bots',
+                true,
+                'Optional. How bots should use this server: which tools to call and what to avoid.'
+              )}
+              <Text tone="muted" variant="footnote">
+                On for every bot. Add tokens on the server's card once it is added.
+              </Text>
+            </>
+          )}
         </>
       )
       break
+    case 'plugins': {
+      const bots = pluginRoster
+      const plugins = rows as unknown as Plugin[]
+      const servers = plugins.filter(p => p.category === 'mcp')
+      const skills = plugins.filter(
+        p => p.kind === 'skill' || (p.kind === 'package' && p.category !== 'mcp')
+      )
+      const item = (p: Plugin) => (
+        <Row
+          key={keyOf(p)}
+          title={p.name}
+          subtitle={`${p.state_text} · ${pluginBots(p, bots)}`}
+          testID={`plugin-${keyOf(p)}`}
+          chevron
+          onPress={() => navigate('plugin', p as unknown as RowData)}
+        />
+      )
+      content = (
+        <>
+          <Text tone="muted">
+            Everything your bots can use beyond their own tools. Open one to choose its bots.
+          </Text>
+          <Group
+            title="Connectors"
+            footer="Services Hexbot supports. Keys are stored once on this daemon."
+          >
+            {plugins.filter(p => p.kind === 'connector' && p.category !== 'mcp').map(item)}
+          </Group>
+          <Group
+            title="MCP servers"
+            footer="Servers you or your bots add. A bot that needs one asks you first."
+          >
+            {row('Add MCP server', 'mcp')}
+            {servers.map(item)}
+          </Group>
+          <Group title="Skills">
+            {row('Create skill', 'skill-create')}
+            {skills.map(item)}
+          </Group>
+          <Group
+            title="Built-in tools"
+            footer="Tools that need a program on the daemon's computer."
+          >
+            {plugins.filter(p => p.kind === 'capability').map(item)}
+          </Group>
+        </>
+      )
+      break
+    }
+    case 'plugin': {
+      const bots = pluginRoster
+      const p = (extra.plugin ?? panel!.data) as unknown as Plugin
+      // One that isn't set up can be taken away from bots, not given to them.
+      const unready = !p.ready
+      const server = p.server
+      const values_ = server ? (server.transport === 'http' ? server.headers : server.env) : []
+      const valueKind = server?.transport === 'http' ? 'headers' : 'env'
+      // `run` reloads this card after each change.
+      const choose = (next: string[]) =>
+        void run(() => rpc('hexbot.plugins.set_bots', { kind: p.kind, id: p.id, bots: next }))
+      content = (
+        <>
+          <Text tone="muted">{p.description}</Text>
+          <Text tone={p.state === 'error' ? 'danger' : 'muted'} variant="footnote">
+            {p.state_text}
+          </Text>
+          <Group
+            title="Bots"
+            footer={unready ? `Set it up before you give it to a bot. ${p.state_text}` : undefined}
+          >
+            {bots.map(b => (
+              <SwitchRow
+                key={b.name}
+                title={b.display_name}
+                testID={`plugin-bot-${b.name}`}
+                value={p.bots.includes(b.name)}
+                disabled={
+                  (unready && !p.bots.includes(b.name)) ||
+                  busy ||
+                  mobile.connection !== 'connected'
+                }
+                onValueChange={on =>
+                  choose(on ? [...p.bots, b.name] : p.bots.filter(name => name !== b.name))
+                }
+              />
+            ))}
+          </Group>
+          {server ? (
+            <Group
+              title={valueKind === 'headers' ? 'Headers' : 'Environment'}
+              footer={server.url ?? [server.command, ...(server.args ?? [])].join(' ')}
+            >
+              <View style={styles.inset}>
+                {values_.map(v =>
+                  field(
+                    `value:${v.key}`,
+                    v.key,
+                    false,
+                    v.set ? `Saved${v.hint ? ` ${v.hint}` : ''}. Leave empty to keep it.` : 'Not set',
+                    true
+                  )
+                )}
+                {field(
+                  'new_key',
+                  valueKind === 'headers' ? 'New header' : 'New environment value',
+                  false,
+                  valueKind === 'headers' ? 'Such as Authorization' : 'Such as API_TOKEN'
+                )}
+                {field('new_value', 'Value', false, undefined, true)}
+              </View>
+              {action('Save values', async () => {
+                const change: Record<string, string> = Object.fromEntries(
+                  values_
+                    .filter(v => str(values[`value:${v.key}`]).trim())
+                    .map(v => [v.key, str(values[`value:${v.key}`])])
+                )
+                const added = str(values.new_key).trim()
+                if (added) change[added] = str(values.new_value)
+                await rpc('hexbot.plugins.configure', {
+                  kind: p.kind,
+                  id: p.id,
+                  [valueKind]: change
+                })
+                setValues({})
+              })}
+              {values_.map(v =>
+                action(`Remove ${v.key}`, () =>
+                  rpc('hexbot.plugins.configure', {
+                    kind: p.kind,
+                    id: p.id,
+                    [valueKind]: { [v.key]: null }
+                  })
+                )
+              )}
+            </Group>
+          ) : null}
+          {p.skills?.length ? (
+            <Group title="Skills">
+              {p.skills.map(skill => (
+                <Row
+                  key={skill.name}
+                  title={skill.name}
+                  subtitle={skill.description}
+                  testID={`plugin-skill-${skill.name}`}
+                />
+              ))}
+            </Group>
+          ) : null}
+          <Group>
+            {p.kind === 'connector' && p.connector
+              ? row(
+                  p.state === 'not_set_up' ? 'Set up' : 'Keys and provider',
+                  'connector',
+                  undefined,
+                  p.connector as unknown as RowData
+                )
+              : null}
+            {p.kind === 'skill'
+              ? row('Skill instructions', 'skill', undefined, {
+                  name: p.name,
+                  category: p.category
+                })
+              : null}
+            {p.connector && (p.kind !== 'connector' || p.state !== 'not_set_up')
+              ? action('Test', async () => {
+                  const result = await rpc('hexbot.connectors.test', { id: p.connector!.id })
+                  setNotice(str(result.message))
+                })
+              : null}
+            {p.kind === 'package' || (p.kind === 'connector' && server)
+              ? action(
+                  `Remove ${p.name}`,
+                  async () => {
+                    // A package goes with its server and skills; a server added
+                    // on its own goes where it was added.
+                    await (p.kind === 'package'
+                      ? rpc('hexbot.plugins.remove', { kind: 'package', id: p.id })
+                      : rpc('hexbot.connectors.remove_mcp', { name: p.name }))
+                    ;(onBack ?? onClose)()
+                  },
+                  true,
+                  'It is removed for every bot.'
+                )
+              : null}
+          </Group>
+        </>
+      )
+      break
+    }
     case 'skills':
       content = (
         <Group>
@@ -1654,6 +1932,8 @@ export function Management({
     connectors: 'Connectors',
     connector: str(panel?.data?.name),
     mcp: 'Add MCP server',
+    plugins: 'Plugins',
+    plugin: str(panel?.data?.name),
     skills: 'Skills',
     skill: str(panel?.data?.name),
     'skill-create': 'Create skill',
