@@ -118,6 +118,9 @@ const clock = (t: number) =>
 
 const number = (value: number) => value.toLocaleString()
 
+const count = (value: number, one: string, many: string) =>
+  `${number(value)} ${value === 1 ? one : many}`
+
 function ago(t: number, now: number): string {
   const seconds = Math.max(0, (now - t) / 1000)
 
@@ -376,7 +379,7 @@ function Overview({
         />
         <Tile
           label="CPU"
-          note={latest ? `${latest.processes} processes` : 'Measuring'}
+          note={latest ? count(latest.processes, 'process', 'processes') : 'Measuring'}
           value={latest ? `${Math.round(latest.cpu)}%` : '—'}
         />
         <Tile
@@ -391,7 +394,7 @@ function Overview({
         />
         <Tile
           label="Database cache hits"
-          note={`${number(caches.sqlite.statements)} statements`}
+          note={count(caches.sqlite.statements, 'statement', 'statements')}
           value={formatPercent(caches.sqlite.cache_hit_rate)}
         />
       </div>
@@ -905,8 +908,9 @@ function Traces({
                 <div className="min-w-0 flex-1">
                   <div className="truncate text-[length:var(--text-body)]">{runName(run)}</div>
                   <div className="truncate text-[length:var(--text-secondary)] text-muted">
-                    {ago(run.start, now)} · {String(run.attrs.model_calls ?? 0)} model calls ·{' '}
-                    {String(run.attrs.tool_calls ?? 0)} tools · cache{' '}
+                    {ago(run.start, now)} ·{' '}
+                    {count(Number(run.attrs.model_calls ?? 0), 'model call', 'model calls')} ·{' '}
+                    {count(Number(run.attrs.tool_calls ?? 0), 'tool', 'tools')} · cache{' '}
                     {formatPercent(run.attrs.cache_hit_rate as null | number)}
                   </div>
                 </div>
@@ -1376,7 +1380,7 @@ function StatementRows({ rows, title }: { rows: DiagnosticsStatement[]; title: s
           control={
             <Value>{formatMs(title === 'Slowest statements' ? row.max_ms : row.total_ms)}</Value>
           }
-          description={`${number(row.count)} ${row.count === 1 ? 'run' : 'runs'} · ${formatMs(row.avg_ms)} on average`}
+          description={`${count(row.count, 'run', 'runs')} · ${formatMs(row.avg_ms)} on average`}
           key={row.sql}
           title={
             <code className="line-clamp-2 font-mono text-[length:var(--text-meta)] [overflow-wrap:anywhere]">
@@ -1414,7 +1418,7 @@ function Caches({ snapshot }: { snapshot: DiagnosticsSnapshot }) {
                   </span>
                 </>
               }
-              description={`${number(prompt.calls)} model calls`}
+              description={count(prompt.calls, 'model call', 'model calls')}
               title="Hit rate"
             />
             <Row control={<Value>{number(prompt.cache_read)}</Value>} title="Read from cache" />
