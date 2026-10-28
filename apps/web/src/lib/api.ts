@@ -40,7 +40,7 @@ import type {
   SkillInfo,
   Usage
 } from './types'
-import type { CurrentUser, UsageSummary } from './types'
+import type { CurrentUser, DiagnosticsSnapshot, DiagnosticsSpan, UsageSummary } from './types'
 
 /** Raw history row as projected by Hexbot `session.history`. */
 export interface HistoryRow {
@@ -434,6 +434,20 @@ export const usersMe = () => rpcCall<CurrentUser>('hexbot.users.me')
 export const usersMeSet = (displayName: string) =>
   rpcCall<CurrentUser>('hexbot.users.me.set', { display_name: displayName })
 export const usageSummary = () => rpcCall<UsageSummary>('hexbot.usage.summary')
+
+// ---------------------------------------------------------------------------
+// Diagnostics
+// ---------------------------------------------------------------------------
+
+/** Everything Settings, Diagnostics shows; `span_name` filters the span log. */
+export const diagnosticsGet = (spanName?: string) =>
+  rpcCall<DiagnosticsSnapshot>('hexbot.diagnostics.get', spanName ? { span_name: spanName } : {})
+
+/** Every span of one trace, the run first. */
+export const diagnosticsTrace = (trace: number) =>
+  rpcCall<{ spans: DiagnosticsSpan[]; trace: number }>('hexbot.diagnostics.trace', { trace })
+
+export const gatewayPing = () => rpcCall<{ pong: boolean }>('gateway.ping')
 
 // ---------------------------------------------------------------------------
 // Sections

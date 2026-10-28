@@ -23,6 +23,7 @@ pub const USAGE: &str = concat!(
     "hexbot setup [--activate] [--no-code-tools] [--json]\n",
     "hexbot service install | uninstall | start | stop | restart | status [--json] | logs [-f]\n",
     "hexbot status [--json]\n",
+    "hexbot diagnostics\n",
     "hexbot pair\n",
     "hexbot bots list | create NAME [--title TEXT] [--description TEXT] [--persona TEXT] [--provider NAME] [--model NAME] [--reasoning-effort LEVEL] | delete NAME\n",
     "hexbot bots primary [NAME]\n",
@@ -43,6 +44,7 @@ fn command(args: &[String]) -> Result<(&'static str, Value)> {
     let a: Vec<&str> = args.iter().map(String::as_str).collect();
     match a.as_slice() {
         ["connect"] => Ok(("register", json!({}))),
+        ["diagnostics"] => Ok(("hexbot.diagnostics.get", json!({}))),
         ["connect", "--name", name] => Ok(("register", json!({"name":name}))),
         ["connect", "status"] => Ok(("hexbot.connect.status", json!({}))),
         ["connect", "disconnect"] => Ok(("hexbot.connect.disconnect", json!({}))),
@@ -464,6 +466,12 @@ async fn invoke(home: &Path, socket: &mut Option<Socket>, method: &str, p: Value
             "Check-ins run in the daemon. Start it with `hexbot serve` or `hexbot service start`.",
         ));
     }
+    if method.starts_with("hexbot.diagnostics.") {
+        return Err(Error::new(
+            4208,
+            "Diagnostics come from a running daemon. Start it with `hexbot serve` or `hexbot service start`.",
+        ));
+    }
     if method == "hexbot.connect.register_poll" {
         return services::register_poll(home, common::required(&p, "device_code")?, false).await;
     }
@@ -569,7 +577,15 @@ pub async fn dispatch(home: &Path, args: &[String]) -> Option<Result<()>> {
     let recognized = matches!(
         args.first().map(String::as_str),
         Some(
-            "connect" | "devices" | "lan" | "send" | "checkins" | "computer" | "plugins" | "hermes"
+            "connect"
+                | "devices"
+                | "lan"
+                | "send"
+                | "checkins"
+                | "computer"
+                | "plugins"
+                | "diagnostics"
+                | "hermes"
         )
     ) || (args.first().map(String::as_str) == Some("bots")
         && args.get(1).map(String::as_str) != Some("list"));

@@ -155,7 +155,10 @@ pub fn open(home: &Path) -> Result<Connection> {
     if fs::symlink_metadata(&database).is_ok_and(|metadata| metadata.file_type().is_symlink()) {
         return Err(Error::new(5200, "database must not be a symlink"));
     }
+    crate::diagnostics::trace_connections();
+    let opening = std::time::Instant::now();
     let connection = Connection::open(database)?;
+    crate::diagnostics::opened(opening);
     connection.busy_timeout(Duration::from_secs(10))?;
     connection.pragma_update(None, "journal_mode", "WAL")?;
     connection.pragma_update(None, "foreign_keys", "ON")?;

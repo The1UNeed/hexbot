@@ -339,6 +339,9 @@ fn model_choice(options: &Value) -> Value {
         options["reasoning_effort"]
     ])
 }
+/// Bot processes that may run at once.
+const SECTION_CAPACITY: usize = 16;
+
 pub struct Runtime {
     pub(crate) admission: Arc<crate::admission::Admission>,
     home: PathBuf,
@@ -385,7 +388,7 @@ impl Runtime {
             sessions: Mutex::new(HashMap::new()),
             opening: Mutex::new(HashMap::new()),
             input_queues: Mutex::new(HashMap::new()),
-            capacity: Arc::new(tokio::sync::Semaphore::new(16)),
+            capacity: Arc::new(tokio::sync::Semaphore::new(SECTION_CAPACITY)),
             weak: weak.clone(),
             stopping: AtomicBool::new(false),
             children: Mutex::new(HashMap::new()),
@@ -1223,6 +1226,7 @@ impl Runtime {
             .optional()?
             .unwrap_or_else(|| format!("live-{}", common::id()));
         let (process, events) = PiProcess::spawn(pi).map_err(pi_error)?;
+        crate::diagnostics::get().label_process(process.pid(), format!("Pi · {bot}"));
         let (settled, _) = watch::channel(0);
         let s = Arc::new(Live {
             owner: owner.into(),
@@ -3134,6 +3138,23 @@ impl Runtime {
             );
         }
     }
+    /// Open sections, running turns and free capacity, for Diagnostics.
+    pub fn diagnostic_load(&self) -> Value {
+        let sessions = self.sessions.lock().unwrap();
+        let running = sessions
+            .values()
+            .filter(|s| {
+                let state = s.state.lock().unwrap();
+                state.busy && !state.closed
+            })
+            .count();
+        json!({
+            "sessions": sessions.len(),
+            "running": running,
+            "capacity": SECTION_CAPACITY,
+            "capacity_free": self.capacity.available_permits(),
+        })
+    }
     pub fn busy_sections(&self, bot: &str) -> Vec<Value> {
         self.sessions
             .lock()
@@ -3625,6 +3646,8 @@ impl Runtime {
                     .filter(|(name, _)| crate::pi::provider_environment(name, provider.unwrap_or(""))),
             );
             let (process, mut events) = PiProcess::spawn(options).map_err(pi_error)?;
+            crate::diagnostics::get()
+                .label_process(process.pid(), format!("Pi · {bot} (one request)"));
             started = Some(AdmittedPi { process, admission: Some(admission.clone()) });
             let process = &started.as_ref().unwrap().process;
             let response = process
@@ -4674,6 +4697,7 @@ impl Runtime {
         if s.state.lock().unwrap().closed {
             return Ok(());
         }
+        crate::diagnostics::get().pi_event(&s.id, &s.bot, &s.stored, &event);
         let observed = {
             let mut state = s.state.lock().unwrap();
             let text = state.output.clone();
@@ -4909,6 +4933,9 @@ impl Runtime {
                     };
                     (ending, latest)
                 };
+                if latest {
+                    crate::diagnostics::get().run_settled(&s.id);
+                }
                 if !latest {
                     if let Some(end) = ending {
                         self.emit(s, "message.complete", with_fields(json!({"text":end.text,"error":end.error,"status":if end.error.is_some(){"error"}else{"complete"},"usage":store::usage(&self.home,&s.stored).unwrap_or_else(|_| json!({}))}), &end.fields));
@@ -5243,6 +5270,7 @@ fn pump(
                     );
                 }
                 if !was_closed {
+                    crate::diagnostics::get().process_exit(&s.id, &s.bot, &error.message);
                     runtime.stop_dialogs(&s).await;
                     crate::native_tools::close_session(&runtime.home, &s.stored).await;
                 }
@@ -5800,6 +5828,91 @@ rl.on('line',line=>{{const c=JSON.parse(line);emit({{type:'response',id:c.id,com
         let hub = EventHub::new();
         let runtime = Runtime::new(home.path().into(), hub.clone(), script).unwrap();
         (home, runtime, hub)
+    }
+    #[tokio::test]
+    async fn diagnostics_follow_the_runtime_through_late_recovered_and_rejected_prompts() {
+        let (_home, runtime, _hub) = setup();
+        let feed = |section: &str, events: &[Value]| {
+            let s = runtime
+                .sessions
+                .lock()
+                .unwrap()
+                .get(section)
+                .unwrap()
+                .clone();
+            for event in events {
+                runtime.event(&s, event.clone()).unwrap();
+            }
+        };
+        let started = |intent: &str| json!({"type":"hexbot_input_preflight","intent":intent,"disposition":"started"});
+        let reply = |stop: &str| json!({"type":"message_end","message":{"role":"assistant","stopReason":stop,"errorMessage":"Overloaded"}});
+        let end = json!({"type":"agent_end","willRetry":false});
+        let start = json!({"type":"agent_start"});
+        let settled = json!({"type":"agent_settled"});
+        for section in ["diag-late", "diag-compacted", "diag-rejected"] {
+            runtime.open_session("alice", "owl", section).await.unwrap();
+        }
+
+        // The next prompt starts before the first one settles.
+        feed(
+            "diag-late",
+            &[
+                started("a"),
+                start.clone(),
+                reply("stop"),
+                end.clone(),
+                started("b"),
+                start.clone(),
+                settled.clone(),
+            ],
+        );
+        let (runs, open) = crate::diagnostics::get().section_runs("diag-late");
+        assert_eq!(runs.len(), 1);
+        assert!(open, "the late settlement must not end the newer run");
+        feed("diag-late", &[reply("error"), end.clone(), settled.clone()]);
+        let (runs, open) = crate::diagnostics::get().section_runs("diag-late");
+        assert_eq!((runs.len(), open), (2, false));
+        assert_eq!(runs[1]["error"], "Overloaded");
+
+        // Compaction recovery continues the same run and settles once.
+        feed(
+            "diag-compacted",
+            &[
+                started("c"),
+                start.clone(),
+                reply("error"),
+                end.clone(),
+                json!({"type":"compaction_end","willRetry":true}),
+                start.clone(),
+                reply("stop"),
+                end.clone(),
+                settled.clone(),
+            ],
+        );
+        let (runs, open) = crate::diagnostics::get().section_runs("diag-compacted");
+        assert_eq!((runs.len(), open), (1, false));
+        assert!(runs[0]["error"].is_null());
+        assert_eq!(runs[0]["model_calls"], 2);
+
+        // A prompt that passed preflight but was refused settles on its own.
+        feed(
+            "diag-rejected",
+            &[
+                started("d"),
+                start.clone(),
+                started("refused"),
+                settled.clone(),
+            ],
+        );
+        let (runs, open) = crate::diagnostics::get().section_runs("diag-rejected");
+        assert_eq!((runs.len(), open), (0, true));
+        feed(
+            "diag-rejected",
+            &[reply("stop"), end.clone(), settled.clone()],
+        );
+        let (runs, open) = crate::diagnostics::get().section_runs("diag-rejected");
+        assert_eq!((runs.len(), open), (1, false));
+        assert_eq!(runs[0]["model_calls"], 1);
     }
     #[tokio::test]
     async fn transcript_identity_fragment_seed_survives_sqlite_retry_without_billing_twice() {

@@ -173,6 +173,12 @@ impl App {
         Ok(app)
     }
     pub async fn call(self: &Arc<Self>, owner: &str, method: &str, p: &Value) -> Result<Value> {
+        let start = common::now() * 1000.;
+        let result = self.call_locked(owner, method, p).await;
+        crate::diagnostics::get().rpc(method, start, &result);
+        result
+    }
+    async fn call_locked(self: &Arc<Self>, owner: &str, method: &str, p: &Value) -> Result<Value> {
         // Reserve name reuse in request order before handing deletion to its
         // cancellation-safe task, including through a rebound listener.
         let bot_lifecycle = if matches!(
@@ -428,6 +434,20 @@ impl App {
                 "recall": true,
                 "home": self.home
             })),
+            "hexbot.diagnostics.get" => {
+                let (home, owner, p) = (self.home.clone(), owner.to_owned(), p.clone());
+                let load = self.runtime.diagnostic_load();
+                tokio::task::spawn_blocking(move || {
+                    crate::diagnostics::get().snapshot(&home, &owner, load, &p)
+                })
+                .await
+                .map_err(|error| Error::new(5200, error.to_string()))
+            }
+            "hexbot.diagnostics.trace" => Ok(crate::diagnostics::get().trace(
+                p["trace"]
+                    .as_u64()
+                    .ok_or_else(|| Error::new(4200, "missing parameter: trace"))?,
+            )),
             "hexbot.rooms.stop" => {
                 Ok(json!({"stopped":self.rooms.stop(owner,common::required(p,"id")?).await?}))
             }
@@ -1706,6 +1726,7 @@ async fn connection(
     device_id: String,
     token: String,
 ) {
+    let _counted = crate::diagnostics::get().socket();
     let mut events = app.events.subscribe();
     let mut stop = app.stop.subscribe();
     if *stop.borrow() {
