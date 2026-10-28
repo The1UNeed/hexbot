@@ -689,13 +689,11 @@ impl Installer {
     }
 
     fn status(&self) -> Result<serde_json::Value> {
-        let mut command = self.paths.command(self.paths.executable());
-        command
+        let output = self
+            .paths
+            .command(self.paths.executable())
             .args(["status", "--json"])
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        let output = spawn(&mut command)?.wait_with_output()?;
+            .output()?;
         let bytes = check_output(output)?;
         Ok(serde_json::from_slice(&bytes)?)
     }
