@@ -803,6 +803,23 @@ pub(crate) fn scope_new_bot(home: &Path, bot: &str) -> Result<()> {
     Ok(())
 }
 
+/// Take a deleted bot out of every package's list, so a new bot with its
+/// name doesn't get what it was given.
+pub(crate) fn forget_bot(home: &Path, bot: &str) -> Result<()> {
+    for name in package_names(home)? {
+        let Ok(mut manifest) = manifest(home, &name) else {
+            continue;
+        };
+        if let Some(scope) = manifest["bots"].as_array_mut()
+            && scope.iter().any(|b| b == bot)
+        {
+            scope.retain(|b| b != bot);
+            write_manifest(home, &name, &manifest)?;
+        }
+    }
+    Ok(())
+}
+
 /// Remove a package: its server and its skills, for every bot.
 pub(crate) fn remove(home: &Path, name: &str) -> Result<()> {
     let manifest = manifest(home, name)?;

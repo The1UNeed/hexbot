@@ -12,7 +12,8 @@ import {
   connectorsClear,
   connectorsRemoveMcp,
   connectorsTest,
-  type PluginInstallInput
+  type PluginInstallInput,
+  skillsSetGlobal
 } from '../../lib/api'
 import { cn } from '../../lib/cn'
 import type { Plugin, PluginValue } from '../../lib/types'
@@ -292,8 +293,10 @@ function PluginRow({
 }) {
   const setBots = usePlugins(state => state.setBots)
   const [error, setError] = useState<null | string>(null)
-  // One that isn't set up can be taken away from bots, not given to them.
-  const unready = !plugin.ready
+  // One that isn't set up can be taken away from bots, not given to them. A
+  // connector or skill can be ready for one bot through a key in its own
+  // `.env`, so only the daemon can tell; a built-in tool is the same for all.
+  const unready = !plugin.ready && plugin.kind === 'capability'
   const hasSetup = Boolean(plugin.kind === 'connector' && plugin.connector?.fields.length)
 
   const choose = (next: string[]) => {
@@ -540,7 +543,11 @@ function PluginDetails({
       ) : null}
       {plugin.kind === 'skill' ? (
         <p className="text-muted">
-          {plugin.source === 'bundled' ? 'Comes with Hexbot.' : 'In your skill library.'}
+          {plugin.disabled_globally
+            ? 'Off for every bot in Settings, whatever its switch here says.'
+            : plugin.source === 'bundled'
+              ? 'Comes with Hexbot.'
+              : 'In your skill library.'}
         </p>
       ) : null}
       {message ? (
@@ -552,6 +559,16 @@ function PluginDetails({
         </p>
       ) : null}
       <div className="flex flex-wrap gap-2">
+        {plugin.kind === 'skill' && plugin.disabled_globally ? (
+          <Button
+            busy={busy}
+            onClick={() => run(() => skillsSetGlobal(plugin.id, true).then(refresh))}
+            size="sm"
+            variant="primary"
+          >
+            Undo Off for every bot
+          </Button>
+        ) : null}
         {plugin.kind === 'connector' && connector?.fields.length ? (
           <Button onClick={onSetup} size="sm">
             {plugin.state === 'not_set_up' ? 'Set up' : 'Edit'}

@@ -1424,8 +1424,10 @@ export function Management({
     case 'plugin': {
       const bots = pluginRoster
       const p = (extra.plugin ?? panel!.data) as unknown as Plugin
-      // One that isn't set up can be taken away from bots, not given to them.
-      const unready = !p.ready
+      // One that isn't set up can be taken away from bots, not given to them. A
+      // connector or skill can be ready for one bot through its own key, so
+      // only the daemon can tell; a built-in tool is the same for all.
+      const unready = !p.ready && p.kind === 'capability'
       const server = p.server
       const values_ = server ? (server.transport === 'http' ? server.headers : server.env) : []
       const valueKind = server?.transport === 'http' ? 'headers' : 'env'
@@ -1527,6 +1529,11 @@ export function Management({
                   'connector',
                   undefined,
                   p.connector as unknown as RowData
+                )
+              : null}
+            {p.kind === 'skill' && p.disabled_globally
+              ? action('Undo Off for every bot', () =>
+                  rpc('hexbot.skills.set_global', { name: p.id, enabled: true })
                 )
               : null}
             {p.kind === 'skill'

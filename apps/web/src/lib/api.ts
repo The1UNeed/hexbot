@@ -327,6 +327,11 @@ export function pluginsRemove(id: string): Promise<{ removed: boolean }> {
   return rpcCall<{ removed: boolean }>('hexbot.plugins.remove', { id, kind: 'package' })
 }
 
+/** A skill's switch for every bot, under each bot's own. */
+export function skillsSetGlobal(name: string, enabled: boolean): Promise<unknown> {
+  return rpcCall('hexbot.skills.set_global', { enabled, name })
+}
+
 export function skillsList(bot: string): Promise<{ skills: SkillInfo[] }> {
   return rpcCall<{ skills: SkillInfo[] }>('hexbot.skills.list', { bot })
 }

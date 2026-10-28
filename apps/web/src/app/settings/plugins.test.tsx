@@ -6,7 +6,8 @@ import {
   pluginsInstall,
   pluginsList,
   pluginsRemove,
-  pluginsSetBots
+  pluginsSetBots,
+  skillsSetGlobal
 } from '../../lib/api'
 import type { Bot, Connector, PluginsList } from '../../lib/types'
 import { useBots } from '../../stores/bots'
@@ -21,7 +22,8 @@ vi.mock('../../lib/api', async importOriginal => ({
   pluginsInstall: vi.fn().mockResolvedValue({}),
   pluginsList: vi.fn(),
   pluginsRemove: vi.fn().mockResolvedValue({ removed: true }),
-  pluginsSetBots: vi.fn().mockResolvedValue({})
+  pluginsSetBots: vi.fn().mockResolvedValue({}),
+  skillsSetGlobal: vi.fn().mockResolvedValue({})
 }))
 
 vi.mock('../../components/ui/confirm', () => ({ confirm: vi.fn().mockResolvedValue(true) }))
@@ -205,17 +207,49 @@ describe('Settings, Plugins', () => {
     await waitFor(() => expect(screen.queryByText('github')).not.toBeInTheDocument())
   })
 
-  it('takes a plugin that is not set up away but does not give it', async () => {
-    const broken = { ...search, state: 'error' as const, state_text: 'Key rejected' }
+  it('takes a built-in tool that is not set up away but does not give it', async () => {
+    const base = list()
+    vi.mocked(pluginsList).mockResolvedValue({
+      ...base,
+      capabilities: [{ ...base.capabilities[0]!, bots: ['owl'] }]
+    })
+    render(<PluginsSettings />)
+    fireEvent.click(await screen.findByText('Computer use'))
+    const picker = screen.getByRole('group', { name: 'Bots that use Computer use' })
+    expect(within(picker).getByRole('button', { name: 'HexBot' })).toBeDisabled()
+    fireEvent.click(within(picker).getByRole('button', { name: 'Owl' }))
+    await waitFor(() =>
+      expect(pluginsSetBots).toHaveBeenCalledWith('capability', 'computer_use', [])
+    )
+  })
+
+  it('leaves a connector without a daemon key to the daemon, which knows bot keys', async () => {
+    const unset = { ...search, state: 'not_set_up' as const, state_text: 'Not set up' }
     vi.mocked(pluginsList).mockResolvedValue(
-      list({ connectors: [{ ...broken, bots: ['owl'], kind: 'connector', ready: false }] })
+      list({ connectors: [{ ...unset, bots: [], kind: 'connector', ready: false }] })
+    )
+    vi.mocked(pluginsSetBots).mockRejectedValueOnce(
+      new Error('Set up Web search before giving it to a bot.')
     )
     render(<PluginsSettings />)
     fireEvent.click(await screen.findByText('Web search'))
     const picker = screen.getByRole('group', { name: 'Bots that use Web search' })
-    expect(within(picker).getByRole('button', { name: 'HexBot' })).toBeDisabled()
-    fireEvent.click(within(picker).getByRole('button', { name: 'Owl' }))
-    await waitFor(() => expect(pluginsSetBots).toHaveBeenCalledWith('connector', 'web_search', []))
+    fireEvent.click(within(picker).getByRole('button', { name: 'HexBot' }))
+    expect(
+      await screen.findByText('Set up Web search before giving it to a bot.')
+    ).toBeInTheDocument()
+  })
+
+  it('turns a skill that is off for every bot back on', async () => {
+    const base = list()
+    vi.mocked(pluginsList).mockResolvedValue({
+      ...base,
+      skills: [{ ...base.skills[0]!, bots: [], disabled_globally: true }]
+    })
+    render(<PluginsSettings />)
+    fireEvent.click(await screen.findByText('pdf'))
+    fireEvent.click(screen.getByRole('button', { name: 'Undo Off for every bot' }))
+    await waitFor(() => expect(skillsSetGlobal).toHaveBeenCalledWith('pdf', true))
   })
 
   it('keeps the latest list when an older refresh answers last', async () => {

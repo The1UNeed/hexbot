@@ -57,6 +57,7 @@ export function pluginRows(list: PluginsList): Plugin[] {
       bots: row.bots,
       category: row.category || 'other',
       description: row.description,
+      disabled_globally: row.disabled_globally,
       icon: 'glyph:sparkles',
       id: row.id,
       kind: 'skill',

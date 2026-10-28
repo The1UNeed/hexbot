@@ -996,6 +996,35 @@ fn a_bot_asking_for_itself_changes_only_itself() {
     .unwrap()
     .unwrap();
     assert!(servers(home.path(), "raven").is_empty());
+    // A deleted bot leaves the list, so a new bot with its name starts without it.
+    crate::catalog::call(
+        home.path(),
+        "alice",
+        "hexbot.bots.delete",
+        &json!({"name":"cat"}),
+    )
+    .unwrap()
+    .unwrap();
+    assert!(
+        !plugins::find(home.path(), "alice", "package", "github")
+            .unwrap()
+            .to_string()
+            .contains("\"cat\"")
+    );
+    assert!(
+        !fs::read_to_string(home.path().join("plugins/github/plugin.json"))
+            .unwrap()
+            .contains("cat")
+    );
+    crate::catalog::call(
+        home.path(),
+        "alice",
+        "hexbot.bots.create",
+        &json!({"name":"cat","display_name":"Cat"}),
+    )
+    .unwrap()
+    .unwrap();
+    assert!(servers(home.path(), "cat").is_empty());
     // Owl taken away meanwhile, then Cat's change lands: Owl stays off.
     call(
         home.path(),

@@ -239,7 +239,13 @@ impl Runtime {
         let config = common::read_config(&self.home)?;
         let mut plugins = vec![];
         for (section, kind) in SECTIONS {
-            for p in listed[*section].as_array().into_iter().flatten() {
+            // A bot's own private skills are its to manage with skill_manage.
+            for p in listed[*section]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter(|p| p["source"] != "bot")
+            {
                 let id = p["id"].as_str().unwrap_or("");
                 // Only what was written as a description: a server without
                 // one would show its address or command line, which can hold a token.

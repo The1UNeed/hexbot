@@ -340,6 +340,8 @@ export interface Plugin {
   /** The connector row behind a connector or a server, for set-up and tests. */
   connector?: Connector | null
   description: string
+  /** A skill switched off in Settings for every bot. */
+  disabled_globally?: boolean
   icon: string
   id: string
   installed_by?: null | string
