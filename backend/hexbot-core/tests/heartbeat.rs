@@ -223,6 +223,22 @@ async fn a_heartbeat_posts_what_it_found_in_the_bots_chat() {
         )
         .unwrap();
     assert_eq!(left, 0, "a heartbeat's transcript goes when it ends");
+
+    // A new bot with a deleted one's name starts with no heartbeats.
+    app.call("local", "hexbot.bots.delete", &json!({"name":"owl"}))
+        .await
+        .unwrap();
+    create(&app, "owl").await;
+    let kept: i64 = db::open(h.path())
+        .unwrap()
+        .query_row(
+            "SELECT (SELECT COUNT(*) FROM heartbeats WHERE bot='owl')+(SELECT COUNT(*) FROM heartbeat_messages WHERE bot='owl')",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(kept, 0);
+    assert_eq!(self::status(&app, "owl").await["recent"], json!([]));
 }
 
 #[tokio::test]

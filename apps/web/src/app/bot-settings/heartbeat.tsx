@@ -1,5 +1,5 @@
 import { Link } from '@tanstack/react-router'
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 
 import { Button } from '../../components/ui/button'
 import { Switch } from '../../components/ui/switch'
@@ -68,8 +68,14 @@ export function HeartbeatTab({ bot }: { bot: Bot }) {
   }, [bot.name, refresh])
 
   // The bot may change its checklist from its chat while this is open.
+  // What you have typed and not saved yet stays.
   const saved = status?.text ?? null
-  useEffect(() => setText(saved), [saved])
+  const shown = useRef(saved)
+  useEffect(() => {
+    const before = shown.current
+    shown.current = saved
+    setText(current => (current === null || current === before ? saved : current))
+  }, [saved])
 
   const attempt = async (action: () => Promise<unknown>) => {
     try {

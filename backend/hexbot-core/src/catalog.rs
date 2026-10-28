@@ -2566,13 +2566,12 @@ fn delete_bot(home: &Path, caller: &str, name: &str) -> Result<Value> {
             ));
         }
         bot_owner(home, caller, name)?;
-        for section in rows(&tx, "SELECT id FROM sections WHERE bot=?", &[&name])? {
-            crate::dreaming::heartbeat::forget_section(&tx, required(&section, "id")?)?;
-        }
         tx.execute("DELETE FROM sections WHERE bot=?", [name])?;
         // Threads where this bot asked others stay with their recipients.
         tx.execute("UPDATE sections SET archived_at=? WHERE peer_bot=? AND owner_id=? AND archived_at IS NULL", params![now(), name, caller])?;
         tx.execute("DELETE FROM dreams WHERE bot=?", [name])?;
+        tx.execute("DELETE FROM heartbeats WHERE bot=?", [name])?;
+        tx.execute("DELETE FROM heartbeat_messages WHERE bot=?", [name])?;
         tx.execute("DELETE FROM memory_proposals WHERE bot=?", [name])?;
         tx.execute("UPDATE room_members SET left_at=? WHERE member_kind='bot' AND member_id=? AND left_at IS NULL", params![now(), name])?;
         tx.execute("UPDATE rooms SET main_bot=NULL WHERE main_bot=?", [name])?;

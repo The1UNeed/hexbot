@@ -1165,7 +1165,7 @@ fn threads_are_hidden_from_lists_and_counts_but_readable_by_the_owner() {
     );
 }
 #[test]
-fn deleting_a_bot_takes_what_check_ins_said_in_its_sections() {
+fn deleting_a_bot_takes_what_its_heartbeat_said() {
     let home = setup();
     let h = home.path();
     create(h);
@@ -1188,11 +1188,8 @@ fn deleting_a_bot_takes_what_check_ins_said_in_its_sections() {
         "hexbot.bots.delete",
         json!({"name":"research-owl"}),
     );
-    let (text, due): (String, Option<f64>) = conn
-        .query_row("SELECT text,push_due_at FROM heartbeat_messages", [], |r| {
-            Ok((r.get(0)?, r.get(1)?))
-        })
+    let left: i64 = conn
+        .query_row("SELECT COUNT(*) FROM heartbeat_messages", [], |r| r.get(0))
         .unwrap();
-    assert_eq!(text, "");
-    assert!(due.is_none());
+    assert_eq!(left, 0);
 }

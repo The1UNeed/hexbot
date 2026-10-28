@@ -141,6 +141,21 @@ describe('heartbeat', () => {
     await waitFor(() => expect(field).toHaveValue('- Is the XM6 under $300?'))
   })
 
+  it('keeps what you are typing when the checklist changes elsewhere', async () => {
+    const call = vi.fn(() => Promise.resolve(status()))
+
+    setActiveRpc({ call } as never)
+    render(<HeartbeatTab bot={owl} />)
+    const field = await screen.findByRole('textbox', { name: 'Heartbeat checklist' })
+    fireEvent.change(field, { target: { value: '- Has Sam replied?' } })
+    call.mockImplementation(() => Promise.resolve(status({ text: '- Is the XM6 under $300?' })))
+    await useHeartbeat.getState().refreshLoaded('owl')
+    await waitFor(() =>
+      expect(useHeartbeat.getState().byBot.owl?.text).toBe('- Is the XM6 under $300?')
+    )
+    expect(field).toHaveValue('- Has Sam replied?')
+  })
+
   it('deletes the Check-ins from before the heartbeat after asking', async () => {
     let deleted = false
 
