@@ -212,7 +212,7 @@ export function DiagnosticsSettings(): React.JSX.Element {
   const [view, setView] = useState<View>('overview')
   const [spanName, setSpanName] = useState('')
   const [trace, setTrace] = useState<null | number>(null)
-  const [copied, setCopied] = useState(false)
+  const [copied, setCopied] = useState<'' | 'Copied' | 'Saved'>('')
   const { error, roundTrip, snapshot } = useDiagnostics(spanName)
 
   const copy = async () => {
@@ -220,9 +220,24 @@ export function DiagnosticsSettings(): React.JSX.Element {
       return
     }
 
-    await navigator.clipboard.writeText(JSON.stringify(snapshot, null, 2))
-    setCopied(true)
-    setTimeout(() => setCopied(false), 1500)
+    const report = JSON.stringify(snapshot, null, 2)
+
+    try {
+      await navigator.clipboard.writeText(report)
+      setCopied('Copied')
+    } catch {
+      // Browsers only allow the clipboard on HTTPS or localhost; save a file instead.
+      const link = document.createElement('a')
+      const url = URL.createObjectURL(new Blob([report], { type: 'application/json' }))
+
+      link.href = url
+      link.download = 'hexbot-diagnostics.json'
+      link.click()
+      setTimeout(() => URL.revokeObjectURL(url), 1000)
+      setCopied('Saved')
+    }
+
+    setTimeout(() => setCopied(''), 1500)
   }
 
   const openTrace = (id: number) => {
@@ -243,7 +258,7 @@ export function DiagnosticsSettings(): React.JSX.Element {
             onClick={() => void copy()}
             size="sm"
           >
-            {copied ? 'Copied' : 'Copy report'}
+            {copied || 'Copy report'}
           </Button>
         ) : null}
       </div>
@@ -874,6 +889,10 @@ function Traces({
         description="Each run of a bot, from the first model call to its answer. Select one for its steps."
         title="Recent runs"
       >
+        {/* A run opened from Failures can be older than the runs listed here. */}
+        {trace != null && !spans.traces.some(run => run.trace === trace) ? (
+          <Waterfall trace={trace} />
+        ) : null}
         {spans.traces.length ? (
           spans.traces.map(run => (
             <div key={run.id}>

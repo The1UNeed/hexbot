@@ -290,6 +290,38 @@ describe('diagnostics', () => {
     expect(screen.getByText('m1')).toBeInTheDocument()
   })
 
+  it('opens a failed run that is older than the recent runs', async () => {
+    const old = snapshot()
+
+    old.spans.traces = []
+    vi.mocked(diagnosticsGet).mockResolvedValue(old)
+    vi.mocked(diagnosticsTrace).mockResolvedValue({ spans: [], trace: 7 })
+    render(<DiagnosticsSettings />)
+    fireEvent.click(await screen.findByRole('tab', { name: 'Failures' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Show run' }))
+
+    expect(
+      await screen.findByText('This run is older than the spans the daemon keeps.')
+    ).toBeInTheDocument()
+  })
+
+  it('saves the report as a file when the clipboard is not allowed', async () => {
+    const writeText = vi.fn().mockRejectedValue(new Error('not allowed'))
+    const createObjectURL = vi.fn().mockReturnValue('blob:report')
+    const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {})
+
+    vi.stubGlobal('navigator', { ...navigator, clipboard: { writeText } })
+    Object.assign(URL, { createObjectURL, revokeObjectURL: vi.fn() })
+    render(<DiagnosticsSettings />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Copy report' }))
+
+    expect(await screen.findByRole('button', { name: 'Saved' })).toBeInTheDocument()
+    expect(click).toHaveBeenCalled()
+    expect(createObjectURL).toHaveBeenCalled()
+    click.mockRestore()
+    vi.unstubAllGlobals()
+  })
+
   it('filters the span log by name', async () => {
     render(<DiagnosticsSettings />)
     fireEvent.click(await screen.findByRole('tab', { name: 'Traces' }))

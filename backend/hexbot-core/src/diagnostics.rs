@@ -301,8 +301,11 @@ impl Diagnostics {
         let now = now_ms();
         match event["type"].as_str().unwrap_or("") {
             "agent_start" => {
-                if let Some(run) = runs.remove(session) {
-                    self.finish_run(run, now, true);
+                // Retries and compaction recovery start again inside the same
+                // run; only `agent_settled` ends it.
+                if let Some(run) = runs.get_mut(session) {
+                    run.boundary = now;
+                    return;
                 }
                 if runs.len() >= OPEN_RUNS {
                     // Sections that vanished without settling.
@@ -1563,6 +1566,29 @@ mod tests {
         let trace = d.trace(run.trace);
         assert_eq!(trace["spans"].as_array().unwrap().len(), 4);
         assert_eq!(trace["spans"][0]["kind"], "run");
+    }
+
+    #[test]
+    fn a_retried_run_stays_one_run_and_recovers() {
+        let d = Diagnostics::default();
+        for event in [
+            json!({"type":"agent_start"}),
+            json!({"type":"message_end","message":{"role":"assistant","stopReason":"error","errorMessage":"Overloaded"}}),
+            json!({"type":"agent_end","willRetry":true}),
+            json!({"type":"auto_retry_start"}),
+            json!({"type":"agent_start"}),
+            json!({"type":"message_end","message":{"role":"assistant","stopReason":"stop"}}),
+            json!({"type":"agent_settled"}),
+        ] {
+            d.pi_event("s", "owl", "x", &event);
+        }
+        let spans = Vec::from(d.spans.lock().unwrap().clone());
+        let runs = spans.iter().filter(|s| s.kind == "run").collect::<Vec<_>>();
+        assert_eq!(runs.len(), 1);
+        assert!(runs[0].error.is_none());
+        assert_eq!(runs[0].attrs["model_calls"], 2);
+        assert!(spans.iter().all(|s| s.trace == runs[0].trace));
+        assert_eq!(d.failures_json()["total"], 0);
     }
 
     #[test]
