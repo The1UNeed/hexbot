@@ -654,3 +654,291 @@ fn strings_of(v: &Value) -> Vec<String> {
         .map(|s| s.as_str().unwrap().to_owned())
         .collect()
 }
+
+const SKILL: &str = "---\ndescription: Find and file GitHub issues.\n---\nUse mcp__github__ tools.";
+
+fn github() -> Value {
+    json!({
+        "name": "github",
+        "description": "GitHub issues and pull requests",
+        "mcp": {"command": "npx", "args": ["-y", "github-mcp"], "env": {"GITHUB_TOKEN": ""}},
+        "skills": [{"name": "github-issues", "content": SKILL}],
+    })
+}
+fn skill_on(home: &Path, bot: &str, name: &str) -> Option<bool> {
+    crate::skills::resolve(home, Some(bot))
+        .unwrap()
+        .into_iter()
+        .find(|s| s.name == name)
+        .map(|s| s.enabled_for_bot)
+}
+
+#[tokio::test]
+async fn a_package_installs_its_server_and_skills_as_one_plugin() {
+    let home = setup();
+    let mut install = github();
+    install["bots"] = json!(["owl"]);
+    let plugin =
+        call(home.path(), "alice", "hexbot.plugins.install", install).unwrap()["plugin"].clone();
+    assert_eq!(plugin["kind"], "package");
+    assert_eq!(plugin["bots"], json!(["owl"]));
+    assert_eq!(plugin["skills"][0]["name"], "github-issues");
+    // A value left empty is for the user to fill in.
+    assert_eq!(plugin["state"], "not_set_up");
+    assert_eq!(plugin["state_text"], "Needs GITHUB_TOKEN");
+    assert_eq!(plugin["server"]["command"], "npx");
+    assert_eq!(
+        plugin["server"]["env"],
+        json!([{"key":"GITHUB_TOKEN","set":false,"hint":null}])
+    );
+    // Its server and skill are parts of the package, not rows of their own.
+    let list = call(home.path(), "alice", "hexbot.plugins.list", json!({})).unwrap();
+    for (group, id) in [("connectors", "mcp:github"), ("skills", "github-issues")] {
+        assert!(
+            !list[group]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|r| r["id"] == id),
+            "{id}"
+        );
+    }
+    assert_eq!(servers(home.path(), "owl"), ["github"]);
+    assert!(servers(home.path(), "cat").is_empty());
+    assert_eq!(skill_on(home.path(), "owl", "github-issues"), Some(true));
+    assert_eq!(skill_on(home.path(), "cat", "github-issues"), Some(false));
+
+    // Settings keep who has it and never send values back.
+    let plugin = call(
+        home.path(),
+        "alice",
+        "hexbot.plugins.configure",
+        json!({"kind":"package","id":"github","env":{"GITHUB_TOKEN":"ghp_0123456789"}}),
+    )
+    .unwrap()["plugin"]
+        .clone();
+    assert_ne!(plugin["state"], "not_set_up");
+    assert_eq!(plugin["server"]["env"][0]["hint"], "…6789");
+    assert!(!plugin.to_string().contains("ghp_0123456789"));
+    assert_eq!(plugin["bots"], json!(["owl"]));
+
+    // Giving it to Cat instead moves both parts.
+    let plugin = call(
+        home.path(),
+        "alice",
+        "hexbot.plugins.set_bots",
+        json!({"kind":"package","id":"github","bots":["cat"]}),
+    )
+    .unwrap()["plugin"]
+        .clone();
+    assert_eq!(plugin["bots"], json!(["cat"]));
+    assert!(servers(home.path(), "owl").is_empty());
+    assert_eq!(skill_on(home.path(), "owl", "github-issues"), Some(false));
+    assert_eq!(skill_on(home.path(), "cat", "github-issues"), Some(true));
+    // A part left on keeps the package on, so it can always be taken away.
+    crate::skills::set_enabled(home.path(), Some("cat"), "github-issues", false).unwrap();
+    let list = call(home.path(), "alice", "hexbot.plugins.list", json!({})).unwrap();
+    assert_eq!(row(&list, "packages", "github")["bots"], json!(["cat"]));
+
+    // Parts go with the package.
+    let error = connectors::call(
+        home.path(),
+        "alice",
+        "hexbot.connectors.remove_mcp",
+        &json!({"name":"github"}),
+    )
+    .await
+    .unwrap()
+    .unwrap_err();
+    assert!(error.message.contains("Remove the plugin instead"));
+    let error = connectors::call(
+        home.path(),
+        "alice",
+        "hexbot.connectors.add_mcp",
+        &json!({"name":"github","command":"other"}),
+    )
+    .await
+    .unwrap()
+    .unwrap_err();
+    assert_eq!(error.code, 4208);
+    for (method, p) in [
+        ("hexbot.skills.delete", json!({"name":"github-issues"})),
+        (
+            "hexbot.skills.save",
+            json!({"name":"github-issues","content":SKILL}),
+        ),
+    ] {
+        let error = crate::skills::call(home.path(), "alice", method, &p).unwrap_err();
+        assert!(
+            error.message.contains("plugin github"),
+            "{method}: {}",
+            error.message
+        );
+    }
+    crate::skills::call(
+        home.path(),
+        "alice",
+        "hexbot.skills.save",
+        &json!({"name":"github-issues","content":SKILL,"bot":"owl"}),
+    )
+    .unwrap();
+    let error = crate::skills::call(
+        home.path(),
+        "alice",
+        "hexbot.skills.share",
+        &json!({"name":"github-issues","bot":"owl","replace":true}),
+    )
+    .unwrap_err();
+    assert!(error.message.contains("plugin github"), "{}", error.message);
+    crate::skills::call(
+        home.path(),
+        "alice",
+        "hexbot.skills.delete",
+        &json!({"name":"github-issues","bot":"owl"}),
+    )
+    .unwrap();
+
+    call(
+        home.path(),
+        "alice",
+        "hexbot.plugins.remove",
+        json!({"kind":"package","id":"github"}),
+    )
+    .unwrap();
+    let list = call(home.path(), "alice", "hexbot.plugins.list", json!({})).unwrap();
+    assert!(list["packages"].as_array().unwrap().is_empty());
+    assert!(servers(home.path(), "cat").is_empty());
+    assert_eq!(skill_on(home.path(), "cat", "github-issues"), None);
+    // Installed again for every bot, it is on for every bot of Alice's.
+    call(home.path(), "alice", "hexbot.plugins.install", github()).unwrap();
+    let list = call(home.path(), "alice", "hexbot.plugins.list", json!({})).unwrap();
+    assert_eq!(
+        row(&list, "packages", "github")["bots"],
+        json!(["cat", "owl"])
+    );
+    assert!(servers(home.path(), "fox").is_empty());
+}
+
+#[test]
+fn installs_are_checked_before_anything_is_written() {
+    let home = setup();
+    let error = |p: Value| {
+        call(home.path(), "alice", "hexbot.plugins.install", p)
+            .unwrap_err()
+            .message
+    };
+    assert!(error(json!({"name":"Bad Name","skills":[]})).contains("plugin name"));
+    assert!(error(json!({"name":"empty"})).contains("MCP server, a skill, or both"));
+    assert!(
+        error(json!({"name":"old","mcp":{"url":"https://example.com/sse","transport":"sse"}}))
+            .contains("SSE")
+    );
+    assert!(error(json!({"name":"two","skills":[{"name":"a","content":SKILL},{"name":"a","content":SKILL}]})).contains("twice"));
+    assert!(
+        error(json!({"name":"nobody","skills":[{"name":"a","content":"no frontmatter"}]}))
+            .contains("frontmatter")
+    );
+    // A bundled skill, and a skill a bot wrote for itself, keep their names.
+    assert!(
+        error(json!({"name":"mine","skills":[{"name":"notion","content":SKILL}]}))
+            .contains("A skill named notion already exists")
+    );
+    let private = home.path().join("profiles/owl/skills/house-style");
+    fs::create_dir_all(&private).unwrap();
+    fs::write(private.join("SKILL.md"), SKILL).unwrap();
+    assert!(
+        error(json!({"name":"style","skills":[{"name":"house-style","content":SKILL}]}))
+            .contains("A skill named house-style already exists")
+    );
+    assert!(!home.path().join("plugins/mine").exists());
+    call(home.path(), "alice", "hexbot.plugins.install", github()).unwrap();
+    assert!(error(github()).contains("already installed"));
+    // Headers carry an HTTP server's token.
+    let plugin = call(
+        home.path(),
+        "alice",
+        "hexbot.plugins.install",
+        json!({"name":"linear","mcp":{"url":"https://mcp.linear.app/mcp","headers":{"Authorization":""}}}),
+    )
+    .unwrap()["plugin"]
+        .clone();
+    assert_eq!(plugin["state_text"], "Needs Authorization");
+    assert_eq!(plugin["server"]["url"], "https://mcp.linear.app/mcp");
+}
+
+#[test]
+fn a_failed_install_leaves_nothing_behind() {
+    let home = setup();
+    fs::write(
+        home.path().join("profiles/cat/config.yaml"),
+        "tools: [unclosed",
+    )
+    .unwrap();
+    assert!(call(home.path(), "alice", "hexbot.plugins.install", github()).is_err());
+    assert!(!home.path().join("plugins/github").exists());
+    let root = fs::read_to_string(home.path().join("config.yaml")).unwrap_or_default();
+    assert!(!root.contains("github"), "{root}");
+}
+
+#[test]
+fn new_bots_get_packages_for_every_bot_but_not_those_for_some() {
+    let home = setup();
+    let mut scoped = github();
+    scoped["bots"] = json!(["owl", "cat"]);
+    call(home.path(), "alice", "hexbot.plugins.install", scoped).unwrap();
+    call(
+        home.path(),
+        "alice",
+        "hexbot.plugins.install",
+        json!({"name":"writing","skills":[{"name":"house-style","content":SKILL}]}),
+    )
+    .unwrap();
+    crate::catalog::call(
+        home.path(),
+        "alice",
+        "hexbot.bots.create",
+        &json!({"name":"raven","display_name":"Raven"}),
+    )
+    .unwrap()
+    .unwrap();
+    let list = call(home.path(), "alice", "hexbot.plugins.list", json!({})).unwrap();
+    // Installed for the bots there were, even all of them, it stays theirs.
+    assert_eq!(
+        row(&list, "packages", "github")["bots"],
+        json!(["cat", "owl"])
+    );
+    assert!(servers(home.path(), "raven").is_empty());
+    assert_eq!(
+        row(&list, "packages", "writing")["bots"],
+        json!(["cat", "owl", "raven"])
+    );
+    // Given to every bot from Settings, later bots get it with its values.
+    call(
+        home.path(),
+        "alice",
+        "hexbot.plugins.configure",
+        json!({"kind":"package","id":"github","env":{"GITHUB_TOKEN":"ghp_0123456789"}}),
+    )
+    .unwrap();
+    call(
+        home.path(),
+        "alice",
+        "hexbot.plugins.set_bots",
+        json!({"kind":"package","id":"github","bots":["owl","cat","raven"]}),
+    )
+    .unwrap();
+    crate::catalog::call(
+        home.path(),
+        "alice",
+        "hexbot.bots.create",
+        &json!({"name":"wren","display_name":"Wren"}),
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(servers(home.path(), "wren"), ["github"]);
+    assert_eq!(
+        connectors::mcp_servers(home.path(), "wren").unwrap()["github"]["env"]["GITHUB_TOKEN"],
+        "ghp_0123456789"
+    );
+    assert_eq!(skill_on(home.path(), "wren", "github-issues"), Some(true));
+}

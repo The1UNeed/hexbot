@@ -2105,6 +2105,7 @@ fn create(home: &Path, caller: &str, p: &Value, primary: bool) -> Result<Value> 
         }
     };
     crate::settings::mirror(home, &profile(home, name)?)?;
+    crate::plugins::scope_new_bot(home, name)?;
     Ok(json!({"bot":bot(home,caller,name)?,"section":section(home,caller,&sid)?}))
 }
 /// Create and update store every accepted column the same way.

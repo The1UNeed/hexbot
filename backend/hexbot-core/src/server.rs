@@ -491,6 +491,17 @@ impl App {
                 } else if let Some(result) = connectors::call(&self.home, owner, method, p).await {
                     result
                 } else if let Some(result) = crate::plugins::call(&self.home, owner, method, p) {
+                    // A changed or removed server's open connections close;
+                    // the next call reconnects with its new settings.
+                    if result.is_ok()
+                        && matches!(method, "hexbot.plugins.configure" | "hexbot.plugins.remove")
+                        && let Ok(server) = crate::plugins::server_of(
+                            p["kind"].as_str().unwrap_or(""),
+                            p["id"].as_str().unwrap_or(""),
+                        )
+                    {
+                        connectors::drop_sessions(&self.home, &server).await;
+                    }
                     result
                 } else if let Some(result) = providers::call(&self.home, owner, method, p).await {
                     result
@@ -709,6 +720,22 @@ impl App {
         ) {
             self.events
                 .emit(owner, None, "hexbot.bots.changed", json!({}));
+            return;
+        }
+        // Installing, changing or removing a package touches servers and
+        // skills alike, so every open list refreshes.
+        if matches!(
+            method,
+            "hexbot.plugins.install" | "hexbot.plugins.configure" | "hexbot.plugins.remove"
+        ) || (method == "hexbot.plugins.set_bots" && p["kind"] == "package")
+        {
+            for event in [
+                "hexbot.connectors.changed",
+                "hexbot.skills.changed",
+                "hexbot.bots.changed",
+            ] {
+                self.events.emit(owner, None, event, json!({}));
+            }
             return;
         }
         // Plugin assignment reuses each kind's event, so every open list refreshes.

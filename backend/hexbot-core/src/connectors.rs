@@ -20,7 +20,7 @@ use tokio::{
     sync::Mutex,
 };
 const CATALOG: &str = include_str!("connectors.json");
-fn catalog() -> Vec<Value> {
+pub(crate) fn catalog() -> Vec<Value> {
     static DATA: std::sync::OnceLock<Vec<Value>> = std::sync::OnceLock::new();
     DATA.get_or_init(|| serde_json::from_str(CATALOG).expect("static connector catalog"))
         .clone()
@@ -39,7 +39,7 @@ fn strings(v: &Value) -> Vec<String> {
         .map(str::to_owned)
         .collect()
 }
-fn names(home: &Path) -> Result<Vec<String>> {
+pub(crate) fn names(home: &Path) -> Result<Vec<String>> {
     Ok(
         rows(&db::open(home)?, "SELECT name FROM bots ORDER BY name", &[])?
             .iter()
@@ -855,7 +855,7 @@ pub(crate) fn chosen_bots(
     }
     Ok(bots.into_iter().collect())
 }
-fn validate_mcp(p: &Value) -> Result<(String, Value)> {
+pub(crate) fn validate_mcp(p: &Value) -> Result<(String, Value)> {
     let name = required(p, "name")?.trim();
     if name.len() > 64
         || !name
@@ -896,6 +896,9 @@ fn validate_mcp(p: &Value) -> Result<(String, Value)> {
         }
         entry["url"] = json!(url);
         entry["transport"] = json!(transport);
+        if !p["headers"].is_null() {
+            entry["headers"] = string_map(&p["headers"], "MCP headers")?;
+        }
     } else {
         let command = p["command"]
             .as_str()
@@ -935,6 +938,21 @@ fn validate_mcp(p: &Value) -> Result<(String, Value)> {
     }
     validate_mcp_security(&entry)?;
     Ok((name.to_string(), entry))
+}
+/// A map of plain strings, such as an MCP server's headers.
+fn string_map(value: &Value, what: &str) -> Result<Value> {
+    let map = value
+        .as_object()
+        .ok_or_else(|| Error::new(4202, format!("{what} must be an object")))?;
+    if map.iter().any(|(k, v)| {
+        k.is_empty()
+            || k.contains([':', '\0', '\n', '\r'])
+            || !v.is_string()
+            || v.as_str().is_some_and(|s| s.contains(['\0', '\n', '\r']))
+    }) {
+        return Err(Error::new(4202, format!("invalid {what}")));
+    }
+    Ok(value.clone())
 }
 async fn dispatch(home: &Path, caller: &str, method: &str, p: &Value) -> Result<Value> {
     user(home, caller)?;
@@ -1080,6 +1098,14 @@ async fn dispatch(home: &Path, caller: &str, method: &str, p: &Value) -> Result<
         "hexbot.connectors.add_mcp" => {
             user(home, caller)?;
             let (name, mut entry) = validate_mcp(p)?;
+            if let Some(plugin) = read_config(home)?["mcp_servers"][&name]["plugin"].as_str() {
+                return Err(Error::new(
+                    4208,
+                    format!(
+                        "{name} comes with the plugin {plugin}. Change it in Settings, Plugins."
+                    ),
+                ));
+            }
             // Saving keeps the bots a server already had unless `bots` says
             // otherwise; a new server reaches no bot until it is given one.
             // Saving from a bot's settings (`bot`) also gives it to that bot.
@@ -1111,8 +1137,17 @@ async fn dispatch(home: &Path, caller: &str, method: &str, p: &Value) -> Result<
         "hexbot.connectors.remove_mcp" => {
             user(home, caller)?;
             let name = required(p, "name")?;
-            if read_config(home)?["mcp_servers"].get(name).is_none() {
+            let config = read_config(home)?;
+            if config["mcp_servers"].get(name).is_none() {
                 return Err(Error::new(4213, format!("unknown MCP server: {name}")));
+            }
+            if let Some(plugin) = config["mcp_servers"][name]["plugin"].as_str() {
+                return Err(Error::new(
+                    4202,
+                    format!(
+                        "This server comes with the plugin {plugin}. Remove the plugin instead."
+                    ),
+                ));
             }
             common::update_config(home, |config| {
                 if let Some(servers) = config["mcp_servers"].as_object_mut() {
@@ -1586,7 +1621,7 @@ fn sessions() -> &'static Mutex<SessionCache> {
     static SESSIONS: OnceLock<Mutex<SessionCache>> = OnceLock::new();
     SESSIONS.get_or_init(|| Mutex::new(HashMap::new()))
 }
-async fn drop_sessions(home: &Path, server: &str) {
+pub(crate) async fn drop_sessions(home: &Path, server: &str) {
     let prefix = format!("{}\0", home.display());
     let suffix = format!("\0{server}");
     sessions()
