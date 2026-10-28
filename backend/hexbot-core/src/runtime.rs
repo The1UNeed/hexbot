@@ -4933,6 +4933,9 @@ impl Runtime {
                     };
                     (ending, latest)
                 };
+                if latest {
+                    crate::diagnostics::get().run_settled(&s.id);
+                }
                 if !latest {
                     if let Some(end) = ending {
                         self.emit(s, "message.complete", with_fields(json!({"text":end.text,"error":end.error,"status":if end.error.is_some(){"error"}else{"complete"},"usage":store::usage(&self.home,&s.stored).unwrap_or_else(|_| json!({}))}), &end.fields));
@@ -5825,6 +5828,91 @@ rl.on('line',line=>{{const c=JSON.parse(line);emit({{type:'response',id:c.id,com
         let hub = EventHub::new();
         let runtime = Runtime::new(home.path().into(), hub.clone(), script).unwrap();
         (home, runtime, hub)
+    }
+    #[tokio::test]
+    async fn diagnostics_follow_the_runtime_through_late_recovered_and_rejected_prompts() {
+        let (_home, runtime, _hub) = setup();
+        let feed = |section: &str, events: &[Value]| {
+            let s = runtime
+                .sessions
+                .lock()
+                .unwrap()
+                .get(section)
+                .unwrap()
+                .clone();
+            for event in events {
+                runtime.event(&s, event.clone()).unwrap();
+            }
+        };
+        let started = |intent: &str| json!({"type":"hexbot_input_preflight","intent":intent,"disposition":"started"});
+        let reply = |stop: &str| json!({"type":"message_end","message":{"role":"assistant","stopReason":stop,"errorMessage":"Overloaded"}});
+        let end = json!({"type":"agent_end","willRetry":false});
+        let start = json!({"type":"agent_start"});
+        let settled = json!({"type":"agent_settled"});
+        for section in ["diag-late", "diag-compacted", "diag-rejected"] {
+            runtime.open_session("alice", "owl", section).await.unwrap();
+        }
+
+        // The next prompt starts before the first one settles.
+        feed(
+            "diag-late",
+            &[
+                started("a"),
+                start.clone(),
+                reply("stop"),
+                end.clone(),
+                started("b"),
+                start.clone(),
+                settled.clone(),
+            ],
+        );
+        let (runs, open) = crate::diagnostics::get().section_runs("diag-late");
+        assert_eq!(runs.len(), 1);
+        assert!(open, "the late settlement must not end the newer run");
+        feed("diag-late", &[reply("error"), end.clone(), settled.clone()]);
+        let (runs, open) = crate::diagnostics::get().section_runs("diag-late");
+        assert_eq!((runs.len(), open), (2, false));
+        assert_eq!(runs[1]["error"], "Overloaded");
+
+        // Compaction recovery continues the same run and settles once.
+        feed(
+            "diag-compacted",
+            &[
+                started("c"),
+                start.clone(),
+                reply("error"),
+                end.clone(),
+                json!({"type":"compaction_end","willRetry":true}),
+                start.clone(),
+                reply("stop"),
+                end.clone(),
+                settled.clone(),
+            ],
+        );
+        let (runs, open) = crate::diagnostics::get().section_runs("diag-compacted");
+        assert_eq!((runs.len(), open), (1, false));
+        assert!(runs[0]["error"].is_null());
+        assert_eq!(runs[0]["model_calls"], 2);
+
+        // A prompt that passed preflight but was refused settles on its own.
+        feed(
+            "diag-rejected",
+            &[
+                started("d"),
+                start.clone(),
+                started("refused"),
+                settled.clone(),
+            ],
+        );
+        let (runs, open) = crate::diagnostics::get().section_runs("diag-rejected");
+        assert_eq!((runs.len(), open), (0, true));
+        feed(
+            "diag-rejected",
+            &[reply("stop"), end.clone(), settled.clone()],
+        );
+        let (runs, open) = crate::diagnostics::get().section_runs("diag-rejected");
+        assert_eq!((runs.len(), open), (1, false));
+        assert_eq!(runs[0]["model_calls"], 1);
     }
     #[tokio::test]
     async fn transcript_identity_fragment_seed_survives_sqlite_retry_without_billing_twice() {

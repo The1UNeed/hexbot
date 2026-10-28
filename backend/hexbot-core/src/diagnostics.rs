@@ -116,10 +116,6 @@ struct OpenRun {
     cost: f64,
     model: String,
     error: Option<String>,
-    /// Pi ended the operation without a retry; its settlement may still come.
-    ended: bool,
-    /// Settlements of earlier operations that have not arrived yet.
-    owed: usize,
 }
 
 struct Failure {
@@ -205,6 +201,8 @@ pub struct Diagnostics {
     launch: Mutex<Launch>,
     spans: Mutex<VecDeque<Span>>,
     runs: Mutex<HashMap<String, OpenRun>>,
+    /// Sessions whose next `agent_start` begins a prompt, not a continuation.
+    prompted: Mutex<HashSet<String>>,
     failures: Mutex<Failures>,
     resources: Mutex<Resources>,
     labels: Mutex<HashMap<u32, String>>,
@@ -220,6 +218,7 @@ impl Default for Diagnostics {
             launch: Mutex::default(),
             spans: Mutex::default(),
             runs: Mutex::default(),
+            prompted: Mutex::default(),
             failures: Mutex::default(),
             resources: Mutex::default(),
             labels: Mutex::default(),
@@ -305,17 +304,21 @@ impl Diagnostics {
         let now = now_ms();
         match event["type"].as_str().unwrap_or("") {
             "agent_start" => {
-                // Retries and compaction recovery start again inside the same
-                // run. A new prompt can start before the last one settles: that
-                // run ends here, and its late settlement is owed.
-                let mut owed = 0;
+                // As in `runtime_identity`: a prompt's start follows its started
+                // preflight. Retries and compaction recovery have none and stay
+                // in the same run. A new prompt can start before the last one
+                // settles; that run ends here, and the runtime ignores its late
+                // settlement.
+                let prompted = self
+                    .prompted
+                    .lock()
+                    .is_ok_and(|mut prompted| prompted.remove(session));
                 if let Some(run) = runs.get_mut(session) {
-                    if !run.ended {
+                    if !prompted {
                         run.boundary = now;
                         return;
                     }
                     if let Some(run) = runs.remove(session) {
-                        owed = run.owed + 1;
                         self.finish_run(run, now, true);
                     }
                 }
@@ -348,8 +351,6 @@ impl Diagnostics {
                         cost: 0.,
                         model: String::new(),
                         error: None,
-                        ended: false,
-                        owed,
                     },
                 );
             }
@@ -469,24 +470,53 @@ impl Diagnostics {
                     attrs: json!({"tool": tool.name}),
                 });
             }
-            "agent_end" if event["willRetry"] != true => {
-                if let Some(run) = runs.get_mut(session) {
-                    run.ended = true;
+            "hexbot_input_preflight" if event["disposition"] == "started" => {
+                if let Ok(mut prompted) = self.prompted.lock() {
+                    prompted.insert(session.to_owned());
                 }
             }
+            // Any settlement drops a started prompt that never ran, as
+            // `runtime_identity` does. The runtime ends the run itself.
             "agent_settled" => {
-                if let Some(run) = runs.get_mut(session)
-                    && run.owed > 0
-                {
-                    run.owed -= 1;
-                    return;
-                }
-                if let Some(run) = runs.remove(session) {
-                    self.finish_run(run, now, true);
+                if let Ok(mut prompted) = self.prompted.lock() {
+                    prompted.remove(session);
                 }
             }
             _ => {}
         }
+    }
+
+    /// The runtime settled the session's current run. It decides which
+    /// settlements belong to an older or rejected prompt and skips those.
+    pub fn run_settled(&self, session: &str) {
+        let run = self
+            .runs
+            .lock()
+            .ok()
+            .and_then(|mut runs| runs.remove(session));
+        if let Some(run) = run {
+            self.finish_run(run, now_ms(), true);
+        }
+    }
+
+    /// The finished runs of a section and whether one is still open.
+    #[cfg(test)]
+    pub(crate) fn section_runs(&self, section: &str) -> (Vec<Value>, bool) {
+        let finished = self
+            .spans
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|s| s.kind == "run" && s.attrs["section"] == section)
+            .map(|s| json!({"error": s.error, "model_calls": s.attrs["model_calls"]}))
+            .collect();
+        let open = self
+            .runs
+            .lock()
+            .unwrap()
+            .values()
+            .any(|r| r.section == section);
+        (finished, open)
     }
 
     /// Ends a run. `fails` records its error as a run failure too.
@@ -1643,11 +1673,11 @@ mod tests {
             json!({"type":"tool_execution_start","toolCallId":"t1","toolName":"bash"}),
             json!({"type":"tool_execution_end","toolCallId":"t1","toolName":"bash","isError":true,"result":{"content":[{"type":"text","text":"exit 1"}]}}),
             json!({"type":"message_end","message":{"role":"assistant","model":"m1","stopReason":"error","errorMessage":"Rate limited","usage":{"input":40}}}),
-            json!({"type":"agent_settled"}),
         ];
         for event in &events {
             d.pi_event("live-1", "owl", "sec-1", event);
         }
+        d.run_settled("live-1");
         let spans = Vec::from(d.spans.lock().unwrap().clone());
         let kinds = spans.iter().map(|s| s.kind).collect::<Vec<_>>();
         assert_eq!(kinds, ["model", "tool", "model", "run"]);
@@ -1680,10 +1710,10 @@ mod tests {
             json!({"type":"auto_retry_start"}),
             json!({"type":"agent_start"}),
             json!({"type":"message_end","message":{"role":"assistant","stopReason":"stop"}}),
-            json!({"type":"agent_settled"}),
         ] {
             d.pi_event("s", "owl", "x", &event);
         }
+        d.run_settled("s");
         let spans = Vec::from(d.spans.lock().unwrap().clone());
         let runs = spans.iter().filter(|s| s.kind == "run").collect::<Vec<_>>();
         assert_eq!(runs.len(), 1);
@@ -1703,7 +1733,7 @@ mod tests {
             "x",
             &json!({"type":"message_end","message":{"role":"assistant","stopReason":"aborted"}}),
         );
-        d.pi_event("s", "owl", "x", &json!({"type":"agent_settled"}));
+        d.run_settled("s");
         let spans = Vec::from(d.spans.lock().unwrap().clone());
         assert_eq!(spans.last().unwrap().attrs["interrupted"], true);
         assert!(spans.last().unwrap().error.is_none());
@@ -1826,31 +1856,6 @@ mod tests {
     }
 
     #[test]
-    fn a_late_settlement_cannot_end_the_next_run() {
-        let d = Diagnostics::default();
-        for event in [
-            json!({"type":"agent_start"}),
-            json!({"type":"message_end","message":{"role":"assistant","stopReason":"stop"}}),
-            json!({"type":"agent_end","willRetry":false}),
-            // The next prompt starts before the first one settles.
-            json!({"type":"agent_start"}),
-            json!({"type":"agent_settled"}),
-            json!({"type":"message_end","message":{"role":"assistant","stopReason":"error","errorMessage":"Overloaded"}}),
-            json!({"type":"agent_end","willRetry":false}),
-            json!({"type":"agent_settled"}),
-        ] {
-            d.pi_event("s", "owl", "x", &event);
-        }
-        let spans = Vec::from(d.spans.lock().unwrap().clone());
-        let runs = spans.iter().filter(|s| s.kind == "run").collect::<Vec<_>>();
-        assert_eq!(runs.len(), 2);
-        assert!(runs[0].error.is_none());
-        assert_eq!(runs[1].error.as_deref(), Some("Overloaded"));
-        assert_eq!(runs[1].attrs["model_calls"], 1);
-        assert_eq!(d.failures_json()["total"], 1);
-    }
-
-    #[test]
     fn first_token_waits_for_content_and_open_tools_close_with_the_run() {
         let d = Diagnostics::default();
         for event in [
@@ -1865,11 +1870,11 @@ mod tests {
             json!({"type":"message_update","assistantMessageEvent":{"type":"text_delta","delta":"hi"}}),
             json!({"type":"message_end","message":{"role":"assistant","stopReason":"toolUse"}}),
             json!({"type":"tool_execution_start","toolCallId":"t1","toolName":"bash"}),
-            // Stopped during the tool: Pi settles without its end event.
-            json!({"type":"agent_settled"}),
         ] {
             d.pi_event("s", "owl", "x", &event);
         }
+        // Stopped during the tool: Pi settles without its end event.
+        d.run_settled("s");
         let spans = Vec::from(d.spans.lock().unwrap().clone());
         assert!(spans[0].attrs["first_token_ms"].is_number());
         let tool = spans.iter().find(|s| s.kind == "tool").unwrap();
