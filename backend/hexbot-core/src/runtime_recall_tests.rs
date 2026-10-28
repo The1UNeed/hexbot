@@ -2,7 +2,8 @@ use super::*;
 
 /// A Pi that keeps a real conversation file and moves its leaf for
 /// `/hexbot-recall` as the private extension does. `wait` keeps a turn
-/// running until Stop; `refuse-recall` in the home makes the command fail.
+/// running until Stop, thinking once after its message so a test knows the
+/// daemon stored it; `refuse-recall` in the home makes the command fail.
 fn install_recall_pi(home: &Path) {
     let script = home.join("pi.cjs");
     fs::write(
@@ -27,7 +28,7 @@ if(c.type==='prompt'&&c.message.startsWith('/hexbot-recall ')){
   emit({type:'response',id:c.id,command:'prompt',success:true,data:{disposition:'handled'}});return;}
 emit({type:'response',id:c.id,command:c.type,success:true,data:c.type==='prompt'?{disposition:'started'}:{}});
 if(c.type==='prompt'){emit({type:'agent_start'});const message={role:'user',content:c.message,timestamp:Date.now()};append({type:'message',message});emit({type:'message_start',message});emit({type:'message_end',message});
-  if(c.message==='wait')waiting=true;else reply('Re: '+c.message,'stop');}
+  if(c.message==='wait'){waiting=true;emit({type:'message_update',assistantMessageEvent:{type:'thinking_delta',delta:'Waiting'}});}else reply('Re: '+c.message,'stop');}
 if(c.type==='abort'){if(waiting){waiting=false;reply('','aborted');}else emit({type:'agent_settled'});}
 });
 "#,
@@ -56,9 +57,13 @@ async fn send(
         .await
         .unwrap()
         .unwrap();
-    if text != "wait" {
-        stop_tests::stop_event(events, |e| e["type"] == "message.complete").await;
-    }
+    // Pi reports in order, so the next event means the message is stored.
+    let next = if text == "wait" {
+        "reasoning.delta"
+    } else {
+        "message.complete"
+    };
+    stop_tests::stop_event(events, |e| e["type"] == next).await;
 }
 
 async fn shown(runtime: &Runtime, id: &str) -> Vec<String> {
