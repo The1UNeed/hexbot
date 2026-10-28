@@ -990,6 +990,12 @@ test('connected servers register once in memory and never for legacy or restrict
   }
 });
 
+test('a heartbeat with connected servers reads files but cannot write them or run commands', async t => {
+  const f = fixture(t, 'smart', ['file', 'terminal'], {mcpServers:['demo'], heartbeat:'h1'});
+  await f.handlers.session_start({}, f.ctx);
+  assert.deepEqual(f.activeTools, [['read', 'grep', 'find', 'ls', 'codemode']]);
+});
+
 test('escaped server values survive Pi resolution without commands or substitutions', async () => {
   const {resolveConfigValue} = await import('./node_modules/@earendil-works/pi-coding-agent/dist/core/resolve-config-value.js');
   for (const value of ['!exit 99', '$HOME', '${HOME}', '$!literal', '$$HOME', '!echo $HOME', '', 'plain']) {

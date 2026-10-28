@@ -335,7 +335,9 @@ export default function hexbot(pi: any) {
   // The bash schema gains Codex's escalation fields in every mode, so a mode
   // change never changes the cached tool list.
   const factories: any = {bash: createBashTool, read: createReadTool, write: createWriteTool, edit: createEditTool, grep: createGrepTool, find: createFindTool, ls: createLsTool};
+  // A heartbeat reads files but never writes them or runs commands.
   const enabled = (name: string) => Array.isArray(config.restricted) ? config.restricted.includes(name) :
+    !(config.heartbeat && ['write', 'edit', 'bash'].includes(name)) &&
     config.enabledToolsets?.includes(name === 'bash' ? 'terminal' : 'file');
   for (const [name, factory] of Object.entries(factories) as [string, any][]) {
     if (!enabled(name)) continue;
