@@ -1431,9 +1431,17 @@ export function Management({
       const server = p.server
       const values_ = server ? (server.transport === 'http' ? server.headers : server.env) : []
       const valueKind = server?.transport === 'http' ? 'headers' : 'env'
-      // `run` reloads this card after each change.
+      // `run` reloads this card after each change. Only bots that still exist
+      // are sent: one deleted elsewhere while the card was open would make the
+      // daemon refuse the whole change.
       const choose = (next: string[]) =>
-        void run(() => rpc('hexbot.plugins.set_bots', { kind: p.kind, id: p.id, bots: next }))
+        void run(() =>
+          rpc('hexbot.plugins.set_bots', {
+            kind: p.kind,
+            id: p.id,
+            bots: next.filter(name => bots.some(b => b.name === name))
+          })
+        )
       content = (
         <>
           <Text tone="muted">{p.description}</Text>
