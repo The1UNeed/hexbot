@@ -35,17 +35,30 @@ To hear when a bot starts, finishes, or needs you, turn on **Sounds** in Setting
 
 ## The primary bot
 
-HexBot is your primary bot. Setup creates it, and it looks after the rest: in its chat it can list, create, change, and delete your bots, create rooms and change who is in them, schedule jobs for any bot, and change settings, skills, and connectors. It always asks before it deletes a bot, room, or job, removes a room's last bot (which deletes the room), changes a bot's or room's approval mode or a bot's or job's working folder, changes a setting, turns a skill or connector on or off, or cancels a [check-in](#check-ins) wake-up, even in Bypass. It never sees API keys or connector credentials, and it can't change network or service settings.
+HexBot is your primary bot. Setup creates it, and it looks after the rest: in its chat it can list, create, change, and delete your bots, create rooms and change who is in them, schedule jobs for any bot, and change settings, skills, and connectors. It always asks before it deletes a bot, room, or job, removes a room's last bot (which deletes the room), changes a bot's or room's approval mode or a bot's or job's working folder, changes a setting, or turns a skill or connector on or off, even in Bypass. It never sees API keys or connector credentials, and it can't change network or service settings.
 
 There is one primary bot, pinned at the top of the roster, and it can't be deleted. You can rename it and change its soul, model, and tools like any other bot. If you used Hexbot before the primary bot existed, the bot list asks you to add HexBot or to make one of your bots primary; on the phone app, choose Make primary in a bot's profile. A bot made primary gets the extra tools in its chat from your next message. Its tools don't work in rooms or scheduled jobs.
 
-## Check-ins
+## Heartbeat
 
-Your primary bot also checks in on its own. Every hour between 08:00 and 22:00 it looks at what is going on: its memory and notes, and what its connectors show, like your calendar, email, or Notion. When it learns about something with a time to it, like a deadline tonight, it sets a wake-up to look again at the right moment. Most check-ins end quietly. When something needs you, it sends one short message with what you need to act on it.
+Every bot has a heartbeat. Every 30 minutes, day and night, it works through its own checklist, `HEARTBEAT.md`, on its own. It looks each item up in its memory and notes, its files, what its connectors show (your email, calendar, or Notion), and the web. It doesn't read your chat. Most heartbeats end quietly. When something needs you, it writes one short message in its chat with what you need to act on it.
 
-Messages land in its **Check-ins** conversation, apart from your chat with it, and show as a notification in the app, in a browser tab you allowed (browsers notify only over HTTPS, such as through Hex Connect), and on your phone. Reply there and it knows what it told you, and its next check-ins see your reply. It sends at most one message per check-in and eight a day. Its Notify me switch silences the notifications; the messages still arrive there. Delete Check-ins under Check-ins in the primary bot's settings, or in its profile on the phone app, to remove what it said there; the next check-in message starts it again.
+Write the checklist under Heartbeat in the bot's settings, or in its profile on the phone app, one check per line:
 
-Turn check-ins off, change how often they run, or change your hours in the primary bot's settings, under Check-ins. The same page shows the wake-ups waiting, lets you cancel one, and lists recent check-ins and what came of them. A check-in runs unattended, like a scheduled job, with your keys. It only looks: it can read files and its connectors, including Notion and Airtable, but it can't run commands, browse, use the computer, change anything through a connector, or ask you anything, and it suggests memory changes for its next dream instead of writing them. If a check-in fails, its wake-ups wait for the next one.
+```md
+- Has Sam replied to my email about the lease?
+- Is flight BA 286 on Friday delayed?
+- Has the Sony WH-1000XM6 dropped below $300?
+- Did anything on my calendar change today?
+```
+
+You can also ask the bot in its chat to keep an eye on something; it adds the line itself, and takes it off once it's settled. A new bot's checklist holds only an example, and while there is nothing on it, the heartbeat doesn't run and costs nothing.
+
+The message shows in the bot's chat and as a notification in the app, in a browser tab you allowed (browsers notify only over HTTPS, such as through Hex Connect), and on your phone. Reply in the chat and the bot knows what it told you. Each bot sends at most one message per heartbeat and eight a day. Its Notify me switch silences the notifications; the messages still arrive in the chat.
+
+The same page shows when the next heartbeat runs, runs one now, and lists recent heartbeats with what each looked at. Turn heartbeats off for every bot there or in Settings. A heartbeat runs unattended, like a scheduled job, with your keys. It only looks: it can read files, search and read the web, and read its connectors, including Notion and Airtable, but it can't run commands, use the browser or the computer, change anything through a connector, or ask you anything, and it suggests memory changes for its next dream instead of writing them.
+
+The heartbeat replaced your primary bot's check-ins. If it sent you any, its Check-ins conversation stays until you delete it under Heartbeat in its settings or in its profile on the phone app.
 
 ## Keep the chat going
 
@@ -71,7 +84,7 @@ A [dream](/docs/dreaming/) posts nothing in the chat; its summary is in the bot'
 
 Use **Stop** to interrupt a running answer. The chat stays available, and you can send another message once the bot is idle. Queued background results run before your next message. A result accepted just after Stop finishes can start the next answer itself. A background result arriving while the answer stops waits until it has stopped, then continues the chat. The new answer can ask questions and request approvals. A question or approval the bot was waiting on goes away in every app.
 
-When an answer fails, the bot shows Stopped. In the web and desktop apps, Retry is available when the daemon can identify the input that failed. Older daemons offer no Retry for failed sends or answers. A failed send keeps its draft for you to check and send manually. Retry, or any new message you send in that chat, shows it as Working as soon as the answer starts, in every app. Work the bot starts on its own, such as a background result, leaves Stopped while it runs; any answer that finishes cleanly clears it. A room's failure stays until a room turn finishes. A bot shows Working only while it answers in its chat or a room; check-ins, scheduled jobs, dreams and subagents run without it.
+When an answer fails, the bot shows Stopped. In the web and desktop apps, Retry is available when the daemon can identify the input that failed. Older daemons offer no Retry for failed sends or answers. A failed send keeps its draft for you to check and send manually. Retry, or any new message you send in that chat, shows it as Working as soon as the answer starts, in every app. Work the bot starts on its own, such as a background result, leaves Stopped while it runs; any answer that finishes cleanly clears it. A room's failure stays until a room turn finishes. A bot shows Working only while it answers in its chat or a room; heartbeats, scheduled jobs, dreams and subagents run without it.
 
 A failed send or upload keeps the bot's current answer and Stop available, including with an older daemon. If the app cannot confirm whether your message was sent, it keeps your draft and offers no Retry. Check the chat before sending again.
 
@@ -81,7 +94,7 @@ Close a Stopped card with its **×** once you have read it. If the bot shows Sto
 
 While the bot is working on your latest message, or after its answer stopped, you can take that message back. In the web and desktop apps, hover over it and choose **Recall**. On the phone, long-press it. A running answer stops first. The message and what the bot said after it leave the chat in every app, and the bot forgets them. The text goes back in the message box to edit; attached files do not, so attach them again. Anything the bot already did, such as changing a file, stays done.
 
-Only your latest message can be recalled, and only in a bot's chat, not in a room, a conversation between bots, or Check-ins. Recalling keeps the conversation before that message as it was, so the bot's next answer still uses the provider's prompt cache.
+Only your latest message can be recalled, and only in a bot's chat, not in a room, a conversation between bots, or an earlier Check-ins. Recalling keeps the conversation before that message as it was, so the bot's next answer still uses the provider's prompt cache.
 
 A chat can't be deleted on its own, even from an older app; deleting the bot removes its profile, chat, memory, and scheduled jobs. Stop its active work first, then wait for Stop cleanup and any queued results to finish; deletion is refused until they do. Back up the daemon's data directory before removing a bot you may need again. Private conversations between bots can still be deleted. While a bot is being deleted it can't start new work; if deletion fails, it can work again.
 

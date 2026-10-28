@@ -79,35 +79,42 @@ async fn invalid_commands_fail_before_creating_state() {
     assert!(cli::dispatch(&h, &args(&["bots", "list"])).await.is_none());
 }
 #[tokio::test]
-async fn checkins_reach_the_cli_and_settings_work_offline() {
+async fn the_heartbeat_reaches_the_cli_and_its_switch_works_offline() {
     let h = home();
     let h = h.path();
-    // Through dispatch, as `hexbot checkins ...` arrives from the binary.
+    // Through dispatch, as `hexbot heartbeat ...` arrives from the binary.
+    cli::dispatch(h, &args(&["heartbeat", "off"]))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        hexbot_core::settings::get(h).unwrap()["heartbeat_enabled"],
+        false
+    );
+    cli::dispatch(h, &args(&["heartbeat", "on"]))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        hexbot_core::settings::get(h).unwrap()["heartbeat_enabled"],
+        true
+    );
+    // A bot's checklist, status and runs need the daemon.
     for a in [
-        vec!["checkins", "off"],
-        vec!["checkins", "every", "30"],
-        vec!["checkins", "hours", "22:00-07:00"],
+        vec!["heartbeat", "status", "owl"],
+        vec!["heartbeat", "now", "owl"],
+        vec!["heartbeat", "set", "owl", "- Has Sam replied?"],
     ] {
-        cli::dispatch(h, &args(&a)).await.unwrap().unwrap();
+        assert_eq!(
+            cli::dispatch(h, &args(&a)).await.unwrap().unwrap_err().code,
+            4208
+        );
     }
-    let settings = hexbot_core::settings::get(h).unwrap();
-    assert_eq!(settings["checkin_enabled"], false);
-    assert_eq!(settings["checkin_every_minutes"], 30);
-    assert_eq!(settings["checkin_hours"], "22:00-07:00");
     assert!(
-        cli::dispatch(h, &args(&["checkins", "every", "5"]))
+        cli::dispatch(h, &args(&["heartbeat", "every", "5"]))
             .await
             .unwrap()
             .is_err()
-    );
-    // Status and runs need the daemon.
-    assert_eq!(
-        cli::dispatch(h, &args(&["checkins"]))
-            .await
-            .unwrap()
-            .unwrap_err()
-            .code,
-        4208
     );
 }
 #[tokio::test]

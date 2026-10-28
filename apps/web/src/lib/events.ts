@@ -19,7 +19,7 @@
  *   session.usage          usage badge
  *   error                  inline error row
  *   hexbot.bots.incident   Stopped card in the section's transcript, notification
- *   hexbot.checkins.message the primary bot messaged you on its own: notification
+ *   hexbot.heartbeat.message a bot's heartbeat posted in its chat: notification
  *
  * Session-less `hexbot.*.changed` events refresh the cold stores.
  */
@@ -27,9 +27,9 @@
 import type { GatewayEvent } from '@hermes/shared'
 
 import { useBots } from '../stores/bots'
-import { useCheckins } from '../stores/checkins'
 import { useComputer } from '../stores/computer'
 import { useConnectors } from '../stores/connectors'
+import { useHeartbeat } from '../stores/heartbeat'
 import { useMe } from '../stores/me'
 import { useRooms } from '../stores/rooms'
 import { keepHistory, useSections } from '../stores/sections'
@@ -39,7 +39,7 @@ import type {
   ToolCompletePayload,
   ToolStartPayload
 } from '../stores/transcripts'
-import { holdCheckinMessage, transcriptNotify, useTranscripts } from '../stores/transcripts'
+import { holdHeartbeatMessage, transcriptNotify, useTranscripts } from '../stores/transcripts'
 import { useUi } from '../stores/ui'
 
 import { getBridge } from './bridge'
@@ -166,20 +166,26 @@ export function routeEvent(event: GatewayEvent, deps: EventRouterDeps = {}): voi
 
       return
 
-    case 'hexbot.checkins.changed':
-      // Changed elsewhere, through another app or `hexbot checkins`.
-      void useSettings.getState().refresh()
-
-      if (useCheckins.getState().loaded) {
-        void useCheckins.getState().refresh()
+    case 'hexbot.heartbeat.changed':
+      // A run started or ended, or the switch or a checklist changed elsewhere:
+      // another app, the bot itself, or `hexbot heartbeat`.
+      if (typeof payload.bot !== 'string') {
+        void useSettings.getState().refresh()
       }
 
+      void useHeartbeat
+        .getState()
+        .refreshLoaded(typeof payload.bot === 'string' ? payload.bot : undefined)
+
       return
-    case 'hexbot.checkins.message': {
+
+    // A daemon from before the heartbeat sends check-in messages the same way.
+    case 'hexbot.checkins.message':
+    case 'hexbot.heartbeat.message': {
       const bot = typeof payload.bot === 'string' ? payload.bot : ''
       const whole = typeof payload.text === 'string' ? payload.text : ''
       const sectionId = typeof payload.section_id === 'string' ? payload.section_id : undefined
-      // An open Check-ins section shows it at once; history has the same row id.
+      // An open chat shows it at once; history has the same row id.
       const live = sectionId ? useSections.getState().liveSessionId[sectionId] : undefined
 
       if (sectionId && whole && typeof payload.row_id === 'string') {
@@ -191,15 +197,15 @@ export function routeEvent(event: GatewayEvent, deps: EventRouterDeps = {}): voi
 
         // Opening as it arrives: it joins once the history is in (stores/sections.ts).
         if (live && transcripts.bySession[live]) {
-          transcripts.checkinMessage(live, row)
+          transcripts.heartbeatMessage(live, row)
         } else {
-          holdCheckinMessage(sectionId, row)
+          holdHeartbeatMessage(sectionId, row)
         }
       }
 
       if (whole && botNotifies(bot)) {
         const title = useBots.getState().byName[bot]?.display_name ?? bot
-        // A notification shows a few lines; the whole message is in the section.
+        // A notification shows a few lines; the whole message is in the chat.
         const body = whole.length > NOTIFY_BODY ? `${whole.slice(0, NOTIFY_BODY - 1)}…` : whole
         // The app notifies even with its window closed. A browser tab has no app
         // to go through, so it shows its own while in the background.

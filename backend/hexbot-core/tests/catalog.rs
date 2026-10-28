@@ -1178,7 +1178,7 @@ fn deleting_a_bot_takes_what_check_ins_said_in_its_sections() {
     let section = sections["sections"][0]["id"].as_str().unwrap();
     let conn = db::open(h).unwrap();
     conn.execute(
-        "INSERT INTO checkin_messages(id,owner_id,bot,section_id,text,created_at,push_due_at) VALUES ('m','alice','research-owl',?,'Due tonight.',1,1)",
+        "INSERT INTO heartbeat_messages(id,owner_id,bot,section_id,text,created_at,push_due_at) VALUES ('m','alice','research-owl',?,'Due tonight.',1,1)",
         [section],
     )
     .unwrap();
@@ -1189,7 +1189,7 @@ fn deleting_a_bot_takes_what_check_ins_said_in_its_sections() {
         json!({"name":"research-owl"}),
     );
     let (text, due): (String, Option<f64>) = conn
-        .query_row("SELECT text,push_due_at FROM checkin_messages", [], |r| {
+        .query_row("SELECT text,push_due_at FROM heartbeat_messages", [], |r| {
             Ok((r.get(0)?, r.get(1)?))
         })
         .unwrap();

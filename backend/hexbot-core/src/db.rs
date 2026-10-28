@@ -78,26 +78,22 @@ CREATE TABLE IF NOT EXISTS memory_proposals(
  id TEXT PRIMARY KEY, bot TEXT NOT NULL, owner_id TEXT NOT NULL, job_id TEXT NOT NULL,
  action TEXT NOT NULL, args_json TEXT NOT NULL DEFAULT '{}', created_at REAL NOT NULL,
  consumed_at REAL, consumed_by TEXT);
--- Check-ins: the primary bot's own looks at what is going on (checkins.rs).
-CREATE TABLE IF NOT EXISTS checkins(
+-- Heartbeats: each bot's run through its HEARTBEAT.md (heartbeat.rs).
+CREATE TABLE IF NOT EXISTS heartbeats(
  id TEXT PRIMARY KEY, owner_id TEXT NOT NULL, bot TEXT NOT NULL,
- kind TEXT NOT NULL CHECK(kind IN ('heartbeat','wakeup','manual')),
+ kind TEXT NOT NULL CHECK(kind IN ('scheduled','manual')),
  started_at REAL NOT NULL, finished_at REAL, status TEXT NOT NULL,
  summary TEXT NOT NULL DEFAULT '', message_id TEXT);
-CREATE TABLE IF NOT EXISTS checkin_wakeups(
- id TEXT PRIMARY KEY, owner_id TEXT NOT NULL, bot TEXT NOT NULL, at REAL NOT NULL,
- note TEXT NOT NULL, created_at REAL NOT NULL, fired_at REAL, cancelled_at REAL,
- checkin_id TEXT);
--- What a check-in told the user. offered_at: first handed to the section's next
--- turn; context_at: Pi took it into the section's context (or the second offer);
--- push_due_at (in COLUMNS): when its phone push is next tried; NULL once Connect
--- took it, it had no one to go to, or it grew too old to send.
-CREATE TABLE IF NOT EXISTS checkin_messages(
+-- What a heartbeat posted in its bot's chat. offered_at: first handed to the
+-- chat's next turn; context_at: Pi took it into the chat's context (or the
+-- second offer); push_due_at: when its phone push is next tried; NULL once
+-- Connect took it, it had no one to go to, or it grew too old to send.
+CREATE TABLE IF NOT EXISTS heartbeat_messages(
  id TEXT PRIMARY KEY, owner_id TEXT NOT NULL, bot TEXT NOT NULL, section_id TEXT NOT NULL,
- checkin_id TEXT, text TEXT NOT NULL, created_at REAL NOT NULL, offered_at REAL, context_at REAL);
-CREATE INDEX IF NOT EXISTS idx_checkins_owner_started ON checkins(owner_id,started_at DESC);
-CREATE INDEX IF NOT EXISTS idx_checkin_wakeups_due ON checkin_wakeups(owner_id,fired_at,cancelled_at,at);
-CREATE INDEX IF NOT EXISTS idx_checkin_messages_section ON checkin_messages(section_id,context_at);
+ heartbeat_id TEXT, text TEXT NOT NULL, created_at REAL NOT NULL, offered_at REAL, context_at REAL,
+ push_due_at REAL);
+CREATE INDEX IF NOT EXISTS idx_heartbeats_bot_started ON heartbeats(bot,started_at DESC);
+CREATE INDEX IF NOT EXISTS idx_heartbeat_messages_section ON heartbeat_messages(section_id,context_at);
 CREATE INDEX IF NOT EXISTS idx_sections_bot ON sections(bot);
 CREATE INDEX IF NOT EXISTS idx_memory_proposals_bot_pending ON memory_proposals(bot,consumed_at,created_at);
 CREATE INDEX IF NOT EXISTS idx_room_events_room_seq ON room_events(room_id,seq);
@@ -137,7 +133,6 @@ const COLUMNS: &[(&str, &str, &str)] = &[
     ("sections", "purpose", "TEXT"),
     ("devices", "push_token", "TEXT"),
     ("devices", "push_platform", "TEXT"),
-    ("checkin_messages", "push_due_at", "REAL"),
 ];
 
 /// Open the explicitly selected database without running schema migrations.
@@ -208,6 +203,12 @@ pub fn migrate(home: &Path) -> Result<()> {
     fold_core_memory(&transaction, home)?;
     transaction
         .execute_batch("DROP TABLE IF EXISTS core_memory; DROP TABLE IF EXISTS memory_entries;")?;
+    // The heartbeat replaced check-ins and wake-ups. A Check-ins conversation
+    // stays, with what check-ins said in its history.
+    transaction.execute_batch(
+        "DROP TABLE IF EXISTS checkins; DROP TABLE IF EXISTS checkin_wakeups; DROP TABLE IF EXISTS checkin_messages;
+         DELETE FROM settings WHERE key IN ('checkin_enabled','checkin_every_minutes','checkin_hours');",
+    )?;
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_err(|error| Error::new(5200, error.to_string()))?

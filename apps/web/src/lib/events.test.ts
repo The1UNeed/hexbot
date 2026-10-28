@@ -5,7 +5,7 @@ import { useMe } from '../stores/me'
 import { useSections } from '../stores/sections'
 import {
   emptyTranscript,
-  releaseCheckinMessages,
+  releaseHeartbeatMessages,
   resetTranscriptEffects,
   setTranscriptEffects,
   useTranscripts
@@ -154,79 +154,79 @@ describe('event routing', () => {
     expect(rows.filter(item => item.error)).toHaveLength(1)
     expect(rows.at(-1)!.error).toBe('Still expired')
   })
-  it('notifies when the primary bot messages you from a check-in', () => {
+  it('notifies when a heartbeat posts in its bot chat', () => {
     const notify = vi.fn()
     setTranscriptEffects({ notify })
     useBots.setState({
-      byName: { hexbot: { display_name: 'HexBot', name: 'hexbot', primary: true } as Bot }
+      byName: { owl: { display_name: 'Owl', name: 'owl' } as Bot }
     })
     routeEvent({
       payload: {
-        bot: 'hexbot',
+        bot: 'owl',
         id: 'm1',
-        section_id: 'checkins-1',
-        text: 'Your PE feedback is due tonight at 11:59 PM.'
+        section_id: 'chat-1',
+        text: 'BA 286 on Friday now leaves at 18:40, two hours late.'
       },
-      type: 'hexbot.checkins.message'
+      type: 'hexbot.heartbeat.message'
     } as unknown as GatewayEvent)
     expect(notify).toHaveBeenCalledWith({
-      body: 'Your PE feedback is due tonight at 11:59 PM.',
-      sectionId: 'checkins-1',
-      title: 'HexBot'
+      body: 'BA 286 on Friday now leaves at 18:40, two hours late.',
+      sectionId: 'chat-1',
+      title: 'Owl'
     })
-    // An open Check-ins section shows it at once, and only once.
+    // An open chat shows it at once, and only once.
     useSections.setState({
-      byId: { 'checkins-1': { bot: 'hexbot', id: 'checkins-1' } as Section },
-      liveSessionId: { 'checkins-1': 'live-c' }
+      byId: { 'chat-1': { bot: 'owl', id: 'chat-1' } as Section },
+      liveSessionId: { 'chat-1': 'live-c' }
     })
-    useTranscripts.setState({ bySession: { 'live-c': emptyTranscript('live-c', 'checkins-1') } })
+    useTranscripts.setState({ bySession: { 'live-c': emptyTranscript('live-c', 'chat-1') } })
 
     const event = {
       payload: {
-        bot: 'hexbot',
-        row_id: 'checkin-m2',
-        section_id: 'checkins-1',
-        text: 'Your essay draft is due at 9 AM.',
+        bot: 'owl',
+        row_id: 'heartbeat-m2',
+        section_id: 'chat-1',
+        text: 'Sam replied about the lease.',
         timestamp: 1_792_000_000
       },
-      type: 'hexbot.checkins.message'
+      type: 'hexbot.heartbeat.message'
     } as unknown as GatewayEvent
 
     routeEvent(event)
     routeEvent(event)
     const shown = useTranscripts.getState().bySession['live-c']!.messages
     expect(shown.map(m => [m.id, m.role, m.text])).toEqual([
-      ['checkin-m2', 'assistant', 'Your essay draft is due at 9 AM.']
+      ['heartbeat-m2', 'assistant', 'Sam replied about the lease.']
     ])
-    // Notify me off: the message still lands in the section, quietly.
+    // Notify me off: the message still lands in the chat, quietly.
     notify.mockClear()
     useBots.setState({
-      byName: { hexbot: { display_name: 'HexBot', name: 'hexbot', notify: false } as Bot }
+      byName: { owl: { display_name: 'Owl', name: 'owl', notify: false } as Bot }
     })
     routeEvent({
-      payload: { bot: 'hexbot', section_id: 'checkins-1', text: 'Later.' },
-      type: 'hexbot.checkins.message'
+      payload: { bot: 'owl', section_id: 'chat-1', text: 'Later.' },
+      type: 'hexbot.heartbeat.message'
     } as unknown as GatewayEvent)
     expect(notify).not.toHaveBeenCalled()
   })
-  it('holds a check-in message until its section has loaded', () => {
+  it('holds a heartbeat message until its chat has loaded', () => {
     useSections.setState({ byId: {}, liveSessionId: {} })
     routeEvent({
       payload: {
-        bot: 'hexbot',
-        row_id: 'checkin-m9',
+        bot: 'owl',
+        row_id: 'heartbeat-m9',
         section_id: 'loading-1',
         text: 'Soon.',
         timestamp: 1
       },
-      type: 'hexbot.checkins.message'
+      type: 'hexbot.heartbeat.message'
     } as unknown as GatewayEvent)
-    expect(releaseCheckinMessages('loading-1')).toEqual([
-      { createdAt: 1000, id: 'checkin-m9', text: 'Soon.' }
+    expect(releaseHeartbeatMessages('loading-1')).toEqual([
+      { createdAt: 1000, id: 'heartbeat-m9', text: 'Soon.' }
     ])
-    expect(releaseCheckinMessages('loading-1')).toEqual([])
+    expect(releaseHeartbeatMessages('loading-1')).toEqual([])
   })
-  it('opens the Check-ins section from a browser notification', () => {
+  it('opens the chat from a browser notification', () => {
     const shown: { onclick: null | (() => void) }[] = []
 
     class FakeNotification {
@@ -241,16 +241,24 @@ describe('event routing', () => {
     const hidden = vi.spyOn(document, 'hidden', 'get').mockReturnValue(true)
     const opened = vi.fn()
     window.addEventListener(OPEN_SECTION_EVENT, opened)
-    useBots.setState({ byName: { hexbot: { display_name: 'HexBot', name: 'hexbot' } as Bot } })
+    useBots.setState({ byName: { owl: { display_name: 'Owl', name: 'owl' } as Bot } })
     routeEvent({
-      payload: { bot: 'hexbot', section_id: 'checkins-1', text: 'Due tonight.' },
-      type: 'hexbot.checkins.message'
+      payload: { bot: 'owl', section_id: 'chat-1', text: 'Due tonight.' },
+      type: 'hexbot.heartbeat.message'
     } as unknown as GatewayEvent)
     shown[0]!.onclick!()
-    expect((opened.mock.calls[0]![0] as CustomEvent<string>).detail).toBe('checkins-1')
+    expect((opened.mock.calls[0]![0] as CustomEvent<string>).detail).toBe('chat-1')
     window.removeEventListener(OPEN_SECTION_EVENT, opened)
     hidden.mockRestore()
     vi.unstubAllGlobals()
+  })
+  it('still shows check-in messages from a daemon from before the heartbeat', () => {
+    useSections.setState({ byId: {}, liveSessionId: {} })
+    routeEvent({
+      payload: { bot: 'hexbot', row_id: 'checkin-m1', section_id: 'checkins-1', text: 'Due.' },
+      type: 'hexbot.checkins.message'
+    } as unknown as GatewayEvent)
+    expect(releaseHeartbeatMessages('checkins-1').map(row => row.id)).toEqual(['checkin-m1'])
   })
   it('stays quiet for a bot whose Notify me switch is off', () => {
     const notify = vi.fn()

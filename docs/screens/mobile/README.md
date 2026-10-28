@@ -1,7 +1,7 @@
 # Hexbot mobile screenshots
 
-The app is laid out like a messaging app: one list of chats, rooms and
-Check-ins, Settings behind your initials, + for a new bot or room, and Bots &
+The app is laid out like a messaging app: one list of chats and rooms,
+Settings behind your initials, + for a new bot or room, and Bots &
 jobs behind the grid button next to Search.
 
 Browser captures from the mobile smoke test on 2026-10-26, at iPhone size,

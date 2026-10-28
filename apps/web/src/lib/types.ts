@@ -467,8 +467,8 @@ export interface Section {
    */
   peer_bot?: null | string
   /**
-   * Set on a section with its own job, such as the primary bot's Check-ins
-   * (`checkins`). It is never the bot's chat. Older daemons leave it out.
+   * Set on a section with its own job, such as a Check-ins from before the
+   * heartbeat (`checkins`). It is never the bot's chat. Older daemons leave it out.
    */
   purpose?: null | string
   preview: string
@@ -504,45 +504,37 @@ export interface Settings {
   workspace_dir: string
   dream_enabled: boolean
   dream_time: string
-  /** Absent on daemons from before check-ins. */
-  checkin_enabled?: boolean
-  checkin_every_minutes?: number
-  /** `HH:MM-HH:MM` in the daemon's time zone; may run past midnight. */
-  checkin_hours?: string
+  /** Every bot's heartbeat. Absent on daemons from before the heartbeat. */
+  heartbeat_enabled?: boolean
 }
 
-export interface CheckinWakeup {
-  id: string
-  /** RFC 3339. */
-  at: string
-  /** The daemon's local time, already formatted. */
-  local: string
-  note: string
-}
-
-export interface CheckinRun {
+export interface HeartbeatRun {
   id: string
   bot: string
-  kind: 'heartbeat' | 'manual' | 'wakeup'
+  kind: 'manual' | 'scheduled'
   started_at: string
   finished_at: null | string
   status: 'complete' | 'failed' | 'running'
+  /** The run's own log, or why it failed. */
   summary: string
+  /** It posted in the bot's chat. */
   messaged: boolean
 }
 
-export interface CheckinStatus {
+/** A bot's heartbeat: its checklist, HEARTBEAT.md, and what came of it. */
+export interface HeartbeatStatus {
   enabled: boolean
   every_minutes: number
-  hours: string
-  /** The primary bot, which is the one that checks in. */
-  bot: null | string
-  /** Its Check-ins section, once it has messaged you. */
-  section_id: null | string
+  bot: string
+  text: string
+  cap: number
+  /** Nothing to check yet, so nothing runs. */
+  empty: boolean
   running: boolean
   next_run_at: null | string
-  wakeups: CheckinWakeup[]
-  recent: CheckinRun[]
+  recent: HeartbeatRun[]
+  /** The Check-ins conversation from before the heartbeat, while it is kept. */
+  earlier_checkins: null | string
 }
 
 /** The one person a daemon belongs to. */

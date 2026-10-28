@@ -1372,7 +1372,7 @@ function BotConversation() {
         }
 
         // A teammate thread or a section with its own purpose, such as the
-        // primary bot's Check-ins, opens as itself; anything else is the chat.
+        // Check-ins from before the heartbeat, opens as itself; anything else is the chat.
         const chat =
           row?.peer_bot || row?.purpose ? row : await sectionsActions().chat(botName, current)
 

@@ -39,7 +39,7 @@ data model. The native transport and event projection live in
   input_id}}` tells clients to drop that message and what followed it, kept
   rows included, and read the chat again; a turn failure on this chat is
   resolved. Anything else answers 4202 and changes nothing: an older message,
-  a hidden one, a room, a thread between bots or Check-ins. A Recall naming an older
+  a hidden one, a room, a thread between bots or an earlier Check-ins. A Recall naming an older
   message than the one a running turn works on leaves that turn running; one
   still queued behind it answers 4002 until its own turn starts. A prompt or
   steer starting `/hexbot-recall` is refused with 4202.
@@ -269,7 +269,7 @@ when it overrides the default.
 `status` is `idle`, `working`, `needs_you`, or `stopped` (priority in that
 reverse order), folded by the daemon from live session state, room turns,
 room `waiting.human` events, and open incidents. Only a bot's chat and its
-room sessions make it `working`; check-ins, scheduled jobs, dreams, CLI runs
+room sessions make it `working`; heartbeats, scheduled jobs, dreams, CLI runs
 and subagents never do, though one waiting on the user still makes it
 `needs_you`. `status_detail` is
 `{text, section_id, room_id, session_id, since, action}` where `action` is
@@ -368,7 +368,8 @@ others (`DESIGN.md`, "The primary bot"). There is at most one per owner.
 
 A bot has one chat with its owner: the one section of that bot with no
 `peer_bot` and no `purpose`. The other sections are threads (`peer_bot`
-set) and, for the primary bot, its Check-ins (`purpose` `checkins`). Rooms keep their
+set) and, for a primary bot from before the heartbeat, its Check-ins
+(`purpose` `checkins`). Rooms keep their
 conversations in `room_sessions`, not here. On its first start after the
 upgrade the daemon keeps one chat per bot (`catalog::one_chat_per_bot`, once,
 recorded as the `one_chat_per_bot` setting): for a bot with several, the one
@@ -466,8 +467,8 @@ live_session_id | null, peer_bot | null, purpose | null}`
 
 `peer_bot` is set on a thread: the private conversation in which `peer_bot`
 asked `bot` for help through `message_bot`. `purpose` is set on a section
-with its own job, so far only `checkins`, the primary bot's Check-ins; it
-is never the bot's chat. Daemons from before one chat per bot leave it out;
+with its own job, so far only `checkins`, the primary bot's Check-ins from
+before the heartbeat, which no longer adds to it; it is never the bot's chat. Daemons from before one chat per bot leave it out;
 there, `hexbot.checkins.status` names the Check-ins section.
 
 `title_by` is `"bot"` when the daemon named the section from the first
@@ -572,8 +573,7 @@ context of its own; the meter belongs to bot sections.
   older clients.
 - `hexbot.sections.delete {id, purge_memory?: true}` → `{deleted: true, history_pending?: true}`
   Deletes only a peer thread (`peer_bot` set) or a section with its own
-  `purpose`, such as the primary bot's Check-ins, which also forgets what
-  check-ins said there. Any other owned section is a bot chat, including
+  `purpose`, such as an earlier Check-ins. Any other owned section is a bot chat, including
   archived sections and legacy sections kept for repair. Deleting it returns
   error `4202`,
   `A bot chat cannot be deleted; delete the bot to remove it`.
@@ -673,25 +673,33 @@ context of its own; the meter belongs to bot sections.
   `memory_before` is the memory it replaced, so it can be undone in turn.
   Broadcasts `hexbot.dreaming.changed`.
 
-### Check-ins
+### Heartbeat
 
-The primary bot's own looks at what is going on (`DESIGN.md`, "Check-ins").
-Settings `checkin_enabled`, `checkin_every_minutes` (15 to 1440) and
-`checkin_hours` (`HH:MM-HH:MM`) go through `hexbot.settings.set`.
+Every bot's 30-minute run through its checklist, `HEARTBEAT.md` in its
+profile (`DESIGN.md`, "Heartbeat"). The setting `heartbeat_enabled` turns it
+on or off for every bot through `hexbot.settings.set`.
 
-- `hexbot.checkins.status {}` → `{enabled, every_minutes, hours, bot,
-  section_id, running, next_run_at, wakeups: [{id, at, local, note}], recent:
-  [{id, bot, kind, started_at, finished_at, status, summary, messaged}]}`.
-  `bot` is the primary bot or null; `kind` is `heartbeat`, `wakeup`, or
-  `manual`; `section_id` is its Check-ins section once it has one.
-- `hexbot.checkins.run_now {}` → `{id, kind, status}`. Error 4246 without a
-  primary bot, 4243 while one runs.
-- `hexbot.checkins.cancel_wakeup {id}` → `{cancelled: true}`; 4244 if it ran
-  or is unknown.
-- Changes broadcast `hexbot.checkins.changed {bot?}`. A message from a
-  check-in broadcasts `hexbot.sections.changed {id, bot}` and then
-  `hexbot.checkins.message {bot, section_id, id, row_id, timestamp, text}`
-  with the whole text; `row_id` is the message's id in the section history.
+- `hexbot.heartbeat.status {bot}` → `{enabled, every_minutes, bot, text, cap,
+  empty, running, next_run_at, recent: [{id, bot, kind, started_at,
+  finished_at, status, summary, messaged}], earlier_checkins}`. `text` is the
+  checklist (the placeholder until someone writes in it), `empty` is true
+  while it holds nothing to check once comments, headings and empty list
+  items are left out, and then `next_run_at` is null. `kind` is `scheduled`
+  or `manual`; `summary` is the run's own log. `earlier_checkins` is the id
+  of the bot's Check-ins conversation from before the heartbeat, or null.
+- `hexbot.heartbeat.set {bot, text}` → the status. Replaces the checklist,
+  at most 4000 characters (4202 over).
+- `hexbot.heartbeat.run_now {bot}` → `{id, kind, status}`, even while the
+  heartbeat is off. Error 4246 while the checklist is empty, 4243 while one
+  runs.
+- Changes broadcast `hexbot.heartbeat.changed {bot?}`: a run started or
+  ended, a checklist changed, or (without `bot`) the setting. A message from
+  a heartbeat broadcasts `hexbot.sections.changed {id, bot}` and then
+  `hexbot.heartbeat.message {bot, section_id, id, row_id, timestamp, text}`
+  with the whole text; `section_id` is the bot's chat and `row_id` the
+  message's id in its history, where the row carries `heartbeat: true`.
+  Daemons from before the heartbeat sent `hexbot.checkins.message` in the
+  same shape.
 
 ### Computer
 
@@ -1183,7 +1191,7 @@ and [provider setup guide](https://hexbot.app/docs/providers/).
 - `hexbot.devices.revoke {id}` → `{revoked: true}`
 - `hexbot.devices.set_push {token, platform}` → `{ok: true}` stores the
   calling device's Expo push token (`ExponentPushToken[...]`) and platform
-  (`ios` or `android`) for check-in pushes; `{token: null}` stops them. Only
+  (`ios` or `android`) for heartbeat message pushes; `{token: null}` stops them. Only
   the calling connection's own paired device changes.
 
 ### Local daemon identity
@@ -1463,9 +1471,10 @@ on the pairing code or grant's single-use protection instead. CORS exposes
 - `hexbot status [--json]`, `hexbot service install|uninstall|start|stop|restart|status|logs`,
   and `hexbot setup [--activate]`: the Headless commands, described in
   `backend/hexbot-core/README.md`.
-- `hexbot checkins [now | on | off | every MINUTES | hours HH:MM-HH:MM |
-  cancel ID]`: shows check-ins and wake-ups, runs one, or changes their
-  settings. Status, now, and cancel need the daemon running.
+- `hexbot heartbeat on | off | status BOT | now BOT | set BOT TEXT`: turns
+  every bot's heartbeat on or off, shows a bot's checklist and recent runs,
+  runs one, or replaces its checklist. Status, now, and set need the daemon
+  running.
 - `hexbot computer [on | off | restart | reset | give-back | size
   small|medium|large]`: shows the bots' computer or changes it, through the
   running daemon.

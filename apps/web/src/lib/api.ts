@@ -13,7 +13,6 @@ import type {
   Bot,
   BotCreateInput,
   BotUpdatePatch,
-  CheckinStatus,
   ClarifyQuestion,
   ClarifyRequest,
   ClarifyRequestPayload,
@@ -26,6 +25,7 @@ import type {
   DaemonInfo,
   DaemonUpdateStatus,
   Device,
+  HeartbeatStatus,
   Message,
   ModelOption,
   NetworkInfo,
@@ -397,14 +397,16 @@ export const computerView = (control: boolean, quality: ComputerQuality = 'auto'
 export const computerConfigure = (size: ComputerSize) =>
   rpcCall<ComputerStatus>('hexbot.computer.configure', { size })
 
-export const checkinsStatus = () => rpcCall<CheckinStatus>('hexbot.checkins.status')
-export const checkinsRunNow = () => rpcCall<{ id: string }>('hexbot.checkins.run_now')
-/** Delete a section that is not a bot's chat, such as Check-ins (4202 for a chat). */
+export const heartbeatStatus = (bot: string) =>
+  rpcCall<HeartbeatStatus>('hexbot.heartbeat.status', { bot })
+/** Replaces the bot's HEARTBEAT.md. */
+export const heartbeatSet = (bot: string, text: string) =>
+  rpcCall<HeartbeatStatus>('hexbot.heartbeat.set', { bot, text })
+export const heartbeatRunNow = (bot: string) =>
+  rpcCall<{ id: string }>('hexbot.heartbeat.run_now', { bot })
+/** Delete a section that is not a bot's chat, such as an earlier Check-ins (4202 for a chat). */
 export const sectionsDelete = (id: string) =>
   rpcCall<{ deleted: boolean }>('hexbot.sections.delete', { id })
-
-export const checkinsCancelWakeup = (id: string) =>
-  rpcCall<{ cancelled: boolean }>('hexbot.checkins.cancel_wakeup', { id })
 
 export interface ConnectStatus {
   registered: boolean
@@ -476,7 +478,7 @@ async function withPurpose(sections: Section[] = []): Promise<Section[]> {
     return sections
   }
 
-  const checkins = await checkinsStatus()
+  const checkins = await rpcCall<{ section_id?: null | string }>('hexbot.checkins.status')
     .then(status => status.section_id)
     .catch(() => null)
 

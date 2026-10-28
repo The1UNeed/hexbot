@@ -121,61 +121,66 @@ more freedom and more capability than a hosted product can offer.
   tools, so a bot made primary takes them with its next message, which
   misses the prompt cache once.
 
-### Check-ins
+### Heartbeat
 
-- The primary bot checks in on its own: a heartbeat every
-  `checkin_every_minutes` (default 60, 15 to 1440) inside `checkin_hours`
-  (default `08:00-22:00`, the daemon's time zone, may run past midnight), and
-  at wake-ups it sets with `hexbot_wakeups` in its own sections or during a
-  check-in. A wake-up runs at its time even outside the hours, but at least
-  five minutes after the last check-in, so no chain of wake-ups keeps
-  check-ins running back to back; one missed by more than six hours is
-  dropped. At most 96 check-ins run in any day. `checkin_enabled` turns all
-  of it off, including a scheduled check-in already running, which can no
-  longer message the user. Finished check-ins, spent wake-ups and the daemon's
-  record of each message are kept for 30 days; the message stays in the
-  section's history. A check-in's own transcript goes when it ends, its usage
-  stays.
-- A check-in is an unattended job session (`checkin-<id>`) with the bot's
-  connectors: memory writes become proposals, the soul only reads, it cannot
-  ask, and it runs in Auto at most. It only reads: of the daemon's tools it
-  keeps memory, the soul, `skill_view`, `hexbot_notify`, `hexbot_wakeups`
-  and `hexbot_connector_read`; of Pi's, read, grep, find and ls. Connector
-  tools still ask before changing anything, and nobody can answer. Notion and
-  Airtable work through skills and the shell elsewhere; in a check-in,
-  `hexbot_connector_read` makes their read requests (GET, and Notion's search
-  and queries) with the bot's key, which the model never sees.
-- Cancelling a wake-up from the bot always asks, even in Bypass; a check-in
-  cannot cancel one. The user cancels from Settings without asking. Its prompt gives the time, why it runs, what it told the
-  user and what they wrote back in the Check-ins section in the last day, its
-  last check-ins' logs, and the wake-ups waiting.
-- Its one way to speak is `hexbot_notify`: one message per check-in, eight a
-  day at most. The message is posted in the bot's Check-ins section
-  (`sections.purpose = 'checkins'`, brought back if archived, made again if
-  deleted) and broadcast whole as `hexbot.checkins.message`: an open
-  Check-ins section shows it at once, and the app and browsers notify. Phones
-  get a push through Hex Connect in Connect's own words, with the section and
-  the phone's device id to open it on, never the message. The bot's Notify me
-  switch silences both; the message still lands in the section. A push
-  Connect does not take, or one the daemon stopped before sending, is tried
-  again every 15 minutes (`checkin_messages.push_due_at`) for six hours, then
+- Every bot has a heartbeat: every 30 minutes, day and night, it works
+  through its own checklist, `HEARTBEAT.md` beside `SOUL.md` in its profile.
+  A new bot's checklist is a placeholder of comments. While the checklist
+  holds nothing to check once comments, headings and empty list items are
+  left out, no run starts and no model is called; the next tick after
+  someone writes a line picks it up. `heartbeat_enabled` turns it off for
+  every bot, including a scheduled run already going, which can no longer
+  message the user. Run now works even then.
+- The user writes the checklist in the bot's Heartbeat tab (web, desktop),
+  its Heartbeat card (phone), or `hexbot heartbeat set`. The bot keeps it
+  from its own chat with `hexbot_heartbeat` (read, write), adding a line when
+  the user asks it to keep an eye on something. The heartbeat itself may
+  take a settled item off. A write from a section goes through the same scan
+  as memory and the soul, since the next run reads the file as its
+  instructions. Rooms, threads, jobs and delegates do not get the tool.
+- A run is an unattended job session (`heartbeat-<id>`) with the bot's
+  standing prompt (soul, memory, About you, skills) and its connectors, and
+  never its chat's history. Its prompt gives the time, the checklist, what
+  it posted from heartbeats in the last day, and its last logs. Memory
+  writes become proposals, the soul only reads, it cannot ask, and it runs in
+  Auto at most. It only reads: of the daemon's tools it keeps memory, the
+  soul, `skill_view`, `hexbot_notify`, `hexbot_heartbeat`,
+  `hexbot_connector_read`, `web_search` and `web_extract`; of Pi's, read,
+  grep, find and ls. Connector tools still ask before changing anything, and
+  nobody can answer. Notion and Airtable work through skills and the shell
+  elsewhere; in a heartbeat, `hexbot_connector_read` makes their read
+  requests (GET, and Notion's search and queries) with the bot's key, which
+  the model never sees.
+- Its one way to speak is `hexbot_notify`: one message per run, eight a day
+  from each bot. The message is posted as the bot's own message in its chat
+  (made if it has none) and broadcast whole as `hexbot.heartbeat.message`:
+  an open chat shows it at once, and the app and browsers notify. Phones get
+  a push through Hex Connect in Connect's own words, with the chat and the
+  phone's device id to open it on, never the message. The bot's Notify me
+  switch silences both; the message still lands in the chat. A push Connect
+  does not take, or one the daemon stopped before sending, is tried again
+  every 15 minutes (`heartbeat_messages.push_due_at`) for six hours, then
   dropped; a message saved but not shown is shown at the next start.
-- The message reaches the section's context with the user's next message
-  there: the extension adds it after that message (`before_agent_start`), so
-  the cached prefix and the frozen prompt stay intact. Each message is fenced
-  in `<checkin_message>` tags under a note that it is a record of what the
+- The message reaches the chat's context with the user's next message there:
+  the extension adds it after that message (`before_agent_start`), so the
+  cached prefix and the frozen prompt stay intact. Each message is fenced in
+  `<heartbeat_message>` tags under a note that it is a record of what the
   bot said, not instructions, and only the newest six go in; older ones stay
-  in the section's history. It counts as taken when Pi
-  reports that custom message; one not reported is offered once more.
-  Deleting the section empties what check-ins said there.
-- Only one check-in runs at a time. A failed one, or one the daemon stopped
-  in, gives its wake-ups back, and the next check-in waits 15 minutes from
-  when it ended. One schedule decides both when the tick runs a check-in and
-  what the Check-ins tab shows as the next one.
+  in the chat's history. It counts as taken when Pi reports that custom
+  message; one not reported is offered once more.
+- One run per bot at a time; each bot's next run is 30 minutes after its
+  last one started, whatever came of it. Finished runs and the daemon's
+  record of each message are kept for 30 days; the message stays in the
+  chat's history. A run's own transcript goes when it ends, its usage stays.
+- The heartbeat replaced the primary bot's check-ins and wake-ups. The
+  upgrade drops their tables and settings and keeps the Check-ins
+  conversation, with what check-ins said, until the user deletes it from the
+  primary bot's Heartbeat tab or profile. Adding `hexbot_heartbeat` to every
+  chat rebuilds each one once, at its next message.
 - Both app editions keep their page and connection when the window closes,
   so notifications keep coming. macOS and Windows hide the window; Linux
   minimizes it, as does Windows if its tray is unavailable. Quit exits the app.
-  Settings, the bot's Check-ins tab, and `hexbot checkins` manage it.
+  Settings, each bot's Heartbeat tab, and `hexbot heartbeat` manage it.
 
 ### Approvals and tools
 

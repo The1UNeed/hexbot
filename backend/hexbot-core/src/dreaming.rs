@@ -36,8 +36,8 @@ const PROPOSAL_RETENTION: f64 = 30.0 * 86_400.0;
 /// The newest day always goes in, cut to its newest part when it is over
 /// the cap on its own, as a day of long characters can be.
 const NOTES_CAP: usize = 16_000;
-#[path = "checkins.rs"]
-pub(crate) mod checkins;
+#[path = "heartbeat.rs"]
+pub(crate) mod heartbeat;
 pub struct Dreaming {
     home: PathBuf,
     runtime: Arc<Runtime>,
@@ -1268,7 +1268,7 @@ impl Dreaming {
             [common::now()],
         )?;
         self.import_jobs()?;
-        checkins::recover(&self.home)?;
+        heartbeat::recover(&self.home)?;
         let this = self.clone();
         let mut stop = self.stop.subscribe();
         *ticker = Some(tokio::spawn(async move {
@@ -1619,8 +1619,8 @@ impl Dreaming {
                 }
             }
         }
-        // A check-in problem must not hold up scheduled jobs.
-        if let Err(error) = self.tick_checkins(now) {
+        // A heartbeat problem must not hold up scheduled jobs.
+        if let Err(error) = self.tick_heartbeats(now) {
             self.events
                 .emit("local", None, "error", json!({"message":error.message}));
         }
@@ -1662,14 +1662,14 @@ impl Dreaming {
                 | "hexbot.jobs.resume"
                 | "hexbot.jobs.remove"
                 | "hexbot.jobs.run"
-                | "hexbot.checkins.status"
-                | "hexbot.checkins.run_now"
-                | "hexbot.checkins.cancel_wakeup"
+                | "hexbot.heartbeat.status"
+                | "hexbot.heartbeat.set"
+                | "hexbot.heartbeat.run_now"
         ) {
             return None;
         }
-        if method.starts_with("hexbot.checkins.") {
-            return Some(self.call_checkins(owner, method, p).await);
+        if method.starts_with("hexbot.heartbeat.") {
+            return Some(self.call_heartbeat(owner, method, p).await);
         }
         Some(self.call_inner(owner, method, p).await)
     }

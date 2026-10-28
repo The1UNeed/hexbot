@@ -268,7 +268,7 @@ async fn recall_is_only_for_a_bot_chat_and_never_typed() {
         .execute("UPDATE sections SET peer_bot='hawk' WHERE id='first'", [])
         .unwrap();
     assert_eq!(recall(&runtime, &id, FIRST).await.unwrap_err().code, 4202);
-    // So does Check-ins.
+    // So does a Check-ins from before the heartbeat.
     db::open(home.path())
         .unwrap()
         .execute(

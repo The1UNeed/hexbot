@@ -1807,7 +1807,7 @@ async fn background_runs_do_not_mark_the_bot_working() {
         let runtime = runtime.clone();
         tokio::spawn(async move {
             runtime
-                .run_hidden_job("alice", "owl", "checkin-1", "waiting", &json!({}))
+                .run_hidden_job("alice", "owl", "heartbeat-1", "waiting", &json!({}))
                 .await
         })
     };
@@ -1816,7 +1816,7 @@ async fn background_runs_do_not_mark_the_bot_working() {
         runtime
             .busy_sections("owl")
             .iter()
-            .any(|s| s["id"] == "checkin-1")
+            .any(|s| s["id"] == "heartbeat-1")
     );
     assert!(runtime.status_for_bot("alice", "owl").is_none());
     let asking = {

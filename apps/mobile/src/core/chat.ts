@@ -69,8 +69,8 @@ export function historyMessages(raw: unknown[]): ChatMessage[] {
   }
   return messages
 }
-/** A message the primary bot sent from a check-in into the open thread, once by its history row id. */
-export function checkinMessage(state: ChatState, id: string, text: string): ChatState {
+/** A message the bot's heartbeat posted in the open chat, once by its history row id. */
+export function heartbeatMessage(state: ChatState, id: string, text: string): ChatState {
   if (state.messages.some(m => m.id === id)) return state
   return { ...state, messages: [...state.messages, { id, role: 'assistant', text }] }
 }
