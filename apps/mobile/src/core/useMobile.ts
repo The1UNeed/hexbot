@@ -67,6 +67,8 @@ export function useMobile() {
   const [computer, setComputer] = useState<ComputerStatus | null>(null)
   /** Counts connections, so what a daemon forgets on restart is asked for again. */
   const [connects, setConnects] = useState(0)
+  /** Counts heartbeat changes, so an open heartbeat card reads its status again. */
+  const [heartbeats, setHeartbeats] = useState(0)
   const [user, setUser] = useState<CurrentUser | null>(null)
   const [route, setRoute] = useState<ChatRoute | null>(null)
   const [chat, setChat] = useState(emptyChat)
@@ -328,6 +330,7 @@ export function useMobile() {
         setComputer(current => (current ? { ...current, ...(p as Partial<ComputerStatus>) } : current))
         return
       }
+      if (event.type === 'hexbot.heartbeat.changed') setHeartbeats(n => n + 1)
       if (event.type.endsWith('.changed')) {
         if (!refreshTimer.current)
           refreshTimer.current = setTimeout(() => {
@@ -829,6 +832,7 @@ export function useMobile() {
     liveSessionId: () => liveId.current,
     computer,
     connects,
+    heartbeats,
     /** Read the computer's status, or run a `hexbot.computer.*` method and keep what it returns. */
     computerCall: async (method = 'hexbot.computer.status', params: Record<string, unknown> = {}) => {
       const result = await rpc<ComputerStatus>(method, params)

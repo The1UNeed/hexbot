@@ -446,6 +446,21 @@ export function Management({
     }
     // A panel is a snapshot; changing it loads a fresh form.
   }, [requested])
+  // A heartbeat starts or ends, or the bot changes its checklist, while the card is open.
+  useEffect(() => {
+    if (kind !== 'heartbeat' || panelLoading) return
+    const current = epoch.current
+    const shown = str(extra.text)
+    void rpc<RowData>('hexbot.heartbeat.status', { bot: bot?.name })
+      .then(detail => {
+        if (current !== epoch.current) return
+        setRows((detail.recent as RowData[] | undefined) ?? [])
+        setExtra(detail)
+        // Unsaved edits stay.
+        setValues(v => (v.text === shown ? { ...v, text: str(detail.text) } : v))
+      })
+      .catch(() => {})
+  }, [mobile.heartbeats])
   const set = (key: string, value: string | boolean) => setValues(v => ({ ...v, [key]: value }))
   const field = (
     key: string,
