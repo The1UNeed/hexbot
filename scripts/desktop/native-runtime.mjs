@@ -98,15 +98,28 @@ export const NODE_SHA256 = Object.freeze({
   'linux-arm64': '5ced2d48d1d7198739b7f86804de0171aefb6823b684b12341d3321afc3cb0b2',
   'linux-x64': '1084aa36196bba4c3a5e69a1ee388a6e4ff729dad09445fbcd434b28fe3c24af'
 })
-export async function standaloneNode(directory, platform, arch, version = NODE_VERSION) {
+// nodejs.org and GitHub sometimes cut a release build's download short.
+// Each attempt starts over; a wrong checksum is never retried.
+export async function retryDownload(task, { attempts = 4, wait = ms => new Promise(done => setTimeout(done, ms)) } = {}) {
+  for (let attempt = 1; ; attempt++) {
+    try { return await task() } catch (error) {
+      if (attempt === attempts) throw error
+      console.warn(`Download failed (${error.cause?.message ?? error.message}); trying again (${attempt + 1}/${attempts})`)
+      await wait(attempt * 5_000)
+    }
+  }
+}
+export async function standaloneNode(directory, platform, arch, version = NODE_VERSION, retry = retryDownload) {
   const digest = NODE_SHA256[nativeTarget(platform, arch)]
   if (version !== NODE_VERSION || !digest) throw new Error('Standalone Node checksum is not pinned')
   const name = `node-v${version}-${platform}-${arch}`
   const filename = `${name}.tar.gz`
   const origin = `https://nodejs.org/dist/v${version}`
-  const response = await fetch(`${origin}/${filename}`)
-  if (!response.ok) throw new Error(`Cannot download standalone Node: ${response.status}`)
-  const archive = Buffer.from(await response.arrayBuffer())
+  const archive = await retry(async () => {
+    const response = await fetch(`${origin}/${filename}`, { signal: AbortSignal.timeout(300_000) })
+    if (!response.ok) throw new Error(`Cannot download standalone Node: ${response.status}`)
+    return Buffer.from(await response.arrayBuffer())
+  })
   if (createHash('sha256').update(archive).digest('hex') !== digest) throw new Error('Standalone Node checksum mismatch')
   const path = join(directory, filename)
   await writeFile(path, archive)
@@ -119,7 +132,7 @@ export async function stageNativeRuntime({
   platform = process.env.HEXBOT_BUILD_PLATFORM || process.platform,
   arch = process.env.HEXBOT_BUILD_ARCH || process.arch,
   nodeExecutable,
-  download = downloadTool,
+  download = (url, dest) => retryDownload(() => downloadTool(url, dest)),
   run = (command, args, options) => execute(command, args, { ...options, maxBuffer: 32 * 1024 * 1024 })
 } = {}) {
   const target = nativeTarget(platform, arch)

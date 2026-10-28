@@ -6,7 +6,7 @@ import { join } from 'node:path'
 import { test } from 'node:test'
 import { promisify } from 'node:util'
 import { toolAsset } from '../../apps/desktop/src/main/backend/tools.ts'
-import { createNativeArchive, launchers, nativeTarget, stageNativeRuntime, rustTarget, pruneRuntimeDependencies, directoryBytes, standaloneNode, NODE_VERSION, NODE_SHA256 } from './native-runtime.mjs'
+import { createNativeArchive, launchers, nativeTarget, stageNativeRuntime, rustTarget, pruneRuntimeDependencies, directoryBytes, standaloneNode, retryDownload, NODE_VERSION, NODE_SHA256 } from './native-runtime.mjs'
 const exec = promisify(execFile)
 test('target supports both desktop architectures and Linux arm64', () => {
   for (const os of ['darwin', 'linux']) for (const arch of ['x64', 'arm64']) assert.equal(nativeTarget(os, arch), `${os}-${arch}`)
@@ -116,6 +116,27 @@ test('standalone Node rejects unpinned versions and tampered archives without fe
   assert.ok(urls.every(url => url.endsWith('.tar.gz') && url.includes(`/v${NODE_VERSION}/`)))
   await assert.rejects(standaloneNode('/unused', 'darwin', 'arm64', '99.0.0'), /not pinned/)
   assert.equal(urls.length, 4)
+})
+
+test('standalone Node downloads again after a cut-short transfer', async t => {
+  let calls = 0
+  t.mock.method(globalThis, 'fetch', async () => {
+    if (++calls === 1) return new Response(new ReadableStream({ pull(controller) { controller.error(new TypeError('terminated')) } }))
+    return new Response('tampered archive')
+  })
+  const waits = []
+  const retry = task => retryDownload(task, { wait: async ms => { waits.push(ms) } })
+  await assert.rejects(standaloneNode('/unused', 'darwin', 'arm64', NODE_VERSION, retry), /checksum mismatch/)
+  assert.equal(calls, 2)
+  assert.deepEqual(waits, [5_000])
+})
+
+test('downloads give up after their last attempt', async () => {
+  let calls = 0
+  const waits = []
+  await assert.rejects(retryDownload(async () => { calls++; throw new TypeError('terminated') }, { wait: async ms => { waits.push(ms) } }), /terminated/)
+  assert.equal(calls, 4)
+  assert.deepEqual(waits, [5_000, 10_000, 15_000])
 })
 
 test('macOS update archives omit AppleDouble files and extended attributes', { skip: process.platform !== 'darwin' }, async () => {
