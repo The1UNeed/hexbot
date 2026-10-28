@@ -171,7 +171,7 @@ const WHIRL = [
  */
 export function LoadingFace({ face, name, size = 88, testID }: FaceSource & { size?: number; testID?: string }) {
   const { color } = resolveFace(face ?? faceForName(name))
-  const gradient = `whirl-${useId()}`
+  const gradient = `whirl-${useId().replace(/[^\w-]/g, '')}`
   const shown = useRef(new Animated.Value(0)).current
   const bands = useRef(WHIRL.map(() => new Animated.Value(0))).current
 

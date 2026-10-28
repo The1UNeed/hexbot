@@ -309,3 +309,29 @@ it('shows an empty chat once its history is read', async () => {
   expect(await screen.findByRole('button', { name: /What can you help me/i })).toBeInTheDocument()
   expect(screen.queryByRole('status', { name: "Opening Owl's chat" })).toBeNull()
 })
+it('a slower read of a chat left since does not put the next one back to loading', async () => {
+  const held = deferred()
+  call.mockImplementation((method: string, input: { id?: string }) =>
+    method === 'hexbot.sections.open'
+      ? input.id === 'old'
+        ? held.promise
+        : Promise.resolve({ section: section(input.id ?? '', `live-${input.id}`), messages: [] })
+      : reply(method, input)
+  )
+  useSections.setState(state => ({
+    byId: { ...state.byId, next: section('next') },
+    idsByBot: { owl: ['old', 'next'] }
+  }))
+  const view = render(<ConversationColumn />)
+  await waitFor(() =>
+    expect(call.mock.calls.some(([method, input]) => method === 'hexbot.sections.open' && input.id === 'old')).toBe(true)
+  )
+  params = { bot: 'owl', section: 'next' }
+  view.rerender(<ConversationColumn />)
+  expect(await screen.findByRole('button', { name: /What can you help me/i })).toBeInTheDocument()
+  await act(async () => {
+    held.resolve({ section: section('old', 'live-old'), messages: [] })
+  })
+  expect(screen.getByRole('button', { name: /What can you help me/i })).toBeInTheDocument()
+  expect(screen.queryByRole('status', { name: "Opening Owl's chat" })).toBeNull()
+})

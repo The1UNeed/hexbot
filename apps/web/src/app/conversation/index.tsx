@@ -1452,7 +1452,12 @@ function BotConversation() {
     const sectionId = params.section
     void sectionsActions()
       .open(sectionId)
-      .then(() => setReadEntry(entry))
+      .then(() => {
+        // A slower read of a chat left since must not mark the one shown now.
+        if (readFor.current === entry) {
+          setReadEntry(entry)
+        }
+      })
       .catch(error => {
         if (current()) {
           setOpenFailure({
