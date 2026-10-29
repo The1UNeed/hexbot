@@ -1,5 +1,5 @@
-import { Ellipsis, Monitor, SquareTerminal } from 'lucide-react'
-import { type CSSProperties, useEffect, useMemo, useState } from 'react'
+import { Ellipsis, Monitor } from 'lucide-react'
+import { type CSSProperties, useEffect, useState } from 'react'
 
 import { Avatar, useFaceColor } from '../../components/ui/avatar'
 import { Button } from '../../components/ui/button'
@@ -9,30 +9,13 @@ import { Menu, MenuCheckIcon } from '../../components/ui/menu'
 import { botFace } from '../../lib/avatar-builder'
 import { cn } from '../../lib/cn'
 import { targetOrigin } from '../../lib/connection'
-import { toMillis } from '../../lib/time'
-import type {
-  Bot,
-  ComputerCursor,
-  ComputerQuality,
-  ComputerStatus,
-  ToolCall
-} from '../../lib/types'
+import type { Bot, ComputerCursor, ComputerQuality, ComputerStatus } from '../../lib/types'
 import { useBots } from '../../stores/bots'
 import { useComputer } from '../../stores/computer'
 import { useConnection } from '../../stores/connection'
-import type { TranscriptMessage } from '../../stores/transcripts'
 import { useUi } from '../../stores/ui'
 import type { SaveBot } from '../bot-settings/shared'
-import { activityLabel, computerLabel } from '../conversation/steps'
-import { StepRow } from '../conversation/work-status'
-
-const clock = (call: ToolCall) =>
-  call.startedAt > 0
-    ? new Date(toMillis(call.startedAt)).toLocaleTimeString([], {
-        hour: 'numeric',
-        minute: '2-digit'
-      })
-    : undefined
+import { computerLabel } from '../conversation/steps'
 
 const BUSY: Partial<Record<ComputerStatus['state'], string>> = {
   resetting: 'Resetting',
@@ -556,60 +539,7 @@ function Screen({ bot, onSave }: { bot: Bot; onSave: SaveBot }) {
   )
 }
 
-/**
- * The bots' computer on top, then the bot's other tool calls in the section,
- * housekeeping included, newest first, each closed until clicked. Its work on
- * the computer shows on the screen instead, as its cursor.
- */
-export function ComputerTab({
-  bot,
-  messages,
-  onSave
-}: {
-  bot: Bot
-  messages: TranscriptMessage[]
-  onSave: SaveBot
-}) {
-  const calls = useMemo(
-    () =>
-      messages
-        .flatMap(message => message.toolCalls)
-        .filter(call => call.name !== 'computer_use')
-        .reverse(),
-    [messages]
-  )
-
-  const running = calls.find(call => call.status === 'running')
-  const name = bot.display_name
-
-  return (
-    <div className="grid grid-cols-1 gap-5">
-      <Screen bot={bot} onSave={onSave} />
-      {calls.length ? (
-        <div className="grid grid-cols-1 gap-3">
-          {running ? (
-            <div className="hex-fade flex items-center gap-2 px-1 text-[length:var(--text-secondary)]">
-              <span className="size-1.5 shrink-0 rounded-full bg-info" />
-              <span className="truncate">{activityLabel(running, name)}</span>
-            </div>
-          ) : null}
-          <ul
-            className="min-w-0 rounded-[16px] bg-background p-1.5 shadow-card"
-            data-testid="computer-steps"
-          >
-            {calls.map(call => (
-              <StepRow call={call} key={call.toolId} meta={clock(call)} />
-            ))}
-          </ul>
-        </div>
-      ) : (
-        <div className="grid justify-items-center gap-2 px-6 pt-2 text-center">
-          <SquareTerminal className="text-muted" size={16} />
-          <p className="max-w-60 text-[length:var(--text-secondary)] text-muted">
-            When {name} runs a command, reads a page or edits a file, each step shows up here.
-          </p>
-        </div>
-      )}
-    </div>
-  )
+/** The Computer tab: the bots' computer alone, with no list of steps. */
+export function ComputerTab({ bot, onSave }: { bot: Bot; onSave: SaveBot }) {
+  return <Screen bot={bot} onSave={onSave} />
 }

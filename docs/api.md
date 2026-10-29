@@ -892,7 +892,7 @@ retirement and daemon restart never reopen a section on a discarded refresh.
 Older sections and those whose fixed guidance or tool layout no longer matches
 after an update keep their prompt, except a chat, which is rebuilt with its
 bot's current tools at its next message. The chat shows no mark for soul,
-memory, or note writes; the side panel's Computer tab lists the calls.
+memory, or note writes.
 
 The `hexbot_show_html {title, html}` tool shows a visual: one self-contained
 HTML page (a chart, table, diagram or mockup) drawn in the conversation. It

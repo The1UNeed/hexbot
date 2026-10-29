@@ -180,8 +180,9 @@ the roster slides in as a drawer.
 - Thinking and steps: a conversation shows what bots say, never how they
   got there. Thinking, steps, and writes to memory, notes, or soul have no
   line, card, or mark in a chat, a room, or a thread between bots, on the
-  app, the browser, or the phone. The Computer tab in the side panel still
-  lists every call.
+  app, the browser, or the phone. The side panel names only the step a bot
+  is running, under its name; its Computer tab shows the bots' computer
+  alone.
 - Approvals: an inline card with the command or action in monospace, the
   reason, and Approve and Deny buttons. Manual and unreviewed cards can also
   offer Allow for now. Reviewed Auto steps never offer it. Requests
