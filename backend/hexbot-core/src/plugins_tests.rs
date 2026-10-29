@@ -880,6 +880,13 @@ fn installs_are_checked_before_anything_is_written() {
         error(json!({"name":"style","skills":[{"name":"house-style","content":SKILL}]}))
             .contains("A skill named house-style already exists")
     );
+    // So does a server a bot keeps in its own profile, even another person's
+    // bot: giving the package's server to bots would drop that copy.
+    let fox = home.path().join("profiles/fox/config.yaml");
+    fs::write(&fox, "mcp_servers:\n  github:\n    command: mine\n").unwrap();
+    assert!(error(github()).contains("An MCP server named github already exists"));
+    assert!(fs::read_to_string(&fox).unwrap().contains("command: mine"));
+    fs::remove_file(&fox).unwrap();
     assert!(!home.path().join("plugins/mine").exists());
     call(home.path(), "alice", "hexbot.plugins.install", github()).unwrap();
     assert!(error(github()).contains("already installed"));

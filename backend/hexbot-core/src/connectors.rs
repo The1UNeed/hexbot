@@ -54,7 +54,7 @@ fn profile(home: &Path, bot: &str) -> Result<PathBuf> {
     }
     Ok(home.join("profiles").join(bot))
 }
-fn targets(home: &Path) -> Result<Vec<PathBuf>> {
+pub(crate) fn targets(home: &Path) -> Result<Vec<PathBuf>> {
     let mut paths = vec![home.to_path_buf()];
     if home.join("profiles").exists() {
         for entry in fs::read_dir(home.join("profiles"))? {

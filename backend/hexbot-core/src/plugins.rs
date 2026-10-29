@@ -556,11 +556,20 @@ pub(crate) fn install(
                 format!("A plugin named {} is already installed.", package.name),
             ));
         }
-        if package.server.is_some()
-            && read_config(home)?["mcp_servers"]
-                .get(&package.name)
-                .is_some()
-        {
+        // A bot's own server counts too: giving the package's server to
+        // bots drops every profile copy of that name.
+        let server_taken = || -> Result<bool> {
+            for path in connectors::targets(home)? {
+                if read_config(&path)?["mcp_servers"]
+                    .get(&package.name)
+                    .is_some()
+                {
+                    return Ok(true);
+                }
+            }
+            Ok(false)
+        };
+        if package.server.is_some() && server_taken()? {
             return Err(Error::new(
                 4208,
                 format!("An MCP server named {} already exists.", package.name),
