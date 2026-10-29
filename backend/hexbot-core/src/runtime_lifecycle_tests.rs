@@ -117,6 +117,154 @@ async fn clearing_unsubmitted_attachments_preserves_the_session_and_checks_owner
     live.state.lock().unwrap().busy = false;
     runtime.shutdown().await;
 }
+#[tokio::test]
+async fn a_bot_asks_before_installing_a_plugin_for_itself() {
+    let (home, runtime, hub) = setup();
+    db::open(home.path())
+        .unwrap()
+        .execute_batch("INSERT INTO bots(name,display_name,owner_id) VALUES('fox','Fox','alice');UPDATE bots SET approval_mode='off' WHERE name='owl';")
+        .unwrap();
+    fs::create_dir_all(home.path().join("profiles/fox")).unwrap();
+    fs::write(
+        home.path().join("profiles/owl/config.yaml"),
+        "model:\n  provider: openai\n  default: fixture\ntools:\n  enabled_toolsets: [hexbot]\n",
+    )
+    .unwrap();
+    open(&runtime).await;
+    let s = runtime.sessions.lock().unwrap()["first"].clone();
+    assert!(s.tools.iter().any(|t| t["name"] == "hexbot_plugins"));
+    let install = json!({
+        "action": "install",
+        "name": "echo",
+        "description": "Echoes text back",
+        "mcp": {"command": "node", "args": ["echo.js"], "env": {"ECHO_TOKEN": ""}},
+        "skills": [{"name": "echo-usage", "content": "---\ndescription: Use the echo server.\n---\nCall mcp__echo__echo."}]
+    });
+    let ask = async |answer: &str| {
+        let mut events = hub.subscribe();
+        let task = {
+            let runtime = runtime.clone();
+            let s = s.clone();
+            let install = install.clone();
+            tokio::spawn(async move { runtime.tool(&s, "hexbot_plugins", &install).await })
+        };
+        // Bypass skips approvals, but never this one.
+        let card = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let event = events.recv().await.unwrap();
+                if event.frame["params"]["type"] == "approval.request" {
+                    break event.frame["params"]["payload"].clone();
+                }
+            }
+        })
+        .await
+        .unwrap();
+        runtime
+            .call(
+                "alice",
+                "approval.respond",
+                &json!({"session_id":s.id,"request_id":card["request_id"],"choice":answer}),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        (card, task.await.unwrap())
+    };
+    let (card, denied) = ask("deny").await;
+    assert_eq!(
+        card["command"],
+        "Install the plugin echo for owl: it runs the MCP server `node echo.js` on this computer and passes ECHO_TOKEN (empty, for you to fill in) and adds the skill echo-usage"
+    );
+    assert_eq!(denied.unwrap_err().code, 4302);
+    assert!(!home.path().join("plugins/echo").exists());
+    let (_, installed) = ask("once").await;
+    let installed = installed.unwrap();
+    assert_eq!(installed["on"], true);
+    let note = installed["note"].as_str().unwrap();
+    assert!(
+        note.contains("skill_view") && note.contains("Needs ECHO_TOKEN"),
+        "{note}"
+    );
+    // On for the bot that asked, and only for it.
+    assert!(
+        crate::connectors::mcp_servers(home.path(), "owl")
+            .unwrap()
+            .get("echo")
+            .is_some()
+    );
+    assert!(
+        crate::connectors::mcp_servers(home.path(), "fox")
+            .unwrap()
+            .get("echo")
+            .is_none()
+    );
+    // The chat takes the new server at its next message.
+    assert!(runtime.tools_stale("alice", "owl", "first").unwrap());
+    let listed = runtime
+        .tool(&s, "hexbot_plugins", &json!({"action":"list"}))
+        .await
+        .unwrap();
+    let echo = listed["plugins"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["id"] == "package:echo")
+        .unwrap()
+        .clone();
+    assert_eq!(echo["on"], true);
+    assert!(listed.get("bots").is_none());
+    // Turning it off for itself takes nothing new, so it does not ask, and
+    // it turns off every part even when one part was already off. A part
+    // left on keeps the package on, so it can be turned off.
+    crate::skills::set_enabled(home.path(), Some("owl"), "echo-usage", false).unwrap();
+    assert_eq!(
+        crate::plugins::find_for(home.path(), "alice", "package", "echo", Some("owl")).unwrap()["enabled_for_bot"],
+        true
+    );
+    let off = runtime
+        .tool(
+            &s,
+            "hexbot_plugins",
+            &json!({"action":"disable","id":"package:echo"}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(off["on"], false);
+    assert!(
+        crate::connectors::mcp_servers(home.path(), "owl")
+            .unwrap()
+            .get("echo")
+            .is_none()
+    );
+    // A bot's server never reaches for stored keys.
+    let mut leak = install.clone();
+    leak["name"] = json!("leak");
+    leak["mcp"] = json!({"url": "https://example.com/mcp", "headers": {"Authorization": "Bearer ${OPENAI_API_KEY}"}});
+    let error = runtime.tool(&s, "hexbot_plugins", &leak).await.unwrap_err();
+    assert!(error.message.contains("stored keys"), "{}", error.message);
+    assert!(!home.path().join("plugins/leak").exists());
+    // Other bots and removal belong to the primary bot, from its own chat:
+    // in a room it is a bot like any other.
+    db::open(home.path())
+        .unwrap()
+        .execute_batch("UPDATE bots SET is_primary=1 WHERE name='owl';INSERT INTO rooms(id,name,owner_id) VALUES('r1','Team','alice');INSERT INTO room_sessions(room_id,bot,stored_session_id) VALUES('r1','owl','first');")
+        .unwrap();
+    for args in [
+        json!({"action":"enable","id":"package:echo","bot":"fox"}),
+        json!({"action":"remove","id":"package:echo"}),
+    ] {
+        assert_eq!(
+            runtime
+                .tool(&s, "hexbot_plugins", &args)
+                .await
+                .unwrap_err()
+                .code,
+            4210
+        );
+    }
+    runtime.shutdown().await;
+}
+
 fn processes(home: &Path) -> Vec<Value> {
     fs::read_to_string(home.join("processes.jsonl"))
         .unwrap()

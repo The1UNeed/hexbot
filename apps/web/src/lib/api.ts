@@ -30,6 +30,8 @@ import type {
   ModelOption,
   NetworkInfo,
   PairingCode,
+  PluginKind,
+  PluginsList,
   Provider,
   ProviderLogin,
   Room,
@@ -270,6 +272,64 @@ export function connectorsAddMcp(input: McpServerInput): Promise<{ connector: Co
 
 export function connectorsRemoveMcp(name: string): Promise<{ removed: boolean }> {
   return rpcCall<{ removed: boolean }>('hexbot.connectors.remove_mcp', { name })
+}
+
+// ---------------------------------------------------------------------------
+// Plugins: connectors, MCP servers, skills, built-in tools and packages
+// ---------------------------------------------------------------------------
+
+export function pluginsList(): Promise<PluginsList> {
+  return rpcCall<PluginsList>('hexbot.plugins.list', {})
+}
+
+export function pluginsSetBots(kind: PluginKind, id: string, bots: string[]): Promise<unknown> {
+  return rpcCall('hexbot.plugins.set_bots', { bots, id, kind })
+}
+
+export interface PluginInstallInput {
+  /** The bots it starts on for; every bot when left out. */
+  bots?: string[]
+  description?: string
+  mcp?: {
+    args?: string[]
+    command?: string
+    env?: Record<string, string>
+    headers?: Record<string, string>
+    url?: string
+  }
+  name: string
+  skills?: { content: string; name: string }[]
+}
+
+export function pluginsInstall(input: PluginInstallInput): Promise<unknown> {
+  return rpcCall('hexbot.plugins.install', { ...input })
+}
+
+/** Values set to null are removed; names left out keep their value. */
+export interface PluginConfigureInput {
+  args?: string[]
+  command?: string
+  env?: Record<string, null | string>
+  headers?: Record<string, null | string>
+  url?: string
+}
+
+export function pluginsConfigure(
+  kind: PluginKind,
+  id: string,
+  change: PluginConfigureInput
+): Promise<unknown> {
+  return rpcCall('hexbot.plugins.configure', { id, kind, ...change })
+}
+
+/** Removes a package, with its server and skills, for every bot. */
+export function pluginsRemove(id: string): Promise<{ removed: boolean }> {
+  return rpcCall<{ removed: boolean }>('hexbot.plugins.remove', { id, kind: 'package' })
+}
+
+/** A skill's switch for every bot, under each bot's own. */
+export function skillsSetGlobal(name: string, enabled: boolean): Promise<unknown> {
+  return rpcCall('hexbot.skills.set_global', { enabled, name })
 }
 
 export function skillsList(bot: string): Promise<{ skills: SkillInfo[] }> {

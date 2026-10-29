@@ -131,6 +131,8 @@ pub struct Skill {
     pub description: String,
     pub category: Option<String>,
     pub source: String,
+    /// The plugin package the skill came with, if any (`plugins.rs`).
+    pub plugin: Option<String>,
     pub path: PathBuf,
     pub enabled_for_bot: bool,
     pub disabled_globally: bool,
@@ -250,6 +252,7 @@ fn discover(
                 description: description.chars().take(1000).collect(),
                 category: (!category.is_empty()).then(|| category.into_owned()),
                 source: source.into(),
+                plugin: None,
                 path: main,
                 enabled_for_bot: true,
                 disabled_globally: false,
@@ -300,6 +303,20 @@ pub(crate) fn resolve_unlocked(home: &Path, bot: Option<&str>) -> Result<Vec<Ski
 fn resolve_with(home: &Path, bot: Option<&str>, bundled: &Path) -> Result<Vec<Skill>> {
     let mut found = BTreeMap::new();
     discover(bundled, bundled, "bundled", &mut found)?;
+    // A package's skills sit under its name, like a category of their own.
+    for plugin in crate::plugins::package_names(home)? {
+        let root = crate::plugins::packages_root(home)
+            .join(&plugin)
+            .join("skills");
+        safe_path(home, &root)?;
+        let mut packaged = BTreeMap::new();
+        discover(&root, &root, "plugin", &mut packaged)?;
+        for mut skill in packaged.into_values() {
+            skill.category = Some(plugin.clone());
+            skill.plugin = Some(plugin.clone());
+            found.insert(skill.name.clone(), skill);
+        }
+    }
     let library = home.join("skills");
     safe_path(home, &library)?;
     discover(&library, &library, "library", &mut found)?;
@@ -461,6 +478,16 @@ fn save(home: &Path, bot: Option<&str>, p: &Value) -> Result<Skill> {
     let existing = resolve_unlocked(home, bot)?
         .into_iter()
         .find(|s| s.name == name);
+    // A library copy would replace the packaged skill, and the package would
+    // no longer give or remove it.
+    if bot.is_none()
+        && let Some(plugin) = existing.as_ref().and_then(|s| s.plugin.as_ref())
+    {
+        return Err(Error::new(
+            4208,
+            format!("The skill {name} comes with the plugin {plugin}. Use another name."),
+        ));
+    }
     let root = bot
         .map(|b| catalog::profile(home, b))
         .transpose()?
@@ -511,6 +538,13 @@ fn share(home: &Path, bot: &str, name: &str, replace: bool) -> Result<Skill> {
     let library = resolve_unlocked(home, None)?
         .into_iter()
         .find(|s| s.name == name);
+    // Like a save, a share can't take a packaged skill's name.
+    if let Some(plugin) = library.as_ref().and_then(|s| s.plugin.as_ref()) {
+        return Err(Error::new(
+            4208,
+            format!("The skill {name} comes with the plugin {plugin}. Use another name."),
+        ));
+    }
     if library.is_some() && !replace {
         return Err(Error::new(
             4208,
@@ -624,6 +658,14 @@ pub fn call(home: &Path, caller: &str, method: &str, p: &Value) -> Result<Value>
                 return Err(Error::new(
                     4202,
                     "Bundled skills can be turned off, not deleted.",
+                ));
+            }
+            if let Some(plugin) = &skill.plugin {
+                return Err(Error::new(
+                    4202,
+                    format!(
+                        "This skill comes with the plugin {plugin}. Remove the plugin instead."
+                    ),
                 ));
             }
             let dir = skill.path.parent().unwrap();

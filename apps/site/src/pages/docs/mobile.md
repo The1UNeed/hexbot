@@ -78,7 +78,7 @@ and thinking level from the providers you have connected. A new model applies
 from the chat's next message.
 
 Rooms shows one room at a time, with a switcher when you have several. Daemon shows what your bots are doing now and
-opens settings, models, connectors, skills, jobs, About you, usage, bot
+opens settings, models, plugins (connectors, MCP servers, skills and built-in tools), jobs, About you, usage, bot
 activity, devices, network, Hex Connect and updates. Settings and
 editors open as cards over the screen you came from. One person owns the daemon; paired devices access that person’s bots and rooms.
 

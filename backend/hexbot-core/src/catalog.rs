@@ -2117,6 +2117,7 @@ fn create(home: &Path, caller: &str, p: &Value, primary: bool) -> Result<Value> 
         }
     };
     crate::settings::mirror(home, &profile(home, name)?)?;
+    crate::plugins::scope_new_bot(home, name)?;
     Ok(json!({"bot":bot(home,caller,name)?,"section":section(home,caller,&sid)?}))
 }
 /// Create and update store every accepted column the same way.
@@ -2465,6 +2466,7 @@ fn finish_bot_delete_locked(home: &Path, name: &str) -> Result<()> {
     // Keep the name reserved until every server grant is removed. A failed
     // config cleanup must be retried before another bot can use this name.
     crate::connectors::forget_bot(home, name)?;
+    crate::plugins::forget_bot(home, name)?;
     let targets = journal["targets"]
         .as_array()
         .ok_or_else(|| Error::new(5200, "Invalid bot deletion journal"))?;

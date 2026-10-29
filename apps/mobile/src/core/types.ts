@@ -10,6 +10,8 @@ export type {
   Provider,
   ModelOption,
   Connector,
+  Plugin,
+  PluginsList,
   SkillInfo,
   SkillRequirement,
   NetworkInfo,

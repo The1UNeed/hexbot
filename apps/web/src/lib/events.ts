@@ -31,6 +31,7 @@ import { useComputer } from '../stores/computer'
 import { useConnectors } from '../stores/connectors'
 import { useHeartbeat } from '../stores/heartbeat'
 import { useMe } from '../stores/me'
+import { refreshPluginsIfLoaded } from '../stores/plugins'
 import { useRooms } from '../stores/rooms'
 import { keepHistory, useSections } from '../stores/sections'
 import { useSettings } from '../stores/settings'
@@ -71,9 +72,12 @@ export interface EventRouterDeps {
 const defaultDeps: Required<EventRouterDeps> = {
   refreshBots: () => {
     void useBots.getState().refresh()
+    // A bot added or deleted elsewhere changes the bots each plugin can go to.
+    refreshPluginsIfLoaded()
   },
   refreshConnectors: () => {
     void useConnectors.getState().refreshAll()
+    refreshPluginsIfLoaded()
   },
   refreshNetwork: () => {
     void useSettings.getState().refreshNetwork()

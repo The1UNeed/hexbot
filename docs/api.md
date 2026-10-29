@@ -1060,12 +1060,30 @@ settings mirroring.
 
 ### Plugins
 
-Plugins are connectors, skills and capabilities (built-in tools that need a
+Plugins are connectors, skills, capabilities (built-in tools that need a
 program or service on the daemon's computer: `computer_use`, `browser`,
-`code_execution`). Each is set up once for the daemon and given to bots.
+`code_execution`) and packages. Each is set up once for the daemon and given
+to bots.
+
+A package installs an MCP server with the skills that explain it, or several
+skills, as one plugin. It lives in `<home>/plugins/<name>/` as `plugin.json`
+(`{name, description, server: bool, installed_by: bot | null, installed_at,
+bots: [string] | null}`) and `skills/<skill>/SKILL.md`. Its server is a
+daemon-level `mcp_servers.<name>` entry with `plugin: <name>` and a `bots`
+list like any other. Its skills are discovered after bundled skills with
+`source: "plugin"`, `plugin: <name>` and the package name as their category.
+Neither its server nor its skills can be removed, saved over or shared over
+on their own (4202 or 4208); remove the package. `bots: null` means every
+bot, including bots created later; a list keeps bots created later off.
 
 - `hexbot.plugins.list {bot?}` → `{connectors: [Plugin], skills: [Plugin],
-  capabilities: [Plugin]}`. Every row has `kind` (`connector`, `skill`,
+  capabilities: [Plugin], packages: [Plugin]}`. A package's server and skills
+  appear only in its package row. MCP server rows add `server: {transport,
+  command?, args?, url?, env: [Value], headers: [Value]}`, where `Value` is
+  `{key, set, hint}` and values never leave the daemon; a server with an empty
+  value is `not_set_up` with `state_text` "Needs KEY". Package rows add
+  `skills: [{name, description}]`, `installed_by`, `connector` and `server`
+  for a package with a server, and count as given to a bot while any part is. Every row has `kind` (`connector`, `skill`,
   `capability`), `id`, `name`, `description`, `ready` and `bots`, the caller's
   bots it is given to. Connector rows are the `Connector` shape; one is
   `ready` when its required keys are saved or its MCP server is enabled,
@@ -1080,7 +1098,39 @@ program or service on the daemon's computer: `computer_use`, `browser`,
   giving it to a bot." An unknown kind is 4202 and an unknown id 4213.
   Capabilities change through `hexbot.bots.update {tools}`. It emits the
   kind's own event (`hexbot.connectors.changed {connector}` or
-  `hexbot.skills.changed {name}`) and `hexbot.bots.changed`.
+  `hexbot.skills.changed {name}`) and `hexbot.bots.changed`. For a package
+  it switches the server and every skill, and choosing every bot sets
+  `bots: null`.
+- `hexbot.plugins.install {name, description?, mcp?: {command, args?, env?} |
+  {url, headers?}, skills?: [{name, content}], bots?: [string]}` → `{plugin}`.
+  Needs a server, a skill, or both; up to 20 skills. A package, server or
+  skill (any bot's private ones included) that already uses a name is 4208.
+  Without `bots` it goes to every bot of the caller's.
+- `hexbot.plugins.configure {kind, id, command?, args?, url?, env?,
+  headers?}` → `{plugin}` for `connector`/`mcp:<name>` and a package with a
+  server. In `env` and `headers` a string sets a value, `null` removes it, and
+  names left out keep theirs. The server keeps its bots; open connections
+  close.
+- `hexbot.plugins.remove {kind: "package", id}` → `{removed: true}` removes
+  a package, its server and its skills. Other kinds are removed where they
+  were added (4202).
+
+Install, configure, remove and giving a package emit
+`hexbot.connectors.changed`, `hexbot.skills.changed` and `hexbot.bots.changed`.
+
+Bots get `hexbot_plugins` with the `hexbot` toolset: `list` (each plugin as
+`kind:id`, whether it is on for the bot, without keys, values, or a server's
+address unless the server has a description), `install` (same fields as
+above), `enable`, `disable`, and, for the primary bot in its own chat,
+`remove` and a `bot` argument for any bot. In a room or a job the primary bot
+gets only what any bot gets. `install`, `enable`, and every primary-bot change
+for another bot ask the user each time, even in Bypass; a scheduled job or a
+check-in cannot ask, so it gets 4302. The card lists the server's command or
+URL and every environment value and header, and a bot's server may not
+contain `${KEY}` references (4202), so it never receives stored keys the card
+doesn't show. A bot's own install is on for that bot only, and stays off for
+bots created later. `disable` for itself does not ask. The chat takes the new
+server at its next message (`tools_stale`).
 
 Successful skill mutations emit `hexbot.skills.changed` and `hexbot.bots.changed`.
 Library changes reach all users with `{name}`; private changes reach the caller

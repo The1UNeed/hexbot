@@ -29,6 +29,8 @@ mod attachments;
 mod delegation;
 #[path = "runtime_identity.rs"]
 mod identity;
+#[path = "runtime_plugins.rs"]
+mod plugin_tool;
 #[path = "runtime_primary.rs"]
 mod primary;
 #[path = "runtime_recall.rs"]
@@ -1375,6 +1377,9 @@ impl Runtime {
         let enabled = crate::connectors::toolsets(&self.home, bot)?;
         let mut tools = base_tools();
         tools.retain(|t| t["name"] != "message_bot" || enabled.iter().any(|v| v == "hexbot"));
+        if enabled.iter().any(|v| v == "hexbot") {
+            tools.push(plugin_tool::descriptor());
+        }
         let own = shows_visuals(&self.home, stored)?;
         if !own {
             tools.retain(|t| t["name"] != "hexbot_show_html");
@@ -4571,6 +4576,7 @@ impl Runtime {
             "hexbot_bots" | "hexbot_rooms" | "hexbot_jobs" | "hexbot_settings" => {
                 self.primary_tool(s, name, args).await
             }
+            plugin_tool::NAME => self.plugins_tool(s, args).await,
             "self_soul" | "hexbot_soul" => {
                 let path = self.home.join("profiles").join(&s.bot).join("SOUL.md");
                 if let Some(text) = args["text"].as_str() {
@@ -5721,7 +5727,7 @@ fn tool_context(name: &str, args: &Value) -> String {
         "message_bot" => "to",
         "hexbot_show_html" => "title",
         "hexbot_bots" | "hexbot_rooms" | "hexbot_jobs" | "hexbot_settings" | "hexbot_heartbeat"
-        | "computer_use" => "action",
+        | "hexbot_plugins" | "computer_use" => "action",
         "hexbot_notify" => "message",
         "hexbot_connector_read" => "path",
         name if name.starts_with("mcp__") => args

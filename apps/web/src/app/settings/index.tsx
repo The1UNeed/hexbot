@@ -55,9 +55,11 @@ import { ConfirmUpdate, installTarget } from '../confirm-update'
 
 import { DiagnosticsSettings } from './diagnostics'
 import { OPEN_SOURCE } from './licenses'
+import { PluginsSettings } from './plugins'
 
 export const SETTINGS_TABS = [
   'providers',
+  'plugins',
   'network',
   'connect',
   'memory',
@@ -113,6 +115,7 @@ export function SettingsPanel({ tab }: { tab: string }): React.JSX.Element {
       className={cn(settingsPageClass, tab === 'diagnostics' && 'max-w-[820px]')}
     >
       {tab === 'providers' && <ProvidersSettings />}
+      {tab === 'plugins' && <PluginsSettings />}
       {tab === 'network' && <NetworkSettings />}
       {tab === 'connect' && <ConnectSettings />}
       {tab === 'memory' && <MemorySettings />}
