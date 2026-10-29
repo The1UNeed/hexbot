@@ -109,6 +109,7 @@ describe('settings', () => {
         )
       }))
     })
+
     const setProviderKey = vi.fn(async () => {
       useSettings.setState(state => ({
         providers: state.providers.map(item => ({ ...item, configured: true }))
