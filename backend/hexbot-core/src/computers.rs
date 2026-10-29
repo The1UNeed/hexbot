@@ -831,13 +831,53 @@ pub async fn proxy(token: String, request: Request) -> Response {
     if rest == "cua.env.v1.StreamService/SetPreferences" {
         return StatusCode::FORBIDDEN.into_response();
     }
-    let page = watching && rest == "viewer/";
+    if rest == "viewer/hexbot-screen.js" {
+        return (
+            [
+                (axum::http::header::CONTENT_TYPE, "text/javascript"),
+                (axum::http::header::CACHE_CONTROL, "no-cache"),
+            ],
+            SCREEN_SCRIPT,
+        )
+            .into_response();
+    }
+    let page = (rest == "viewer/").then(|| {
+        if watching {
+            format!("{WATCH_STYLE}{SCREEN_TAG}</head>")
+        } else {
+            format!("{SCREEN_TAG}</head>")
+        }
+    });
     forward(parts, body, target, upstream, page).await
 }
 /// A watching screen is small and takes no input: the viewer's toolbar would
 /// only cover it. Its status overlay stays, so a lost stream still says so.
 const WATCH_STYLE: &str =
     "<style>.cua-toolbar,.cua-stats,.cua-chips{display:none!important}</style>";
+/// The viewer's policy runs only scripts from its own origin, so the script
+/// that reports the screen's state is served beside it.
+const SCREEN_TAG: &str = r#"<script defer src="./hexbot-screen.js"></script>"#;
+/// Tells the page around the screen how it is doing: `connecting`,
+/// `streaming` once the picture is up, `reconnecting` or `failed`. A page
+/// switching screens, as taking control and giving it back do, keeps the
+/// old one in sight until the new one streams.
+const SCREEN_SCRIPT: &str = r#"(() => {
+  let last
+  const tell = () => {
+    const status = document.querySelector('.cua-viewer')?.dataset.status
+    if (!status || status === last) return
+    last = status
+    const message = { type: 'hexbot.computer.screen', status }
+    window.ReactNativeWebView?.postMessage(JSON.stringify(message))
+    if (window.parent !== window) window.parent.postMessage(message, '*')
+  }
+  new MutationObserver(tell).observe(document.documentElement, {
+    attributeFilter: ['data-status'],
+    subtree: true
+  })
+  tell()
+})()
+"#;
 
 fn proxy_client() -> &'static reqwest::Client {
     static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
@@ -866,7 +906,8 @@ async fn forward(
     body: Body,
     target: String,
     upstream: String,
-    watch_page: bool,
+    // The viewer's page gets this in place of its `</head>`.
+    head: Option<String>,
 ) -> Response {
     let Ok(body) = axum::body::to_bytes(body, 64 * 1024 * 1024).await else {
         return StatusCode::PAYLOAD_TOO_LARGE.into_response();
@@ -903,7 +944,7 @@ async fn forward(
         .get("content-type")
         .and_then(|v| v.to_str().ok())
         .is_some_and(|v| v.starts_with("text/html"));
-    if watch_page && html && status.is_success() {
+    if let Some(head) = head.filter(|_| html && status.is_success()) {
         let Ok(page) = crate::http::bytes(
             response,
             1024 * 1024,
@@ -914,8 +955,7 @@ async fn forward(
         else {
             return StatusCode::BAD_GATEWAY.into_response();
         };
-        let page =
-            String::from_utf8_lossy(&page).replacen("</head>", &format!("{WATCH_STYLE}</head>"), 1);
+        let page = String::from_utf8_lossy(&page).replacen("</head>", &head, 1);
         headers.remove("content-length");
         let mut out = Response::new(Body::from(page));
         *out.status_mut() = status;

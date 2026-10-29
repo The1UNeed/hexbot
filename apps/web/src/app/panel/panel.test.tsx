@@ -223,6 +223,8 @@ describe('ProfilePanel', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Take control' }))
     expect(api.computerControl).toHaveBeenCalledWith('user')
     expect(await screen.findByRole('button', { name: 'Give back' })).toBeVisible()
+    // The small screen keeps playing under the window, so it is there when it closes.
+    expect(screen.getByTestId('computer-screen')).toContainElement(frame)
     // The window and the line under the small screen both say who has it.
     expect(
       await screen.findAllByText('You have control. Your bots wait until you give it back.')
@@ -253,12 +255,33 @@ describe('ProfilePanel', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Computer options' }))
     fireEvent.click(await screen.findByTestId('computer-quality-720p30'))
-    // A new link at the chosen quality, kept for the next time.
+    // A new link at the chosen quality, kept for the next time. It loads
+    // under the screen on show, which stays until the new picture is up.
     await waitFor(() => expect(api.computerView).toHaveBeenLastCalledWith(false, '720p30'))
-    expect(await screen.findByTitle("Your bots' screen")).toHaveAttribute(
-      'src',
-      'http://127.0.0.1:9119/v/720p30/#t&audio=none'
-    )
+    await waitFor(() => expect(screen.getAllByTitle("Your bots' screen")).toHaveLength(2))
+
+    const [shown, next] = screen.getAllByTitle("Your bots' screen") as [
+      HTMLIFrameElement,
+      HTMLIFrameElement
+    ]
+
+    expect(shown).toHaveAttribute('src', 'http://127.0.0.1:9119/v/auto/#t&audio=none')
+    expect(next).toHaveAttribute('src', 'http://127.0.0.1:9119/v/720p30/#t&audio=none')
+
+    const tell = (status: string) =>
+      act(() =>
+        window.dispatchEvent(
+          new MessageEvent('message', {
+            data: { status, type: 'hexbot.computer.screen' },
+            source: next.contentWindow
+          })
+        )
+      )
+
+    tell('connecting')
+    expect(screen.getAllByTitle("Your bots' screen")).toHaveLength(2)
+    tell('streaming')
+    expect(screen.getByTitle("Your bots' screen")).toBe(next)
     expect(useUi.getState().computerQuality).toBe('720p30')
     useUi.setState({ computerQuality: 'auto' })
   })

@@ -1079,6 +1079,85 @@ async fn giving_the_computer_back_closes_an_open_control_screen() {
     server.abort();
     upstream.abort();
 }
+#[cfg(unix)]
+#[tokio::test]
+async fn every_screen_reports_when_its_picture_is_up() {
+    use axum::{
+        extract::{Path as UrlPath, Request},
+        routing::{any, get},
+    };
+    use hexbot_core::computers;
+    let h = home(json!({"tools":{"enabled_toolsets":["computer_use"]}}));
+    let cua = script(h.path(), "cua-test", FAKE_CUA);
+    std::fs::write(
+        h.path().join(".env"),
+        format!("HEXBOT_CUA_CMD={}\n", cua.display()),
+    )
+    .unwrap();
+    let viewer = Router::new().route(
+        "/viewer/",
+        get(|| async {
+            axum::response::Html("<html><head><title>Cua viewer</title></head><body></body></html>")
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let upstream = tokio::spawn(async move { axum::serve(listener, viewer).await.unwrap() });
+    std::fs::write(h.path().join("upstream.txt"), format!("http://{address}")).unwrap();
+    let daemon = Router::new().route(
+        "/hexbot/computer/{token}/{*rest}",
+        any(
+            |UrlPath((token, _)): UrlPath<(String, String)>, request: Request| {
+                computers::proxy(token, request)
+            },
+        ),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let served = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move { axum::serve(listener, daemon).await.unwrap() });
+    let client = reqwest::Client::new();
+    for control in [false, true] {
+        let view = computers::call(
+            h.path(),
+            "hexbot.computer.view",
+            &json!({"control": control}),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        let page = view["path"].as_str().unwrap().split_once('#').unwrap().0;
+        let html = client
+            .get(format!("http://{served}{page}"))
+            .send()
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap();
+        // Watching or in control, the page says when its picture is up;
+        // only a watching one hides the viewer's toolbar.
+        assert!(
+            html.contains(r#"<script defer src="./hexbot-screen.js"></script></head>"#),
+            "{html}"
+        );
+        assert_eq!(html.contains("cua-toolbar"), !control, "{html}");
+        let script = client
+            .get(format!("http://{served}{page}hexbot-screen.js"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(script.headers()["content-type"], "text/javascript");
+        assert!(
+            script
+                .text()
+                .await
+                .unwrap()
+                .contains("hexbot.computer.screen")
+        );
+    }
+    server.abort();
+    upstream.abort();
+}
 #[tokio::test]
 async fn keenable_mistral_and_krea_use_selected_vendor_contracts() {
     use base64::Engine;
