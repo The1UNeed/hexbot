@@ -86,6 +86,11 @@ export type BotStatus = 'idle' | 'needs_you' | 'stopped' | 'working'
 
 export interface BotStatusDetail {
   action: null | { kind: 'fix_connector'; connector: string } | { kind: 'retry' }
+  /**
+   * A failure with no room or conversation of its own, such as a dream's:
+   * the bot's chat shows it. Older daemons leave it out.
+   */
+  in_chat?: boolean
   room_id: null | string
   section_id: null | string
   session_id: null | string

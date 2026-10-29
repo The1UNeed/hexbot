@@ -6,6 +6,7 @@ import {
   chatPreview,
   isOpenRoom,
   pulseTarget,
+  stoppedIn,
   purposeOf,
   rebind,
   type ChatRoute
@@ -220,5 +221,22 @@ describe('bot card preview', () => {
     expect(chatPreview('ada', [{ ...chat, preview: 'Latest message' }], [chat])).toBe('Latest message')
     expect(chatPreview('ada', [thread])).toBeNull()
     expect(chatPreview('ada', [])).toBeNull()
+  })
+})
+
+describe('stopped bot', () => {
+  const stopped = (detail: Record<string, unknown>) =>
+    ({ ...bot, status: 'stopped', status_detail: { since: 1, text: 'fetch failed', ...detail } }) as Bot
+  it("shows a failure with nowhere else to show, such as a dream's, in the bot's chat only", () => {
+    const dream = stopped({ section_id: 'dream-1', in_chat: true })
+    expect(stoppedIn(dream, section('chat'))).toBe(true)
+    expect(stoppedIn(dream, section('t', { peer_bot: 'grace' } as Partial<Section>))).toBe(false)
+    expect(stoppedIn(dream, section('c', { purpose: 'checkins' } as Partial<Section>))).toBe(false)
+  })
+  it('shows any other failure where it happened', () => {
+    const thread = stopped({ section_id: 't', in_chat: false })
+    expect(stoppedIn(thread, section('t', { peer_bot: 'grace' } as Partial<Section>))).toBe(true)
+    expect(stoppedIn(thread, section('chat'))).toBe(false)
+    expect(stoppedIn({ ...thread, status: 'idle' } as Bot, section('t'))).toBe(false)
   })
 })

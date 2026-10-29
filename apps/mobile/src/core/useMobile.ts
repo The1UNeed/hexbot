@@ -25,6 +25,7 @@ import {
   listSections,
   ownerChat,
   rebind,
+  stoppedIn,
   type ChatRoute
 } from './routes'
 import type {
@@ -771,7 +772,7 @@ export function useMobile() {
     setError(null)
     if (target?.kind !== 'section') return
     const owner = botsRef.current.find(b => b.name === target.section.bot)
-    if (owner?.status === 'stopped' && owner.status_detail?.section_id === target.section.id)
+    if (owner && stoppedIn(owner, target.section))
       await rpc('hexbot.bots.clear_status', { name: owner.name })
   }
   const approval = async (requestId: string, choice: string) => {

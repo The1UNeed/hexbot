@@ -212,7 +212,9 @@ the roster slides in as a drawer.
   Every Stopped card has a close button (×) in its header. Closing one built
   from the bot's Stopped state for this chat clears that state
   (`hexbot.bots.clear_status`), so it does not come back. The phone's error
-  banner under a chat closes the same way.
+  banner under a chat closes the same way. A failure with no room or
+  conversation of its own, such as a dream's or a scheduled job's, shows in
+  the bot's chat, so a red dot always has a message you can read and close.
 - Recall: your latest message in a bot's chat, while the bot works on it or
   after its turn stopped, shows Recall beside Copy on hover; the phone offers
   it on a long press. The message and everything after it leave the chat, and

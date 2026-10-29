@@ -88,6 +88,14 @@ async fn assert_stopped(app: &Arc<App>, failure: &Value) {
     }
 }
 
+/// Whether the bot's status says to show its failure in the bot's chat.
+async fn in_chat(app: &Arc<App>) -> Value {
+    app.call("local", "hexbot.bots.get", &json!({"name":"owl"}))
+        .await
+        .unwrap()["bot"]["status_detail"]["in_chat"]
+        .clone()
+}
+
 #[tokio::test]
 async fn hidden_job_failure_keeps_stopped_status_and_notification_after_restart() {
     let (home, app) = fixture().await;
@@ -151,6 +159,8 @@ async fn dream_provider_failure_keeps_stopped_status_and_notification() {
     let finished = event(&mut events, "hexbot.dreaming.changed").await;
     assert_eq!(finished["dream"]["status"], "failed");
     assert_stopped(&app, &failure).await;
+    // A dream has no conversation to open: the bot's chat shows its failure.
+    assert_eq!(in_chat(&app).await, true);
     app.shutdown().await;
 }
 
@@ -178,6 +188,8 @@ async fn archived_and_deleted_private_failures_do_not_become_hidden_run_failures
     let failure = event(&mut events, "hexbot.bots.incident").await;
     event(&mut events, "message.complete").await;
     assert_stopped(&app, &failure).await;
+    // The thread shows its own failure.
+    assert_eq!(in_chat(&app).await, false);
     app.call("local", "hexbot.sections.archive", &json!({"id":stored}))
         .await
         .unwrap();

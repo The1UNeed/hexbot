@@ -309,6 +309,36 @@ it('shows an empty chat once its history is read', async () => {
   expect(await screen.findByRole('button', { name: /What can you help me/i })).toBeInTheDocument()
   expect(screen.queryByRole('status', { name: "Opening Owl's chat" })).toBeNull()
 })
+it("shows a failure with nowhere else to show, such as a dream's, in an empty chat", async () => {
+  useBots.setState({
+    byName: {
+      owl: {
+        name: 'owl',
+        display_name: 'Owl',
+        status: 'stopped',
+        status_detail: {
+          action: { kind: 'retry' },
+          in_chat: true,
+          room_id: null,
+          section_id: 'dream-1',
+          session_id: 'live-dream',
+          since: 1_757_600_000,
+          text: 'fetch failed'
+        }
+      } as Bot
+    }
+  })
+  call.mockImplementation((method: string, input: { id?: string }) =>
+    method === 'hexbot.sections.open'
+      ? Promise.resolve({ section: section('old', 'live-old'), messages: [] })
+      : reply(method, input)
+  )
+  render(<ConversationColumn />)
+  expect(await screen.findByTestId('stopped-card')).toHaveTextContent('fetch failed')
+  fireEvent.click(screen.getByRole('button', { name: 'Dismiss' }))
+  expect(screen.queryByTestId('stopped-card')).toBeNull()
+  expect(call).toHaveBeenCalledWith('hexbot.bots.clear_status', { name: 'owl' })
+})
 it('a slower read of a chat left since does not put the next one back to loading', async () => {
   const held = deferred()
   call.mockImplementation((method: string, input: { id?: string }) =>
