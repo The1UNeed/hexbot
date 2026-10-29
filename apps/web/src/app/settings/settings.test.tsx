@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { beforeEach, vi } from 'vitest'
 
 import {
@@ -94,9 +94,22 @@ describe('settings', () => {
     vi.clearAllMocks()
   })
 
+  // The card under a group label, so a test can ask which group a row is in.
+  const group = (title: string) =>
+    screen.getByText(title, { selector: 'p' }).parentElement!.nextElementSibling as HTMLElement
+
   it('adds and tests a provider key', async () => {
-    // Saving marks the provider configured, as the daemon does; the row must
-    // stay put (and open) instead of jumping to the Connected group.
+    // Saving marks the provider configured, as the daemon does; the row moves
+    // to Connected and keeps its editor open, its pending test and its result.
+    // Removing the key moves it back and keeps a replacement already typed.
+    const clearProviderKey = vi.fn(async (id: string) => {
+      useSettings.setState(state => ({
+        providers: state.providers.map(item =>
+          item.id === id ? { ...item, configured: false } : item
+        )
+      }))
+    })
+
     const setProviderKey = vi.fn(async () => {
       useSettings.setState(state => ({
         providers: state.providers.map(item => ({ ...item, configured: true }))
@@ -105,22 +118,83 @@ describe('settings', () => {
 
     useSettings.setState({
       providers: [
-        { auth_type: 'key', configured: false, id: 'openai', label: 'OpenAI', models_source: 'api' }
+        {
+          auth_type: 'key',
+          configured: false,
+          id: 'openai',
+          label: 'OpenAI',
+          models_source: 'api'
+        },
+        { auth_type: 'key', configured: true, id: 'groq', label: 'Groq', models_source: 'api' }
       ],
+      clearProviderKey,
       refreshProviders: vi.fn().mockResolvedValue(undefined),
       setProviderKey
     })
-    vi.mocked(modelsList).mockResolvedValue({
-      all: [{ id: 'gpt', label: 'GPT', provider: 'openai' }],
-      curated: []
-    })
+    let models!: (value: Awaited<ReturnType<typeof modelsList>>) => void
+    vi.mocked(modelsList).mockReturnValue(new Promise(resolve => (models = resolve)))
     render(<ProvidersSettings />)
+    expect(within(group('More providers')).getByText('OpenAI')).toBeVisible()
     // The key field is behind the row's "Add key" so the list stays one line per provider.
     fireEvent.click(screen.getByRole('button', { name: 'Add key' }))
     fireEvent.change(screen.getByLabelText('OpenAI API key'), { target: { value: 'secret' } })
     fireEvent.click(screen.getByRole('button', { name: 'Test' }))
     await waitFor(() => expect(setProviderKey).toHaveBeenCalledWith('openai', 'secret'))
+    await waitFor(() => expect(within(group('Connected')).getByText('OpenAI')).toBeVisible())
+    expect(screen.getByRole('button', { name: /Test/ })).toBeDisabled()
+    act(() => models({ all: [{ id: 'gpt', label: 'GPT', provider: 'openai' }], curated: [] }))
     expect(await screen.findByText('1 models available.')).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Test' })).toBeEnabled()
+    expect(screen.getByLabelText('OpenAI API key')).toBeVisible()
+    expect(screen.queryByText('More providers')).not.toBeInTheDocument()
+    fireEvent.change(screen.getByLabelText('OpenAI API key'), { target: { value: 'next' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Remove OpenAI key' }))
+    await waitFor(() => expect(within(group('More providers')).getByText('OpenAI')).toBeVisible())
+    expect(screen.getByLabelText('OpenAI API key')).toHaveValue('next')
+  })
+
+  it('moves a subscription to Connected when it signs in, and back when it signs out', async () => {
+    const clearProviderKey = vi.fn(async () => {
+      useSettings.setState(state => ({
+        providers: state.providers.map(item => ({ ...item, configured: false }))
+      }))
+    })
+
+    useSettings.setState({
+      clearProviderKey,
+      providers: [
+        {
+          auth_type: 'oauth',
+          configured: false,
+          id: 'codex',
+          label: 'OpenAI Codex',
+          models_source: 'api'
+        },
+        {
+          auth_type: 'key',
+          configured: true,
+          id: 'openrouter',
+          label: 'OpenRouter',
+          models_source: 'api'
+        }
+      ],
+      refreshProviders: vi.fn().mockResolvedValue(undefined)
+    })
+    render(<ProvidersSettings />)
+    expect(within(group('More providers')).getByText('OpenAI Codex')).toBeVisible()
+    // Signing in finishes elsewhere (the browser flow); the store refreshes.
+    act(() => {
+      useSettings.setState(state => ({
+        providers: state.providers.map(item => ({ ...item, configured: true }))
+      }))
+    })
+    expect(within(group('Connected')).getByText('OpenAI Codex')).toBeVisible()
+    expect(screen.queryByText('More providers')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByText('OpenAI Codex'))
+    fireEvent.click(screen.getByRole('button', { name: 'Sign out of OpenAI Codex' }))
+    await waitFor(() =>
+      expect(within(group('All providers')).getByText('OpenAI Codex')).toBeVisible()
+    )
   })
 
   it('shows LAN off and explains the reconnect when enabled', async () => {
