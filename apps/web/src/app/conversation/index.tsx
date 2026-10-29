@@ -55,6 +55,7 @@ import {
   liveSectionsOf,
   sectionsActions,
   sectionStatusOf,
+  statusIsHere,
   useLiveSessionId,
   useSection,
   useSections
@@ -314,21 +315,24 @@ function Attachments({
 
 /**
  * A Stopped card built from the bot's `status_detail` for a section opened
- * after the incident fired (the live event only reaches open transcripts).
- * Null once the transcript carries its own error row.
+ * after the incident fired (the live event only reaches open transcripts),
+ * or for the bot's chat (`chat`) when the failure has nowhere else to show,
+ * such as a dream's. Null once the transcript carries its own error row.
  */
 export function stoppedCardFor(
   bot: Bot | undefined,
   sectionId: null | string,
-  messages: TranscriptMessage[]
+  messages: TranscriptMessage[],
+  chat = false
 ): null | TranscriptMessage {
   const detail = bot?.status === 'stopped' ? bot.status_detail : null
 
-  if (!detail || !sectionId || detail.section_id !== sectionId) {
+  if (!detail || !sectionId || !statusIsHere(bot, sectionId, chat)) {
     return null
   }
 
-  if (messages.some(message => message.error)) {
+  // The chat's own error rows are about its turns, not a failure elsewhere.
+  if (detail.section_id === sectionId && messages.some(message => message.error)) {
     return null
   }
 
@@ -1305,13 +1309,16 @@ function BotConversation() {
   const [dismissedSince, setDismissedSince] = useState<number>()
   // The message whose stopped turn's card was closed: still yours to recall.
   const [closedOn, setClosedOn] = useState<string>()
-  const stoppedCard = stoppedCardFor(bot, params.section ?? null, messages)
+  // The bot's chat also shows failures with nowhere else to show, such as a dream's.
+  const chat = Boolean(section && !section.peer_bot && !section.purpose)
+  const stoppedCard = stoppedCardFor(bot, params.section ?? null, messages, chat)
   const stoppedHere = stoppedCard?.createdAt === dismissedSince ? null : stoppedCard
 
   const status = sectionStatusOf(
     bot,
     params.section ?? null,
-    transcript && liveId ? liveSectionsOf({ [liveId]: transcript }) : {}
+    transcript && liveId ? liveSectionsOf({ [liveId]: transcript }) : {},
+    chat
   )
 
   // Waiting is the banner under the header; the composer notice is for errors only.
@@ -1711,7 +1718,7 @@ function BotConversation() {
 
     const detail = bot?.status === 'stopped' ? bot.status_detail : null
 
-    if (bot && detail && detail.section_id === params.section) {
+    if (bot && detail && statusIsHere(bot, params.section ?? null, chat)) {
       setDismissedSince(detail.since)
       void botsClearStatus(bot.name).catch(() => undefined)
     }
@@ -1865,7 +1872,7 @@ function BotConversation() {
           >
             <Avatar {...botFace(bot)} mood="loading" name={name} size="xl" />
           </div>
-        ) : messages.length === 0 && clarifies.length === 0 ? (
+        ) : messages.length === 0 && clarifies.length === 0 && !stoppedHere ? (
           <div className="hex-rise grid h-full place-content-center justify-items-center gap-6 p-8 text-center">
             <Avatar {...botFace(bot)} name={name} size="xl" />
             <div>

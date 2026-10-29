@@ -1482,7 +1482,19 @@ fn shape_bot(home: &Path, caller: &str, status: &StatusReader, row: Value) -> Re
         } else {
             Value::Null
         };
-        detail = json!({"text":i["text"],"section_id":i["section_id"],"room_id":i["room_id"],"session_id":i["session_id"],"since":i["created_at"],"action":action});
+        // A failure with no room or conversation of its own, such as a dream's
+        // or a scheduled job's, shows in the bot's chat; nothing else shows it.
+        let in_chat = i["room_id"].is_null()
+            && match i["section_id"].as_str() {
+                None => true,
+                Some(id) => !conn.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM sections WHERE id=?1)
+                     OR EXISTS(SELECT 1 FROM room_sessions WHERE stored_session_id=?1)",
+                    [id],
+                    |r| r.get::<_, bool>(0),
+                )?,
+            };
+        detail = json!({"text":i["text"],"section_id":i["section_id"],"room_id":i["room_id"],"session_id":i["session_id"],"since":i["created_at"],"action":action,"in_chat":in_chat});
     } else {
         let wait = rows(
             &db::open(home)?,

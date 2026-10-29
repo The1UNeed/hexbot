@@ -10,6 +10,16 @@ export const purposeOf = (s: Section, sections: Section[]) =>
 /** The bot's chat with its owner: not a teammate thread or a section with its own purpose. */
 export const ownerChat = (s: Section) => !s.peer_bot && !s.purpose
 /**
+ * Whether a stopped bot's failure shows in this section: the one it names, or
+ * the bot's chat for a failure nothing else shows (`in_chat`), such as a dream's.
+ */
+export function stoppedIn(bot: Bot, section: Section): boolean {
+  const detail = bot.status === 'stopped' ? bot.status_detail : null
+  return Boolean(
+    detail && (detail.section_id === section.id || (detail.in_chat && ownerChat(section)))
+  )
+}
+/**
  * Sections as `hexbot.sections.list` returns them, with the Check-ins section
  * marked on a daemon with check-ins from before one chat per bot, which names
  * no purpose: its check-ins status names that section.

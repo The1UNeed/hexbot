@@ -272,8 +272,11 @@ room `waiting.human` events, and open incidents. Only a bot's chat and its
 room sessions make it `working`; heartbeats, scheduled jobs, dreams, CLI runs
 and subagents never do, though one waiting on the user still makes it
 `needs_you`. `status_detail` is
-`{text, section_id, room_id, session_id, since, action}` where `action` is
-null, `{kind: "fix_connector", connector}`, or `{kind: "retry"}`. A room's
+`{text, section_id, room_id, session_id, since, action, in_chat}` where `action` is
+null, `{kind: "fix_connector", connector}`, or `{kind: "retry"}`. A stopped
+bot's `in_chat` is true when the failure has no room and no conversation of
+its own, such as a dream's, a scheduled job's or a CLI run's; clients show it
+in the bot's chat. A room's
 failed turns count only while the bot is still in that room; adding it back
 restores them. When a message you send, such as Retry, starts a turn in a
 private section, it resolves that section's own failed turn: same bot and

@@ -69,4 +69,33 @@ describe('stopped card from the bot status', () => {
     expect(stoppedCardFor(bot, 'section-1', [row()])).toBeNull()
     expect(stoppedCardFor({ ...bot, status: 'idle' } as Bot, 'section-1', [])).toBeNull()
   })
+
+  it("shows a failure with nowhere else to show, such as a dream's, in the bot's chat", () => {
+    const dream = {
+      ...bot,
+      status_detail: {
+        action: { kind: 'retry' },
+        in_chat: true,
+        room_id: null,
+        section_id: 'dream-1',
+        session_id: 'live-1',
+        since: 1_757_600_000,
+        text: 'fetch failed'
+      }
+    } as unknown as Bot
+
+    // The chat's own old error rows do not hide it.
+    expect(stoppedCardFor(dream, 'chat', [row()], true)).toMatchObject({ error: 'fetch failed' })
+    // A thread or Check-ins is not the bot's chat.
+    expect(stoppedCardFor(dream, 'chat', [], false)).toBeNull()
+    // A failure another conversation shows stays there.
+    expect(
+      stoppedCardFor(
+        { ...dream, status_detail: { ...dream.status_detail, in_chat: false } } as Bot,
+        'chat',
+        [],
+        true
+      )
+    ).toBeNull()
+  })
 })

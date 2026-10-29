@@ -1016,17 +1016,34 @@ export function botStatus(bot: Bot | undefined): BotStatus {
 }
 
 /**
- * A section's state: the daemon's status when its detail names this section,
+ * Whether the bot's status is about this section: the one its detail names,
+ * or the bot's chat (`chat`) for a failure nothing else shows (`in_chat`).
+ */
+export function statusIsHere(
+  bot: Bot | undefined,
+  sectionId: null | string,
+  chat = false
+): boolean {
+  const detail = bot?.status_detail
+
+  return Boolean(
+    detail && sectionId && (detail.section_id === sectionId || (chat && detail.in_chat))
+  )
+}
+
+/**
+ * A section's state: the daemon's status when it is about this section,
  * else what the live transcript says.
  */
 export function sectionStatusOf(
   bot: Bot | undefined,
   sectionId: null | string,
-  live: LiveSections = {}
+  live: LiveSections = {},
+  chat = false
 ): BotStatus {
   const status = botStatus(bot)
 
-  if (status !== 'idle' && sectionId && bot?.status_detail?.section_id === sectionId) {
+  if (status !== 'idle' && statusIsHere(bot, sectionId, chat)) {
     return status
   }
 

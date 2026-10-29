@@ -55,7 +55,7 @@ import { Management, type Panel } from './src/Management'
 import { useMobile } from './src/core/useMobile'
 import { useFeeling } from './src/core/feelings'
 import { clearTapped, useTappedSection } from './src/core/tapped'
-import { chatPreview, pulseTarget, purposeOf } from './src/core/routes'
+import { chatPreview, pulseTarget, purposeOf, stoppedIn } from './src/core/routes'
 import { CONNECT_ORIGIN, parseConnectCallback } from './src/core/links'
 import { clearConnectSession, loadConnectSession, saveConnectSession } from './src/core/storage'
 import { connectGrant, request, RevokedError } from './src/core/transport'
@@ -288,6 +288,8 @@ function MobileApp() {
   openChat.current = chatKey
   // The message whose stopped turn's error was closed: still yours to recall.
   const [closedOn, setClosedOn] = useState<string | null>(null)
+  // When the failure you closed happened; it stays closed while the bot's state catches up.
+  const [closedSince, setClosedSince] = useState<number | null>(null)
   useEffect(() => {
     setPanels([])
     setSwitcherOpen(false)
@@ -794,6 +796,15 @@ function MobileApp() {
       (owner.status === 'stopped' && owner.status_detail?.section_id === route.section.id)
     return last && stopped ? last.id : null
   })()
+  // A failure nothing else shows, such as a dream's, shows under the bot's chat.
+  const stoppedElsewhere = (() => {
+    if (route?.kind !== 'section') return null
+    const owner = botByName(route.bot.name) ?? route.bot
+    const detail = owner.status_detail
+    return detail?.in_chat && detail.since !== closedSince && stoppedIn(owner, route.section)
+      ? detail
+      : null
+  })()
   // Everything a conversation needs, for a bot thread and for the open room alike.
   const emotion = useFeeling(
     route?.kind === 'section' ? route.section.id : null,
@@ -826,9 +837,10 @@ function MobileApp() {
             : route?.kind === 'section' && !mobile.liveSessionId()
               ? 'Open this chat to send'
               : undefined,
-    error: mobile.chat.error || mobile.error,
+    error: mobile.chat.error || mobile.error || stoppedElsewhere?.text || null,
     onDismissError: () => {
       setClosedOn(mobile.chat.messages.findLast(m => m.role === 'user')?.id ?? null)
+      if (stoppedElsewhere) setClosedSince(stoppedElsewhere.since)
       act(mobile.dismissError)
     },
     recallId,
