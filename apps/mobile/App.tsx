@@ -979,6 +979,7 @@ function MobileApp() {
         face={faceOf(route.bot)}
         emotion={emotion}
         status={route.bot.status}
+        opening={mobile.opening}
         intro={
           <View style={{ alignItems: 'center', gap: 4, maxWidth: 320 }}>
             {route.bot.description ? (

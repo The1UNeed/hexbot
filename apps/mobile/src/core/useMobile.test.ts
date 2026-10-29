@@ -102,6 +102,23 @@ beforeEach(() => {
 afterEach(cleanup)
 
 describe('mobile navigation while a bot lookup waits', () => {
+  it('keeps a chat opening until its history arrives', async () => {
+    const hook = await connected()
+    const held = pause('hexbot.sections.open')
+    let opening!: Promise<void>
+    await act(async () => {
+      opening = hook.result.current.openSection(bot)
+      await held.called
+    })
+    expect(hook.result.current.route).toMatchObject({ kind: 'section', section: { id: 'owl-chat' } })
+    expect(hook.result.current.opening).toBe(true)
+    state.request.mockImplementation(reply)
+    await act(async () => {
+      held.resolve(await reply('hexbot.sections.open', { id: 'owl-chat' }))
+      await opening
+    })
+    expect(hook.result.current.opening).toBe(false)
+  })
   it('keeps the later room when canonical resolution completes', async () => {
     const hook = await connected()
     const held = pause('hexbot.sections.create')

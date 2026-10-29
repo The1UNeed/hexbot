@@ -6,6 +6,7 @@ export {
   type BotStatus,
   FaceDrawing,
   type FaceSource,
+  LoadingFace,
   moodForStatus,
   PersonFace,
   RoomFace,

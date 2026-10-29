@@ -1431,6 +1431,9 @@ function BotConversation() {
   // Each route entry (opening the chat, a reconnect, Retry) reads the history
   // again, even when the live session is still known: events may have been missed.
   const readFor = useRef<typeof entry | null>(null)
+  // The route entry whose history read has finished, kept even when the
+  // effect re-runs as the read names the live session.
+  const [readEntry, setReadEntry] = useState<typeof entry | null>(null)
 
   useEffect(() => {
     if (!ready || !params.section || (liveId && readFor.current === entry)) {
@@ -1449,6 +1452,12 @@ function BotConversation() {
     const sectionId = params.section
     void sectionsActions()
       .open(sectionId)
+      .then(() => {
+        // A slower read of a chat left since must not mark the one shown now.
+        if (readFor.current === entry) {
+          setReadEntry(entry)
+        }
+      })
       .catch(error => {
         if (current()) {
           setOpenFailure({
@@ -1776,6 +1785,12 @@ function BotConversation() {
 
   const name = bot?.display_name ?? params.bot ?? 'Bot'
 
+  // Until its history arrives a chat with messages would look empty, so the
+  // bot's face whirls instead; it fades in late enough that a quick read never shows it.
+  const opening = ready
+    ? !messages.length && !clarifies.length && readEntry !== entry
+    : !(kept && transcript)
+
   return (
     <div
       className="@container relative h-full min-h-0 overflow-hidden bg-background"
@@ -1821,9 +1836,13 @@ function BotConversation() {
               Retry
             </Button>
           </div>
-        ) : !ready && !(kept && transcript) ? (
-          <div className="grid h-full place-content-center text-muted" role="status">
-            Opening conversation
+        ) : opening ? (
+          <div
+            aria-label={`Opening ${name}'s chat`}
+            className="hex-fade grid h-full place-content-center [animation-delay:150ms]"
+            role="status"
+          >
+            <Avatar {...botFace(bot)} mood="loading" name={name} size="xl" />
           </div>
         ) : messages.length === 0 && clarifies.length === 0 ? (
           <div className="hex-rise grid h-full place-content-center justify-items-center gap-6 p-8 text-center">
