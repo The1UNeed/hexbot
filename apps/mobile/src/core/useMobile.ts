@@ -97,6 +97,11 @@ export function useMobile() {
   const [choosing, setChoosing] = useState<{ bot: Bot; choices: Section[]; current: () => boolean } | null>(null)
   /** Each bot's chat on an older daemon, so the user is asked once while the app runs. */
   const picked = useRef(new Map<string, string>())
+  /**
+   * Each bot's chat as the daemon last named it on this connection. A tap
+   * opens it at once and asks the daemon again, which may name another.
+   */
+  const named = useRef(new Map<string, Section>())
   const cancelNavigation = useCallback(() => {
     navigation.current++
     openSequence.current++
@@ -170,6 +175,7 @@ export function useMobile() {
     if (previousInfo && (previousInfo.one_chat !== i.one_chat || previousInfo.install_id !== i.install_id)) {
       cancelNavigation()
       picked.current.clear()
+      named.current.clear()
     }
     infoRef.current = i
     setBots(b.bots)
@@ -444,6 +450,7 @@ export function useMobile() {
       setUser(null)
       setChoosing(null)
       picked.current.clear()
+      named.current.clear()
       openSequence.current++
       loadingEvents.current = null
       routeRef.current = null
@@ -472,6 +479,7 @@ export function useMobile() {
           setConnects(count => count + 1)
           // A reconnect can reach an upgraded daemon at the same address.
           cancelNavigation()
+          named.current.clear()
           const generation = navigation.current
           const before = routeRef.current
           ownerPending.current = before?.kind === 'section' && ownerChat(before.section)
@@ -581,8 +589,18 @@ export function useMobile() {
     setError(null)
     try {
       const oneChat = (infoRef.current ?? (await lookup<DaemonInfo>('hexbot.info'))).one_chat === true
-      const found = await botChat(lookup, bot.name, oneChat, picked.current, section)
+      const known = oneChat && !section ? named.current.get(bot.name) : undefined
+      const found = known ? { section: known } : await botChat(lookup, bot.name, oneChat, picked.current, section)
       if (stale()) return
+      if (oneChat && !section && 'section' in found) named.current.set(bot.name, found.section)
+      if (known)
+        void botChat(lookup, bot.name, oneChat, picked.current)
+          .then(checked => {
+            if (stale() || !('section' in checked) || checked.section.id === known.id) return
+            named.current.set(bot.name, checked.section)
+            void openSectionRef.current(bot)
+          })
+          .catch(() => undefined)
       if ('choices' in found) {
         setChoosing({ bot, choices: found.choices, current: () => !stale() })
         return

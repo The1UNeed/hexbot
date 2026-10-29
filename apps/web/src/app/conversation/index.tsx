@@ -44,12 +44,14 @@ import type {
   BotStatus,
   ClarifyRequest
 } from '../../lib/types'
+import { openedElsewhere, selectionsSettled } from '../../lib/use-chat-selection'
 import { botMissing, useBot, useBots } from '../../stores/bots'
 import { useConnection } from '../../stores/connection'
 import { connectorsActions } from '../../stores/connectors'
 import { draftsActions } from '../../stores/drafts'
 import { useConversationFeelings, useEmotion } from '../../stores/emotions'
 import {
+  knownChat,
   liveSectionsOf,
   sectionsActions,
   sectionStatusOf,
@@ -1353,6 +1355,15 @@ function BotConversation() {
       destination?.bot === botName &&
       destination?.section === sectionId
     ) {
+      // The chat the daemon named on this connection opens at once; the check
+      // below still runs and moves to another chat if the daemon names one.
+      const known = knownChat(botName)?.id === sectionId
+      const clicks = selectionsSettled()
+
+      if (known) {
+        setResolved({ entry, peer: false })
+      }
+
       void (async () => {
         // A bookmark can name an owner chat that survived a conservative upgrade,
         // or an explicit teammate thread. Missing metadata must be read before
@@ -1374,19 +1385,29 @@ function BotConversation() {
         // A teammate thread or a section with its own purpose, such as the
         // Check-ins from before the heartbeat, opens as itself; anything else is the chat.
         const chat =
-          row?.peer_bot || row?.purpose ? row : await sectionsActions().chat(botName, current)
+          row?.peer_bot || row?.purpose
+            ? row
+            : await sectionsActions().chat(botName, current, known)
 
         if (!current()) {
           return
         }
 
+        // A known chat stays open when its check gets no answer; the next entry checks again.
         if (!chat) {
-          setOpenFailure({ section: sectionId, message: 'Choose a chat to continue.' })
+          if (!known) {
+            setOpenFailure({ section: sectionId, message: 'Choose a chat to continue.' })
+          }
 
           return
         }
 
         if (chat.id !== sectionId) {
+          // A click on another bot that finds its chat after this opened goes there instead.
+          if (known && ((await openedElsewhere(clicks)) || !current())) {
+            return
+          }
+
           void navigate({
             to: '/b/$bot/s/$section',
             params: { bot: chat.bot, section: chat.id },
@@ -1410,7 +1431,7 @@ function BotConversation() {
           return
         }
 
-        if (current()) {
+        if (current() && !known) {
           setOpenFailure({
             section: sectionId,
             message: error instanceof Error ? error.message : String(error)

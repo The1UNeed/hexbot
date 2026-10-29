@@ -37,6 +37,7 @@ import { roomStatus, roomUnread, useRoomList, useRooms } from '../../stores/room
 import {
   botStatusWithLive,
   introduceBot,
+  knownChat,
   type LiveSections,
   liveSectionsOf,
   sectionsActions,
@@ -279,7 +280,7 @@ function BotRow({
 export function RosterColumn() {
   const params = useParams({ strict: false }) as { bot?: string; section?: string }
   const navigate = useNavigate()
-  const { cancel: cancelChat, selectChat } = useChatSelection()
+  const { asking, cancel: cancelChat, selectChat } = useChatSelection()
   const bots = useBotList()
   const rooms = useRoomList()
   const sectionMap = useSections(state => state.byId)
@@ -420,8 +421,18 @@ export function RosterColumn() {
   /**
    * The bot's one chat, as the daemon names it: this window's list cannot
    * tell one recovery set aside. An older daemon's may be picked by the user.
+   * One it named on this connection opens at once; the chat view asks again.
    */
   const openChat = async (bot: string) => {
+    const known = knownChat(bot)
+
+    if (known) {
+      cancelChat()
+      open(bot, known.id)
+
+      return
+    }
+
     const chat = await selectChat(bot)
 
     if (chat) {
@@ -575,7 +586,11 @@ export function RosterColumn() {
             />
           ) : (
             <BotRow
-              active={Boolean(params.section) && params.bot === (entry.item as Bot).name}
+              active={
+                asking
+                  ? asking === (entry.item as Bot).name
+                  : Boolean(params.section) && params.bot === (entry.item as Bot).name
+              }
               bot={entry.item as Bot}
               draft={Object.values(sectionMap).some(
                 section => section.bot === (entry.item as Bot).name && Boolean(drafts[section.id])
