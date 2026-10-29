@@ -266,6 +266,64 @@ export interface ComputerSheetProps {
   connects: number
 }
 
+/** A screen that says nothing about its state, from an older daemon, takes over after this. */
+const QUIET_SCREEN_MS = 4000
+/** A screen that is still connecting takes over after this, so its error shows. */
+const SLOW_SCREEN_MS = 15_000
+
+/**
+ * The screen at `src`. A new link loads under the screen on show and takes
+ * its place once its picture is up, so taking control or giving it back
+ * never blanks it. Screens keep their place, since moving one reloads it.
+ */
+function Screens({ control, src }: { control: boolean; src: null | string }) {
+  // The first is on show; a second is loading under it.
+  const [frames, setFrames] = useState<{ control: boolean; uri: string }[]>([])
+  const timer = useRef<ReturnType<typeof setTimeout>>(undefined)
+  const next = frames[1]?.uri
+
+  if (src ? frames.at(-1)?.uri !== src : frames.length > 0)
+    setFrames(
+      !src
+        ? []
+        : frames[0]?.uri === src
+          ? frames.slice(0, 1)
+          : [...frames.slice(0, 1), { control, uri: src }]
+    )
+
+  const show = (uri: string) => setFrames(current => (current[1]?.uri === uri ? [current[1]] : current))
+  useEffect(() => {
+    if (!next) return
+    timer.current = setTimeout(() => show(next), QUIET_SCREEN_MS)
+    return () => clearTimeout(timer.current)
+  }, [next])
+  const heard = (uri: string, status: string) => {
+    if (uri !== next) return
+    clearTimeout(timer.current)
+    if (status === 'streaming' || status === 'failed') show(uri)
+    else timer.current = setTimeout(() => show(uri), SLOW_SCREEN_MS)
+  }
+
+  return (
+    <View style={StyleSheet.absoluteFill}>
+      {frames.map((frame, index) => (
+        <View
+          key={frame.uri}
+          pointerEvents={index === 0 ? 'auto' : 'none'}
+          style={[StyleSheet.absoluteFill, index === 0 && { zIndex: 1 }]}
+        >
+          <ComputerFrame
+            // Only the current link takes touches; one given back no longer can.
+            control={index === 0 && frame.control && frame.uri === src}
+            onStatus={status => heard(frame.uri, status)}
+            uri={frame.uri}
+          />
+        </View>
+      ))}
+    </View>
+  )
+}
+
 /**
  * The bots' shared computer on its own card: the live screen with each bot's
  * cursor, a line saying what is happening, and its controls. Take control
@@ -341,9 +399,13 @@ export function ComputerSheet({
     []
   )
 
+  // A new link for the same screen, as taking control or giving it back asks
+  // for, leaves the old one up until it arrives.
   useEffect(() => {
-    setSrc(null)
-    if (!running || !origin || !plays || !enabled || !quality || read !== connects) return
+    if (!running || !origin || !plays || !enabled || !quality || read !== connects) {
+      setSrc(null)
+      return
+    }
     let current = true
     let renew: ReturnType<typeof setTimeout> | undefined
     const load = () =>
@@ -427,7 +489,7 @@ export function ComputerSheet({
             ]}
             testID="computer-screen"
           >
-            {src ? <ComputerFrame control={user} uri={src} /> : null}
+            <Screens control={user} src={src} />
             <Cursors faceFor={faceFor} height={width / 1.6} status={status} width={width} />
           </View>
         ) : busy ? (

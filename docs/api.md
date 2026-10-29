@@ -742,6 +742,13 @@ cursor there.
   cookies and the viewer's own ticket authorises its calls. The daemon also
   serves `…/<token>/viewer` as the page, because Hex Connect's edge drops
   the trailing slash.
+  The page loads `…/viewer/hexbot-screen.js` from the daemon, which posts
+  `{type: "hexbot.computer.screen", status}` to the page around it
+  (`window.parent`, or `ReactNativeWebView` in the phone app) each time the
+  viewer's state changes: `connecting`, `streaming` once the picture is up,
+  `reconnecting` or `failed`. A client switching links, as taking control
+  and giving it back do, keeps the old screen in sight until the new one
+  streams.
   The viewer decodes H.264 with WebCodecs, which browsers offer only on a
   secure page: over HTTPS (Connect) or on the daemon's own computer. A page
   at a plain `http://` address on the network gets no video; clients say so

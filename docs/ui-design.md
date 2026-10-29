@@ -270,7 +270,10 @@ notice. Working and idle draw the plain pill.
     it. The cursor glides to where the bot acts, presses and rings on a
     click, and the face taps while the bot types; it fades after 45 seconds
     idle. "Take control" opens the screen large over the app, where the user
-    can click and type; "Give back" or closing the window hands it back. A
+    can click and type; "Give back" or closing the window hands it back.
+    The small screen keeps playing under the window, and a screen switching
+    between watching and control keeps its picture until the new one is up,
+    so neither goes black. A
     menu has Open larger, Restart, Turn off and Reset… (asks first:
     everything on it is erased, for every bot), then "Quality on this
     device" with Auto (the default), 1080p · 60 fps, 1080p · 30 fps,
@@ -289,6 +292,7 @@ notice. Working and idle draw the plain pill.
     or you have it: the screen with the same face cursors, the line under
     it, Take control or Give back, Restart, Turn off and Reset… as rows,
     and a "Quality on this device" group with the same five choices.
+    Its screen, too, keeps its picture through Take control and Give back.
     Closing the card while you have control gives it back.
 
     ![The Computer tab's menu with the quality choices](screens/computer-quality.png)

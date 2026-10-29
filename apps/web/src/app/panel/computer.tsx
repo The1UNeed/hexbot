@@ -1,5 +1,5 @@
 import { Ellipsis, Monitor } from 'lucide-react'
-import { type CSSProperties, useEffect, useState } from 'react'
+import { type CSSProperties, useEffect, useRef, useState } from 'react'
 
 import { Avatar, useFaceColor } from '../../components/ui/avatar'
 import { Button } from '../../components/ui/button'
@@ -72,9 +72,11 @@ function useScreen(live: boolean, control: boolean): null | string {
   const [renewals, setRenewals] = useState(0)
 
   useEffect(() => {
-    setScreen(null)
-
+    // A new link for the same screen, as taking control or giving it back
+    // asks for, leaves the old one up until it arrives.
     if (!live || !target || read !== connects || !screenPlays(targetOrigin(target))) {
+      setScreen(null)
+
       return
     }
 
@@ -213,16 +215,92 @@ function Cursors({ small = false, status }: { small?: boolean; status: ComputerS
   )
 }
 
-function Frame({ control, src }: { control: boolean; src: string }) {
+/** A screen that says nothing about its state, from an older daemon, takes over after this. */
+const QUIET_SCREEN_MS = 4000
+/** A screen that is still connecting takes over after this, so its error shows. */
+const SLOW_SCREEN_MS = 15_000
+
+/**
+ * The screen at `src`. A new link loads under the screen on show and takes
+ * its place once its picture is up, so taking control or giving it back
+ * never blanks it. Frames keep their place in the page, since moving one
+ * would reload it.
+ */
+function Frames({ control, src }: { control: boolean; src: null | string }) {
+  // The first is on show; a second is loading under it.
+  const [frames, setFrames] = useState<{ control: boolean; src: string }[]>([])
+  const pending = useRef<HTMLIFrameElement>(null)
+  const next = frames[1]?.src
+
+  if (src ? frames.at(-1)?.src !== src : frames.length > 0) {
+    setFrames(
+      !src
+        ? []
+        : frames[0]?.src === src
+          ? frames.slice(0, 1)
+          : [...frames.slice(0, 1), { control, src }]
+    )
+  }
+
+  useEffect(() => {
+    if (!next) {
+      return
+    }
+
+    const show = () => setFrames(current => (current[1]?.src === next ? [current[1]] : current))
+    let timer = setTimeout(show, QUIET_SCREEN_MS)
+
+    const listen = (event: MessageEvent) => {
+      const status = (event.data as { status?: string; type?: string } | null) ?? {}
+
+      if (
+        event.source !== pending.current?.contentWindow ||
+        status.type !== 'hexbot.computer.screen'
+      ) {
+        return
+      }
+
+      clearTimeout(timer)
+
+      if (status.status === 'streaming' || status.status === 'failed') {
+        show()
+      } else {
+        timer = setTimeout(show, SLOW_SCREEN_MS)
+      }
+    }
+
+    window.addEventListener('message', listen)
+
+    return () => {
+      clearTimeout(timer)
+      window.removeEventListener('message', listen)
+    }
+  }, [next])
+
   return (
-    <iframe
-      allow="clipboard-read; clipboard-write; fullscreen; autoplay"
-      className={cn('size-full border-0 bg-black', control ? '' : 'pointer-events-none')}
-      key={src}
-      src={src}
-      tabIndex={control ? 0 : -1}
-      title="Your bots' screen"
-    />
+    <div className="absolute inset-0 isolate">
+      {frames.map((frame, index) => {
+        // Only the current link takes clicks; one given back no longer can.
+        const input = index === 0 && frame.control && frame.src === src
+
+        return (
+          <iframe
+            allow="clipboard-read; clipboard-write; fullscreen; autoplay"
+            aria-hidden={index > 0 || undefined}
+            className={cn(
+              'absolute inset-0 size-full border-0 bg-black',
+              index === 0 ? 'z-[1]' : '',
+              input ? '' : 'pointer-events-none'
+            )}
+            key={frame.src}
+            ref={index === 1 ? pending : undefined}
+            src={frame.src}
+            tabIndex={input ? 0 : -1}
+            title="Your bots' screen"
+          />
+        )
+      })}
+    </div>
   )
 }
 
@@ -311,7 +389,7 @@ function ComputerWindow({ onClose, status }: { onClose: () => void; status: Comp
             user ? 'ring-2 ring-info' : ''
           )}
         >
-          {src ? <Frame control={user} src={src} /> : null}
+          <Frames control={user} src={src} />
           <Cursors status={status} />
         </div>
       </div>
@@ -337,7 +415,8 @@ function Screen({ bot, onSave }: { bot: Bot; onSave: SaveBot }) {
   const [open, setOpen] = useState(false)
   const enabled = bot.tools.includes('computer_use')
   const running = status?.state === 'running'
-  const src = useScreen(running && enabled && !open, false)
+  // It keeps playing while the window is open, so it is there when it closes.
+  const src = useScreen(running && enabled, false)
   const actor = useActorName(status?.actor)
   const connects = useConnection(state => state.connects)
   const target = useConnection(state => state.target)
@@ -426,7 +505,7 @@ function Screen({ bot, onSave }: { bot: Bot; onSave: SaveBot }) {
           onClick={() => setOpen(true)}
           type="button"
         >
-          {src ? <Frame control={false} src={src} /> : null}
+          <Frames control={false} src={src} />
           {open ? null : <Cursors small status={status} />}
         </button>
       ) : (
@@ -512,7 +591,9 @@ function Screen({ bot, onSave }: { bot: Bot; onSave: SaveBot }) {
               label: (
                 <span className="flex w-full items-center justify-between gap-6">
                   {option.label}
-                  {quality === option.value ? <MenuCheckIcon aria-label="Chosen" size={14} /> : null}
+                  {quality === option.value ? (
+                    <MenuCheckIcon aria-label="Chosen" size={14} />
+                  ) : null}
                 </span>
               ),
               onSelect: () => setQuality(option.value)
@@ -534,7 +615,9 @@ function Screen({ bot, onSave }: { bot: Bot; onSave: SaveBot }) {
           {error}
         </p>
       ) : null}
-      {open && running && plays ? <ComputerWindow onClose={() => setOpen(false)} status={status} /> : null}
+      {open && running && plays ? (
+        <ComputerWindow onClose={() => setOpen(false)} status={status} />
+      ) : null}
     </section>
   )
 }
