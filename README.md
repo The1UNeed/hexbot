@@ -49,13 +49,31 @@ The app follows the track it was installed from; switch in Settings, Updates.
 
 ## What it does
 
-- **Bots with memory.** Each bot has a soul, its own memory, and a searchable
-  history of its conversations. A daily **dreaming** pass tidies the memory.
-  One **About you** text, written by you, reaches every bot you own.
+- **A primary bot.** Setup creates **HexBot**, which creates, changes, and
+  deletes your other bots, builds rooms, schedules jobs, and changes settings
+  from its chat. Deleting anything or changing settings always asks, even in
+  Bypass.
+- **Bots with memory.** Each bot has a soul, its own memory, daily notes, and
+  a searchable history of its one ongoing **chat**. A daily **dreaming** pass
+  folds the notes into memory. One **About you** text, written by you,
+  reaches every bot you own. Recall your latest message and the bot forgets
+  it.
+- **Heartbeat.** Every 30 minutes each bot works through its own checklist,
+  `HEARTBEAT.md`, and writes to you only when something needs you.
+- **A shared computer.** With Computer use on, bots click and type on one
+  Linux desktop (a [Cua](https://cua.ai) sandbox in Docker) that you can
+  watch live and take over.
+- **Visuals.** In its chat a bot can show a chart, table, diagram, or mockup
+  as a live, sandboxed page above its reply.
+- **Faces.** Each bot's face moves with what it does and reacts to what
+  happens, with optional sound cues.
 - **Rooms.** Group chats with any number of bots and people. A **main bot**
   answers when nobody is @-mentioned; bots can address each other.
 - **Any model.** Bring keys for OpenAI, Anthropic, Google, OpenRouter, local
-  servers, and more. Pick a model per bot.
+  servers, and more. Pick a model and a thinking level per bot.
+- **Plugins.** Connectors, MCP servers, skills, and plugin packages, set up
+  once in Settings, Plugins and given to the bots you choose. A bot can ask to
+  install one; that always asks you.
 - **Tools with approvals.** Bots can run commands, browse, and edit files.
   In **Auto mode**, the default, they work freely inside the workspace
   behind an OS sandbox; steps outside it get a check by the bot's model, and
@@ -72,9 +90,10 @@ The app follows the track it was installed from; switch in Settings, Updates.
   scan is incomplete.
   Repositories created during a command are not protected on Linux. macOS
   filename rules also cover new `.git` metadata directories.
-- **Your hardware.** The daemon runs where you install it. Pair devices over
-  LAN or Tailscale, revoke them from settings, and delete conversations
-  together with the memory they produced.
+- **Your hardware.** The daemon runs where you install it and keeps working
+  when the window closes. Pair the desktop app, a browser, or the iPhone and
+  Android app over LAN or Tailscale, and revoke them from settings.
+  Settings, Advanced, Diagnostics shows what the daemon is doing.
 - **Hex Connect.** Sign in once, reach your daemon from outside the LAN in the app or a browser.
   Connect brokers identity and a hostname; chat traffic never passes through
   it.

@@ -2,7 +2,7 @@
 import Base from '../layouts/Base.astro'
 import { toolGroups } from '../lib/tools'
 
-const description = 'Every tool a Hexbot bot can use: terminal, files, code, browser, rooms, memory, web search, image generation, Notion, Home Assistant, MCP servers, and more.'
+const description = 'Every tool a Hexbot bot can use: a shared computer, terminal, files, code, browser, visuals, heartbeats, rooms, memory, web search, image generation, Notion, Home Assistant, MCP servers, and more.'
 const list = {
   '@context': 'https://schema.org',
   '@type': 'ItemList',
@@ -13,7 +13,7 @@ const list = {
 <Base title="Tools" description={description} jsonLd={[list]}>
   <section class="mx-auto max-w-[1120px] px-5 pt-10 sm:px-8 lg:pt-16">
     <h1 class="display text-[clamp(2.75rem,7vw,4.25rem)]">What your bots can do</h1>
-    <p class="lede mt-4">Each bot runs on the machine you install Hexbot on, with real tools. Switch any of them off per bot in Bot settings, Tools.</p>
+    <p class="lede mt-4">Each bot runs on the machine you install Hexbot on, with real tools. Switch them per bot in Bot settings, Tools, and choose which bots get each plugin in Settings, Plugins.</p>
     <nav aria-label="Tool groups" class="mt-8 flex flex-wrap gap-2">
       {toolGroups.map(group => <a class="pill" href={`#${group.id}`}>{group.title}</a>)}
       <a class="pill" href="#models">Models</a>
@@ -46,7 +46,7 @@ const list = {
     <div>
       <h2 class="display-sm text-[clamp(1.75rem,4vw,2.25rem)]">Any model you already pay for</h2>
       <p class="mt-4">More than 50 model providers. Sign in with a ChatGPT, SuperGrok, or Nous Portal subscription, or paste an API key for Anthropic, OpenAI, Google, xAI, OpenRouter, DeepSeek, and the rest. Run local models through Ollama or LM Studio.</p>
-      <p class="mt-4 text-mute">Each bot picks its own model, and a fallback model takes over when a provider is down. <a href="/docs/providers/">Providers and billing</a></p>
+      <p class="mt-4 text-mute">Each bot picks its own model and how hard it thinks, from Off to Max, and a fallback model takes over when a provider is down. <a href="/docs/providers/">Providers and billing</a></p>
     </div>
     <figure class="shot bg-paper"><img src="/screens/providers.webp" width="1100" height="1113" alt="Hexbot's Connect a provider screen listing subscriptions and API key providers." loading="lazy" /></figure>
   </section>

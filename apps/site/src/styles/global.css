@@ -148,3 +148,25 @@ div.rise { display: flex; }
 .legal dl { margin: 1rem 0; }
 .legal dt { font-weight: 650; }
 .legal dd { margin: .15rem 0 .75rem; color: var(--color-mute); }
+
+/* Drawings of the app (components/Scene.astro). Still pictures: only the faces move. */
+.scene { border-radius: 22px; background: var(--color-wash); padding: 1.1rem; }
+.scene-dark { background: #17171a; color: #fff; }
+.chip { display: inline-flex; align-items: center; padding: .1rem .55rem; border-radius: 999px; background: var(--color-paper); box-shadow: inset 0 0 0 1px var(--color-line); color: var(--color-mute); font-size: 12px; font-weight: 500; white-space: nowrap; }
+.chip-dark { background: rgb(255 255 255 / .08); box-shadow: none; color: rgb(255 255 255 / .75); }
+.mini-button { display: inline-flex; align-items: center; padding: .2rem .7rem; border-radius: 999px; background: var(--color-wash); box-shadow: inset 0 0 0 1px var(--color-line); font-size: 13px; font-weight: 600; white-space: nowrap; }
+.mini-button-ink { background: var(--color-ink); box-shadow: none; color: var(--color-paper); }
+.mini-button-light { background: #fff; box-shadow: none; color: var(--color-ink); }
+.beat { width: 12px; height: 12px; border-radius: 999px; background: var(--color-paper); box-shadow: inset 0 0 0 2px var(--color-line); }
+.beat-alert { background: #3b82f6; box-shadow: 0 0 0 4px rgb(59 130 246 / .18); }
+.screen { position: relative; overflow: hidden; border-radius: 14px; background: linear-gradient(160deg, #2c2a4a, #3b2f5c 55%, #5a3b5e); aspect-ratio: 16 / 10; }
+.screen .dot { width: 7px; height: 7px; border-radius: 999px; background: var(--color-line); }
+.field-active { padding: 0 .35rem; border-radius: 4px; box-shadow: 0 0 0 2px #3b82f6; }
+.cursor { position: absolute; display: flex; align-items: flex-start; gap: 1px; filter: drop-shadow(0 2px 3px rgb(0 0 0 / .35)); }
+.cursor .face { margin-top: 10px; }
+.cursor-a { left: 62%; top: 52%; }
+.cursor-b { left: 22%; top: 76%; opacity: .75; }
+.bar { display: block; height: 14px; border-radius: 4px; background: #22a55b; }
+.recalled { opacity: .45; text-decoration: line-through; text-decoration-thickness: 1px; }
+.caret { display: inline-block; width: 1.5px; height: 1em; margin-left: 1px; vertical-align: -.15em; background: var(--color-accent); }
+.phone { width: 100%; max-width: 300px; margin-inline: auto; padding: 1.1rem .9rem; border-radius: 40px; background: var(--color-paper); box-shadow: 0 0 0 8px #17171a, 0 30px 60px -30px rgb(0 0 0 / .5); }

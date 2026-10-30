@@ -5,13 +5,16 @@ export const docGroups = [
       { title: 'Install', summary: 'Install Full, Client, or Headless, from the installer or a terminal.', href: '/docs/install/' },
       { title: 'Quick start', summary: 'Connect a provider, meet HexBot, and send a message.', href: '/docs/quick-start/' },
       { title: 'Providers and billing', summary: 'Add credentials, choose models, and understand usage charges.', href: '/docs/providers/' },
-      { title: 'Bots and chats', summary: 'Give bots a role and keep one ongoing chat with each.', href: '/docs/bots-and-sections/' },
+      { title: 'Bots and chats', summary: 'Give bots a role, keep one ongoing chat with each, and meet HexBot, your primary bot.', href: '/docs/bots-and-sections/' },
     ],
   },
   {
     title: 'Work with bots',
     pages: [
       { title: 'Tools, plugins, and skills', summary: 'Enable local tools, then choose the connectors, MCP servers, and skills each bot gets.', href: '/docs/tools-and-skills/' },
+      { title: 'Heartbeat', summary: 'Give a bot a checklist it works through every 30 minutes, and hear only when something needs you.', href: '/docs/bots-and-sections/#heartbeat' },
+      { title: "Your bots' computer", summary: 'Give bots a shared Linux desktop to work in, and watch or take control.', href: '/docs/tools-and-skills/#your-bots-computer' },
+      { title: 'Visuals', summary: 'Let a bot show a chart, table, diagram, or mockup in its chat.', href: '/docs/visuals/' },
       { title: 'Approvals', summary: 'Use Auto, Manual, or Bypass to control what a bot can do.', href: '/docs/approvals/' },
       { title: 'Memory', summary: "Edit a bot's soul and memory, and your About you text.", href: '/docs/memory/' },
       { title: 'Rooms', summary: 'Work with several bots and people, or ask another bot for private help.', href: '/docs/rooms/' },
@@ -32,6 +35,7 @@ export const docGroups = [
     title: 'Run and maintain Hexbot',
     pages: [
       { title: 'Updates', summary: 'Choose Stable or Nightly and update an app or remote daemon.', href: '/docs/updates/' },
+      { title: 'Diagnostics', summary: 'See launch time, resources, run traces, failures, and cache hit rates.', href: '/docs/diagnostics/' },
       { title: 'CLI', summary: 'Start a daemon, manage devices, and send messages from a terminal.', href: '/docs/cli/' },
       { title: 'Run from source', summary: 'Develop Hexbot or build the daemon from a source checkout.', href: '/docs/development/' },
     ],

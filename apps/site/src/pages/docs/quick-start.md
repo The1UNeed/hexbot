@@ -30,7 +30,7 @@ Model credentials and tool credentials are separate. A model key does not config
 
 Setup ends by creating HexBot, your primary bot, on the default model. Hexbot opens your chat with it, where it introduces itself and asks what you mainly want help with. HexBot looks after your other bots: ask it to create one for a job, put bots together in a room, schedule work, or change a setting. It asks before deleting anything or changing settings. You can also create bots yourself from the roster.
 
-Give it a small first task, such as "Make me a bot that reviews my writing." In Bot settings, you can rename HexBot and change its Soul, Model, Tools, Connectors, and Skills. See [Bots and sections](/docs/bots-and-sections/#the-primary-bot).
+Give it a small first task, such as "Make me a bot that reviews my writing." In Bot settings, you can rename HexBot and change its Soul, Model, Tools, Connectors, and Skills. See [The primary bot](/docs/bots-and-sections/#the-primary-bot).
 
 ## 5. Give it a workspace
 
@@ -41,7 +41,11 @@ If you connect remotely, files and commands still belong to the daemon computer.
 ## Next tasks
 
 - Keep talking in the bot's [chat](/docs/bots-and-sections/); it summarises older messages as it grows and keeps what matters in memory.
+- Write a [heartbeat](/docs/bots-and-sections/#heartbeat) checklist, or ask a bot to keep an eye on something, and hear from it only when something needs you.
+- Ask for a chart or a table, and the bot shows a [visual](/docs/visuals/) above its reply.
 - Create a [room](/docs/rooms/) and mention two bots to get both perspectives.
 - Turn on Message other bots and give each teammate a description so bots can ask the right one for help.
 - Enable [Scheduling](/docs/scheduling/) when you want a job to run while you are away.
+- Choose which bots get web search, Notion, or an MCP server in Settings, [Plugins](/docs/tools-and-skills/#plugins).
+- Turn on Computer use to give your bots [a computer of their own](/docs/tools-and-skills/#your-bots-computer) you can watch.
 - [Pair another device](/docs/pairing-and-lan/) or use [Hex Connect](/docs/connect/) to reach the same daemon.

@@ -5,8 +5,10 @@
  * eyes sit in the ball frame, so the script that turns them toward the
  * pointer moves a small triangle and a big round face by the same angle.
  * Give `size` for a fixed face, or omit it and size the parent: the SVG then fills its container.
+ * `mood` holds the eyes in one of the app's poses (EYE_MOODS in
+ * apps/web/src/lib/face-geometry.ts); without it the face is idle.
  */
-interface Props { shape: keyof typeof shapes; color: string; size?: number; class?: string; delay?: number }
+interface Props { shape: keyof typeof shapes; color: string; size?: number; class?: string; delay?: number; mood?: keyof typeof moods }
 const shapes = {
   round: { path: 'M50 5a45 45 0 1 1 0 90a45 45 0 1 1 0-90Z', cy: 54, r: 45 },
   squircle: { path: 'M50 5c34 0 45 11 45 45S84 95 50 95 5 84 5 50 16 5 50 5Z', cy: 54, r: 45 },
@@ -17,19 +19,47 @@ const shapes = {
   cloud: { path: 'M26 85a19 19 0 0 1-5.9-37 28 28 0 0 1 55.8-4.6 21 21 0 0 1-3.9 41.6Z', cy: 57, r: 30 },
   drop: { path: 'M50 5c12.7 19.8 38 36.3 38 52a38 38 0 0 1-76 0C12 41.3 37.3 24.8 50 5Z', cy: 59, r: 37 },
 }
+// [dx, dy, lean, size, squash, turn], copied from the app's EYE_MOODS.
+const moods = {
+  idle: [0, 0, 0, 13.5, 1, 0],
+  listening: [0, 1, 0, 14.5, 1, 0],
+  working: [0, 1, 0, 12.5, 1, 0],
+  happy: [0, -2, 0, 9.5, 0.7, 90],
+  sleeping: [0, 3, 0, 9, 0.2, 90],
+  bored: [0, 4, 0, 7.5, 1.1, 90],
+  celebrating: [0, -3, -14, 10.5, 0.6, 90],
+  confused: [0, 0, 12, 13, 0.8, 0],
+  curious: [1, -2, -6, 13.5, 1, 0],
+  drowsy: [0, 5, -6, 8.5, 0.45, 90],
+  frustrated: [0, 1, 16, 11, 0.45, 90],
+  proud: [0, -3, -12, 10, 0.55, 90],
+  sad: [0, 6, -12, 11.5, 0.85, 0],
+  shy: [-3, 4, -10, 9.5, 0.6, 90],
+  surprised: [0, -1, 0, 16.5, 1, 0],
+} as const
+const CAPSULE = 'M-0.4333 -0.5667A0.4333 0.4333 0 0 1 0.4333 -0.5667V0.5667A0.4333 0.4333 0 0 1 -0.4333 0.5667Z'
 /** Chalk is the one colour too light for white eyes. */
 const LIGHT = ['#ececf0']
-const { shape, color, size, class: className = '', delay = 0 } = Astro.props
+const { shape, color, size, class: className = '', delay = 0, mood } = Astro.props
 const { path, cy, r } = shapes[shape]
 const eyes = LIGHT.includes(color.toLowerCase()) ? '#151517' : '#ffffff'
+const pose = mood && mood !== 'idle' ? moods[mood] : undefined
+const placed = pose && [-1, 1].map(side => {
+  const [dx, dy, lean, s, squash, turn] = pose
+  return `translate(${side * 14.5 + dx} ${dy}) rotate(${-side * lean}) scale(${s} ${s * squash}) rotate(${turn})`
+})
 ---
 <svg aria-hidden="true" class:list={['face', size === undefined && 'h-auto w-full', className]} viewBox="0 0 100 100" width={size ?? 100} height={size ?? 100} data-face>
   <path d={path} fill={color}></path>
   <g transform={`translate(50 ${cy}) scale(${r / 45})`}>
     <g class="pupils">
       <g class:list={['eyes', `[animation-delay:${delay}s]`]}>
-        <rect x="-20.35" y="-13.5" width="11.7" height="27" rx="5.85" fill={eyes}></rect>
-        <rect x="8.65" y="-13.5" width="11.7" height="27" rx="5.85" fill={eyes}></rect>
+        {placed ? placed.map(transform => <path d={CAPSULE} transform={transform} fill={eyes}></path>) : (
+          <>
+            <rect x="-20.35" y="-13.5" width="11.7" height="27" rx="5.85" fill={eyes}></rect>
+            <rect x="8.65" y="-13.5" width="11.7" height="27" rx="5.85" fill={eyes}></rect>
+          </>
+        )}
       </g>
     </g>
   </g>
