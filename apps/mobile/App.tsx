@@ -1,5 +1,5 @@
 import { Ionicons } from '@expo/vector-icons'
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ActivityIndicator, BackHandler, Platform, View } from 'react-native'
 import { SafeAreaProvider } from 'react-native-safe-area-context'
 import { StatusBar } from 'expo-status-bar'
@@ -177,9 +177,9 @@ function MobileApp() {
   mobileRef.current = mobile
   const nativeUrl = ExpoLinking.useURL()
   const panel = panels.at(-1) ?? null
-  const act = (work: () => Promise<unknown>) => {
-    void work().catch(e => mobile.setError(messageOf(e)))
-  }
+  const act = useCallback((work: () => Promise<unknown>) => {
+    void work().catch(e => mobileRef.current.setError(messageOf(e)))
+  }, [])
   // Cards stack: a card already in the stack is returned to instead of opened twice.
   const navigate = (next: Panel, keep?: Record<string, string | boolean>) =>
     setPanels(stack => {
@@ -614,47 +614,52 @@ function MobileApp() {
           ]
         }
       ]
-  const visuals = new Map<string, { title: string; html: string }>()
-  const items: ChatItem[] = mobile.chat.messages.flatMap((m): ChatItem[] =>
-    m.role === 'system'
-      ? [{ kind: 'notice', id: m.id, text: m.text, tone: m.tone }]
-      : [
-          // A conversation shows what bots say and the visuals they draw, not their steps.
-          ...(m.tools ?? [])
-            .filter(t => t.name === 'hexbot_show_html' && t.status === 'ok')
-            .flatMap((t, i) => {
-              const args = parseArgs(t.args) as { title?: string; html?: string } | null
-              if (typeof args?.html !== 'string') return []
-              const id = `visual-${m.id}-${i}`
-              visuals.set(id, { title: args.title || 'Visual', html: args.html })
-              return [
-                {
-                  kind: 'visual' as const,
-                  id,
-                  title: args.title || 'Visual',
-                  index: visuals.size - 1
-                }
-              ]
-            }),
-          {
-            kind: 'message',
-            id: m.id,
-            role:
-              m.role === 'user'
-                ? route?.kind !== 'room' || m.sender === mobile.user?.id
-                  ? 'user'
-                  : 'human'
-                : 'bot',
-            text: m.text,
-            author:
-              m.role === 'user'
-                ? { name: m.senderName || 'Former member' }
-                : m.sender && botByName(m.sender)
-                  ? faceOf(botByName(m.sender)!)
-                  : undefined
-          }
-        ]
-  )
+  const { items: historyItems, visuals } = useMemo(() => {
+    const botByName = (name: string) => mobile.bots.find(b => b.name === name)
+    const visuals = new Map<string, { title: string; html: string }>()
+    const items: ChatItem[] = mobile.chat.messages.flatMap((m): ChatItem[] =>
+      m.role === 'system'
+        ? [{ kind: 'notice', id: m.id, text: m.text, tone: m.tone }]
+        : [
+            // A conversation shows what bots say and the visuals they draw, not their steps.
+            ...(m.tools ?? [])
+              .filter(t => t.name === 'hexbot_show_html' && t.status === 'ok')
+              .flatMap((t, i) => {
+                const args = parseArgs(t.args) as { title?: string; html?: string } | null
+                if (typeof args?.html !== 'string') return []
+                const id = `visual-${m.id}-${i}`
+                visuals.set(id, { title: args.title || 'Visual', html: args.html })
+                return [
+                  {
+                    kind: 'visual' as const,
+                    id,
+                    title: args.title || 'Visual',
+                    index: visuals.size - 1
+                  }
+                ]
+              }),
+            {
+              kind: 'message',
+              id: m.id,
+              role:
+                m.role === 'user'
+                  ? route?.kind !== 'room' || m.sender === mobile.user?.id
+                    ? 'user'
+                    : 'human'
+                  : 'bot',
+              text: m.text,
+              author:
+                m.role === 'user'
+                  ? { name: m.senderName || 'Former member' }
+                  : m.sender && botByName(m.sender)
+                    ? faceOf(botByName(m.sender)!)
+                    : undefined
+            }
+          ]
+    )
+    return { items, visuals }
+  }, [mobile.chat.messages, mobile.bots, mobile.user?.id, route?.kind])
+  const items = [...historyItems]
   const liveTurns =
     route?.kind === 'room'
       ? Object.values(mobile.chat.turns)
@@ -778,8 +783,10 @@ function MobileApp() {
       }
     })
   }
-  const renderMessageText: ChatScreenProps['renderMessageText'] = item =>
-    item.text ? <MarkdownText text={item.text} user={item.role === 'user'} /> : null
+  const renderMessageText = useCallback<NonNullable<ChatScreenProps['renderMessageText']>>(
+    item => (item.text ? <MarkdownText text={item.text} user={item.role === 'user'} /> : null),
+    []
+  )
   // Your latest message in a bot's chat, while the bot is on it or after its turn
   // stopped, with or without its closed error.
   const recallId = (() => {
@@ -816,6 +823,32 @@ function MobileApp() {
     !mobile.loading
   )
 
+  const recall = useCallback(
+    (id: string) =>
+      confirm(
+        'Recall',
+        `${route?.kind === 'section' ? route.bot.display_name : 'The bot'} forgets this message and its reply. The text goes back in the message box.`,
+        () =>
+          act(async () => {
+            const from = chatKey
+            const text = await mobileRef.current.recall(id)
+            // The message box belongs to the chat open now; another one keeps its own.
+            if (text && openChat.current === from)
+              setDraft(previous => (previous.trim() ? `${text}\n\n${previous}` : text))
+          })
+      ),
+    [act, chatKey, route?.kind, route?.kind === 'section' ? route.bot.display_name : null]
+  )
+  const approve = useCallback(
+    (id: string, choice: ApprovalChoice) => act(() => mobileRef.current.approval(id, choice)),
+    [act]
+  )
+  const openVisual = useCallback((id: string) => setVisual(visuals.get(id) ?? null), [visuals])
+  const chatFace = useMemo(
+    () => (route?.kind === 'section' ? faceOf(route.bot) : undefined),
+    [route?.kind === 'section' ? route.bot : null]
+  )
+
   const conversation = {
     items,
     renderMessageText,
@@ -828,8 +861,8 @@ function MobileApp() {
     onStop: () => act(mobile.stop),
     attachments,
     onRemoveAttachment: removeAttachment,
-    onApprove: (id: string, choice: ApprovalChoice) => act(() => mobile.approval(id, choice)),
-    onOpenVisual: (id: string) => setVisual(visuals.get(id) ?? null),
+    onApprove: approve,
+    onOpenVisual: openVisual,
     sendDisabledReason: uploading
       ? 'Sending attachments'
       : mobile.loading
@@ -848,19 +881,7 @@ function MobileApp() {
       act(mobile.dismissError)
     },
     recallId,
-    onRecall: (id: string) =>
-      confirm(
-        'Recall',
-        `${route?.kind === 'section' ? route.bot.display_name : 'The bot'} forgets this message and its reply. The text goes back in the message box.`,
-        () =>
-          act(async () => {
-            const from = chatKey
-            const text = await mobile.recall(id)
-            // The message box belongs to the chat open now; another one keeps its own.
-            if (text && openChat.current === from)
-              setDraft(previous => (previous.trim() ? `${text}\n\n${previous}` : text))
-          })
-      ),
+    onRecall: recall,
     onRetry: () =>
       act(async () => {
         await mobile.retry()
@@ -992,7 +1013,7 @@ function MobileApp() {
               ? `With ${botByName(route.section.peer_bot)?.display_name ?? route.section.peer_bot}`
               : null
         }
-        face={faceOf(route.bot)}
+        face={chatFace}
         emotion={emotion}
         status={route.bot.status}
         opening={mobile.opening}

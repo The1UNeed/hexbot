@@ -1,6 +1,6 @@
 import { useNavigate, useParams } from '@tanstack/react-router'
 import { Info } from 'lucide-react'
-import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
+import { Fragment, memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 
 import { Avatar, useFaceColor } from '../../components/ui/avatar'
 import { RoomCluster } from '../../components/ui/room-cluster'
@@ -35,6 +35,7 @@ import {
   CardRow,
   ConnectedToolsNotice,
   DaySeparator,
+  LoadEarlierMessages,
   Markdown,
   transcriptClass,
   userBubbleClass
@@ -44,7 +45,7 @@ import {
 const NO_EVENTS: RoomEvent[] = []
 const NO_TURNS: Record<string, RoomTurn> = {}
 
-export function RoomEventRow({
+export const RoomEventRow = memo(function RoomEventRow({
   event,
   fresh = false,
   latest = false
@@ -190,7 +191,7 @@ export function RoomEventRow({
       {asked.length ? <AskRows asks={asked} sender={event.actor_id ?? null} /> : null}
     </>
   )
-}
+})
 
 /** A finished turn's asks from its `message.bot` payload: `[{to, section_id}]`. */
 function storedAsks(value: unknown): Ask[] {
@@ -279,6 +280,59 @@ export function RoomConversation() {
   const [text, setText] = useState('')
   const [sending, setSending] = useState(false)
   const bottom = useRef<HTMLDivElement>(null)
+  const viewport = useRef<HTMLDivElement>(null)
+  const atBottom = useRef(true)
+  const earlierAnchor = useRef<{ height: number; top: number } | null>(null)
+  // Keep the first shown event while live events append, so reading older messages stays put.
+  const [historyWindow, setWindow] = useState({ room: roomId, first: events.at(-60)?.seq })
+  const first = historyWindow.room === roomId ? historyWindow.first : events.at(-60)?.seq
+
+  // A live event can arrive before hydration prepends the history. Always
+  // include at least the recent suffix once that earlier history arrives.
+  const start =
+    first === undefined
+      ? 0
+      : Math.min(
+          Math.max(
+            0,
+            events.findIndex(event => event.seq >= first)
+          ),
+          Math.max(0, events.length - 60)
+        )
+
+  if (historyWindow.room !== roomId || (first === undefined && events.length)) {
+    setWindow({ room: roomId, first: events.at(-60)?.seq ?? events[0]?.seq })
+  } else if (first !== undefined && events[start] && events[start].seq !== first) {
+    // Keep the window where hydration widened it, or the next event slides it.
+    setWindow({ room: roomId, first: events[start].seq })
+  }
+
+  const shown = events.slice(start)
+
+  const loadEarlier = () => {
+    const node = viewport.current
+
+    if (node) {
+      earlierAnchor.current = { height: node.scrollHeight, top: node.scrollTop }
+    }
+
+    setWindow({ room: roomId, first: events[Math.max(0, start - 60)]?.seq })
+  }
+
+  useLayoutEffect(() => {
+    const node = viewport.current
+    const anchor = earlierAnchor.current
+
+    if (node && anchor) {
+      node.scrollTop = anchor.top + node.scrollHeight - anchor.height
+    }
+
+    earlierAnchor.current = null
+  }, [first, roomId])
+  useLayoutEffect(() => {
+    atBottom.current = true
+    earlierAnchor.current = null
+  }, [roomId])
   // Messages that arrive after the room opened spring in; history is drawn still.
   const opened = useRef({ at: Date.now(), id: roomId })
 
@@ -298,7 +352,9 @@ export function RoomConversation() {
     }
   }, [events, present, roomId])
   useEffect(() => {
-    void bottom.current?.scrollIntoView({ block: 'end' })
+    if (atBottom.current) {
+      void bottom.current?.scrollIntoView({ block: 'end' })
+    }
   }, [events, transcripts])
 
   const members = useMemo(
@@ -398,10 +454,18 @@ export function RoomConversation() {
           <WaitingBanner name={waitingBot(events, bots, room.members)} />
         </div>
       ) : null}
-      <div className="min-h-0 flex-1 overflow-y-auto">
+      <div
+        className="min-h-0 flex-1 overflow-y-auto"
+        onScroll={event => {
+          const node = event.currentTarget
+          atBottom.current = node.scrollHeight - node.scrollTop - node.clientHeight < 80
+        }}
+        ref={viewport}
+      >
         <div className={transcriptClass}>
-          {events.map((event, index) => {
-            const previous = events[index - 1]
+          {start > 0 ? <LoadEarlierMessages onClick={loadEarlier} /> : null}
+          {shown.map((event, index) => {
+            const previous = shown[index - 1]
 
             const separator =
               !previous || toMillis(event.created_at) - toMillis(previous.created_at) > 20 * 60_000

@@ -221,3 +221,21 @@ it('leaves archived rooms and Check-ins of a bot that is not primary out of the 
   expect(screen.queryByRole('button', { name: 'Open Garden' })).toBeNull()
   expect(screen.queryByRole('button', { name: 'Open Check-ins' })).toBeNull()
 })
+
+
+it('keeps historical items, the face and row callbacks stable while a reply streams', async () => {
+  await open('Bot')
+  await screen.findByText('owner history')
+  const before = state.chat!
+  act(() => state.event({ type: 'message.start', session_id: 'live-owner', payload: {} }))
+  for (let i = 0; i < 5; i++)
+    act(() => state.event({ type: 'message.delta', session_id: 'live-owner', payload: { text: 'token' } }))
+  const after = state.chat!
+  expect(after.items[0]).toBe(before.items[0])
+  expect(after.face).toBe(before.face)
+  expect(after.renderMessageText).toBe(before.renderMessageText)
+  expect(after.onRecall).toBe(before.onRecall)
+  expect(after.onApprove).toBe(before.onApprove)
+  expect(after.onOpenVisual).toBe(before.onOpenVisual)
+  expect(after.items.at(-2)).toMatchObject({ streaming: true, text: 'tokentokentokentokentoken' })
+})

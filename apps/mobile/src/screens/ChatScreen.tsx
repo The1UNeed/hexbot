@@ -1,6 +1,15 @@
 import { Ionicons } from '@expo/vector-icons'
-import { type ReactNode, useMemo, useState } from 'react'
-import { FlatList, Image, Pressable, ScrollView, StyleSheet, TextInput, View } from 'react-native'
+import { memo, type ReactNode, useCallback, useMemo, useState } from 'react'
+import {
+  FlatList,
+  type ListRenderItemInfo,
+  Image,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  TextInput,
+  View
+} from 'react-native'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 
 import {
@@ -97,6 +106,9 @@ export interface ChatScreenProps {
 }
 
 type Entry = ChatItem | { id: string; kind: 'waiting' }
+type ListEntry = { id: string; entry: Entry; continued: boolean }
+const waitingEntry: Entry = { id: 'waiting', kind: 'waiting' }
+const entryKey = (item: ListEntry) => item.id
 
 /**
  * One conversation: a bot's chat or a room. Bot messages sit on soft grey
@@ -104,8 +116,17 @@ type Entry = ChatItem | { id: string; kind: 'waiting' }
  * one quiet line per run, and approvals stop the transcript with a card.
  */
 export function ChatScreen(props: ChatScreenProps) {
-  const { computerLive, face, members, onBack, onOpenComputer, onOpenSettings, status, subtitle, title } =
-    props
+  const {
+    computerLive,
+    face,
+    members,
+    onBack,
+    onOpenComputer,
+    onOpenSettings,
+    status,
+    subtitle,
+    title
+  } = props
   const theme = useTheme()
   const room = !!members
 
@@ -218,11 +239,72 @@ function ChatBody(props: ChatScreenProps) {
   const bottom = keyboard ? 8 : Math.max(insets.bottom, 8)
 
   // Inverted list: newest first, so the view starts at the bottom and stays there.
-  const entries = useMemo<Entry[]>(() => {
-    const list: Entry[] = [...items].reverse()
+  const entries = useMemo<ListEntry[]>(() => {
+    const list = items
+      .map((entry, index) => {
+        const previous = items[index - 1]
+        return {
+          id: entry.id,
+          entry,
+          continued:
+            entry.kind === 'message' &&
+            previous?.kind === 'message' &&
+            previous.role === entry.role &&
+            previous.author?.name === entry.author?.name
+        }
+      })
+      .reverse()
 
-    return waiting ? [{ id: 'waiting', kind: 'waiting' }, ...list] : list
-  }, [items, waiting])
+    return waiting ? [{ id: 'waiting', entry: waitingEntry, continued: false }, ...list] : list
+  }, [items, !!waiting])
+  const fallbackFace = useMemo(() => face ?? { name: title }, [face, title])
+  const {
+    emotion,
+    onApprove,
+    onMessageLongPress,
+    onOpenVisual,
+    onRecall,
+    recallId,
+    renderMessageText
+  } = props
+  const waitingLabel = waiting?.label
+  const waitingWho = waiting?.who ?? (room ? null : fallbackFace)
+  const renderItem = useCallback(
+    ({ item: { entry, continued } }: ListRenderItemInfo<ListEntry>) => (
+      <TranscriptEntry
+        entry={entry}
+        continued={continued}
+        face={entry.kind === 'message' && !room ? fallbackFace : undefined}
+        room={room}
+        onLongPress={
+          entry.kind === 'message'
+            ? entry.id === recallId && onRecall
+              ? onRecall
+              : onMessageLongPress
+            : undefined
+        }
+        renderText={entry.kind === 'message' ? renderMessageText : undefined}
+        onApprove={entry.kind === 'approval' ? onApprove : undefined}
+        onOpenVisual={entry.kind === 'visual' ? onOpenVisual : undefined}
+        waitingLabel={entry.kind === 'waiting' ? waitingLabel : undefined}
+        waitingWho={entry.kind === 'waiting' ? waitingWho : undefined}
+        mood={entry.kind === 'waiting' ? emotion : undefined}
+      />
+    ),
+    [
+      room,
+      fallbackFace,
+      recallId,
+      onRecall,
+      onMessageLongPress,
+      renderMessageText,
+      onApprove,
+      onOpenVisual,
+      waitingLabel,
+      waitingWho,
+      emotion
+    ]
+  )
 
   return (
     <>
@@ -271,18 +353,10 @@ function ChatBody(props: ChatScreenProps) {
           contentContainerStyle={styles.transcript}
           data={entries}
           inverted
-          keyExtractor={entry => entry.id}
+          keyExtractor={entryKey}
           keyboardDismissMode="interactive"
           keyboardShouldPersistTaps="handled"
-          renderItem={({ index, item }) => (
-            <TranscriptEntry
-              entry={item}
-              // Inverted, so the chronologically previous entry is the next index.
-              previous={entries[index + 1]}
-              props={props}
-              room={room}
-            />
-          )}
+          renderItem={renderItem}
           testID="chat-transcript"
         />
       )}
@@ -320,26 +394,34 @@ function ChatBody(props: ChatScreenProps) {
   )
 }
 
-function TranscriptEntry({
+const TranscriptEntry = memo(function TranscriptEntry({
   entry,
-  previous,
-  props,
-  room
+  continued,
+  face,
+  room,
+  onLongPress,
+  renderText,
+  onApprove,
+  onOpenVisual,
+  waitingLabel,
+  waitingWho,
+  mood
 }: {
   entry: Entry
-  previous?: Entry
-  props: Omit<ChatScreenProps, 'onBack'>
+  continued: boolean
+  face?: FaceSource
   room: boolean
+  onLongPress?: (id: string) => void
+  renderText?: ChatScreenProps['renderMessageText']
+  onApprove?: ChatScreenProps['onApprove']
+  onOpenVisual?: ChatScreenProps['onOpenVisual']
+  waitingLabel?: string | null
+  waitingWho?: FaceSource | null
+  mood?: FaceMood
 }) {
   switch (entry.kind) {
     case 'waiting':
-      return (
-        <WaitingRow
-          label={props.waiting?.label}
-          mood={props.emotion}
-          who={props.waiting?.who ?? (room ? null : (props.face ?? { name: props.title }))}
-        />
-      )
+      return <WaitingRow label={waitingLabel} mood={mood} who={waitingWho} />
     case 'day':
       return (
         <Text align="center" style={styles.day} tone="muted" variant="caption">
@@ -361,37 +443,28 @@ function TranscriptEntry({
       return (
         <View style={styles.visualItem}>
           <VisualCard
-            onOpen={() => props.onOpenVisual?.(entry.id)}
+            onOpen={() => onOpenVisual?.(entry.id)}
             testID={`visual-open-${entry.index}`}
             title={entry.title}
           />
         </View>
       )
     case 'approval':
-      return <ApprovalCard onAnswer={props.onApprove} request={entry.request} />
+      return <ApprovalCard onAnswer={onApprove!} request={entry.request} />
     case 'message': {
-      const run =
-        previous?.kind === 'message' &&
-        previous.role === entry.role &&
-        previous.author?.name === entry.author?.name
-
       return (
         <MessageBubble
-          chat={{ face: room ? null : (props.face ?? { name: props.title }), room }}
-          continued={run}
+          chat={{ face: face ?? null, room }}
+          continued={continued}
           item={entry}
-          onLongPress={
-            entry.id === props.recallId && props.onRecall
-              ? props.onRecall
-              : props.onMessageLongPress
-          }
-          renderText={props.renderMessageText}
-          showAuthor={room && entry.role !== 'user' && !run}
+          onLongPress={onLongPress}
+          renderText={renderText}
+          showAuthor={room && entry.role !== 'user' && !continued}
         />
       )
     }
   }
-}
+})
 
 function MessageBubble({
   chat,
