@@ -95,8 +95,11 @@ export function texToText(tex: string): string {
       if (name === 'frac' || name === 'dfrac' || name === 'tfrac') {
         const top = arg()
         const fraction = `${wrap(top)}/${wrap(arg())}`
-        // \frac{3}{2}^2 is (3/2)², not 3/2².
-        out += /^ *[\^_]/.test(tex.slice(i)) ? `(${fraction})` : fraction
+        // A term touching the fraction keeps it apart: (3/2)², 2(1/2), (1/2)(3/4), (1/2)x.
+        const touching =
+          /[\p{L}\p{N})]$/u.test(out) ||
+          /^ *(?:[\^_\p{L}\p{N}(]|\\[dt]?frac|\\sqrt)/u.test(tex.slice(i))
+        out += touching ? `(${fraction})` : fraction
       } else if (name === 'sqrt') {
         space()
         let index = ''

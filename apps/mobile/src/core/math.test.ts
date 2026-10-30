@@ -10,10 +10,13 @@ describe('math on the phone', () => {
     expect(texToText(String.raw`\boxed{h'(x)=-\frac{2}{x^2}+\frac{3}{2\sqrt{x}}}`)).toBe(
       "h'(x)=-2/x²+3/(2√x)"
     )
-    expect(texToText(String.raw`\frac{d}{dx}(x^n)=nx^{n-1}`)).toBe('d/dx(xⁿ)=nxⁿ⁻¹')
+    expect(texToText(String.raw`\frac{d}{dx}(x^n)=nx^{n-1}`)).toBe('(d/dx)(xⁿ)=nxⁿ⁻¹')
     expect(texToText(String.raw`\sqrt[3]{x}`)).toBe('∛x')
     expect(texToText(String.raw`3\sqrt{x+1}`)).toBe('3√(x+1)')
     expect(texToText(String.raw`\frac{3}{2}^2`)).toBe('(3/2)²')
+    expect(texToText(String.raw`\frac{1}{2}\frac{3}{4} = 2\frac12 - \frac12x`)).toBe(
+      '(1/2)(3/4) = 2(1/2) - (1/2)x'
+    )
     expect(texToText('{x+1}^2 + {y}^2')).toBe('(x+1)² + y²')
     expect(texToText(String.raw`\dot{x}=v, \bar{x}, \vec{v}, \overline{AB}`)).toBe(
       'x\u0307=v, x\u0304, v\u20d7, A\u0305B\u0305'
