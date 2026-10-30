@@ -5,7 +5,7 @@ import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { routeEvent } from '../../lib/events'
 import { setActiveRpc } from '../../lib/rpc'
 import * as sounds from '../../lib/sounds'
-import type { Bot, Room, RoomMember } from '../../lib/types'
+import type { Bot, Room, RoomEvent, RoomMember } from '../../lib/types'
 import { useBots } from '../../stores/bots'
 import { useMe } from '../../stores/me'
 import { useRooms } from '../../stores/rooms'
@@ -19,10 +19,14 @@ import { useUi } from '../../stores/ui'
 import { RoomConversation, RoomEventRow, RoomMentionPopover } from './room'
 
 const navigate = vi.fn()
+let roomId = 'r1'
+beforeEach(() => {
+  roomId = 'r1'
+})
 
 vi.mock('@tanstack/react-router', () => ({
   useNavigate: () => navigate,
-  useParams: () => ({ room: 'r1' })
+  useParams: () => ({ room: roomId })
 }))
 
 describe('room composer mentions', () => {
@@ -418,5 +422,93 @@ describe('room history', () => {
       screen.getByRole('button', { name: 'Open the conversation between Owl and Writer' })
     )
     expect(useUi.getState().thread).toEqual({ bot: 'writer', peer: 'owl', sectionId: 'th1' })
+  })
+})
+
+describe('room history window', () => {
+  it('starts with 60 events, anchors earlier history, keeps live events and resets on navigation', async () => {
+    const room = { id: 'r1', name: 'Lab', members: [] } as unknown as Room
+
+    const events = Array.from({ length: 1000 }, (_, i) => ({
+      room_id: 'r1',
+      seq: i + 1,
+      actor_kind: 'human',
+      kind: 'message.user',
+      created_at: 0,
+      payload: { text: `Event ${i + 1}` }
+    })) as RoomEvent[]
+
+    useRooms.setState({
+      byId: { r1: room, r2: { ...room, id: 'r2' } },
+      eventsByRoom: { r1: events, r2: events },
+      liveTurnsByRoom: {}
+    })
+    setActiveRpc({
+      call: vi.fn((method: string, input: { id: string }) =>
+        Promise.resolve(
+          method === 'hexbot.rooms.log' ? { events } : { room: { ...room, id: input.id } }
+        )
+      )
+    } as never)
+    const view = render(<RoomConversation />)
+    await waitFor(() => expect(screen.getAllByTestId('room-event')).toHaveLength(60))
+    const viewport = screen.getByText('Event 1000').closest('.overflow-y-auto') as HTMLDivElement
+    Object.defineProperty(viewport, 'scrollHeight', {
+      configurable: true,
+      get: () => screen.getAllByTestId('room-event').length * 20
+    })
+    Object.defineProperty(viewport, 'clientHeight', { configurable: true, value: 400 })
+    viewport.scrollTop = 100
+    fireEvent.scroll(viewport)
+    const scroll = vi.spyOn(Element.prototype, 'scrollIntoView').mockClear()
+    fireEvent.click(screen.getByRole('button', { name: 'Load earlier messages' }))
+    expect(screen.getAllByTestId('room-event')).toHaveLength(120)
+    expect(viewport.scrollTop).toBe(1300)
+    act(() =>
+      useRooms.setState({
+        eventsByRoom: {
+          r1: [...events, { ...events[999]!, seq: 1001, payload: { text: 'Live event' } }],
+          r2: events
+        }
+      })
+    )
+    expect(screen.getByText('Live event')).toBeVisible()
+    expect(screen.getByText('Event 881')).toBeVisible()
+    expect(viewport.scrollTop).toBe(1300)
+    expect(scroll).not.toHaveBeenCalled()
+    roomId = 'r2'
+    view.rerender(<RoomConversation />)
+    await waitFor(() => expect(screen.getAllByTestId('room-event')).toHaveLength(60))
+    scroll.mockRestore()
+  })
+})
+
+describe('room history window after a live event', () => {
+  it('keeps the first shown event once history arrives behind it', () => {
+    const room = { id: 'r1', name: 'Lab', members: [] } as unknown as Room
+
+    const event = (seq: number) =>
+      ({
+        room_id: 'r1',
+        seq,
+        actor_kind: 'human',
+        kind: 'message.user',
+        created_at: 0,
+        payload: { text: `Event ${seq}` }
+      }) as RoomEvent
+
+    const history = Array.from({ length: 1001 }, (_, i) => event(i + 1))
+    useRooms.setState({
+      byId: { r1: room },
+      eventsByRoom: { r1: [event(1001)] },
+      liveTurnsByRoom: {}
+    })
+    setActiveRpc({ call: vi.fn(() => new Promise(() => {})) } as never)
+    render(<RoomConversation />)
+    act(() => useRooms.setState({ eventsByRoom: { r1: history } }))
+    expect(screen.getAllByTestId('room-event')).toHaveLength(60)
+    act(() => useRooms.setState({ eventsByRoom: { r1: [...history, event(1002)] } }))
+    expect(screen.getAllByTestId('room-event')).toHaveLength(61)
+    expect(screen.getByText('Event 942')).toBeVisible()
   })
 })

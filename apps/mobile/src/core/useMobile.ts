@@ -209,11 +209,14 @@ export function useMobile() {
         routeRef.current?.kind !== 'room' ||
         routeRef.current.room.id !== id
       try {
-        const latest = await rpc<{ events: RoomEvent[] }>('hexbot.rooms.log', {
-          id,
-          before_seq: Number.MAX_SAFE_INTEGER,
-          limit: ROOM_PAGE
-        })
+        const [latest, { room }] = await Promise.all([
+          rpc<{ events: RoomEvent[] }>('hexbot.rooms.log', {
+            id,
+            before_seq: Number.MAX_SAFE_INTEGER,
+            limit: ROOM_PAGE
+          }),
+          rpc<{ room: Room }>('hexbot.rooms.get', { id })
+        ])
         if (stale()) return
         const events = latest.events
         // Older daemons ignore before_seq and answer from the start; read the rest.
@@ -228,7 +231,6 @@ export function useMobile() {
             events.push(...page.events)
             if (page.events.length < 1000) break
           }
-        const { room } = await rpc<{ room: Room }>('hexbot.rooms.get', { id })
         if (stale()) return
         roomEvents.current = events
         setHasEarlier((events[0]?.seq ?? 1) > 1)
@@ -241,7 +243,8 @@ export function useMobile() {
         const updated = { kind: 'room' as const, room }
         routeRef.current = updated
         setRoute(updated)
-        if (events.length) await rpc('hexbot.rooms.mark_read', { id, seq: events.at(-1)!.seq })
+        if (events.length)
+          void rpc('hexbot.rooms.mark_read', { id, seq: events.at(-1)!.seq }).catch(() => {})
       } finally {
         if (sequence === openSequence.current) loadingEvents.current = null
       }
@@ -261,6 +264,7 @@ export function useMobile() {
         const result = await rpc<{
           section: Section
           messages: unknown[]
+          busy?: boolean
           pending_clarify?: Record<string, unknown>
         }>('hexbot.sections.open', { id: target.section.id })
         if (
@@ -272,13 +276,15 @@ export function useMobile() {
         const restoredLiveId = result.section.live_session_id
         if (!restoredLiveId) throw new Error('Open this conversation again before sending.')
         setHasEarlier(false)
-        const status = await rpc<{ status: string }>('session.status', {
-          session_id: restoredLiveId
-        })
+        const busy =
+          typeof result.busy === 'boolean'
+            ? result.busy
+            : (await rpc<{ status: string }>('session.status', { session_id: restoredLiveId }))
+                .status === 'working'
         if (sequence !== openSequence.current) return
         let snapshot: ChatState = {
           ...emptyChat(),
-          busy: status.status === 'working',
+          busy,
           messages: historyMessages(result.messages)
         }
         // The snapshot goes first: an answer or Stop that arrived while it loaded is newer.
@@ -320,7 +326,7 @@ export function useMobile() {
         const newRoute: ChatRoute = { ...target, section }
         routeRef.current = newRoute
         setRoute(newRoute)
-        await rpc('hexbot.sections.mark_read', { id: target.section.id })
+        void rpc('hexbot.sections.mark_read', { id: target.section.id }).catch(() => {})
         return
       } finally {
         if (sequence === openSequence.current) loadingEvents.current = null

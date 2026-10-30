@@ -6,6 +6,8 @@ import { ArrowDown, Copy, File, PanelRight, Undo2, X } from 'lucide-react'
 import {
   type CSSProperties,
   isValidElement,
+  memo,
+  useCallback,
   useEffect,
   useLayoutEffect,
   useMemo,
@@ -13,7 +15,7 @@ import {
   useState,
   useSyncExternalStore
 } from 'react'
-import ReactMarkdown, { type Options } from 'react-markdown'
+import ReactMarkdown, { type Components, type Options } from 'react-markdown'
 import rehypeKatex from 'rehype-katex'
 import remarkGfm from 'remark-gfm'
 import remarkMath from 'remark-math'
@@ -203,6 +205,18 @@ export function botBubbleStyle(color: null | string): CSSProperties {
 /** The transcript column: centred and capped so lines stay readable on wide windows. */
 export const transcriptClass = 'mx-auto max-w-[52rem] px-5 py-2'
 
+export function LoadEarlierMessages({ onClick }: { onClick: () => void }) {
+  return (
+    <button
+      className="hex-focus mx-auto mb-3 block rounded-full px-3 py-1 text-[length:var(--text-secondary)] text-muted transition-colors duration-[var(--hex-motion-fast)] hover:bg-surface-2 hover:text-foreground"
+      onClick={onClick}
+      type="button"
+    >
+      Load earlier messages
+    </button>
+  )
+}
+
 /** Inline code: a small chip in the sentence. Fenced blocks go through `Pre`. */
 function InlineCode({ children }: { children?: React.ReactNode }) {
   return (
@@ -255,6 +269,26 @@ function CodeBlock({ children, className }: { children?: React.ReactNode; classN
   )
 }
 
+const markdownComponents: Components = {
+  a: props => (
+    <a
+      className="underline decoration-foreground/30 underline-offset-2 hover:decoration-foreground"
+      rel="noreferrer"
+      target="_blank"
+      {...props}
+    />
+  ),
+  code: InlineCode,
+  pre: Pre,
+  table: props => (
+    <div className="overflow-x-auto">
+      <table className="my-3 w-full border-collapse" {...props} />
+    </div>
+  ),
+  td: props => <td className="border border-border p-2" {...props} />,
+  th: props => <th className="border border-border bg-surface-2 p-2 text-left" {...props} />
+}
+
 // A lone $ is too often money, so math needs $$ (or the \( \) and \[ \] mathDelimiters converts).
 const remarkPlugins: Options['remarkPlugins'] = [
   remarkGfm,
@@ -263,35 +297,17 @@ const remarkPlugins: Options['remarkPlugins'] = [
 
 const rehypePlugins: Options['rehypePlugins'] = [rehypeKatex]
 
-export function Markdown({ text }: { text: string }) {
+export const Markdown = memo(function Markdown({ text }: { text: string }) {
   return (
     <ReactMarkdown
-      components={{
-        a: props => (
-          <a
-            className="underline decoration-foreground/30 underline-offset-2 hover:decoration-foreground"
-            rel="noreferrer"
-            target="_blank"
-            {...props}
-          />
-        ),
-        code: InlineCode,
-        pre: Pre,
-        table: props => (
-          <div className="overflow-x-auto">
-            <table className="my-3 w-full border-collapse" {...props} />
-          </div>
-        ),
-        td: props => <td className="border border-border p-2" {...props} />,
-        th: props => <th className="border border-border bg-surface-2 p-2 text-left" {...props} />
-      }}
+      components={markdownComponents}
       rehypePlugins={rehypePlugins}
       remarkPlugins={remarkPlugins}
     >
       {mathDelimiters(text)}
     </ReactMarkdown>
   )
-}
+})
 
 function Attachments({
   attachments,
@@ -446,7 +462,7 @@ export function StoppedCard({
   )
 }
 
-export function MessageRow({
+export const MessageRow = memo(function MessageRow({
   bot,
   message,
   onDismiss,
@@ -454,18 +470,20 @@ export function MessageRow({
   onImage,
   onRecall,
   onRetry,
+  retryMessage,
   fresh = false,
   joined = false,
   showFace = false
 }: {
   bot?: Bot
   message: TranscriptMessage
-  onDismiss?: () => void
+  onDismiss?: (message: TranscriptMessage) => void
   onFix?: (connector: string) => void
   onImage: (source: string) => void
   /** Your latest message, while the bot is on it or after its turn stopped. */
-  onRecall?: () => void
-  onRetry?: () => void
+  onRecall?: (message: TranscriptMessage) => void
+  onRetry?: (input: TranscriptMessage) => void
+  retryMessage?: TranscriptMessage
   /** Arrived while this chat was open: each of its bubbles springs in as it appears. */
   fresh?: boolean
   /** Follows a bubble from the same side: it sits 4 px under it, one stack. */
@@ -484,9 +502,9 @@ export function MessageRow({
       <StoppedCard
         message={message}
         name={bot?.display_name ?? 'The bot'}
-        onDismiss={onDismiss}
+        onDismiss={onDismiss ? () => onDismiss(message) : undefined}
         onFix={onFix}
-        onRetry={onRetry}
+        onRetry={onRetry && retryMessage ? () => onRetry(retryMessage) : undefined}
       />
     )
   }
@@ -519,7 +537,9 @@ export function MessageRow({
           label: 'Copy',
           onClick: () => void navigator.clipboard.writeText(bubbles.join('\n\n'))
         },
-        ...(onRecall ? [{ icon: <Undo2 size={14} />, label: 'Recall', onClick: onRecall }] : [])
+        ...(onRecall
+          ? [{ icon: <Undo2 size={14} />, label: 'Recall', onClick: () => onRecall(message) }]
+          : [])
       ]
 
   const last = bubbles.length - 1
@@ -626,7 +646,7 @@ export function MessageRow({
       {assistant ? <AskingRow message={message} sender={bot?.name ?? null} /> : null}
     </>
   )
-}
+})
 
 /**
  * The live status at the foot of a bot's chat while Auto mode still reviews
@@ -1283,9 +1303,37 @@ function BotConversation() {
     }
   }, [params.bot])
   const [lightbox, setLightbox] = useState<string | null>(null)
-  const [visible, setVisible] = useState(60)
+  const [historyWindow, setWindow] = useState({ section: params.section, count: 60 })
+  const visible = historyWindow.section === params.section ? historyWindow.count : 60
+
+  if (historyWindow.section !== params.section) {
+    setWindow({ section: params.section, count: 60 })
+  }
+
+  const earlierAnchor = useRef<{ height: number; top: number } | null>(null)
+
+  const loadEarlier = () => {
+    const node = viewport.current
+
+    if (node) {
+      earlierAnchor.current = { height: node.scrollHeight, top: node.scrollTop }
+    }
+
+    setWindow({ section: params.section, count: visible + 60 })
+  }
+
   const [atBottom, setAtBottom] = useState(true)
   const viewport = useRef<HTMLDivElement>(null)
+  useLayoutEffect(() => {
+    const node = viewport.current
+    const anchor = earlierAnchor.current
+
+    if (node && anchor) {
+      node.scrollTop = anchor.top + node.scrollHeight - anchor.height
+    }
+
+    earlierAnchor.current = null
+  }, [visible, params.section])
   const togglePanel = useUi(state => state.toggleRightPanel)
   const panelOpen = useUi(state => state.rightPanelOpen)
   const [composerBox, composerHeight] = useHeight<HTMLDivElement>()
@@ -1632,14 +1680,17 @@ function BotConversation() {
     return items
   }, [approvals, clarifies, shown])
 
-  const canPrompt = () =>
-    ownerInput &&
-    router.history.location === location &&
-    target === useConnection.getState().target &&
-    epoch === useConnection.getState().epoch &&
-    capability === useConnection.getState().daemon?.one_chat &&
-    identified === (useConnection.getState().daemon?.transcript_identity === true) &&
-    installation === useConnection.getState().daemon?.install_id
+  const canPrompt = useCallback(
+    () =>
+      ownerInput &&
+      router.history.location === location &&
+      target === useConnection.getState().target &&
+      epoch === useConnection.getState().epoch &&
+      capability === useConnection.getState().daemon?.one_chat &&
+      identified === (useConnection.getState().daemon?.transcript_identity === true) &&
+      installation === useConnection.getState().daemon?.install_id,
+    [ownerInput, router, location, target, epoch, capability, identified, installation]
+  )
 
   const recallable = useConnection(state => state.daemon?.recall === true)
   const [draftVersion, setDraftVersion] = useState(0)
@@ -1647,7 +1698,7 @@ function BotConversation() {
   // Your latest message, while the bot is on it or after its turn stopped,
   // with or without its closed card. One the daemon refused never reached the
   // bot and goes from here alone.
-  const recallFor = (message: TranscriptMessage): (() => void) | undefined => {
+  const canRecall = (message: TranscriptMessage): boolean => {
     const index = messages.findLastIndex(item => item.role === 'user')
     const submitted = message.submission?.status ?? 'accepted'
     const after = messages.slice(index + 1)
@@ -1668,10 +1719,15 @@ function BotConversation() {
       !stopped ||
       !['accepted', 'rejected'].includes(submitted)
     ) {
-      return undefined
+      return false
     }
 
-    return () => {
+    return true
+  }
+
+  const recall = useCallback(
+    (message: TranscriptMessage) => {
+      const submitted = message.submission?.status ?? 'accepted'
       const sectionId = params.section
 
       if (!canPrompt() || !liveId || !sectionId) {
@@ -1718,27 +1774,33 @@ function BotConversation() {
           setDraftVersion(version => version + 1)
         }
       })()
-    }
-  }
+    },
+    [canPrompt, liveId, params.section]
+  )
 
   // Closing a card closes the bot's Stopped state for this chat too, or the
   // card would come back from it.
-  const dismiss = (card: TranscriptMessage) => {
-    setClosedOn(messages.findLast(item => item.role === 'user')?.id)
+  const lastUserId = messages.findLast(item => item.role === 'user')?.id
 
-    if (liveId) {
-      transcriptActions().dismiss(liveId, card.id)
-    }
+  const dismiss = useCallback(
+    (card: TranscriptMessage) => {
+      setClosedOn(lastUserId)
 
-    const detail = bot?.status === 'stopped' ? bot.status_detail : null
+      if (liveId) {
+        transcriptActions().dismiss(liveId, card.id)
+      }
 
-    if (bot && detail && statusIsHere(bot, params.section ?? null, chat)) {
-      setDismissedSince(detail.since)
-      void botsClearStatus(bot.name).catch(() => undefined)
-    }
-  }
+      const detail = bot?.status === 'stopped' ? bot.status_detail : null
 
-  const retryFor = (card: TranscriptMessage): (() => void) | undefined => {
+      if (bot && detail && statusIsHere(bot, params.section ?? null, chat)) {
+        setDismissedSince(detail.since)
+        void botsClearStatus(bot.name).catch(() => undefined)
+      }
+    },
+    [lastUserId, liveId, bot, params.section, chat]
+  )
+
+  const retryInput = (card: TranscriptMessage) => {
     // Retry requires durable input ownership. Legacy bubble order and error
     // timing cannot establish it, even after a history read or a later send.
     if (!ownerInput || !identified) {
@@ -1761,8 +1823,14 @@ function BotConversation() {
       return undefined
     }
 
-    return () => {
-      if (!canPrompt() || !liveId) {
+    return input
+  }
+
+  const retry = useCallback(
+    (input: TranscriptMessage) => {
+      const source = input.submission
+
+      if (!source || !canPrompt() || !liveId) {
         return
       }
 
@@ -1788,18 +1856,24 @@ function BotConversation() {
         pending: { ...pending, inputId },
         uploads: source.uploads ?? []
       })
-    }
-  }
+    },
+    [canPrompt, liveId]
+  )
 
-  const fixConnector = (connector: string) => {
-    if (bot) {
-      void navigate({
-        params: { bot: bot.name, tab: 'connectors' },
-        search: { connector },
-        to: '/b/$bot/settings/$tab'
-      })
-    }
-  }
+  const botName = bot?.name
+
+  const fixConnector = useCallback(
+    (connector: string) => {
+      if (botName) {
+        void navigate({
+          params: { bot: botName, tab: 'connectors' },
+          search: { connector },
+          to: '/b/$bot/settings/$tab'
+        })
+      }
+    },
+    [botName, navigate]
+  )
 
   const send = (prompt: string) => {
     if (canPrompt() && liveId && section) {
@@ -1912,15 +1986,7 @@ function BotConversation() {
           </div>
         ) : (
           <div className={cn(transcriptClass, 'hex-fade')} key={params.section}>
-            {messages.length > visible ? (
-              <button
-                className="hex-focus mx-auto mb-3 block rounded-full px-3 py-1 text-[length:var(--text-secondary)] text-muted transition-colors duration-[var(--hex-motion-fast)] hover:bg-surface-2 hover:text-foreground"
-                onClick={() => setVisible(value => value + 60)}
-                type="button"
-              >
-                Load earlier messages
-              </button>
-            ) : null}
+            {messages.length > visible ? <LoadEarlierMessages onClick={loadEarlier} /> : null}
             {timeline.map((item, position) => {
               if (item.kind === 'clarify') {
                 return (
@@ -1954,11 +2020,12 @@ function BotConversation() {
                     fresh={toMillis(message.createdAt) > openedAt}
                     joined={joined}
                     message={message}
-                    onDismiss={() => dismiss(message)}
+                    onDismiss={message.error ? dismiss : undefined}
                     onFix={fixConnector}
                     onImage={setLightbox}
-                    onRecall={recallFor(message)}
-                    onRetry={retryFor(message)}
+                    onRecall={canRecall(message) ? recall : undefined}
+                    onRetry={message.error ? retry : undefined}
+                    retryMessage={message.error ? retryInput(message) : undefined}
                   />
                 </div>
               )
@@ -1970,7 +2037,9 @@ function BotConversation() {
                 name={bot?.display_name ?? 'Bot'}
                 onDismiss={() => dismiss(stoppedHere)}
                 onFix={fixConnector}
-                onRetry={retryFor(stoppedHere)}
+                onRetry={
+                  retryInput(stoppedHere) ? () => retry(retryInput(stoppedHere)!) : undefined
+                }
               />
             ) : null}
             <div className="h-2" />
