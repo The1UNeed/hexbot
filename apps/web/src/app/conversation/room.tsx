@@ -33,10 +33,13 @@ import {
   botBubbleStyle,
   bubbleClass,
   CardRow,
+  closeInTime,
   ConnectedToolsNotice,
   DaySeparator,
   LoadEarlierMessages,
   Markdown,
+  MessageTime,
+  separates,
   transcriptClass,
   userBubbleClass
 } from './index'
@@ -45,15 +48,30 @@ import {
 const NO_EVENTS: RoomEvent[] = []
 const NO_TURNS: Record<string, RoomTurn> = {}
 
+const spoken = (event: RoomEvent | undefined) =>
+  event?.kind === 'message.bot' || event?.kind === 'message.user'
+
+/** Two messages from the same bot or person, one soon after the other, read as one run. */
+const sameRun = (a: RoomEvent, b: RoomEvent) =>
+  spoken(a) &&
+  spoken(b) &&
+  a.kind === b.kind &&
+  a.actor_id === b.actor_id &&
+  !separates(toMillis(a.created_at), toMillis(b.created_at)) &&
+  closeInTime(toMillis(a.created_at), toMillis(b.created_at))
+
 export const RoomEventRow = memo(function RoomEventRow({
   event,
   fresh = false,
-  latest = false
+  latest = false,
+  time = 0
 }: {
   event: RoomEvent
   fresh?: boolean
   /** The bot's latest message in the room: its face shows what the bot feels. */
   latest?: boolean
+  /** When it was sent, shown under it as the last message of a run; 0 shows none. */
+  time?: number
 }) {
   const bot = useBots(state => (event.actor_id ? state.byName[event.actor_id] : undefined))
   const emotion = useEmotion(latest ? event.actor_id : undefined)
@@ -167,7 +185,12 @@ export const RoomEventRow = memo(function RoomEventRow({
             size="sm"
           />
         )}
-        <div className="flex min-w-0 max-w-[80%] flex-col items-start">
+        <div
+          className={cn(
+            'flex min-w-0 max-w-[80%] flex-col gap-1',
+            mine ? 'items-end' : 'items-start'
+          )}
+        >
           <div
             className={cn(
               mine ? userBubbleClass : bubbleClass,
@@ -186,6 +209,7 @@ export const RoomEventRow = memo(function RoomEventRow({
               <Markdown text={text} />
             </div>
           </div>
+          {time > 0 ? <MessageTime time={time} /> : null}
         </div>
       </article>
       {asked.length ? <AskRows asks={asked} sender={event.actor_id ?? null} /> : null}
@@ -467,8 +491,16 @@ export function RoomConversation() {
           {shown.map((event, index) => {
             const previous = shown[index - 1]
 
-            const separator =
-              !previous || toMillis(event.created_at) - toMillis(previous.created_at) > 20 * 60_000
+            const separator = separates(
+              previous && toMillis(previous.created_at),
+              toMillis(event.created_at)
+            )
+
+            // The last message of a run shows when it was sent. Rows that draw
+            // nothing do not end a run.
+            const next = shown
+              .slice(index + 1)
+              .find(item => item.kind !== 'turn.started' && item.kind !== 'waiting.human')
 
             return (
               <div key={event.seq}>
@@ -477,6 +509,11 @@ export function RoomConversation() {
                   event={event}
                   fresh={toMillis(event.created_at) > openedAt}
                   latest={event.actor_id ? latestByBot[event.actor_id] === event.seq : false}
+                  time={
+                    spoken(event) && !(next && sameRun(event, next))
+                      ? toMillis(event.created_at)
+                      : 0
+                  }
                 />
               </div>
             )

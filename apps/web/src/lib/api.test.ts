@@ -49,6 +49,23 @@ describe('history projection', () => {
     expect(message?.toolCalls[0]?.startedAt).toBe(0)
   })
 
+  it('keeps when each message was sent, and still marks it as history', () => {
+    const messages = messagesFromHistory([
+      { role: 'user', text: 'Morning', timestamp: 1_793_340_000.5 },
+      { role: 'assistant', text: 'I will check.', timestamp: 1_793_340_010 },
+      { name: 'terminal', role: 'tool', text: 'ok', timestamp: 1_793_340_020 },
+      { role: 'assistant', text: 'Done.', timestamp: 1_793_340_030 },
+      { role: 'user', text: 'Unknown' }
+    ] as Parameters<typeof messagesFromHistory>[0])
+
+    expect(messages.map(message => [message.createdAt, message.sentAt])).toEqual([
+      [0, 1_793_340_000_500],
+      // A turn is sent when it starts.
+      [0, 1_793_340_010_000],
+      [0, undefined]
+    ])
+  })
+
   it('restores each call with the arguments the assistant row made it with', () => {
     const [message] = messagesFromHistory([
       {

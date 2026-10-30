@@ -63,6 +63,9 @@ export function historyMessages(raw: unknown[]): ChatMessage[] {
           id: String(row.id ?? row.row_id ?? `history-${messages.length}`),
           role: row.role,
           text,
+          // Rows carry `timestamp` in Unix seconds.
+          ...(typeof row.timestamp === 'number' &&
+            row.timestamp > 0 && { createdAt: row.timestamp * 1000 }),
           ...(typeof row.input_id === 'string' && { inputId: row.input_id })
         })
     }
@@ -72,7 +75,10 @@ export function historyMessages(raw: unknown[]): ChatMessage[] {
 /** A message the bot's heartbeat posted in the open chat, once by its history row id. */
 export function heartbeatMessage(state: ChatState, id: string, text: string): ChatState {
   if (state.messages.some(m => m.id === id)) return state
-  return { ...state, messages: [...state.messages, { id, role: 'assistant', text }] }
+  return {
+    ...state,
+    messages: [...state.messages, { id, role: 'assistant', text, createdAt: Date.now() }]
+  }
 }
 export function reduceChat(state: ChatState, event: GatewayEvent): ChatState {
   const p = (event.payload ?? {}) as Record<string, unknown>
@@ -100,6 +106,7 @@ export function reduceChat(state: ChatState, event: GatewayEvent): ChatState {
             id: `${sessionId}-${String((event as GatewayEvent & { seq?: number }).seq ?? state.messages.length)}-${index}`,
             role: 'assistant',
             text: part,
+            createdAt: Date.now(),
             tools: index === parts.length - 1 ? state.tools : undefined
           }))
         ],

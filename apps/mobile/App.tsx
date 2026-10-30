@@ -648,6 +648,7 @@ function MobileApp() {
                     : 'human'
                   : 'bot',
               text: m.text,
+              createdAt: m.createdAt,
               author:
                 m.role === 'user'
                   ? { name: m.senderName || 'Former member' }

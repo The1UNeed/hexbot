@@ -213,11 +213,25 @@ describe('restored tools and questions', () => {
     expect(loaded.state.busy).toBe(true)
   })
 })
+describe('message times', () => {
+  it('come from history rows, in milliseconds, and are left out when unknown', () => {
+    const rows = [
+      { role: 'user', text: 'Morning', timestamp: 1_793_340_000.5 },
+      { role: 'assistant', text: 'Hi' }
+    ]
+    expect(historyMessages(rows).map(m => m.createdAt)).toEqual([1_793_340_000_500, undefined])
+  })
+  it('stamp a reply when it finishes', () => {
+    const now = Date.now()
+    const done = reduceChat(emptyChat(), event('message.complete', { text: 'Done.' }))
+    expect(done.messages[0]?.createdAt).toBeGreaterThanOrEqual(now)
+  })
+})
 describe('heartbeat messages', () => {
   it('join the open thread once', () => {
     const once = heartbeatMessage(emptyChat(), 'heartbeat-1', 'BA 286 is two hours late.')
     expect(once.messages).toEqual([
-      { id: 'heartbeat-1', role: 'assistant', text: 'BA 286 is two hours late.' }
+      { id: 'heartbeat-1', role: 'assistant', text: 'BA 286 is two hours late.', createdAt: expect.any(Number) }
     ])
     expect(heartbeatMessage(once, 'heartbeat-1', 'BA 286 is two hours late.')).toBe(once)
     // Already in the history it loaded, under the same row id.
