@@ -176,6 +176,32 @@ describe('VisualBubble', () => {
     expect(frame.style.height).toBe('2000px')
   })
 
+  it("is washed with the bot's face colour, and so is the page inside it", () => {
+    const root = document.documentElement.style
+    root.setProperty('--hex-bubble', '#232326')
+    root.setProperty('--hex-bot-wash', '20%')
+    root.setProperty('--hex-bot-muted', '#bebebe')
+    render(<VisualBubble color="#ef4444" visual={costs} />)
+    const frame = screen.getByTitle('Costs') as HTMLIFrameElement
+    const post = vi.spyOn(frame.contentWindow!, 'postMessage').mockImplementation(() => {})
+
+    act(() => {
+      window.dispatchEvent(
+        new MessageEvent('message', {
+          data: { jsonrpc: '2.0', method: 'hexbot/visual/ready' },
+          source: frame.contentWindow
+        })
+      )
+    })
+
+    expect(screen.getByTestId('visual-bubble').style.backgroundColor).toContain('#ef4444')
+    // 20% of the way from the bubble to the face colour, as CSS color-mix draws the bubble.
+    const page = post.mock.calls[0]?.[0] as { params: { document: string } }
+    expect(page.params.document).toContain('"--background":"#4c2a2c"')
+    expect(page.params.document).toContain('"--muted":"#bebebe"')
+    root.cssText = ''
+  })
+
   it('stays live in the chat and expands beside it as a tab', () => {
     render(<VisualBubble visual={costs} />)
 

@@ -17,6 +17,7 @@ import { useVisuals, visualsActions } from '../../stores/visuals'
 
 import {
   hostContext,
+  mixHex,
   readVisualTheme,
   themeOnSurface,
   type Visual,
@@ -25,6 +26,8 @@ import {
   visualDocument,
   type VisualTheme
 } from './visual'
+
+import { botBubbleStyle } from './index'
 
 /** The height a visual's frame keeps, invisible, until its page reports its own. */
 const FIRST_HEIGHT = 120
@@ -43,20 +46,35 @@ function systemDark(): boolean {
 /**
  * The theme a visual sees; it changes when the user's theme or the system's
  * mode does. `surface` names the app token the page sits on, so a page drawn
- * inside a bubble or a card has that background.
+ * inside a bubble or a card has that background. `tint` washes it with a
+ * bot's face colour, the way `botBubbleStyle` washes the bubble around it.
  */
-function useVisualTheme(surface: string): VisualTheme {
+function useVisualTheme(surface: string, tint: null | string): VisualTheme {
   const choice = useUi(state => state.theme)
   const dark = useSyncExternalStore(subscribeToSystemTheme, systemDark)
 
   // The store applies a theme to the document before its subscribers render.
   return useMemo(() => {
     const theme = readVisualTheme()
-    const value = getComputedStyle(document.documentElement).getPropertyValue(surface).trim()
+    const root = getComputedStyle(document.documentElement)
+    const value = root.getPropertyValue(surface).trim()
 
-    return value && surface !== '--hex-background' ? themeOnSurface(theme, value) : theme
+    if (!value || surface === '--hex-background') {
+      return theme
+    }
+
+    if (!tint) {
+      return themeOnSurface(theme, value)
+    }
+
+    const wash = parseFloat(root.getPropertyValue('--hex-bot-wash')) / 100
+    const washed = themeOnSurface(theme, mixHex(value, tint, wash) ?? value)
+    const muted = root.getPropertyValue('--hex-bot-muted').trim()
+
+    // Secondary text takes the bot bubble's muted colour, readable on every wash.
+    return muted ? { ...washed, variables: { ...washed.variables, '--muted': muted } } : washed
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [choice, dark, surface])
+  }, [choice, dark, surface, tint])
 }
 
 /** An http(s) URL the page asked to open, or null for anything else. */
@@ -88,15 +106,17 @@ function openLink(url: URL) {
 export function VisualPage({
   onLink,
   surface = '--hex-background',
+  tint = null,
   visual
 }: {
   onLink: (url: URL) => void
   surface?: string
+  tint?: null | string
   visual: Visual
 }) {
   const frame = useRef<HTMLIFrameElement>(null)
   const [height, setHeight] = useState<number>()
-  const theme = useVisualTheme(surface)
+  const theme = useVisualTheme(surface, tint)
   const current = useRef(theme)
   const link = useRef(onLink)
 
@@ -247,7 +267,15 @@ function Action({
  * and click, under a title row whose one action, Expand, opens it beside the
  * chat as a tab.
  */
-export function VisualBubble({ fresh = false, visual }: { fresh?: boolean; visual: Visual }) {
+export function VisualBubble({
+  color = null,
+  fresh = false,
+  visual
+}: {
+  color?: null | string
+  fresh?: boolean
+  visual: Visual
+}) {
   const beside = useVisuals(state => state.tabs.some(tab => tab.toolId === visual.toolId))
   const { offer, setLink } = useLinkOffer()
 
@@ -256,6 +284,7 @@ export function VisualBubble({ fresh = false, visual }: { fresh?: boolean; visua
       <div
         className={cn('w-full rounded-[20px] bg-bubble pb-3.5', fresh && 'hex-message')}
         data-testid="visual-bubble"
+        style={botBubbleStyle(color)}
       >
         <div className="flex h-11 items-center gap-2 pr-2 pl-4">
           <ChartColumn className="shrink-0 text-muted" size={14} />
@@ -271,7 +300,7 @@ export function VisualBubble({ fresh = false, visual }: { fresh?: boolean; visua
           </Action>
         </div>
         <div className="px-4">
-          <VisualPage onLink={setLink} surface="--hex-bubble" visual={visual} />
+          <VisualPage onLink={setLink} surface="--hex-bubble" tint={color} visual={visual} />
         </div>
       </div>
       {offer}
@@ -279,8 +308,16 @@ export function VisualBubble({ fresh = false, visual }: { fresh?: boolean; visua
   )
 }
 
-/** The visuals of one bot message, each its own bubble. */
-export function Visuals({ fresh, visuals }: { fresh?: boolean; visuals: Visual[] }) {
+/** The visuals of one bot message, each its own bubble, washed like the bot's others. */
+export function Visuals({
+  color,
+  fresh,
+  visuals
+}: {
+  color?: null | string
+  fresh?: boolean
+  visuals: Visual[]
+}) {
   if (!visuals.length) {
     return null
   }
@@ -288,7 +325,7 @@ export function Visuals({ fresh, visuals }: { fresh?: boolean; visuals: Visual[]
   return (
     <div className="flex w-full flex-col gap-1">
       {visuals.map(visual => (
-        <VisualBubble fresh={fresh} key={visual.toolId} visual={visual} />
+        <VisualBubble color={color} fresh={fresh} key={visual.toolId} visual={visual} />
       ))}
     </div>
   )

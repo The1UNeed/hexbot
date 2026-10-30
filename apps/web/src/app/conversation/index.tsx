@@ -608,7 +608,7 @@ export const MessageRow = memo(function MessageRow({
     column.splice(
       replied ? last : bubbles.length,
       0,
-      <Visuals fresh={fresh} key="visuals" visuals={visuals} />
+      <Visuals color={color} fresh={fresh} key="visuals" visuals={visuals} />
     )
   }
 

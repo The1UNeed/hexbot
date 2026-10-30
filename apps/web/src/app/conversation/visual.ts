@@ -112,32 +112,38 @@ export function readVisualTheme(root: HTMLElement = document.documentElement): V
  * striped with `--surface` shows dark slabs in a bubble.
  */
 export function themeOnSurface(theme: VisualTheme, color: string): VisualTheme {
-  const text = rgb(theme.variables['--foreground'])
-  const base = rgb(color)
+  const text = theme.variables['--foreground'] ?? ''
+  const step = (amount: number) => mixHex(color, text, amount)
+  const [border, surface, surface2] = [step(0.12), step(0.04), step(0.1)]
   const variables = { ...theme.variables, '--background': color }
 
-  if (text && base) {
-    const step = (amount: number) =>
-      `#${base
-        .map((value, i) =>
-          Math.round(value + ((text[i] ?? value) - value) * amount)
-            .toString(16)
-            .padStart(2, '0')
-        )
-        .join('')}`
-
-    Object.assign(variables, {
-      '--border': step(0.12),
-      '--surface': step(0.04),
-      '--surface-2': step(0.1)
-    })
+  if (border && surface && surface2) {
+    Object.assign(variables, { '--border': border, '--surface': surface, '--surface-2': surface2 })
   }
 
   return { ...theme, variables }
 }
 
-function rgb(hex: string | undefined): null | number[] {
-  const digits = /^#([0-9a-f]{6})$/i.exec(hex ?? '')?.[1]
+/** `from` moved `amount` (0 to 1) of the way to `to`, as CSS `color-mix(in srgb)` does; null unless both are #rrggbb. */
+export function mixHex(from: string, to: string, amount: number): null | string {
+  const a = rgb(from)
+  const b = rgb(to)
+
+  if (!a || !b) {
+    return null
+  }
+
+  return `#${a
+    .map((value, i) =>
+      Math.round(value + ((b[i] ?? value) - value) * amount)
+        .toString(16)
+        .padStart(2, '0')
+    )
+    .join('')}`
+}
+
+function rgb(hex: string): null | number[] {
+  const digits = /^#([0-9a-f]{6})$/i.exec(hex)?.[1]
 
   return digits ? [0, 2, 4].map(i => parseInt(digits.slice(i, i + 2), 16)) : null
 }
