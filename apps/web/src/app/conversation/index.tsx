@@ -1,3 +1,5 @@
+import 'katex/dist/katex.min.css'
+
 import { JsonRpcGatewayError } from '@hermes/shared'
 import { useNavigate, useParams, useRouter } from '@tanstack/react-router'
 import { ArrowDown, Copy, File, PanelRight, Undo2, X } from 'lucide-react'
@@ -11,8 +13,10 @@ import {
   useState,
   useSyncExternalStore
 } from 'react'
-import ReactMarkdown from 'react-markdown'
+import ReactMarkdown, { type Options } from 'react-markdown'
+import rehypeKatex from 'rehype-katex'
 import remarkGfm from 'remark-gfm'
+import remarkMath from 'remark-math'
 
 import { Avatar, useFaceColor } from '../../components/ui/avatar'
 import { Button } from '../../components/ui/button'
@@ -33,6 +37,7 @@ import { botFace } from '../../lib/avatar-builder'
 import { getBridge } from '../../lib/bridge'
 import { cn } from '../../lib/cn'
 import { moodForStatus } from '../../lib/face'
+import { mathDelimiters } from '../../lib/math'
 import { NotConnectedError } from '../../lib/rpc'
 import { useTurnCues } from '../../lib/sounds'
 import { toMillis } from '../../lib/time'
@@ -250,6 +255,14 @@ function CodeBlock({ children, className }: { children?: React.ReactNode; classN
   )
 }
 
+// A lone $ is too often money, so math needs $$ (or the \( \) and \[ \] mathDelimiters converts).
+const remarkPlugins: Options['remarkPlugins'] = [
+  remarkGfm,
+  [remarkMath, { singleDollarTextMath: false }]
+]
+
+const rehypePlugins: Options['rehypePlugins'] = [rehypeKatex]
+
 export function Markdown({ text }: { text: string }) {
   return (
     <ReactMarkdown
@@ -272,9 +285,10 @@ export function Markdown({ text }: { text: string }) {
         td: props => <td className="border border-border p-2" {...props} />,
         th: props => <th className="border border-border bg-surface-2 p-2 text-left" {...props} />
       }}
-      remarkPlugins={[remarkGfm]}
+      rehypePlugins={rehypePlugins}
+      remarkPlugins={remarkPlugins}
     >
-      {text}
+      {mathDelimiters(text)}
     </ReactMarkdown>
   )
 }

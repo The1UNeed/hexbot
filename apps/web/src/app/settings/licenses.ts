@@ -134,6 +134,18 @@ export const OPEN_SOURCE: OpenSourceGroup[] = [
         repository: 'https://github.com/remarkjs/remark-gfm'
       },
       {
+        license: 'MIT',
+        name: 'remark-math',
+        packages: ['remark-math', 'rehype-katex'],
+        repository: 'https://github.com/remarkjs/remark-math'
+      },
+      {
+        license: 'MIT',
+        name: 'KaTeX',
+        packages: ['katex'],
+        repository: 'https://github.com/KaTeX/KaTeX'
+      },
+      {
         license: 'ISC',
         name: 'Lucide',
         packages: ['lucide-react'],
