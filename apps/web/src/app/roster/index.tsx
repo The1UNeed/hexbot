@@ -24,6 +24,7 @@ import { toHandle } from '../../lib/bot-handle'
 import { getBridge } from '../../lib/bridge'
 import { cn } from '../../lib/cn'
 import { moodForStatus } from '../../lib/face'
+import { previewLine } from '../../lib/preview'
 import { reasoningOptions, runningLevel } from '../../lib/reasoning'
 import { toMillis } from '../../lib/time'
 import type { Bot, ModelOption, ReasoningEffort, Room, RoomEvent, Section } from '../../lib/types'
@@ -38,6 +39,7 @@ import {
   botStatusWithLive,
   introduceBot,
   knownChat,
+  legacyChat,
   type LiveSections,
   liveSectionsOf,
   sectionsActions,
@@ -214,7 +216,10 @@ function BotRow({
     ...bot.sections_recent.filter(recent => !sections.some(section => section.id === recent.id))
   ]
 
-  const label = bot.title || bot.description
+  // The last thing either side said in the chat, as a messaging app lists it.
+  const chat = legacyChat(available, bot.name)
+  const preview = chat && 'section' in chat ? previewLine(chat.section.preview) : ''
+  const label = preview || bot.title || bot.description
   const status = botStatusWithLive(bot, available, live)
 
   // A turn finished in the chat that you have not seen on any device. Check-ins

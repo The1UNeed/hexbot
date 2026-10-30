@@ -51,6 +51,15 @@ describe('section titles', () => {
     })
   })
 
+  it('previews the message the user just sent until the bot answers', () => {
+    seed(section({ message_count: 4, preview: 'Older reply', title: 'Garden', title_by: 'bot' }))
+    sectionsActions().markTouched('s1', 'What about tomatoes?')
+    expect(useSections.getState().byId.s1).toMatchObject({
+      preview: 'What about tomatoes?',
+      title: 'Garden'
+    })
+  })
+
   it('keeps a title the user or the bot already set', () => {
     seed(section({ message_count: 2, title: 'Garden', title_by: 'bot' }))
     sectionsActions().markTouched('s1', 'Something else')

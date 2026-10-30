@@ -56,6 +56,7 @@ import { useMobile } from './src/core/useMobile'
 import { useFeeling } from './src/core/feelings'
 import { clearTapped, useTappedSection } from './src/core/tapped'
 import { chatPreview, pulseTarget, purposeOf, stoppedIn } from './src/core/routes'
+import { previewLine } from '../web/src/lib/preview'
 import { CONNECT_ORIGIN, parseConnectCallback } from './src/core/links'
 import { clearConnectSession, loadConnectSession, saveConnectSession } from './src/core/storage'
 import { connectGrant, request, RevokedError } from './src/core/transport'
@@ -418,7 +419,7 @@ function MobileApp() {
       primary: b.primary === true,
       title: b.title,
       description: b.description,
-      preview: chatPreview(b.name, mobile.sections, b.sections_recent),
+      preview: previewLine(chatPreview(b.name, mobile.sections, b.sections_recent) ?? '') || null,
       activity: b.status_detail?.text,
       status:
         b.status === 'idle' &&
