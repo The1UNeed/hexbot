@@ -55,11 +55,13 @@ import { ConfirmUpdate, installTarget } from '../confirm-update'
 
 import { DiagnosticsSettings } from './diagnostics'
 import { OPEN_SOURCE } from './licenses'
+import { PasswordsSettings } from './passwords'
 import { PluginsSettings } from './plugins'
 
 export const SETTINGS_TABS = [
   'providers',
   'plugins',
+  'passwords',
   'network',
   'connect',
   'memory',
@@ -116,6 +118,7 @@ export function SettingsPanel({ tab }: { tab: string }): React.JSX.Element {
     >
       {tab === 'providers' && <ProvidersSettings />}
       {tab === 'plugins' && <PluginsSettings />}
+      {tab === 'passwords' && <PasswordsSettings />}
       {tab === 'network' && <NetworkSettings />}
       {tab === 'connect' && <ConnectSettings />}
       {tab === 'memory' && <MemorySettings />}

@@ -2479,6 +2479,7 @@ fn finish_bot_delete_locked(home: &Path, name: &str) -> Result<()> {
     // config cleanup must be retried before another bot can use this name.
     crate::connectors::forget_bot(home, name)?;
     crate::plugins::forget_bot(home, name)?;
+    crate::passwords::forget_bot(home, name)?;
     let targets = journal["targets"]
         .as_array()
         .ok_or_else(|| Error::new(5200, "Invalid bot deletion journal"))?;

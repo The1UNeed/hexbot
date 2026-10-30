@@ -47,6 +47,40 @@ export interface ClarifyRequest {
   sessionId: string
 }
 
+/**
+ * The sign-in card's fields, on an approval a bot asks with
+ * `hexbot_passwords`. What the user types goes to the daemon with the answer
+ * and is saved in Passwords; the bot never sees it.
+ */
+export interface SignInForm {
+  kind: 'sign_in'
+  /** The host, such as app.schoology.com. */
+  site: string
+  title: string
+  /** True when it replaces the password of a login already saved. */
+  update?: boolean
+  url?: string
+  username?: string
+}
+
+/** A saved login in Settings, Passwords: never its password or code key. */
+export interface PasswordLogin {
+  /** The bots that may use it; null means every bot, including new ones. */
+  bots: null | string[]
+  has_code: boolean
+  has_password: boolean
+  id: string
+  notes: string
+  site: null | string
+  title: string
+  updated_at: null | number
+  url: string
+  username: string
+}
+
+/** Where the vault's key is kept; null before the first password. */
+export type PasswordKeyStore = 'file' | 'keychain' | 'locked' | 'secret_service' | null
+
 export interface ApprovalRequest {
   messageId?: string
   turnId?: string
@@ -55,6 +89,7 @@ export interface ApprovalRequest {
   decision?: ApprovalChoice
   /** The command or action, rendered in monospace. */
   command?: string
+  form?: SignInForm
   reason?: string
   receivedAt: number
   requestId: string

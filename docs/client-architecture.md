@@ -172,13 +172,14 @@ when multiple preserved owner conversations make its source uncertain.
 | `reasoning.delta` | append to the message's reasoning trace; the conversation never shows it |
 | `thinking.delta` | replace the daemon's status line (a wait notice); spinner copy is dropped |
 | `tool.start` / `tool.complete` | add or resolve a tool call in the current assistant message |
-| `approval.request` | push an approval card (session scoped) and notify |
+| `approval.request` | push an approval card (session scoped) and notify; one with a `form` is the sign-in card, answered with the username and password |
 | `approval.resolved` / `approval.expire` | show that card's answer / drop it while unanswered |
 | `clarify.request` / `clarify.resolved` / `clarify.expire` | push a question card / show its answers / freeze it |
 | `status.update` | header status line; `checking` replaces the live status with "Checking this step" until an empty `checking` line |
 | `session.info` | update section's model and provider chips |
 | `session.usage` | usage badge |
 | `error` | inline error row |
+| `hexbot.passwords.changed` | refresh Settings, Passwords while it is open |
 
 Sending: `prompt.submit {session_id, text}`; before it, attachments are
 staged with `image.attach_bytes` (images) or `file.attach {data_url,

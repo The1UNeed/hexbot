@@ -72,7 +72,12 @@ data model. The native transport and event projection live in
   scans and requests raised by the daemon offer `once | deny` only. Clients
   must use the card's `choices`; `session` is rejected when not offered. Delegates and
   background sections cannot wait for approval; actions that need it are
-  refused. Opening a section re-emits its pending approval. Questions arrive as `clarify.request` and
+  refused. Opening a section re-emits its pending approval. An approval with a
+  `form` (`{kind: "sign_in", title, site, url, username, update}`) is the
+  sign-in card `hexbot_passwords` shows: answer `once` with `username` and
+  `password` (4202 without a password), or `deny` to cancel. What was typed
+  goes to the waiting tool only and is saved in Passwords; no event, log or
+  history row carries it. Questions arrive as `clarify.request` and
   `pending_clarify` on section open; use `clarify.respond` to answer.
   Every card that stops waiting is settled once, to every client of the
   owner, by its `request_id`. An answer sends `approval.resolved
@@ -1188,6 +1193,50 @@ calls. Stored parent tool rows include Pi's `nested_calls` record. Clients show
 nested steps below the code step both live and after reload. Pi retains nested
 arguments and status, not full nested result bodies; its record is bounded.
 
+### Passwords
+
+Each user has one KeePass (KDBX 4) vault, `<home>/users/<id>/passwords/passwords.kdbx`.
+Its key, 256 random bits written as hex, is the vault's KeePass password. It
+lives in the macOS Keychain (service `hexbot-passwords`) or the Linux Secret
+Service, or, where neither works, in `<home>/users/<id>/passwords/passwords.key`
+(`0600`). `HEXBOT_PASSWORD_KEY_STORE=file` always uses the key file; `pnpm dev`
+and the mobile smoke test set it so temporary daemons leave nothing in the
+login keychain. Bots' shells and file tools can't read that folder, temporary files included. A vault
+whose key can't be read stays locked (5300); Hexbot never replaces it.
+
+A login lists the bots that may use it in the entry's custom data
+`hexbot.bots`; `bots: null` means every bot, including bots created later.
+Deleting a bot takes it off every list; the bot's name stays reserved until that succeeds.
+
+- `hexbot.passwords.list {}` → `{logins: [Login], bots: [string], store:
+  "keychain" | "secret_service" | "file" | "locked" | null}`. A `Login` is
+  `{id, title, url, site, username, bots, has_password, has_code, notes,
+  updated_at}`, never a password or code key.
+- `hexbot.passwords.save {id?, title?, url?, username?, password?, code?,
+  notes?, bots?}` → `{login}`. Without `id` it creates a login and needs a
+  password and a site or title. Fields left out stay. `code` is an
+  `otpauth://` link or base32 key; an empty `code` removes it. `url` must be
+  http or https.
+- `hexbot.passwords.set_bots {id, bots}` → `{login}`.
+- `hexbot.passwords.delete {id}` → `{deleted}`.
+- `hexbot.passwords.reveal {id}` → `{login, password, code: {code,
+  valid_for} | null}`, for the owner's own clients.
+
+Changes, including a bot's sign-in card, emit `hexbot.passwords.changed {}`.
+
+The bot tool `hexbot_passwords` is offered to a bot with Browser or Computer
+use, in its own chat and its scheduled jobs; rooms and threads between bots
+never get it. `list` returns `{id, title, site, username, has_code}`. `ask`
+shows the sign-in card (refused in a job); the login it saves goes to every
+bot. `fill {id, fields: [{field: username | password | code, ref |
+coordinate}]}` types into the browser only when the page's host is the
+login's host or one inside the other, and never from an https login into an
+http page; the secrets reach agent-browser on stdin and every later browser
+result in that section has them blanked out. On the bots' computer it asks
+first unless the bot runs in Bypass. The primary bot, in its own chat, also
+has `share {id, bots}`, `update {id, title?, url?, username?}` and `delete`
+(always asks).
+
 ### Providers and models
 
 Provider configuration lives on the daemon in `config.yaml`. Set
@@ -1444,6 +1493,7 @@ emits `hexbot.rooms.event {room_id, event}`. Turn state changes emit
 `hexbot.rooms.turn {room_id, bot, live_session_id, status}`. Room events go
 to the owner.
 Dream triggers emit `hexbot.dreaming.changed {bot}`.
+Password changes emit `hexbot.passwords.changed {}`.
 Connector mutations emit `hexbot.connectors.changed {connector, bot?}` and
 `hexbot.bots.changed`. Recording a runtime failure emits
 `hexbot.bots.incident {bot, section_id, room_id, session_id, incident: {id,

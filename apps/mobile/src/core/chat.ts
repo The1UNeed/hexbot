@@ -1,5 +1,5 @@
 import type { GatewayEvent } from '@hermes/shared'
-import type { ChatMessage, ChatState, ChatTool, TurnState } from './types'
+import type { ChatMessage, ChatState, ChatTool, SignInForm, TurnState } from './types'
 export const emptyTurn = (): TurnState => ({
   streaming: '',
   interim: [],
@@ -30,6 +30,14 @@ export const parseArgs = (value: unknown): unknown => {
     return value
   }
 }
+/** A sign-in card's fields, from an `approval.request`. */
+const isSignIn = (value: unknown): value is SignInForm =>
+  typeof value === 'object' &&
+  value !== null &&
+  (value as SignInForm).kind === 'sign_in' &&
+  typeof (value as SignInForm).site === 'string' &&
+  typeof (value as SignInForm).title === 'string'
+
 const detailOf = (value: unknown) =>
   typeof value === 'string' ? value : value == null ? '' : JSON.stringify(value, null, 2)
 export function historyMessages(raw: unknown[]): ChatMessage[] {
@@ -185,7 +193,8 @@ export function reduceChat(state: ChatState, event: GatewayEvent): ChatState {
         sessionId,
         command: String(p.command ?? p.tool_name ?? 'Approve this action'),
         reason: typeof p.reason === 'string' ? p.reason : undefined,
-        choices: Array.isArray(p.choices) ? (p.choices as string[]) : ['once', 'deny']
+        choices: Array.isArray(p.choices) ? (p.choices as string[]) : ['once', 'deny'],
+        ...(isSignIn(p.form) && { form: p.form })
       }
       return {
         ...state,
@@ -195,8 +204,7 @@ export function reduceChat(state: ChatState, event: GatewayEvent): ChatState {
     }
     case 'clarify.request': {
       if (typeof p.request_id !== 'string') return state
-      const answered = (id: string) =>
-        Object.prototype.hasOwnProperty.call(p.answers ?? {}, id)
+      const answered = (id: string) => Object.prototype.hasOwnProperty.call(p.answers ?? {}, id)
       // Re-sent or replayed: keep the card shown, so its answers only move forward.
       if (state.questions.some(q => q.requestId === p.request_id))
         return {

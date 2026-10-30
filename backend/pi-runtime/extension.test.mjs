@@ -918,6 +918,8 @@ test('SSH public files stay readable, private keys and auth stores do not, and c
   assert.equal(credentialPath(join(f.home, 'profiles/owl/pi/mcp-auth.json'), f.home), true);
   for (const name of ['id_ed25519', 'work.pem', 'deploy.key']) assert.equal(credentialPath(join(homedir(), '.ssh', name), f.home), true);
   assert.equal(credentialPath(join(f.home, 'desktop-data/Local Storage/token'), f.home), true);
+  for (const name of ['passwords.kdbx', 'passwords.key', '.tmpA1b2C3']) assert.equal(credentialPath(join(f.home, 'users/alice/passwords', name), f.home), true);
+  assert.equal(credentialPath(join(f.home, 'users/alice/user.md'), f.home), false);
   assert.equal(credentialPath(join(f.home, '../connect.json'), f.home), false);
   assert.equal(credentialPath(join(homedir(), '.codex/auth.json'), f.home), true);
   assert.deepEqual(shellEnvironment({SSH_AUTH_SOCK:'/tmp/agent', AWS_PROFILE:'secret', AWS_SECRET_ACCESS_KEY:'secret', GOOGLE_APPLICATION_CREDENTIALS:'secret', GOOGLE_CLOUD_PROJECT:'secret', CLOUDSDK_CONFIG:'secret'}), {SSH_AUTH_SOCK:'/tmp/agent'});

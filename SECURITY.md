@@ -257,6 +257,25 @@ Provider credentials are local files protected by directory and file permissions
 not encrypted by an OS keychain. Same-user malware and unprotected backups can
 read them. The daemon and its configured providers must be trusted with these keys.
 
+Saved passwords are a KeePass (KDBX 4) vault per user, encrypted with a random
+256-bit key kept in the macOS Keychain or the Linux Secret Service, or, where
+neither is available (Windows, most headless Linux), in an owner-only key file
+beside the vault. A backup of the vault alone can't be opened; a backup that
+also holds the key file can. Same-user malware can ask the keychain for the key.
+Bots' shells and file tools can read neither file in Manual or Auto; Bypass has
+no sandbox, so a bot in Bypass can.
+
+A bot never receives a password in its conversation. The daemon types it into
+the page the bot names, and only when the browser's page is on the login's own
+site (the same host, or one inside the other, never https to http). On the
+bots' computer the daemon can't see the address, so it asks first unless the
+bot runs in Bypass. This keeps passwords out of prompts, history and provider
+traffic; it does not contain a bot that is trying to steal one. A filled
+field can be read back by a page script, so the daemon blanks the filled
+values out of every later browser result in that conversation, but an encoded
+read would get past that. The sign-in card's answer travels on the same
+connection as chat, so plain LAN HTTP exposes it the same way.
+
 Installers validate archive paths, reject links, enforce size limits, and verify
 download checksums. Install and native daemon manifests carry Ed25519 release
 signatures. The installer and native updater refuse an untrusted manifest;

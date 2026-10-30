@@ -29,6 +29,7 @@ export interface DaemonArea {
     | 'connectors'
     | 'devices'
     | 'network'
+    | 'passwords'
     | 'plugins'
     | 'providers'
     | 'settings'

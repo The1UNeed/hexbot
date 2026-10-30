@@ -31,6 +31,8 @@ import type {
   ModelOption,
   NetworkInfo,
   PairingCode,
+  PasswordKeyStore,
+  PasswordLogin,
   PluginKind,
   PluginsList,
   Provider,
@@ -278,6 +280,54 @@ export function connectorsRemoveMcp(name: string): Promise<{ removed: boolean }>
 // ---------------------------------------------------------------------------
 // Plugins: connectors, MCP servers, skills, built-in tools and packages
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Passwords
+// ---------------------------------------------------------------------------
+
+export interface PasswordsList {
+  bots: string[]
+  logins: PasswordLogin[]
+  store: PasswordKeyStore
+}
+
+/** A new login (no `id`) or a change; fields left out stay. An empty `code` removes it. */
+export interface PasswordInput {
+  bots?: null | string[]
+  code?: string
+  id?: string
+  notes?: string
+  password?: string
+  title?: string
+  url?: string
+  username?: string
+}
+
+export function passwordsList(): Promise<PasswordsList> {
+  return rpcCall<PasswordsList>('hexbot.passwords.list', {})
+}
+
+export function passwordsSave(input: PasswordInput): Promise<{ login: PasswordLogin }> {
+  return rpcCall<{ login: PasswordLogin }>('hexbot.passwords.save', { ...input })
+}
+
+export function passwordsSetBots(
+  id: string,
+  bots: null | string[]
+): Promise<{ login: PasswordLogin }> {
+  return rpcCall<{ login: PasswordLogin }>('hexbot.passwords.set_bots', { bots, id })
+}
+
+export function passwordsDelete(id: string): Promise<unknown> {
+  return rpcCall('hexbot.passwords.delete', { id })
+}
+
+/** The password and the one-time code for now, for the owner only. */
+export function passwordsReveal(
+  id: string
+): Promise<{ code: null | { code: string; valid_for: number }; password: string }> {
+  return rpcCall('hexbot.passwords.reveal', { id })
+}
 
 export function pluginsList(): Promise<PluginsList> {
   return rpcCall<PluginsList>('hexbot.plugins.list', {})
@@ -790,12 +840,14 @@ export function setSectionModel(
 export function approvalRespond(
   sessionId: string,
   requestId: string,
-  choice: ApprovalChoice
+  choice: ApprovalChoice,
+  signIn?: { password: string; username: string }
 ): Promise<{ resolved: boolean }> {
   return rpcCall<{ resolved: boolean }>('approval.respond', {
     choice,
     request_id: requestId,
-    session_id: sessionId
+    session_id: sessionId,
+    ...signIn
   })
 }
 
