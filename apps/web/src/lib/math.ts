@@ -1,5 +1,5 @@
-/** Fenced blocks (closed or still streaming) and inline code keep their text. */
-const CODE = /(```[\s\S]*?(?:```|$)|~~~[\s\S]*?(?:~~~|$)|`[^`\n]*`)/
+/** Fenced blocks (closed or still streaming), inline code and link destinations keep their text. */
+const CODE = /(```[\s\S]*?(?:```|$)|~~~[\s\S]*?(?:~~~|$)|`[^`\n]*`|\]\((?:[^()\s\\]|\\.)*\))/
 /** \[ \] on lines of its own, with the indent or quote marks in front of it. */
 const DISPLAY_LINES = /^([ \t>]*)(?<!\\)\\\[((?:[^\\]|\\[^\]])+?)\\\][ \t]*$/gm
 const DISPLAY = /(?<!\\)\\\[((?:[^\\]|\\[^\]])+?)\\\]/g

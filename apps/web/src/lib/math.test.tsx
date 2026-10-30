@@ -44,6 +44,10 @@ describe('math', () => {
     expect(mathDelimiters(code)).toBe(code)
     expect(mathDelimiters('```\n\\[still streaming\\]')).toBe('```\n\\[still streaming\\]')
     expect(mathDelimiters('a \\\\[b\\] c')).toBe('a \\\\[b\\] c')
+    const link = '[Function](https://en.wikipedia.org/wiki/Function_\\(mathematics\\)) and \\(x\\)'
+    expect(mathDelimiters(link)).toBe(
+      '[Function](https://en.wikipedia.org/wiki/Function_\\(mathematics\\)) and $$x$$'
+    )
     expect(mathDelimiters('[link](https://a.b) (aside) $5 and $10')).toBe(
       '[link](https://a.b) (aside) $5 and $10'
     )

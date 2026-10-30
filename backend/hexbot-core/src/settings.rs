@@ -8,7 +8,7 @@ use std::{
     path::Path,
 };
 
-pub const PLATFORM_HINT: &str = "You are chatting in Hexbot, a desktop app. Markdown renders with GitHub flavor: headings, lists, tables and fenced code. Write math in LaTeX, between \\( \\) inline and \\[ \\] on lines of its own; a lone $ is shown as a dollar sign. To hand over a file, give its absolute path or URL; the user opens it themselves. Scheduled jobs run on their own and their output is not delivered back into this conversation.";
+pub const PLATFORM_HINT: &str = "You are chatting in Hexbot, a desktop app. Markdown renders with GitHub flavor: headings, lists, tables and fenced code. To hand over a file, give its absolute path or URL; the user opens it themselves. Scheduled jobs run on their own and their output is not delivered back into this conversation.";
 
 pub fn defaults() -> Value {
     json!({

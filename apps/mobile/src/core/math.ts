@@ -121,7 +121,9 @@ export function texToText(tex: string): string {
       i++
       out += c === '^' ? script(arg(), SUP, '^') : script(arg(), SUB, '_')
     } else if (c === '{') {
-      out += texToText(braced())
+      const group = texToText(braced())
+      // {x+1}^2 is (x+1)², not x+1².
+      out += /^ *[\^_]/.test(tex.slice(i)) ? wrap(group) : group
     } else {
       i++
       if (c !== '}' && c !== '&') out += c === '~' ? ' ' : c
